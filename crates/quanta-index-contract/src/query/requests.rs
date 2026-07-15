@@ -9,7 +9,9 @@ use serde::{
 use crate::LexicalCandidate;
 use crate::SemanticCorpusKindV1;
 
-use super::{GenerationPin, GenerationSelector, TextQueryRequest, TextQuerySyntax};
+use super::{
+    GenerationPin, GenerationSelector, QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax,
+};
 
 /// Semantic query request (LXE-01 §3: lexical scope unified on
 /// [`TextQueryRequest`]).
@@ -23,6 +25,8 @@ use super::{GenerationPin, GenerationSelector, TextQueryRequest, TextQuerySyntax
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticQueryRequest {
     pub query_text: String,
+    /// Applied identically to the semantic lane and any lexical scope lane.
+    pub constraints: QueryConstraintSetV1,
     pub generation: Option<GenerationPin>,
     pub generation_selector: Option<GenerationSelector>,
     /// LXE-01 §3: lexical pre-filter for the semantic recall set. Replaces
@@ -35,6 +39,7 @@ pub struct SemanticQueryRequest {
 
 const SEMANTIC_QUERY_REQUEST_FIELDS: &[&str] = &[
     "query_text",
+    "constraints",
     "generation",
     "generation_selector",
     "lexical_scope",
@@ -48,7 +53,7 @@ macro_rules! impl_semantic_query_request_serde {
             where
                 S: Serializer,
             {
-                let mut field_count: usize = 2;
+                let mut field_count: usize = 3;
                 if self.generation.is_some() {
                     field_count = field_count.saturating_add(1);
                 }
@@ -60,6 +65,7 @@ macro_rules! impl_semantic_query_request_serde {
                 }
                 let mut state = serializer.serialize_struct("SemanticQueryRequest", field_count)?;
                 state.serialize_field("query_text", &self.query_text)?;
+                state.serialize_field("constraints", &self.constraints)?;
                 if let Some(generation) = &self.generation {
                     state.serialize_field("generation", generation)?;
                 }
@@ -89,6 +95,7 @@ macro_rules! impl_semantic_query_request_serde {
             {
                 let mut query_text: Option<String> = None;
                 let mut query_text_seen = false;
+                let mut constraints: Option<QueryConstraintSetV1> = None;
                 let mut generation: Option<GenerationPin> = None;
                 let mut generation_seen = false;
                 let mut generation_selector: Option<GenerationSelector> = None;
@@ -104,6 +111,12 @@ macro_rules! impl_semantic_query_request_serde {
                             }
                             query_text_seen = true;
                             query_text = Some(map.next_value()?);
+                        }
+                        "constraints" => {
+                            if constraints.is_some() {
+                                return Err(de::Error::duplicate_field("constraints"));
+                            }
+                            constraints = Some(map.next_value()?);
                         }
                         "generation" => {
                             if generation_seen {
@@ -139,6 +152,8 @@ macro_rules! impl_semantic_query_request_serde {
                 }
                 Ok(SemanticQueryRequest {
                     query_text: query_text.ok_or_else(|| de::Error::missing_field("query_text"))?,
+                    constraints: constraints
+                        .ok_or_else(|| de::Error::missing_field("constraints"))?,
                     generation,
                     generation_selector,
                     lexical_scope,
@@ -518,6 +533,7 @@ impl_hybrid_seed_query_request_serde!(
 pub struct SymbolQueryRequest {
     pub syntax: TextQuerySyntax,
     pub query_text: String,
+    pub constraints: QueryConstraintSetV1,
     pub generation: Option<GenerationPin>,
     pub generation_selector: Option<GenerationSelector>,
     /// QI-QRY-01: required result cap. Wire field is mandatory; missing
@@ -529,6 +545,7 @@ pub struct SymbolQueryRequest {
 const SYMBOL_QUERY_REQUEST_FIELDS: &[&str] = &[
     "syntax",
     "query_text",
+    "constraints",
     "generation",
     "generation_selector",
     "top_k",
@@ -541,7 +558,7 @@ macro_rules! impl_symbol_query_request_serde {
             where
                 S: Serializer,
             {
-                let mut field_count: usize = 3;
+                let mut field_count: usize = 4;
                 if self.generation.is_some() {
                     field_count = field_count.saturating_add(1);
                 }
@@ -551,6 +568,7 @@ macro_rules! impl_symbol_query_request_serde {
                 let mut state = serializer.serialize_struct("SymbolQueryRequest", field_count)?;
                 state.serialize_field("syntax", &self.syntax)?;
                 state.serialize_field("query_text", &self.query_text)?;
+                state.serialize_field("constraints", &self.constraints)?;
                 if let Some(generation) = &self.generation {
                     state.serialize_field("generation", generation)?;
                 }
@@ -577,6 +595,7 @@ macro_rules! impl_symbol_query_request_serde {
             {
                 let mut syntax: Option<TextQuerySyntax> = None;
                 let mut query_text: Option<String> = None;
+                let mut constraints: Option<QueryConstraintSetV1> = None;
                 let mut generation: Option<GenerationPin> = None;
                 let mut generation_seen = false;
                 let mut generation_selector: Option<GenerationSelector> = None;
@@ -595,6 +614,12 @@ macro_rules! impl_symbol_query_request_serde {
                                 return Err(de::Error::duplicate_field("query_text"));
                             }
                             query_text = Some(map.next_value()?);
+                        }
+                        "constraints" => {
+                            if constraints.is_some() {
+                                return Err(de::Error::duplicate_field("constraints"));
+                            }
+                            constraints = Some(map.next_value()?);
                         }
                         "generation" => {
                             if generation_seen {
@@ -624,6 +649,8 @@ macro_rules! impl_symbol_query_request_serde {
                 Ok(SymbolQueryRequest {
                     syntax: syntax.ok_or_else(|| de::Error::missing_field("syntax"))?,
                     query_text: query_text.ok_or_else(|| de::Error::missing_field("query_text"))?,
+                    constraints: constraints
+                        .ok_or_else(|| de::Error::missing_field("constraints"))?,
                     generation,
                     generation_selector,
                     top_k: top_k.ok_or_else(|| de::Error::missing_field("top_k"))?,

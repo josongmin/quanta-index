@@ -26,6 +26,7 @@ pub(super) struct SemanticSelection {
 pub(super) struct HybridFusion {
     pub(super) pin: GenerationPin,
     pub(super) fused: Vec<LexicalCandidate>,
+    pub(super) window: QueryResultWindowV1,
     pub(super) explanation: SearchExplanation,
 }
 
@@ -236,28 +237,29 @@ pub(super) fn build_hybrid_seed_candidates_v1(
         .collect()
 }
 
-fn owner_kind_for_semantic_seed_hit_v2(hit: &SemanticSearchHitV1) -> OwnerDocKind {
-    match hit.corpus_kind {
-        Some(SemanticCorpusKindV1::SymbolCard) => OwnerDocKind::Symbol,
-        Some(SemanticCorpusKindV1::RawCodeFallback) | None => OwnerDocKind::Chunk,
-        Some(SemanticCorpusKindV1::ModuleCard | SemanticCorpusKindV1::ClusterCard) => {
-            OwnerDocKind::Module
-        }
-        Some(
-            SemanticCorpusKindV1::DocumentLeaf
-            | SemanticCorpusKindV1::DocumentSection
-            | SemanticCorpusKindV1::DocumentSummary
-            | SemanticCorpusKindV1::TestBehavior
-            | SemanticCorpusKindV1::RepositorySummary,
-        ) => OwnerDocKind::File,
-    }
-}
-
 fn lane_order_key_v2(lane: SeedLaneV2) -> u8 {
     match lane {
         SeedLaneV2::Exact => 0,
         SeedLaneV2::Bm25 => 1,
         SeedLaneV2::Dense => 2,
+    }
+}
+
+/// Private fusion identity. `entity_id` remains the opaque response carrier,
+/// but ranking/deduplication must also retain the owner domain so a lexical
+/// chunk cannot collapse a symbol merely because their display strings match.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct SeedFusionIdentityV2 {
+    owner_kind: OwnerDocKind,
+    entity_id: String,
+}
+
+impl From<&SeedCandidateV2> for SeedFusionIdentityV2 {
+    fn from(candidate: &SeedCandidateV2) -> Self {
+        Self {
+            owner_kind: candidate.owner_kind,
+            entity_id: candidate.entity_id.clone(),
+        }
     }
 }
 
@@ -308,7 +310,7 @@ fn one_semantic_lane_seed_candidates_v2(
         collapsed.push(SeedCandidateV2 {
             record_id: hit.record_id.clone(),
             entity_id,
-            owner_kind: owner_kind_for_semantic_seed_hit_v2(hit),
+            owner_kind: hit.owner_kind,
             corpus_kind: hit.corpus_kind,
             repo_relative_path: hit.candidate.repo_relative_path.clone(),
             snippet: hit.candidate.snippet.clone(),
@@ -325,10 +327,10 @@ fn one_semantic_lane_seed_candidates_v2(
     Ok(collapsed)
 }
 
-fn entity_ids_v2(seed_candidates: &[SeedCandidateV2]) -> Vec<String> {
+fn fusion_identities_v2(seed_candidates: &[SeedCandidateV2]) -> Vec<SeedFusionIdentityV2> {
     seed_candidates
         .iter()
-        .map(|candidate| candidate.entity_id.clone())
+        .map(SeedFusionIdentityV2::from)
         .collect()
 }
 
@@ -360,33 +362,28 @@ pub(super) fn build_hybrid_seed_candidates_v2(
         .iter()
         .map(|lane| one_semantic_lane_seed_candidates_v2(lane))
         .collect::<Result<Vec<_>, CoreError>>()?;
-    let mut entity_id_lanes = Vec::with_capacity(collapsed_semantic_lanes.len().saturating_add(1));
-    entity_id_lanes.push(entity_ids_v2(&collapsed_lexical));
-    entity_id_lanes.extend(
+    let mut identity_lanes = Vec::with_capacity(collapsed_semantic_lanes.len().saturating_add(1));
+    identity_lanes.push(fusion_identities_v2(&collapsed_lexical));
+    identity_lanes.extend(
         collapsed_semantic_lanes
             .iter()
-            .map(|lane| entity_ids_v2(lane)),
+            .map(|lane| fusion_identities_v2(lane)),
     );
-    let lane_refs = entity_id_lanes
-        .iter()
-        .map(Vec::as_slice)
-        .collect::<Vec<_>>();
-    let fused = HybridOrchestratorPolicy::fuse_rrf_id_lanes(&lane_refs, top_k);
+    let lane_refs = identity_lanes.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    let fused = HybridOrchestratorPolicy::fuse_rrf_key_lanes(&lane_refs, top_k);
 
-    let mut by_entity = BTreeMap::<String, SeedCandidateV2>::new();
+    let mut by_identity = BTreeMap::<SeedFusionIdentityV2, SeedCandidateV2>::new();
     for candidate in collapsed_lexical
         .into_iter()
         .chain(collapsed_semantic_lanes.into_iter().flatten())
     {
-        if let Some(existing) = by_entity.get_mut(candidate.entity_id.as_str()) {
+        let identity = SeedFusionIdentityV2::from(&candidate);
+        if let Some(existing) = by_identity.get_mut(&identity) {
             merge_seed_candidate_v2(existing, candidate);
         } else {
-            if by_entity
-                .insert(candidate.entity_id.clone(), candidate)
-                .is_some()
-            {
+            if by_identity.insert(identity, candidate).is_some() {
                 return Err(CoreError::Storage(
-                    "hybrid seed v2: duplicate entity inserted after collapse".to_string(),
+                    "hybrid seed v2: duplicate typed identity inserted after collapse".to_string(),
                 ));
             }
         }
@@ -395,11 +392,11 @@ pub(super) fn build_hybrid_seed_candidates_v2(
     fused
         .into_iter()
         .enumerate()
-        .map(|(index, entity_id)| {
-            let mut candidate = by_entity.remove(entity_id.as_str()).ok_or_else(|| {
+        .map(|(index, identity)| {
+            let mut candidate = by_identity.remove(&identity).ok_or_else(|| {
                 CoreError::Storage(format!(
-                    "hybrid seed v2: fused entity {} missing merged candidate payload",
-                    entity_id
+                    "hybrid seed v2: fused typed identity {:?}/{} missing merged candidate payload",
+                    identity.owner_kind, identity.entity_id
                 ))
             })?;
             candidate.seed_rank = checked_rank_u32_v1(index, "hybrid seed v2 fused")?;
@@ -502,9 +499,9 @@ pub(super) fn ensure_query_model_matches_index_v1(
 
 #[cfg(test)]
 mod corpus_budget_tests {
-    use super::{
-        SemanticCorpusKindV1, SemanticSeedCorpusBudgetV1, canonical_dense_corpus_budgets_v1,
-    };
+    use quanta_index_contract::SemanticCorpusKindV1;
+
+    use super::{SemanticSeedCorpusBudgetV1, canonical_dense_corpus_budgets_v1};
 
     #[test]
     fn corpus_budgets_are_canonical_and_duplicate_or_zero_budgets_fail_closed() {
@@ -542,6 +539,84 @@ mod corpus_budget_tests {
             },])
             .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod seed_fusion_tests {
+    use quanta_index_contract::{
+        LexicalCandidate, ManifestGeneration, OwnerDocKind, RepoId, RepoRelativePath, RevisionId,
+        SemanticCorpusKindV1,
+    };
+    use quanta_index_core::domains::semantic::SemanticSearchHitV1;
+
+    use super::build_hybrid_seed_candidates_v2;
+
+    const EXACT_SYMBOL_ID: &str =
+        "runtime_symbol_id_v1:src/session.rs:Function:RuntimeSession::commit:17";
+
+    fn lexical_candidate(id: &str) -> LexicalCandidate {
+        LexicalCandidate {
+            candidate_id: id.to_string(),
+            repo_id: RepoId::new("repo-seed-fusion"),
+            revision_id: RevisionId::new("rev-seed-fusion"),
+            manifest_generation: ManifestGeneration::new(1),
+            repo_relative_path: RepoRelativePath::new("src/session.rs"),
+            start_line: 0,
+            end_line: 0,
+            score: 1.0,
+            snippet: "seed fusion fixture".to_string(),
+            snippet_hit_offset: None,
+            highlights: Vec::new(),
+        }
+    }
+
+    fn symbol_hit(record_id: &str) -> SemanticSearchHitV1 {
+        SemanticSearchHitV1 {
+            candidate: lexical_candidate(record_id),
+            record_id: record_id.to_string(),
+            owner_id: EXACT_SYMBOL_ID.to_string(),
+            owner_kind: OwnerDocKind::Symbol,
+            corpus_kind: Some(SemanticCorpusKindV1::SymbolCard),
+        }
+    }
+
+    #[test]
+    fn seed_fusion_merges_same_exact_symbol_identity_across_dense_lanes() {
+        let seeds = build_hybrid_seed_candidates_v2(
+            &[],
+            &[
+                vec![symbol_hit("symbol-card-primary")],
+                vec![symbol_hit("symbol-card-secondary")],
+            ],
+            &[],
+            2,
+        )
+        .expect("same symbol identity must be fusable");
+
+        assert_eq!(seeds.len(), 1);
+        assert_eq!(seeds[0].entity_id, EXACT_SYMBOL_ID);
+        assert_eq!(seeds[0].owner_kind, OwnerDocKind::Symbol);
+        assert_eq!(seeds[0].contributions.len(), 2);
+    }
+
+    #[test]
+    fn seed_fusion_keeps_chunk_and_symbol_with_same_opaque_text_independent() {
+        let seeds = build_hybrid_seed_candidates_v2(
+            &[lexical_candidate(EXACT_SYMBOL_ID)],
+            &[vec![symbol_hit("symbol-card")]],
+            &[],
+            2,
+        )
+        .expect("different owner domains must not collapse");
+
+        assert_eq!(seeds.len(), 2);
+        assert_eq!(seeds[0].owner_kind, OwnerDocKind::Chunk);
+        assert_eq!(seeds[0].entity_id, EXACT_SYMBOL_ID);
+        assert_eq!(seeds[0].record_id, EXACT_SYMBOL_ID);
+        assert_eq!(seeds[1].owner_kind, OwnerDocKind::Symbol);
+        assert_eq!(seeds[1].entity_id, EXACT_SYMBOL_ID);
+        assert_eq!(seeds[1].record_id, "symbol-card");
     }
 }
 

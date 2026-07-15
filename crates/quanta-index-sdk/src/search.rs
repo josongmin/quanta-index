@@ -73,7 +73,7 @@ pub struct HybridSeedQueryBuilder<
 }
 
 impl<'a> HybridSeedQueryBuilder<'a> {
-    const fn new(client: &'a QuantaIndex) -> Self {
+    fn new(client: &'a QuantaIndex) -> Self {
         Self {
             client,
             state: VectorQueryBuilderState::new(),
@@ -132,6 +132,18 @@ impl<
     ) -> HybridSeedQueryBuilder<'a, HAS_TEXT, true, HAS_SELECTION, HAS_TOP_K> {
         self.transition(|state| {
             state.semantic_query_text = Some(query_text.into());
+        })
+    }
+
+    /// Replace the canonical OR-set propagated to every sparse and dense leg.
+    #[must_use]
+    pub fn language_any_of(
+        self,
+        languages: impl IntoIterator<Item = quanta_index_contract::lex::LanguageCode>,
+    ) -> Self {
+        self.transition(|state| {
+            state.constraints =
+                quanta_index_contract::QueryConstraintSetV1::from_languages(languages);
         })
     }
 

@@ -1,9 +1,8 @@
 use quanta_index_contract::lex::ParseTreeRecord;
 use quanta_index_contract::{
     ChunkId, GenerationPin, GenerationSelector, ManifestGeneration, RepoId, RevisionId,
-    SearchPlaneActivateGenerationRequest, SearchPlaneActivationAck, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
-    SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind, SearchScopeKey,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcResponse, SearchPlaneStructuralQueryResponse, SearchScopeKey,
     StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope,
     StructuralTombstoneScope, StructuralTreeRecord, TextQuerySyntax,
 };
@@ -210,32 +209,6 @@ impl<'a> StructuralNamespace<'a> {
         publish_structural_batch(self.client, batch)
     }
 
-    /// Publishes a sealed structural batch and activates the accepted
-    /// generation on the structural track. If activation fails, the batch
-    /// remains ingested and callers must reconcile that partial state.
-    pub fn publish_and_activate(
-        &self,
-        batch: &StructuralBatch,
-    ) -> Result<(BatchReceipt, SearchPlaneActivationAck), SdkError> {
-        let receipt = self.publish(batch)?;
-        if !receipt.sealed {
-            return Err(SdkError::Protocol(
-                "structural publish_and_activate requires a sealed receipt".to_string(),
-            ));
-        }
-        let activation =
-            self.client
-                .generations()
-                .commit(SearchPlaneActivateGenerationRequest {
-                    repo_id: batch.repo_id().clone(),
-                    revision_id: batch.revision_id().clone(),
-                    manifest_generation: receipt.generation,
-                    manifest_digest: receipt.manifest_digest.clone(),
-                    tracks: vec![SearchPlaneTrackKind::Structural],
-                })?;
-        Ok((receipt, activation))
-    }
-
     /// Contract-exact query replay surface. Accepts the shared wire DTO
     /// unchanged and routes it through the query transport.
     pub fn query_request(
@@ -303,7 +276,7 @@ pub struct StructuralQueryBuilder<
 }
 
 impl<'a> StructuralQueryBuilder<'a> {
-    const fn new(client: &'a QuantaIndex) -> Self {
+    fn new(client: &'a QuantaIndex) -> Self {
         Self {
             client,
             state: TextQueryBuilderState::new(),

@@ -12,14 +12,14 @@ mod frontdoor_scenarios;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use quanta_index_contract::lex::{
-    LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship, SymbolSpan,
-    compute_parse_tree_source_hash,
+    compute_parse_tree_source_hash, LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord,
+    SymbolRelationship, SymbolSpan,
 };
 use quanta_index_contract::{
     ChunkId, ChunkRecord, FileContributorIdentityEntry, GenerationPin, GenerationSelector,
@@ -30,7 +30,7 @@ use quanta_index_contract::{
     RepoMapNodeRef, RepoMapOwnsChunkEdge, RepoMapQueryRequest, RepoMapRedactionState,
     RepoMapSourceBundle, RepoMapSymbolNode, RevisionId, RuntimeCatalogIngestBatch,
     RuntimeChangedRecord, RuntimeDocFacetRecord, RuntimeEdgeAuthorityRecord,
-    RuntimeMetadataQueryRequest, RuntimeSnapshotRecord, SearchPlaneActivateGenerationRequest,
+    RuntimeMetadataQueryRequest, RuntimeSnapshotRecord, SearchCorpusGenerationIdentityV1,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneTrackKind, SemanticQueryRequest,
     StructuralQueryRequest, SymbolId, SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
@@ -43,12 +43,12 @@ use quanta_index_sdk::{
     RepoTopicBatch, SdkError, SearchCorpusBatch, SearchScopeKey, SearchScopeSurface,
     StructuralBatch,
 };
-use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::searchd::drive;
+use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd_runtime::build_runtime;
 
 use crate::frontdoor_scenarios::{
-    SDK_FRONTDOOR_SCENARIOS, SdkFrontdoorExpectation, SdkFrontdoorSurface,
+    SdkFrontdoorExpectation, SdkFrontdoorSurface, SDK_FRONTDOOR_SCENARIOS,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -89,11 +89,8 @@ fn pin_two() -> GenerationPin {
     GenerationPin::new(repo(), revision(), generation_two())
 }
 
-fn active_selector() -> GenerationSelector {
-    GenerationSelector::Active {
-        repo_id: repo(),
-        revision_id: revision(),
-    }
+fn pinned_selector(pin: GenerationPin) -> GenerationSelector {
+    GenerationSelector::Pinned(pin)
 }
 
 fn commit_sha() -> CommitSha {
@@ -1166,23 +1163,73 @@ fn expect_sdk_error<T>(
     }
 }
 
-fn publish_sdk_lexical_and_structural_ready(client: &QuantaIndex) -> TestResult {
-    let _lexical_receipt = client.search_corpus().publish(&lexical_batch()?)?;
-    let _structural_receipt = client.structural().publish(&structural_batch()?)?;
-    let _activation = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+fn current_sdk_search_corpus_or_none(
+    client: &QuantaIndex,
+    repo_id: RepoId,
+    revision_id: RevisionId,
+) -> Result<Option<SearchCorpusGenerationIdentityV1>, SdkError> {
+    let lexical = client.generations().current(
+        repo_id.clone(),
+        revision_id.clone(),
+        SearchPlaneTrackKind::Lexical,
+    );
+    let semantic =
         client
             .generations()
-            .activate()
-            .repo(repo())
-            .revision(revision())
-            .generation(generation())
-            .manifest_digest("manifest:sdk-structural-ready")
-            .tracks([
-                SearchPlaneTrackKind::Lexical,
-                SearchPlaneTrackKind::Structural,
-            ])?
-            .commit()
-    })?;
+            .current(repo_id, revision_id, SearchPlaneTrackKind::Semantic);
+    match (lexical, semantic) {
+        (Ok(lexical), Ok(semantic)) => {
+            let identity = SearchCorpusGenerationIdentityV1 { lexical, semantic };
+            identity.validate_v1().map_err(|error| {
+                SdkError::Protocol(format!(
+                    "current search corpus identity is invalid: {error}"
+                ))
+            })?;
+            Ok(Some(identity))
+        }
+        (
+            Err(SdkError::Remote {
+                code: lexical_code, ..
+            }),
+            Err(SdkError::Remote {
+                code: semantic_code,
+                ..
+            }),
+        ) if lexical_code == "NOT_READY" && semantic_code == "NOT_READY" => Ok(None),
+        (Ok(_), Err(SdkError::Remote { code, .. }))
+        | (Err(SdkError::Remote { code, .. }), Ok(_))
+            if code == "NOT_READY" =>
+        {
+            Err(SdkError::Protocol(
+                "search corpus active state is split across lexical and semantic tracks"
+                    .to_string(),
+            ))
+        }
+        (Err(error), _) | (_, Err(error)) => Err(error),
+    }
+}
+
+/// Publishes once and promotes one complete corpus identity. This deliberately
+/// does not use the polling helper: retrying a mutating publish after an
+/// ambiguous transport or CAS outcome could duplicate the ingress operation.
+fn publish_and_activate_sdk_search_corpus(
+    client: &QuantaIndex,
+    batch: &SearchCorpusBatch,
+) -> Result<SearchCorpusGenerationIdentityV1, Box<dyn Error>> {
+    let expected_active = current_sdk_search_corpus_or_none(
+        client,
+        batch.repo_id().clone(),
+        batch.revision_id().clone(),
+    )?;
+    let ack = client
+        .search_corpus()
+        .publish_and_activate(batch, expected_active)?;
+    Ok(ack.1.active)
+}
+
+fn publish_sdk_search_corpus_ready(client: &QuantaIndex) -> TestResult {
+    let batch = lexical_batch()?;
+    let _active = publish_and_activate_sdk_search_corpus(client, &batch)?;
     Ok(())
 }
 
@@ -1216,22 +1263,6 @@ fn assert_structural_single_binding(
         );
     }
     Ok(())
-}
-
-fn expect_usage_error_contains<T>(
-    result: Result<T, SdkError>,
-    expected_fragment: &str,
-) -> TestResult {
-    match result {
-        Err(SdkError::Usage(message)) if message.contains(expected_fragment) => Ok(()),
-        Err(other) => Err(format!(
-            "expected usage error containing {expected_fragment:?}, got {other:?}"
-        )
-        .into()),
-        Ok(_) => Err(
-            format!("expected usage error containing {expected_fragment:?}, got success").into(),
-        ),
-    }
 }
 
 fn wait_for_sdk_ready<T, F>(timeout: Duration, mut run: F) -> Result<T, SdkError>
@@ -1486,27 +1517,14 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
             .with_ingest_socket(ingest_socket),
     )?;
 
-    let _lexical_receipt = client.search_corpus().publish(&lexical_batch()?)?;
+    let corpus_batch = lexical_batch()?;
+    let _corpus_active = publish_and_activate_sdk_search_corpus(&client, &corpus_batch)?;
     let repo_map_receipt = client.repomap().publish(&repo_map_bundle()?)?;
     if repo_map_receipt.manifest_generation != generation() {
         stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected repo-map publish ack: {repo_map_receipt:?}").into());
     }
 
-    let _activation = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
-        client
-            .generations()
-            .activate()
-            .repo(repo())
-            .revision(revision())
-            .generation(generation())
-            .manifest_digest("manifest:lexical")
-            .tracks([
-                SearchPlaneTrackKind::Lexical,
-                SearchPlaneTrackKind::Semantic,
-            ])?
-            .commit()
-    })?;
     let repo_map_activation = client.repomap().activate(repo_map_activate_request())?;
     if repo_map_activation.manifest_generation != generation() {
         stop_runtime(&shutdown, join)?;
@@ -1762,24 +1780,11 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
             .with_ingest_socket(ingest_socket),
     )?;
 
-    let _lexical_receipt = client.search_corpus().publish(&lexical_batch()?)?;
+    let corpus_batch = lexical_batch()?;
+    let _corpus_active = publish_and_activate_sdk_search_corpus(&client, &corpus_batch)?;
     let _history_receipt = client.history().publish(&history_batch())?;
     let _dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
     let _structural_receipt = client.structural().publish(&structural_batch()?)?;
-    let _activation = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
-        client
-            .generations()
-            .activate()
-            .repo(repo())
-            .revision(revision())
-            .generation(generation())
-            .manifest_digest("manifest:history-sdk")
-            .tracks([
-                SearchPlaneTrackKind::Lexical,
-                SearchPlaneTrackKind::Structural,
-            ])?
-            .commit()
-    })?;
 
     let history_commit = wait_for_sdk_observation(
         SOCKET_TIMEOUT,
@@ -1788,7 +1793,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
                 .history()
                 .query()
                 .sourcegraph("type:commit rev:refs/heads/main author:alice fix")
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(5)
                 .execute()
         },
@@ -1819,7 +1824,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
                 .history()
                 .query()
                 .native("type:diff todo")
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(5)
                 .execute()
         },
@@ -1840,7 +1845,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
             .symbol()
             .query()
             .native("select:symbol MySdkSymbol")
-            .active(repo(), revision())
+            .pinned(pin())
             .top_k(3)
             .execute()
     })?;
@@ -1851,7 +1856,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
             .symbol()
             .query()
             .native("type:symbol MySdkSymbol")
-            .active(repo(), revision())
+            .pinned(pin())
             .top_k(3)
             .execute()
     })?;
@@ -1862,7 +1867,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
             .symbol()
             .query()
             .sourcegraph("select:symbol MySdkSymbol")
-            .active(repo(), revision())
+            .pinned(pin())
             .top_k(3)
             .execute()
     })?;
@@ -1873,7 +1878,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
             .symbol()
             .query()
             .sourcegraph("type:symbol MySdkSymbol")
-            .active(repo(), revision())
+            .pinned(pin())
             .top_k(3)
             .execute()
     })?;
@@ -1886,7 +1891,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
                 .runtime()
                 .query()
                 .sourcegraph("dirty:yes todo")
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(3)
                 .execute()
         },
@@ -2619,9 +2624,8 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
     let (_dir, client, ingest_socket, shutdown, join) =
         start_sdk_frontdoor_runtime_with_ingest("sdk-frontdoor-widened-query-matrix")?;
 
-    let _lexical_receipt = client
-        .search_corpus()
-        .publish(&lexical_frontdoor_matrix_batch()?)?;
+    let corpus_batch = lexical_frontdoor_matrix_batch()?;
+    let _corpus_active = publish_and_activate_sdk_search_corpus(&client, &corpus_batch)?;
     let _history_receipt = client.history().publish(&history_batch())?;
     let _structural_receipt = client.structural().publish(&structural_batch()?)?;
     let _repo_commit_recency_receipt = client
@@ -2640,20 +2644,6 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
         .publish_file_contributor(&file_contributor_batch())?;
     let _dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
     publish_runtime_catalog_batch(&ingest_socket)?;
-    let _activation = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
-        client
-            .generations()
-            .activate()
-            .repo(repo())
-            .revision(revision())
-            .generation(generation())
-            .manifest_digest("manifest:sdk-frontdoor-matrix")
-            .tracks([
-                SearchPlaneTrackKind::Lexical,
-                SearchPlaneTrackKind::Structural,
-            ])?
-            .commit()
-    })?;
 
     for &scenario in SDK_FRONTDOOR_SCENARIOS {
         match scenario.expected {
@@ -2666,14 +2656,14 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                                 .lexical()
                                 .query()
                                 .native(scenario.query_text)
-                                .active(repo(), revision())
+                                .pinned(pin())
                                 .top_k(10)
                                 .execute(),
                             TextQuerySyntax::Sourcegraph => client
                                 .lexical()
                                 .query()
                                 .sourcegraph(scenario.query_text)
-                                .active(repo(), revision())
+                                .pinned(pin())
                                 .top_k(10)
                                 .execute(),
                         },
@@ -2780,14 +2770,14 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                                 .runtime()
                                 .query()
                                 .native(scenario.query_text)
-                                .active(repo(), revision())
+                                .pinned(pin())
                                 .top_k(10)
                                 .execute(),
                             TextQuerySyntax::Sourcegraph => client
                                 .runtime()
                                 .query()
                                 .sourcegraph(scenario.query_text)
-                                .active(repo(), revision())
+                                .pinned(pin())
                                 .top_k(10)
                                 .execute(),
                         },
@@ -2836,14 +2826,14 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                             .history()
                             .query()
                             .native(scenario.query_text)
-                            .active(repo(), revision())
+                            .pinned(pin())
                             .top_k(10)
                             .execute(),
                         TextQuerySyntax::Sourcegraph => client
                             .history()
                             .query()
                             .sourcegraph(scenario.query_text)
-                            .active(repo(), revision())
+                            .pinned(pin())
                             .top_k(10)
                             .execute(),
                     },
@@ -2895,14 +2885,14 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                                     .history()
                                     .query()
                                     .native(scenario.query_text)
-                                    .active(repo(), revision())
+                                    .pinned(pin())
                                     .top_k(10)
                                     .execute(),
                                 TextQuerySyntax::Sourcegraph => client
                                     .history()
                                     .query()
                                     .sourcegraph(scenario.query_text)
-                                    .active(repo(), revision())
+                                    .pinned(pin())
                                     .top_k(10)
                                     .execute(),
                             }
@@ -2965,44 +2955,23 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
 fn sdk_text_frontdoor_rebinds_rev_at_time_generation_truth() -> TestResult {
     let (_dir, client, shutdown, join) = start_sdk_frontdoor_runtime("sdk-frontdoor-rev-at-time")?;
 
-    let _ancestor_receipt = client.search_corpus().publish(&rev_at_time_lexical_batch(
+    let ancestor_batch = rev_at_time_lexical_batch(
         rev_at_time_ancestor_revision(),
         rev_at_time_ancestor_generation(),
         "src/legacy.rs",
         "chunk-rev-at-time-ancestor",
         "needle_token legacy_choice",
-    )?)?;
-    let _head_receipt = client.search_corpus().publish(&rev_at_time_lexical_batch(
+    )?;
+    let _ancestor_active = publish_and_activate_sdk_search_corpus(&client, &ancestor_batch)?;
+    let head_batch = rev_at_time_lexical_batch(
         rev_at_time_head_revision(),
         rev_at_time_head_generation(),
         "src/head.rs",
         "chunk-rev-at-time-head",
         "needle_token head_choice",
-    )?)?;
+    )?;
+    let _head_active = publish_and_activate_sdk_search_corpus(&client, &head_batch)?;
     let _history_receipt = client.history().publish(&rev_at_time_history_batch()?)?;
-
-    let _activate_ancestor = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
-        client
-            .generations()
-            .activate()
-            .repo(repo())
-            .revision(rev_at_time_ancestor_revision())
-            .generation(rev_at_time_ancestor_generation())
-            .manifest_digest("manifest:rev-at-time:src/legacy.rs:41")
-            .tracks([SearchPlaneTrackKind::Lexical])?
-            .commit()
-    })?;
-    let _activate_head = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
-        client
-            .generations()
-            .activate()
-            .repo(repo())
-            .revision(rev_at_time_head_revision())
-            .generation(rev_at_time_head_generation())
-            .manifest_digest("manifest:rev-at-time:src/head.rs:42")
-            .tracks([SearchPlaneTrackKind::Lexical])?
-            .commit()
-    })?;
 
     let head = wait_for_sdk_observation(
         SOCKET_TIMEOUT,
@@ -3176,7 +3145,8 @@ fn sdk_structural_sourcegraph_frontdoor_supports_boolean_and_typed_hole_truth() 
     let (_dir, client, shutdown, join) =
         start_sdk_frontdoor_runtime("sdk-frontdoor-structural-sourcegraph-v2")?;
 
-    publish_sdk_lexical_and_structural_ready(&client)?;
+    publish_sdk_search_corpus_ready(&client)?;
+    let _structural_receipt = client.structural().publish(&structural_batch()?)?;
 
     let typed_expr = wait_for_sdk_observation(
         SOCKET_TIMEOUT,
@@ -3259,7 +3229,8 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
     let (_dir, client, shutdown, join) =
         start_sdk_frontdoor_runtime("sdk-frontdoor-dsl-fail-closed")?;
 
-    publish_sdk_lexical_and_structural_ready(&client)?;
+    publish_sdk_search_corpus_ready(&client)?;
+    let _structural_receipt = client.structural().publish(&structural_batch()?)?;
 
     let lexical_timeout = expect_sdk_error(
         client
@@ -3536,31 +3507,18 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
     let (_dir, client, shutdown, join) =
         start_sdk_frontdoor_runtime("sdk-frontdoor-contract-exact")?;
 
-    let _lexical_receipt = client.search_corpus().publish(&lexical_batch()?)?;
+    let corpus_batch = lexical_batch()?;
+    let _corpus_active = publish_and_activate_sdk_search_corpus(&client, &corpus_batch)?;
     let _history_receipt = client.history().publish(&history_batch())?;
     let _dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
     let _structural_receipt = client.structural().publish(&structural_batch()?)?;
-    let _activation = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
-        client
-            .generations()
-            .activate()
-            .repo(repo())
-            .revision(revision())
-            .generation(generation())
-            .manifest_digest("manifest:lexical")
-            .tracks([
-                SearchPlaneTrackKind::Lexical,
-                SearchPlaneTrackKind::Semantic,
-                SearchPlaneTrackKind::Structural,
-            ])?
-            .commit()
-    })?;
 
     let lexical_request = TextQueryRequest {
         syntax: TextQuerySyntax::Native,
         query_text: "todo".to_string(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
         generation: None,
-        generation_selector: Some(active_selector()),
+        generation_selector: Some(pinned_selector(pin())),
         top_k: 2,
     };
     let lexical = wait_for_sdk_observation(
@@ -3583,8 +3541,9 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
     let symbol_request = SymbolQueryRequest {
         syntax: TextQuerySyntax::Sourcegraph,
         query_text: "select:symbol MySdkSymbol".to_string(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
         generation: None,
-        generation_selector: Some(active_selector()),
+        generation_selector: Some(pinned_selector(pin())),
         top_k: 3,
     };
     let symbol = wait_for_symbol_query(SOCKET_TIMEOUT, || {
@@ -3596,8 +3555,9 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
         text_query: TextQueryRequest {
             syntax: TextQuerySyntax::Sourcegraph,
             query_text: "type:commit rev:refs/heads/main author:alice fix".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: None,
-            generation_selector: Some(active_selector()),
+            generation_selector: Some(pinned_selector(pin())),
             top_k: 5,
         },
     };
@@ -3622,8 +3582,9 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
         text_query: TextQueryRequest {
             syntax: TextQuerySyntax::Sourcegraph,
             query_text: "dirty:yes todo".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: None,
-            generation_selector: Some(active_selector()),
+            generation_selector: Some(pinned_selector(pin())),
             top_k: 3,
         },
     };
@@ -3647,8 +3608,9 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
             query_text:
                 r#"repo:repo-sdk path:src/lib.rs lang:rust patterntype:structural "function_item { { :[name.expr] } }""#
                     .to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: None,
-            generation_selector: Some(active_selector()),
+            generation_selector: Some(pinned_selector(pin())),
             top_k: 2,
         },
     };
@@ -3683,13 +3645,15 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
 
     let semantic_request = SemanticQueryRequest {
         query_text: "quartz".to_string(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
         generation: None,
-        generation_selector: Some(active_selector()),
+        generation_selector: Some(pinned_selector(pin())),
         lexical_scope: Some(TextQueryRequest {
             syntax: TextQuerySyntax::Sourcegraph,
             query_text: "sphinx".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: None,
-            generation_selector: Some(active_selector()),
+            generation_selector: Some(pinned_selector(pin())),
             top_k: 2,
         }),
         top_k: 2,
@@ -3715,13 +3679,14 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
         text_query: TextQueryRequest {
             syntax: TextQuerySyntax::Native,
             query_text: "sphinx".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: None,
-            generation_selector: Some(active_selector()),
+            generation_selector: Some(pinned_selector(pin())),
             top_k: 2,
         },
         semantic_query_text: "quartz".to_string(),
         generation: None,
-        generation_selector: Some(active_selector()),
+        generation_selector: Some(pinned_selector(pin())),
         dense_corpora: Vec::new(),
         top_k: 2,
     };
@@ -3746,7 +3711,7 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
 }
 
 #[test]
-fn sdk_generations_frontdoor_routes_commit_current_status_and_builder_activation() -> TestResult {
+fn sdk_search_corpus_frontdoor_promotes_composite_generation_identity() -> TestResult {
     let (_dir, client, shutdown, join) = start_sdk_frontdoor_runtime("sdk-frontdoor-generations")?;
 
     let initial_status = client.generations().status(repo(), revision())?;
@@ -3766,40 +3731,21 @@ fn sdk_generations_frontdoor_routes_commit_current_status_and_builder_activation
     )?;
     expect_remote_code(not_ready, "NOT_READY")?;
 
-    let direct_activation_not_ready = expect_sdk_error(
-        client
-            .generations()
-            .commit(SearchPlaneActivateGenerationRequest {
-                repo_id: repo(),
-                revision_id: revision(),
-                manifest_generation: generation(),
-                manifest_digest: "manifest:direct-activation".to_string(),
-                tracks: vec![SearchPlaneTrackKind::Lexical],
-            }),
-        "direct activation before lexical materialization should fail closed",
-    )?;
-    expect_remote_code(direct_activation_not_ready, "NOT_READY")?;
-
-    let _lexical_receipt = client.search_corpus().publish(&lexical_batch()?)?;
-    let _structural_receipt = client.structural().publish(&structural_batch()?)?;
-
-    let direct_activation = client
-        .generations()
-        .commit(SearchPlaneActivateGenerationRequest {
-            repo_id: repo(),
-            revision_id: revision(),
-            manifest_generation: generation(),
-            manifest_digest: "manifest:direct-activation".to_string(),
-            tracks: vec![SearchPlaneTrackKind::Lexical],
-        })?;
-    if direct_activation.repo_id != repo()
-        || direct_activation.revision_id != revision()
-        || direct_activation.manifest_generation != generation()
-        || direct_activation.manifest_digest != "manifest:direct-activation"
-        || direct_activation.tracks != vec![SearchPlaneTrackKind::Lexical]
+    let corpus_batch = lexical_batch()?;
+    let composite_active = publish_and_activate_sdk_search_corpus(&client, &corpus_batch)?;
+    if composite_active.lexical.repo_id != repo()
+        || composite_active.lexical.revision_id != revision()
+        || composite_active.lexical.track != SearchPlaneTrackKind::Lexical
+        || composite_active.semantic.track != SearchPlaneTrackKind::Semantic
+        || composite_active.lexical.manifest_generation != generation()
+        || composite_active.lexical.manifest_digest != corpus_batch.manifest_digest()
+        || composite_active.semantic.manifest_generation != generation()
+        || composite_active.semantic.manifest_digest != corpus_batch.manifest_digest()
     {
         stop_runtime(&shutdown, join)?;
-        return Err(format!("unexpected direct activation ack: {direct_activation:?}").into());
+        return Err(
+            format!("unexpected composite activation identity: {composite_active:?}").into(),
+        );
     }
 
     let lexical_snapshot = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
@@ -3811,43 +3757,10 @@ fn sdk_generations_frontdoor_routes_commit_current_status_and_builder_activation
         || lexical_snapshot.revision_id != revision()
         || lexical_snapshot.track != SearchPlaneTrackKind::Lexical
         || lexical_snapshot.manifest_generation != generation()
-        || lexical_snapshot.manifest_digest != "manifest:direct-activation"
+        || lexical_snapshot.manifest_digest != corpus_batch.manifest_digest()
     {
         stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected lexical generation snapshot: {lexical_snapshot:?}").into());
-    }
-
-    let builder_activation = client
-        .generations()
-        .activate()
-        .repo(repo())
-        .revision(revision())
-        .generation(generation())
-        .manifest_digest("manifest:builder-activation")
-        .track(SearchPlaneTrackKind::Structural)
-        .commit()?;
-    if builder_activation.tracks != vec![SearchPlaneTrackKind::Structural]
-        || builder_activation.manifest_digest != "manifest:builder-activation"
-    {
-        stop_runtime(&shutdown, join)?;
-        return Err(format!("unexpected builder activation ack: {builder_activation:?}").into());
-    }
-
-    let structural_snapshot = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
-        client
-            .generations()
-            .current(repo(), revision(), SearchPlaneTrackKind::Structural)
-    })?;
-    if structural_snapshot.repo_id != repo()
-        || structural_snapshot.revision_id != revision()
-        || structural_snapshot.track != SearchPlaneTrackKind::Structural
-        || structural_snapshot.manifest_generation != generation()
-        || structural_snapshot.manifest_digest != "manifest:builder-activation"
-    {
-        stop_runtime(&shutdown, join)?;
-        return Err(
-            format!("unexpected structural generation snapshot: {structural_snapshot:?}").into(),
-        );
     }
 
     let final_status = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
@@ -3858,11 +3771,11 @@ fn sdk_generations_frontdoor_routes_commit_current_status_and_builder_activation
         return Err(format!("unexpected final generation status: {final_status:?}").into());
     }
     match final_status.tracks.as_slice() {
-        [lexical, structural]
+        [lexical, semantic]
             if lexical.track == SearchPlaneTrackKind::Lexical
-                && lexical.manifest_digest == "manifest:direct-activation"
-                && structural.track == SearchPlaneTrackKind::Structural
-                && structural.manifest_digest == "manifest:builder-activation" => {}
+                && lexical.manifest_digest == corpus_batch.manifest_digest()
+                && semantic.track == SearchPlaneTrackKind::Semantic
+                && semantic.manifest_digest == corpus_batch.manifest_digest() => {}
         _ => {
             stop_runtime(&shutdown, join)?;
             return Err(format!("unexpected final generation track set: {final_status:?}").into());
@@ -3877,22 +3790,9 @@ fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() 
     let (_dir, client, shutdown, join) =
         start_sdk_frontdoor_runtime("sdk-frontdoor-builder-variants")?;
 
-    let _lexical_receipt = client.search_corpus().publish(&lexical_batch()?)?;
+    let corpus_batch = lexical_batch()?;
+    let _corpus_active = publish_and_activate_sdk_search_corpus(&client, &corpus_batch)?;
     let _dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
-    let _activation = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
-        client
-            .generations()
-            .activate()
-            .repo(repo())
-            .revision(revision())
-            .generation(generation())
-            .manifest_digest("manifest:lexical")
-            .tracks([
-                SearchPlaneTrackKind::Lexical,
-                SearchPlaneTrackKind::Semantic,
-            ])?
-            .commit()
-    })?;
 
     let lexical_native = wait_for_sdk_observation(
         SOCKET_TIMEOUT,
@@ -4013,19 +3913,9 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_per_
     let (client, shutdown, join) =
         start_sdk_frontdoor_runtime_at_state_root(&state_root, "sdk-frontdoor-multigen-v1")?;
 
-    let _lexical_receipt_v1 = client.search_corpus().publish(&lexical_batch()?)?;
+    let corpus_batch_v1 = lexical_batch()?;
+    let _corpus_active_v1 = publish_and_activate_sdk_search_corpus(&client, &corpus_batch_v1)?;
     let _structural_receipt_v1 = client.structural().publish(&structural_batch()?)?;
-    let _activation_v1 = wait_for_sdk_ready(complex_timeout, || {
-        client
-            .generations()
-            .activate()
-            .repo(repo())
-            .revision(revision())
-            .generation(generation())
-            .manifest_digest("manifest:v1-active")
-            .tracks([SearchPlaneTrackKind::Lexical])?
-            .commit()
-    })?;
 
     let lexical_active_v1 = wait_for_sdk_observation(
         complex_timeout,
@@ -4051,7 +3941,8 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_per_
         return Err(format!("unexpected active v1 lexical response: {lexical_active_v1:?}").into());
     }
 
-    let _lexical_receipt_v2 = client.search_corpus().publish(&lexical_batch_two()?)?;
+    let corpus_batch_v2 = lexical_batch_two()?;
+    let _corpus_active_v2 = publish_and_activate_sdk_search_corpus(&client, &corpus_batch_v2)?;
     let _structural_receipt_v2 = client.structural().publish(&structural_batch_two()?)?;
 
     let lexical_pinned_v2 = wait_for_sdk_observation(
@@ -4245,25 +4136,13 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_per_
         .into());
     }
 
-    let _activation_v2 = wait_for_sdk_ready(complex_timeout, || {
-        client
-            .generations()
-            .activate()
-            .repo(repo())
-            .revision(revision())
-            .generation(generation_two())
-            .manifest_digest("manifest:v2-active")
-            .tracks([SearchPlaneTrackKind::Lexical])?
-            .commit()
-    })?;
-
     let lexical_snapshot_v2 = wait_for_sdk_ready(complex_timeout, || {
         client
             .generations()
             .current(repo(), revision(), SearchPlaneTrackKind::Lexical)
     })?;
     if lexical_snapshot_v2.manifest_generation != generation_two()
-        || lexical_snapshot_v2.manifest_digest != "manifest:v2-active"
+        || lexical_snapshot_v2.manifest_digest != "manifest:lexical-v2"
     {
         stop_runtime(&shutdown, join)?;
         return Err(format!(
@@ -4322,25 +4201,6 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_per_
         )
         .into());
     }
-
-    stop_runtime(&shutdown, join)
-}
-
-#[test]
-fn sdk_frontdoor_activation_builder_rejects_empty_tracks_before_wire_dispatch() -> TestResult {
-    let (_dir, client, shutdown, join) = start_sdk_frontdoor_runtime("sdk-frontdoor-usage")?;
-
-    expect_usage_error_contains(
-        client
-            .generations()
-            .activate()
-            .repo(repo())
-            .revision(revision())
-            .generation(generation())
-            .manifest_digest("manifest:missing-tracks")
-            .tracks([]),
-        "at least one track",
-    )?;
 
     stop_runtime(&shutdown, join)
 }

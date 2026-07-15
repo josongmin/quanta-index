@@ -7,6 +7,7 @@ crate quanta_index_contract
 │   │   ├── struct EmbeddingId: pub
 │   │   └── struct SymbolId: pub
 │   ├── mod ops: pub(self)
+│   │   ├── struct ClearLexicalSurface: pub
 │   │   ├── struct DeleteChunk: pub
 │   │   ├── struct DeleteParseTree: pub
 │   │   ├── struct DeleteParseTreeVisitor: pub(self)
@@ -81,11 +82,23 @@ crate quanta_index_contract
 │   │   ├── struct GenerationStatusRequest: pub
 │   │   ├── struct GenerationStatusRequestVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
+│   │   ├── struct SearchPlaneActivateGenerationCasRequest: pub
+│   │   ├── struct SearchPlaneActivateGenerationCasRequestVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
 │   │   ├── struct SearchPlaneActivateGenerationRequest: pub
 │   │   ├── struct SearchPlaneActivateGenerationRequestVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
 │   │   ├── struct SearchPlaneActivationAck: pub
 │   │   ├── struct SearchPlaneActivationAckVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct SearchPlaneActivationCasAck: pub
+│   │   ├── struct SearchPlaneActivationCasAckVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct SearchPlaneRollbackGenerationAck: pub
+│   │   ├── struct SearchPlaneRollbackGenerationAckVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct SearchPlaneRollbackGenerationRequest: pub
+│   │   ├── struct SearchPlaneRollbackGenerationRequestVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
 │   │   ├── enum SearchPlaneTrackKind: pub
 │   │   ├── struct SearchPlaneTrackKindVisitor: pub(self)
@@ -130,6 +143,8 @@ crate quanta_index_contract
 │   │   ├── struct FileContributorEntryVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
 │   │   ├── struct FileContributorIdentityEntry: pub
+│   │   ├── struct FileContributorIdentityEntryVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
 │   │   ├── struct FileContributorIngestBatch: pub
 │   │   ├── struct FileContributorIngestBatchVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
@@ -202,6 +217,7 @@ crate quanta_index_contract
 │   │   ├── struct SearchCorpusReplaceScope: pub
 │   │   ├── struct SearchCorpusReplaceScopeVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
+│   │   ├── enum SearchCorpusSurfaceMutationConflictV1: pub
 │   │   ├── struct SearchCorpusTombstoneScope: pub
 │   │   ├── struct SearchCorpusTombstoneScopeVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
@@ -314,9 +330,6 @@ crate quanta_index_contract
 │   │   │   └── type Value: pub(self)
 │   │   └── struct TagsSer: pub(self)
 │   ├── mod lang: pub
-│   │   ├── struct LanguageCode: pub
-│   │   └── struct LanguageCodeVisitor: pub(self)
-│   │       └── type Value: pub(self)
 │   ├── mod parse_tree: pub
 │   │   ├── struct ParseNode: pub
 │   │   ├── struct ParseNodeVisitor: pub(self)

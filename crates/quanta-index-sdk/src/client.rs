@@ -1,6 +1,6 @@
 use std::sync::{
-    Arc,
     atomic::{AtomicU64, Ordering},
+    Arc,
 };
 
 use quanta_index_contract::{
@@ -173,7 +173,7 @@ impl QuantaIndex {
                 message: error.message,
                 repair: error.repair,
             }),
-            payload @ (SearchPlaneControlIpcResponse::ActivationAck(_)
+            payload @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::RollbackAck(_)
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
@@ -258,7 +258,9 @@ impl QuantaIndex {
         response: &SearchPlaneControlIpcResponse,
     ) -> &'static str {
         match response {
-            SearchPlaneControlIpcResponse::ActivationAck(_) => "activation_ack",
+            SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_) => {
+                "search_corpus_activation_cas_ack"
+            }
             SearchPlaneControlIpcResponse::RollbackAck(_) => "rollback_ack",
             SearchPlaneControlIpcResponse::RepoMapMutationAck(_) => "repomap_mutation_ack",
             SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_) => {
@@ -460,14 +462,17 @@ impl<'a> ProducerClient<'a> {
     pub fn publish_search_corpus_and_activate(
         &self,
         batch: &crate::SearchCorpusBatch,
+        expected_active: Option<quanta_index_contract::SearchCorpusGenerationIdentityV1>,
     ) -> Result<
         (
             crate::BatchReceipt,
-            quanta_index_contract::SearchPlaneActivationAck,
+            quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck,
         ),
         SdkError,
     > {
-        self.client.search_corpus().publish_and_activate(batch)
+        self.client
+            .search_corpus()
+            .publish_and_activate(batch, expected_active)
     }
 
     pub fn publish_history(
@@ -491,19 +496,6 @@ impl<'a> ProducerClient<'a> {
         self.client.structural().publish(batch)
     }
 
-    pub fn publish_structural_and_activate(
-        &self,
-        batch: &crate::StructuralBatch,
-    ) -> Result<
-        (
-            crate::BatchReceipt,
-            quanta_index_contract::SearchPlaneActivationAck,
-        ),
-        SdkError,
-    > {
-        self.client.structural().publish_and_activate(batch)
-    }
-
     pub fn publish_repomap(
         &self,
         bundle: &quanta_index_contract::RepoMapSourceBundle,
@@ -520,18 +512,6 @@ pub struct ControlClient<'a> {
 impl<'a> ControlClient<'a> {
     const fn new(client: &'a QuantaIndex) -> Self {
         Self { client }
-    }
-
-    #[must_use]
-    pub fn activate(&self) -> crate::ActivationBuilder<'a> {
-        self.client.generations().activate()
-    }
-
-    pub fn commit(
-        &self,
-        request: quanta_index_contract::SearchPlaneActivateGenerationRequest,
-    ) -> Result<quanta_index_contract::SearchPlaneActivationAck, SdkError> {
-        self.client.generations().commit(request)
     }
 
     pub fn rollback(

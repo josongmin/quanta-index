@@ -158,6 +158,7 @@ fn boot_symbol_projection_fixture() -> AnyResult<E2eRuntime> {
         batch_digest: "structural-symbol-hellgate-lex-batch".to_string(),
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
+        clear_surfaces: Vec::new(),
         replace_scopes: vec![SearchCorpusReplaceScope {
             scope: scope_key(path),
             scope_digest: "structural-symbol-hellgate-scope".to_string(),

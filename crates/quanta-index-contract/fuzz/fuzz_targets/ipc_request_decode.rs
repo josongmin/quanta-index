@@ -18,11 +18,10 @@ use libfuzzer_sys::fuzz_target;
 
 use quanta_index_contract::{
     CurrentGenerationRequest, DirtyIngestBatch, GenerationStatusRequest, HistoryIngestBatch,
-    HistoryQueryRequest, HybridQueryRequest, HybridSeedQueryRequest, SearchCorpusIngestBatch,
-    RepoMapQueryRequest,
-    RepoMapSourceBundle, SearchPlaneControlIpcRequest, SearchPlaneControlIpcRequestEnvelope,
-    SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneQueryIpcRequest,
+    HistoryQueryRequest, HybridQueryRequest, HybridSeedQueryRequest, RepoMapQueryRequest,
+    RepoMapSourceBundle, SearchCorpusIngestBatch, SearchPlaneControlIpcRequest,
+    SearchPlaneControlIpcRequestEnvelope, SearchPlaneExplainQueryRequest,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SemanticIngestBatch, SemanticQueryRequest,
     StructuralIngestBatch, StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest,
 };

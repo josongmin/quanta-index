@@ -8,7 +8,7 @@
 //! vary across variants (raw UTF-8, CBOR, opaque bookkeeping) and are NOT all
 //! CBOR despite the earlier blanket claim that lived on this module.
 
-use crate::{ManifestGeneration, RepoId, RevisionId};
+use crate::{ManifestGeneration, RepoId, RevisionId, SearchScopeSurface};
 
 use super::ids::{ChunkId, SymbolId};
 
@@ -182,6 +182,18 @@ pub struct TombstoneLexicalScope {
     pub payload: Vec<u8>,
 }
 
+/// Whole-surface deletion for a target lexical generation. `base_generation`
+/// is carried explicitly so a clear-only Delta can materialize its target by
+/// cloning the immutable base before deleting rows.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClearLexicalSurface {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub base_generation: Option<ManifestGeneration>,
+    pub surface: SearchScopeSurface,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplaceStructuralScope {
     pub repo_id: RepoId,
@@ -221,6 +233,7 @@ pub enum LexicalChannelOp {
     DeleteSymbol(DeleteSymbol),
     ReplaceLexicalScope(ReplaceLexicalScope),
     TombstoneLexicalScope(TombstoneLexicalScope),
+    ClearLexicalSurface(ClearLexicalSurface),
     Seal(LexicalSeal),
     // PRE-CONTRACT-EXT additive variants — appended only; existing variants
     // above keep their order and shape for wire compatibility.
@@ -249,6 +262,7 @@ impl LexicalChannelOp {
             Self::DeleteSymbol(op) => &op.repo_id,
             Self::ReplaceLexicalScope(op) => &op.repo_id,
             Self::TombstoneLexicalScope(op) => &op.repo_id,
+            Self::ClearLexicalSurface(op) => &op.repo_id,
             Self::Seal(op) => &op.repo_id,
             Self::UpsertCommit(op) => &op.repo_id,
             Self::UpsertRef(op) => &op.repo_id,
@@ -275,6 +289,7 @@ impl LexicalChannelOp {
             Self::DeleteSymbol(op) => &op.revision_id,
             Self::ReplaceLexicalScope(op) => &op.revision_id,
             Self::TombstoneLexicalScope(op) => &op.revision_id,
+            Self::ClearLexicalSurface(op) => &op.revision_id,
             Self::Seal(op) => &op.revision_id,
             Self::UpsertCommit(op) => &op.revision_id,
             Self::UpsertRef(op) => &op.revision_id,
@@ -301,6 +316,7 @@ impl LexicalChannelOp {
             Self::DeleteSymbol(op) => op.generation,
             Self::ReplaceLexicalScope(op) => op.generation,
             Self::TombstoneLexicalScope(op) => op.generation,
+            Self::ClearLexicalSurface(op) => op.generation,
             Self::Seal(op) => op.generation,
             Self::UpsertCommit(op) => op.generation,
             Self::UpsertRef(op) => op.generation,

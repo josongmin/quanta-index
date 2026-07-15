@@ -19,13 +19,13 @@ use quanta_index_contract::ipc::{
 use quanta_index_contract::lex::ExplanationRow;
 use quanta_index_contract::{
     EngineTouched, GenerationPin, HybridSeedCandidate, HybridSeedLane, HybridSeedQueryResponse,
-    LexicalCandidate, ManifestGeneration, PlannerStage, PlannerTraceEntry, RepoId, RepoMapDocType,
-    RepoMapEntryDto, RepoMapExactnessSummary, RepoMapFocusSubjectDto, RepoMapGraphCoverageClass,
-    RepoMapItemIndexAvailability, RepoMapQueryResponse, RepoMapRedactionState, RepoMapSnapshotMeta,
-    RepoRelativePath, RevisionId, SearchExplanation, SearchPlaneExplainQueryResponse,
-    SearchPlaneIpcError, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
-    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope, SemanticQueryResponse,
-    TextQueryResponse, TextQuerySyntax,
+    LexicalCandidate, ManifestGeneration, PlannerStage, PlannerTraceEntry, QueryResultWindowV1,
+    RepoId, RepoMapDocType, RepoMapEntryDto, RepoMapExactnessSummary, RepoMapFocusSubjectDto,
+    RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapQueryResponse,
+    RepoMapRedactionState, RepoMapSnapshotMeta, RepoRelativePath, RevisionId, SearchExplanation,
+    SearchPlaneExplainQueryResponse, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    SearchPlaneQueryIpcResponseEnvelope, SemanticQueryResponse, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_ipc::{IpcDispatcher, UdsServer};
 use tempfile::tempdir;
@@ -508,7 +508,7 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
         match request {
             SearchPlaneControlIpcRequest::GenerationStatus(req) => self.generation_status(&req),
             SearchPlaneControlIpcRequest::CurrentGeneration(req) => self.current_generation(&req),
-            other @ (SearchPlaneControlIpcRequest::ActivateGeneration(_)
+            other @ (SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackGeneration(_)
             | SearchPlaneControlIpcRequest::RepoMapActivate(_)) => control_error_response(
                 "TEST_UNEXPECTED_CONTROL_REQUEST",
@@ -778,6 +778,7 @@ fn dispatch_lexical_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQ
     SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
         generation: generation.clone(),
         results: vec![stub_candidate(generation)],
+        window: QueryResultWindowV1::exact(1),
         file_owner_rows: None,
     })
 }
@@ -843,6 +844,7 @@ fn dispatch_semantic_request(request: SearchPlaneQueryIpcRequest) -> SearchPlane
     SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
         generation: expected_generation.clone(),
         results: vec![stub_candidate(expected_generation)],
+        window: QueryResultWindowV1::exact(1),
         explanation: stub_explanation("semantic explanation", vec![EngineTouched::Semantic]),
     })
 }
@@ -901,6 +903,7 @@ fn dispatch_hybrid_seed_request(
             source_lanes: vec![HybridSeedLane::Lexical, HybridSeedLane::Semantic],
         }],
         seed_candidates_v2: None,
+        window: QueryResultWindowV1::exact(1),
         explanation: stub_explanation(
             "hybrid seed explanation",
             vec![EngineTouched::Lexical, EngineTouched::Semantic],

@@ -13,6 +13,7 @@
 //! the same `state_root`.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -26,11 +27,11 @@ use quanta_index_contract::lex::{
 };
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, EngineTouched, FileOwnerProjectionRow, GenerationPin,
-    HistoryQueryRequest, HybridQueryRequest, LexicalCandidate, ManifestGeneration, RepoId,
-    RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchCorpusTombstoneScope, SearchExplanation,
-    SearchPlaneActivateGenerationRequest, SearchPlaneExplainQueryRequest,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    GenerationSnapshot, HistoryQueryRequest, HybridQueryRequest, LexicalCandidate,
+    ManifestGeneration, RepoId, RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest,
+    SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
+    SearchExplanation, SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind, SemanticQueryRequest,
@@ -38,8 +39,10 @@ use quanta_index_contract::{
     StructuralTreeRecord, SymbolId, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::{IpcError, send_request};
-use quanta_index_search_plane::ActivationCatalog;
-use quanta_index_search_plane::{BoundedQueryObsStore, MetricSample, ObsError};
+use quanta_index_search_plane::{
+    ActivationCatalog, BoundedQueryObsStore, MetricSample, ObsError,
+    PreparedSearchCorpusGenerationV1, SearchCorpusGenerationV1,
+};
 use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd::app::{SearchdConfig, SemanticEmbedderProfile};
 use quanta_index_searchd_runtime::build_runtime;
@@ -178,6 +181,14 @@ pub struct E2eTypedError {
     pub code: String,
     pub message: String,
 }
+
+impl fmt::Display for E2eTypedError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for E2eTypedError {}
 
 pub struct E2eExplainResult {
     pub explanation: Option<SearchExplanation>,
@@ -339,43 +350,48 @@ impl E2eRuntime {
     }
 
     pub fn activate_last_sealed_generation(&self) -> AnyResult<()> {
-        self.activate_last_sealed_generation_with_tracks(&[SearchPlaneTrackKind::Lexical])
-    }
-
-    pub fn activate_last_sealed_generation_with_tracks(
-        &self,
-        tracks: &[SearchPlaneTrackKind],
-    ) -> AnyResult<()> {
         let Some(pin) = self.last_sealed_pin() else {
             return Err(anyhow::anyhow!(
                 "e2e-harness: cannot activate before any generation has been sealed"
             ));
         };
-        let catalog = ActivationCatalog::open(self.state_root.join("activations"))?;
-        catalog.activate(&SearchPlaneActivateGenerationRequest {
-            repo_id: pin.repo_id,
-            revision_id: pin.revision_id,
-            manifest_generation: pin.manifest_generation,
-            manifest_digest: "e2e-harness-activation".to_string(),
-            tracks: tracks.to_vec(),
-        })?;
-        Ok(())
+        self.activate_generation(pin, "e2e-harness-activation")
     }
 
-    pub fn activate_generation(
-        &self,
-        pin: GenerationPin,
-        manifest_digest: &str,
-        tracks: &[SearchPlaneTrackKind],
-    ) -> AnyResult<()> {
-        let catalog = ActivationCatalog::open(self.state_root.join("activations"))?;
-        catalog.activate(&SearchPlaneActivateGenerationRequest {
-            repo_id: pin.repo_id,
-            revision_id: pin.revision_id,
+    /// Promote a sealed harness generation as one lexical plus semantic corpus.
+    ///
+    /// The harness deliberately does not expose a `tracks` selector: a
+    /// lexical-only bootstrap would make a query-visible generation that the
+    /// production composite activation ingress cannot represent.
+    pub fn activate_generation(&self, pin: GenerationPin, manifest_digest: &str) -> AnyResult<()> {
+        if manifest_digest.trim().is_empty() {
+            return Err(anyhow::anyhow!(
+                "e2e-harness: composite activation requires a non-empty manifest digest"
+            ));
+        }
+        let lexical = GenerationSnapshot {
+            repo_id: pin.repo_id.clone(),
+            revision_id: pin.revision_id.clone(),
+            track: SearchPlaneTrackKind::Lexical,
             manifest_generation: pin.manifest_generation,
             manifest_digest: manifest_digest.to_string(),
-            tracks: tracks.to_vec(),
-        })?;
+        };
+        let semantic = GenerationSnapshot {
+            repo_id: pin.repo_id,
+            revision_id: pin.revision_id,
+            track: SearchPlaneTrackKind::Semantic,
+            manifest_generation: pin.manifest_generation,
+            manifest_digest: manifest_digest.to_string(),
+        };
+        let candidate = SearchCorpusGenerationV1::new(lexical, semantic)?;
+        let prepared = PreparedSearchCorpusGenerationV1::new(candidate, None)?;
+        let catalog = ActivationCatalog::open(self.state_root.join("activations"))?;
+        let activation = catalog.activate_prepared_search_corpus_generation_v1(&prepared)?;
+        if activation.active != *prepared.candidate() {
+            return Err(anyhow::anyhow!(
+                "e2e-harness: composite activation receipt differs from requested generation"
+            ));
+        }
         Ok(())
     }
 
@@ -464,6 +480,7 @@ impl E2eRuntime {
                 ),
                 mode,
                 bundle_payload: None,
+                clear_surfaces: Vec::new(),
                 replace_scopes: vec![SearchCorpusReplaceScope {
                     scope: scope_key(path),
                     scope_digest: format!("scope:{path}:{}-chunks", records.len()),
@@ -581,6 +598,7 @@ impl E2eRuntime {
                 ),
                 mode,
                 bundle_payload: None,
+                clear_surfaces: Vec::new(),
                 replace_scopes: scopes,
                 tombstone_scopes: Vec::new(),
                 semantic_replace_scopes: Vec::new(),
@@ -606,6 +624,7 @@ impl E2eRuntime {
                 ),
                 mode,
                 bundle_payload: Some(payload),
+                clear_surfaces: Vec::new(),
                 replace_scopes: Vec::new(),
                 tombstone_scopes: Vec::new(),
                 semantic_replace_scopes: Vec::new(),
@@ -1068,6 +1087,7 @@ impl E2eRuntime {
                 ),
                 mode,
                 bundle_payload: None,
+                clear_surfaces: Vec::new(),
                 replace_scopes: Vec::new(),
                 tombstone_scopes: vec![SearchCorpusTombstoneScope {
                     scope: scope_key(path),
@@ -1129,6 +1149,7 @@ impl E2eRuntime {
                 batch_digest: format!("lex-symbol-batch:{path}:{symbol_id}"),
                 mode,
                 bundle_payload: None,
+                clear_surfaces: Vec::new(),
                 replace_scopes: vec![SearchCorpusReplaceScope {
                     scope: scope_key(path),
                     scope_digest: format!("scope-symbol:{path}:{symbol_id}"),
@@ -1183,6 +1204,7 @@ impl E2eRuntime {
                     batch_digest: format!("lex-seal-batch:{}", sealed.get()),
                     mode,
                     bundle_payload: None,
+                    clear_surfaces: Vec::new(),
                     replace_scopes: Vec::new(),
                     tombstone_scopes: Vec::new(),
                     semantic_replace_scopes: Vec::new(),
@@ -1233,6 +1255,7 @@ impl E2eRuntime {
                 text_query: TextQueryRequest {
                     syntax,
                     query_text: query_text.to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: self.last_sealed_pin(),
                     generation_selector: None,
                     top_k,
@@ -1316,6 +1339,7 @@ impl E2eRuntime {
                 text_query: TextQueryRequest {
                     syntax,
                     query_text: query_text.to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: self.last_sealed_pin(),
                     generation_selector: None,
                     top_k,
@@ -1398,6 +1422,7 @@ impl E2eRuntime {
             payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
                 syntax,
                 query_text: query_text.to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: pin,
                 generation_selector: None,
                 top_k,
@@ -1488,6 +1513,7 @@ impl E2eRuntime {
                 text_query: TextQueryRequest {
                     syntax,
                     query_text: query_text.to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: pin,
                     generation_selector: None,
                     top_k,
@@ -1573,12 +1599,14 @@ impl E2eRuntime {
             request_id,
             payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
                 query_text: query_text.to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: self.last_sealed_pin(),
                 generation_selector: None,
                 lexical_scope: lexical_scope.map(|(syntax, query_text, scope_top_k)| {
                     TextQueryRequest {
                         syntax,
                         query_text: query_text.to_string(),
+                        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                         generation: self.last_sealed_pin(),
                         generation_selector: None,
                         top_k: scope_top_k,
@@ -1665,6 +1693,7 @@ impl E2eRuntime {
                 text_query: TextQueryRequest {
                     syntax,
                     query_text: text_query.to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: pin.clone(),
                     generation_selector: None,
                     top_k: 50,

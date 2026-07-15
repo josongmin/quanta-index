@@ -122,6 +122,9 @@ pub(crate) fn derive_semantic_batch_from_search_corpus_batch(
     batch: &SearchCorpusIngestBatch,
     embedder: &dyn TextEmbeddingProvider,
 ) -> Result<SemanticIngestBatch, CoreError> {
+    batch
+        .validate_surface_mutations_v1()
+        .map_err(|err| CoreError::InvalidContract(format!("semantic derivation: {err}")))?;
     let dimension = embedder.dimension();
     if dimension == 0 {
         return Err(CoreError::InvalidContract(
@@ -202,6 +205,7 @@ pub(crate) fn derive_semantic_batch_from_search_corpus_batch(
         model_contract,
         required_corpora: vec![SemanticCorpusKindV1::RawCodeFallback],
         corpus_policy_digest: None,
+        clear_surfaces: batch.clear_surfaces.clone(),
         replace_scopes,
         tombstone_scopes: batch
             .tombstone_scopes
@@ -230,13 +234,20 @@ pub(crate) fn derive_semantic_batch_from_semantic_sources_v1(
     embedder: &dyn TextEmbeddingProvider,
     mode: SemanticDerivationModeV1,
 ) -> Result<SemanticIngestBatch, CoreError> {
+    batch
+        .validate_surface_mutations_v1()
+        .map_err(|err| CoreError::InvalidContract(format!("semantic derivation: {err}")))?;
     let dimension = embedder.dimension();
     if dimension == 0 {
         return Err(CoreError::InvalidContract(
             "semantic derivation: embedding dimension must be non-zero".to_string(),
         ));
     }
-    if batch.semantic_replace_scopes.is_empty() {
+    let has_semantic_lifecycle_operation = !batch.semantic_tombstone_scopes.is_empty()
+        || !batch.tombstone_scopes.is_empty()
+        || !batch.clear_surfaces.is_empty()
+        || batch.seal;
+    if batch.semantic_replace_scopes.is_empty() && !has_semantic_lifecycle_operation {
         return match mode {
             SemanticDerivationModeV1::SemanticSourcesWithLegacyFallback => {
                 let mut legacy = derive_semantic_batch_from_search_corpus_batch(batch, embedder)?;
@@ -322,6 +333,7 @@ pub(crate) fn derive_semantic_batch_from_semantic_sources_v1(
         model_contract,
         required_corpora,
         corpus_policy_digest: Some(SEMANTIC_SOURCE_POLICY_DIGEST.to_string()),
+        clear_surfaces: batch.clear_surfaces.clone(),
         replace_scopes,
         tombstone_scopes: semantic_tombstone_scopes_v1(batch),
         seal: batch.seal,
@@ -534,8 +546,10 @@ fn validated_semantic_source_scopes_v1(
                         .to_string(),
                 )
             })?;
-            let scope_surface =
-                semantic_scope_surface_v1(scope.scope.owner_kind, scope.scope.corpus_kind);
+            let scope_surface = SearchScopeSurface::for_semantic_owner_v1(
+                scope.scope.owner_kind,
+                scope.scope.corpus_kind,
+            );
             let scope_key = SearchScopeKey {
                 doc_surface: scope_surface,
                 repo_relative_path: first_record.repo_relative_path.clone(),
@@ -698,31 +712,6 @@ fn semantic_source_symbol_kind_v1(
         .transpose()
 }
 
-fn semantic_scope_surface_v1(
-    owner_kind: OwnerDocKind,
-    corpus_kind: SemanticCorpusKindV1,
-) -> SearchScopeSurface {
-    match owner_kind {
-        OwnerDocKind::File => SearchScopeSurface::File,
-        OwnerDocKind::Module => SearchScopeSurface::Module,
-        OwnerDocKind::Chunk => SearchScopeSurface::Chunk,
-        OwnerDocKind::Symbol => SearchScopeSurface::Symbol,
-        _ => match corpus_kind {
-            SemanticCorpusKindV1::SymbolCard | SemanticCorpusKindV1::RawCodeFallback => {
-                SearchScopeSurface::Symbol
-            }
-            SemanticCorpusKindV1::ModuleCard | SemanticCorpusKindV1::ClusterCard => {
-                SearchScopeSurface::Module
-            }
-            SemanticCorpusKindV1::DocumentLeaf
-            | SemanticCorpusKindV1::DocumentSection
-            | SemanticCorpusKindV1::DocumentSummary
-            | SemanticCorpusKindV1::TestBehavior
-            | SemanticCorpusKindV1::RepositorySummary => SearchScopeSurface::File,
-        },
-    }
-}
-
 fn semantic_source_view_kind_v1(record: &SemanticSourceRecordV1) -> String {
     format!(
         "{}.{}",
@@ -856,6 +845,7 @@ mod tests {
             batch_digest: "batch:lex".to_string(),
             mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload: None,
+            clear_surfaces: Vec::new(),
             replace_scopes: vec![SearchCorpusReplaceScope {
                 scope: SearchScopeKey {
                     doc_surface: SearchScopeSurface::Chunk,
@@ -923,6 +913,7 @@ mod tests {
         let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
         let mut batch = fixture_search_batch()?;
         batch.semantic_replace_scopes.clear();
+        batch.seal = false;
         match derive_semantic_batch_from_semantic_sources_v1(
             &batch,
             &embedder,
@@ -935,6 +926,77 @@ mod tests {
             }
             other => Err(format!("semantic_only must fail on empty sources, got {other:?}").into()),
         }
+    }
+
+    #[test]
+    fn semantic_derivation_semantic_only_tombstone_batch_does_not_require_replace_sources()
+    -> TestRes {
+        let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
+        let mut batch = fixture_search_batch()?;
+        batch.semantic_replace_scopes.clear();
+        batch.semantic_tombstone_scopes = vec![SemanticSourceScopeKeyV1 {
+            corpus_kind: SemanticCorpusKindV1::SymbolCard,
+            owner_kind: OwnerDocKind::Symbol,
+            owner_id: "symbol-deleted".to_string(),
+        }];
+        batch.seal = false;
+
+        let derived = derive_semantic_batch_from_semantic_sources_v1(
+            &batch,
+            &embedder,
+            SemanticDerivationModeV1::SemanticSourcesOnly,
+        )?;
+
+        assert!(derived.replace_scopes.is_empty());
+        assert_eq!(derived.tombstone_scopes.len(), 1);
+        assert!(derived.required_corpora.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_derivation_semantic_only_seal_batch_does_not_require_replace_sources() -> TestRes {
+        let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
+        let mut batch = fixture_search_batch()?;
+        batch.semantic_replace_scopes.clear();
+        batch.semantic_tombstone_scopes.clear();
+        batch.seal = true;
+
+        let derived = derive_semantic_batch_from_semantic_sources_v1(
+            &batch,
+            &embedder,
+            SemanticDerivationModeV1::SemanticSourcesOnly,
+        )?;
+
+        assert!(derived.replace_scopes.is_empty());
+        assert!(derived.tombstone_scopes.is_empty());
+        assert!(derived.required_corpora.is_empty());
+        assert!(derived.seal);
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_derivation_semantic_only_clear_batch_does_not_require_replace_sources() -> TestRes {
+        let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
+        let mut batch = fixture_search_batch()?;
+        batch.mode = BatchIngestMode::Delta;
+        batch.base_generation = Some(ManifestGeneration::new(6));
+        batch.replace_scopes.clear();
+        batch.semantic_replace_scopes.clear();
+        batch.semantic_tombstone_scopes.clear();
+        batch.clear_surfaces = vec![SearchScopeSurface::Chunk];
+        batch.seal = false;
+
+        let derived = derive_semantic_batch_from_semantic_sources_v1(
+            &batch,
+            &embedder,
+            SemanticDerivationModeV1::SemanticSourcesOnly,
+        )?;
+
+        assert!(derived.replace_scopes.is_empty());
+        assert!(derived.tombstone_scopes.is_empty());
+        assert!(derived.required_corpora.is_empty());
+        assert_eq!(derived.clear_surfaces, vec![SearchScopeSurface::Chunk]);
+        Ok(())
     }
 
     #[test]

@@ -22,8 +22,11 @@ pub mod results;
 pub use ids::{
     FileId, GenerationId, ManifestDigest, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
 };
-pub use query::{GenerationPin, GenerationSelector, TextQueryRequest, TextQuerySyntax};
+pub use query::{
+    GenerationPin, GenerationSelector, LanguageCode, QueryConstraintSetV1, TextQueryRequest,
+    TextQuerySyntax,
+};
 pub use results::{
-    DiffCandidate, DiffHunkSide, HighlightSpan, LexicalCandidate, StructuralBinding,
-    StructuralCandidate,
+    CandidateCountV1, DiffCandidate, DiffHunkSide, HighlightSpan, LexicalCandidate,
+    QueryResultWindowV1, StructuralBinding, StructuralCandidate,
 };

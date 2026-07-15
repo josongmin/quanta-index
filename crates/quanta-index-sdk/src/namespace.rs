@@ -243,6 +243,7 @@ mod tests {
         BatchPublishReceipt {
             generation: ManifestGeneration::new(1),
             manifest_digest: "digest-lex".to_string(),
+            accepted_clear_surfaces: 0,
             accepted_replace_scopes: 1,
             accepted_tombstone_scopes: 0,
             sealed: true,

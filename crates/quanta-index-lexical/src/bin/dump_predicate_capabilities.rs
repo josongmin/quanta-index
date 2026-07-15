@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::ser::SerializeStruct;
+use serde::{Serialize, Serializer};
 
 #[expect(
     dead_code,
@@ -9,10 +10,21 @@ use serde::Serialize;
 #[path = "../predicate_registry.rs"]
 mod predicate_registry_dump;
 
-#[derive(Serialize)]
 struct PredicateCapabilitiesDump<'a> {
     canonical_predicates: Vec<&'a str>,
     aliases: BTreeMap<&'a str, &'a str>,
+}
+
+impl Serialize for PredicateCapabilitiesDump<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("PredicateCapabilitiesDump", 2)?;
+        state.serialize_field("canonical_predicates", &self.canonical_predicates)?;
+        state.serialize_field("aliases", &self.aliases)?;
+        state.end()
+    }
 }
 
 #[expect(

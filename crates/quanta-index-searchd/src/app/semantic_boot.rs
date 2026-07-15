@@ -14,7 +14,10 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
-use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind};
+use quanta_index_contract::{
+    ManifestGeneration, OwnerDocKind, RepoId, RevisionId, SearchPlaneTrackKind,
+    SemanticCorpusKindV1, SemanticIngestBatch,
+};
 use quanta_index_core::{CoreError, SemanticBatchBuildPort};
 use quanta_index_search_plane::{Ledger, LegacySemanticJournalStore};
 use quanta_index_semantic::scan_persisted_generations;
@@ -61,6 +64,23 @@ pub struct SemanticBootReport {
 
 type GenerationKey = (RepoId, RevisionId, ManifestGeneration);
 
+fn normalize_legacy_semantic_batch_v1(batch: &SemanticIngestBatch) -> SemanticIngestBatch {
+    let mut normalized = batch.clone();
+    for scope in &mut normalized.replace_scopes {
+        let legacy_owner_id =
+            format!("legacy-path:{}", scope.scope.repo_relative_path.as_str()).into_boxed_str();
+        for embedding in &mut scope.embeddings {
+            if embedding.owner_kind == OwnerDocKind::Chunk
+                && embedding.corpus_kind == SemanticCorpusKindV1::RawCodeFallback
+            {
+                embedding.owner_id = legacy_owner_id.clone();
+                embedding.parent_owner_id = Some(legacy_owner_id.clone());
+            }
+        }
+    }
+    normalized
+}
+
 /// Migrate the legacy semantic journal into durable generations exactly once.
 ///
 /// Idempotent and resumable: generations already sealed on disk (from a prior
@@ -85,7 +105,8 @@ pub fn migrate_legacy_semantic_journal(
     }
 
     let mut imported: usize = 0;
-    for batch in store.legacy_batches() {
+    for legacy_batch in store.legacy_batches() {
+        let batch = normalize_legacy_semantic_batch_v1(legacy_batch);
         let key: GenerationKey = (
             batch.repo_id.clone(),
             batch.revision_id.clone(),
@@ -94,7 +115,7 @@ pub fn migrate_legacy_semantic_journal(
         if sealed.contains(&key) {
             continue;
         }
-        builder.build_batch(batch)?;
+        builder.build_batch(&batch)?;
         if batch.seal {
             let _present = sealed.insert(key);
         }
@@ -161,18 +182,20 @@ mod tests {
     use std::path::PathBuf;
 
     use quanta_index_contract::{
-        BatchIngestMode, EmbeddingDistanceMetric, EmbeddingId, EmbeddingModelContract,
-        EmbeddingNormalization, EmbeddingRecord, OwnerDocKind, RepoRelativePath, SearchScopeKey,
-        SearchScopeSurface, SemanticIngestBatch, SemanticReplaceScope, lex::LanguageCode,
+        BatchIngestMode, EmbeddingDistanceMetric, EmbeddingModelContract, EmbeddingNormalization,
+        EmbeddingRecord, OwnerDocKind, RepoRelativePath, SearchScopeKey, SearchScopeSurface,
+        SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
     };
     use quanta_index_core::SemanticIndexOpenPort;
-    use quanta_index_semantic::SemanticAdapter;
+    use quanta_index_semantic::{
+        SemanticAdapter, embedding_record_v1, ingest_batch_v1, legacy_chunk_embedding_record_v1,
+    };
 
     use super::{
         Arc, BTreeSet, GenerationKey, Ledger, LegacySemanticJournalStore, ManifestGeneration,
         RepoId, RevisionId, RwLock, SearchPlaneTrackKind, SemanticMigrationOutcome,
-        migrate_legacy_semantic_journal, scan_persisted_generations,
-        seed_persisted_semantic_readiness,
+        migrate_legacy_semantic_journal, normalize_legacy_semantic_batch_v1,
+        scan_persisted_generations, seed_persisted_semantic_readiness,
     };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -198,26 +221,7 @@ mod tests {
     }
 
     fn embedding(id: &str, path: &str, vector: Vec<f32>) -> Result<EmbeddingRecord, String> {
-        let language =
-            LanguageCode::new("rust").map_err(|err| format!("fixture language invalid: {err}"))?;
-        Ok(EmbeddingRecord {
-            embedding_id: EmbeddingId::new(id),
-            owner_kind: OwnerDocKind::Chunk,
-            owner_id: format!("owner-{id}").into_boxed_str(),
-            source_doc_id: format!("doc-{id}").into_boxed_str(),
-            repo_relative_path: RepoRelativePath::new(path),
-            language,
-            symbol_kind: None,
-            start_byte: 0,
-            end_byte: 8,
-            start_line: 1,
-            end_line: 2,
-            snippet: format!("fn {id}() {{}}").into_boxed_str(),
-            embedding_input_digest: format!("in:{id}").into_boxed_str(),
-            vector_digest: format!("vec:{id}").into_boxed_str(),
-            view_kind: "raw_chunk".to_string().into_boxed_str(),
-            vector,
-        })
+        legacy_chunk_embedding_record_v1(id, path, vector)
     }
 
     fn batch(
@@ -227,16 +231,16 @@ mod tests {
         vector: Vec<f32>,
         seal: bool,
     ) -> Result<SemanticIngestBatch, String> {
-        Ok(SemanticIngestBatch {
-            repo_id: repo_id(),
-            revision_id: revision_id(),
+        Ok(ingest_batch_v1(
+            repo_id(),
+            revision_id(),
             generation,
-            base_generation: None,
-            manifest_digest: format!("manifest:{}", generation.get()),
-            batch_digest: format!("batch:{}", generation.get()),
-            mode: BatchIngestMode::ReplaceGeneration,
-            model_contract: model_contract(),
-            replace_scopes: vec![SemanticReplaceScope {
+            None,
+            format!("manifest:{}", generation.get()),
+            format!("batch:{}", generation.get()),
+            BatchIngestMode::ReplaceGeneration,
+            model_contract(),
+            vec![SemanticReplaceScope {
                 scope: SearchScopeKey {
                     doc_surface: SearchScopeSurface::Chunk,
                     repo_relative_path: RepoRelativePath::new(path),
@@ -244,14 +248,62 @@ mod tests {
                 scope_digest: format!("scope:{path}"),
                 embeddings: vec![embedding(id, path, vector)?],
             }],
-            tombstone_scopes: Vec::new(),
+            Vec::new(),
             seal,
-        })
+        ))
     }
 
     fn build_durable(adapter: &SemanticAdapter, batch: &SemanticIngestBatch) -> TestResult {
         use quanta_index_core::SemanticBatchBuildPort as _;
         adapter.build_batch(batch)?;
+        Ok(())
+    }
+
+    fn build_legacy_durable(adapter: &SemanticAdapter, batch: &SemanticIngestBatch) -> TestResult {
+        build_durable(adapter, &normalize_legacy_semantic_batch_v1(batch))
+    }
+
+    #[test]
+    fn legacy_normalization_uses_path_stable_owner_and_preserves_scv2_owner() -> TestResult {
+        let mut legacy_batch = batch(
+            ManifestGeneration::new(1),
+            "legacy-a",
+            "src/lib.rs",
+            vec![1.0, 0.0, 0.0],
+            false,
+        )?;
+        legacy_batch.replace_scopes[0].embeddings.push(embedding(
+            "legacy-b",
+            "src/lib.rs",
+            vec![0.0, 1.0, 0.0],
+        )?);
+        legacy_batch.replace_scopes[0]
+            .embeddings
+            .push(embedding_record_v1(
+                "symbol-card",
+                "src/lib.rs",
+                OwnerDocKind::Symbol,
+                "symbol:authoritative",
+                SemanticCorpusKindV1::SymbolCard,
+                vec![0.0, 0.0, 1.0],
+            )?);
+
+        let normalized = normalize_legacy_semantic_batch_v1(&legacy_batch);
+        let embeddings = &normalized.replace_scopes[0].embeddings;
+        assert_eq!(
+            embeddings[0].embedding_id,
+            legacy_batch.replace_scopes[0].embeddings[0].embedding_id
+        );
+        assert_eq!(
+            embeddings[0].record_id,
+            legacy_batch.replace_scopes[0].embeddings[0].record_id
+        );
+        assert_eq!(embeddings[0].owner_id, embeddings[1].owner_id);
+        assert_eq!(
+            embeddings[0].parent_owner_id,
+            Some(embeddings[0].owner_id.clone())
+        );
+        assert_eq!(embeddings[2], legacy_batch.replace_scopes[0].embeddings[2]);
         Ok(())
     }
 
@@ -474,8 +526,8 @@ mod tests {
             false,
         )?;
         clean_first.batch_digest = "batch:7:a".to_string();
-        build_durable(&clean_adapter, &clean_first)?;
-        build_durable(
+        build_legacy_durable(&clean_adapter, &clean_first)?;
+        build_legacy_durable(
             &clean_adapter,
             &batch(
                 ManifestGeneration::new(7),
@@ -509,7 +561,7 @@ mod tests {
 
         // Simulate a migration that crashed after sealing gen 1 but before
         // writing the MIGRATED marker: gen 1 is durable on disk, marker absent.
-        build_durable(
+        build_legacy_durable(
             &adapter,
             &batch(
                 ManifestGeneration::new(1),
@@ -578,8 +630,8 @@ mod tests {
         let resumed = tempfile::tempdir()?;
         let resumed_semantic: PathBuf = resumed.path().join("indexes").join("semantic");
         let resumed_adapter = SemanticAdapter::with_state_root(resumed_semantic.clone())?;
-        build_durable(&resumed_adapter, &a)?;
-        build_durable(&resumed_adapter, &b)?;
+        build_legacy_durable(&resumed_adapter, &a)?;
+        build_legacy_durable(&resumed_adapter, &b)?;
         let store = LegacySemanticJournalStore::write_legacy_journal(
             resumed.path().join("semantic"),
             &[a.clone(), b.clone(), c.clone()],
@@ -594,9 +646,9 @@ mod tests {
         let clean = tempfile::tempdir()?;
         let clean_semantic: PathBuf = clean.path().join("indexes").join("semantic");
         let clean_adapter = SemanticAdapter::with_state_root(clean_semantic)?;
-        build_durable(&clean_adapter, &a)?;
-        build_durable(&clean_adapter, &b)?;
-        build_durable(&clean_adapter, &c)?;
+        build_legacy_durable(&clean_adapter, &a)?;
+        build_legacy_durable(&clean_adapter, &b)?;
+        build_legacy_durable(&clean_adapter, &c)?;
         let clean_searcher =
             clean_adapter.open(&repo_id(), &revision_id(), ManifestGeneration::new(7))?;
 

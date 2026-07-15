@@ -59,7 +59,7 @@ impl<'a> RepoMapNamespace<'a> {
             .dispatch_control(SearchPlaneControlIpcRequest::RepoMapActivate(request))?;
         match response {
             SearchPlaneControlIpcResponse::RepoMapMutationAck(ack) => Ok(ack),
-            other @ (SearchPlaneControlIpcResponse::ActivationAck(_)
+            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::RollbackAck(_)
             | SearchPlaneControlIpcResponse::Error(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)

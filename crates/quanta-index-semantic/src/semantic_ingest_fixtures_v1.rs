@@ -156,6 +156,7 @@ pub fn ingest_batch_v1(
         model_contract,
         required_corpora: Vec::new(),
         corpus_policy_digest: None,
+        clear_surfaces: Vec::new(),
         replace_scopes,
         tombstone_scopes,
         seal,

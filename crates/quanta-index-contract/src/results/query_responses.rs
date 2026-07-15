@@ -8,7 +8,8 @@ use serde::{
 
 use crate::{
     CommitCandidate, DiffCandidate, GenerationPin, LexicalCandidate, ManifestGeneration,
-    OwnerDocKind, RepoId, RepoRelativePath, RevisionId, SemanticCorpusKindV1, StructuralCandidate,
+    OwnerDocKind, QueryResultWindowV1, RepoId, RepoRelativePath, RevisionId, SemanticCorpusKindV1,
+    StructuralCandidate,
     lex::{SymbolKindCode, SymbolKindFamily},
 };
 
@@ -18,6 +19,7 @@ use super::SearchExplanation;
 pub struct TextQueryResponse {
     pub generation: GenerationPin,
     pub results: Vec<LexicalCandidate>,
+    pub window: QueryResultWindowV1,
     pub file_owner_rows: Option<Vec<FileOwnerProjectionRow>>,
 }
 
@@ -217,11 +219,12 @@ impl_symbol_candidate_serde!(SYMBOL_CANDIDATE_FIELDS, SymbolCandidateVisitor);
 pub struct SymbolQueryResponse {
     pub generation: GenerationPin,
     pub results: Vec<SymbolCandidate>,
+    pub window: QueryResultWindowV1,
 }
 
-const SYMBOL_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results"];
+const SYMBOL_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "window"];
 
-const TEXT_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "file_owner_rows"];
+const TEXT_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "window", "file_owner_rows"];
 const FILE_OWNER_PROJECTION_ROW_FIELDS: &[&str] = &[
     "candidate_id",
     "repo_id",
@@ -235,19 +238,21 @@ const FILE_OWNER_PROJECTION_ROW_FIELDS: &[&str] = &[
 pub struct SemanticQueryResponse {
     pub generation: GenerationPin,
     pub results: Vec<LexicalCandidate>,
+    pub window: QueryResultWindowV1,
     pub explanation: SearchExplanation,
 }
 
-const SEMANTIC_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "explanation"];
+const SEMANTIC_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "window", "explanation"];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct HybridQueryResponse {
     pub generation: GenerationPin,
     pub results: Vec<LexicalCandidate>,
+    pub window: QueryResultWindowV1,
     pub explanation: SearchExplanation,
 }
 
-const HYBRID_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "explanation"];
+const HYBRID_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "window", "explanation"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HybridSeedLane {
@@ -300,6 +305,7 @@ pub struct HybridSeedQueryResponse {
     pub manifest_digest: String,
     pub seed_candidates: Vec<HybridSeedCandidate>,
     pub seed_candidates_v2: Option<Vec<SeedCandidateV2>>,
+    pub window: QueryResultWindowV1,
     pub explanation: SearchExplanation,
 }
 
@@ -308,6 +314,7 @@ const HYBRID_SEED_QUERY_RESPONSE_FIELDS: &[&str] = &[
     "manifest_digest",
     "seed_candidates",
     "seed_candidates_v2",
+    "window",
     "explanation",
 ];
 const HYBRID_SEED_CANDIDATE_FIELDS: &[&str] = &[
@@ -342,6 +349,180 @@ pub struct SearchPlaneHistoryQueryResponse {
 const SEARCH_PLANE_HISTORY_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "commits", "diffs"];
 
 macro_rules! impl_generation_results_response_serde {
+    ($ty:ident, $fields:ident, $visitor:ident, $result_ty:ty) => {
+        impl Serialize for $ty {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                let mut state = serializer.serialize_struct(stringify!($ty), 3)?;
+                state.serialize_field("generation", &self.generation)?;
+                state.serialize_field("results", &self.results)?;
+                state.serialize_field("window", &self.window)?;
+                state.end()
+            }
+        }
+
+        struct $visitor;
+
+        impl<'de> Visitor<'de> for $visitor {
+            type Value = $ty;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(concat!("a ", stringify!($ty), " map"))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut generation: Option<GenerationPin> = None;
+                let mut results: Option<Vec<$result_ty>> = None;
+                let mut window: Option<QueryResultWindowV1> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "generation" => {
+                            if generation.is_some() {
+                                return Err(de::Error::duplicate_field("generation"));
+                            }
+                            generation = Some(map.next_value()?);
+                        }
+                        "results" => {
+                            if results.is_some() {
+                                return Err(de::Error::duplicate_field("results"));
+                            }
+                            results = Some(map.next_value()?);
+                        }
+                        "window" => {
+                            if window.is_some() {
+                                return Err(de::Error::duplicate_field("window"));
+                            }
+                            window = Some(map.next_value()?);
+                        }
+                        other => {
+                            return Err(de::Error::unknown_field(other, $fields));
+                        }
+                    }
+                }
+                let results = results.ok_or_else(|| de::Error::missing_field("results"))?;
+                let window = window.ok_or_else(|| de::Error::missing_field("window"))?;
+                if usize::try_from(window.returned()).ok() != Some(results.len()) {
+                    return Err(de::Error::custom(
+                        "query result window returned count does not match results length",
+                    ));
+                }
+                Ok($ty {
+                    generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+                    results,
+                    window,
+                })
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                deserializer.deserialize_struct(stringify!($ty), $fields, $visitor)
+            }
+        }
+    };
+}
+
+macro_rules! impl_generation_results_explanation_response_serde {
+    ($ty:ident, $fields:ident, $visitor:ident, $result_ty:ty) => {
+        impl Serialize for $ty {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                let mut state = serializer.serialize_struct(stringify!($ty), 4)?;
+                state.serialize_field("generation", &self.generation)?;
+                state.serialize_field("results", &self.results)?;
+                state.serialize_field("window", &self.window)?;
+                state.serialize_field("explanation", &self.explanation)?;
+                state.end()
+            }
+        }
+
+        struct $visitor;
+
+        impl<'de> Visitor<'de> for $visitor {
+            type Value = $ty;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(concat!("a ", stringify!($ty), " map"))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut generation: Option<GenerationPin> = None;
+                let mut results: Option<Vec<$result_ty>> = None;
+                let mut window: Option<QueryResultWindowV1> = None;
+                let mut explanation: Option<SearchExplanation> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "generation" => {
+                            if generation.is_some() {
+                                return Err(de::Error::duplicate_field("generation"));
+                            }
+                            generation = Some(map.next_value()?);
+                        }
+                        "results" => {
+                            if results.is_some() {
+                                return Err(de::Error::duplicate_field("results"));
+                            }
+                            results = Some(map.next_value()?);
+                        }
+                        "window" => {
+                            if window.is_some() {
+                                return Err(de::Error::duplicate_field("window"));
+                            }
+                            window = Some(map.next_value()?);
+                        }
+                        "explanation" => {
+                            if explanation.is_some() {
+                                return Err(de::Error::duplicate_field("explanation"));
+                            }
+                            explanation = Some(map.next_value()?);
+                        }
+                        other => {
+                            return Err(de::Error::unknown_field(other, $fields));
+                        }
+                    }
+                }
+                let results = results.ok_or_else(|| de::Error::missing_field("results"))?;
+                let window = window.ok_or_else(|| de::Error::missing_field("window"))?;
+                if usize::try_from(window.returned()).ok() != Some(results.len()) {
+                    return Err(de::Error::custom(
+                        "query result window returned count does not match results length",
+                    ));
+                }
+                Ok($ty {
+                    generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+                    results,
+                    window,
+                    explanation: explanation
+                        .ok_or_else(|| de::Error::missing_field("explanation"))?,
+                })
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                deserializer.deserialize_struct(stringify!($ty), $fields, $visitor)
+            }
+        }
+    };
+}
+
+macro_rules! impl_generation_results_unwindowed_response_serde {
     ($ty:ident, $fields:ident, $visitor:ident, $result_ty:ty) => {
         impl Serialize for $ty {
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -384,90 +565,12 @@ macro_rules! impl_generation_results_response_serde {
                             }
                             results = Some(map.next_value()?);
                         }
-                        other => {
-                            return Err(de::Error::unknown_field(other, $fields));
-                        }
+                        other => return Err(de::Error::unknown_field(other, $fields)),
                     }
                 }
                 Ok($ty {
                     generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
                     results: results.ok_or_else(|| de::Error::missing_field("results"))?,
-                })
-            }
-        }
-
-        impl<'de> Deserialize<'de> for $ty {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: Deserializer<'de>,
-            {
-                deserializer.deserialize_struct(stringify!($ty), $fields, $visitor)
-            }
-        }
-    };
-}
-
-macro_rules! impl_generation_results_explanation_response_serde {
-    ($ty:ident, $fields:ident, $visitor:ident, $result_ty:ty) => {
-        impl Serialize for $ty {
-            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: Serializer,
-            {
-                let mut state = serializer.serialize_struct(stringify!($ty), 3)?;
-                state.serialize_field("generation", &self.generation)?;
-                state.serialize_field("results", &self.results)?;
-                state.serialize_field("explanation", &self.explanation)?;
-                state.end()
-            }
-        }
-
-        struct $visitor;
-
-        impl<'de> Visitor<'de> for $visitor {
-            type Value = $ty;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str(concat!("a ", stringify!($ty), " map"))
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: MapAccess<'de>,
-            {
-                let mut generation: Option<GenerationPin> = None;
-                let mut results: Option<Vec<$result_ty>> = None;
-                let mut explanation: Option<SearchExplanation> = None;
-                while let Some(key) = map.next_key::<String>()? {
-                    match key.as_str() {
-                        "generation" => {
-                            if generation.is_some() {
-                                return Err(de::Error::duplicate_field("generation"));
-                            }
-                            generation = Some(map.next_value()?);
-                        }
-                        "results" => {
-                            if results.is_some() {
-                                return Err(de::Error::duplicate_field("results"));
-                            }
-                            results = Some(map.next_value()?);
-                        }
-                        "explanation" => {
-                            if explanation.is_some() {
-                                return Err(de::Error::duplicate_field("explanation"));
-                            }
-                            explanation = Some(map.next_value()?);
-                        }
-                        other => {
-                            return Err(de::Error::unknown_field(other, $fields));
-                        }
-                    }
-                }
-                Ok($ty {
-                    generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
-                    results: results.ok_or_else(|| de::Error::missing_field("results"))?,
-                    explanation: explanation
-                        .ok_or_else(|| de::Error::missing_field("explanation"))?,
                 })
             }
         }
@@ -750,13 +853,14 @@ impl Serialize for TextQueryResponse {
     where
         S: Serializer,
     {
-        let mut field_count = 2usize;
+        let mut field_count = 3usize;
         if self.file_owner_rows.is_some() {
             field_count = field_count.saturating_add(1);
         }
         let mut state = serializer.serialize_struct("TextQueryResponse", field_count)?;
         state.serialize_field("generation", &self.generation)?;
         state.serialize_field("results", &self.results)?;
+        state.serialize_field("window", &self.window)?;
         if let Some(file_owner_rows) = &self.file_owner_rows {
             state.serialize_field("file_owner_rows", file_owner_rows)?;
         }
@@ -779,6 +883,7 @@ impl<'de> Visitor<'de> for TextQueryResponseVisitor {
     {
         let mut generation: Option<GenerationPin> = None;
         let mut results: Option<Vec<LexicalCandidate>> = None;
+        let mut window: Option<QueryResultWindowV1> = None;
         let mut file_owner_rows: Option<Vec<FileOwnerProjectionRow>> = None;
         let mut file_owner_rows_seen = false;
         while let Some(key) = map.next_key::<String>()? {
@@ -795,6 +900,12 @@ impl<'de> Visitor<'de> for TextQueryResponseVisitor {
                     }
                     results = Some(map.next_value()?);
                 }
+                "window" => {
+                    if window.is_some() {
+                        return Err(de::Error::duplicate_field("window"));
+                    }
+                    window = Some(map.next_value()?);
+                }
                 "file_owner_rows" => {
                     if file_owner_rows_seen {
                         return Err(de::Error::duplicate_field("file_owner_rows"));
@@ -807,9 +918,17 @@ impl<'de> Visitor<'de> for TextQueryResponseVisitor {
                 }
             }
         }
+        let results = results.ok_or_else(|| de::Error::missing_field("results"))?;
+        let window = window.ok_or_else(|| de::Error::missing_field("window"))?;
+        if usize::try_from(window.returned()).ok() != Some(results.len()) {
+            return Err(de::Error::custom(
+                "query result window returned count does not match results length",
+            ));
+        }
         Ok(TextQueryResponse {
             generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
-            results: results.ok_or_else(|| de::Error::missing_field("results"))?,
+            results,
+            window,
             file_owner_rows,
         })
     }
@@ -1315,7 +1434,7 @@ impl Serialize for HybridSeedQueryResponse {
     where
         S: Serializer,
     {
-        let mut field_count = 4usize;
+        let mut field_count = 5usize;
         if self.seed_candidates_v2.is_some() {
             field_count = field_count.saturating_add(1);
         }
@@ -1326,6 +1445,7 @@ impl Serialize for HybridSeedQueryResponse {
         if let Some(seed_candidates_v2) = &self.seed_candidates_v2 {
             state.serialize_field("seed_candidates_v2", seed_candidates_v2)?;
         }
+        state.serialize_field("window", &self.window)?;
         state.serialize_field("explanation", &self.explanation)?;
         state.end()
     }
@@ -1349,6 +1469,7 @@ impl<'de> Visitor<'de> for HybridSeedQueryResponseVisitor {
         let mut seed_candidates: Option<Vec<HybridSeedCandidate>> = None;
         let mut seed_candidates_v2: Option<Vec<SeedCandidateV2>> = None;
         let mut seed_candidates_v2_seen = false;
+        let mut window: Option<QueryResultWindowV1> = None;
         let mut explanation: Option<SearchExplanation> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -1377,6 +1498,12 @@ impl<'de> Visitor<'de> for HybridSeedQueryResponseVisitor {
                     seed_candidates_v2_seen = true;
                     seed_candidates_v2 = Some(map.next_value()?);
                 }
+                "window" => {
+                    if window.is_some() {
+                        return Err(de::Error::duplicate_field("window"));
+                    }
+                    window = Some(map.next_value()?);
+                }
                 "explanation" => {
                     if explanation.is_some() {
                         return Err(de::Error::duplicate_field("explanation"));
@@ -1391,13 +1518,24 @@ impl<'de> Visitor<'de> for HybridSeedQueryResponseVisitor {
                 }
             }
         }
+        let seed_candidates =
+            seed_candidates.ok_or_else(|| de::Error::missing_field("seed_candidates"))?;
+        let window = window.ok_or_else(|| de::Error::missing_field("window"))?;
+        let returned_len = seed_candidates_v2
+            .as_ref()
+            .map_or(seed_candidates.len(), Vec::len);
+        if usize::try_from(window.returned()).ok() != Some(returned_len) {
+            return Err(de::Error::custom(
+                "hybrid seed window returned count does not match active seed result length",
+            ));
+        }
         Ok(HybridSeedQueryResponse {
             generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
             manifest_digest: manifest_digest
                 .ok_or_else(|| de::Error::missing_field("manifest_digest"))?,
-            seed_candidates: seed_candidates
-                .ok_or_else(|| de::Error::missing_field("seed_candidates"))?,
+            seed_candidates,
             seed_candidates_v2,
+            window,
             explanation: explanation.ok_or_else(|| de::Error::missing_field("explanation"))?,
         })
     }
@@ -1431,7 +1569,7 @@ pub struct SearchPlaneRuntimeMetadataQueryResponse {
 }
 
 const SEARCH_PLANE_RUNTIME_METADATA_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results"];
-impl_generation_results_response_serde!(
+impl_generation_results_unwindowed_response_serde!(
     SearchPlaneRuntimeMetadataQueryResponse,
     SEARCH_PLANE_RUNTIME_METADATA_QUERY_RESPONSE_FIELDS,
     SearchPlaneRuntimeMetadataQueryResponseVisitor,
@@ -1445,7 +1583,7 @@ pub struct SearchPlaneStructuralQueryResponse {
 }
 
 const SEARCH_PLANE_STRUCTURAL_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results"];
-impl_generation_results_response_serde!(
+impl_generation_results_unwindowed_response_serde!(
     SearchPlaneStructuralQueryResponse,
     SEARCH_PLANE_STRUCTURAL_QUERY_RESPONSE_FIELDS,
     SearchPlaneStructuralQueryResponseVisitor,
@@ -1523,7 +1661,7 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_seed_query_response_missing_v2_field_decodes_as_none() {
+    fn hybrid_seed_query_response_without_required_window_fails_closed() {
         let value = serde_json::json!({
             "generation": {
                 "repo_id": "repo-seed",
@@ -1553,13 +1691,11 @@ mod tests {
             "explanation": serde_json::to_value(SearchExplanation::default())
                 .expect("default explanation must serialize")
         });
-        let decoded: HybridSeedQueryResponse =
-            serde_json::from_value(value).expect("legacy payload must still decode");
+        let decoded = serde_json::from_value::<HybridSeedQueryResponse>(value);
         assert!(
-            decoded.seed_candidates_v2.is_none(),
-            "legacy payload without seed_candidates_v2 must decode to None"
+            decoded.is_err(),
+            "payload without mandatory result-window semantics must fail closed"
         );
-        assert_eq!(decoded.seed_candidates.len(), 1);
     }
 
     #[test]
@@ -1569,6 +1705,7 @@ mod tests {
             manifest_digest: "a".repeat(64),
             seed_candidates: vec![sample_seed_candidate()],
             seed_candidates_v2: Some(vec![sample_seed_candidate_v2()]),
+            window: QueryResultWindowV1::exact(1),
             explanation: SearchExplanation::default(),
         };
 

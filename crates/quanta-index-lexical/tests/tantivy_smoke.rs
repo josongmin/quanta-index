@@ -15,10 +15,11 @@ use quanta_index_contract::lex::{
     LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship, SymbolSpan,
 };
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, LQ_VERSION_TAG, LexicalFullBundle, LqCase, LqCountBound, LqExpr,
-    LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqPredicateArg, LqQuery, LqSelect,
-    LqSpan, LqType, LqVisibility, LqYesNoOnly, ManifestGeneration, RepoId, RepoRelativePath,
-    RevisionId, SymbolId, UpsertChunk, UpsertSymbol,
+    ChunkId, ChunkRecord, ClearLexicalSurface, LQ_VERSION_TAG, LexicalFullBundle, LqCase,
+    LqCountBound, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqPredicateArg,
+    LqQuery, LqSelect, LqSpan, LqType, LqVisibility, LqYesNoOnly, ManifestGeneration,
+    QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId, SearchScopeSurface, SymbolId,
+    UpsertChunk, UpsertSymbol,
 };
 use quanta_index_core::{CoreError, LexicalIndexBuildPort, LexicalIndexOpenPort};
 use quanta_index_lexical::{LEXICAL_WRITER_CACHE_MAX, LexicalAdapter};
@@ -461,6 +462,57 @@ fn tantivy_index_round_trip() -> TestResult {
         .into());
     }
 
+    Ok(())
+}
+
+#[test]
+fn language_constraint_is_pushed_into_one_pre_limit_candidate_query_v1() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let ops = vec![
+        upsert_with_metadata(
+            "python-1",
+            "src/a.py",
+            "python",
+            1,
+            1,
+            "needle needle needle",
+        )?,
+        upsert_with_metadata(
+            "python-2",
+            "src/b.py",
+            "python",
+            1,
+            1,
+            "needle needle needle",
+        )?,
+        upsert_with_metadata("rust-target", "src/lib.rs", "rust", 1, 1, "needle")?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let query = make_query(LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())));
+
+    let rust_only = QueryConstraintSetV1::from_languages([language_code("rust")?]);
+    let hits = searcher.search_constrained(&query, &rust_only, 1)?;
+    assert_eq!(
+        hits.iter()
+            .map(|candidate| candidate.candidate_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["rust-target"],
+        "language filtering after top_k would incorrectly lose the lower-scoring rust candidate"
+    );
+
+    let either = QueryConstraintSetV1::from_languages([
+        language_code("rust")?,
+        language_code("python")?,
+        language_code("rust")?,
+    ]);
+    let hits = searcher.search_constrained(&query, &either, 10)?;
+    assert_eq!(
+        hits.len(),
+        3,
+        "OR-set constraints must not execute as an intersection"
+    );
     Ok(())
 }
 
@@ -3065,6 +3117,46 @@ fn tantivy_search_all_materializes_full_scope() -> TestResult {
     if ids != vec!["c1".to_string(), "c2".to_string(), "c3".to_string()] {
         return Err(format!("expected full scope ids [c1, c2, c3], got {ids:?}").into());
     }
+    Ok(())
+}
+
+#[test]
+fn clear_only_delta_clones_base_and_removes_only_requested_surface_v1() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let base_generation = generation();
+    let base_ops = vec![
+        upsert("clear-chunk", "clear surface needle")?,
+        upsert_symbol("kept-symbol", "src/lib.rs", "rust", "KeptSymbol", 1, 1)?,
+    ];
+    adapter.build(&repo(), &revision(), base_generation, &base_ops)?;
+
+    let target_generation = ManifestGeneration::new(2);
+    adapter.build(
+        &repo(),
+        &revision(),
+        target_generation,
+        &[LexicalChannelOp::ClearLexicalSurface(ClearLexicalSurface {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: target_generation,
+            base_generation: Some(base_generation),
+            surface: SearchScopeSurface::Chunk,
+        })],
+    )?;
+
+    let searcher = adapter.open(&repo(), &revision(), target_generation)?;
+    let chunk_hits = searcher.search(
+        &make_query(LqExpr::Leaf(LqLeaf::Keyword("needle".to_string()))),
+        10,
+    )?;
+    let symbol_hits = searcher.search_symbols(
+        &make_query(LqExpr::Leaf(LqLeaf::Keyword("KeptSymbol".to_string()))),
+        10,
+    )?;
+    assert!(chunk_hits.is_empty());
+    assert_eq!(symbol_hits.len(), 1);
+    assert_eq!(symbol_hits[0].candidate_id, "kept-symbol");
     Ok(())
 }
 

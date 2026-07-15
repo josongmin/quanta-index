@@ -4,8 +4,8 @@
 )]
 
 use quanta_index_contract::{
-    GenerationPin, GenerationSelector, HybridSeedQueryRequest, SemanticQueryRequest,
-    SemanticSeedCorpusBudgetV1, TextQueryRequest, TextQuerySyntax,
+    GenerationPin, GenerationSelector, HybridSeedQueryRequest, QueryConstraintSetV1,
+    SemanticQueryRequest, SemanticSeedCorpusBudgetV1, TextQueryRequest, TextQuerySyntax,
 };
 
 use crate::{QuantaIndex, SdkError};
@@ -13,15 +13,17 @@ use crate::{QuantaIndex, SdkError};
 pub(crate) struct TextQueryBuilderState {
     pub(crate) syntax: TextQuerySyntax,
     pub(crate) query_text: Option<String>,
+    pub(crate) constraints: QueryConstraintSetV1,
     pub(crate) selection: Option<GenerationSelector>,
     pub(crate) top_k: Option<u32>,
 }
 
 impl TextQueryBuilderState {
-    pub(crate) const fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             syntax: TextQuerySyntax::Native,
             query_text: None,
+            constraints: QueryConstraintSetV1::unconstrained(),
             selection: None,
             top_k: None,
         }
@@ -41,6 +43,7 @@ impl TextQueryBuilderState {
         Ok(TextQueryRequest {
             syntax: self.syntax,
             query_text,
+            constraints: self.constraints,
             generation,
             generation_selector,
             top_k,
@@ -52,6 +55,7 @@ pub(crate) struct VectorQueryBuilderState {
     pub(crate) selection: Option<GenerationSelector>,
     pub(crate) top_k: Option<u32>,
     pub(crate) semantic_query_text: Option<String>,
+    pub(crate) constraints: QueryConstraintSetV1,
     pub(crate) text_leg: Option<(TextQuerySyntax, String)>,
     pub(crate) scope_leg: Option<(TextQuerySyntax, String)>,
     pub(crate) scope_top_k: Option<u32>,
@@ -59,11 +63,12 @@ pub(crate) struct VectorQueryBuilderState {
 }
 
 impl VectorQueryBuilderState {
-    pub(crate) const fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             selection: None,
             top_k: None,
             semantic_query_text: None,
+            constraints: QueryConstraintSetV1::unconstrained(),
             text_leg: None,
             scope_leg: None,
             scope_top_k: None,
@@ -82,10 +87,12 @@ impl VectorQueryBuilderState {
             .top_k
             .ok_or_else(|| SdkError::Usage("semantic top_k is required".to_string()))?;
         let (generation, generation_selector) = Self::selection_fields(selection);
+        let constraints = self.constraints;
         let lexical_scope = match (self.scope_leg, self.scope_top_k) {
             (Some((syntax, query_text)), Some(scope_top_k)) => Some(TextQueryRequest {
                 syntax,
                 query_text,
+                constraints: constraints.clone(),
                 generation: generation.clone(),
                 generation_selector: generation_selector.clone(),
                 top_k: scope_top_k,
@@ -110,6 +117,7 @@ impl VectorQueryBuilderState {
         };
         Ok(SemanticQueryRequest {
             query_text,
+            constraints,
             generation,
             generation_selector,
             lexical_scope,
@@ -135,6 +143,7 @@ impl VectorQueryBuilderState {
             text_query: TextQueryRequest {
                 syntax,
                 query_text,
+                constraints: self.constraints,
                 generation: generation.clone(),
                 generation_selector: generation_selector.clone(),
                 top_k,

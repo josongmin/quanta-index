@@ -24,7 +24,7 @@ pub use batch::{BatchMode, BatchReceipt};
 pub use client::{ControlClient, ProducerClient, QuantaIndex, ReaderClient};
 pub use config::ConnectOptions;
 pub use error::SdkError;
-pub use generations::{ActivationBuilder, GenerationNamespace};
+pub use generations::GenerationNamespace;
 pub use history::{
     DiffHunkMutation, FileContributorBatch, FileContributorMutation, FileOwnershipBatch,
     FileOwnershipMutation, HistoryBatch, HistoryNamespace, HistoryQueryBuilder, RefMutation,
@@ -61,13 +61,15 @@ pub use quanta_index_contract::{
     RepoMapGraphCoverage, RepoMapImportEdge, RepoMapModuleId, RepoMapModuleNode,
     RepoMapMutationAck, RepoMapNode, RepoMapNodeRef, RepoMapOwnsChunkEdge, RepoMapQueryRequest,
     RepoMapQueryResponse, RepoMapSourceBundle, RepoMapSymbolNode, RepoRelativePath, RevisionId,
-    SearchCorpusReplaceScope, SearchCorpusTombstoneScope, SearchExplanation,
-    SearchPlaneActivationAck, SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse,
+    SearchCorpusGenerationIdentityV1, SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
+    SearchExplanation, SearchPlaneActivateSearchCorpusGenerationCasRequest,
+    SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse,
     SearchPlaneRollbackGenerationAck, SearchPlaneRollbackGenerationRequest,
-    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
-    SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface, SemanticQueryResponse,
-    StructuralReplaceScope, StructuralTombstoneScope, StructuralTreeRecord, SymbolCandidate,
-    SymbolId, SymbolQueryResponse, TextQueryResponse, TextQuerySyntax, TrackReadinessRecord,
+    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneSearchCorpusActivationCasAck,
+    SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
+    SemanticQueryResponse, StructuralReplaceScope, StructuralTombstoneScope, StructuralTreeRecord,
+    SymbolCandidate, SymbolId, SymbolQueryResponse, TextQueryResponse, TextQuerySyntax,
+    TrackReadinessRecord,
 };
 
 pub type CodeHit = LexicalCandidate;

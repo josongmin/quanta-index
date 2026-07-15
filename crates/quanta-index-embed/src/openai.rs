@@ -489,23 +489,116 @@ impl EmbeddingTransport for ReqwestBlockingTransport {
     }
 }
 
-#[derive(Serialize)]
 struct EmbeddingsRequest<'a> {
     model: &'a str,
     input: &'a [&'a str],
     dimensions: usize,
 }
 
-#[derive(Deserialize)]
+impl Serialize for EmbeddingsRequest<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct as _;
+
+        let mut state = serializer.serialize_struct("EmbeddingsRequest", 3)?;
+        state.serialize_field("model", self.model)?;
+        state.serialize_field("input", self.input)?;
+        state.serialize_field("dimensions", &self.dimensions)?;
+        state.end()
+    }
+}
+
 struct EmbeddingsResponse {
     data: Vec<EmbeddingItem>,
 }
 
-#[derive(Deserialize)]
 struct EmbeddingItem {
     embedding: Vec<f32>,
     index: usize,
 }
+
+// Implements the provider response object decoder without a serde proc macro.
+// Unknown fields are ignored because OpenAI adds response metadata over time;
+// declared fields remain required and duplicates fail closed.
+macro_rules! impl_openai_response_deserialize {
+    ($ty:ident { $($field:ident : $field_ty:ty => $field_index:literal),+ $(,)? }) => {
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                struct ResponseVisitor;
+
+                impl<'de> serde::de::Visitor<'de> for ResponseVisitor {
+                    type Value = $ty;
+
+                    fn expecting(
+                        &self,
+                        formatter: &mut core::fmt::Formatter<'_>,
+                    ) -> core::fmt::Result {
+                        formatter.write_str(concat!("struct ", stringify!($ty)))
+                    }
+
+                    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+                    where
+                        A: serde::de::SeqAccess<'de>,
+                    {
+                        $(
+                            let $field: $field_ty = sequence.next_element()?.ok_or_else(|| {
+                                serde::de::Error::invalid_length($field_index, &self)
+                            })?;
+                        )+
+                        Ok($ty { $($field),+ })
+                    }
+
+                    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+                    where
+                        A: serde::de::MapAccess<'de>,
+                    {
+                        $(let mut $field: Option<$field_ty> = None;)+
+                        while let Some(key) = map.next_key::<String>()? {
+                            match key.as_str() {
+                                $(
+                                    stringify!($field) => {
+                                        if $field.is_some() {
+                                            return Err(serde::de::Error::duplicate_field(
+                                                stringify!($field),
+                                            ));
+                                        }
+                                        $field = Some(map.next_value()?);
+                                    }
+                                )+
+                                _ => {
+                                    let _: serde::de::IgnoredAny = map.next_value()?;
+                                }
+                            }
+                        }
+                        Ok($ty {
+                            $(
+                                $field: $field.ok_or_else(|| {
+                                    serde::de::Error::missing_field(stringify!($field))
+                                })?,
+                            )+
+                        })
+                    }
+                }
+
+                const FIELDS: &[&str] = &[$(stringify!($field)),+];
+                deserializer.deserialize_struct(stringify!($ty), FIELDS, ResponseVisitor)
+            }
+        }
+    };
+}
+
+impl_openai_response_deserialize!(EmbeddingsResponse {
+    data: Vec<EmbeddingItem> => 0,
+});
+impl_openai_response_deserialize!(EmbeddingItem {
+    embedding: Vec<f32> => 0,
+    index: usize => 1,
+});
 
 /// A batch's embedding result paired with its batch index, used to reassemble
 /// concurrent worker output back into input order.
@@ -604,6 +697,61 @@ mod tests {
     ) -> OpenAiEmbeddingProvider {
         OpenAiEmbeddingProvider::new(config, Box::new(transport))
             .expect("provider builds with a non-empty key/model/dim")
+    }
+
+    #[test]
+    fn openai_request_wire_shape_is_exact() {
+        let input = ["alpha", "beta"];
+        let request = EmbeddingsRequest {
+            model: "text-embedding-test",
+            input: &input,
+            dimensions: 2,
+        };
+
+        let body = serde_json::to_string(&request);
+
+        assert!(matches!(
+            body.as_deref(),
+            Ok(r#"{"model":"text-embedding-test","input":["alpha","beta"],"dimensions":2}"#)
+        ));
+    }
+
+    #[test]
+    fn openai_response_ignores_unknown_fields() {
+        let body = r#"{
+            "data": [{"embedding": [0.25, 0.75], "index": 0, "object": "embedding"}],
+            "model": "text-embedding-test",
+            "usage": {"prompt_tokens": 2}
+        }"#;
+
+        let response = serde_json::from_str::<EmbeddingsResponse>(body);
+
+        assert!(matches!(
+            response.as_ref(),
+            Ok(EmbeddingsResponse { data })
+                if matches!(
+                    data.as_slice(),
+                    [item] if item.embedding.as_slice() == [0.25, 0.75] && item.index == 0
+                )
+        ));
+    }
+
+    #[test]
+    fn openai_response_rejects_missing_required_fields() {
+        let missing_data = serde_json::from_str::<EmbeddingsResponse>(r#"{"object":"list"}"#)
+            .map_err(|error| error.to_string());
+        let missing_embedding =
+            serde_json::from_str::<EmbeddingsResponse>(r#"{"data":[{"index":0}]}"#)
+                .map_err(|error| error.to_string());
+        let missing_index =
+            serde_json::from_str::<EmbeddingsResponse>(r#"{"data":[{"embedding":[0.25]}]}"#)
+                .map_err(|error| error.to_string());
+
+        assert!(matches!(missing_data, Err(ref error) if error.contains("missing field `data`")));
+        assert!(
+            matches!(missing_embedding, Err(ref error) if error.contains("missing field `embedding`"))
+        );
+        assert!(matches!(missing_index, Err(ref error) if error.contains("missing field `index`")));
     }
 
     #[test]

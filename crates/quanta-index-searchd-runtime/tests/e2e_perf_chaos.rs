@@ -104,10 +104,7 @@ fn seed_hybrid_count_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
     rt.ingest_text("repo-e2e", "src/beta.rs", "scope beta keep")?;
     rt.ingest_text("repo-e2e", "src/gamma.rs", "scope gamma keep")?;
     _ = rt.seal()?;
-    rt.activate_last_sealed_generation_with_tracks(&[
-        SearchPlaneTrackKind::Lexical,
-        SearchPlaneTrackKind::Semantic,
-    ])?;
+    rt.activate_last_sealed_generation()?;
     Ok(())
 }
 
@@ -117,10 +114,7 @@ fn seed_hybrid_tie_fixture(rt: &mut E2eRuntime, count: usize) -> AnyResult<()> {
         rt.ingest_text("repo-e2e", &path, "scope tie keep")?;
     }
     _ = rt.seal()?;
-    rt.activate_last_sealed_generation_with_tracks(&[
-        SearchPlaneTrackKind::Lexical,
-        SearchPlaneTrackKind::Semantic,
-    ])?;
+    rt.activate_last_sealed_generation()?;
     Ok(())
 }
 
@@ -179,10 +173,6 @@ fn seed_structural_pure_negative_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
         SearchPlaneTrackKind::Lexical,
         SearchPlaneTrackKind::Structural,
     ])?;
-    rt.activate_last_sealed_generation_with_tracks(&[
-        SearchPlaneTrackKind::Lexical,
-        SearchPlaneTrackKind::Structural,
-    ])?;
     Ok(())
 }
 
@@ -198,10 +188,6 @@ fn seed_structural_boolean_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
     ingest_structural_trait_tree(rt, trait_path, trait_content)?;
 
     _ = rt.seal_lexical_generation_for_tracks(&[
-        SearchPlaneTrackKind::Lexical,
-        SearchPlaneTrackKind::Structural,
-    ])?;
-    rt.activate_last_sealed_generation_with_tracks(&[
         SearchPlaneTrackKind::Lexical,
         SearchPlaneTrackKind::Structural,
     ])?;
@@ -1044,7 +1030,6 @@ fn structural_missing_parse_tree_fails_typed_generation_not_ready() -> AnyResult
     let mut rt = E2eRuntime::boot()?;
     rt.ingest_text("repo-e2e", "src/tree.rs", "fn orphaned() {}")?;
     _ = rt.seal_lexical_generation_for_tracks(&[SearchPlaneTrackKind::Lexical])?;
-    rt.activate_last_sealed_generation_with_tracks(&[SearchPlaneTrackKind::Lexical])?;
 
     let result = rt.query_structural(TextQuerySyntax::Native, "match { :[x] }", 10);
     let error = result
@@ -1080,10 +1065,6 @@ fn structural_orphan_chunk_authority_fails_typed_shard_unavailable() -> AnyResul
     rt.ingest_structural_function_tree(path, content, "orphaned")?;
     rt.delete_chunk_for_path(path)?;
     _ = rt.seal_lexical_generation_for_tracks(&[
-        SearchPlaneTrackKind::Lexical,
-        SearchPlaneTrackKind::Structural,
-    ])?;
-    rt.activate_last_sealed_generation_with_tracks(&[
         SearchPlaneTrackKind::Lexical,
         SearchPlaneTrackKind::Structural,
     ])?;

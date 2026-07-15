@@ -90,6 +90,7 @@ fn fixture_search_corpus_batch() -> SearchCorpusIngestBatch {
         batch_digest: "batch:lex".to_string(),
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
+        clear_surfaces: Vec::new(),
         replace_scopes: Vec::new(),
         tombstone_scopes: Vec::new(),
         semantic_replace_scopes: vec![SemanticSourceReplaceScopeV1 {

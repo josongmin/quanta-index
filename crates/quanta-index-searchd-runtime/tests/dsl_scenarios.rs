@@ -274,6 +274,7 @@ fn publish_search_corpus_chunks(
             ),
             mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload,
+            clear_surfaces: Vec::new(),
             replace_scopes,
             tombstone_scopes: Vec::new(),
             semantic_replace_scopes: Vec::new(),
@@ -298,6 +299,7 @@ fn seal_lexical(socket: &Path) -> TestResult {
             ),
             mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload: None,
+            clear_surfaces: Vec::new(),
             replace_scopes: Vec::new(),
             tombstone_scopes: Vec::new(),
             semantic_replace_scopes: Vec::new(),
@@ -317,6 +319,7 @@ fn lexical_request(
         payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax,
             query_text: query_text.to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(pin()),
             generation_selector: None,
             top_k: 50,
@@ -804,11 +807,13 @@ fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scop
         request_id: 3,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "scope".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(pin()),
             generation_selector: None,
             lexical_scope: Some(TextQueryRequest {
                 syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "(alpha OR beta) scope NOT outsider".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(pin()),
                 generation_selector: None,
                 top_k: 2,
@@ -919,6 +924,7 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
             text_query: TextQueryRequest {
                 syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "(alpha OR beta) scope NOT outsider".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(pin()),
                 generation_selector: None,
                 top_k: 50,
@@ -1034,6 +1040,7 @@ fn hybrid_query_surfaces_truthful_count_reached_early_stop() -> TestResult {
             text_query: TextQueryRequest {
                 syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "scope".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(pin()),
                 generation_selector: None,
                 top_k: 50,

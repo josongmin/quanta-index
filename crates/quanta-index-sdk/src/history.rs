@@ -769,7 +769,7 @@ pub struct HistoryQueryBuilder<
 }
 
 impl<'a> HistoryQueryBuilder<'a> {
-    const fn new(client: &'a QuantaIndex) -> Self {
+    fn new(client: &'a QuantaIndex) -> Self {
         Self {
             client,
             state: TextQueryBuilderState::new(),

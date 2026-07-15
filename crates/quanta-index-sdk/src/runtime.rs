@@ -151,7 +151,7 @@ pub struct RuntimeQueryBuilder<
 }
 
 impl<'a> RuntimeQueryBuilder<'a> {
-    const fn new(client: &'a QuantaIndex) -> Self {
+    fn new(client: &'a QuantaIndex) -> Self {
         Self {
             client,
             state: TextQueryBuilderState::new(),

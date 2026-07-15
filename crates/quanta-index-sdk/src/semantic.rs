@@ -55,7 +55,7 @@ pub struct SemanticQueryBuilder<
 }
 
 impl<'a> SemanticQueryBuilder<'a> {
-    const fn new(client: &'a QuantaIndex) -> Self {
+    fn new(client: &'a QuantaIndex) -> Self {
         Self {
             client,
             state: VectorQueryBuilderState::new(),
@@ -117,6 +117,19 @@ impl<
     ) -> SemanticQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K, true, HAS_SCOPE_TOP_K> {
         self.transition(|state| {
             state.scope_leg = Some((TextQuerySyntax::Sourcegraph, query_text.into()));
+        })
+    }
+
+    /// Replace the canonical OR-set applied to both semantic recall and the
+    /// optional lexical scope leg.
+    #[must_use]
+    pub fn language_any_of(
+        self,
+        languages: impl IntoIterator<Item = quanta_index_contract::lex::LanguageCode>,
+    ) -> Self {
+        self.transition(|state| {
+            state.constraints =
+                quanta_index_contract::QueryConstraintSetV1::from_languages(languages);
         })
     }
 

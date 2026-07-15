@@ -22,15 +22,15 @@ use quanta_index_contract::{
     LqFilter, LqLeaf, LqOptions, LqPatternType, LqQuery, LqSpan, LqStructuralBlock,
     LqStructuralConstraint, LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleRef,
     LqStructuralNode, LqType, LqYesNoOnly, ManifestGeneration, OwnerDocKind, PlannerStage,
-    PlannerTraceEntry, QueryErrorRepair, RepairClass, RepoId, RepoMapQueryRequest,
-    RepoMapQueryResponse, RevisionId, RuntimeMetadataQueryRequest, SearchExplanation,
-    SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
+    PlannerTraceEntry, QueryConstraintSetV1, QueryErrorRepair, QueryResultWindowV1, RepairClass,
+    RepoId, RepoMapQueryRequest, RepoMapQueryResponse, RevisionId, RuntimeMetadataQueryRequest,
+    SearchExplanation, SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
     SearchPlaneHistoryQueryResponse, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcResponse, SearchPlaneRuntimeMetadataQueryResponse,
     SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind, SeedCandidateV2, SeedContributionV2,
-    SeedLaneV2, SemanticCorpusKindV1, SemanticQueryRequest, SemanticQueryResponse,
-    StructuralQueryRequest, SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse,
-    TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    SeedLaneV2, SemanticQueryRequest, SemanticQueryResponse, StructuralQueryRequest,
+    SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse,
+    TextQuerySyntax,
 };
 use quanta_index_core::domains::structural::{
     StructuralExecutableFilter, StructuralProducerPort,
@@ -64,6 +64,103 @@ const ERR_RUNTIME_INVALID_SCOPE: &str = "RUNTIME_INVALID_SCOPE";
 #[cfg(test)]
 const ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED: &str = "RUNTIME_DIRTY_ONLY_UNSUPPORTED";
 const ERR_SNAPSHOT_UNKNOWN: &str = "SNAPSHOT_UNKNOWN";
+
+struct PreparedLanguageQueryV1 {
+    query: LqQuery,
+    constraints: QueryConstraintSetV1,
+    force_empty: bool,
+}
+
+/// Compose DSL `lang:` filters with the typed OR-set once, then remove the DSL
+/// language leaves so every sparse and dense lane consumes the same canonical
+/// constraint. The two surfaces intersect; a disjoint intersection is an
+/// explicit empty result, never an unconstrained fallback.
+fn prepare_language_query_v1(
+    mut query: LqQuery,
+    typed: &QueryConstraintSetV1,
+) -> Result<PreparedLanguageQueryV1, CoreError> {
+    let mut dsl_languages = BTreeSet::new();
+    let mut retained = Vec::with_capacity(query.filters.len());
+    for filter in std::mem::take(&mut query.filters) {
+        match filter {
+            LqFilter::Lang { id } => {
+                let canonical = id.trim().to_ascii_lowercase();
+                let language =
+                    quanta_index_contract::lex::LanguageCode::new(canonical).map_err(|err| {
+                        CoreError::InvalidContract(format!(
+                            "query language constraint is not canonical: {err}"
+                        ))
+                    })?;
+                let _inserted = dsl_languages.insert(language);
+            }
+            other => retained.push(other),
+        }
+    }
+    query.filters = retained;
+    let dsl = QueryConstraintSetV1::from_languages(dsl_languages);
+    let both_constrained = !typed.is_unconstrained() && !dsl.is_unconstrained();
+    let constraints = typed.intersect(&dsl);
+    let force_empty = both_constrained && constraints.is_unconstrained();
+    Ok(PreparedLanguageQueryV1 {
+        query,
+        constraints,
+        force_empty,
+    })
+}
+
+fn probe_top_k_v1(top_k: u32) -> Result<u32, CoreError> {
+    let probed = top_k.checked_add(1).ok_or_else(|| {
+        CoreError::InvalidContract("query top_k cannot be probed beyond u32::MAX".to_string())
+    })?;
+    if probed > SemanticPolicy::max_top_k() {
+        return Err(CoreError::InvalidContract(format!(
+            "query top_k must be below {} so the result window can observe one continuation row",
+            SemanticPolicy::max_top_k()
+        )));
+    }
+    Ok(probed)
+}
+
+fn hybrid_probe_top_k_v1(top_k: u32) -> Result<u32, CoreError> {
+    Ok(HybridOrchestratorPolicy::over_fetch_top_k(top_k).max(probe_top_k_v1(top_k)?))
+}
+
+fn finalize_probe_window_v1<T>(
+    results: &mut Vec<T>,
+    top_k: u32,
+) -> Result<QueryResultWindowV1, CoreError> {
+    let observed = results.len();
+    let requested = usize::try_from(top_k)
+        .map_err(|err| CoreError::InvalidContract(format!("query top_k overflow: {err}")))?;
+    if results.len() > requested {
+        results.truncate(requested);
+    }
+    QueryResultWindowV1::from_probe(top_k, observed)
+        .map_err(|err| CoreError::InvalidContract(format!("query result window: {err}")))
+}
+
+fn fused_window_v1(
+    top_k: u32,
+    returned: usize,
+    observed_universe: usize,
+    lane_limit_reached: bool,
+) -> Result<QueryResultWindowV1, CoreError> {
+    let requested = usize::try_from(top_k)
+        .map_err(|err| CoreError::InvalidContract(format!("query top_k overflow: {err}")))?;
+    if lane_limit_reached && returned != requested {
+        return Err(CoreError::InvalidContract(
+            "hybrid result window observed a capped lane before filling the requested page"
+                .to_string(),
+        ));
+    }
+    let observed = if observed_universe > requested || lane_limit_reached {
+        requested.saturating_add(1)
+    } else {
+        returned
+    };
+    QueryResultWindowV1::from_probe(top_k, observed)
+        .map_err(|err| CoreError::InvalidContract(format!("query result window: {err}")))
+}
 
 pub trait QueryObsSink {
     fn emit(&self, sample: MetricSample);
@@ -264,6 +361,7 @@ impl SearchPlaneDispatcher {
     /// Lower the request and forward it to the live lexical searcher.
     fn lexical(&self, request: &TextQueryRequest) -> Result<TextQueryResponse, CoreError> {
         let lowered = lower_lexical_text_query(request)?;
+        let prepared_language = prepare_language_query_v1(lowered, &request.constraints)?;
         let base_pin = resolve_lexical_request_pin(
             self.activation_catalog.as_ref(),
             request,
@@ -274,14 +372,15 @@ impl SearchPlaneDispatcher {
             self.activation_catalog.as_ref(),
             self.ledger.as_ref(),
             &base_pin,
-            lowered,
+            prepared_language.query,
         )?;
         LexicalPolicy::validate_query(&prepared.query)?;
         let wants_file_owner_projection = query_selects_file_owner_projection(&prepared.query);
-        if prepared.force_empty {
+        if prepared.force_empty || prepared_language.force_empty {
             return Ok(TextQueryResponse {
                 generation: prepared.pin,
                 results: Vec::new(),
+                window: QueryResultWindowV1::exact(0),
                 file_owner_rows: wants_file_owner_projection.then(Vec::new),
             });
         }
@@ -291,8 +390,14 @@ impl SearchPlaneDispatcher {
         let searcher =
             self.lex_opener
                 .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
-        let mut results = searcher.search(&prepared.query, request.top_k)?;
+        let probe_top_k = probe_top_k_v1(request.top_k)?;
+        let mut results = searcher.search_constrained(
+            &prepared.query,
+            &prepared_language.constraints,
+            probe_top_k,
+        )?;
         stabilize_ranked_candidates(&mut results);
+        let window = finalize_probe_window_v1(&mut results, request.top_k)?;
         let file_owner_rows = if wants_file_owner_projection {
             Some(searcher.project_file_owners(&results)?)
         } else {
@@ -301,6 +406,7 @@ impl SearchPlaneDispatcher {
         Ok(TextQueryResponse {
             generation: prepared.pin,
             results,
+            window,
             file_owner_rows,
         })
     }
@@ -319,21 +425,36 @@ impl SearchPlaneDispatcher {
         let lexical_request = TextQueryRequest {
             syntax: request.syntax,
             query_text: request.query_text,
+            constraints: request.constraints,
             generation: Some(pin.clone()),
             generation_selector: None,
             top_k: request.top_k,
         };
         let lowered = lower_lexical_text_query(&lexical_request)?;
-        LexicalPolicy::validate_query(&lowered)?;
+        let prepared_language = prepare_language_query_v1(lowered, &lexical_request.constraints)?;
+        LexicalPolicy::validate_query(&prepared_language.query)?;
+        if prepared_language.force_empty {
+            return Ok(SymbolQueryResponse {
+                generation: pin,
+                results: Vec::new(),
+                window: QueryResultWindowV1::exact(0),
+            });
+        }
         let materialized = self.snapshot_lex_materialized(&pin.repo_id, &pin.revision_id)?;
         LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, materialized)?;
         let searcher =
             self.lex_opener
                 .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
-        let results = searcher.search_symbols(&lowered, request.top_k)?;
+        let mut results = searcher.search_symbols_constrained(
+            &prepared_language.query,
+            &prepared_language.constraints,
+            probe_top_k_v1(request.top_k)?,
+        )?;
+        let window = finalize_probe_window_v1(&mut results, request.top_k)?;
         Ok(SymbolQueryResponse {
             generation: pin,
             results,
+            window,
         })
     }
 
@@ -386,9 +507,18 @@ impl SearchPlaneDispatcher {
             self.sem_opener
                 .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let lexical_query = lower_lexical_text_query(text_query)?;
-        LexicalPolicy::validate_query(&lexical_query)?;
-        let internal_top_k = HybridOrchestratorPolicy::over_fetch_top_k(top_k);
-        let mut lex_results = lex_searcher.search(&lexical_query, internal_top_k)?;
+        let prepared_language = prepare_language_query_v1(lexical_query, &text_query.constraints)?;
+        LexicalPolicy::validate_query(&prepared_language.query)?;
+        let internal_top_k = hybrid_probe_top_k_v1(top_k)?;
+        let mut lex_results = if prepared_language.force_empty {
+            Vec::new()
+        } else {
+            lex_searcher.search_constrained(
+                &prepared_language.query,
+                &prepared_language.constraints,
+                internal_top_k,
+            )?
+        };
         stabilize_ranked_candidates(&mut lex_results);
         let lexical_ids = lex_results
             .iter()
@@ -396,9 +526,18 @@ impl SearchPlaneDispatcher {
             .collect::<BTreeSet<_>>();
         let query_vector =
             self.embed_and_gate_query(semantic_query_text, sem_searcher.as_ref(), plane)?;
-        let mut sem_results =
-            sem_searcher.search_scoped(&query_vector, &lexical_ids, internal_top_k)?;
+        let mut sem_results = sem_searcher.search_scoped_constrained(
+            &query_vector,
+            &lexical_ids,
+            &prepared_language.constraints,
+            internal_top_k,
+        )?;
         stabilize_ranked_candidates(&mut sem_results);
+        let internal_limit = usize::try_from(internal_top_k).map_err(|err| {
+            CoreError::InvalidContract(format!("hybrid: internal top_k overflow: {err}"))
+        })?;
+        let lane_limit_reached =
+            lex_results.len() == internal_limit || sem_results.len() == internal_limit;
         let fused_universe_size = lex_results
             .iter()
             .map(|candidate| candidate.candidate_id.as_str())
@@ -423,9 +562,11 @@ impl SearchPlaneDispatcher {
             internal_top_k,
             early_stop_reason,
         );
+        let window = fused_window_v1(top_k, fused.len(), fused_universe_size, lane_limit_reached)?;
         Ok(HybridFusion {
             pin,
             fused,
+            window,
             explanation,
         })
     }
@@ -436,9 +577,18 @@ impl SearchPlaneDispatcher {
             resolve_semantic_request_selection(self.activation_catalog.as_ref(), request)?;
         let pin = selection.pin.clone();
         self.validate_semantic_selection(&selection, "semantic")?;
+        let mut effective_constraints = request.constraints.clone();
         let scope_candidate_ids = if let Some(scope) = request.lexical_scope.as_ref() {
+            if scope.constraints != request.constraints {
+                return Err(CoreError::InvalidContract(
+                    "semantic: lexical scope constraints must equal outer semantic constraints"
+                        .to_string(),
+                ));
+            }
             let lowered_scope = lower_lexical_text_query(scope)?;
-            LexicalPolicy::validate_query(&lowered_scope)?;
+            let prepared_language = prepare_language_query_v1(lowered_scope, &request.constraints)?;
+            LexicalPolicy::validate_query(&prepared_language.query)?;
+            effective_constraints = prepared_language.constraints.clone();
             let lex_materialized =
                 self.snapshot_lex_materialized(&pin.repo_id, &pin.revision_id)?;
             LexicalPolicy::validate_query_against_readiness(
@@ -448,7 +598,14 @@ impl SearchPlaneDispatcher {
             let searcher =
                 self.lex_opener
                     .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
-            let scoped = searcher.search_all(&lowered_scope)?;
+            let scoped = if prepared_language.force_empty {
+                Vec::new()
+            } else {
+                searcher.search_all_constrained(
+                    &prepared_language.query,
+                    &prepared_language.constraints,
+                )?
+            };
             Some(
                 scoped
                     .into_iter()
@@ -463,11 +620,18 @@ impl SearchPlaneDispatcher {
                 .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let query_vector =
             self.embed_and_gate_query(request.query_text.as_str(), searcher.as_ref(), "semantic")?;
-        let results = if let Some(scope_ids) = scope_candidate_ids.as_ref() {
-            searcher.search_scoped(&query_vector, scope_ids, request.top_k)?
+        let probe_top_k = probe_top_k_v1(request.top_k)?;
+        let mut results = if let Some(scope_ids) = scope_candidate_ids.as_ref() {
+            searcher.search_scoped_constrained(
+                &query_vector,
+                scope_ids,
+                &effective_constraints,
+                probe_top_k,
+            )?
         } else {
-            searcher.search(&query_vector, request.top_k)?
+            searcher.search_constrained(&query_vector, &effective_constraints, probe_top_k)?
         };
+        let window = finalize_probe_window_v1(&mut results, request.top_k)?;
         let early_stop_reason = scope_candidate_ids.as_ref().and_then(|scope_ids| {
             let limit = top_k_limit(request.top_k);
             if scope_ids.len() > results.len() && results.len() == limit {
@@ -485,6 +649,7 @@ impl SearchPlaneDispatcher {
         Ok(SemanticQueryResponse {
             generation: pin,
             results,
+            window,
             explanation,
         })
     }
@@ -503,6 +668,7 @@ impl SearchPlaneDispatcher {
         Ok(HybridQueryResponse {
             generation: fusion.pin,
             results: fusion.fused,
+            window: fusion.window,
             explanation: fusion.explanation,
         })
     }
@@ -525,9 +691,19 @@ impl SearchPlaneDispatcher {
             self.sem_opener
                 .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let lexical_query = lower_lexical_text_query(&request.text_query)?;
-        LexicalPolicy::validate_query(&lexical_query)?;
-        let internal_top_k = HybridOrchestratorPolicy::over_fetch_top_k(request.top_k);
-        let mut lex_results = lex_searcher.search(&lexical_query, internal_top_k)?;
+        let prepared_language =
+            prepare_language_query_v1(lexical_query, &request.text_query.constraints)?;
+        LexicalPolicy::validate_query(&prepared_language.query)?;
+        let internal_top_k = hybrid_probe_top_k_v1(request.top_k)?;
+        let mut lex_results = if prepared_language.force_empty {
+            Vec::new()
+        } else {
+            lex_searcher.search_constrained(
+                &prepared_language.query,
+                &prepared_language.constraints,
+                internal_top_k,
+            )?
+        };
         stabilize_ranked_candidates(&mut lex_results);
         let lexical_ids = lex_results
             .iter()
@@ -538,9 +714,17 @@ impl SearchPlaneDispatcher {
             sem_searcher.as_ref(),
             "hybrid seed",
         )?;
-        let mut sem_results =
-            sem_searcher.search_scoped(&query_vector, &lexical_ids, internal_top_k)?;
+        let mut sem_results = sem_searcher.search_scoped_constrained(
+            &query_vector,
+            &lexical_ids,
+            &prepared_language.constraints,
+            internal_top_k,
+        )?;
         stabilize_ranked_candidates(&mut sem_results);
+        let internal_limit = usize::try_from(internal_top_k).map_err(|err| {
+            CoreError::InvalidContract(format!("hybrid seed: internal top_k overflow: {err}"))
+        })?;
+        let primary_lane_limit_reached = lex_results.len() == internal_limit;
         let seed_candidates = build_hybrid_seed_candidates_v1(
             &HybridOrchestratorPolicy::fuse_rrf(&lex_results, &sem_results, request.top_k),
             &lex_results,
@@ -549,15 +733,22 @@ impl SearchPlaneDispatcher {
         let dense_corpora = canonical_dense_corpus_budgets_v1(&request.dense_corpora)?;
         let mut unavailable_corpus_reasons = Vec::new();
         let mut semantic_lanes = Vec::new();
-        if dense_corpora.is_empty() {
-            let mut hits = sem_searcher.search_hits(&query_vector, internal_top_k)?;
+        if prepared_language.force_empty {
+            semantic_lanes.push(Vec::new());
+        } else if dense_corpora.is_empty() {
+            let mut hits = sem_searcher.search_hits_constrained(
+                &query_vector,
+                &prepared_language.constraints,
+                internal_top_k,
+            )?;
             stabilize_semantic_seed_hits_v1(&mut hits);
             semantic_lanes.push(hits);
         } else {
             for budget in dense_corpora {
-                let mut hits = sem_searcher.search_hits_for_corpus(
+                let mut hits = sem_searcher.search_hits_for_corpus_constrained(
                     &query_vector,
                     budget.corpus_kind,
+                    &prepared_language.constraints,
                     budget.top_k,
                 )?;
                 stabilize_semantic_seed_hits_v1(&mut hits);
@@ -608,11 +799,18 @@ impl SearchPlaneDispatcher {
             &unavailable_corpus_reasons,
             early_stop_reason,
         );
+        let window = fused_window_v1(
+            request.top_k,
+            seed_candidates_v2.len(),
+            fused_entity_universe,
+            primary_lane_limit_reached,
+        )?;
         Ok(HybridSeedQueryResponse {
             generation: pin,
             manifest_digest,
             seed_candidates,
             seed_candidates_v2: Some(seed_candidates_v2),
+            window,
             explanation,
         })
     }
@@ -4398,16 +4596,85 @@ mod tests {
         ERR_HISTORY_PRODUCER_UNAVAILABLE, ERR_HISTORY_SHARD_UNAVAILABLE, ERR_INVALID,
         ERR_NOT_IMPLEMENTED, ERR_NOT_READY, ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED,
         FailClosedStructuralProducer, MAX_OBS_SAMPLES, QueryObsSink, SearchPlaneDispatcher,
-        build_hybrid_seed_candidates_v2, classify_error_metric_name, make_pin,
-        runtime_generation_is_stale, runtime_seed_ids, validate_history_query,
+        build_hybrid_seed_candidates_v2, build_probe_query, classify_error_metric_name,
+        finalize_probe_window_v1, fused_window_v1, make_pin, prepare_language_query_v1,
+        probe_top_k_v1, runtime_generation_is_stale, runtime_seed_ids, validate_history_query,
         validate_runtime_metadata_query,
     };
     use crate::{
-        ActivationCatalog, HashingQueryTextEmbedder, Ledger, QueryTextEmbedderPort,
-        SEARCH_OWNED_SEMANTIC_DIMENSION,
+        ActivationCatalog, HashingQueryTextEmbedder, Ledger, PreparedSearchCorpusGenerationV1,
+        QueryTextEmbedderPort, SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusGenerationV1,
     };
     use quanta_index_contract::HybridSeedQueryRequest;
     use quanta_index_core::SemanticSearchHitV1;
+
+    #[test]
+    fn typed_and_dsl_language_constraints_intersect_before_every_retrieval_lane_v1() {
+        use quanta_index_contract::lex::LanguageCode;
+        use quanta_index_contract::{LqFilter, QueryConstraintSetV1};
+
+        let typed = QueryConstraintSetV1::from_languages([
+            LanguageCode::new("rust").expect("valid language"),
+            LanguageCode::new("python").expect("valid language"),
+        ]);
+        let mut query = build_probe_query("needle");
+        query.filters.push(LqFilter::Lang {
+            id: "Rust".to_string(),
+        });
+        let prepared = prepare_language_query_v1(query, &typed).expect("valid constraints");
+        assert!(!prepared.force_empty);
+        assert!(prepared.query.filters.is_empty());
+        assert_eq!(
+            prepared
+                .constraints
+                .language_any_of
+                .iter()
+                .map(LanguageCode::as_str)
+                .collect::<Vec<_>>(),
+            vec!["rust"]
+        );
+
+        let typed_rust = QueryConstraintSetV1::from_languages([
+            LanguageCode::new("rust").expect("valid language")
+        ]);
+        let mut disjoint = build_probe_query("needle");
+        disjoint.filters.push(LqFilter::Lang {
+            id: "python".to_string(),
+        });
+        let prepared = prepare_language_query_v1(disjoint, &typed_rust).expect("valid constraints");
+        assert!(
+            prepared.force_empty,
+            "disjoint constraints must not widen to all languages"
+        );
+        assert!(prepared.constraints.is_unconstrained());
+    }
+
+    #[test]
+    fn query_window_uses_one_continuation_row_and_never_requires_full_count_v1() {
+        use quanta_index_contract::{CandidateCountV1, QueryResultWindowV1};
+
+        let mut exact = vec![1_u8, 2];
+        assert_eq!(
+            finalize_probe_window_v1(&mut exact, 3).expect("valid exact window"),
+            QueryResultWindowV1::exact(2)
+        );
+        let mut continued = vec![1_u8, 2, 3, 4];
+        let window = finalize_probe_window_v1(&mut continued, 3).expect("valid lower bound");
+        assert_eq!(continued, vec![1, 2, 3]);
+        assert_eq!(window.returned(), 3);
+        assert_eq!(window.candidate_count(), CandidateCountV1::AtLeast(4));
+        assert!(window.has_more());
+        let fused = fused_window_v1(100, 100, 100, true).expect("capped lane is a lower bound");
+        assert_eq!(fused.candidate_count(), CandidateCountV1::AtLeast(101));
+        assert!(fused.has_more());
+        assert!(fused_window_v1(100, 99, 99, true).is_err());
+        assert_eq!(
+            probe_top_k_v1(9_999).expect("one-row probe within ceiling"),
+            10_000
+        );
+        assert!(probe_top_k_v1(10_000).is_err());
+        assert!(probe_top_k_v1(u32::MAX).is_err());
+    }
 
     // CASE-COVERS: hybrid explanation honesty (semantic lane scoped to lexical).
     #[test]
@@ -4532,10 +4799,9 @@ mod tests {
         RepoMapQueryResponse, RepoMapRedactionState, RepoMapSnapshotMeta, RepoRelativePath,
         RevisionId, RuntimeCatalogIngestBatch, RuntimeChangedRecord, RuntimeDocFacetRecord,
         RuntimeEdgeAuthorityRecord, RuntimeMetadataQueryRequest, RuntimeSnapshotRecord,
-        SearchPlaneActivateGenerationRequest, SearchPlaneQueryIpcRequest,
-        SearchPlaneQueryIpcResponse, SemanticCorpusKindV1, SemanticQueryRequest,
-        SemanticSeedCorpusBudgetV1, SymbolCandidate, TextQueryRequest, TextQuerySyntax,
-        UpsertCommit,
+        SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SemanticCorpusKindV1,
+        SemanticQueryRequest, SemanticSeedCorpusBudgetV1, SymbolCandidate, TextQueryRequest,
+        TextQuerySyntax, UpsertCommit,
     };
     use quanta_index_core::{
         CoreError, LexicalIndexOpenPort, LexicalSearcher, RepoMapQueryPort, SemanticIndexOpenPort,
@@ -4671,12 +4937,42 @@ mod tests {
         Ok(Arc::new(ActivationCatalog::open(dir.keep())?))
     }
 
-    fn activation_catalog_with_requests(
-        requests: &[quanta_index_contract::SearchPlaneActivateGenerationRequest],
+    fn corpus_generation(
+        repo_id: RepoId,
+        revision_id: RevisionId,
+        manifest_generation: ManifestGeneration,
+        manifest_digest: &str,
+    ) -> Result<SearchCorpusGenerationV1, quanta_index_core::CoreError> {
+        SearchCorpusGenerationV1::new(
+            quanta_index_contract::GenerationSnapshot {
+                repo_id: repo_id.clone(),
+                revision_id: revision_id.clone(),
+                track: SearchPlaneTrackKind::Lexical,
+                manifest_generation,
+                manifest_digest: manifest_digest.to_string(),
+            },
+            quanta_index_contract::GenerationSnapshot {
+                repo_id,
+                revision_id,
+                track: SearchPlaneTrackKind::Semantic,
+                manifest_generation,
+                manifest_digest: manifest_digest.to_string(),
+            },
+        )
+    }
+
+    fn activation_catalog_with_generations(
+        generations: &[SearchCorpusGenerationV1],
     ) -> Result<Arc<ActivationCatalog>, Box<dyn std::error::Error>> {
         let catalog = test_activation_catalog()?;
-        for request in requests {
-            catalog.activate(request)?;
+        for generation in generations {
+            let prepared = PreparedSearchCorpusGenerationV1::new(generation.clone(), None)?;
+            let activation = catalog.activate_prepared_search_corpus_generation_v1(&prepared)?;
+            if activation.active != *generation {
+                return Err(
+                    "activation receipt did not preserve the prepared composite generation".into(),
+                );
+            }
         }
         Ok(catalog)
     }
@@ -4759,6 +5055,7 @@ mod tests {
             text_query: TextQueryRequest {
                 syntax: TextQuerySyntax::Native,
                 query_text: query_text.to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(ready_pin()),
                 generation_selector: None,
                 top_k: 5,
@@ -4811,6 +5108,7 @@ mod tests {
             text_query: TextQueryRequest {
                 syntax,
                 query_text: query_text.to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(ready_pin()),
                 generation_selector: None,
                 top_k: 5,
@@ -4997,6 +5295,7 @@ mod tests {
                 candidate: candidate("semantic-inline", 1.0),
                 record_id: "semantic-inline-record".to_string(),
                 owner_id: "semantic-inline-owner".to_string(),
+                owner_kind: quanta_index_contract::OwnerDocKind::Chunk,
                 corpus_kind: None,
             }])
         }
@@ -5020,6 +5319,7 @@ mod tests {
                 candidate: candidate(corpus_kind.as_code_str(), 1.0),
                 record_id: format!("record:{}", corpus_kind.as_code_str()),
                 owner_id: format!("owner:{}", corpus_kind.as_code_str()),
+                owner_kind: quanta_index_contract::OwnerDocKind::Symbol,
                 corpus_kind: Some(corpus_kind),
             }])
         }
@@ -5300,6 +5600,7 @@ mod tests {
         match dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Native,
             query_text: "needle".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(make_pin(
                 RepoId::new("repo-map-ipc"),
                 RevisionId::new("rev-map-ipc"),
@@ -5352,6 +5653,7 @@ mod tests {
         let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Sourcegraph,
             query_text: "repo:repo-map-ipc alpha".into(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(pin.clone()),
             generation_selector: None,
             top_k: 2,
@@ -5384,9 +5686,9 @@ mod tests {
         let guard = state
             .lock()
             .map_err(|err| format!("lexical state poisoned: {err}"))?;
-        if guard.search_top_ks.as_slice() != [2] {
+        if guard.search_top_ks.as_slice() != [3] {
             return Err(format!(
-                "expected sourcegraph route to forward top_k=2, got {:?}",
+                "expected sourcegraph route to probe with top_k=3, got {:?}",
                 guard.search_top_ks
             )
             .into());
@@ -5429,6 +5731,7 @@ mod tests {
         let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Native,
             query_text: "alpha".into(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(ready_pin()),
             generation_selector: None,
             top_k: 10,
@@ -5484,6 +5787,7 @@ mod tests {
         let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Sourcegraph,
             query_text: r#"patterntype:structural "function_item""#.into(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(ready_pin()),
             generation_selector: None,
             top_k: 2,
@@ -5529,6 +5833,7 @@ mod tests {
         let response =
             dispatcher.dispatch(SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
                 query_text: "focus alpha".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(GenerationPin::new(
                     RepoId::new("repo-map-ipc"),
                     RevisionId::new("rev-map-ipc"),
@@ -5623,6 +5928,7 @@ mod tests {
     fn semantic_focus_request() -> SemanticQueryRequest {
         SemanticQueryRequest {
             query_text: "focus alpha".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(GenerationPin::new(
                 RepoId::new("repo-map-ipc"),
                 RevisionId::new("rev-map-ipc"),
@@ -5749,6 +6055,7 @@ mod tests {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Sourcegraph,
                     query_text: "scope".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(pin.clone()),
                     generation_selector: None,
                     top_k: 2,
@@ -5821,6 +6128,7 @@ mod tests {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Sourcegraph,
                     query_text: "scope".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(pin.clone()),
                     generation_selector: None,
                     top_k: 2,
@@ -5950,6 +6258,11 @@ mod tests {
                 candidate: candidate(record_id, score),
                 record_id: record_id.to_string(),
                 owner_id: owner_id.to_string(),
+                owner_kind: match corpus_kind {
+                    SemanticCorpusKindV1::SymbolCard => quanta_index_contract::OwnerDocKind::Symbol,
+                    SemanticCorpusKindV1::ModuleCard => quanta_index_contract::OwnerDocKind::Module,
+                    _ => quanta_index_contract::OwnerDocKind::Chunk,
+                },
                 corpus_kind: Some(corpus_kind),
             }
         }
@@ -6019,16 +6332,44 @@ mod tests {
     }
 
     #[test]
+    fn hybrid_seed_v2_preserves_authoritative_semantic_owner_kind() -> TestResult {
+        let semantic_lanes = vec![vec![SemanticSearchHitV1 {
+            candidate: candidate("test-behavior-record", 0.9),
+            record_id: "test-behavior-record".to_string(),
+            owner_id: "test:session_commit".to_string(),
+            owner_kind: quanta_index_contract::OwnerDocKind::Test,
+            corpus_kind: Some(SemanticCorpusKindV1::TestBehavior),
+        }]];
+
+        let seeds = build_hybrid_seed_candidates_v2(&[], &semantic_lanes, &[], 1)?;
+        let seed = seeds
+            .first()
+            .ok_or_else(|| "expected one semantic seed".to_string())?;
+        if seed.owner_kind != quanta_index_contract::OwnerDocKind::Test {
+            return Err(format!(
+                "semantic seed must preserve Test owner kind independently of corpus kind: {seed:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn semantic_dispatch_rejects_active_digest_mismatch_with_exact_code() -> TestResult {
         let dir = tempdir()?;
         let activation_catalog = Arc::new(ActivationCatalog::open(dir.keep())?);
-        activation_catalog.activate(&SearchPlaneActivateGenerationRequest {
-            repo_id: RepoId::new("repo-map-ipc"),
-            revision_id: RevisionId::new("rev-map-ipc"),
-            manifest_generation: ManifestGeneration::new(9),
-            manifest_digest: "activation-digest-9".to_string(),
-            tracks: vec![SearchPlaneTrackKind::Semantic],
-        })?;
+        let active = corpus_generation(
+            RepoId::new("repo-map-ipc"),
+            RevisionId::new("rev-map-ipc"),
+            ManifestGeneration::new(9),
+            "activation-digest-9",
+        )?;
+        let prepared = PreparedSearchCorpusGenerationV1::new(active, None)?;
+        let activation =
+            activation_catalog.activate_prepared_search_corpus_generation_v1(&prepared)?;
+        if activation.active.manifest_generation() != ManifestGeneration::new(9) {
+            return Err("expected active composite generation 9".into());
+        }
         let mut ledger = Ledger::default();
         let repo_id = RepoId::new("repo-map-ipc");
         let revision_id = RevisionId::new("rev-map-ipc");
@@ -6058,6 +6399,7 @@ mod tests {
         let response =
             dispatcher.dispatch(SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
                 query_text: "focus alpha".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: None,
                 generation_selector: Some(GenerationSelector::Active {
                     repo_id: RepoId::new("repo-map-ipc"),
@@ -6104,6 +6446,7 @@ mod tests {
         let response =
             dispatcher.dispatch(SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
                 query_text: "focus alpha".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(GenerationPin::new(
                     RepoId::new("repo-map-ipc"),
                     RevisionId::new("rev-map-ipc"),
@@ -6161,6 +6504,7 @@ mod tests {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "scope".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(ready_pin()),
                     generation_selector: None,
                     top_k: 2,
@@ -6749,6 +7093,7 @@ mod tests {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "scope".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(ready_pin()),
                     generation_selector: None,
                     top_k: 1,
@@ -6864,6 +7209,7 @@ mod tests {
         let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Native,
             query_text: "/(?<=needle_)x/".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(ready_pin()),
             generation_selector: None,
             top_k: 10,
@@ -6974,6 +7320,7 @@ mod tests {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "changed:since=1970-01-01T00:00:00.010Z runtime".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(ready_pin()),
                     generation_selector: None,
                     top_k: 5,
@@ -7122,6 +7469,7 @@ mod tests {
             &crate::lower_lexical_text_query(&TextQueryRequest {
                 syntax: TextQuerySyntax::Native,
                 query_text: "changed:since=1970-01-01T00:00:00.010Z catalog".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(ready_pin()),
                 generation_selector: None,
                 top_k: 5,
@@ -7137,6 +7485,7 @@ mod tests {
             &crate::lower_lexical_text_query(&TextQueryRequest {
                 syntax: TextQuerySyntax::Native,
                 query_text: "dirty:no todo".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(ready_pin()),
                 generation_selector: None,
                 top_k: 5,
@@ -7154,6 +7503,7 @@ mod tests {
             &crate::lower_lexical_text_query(&TextQueryRequest {
                 syntax: TextQuerySyntax::Native,
                 query_text: "affected:rebuild=lexical catalog".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(ready_pin()),
                 generation_selector: None,
                 top_k: 5,
@@ -7270,6 +7620,7 @@ mod tests {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "match { :[x] }".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(ready_pin()),
                     generation_selector: None,
                     top_k: 4,
@@ -7434,6 +7785,7 @@ mod tests {
         let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Native,
             query_text: "fork:only foo".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(ready_pin()),
             generation_selector: None,
             top_k: 5,
@@ -7468,9 +7820,9 @@ mod tests {
                 .map_err(|err| format!("lexical state poisoned: {err}"))?;
             guard.search_top_ks.clone()
         };
-        if search_top_ks.as_slice() != [5] {
+        if search_top_ks.as_slice() != [6] {
             return Err(format!(
-                "expected metadata filter query to reach searcher with top_k=5, got {search_top_ks:?}"
+                "expected metadata filter query to probe searcher with top_k=6, got {search_top_ks:?}"
             )
             .into());
         }
@@ -7585,6 +7937,7 @@ mod tests {
         let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Native,
             query_text: "rev:deadbeef foo".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(ready_pin()),
             generation_selector: None,
             top_k: 5,
@@ -7601,21 +7954,19 @@ mod tests {
     #[test]
     fn lexical_dispatch_rebinds_rev_at_time_to_reachable_ancestor() -> TestResult {
         let state = Arc::new(Mutex::new(RecordingLexicalState::default()));
-        let activation_catalog = activation_catalog_with_requests(&[
-            quanta_index_contract::SearchPlaneActivateGenerationRequest {
-                repo_id: RepoId::new("repo-map-ipc"),
-                revision_id: RevisionId::new("1111111111111111111111111111111111111111"),
-                manifest_generation: ManifestGeneration::new(7),
-                manifest_digest: "ancestor-lex".to_string(),
-                tracks: vec![SearchPlaneTrackKind::Lexical],
-            },
-            quanta_index_contract::SearchPlaneActivateGenerationRequest {
-                repo_id: RepoId::new("repo-map-ipc"),
-                revision_id: RevisionId::new("2222222222222222222222222222222222222222"),
-                manifest_generation: ManifestGeneration::new(9),
-                manifest_digest: "head-lex".to_string(),
-                tracks: vec![SearchPlaneTrackKind::Lexical],
-            },
+        let activation_catalog = activation_catalog_with_generations(&[
+            corpus_generation(
+                RepoId::new("repo-map-ipc"),
+                RevisionId::new("1111111111111111111111111111111111111111"),
+                ManifestGeneration::new(7),
+                "ancestor-lex",
+            )?,
+            corpus_generation(
+                RepoId::new("repo-map-ipc"),
+                RevisionId::new("2222222222222222222222222222222222222222"),
+                ManifestGeneration::new(9),
+                "head-lex",
+            )?,
         ])?;
         let dispatcher = SearchPlaneDispatcher::new(
             Arc::new(RecordingLexicalOpener {
@@ -7632,6 +7983,7 @@ mod tests {
         let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Sourcegraph,
             query_text: "rev:at.time(1970-01-01T00:00:00.150Z) foo".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(GenerationPin::new(
                 RepoId::new("repo-map-ipc"),
                 RevisionId::new("2222222222222222222222222222222222222222"),
@@ -7714,6 +8066,7 @@ mod tests {
         let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Sourcegraph,
             query_text: "rev:at.time(definitely-not-a-timeref) foo".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(GenerationPin::new(
                 RepoId::new("repo-map-ipc"),
                 RevisionId::new("2222222222222222222222222222222222222222"),
@@ -7741,20 +8094,18 @@ mod tests {
             Arc::new(StubRepoMapQueryPort),
             Arc::new(FailClosedStructuralProducer),
             ledger_with_rev_at_time_history()?,
-            activation_catalog_with_requests(&[
-                quanta_index_contract::SearchPlaneActivateGenerationRequest {
-                    repo_id: RepoId::new("repo-map-ipc"),
-                    revision_id: RevisionId::new("2222222222222222222222222222222222222222"),
-                    manifest_generation: ManifestGeneration::new(9),
-                    manifest_digest: "head-lex".to_string(),
-                    tracks: vec![SearchPlaneTrackKind::Lexical],
-                },
-            ])?,
+            activation_catalog_with_generations(&[corpus_generation(
+                RepoId::new("repo-map-ipc"),
+                RevisionId::new("2222222222222222222222222222222222222222"),
+                ManifestGeneration::new(9),
+                "head-lex",
+            )?])?,
         );
 
         let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Sourcegraph,
             query_text: "rev:at.time(1970-01-01T00:00:00.150Z) foo".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(GenerationPin::new(
                 RepoId::new("repo-map-ipc"),
                 RevisionId::new("2222222222222222222222222222222222222222"),
@@ -7801,6 +8152,7 @@ mod tests {
         let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Native,
             query_text: "needle".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(ready_pin()),
             generation_selector: None,
             top_k: 5,
@@ -7838,9 +8190,9 @@ mod tests {
                 .map_err(|err| format!("lexical state poisoned: {err}"))?;
             guard.search_top_ks.clone()
         };
-        if search_top_ks.as_slice() != [5] {
+        if search_top_ks.as_slice() != [6] {
             return Err(format!(
-                "expected searcher.search invoked with top_k=5, got {search_top_ks:?}"
+                "expected searcher.search probe with top_k=6, got {search_top_ks:?}"
             )
             .into());
         }
@@ -7866,6 +8218,7 @@ mod tests {
             quanta_index_contract::SymbolQueryRequest {
                 syntax: TextQuerySyntax::Native,
                 query_text: "type:symbol MySymbol".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(ready_pin()),
                 generation_selector: None,
                 top_k: 3,
@@ -7906,9 +8259,9 @@ mod tests {
         let guard = state
             .lock()
             .map_err(|err| format!("lexical state poisoned: {err}"))?;
-        if guard.symbol_top_ks.as_slice() != [3] {
+        if guard.symbol_top_ks.as_slice() != [4] {
             return Err(format!(
-                "expected symbol route to forward top_k=3, got {:?}",
+                "expected symbol route to probe with top_k=4, got {:?}",
                 guard.symbol_top_ks
             )
             .into());
@@ -7979,6 +8332,7 @@ mod tests {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "match { :[x] }".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(ready_pin()),
                     generation_selector: None,
                     top_k: 4,
@@ -8052,6 +8406,7 @@ mod tests {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "match { :[x] }".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(ready_pin()),
                     generation_selector: None,
                     top_k: 4,
@@ -8082,6 +8437,7 @@ mod tests {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "match { :[x] }".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(ready_pin()),
                     generation_selector: None,
                     top_k: 4,
@@ -8112,6 +8468,7 @@ mod tests {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "lang:java match { :[x] }".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(ready_pin()),
                     generation_selector: None,
                     top_k: 4,
@@ -8139,6 +8496,7 @@ mod tests {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "repo:repo-map-ipc file:src/lib.rs match { :[x] }".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(ready_pin()),
                     generation_selector: None,
                     top_k: 4,
@@ -8199,6 +8557,7 @@ mod tests {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "select:repo match { :[x] }".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(ready_pin()),
                     generation_selector: None,
                     top_k: 4,
@@ -8237,6 +8596,7 @@ mod tests {
                     query_text:
                         r#"repo:repo-map-ipc path:src/lib.rs lang:rust patterntype:structural "function_item { { identifier :[x] } }""#
                             .to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(ready_pin()),
                     generation_selector: None,
                     top_k: 4,
@@ -8299,6 +8659,7 @@ mod tests {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "match { function_item { { :[name.lambda] } } }".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(ready_pin()),
                     generation_selector: None,
                     top_k: 4,
@@ -8334,6 +8695,7 @@ mod tests {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "match { alpha } AND match { beta }".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(ready_pin()),
                     generation_selector: None,
                     top_k: 10,
@@ -8411,6 +8773,7 @@ mod tests {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "match { alpha } OR match { beta }".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(ready_pin()),
                     generation_selector: None,
                     top_k: 10,
@@ -8461,6 +8824,7 @@ mod tests {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "match { alpha } AND NOT match { gamma }".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(ready_pin()),
                     generation_selector: None,
                     top_k: 10,
@@ -8521,6 +8885,7 @@ mod tests {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "match { alpha } OR match { alpha }".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(ready_pin()),
                     generation_selector: None,
                     top_k: 10,
@@ -8590,6 +8955,7 @@ mod tests {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "needle AND match { alpha }".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(ready_pin()),
                     generation_selector: None,
                     top_k: 10,
@@ -8664,6 +9030,7 @@ mod tests {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "NOT match { alpha }".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(ready_pin()),
                     generation_selector: None,
                     top_k: 10,

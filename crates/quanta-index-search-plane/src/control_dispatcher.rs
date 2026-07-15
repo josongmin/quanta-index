@@ -8,21 +8,23 @@ use std::sync::{Arc, RwLock};
 
 use quanta_index_contract::{
     CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
-    RepoMapActivateGenerationRequest, RepoMapMutationAck, SearchPlaneActivateGenerationRequest,
-    SearchPlaneActivationAck, SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse,
-    SearchPlaneIpcError, SearchPlaneRollbackGenerationAck, SearchPlaneRollbackGenerationRequest,
-    SearchPlaneTrackKind, TrackReadinessRecord,
+    ManifestGeneration, RepoMapActivateGenerationRequest, RepoMapMutationAck,
+    SearchCorpusGenerationIdentityV1, SearchPlaneActivateSearchCorpusGenerationCasRequest,
+    SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIpcError,
+    SearchPlaneRollbackGenerationAck, SearchPlaneRollbackGenerationRequest,
+    SearchPlaneSearchCorpusActivationCasAck, SearchPlaneTrackKind, TrackReadinessRecord,
 };
 use quanta_index_core::{CoreError, RepoMapGenerationActivatePort};
 
-use crate::{ActivationCatalog, Ledger};
+use crate::{
+    ActivationCatalog, Ledger, PreparedSearchCorpusGenerationV1, SearchCorpusGenerationActivationV1,
+};
 
 const ERR_INVALID: &str = "INVALID_REQUEST";
 const ERR_NOT_READY: &str = "NOT_READY";
 const ERR_NOT_FOUND: &str = "NOT_FOUND";
 const ERR_NOT_IMPLEMENTED: &str = "NOT_IMPLEMENTED";
 const ERR_INTERNAL: &str = "INTERNAL";
-const ERR_SEMANTIC_ACTIVATION_REGRESSION: &str = "SEMANTIC_ACTIVATION_REGRESSION";
 #[cfg(test)]
 const ERR_ROLLBACK_CAS_CONFLICT: &str = crate::readiness::ERR_ROLLBACK_CAS_CONFLICT;
 
@@ -63,25 +65,42 @@ impl SearchPlaneControlDispatcher {
         })
     }
 
-    fn activate_generation(
+    /// Promote a prepared lexical plus semantic corpus after proving both
+    /// sealed identities against the same readiness snapshot.
+    pub fn activate_prepared_search_corpus_generation_v1(
         &self,
-        request: SearchPlaneActivateGenerationRequest,
-    ) -> Result<SearchPlaneActivationAck, CoreError> {
+        prepared: PreparedSearchCorpusGenerationV1,
+    ) -> Result<SearchCorpusGenerationActivationV1, CoreError> {
         let guard = self
             .ledger
             .read()
             .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
-        for track in &request.tracks {
-            self.validate_track_activation(&guard, &request, *track)?;
-        }
-        drop(guard);
-        self.activation_catalog.activate(&request)?;
-        Ok(SearchPlaneActivationAck {
-            repo_id: request.repo_id,
-            revision_id: request.revision_id,
-            manifest_generation: request.manifest_generation,
-            manifest_digest: request.manifest_digest,
-            tracks: request.tracks,
+        validate_candidate_activation(&guard, prepared.candidate().lexical())?;
+        validate_candidate_activation(&guard, prepared.candidate().semantic())?;
+        // Readiness only advances after sealing. Holding this guard through
+        // the durable catalog CAS prevents either half of a prepared corpus
+        // from becoming unsealed before the composite root is committed.
+        self.activation_catalog
+            .activate_prepared_search_corpus_generation_v1(&prepared)
+    }
+
+    fn activate_search_corpus_generation_cas(
+        &self,
+        request: SearchPlaneActivateSearchCorpusGenerationCasRequest,
+    ) -> Result<SearchPlaneSearchCorpusActivationCasAck, CoreError> {
+        let candidate = search_corpus_generation_from_contract(&request.candidate)?;
+        let expected_active = request
+            .expected_active
+            .as_ref()
+            .map(search_corpus_generation_from_contract)
+            .transpose()?;
+        let prepared = PreparedSearchCorpusGenerationV1::new(candidate, expected_active)?;
+        let activation = self.activate_prepared_search_corpus_generation_v1(prepared)?;
+        Ok(SearchPlaneSearchCorpusActivationCasAck {
+            active: search_corpus_generation_into_contract(activation.active),
+            previous_sealed_active: activation
+                .previous_active
+                .map(search_corpus_generation_into_contract),
         })
     }
 
@@ -98,42 +117,26 @@ impl SearchPlaneControlDispatcher {
             .ledger
             .read()
             .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
-        guard.validate_semantic_generation(
-            &request.repo_id,
-            &request.revision_id,
-            request.target_generation,
-            Some(request.target_manifest_digest.as_str()),
-            true,
-            "rollback-generation",
-        )?;
+        let lexical_target = GenerationSnapshot {
+            repo_id: request.repo_id.clone(),
+            revision_id: request.revision_id.clone(),
+            track: SearchPlaneTrackKind::Lexical,
+            manifest_generation: request.target_generation,
+            manifest_digest: request.target_manifest_digest.clone(),
+        };
+        let semantic_target = GenerationSnapshot {
+            repo_id: request.repo_id.clone(),
+            revision_id: request.revision_id.clone(),
+            track: SearchPlaneTrackKind::Semantic,
+            manifest_generation: request.target_generation,
+            manifest_digest: request.target_manifest_digest.clone(),
+        };
+        guard
+            .validate_historically_sealed_track_identity(&lexical_target, "rollback-generation")?;
+        guard
+            .validate_historically_sealed_track_identity(&semantic_target, "rollback-generation")?;
         drop(guard);
         self.activation_catalog.rollback(&request)
-    }
-
-    fn validate_track_activation(
-        &self,
-        guard: &Ledger,
-        request: &SearchPlaneActivateGenerationRequest,
-        track: SearchPlaneTrackKind,
-    ) -> Result<(), CoreError> {
-        if track == SearchPlaneTrackKind::Semantic {
-            return validate_semantic_track_activation(&self.activation_catalog, guard, request);
-        }
-        let materialized = guard.track_sealed(&request.repo_id, &request.revision_id, track);
-        match materialized {
-            Some(generation) if generation.get() >= request.manifest_generation.get() => Ok(()),
-            Some(generation) => Err(CoreError::NotReady(format!(
-                "activate-generation: {track:?} materialized only up to {} for repo={} revision={}",
-                generation.get(),
-                request.repo_id.as_str(),
-                request.revision_id.as_str(),
-            ))),
-            None => Err(CoreError::NotReady(format!(
-                "activate-generation: no materialized {track:?} generation for repo={} revision={}",
-                request.repo_id.as_str(),
-                request.revision_id.as_str(),
-            ))),
-        }
     }
 
     /// QI-ACT-01: resolve one `(repo, revision, track)` triple to its active
@@ -185,9 +188,9 @@ impl SearchPlaneControlDispatcher {
     #[must_use]
     pub fn dispatch(&self, request: SearchPlaneControlIpcRequest) -> SearchPlaneControlIpcResponse {
         match request {
-            SearchPlaneControlIpcRequest::ActivateGeneration(request) => {
-                match self.activate_generation(request) {
-                    Ok(resp) => SearchPlaneControlIpcResponse::ActivationAck(resp),
+            SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(request) => {
+                match self.activate_search_corpus_generation_cas(request) {
+                    Ok(resp) => SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(resp),
                     Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
@@ -239,36 +242,50 @@ fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
     }
 }
 
-fn validate_semantic_track_activation(
-    activation_catalog: &ActivationCatalog,
+fn validate_candidate_activation(
     guard: &Ledger,
-    request: &SearchPlaneActivateGenerationRequest,
+    candidate: &GenerationSnapshot,
 ) -> Result<(), CoreError> {
-    if let Ok(active) = activation_catalog.resolve_record(
-        &request.repo_id,
-        &request.revision_id,
-        SearchPlaneTrackKind::Semantic,
-    ) && request.manifest_generation.get() < active.manifest_generation.get()
+    let observed_generation =
+        guard.track_sealed(&candidate.repo_id, &candidate.revision_id, candidate.track);
+    let observed_digest =
+        guard.track_manifest_digest(&candidate.repo_id, &candidate.revision_id, candidate.track);
+    if observed_generation != Some(candidate.manifest_generation)
+        || observed_digest != Some(candidate.manifest_digest.as_str())
     {
-        return Err(CoreError::Typed {
-            code: ERR_SEMANTIC_ACTIVATION_REGRESSION.to_string(),
-            message: format!(
-                "activate-generation: semantic generation regression for repo={} revision={}: requested={} active={}",
-                request.repo_id.as_str(),
-                request.revision_id.as_str(),
-                request.manifest_generation.get(),
-                active.manifest_generation.get(),
-            ),
-        });
+        return Err(CoreError::NotReady(format!(
+            "activate-generation-cas: candidate is not the currently sealed track identity for repo={} revision={} track={:?}: candidate_generation={} candidate_digest={} observed_generation={:?} observed_digest={:?}",
+            candidate.repo_id.as_str(),
+            candidate.revision_id.as_str(),
+            candidate.track,
+            candidate.manifest_generation.get(),
+            candidate.manifest_digest,
+            observed_generation.map(ManifestGeneration::get),
+            observed_digest,
+        )));
     }
-    guard.validate_semantic_generation(
-        &request.repo_id,
-        &request.revision_id,
-        request.manifest_generation,
-        Some(request.manifest_digest.as_str()),
-        true,
-        "activate-generation",
-    )
+    Ok(())
+}
+
+fn search_corpus_generation_from_contract(
+    identity: &SearchCorpusGenerationIdentityV1,
+) -> Result<crate::SearchCorpusGenerationV1, CoreError> {
+    identity.validate_v1().map_err(|error| {
+        CoreError::InvalidContract(format!(
+            "search-corpus activation: invalid composite identity: {}",
+            error.code_v1()
+        ))
+    })?;
+    crate::SearchCorpusGenerationV1::new(identity.lexical.clone(), identity.semantic.clone())
+}
+
+fn search_corpus_generation_into_contract(
+    identity: crate::SearchCorpusGenerationV1,
+) -> SearchCorpusGenerationIdentityV1 {
+    SearchCorpusGenerationIdentityV1 {
+        lexical: identity.lexical().clone(),
+        semantic: identity.semantic().clone(),
+    }
 }
 
 #[cfg(test)]
@@ -277,17 +294,43 @@ mod tests {
 
     use super::SearchPlaneControlDispatcher;
     use quanta_index_contract::{
-        ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapMutationAck,
-        RevisionId, SearchPlaneActivateGenerationRequest, SearchPlaneActivationAck,
-        SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse,
-        SearchPlaneRollbackGenerationRequest, SearchPlaneTrackKind,
+        GenerationSnapshot, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest,
+        RepoMapMutationAck, RevisionId, SearchCorpusGenerationIdentityV1,
+        SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
+        SearchPlaneControlIpcResponse, SearchPlaneRollbackGenerationRequest, SearchPlaneTrackKind,
     };
     use quanta_index_core::{CoreError, RepoMapGenerationActivatePort};
     use tempfile::tempdir;
 
-    use crate::{ActivationCatalog, Ledger};
+    use crate::{
+        ActivationCatalog, Ledger, PreparedSearchCorpusGenerationV1, SearchCorpusGenerationV1,
+    };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn composite_generation(
+        repo_id: &str,
+        revision_id: &str,
+        generation: u64,
+        manifest_digest: &str,
+    ) -> Result<SearchCorpusGenerationV1, quanta_index_core::CoreError> {
+        SearchCorpusGenerationV1::new(
+            GenerationSnapshot {
+                repo_id: RepoId::new(repo_id),
+                revision_id: RevisionId::new(revision_id),
+                track: SearchPlaneTrackKind::Lexical,
+                manifest_generation: ManifestGeneration::new(generation),
+                manifest_digest: manifest_digest.to_string(),
+            },
+            GenerationSnapshot {
+                repo_id: RepoId::new(repo_id),
+                revision_id: RevisionId::new(revision_id),
+                track: SearchPlaneTrackKind::Semantic,
+                manifest_generation: ManifestGeneration::new(generation),
+                manifest_digest: manifest_digest.to_string(),
+            },
+        )
+    }
 
     struct StubRepoMapActivatePort;
 
@@ -310,7 +353,7 @@ mod tests {
     ) -> Result<RepoMapMutationAck, Box<dyn std::error::Error>> {
         match response {
             SearchPlaneControlIpcResponse::RepoMapMutationAck(ack) => Ok(ack),
-            other @ (SearchPlaneControlIpcResponse::ActivationAck(_)
+            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::RollbackAck(_)
             | SearchPlaneControlIpcResponse::Error(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
@@ -320,42 +363,12 @@ mod tests {
         }
     }
 
-    fn into_activation_ack(
-        response: SearchPlaneControlIpcResponse,
-    ) -> Result<SearchPlaneActivationAck, Box<dyn std::error::Error>> {
-        match response {
-            SearchPlaneControlIpcResponse::ActivationAck(ack) => Ok(ack),
-            other @ (SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
-            | SearchPlaneControlIpcResponse::RollbackAck(_)
-            | SearchPlaneControlIpcResponse::Error(_)
-            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
-            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => {
-                Err(format!("expected activation ack, got {other:?}").into())
-            }
-        }
-    }
-
     fn into_error_code(
         response: SearchPlaneControlIpcResponse,
     ) -> Result<String, Box<dyn std::error::Error>> {
         match response {
             SearchPlaneControlIpcResponse::Error(err) => Ok(err.code),
-            other @ (SearchPlaneControlIpcResponse::ActivationAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
-            | SearchPlaneControlIpcResponse::RollbackAck(_)
-            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
-            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => {
-                Err(format!("expected error response, got {other:?}").into())
-            }
-        }
-    }
-
-    fn into_error(
-        response: SearchPlaneControlIpcResponse,
-    ) -> Result<quanta_index_contract::SearchPlaneIpcError, Box<dyn std::error::Error>> {
-        match response {
-            SearchPlaneControlIpcResponse::Error(err) => Ok(err),
-            other @ (SearchPlaneControlIpcResponse::ActivationAck(_)
+            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::RollbackAck(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
@@ -366,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn repo_map_control_branches_ack() -> TestResult {
+    fn repo_map_control_and_prepared_corpus_activation_preserve_composite_identity() -> TestResult {
         // QI-INT-01: control surface only handles `RepoMapActivate` and
         // activation queries; the ingest variant moved to the ingest IPC
         // (`SearchPlaneIngestIpcRequest::PublishRepoMapBundle`). See
@@ -387,11 +400,12 @@ mod tests {
                 ManifestGeneration::new(11),
                 Some("manifest-digest-11"),
             );
-            guard.record_track_seal(
+            guard.record_track_seal_with_digest(
                 &repo_id,
                 &revision_id,
                 SearchPlaneTrackKind::Lexical,
                 ManifestGeneration::new(11),
+                "manifest-digest-11",
             );
             guard.record_track_seal_with_digest(
                 &repo_id,
@@ -423,24 +437,37 @@ mod tests {
             .into());
         }
 
-        let activation = into_activation_ack(dispatcher.dispatch(
-            SearchPlaneControlIpcRequest::ActivateGeneration(
-                SearchPlaneActivateGenerationRequest {
-                    repo_id: RepoId::new("repo-map-ipc"),
-                    revision_id: RevisionId::new("rev-map-ipc"),
-                    manifest_generation: ManifestGeneration::new(11),
-                    manifest_digest: "manifest-digest-11".to_string(),
-                    tracks: vec![
-                        SearchPlaneTrackKind::Lexical,
-                        SearchPlaneTrackKind::Semantic,
-                    ],
+        let response = dispatcher.dispatch(
+            SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
+                SearchPlaneActivateSearchCorpusGenerationCasRequest {
+                    candidate: SearchCorpusGenerationIdentityV1 {
+                        lexical: GenerationSnapshot {
+                            repo_id: RepoId::new("repo-map-ipc"),
+                            revision_id: RevisionId::new("rev-map-ipc"),
+                            track: SearchPlaneTrackKind::Lexical,
+                            manifest_generation: ManifestGeneration::new(11),
+                            manifest_digest: "manifest-digest-11".to_string(),
+                        },
+                        semantic: GenerationSnapshot {
+                            repo_id: RepoId::new("repo-map-ipc"),
+                            revision_id: RevisionId::new("rev-map-ipc"),
+                            track: SearchPlaneTrackKind::Semantic,
+                            manifest_generation: ManifestGeneration::new(11),
+                            manifest_digest: "manifest-digest-11".to_string(),
+                        },
+                    },
+                    expected_active: None,
                 },
             ),
-        ))?;
-        if activation.manifest_generation.get() != 11 {
+        );
+        let SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(activation) = response
+        else {
+            return Err("expected composite activation acknowledgment".into());
+        };
+        if activation.active.lexical.manifest_generation.get() != 11 {
             return Err(format!(
                 "unexpected activation manifest generation: {}",
-                activation.manifest_generation.get()
+                activation.active.lexical.manifest_generation.get()
             )
             .into());
         }
@@ -456,203 +483,60 @@ mod tests {
             )
             .into());
         }
+        let semantic_pin = activation_catalog.resolve(
+            &RepoId::new("repo-map-ipc"),
+            &RevisionId::new("rev-map-ipc"),
+            SearchPlaneTrackKind::Semantic,
+        )?;
+        assert_eq!(
+            semantic_pin.manifest_generation,
+            lexical_pin.manifest_generation
+        );
         Ok(())
     }
 
     #[test]
-    fn activate_generation_rejects_semantic_digest_mismatch() -> TestResult {
+    fn composite_ipc_rejects_malformed_identity_before_catalog_mutation() -> TestResult {
         let dir = tempdir()?;
         let activation_catalog = Arc::new(ActivationCatalog::open(dir.path())?);
-        let ledger = Arc::new(RwLock::new(Ledger::new()));
-        {
-            let mut guard = ledger
-                .write()
-                .map_err(|err| format!("ledger poisoned: {err}"))?;
-            let repo_id = RepoId::new("repo-sem");
-            let revision_id = RevisionId::new("rev-sem");
-            guard.record_track_seal(
-                &repo_id,
-                &revision_id,
-                SearchPlaneTrackKind::Lexical,
-                ManifestGeneration::new(11),
-            );
-            guard.record_track_materialized(
-                &repo_id,
-                &revision_id,
-                SearchPlaneTrackKind::Semantic,
-                ManifestGeneration::new(11),
-                Some("manifest-digest-11"),
-            );
-            guard.record_track_seal_with_digest(
-                &repo_id,
-                &revision_id,
-                SearchPlaneTrackKind::Semantic,
-                ManifestGeneration::new(11),
-                "manifest-digest-11",
-            );
-        }
         let dispatcher = SearchPlaneControlDispatcher::new(
             Arc::new(StubRepoMapActivatePort),
-            activation_catalog,
-            ledger,
+            Arc::clone(&activation_catalog),
+            Arc::new(RwLock::new(Ledger::new())),
         );
         let code = into_error_code(dispatcher.dispatch(
-            SearchPlaneControlIpcRequest::ActivateGeneration(
-                SearchPlaneActivateGenerationRequest {
-                    repo_id: RepoId::new("repo-sem"),
-                    revision_id: RevisionId::new("rev-sem"),
-                    manifest_generation: ManifestGeneration::new(11),
-                    manifest_digest: "manifest-digest-other".to_string(),
-                    tracks: vec![
-                        SearchPlaneTrackKind::Lexical,
-                        SearchPlaneTrackKind::Semantic,
-                    ],
+            SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
+                SearchPlaneActivateSearchCorpusGenerationCasRequest {
+                    candidate: SearchCorpusGenerationIdentityV1 {
+                        lexical: GenerationSnapshot {
+                            repo_id: RepoId::new("repo-invalid"),
+                            revision_id: RevisionId::new("rev-invalid"),
+                            track: SearchPlaneTrackKind::Semantic,
+                            manifest_generation: ManifestGeneration::new(11),
+                            manifest_digest: "manifest-digest-11".to_string(),
+                        },
+                        semantic: GenerationSnapshot {
+                            repo_id: RepoId::new("repo-invalid"),
+                            revision_id: RevisionId::new("rev-invalid"),
+                            track: SearchPlaneTrackKind::Semantic,
+                            manifest_generation: ManifestGeneration::new(11),
+                            manifest_digest: "manifest-digest-11".to_string(),
+                        },
+                    },
+                    expected_active: None,
                 },
             ),
         ))?;
-        if code != "SEMANTIC_MANIFEST_DIGEST_MISMATCH" {
-            return Err(format!("unexpected semantic mismatch code: {code}").into());
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn activate_generation_rejects_unsealed_semantic_generation() -> TestResult {
-        let dir = tempdir()?;
-        let activation_catalog = Arc::new(ActivationCatalog::open(dir.path())?);
-        let ledger = Arc::new(RwLock::new(Ledger::new()));
-        {
-            let mut guard = ledger
-                .write()
-                .map_err(|err| format!("ledger poisoned: {err}"))?;
-            let repo_id = RepoId::new("repo-sem");
-            let revision_id = RevisionId::new("rev-sem");
-            guard.record_track_seal(
-                &repo_id,
-                &revision_id,
-                SearchPlaneTrackKind::Lexical,
-                ManifestGeneration::new(11),
-            );
-            guard.record_track_materialized(
-                &repo_id,
-                &revision_id,
-                SearchPlaneTrackKind::Semantic,
-                ManifestGeneration::new(11),
-                Some("manifest-digest-11"),
-            );
-        }
-        let dispatcher = SearchPlaneControlDispatcher::new(
-            Arc::new(StubRepoMapActivatePort),
-            activation_catalog,
-            ledger,
+        assert_eq!(code, super::ERR_INVALID);
+        assert!(
+            activation_catalog
+                .resolve_record(
+                    &RepoId::new("repo-invalid"),
+                    &RevisionId::new("rev-invalid"),
+                    SearchPlaneTrackKind::Lexical,
+                )
+                .is_err()
         );
-        let code = into_error_code(dispatcher.dispatch(
-            SearchPlaneControlIpcRequest::ActivateGeneration(
-                SearchPlaneActivateGenerationRequest {
-                    repo_id: RepoId::new("repo-sem"),
-                    revision_id: RevisionId::new("rev-sem"),
-                    manifest_generation: ManifestGeneration::new(11),
-                    manifest_digest: "manifest-digest-11".to_string(),
-                    tracks: vec![
-                        SearchPlaneTrackKind::Lexical,
-                        SearchPlaneTrackKind::Semantic,
-                    ],
-                },
-            ),
-        ))?;
-        if code != "SEMANTIC_GENERATION_NOT_SEALED" {
-            return Err(format!("unexpected semantic unsealed code: {code}").into());
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn activate_generation_rejects_semantic_active_generation_regression() -> TestResult {
-        let dir = tempdir()?;
-        let activation_catalog = Arc::new(ActivationCatalog::open(dir.path())?);
-        let ledger = Arc::new(RwLock::new(Ledger::new()));
-        {
-            let mut guard = ledger
-                .write()
-                .map_err(|err| format!("ledger poisoned: {err}"))?;
-            let repo_id = RepoId::new("repo-sem");
-            let revision_id = RevisionId::new("rev-sem");
-            guard.record_track_seal(
-                &repo_id,
-                &revision_id,
-                SearchPlaneTrackKind::Lexical,
-                ManifestGeneration::new(10),
-            );
-            guard.record_track_seal(
-                &repo_id,
-                &revision_id,
-                SearchPlaneTrackKind::Lexical,
-                ManifestGeneration::new(11),
-            );
-            guard.record_track_materialized(
-                &repo_id,
-                &revision_id,
-                SearchPlaneTrackKind::Semantic,
-                ManifestGeneration::new(10),
-                Some("manifest-digest-10"),
-            );
-            guard.record_track_seal_with_digest(
-                &repo_id,
-                &revision_id,
-                SearchPlaneTrackKind::Semantic,
-                ManifestGeneration::new(10),
-                "manifest-digest-10",
-            );
-            guard.record_track_materialized(
-                &repo_id,
-                &revision_id,
-                SearchPlaneTrackKind::Semantic,
-                ManifestGeneration::new(11),
-                Some("manifest-digest-11"),
-            );
-            guard.record_track_seal_with_digest(
-                &repo_id,
-                &revision_id,
-                SearchPlaneTrackKind::Semantic,
-                ManifestGeneration::new(11),
-                "manifest-digest-11",
-            );
-        }
-        activation_catalog.activate(&SearchPlaneActivateGenerationRequest {
-            repo_id: RepoId::new("repo-sem"),
-            revision_id: RevisionId::new("rev-sem"),
-            manifest_generation: ManifestGeneration::new(11),
-            manifest_digest: "manifest-digest-11".to_string(),
-            tracks: vec![SearchPlaneTrackKind::Semantic],
-        })?;
-        let dispatcher = SearchPlaneControlDispatcher::new(
-            Arc::new(StubRepoMapActivatePort),
-            activation_catalog,
-            ledger,
-        );
-
-        let err = into_error(dispatcher.dispatch(
-            SearchPlaneControlIpcRequest::ActivateGeneration(
-                SearchPlaneActivateGenerationRequest {
-                    repo_id: RepoId::new("repo-sem"),
-                    revision_id: RevisionId::new("rev-sem"),
-                    manifest_generation: ManifestGeneration::new(10),
-                    manifest_digest: "manifest-digest-10".to_string(),
-                    tracks: vec![
-                        SearchPlaneTrackKind::Lexical,
-                        SearchPlaneTrackKind::Semantic,
-                    ],
-                },
-            ),
-        ))?;
-        if err.code != super::ERR_SEMANTIC_ACTIVATION_REGRESSION {
-            return Err(format!("unexpected semantic regression code: {}", err.code).into());
-        }
-        if err.message
-            != "activate-generation: semantic generation regression for repo=repo-sem revision=rev-sem: requested=10 active=11"
-        {
-            return Err(format!("unexpected semantic regression message: {}", err.message).into());
-        }
         Ok(())
     }
 
@@ -669,29 +553,35 @@ mod tests {
             let repo_id = RepoId::new("repo-rollback");
             let revision_id = RevisionId::new("rev-rollback");
             for (generation, digest) in [(10, "manifest-digest-10"), (11, "manifest-digest-11")] {
-                guard.record_track_materialized(
-                    &repo_id,
-                    &revision_id,
+                for track in [
+                    SearchPlaneTrackKind::Lexical,
                     SearchPlaneTrackKind::Semantic,
-                    ManifestGeneration::new(generation),
-                    Some(digest),
-                );
-                guard.record_track_seal_with_digest(
-                    &repo_id,
-                    &revision_id,
-                    SearchPlaneTrackKind::Semantic,
-                    ManifestGeneration::new(generation),
-                    digest,
-                );
+                ] {
+                    guard.record_track_materialized(
+                        &repo_id,
+                        &revision_id,
+                        track,
+                        ManifestGeneration::new(generation),
+                        Some(digest),
+                    );
+                    guard.record_track_seal_with_digest(
+                        &repo_id,
+                        &revision_id,
+                        track,
+                        ManifestGeneration::new(generation),
+                        digest,
+                    );
+                }
             }
         }
-        activation_catalog.activate(&SearchPlaneActivateGenerationRequest {
-            repo_id: RepoId::new("repo-rollback"),
-            revision_id: RevisionId::new("rev-rollback"),
-            manifest_generation: ManifestGeneration::new(11),
-            manifest_digest: "manifest-digest-11".to_string(),
-            tracks: vec![SearchPlaneTrackKind::Semantic],
-        })?;
+        let active =
+            composite_generation("repo-rollback", "rev-rollback", 11, "manifest-digest-11")?;
+        let prepared = PreparedSearchCorpusGenerationV1::new(active, None)?;
+        let activation =
+            activation_catalog.activate_prepared_search_corpus_generation_v1(&prepared)?;
+        if activation.active.manifest_generation() != ManifestGeneration::new(11) {
+            return Err("expected initial composite activation at generation 11".into());
+        }
         let dispatcher = SearchPlaneControlDispatcher::new(
             Arc::new(StubRepoMapActivatePort),
             Arc::clone(&activation_catalog),
@@ -728,6 +618,34 @@ mod tests {
         {
             return Err(format!("rollback did not update active state: {current:?}").into());
         }
+        let lexical = activation_catalog.resolve_record(
+            &RepoId::new("repo-rollback"),
+            &RevisionId::new("rev-rollback"),
+            SearchPlaneTrackKind::Lexical,
+        )?;
+        if lexical.manifest_generation != ManifestGeneration::new(10)
+            || lexical.manifest_digest != "manifest-digest-10"
+        {
+            return Err(format!("rollback did not update lexical state: {lexical:?}").into());
+        }
+        let reopened = ActivationCatalog::open(dir.path())?;
+        let reopened_lexical = reopened.resolve_record(
+            &RepoId::new("repo-rollback"),
+            &RevisionId::new("rev-rollback"),
+            SearchPlaneTrackKind::Lexical,
+        )?;
+        let reopened_semantic = reopened.resolve_record(
+            &RepoId::new("repo-rollback"),
+            &RevisionId::new("rev-rollback"),
+            SearchPlaneTrackKind::Semantic,
+        )?;
+        if reopened_lexical.manifest_generation != ManifestGeneration::new(10)
+            || reopened_semantic.manifest_generation != ManifestGeneration::new(10)
+            || reopened_lexical.manifest_digest != "manifest-digest-10"
+            || reopened_semantic.manifest_digest != "manifest-digest-10"
+        {
+            return Err("composite rollback did not survive reopen".into());
+        }
 
         let stale = dispatcher.dispatch(SearchPlaneControlIpcRequest::RollbackGeneration(
             SearchPlaneRollbackGenerationRequest {
@@ -745,6 +663,25 @@ mod tests {
         };
         if error.code != super::ERR_ROLLBACK_CAS_CONFLICT {
             return Err(format!("unexpected stale rollback code: {}", error.code).into());
+        }
+
+        let unsealed_target =
+            dispatcher.dispatch(SearchPlaneControlIpcRequest::RollbackGeneration(
+                SearchPlaneRollbackGenerationRequest {
+                    repo_id: RepoId::new("repo-rollback"),
+                    revision_id: RevisionId::new("rev-rollback"),
+                    track: SearchPlaneTrackKind::Semantic,
+                    expected_active_generation: ManifestGeneration::new(10),
+                    expected_active_manifest_digest: "manifest-digest-10".to_string(),
+                    target_generation: ManifestGeneration::new(9),
+                    target_manifest_digest: "manifest-digest-9".to_string(),
+                },
+            ));
+        let SearchPlaneControlIpcResponse::Error(error) = unsealed_target else {
+            return Err("rollback to unsealed historical target unexpectedly succeeded".into());
+        };
+        if error.code != crate::readiness::ERR_SEARCH_TRACK_GENERATION_NOT_SEALED {
+            return Err(format!("unexpected unsealed rollback code: {}", error.code).into());
         }
         Ok(())
     }

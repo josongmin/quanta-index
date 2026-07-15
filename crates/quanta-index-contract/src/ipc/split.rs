@@ -11,12 +11,13 @@ use crate::{
     HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest,
     HybridSeedQueryResponse, RepoMapActivateGenerationRequest, RepoMapMutationAck,
     RepoMapQueryRequest, RepoMapQueryResponse, RuntimeMetadataQueryRequest,
-    SearchPlaneActivateGenerationRequest, SearchPlaneActivationAck, SearchPlaneExplainQueryRequest,
+    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneExplainQueryRequest,
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
     SearchPlaneRollbackGenerationAck, SearchPlaneRollbackGenerationRequest,
-    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
-    SemanticQueryRequest, SemanticQueryResponse, StructuralQueryRequest, SymbolQueryRequest,
-    SymbolQueryResponse, TextQueryRequest, TextQueryResponse,
+    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneSearchCorpusActivationCasAck,
+    SearchPlaneStructuralQueryResponse, SemanticQueryRequest, SemanticQueryResponse,
+    StructuralQueryRequest, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest,
+    TextQueryResponse,
 };
 
 const SEARCH_PLANE_ENVELOPE_FIELDS: &[&str] = &["request_id", "payload"];
@@ -47,14 +48,14 @@ const SEARCH_PLANE_QUERY_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "Error",
 ];
 const SEARCH_PLANE_CONTROL_IPC_REQUEST_VARIANTS: &[&str] = &[
-    "ActivateGeneration",
+    "ActivateSearchCorpusGenerationCas",
     "RollbackGeneration",
     "RepoMapActivate",
     "CurrentGeneration",
     "GenerationStatus",
 ];
 const SEARCH_PLANE_CONTROL_IPC_RESPONSE_VARIANTS: &[&str] = &[
-    "ActivationAck",
+    "SearchCorpusActivationCasAck",
     "RollbackAck",
     "RepoMapMutationAck",
     "Error",
@@ -111,7 +112,8 @@ pub struct SearchPlaneControlIpcRequestEnvelope {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchPlaneControlIpcRequest {
-    ActivateGeneration(SearchPlaneActivateGenerationRequest),
+    /// Atomic activation of the complete lexical + semantic corpus identity.
+    ActivateSearchCorpusGenerationCas(SearchPlaneActivateSearchCorpusGenerationCasRequest),
     /// Explicit rollback CAS; normal activation remains monotonic.
     RollbackGeneration(SearchPlaneRollbackGenerationRequest),
     // QI-INT-01: `RepoMapIngest(RepoMapSourceBundle)` was removed from the
@@ -137,7 +139,7 @@ pub struct SearchPlaneControlIpcResponseEnvelope {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchPlaneControlIpcResponse {
-    ActivationAck(SearchPlaneActivationAck),
+    SearchCorpusActivationCasAck(SearchPlaneSearchCorpusActivationCasAck),
     RollbackAck(SearchPlaneRollbackGenerationAck),
     RepoMapMutationAck(RepoMapMutationAck),
     Error(SearchPlaneIpcError),
@@ -686,9 +688,9 @@ impl Serialize for SearchPlaneControlIpcRequest {
         S: Serializer,
     {
         match self {
-            Self::ActivateGeneration(payload) => serialize_adjacent_tagged(
+            Self::ActivateSearchCorpusGenerationCas(payload) => serialize_adjacent_tagged(
                 "SearchPlaneControlIpcRequest",
-                "ActivateGeneration",
+                "ActivateSearchCorpusGenerationCas",
                 payload,
                 serializer,
             ),
@@ -751,8 +753,10 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcRequestVisitor {
                         .as_deref()
                         .ok_or_else(|| payload_before_kind_error("SearchPlaneControlIpcRequest"))?;
                     let decoded = match kind_value {
-                        "ActivateGeneration" => {
-                            SearchPlaneControlIpcRequest::ActivateGeneration(map.next_value()?)
+                        "ActivateSearchCorpusGenerationCas" => {
+                            SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
+                                map.next_value()?,
+                            )
                         }
                         "RollbackGeneration" => {
                             SearchPlaneControlIpcRequest::RollbackGeneration(map.next_value()?)
@@ -861,9 +865,9 @@ impl Serialize for SearchPlaneControlIpcResponse {
         S: Serializer,
     {
         match self {
-            Self::ActivationAck(payload) => serialize_adjacent_tagged(
+            Self::SearchCorpusActivationCasAck(payload) => serialize_adjacent_tagged(
                 "SearchPlaneControlIpcResponse",
-                "ActivationAck",
+                "SearchCorpusActivationCasAck",
                 payload,
                 serializer,
             ),
@@ -932,8 +936,10 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcResponseVisitor {
                         payload_before_kind_error("SearchPlaneControlIpcResponse")
                     })?;
                     let decoded = match kind_value {
-                        "ActivationAck" => {
-                            SearchPlaneControlIpcResponse::ActivationAck(map.next_value()?)
+                        "SearchCorpusActivationCasAck" => {
+                            SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(
+                                map.next_value()?,
+                            )
                         }
                         "RollbackAck" => {
                             SearchPlaneControlIpcResponse::RollbackAck(map.next_value()?)
@@ -994,7 +1000,10 @@ impl<'de> Deserialize<'de> for SearchPlaneControlIpcResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind, TextQuerySyntax};
+    use crate::{
+        ManifestGeneration, RepoId, RevisionId, SearchCorpusGenerationIdentityV1,
+        SearchPlaneTrackKind, TextQuerySyntax,
+    };
     use serde_json::json;
 
     fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
@@ -1025,6 +1034,7 @@ mod tests {
             payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
                 syntax: TextQuerySyntax::Native,
                 query_text: "needle".to_string(),
+                constraints: crate::QueryConstraintSetV1::unconstrained(),
                 generation: None,
                 generation_selector: None,
                 top_k: 5,
@@ -1049,6 +1059,9 @@ mod tests {
                     "payload": {
                         "syntax": "native",
                         "query_text": "needle",
+                        "constraints": {
+                            "language_any_of": []
+                        },
                         "top_k": 5
                     }
                 }
@@ -1223,6 +1236,89 @@ mod tests {
             }
         };
         assert_eq!(decoded_cbor, envelope);
+    }
+
+    #[test]
+    fn legacy_single_track_activation_wire_tags_are_unknown() {
+        for legacy_kind in ["ActivateGeneration", "ActivateGenerationCas"] {
+            let wire = json!({
+                "request_id": 12,
+                "payload": {"kind": legacy_kind, "payload": {}}
+            });
+            let error = serde_json::from_value::<SearchPlaneControlIpcRequestEnvelope>(wire)
+                .expect_err("removed single-track activation wire tag must fail closed");
+            assert!(
+                error.to_string().contains("unknown variant"),
+                "legacy tag {legacy_kind} must fail as an unknown control variant: {error}"
+            );
+        }
+    }
+
+    fn corpus_identity_v1(generation: u64, digest: &str) -> SearchCorpusGenerationIdentityV1 {
+        SearchCorpusGenerationIdentityV1 {
+            lexical: GenerationSnapshot {
+                repo_id: fixture_repo(),
+                revision_id: fixture_revision(),
+                track: SearchPlaneTrackKind::Lexical,
+                manifest_generation: ManifestGeneration::new(generation),
+                manifest_digest: digest.to_string(),
+            },
+            semantic: GenerationSnapshot {
+                repo_id: fixture_repo(),
+                revision_id: fixture_revision(),
+                track: SearchPlaneTrackKind::Semantic,
+                manifest_generation: ManifestGeneration::new(generation),
+                manifest_digest: digest.to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn composite_search_corpus_activation_control_variants_round_trip_v1() {
+        let previous = corpus_identity_v1(10, "digest-10");
+        let candidate = corpus_identity_v1(11, "digest-11");
+        let request = SearchPlaneControlIpcRequestEnvelope {
+            request_id: 13,
+            payload: SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
+                SearchPlaneActivateSearchCorpusGenerationCasRequest {
+                    candidate: candidate.clone(),
+                    expected_active: Some(previous.clone()),
+                },
+            ),
+        };
+        assert_eq!(
+            serde_json::to_value(&request).expect("encode composite activation request")["payload"]
+                ["kind"],
+            json!("ActivateSearchCorpusGenerationCas")
+        );
+        assert_eq!(
+            decode::<SearchPlaneControlIpcRequestEnvelope>(
+                &encode(&request).expect("encode composite activation request cbor"),
+            )
+            .expect("decode composite activation request cbor"),
+            request
+        );
+
+        let response = SearchPlaneControlIpcResponseEnvelope {
+            request_id: 13,
+            payload: SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(
+                SearchPlaneSearchCorpusActivationCasAck {
+                    active: candidate,
+                    previous_sealed_active: Some(previous),
+                },
+            ),
+        };
+        assert_eq!(
+            serde_json::to_value(&response).expect("encode composite activation ack")["payload"]["kind"],
+            json!("SearchCorpusActivationCasAck")
+        );
+        assert_eq!(
+            decode::<SearchPlaneControlIpcResponseEnvelope>(
+                &encode(&response).expect("encode composite activation ack cbor"),
+            )
+            .expect("decode composite activation ack cbor"),
+            response
+        );
     }
 
     #[test]

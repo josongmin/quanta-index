@@ -6,10 +6,12 @@
 use quanta_index_contract::lex::SymbolRecord;
 use quanta_index_contract::{
     ChunkRecord, GenerationSelector, ManifestGeneration, RepoId, RevisionId,
-    SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
-    SearchPlaneActivateGenerationRequest, SearchPlaneActivationAck, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcResponse, SearchPlaneTrackKind, SearchScopeKey, TextQueryRequest,
-    TextQueryResponse, TextQuerySyntax,
+    SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
+    SearchCorpusTombstoneScope, SearchPlaneActivateSearchCorpusGenerationCasRequest,
+    SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcResponse, SearchPlaneSearchCorpusActivationCasAck, SearchPlaneTrackKind,
+    SearchScopeKey, SearchScopeSurface, SemanticSourceRecordV1, SemanticSourceReplaceScopeV1,
+    SemanticSourceScopeKeyV1, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
 
 use crate::text_query_builder::TextQueryBuilderState;
@@ -24,8 +26,11 @@ pub struct SearchCorpusBatch<const SEALED: bool = true> {
     manifest_digest: String,
     batch_digest: String,
     mode: BatchMode,
+    clear_surfaces: Vec<SearchScopeSurface>,
     replace_scopes: Vec<SearchCorpusReplaceScope>,
     tombstone_scopes: Vec<SearchCorpusTombstoneScope>,
+    semantic_replace_scopes: Vec<SemanticSourceReplaceScopeV1>,
+    semantic_tombstone_scopes: Vec<SemanticSourceScopeKeyV1>,
 }
 
 impl SearchCorpusBatch {
@@ -45,8 +50,11 @@ impl SearchCorpusBatch {
             manifest_digest: manifest_digest.into(),
             batch_digest: batch_digest.into(),
             mode: BatchMode::ReplaceGeneration,
+            clear_surfaces: Vec::new(),
             replace_scopes: Vec::new(),
             tombstone_scopes: Vec::new(),
+            semantic_replace_scopes: Vec::new(),
+            semantic_tombstone_scopes: Vec::new(),
         }
     }
 
@@ -67,13 +75,26 @@ impl SearchCorpusBatch {
             manifest_digest: manifest_digest.into(),
             batch_digest: batch_digest.into(),
             mode: BatchMode::Delta,
+            clear_surfaces: Vec::new(),
             replace_scopes: Vec::new(),
             tombstone_scopes: Vec::new(),
+            semantic_replace_scopes: Vec::new(),
+            semantic_tombstone_scopes: Vec::new(),
         }
     }
 }
 
 impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
+    /// Clear every indexed row on one canonical document surface. Repeated
+    /// calls are idempotent and the wire vector remains canonically ordered.
+    #[must_use]
+    pub fn clear_surface(mut self, surface: SearchScopeSurface) -> Self {
+        if let Err(index) = self.clear_surfaces.binary_search(&surface) {
+            self.clear_surfaces.insert(index, surface);
+        }
+        self
+    }
+
     #[must_use]
     pub fn replace_scope(
         mut self,
@@ -98,6 +119,49 @@ impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
         self
     }
 
+    /// Replace one producer-authored semantic-source scope. Scope mutations
+    /// are kept in canonical key order so equivalent builder sequences emit
+    /// identical wire batches.
+    #[must_use]
+    pub fn replace_semantic_scope(
+        mut self,
+        scope: SemanticSourceScopeKeyV1,
+        scope_digest: impl Into<String>,
+        sources: Vec<SemanticSourceRecordV1>,
+    ) -> Self {
+        let search_result = self.semantic_replace_scopes.binary_search_by(|candidate| {
+            semantic_scope_sort_key_v1(&candidate.scope).cmp(&semantic_scope_sort_key_v1(&scope))
+        });
+        let index = match search_result {
+            Ok(index) | Err(index) => index,
+        };
+        self.semantic_replace_scopes.insert(
+            index,
+            SemanticSourceReplaceScopeV1 {
+                scope,
+                scope_digest: scope_digest.into(),
+                sources,
+            },
+        );
+        self
+    }
+
+    /// Tombstone one producer-authored semantic-source scope in canonical key
+    /// order. Conflicts with whole-surface clears are rejected before I/O.
+    #[must_use]
+    pub fn tombstone_semantic_scope(mut self, scope: SemanticSourceScopeKeyV1) -> Self {
+        let search_result = self
+            .semantic_tombstone_scopes
+            .binary_search_by(|candidate| {
+                semantic_scope_sort_key_v1(candidate).cmp(&semantic_scope_sort_key_v1(&scope))
+            });
+        let index = match search_result {
+            Ok(index) | Err(index) => index,
+        };
+        self.semantic_tombstone_scopes.insert(index, scope);
+        self
+    }
+
     #[must_use]
     pub fn without_seal(self) -> SearchCorpusBatch<false> {
         SearchCorpusBatch {
@@ -108,8 +172,11 @@ impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
             manifest_digest: self.manifest_digest,
             batch_digest: self.batch_digest,
             mode: self.mode,
+            clear_surfaces: self.clear_surfaces,
             replace_scopes: self.replace_scopes,
             tombstone_scopes: self.tombstone_scopes,
+            semantic_replace_scopes: self.semantic_replace_scopes,
+            semantic_tombstone_scopes: self.semantic_tombstone_scopes,
         }
     }
 
@@ -149,6 +216,11 @@ impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
     }
 
     #[must_use]
+    pub fn clear_surfaces(&self) -> &[SearchScopeSurface] {
+        &self.clear_surfaces
+    }
+
+    #[must_use]
     pub fn replace_scopes(&self) -> &[SearchCorpusReplaceScope] {
         &self.replace_scopes
     }
@@ -156,6 +228,16 @@ impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
     #[must_use]
     pub fn tombstone_scopes(&self) -> &[SearchCorpusTombstoneScope] {
         &self.tombstone_scopes
+    }
+
+    #[must_use]
+    pub fn semantic_replace_scopes(&self) -> &[SemanticSourceReplaceScopeV1] {
+        &self.semantic_replace_scopes
+    }
+
+    #[must_use]
+    pub fn semantic_tombstone_scopes(&self) -> &[SemanticSourceScopeKeyV1] {
+        &self.semantic_tombstone_scopes
     }
 
     #[must_use]
@@ -173,13 +255,24 @@ impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
             batch_digest: self.batch_digest.clone(),
             mode: self.mode.to_wire(),
             bundle_payload: None,
+            clear_surfaces: self.clear_surfaces.clone(),
             replace_scopes: self.replace_scopes.clone(),
             tombstone_scopes: self.tombstone_scopes.clone(),
-            semantic_replace_scopes: Vec::new(),
-            semantic_tombstone_scopes: Vec::new(),
+            semantic_replace_scopes: self.semantic_replace_scopes.clone(),
+            semantic_tombstone_scopes: self.semantic_tombstone_scopes.clone(),
             seal: SEALED,
         }
     }
+}
+
+fn semantic_scope_sort_key_v1(
+    scope: &SemanticSourceScopeKeyV1,
+) -> (&'static str, &'static str, &str) {
+    (
+        scope.corpus_kind.as_code_str(),
+        scope.owner_kind.as_code_str(),
+        scope.owner_id.as_str(),
+    )
 }
 
 pub struct LexicalNamespace<'a> {
@@ -223,32 +316,112 @@ impl<'a> SearchCorpusNamespace<'a> {
         dispatch_search_corpus_publish_v1(self.client, batch)
     }
 
-    /// Publishes a sealed search-corpus batch and activates the accepted
-    /// generation on the lexical track. If activation fails, the batch was
-    /// still ingested successfully and callers must reconcile that partial
-    /// state explicitly.
+    /// Publishes a sealed search-corpus batch and atomically promotes the
+    /// complete lexical + semantic identity against an explicit composite
+    /// active identity. If promotion conflicts, the batch remains sealed but
+    /// neither reader plane is made active.
     pub fn publish_and_activate(
         &self,
         batch: &SearchCorpusBatch,
-    ) -> Result<(BatchReceipt, SearchPlaneActivationAck), SdkError> {
+        expected_active: Option<SearchCorpusGenerationIdentityV1>,
+    ) -> Result<(BatchReceipt, SearchPlaneSearchCorpusActivationCasAck), SdkError> {
+        validate_expected_search_corpus_identity_v1(batch, expected_active.as_ref())?;
         let receipt = self.publish(batch)?;
         if !receipt.sealed {
             return Err(SdkError::Protocol(
                 "search corpus publish_and_activate requires a sealed receipt".to_string(),
             ));
         }
-        let activation =
-            self.client
-                .generations()
-                .commit(SearchPlaneActivateGenerationRequest {
-                    repo_id: batch.repo_id().clone(),
-                    revision_id: batch.revision_id().clone(),
-                    manifest_generation: receipt.generation,
-                    manifest_digest: receipt.manifest_digest.clone(),
-                    tracks: vec![SearchPlaneTrackKind::Lexical],
-                })?;
+        let candidate = search_corpus_identity_from_receipt_v1(batch, &receipt)?;
+        let response = self.client.dispatch_control(
+            SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
+                SearchPlaneActivateSearchCorpusGenerationCasRequest {
+                    candidate,
+                    expected_active,
+                },
+            ),
+        )?;
+        let activation = match response {
+            SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(ack) => ack,
+            other @ (SearchPlaneControlIpcResponse::RollbackAck(_)
+            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
+            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => {
+                return Err(SdkError::Protocol(format!(
+                    "expected composite search corpus activation CAS ack, got {}",
+                    QuantaIndex::control_response_kind(&other)
+                )));
+            }
+            SearchPlaneControlIpcResponse::Error(_) => {
+                return Err(SdkError::Protocol(
+                    "control dispatch leaked an error response".to_string(),
+                ));
+            }
+        };
         Ok((receipt, activation))
     }
+}
+
+fn search_corpus_identity_from_receipt_v1(
+    batch: &SearchCorpusBatch,
+    receipt: &BatchReceipt,
+) -> Result<SearchCorpusGenerationIdentityV1, SdkError> {
+    if receipt.generation != batch.generation() {
+        return Err(SdkError::Protocol(
+            "sealed search corpus receipt generation differs from the published batch".to_string(),
+        ));
+    }
+    if receipt.manifest_digest != batch.manifest_digest() {
+        return Err(SdkError::Protocol(
+            "sealed search corpus receipt manifest digest differs from the published batch"
+                .to_string(),
+        ));
+    }
+    let identity = SearchCorpusGenerationIdentityV1 {
+        lexical: quanta_index_contract::GenerationSnapshot {
+            repo_id: batch.repo_id().clone(),
+            revision_id: batch.revision_id().clone(),
+            track: SearchPlaneTrackKind::Lexical,
+            manifest_generation: receipt.generation,
+            manifest_digest: receipt.manifest_digest.clone(),
+        },
+        semantic: quanta_index_contract::GenerationSnapshot {
+            repo_id: batch.repo_id().clone(),
+            revision_id: batch.revision_id().clone(),
+            track: SearchPlaneTrackKind::Semantic,
+            manifest_generation: receipt.generation,
+            manifest_digest: receipt.manifest_digest.clone(),
+        },
+    };
+    identity.validate_v1().map_err(|error| {
+        SdkError::Protocol(format!(
+            "sealed search corpus receipt cannot form a composite generation identity: {error}"
+        ))
+    })?;
+    Ok(identity)
+}
+
+fn validate_expected_search_corpus_identity_v1(
+    batch: &SearchCorpusBatch,
+    expected_active: Option<&SearchCorpusGenerationIdentityV1>,
+) -> Result<(), SdkError> {
+    let Some(expected_active) = expected_active else {
+        return Ok(());
+    };
+    expected_active.validate_v1().map_err(|error| {
+        SdkError::Protocol(format!(
+            "expected active search corpus identity is invalid: {error}"
+        ))
+    })?;
+    if &expected_active.lexical.repo_id != batch.repo_id()
+        || &expected_active.lexical.revision_id != batch.revision_id()
+    {
+        return Err(SdkError::Protocol(
+            "expected active search corpus identity belongs to a different repository revision"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// QI-NS-01 marker type for the built-in lexical query namespace.
@@ -279,11 +452,27 @@ fn dispatch_search_corpus_publish_v1<const SEALED: bool>(
     client: &QuantaIndex,
     batch: &SearchCorpusBatch<SEALED>,
 ) -> Result<BatchReceipt, SdkError> {
+    let wire_batch = batch.to_wire_batch();
+    wire_batch.validate_surface_mutations_v1().map_err(|err| {
+        SdkError::Protocol(format!("invalid search corpus surface mutation: {err}"))
+    })?;
     let response = client.dispatch_ingest(
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.to_wire_batch()),
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(wire_batch),
     )?;
     match response {
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt) => Ok(receipt),
+        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt) => {
+            let expected_clear_surfaces =
+                u32::try_from(batch.clear_surfaces.len()).map_err(|err| {
+                    SdkError::Protocol(format!("search corpus clear surface count overflow: {err}"))
+                })?;
+            if receipt.accepted_clear_surfaces != expected_clear_surfaces {
+                return Err(SdkError::Protocol(format!(
+                    "search corpus clear receipt mismatch: expected {expected_clear_surfaces}, received {}",
+                    receipt.accepted_clear_surfaces
+                )));
+            }
+            Ok(receipt)
+        }
         other @ (SearchPlaneIngestIpcResponse::HistoryReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
@@ -321,7 +510,7 @@ pub struct LexicalQueryBuilder<
 }
 
 impl<'a> LexicalQueryBuilder<'a> {
-    const fn new(client: &'a QuantaIndex) -> Self {
+    fn new(client: &'a QuantaIndex) -> Self {
         Self {
             client,
             state: TextQueryBuilderState::new(),
@@ -362,6 +551,18 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
         self.transition(|state| {
             state.syntax = TextQuerySyntax::Sourcegraph;
             state.query_text = Some(query_text.into());
+        })
+    }
+
+    /// Replace the canonical OR-set of language constraints.
+    #[must_use]
+    pub fn language_any_of(
+        self,
+        languages: impl IntoIterator<Item = quanta_index_contract::lex::LanguageCode>,
+    ) -> Self {
+        self.transition(|state| {
+            state.constraints =
+                quanta_index_contract::QueryConstraintSetV1::from_languages(languages);
         })
     }
 

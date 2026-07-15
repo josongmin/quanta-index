@@ -783,12 +783,9 @@ mod tests {
     use super::{
         DomainStructuralQueryRequest, GenerationPin, GenerationSelector, Ledger,
         LedgerStructuralProducer, LqStructuralBlock, RepoId, RevisionId, StructuralProducerPort,
-        StructuralReadiness, TextEmbeddingProvider,
+        StructuralReadiness,
     };
     use quanta_index_contract::LqOptions;
-    // A1 hermetic smoke: query-side embed contract (`embed_query`) lives on this
-    // port; the corpus side uses `TextEmbeddingProvider::embed_batch` (imported above).
-    use quanta_index_search_plane::QueryTextEmbedderPort;
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::{Arc, RwLock};
     type TestRes = Result<(), Box<dyn std::error::Error>>;

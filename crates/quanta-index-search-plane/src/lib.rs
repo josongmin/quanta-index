@@ -35,6 +35,8 @@ pub use query_embedder::{
     SEARCH_OWNED_SEMANTIC_MODEL_ID,
 };
 pub use readiness::{
-    ActivationCatalog, ActiveGenerationRecord, AuxiliaryAuthorityStore, Ledger, TrackLedger,
+    ActivationCatalog, ActiveGenerationRecord, AuxiliaryAuthorityStore, Ledger,
+    PreparedSearchCorpusGenerationV1, SearchCorpusGenerationActivationV1, SearchCorpusGenerationV1,
+    TrackLedger,
 };
 pub use semantic_derive::SemanticDerivationModeV1;

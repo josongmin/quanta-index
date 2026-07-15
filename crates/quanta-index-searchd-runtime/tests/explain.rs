@@ -133,6 +133,7 @@ fn lex_query(needle: &str, pin: GenerationPin) -> SearchPlaneQueryIpcRequestEnve
         payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Sourcegraph,
             query_text: needle.to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(pin),
             generation_selector: None,
             top_k: 50,
@@ -216,6 +217,7 @@ fn publish_chunk(socket: &Path, chunk: ChunkRecord) -> TestResult {
             ),
             mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload: None,
+            clear_surfaces: Vec::new(),
             replace_scopes: vec![SearchCorpusReplaceScope {
                 scope: scope_key(chunk.repo_relative_path.as_str()),
                 scope_digest: "explain-scope".to_string(),
@@ -245,6 +247,7 @@ fn seal_lexical(socket: &Path) -> TestResult {
             ),
             mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload: None,
+            clear_surfaces: Vec::new(),
             replace_scopes: Vec::new(),
             tombstone_scopes: Vec::new(),
             semantic_replace_scopes: Vec::new(),

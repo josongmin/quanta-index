@@ -14,7 +14,7 @@ use libfuzzer_sys::fuzz_target;
 
 use quanta_index_contract::{
     BatchPublishReceipt, GenerationSnapshot, GenerationStatusReport, HybridQueryResponse,
-    HybridSeedQueryResponse, RepoMapMutationAck, RepoMapQueryResponse, SearchPlaneActivationAck,
+    HybridSeedQueryResponse, RepoMapMutationAck, RepoMapQueryResponse,
     SearchPlaneControlIpcResponse, SearchPlaneControlIpcResponseEnvelope,
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneIpcError, SearchPlaneQueryIpcResponse,
@@ -39,7 +39,6 @@ fuzz_target!(|data: &[u8]| {
     let _ = ciborium::de::from_reader::<SearchPlaneQueryIpcResponseEnvelope, _>(data);
 
     // Control responses (QI-ACT-01 snapshots / status report included).
-    let _ = ciborium::de::from_reader::<SearchPlaneActivationAck, _>(data);
     let _ = ciborium::de::from_reader::<RepoMapMutationAck, _>(data);
     let _ = ciborium::de::from_reader::<GenerationSnapshot, _>(data);
     let _ = ciborium::de::from_reader::<GenerationStatusReport, _>(data);

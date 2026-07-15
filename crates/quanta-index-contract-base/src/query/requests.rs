@@ -12,12 +12,15 @@ use serde::{
     ser::SerializeStruct,
 };
 
-use super::{GenerationPin, GenerationSelector, TextQuerySyntax};
+use super::{GenerationPin, GenerationSelector, QueryConstraintSetV1, TextQuerySyntax};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TextQueryRequest {
     pub syntax: TextQuerySyntax,
     pub query_text: String,
+    /// Candidate-generation constraints. This field is mandatory on the wire;
+    /// an empty set explicitly means unconstrained.
+    pub constraints: QueryConstraintSetV1,
     pub generation: Option<GenerationPin>,
     pub generation_selector: Option<GenerationSelector>,
     /// QI-QRY-01: required result cap. Wire field is mandatory; missing
@@ -29,6 +32,7 @@ pub struct TextQueryRequest {
 const TEXT_QUERY_REQUEST_FIELDS: &[&str] = &[
     "syntax",
     "query_text",
+    "constraints",
     "generation",
     "generation_selector",
     "top_k",
@@ -39,7 +43,7 @@ impl Serialize for TextQueryRequest {
     where
         S: Serializer,
     {
-        let mut field_count: usize = 3;
+        let mut field_count: usize = 4;
         if self.generation.is_some() {
             field_count = field_count.saturating_add(1);
         }
@@ -49,6 +53,7 @@ impl Serialize for TextQueryRequest {
         let mut state = serializer.serialize_struct("TextQueryRequest", field_count)?;
         state.serialize_field("syntax", &self.syntax)?;
         state.serialize_field("query_text", &self.query_text)?;
+        state.serialize_field("constraints", &self.constraints)?;
         if let Some(generation) = &self.generation {
             state.serialize_field("generation", generation)?;
         }
@@ -75,6 +80,7 @@ impl<'de> Visitor<'de> for TextQueryRequestVisitor {
     {
         let mut syntax: Option<TextQuerySyntax> = None;
         let mut query_text: Option<String> = None;
+        let mut constraints: Option<QueryConstraintSetV1> = None;
         let mut generation: Option<GenerationPin> = None;
         let mut generation_seen = false;
         let mut generation_selector: Option<GenerationSelector> = None;
@@ -93,6 +99,12 @@ impl<'de> Visitor<'de> for TextQueryRequestVisitor {
                         return Err(de::Error::duplicate_field("query_text"));
                     }
                     query_text = Some(map.next_value()?);
+                }
+                "constraints" => {
+                    if constraints.is_some() {
+                        return Err(de::Error::duplicate_field("constraints"));
+                    }
+                    constraints = Some(map.next_value()?);
                 }
                 "generation" => {
                     if generation_seen {
@@ -122,6 +134,7 @@ impl<'de> Visitor<'de> for TextQueryRequestVisitor {
         Ok(TextQueryRequest {
             syntax: syntax.ok_or_else(|| de::Error::missing_field("syntax"))?,
             query_text: query_text.ok_or_else(|| de::Error::missing_field("query_text"))?,
+            constraints: constraints.ok_or_else(|| de::Error::missing_field("constraints"))?,
             generation,
             generation_selector,
             top_k: top_k.ok_or_else(|| de::Error::missing_field("top_k"))?,

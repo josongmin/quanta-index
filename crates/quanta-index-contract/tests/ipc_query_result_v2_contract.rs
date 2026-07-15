@@ -1,16 +1,19 @@
 #![forbid(unsafe_code)]
 
-use quanta_index_contract::lex::{CommitSha, ExplanationRow, SymbolKindCode, SymbolKindFamily};
+use quanta_index_contract::lex::{
+    CommitSha, ExplanationRow, LanguageCode, SymbolKindCode, SymbolKindFamily,
+};
 use quanta_index_contract::results::{
     EngineTouched, PlannerStage, PlannerTraceEntry, SearchExplanation,
 };
 use quanta_index_contract::{
     DiffCandidate, DiffHunkSide, GenerationPin, HighlightSpan, HybridQueryRequest,
     HybridQueryResponse, HybridSeedQueryRequest, LexicalCandidate, LqQuery, LqSpan,
-    ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse, SemanticCorpusKindV1,
-    SemanticQueryRequest, SemanticQueryResponse, SemanticSeedCorpusBudgetV1,
-    StructuralQueryRequest, SymbolCandidate, TextQueryRequest, TextQuerySyntax,
+    ManifestGeneration, QueryConstraintSetV1, QueryResultWindowV1, RepoId, RepoRelativePath,
+    RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
+    SearchPlaneQueryIpcResponse, SemanticCorpusKindV1, SemanticQueryRequest, SemanticQueryResponse,
+    SemanticSeedCorpusBudgetV1, StructuralQueryRequest, SymbolCandidate, TextQueryRequest,
+    TextQuerySyntax,
 };
 
 type TestRes = Result<(), Box<dyn std::error::Error>>;
@@ -172,6 +175,7 @@ fn lexical_request() -> TextQueryRequest {
     TextQueryRequest {
         syntax: TextQuerySyntax::Sourcegraph,
         query_text: "repo:quanta-index lang:rust SearchPlane".to_owned(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
         generation: Some(generation_pin()),
         generation_selector: None,
         top_k: 50,
@@ -182,6 +186,7 @@ fn semantic_scope() -> TextQueryRequest {
     TextQueryRequest {
         syntax: TextQuerySyntax::Sourcegraph,
         query_text: "repo:quanta-index lang:rust SearchPlane".to_owned(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
         generation: Some(generation_pin()),
         generation_selector: None,
         // LXE-01 §3: lexical scope unified on TextQueryRequest. The lexical
@@ -227,6 +232,7 @@ fn symbol_candidate() -> Result<SymbolCandidate, Box<dyn std::error::Error>> {
 fn semantic_request() -> SemanticQueryRequest {
     SemanticQueryRequest {
         query_text: "1.0 0.0".to_owned(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
         generation: Some(generation_pin()),
         generation_selector: None,
         lexical_scope: Some(semantic_scope()),
@@ -247,6 +253,7 @@ fn hybrid_request() -> HybridQueryRequest {
 fn semantic_request_with_query_text(query_text: &str) -> SemanticQueryRequest {
     SemanticQueryRequest {
         query_text: query_text.to_owned(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
         generation: Some(generation_pin()),
         generation_selector: None,
         lexical_scope: Some(semantic_scope()),
@@ -288,6 +295,7 @@ fn sourcegraph_text_request() -> TextQueryRequest {
     TextQueryRequest {
         syntax: TextQuerySyntax::Sourcegraph,
         query_text: "repo:quanta-index lang:rust SearchPlane".to_owned(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
         generation: Some(generation_pin()),
         generation_selector: None,
         top_k: 25,
@@ -300,6 +308,7 @@ fn sourcegraph_structural_request() -> StructuralQueryRequest {
             syntax: TextQuerySyntax::Sourcegraph,
             query_text: r#"repo:quanta-index lang:rust patterntype:structural "function_item""#
                 .to_owned(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(generation_pin()),
             generation_selector: None,
             top_k: 25,
@@ -610,6 +619,36 @@ fn search_plane_query_ipc_request_envelope_hybrid_roundtrips_semantic_text() -> 
 }
 
 #[test]
+fn query_constraint_wire_is_order_invariant_and_deduplicated() -> TestRes {
+    let rust = LanguageCode::new("rust").map_err(str::to_string)?;
+    let python = LanguageCode::new("python").map_err(str::to_string)?;
+    let mut left = sourcegraph_text_request();
+    left.constraints =
+        QueryConstraintSetV1::from_languages([rust.clone(), python.clone(), rust.clone()]);
+    let mut right = sourcegraph_text_request();
+    right.constraints = QueryConstraintSetV1::from_languages([python, rust]);
+    assert_eq!(encode(&left)?, encode(&right)?);
+    Ok(())
+}
+
+#[test]
+fn text_request_rejects_missing_mandatory_constraints() -> TestRes {
+    let bytes = mutate_ipc_request_wire(
+        &SearchPlaneQueryIpcRequest::Text(sourcegraph_text_request()),
+        |wire| {
+            let request_fields = map_fields_mut(wire)?;
+            let payload = field_value_mut(request_fields, "payload")?;
+            let payload_fields = map_fields_mut(payload)?;
+            payload_fields.retain(
+                |(key, _)| !matches!(key, ciborium::Value::Text(name) if name == "constraints"),
+            );
+            Ok(())
+        },
+    )?;
+    expect_decode_error_contains::<SearchPlaneQueryIpcRequest>(&bytes, "constraints")
+}
+
+#[test]
 fn search_plane_ipc_request_v2_semantic_rejects_duplicate_nested_lexical_syntax() -> TestRes {
     let bytes = mutate_ipc_request_wire(
         &SearchPlaneQueryIpcRequest::Semantic(semantic_request()),
@@ -686,6 +725,7 @@ fn search_plane_ipc_response_v2_semantic_roundtrips_explanation() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
         generation: generation_pin(),
         results: vec![lexical_candidate()],
+        window: QueryResultWindowV1::exact(1),
         explanation: explanation_v2(),
     });
 
@@ -711,6 +751,7 @@ fn search_plane_ipc_response_v2_hybrid_roundtrips_explanation() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
         generation: generation_pin(),
         results: vec![lexical_candidate()],
+        window: QueryResultWindowV1::exact(1),
         explanation: explanation_v2(),
     });
 
@@ -737,6 +778,7 @@ fn search_plane_ipc_response_v2_symbol_roundtrips_kind_truth() -> TestRes {
         SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse {
             generation: generation_pin(),
             results: vec![symbol_candidate()?],
+            window: QueryResultWindowV1::exact(1),
         });
 
     roundtrip_eq(&response)?;
@@ -768,6 +810,7 @@ fn search_plane_ipc_response_v2_sourcegraph_roundtrips_text_candidates() -> Test
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
         generation: generation_pin(),
         results: vec![lexical_candidate()],
+        window: QueryResultWindowV1::exact(1),
         file_owner_rows: None,
     });
 
@@ -849,6 +892,7 @@ fn search_plane_ipc_response_v2_lexical_rejects_duplicate_results() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
         generation: generation_pin(),
         results: vec![lexical_candidate()],
+        window: QueryResultWindowV1::exact(1),
         file_owner_rows: None,
     });
     let bytes = mutate_ipc_response_wire(&response, |wire| {
@@ -863,10 +907,37 @@ fn search_plane_ipc_response_v2_lexical_rejects_duplicate_results() -> TestRes {
 }
 
 #[test]
+fn text_response_rejects_missing_or_contradictory_window() -> TestRes {
+    let response = text_response_with_lexical_candidate();
+    let missing = mutate_ipc_response_wire(&response, |wire| {
+        let response_fields = map_fields_mut(wire)?;
+        let payload = field_value_mut(response_fields, "payload")?;
+        let payload_fields = map_fields_mut(payload)?;
+        payload_fields
+            .retain(|(key, _)| !matches!(key, ciborium::Value::Text(name) if name == "window"));
+        Ok(())
+    })?;
+    expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&missing, "window")?;
+
+    let contradictory = mutate_ipc_response_wire(&response, |wire| {
+        let response_fields = map_fields_mut(wire)?;
+        let payload = field_value_mut(response_fields, "payload")?;
+        let payload_fields = map_fields_mut(payload)?;
+        let window = field_value_mut(payload_fields, "window")?;
+        let window_fields = map_fields_mut(window)?;
+        let has_more = field_value_mut(window_fields, "has_more")?;
+        *has_more = ciborium::Value::Bool(true);
+        Ok(())
+    })?;
+    expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&contradictory, "contradict")
+}
+
+#[test]
 fn search_plane_ipc_response_v2_roundtrips_file_owner_projection_rows() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
         generation: generation_pin(),
         results: vec![lexical_candidate()],
+        window: QueryResultWindowV1::exact(1),
         file_owner_rows: Some(vec![quanta_index_contract::FileOwnerProjectionRow {
             candidate_id: "lex-1".to_string(),
             repo_id: RepoId::new("repo-a"),
@@ -905,6 +976,7 @@ fn search_plane_ipc_response_v2_symbol_rejects_duplicate_symbol_kind() -> TestRe
         SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse {
             generation: generation_pin(),
             results: vec![symbol_candidate()?],
+            window: QueryResultWindowV1::exact(1),
         });
     let bytes = mutate_ipc_response_wire(&response, |wire| {
         let response_fields = map_fields_mut(wire)?;
@@ -950,6 +1022,7 @@ fn search_plane_ipc_response_v2_semantic_rejects_duplicate_generation() -> TestR
     let response = SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
         generation: generation_pin(),
         results: vec![lexical_candidate()],
+        window: QueryResultWindowV1::exact(1),
         explanation: explanation_v2(),
     });
     let bytes = mutate_ipc_response_wire(&response, |wire| {
@@ -968,6 +1041,7 @@ fn search_plane_ipc_response_v2_hybrid_rejects_duplicate_explanation() -> TestRe
     let response = SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
         generation: generation_pin(),
         results: vec![lexical_candidate()],
+        window: QueryResultWindowV1::exact(1),
         explanation: explanation_v2(),
     });
     let bytes = mutate_ipc_response_wire(&response, |wire| {
@@ -985,6 +1059,7 @@ fn text_response_with_lexical_candidate() -> SearchPlaneQueryIpcResponse {
     SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
         generation: generation_pin(),
         results: vec![lexical_candidate()],
+        window: QueryResultWindowV1::exact(1),
         file_owner_rows: None,
     })
 }

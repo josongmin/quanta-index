@@ -40,7 +40,7 @@ pub struct SymbolQueryBuilder<
 }
 
 impl<'a> SymbolQueryBuilder<'a> {
-    const fn new(client: &'a QuantaIndex) -> Self {
+    fn new(client: &'a QuantaIndex) -> Self {
         Self {
             client,
             state: TextQueryBuilderState::new(),
@@ -81,6 +81,18 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
         self.transition(|state| {
             state.syntax = TextQuerySyntax::Sourcegraph;
             state.query_text = Some(query_text.into());
+        })
+    }
+
+    /// Replace the canonical OR-set of language constraints.
+    #[must_use]
+    pub fn language_any_of(
+        self,
+        languages: impl IntoIterator<Item = quanta_index_contract::lex::LanguageCode>,
+    ) -> Self {
+        self.transition(|state| {
+            state.constraints =
+                quanta_index_contract::QueryConstraintSetV1::from_languages(languages);
         })
     }
 
@@ -125,6 +137,7 @@ impl SymbolQueryBuilder<'_, true, true, true> {
             quanta_index_contract::SymbolQueryRequest {
                 syntax: request.syntax,
                 query_text: request.query_text,
+                constraints: request.constraints,
                 generation: request.generation,
                 generation_selector: request.generation_selector,
                 top_k: request.top_k,

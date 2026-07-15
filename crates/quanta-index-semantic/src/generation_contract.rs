@@ -16,11 +16,12 @@ use quanta_index_core::CoreError;
 use crate::codec::{self, cbor_serde};
 use crate::manifest::{SemanticManifest, distance_metric_token, normalization_token};
 
-const GENERATION_CONTRACT_VERSION: u32 = 1;
+const GENERATION_CONTRACT_VERSION: u32 = 2;
+const LEGACY_GENERATION_CONTRACT_VERSION: u32 = 1;
 
 /// Return `Err($variant(format!(...)))` when two contract fields disagree.
 ///
-/// Both validation paths (`validate_batch`, `validate_manifest`) are a run of
+/// Both validation paths (`merge_batch`, `validate_manifest`) are a run of
 /// field-equality guards that differ only in the `CoreError` variant and the
 /// message wording — this keeps each guard a single, uniform line.
 macro_rules! ensure_field_eq {
@@ -31,6 +32,7 @@ macro_rules! ensure_field_eq {
     };
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct GenerationContract {
     pub(crate) format_version: u32,
     pub(crate) mode: BatchIngestMode,
@@ -55,6 +57,28 @@ cbor_serde!(GenerationContract {
     normalization: String,
     required_corpora: Vec<String>,
     corpus_policy_digest: Option<String>,
+});
+
+struct LegacyGenerationContractV1 {
+    format_version: u32,
+    mode: BatchIngestMode,
+    base_generation: Option<ManifestGeneration>,
+    model_id: String,
+    model_version: Option<String>,
+    dimension: u32,
+    distance_metric: String,
+    normalization: String,
+}
+
+cbor_serde!(LegacyGenerationContractV1 {
+    format_version: u32,
+    mode: BatchIngestMode,
+    base_generation: Option<ManifestGeneration>,
+    model_id: String,
+    model_version: Option<String>,
+    dimension: u32,
+    distance_metric: String,
+    normalization: String,
 });
 
 impl GenerationContract {
@@ -86,7 +110,32 @@ impl GenerationContract {
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, CoreError> {
-        codec::decode(bytes, "semantic generation contract")
+        match codec::decode(bytes, "semantic generation contract") {
+            Ok(current) => Ok(current),
+            Err(current_err) => {
+                let Ok(legacy) = codec::decode::<LegacyGenerationContractV1>(
+                    bytes,
+                    "legacy semantic generation contract",
+                ) else {
+                    return Err(current_err);
+                };
+                if legacy.format_version != LEGACY_GENERATION_CONTRACT_VERSION {
+                    return Err(current_err);
+                }
+                Ok(Self {
+                    format_version: legacy.format_version,
+                    mode: legacy.mode,
+                    base_generation: legacy.base_generation,
+                    model_id: legacy.model_id,
+                    model_version: legacy.model_version,
+                    dimension: legacy.dimension,
+                    distance_metric: legacy.distance_metric,
+                    normalization: legacy.normalization,
+                    required_corpora: Vec::new(),
+                    corpus_policy_digest: None,
+                })
+            }
+        }
     }
 
     pub(crate) fn validate_batch_shape(batch: &SemanticIngestBatch) -> Result<(), CoreError> {
@@ -103,7 +152,7 @@ impl GenerationContract {
         }
     }
 
-    pub(crate) fn validate_batch(&self, batch: &SemanticIngestBatch) -> Result<(), CoreError> {
+    pub(crate) fn merge_batch(&self, batch: &SemanticIngestBatch) -> Result<Self, CoreError> {
         Self::validate_batch_shape(batch)?;
         self.validate_format()?;
         let observed = Self::from_batch(batch);
@@ -149,19 +198,41 @@ impl GenerationContract {
             observed.normalization,
             "semantic: existing generation normalization `{}` does not match batch normalization `{}`"
         );
-        ensure_field_eq!(
-            CoreError::InvalidContract,
-            self.required_corpora,
-            observed.required_corpora,
-            "semantic: existing generation required_corpora {:?} does not match batch required_corpora {:?}"
-        );
-        ensure_field_eq!(
-            CoreError::InvalidContract,
-            self.corpus_policy_digest,
-            observed.corpus_policy_digest,
-            "semantic: existing generation corpus_policy_digest {:?} does not match batch corpus_policy_digest {:?}"
-        );
-        Ok(())
+        let corpus_policy_digest = match (
+            self.corpus_policy_digest.as_ref(),
+            observed.corpus_policy_digest.as_ref(),
+        ) {
+            (Some(existing), Some(incoming)) if existing == incoming => {
+                self.corpus_policy_digest.clone()
+            }
+            (None, None) => None,
+            (None, Some(_)) if self.format_version == LEGACY_GENERATION_CONTRACT_VERSION => {
+                observed.corpus_policy_digest.clone()
+            }
+            _ => {
+                return Err(CoreError::InvalidContract(format!(
+                    "semantic: existing generation corpus_policy_digest {:?} does not match batch corpus_policy_digest {:?}",
+                    self.corpus_policy_digest, observed.corpus_policy_digest
+                )));
+            }
+        };
+        let mut required_corpora = self.required_corpora.clone();
+        required_corpora.extend(observed.required_corpora);
+        required_corpora.sort();
+        required_corpora.dedup();
+
+        Ok(Self {
+            format_version: GENERATION_CONTRACT_VERSION,
+            mode: self.mode,
+            base_generation: self.base_generation,
+            model_id: self.model_id.clone(),
+            model_version: self.model_version.clone(),
+            dimension: self.dimension,
+            distance_metric: self.distance_metric.clone(),
+            normalization: self.normalization.clone(),
+            required_corpora,
+            corpus_policy_digest,
+        })
     }
 
     pub(crate) fn validate_manifest(&self, manifest: &SemanticManifest) -> Result<(), CoreError> {
@@ -212,12 +283,46 @@ impl GenerationContract {
     }
 
     fn validate_format(&self) -> Result<(), CoreError> {
-        if self.format_version != GENERATION_CONTRACT_VERSION {
+        if self.format_version != GENERATION_CONTRACT_VERSION
+            && self.format_version != LEGACY_GENERATION_CONTRACT_VERSION
+        {
             return Err(CoreError::Storage(format!(
-                "semantic: generation contract format version {} unsupported (expected {GENERATION_CONTRACT_VERSION})",
+                "semantic: generation contract format version {} unsupported (expected {GENERATION_CONTRACT_VERSION} or legacy {LEGACY_GENERATION_CONTRACT_VERSION})",
                 self.format_version
             )));
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use quanta_index_contract::BatchIngestMode;
+
+    use super::{GenerationContract, LegacyGenerationContractV1};
+    use crate::codec;
+
+    #[test]
+    fn decode_legacy_v1_contract_defaults_corpus_policy() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let legacy = LegacyGenerationContractV1 {
+            format_version: 1,
+            mode: BatchIngestMode::ReplaceGeneration,
+            base_generation: None,
+            model_id: "legacy-model".to_string(),
+            model_version: Some("v3".to_string()),
+            dimension: 3,
+            distance_metric: "cosine".to_string(),
+            normalization: "l2_unit".to_string(),
+        };
+        let bytes = codec::encode(&legacy, "legacy generation contract fixture")?;
+
+        let decoded = GenerationContract::decode(&bytes)?;
+
+        assert_eq!(decoded.format_version, 1);
+        assert_eq!(decoded.model_id, "legacy-model");
+        assert!(decoded.required_corpora.is_empty());
+        assert_eq!(decoded.corpus_policy_digest, None);
         Ok(())
     }
 }

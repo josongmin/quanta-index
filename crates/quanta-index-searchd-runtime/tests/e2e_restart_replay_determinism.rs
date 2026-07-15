@@ -105,10 +105,6 @@ fn ingest_structural_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
         SearchPlaneTrackKind::Lexical,
         SearchPlaneTrackKind::Structural,
     ])?;
-    rt.activate_last_sealed_generation_with_tracks(&[
-        SearchPlaneTrackKind::Lexical,
-        SearchPlaneTrackKind::Structural,
-    ])?;
     Ok(())
 }
 
@@ -374,10 +370,7 @@ fn reopen_preserves_semantic_scope_ids_and_explanation() -> AnyResult<()> {
     let mut rt = E2eRuntime::boot()?;
     ingest_dual_track_fixture(&mut rt)?;
     _ = rt.seal()?;
-    rt.activate_last_sealed_generation_with_tracks(&[
-        SearchPlaneTrackKind::Lexical,
-        SearchPlaneTrackKind::Semantic,
-    ])?;
+    rt.activate_last_sealed_generation()?;
 
     let (before_ids, before_explanation) = query_semantic_scope_ids_and_explanation(&mut rt)?;
     let mut rt = rt.reopen();
@@ -413,19 +406,13 @@ fn fresh_reingest_replays_equivalent_hybrid_ids_and_early_stop_truth() -> AnyRes
     let mut baseline = E2eRuntime::boot()?;
     ingest_dual_track_fixture(&mut baseline)?;
     _ = baseline.seal()?;
-    baseline.activate_last_sealed_generation_with_tracks(&[
-        SearchPlaneTrackKind::Lexical,
-        SearchPlaneTrackKind::Semantic,
-    ])?;
+    baseline.activate_last_sealed_generation()?;
     let baseline = query_hybrid_ids_and_explanation(&mut baseline)?;
 
     let mut replay = E2eRuntime::boot()?;
     ingest_dual_track_fixture(&mut replay)?;
     _ = replay.seal()?;
-    replay.activate_last_sealed_generation_with_tracks(&[
-        SearchPlaneTrackKind::Lexical,
-        SearchPlaneTrackKind::Semantic,
-    ])?;
+    replay.activate_last_sealed_generation()?;
     let replay = query_hybrid_ids_and_explanation(&mut replay)?;
 
     if baseline.0 != replay.0 {
@@ -906,10 +893,6 @@ fn reopen_preserves_structural_tombstone_not_ready_state() -> AnyResult<()> {
         SearchPlaneTrackKind::Lexical,
         SearchPlaneTrackKind::Structural,
     ])?;
-    rt.activate_last_sealed_generation_with_tracks(&[
-        SearchPlaneTrackKind::Lexical,
-        SearchPlaneTrackKind::Structural,
-    ])?;
 
     let before = query_structural_ids(
         &mut rt,
@@ -926,10 +909,6 @@ fn reopen_preserves_structural_tombstone_not_ready_state() -> AnyResult<()> {
     rt.ingest_structural_function_tree(path, content, "restart_structural_tombstone")?;
     rt.tombstone_structural_for_path(path)?;
     _ = rt.seal_lexical_generation_for_tracks(&[
-        SearchPlaneTrackKind::Lexical,
-        SearchPlaneTrackKind::Structural,
-    ])?;
-    rt.activate_last_sealed_generation_with_tracks(&[
         SearchPlaneTrackKind::Lexical,
         SearchPlaneTrackKind::Structural,
     ])?;

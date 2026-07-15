@@ -7,7 +7,7 @@ crate quanta_index_core
 │   │   │   └── trait HybridQueryPort: pub
 │   │   └── mod service: pub(self)
 │   │       ├── struct HybridOrchestratorPolicy: pub
-│   │       └── struct IdFuseAccumulator: pub(self)
+│   │       └── struct KeyFuseAccumulator: pub(self)
 │   ├── mod lexical: pub
 │   │   ├── mod inbound: pub(self)
 │   │   │   └── trait LexicalQueryPort: pub

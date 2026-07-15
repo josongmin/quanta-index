@@ -1,7 +1,7 @@
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::{
     BatchPublishReceipt, FileContributorIngestBatch, FileOwnerProjectionRow,
-    FileOwnershipIngestBatch, LexicalCandidate, LqQuery, ManifestGeneration,
+    FileOwnershipIngestBatch, LexicalCandidate, LqQuery, ManifestGeneration, QueryConstraintSetV1,
     RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId, RepoMetaIngestBatch,
     RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch, SymbolCandidate,
 };
@@ -152,6 +152,24 @@ pub trait FileContributorIngestPort: Send + Sync {
 pub trait LexicalSearcher: Send + Sync {
     fn search(&self, query: &LqQuery, top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError>;
 
+    /// Search with candidate-generation constraints applied before ranking and
+    /// `top_k`. Adapters that do not own native constraint pushdown must fail
+    /// closed for non-empty constraints instead of post-filtering results.
+    fn search_constrained(
+        &self,
+        query: &LqQuery,
+        constraints: &QueryConstraintSetV1,
+        top_k: u32,
+    ) -> Result<Vec<LexicalCandidate>, CoreError> {
+        if constraints.is_unconstrained() {
+            self.search(query, top_k)
+        } else {
+            Err(CoreError::NotImplemented(
+                "lexical searcher does not provide native query-constraint pushdown".to_string(),
+            ))
+        }
+    }
+
     /// Project owner rows for the supplied lexical candidates.
     ///
     /// The input candidates already encode the lexical match set. Implementations
@@ -170,6 +188,21 @@ pub trait LexicalSearcher: Send + Sync {
         top_k: u32,
     ) -> Result<Vec<SymbolCandidate>, CoreError>;
 
+    fn search_symbols_constrained(
+        &self,
+        query: &LqQuery,
+        constraints: &QueryConstraintSetV1,
+        top_k: u32,
+    ) -> Result<Vec<SymbolCandidate>, CoreError> {
+        if constraints.is_unconstrained() {
+            self.search_symbols(query, top_k)
+        } else {
+            Err(CoreError::NotImplemented(
+                "symbol searcher does not provide native query-constraint pushdown".to_string(),
+            ))
+        }
+    }
+
     /// Return every symbol-domain match for the query within the opened
     /// generation. Callers use this when chunk-domain structural routing needs
     /// exact symbol-hit projection without top-k truncation.
@@ -181,4 +214,19 @@ pub trait LexicalSearcher: Send + Sync {
     /// Callers use this for exact scope materialization before downstream
     /// semantic/hybrid narrowing.
     fn search_all(&self, query: &LqQuery) -> Result<Vec<LexicalCandidate>, CoreError>;
+
+    fn search_all_constrained(
+        &self,
+        query: &LqQuery,
+        constraints: &QueryConstraintSetV1,
+    ) -> Result<Vec<LexicalCandidate>, CoreError> {
+        if constraints.is_unconstrained() {
+            self.search_all(query)
+        } else {
+            Err(CoreError::NotImplemented(
+                "lexical searcher does not provide native unbounded query-constraint pushdown"
+                    .to_string(),
+            ))
+        }
+    }
 }

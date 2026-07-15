@@ -78,30 +78,322 @@ impl<'de> Deserialize<'de> for SearchPlaneTrackKind {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SearchPlaneActivateGenerationRequest {
-    pub repo_id: RepoId,
-    pub revision_id: RevisionId,
-    pub manifest_generation: ManifestGeneration,
-    pub manifest_digest: String,
-    pub tracks: Vec<SearchPlaneTrackKind>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SearchPlaneActivationAck {
-    pub repo_id: RepoId,
-    pub revision_id: RevisionId,
-    pub manifest_generation: ManifestGeneration,
-    pub manifest_digest: String,
-    pub tracks: Vec<SearchPlaneTrackKind>,
-}
-
-/// Explicit compare-and-swap rollback request for one semantic generation.
+/// Validation failure for a search-corpus generation identity.
 ///
-/// `SearchPlaneActivateGenerationRequest` remains monotonic and must never be
-/// used to lower an active generation. Rollback carries both the expected
-/// active identity and the sealed target identity so a stale operator cannot
-/// overwrite a concurrent activation.
+/// A corpus generation is one logical reader-visible generation across the
+/// lexical and semantic planes.  Keeping the malformed states explicit lets
+/// the dispatcher reject them before any durable activation mutation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchCorpusGenerationIdentityValidationErrorV1 {
+    LexicalTrackRequired,
+    SemanticTrackRequired,
+    RepoMismatch,
+    RevisionMismatch,
+    GenerationMismatch,
+    DigestMismatch,
+    EmptyDigest,
+}
+
+impl SearchCorpusGenerationIdentityValidationErrorV1 {
+    #[must_use]
+    pub const fn code_v1(self) -> &'static str {
+        match self {
+            Self::LexicalTrackRequired => "LEXICAL_TRACK_REQUIRED",
+            Self::SemanticTrackRequired => "SEMANTIC_TRACK_REQUIRED",
+            Self::RepoMismatch => "REPO_MISMATCH",
+            Self::RevisionMismatch => "REVISION_MISMATCH",
+            Self::GenerationMismatch => "GENERATION_MISMATCH",
+            Self::DigestMismatch => "DIGEST_MISMATCH",
+            Self::EmptyDigest => "EMPTY_DIGEST",
+        }
+    }
+}
+
+impl fmt::Display for SearchCorpusGenerationIdentityValidationErrorV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.code_v1())
+    }
+}
+
+/// Complete reader-visible generation identity for a search corpus.
+///
+/// The two records deliberately stay separate so each plane keeps its typed
+/// track identity, while this composite makes lexical-only activation
+/// unrepresentable on the production activation path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchCorpusGenerationIdentityV1 {
+    pub lexical: GenerationSnapshot,
+    pub semantic: GenerationSnapshot,
+}
+
+impl SearchCorpusGenerationIdentityV1 {
+    pub fn validate_v1(&self) -> Result<(), SearchCorpusGenerationIdentityValidationErrorV1> {
+        if self.lexical.track != SearchPlaneTrackKind::Lexical {
+            return Err(SearchCorpusGenerationIdentityValidationErrorV1::LexicalTrackRequired);
+        }
+        if self.semantic.track != SearchPlaneTrackKind::Semantic {
+            return Err(SearchCorpusGenerationIdentityValidationErrorV1::SemanticTrackRequired);
+        }
+        if self.lexical.repo_id != self.semantic.repo_id {
+            return Err(SearchCorpusGenerationIdentityValidationErrorV1::RepoMismatch);
+        }
+        if self.lexical.revision_id != self.semantic.revision_id {
+            return Err(SearchCorpusGenerationIdentityValidationErrorV1::RevisionMismatch);
+        }
+        if self.lexical.manifest_generation != self.semantic.manifest_generation {
+            return Err(SearchCorpusGenerationIdentityValidationErrorV1::GenerationMismatch);
+        }
+        if self.lexical.manifest_digest != self.semantic.manifest_digest {
+            return Err(SearchCorpusGenerationIdentityValidationErrorV1::DigestMismatch);
+        }
+        if self.lexical.manifest_digest.trim().is_empty() {
+            return Err(SearchCorpusGenerationIdentityValidationErrorV1::EmptyDigest);
+        }
+        Ok(())
+    }
+}
+
+/// Atomic activation request for one complete search-corpus generation.
+///
+/// `expected_active` is required on the wire. `null` explicitly denotes a
+/// first activation; omission is rejected to prevent accidental blind writes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchPlaneActivateSearchCorpusGenerationCasRequest {
+    pub candidate: SearchCorpusGenerationIdentityV1,
+    pub expected_active: Option<SearchCorpusGenerationIdentityV1>,
+}
+
+/// Receipt of one successful composite search-corpus activation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchPlaneSearchCorpusActivationCasAck {
+    pub active: SearchCorpusGenerationIdentityV1,
+    pub previous_sealed_active: Option<SearchCorpusGenerationIdentityV1>,
+}
+
+const SEARCH_CORPUS_GENERATION_IDENTITY_V1_FIELDS: &[&str] = &["lexical", "semantic"];
+const SEARCH_PLANE_ACTIVATE_SEARCH_CORPUS_GENERATION_CAS_REQUEST_FIELDS: &[&str] =
+    &["candidate", "expected_active"];
+const SEARCH_PLANE_SEARCH_CORPUS_ACTIVATION_CAS_ACK_FIELDS: &[&str] =
+    &["active", "previous_sealed_active"];
+
+impl Serialize for SearchCorpusGenerationIdentityV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("SearchCorpusGenerationIdentityV1", 2)?;
+        state.serialize_field("lexical", &self.lexical)?;
+        state.serialize_field("semantic", &self.semantic)?;
+        state.end()
+    }
+}
+
+struct SearchCorpusGenerationIdentityV1Visitor;
+
+impl<'de> Visitor<'de> for SearchCorpusGenerationIdentityV1Visitor {
+    type Value = SearchCorpusGenerationIdentityV1;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a SearchCorpusGenerationIdentityV1 map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut lexical: Option<GenerationSnapshot> = None;
+        let mut semantic: Option<GenerationSnapshot> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "lexical" => {
+                    if lexical.is_some() {
+                        return Err(de::Error::duplicate_field("lexical"));
+                    }
+                    lexical = Some(map.next_value()?);
+                }
+                "semantic" => {
+                    if semantic.is_some() {
+                        return Err(de::Error::duplicate_field("semantic"));
+                    }
+                    semantic = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        SEARCH_CORPUS_GENERATION_IDENTITY_V1_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(Self::Value {
+            lexical: lexical.ok_or_else(|| de::Error::missing_field("lexical"))?,
+            semantic: semantic.ok_or_else(|| de::Error::missing_field("semantic"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for SearchCorpusGenerationIdentityV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "SearchCorpusGenerationIdentityV1",
+            SEARCH_CORPUS_GENERATION_IDENTITY_V1_FIELDS,
+            SearchCorpusGenerationIdentityV1Visitor,
+        )
+    }
+}
+
+impl Serialize for SearchPlaneActivateSearchCorpusGenerationCasRequest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer
+            .serialize_struct("SearchPlaneActivateSearchCorpusGenerationCasRequest", 2)?;
+        state.serialize_field("candidate", &self.candidate)?;
+        state.serialize_field("expected_active", &self.expected_active)?;
+        state.end()
+    }
+}
+
+struct SearchPlaneActivateSearchCorpusGenerationCasRequestVisitor;
+
+impl<'de> Visitor<'de> for SearchPlaneActivateSearchCorpusGenerationCasRequestVisitor {
+    type Value = SearchPlaneActivateSearchCorpusGenerationCasRequest;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a SearchPlaneActivateSearchCorpusGenerationCasRequest map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut candidate: Option<SearchCorpusGenerationIdentityV1> = None;
+        let mut expected_active: Option<Option<SearchCorpusGenerationIdentityV1>> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "candidate" => {
+                    if candidate.is_some() {
+                        return Err(de::Error::duplicate_field("candidate"));
+                    }
+                    candidate = Some(map.next_value()?);
+                }
+                "expected_active" => {
+                    if expected_active.is_some() {
+                        return Err(de::Error::duplicate_field("expected_active"));
+                    }
+                    expected_active = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        SEARCH_PLANE_ACTIVATE_SEARCH_CORPUS_GENERATION_CAS_REQUEST_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(Self::Value {
+            candidate: candidate.ok_or_else(|| de::Error::missing_field("candidate"))?,
+            expected_active: expected_active
+                .ok_or_else(|| de::Error::missing_field("expected_active"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for SearchPlaneActivateSearchCorpusGenerationCasRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "SearchPlaneActivateSearchCorpusGenerationCasRequest",
+            SEARCH_PLANE_ACTIVATE_SEARCH_CORPUS_GENERATION_CAS_REQUEST_FIELDS,
+            SearchPlaneActivateSearchCorpusGenerationCasRequestVisitor,
+        )
+    }
+}
+
+impl Serialize for SearchPlaneSearchCorpusActivationCasAck {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state =
+            serializer.serialize_struct("SearchPlaneSearchCorpusActivationCasAck", 2)?;
+        state.serialize_field("active", &self.active)?;
+        state.serialize_field("previous_sealed_active", &self.previous_sealed_active)?;
+        state.end()
+    }
+}
+
+struct SearchPlaneSearchCorpusActivationCasAckVisitor;
+
+impl<'de> Visitor<'de> for SearchPlaneSearchCorpusActivationCasAckVisitor {
+    type Value = SearchPlaneSearchCorpusActivationCasAck;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a SearchPlaneSearchCorpusActivationCasAck map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut active: Option<SearchCorpusGenerationIdentityV1> = None;
+        let mut previous_sealed_active: Option<Option<SearchCorpusGenerationIdentityV1>> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "active" => {
+                    if active.is_some() {
+                        return Err(de::Error::duplicate_field("active"));
+                    }
+                    active = Some(map.next_value()?);
+                }
+                "previous_sealed_active" => {
+                    if previous_sealed_active.is_some() {
+                        return Err(de::Error::duplicate_field("previous_sealed_active"));
+                    }
+                    previous_sealed_active = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        SEARCH_PLANE_SEARCH_CORPUS_ACTIVATION_CAS_ACK_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(Self::Value {
+            active: active.ok_or_else(|| de::Error::missing_field("active"))?,
+            previous_sealed_active: previous_sealed_active
+                .ok_or_else(|| de::Error::missing_field("previous_sealed_active"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for SearchPlaneSearchCorpusActivationCasAck {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "SearchPlaneSearchCorpusActivationCasAck",
+            SEARCH_PLANE_SEARCH_CORPUS_ACTIVATION_CAS_ACK_FIELDS,
+            SearchPlaneSearchCorpusActivationCasAckVisitor,
+        )
+    }
+}
+
+/// Explicit compare-and-swap rollback request for one composite search corpus.
+///
+/// `track` is retained as the semantic rollback-capability selector and MUST
+/// be `Semantic`; it does not select a single-track state. The control plane
+/// restores lexical and semantic identities together from the exact target
+/// tuple, so a stale operator cannot overwrite a concurrent composite
+/// activation or create a semantic-only active head.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchPlaneRollbackGenerationRequest {
     pub repo_id: RepoId,
@@ -113,7 +405,7 @@ pub struct SearchPlaneRollbackGenerationRequest {
     pub target_manifest_digest: String,
 }
 
-/// Result of a successful explicit rollback CAS.
+/// Result of a successful explicit composite rollback CAS.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchPlaneRollbackGenerationAck {
     pub repo_id: RepoId,
@@ -123,210 +415,6 @@ pub struct SearchPlaneRollbackGenerationAck {
     pub previous_manifest_digest: String,
     pub manifest_generation: ManifestGeneration,
     pub manifest_digest: String,
-}
-
-const SEARCH_PLANE_ACTIVATE_GENERATION_REQUEST_FIELDS: &[&str] = &[
-    "repo_id",
-    "revision_id",
-    "manifest_generation",
-    "manifest_digest",
-    "tracks",
-];
-
-fn serialize_activation_like<S>(
-    name: &'static str,
-    repo_id: &RepoId,
-    revision_id: &RevisionId,
-    manifest_generation: &ManifestGeneration,
-    manifest_digest: &str,
-    tracks: &[SearchPlaneTrackKind],
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    let mut state = serializer.serialize_struct(name, 5)?;
-    state.serialize_field("repo_id", repo_id)?;
-    state.serialize_field("revision_id", revision_id)?;
-    state.serialize_field("manifest_generation", manifest_generation)?;
-    state.serialize_field("manifest_digest", manifest_digest)?;
-    state.serialize_field("tracks", tracks)?;
-    state.end()
-}
-
-impl Serialize for SearchPlaneActivateGenerationRequest {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serialize_activation_like(
-            "SearchPlaneActivateGenerationRequest",
-            &self.repo_id,
-            &self.revision_id,
-            &self.manifest_generation,
-            &self.manifest_digest,
-            &self.tracks,
-            serializer,
-        )
-    }
-}
-
-impl Serialize for SearchPlaneActivationAck {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serialize_activation_like(
-            "SearchPlaneActivationAck",
-            &self.repo_id,
-            &self.revision_id,
-            &self.manifest_generation,
-            &self.manifest_digest,
-            &self.tracks,
-            serializer,
-        )
-    }
-}
-
-struct SearchPlaneActivateGenerationRequestVisitor;
-struct SearchPlaneActivationAckVisitor;
-
-type ActivationLikeTuple = (
-    RepoId,
-    RevisionId,
-    ManifestGeneration,
-    String,
-    Vec<SearchPlaneTrackKind>,
-);
-
-fn deserialize_activation_like<'de, A>(mut map: A) -> Result<ActivationLikeTuple, A::Error>
-where
-    A: MapAccess<'de>,
-{
-    let mut repo_id: Option<RepoId> = None;
-    let mut revision_id: Option<RevisionId> = None;
-    let mut manifest_generation: Option<ManifestGeneration> = None;
-    let mut manifest_digest: Option<String> = None;
-    let mut tracks: Option<Vec<SearchPlaneTrackKind>> = None;
-    while let Some(key) = map.next_key::<String>()? {
-        match key.as_str() {
-            "repo_id" => {
-                if repo_id.is_some() {
-                    return Err(de::Error::duplicate_field("repo_id"));
-                }
-                repo_id = Some(map.next_value()?);
-            }
-            "revision_id" => {
-                if revision_id.is_some() {
-                    return Err(de::Error::duplicate_field("revision_id"));
-                }
-                revision_id = Some(map.next_value()?);
-            }
-            "manifest_generation" => {
-                if manifest_generation.is_some() {
-                    return Err(de::Error::duplicate_field("manifest_generation"));
-                }
-                manifest_generation = Some(map.next_value()?);
-            }
-            "manifest_digest" => {
-                if manifest_digest.is_some() {
-                    return Err(de::Error::duplicate_field("manifest_digest"));
-                }
-                manifest_digest = Some(map.next_value()?);
-            }
-            "tracks" => {
-                if tracks.is_some() {
-                    return Err(de::Error::duplicate_field("tracks"));
-                }
-                tracks = Some(map.next_value()?);
-            }
-            other => {
-                return Err(de::Error::unknown_field(
-                    other,
-                    SEARCH_PLANE_ACTIVATE_GENERATION_REQUEST_FIELDS,
-                ));
-            }
-        }
-    }
-    Ok((
-        repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
-        revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
-        manifest_generation.ok_or_else(|| de::Error::missing_field("manifest_generation"))?,
-        manifest_digest.ok_or_else(|| de::Error::missing_field("manifest_digest"))?,
-        tracks.ok_or_else(|| de::Error::missing_field("tracks"))?,
-    ))
-}
-
-impl<'de> Visitor<'de> for SearchPlaneActivateGenerationRequestVisitor {
-    type Value = SearchPlaneActivateGenerationRequest;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a SearchPlaneActivateGenerationRequest map")
-    }
-
-    fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let (repo_id, revision_id, manifest_generation, manifest_digest, tracks) =
-            deserialize_activation_like(map)?;
-        Ok(SearchPlaneActivateGenerationRequest {
-            repo_id,
-            revision_id,
-            manifest_generation,
-            manifest_digest,
-            tracks,
-        })
-    }
-}
-
-impl<'de> Deserialize<'de> for SearchPlaneActivateGenerationRequest {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_struct(
-            "SearchPlaneActivateGenerationRequest",
-            SEARCH_PLANE_ACTIVATE_GENERATION_REQUEST_FIELDS,
-            SearchPlaneActivateGenerationRequestVisitor,
-        )
-    }
-}
-
-impl<'de> Visitor<'de> for SearchPlaneActivationAckVisitor {
-    type Value = SearchPlaneActivationAck;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a SearchPlaneActivationAck map")
-    }
-
-    fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let (repo_id, revision_id, manifest_generation, manifest_digest, tracks) =
-            deserialize_activation_like(map)?;
-        Ok(SearchPlaneActivationAck {
-            repo_id,
-            revision_id,
-            manifest_generation,
-            manifest_digest,
-            tracks,
-        })
-    }
-}
-
-impl<'de> Deserialize<'de> for SearchPlaneActivationAck {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_struct(
-            "SearchPlaneActivationAck",
-            SEARCH_PLANE_ACTIVATE_GENERATION_REQUEST_FIELDS,
-            SearchPlaneActivationAckVisitor,
-        )
-    }
 }
 
 const SEARCH_PLANE_ROLLBACK_GENERATION_REQUEST_FIELDS: &[&str] = &[
@@ -1149,6 +1237,77 @@ mod qi_act_01_tests {
             return;
         };
         assert_eq!(decoded, snapshot);
+    }
+
+    fn corpus_identity(generation: u64, digest: &str) -> SearchCorpusGenerationIdentityV1 {
+        SearchCorpusGenerationIdentityV1 {
+            lexical: GenerationSnapshot {
+                repo_id: fixture_repo(),
+                revision_id: fixture_rev(),
+                track: SearchPlaneTrackKind::Lexical,
+                manifest_generation: ManifestGeneration::new(generation),
+                manifest_digest: digest.to_string(),
+            },
+            semantic: GenerationSnapshot {
+                repo_id: fixture_repo(),
+                revision_id: fixture_rev(),
+                track: SearchPlaneTrackKind::Semantic,
+                manifest_generation: ManifestGeneration::new(generation),
+                manifest_digest: digest.to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn search_corpus_activation_round_trips_only_composite_identity_v1() {
+        let previous = corpus_identity(10, "digest-10");
+        let candidate = corpus_identity(11, "digest-11");
+        assert_eq!(candidate.validate_v1(), Ok(()));
+
+        let request = SearchPlaneActivateSearchCorpusGenerationCasRequest {
+            candidate: candidate.clone(),
+            expected_active: Some(previous.clone()),
+        };
+        let bytes = encode(&request).expect("encode composite activation request");
+        assert_eq!(
+            decode::<SearchPlaneActivateSearchCorpusGenerationCasRequest>(&bytes)
+                .expect("decode composite activation request"),
+            request
+        );
+
+        let ack = SearchPlaneSearchCorpusActivationCasAck {
+            active: candidate,
+            previous_sealed_active: Some(previous),
+        };
+        let bytes = encode(&ack).expect("encode composite activation ack");
+        assert_eq!(
+            decode::<SearchPlaneSearchCorpusActivationCasAck>(&bytes)
+                .expect("decode composite activation ack"),
+            ack
+        );
+    }
+
+    #[test]
+    fn search_corpus_activation_rejects_lexical_only_identity_v1() {
+        let mut identity = corpus_identity(11, "digest-11");
+        identity.semantic.track = SearchPlaneTrackKind::Lexical;
+        assert_eq!(
+            identity.validate_v1(),
+            Err(SearchCorpusGenerationIdentityValidationErrorV1::SemanticTrackRequired)
+        );
+
+        let missing_semantic = serde_json::json!({
+            "lexical": {
+                "repo_id": "repo",
+                "revision_id": "rev",
+                "track": "Lexical",
+                "manifest_generation": 11,
+                "manifest_digest": "digest-11"
+            }
+        });
+        let error = SearchCorpusGenerationIdentityV1::deserialize(missing_semantic)
+            .expect_err("lexical-only identity must not deserialize");
+        assert!(error.to_string().contains("missing field `semantic`"));
     }
 
     #[test]

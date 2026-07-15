@@ -478,6 +478,7 @@ fn publish_search_corpus_chunks(
             ),
             mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload,
+            clear_surfaces: Vec::new(),
             replace_scopes,
             tombstone_scopes: Vec::new(),
             semantic_replace_scopes: Vec::new(),
@@ -502,6 +503,7 @@ fn tombstone_lexical_scopes(socket: &Path, paths: &[&str]) -> TestResult {
             ),
             mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload: None,
+            clear_surfaces: Vec::new(),
             replace_scopes: Vec::new(),
             tombstone_scopes: paths
                 .iter()
@@ -531,6 +533,7 @@ fn seal_lexical(socket: &Path) -> TestResult {
             ),
             mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload: None,
+            clear_surfaces: Vec::new(),
             replace_scopes: Vec::new(),
             tombstone_scopes: Vec::new(),
             semantic_replace_scopes: Vec::new(),
@@ -886,6 +889,7 @@ fn publish_dispatch_query_sourcegraph_roundtrip() -> TestResult {
             payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
                 syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "hello".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(pin.clone()),
                 generation_selector: None,
                 top_k: 50,
@@ -941,6 +945,7 @@ fn sourcegraph_path_and_lang_filters_execute_against_indexed_metadata() -> TestR
         payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Sourcegraph,
             query_text: "path:src/lib.rs lang:rust needle".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(GenerationPin::new(repo(), revision(), generation())),
             generation_selector: None,
             top_k: 50,
@@ -1409,6 +1414,7 @@ fn hybrid_query_requires_joint_materialization() -> TestResult {
             text_query: TextQueryRequest {
                 syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "only".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(GenerationPin::new(repo(), revision(), generation())),
                 generation_selector: None,
                 top_k: 50,
@@ -1456,6 +1462,7 @@ fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Sourcegraph,
                     query_text: "sphinx".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(pin.clone()),
                     generation_selector: None,
                     top_k: 50,
@@ -1482,6 +1489,7 @@ fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
             text_query: TextQueryRequest {
                 syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "sphinx".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(pin.clone()),
                 generation_selector: None,
                 top_k: 50,
@@ -1546,6 +1554,7 @@ fn hybrid_query_rejects_generation_pin_mismatch() -> TestResult {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Sourcegraph,
                     query_text: "needle".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(GenerationPin::new(
                         repo(),
                         revision(),
@@ -1614,6 +1623,7 @@ fn sourcegraph_context_filter_executes_against_repo_metadata_surface() -> TestRe
         payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Sourcegraph,
             query_text: "fork:no archived:no visibility:public context:global needle".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(GenerationPin::new(repo(), revision(), generation())),
             generation_selector: None,
             top_k: 50,
@@ -1687,6 +1697,7 @@ fn hybrid_query_visibility_filter_executes_against_repo_metadata_surface() -> Te
                 syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "fork:no archived:no visibility:public context:global needle"
                     .to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(pin.clone()),
                 generation_selector: None,
                 top_k: 50,
@@ -1761,6 +1772,7 @@ fn semantic_only_query_requires_semantic_materialization() -> TestResult {
         request_id: 0,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "semantic".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(GenerationPin::new(repo(), revision(), generation())),
             generation_selector: None,
             lexical_scope: None,
@@ -1810,6 +1822,7 @@ fn semantic_query_without_lexical_scope_returns_global_nearest_hit() -> TestResu
         request_id: 42,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "alpha".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(pin.clone()),
             generation_selector: None,
             lexical_scope: None,
@@ -1932,6 +1945,7 @@ fn openai_semantic_paraphrase_outranks_unrelated_v1() -> TestResult {
         request_id: 7,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "the cat is sleeping".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(pin.clone()),
             generation_selector: None,
             lexical_scope: None,
@@ -2019,6 +2033,7 @@ fn semantic_query_uses_search_owned_text_derivation_by_default() -> TestResult {
         request_id: 43,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "typed semantic parser".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(GenerationPin::new(repo(), revision(), generation())),
             generation_selector: None,
             lexical_scope: None,
@@ -2079,6 +2094,7 @@ fn semantic_query_uses_search_owned_text_derivation_with_explicit_hash_profile()
         request_id: 44,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "typed semantic parser".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(GenerationPin::new(repo(), revision(), generation())),
             generation_selector: None,
             lexical_scope: None,
@@ -2147,11 +2163,13 @@ fn semantic_query_rejects_generation_pin_mismatch_with_lexical_scope() -> TestRe
             request_id: 43,
             payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
                 query_text: "scope".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(GenerationPin::new(repo(), revision(), generation())),
                 generation_selector: None,
                 lexical_scope: Some(TextQueryRequest {
                     syntax: TextQuerySyntax::Sourcegraph,
                     query_text: "scope".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(GenerationPin::new(
                         repo(),
                         revision(),
@@ -2209,11 +2227,13 @@ fn semantic_query_executes_scoped_unindexed_lexical_scope() -> TestResult {
         request_id: 44,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "alpha".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(pin.clone()),
             generation_selector: None,
             lexical_scope: Some(TextQueryRequest {
                 syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "index:no semantic".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(pin.clone()),
                 generation_selector: None,
                 top_k: 1,
@@ -2278,11 +2298,13 @@ fn semantic_query_with_lexical_scope_returns_intersection_only() -> TestResult {
         request_id: 41,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "needle".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(pin.clone()),
             generation_selector: None,
             lexical_scope: Some(TextQueryRequest {
                 syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "scope needle".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(pin),
                 generation_selector: None,
                 top_k: 2,
@@ -2340,11 +2362,13 @@ fn semantic_scoped_query_ignores_out_of_scope_global_nearest_hit() -> TestResult
         request_id: 42,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "focus alpha".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(pin.clone()),
             generation_selector: None,
             lexical_scope: Some(TextQueryRequest {
                 syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "scope".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(pin),
                 generation_selector: None,
                 top_k: 1,
@@ -2402,6 +2426,7 @@ fn semantic_query_rejects_empty_text_with_typed_code() -> TestResult {
         request_id: 43,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "!!!".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(GenerationPin::new(repo(), revision(), generation())),
             generation_selector: None,
             lexical_scope: None,
@@ -2473,6 +2498,7 @@ fn semantic_query_fails_closed_when_runtime_has_no_query_embedder() -> TestResul
         request_id: 44,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "semantic meaning".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(GenerationPin::new(repo(), revision(), generation())),
             generation_selector: None,
             lexical_scope: None,
@@ -2538,6 +2564,7 @@ fn hybrid_query_rejects_zero_top_k_with_typed_code() -> TestResult {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Sourcegraph,
                     query_text: "needle".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(GenerationPin::new(repo(), revision(), generation())),
                     generation_selector: None,
                     top_k: 50,
@@ -2590,6 +2617,7 @@ fn hybrid_query_excludes_semantic_outsider_from_lexical_universe() -> TestResult
             text_query: TextQueryRequest {
                 syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "scope".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(pin.clone()),
                 generation_selector: None,
                 top_k: 50,
@@ -2656,6 +2684,7 @@ fn hybrid_query_repeated_tied_scope_query_keeps_stable_order() -> TestResult {
             text_query: TextQueryRequest {
                 syntax: TextQuerySyntax::Native,
                 query_text: "scope tie".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(pin.clone()),
                 generation_selector: None,
                 top_k: 50,
@@ -2735,6 +2764,7 @@ fn structural_query_returns_typed_generation_not_ready_error() -> TestResult {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "match { :[x] }".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(GenerationPin::new(repo(), revision(), generation())),
                     generation_selector: None,
                     top_k: 50,
@@ -2834,6 +2864,7 @@ fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
             text_query: TextQueryRequest {
                 syntax: TextQuerySyntax::Native,
                 query_text: "match { :[x] }".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(GenerationPin::new(repo(), revision(), generation())),
                 generation_selector: None,
                 top_k: 50,
@@ -2910,6 +2941,7 @@ fn structural_query_composition_wiring_emits_typed_error() -> TestResult {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "match { :[x] }".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(GenerationPin::new(repo(), revision(), generation())),
                     generation_selector: None,
                     top_k: 50,
@@ -2969,6 +3001,7 @@ fn structural_sourcegraph_query_returns_match_after_parse_tree_ingest() -> TestR
             text_query: TextQueryRequest {
                 syntax: TextQuerySyntax::Sourcegraph,
                 query_text: r#"repo:repo-int path:src/lib.rs lang:rust patterntype:structural "function_item { { identifier :[name] } }""#.to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(pin.clone()),
                 generation_selector: None,
                 top_k: 50,
@@ -3067,6 +3100,7 @@ fn structural_sourcegraph_regex_query_returns_match_after_parse_tree_ingest() ->
                 query_text:
                     r"repo:repo-int path:src/lib.rs lang:rust patterntype:structural /^main$/"
                         .to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(pin.clone()),
                 generation_selector: None,
                 top_k: 50,
@@ -3167,6 +3201,7 @@ fn structural_sourcegraph_query_requires_structural_pattern_type() -> TestResult
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Sourcegraph,
                     query_text: r#""function_item""#.to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(GenerationPin::new(repo(), revision(), generation())),
                     generation_selector: None,
                     top_k: 50,
@@ -3217,6 +3252,7 @@ fn structural_sourcegraph_query_rejects_select_filter() -> TestResult {
             text_query: TextQueryRequest {
                 syntax: TextQuerySyntax::Sourcegraph,
                 query_text: r#"select:repo patterntype:structural "function_item""#.to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(GenerationPin::new(repo(), revision(), generation())),
                 generation_selector: None,
                 top_k: 50,
@@ -3287,6 +3323,7 @@ fn structural_sourcegraph_query_rejects_timeout_filter() -> TestResult {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Sourcegraph,
                     query_text: r#"timeout:0ms patterntype:structural "function_item""#.to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(GenerationPin::new(repo(), revision(), generation())),
                     generation_selector: None,
                     top_k: 50,
@@ -3335,6 +3372,7 @@ fn structural_query_typed_holes_return_role_tag_scoped_matches() -> TestResult {
             text_query: TextQueryRequest {
                 syntax: TextQuerySyntax::Native,
                 query_text: "match { function_item { { :[name.expr] } } }".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(pin.clone()),
                 generation_selector: None,
                 top_k: 50,
@@ -3410,6 +3448,7 @@ fn structural_query_typed_holes_return_role_tag_scoped_matches() -> TestResult {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "match { :[root.item] }".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(pin),
                     generation_selector: None,
                     top_k: 50,
@@ -3461,6 +3500,7 @@ fn structural_query_rejects_typed_hole_kind_with_exact_code() -> TestResult {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "match { function_item { { :[name.lambda] } } }".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(GenerationPin::new(repo(), revision(), generation())),
                     generation_selector: None,
                     top_k: 50,
@@ -3494,6 +3534,7 @@ fn lex_query(needle: &str) -> SearchPlaneQueryIpcRequestEnvelope {
         payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Sourcegraph,
             query_text: needle.to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(GenerationPin::new(repo(), revision(), generation())),
             generation_selector: None,
             top_k: 50,
@@ -3515,6 +3556,7 @@ fn history_query_with_syntax(
             text_query: TextQueryRequest {
                 syntax,
                 query_text: query_text.to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(GenerationPin::new(repo(), revision(), generation())),
                 generation_selector: None,
                 top_k: 50,
@@ -3537,6 +3579,7 @@ fn runtime_metadata_query_with_syntax(
             text_query: TextQueryRequest {
                 syntax,
                 query_text: query_text.to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(GenerationPin::new(repo(), revision(), generation())),
                 generation_selector: None,
                 top_k: 50,

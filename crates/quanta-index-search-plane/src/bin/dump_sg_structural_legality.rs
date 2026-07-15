@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use quanta_index_contract::{LqLeaf, LqStructuralBlock};
-use serde::Serialize;
+use serde::ser::SerializeStruct;
+use serde::{Serialize, Serializer};
 
 #[expect(
     dead_code,
@@ -11,9 +12,19 @@ use serde::Serialize;
 #[path = "../lowering.rs"]
 mod lowering_dump;
 
-#[derive(Serialize)]
 struct StructuralLegalityDump<'a> {
     verdicts: BTreeMap<&'a str, &'a str>,
+}
+
+impl Serialize for StructuralLegalityDump<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("StructuralLegalityDump", 1)?;
+        state.serialize_field("verdicts", &self.verdicts)?;
+        state.end()
+    }
 }
 
 fn verdict_name(verdict: &lowering_dump::StructuralLeafVerdict<'_>) -> &'static str {

@@ -250,6 +250,7 @@ fn scv2_s03_restart_preserves_owner_and_corpus_identity() -> TestResult {
     };
     assert_eq!(hit.record_id, "record-commit");
     assert_eq!(hit.owner_id, "symbol:RuntimeSession::commit");
+    assert_eq!(hit.owner_kind, OwnerDocKind::Symbol);
     assert_eq!(hit.corpus_kind, Some(SemanticCorpusKindV1::SymbolCard));
     Ok(())
 }

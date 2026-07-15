@@ -8,8 +8,10 @@
 
 mod candidates;
 mod diff_candidate;
+mod query_window;
 mod structural;
 
 pub use candidates::*;
 pub use diff_candidate::*;
+pub use query_window::*;
 pub use structural::*;

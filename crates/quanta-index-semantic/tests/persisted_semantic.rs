@@ -6,14 +6,15 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     BatchIngestMode, EmbeddingDistanceMetric, EmbeddingModelContract, EmbeddingRecord,
-    ManifestGeneration, RepoId, RevisionId, SearchScopeKey, SemanticIngestBatch,
-    SemanticReplaceScope,
+    ManifestGeneration, OwnerDocKind, QueryConstraintSetV1, RepoId, RevisionId, SearchScopeKey,
+    SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
 };
 use quanta_index_core::{CoreError, SemanticBatchBuildPort, SemanticIndexOpenPort};
 use quanta_index_semantic::{
-    SemanticAdapter, legacy_chunk_embedding_record_v1, model_contract_v1,
+    SemanticAdapter, embedding_record_v1, legacy_chunk_embedding_record_v1, model_contract_v1,
     scan_persisted_generations, sealed_replace_batch_v1, search_scope_v1, test_support,
     tombstone_scope_v1,
 };
@@ -121,6 +122,59 @@ fn build_open_roundtrip_serves_from_durable_state() -> TestResult {
     assert_eq!(hits.len(), 1);
     assert_eq!(hit.candidate_id.as_str(), "emb-1");
     assert_eq!(hit.repo_relative_path.as_str(), "src/main.rs");
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts constraint pushdown across the persisted vector engine"
+)]
+fn language_constraint_is_applied_before_vector_limit_and_composes_with_scope_v1() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let generation = ManifestGeneration::new(8);
+    let mut python = embedding_record_v1(
+        "python-best",
+        "src/shared.rs",
+        OwnerDocKind::Chunk,
+        "owner-python",
+        SemanticCorpusKindV1::RawCodeFallback,
+        vec![1.0, 0.0, 0.0],
+    )?;
+    python.language = LanguageCode::new("python").map_err(str::to_string)?;
+    let rust = embedding_record_v1(
+        "rust-target",
+        "src/shared.rs",
+        OwnerDocKind::Chunk,
+        "owner-rust",
+        SemanticCorpusKindV1::RawCodeFallback,
+        vec![0.8, 0.2, 0.0],
+    )?;
+    adapter.build_batch(&sealed_batch(
+        generation,
+        "src/shared.rs",
+        vec![python, rust],
+        3,
+    ))?;
+
+    let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
+    let rust_only =
+        QueryConstraintSetV1::from_languages([LanguageCode::new("rust").map_err(str::to_string)?]);
+    let hits = searcher.search_constrained(&[1.0, 0.0, 0.0], &rust_only, 1)?;
+    assert_eq!(
+        hits.first().map(|hit| hit.candidate_id.as_str()),
+        Some("rust-target"),
+        "post-limit filtering would lose the lower-scoring allowed-language row"
+    );
+
+    let allowed_ids = BTreeSet::from(["rust-target".to_string(), "python-best".to_string()]);
+    let scoped =
+        searcher.search_scoped_constrained(&[1.0, 0.0, 0.0], &allowed_ids, &rust_only, 1)?;
+    assert_eq!(
+        scoped.first().map(|hit| hit.candidate_id.as_str()),
+        Some("rust-target")
+    );
     Ok(())
 }
 
@@ -236,6 +290,7 @@ fn tombstone_scope_removes_existing_entries() -> TestResult {
         model_contract: model_contract(3),
         required_corpora: Vec::new(),
         corpus_policy_digest: None,
+        clear_surfaces: Vec::new(),
         replace_scopes: Vec::new(),
         tombstone_scopes: vec![tombstone_scope_v1("src/main.rs")],
         seal: true,
@@ -302,6 +357,7 @@ fn sealed_empty_generation_serves_empty_hits() -> TestResult {
         model_contract: model_contract(3),
         required_corpora: Vec::new(),
         corpus_policy_digest: None,
+        clear_surfaces: Vec::new(),
         replace_scopes: Vec::new(),
         tombstone_scopes: Vec::new(),
         seal: true,
@@ -620,6 +676,7 @@ fn search_scoped_restricts_to_allowlist() -> TestResult {
         model_contract: model_contract(3),
         required_corpora: Vec::new(),
         corpus_policy_digest: None,
+        clear_surfaces: Vec::new(),
         replace_scopes: vec![SemanticReplaceScope {
             scope: scope("x.rs"),
             scope_digest: "scope:x".to_string(),
@@ -731,6 +788,7 @@ fn delta_with_missing_base_fails_closed() -> TestResult {
         model_contract: model_contract(3),
         required_corpora: Vec::new(),
         corpus_policy_digest: None,
+        clear_surfaces: Vec::new(),
         replace_scopes: vec![SemanticReplaceScope {
             scope: scope("x.rs"),
             scope_digest: "scope:x".to_string(),
@@ -868,6 +926,7 @@ fn reused_unsealed_generation_with_different_base_fails_closed() -> TestResult {
         model_contract: model_contract(3),
         required_corpora: Vec::new(),
         corpus_policy_digest: None,
+        clear_surfaces: Vec::new(),
         replace_scopes: vec![SemanticReplaceScope {
             scope: scope("delta.rs"),
             scope_digest: "scope:delta:first".to_string(),
@@ -893,6 +952,7 @@ fn reused_unsealed_generation_with_different_base_fails_closed() -> TestResult {
         model_contract: model_contract(3),
         required_corpora: Vec::new(),
         corpus_policy_digest: None,
+        clear_surfaces: Vec::new(),
         replace_scopes: vec![SemanticReplaceScope {
             scope: scope("delta.rs"),
             scope_digest: "scope:delta:second".to_string(),
@@ -1104,6 +1164,7 @@ fn ivf_hnsw_sq_index_built_at_seal_serves_vector_search() -> TestResult {
         model_contract: model_contract(dim_u32),
         required_corpora: Vec::new(),
         corpus_policy_digest: None,
+        clear_surfaces: Vec::new(),
         replace_scopes: vec![SemanticReplaceScope {
             scope: scope("p/0.rs"),
             scope_digest: "scope:p".to_string(),
@@ -1207,6 +1268,7 @@ fn delta_with_unsealed_base_fails_closed() -> TestResult {
         model_contract: model_contract(3),
         required_corpora: Vec::new(),
         corpus_policy_digest: None,
+        clear_surfaces: Vec::new(),
         replace_scopes: vec![SemanticReplaceScope {
             scope: scope("b.rs"),
             scope_digest: "scope:b".to_string(),
@@ -1311,6 +1373,7 @@ fn validate_before_delete_preserves_prior_unsealed_rows() -> TestResult {
         model_contract: model_contract(3),
         required_corpora: Vec::new(),
         corpus_policy_digest: None,
+        clear_surfaces: Vec::new(),
         replace_scopes: Vec::new(),
         tombstone_scopes: Vec::new(),
         seal: true,
@@ -1383,6 +1446,7 @@ fn append_failure_preserves_prior_unsealed_rows() -> TestResult {
         model_contract: model_contract(3),
         required_corpora: Vec::new(),
         corpus_policy_digest: None,
+        clear_surfaces: Vec::new(),
         replace_scopes: Vec::new(),
         tombstone_scopes: Vec::new(),
         seal: true,
@@ -1712,6 +1776,14 @@ fn legacy_v2_manifest_without_generation_contract_opens_for_compatibility() -> T
         return Err("legacy v2 sealed generation must still serve hits".into());
     };
     assert_eq!(hit.candidate_id.as_str(), "emb-legacy");
+    let identity_hits = searcher.search_hits(&[1.0, 0.0, 0.0], 3)?;
+    let Some(identity_hit) = identity_hits.first() else {
+        return Err("legacy v2 sealed generation must still serve identity hits".into());
+    };
+    assert_eq!(identity_hit.record_id, "emb-legacy");
+    assert_eq!(identity_hit.owner_id, "emb-legacy");
+    assert_eq!(identity_hit.owner_kind, OwnerDocKind::Chunk);
+    assert_eq!(identity_hit.corpus_kind, None);
     Ok(())
 }
 

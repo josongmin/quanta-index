@@ -7,7 +7,7 @@
 use std::error::Error;
 
 use quanta_index_contract::{
-    LexicalCandidate, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    HighlightSpan, LexicalCandidate, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
 };
 use quanta_index_core::{CoreError, HybridOrchestratorPolicy};
 
@@ -148,6 +148,31 @@ fn rrf_shared_id_aggregates_score() {
     // "a" gets 2 * 1/(60+1) = 0.0328; "b" and "c" each get 1/(60+2) = 0.0161
     // Both b and c tie in score; tiebreak: b is in_lex, so b before c.
     assert_eq!(ids, vec!["a", "b", "c"]);
+}
+
+#[test]
+fn rrf_shared_id_preserves_lexical_payload() {
+    let mut lexical = candidate("shared");
+    lexical.repo_relative_path = RepoRelativePath::new("src/lexical.rs");
+    lexical.start_line = 10;
+    lexical.end_line = 12;
+    lexical.score = 0.875;
+    lexical.snippet = "lexical match".to_string();
+    lexical.snippet_hit_offset = Some(2);
+    lexical.highlights = vec![HighlightSpan { start: 2, len: 7 }];
+
+    let mut semantic = candidate("shared");
+    semantic.repo_relative_path = RepoRelativePath::new("src/semantic.rs");
+    semantic.start_line = 40;
+    semantic.end_line = 45;
+    semantic.score = 0.25;
+    semantic.snippet = "semantic payload".to_string();
+    semantic.snippet_hit_offset = None;
+    semantic.highlights = Vec::new();
+
+    let fused = HybridOrchestratorPolicy::fuse_rrf(&[lexical.clone()], &[semantic], 1);
+
+    assert_eq!(fused, vec![lexical]);
 }
 
 #[test]

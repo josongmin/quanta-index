@@ -12,9 +12,9 @@ use std::process::ExitCode;
 
 use quanta_index_contract::{
     EarlyStopReason, EngineTouched, GenerationPin, HistoryQueryRequest, HybridSeedQueryRequest,
-    LexicalCandidate, ManifestGeneration, PlannerTraceEntry, QueryErrorRepair, RepoId,
-    RepoMapDocType, RepoMapFocusSubjectDto, RepoMapQueryRequest, RevisionId,
-    RuntimeMetadataQueryRequest, SearchExplanation, SearchPlaneHistoryQueryResponse,
+    LexicalCandidate, ManifestGeneration, PlannerTraceEntry, QueryConstraintSetV1,
+    QueryErrorRepair, RepoId, RepoMapDocType, RepoMapFocusSubjectDto, RepoMapQueryRequest,
+    RevisionId, RuntimeMetadataQueryRequest, SearchExplanation, SearchPlaneHistoryQueryResponse,
     SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
     SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
     SemanticQueryRequest, StructuralQueryRequest, SymbolCandidate, SymbolQueryRequest,
@@ -398,6 +398,7 @@ fn parse_lexical(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
     Ok(CliRequest::Lexical(TextQueryRequest {
         syntax,
         query_text,
+        constraints: QueryConstraintSetV1::unconstrained(),
         generation: Some(generation),
         generation_selector: None,
         top_k,
@@ -438,6 +439,7 @@ fn parse_symbol(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliR
     Ok(CliRequest::Symbol(SymbolQueryRequest {
         syntax,
         query_text,
+        constraints: QueryConstraintSetV1::unconstrained(),
         generation: Some(generation),
         generation_selector: None,
         top_k,
@@ -481,6 +483,7 @@ fn parse_runtime_metadata(
     let text_query = TextQueryRequest {
         syntax,
         query_text,
+        constraints: QueryConstraintSetV1::unconstrained(),
         generation: Some(generation),
         generation_selector: None,
         top_k,
@@ -528,6 +531,7 @@ fn parse_text_query_wrapper(
     Ok(TextQueryRequest {
         syntax,
         query_text,
+        constraints: QueryConstraintSetV1::unconstrained(),
         generation: Some(generation),
         generation_selector: None,
         top_k,
@@ -670,6 +674,7 @@ fn parse_semantic(
             Some(TextQueryRequest {
                 syntax,
                 query_text: query,
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(generation.clone()),
                 generation_selector: None,
                 top_k: scope_top_k,
@@ -689,6 +694,7 @@ fn parse_semantic(
     Ok(CliRequest::Semantic(SemanticQueryRequest {
         query_text: query_text
             .ok_or_else(|| CliError::usage("missing --query-text".to_string()))?,
+        constraints: QueryConstraintSetV1::unconstrained(),
         generation: Some(generation),
         generation_selector: None,
         lexical_scope,
@@ -737,6 +743,7 @@ fn parse_hybrid_seed(
             .ok_or_else(|| CliError::usage("missing --lexical-syntax".to_string()))?,
         query_text: lexical_query_text
             .ok_or_else(|| CliError::usage("missing --lexical-query".to_string()))?,
+        constraints: QueryConstraintSetV1::unconstrained(),
         generation: Some(generation.clone()),
         generation_selector: None,
         top_k: text_query_top_k,
@@ -1335,6 +1342,7 @@ fn render_pretty(
             &TextQueryResponse {
                 generation: payload.generation.clone(),
                 results: payload.results.clone(),
+                window: payload.window,
                 file_owner_rows: None,
             },
             Some(&payload.explanation),
@@ -1345,6 +1353,7 @@ fn render_pretty(
             &TextQueryResponse {
                 generation: payload.generation.clone(),
                 results: payload.results.clone(),
+                window: payload.window,
                 file_owner_rows: None,
             },
             Some(&payload.explanation),
@@ -1359,6 +1368,7 @@ fn render_pretty(
                     .iter()
                     .map(|candidate| candidate.candidate.clone())
                     .collect(),
+                window: payload.window,
                 file_owner_rows: None,
             },
             Some(&payload.explanation),
@@ -2265,7 +2275,7 @@ mod tests {
     #[test]
     fn pretty_renderer_supports_symbol_response() {
         use quanta_index_contract::{
-            RepoRelativePath, SymbolQueryResponse,
+            QueryResultWindowV1, RepoRelativePath, SymbolQueryResponse,
             lex::{SymbolKindCode, SymbolKindFamily},
         };
         let Ok(symbol_kind) = SymbolKindCode::new("function") else {
@@ -2292,6 +2302,7 @@ mod tests {
                     symbol_kind,
                     symbol_kind_family: Some(SymbolKindFamily::Callable),
                 }],
+                window: QueryResultWindowV1::exact(1),
             }),
         };
         let mut stdout = Vec::new();
@@ -2368,6 +2379,7 @@ mod tests {
                     snippet_hit_offset: None,
                     highlights: Vec::new(),
                 }],
+                window: quanta_index_contract::QueryResultWindowV1::exact(1),
                 file_owner_rows: Some(vec![quanta_index_contract::FileOwnerProjectionRow {
                     candidate_id: "cand-1".to_string(),
                     repo_id: RepoId::new("repo"),

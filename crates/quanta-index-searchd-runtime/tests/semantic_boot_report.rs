@@ -6,10 +6,11 @@
 use std::path::{Path, PathBuf};
 
 use quanta_index_contract::{
-    BatchIngestMode, EmbeddingDistanceMetric, EmbeddingId, EmbeddingModelContract,
-    EmbeddingNormalization, EmbeddingRecord, ManifestGeneration, OwnerDocKind, RepoId,
-    RepoRelativePath, RevisionId, SearchScopeKey, SearchScopeSurface, SemanticIngestBatch,
-    SemanticReplaceScope, lex::LanguageCode,
+    BatchIngestMode, CapabilityStatusV1, EmbeddingDistanceMetric, EmbeddingId,
+    EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, ManifestGeneration,
+    OwnerDocKind, RepoId, RepoRelativePath, RevisionId, SearchScopeKey, SearchScopeSurface,
+    SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope, SourceRoleV1,
+    lex::LanguageCode,
 };
 use quanta_index_core::SemanticBatchBuildPort as _;
 use quanta_index_search_plane::LegacySemanticJournalStore;
@@ -77,6 +78,9 @@ fn fixture_batch(generation: ManifestGeneration) -> Result<SemanticIngestBatch, 
             policy_digest: "policy:bootrep".to_string().into_boxed_str(),
             view_policy_digest: None,
         },
+        required_corpora: vec![SemanticCorpusKindV1::SymbolCard],
+        corpus_policy_digest: Some("policy:bootrep".to_string()),
+        clear_surfaces: Vec::new(),
         replace_scopes: vec![SemanticReplaceScope {
             scope: SearchScopeKey {
                 doc_surface: SearchScopeSurface::Chunk,
@@ -85,12 +89,23 @@ fn fixture_batch(generation: ManifestGeneration) -> Result<SemanticIngestBatch, 
             scope_digest: "scope:x.rs".to_string(),
             embeddings: vec![EmbeddingRecord {
                 embedding_id: EmbeddingId::new("emb-1"),
+                record_id: "record-1".to_string().into_boxed_str(),
                 owner_kind: OwnerDocKind::Chunk,
                 owner_id: "owner-1".to_string().into_boxed_str(),
+                corpus_kind: SemanticCorpusKindV1::SymbolCard,
+                parent_owner_id: None,
                 source_doc_id: "doc-1".to_string().into_boxed_str(),
                 repo_relative_path: RepoRelativePath::new("x.rs"),
                 language,
+                package: None,
                 symbol_kind: None,
+                visibility: None,
+                source_role: SourceRoleV1::CardText,
+                generated: false,
+                capability_status: CapabilityStatusV1::Full,
+                authority_digest: "auth:1".to_string().into_boxed_str(),
+                render_policy_digest: "render:1".to_string().into_boxed_str(),
+                card_schema_version: 1,
                 start_byte: 0,
                 end_byte: 8,
                 start_line: 1,

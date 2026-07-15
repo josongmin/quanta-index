@@ -60,7 +60,8 @@ impl HybridOrchestratorPolicy {
     /// Fuse two ranked candidate lists by RRF.
     ///
     /// Tie-break order: higher fused score, then "present in lexical list",
-    /// then `candidate_id` lexicographic.
+    /// then `candidate_id` lexicographic. When both lanes contain the same
+    /// identity, the lexical candidate owns the returned payload.
     #[must_use]
     pub fn fuse_rrf(
         lexical: &[LexicalCandidate],
@@ -75,9 +76,9 @@ impl HybridOrchestratorPolicy {
             .iter()
             .map(|candidate| candidate.candidate_id.clone())
             .collect::<Vec<_>>();
-        let mut candidates = lexical
+        let mut candidates = semantic
             .iter()
-            .chain(semantic)
+            .chain(lexical)
             .map(|candidate| (candidate.candidate_id.clone(), candidate.clone()))
             .collect::<BTreeMap<_, _>>();
         Self::fuse_rrf_ids(&lexical_ids, &semantic_ids, top_k)
@@ -103,17 +104,32 @@ impl HybridOrchestratorPolicy {
     /// an independent rank domain.
     #[must_use]
     pub fn fuse_rrf_id_lanes(lanes: &[&[String]], top_k: u32) -> Vec<String> {
-        let mut accs: BTreeMap<String, IdFuseAccumulator> = BTreeMap::new();
+        Self::fuse_rrf_key_lanes(lanes, top_k)
+    }
+
+    /// Fuse any number of independently ranked, typed stable-identity lanes.
+    ///
+    /// This is the canonical entity-fusion primitive. String-only callers use
+    /// [`Self::fuse_rrf_id_lanes`]; callers whose identity includes a kind or
+    /// another typed discriminator must use this method so unrelated values
+    /// with identical display text cannot collapse into one RRF candidate.
+    #[must_use]
+    pub fn fuse_rrf_key_lanes<T>(lanes: &[&[T]], top_k: u32) -> Vec<T>
+    where
+        T: Clone + Ord,
+    {
+        let mut accs: BTreeMap<T, KeyFuseAccumulator> = BTreeMap::new();
         for (lane_index, lane) in lanes.iter().enumerate() {
-            accumulate_ids(&mut accs, lane, lane_index == 0);
+            accumulate_keys(&mut accs, lane, lane_index == 0);
         }
 
-        let mut fused: Vec<IdFuseAccumulator> = accs.into_values().collect();
-        fused.sort_by(|a, b| {
-            b.score
-                .total_cmp(&a.score)
-                .then(b.in_lex.cmp(&a.in_lex))
-                .then_with(|| a.candidate_id.cmp(&b.candidate_id))
+        let mut fused: Vec<(T, KeyFuseAccumulator)> = accs.into_iter().collect();
+        fused.sort_by(|(left_key, left), (right_key, right)| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then(right.in_lex.cmp(&left.in_lex))
+                .then_with(|| left_key.cmp(right_key))
         });
         // Saturating cap: top_k larger than usize::MAX (only possible on
         // <64-bit targets) is treated as unlimited. `map_or` is the
@@ -122,30 +138,31 @@ impl HybridOrchestratorPolicy {
         fused
             .into_iter()
             .take(limit)
-            .map(|acc| acc.candidate_id)
+            .map(|(key, _acc)| key)
             .collect()
     }
 }
 
-struct IdFuseAccumulator {
+struct KeyFuseAccumulator {
     score: f64,
     in_lex: bool,
-    candidate_id: String,
 }
 
-fn accumulate_ids(accs: &mut BTreeMap<String, IdFuseAccumulator>, ranked: &[String], is_lex: bool) {
-    for (rank, candidate_id) in ranked.iter().enumerate() {
+fn accumulate_keys<T>(accs: &mut BTreeMap<T, KeyFuseAccumulator>, ranked: &[T], is_lex: bool)
+where
+    T: Clone + Ord,
+{
+    for (rank, key) in ranked.iter().enumerate() {
         let rank_plus_one = rank.saturating_add(1);
         // Saturating: rank index past u32::MAX collapses to the same RRF
         // tail score. `map_or` keeps the clippy + workspace lints happy.
         let rank_u32 = u32::try_from(rank_plus_one).map_or(u32::MAX, |n| n);
         let rank_f = f64::from(rank_u32);
         let entry = accs
-            .entry(candidate_id.clone())
-            .or_insert_with(|| IdFuseAccumulator {
+            .entry(key.clone())
+            .or_insert_with(|| KeyFuseAccumulator {
                 score: 0.0,
                 in_lex: false,
-                candidate_id: candidate_id.clone(),
             });
         entry.score += 1.0 / (RRF_K + rank_f);
         if is_lex {
@@ -205,5 +222,28 @@ mod tests {
             .first()
             .map(|candidate| candidate.candidate_id.as_str());
         assert_eq!(top, Some("A"));
+    }
+
+    #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    struct TypedKey {
+        kind: &'static str,
+        id: &'static str,
+    }
+
+    #[test]
+    fn typed_fusion_keeps_distinct_kinds_with_the_same_display_id() {
+        let chunk = TypedKey {
+            kind: "chunk",
+            id: "same-text",
+        };
+        let symbol = TypedKey {
+            kind: "symbol",
+            id: "same-text",
+        };
+        let fused = HybridOrchestratorPolicy::fuse_rrf_key_lanes(
+            &[std::slice::from_ref(&chunk), std::slice::from_ref(&symbol)],
+            2,
+        );
+        assert_eq!(fused, vec![chunk, symbol]);
     }
 }

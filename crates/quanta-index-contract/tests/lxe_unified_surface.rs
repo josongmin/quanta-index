@@ -56,6 +56,7 @@ fn lexical_scope_text_query() -> TextQueryRequest {
     TextQueryRequest {
         syntax: TextQuerySyntax::Sourcegraph,
         query_text: "repo:quanta-index lang:rust SemanticQuery".to_owned(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
         generation: Some(generation_pin()),
         generation_selector: None,
         top_k: 64,
@@ -72,6 +73,7 @@ fn semantic_query_text() -> String {
 fn semantic_query_request_lexical_scope_round_trips() -> TestRes {
     let original = SemanticQueryRequest {
         query_text: semantic_query_text(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
         generation: Some(generation_pin()),
         generation_selector: None,
         lexical_scope: Some(lexical_scope_text_query()),
@@ -100,6 +102,7 @@ fn semantic_query_request_lexical_scope_round_trips() -> TestRes {
 fn semantic_query_request_none_lexical_scope_round_trips() -> TestRes {
     let original = SemanticQueryRequest {
         query_text: semantic_query_text(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
         generation: None,
         generation_selector: None,
         lexical_scope: None,
@@ -120,6 +123,7 @@ fn semantic_query_request_rejects_legacy_scope_field() -> TestRes {
     // deletion at the wire level.
     let original = SemanticQueryRequest {
         query_text: semantic_query_text(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
         generation: None,
         generation_selector: None,
         lexical_scope: Some(lexical_scope_text_query()),
@@ -158,6 +162,7 @@ fn semantic_query_request_wire_field_is_lexical_scope() -> TestRes {
     // map-key assertion below catches the regression.
     let sentinel = SemanticQueryRequest {
         query_text: semantic_query_text(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
         generation: None,
         generation_selector: None,
         lexical_scope: Some(lexical_scope_text_query()),

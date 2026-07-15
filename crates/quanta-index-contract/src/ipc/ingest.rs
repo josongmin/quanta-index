@@ -27,19 +27,20 @@
 //! intentional for the new ingest surface.
 
 use core::fmt;
+use std::collections::BTreeSet;
 
 use serde::{
-    Deserialize, Deserializer, Serialize, Serializer,
     de::{self, MapAccess, VariantAccess, Visitor},
     ser::SerializeStruct,
+    Deserialize, Deserializer, Serialize, Serializer,
 };
 
 use crate::lex::{
     CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord, ParseTreeRecord, SymbolRecord,
 };
 use crate::{
-    ChunkId, ChunkRecord, EmbeddingRecord, ManifestGeneration, RepoId, RepoMapMutationAck,
-    RepoMapSourceBundle, RepoRelativePath, RevisionId,
+    ChunkId, ChunkRecord, EmbeddingRecord, ManifestGeneration, OwnerDocKind, RepoId,
+    RepoMapMutationAck, RepoMapSourceBundle, RepoRelativePath, RevisionId,
 };
 
 use super::{
@@ -117,12 +118,43 @@ impl<'de> Deserialize<'de> for BatchIngestMode {
 // Search scope / lexical / semantic ingest batches
 // =============================================================================
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub enum SearchScopeSurface {
     File,
     Module,
     Chunk,
     Symbol,
+}
+
+impl SearchScopeSurface {
+    /// Canonical semantic-owner projection used by derivation and durable
+    /// surface deletion. Keeping this mapping in the shared contract prevents
+    /// producer, dispatcher, and semantic-adapter policy drift.
+    #[must_use]
+    pub const fn for_semantic_owner_v1(
+        owner_kind: OwnerDocKind,
+        corpus_kind: SemanticCorpusKindV1,
+    ) -> Self {
+        match owner_kind {
+            OwnerDocKind::File => Self::File,
+            OwnerDocKind::Module => Self::Module,
+            OwnerDocKind::Chunk => Self::Chunk,
+            OwnerDocKind::Symbol => Self::Symbol,
+            _ => match corpus_kind {
+                SemanticCorpusKindV1::SymbolCard | SemanticCorpusKindV1::RawCodeFallback => {
+                    Self::Symbol
+                }
+                SemanticCorpusKindV1::ModuleCard | SemanticCorpusKindV1::ClusterCard => {
+                    Self::Module
+                }
+                SemanticCorpusKindV1::DocumentLeaf
+                | SemanticCorpusKindV1::DocumentSection
+                | SemanticCorpusKindV1::DocumentSummary
+                | SemanticCorpusKindV1::TestBehavior
+                | SemanticCorpusKindV1::RepositorySummary => Self::File,
+            },
+        }
+    }
 }
 
 const SEARCH_SCOPE_SURFACE_VARIANTS: &[&str] = &["File", "Module", "Chunk", "Symbol"];
@@ -175,6 +207,52 @@ impl<'de> Deserialize<'de> for SearchScopeSurface {
         deserializer.deserialize_str(SearchScopeSurfaceVisitor)
     }
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchCorpusSurfaceMutationConflictV1 {
+    DuplicateClear(SearchScopeSurface),
+    NonCanonicalClearOrder,
+    DuplicateReplaceScope(SearchScopeSurface),
+    DuplicateTombstoneScope(SearchScopeSurface),
+    ReplaceAndTombstone(SearchScopeSurface),
+    ClearAndReplace(SearchScopeSurface),
+    ClearAndTombstone(SearchScopeSurface),
+}
+
+impl fmt::Display for SearchCorpusSurfaceMutationConflictV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateClear(surface) => {
+                write!(formatter, "duplicate clear for search surface {surface:?}")
+            }
+            Self::NonCanonicalClearOrder => {
+                formatter.write_str("search surface clears must use canonical ascending order")
+            }
+            Self::DuplicateReplaceScope(surface) => write!(
+                formatter,
+                "duplicate replace scope on search surface {surface:?}"
+            ),
+            Self::DuplicateTombstoneScope(surface) => write!(
+                formatter,
+                "duplicate tombstone scope on search surface {surface:?}"
+            ),
+            Self::ReplaceAndTombstone(surface) => write!(
+                formatter,
+                "search scope on surface {surface:?} cannot be replaced and tombstoned in one batch"
+            ),
+            Self::ClearAndReplace(surface) => write!(
+                formatter,
+                "search surface {surface:?} cannot be cleared and replaced in one batch"
+            ),
+            Self::ClearAndTombstone(surface) => write!(
+                formatter,
+                "search surface {surface:?} cannot be cleared and tombstoned in one batch"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SearchCorpusSurfaceMutationConflictV1 {}
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct SearchScopeKey {
@@ -423,6 +501,10 @@ pub struct SearchCorpusIngestBatch {
     pub batch_digest: String,
     pub mode: BatchIngestMode,
     pub bundle_payload: Option<Vec<u8>>,
+    /// Canonical whole-surface deletion intents applied to the target
+    /// generation before scope-level mutations. The vector must be sorted,
+    /// duplicate-free, and disjoint from every scope mutation in this batch.
+    pub clear_surfaces: Vec<SearchScopeSurface>,
     pub replace_scopes: Vec<SearchCorpusReplaceScope>,
     pub tombstone_scopes: Vec<SearchCorpusTombstoneScope>,
     pub semantic_replace_scopes: Vec<SemanticSourceReplaceScopeV1>,
@@ -439,6 +521,7 @@ const SEARCH_CORPUS_INGEST_BATCH_FIELDS: &[&str] = &[
     "batch_digest",
     "mode",
     "bundle_payload",
+    "clear_surfaces",
     "replace_scopes",
     "tombstone_scopes",
     "semantic_replace_scopes",
@@ -451,7 +534,7 @@ impl Serialize for SearchCorpusIngestBatch {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SearchCorpusIngestBatch", 13)?;
+        let mut state = serializer.serialize_struct("SearchCorpusIngestBatch", 14)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("generation", &self.generation)?;
@@ -460,6 +543,7 @@ impl Serialize for SearchCorpusIngestBatch {
         state.serialize_field("batch_digest", &self.batch_digest)?;
         state.serialize_field("mode", &self.mode)?;
         state.serialize_field("bundle_payload", &self.bundle_payload)?;
+        state.serialize_field("clear_surfaces", &self.clear_surfaces)?;
         state.serialize_field("replace_scopes", &self.replace_scopes)?;
         state.serialize_field("tombstone_scopes", &self.tombstone_scopes)?;
         state.serialize_field("semantic_replace_scopes", &self.semantic_replace_scopes)?;
@@ -490,6 +574,7 @@ impl<'de> Visitor<'de> for SearchCorpusIngestBatchVisitor {
         let mut batch_digest: Option<String> = None;
         let mut mode: Option<BatchIngestMode> = None;
         let mut bundle_payload: Option<Option<Vec<u8>>> = None;
+        let mut clear_surfaces: Option<Vec<SearchScopeSurface>> = None;
         let mut replace_scopes: Option<Vec<SearchCorpusReplaceScope>> = None;
         let mut tombstone_scopes: Option<Vec<SearchCorpusTombstoneScope>> = None;
         let mut semantic_replace_scopes: Option<Vec<SemanticSourceReplaceScopeV1>> = None;
@@ -545,6 +630,12 @@ impl<'de> Visitor<'de> for SearchCorpusIngestBatchVisitor {
                     }
                     bundle_payload = Some(map.next_value()?);
                 }
+                "clear_surfaces" => {
+                    if clear_surfaces.is_some() {
+                        return Err(de::Error::duplicate_field("clear_surfaces"));
+                    }
+                    clear_surfaces = Some(map.next_value()?);
+                }
                 "replace_scopes" => {
                     if replace_scopes.is_some() {
                         return Err(de::Error::duplicate_field("replace_scopes"));
@@ -594,6 +685,10 @@ impl<'de> Visitor<'de> for SearchCorpusIngestBatchVisitor {
             batch_digest: batch_digest.ok_or_else(|| de::Error::missing_field("batch_digest"))?,
             mode: mode.ok_or_else(|| de::Error::missing_field("mode"))?,
             bundle_payload: bundle_payload.unwrap_or(None),
+            // Bounded legacy migration: pre-clear persisted batches did not
+            // carry this field and therefore decode as the empty clear set.
+            // New serializers always emit it explicitly.
+            clear_surfaces: clear_surfaces.unwrap_or_default(),
             replace_scopes: replace_scopes
                 .ok_or_else(|| de::Error::missing_field("replace_scopes"))?,
             tombstone_scopes: tombstone_scopes
@@ -616,6 +711,157 @@ impl<'de> Deserialize<'de> for SearchCorpusIngestBatch {
             SearchCorpusIngestBatchVisitor,
         )
     }
+}
+
+impl SearchCorpusIngestBatch {
+    /// Validate the mutation authority before any adapter observes the batch.
+    /// A whole-surface clear and a scope mutation on that surface cannot be
+    /// ordered safely without creating producer-dependent semantics.
+    pub fn validate_surface_mutations_v1(
+        &self,
+    ) -> Result<(), SearchCorpusSurfaceMutationConflictV1> {
+        let clear_surfaces = validated_search_corpus_clear_surfaces_v1(self)?;
+        validate_search_corpus_lexical_scope_mutations_v1(self)?;
+        validate_search_corpus_semantic_scope_mutations_v1(self)?;
+        validate_search_corpus_clear_disjoint_v1(self, &clear_surfaces)
+    }
+}
+
+fn validated_search_corpus_clear_surfaces_v1(
+    batch: &SearchCorpusIngestBatch,
+) -> Result<BTreeSet<SearchScopeSurface>, SearchCorpusSurfaceMutationConflictV1> {
+    let mut clear_surfaces = BTreeSet::new();
+    for surface in &batch.clear_surfaces {
+        if !clear_surfaces.insert(*surface) {
+            return Err(SearchCorpusSurfaceMutationConflictV1::DuplicateClear(
+                *surface,
+            ));
+        }
+    }
+    if !batch
+        .clear_surfaces
+        .windows(2)
+        .all(|pair| matches!(pair, [left, right] if left < right))
+    {
+        return Err(SearchCorpusSurfaceMutationConflictV1::NonCanonicalClearOrder);
+    }
+    Ok(clear_surfaces)
+}
+
+fn validate_search_corpus_lexical_scope_mutations_v1(
+    batch: &SearchCorpusIngestBatch,
+) -> Result<(), SearchCorpusSurfaceMutationConflictV1> {
+    let mut replace_scope_keys = BTreeSet::new();
+    for scope in &batch.replace_scopes {
+        let key = (
+            scope.scope.doc_surface,
+            scope.scope.repo_relative_path.as_str(),
+        );
+        if !replace_scope_keys.insert(key) {
+            return Err(
+                SearchCorpusSurfaceMutationConflictV1::DuplicateReplaceScope(
+                    scope.scope.doc_surface,
+                ),
+            );
+        }
+    }
+    let mut tombstone_scope_keys = BTreeSet::new();
+    for scope in &batch.tombstone_scopes {
+        let key = (
+            scope.scope.doc_surface,
+            scope.scope.repo_relative_path.as_str(),
+        );
+        if !tombstone_scope_keys.insert(key) {
+            return Err(
+                SearchCorpusSurfaceMutationConflictV1::DuplicateTombstoneScope(
+                    scope.scope.doc_surface,
+                ),
+            );
+        }
+        if replace_scope_keys.contains(&key) {
+            return Err(SearchCorpusSurfaceMutationConflictV1::ReplaceAndTombstone(
+                scope.scope.doc_surface,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_search_corpus_semantic_scope_mutations_v1(
+    batch: &SearchCorpusIngestBatch,
+) -> Result<(), SearchCorpusSurfaceMutationConflictV1> {
+    let mut replace_scope_keys = BTreeSet::new();
+    for scope in &batch.semantic_replace_scopes {
+        let key = (
+            scope.scope.corpus_kind.as_code_str(),
+            scope.scope.owner_kind.as_code_str(),
+            scope.scope.owner_id.as_str(),
+        );
+        let surface = SearchScopeSurface::for_semantic_owner_v1(
+            scope.scope.owner_kind,
+            scope.scope.corpus_kind,
+        );
+        if !replace_scope_keys.insert(key) {
+            return Err(SearchCorpusSurfaceMutationConflictV1::DuplicateReplaceScope(surface));
+        }
+    }
+    let mut tombstone_scope_keys = BTreeSet::new();
+    for scope in &batch.semantic_tombstone_scopes {
+        let key = (
+            scope.corpus_kind.as_code_str(),
+            scope.owner_kind.as_code_str(),
+            scope.owner_id.as_str(),
+        );
+        let surface =
+            SearchScopeSurface::for_semantic_owner_v1(scope.owner_kind, scope.corpus_kind);
+        if !tombstone_scope_keys.insert(key) {
+            return Err(SearchCorpusSurfaceMutationConflictV1::DuplicateTombstoneScope(surface));
+        }
+        if replace_scope_keys.contains(&key) {
+            return Err(SearchCorpusSurfaceMutationConflictV1::ReplaceAndTombstone(
+                surface,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_search_corpus_clear_disjoint_v1(
+    batch: &SearchCorpusIngestBatch,
+    clear_surfaces: &BTreeSet<SearchScopeSurface>,
+) -> Result<(), SearchCorpusSurfaceMutationConflictV1> {
+    for surface in batch
+        .replace_scopes
+        .iter()
+        .map(|scope| scope.scope.doc_surface)
+        .chain(batch.semantic_replace_scopes.iter().map(|scope| {
+            SearchScopeSurface::for_semantic_owner_v1(
+                scope.scope.owner_kind,
+                scope.scope.corpus_kind,
+            )
+        }))
+    {
+        if clear_surfaces.contains(&surface) {
+            return Err(SearchCorpusSurfaceMutationConflictV1::ClearAndReplace(
+                surface,
+            ));
+        }
+    }
+    for surface in batch
+        .tombstone_scopes
+        .iter()
+        .map(|scope| scope.scope.doc_surface)
+        .chain(batch.semantic_tombstone_scopes.iter().map(|scope| {
+            SearchScopeSurface::for_semantic_owner_v1(scope.owner_kind, scope.corpus_kind)
+        }))
+    {
+        if clear_surfaces.contains(&surface) {
+            return Err(SearchCorpusSurfaceMutationConflictV1::ClearAndTombstone(
+                surface,
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -1071,6 +1317,7 @@ pub struct SemanticIngestBatch {
     pub model_contract: EmbeddingModelContract,
     pub required_corpora: Vec<SemanticCorpusKindV1>,
     pub corpus_policy_digest: Option<String>,
+    pub clear_surfaces: Vec<SearchScopeSurface>,
     pub replace_scopes: Vec<SemanticReplaceScope>,
     pub tombstone_scopes: Vec<SemanticTombstoneScope>,
     pub seal: bool,
@@ -1087,6 +1334,7 @@ const SEMANTIC_INGEST_BATCH_FIELDS: &[&str] = &[
     "model_contract",
     "required_corpora",
     "corpus_policy_digest",
+    "clear_surfaces",
     "replace_scopes",
     "tombstone_scopes",
     "seal",
@@ -1097,7 +1345,7 @@ impl Serialize for SemanticIngestBatch {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SemanticIngestBatch", 13)?;
+        let mut state = serializer.serialize_struct("SemanticIngestBatch", 14)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("generation", &self.generation)?;
@@ -1108,6 +1356,7 @@ impl Serialize for SemanticIngestBatch {
         state.serialize_field("model_contract", &self.model_contract)?;
         state.serialize_field("required_corpora", &self.required_corpora)?;
         state.serialize_field("corpus_policy_digest", &self.corpus_policy_digest)?;
+        state.serialize_field("clear_surfaces", &self.clear_surfaces)?;
         state.serialize_field("replace_scopes", &self.replace_scopes)?;
         state.serialize_field("tombstone_scopes", &self.tombstone_scopes)?;
         state.serialize_field("seal", &self.seal)?;
@@ -1138,6 +1387,7 @@ impl<'de> Visitor<'de> for SemanticIngestBatchVisitor {
         let mut model_contract: Option<EmbeddingModelContract> = None;
         let mut required_corpora: Option<Vec<SemanticCorpusKindV1>> = None;
         let mut corpus_policy_digest: Option<Option<String>> = None;
+        let mut clear_surfaces: Option<Vec<SearchScopeSurface>> = None;
         let mut replace_scopes: Option<Vec<SemanticReplaceScope>> = None;
         let mut tombstone_scopes: Option<Vec<SemanticTombstoneScope>> = None;
         let mut seal: Option<bool> = None;
@@ -1203,6 +1453,12 @@ impl<'de> Visitor<'de> for SemanticIngestBatchVisitor {
                     }
                     corpus_policy_digest = Some(map.next_value()?);
                 }
+                "clear_surfaces" => {
+                    if clear_surfaces.is_some() {
+                        return Err(de::Error::duplicate_field("clear_surfaces"));
+                    }
+                    clear_surfaces = Some(map.next_value()?);
+                }
                 "replace_scopes" => {
                     if replace_scopes.is_some() {
                         return Err(de::Error::duplicate_field("replace_scopes"));
@@ -1243,6 +1499,9 @@ impl<'de> Visitor<'de> for SemanticIngestBatchVisitor {
                 .ok_or_else(|| de::Error::missing_field("model_contract"))?,
             required_corpora: required_corpora.unwrap_or_default(),
             corpus_policy_digest: corpus_policy_digest.unwrap_or(None),
+            // Bounded legacy migration for semantic batches persisted before
+            // whole-surface clear was part of the wire contract.
+            clear_surfaces: clear_surfaces.unwrap_or_default(),
             replace_scopes: replace_scopes
                 .ok_or_else(|| de::Error::missing_field("replace_scopes"))?,
             tombstone_scopes: tombstone_scopes
@@ -2495,11 +2754,91 @@ impl<'de> Deserialize<'de> for FileOwnershipIngestBatch {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct FileContributorIdentityEntry {
     pub canonical: String,
     pub name: Option<String>,
     pub email: Option<String>,
+}
+
+const FILE_CONTRIBUTOR_IDENTITY_ENTRY_FIELDS: &[&str] = &["canonical", "name", "email"];
+
+impl Serialize for FileContributorIdentityEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("FileContributorIdentityEntry", 3)?;
+        state.serialize_field("canonical", &self.canonical)?;
+        state.serialize_field("name", &self.name)?;
+        state.serialize_field("email", &self.email)?;
+        state.end()
+    }
+}
+
+struct FileContributorIdentityEntryVisitor;
+
+impl<'de> Visitor<'de> for FileContributorIdentityEntryVisitor {
+    type Value = FileContributorIdentityEntry;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a FileContributorIdentityEntry map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut canonical: Option<String> = None;
+        let mut name: Option<Option<String>> = None;
+        let mut email: Option<Option<String>> = None;
+        while let Some(field) = map.next_key::<String>()? {
+            match field.as_str() {
+                "canonical" => {
+                    if canonical.is_some() {
+                        return Err(de::Error::duplicate_field("canonical"));
+                    }
+                    canonical = Some(map.next_value()?);
+                }
+                "name" => {
+                    if name.is_some() {
+                        return Err(de::Error::duplicate_field("name"));
+                    }
+                    name = Some(map.next_value()?);
+                }
+                "email" => {
+                    if email.is_some() {
+                        return Err(de::Error::duplicate_field("email"));
+                    }
+                    email = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        FILE_CONTRIBUTOR_IDENTITY_ENTRY_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(FileContributorIdentityEntry {
+            canonical: canonical.ok_or_else(|| de::Error::missing_field("canonical"))?,
+            name: name.unwrap_or(None),
+            email: email.unwrap_or(None),
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for FileContributorIdentityEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "FileContributorIdentityEntry",
+            FILE_CONTRIBUTOR_IDENTITY_ENTRY_FIELDS,
+            FileContributorIdentityEntryVisitor,
+        )
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -3726,6 +4065,7 @@ pub struct BatchPublishReceipt {
     pub manifest_digest: String,
     pub accepted_replace_scopes: u32,
     pub accepted_tombstone_scopes: u32,
+    pub accepted_clear_surfaces: u32,
     pub sealed: bool,
 }
 
@@ -3734,6 +4074,7 @@ const BATCH_PUBLISH_RECEIPT_FIELDS: &[&str] = &[
     "manifest_digest",
     "accepted_replace_scopes",
     "accepted_tombstone_scopes",
+    "accepted_clear_surfaces",
     "sealed",
 ];
 
@@ -3742,11 +4083,12 @@ impl Serialize for BatchPublishReceipt {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("BatchPublishReceipt", 5)?;
+        let mut state = serializer.serialize_struct("BatchPublishReceipt", 6)?;
         state.serialize_field("generation", &self.generation)?;
         state.serialize_field("manifest_digest", &self.manifest_digest)?;
         state.serialize_field("accepted_replace_scopes", &self.accepted_replace_scopes)?;
         state.serialize_field("accepted_tombstone_scopes", &self.accepted_tombstone_scopes)?;
+        state.serialize_field("accepted_clear_surfaces", &self.accepted_clear_surfaces)?;
         state.serialize_field("sealed", &self.sealed)?;
         state.end()
     }
@@ -3769,6 +4111,7 @@ impl<'de> Visitor<'de> for BatchPublishReceiptVisitor {
         let mut manifest_digest: Option<String> = None;
         let mut accepted_replace_scopes: Option<u32> = None;
         let mut accepted_tombstone_scopes: Option<u32> = None;
+        let mut accepted_clear_surfaces: Option<u32> = None;
         let mut sealed: Option<bool> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -3796,6 +4139,12 @@ impl<'de> Visitor<'de> for BatchPublishReceiptVisitor {
                     }
                     accepted_tombstone_scopes = Some(map.next_value()?);
                 }
+                "accepted_clear_surfaces" => {
+                    if accepted_clear_surfaces.is_some() {
+                        return Err(de::Error::duplicate_field("accepted_clear_surfaces"));
+                    }
+                    accepted_clear_surfaces = Some(map.next_value()?);
+                }
                 "sealed" => {
                     if sealed.is_some() {
                         return Err(de::Error::duplicate_field("sealed"));
@@ -3818,6 +4167,9 @@ impl<'de> Visitor<'de> for BatchPublishReceiptVisitor {
                 .ok_or_else(|| de::Error::missing_field("accepted_replace_scopes"))?,
             accepted_tombstone_scopes: accepted_tombstone_scopes
                 .ok_or_else(|| de::Error::missing_field("accepted_tombstone_scopes"))?,
+            // Legacy receipts predate clear-surface admission; absence means
+            // zero accepted clears, while new writers always emit the count.
+            accepted_clear_surfaces: accepted_clear_surfaces.unwrap_or(0),
             sealed: sealed.ok_or_else(|| de::Error::missing_field("sealed"))?,
         })
     }
@@ -3844,6 +4196,7 @@ impl BatchPublishReceipt {
             manifest_digest: manifest_digest.into(),
             accepted_replace_scopes: 0,
             accepted_tombstone_scopes: 0,
+            accepted_clear_surfaces: 0,
             sealed: false,
         }
     }
@@ -3854,6 +4207,10 @@ impl BatchPublishReceipt {
 
     pub fn accept_tombstone_scope(&mut self) {
         self.accepted_tombstone_scopes = self.accepted_tombstone_scopes.saturating_add(1);
+    }
+
+    pub fn accept_clear_surface(&mut self) {
+        self.accepted_clear_surfaces = self.accepted_clear_surfaces.saturating_add(1);
     }
 
     pub fn mark_sealed(&mut self) {
@@ -4438,8 +4795,8 @@ impl<'de> Deserialize<'de> for SearchPlaneIngestIpcResponseEnvelope {
 mod tests {
     use super::*;
     use crate::lex::{
-        CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord, LanguageCode, ParseNode,
-        ParseRoleTag, ParseTreeRecord, compute_parse_tree_source_hash,
+        compute_parse_tree_source_hash, CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord,
+        LanguageCode, ParseNode, ParseRoleTag, ParseTreeRecord,
     };
     use crate::{
         CapabilityStatusV1, ChunkRecord, EmbeddingId, EmbeddingRecord, RepoRelativePath,
@@ -4627,6 +4984,7 @@ mod tests {
             batch_digest: "batch:feed".to_string(),
             mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload: None,
+            clear_surfaces: Vec::new(),
             replace_scopes: vec![SearchCorpusReplaceScope {
                 scope: fixture_scope_key(),
                 scope_digest: "scope:feed".to_string(),
@@ -4657,6 +5015,7 @@ mod tests {
             model_contract: fixture_model_contract(),
             required_corpora: vec![SemanticCorpusKindV1::RawCodeFallback],
             corpus_policy_digest: None,
+            clear_surfaces: Vec::new(),
             replace_scopes: vec![SemanticReplaceScope {
                 scope: fixture_scope_key(),
                 scope_digest: "scope:feed".to_string(),
@@ -4866,7 +5225,8 @@ mod tests {
 
     #[test]
     fn search_corpus_ingest_batch_round_trip() -> TestRes {
-        let batch = fixture_search_corpus_batch();
+        let mut batch = fixture_search_corpus_batch();
+        batch.clear_surfaces = vec![SearchScopeSurface::Chunk];
         let bytes = encode(&batch)?;
         let decoded: SearchCorpusIngestBatch = decode(&bytes)?;
         assert_eq!(decoded, batch);
@@ -4879,11 +5239,98 @@ mod tests {
         ignore = "ciborium f16 path uses aarch64 inline asm that Miri cannot execute; native f32 vec serde is exercised in stable tests + fuzz"
     )]
     fn semantic_ingest_batch_round_trip() -> TestRes {
-        let batch = fixture_semantic_batch();
+        let mut batch = fixture_semantic_batch();
+        batch.clear_surfaces = vec![SearchScopeSurface::Module];
         let bytes = encode(&batch)?;
         let decoded: SemanticIngestBatch = decode(&bytes)?;
         assert_eq!(decoded, batch);
         Ok(())
+    }
+
+    #[test]
+    fn legacy_clearless_batches_and_receipts_decode_as_zero_clear_v1() -> TestRes {
+        let mut search_value = serde_json::to_value(fixture_search_corpus_batch())?;
+        let _removed_clear_surfaces = search_value
+            .as_object_mut()
+            .ok_or("search batch fixture must encode as a map")?
+            .remove("clear_surfaces");
+        let search_batch: SearchCorpusIngestBatch = serde_json::from_value(search_value)?;
+        assert!(search_batch.clear_surfaces.is_empty());
+
+        let mut semantic_value = serde_json::to_value(fixture_semantic_batch())?;
+        let _removed_clear_surfaces = semantic_value
+            .as_object_mut()
+            .ok_or("semantic batch fixture must encode as a map")?
+            .remove("clear_surfaces");
+        let semantic_batch: SemanticIngestBatch = serde_json::from_value(semantic_value)?;
+        assert!(semantic_batch.clear_surfaces.is_empty());
+
+        let mut receipt_value = serde_json::to_value(BatchPublishReceipt::empty_for(
+            fixture_generation(),
+            "manifest:legacy",
+        ))?;
+        let _removed_accepted_clear_surfaces = receipt_value
+            .as_object_mut()
+            .ok_or("receipt fixture must encode as a map")?
+            .remove("accepted_clear_surfaces");
+        let receipt: BatchPublishReceipt = serde_json::from_value(receipt_value)?;
+        assert_eq!(receipt.accepted_clear_surfaces, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn search_corpus_clear_surface_authority_rejects_conflicts_v1() {
+        let mut batch = fixture_search_corpus_batch();
+        batch.clear_surfaces = vec![SearchScopeSurface::File];
+        assert_eq!(
+            batch.validate_surface_mutations_v1(),
+            Err(SearchCorpusSurfaceMutationConflictV1::ClearAndReplace(
+                SearchScopeSurface::File
+            ))
+        );
+
+        batch.clear_surfaces = vec![SearchScopeSurface::Chunk, SearchScopeSurface::Chunk];
+        assert_eq!(
+            batch.validate_surface_mutations_v1(),
+            Err(SearchCorpusSurfaceMutationConflictV1::DuplicateClear(
+                SearchScopeSurface::Chunk
+            ))
+        );
+
+        batch.clear_surfaces = vec![SearchScopeSurface::Symbol, SearchScopeSurface::Chunk];
+        assert_eq!(
+            batch.validate_surface_mutations_v1(),
+            Err(SearchCorpusSurfaceMutationConflictV1::NonCanonicalClearOrder)
+        );
+
+        let mut batch = fixture_search_corpus_batch();
+        let duplicate_replace = batch
+            .replace_scopes
+            .first()
+            .expect("fixture must contain one replace scope")
+            .clone();
+        batch.replace_scopes.push(duplicate_replace);
+        assert_eq!(
+            batch.validate_surface_mutations_v1(),
+            Err(
+                SearchCorpusSurfaceMutationConflictV1::DuplicateReplaceScope(
+                    SearchScopeSurface::File
+                )
+            )
+        );
+
+        let mut batch = fixture_search_corpus_batch();
+        batch
+            .tombstone_scopes
+            .first_mut()
+            .expect("fixture must contain one tombstone scope")
+            .scope = fixture_scope_key();
+        assert_eq!(
+            batch.validate_surface_mutations_v1(),
+            Err(SearchCorpusSurfaceMutationConflictV1::ReplaceAndTombstone(
+                SearchScopeSurface::File
+            ))
+        );
     }
 
     #[test]
@@ -4932,6 +5379,45 @@ mod tests {
     }
 
     #[test]
+    fn file_contributor_identity_manual_serde_enforces_wire_contract() -> TestRes {
+        let missing_optional: FileContributorIdentityEntry =
+            serde_json::from_str(r#"{"canonical":"alice"}"#)?;
+        assert_eq!(
+            missing_optional,
+            FileContributorIdentityEntry {
+                canonical: "alice".to_string(),
+                name: None,
+                email: None,
+            }
+        );
+
+        let duplicate = serde_json::from_str::<FileContributorIdentityEntry>(
+            r#"{"canonical":"alice","canonical":"bob"}"#,
+        );
+        assert!(matches!(
+            duplicate,
+            Err(error) if error.to_string().contains("duplicate field `canonical`")
+        ));
+
+        let missing = serde_json::from_str::<FileContributorIdentityEntry>(
+            r#"{"name":"Alice","email":"alice@example.com"}"#,
+        );
+        assert!(matches!(
+            missing,
+            Err(error) if error.to_string().contains("missing field `canonical`")
+        ));
+
+        let unknown = serde_json::from_str::<FileContributorIdentityEntry>(
+            r#"{"canonical":"alice","unexpected":true}"#,
+        );
+        assert!(matches!(
+            unknown,
+            Err(error) if error.to_string().contains("unknown field `unexpected`")
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn dirty_ingest_batch_round_trip() -> TestRes {
         let batch = fixture_dirty_batch();
         let bytes = encode(&batch)?;
@@ -4956,6 +5442,7 @@ mod tests {
             manifest_digest: "sha256:feed".to_string(),
             accepted_replace_scopes: 2,
             accepted_tombstone_scopes: 1,
+            accepted_clear_surfaces: 0,
             sealed: true,
         };
         let bytes = encode(&receipt)?;
@@ -5089,6 +5576,7 @@ mod tests {
                 manifest_digest: "digest-lex".to_string(),
                 accepted_replace_scopes: 1,
                 accepted_tombstone_scopes: 0,
+                accepted_clear_surfaces: 0,
                 sealed: true,
             }),
         };
@@ -5123,6 +5611,7 @@ mod tests {
                 manifest_digest: "digest-hist".to_string(),
                 accepted_replace_scopes: 4,
                 accepted_tombstone_scopes: 0,
+                accepted_clear_surfaces: 0,
                 sealed: false,
             }),
         };
@@ -5141,6 +5630,7 @@ mod tests {
                 manifest_digest: "digest-repo-commit-recency".to_string(),
                 accepted_replace_scopes: 2,
                 accepted_tombstone_scopes: 0,
+                accepted_clear_surfaces: 0,
                 sealed: false,
             }),
         };
@@ -5159,6 +5649,7 @@ mod tests {
                 manifest_digest: "digest-repo-meta".to_string(),
                 accepted_replace_scopes: 2,
                 accepted_tombstone_scopes: 0,
+                accepted_clear_surfaces: 0,
                 sealed: false,
             }),
         };
@@ -5177,6 +5668,7 @@ mod tests {
                 manifest_digest: "digest-repo-description".to_string(),
                 accepted_replace_scopes: 2,
                 accepted_tombstone_scopes: 0,
+                accepted_clear_surfaces: 0,
                 sealed: false,
             }),
         };
@@ -5195,6 +5687,7 @@ mod tests {
                 manifest_digest: "digest-repo-topic".to_string(),
                 accepted_replace_scopes: 2,
                 accepted_tombstone_scopes: 0,
+                accepted_clear_surfaces: 0,
                 sealed: false,
             }),
         };
@@ -5213,6 +5706,7 @@ mod tests {
                 manifest_digest: "digest-file-contributor".to_string(),
                 accepted_replace_scopes: 2,
                 accepted_tombstone_scopes: 0,
+                accepted_clear_surfaces: 0,
                 sealed: false,
             }),
         };
@@ -5231,6 +5725,7 @@ mod tests {
                 manifest_digest: "digest-dirty".to_string(),
                 accepted_replace_scopes: 1,
                 accepted_tombstone_scopes: 1,
+                accepted_clear_surfaces: 0,
                 sealed: false,
             }),
         };
@@ -5249,6 +5744,7 @@ mod tests {
                 manifest_digest: "digest-struct".to_string(),
                 accepted_replace_scopes: 1,
                 accepted_tombstone_scopes: 0,
+                accepted_clear_surfaces: 0,
                 sealed: false,
             }),
         };

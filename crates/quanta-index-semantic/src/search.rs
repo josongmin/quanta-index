@@ -28,8 +28,8 @@ use lancedb::connect;
 use lancedb::query::{ExecutableQuery as _, QueryBase as _};
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
-    LexicalCandidate, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
-    SemanticCorpusKindV1,
+    LexicalCandidate, ManifestGeneration, OwnerDocKind, QueryConstraintSetV1, RepoId,
+    RepoRelativePath, RevisionId, SemanticCorpusKindV1,
 };
 use quanta_index_core::CoreError;
 use quanta_index_core::domains::semantic::{SemanticPolicy, SemanticSearchHitV1, SemanticSearcher};
@@ -37,9 +37,9 @@ use quanta_index_core::domains::semantic::{SemanticPolicy, SemanticSearchHitV1, 
 use crate::errors::lancedb_err;
 use crate::generation_contract::GenerationContract;
 use crate::layout::{
-    self, COLUMN_CORPUS_KIND, COLUMN_EMBEDDING_ID, COLUMN_END_LINE, COLUMN_OWNER_ID,
-    COLUMN_RECORD_ID, COLUMN_REPO_RELATIVE_PATH, COLUMN_SNIPPET, COLUMN_START_LINE, TABLE_NAME,
-    dataset_uri,
+    self, COLUMN_CORPUS_KIND, COLUMN_EMBEDDING_ID, COLUMN_END_LINE, COLUMN_LANGUAGE,
+    COLUMN_OWNER_ID, COLUMN_OWNER_KIND, COLUMN_RECORD_ID, COLUMN_REPO_RELATIVE_PATH,
+    COLUMN_SNIPPET, COLUMN_START_LINE, TABLE_NAME, dataset_uri,
 };
 use crate::manifest::{
     FORMAT_VERSION, LEGACY_BUILD_CONTRACT_FORMAT_VERSION, LEGACY_LANCEDB_FORMAT_VERSION,
@@ -104,6 +104,7 @@ pub(crate) struct SemanticSearchHit {
     pub(crate) candidate: LexicalCandidate,
     pub(crate) record_id: String,
     pub(crate) owner_id: String,
+    pub(crate) owner_kind: String,
     pub(crate) corpus_kind: Option<String>,
 }
 
@@ -265,6 +266,15 @@ fn cosine_distance_to_score_v1(distance: f32, candidate_id: &str) -> Result<f32,
     Ok(1.0_f32 - distance)
 }
 
+fn parse_owner_kind_v1(value: &str, record_id: &str) -> Result<OwnerDocKind, CoreError> {
+    OwnerDocKind::from_code_str(value).ok_or_else(|| {
+        CoreError::Storage(format!(
+            "semantic: unsupported owner_kind {:?} on record {}",
+            value, record_id
+        ))
+    })
+}
+
 fn extract_hits(
     batch: &RecordBatch,
     repo_id: &RepoId,
@@ -286,6 +296,11 @@ fn extract_hits(
     };
     let owner_id_col = if format_version == FORMAT_VERSION {
         Some(column_as::<StringArray>(batch, COLUMN_OWNER_ID, "Utf8")?)
+    } else {
+        None
+    };
+    let owner_kind_col = if format_version == FORMAT_VERSION {
+        Some(column_as::<StringArray>(batch, COLUMN_OWNER_KIND, "Utf8")?)
     } else {
         None
     };
@@ -320,6 +335,10 @@ fn extract_hits(
             candidate,
             record_id: record_id_col.map_or_else(|| id.clone(), |col| col.value(row).to_owned()),
             owner_id: owner_id_col.map_or_else(|| id.clone(), |col| col.value(row).to_owned()),
+            owner_kind: owner_kind_col.map_or_else(
+                || OwnerDocKind::Chunk.as_code_str().to_owned(),
+                |col| col.value(row).to_owned(),
+            ),
             corpus_kind: corpus_kind_col.map(|col| col.value(row).to_owned()),
         });
     }
@@ -402,6 +421,7 @@ impl LoadedGeneration {
     ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
         hits.into_iter()
             .map(|hit| {
+                let owner_kind = parse_owner_kind_v1(&hit.owner_kind, &hit.record_id)?;
                 let corpus_kind = hit
                     .corpus_kind
                     .as_deref()
@@ -418,6 +438,7 @@ impl LoadedGeneration {
                     candidate: hit.candidate,
                     record_id: hit.record_id,
                     owner_id: hit.owner_id,
+                    owner_kind,
                     corpus_kind,
                 })
             })
@@ -436,14 +457,72 @@ impl LoadedGeneration {
         }
     }
 
+    fn language_any_of_filter(constraints: &QueryConstraintSetV1) -> Option<String> {
+        if constraints.language_any_of.is_empty() {
+            return None;
+        }
+        let clauses = constraints
+            .language_any_of
+            .iter()
+            .map(|language| {
+                format!(
+                    "{COLUMN_LANGUAGE} = {}",
+                    crate::sql::quote_sql_string(language.as_str())
+                )
+            })
+            .collect::<Vec<_>>();
+        Some(format!("({})", clauses.join(" OR ")))
+    }
+
+    async fn search_hits_constrained_async(
+        &self,
+        query_vector: &[f32],
+        top_k: usize,
+        allowed_ids: Option<&BTreeSet<String>>,
+        corpus_kind: Option<&str>,
+        constraints: &QueryConstraintSetV1,
+    ) -> Result<Vec<SemanticSearchHit>, CoreError> {
+        self.check_query_dim(query_vector)?;
+        if allowed_ids.is_some_and(BTreeSet::is_empty) {
+            return Ok(Vec::new());
+        }
+        if (corpus_kind.is_some() || !constraints.is_unconstrained())
+            && self.format_version != FORMAT_VERSION
+        {
+            return Err(CoreError::Storage(format!(
+                "semantic: corpus/language filters require format version {FORMAT_VERSION}, found {}",
+                self.format_version
+            )));
+        }
+        let filter = Self::combine_filters(
+            allowed_ids
+                .into_iter()
+                .map(build_id_in_filter)
+                .chain(corpus_kind.into_iter().map(|kind| {
+                    format!(
+                        "{COLUMN_CORPUS_KIND} = {}",
+                        crate::sql::quote_sql_string(kind)
+                    )
+                }))
+                .chain(Self::language_any_of_filter(constraints)),
+        );
+        self.run_vector_query(query_vector, top_k, filter).await
+    }
+
     pub(crate) async fn search_async(
         &self,
         query_vector: &[f32],
         top_k: usize,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
-        self.search_hits_filtered_async(query_vector, top_k, None)
-            .await
-            .map(Self::map_hits_to_candidates)
+        self.search_hits_constrained_async(
+            query_vector,
+            top_k,
+            None,
+            None,
+            &QueryConstraintSetV1::unconstrained(),
+        )
+        .await
+        .map(Self::map_hits_to_candidates)
     }
 
     pub(crate) async fn search_scoped_async(
@@ -452,18 +531,15 @@ impl LoadedGeneration {
         allowed_ids: &BTreeSet<String>,
         top_k: usize,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
-        // Validate dim BEFORE the empty-allowlist early return so the typed
-        // `SemDimMismatch` contract is symmetric between `search` and
-        // `search_scoped` — an empty allowlist + wrong-dim query must still
-        // surface the dim-mismatch typed error, not a silent empty result.
-        self.check_query_dim(query_vector)?;
-        if allowed_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let filter = Self::combine_filters(std::iter::once(build_id_in_filter(allowed_ids)));
-        self.run_vector_query(query_vector, top_k, filter)
-            .await
-            .map(Self::map_hits_to_candidates)
+        self.search_hits_constrained_async(
+            query_vector,
+            top_k,
+            Some(allowed_ids),
+            None,
+            &QueryConstraintSetV1::unconstrained(),
+        )
+        .await
+        .map(Self::map_hits_to_candidates)
     }
 
     pub(crate) async fn search_hits_filtered_async(
@@ -472,20 +548,14 @@ impl LoadedGeneration {
         top_k: usize,
         corpus_kind: Option<&str>,
     ) -> Result<Vec<SemanticSearchHit>, CoreError> {
-        self.check_query_dim(query_vector)?;
-        if corpus_kind.is_some() && self.format_version != FORMAT_VERSION {
-            return Err(CoreError::Storage(format!(
-                "semantic: corpus_kind filter requires format version {FORMAT_VERSION}, found {}",
-                self.format_version
-            )));
-        }
-        let filter = Self::combine_filters(corpus_kind.into_iter().map(|kind| {
-            format!(
-                "{COLUMN_CORPUS_KIND} = {}",
-                crate::sql::quote_sql_string(kind)
-            )
-        }));
-        self.run_vector_query(query_vector, top_k, filter).await
+        self.search_hits_constrained_async(
+            query_vector,
+            top_k,
+            None,
+            corpus_kind,
+            &QueryConstraintSetV1::unconstrained(),
+        )
+        .await
     }
 }
 
@@ -520,6 +590,23 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         crate::run_blocking(&self.runtime, self.loaded.search_async(query_vector, limit))
     }
 
+    fn search_constrained(
+        &self,
+        query_vector: &[f32],
+        constraints: &QueryConstraintSetV1,
+        top_k: u32,
+    ) -> Result<Vec<LexicalCandidate>, CoreError> {
+        SemanticPolicy::validate_top_k(top_k)?;
+        SemanticPolicy::validate_query_vector(query_vector)?;
+        let limit = top_k_limit(top_k)?;
+        crate::run_blocking(
+            &self.runtime,
+            self.loaded
+                .search_hits_constrained_async(query_vector, limit, None, None, constraints),
+        )
+        .map(LoadedGeneration::map_hits_to_candidates)
+    }
+
     fn search_hits(
         &self,
         query_vector: &[f32],
@@ -532,6 +619,23 @@ impl SemanticSearcher for PersistedSemanticSearcher {
             &self.runtime,
             self.loaded
                 .search_hits_filtered_async(query_vector, limit, None),
+        )
+        .and_then(LoadedGeneration::map_hits_to_core_v1)
+    }
+
+    fn search_hits_constrained(
+        &self,
+        query_vector: &[f32],
+        constraints: &QueryConstraintSetV1,
+        top_k: u32,
+    ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
+        SemanticPolicy::validate_top_k(top_k)?;
+        SemanticPolicy::validate_query_vector(query_vector)?;
+        let limit = top_k_limit(top_k)?;
+        crate::run_blocking(
+            &self.runtime,
+            self.loaded
+                .search_hits_constrained_async(query_vector, limit, None, None, constraints),
         )
         .and_then(LoadedGeneration::map_hits_to_core_v1)
     }
@@ -556,6 +660,29 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         .and_then(LoadedGeneration::map_hits_to_core_v1)
     }
 
+    fn search_hits_for_corpus_constrained(
+        &self,
+        query_vector: &[f32],
+        corpus_kind: SemanticCorpusKindV1,
+        constraints: &QueryConstraintSetV1,
+        top_k: u32,
+    ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
+        SemanticPolicy::validate_top_k(top_k)?;
+        SemanticPolicy::validate_query_vector(query_vector)?;
+        let limit = top_k_limit(top_k)?;
+        crate::run_blocking(
+            &self.runtime,
+            self.loaded.search_hits_constrained_async(
+                query_vector,
+                limit,
+                None,
+                Some(corpus_kind.as_code_str()),
+                constraints,
+            ),
+        )
+        .and_then(LoadedGeneration::map_hits_to_core_v1)
+    }
+
     fn search_scoped(
         &self,
         query_vector: &[f32],
@@ -572,6 +699,29 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         )
     }
 
+    fn search_scoped_constrained(
+        &self,
+        query_vector: &[f32],
+        allowed_ids: &BTreeSet<String>,
+        constraints: &QueryConstraintSetV1,
+        top_k: u32,
+    ) -> Result<Vec<LexicalCandidate>, CoreError> {
+        SemanticPolicy::validate_top_k(top_k)?;
+        SemanticPolicy::validate_query_vector(query_vector)?;
+        let limit = top_k_limit(top_k)?;
+        crate::run_blocking(
+            &self.runtime,
+            self.loaded.search_hits_constrained_async(
+                query_vector,
+                limit,
+                Some(allowed_ids),
+                None,
+                constraints,
+            ),
+        )
+        .map(LoadedGeneration::map_hits_to_candidates)
+    }
+
     fn index_model_id(&self) -> &str {
         self.loaded.model_id()
     }
@@ -583,7 +733,8 @@ impl SemanticSearcher for PersistedSemanticSearcher {
 
 #[cfg(test)]
 mod tests {
-    use super::cosine_distance_to_score_v1;
+    use super::{cosine_distance_to_score_v1, parse_owner_kind_v1};
+    use quanta_index_contract::OwnerDocKind;
     use quanta_index_core::CoreError;
 
     // CASE-COVERS: non-finite cosine distance must fail closed, not seed a NaN score.
@@ -615,6 +766,21 @@ mod tests {
                     panic!("non-finite distance {bad} must fail closed as Storage, got {other:?}")
                 }
             }
+        }
+    }
+
+    #[test]
+    fn owner_kind_parser_preserves_valid_value_and_rejects_malformed_v1() {
+        assert_eq!(
+            parse_owner_kind_v1("Test", "record-test").expect("valid owner kind"),
+            OwnerDocKind::Test
+        );
+        match parse_owner_kind_v1("test", "record-bad") {
+            Err(CoreError::Storage(message)) => {
+                assert!(message.contains("unsupported owner_kind \"test\""));
+                assert!(message.contains("record-bad"));
+            }
+            other => panic!("malformed v4 owner kind must fail closed, got {other:?}"),
         }
     }
 }

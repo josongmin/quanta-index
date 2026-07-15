@@ -308,6 +308,9 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
         &self,
         batch: &SearchCorpusIngestBatch,
     ) -> Result<BatchPublishReceipt, CoreError> {
+        batch.validate_surface_mutations_v1().map_err(|err| {
+            CoreError::InvalidContract(format!("direct search-corpus materialize: {err}"))
+        })?;
         let derived_semantic_batch = match (&self.semantic_ingest, &self.semantic_embedder) {
             (Some(_), Some(embedder)) => Some(derive_semantic_batch_with_mode_v1(
                 batch,
@@ -349,6 +352,9 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
         for _scope in &batch.tombstone_scopes {
             receipt.accept_tombstone_scope();
         }
+        for _surface in &batch.clear_surfaces {
+            receipt.accept_clear_surface();
+        }
         if batch.seal {
             receipt.mark_sealed();
         }
@@ -358,7 +364,19 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
             // Search-owned semantic derivation is explicit follow-on work from
             // the accepted search-corpus batch. Failure is surfaced to the
             // caller; no silent downgrade to search-corpus-only indexing occurs.
-            drop(semantic_ingest.publish_batch(semantic_batch)?);
+            let semantic_receipt = semantic_ingest.publish_batch(semantic_batch)?;
+            let expected_clear_surfaces =
+                u32::try_from(batch.clear_surfaces.len()).map_err(|err| {
+                    CoreError::InvalidContract(format!(
+                        "direct search-corpus materialize: clear surface count overflow: {err}"
+                    ))
+                })?;
+            if semantic_receipt.accepted_clear_surfaces != expected_clear_surfaces {
+                return Err(CoreError::InvalidContract(format!(
+                    "direct search-corpus materialize: semantic clear receipt mismatch: expected {expected_clear_surfaces}, received {}",
+                    semantic_receipt.accepted_clear_surfaces
+                )));
+            }
         }
         Ok(receipt)
     }
@@ -418,6 +436,9 @@ impl SemanticIngestPort for DirectSemanticMaterializer {
         }
         for _scope in &batch.tombstone_scopes {
             receipt.accept_tombstone_scope();
+        }
+        for _surface in &batch.clear_surfaces {
+            receipt.accept_clear_surface();
         }
         if batch.seal {
             receipt.mark_sealed();
@@ -929,6 +950,7 @@ mod tests {
             model_contract: fixture_model_contract(),
             required_corpora: vec![SemanticCorpusKindV1::RawCodeFallback],
             corpus_policy_digest: None,
+            clear_surfaces: Vec::new(),
             replace_scopes: vec![SemanticReplaceScope {
                 scope: fixture_scope(),
                 scope_digest: "scope:sem".to_string(),
@@ -967,6 +989,7 @@ mod tests {
             batch_digest: "batch:lex".to_string(),
             mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload: None,
+            clear_surfaces: Vec::new(),
             replace_scopes: vec![SearchCorpusReplaceScope {
                 scope: fixture_scope(),
                 scope_digest: "scope:lex".to_string(),
@@ -1058,9 +1081,10 @@ mod tests {
                 SEARCH_OWNED_SEMANTIC_DIMENSION,
             )),
         );
-        let batch = fixture_search_corpus_batch()?;
+        let mut batch = fixture_search_corpus_batch()?;
+        batch.clear_surfaces = vec![SearchScopeSurface::Symbol];
         let receipt = materializer.publish_batch(&batch)?;
-        if !receipt.sealed {
+        if !receipt.sealed || receipt.accepted_clear_surfaces != 1 {
             return Err("derived semantic search-corpus receipt must preserve seal".into());
         }
         let semantic_batches = semantic_builder.take()?;
@@ -1069,6 +1093,9 @@ mod tests {
             .ok_or_else(|| "expected one derived semantic batch".to_string())?;
         if derived.generation != batch.generation || !derived.seal {
             return Err("derived semantic batch lost generation/seal truth".into());
+        }
+        if derived.clear_surfaces != [SearchScopeSurface::Symbol] {
+            return Err("derived semantic batch lost clear-surface truth".into());
         }
         if derived.replace_scopes.len() != 1 {
             return Err(
@@ -1243,6 +1270,7 @@ mod tests {
             batch_digest: "batch:lex".to_string(),
             mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload: None,
+            clear_surfaces: Vec::new(),
             replace_scopes: vec![
                 scope_with_chunks(
                     "a.rs",

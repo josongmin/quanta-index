@@ -491,6 +491,7 @@ fn publish_revision_text_generation(
         batch_digest: format!("lex-batch:{path}:{}", generation.get()),
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
+        clear_surfaces: Vec::new(),
         replace_scopes: vec![SearchCorpusReplaceScope {
             scope: revision_scope_key(path),
             scope_digest: format!("scope:{path}:1-chunk"),
@@ -517,11 +518,6 @@ fn publish_revision_text_generation(
         seal: true,
     })?;
     let pin = GenerationPin::new(rt.repo(), revision_id, generation);
-    rt.activate_generation(
-        pin.clone(),
-        &manifest_digest,
-        &[SearchPlaneTrackKind::Lexical],
-    )?;
     Ok(pin)
 }
 

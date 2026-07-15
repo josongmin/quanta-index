@@ -220,10 +220,7 @@ fn prepare_semantic_relevance_runtime_with_profile(
         SearchPlaneTrackKind::Lexical,
         SearchPlaneTrackKind::Semantic,
     ])?;
-    rt.activate_last_sealed_generation_with_tracks(&[
-        SearchPlaneTrackKind::Lexical,
-        SearchPlaneTrackKind::Semantic,
-    ])?;
+    rt.activate_last_sealed_generation()?;
     Ok(rt)
 }
 

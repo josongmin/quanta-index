@@ -43,13 +43,13 @@ use quanta_index_contract::lex::{
     LexicalErrorCode, SymbolKindCode, SymbolKindFamily, SymbolRecord,
 };
 use quanta_index_contract::{
-    BatchIngestMode, ChunkRecord, FileContributorIdentityEntry, FileContributorIngestBatch,
-    FileOwnerProjectionRow, FileOwnershipIngestBatch, HighlightSpan, LexicalCandidate,
-    LexicalFullBundle, LexicalSeal, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions,
-    LqPatternType, LqPredicateArg, LqQuery, LqSelect, LqType, LqVisibility, LqYesNoOnly,
-    ManifestGeneration, ReplaceLexicalScope, RepoCommitRecencyIngestBatch,
+    BatchIngestMode, ChunkRecord, ClearLexicalSurface, FileContributorIdentityEntry,
+    FileContributorIngestBatch, FileOwnerProjectionRow, FileOwnershipIngestBatch, HighlightSpan,
+    LexicalCandidate, LexicalFullBundle, LexicalSeal, LqExpr, LqFileScope, LqFilter, LqLeaf,
+    LqOptions, LqPatternType, LqPredicateArg, LqQuery, LqSelect, LqType, LqVisibility, LqYesNoOnly,
+    ManifestGeneration, QueryConstraintSetV1, ReplaceLexicalScope, RepoCommitRecencyIngestBatch,
     RepoDescriptionIngestBatch, RepoId, RepoMetaIngestBatch, RepoRelativePath,
-    RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch, SymbolCandidate,
+    RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch, SearchScopeSurface, SymbolCandidate,
     TombstoneLexicalScope,
 };
 use quanta_index_core::{
@@ -2919,6 +2919,7 @@ impl LexicalAdapter {
                         decode_tombstone_scope_payload(&payload.payload)?;
                     base_generation
                 }
+                LexicalChannelOp::ClearLexicalSurface(payload) => payload.base_generation,
                 LexicalChannelOp::FullBundle(_)
                 | LexicalChannelOp::UpsertChunk(_)
                 | LexicalChannelOp::DeleteChunk(_)
@@ -2955,6 +2956,18 @@ impl LexicalAdapter {
         let term =
             Term::from_field_text(self.fields.repo_relative_path, repo_relative_path.as_str());
         let _opstamp = writer.delete_term(term);
+    }
+
+    fn clear_surface_docs(&self, writer: &IndexWriter, surface: SearchScopeSurface) -> bool {
+        let doc_kind = match surface {
+            SearchScopeSurface::Chunk => TEXT_DOC_KIND,
+            SearchScopeSurface::Symbol => SYMBOL_DOC_KIND,
+            // File and Module semantic rows have no lexical representation.
+            SearchScopeSurface::File | SearchScopeSurface::Module => return false,
+        };
+        let term = Term::from_field_text(self.fields.doc_kind, doc_kind);
+        let _opstamp = writer.delete_term(term);
+        true
     }
 
     fn apply_op(
@@ -3110,6 +3123,9 @@ impl LexicalAdapter {
                 self.delete_scope_docs(writer, &scope.scope.repo_relative_path);
                 Ok(true)
             }
+            LexicalChannelOp::ClearLexicalSurface(payload) => {
+                Ok(self.clear_surface_docs(writer, payload.surface))
+            }
             // FullBundle/Seal carry no document-level effect (dispatcher's
             // ledger update observes Seal).
             LexicalChannelOp::FullBundle(bundle) => {
@@ -3154,6 +3170,7 @@ fn op_touches_text_authority(op: &LexicalChannelOp) -> bool {
             | LexicalChannelOp::DeleteChunk(_)
             | LexicalChannelOp::ReplaceLexicalScope(_)
             | LexicalChannelOp::TombstoneLexicalScope(_)
+            | LexicalChannelOp::ClearLexicalSurface(_)
     )
 }
 
@@ -3161,6 +3178,14 @@ fn legacy_ops_for_batch(
     batch: &SearchCorpusIngestBatch,
     include_seal: bool,
 ) -> Result<Vec<LexicalChannelOp>, CoreError> {
+    batch
+        .validate_surface_mutations_v1()
+        .map_err(|err| CoreError::InvalidContract(format!("lexical: {err}")))?;
+    if batch.mode == BatchIngestMode::Delta && batch.base_generation.is_none() {
+        return Err(CoreError::InvalidContract(
+            "lexical: Delta search-corpus batch requires base_generation".to_string(),
+        ));
+    }
     let op_capacity = batch
         .bundle_payload
         .as_ref()
@@ -3169,6 +3194,7 @@ fn legacy_ops_for_batch(
             batch
                 .replace_scopes
                 .len()
+                .saturating_add(batch.clear_surfaces.len())
                 .saturating_add(batch.tombstone_scopes.len())
                 .saturating_add(usize::from(include_seal)),
         );
@@ -3179,6 +3205,15 @@ fn legacy_ops_for_batch(
             revision_id: batch.revision_id.clone(),
             generation: batch.generation,
             payload: payload.clone(),
+        }));
+    }
+    for surface in &batch.clear_surfaces {
+        ops.push(LexicalChannelOp::ClearLexicalSurface(ClearLexicalSurface {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+            base_generation: batch.base_generation,
+            surface: *surface,
         }));
     }
     for scope in &batch.replace_scopes {
@@ -4636,6 +4671,33 @@ impl TantivySearcher {
                 Occur::Must,
                 Box::new(TermQuery::new(doc_kind_term, IndexRecordOption::Basic)),
             ),
+        ]))
+    }
+
+    fn language_any_of_query(&self, constraints: &QueryConstraintSetV1) -> Box<dyn Query> {
+        let mut clauses = Vec::with_capacity(constraints.language_any_of.len());
+        for language in &constraints.language_any_of {
+            clauses.push((
+                Occur::Should,
+                self.exact_text_query(self.fields.language, language.as_str()),
+            ));
+        }
+        Box::new(BooleanQuery::new(clauses))
+    }
+
+    fn with_doc_kind_and_constraints(
+        &self,
+        query: Box<dyn Query>,
+        doc_kind: &str,
+        constraints: &QueryConstraintSetV1,
+    ) -> Box<dyn Query> {
+        let typed = self.with_doc_kind(query, doc_kind);
+        if constraints.is_unconstrained() {
+            return typed;
+        }
+        Box::new(BooleanQuery::new(vec![
+            (Occur::Must, typed),
+            (Occur::Must, self.language_any_of_query(constraints)),
         ]))
     }
 
@@ -7271,13 +7333,18 @@ fn map_planner_error(err: &crate::planner::LexicalPlannerError) -> CoreError {
 
 impl LexicalSearcher for TantivySearcher {
     fn search(&self, query: &LqQuery, top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError> {
-        // Validation ordering: `LexicalPolicy::validate_query` runs FIRST so
-        // core-policy contract violations (empty-query rejection, structural
-        // fail-closed, top-level rev/type:commit gating) surface their own
-        // typed errors before the lexical planner's pre-flight runs. The
-        // planner is then the single authority for typed-unavailable
-        // surfacing on filters/IR shapes that pass the core policy —
-        // overlapping responsibility is gone.
+        self.search_constrained(query, &QueryConstraintSetV1::unconstrained(), top_k)
+    }
+
+    fn search_constrained(
+        &self,
+        query: &LqQuery,
+        constraints: &QueryConstraintSetV1,
+        top_k: u32,
+    ) -> Result<Vec<LexicalCandidate>, CoreError> {
+        // This is the single text-query execution path. The unconstrained
+        // public method delegates here so constraint support cannot drift into
+        // a second planner/search implementation.
         let effective_query =
             rewrite_symbol_name_predicate_query(query)?.unwrap_or_else(|| query.clone());
         LexicalPolicy::validate_query(&effective_query)?;
@@ -7301,28 +7368,37 @@ impl LexicalSearcher for TantivySearcher {
             return Ok(Vec::new());
         }
         if Self::uses_unindexed_scan(&effective_query.options) {
-            return self.manual_text_search(&effective_query, &prepared_query, limit, true);
+            if constraints.is_unconstrained() {
+                return self.manual_text_search(&effective_query, &prepared_query, limit, true);
+            }
+            return Err(CoreError::NotImplemented(
+                "lexical: typed language constraints require indexed execution; index:no cannot read the non-stored language field"
+                    .to_string(),
+            ));
         }
         let Some(base) = self
             .compile_query_from_prepared(&prepared_query.query, &prepared_query.predicate_plan)?
         else {
             return Ok(Vec::new());
         };
-        let compiled = self.with_doc_kind(base, prepared_query.doc_kind.as_str());
+        let compiled =
+            self.with_doc_kind_and_constraints(base, prepared_query.doc_kind.as_str(), constraints);
         let collect_limit = self.collect_limit(&effective_query, requested, limit);
         let boosted_options = &effective_query.options;
         let searcher = self.reader.searcher();
         let mut hits = searcher
             .search(&*compiled, &TopDocs::with_limit(collect_limit))
-            .map_err(|err| CoreError::Storage(format!("lexical: search: {err}")))?;
+            .map_err(|err| CoreError::Storage(format!("lexical: constrained search: {err}")))?;
         let full_recall_limit = self.full_recall_limit(requested, limit);
         if collect_limit < full_recall_limit && Self::boundary_tie_detected(&hits, limit) {
             hits = searcher
                 .search(&*compiled, &TopDocs::with_limit(full_recall_limit))
-                .map_err(|err| CoreError::Storage(format!("lexical: search full recall: {err}")))?;
+                .map_err(|err| {
+                    CoreError::Storage(format!("lexical: constrained search full recall: {err}"))
+                })?;
         }
         let center_terms = snippet_center_terms(&effective_query);
-        let mut out: Vec<LexicalCandidate> = Vec::with_capacity(hits.len());
+        let mut out = Vec::with_capacity(hits.len());
         for (score, doc_address) in hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
@@ -7405,6 +7481,17 @@ impl LexicalSearcher for TantivySearcher {
         query: &LqQuery,
         top_k: u32,
     ) -> Result<Vec<SymbolCandidate>, CoreError> {
+        self.search_symbols_constrained(query, &QueryConstraintSetV1::unconstrained(), top_k)
+    }
+
+    fn search_symbols_constrained(
+        &self,
+        query: &LqQuery,
+        constraints: &QueryConstraintSetV1,
+        top_k: u32,
+    ) -> Result<Vec<SymbolCandidate>, CoreError> {
+        // Single symbol-query execution path; the unconstrained entrypoint
+        // delegates here to prevent planner and scoring drift.
         let effective_query =
             rewrite_symbol_name_predicate_query(query)?.unwrap_or_else(|| query.clone());
         LexicalPolicy::validate_query(&effective_query)?;
@@ -7422,36 +7509,43 @@ impl LexicalSearcher for TantivySearcher {
             return Ok(Vec::new());
         }
         let requested = usize::try_from(top_k)
-            .map_err(|err| CoreError::InvalidContract(format!("lexical: top_k: {err}")))?;
+            .map_err(|err| CoreError::InvalidContract(format!("symbol: top_k: {err}")))?;
         let limit = self.effective_limit(&effective_query, requested);
         if limit == 0 {
             return Ok(Vec::new());
         }
         if Self::uses_unindexed_scan(&effective_query.options) {
-            return self.manual_symbol_search(&effective_query, &prepared_query, limit);
+            if constraints.is_unconstrained() {
+                return self.manual_symbol_search(&effective_query, &prepared_query, limit);
+            }
+            return Err(CoreError::NotImplemented(
+                "symbol: typed language constraints require indexed execution; index:no cannot read the non-stored language field"
+                    .to_string(),
+            ));
         }
         let Some(base) = self
             .compile_query_from_prepared(&prepared_query.query, &prepared_query.predicate_plan)?
         else {
             return Ok(Vec::new());
         };
-        let compiled = self.with_doc_kind(base, prepared_query.doc_kind.as_str());
+        let compiled =
+            self.with_doc_kind_and_constraints(base, prepared_query.doc_kind.as_str(), constraints);
         let collect_limit = self.collect_limit(&effective_query, requested, limit);
         let boosted_options = &effective_query.options;
         let searcher = self.reader.searcher();
         let mut hits = searcher
             .search(&*compiled, &TopDocs::with_limit(collect_limit))
-            .map_err(|err| CoreError::Storage(format!("lexical: symbol search: {err}")))?;
+            .map_err(|err| CoreError::Storage(format!("symbol: constrained search: {err}")))?;
         let full_recall_limit = self.full_recall_limit(requested, limit);
         if collect_limit < full_recall_limit && Self::boundary_tie_detected(&hits, limit) {
             hits = searcher
                 .search(&*compiled, &TopDocs::with_limit(full_recall_limit))
                 .map_err(|err| {
-                    CoreError::Storage(format!("lexical: symbol search full recall: {err}"))
+                    CoreError::Storage(format!("symbol: constrained full recall: {err}"))
                 })?;
         }
         let center_terms = snippet_center_terms(&effective_query);
-        let mut out: Vec<SymbolCandidate> = Vec::with_capacity(hits.len());
+        let mut out = Vec::with_capacity(hits.len());
         for (score, doc_address) in hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
@@ -7521,6 +7615,16 @@ impl LexicalSearcher for TantivySearcher {
     }
 
     fn search_all(&self, query: &LqQuery) -> Result<Vec<LexicalCandidate>, CoreError> {
+        self.search_all_constrained(query, &QueryConstraintSetV1::unconstrained())
+    }
+
+    fn search_all_constrained(
+        &self,
+        query: &LqQuery,
+        constraints: &QueryConstraintSetV1,
+    ) -> Result<Vec<LexicalCandidate>, CoreError> {
+        // Single full-scope execution path; callers differ only in the
+        // canonical constraint set attached to the compiled Boolean query.
         LexicalPolicy::validate_query(query)?;
         let Some(prepared_query) = self.prepare_executable_query(query, QueryDocKind::Text)? else {
             return Ok(Vec::new());
@@ -7536,7 +7640,7 @@ impl LexicalSearcher for TantivySearcher {
         let searcher = self.reader.searcher();
         let requested = usize::try_from(searcher.num_docs()).map_err(|err| {
             CoreError::InvalidContract(format!(
-                "lexical: num_docs overflow while materializing scope: {err}"
+                "lexical: num_docs overflow while materializing constrained scope: {err}"
             ))
         })?;
         let limit = self.effective_limit(query, requested);
@@ -7544,21 +7648,28 @@ impl LexicalSearcher for TantivySearcher {
             return Ok(Vec::new());
         }
         if Self::uses_unindexed_scan(&query.options) {
-            let hits = self.manual_text_search(query, &prepared_query, limit, false)?;
-            return Ok(Self::collapse_repo_projection(query, hits));
+            if constraints.is_unconstrained() {
+                let hits = self.manual_text_search(query, &prepared_query, limit, false)?;
+                return Ok(Self::collapse_repo_projection(query, hits));
+            }
+            return Err(CoreError::NotImplemented(
+                "lexical: typed language constraints require indexed execution; index:no cannot read the non-stored language field"
+                    .to_string(),
+            ));
         }
         let Some(base) = self
             .compile_query_from_prepared(&prepared_query.query, &prepared_query.predicate_plan)?
         else {
             return Ok(Vec::new());
         };
-        let compiled = self.with_doc_kind(base, prepared_query.doc_kind.as_str());
+        let compiled =
+            self.with_doc_kind_and_constraints(base, prepared_query.doc_kind.as_str(), constraints);
         let collect_limit = self.collect_limit(query, requested, limit);
         let hits = searcher
             .search(&*compiled, &TopDocs::with_limit(collect_limit))
-            .map_err(|err| CoreError::Storage(format!("lexical: search_all: {err}")))?;
+            .map_err(|err| CoreError::Storage(format!("lexical: constrained search_all: {err}")))?;
         let center_terms = snippet_center_terms(query);
-        let mut out: Vec<LexicalCandidate> = Vec::with_capacity(hits.len());
+        let mut out = Vec::with_capacity(hits.len());
         for (score, doc_address) in hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
