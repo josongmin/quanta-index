@@ -773,22 +773,27 @@ impl DirectRuntimeMetadataMaterializer {
     }
 }
 
+fn dirty_publish_receipt_v1(batch: &DirtyIngestBatch) -> BatchPublishReceipt {
+    let mut receipt =
+        BatchPublishReceipt::empty_for(batch.generation, batch.batch_digest.clone());
+    for entry in &batch.entries {
+        match entry {
+            DirtyMutation::Upsert(_) => receipt.accept_replace_scope(),
+            DirtyMutation::Delete(_) => receipt.accept_tombstone_scope(),
+        }
+    }
+    receipt
+}
+
 impl RuntimeMetadataIngestPort for DirectRuntimeMetadataMaterializer {
     fn publish_batch(&self, batch: &DirtyIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
-        let mut receipt = BatchPublishReceipt::empty_for(batch.generation, String::new());
         let mut guard = self.ledger.write().map_err(|err| {
             CoreError::Storage(format!("direct dirty materialize: ledger poisoned: {err}"))
         })?;
         guard.apply_runtime_batch(batch);
-        for entry in &batch.entries {
-            match entry {
-                DirtyMutation::Upsert(_) => receipt.accept_replace_scope(),
-                DirtyMutation::Delete(_) => receipt.accept_tombstone_scope(),
-            }
-        }
         self.authority_store.persist_from_ledger(&guard)?;
         drop(guard);
-        Ok(receipt)
+        Ok(dirty_publish_receipt_v1(batch))
     }
 
     fn publish_catalog_batch(
@@ -1076,6 +1081,24 @@ mod tests {
     };
 
     type TestRes = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn dirty_publish_receipt_binds_exact_auxiliary_batch_without_sealing_v1() {
+        let batch = DirtyIngestBatch {
+            repo_id: RepoId::new("repo"),
+            revision_id: RevisionId::new("rev"),
+            generation: ManifestGeneration::new(9),
+            overlay_epoch_ms: 7,
+            batch_digest: "dirty-batch:exact".to_string(),
+            entries: Vec::new(),
+        };
+        let receipt = dirty_publish_receipt_v1(&batch);
+        assert_eq!(receipt.generation, batch.generation);
+        assert_eq!(receipt.manifest_digest, batch.batch_digest);
+        assert_eq!(receipt.accepted_replace_scopes, 0);
+        assert_eq!(receipt.accepted_tombstone_scopes, 0);
+        assert!(!receipt.sealed);
+    }
 
     macro_rules! search_corpus_materializer {
         (
