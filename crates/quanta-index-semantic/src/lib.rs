@@ -33,6 +33,7 @@ mod errors;
 mod generation_contract;
 mod layout;
 mod manifest;
+mod membership_integrity;
 mod search;
 mod semantic_ingest_fixtures_v1;
 mod sql;
@@ -634,6 +635,9 @@ mod incomplete_generation_discard_tests {
     }
 
     fn manifest_for(identity: &GenerationSnapshot) -> SemanticManifest {
+        let membership_commitment =
+            crate::membership_integrity::cluster_membership_commitment_v1(Vec::new())
+                .expect("empty membership commitment");
         SemanticManifest {
             format_version: FORMAT_VERSION,
             repo_id: identity.repo_id.as_str().to_string(),
@@ -652,6 +656,9 @@ mod incomplete_generation_discard_tests {
             card_schema_versions: Vec::new(),
             render_policy_digests: Vec::new(),
             corpus_policy_digest: None,
+            cluster_membership_root_digest: membership_commitment.root_digest,
+            cluster_membership_cluster_count: membership_commitment.cluster_count,
+            cluster_membership_member_row_count: membership_commitment.member_row_count,
         }
     }
 

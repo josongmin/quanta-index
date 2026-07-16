@@ -6,7 +6,8 @@ use serde::{
     ser::SerializeStruct,
 };
 
-use crate::{GenerationPin, SymbolId};
+use crate::bounded_cluster_members::{BoundedClusterMembersV1, BoundedVecV1};
+use crate::{GenerationPin, MAX_CLUSTER_MEMBERSHIP_BATCH_ITEMS_V1, SymbolId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClusterMembershipCompletenessV1 {
@@ -285,7 +286,7 @@ impl<'de> Visitor<'de> for ClusterMembershipSnapshotV1Visitor {
         let mut cluster_record_id = None;
         let mut generation = None;
         let mut authority_digest = None;
-        let mut members = None;
+        let mut members: Option<BoundedClusterMembersV1> = None;
         let mut completeness = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -312,7 +313,9 @@ impl<'de> Visitor<'de> for ClusterMembershipSnapshotV1Visitor {
             generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
             authority_digest: authority_digest
                 .ok_or_else(|| de::Error::missing_field("authority_digest"))?,
-            members: members.ok_or_else(|| de::Error::missing_field("members"))?,
+            members: members
+                .ok_or_else(|| de::Error::missing_field("members"))?
+                .into_inner(),
             completeness: completeness.ok_or_else(|| de::Error::missing_field("completeness"))?,
         };
         snapshot.validate_v1().map_err(de::Error::custom)?;
@@ -563,6 +566,16 @@ pub struct ClusterMembershipBatchReadResponseV1 {
 }
 
 impl ClusterMembershipBatchReadResponseV1 {
+    fn validate_wire_shape_v1(&self) -> Result<(), &'static str> {
+        if self.outcomes.is_empty() {
+            return Err("cluster membership batch response must not be empty");
+        }
+        if self.outcomes.len() > MAX_CLUSTER_MEMBERSHIP_BATCH_ITEMS_V1 {
+            return Err("cluster membership batch response exceeds the bounded item count");
+        }
+        Ok(())
+    }
+
     pub fn validate_against_v1(
         &self,
         request: &crate::ClusterMembershipBatchReadRequestV1,
@@ -584,6 +597,8 @@ impl Serialize for ClusterMembershipBatchReadResponseV1 {
     where
         S: Serializer,
     {
+        self.validate_wire_shape_v1()
+            .map_err(serde::ser::Error::custom)?;
         for outcome in &self.outcomes {
             outcome.validate_v1().map_err(serde::ser::Error::custom)?;
         }
@@ -606,7 +621,9 @@ impl<'de> Visitor<'de> for ClusterMembershipBatchReadResponseV1Visitor {
     where
         A: MapAccess<'de>,
     {
-        let mut outcomes = None;
+        let mut outcomes: Option<
+            BoundedVecV1<ClusterMembershipReadOutcomeV1, MAX_CLUSTER_MEMBERSHIP_BATCH_ITEMS_V1>,
+        > = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "outcomes" => set_once_v1(&mut outcomes, "outcomes", &mut map)?,
@@ -619,8 +636,13 @@ impl<'de> Visitor<'de> for ClusterMembershipBatchReadResponseV1Visitor {
             }
         }
         let response = ClusterMembershipBatchReadResponseV1 {
-            outcomes: outcomes.ok_or_else(|| de::Error::missing_field("outcomes"))?,
+            outcomes: outcomes
+                .ok_or_else(|| de::Error::missing_field("outcomes"))?
+                .into_inner(),
         };
+        response
+            .validate_wire_shape_v1()
+            .map_err(de::Error::custom)?;
         for outcome in &response.outcomes {
             outcome.validate_v1().map_err(de::Error::custom)?;
         }
@@ -694,7 +716,7 @@ struct ClusterMembershipOutcomePayloadBufferV1 {
     generation: Option<GenerationPin>,
     authority_digest: Option<String>,
     expected_authority_digest: Option<String>,
-    members: Option<Vec<SymbolId>>,
+    members: Option<BoundedClusterMembersV1>,
     completeness: Option<ClusterMembershipCompletenessV1>,
     failure: Option<ClusterMembershipReadFailureV1>,
 }
@@ -826,7 +848,8 @@ impl<'de> Visitor<'de> for ClusterMembershipReadOutcomeV1Visitor {
                         .ok_or_else(|| de::Error::missing_field("authority_digest"))?,
                     members: payload
                         .members
-                        .ok_or_else(|| de::Error::missing_field("members"))?,
+                        .ok_or_else(|| de::Error::missing_field("members"))?
+                        .into_inner(),
                     completeness: payload
                         .completeness
                         .ok_or_else(|| de::Error::missing_field("completeness"))?,
@@ -956,6 +979,24 @@ mod tests {
                 ciborium::de::from_reader(cbor.as_slice()).expect("outcome CBOR decode");
             assert_eq!(decoded_cbor, outcome);
         }
+    }
+
+    #[test]
+    fn cluster_membership_batch_response_decoder_bounds_outcomes_before_allocation_v1() {
+        let outcome = serde_json::to_value(ClusterMembershipReadOutcomeV1::Available(
+            sample_cluster_membership_snapshot(),
+        ))
+        .expect("valid outcome wire");
+        let oversized = serde_json::json!({
+            "outcomes": vec![outcome; MAX_CLUSTER_MEMBERSHIP_BATCH_ITEMS_V1 + 1]
+        });
+        assert!(serde_json::from_value::<ClusterMembershipBatchReadResponseV1>(oversized).is_err());
+        assert!(
+            serde_json::from_value::<ClusterMembershipBatchReadResponseV1>(
+                serde_json::json!({"outcomes": []})
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1142,6 +1183,28 @@ mod tests {
         assert!(
             serde_json::from_value::<ClusterMembershipSnapshotV1>(unknown_wire).is_err(),
             "unknown membership fields must fail closed"
+        );
+
+        let oversized_members = (0..=crate::MAX_CLUSTER_MEMBERSHIP_READ_V1)
+            .map(|index| serde_json::Value::String(format!("symbol:{index:04}")))
+            .collect::<Vec<_>>();
+        let oversized_outcome = serde_json::json!({
+            "kind": "Available",
+            "payload": {
+                "cluster_record_id": "cluster-card:auth-service",
+                "generation": {
+                    "repo_id": "repo-seed",
+                    "revision_id": "rev-seed",
+                    "manifest_generation": 7
+                },
+                "authority_digest": "cluster-authority-digest",
+                "members": oversized_members,
+                "completeness": "Complete"
+            }
+        });
+        assert!(
+            serde_json::from_value::<ClusterMembershipReadOutcomeV1>(oversized_outcome).is_err(),
+            "oversized outcome must fail in the bounded member visitor"
         );
     }
 }

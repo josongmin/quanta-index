@@ -4440,6 +4440,7 @@ dependencies = [
  "quanta-index-contract",
  "quanta-index-core",
  "serde",
+ "sha2",
  "tempfile",
  "tokio",
 ]

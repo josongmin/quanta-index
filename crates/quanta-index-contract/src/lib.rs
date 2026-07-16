@@ -19,6 +19,7 @@
 
 #[macro_use]
 mod macros;
+mod bounded_cluster_members;
 
 /// Internal legacy channel surface used by `searchd` composition-root,
 /// replay, and restart recovery paths.

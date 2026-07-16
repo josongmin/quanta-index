@@ -7,6 +7,7 @@ use serde::{
 };
 
 use super::GenerationPin;
+use crate::bounded_cluster_members::BoundedVecV1;
 
 /// Hard upper bound for one structured ClusterCard membership read.
 ///
@@ -265,7 +266,9 @@ impl<'de> Visitor<'de> for ClusterMembershipBatchReadRequestV1Visitor {
         A: MapAccess<'de>,
     {
         let mut generation = None;
-        let mut items = None;
+        let mut items: Option<
+            BoundedVecV1<ClusterMembershipBatchReadItemV1, MAX_CLUSTER_MEMBERSHIP_BATCH_ITEMS_V1>,
+        > = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "generation" => {
@@ -290,7 +293,9 @@ impl<'de> Visitor<'de> for ClusterMembershipBatchReadRequestV1Visitor {
         }
         let request = ClusterMembershipBatchReadRequestV1 {
             generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
-            items: items.ok_or_else(|| de::Error::missing_field("items"))?,
+            items: items
+                .ok_or_else(|| de::Error::missing_field("items"))?
+                .into_inner(),
         };
         request.validate_v1().map_err(de::Error::custom)?;
         Ok(request)
@@ -502,6 +507,21 @@ mod cluster_membership_request_tests {
             "negative fixture must add rather than replace the unknown field"
         );
         assert!(serde_json::from_value::<ClusterMembershipReadRequestV1>(unknown).is_err());
+
+        let over_limit = serde_json::json!({
+            "cluster_record_id": "cluster-card:auth-service",
+            "generation": {
+                "repo_id": "repo",
+                "revision_id": "rev",
+                "manifest_generation": 17
+            },
+            "expected_authority_digest": "authority-digest",
+            "limit": MAX_CLUSTER_MEMBERSHIP_READ_V1 + 1
+        });
+        assert!(
+            serde_json::from_value::<ClusterMembershipReadRequestV1>(over_limit).is_err(),
+            "oversized request must fail during contract decode"
+        );
     }
 
     fn batch(count: usize, limit: u32) -> ClusterMembershipBatchReadRequestV1 {
@@ -539,6 +559,28 @@ mod cluster_membership_request_tests {
             batch(2, MAX_CLUSTER_MEMBERSHIP_READ_V1 / 2 + 1).validate_v1(),
             Err(ClusterMembershipReadPolicyErrorV1::TotalLimitExceeded { .. })
         ));
+
+        let items = (0..=MAX_CLUSTER_MEMBERSHIP_BATCH_ITEMS_V1)
+            .map(|index| {
+                serde_json::json!({
+                    "cluster_record_id": format!("cluster-card:{index:02}"),
+                    "expected_authority_digest": format!("authority:{index:02}"),
+                    "limit": 1
+                })
+            })
+            .collect::<Vec<_>>();
+        let oversized_wire = serde_json::json!({
+            "generation": {
+                "repo_id": "repo",
+                "revision_id": "rev",
+                "manifest_generation": 17
+            },
+            "items": items
+        });
+        assert!(
+            serde_json::from_value::<ClusterMembershipBatchReadRequestV1>(oversized_wire).is_err(),
+            "batch request must reject the first over-limit item in its sequence visitor"
+        );
     }
 
     #[test]

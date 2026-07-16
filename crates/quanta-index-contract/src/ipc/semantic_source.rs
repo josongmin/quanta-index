@@ -8,6 +8,7 @@ use serde::{
 };
 use sha2::{Digest as _, Sha256};
 
+use crate::bounded_cluster_members::BoundedClusterMembersV1;
 use crate::{MAX_CLUSTER_MEMBERSHIP_READ_V1, OwnerDocKind, RepoRelativePath, SymbolId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -845,7 +846,7 @@ impl<'de> Visitor<'de> for ClusterMembershipReplaceV1Visitor {
     {
         let mut cluster_record_id = None;
         let mut authority_digest = None;
-        let mut members = None;
+        let mut members: Option<BoundedClusterMembersV1> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "cluster_record_id" => {
@@ -879,7 +880,9 @@ impl<'de> Visitor<'de> for ClusterMembershipReplaceV1Visitor {
                 .ok_or_else(|| de::Error::missing_field("cluster_record_id"))?,
             authority_digest: authority_digest
                 .ok_or_else(|| de::Error::missing_field("authority_digest"))?,
-            members: members.ok_or_else(|| de::Error::missing_field("members"))?,
+            members: members
+                .ok_or_else(|| de::Error::missing_field("members"))?
+                .into_inner(),
         };
         replacement.validate_v1().map_err(de::Error::custom)?;
         Ok(replacement)

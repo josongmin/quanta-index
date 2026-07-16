@@ -26,6 +26,7 @@ use std::sync::Arc;
 
 use crate::manifest::{
     FORMAT_VERSION, LEGACY_BUILD_CONTRACT_FORMAT_VERSION, LEGACY_LANCEDB_FORMAT_VERSION,
+    LEGACY_UNCOMMITTED_MEMBERSHIP_FORMAT_VERSION,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
@@ -40,7 +41,7 @@ pub(crate) const MARKER_SEALED_FILE_NAME: &str = "MARKER_SEALED";
 /// Lancedb table name for the semantic dataset.
 pub(crate) const TABLE_NAME: &str = "semantic";
 pub(crate) const CLUSTER_MEMBERSHIP_TABLE_NAME: &str = "cluster_membership";
-pub(crate) const PHYSICAL_LAYOUT_VERSION: u32 = 5;
+pub(crate) const PHYSICAL_LAYOUT_VERSION: u32 = 6;
 
 pub(crate) const COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID: &str = "cluster_record_id";
 pub(crate) const COLUMN_MEMBERSHIP_AUTHORITY_DIGEST: &str = "authority_digest";
@@ -156,7 +157,8 @@ pub(crate) fn semantic_schema_for_manifest_version(
         PHYSICAL_LAYOUT_VERSION if PHYSICAL_LAYOUT_VERSION == FORMAT_VERSION => {
             Ok(semantic_schema(dimension))
         }
-        crate::manifest::LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION => Ok(semantic_schema(dimension)),
+        LEGACY_UNCOMMITTED_MEMBERSHIP_FORMAT_VERSION
+        | crate::manifest::LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION => Ok(semantic_schema(dimension)),
         LEGACY_BUILD_CONTRACT_FORMAT_VERSION | LEGACY_LANCEDB_FORMAT_VERSION => {
             Ok(semantic_schema_v3(dimension))
         }

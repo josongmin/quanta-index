@@ -14,6 +14,10 @@ use std::collections::BTreeSet;
 use quanta_index_contract::{
     EmbeddingDistanceMetric, EmbeddingNormalization, ManifestGeneration, RepoId, RevisionId,
 };
+use quanta_index_core::CoreError;
+
+use crate::codec::{self, cbor_serde};
+use crate::generation_contract::GenerationContract;
 
 /// Distance metric the lancedb adapter actually serves at query time.
 ///
@@ -22,15 +26,23 @@ use quanta_index_contract::{
 /// metric mid-flight cannot serve cosine-quantized data through a `dot` /
 /// `euclidean` contract.
 const SUPPORTED_DISTANCE_METRIC: &str = "cosine";
-use quanta_index_core::CoreError;
 
-use crate::codec::{self, cbor_serde};
-use crate::generation_contract::GenerationContract;
+fn is_canonical_sha256_v1(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
 
 /// Current manifest format version. Bumped on any durable shape change.
 ///
-/// `5` = v4 semantic corpus coverage plus structured ClusterCard membership.
-pub(crate) const FORMAT_VERSION: u32 = 5;
+/// `6` = v5 structured ClusterCard membership plus a sealed table commitment.
+pub(crate) const FORMAT_VERSION: u32 = 6;
+
+/// Legacy structured-membership manifest without a sealed sidecar commitment.
+pub(crate) const LEGACY_UNCOMMITTED_MEMBERSHIP_FORMAT_VERSION: u32 = 5;
 
 /// Legacy semantic-corpus manifest without structured membership capability.
 pub(crate) const LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION: u32 = 4;
@@ -64,9 +76,55 @@ pub(crate) struct SemanticManifest {
     pub(crate) card_schema_versions: Vec<u32>,
     pub(crate) render_policy_digests: Vec<String>,
     pub(crate) corpus_policy_digest: Option<String>,
+    pub(crate) cluster_membership_root_digest: String,
+    pub(crate) cluster_membership_cluster_count: u64,
+    pub(crate) cluster_membership_member_row_count: u64,
 }
 
 cbor_serde!(SemanticManifest {
+    format_version: u32,
+    repo_id: String,
+    revision_id: String,
+    generation: u64,
+    manifest_digest: String,
+    model_id: String,
+    model_version: Option<String>,
+    dimension: u32,
+    distance_metric: String,
+    normalization: String,
+    row_count: u64,
+    built_at_unix_nanos: u64,
+    present_corpora: Vec<String>,
+    required_corpora: Vec<String>,
+    card_schema_versions: Vec<u32>,
+    render_policy_digests: Vec<String>,
+    corpus_policy_digest: Option<String>,
+    cluster_membership_root_digest: String,
+    cluster_membership_cluster_count: u64,
+    cluster_membership_member_row_count: u64,
+});
+
+struct SemanticManifestV5 {
+    format_version: u32,
+    repo_id: String,
+    revision_id: String,
+    generation: u64,
+    manifest_digest: String,
+    model_id: String,
+    model_version: Option<String>,
+    dimension: u32,
+    distance_metric: String,
+    normalization: String,
+    row_count: u64,
+    built_at_unix_nanos: u64,
+    present_corpora: Vec<String>,
+    required_corpora: Vec<String>,
+    card_schema_versions: Vec<u32>,
+    render_policy_digests: Vec<String>,
+    corpus_policy_digest: Option<String>,
+}
+
+cbor_serde!(SemanticManifestV5 {
     format_version: u32,
     repo_id: String,
     revision_id: String,
@@ -147,6 +205,9 @@ impl SemanticManifest {
         card_schema_versions: Vec<u32>,
         render_policy_digests: Vec<String>,
         corpus_policy_digest: Option<String>,
+        cluster_membership_root_digest: String,
+        cluster_membership_cluster_count: u64,
+        cluster_membership_member_row_count: u64,
     ) -> Self {
         Self {
             format_version: FORMAT_VERSION,
@@ -166,6 +227,9 @@ impl SemanticManifest {
             card_schema_versions,
             render_policy_digests,
             corpus_policy_digest,
+            cluster_membership_root_digest,
+            cluster_membership_cluster_count,
+            cluster_membership_member_row_count,
         }
     }
 
@@ -177,6 +241,31 @@ impl SemanticManifest {
         match codec::decode(bytes, "semantic manifest") {
             Ok(current) => Ok(current),
             Err(current_err) => {
+                if let Ok(legacy) = codec::decode::<SemanticManifestV5>(bytes, "semantic manifest")
+                {
+                    return Ok(Self {
+                        format_version: legacy.format_version,
+                        repo_id: legacy.repo_id,
+                        revision_id: legacy.revision_id,
+                        generation: legacy.generation,
+                        manifest_digest: legacy.manifest_digest,
+                        model_id: legacy.model_id,
+                        model_version: legacy.model_version,
+                        dimension: legacy.dimension,
+                        distance_metric: legacy.distance_metric,
+                        normalization: legacy.normalization,
+                        row_count: legacy.row_count,
+                        built_at_unix_nanos: legacy.built_at_unix_nanos,
+                        present_corpora: legacy.present_corpora,
+                        required_corpora: legacy.required_corpora,
+                        card_schema_versions: legacy.card_schema_versions,
+                        render_policy_digests: legacy.render_policy_digests,
+                        corpus_policy_digest: legacy.corpus_policy_digest,
+                        cluster_membership_root_digest: String::new(),
+                        cluster_membership_cluster_count: 0,
+                        cluster_membership_member_row_count: 0,
+                    });
+                }
                 if let Ok(legacy_v3) =
                     codec::decode::<SemanticManifestV3>(bytes, "semantic manifest")
                 {
@@ -198,6 +287,9 @@ impl SemanticManifest {
                         card_schema_versions: Vec::new(),
                         render_policy_digests: Vec::new(),
                         corpus_policy_digest: None,
+                        cluster_membership_root_digest: String::new(),
+                        cluster_membership_cluster_count: 0,
+                        cluster_membership_member_row_count: 0,
                     });
                 }
                 if let Ok(legacy_v2) =
@@ -221,6 +313,9 @@ impl SemanticManifest {
                         card_schema_versions: Vec::new(),
                         render_policy_digests: Vec::new(),
                         corpus_policy_digest: None,
+                        cluster_membership_root_digest: String::new(),
+                        cluster_membership_cluster_count: 0,
+                        cluster_membership_member_row_count: 0,
                     });
                 }
                 Err(current_err)
@@ -237,14 +332,32 @@ impl SemanticManifest {
         generation: ManifestGeneration,
     ) -> Result<(), CoreError> {
         if self.format_version != FORMAT_VERSION
+            && self.format_version != LEGACY_UNCOMMITTED_MEMBERSHIP_FORMAT_VERSION
             && self.format_version != LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION
             && self.format_version != LEGACY_BUILD_CONTRACT_FORMAT_VERSION
             && self.format_version != LEGACY_LANCEDB_FORMAT_VERSION
         {
             return Err(CoreError::Storage(format!(
-                "semantic: manifest format version {} unsupported (expected {FORMAT_VERSION}, legacy {LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION}, {LEGACY_BUILD_CONTRACT_FORMAT_VERSION}, or {LEGACY_LANCEDB_FORMAT_VERSION})",
+                "semantic: manifest format version {} unsupported (expected {FORMAT_VERSION}, legacy {LEGACY_UNCOMMITTED_MEMBERSHIP_FORMAT_VERSION}, {LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION}, {LEGACY_BUILD_CONTRACT_FORMAT_VERSION}, or {LEGACY_LANCEDB_FORMAT_VERSION})",
                 self.format_version,
             )));
+        }
+        if self.format_version == FORMAT_VERSION
+            && !is_canonical_sha256_v1(&self.cluster_membership_root_digest)
+        {
+            return Err(CoreError::Storage(
+                "semantic: current manifest has an invalid cluster membership root digest"
+                    .to_string(),
+            ));
+        }
+        if self.format_version == FORMAT_VERSION
+            && ((self.cluster_membership_cluster_count == 0)
+                != (self.cluster_membership_member_row_count == 0)
+                || self.cluster_membership_cluster_count > self.cluster_membership_member_row_count)
+        {
+            return Err(CoreError::Storage(
+                "semantic: current manifest has inconsistent cluster membership counts".to_string(),
+            ));
         }
         if self.repo_id != repo.as_str() {
             return Err(CoreError::Storage(format!(
@@ -308,5 +421,42 @@ impl SemanticManifest {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_v5_decodes_without_fabricating_membership_commitment_v1() {
+        let legacy = SemanticManifestV5 {
+            format_version: LEGACY_UNCOMMITTED_MEMBERSHIP_FORMAT_VERSION,
+            repo_id: "repo".to_string(),
+            revision_id: "rev".to_string(),
+            generation: 7,
+            manifest_digest: "manifest".to_string(),
+            model_id: "model".to_string(),
+            model_version: None,
+            dimension: 3,
+            distance_metric: "cosine".to_string(),
+            normalization: "l2_unit".to_string(),
+            row_count: 1,
+            built_at_unix_nanos: 0,
+            present_corpora: vec!["ClusterCard".to_string()],
+            required_corpora: vec!["ClusterCard".to_string()],
+            card_schema_versions: vec![1],
+            render_policy_digests: vec!["render".to_string()],
+            corpus_policy_digest: Some("policy".to_string()),
+        };
+        let bytes = codec::encode(&legacy, "legacy semantic manifest").expect("encode legacy");
+        let decoded = SemanticManifest::decode(&bytes).expect("decode legacy");
+        assert_eq!(
+            decoded.format_version,
+            LEGACY_UNCOMMITTED_MEMBERSHIP_FORMAT_VERSION
+        );
+        assert!(decoded.cluster_membership_root_digest.is_empty());
+        assert_eq!(decoded.cluster_membership_cluster_count, 0);
+        assert_eq!(decoded.cluster_membership_member_row_count, 0);
     }
 }

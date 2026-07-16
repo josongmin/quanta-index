@@ -47,11 +47,16 @@ use crate::generation_contract::GenerationContract;
 use crate::layout::{
     self, CLUSTER_MEMBERSHIP_TABLE_NAME, COLUMN_AUTHORITY_DIGEST, COLUMN_CARD_SCHEMA_VERSION,
     COLUMN_CORPUS_KIND, COLUMN_MEMBERSHIP_AUTHORITY_DIGEST, COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID,
-    COLUMN_MEMBERSHIP_OWNER_ID, COLUMN_MEMBERSHIP_OWNER_KIND, COLUMN_OWNER_ID, COLUMN_OWNER_KIND,
-    COLUMN_RENDER_POLICY_DIGEST, COLUMN_REPO_RELATIVE_PATH, COLUMN_VECTOR, TABLE_NAME,
-    cluster_membership_schema, dimension_to_i32, semantic_schema,
+    COLUMN_MEMBERSHIP_CONTENT_DIGEST, COLUMN_MEMBERSHIP_MEMBER_COUNT,
+    COLUMN_MEMBERSHIP_MEMBER_SYMBOL_ID, COLUMN_MEMBERSHIP_ORDINAL, COLUMN_MEMBERSHIP_OWNER_ID,
+    COLUMN_MEMBERSHIP_OWNER_KIND, COLUMN_OWNER_ID, COLUMN_OWNER_KIND, COLUMN_RENDER_POLICY_DIGEST,
+    COLUMN_REPO_RELATIVE_PATH, COLUMN_VECTOR, TABLE_NAME, cluster_membership_schema,
+    dimension_to_i32, semantic_schema,
 };
 use crate::manifest::SemanticManifest;
+use crate::membership_integrity::{
+    ClusterMembershipCommitmentV1, ClusterMembershipStoredRowV1, cluster_membership_commitment_v1,
+};
 
 /// Row-count floor below which we skip ANN index construction at seal.
 ///
@@ -778,6 +783,78 @@ async fn validate_cluster_membership_coverage_v1(
     Ok(())
 }
 
+async fn collect_cluster_membership_commitment_v1(
+    membership_table: &lancedb::Table,
+) -> Result<ClusterMembershipCommitmentV1, CoreError> {
+    let row_count = membership_table
+        .count_rows(None)
+        .await
+        .map_err(|error| lancedb_err("count cluster membership rows", error))?;
+    let mut rows = Vec::with_capacity(row_count);
+    let mut stream = membership_table
+        .query()
+        .execute()
+        .await
+        .map_err(|error| lancedb_err("query cluster membership commitment", error))?;
+    while let Some(batch) = stream
+        .try_next()
+        .await
+        .map_err(|error| lancedb_err("stream cluster membership commitment", error))?
+    {
+        if rows
+            .len()
+            .checked_add(batch.num_rows())
+            .is_none_or(|next| next > row_count)
+        {
+            return Err(CoreError::Storage(
+                "semantic: cluster membership stream exceeded its counted row bound".to_string(),
+            ));
+        }
+        if batch
+            .columns()
+            .iter()
+            .any(|column| column.null_count() != 0)
+        {
+            return Err(CoreError::Storage(
+                "semantic: cluster membership commitment stream contains null values".to_string(),
+            ));
+        }
+        let cluster_record_ids =
+            column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID, "Utf8")?;
+        let authority_digests =
+            column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_AUTHORITY_DIGEST, "Utf8")?;
+        let owner_kinds = column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_OWNER_KIND, "Utf8")?;
+        let owner_ids = column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_OWNER_ID, "Utf8")?;
+        let member_symbol_ids =
+            column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_MEMBER_SYMBOL_ID, "Utf8")?;
+        let ordinals = column_as::<UInt32Array>(&batch, COLUMN_MEMBERSHIP_ORDINAL, "UInt32")?;
+        let member_counts =
+            column_as::<UInt32Array>(&batch, COLUMN_MEMBERSHIP_MEMBER_COUNT, "UInt32")?;
+        let membership_digests =
+            column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_CONTENT_DIGEST, "Utf8")?;
+        for row in 0..batch.num_rows() {
+            rows.push(ClusterMembershipStoredRowV1 {
+                cluster_record_id: cluster_record_ids.value(row).to_owned(),
+                authority_digest: authority_digests.value(row).to_owned(),
+                owner_kind: owner_kinds.value(row).to_owned(),
+                owner_id: owner_ids.value(row).to_owned(),
+                member_symbol_id: member_symbol_ids.value(row).to_owned(),
+                ordinal: ordinals.value(row),
+                member_count: member_counts.value(row),
+                membership_digest: membership_digests.value(row).to_owned(),
+            });
+        }
+    }
+    if rows.len() != row_count {
+        return Err(CoreError::Storage(format!(
+            "semantic: cluster membership stream rows {} != counted rows {row_count}",
+            rows.len()
+        )));
+    }
+    cluster_membership_commitment_v1(rows)
+        .map_err(|error| CoreError::Storage(format!("semantic: {error}")))
+}
+
 fn build_record_batch(
     scope: &SemanticReplaceScope,
     dimension: usize,
@@ -1426,6 +1503,7 @@ fn rollback_promoted_dataset(generation_dir: &Path) -> Result<(), CoreError> {
 
 async fn build_manifest_bytes(
     table: &lancedb::Table,
+    membership_table: &lancedb::Table,
     batch: &SemanticIngestBatch,
     generation_contract: &GenerationContract,
 ) -> Result<Vec<u8>, CoreError> {
@@ -1436,6 +1514,7 @@ async fn build_manifest_bytes(
     let row_count_u64 = u64::try_from(row_count)
         .map_err(|err| CoreError::Storage(format!("semantic: row count overflow: {err}")))?;
     let coverage = collect_manifest_coverage(table).await?;
+    let membership_commitment = collect_cluster_membership_commitment_v1(membership_table).await?;
 
     // SOTA++: build the ANN vector index once at seal so query-time
     // `vector_search` uses IVF_HNSW_SQ (lancedb's HNSW + scalar quantization)
@@ -1471,6 +1550,9 @@ async fn build_manifest_bytes(
         coverage.card_schema_versions,
         coverage.render_policy_digests,
         generation_contract.corpus_policy_digest.clone(),
+        membership_commitment.root_digest,
+        membership_commitment.cluster_count,
+        membership_commitment.member_row_count,
     );
     manifest.validate_corpus_coverage()?;
     manifest.encode()
@@ -1554,7 +1636,10 @@ pub(crate) async fn build_batch(
 
         if batch.seal {
             validate_cluster_membership_coverage_v1(&table, &membership_table).await?;
-            Some(build_manifest_bytes(&table, batch, &generation_contract).await?)
+            Some(
+                build_manifest_bytes(&table, &membership_table, batch, &generation_contract)
+                    .await?,
+            )
         } else {
             None
         }
@@ -1651,9 +1736,9 @@ mod tests {
     };
     use crate::generation_contract::GenerationContract;
     use crate::layout::{
-        self, COLUMN_AUTHORITY_DIGEST, COLUMN_CAPABILITY_STATUS, COLUMN_CARD_SCHEMA_VERSION,
-        COLUMN_CORPUS_KIND, COLUMN_GENERATED, COLUMN_OWNER_ID, COLUMN_PACKAGE,
-        COLUMN_PARENT_OWNER_ID, COLUMN_RECORD_ID, COLUMN_RENDER_POLICY_DIGEST,
+        self, CLUSTER_MEMBERSHIP_TABLE_NAME, COLUMN_AUTHORITY_DIGEST, COLUMN_CAPABILITY_STATUS,
+        COLUMN_CARD_SCHEMA_VERSION, COLUMN_CORPUS_KIND, COLUMN_GENERATED, COLUMN_OWNER_ID,
+        COLUMN_PACKAGE, COLUMN_PARENT_OWNER_ID, COLUMN_RECORD_ID, COLUMN_RENDER_POLICY_DIGEST,
         COLUMN_SOURCE_DOC_ID, COLUMN_SOURCE_ROLE, COLUMN_VISIBILITY, TABLE_NAME,
     };
     use crate::manifest::SemanticManifest;
@@ -2892,7 +2977,7 @@ mod tests {
     fn cluster_membership_same_seal_replace_base_clone_and_tombstone_v1() -> TestResult {
         let temp = tempdir()?;
         let root = temp.path().to_path_buf();
-        let adapter = crate::SemanticAdapter::with_state_root(root)?;
+        let adapter = crate::SemanticAdapter::with_state_root(root.clone())?;
         let base_generation = ManifestGeneration::new(71);
         let replacement_generation = ManifestGeneration::new(72);
         let tombstone_generation = ManifestGeneration::new(73);
@@ -3057,6 +3142,51 @@ mod tests {
                 if rejection.failure
                     == ClusterMembershipReadFailureV1::CurrentGenerationMissing
         ));
+
+        drop(replacement_searcher);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let replacement_dir =
+            layout::generation_dir(&root, &repo_id(), &revision_id(), replacement_generation);
+        let connection = crate::run_blocking(
+            &runtime,
+            open_connection(&layout::dataset_dir(&replacement_dir)),
+        )?;
+        let membership_table = crate::run_blocking(
+            &runtime,
+            connection
+                .open_table(CLUSTER_MEMBERSHIP_TABLE_NAME)
+                .execute(),
+        )?;
+        let _delete_result = crate::run_blocking(
+            &runtime,
+            membership_table.delete("member_symbol_id = 'symbol:d'"),
+        )?;
+        assert!(
+            crate::run_blocking(
+                &runtime,
+                open_generation(&root, &repo_id(), &revision_id(), replacement_generation,),
+            )
+            .is_err(),
+            "cold open must reject a membership row deleted after seal"
+        );
+
+        let base_dir = layout::generation_dir(&root, &repo_id(), &revision_id(), base_generation);
+        let base_connection =
+            crate::run_blocking(&runtime, open_connection(&layout::dataset_dir(&base_dir)))?;
+        crate::run_blocking(
+            &runtime,
+            base_connection.drop_table(CLUSTER_MEMBERSHIP_TABLE_NAME, &[]),
+        )?;
+        assert!(
+            crate::run_blocking(
+                &runtime,
+                open_generation(&root, &repo_id(), &revision_id(), base_generation,),
+            )
+            .is_err(),
+            "cold open must reject a deleted membership sidecar table"
+        );
         Ok(())
     }
 }
