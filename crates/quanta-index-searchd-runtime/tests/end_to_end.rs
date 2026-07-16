@@ -845,6 +845,7 @@ fn publish_dispatch_query_lexical_roundtrip() -> TestResult {
                 | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
                 | SearchPlaneQueryIpcResponse::Explain(_)
                 | SearchPlaneQueryIpcResponse::HybridSeed(_)
+                | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
                 | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
                 | SearchPlaneQueryIpcResponse::Error(_) => false,
             },

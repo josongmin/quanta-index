@@ -250,9 +250,7 @@ impl QuantaIndex {
             SearchPlaneQueryIpcResponse::Structural(_) => "structural",
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => "repomap",
             SearchPlaneQueryIpcResponse::Explain(_) => "explain",
-            SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
-                "cluster_membership_batch_read"
-            }
+            SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => "cluster_membership_read",
             SearchPlaneQueryIpcResponse::Error(_) => "error",
             SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => "runtime_metadata",
         }

@@ -1631,12 +1631,11 @@ mod tests {
     use tempfile::tempdir;
 
     use quanta_index_contract::{
-        BatchIngestMode, CapabilityStatusV1, ClusterMembershipBatchReadRequestV1,
-        ClusterMembershipReadFailureV1, ClusterMembershipReadOutcomeV1,
-        ClusterMembershipReadRequestV1, ClusterMembershipReplaceV1, EmbeddingDistanceMetric,
-        EmbeddingId, EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord,
-        GenerationPin, ManifestGeneration, OwnerDocKind, RepoId, RepoRelativePath, RevisionId,
-        SearchScopeKey, SearchScopeSurface, SemanticCorpusKindV1, SemanticIngestBatch,
+        BatchIngestMode, CapabilityStatusV1, ClusterMembershipReadFailureV1,
+        ClusterMembershipReadOutcomeV1, ClusterMembershipReadRequestV1, ClusterMembershipReplaceV1,
+        EmbeddingDistanceMetric, EmbeddingId, EmbeddingModelContract, EmbeddingNormalization,
+        EmbeddingRecord, GenerationPin, ManifestGeneration, OwnerDocKind, RepoId, RepoRelativePath,
+        RevisionId, SearchScopeKey, SearchScopeSurface, SemanticCorpusKindV1, SemanticIngestBatch,
         SemanticReplaceScope, SemanticSourceScopeKeyV1, SemanticTombstoneScope, SourceRoleV1,
         SymbolId, lex::LanguageCode,
     };
@@ -2958,26 +2957,12 @@ mod tests {
 
         let replacement_searcher =
             adapter.open(&repo_id(), &revision_id(), replacement_generation)?;
-        let available = replacement_searcher
-            .cluster_membership_batch_read(&ClusterMembershipBatchReadRequestV1::single_v1(
-                ClusterMembershipReadRequestV1 {
-                    cluster_record_id: "record-cluster-b".to_string(),
-                    generation: GenerationPin::new(
-                        repo_id(),
-                        revision_id(),
-                        replacement_generation,
-                    ),
-                    expected_authority_digest: "auth:cluster-b".to_string(),
-                    limit: 1,
-                },
-            ))?
-            .outcomes
-            .into_iter()
-            .next()
-            .ok_or_else(|| {
-                CoreError::InvalidContract(
-                    "single membership batch returned no outcome".to_string(),
-                )
+        let available =
+            replacement_searcher.cluster_membership_read(&ClusterMembershipReadRequestV1 {
+                cluster_record_id: "record-cluster-b".to_string(),
+                generation: GenerationPin::new(repo_id(), revision_id(), replacement_generation),
+                expected_authority_digest: "auth:cluster-b".to_string(),
+                limit: 1,
             })?;
         assert!(matches!(
             available,
@@ -2986,26 +2971,12 @@ mod tests {
                     && snapshot.completeness
                         == quanta_index_contract::ClusterMembershipCompletenessV1::Truncated
         ));
-        let replaced = replacement_searcher
-            .cluster_membership_batch_read(&ClusterMembershipBatchReadRequestV1::single_v1(
-                ClusterMembershipReadRequestV1 {
-                    cluster_record_id: "record-cluster-a".to_string(),
-                    generation: GenerationPin::new(
-                        repo_id(),
-                        revision_id(),
-                        replacement_generation,
-                    ),
-                    expected_authority_digest: "auth:cluster-a".to_string(),
-                    limit: 2,
-                },
-            ))?
-            .outcomes
-            .into_iter()
-            .next()
-            .ok_or_else(|| {
-                CoreError::InvalidContract(
-                    "single membership batch returned no outcome".to_string(),
-                )
+        let replaced =
+            replacement_searcher.cluster_membership_read(&ClusterMembershipReadRequestV1 {
+                cluster_record_id: "record-cluster-a".to_string(),
+                generation: GenerationPin::new(repo_id(), revision_id(), replacement_generation),
+                expected_authority_digest: "auth:cluster-a".to_string(),
+                limit: 2,
             })?;
         assert!(matches!(
             replaced,
@@ -3035,21 +3006,11 @@ mod tests {
         })?;
         let tombstoned = adapter
             .open(&repo_id(), &revision_id(), tombstone_generation)?
-            .cluster_membership_batch_read(&ClusterMembershipBatchReadRequestV1::single_v1(
-                ClusterMembershipReadRequestV1 {
-                    cluster_record_id: "record-cluster-b".to_string(),
-                    generation: GenerationPin::new(repo_id(), revision_id(), tombstone_generation),
-                    expected_authority_digest: "auth:cluster-b".to_string(),
-                    limit: 2,
-                },
-            ))?
-            .outcomes
-            .into_iter()
-            .next()
-            .ok_or_else(|| {
-                CoreError::InvalidContract(
-                    "single membership batch returned no outcome".to_string(),
-                )
+            .cluster_membership_read(&ClusterMembershipReadRequestV1 {
+                cluster_record_id: "record-cluster-b".to_string(),
+                generation: GenerationPin::new(repo_id(), revision_id(), tombstone_generation),
+                expected_authority_digest: "auth:cluster-b".to_string(),
+                limit: 2,
             })?;
         assert!(matches!(
             tombstoned,

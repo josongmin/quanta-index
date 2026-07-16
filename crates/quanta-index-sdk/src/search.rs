@@ -1,5 +1,4 @@
 use quanta_index_contract::{
-    ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
     ClusterMembershipReadOutcomeV1, ClusterMembershipReadRequestV1, GenerationPin,
     GenerationSelector, HybridSeedQueryRequest, HybridSeedQueryResponse, LexicalCandidate, RepoId,
     RevisionId, SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
@@ -40,37 +39,19 @@ impl<'a> SearchNamespace<'a> {
         request
             .validate_v1()
             .map_err(|error| SdkError::Usage(error.to_string()))?;
-        let mut response = self.cluster_membership_batch_read_v1(
-            ClusterMembershipBatchReadRequestV1::single_v1(request),
-        )?;
-        response.outcomes.pop().ok_or_else(|| {
-            SdkError::Protocol("validated single membership batch returned no outcome".to_string())
-        })
-    }
-
-    /// Reads up to 16 ClusterCard memberships through one bounded transport
-    /// request and rejects the entire call if any response entry is missing,
-    /// reordered, duplicated, or stale.
-    pub fn cluster_membership_batch_read_v1(
-        &self,
-        request: ClusterMembershipBatchReadRequestV1,
-    ) -> Result<ClusterMembershipBatchReadResponseV1, SdkError> {
-        request
-            .validate_v1()
-            .map_err(|error| SdkError::Usage(error.to_string()))?;
         let response = self.client.dispatch_query(
             quanta_index_contract::SearchPlaneQueryIpcRequest::ClusterMembershipRead(
                 request.clone(),
             ),
         )?;
         match response {
-            quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(batch) => {
-                batch.validate_against_v1(&request).map_err(|failure| {
+            quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(outcome) => {
+                outcome.validate_against_v1(&request).map_err(|failure| {
                     SdkError::Protocol(format!(
-                        "cluster membership batch response failed request authority validation: {failure}"
+                        "cluster membership response failed request authority validation: {failure}"
                     ))
                 })?;
-                Ok(batch)
+                Ok(outcome)
             }
             other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)

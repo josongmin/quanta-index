@@ -309,7 +309,7 @@ fn one_semantic_lane_seed_candidates_v2(
             entity_id,
             owner_kind: hit.owner_kind,
             corpus_kind: hit.corpus_kind,
-            authority_digest: Some(hit.authority_digest.clone()),
+            authority_digest: None,
             repo_relative_path: hit.candidate.repo_relative_path.clone(),
             snippet: hit.candidate.snippet.clone(),
             seed_rank: checked_rank_u32_v1(index, "hybrid seed v2 semantic")?,
@@ -589,7 +589,6 @@ mod seed_fusion_tests {
             owner_id: owner_id.to_string(),
             owner_kind,
             corpus_kind: Some(corpus_kind),
-            authority_digest: format!("authority:{record_id}"),
         }
     }
 
@@ -629,7 +628,6 @@ mod seed_fusion_tests {
                 owner_id: owner_id.to_string(),
                 owner_kind: OwnerDocKind::Module,
                 corpus_kind: Some(SemanticCorpusKindV1::ModuleCard),
-                authority_digest: "module-authority".to_string(),
             }],
             vec![SemanticSearchHitV1 {
                 candidate: lexical_candidate("cluster-record"),
@@ -637,7 +635,6 @@ mod seed_fusion_tests {
                 owner_id: owner_id.to_string(),
                 owner_kind: OwnerDocKind::Module,
                 corpus_kind: Some(SemanticCorpusKindV1::ClusterCard),
-                authority_digest: "cluster-authority".to_string(),
             }],
         ];
 
@@ -646,11 +643,9 @@ mod seed_fusion_tests {
         assert_eq!(seeds.len(), 2);
         assert!(seeds.iter().any(|seed| {
             seed.corpus_kind == Some(SemanticCorpusKindV1::ModuleCard)
-                && seed.authority_digest.as_deref() == Some("module-authority")
         }));
         assert!(seeds.iter().any(|seed| {
             seed.corpus_kind == Some(SemanticCorpusKindV1::ClusterCard)
-                && seed.authority_digest.as_deref() == Some("cluster-authority")
         }));
     }
 
