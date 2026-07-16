@@ -15,8 +15,9 @@ use crate::{
 };
 use quanta_index_contract::lex::{CommitSha, LexicalErrorCode};
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, CommitCandidate, DiffCandidate, EarlyStopReason, EngineTouched,
-    GenerationPin, GenerationSelector, HistoryQueryRequest, HybridQueryRequest,
+    ChunkId, ChunkRecord, ClusterMembershipBatchReadRequestV1,
+    ClusterMembershipBatchReadResponseV1, CommitCandidate, DiffCandidate, EarlyStopReason,
+    EngineTouched, GenerationPin, GenerationSelector, HistoryQueryRequest, HybridQueryRequest,
     HybridQueryResponse, HybridSeedCandidate, HybridSeedLane, HybridSeedQueryRequest,
     HybridSeedQueryResponse, LQ_VERSION_TAG, LexicalCandidate, LqCase, LqCountBound, LqExpr,
     LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqQuery, LqSpan, LqStructuralBlock,
@@ -1112,7 +1113,55 @@ impl SearchPlaneDispatcher {
             SearchPlaneQueryIpcRequest::RuntimeMetadata(req) => {
                 self.dispatch_runtime_metadata(&req)
             }
+            SearchPlaneQueryIpcRequest::ClusterMembershipRead(req) => {
+                self.dispatch_cluster_membership_batch_read(&req)
+            }
         }
+    }
+
+    fn dispatch_cluster_membership_batch_read(
+        &self,
+        request: &ClusterMembershipBatchReadRequestV1,
+    ) -> SearchPlaneQueryIpcResponse {
+        match self.cluster_membership_batch_read(request) {
+            Ok(outcome) => SearchPlaneQueryIpcResponse::ClusterMembershipRead(outcome),
+            Err(error) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(error)),
+        }
+    }
+
+    pub fn cluster_membership_batch_read(
+        &self,
+        request: &ClusterMembershipBatchReadRequestV1,
+    ) -> Result<ClusterMembershipBatchReadResponseV1, CoreError> {
+        request
+            .validate_v1()
+            .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
+        {
+            let ledger = self
+                .ledger
+                .read()
+                .map_err(|error| CoreError::Storage(format!("ledger poisoned: {error}")))?;
+            ledger.validate_semantic_generation(
+                &request.generation.repo_id,
+                &request.generation.revision_id,
+                request.generation.manifest_generation,
+                None,
+                true,
+                "cluster membership read",
+            )?;
+        }
+        let searcher = self.sem_opener.open(
+            &request.generation.repo_id,
+            &request.generation.revision_id,
+            request.generation.manifest_generation,
+        )?;
+        let outcome = searcher.cluster_membership_batch_read(request)?;
+        outcome.validate_against_v1(request).map_err(|failure| {
+            CoreError::InvalidContract(format!(
+                "cluster membership batch read: searcher returned invalid authority: {failure}"
+            ))
+        })?;
+        Ok(outcome)
     }
 
     fn dispatch_text(&self, request: TextQueryRequest) -> SearchPlaneQueryIpcResponse {
@@ -4641,7 +4690,10 @@ mod tests {
         ActivationCatalog, HashingQueryTextEmbedder, Ledger, PreparedSearchCorpusGenerationV1,
         QueryTextEmbedderPort, SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusGenerationV1,
     };
-    use quanta_index_contract::HybridSeedQueryRequest;
+    use quanta_index_contract::{
+        ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
+        HybridSeedQueryRequest,
+    };
     use quanta_index_core::SemanticSearchHitV1;
 
     #[test]
@@ -4993,6 +5045,9 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+                _,
+            )
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 Err(format!("expected repo-map query response, got {other:?}").into())
             }
@@ -5078,6 +5133,50 @@ mod tests {
             "manifest-digest-9",
         );
         Arc::new(RwLock::new(ledger))
+    }
+
+    fn cluster_membership_batch_request_v1() -> ClusterMembershipBatchReadRequestV1 {
+        ClusterMembershipBatchReadRequestV1 {
+            generation: ready_pin(),
+            items: vec![
+                quanta_index_contract::ClusterMembershipBatchReadItemV1 {
+                    cluster_record_id: "cluster-card:auth".to_string(),
+                    expected_authority_digest: "authority:auth".to_string(),
+                    limit: 2,
+                },
+                quanta_index_contract::ClusterMembershipBatchReadItemV1 {
+                    cluster_record_id: "cluster-card:billing".to_string(),
+                    expected_authority_digest: "authority:billing".to_string(),
+                    limit: 2,
+                },
+            ],
+        }
+    }
+
+    fn available_cluster_membership_batch_response_v1(
+        request: &ClusterMembershipBatchReadRequestV1,
+    ) -> ClusterMembershipBatchReadResponseV1 {
+        ClusterMembershipBatchReadResponseV1 {
+            outcomes: request
+                .items
+                .iter()
+                .map(|item| {
+                    quanta_index_contract::ClusterMembershipReadOutcomeV1::Available(
+                        quanta_index_contract::ClusterMembershipSnapshotV1 {
+                            cluster_record_id: item.cluster_record_id.clone(),
+                            generation: request.generation.clone(),
+                            authority_digest: item.expected_authority_digest.clone(),
+                            members: vec![quanta_index_contract::SymbolId::new(format!(
+                                "symbol:{}",
+                                item.cluster_record_id
+                            ))],
+                            completeness:
+                                quanta_index_contract::ClusterMembershipCompletenessV1::Complete,
+                        },
+                    )
+                })
+                .collect(),
+        }
     }
 
     fn history_commit_sha() -> CommitSha {
@@ -5328,6 +5427,9 @@ mod tests {
         search_hit_vectors: Vec<Vec<f32>>,
         corpus_searches: Vec<(SemanticCorpusKindV1, u32)>,
         scoped_vectors: Vec<Vec<f32>>,
+        cluster_membership_opened_pins: Vec<(RepoId, RevisionId, ManifestGeneration)>,
+        cluster_membership_requests: Vec<ClusterMembershipBatchReadRequestV1>,
+        cluster_membership_response: Option<ClusterMembershipBatchReadResponseV1>,
     }
 
     struct RecordingSemanticSearcher {
@@ -5335,6 +5437,38 @@ mod tests {
     }
 
     impl SemanticSearcher for RecordingSemanticSearcher {
+        fn cluster_membership_batch_read(
+            &self,
+            request: &ClusterMembershipBatchReadRequestV1,
+        ) -> Result<ClusterMembershipBatchReadResponseV1, CoreError> {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?;
+            state.cluster_membership_requests.push(request.clone());
+            if let Some(response) = &state.cluster_membership_response {
+                return Ok(response.clone());
+            }
+            Ok(ClusterMembershipBatchReadResponseV1 {
+                outcomes: request
+                    .items
+                    .iter()
+                    .map(|item| {
+                        quanta_index_contract::ClusterMembershipReadOutcomeV1::Rejected(
+                            quanta_index_contract::ClusterMembershipReadRejectionV1 {
+                                cluster_record_id: item.cluster_record_id.clone(),
+                                generation: request.generation.clone(),
+                                expected_authority_digest: item
+                                    .expected_authority_digest
+                                    .clone(),
+                                failure: quanta_index_contract::ClusterMembershipReadFailureV1::CurrentGenerationMissing,
+                            },
+                        )
+                    })
+                    .collect(),
+            })
+        }
+
         fn search(
             &self,
             query_vector: &[f32],
@@ -5364,6 +5498,7 @@ mod tests {
                 owner_id: "semantic-inline-owner".to_string(),
                 owner_kind: quanta_index_contract::OwnerDocKind::Chunk,
                 corpus_kind: None,
+                authority_digest: "authority:semantic-inline".to_string(),
             }])
         }
 
@@ -5389,6 +5524,7 @@ mod tests {
                 owner_id: format!("owner:{}", corpus_kind.as_code_str()),
                 owner_kind: quanta_index_contract::OwnerDocKind::Symbol,
                 corpus_kind: Some(corpus_kind),
+                authority_digest: format!("authority:{}", corpus_kind.as_code_str()),
             }])
         }
 
@@ -5425,14 +5561,166 @@ mod tests {
     impl SemanticIndexOpenPort for RecordingSemanticOpener {
         fn open(
             &self,
-            _repo: &RepoId,
-            _revision: &RevisionId,
-            _generation: ManifestGeneration,
+            repo: &RepoId,
+            revision: &RevisionId,
+            generation: ManifestGeneration,
         ) -> Result<Box<dyn SemanticSearcher>, CoreError> {
+            self.state
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?
+                .cluster_membership_opened_pins
+                .push((repo.clone(), revision.clone(), generation));
             Ok(Box::new(RecordingSemanticSearcher {
                 state: Arc::clone(&self.state),
             }))
         }
+    }
+
+    #[test]
+    fn cluster_membership_dispatch_rejects_invalid_request_before_semantic_open_v1() -> TestResult {
+        let state = Arc::new(Mutex::new(RecordingSemanticState::default()));
+        let dispatcher = SearchPlaneDispatcher::new(
+            Arc::new(RejectLexicalOpener),
+            Arc::new(RecordingSemanticOpener {
+                state: Arc::clone(&state),
+            }),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            ready_ledger(),
+            test_activation_catalog()?,
+        );
+        let request = ClusterMembershipBatchReadRequestV1 {
+            generation: ready_pin(),
+            items: Vec::new(),
+        };
+
+        match dispatcher.cluster_membership_batch_read(&request) {
+            Err(CoreError::InvalidContract(message)) if message.contains("must not be empty") => {}
+            other => {
+                return Err(format!("expected invalid-contract rejection, got {other:?}").into());
+            }
+        }
+
+        let guard = state
+            .lock()
+            .map_err(|err| format!("semantic state poisoned: {err}"))?;
+        if !guard.cluster_membership_opened_pins.is_empty()
+            || !guard.cluster_membership_requests.is_empty()
+        {
+            return Err("invalid membership request reached semantic storage".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cluster_membership_dispatch_opens_one_pinned_generation_and_preserves_authority_v1()
+    -> TestResult {
+        let request = cluster_membership_batch_request_v1();
+        let expected = available_cluster_membership_batch_response_v1(&request);
+        let state = Arc::new(Mutex::new(RecordingSemanticState {
+            cluster_membership_response: Some(expected.clone()),
+            ..RecordingSemanticState::default()
+        }));
+        let dispatcher = SearchPlaneDispatcher::new(
+            Arc::new(RejectLexicalOpener),
+            Arc::new(RecordingSemanticOpener {
+                state: Arc::clone(&state),
+            }),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            ready_ledger(),
+            test_activation_catalog()?,
+        );
+
+        let observed = dispatcher.cluster_membership_batch_read(&request)?;
+        if observed != expected {
+            return Err(format!("membership authority drifted: {observed:?}").into());
+        }
+
+        let guard = state
+            .lock()
+            .map_err(|err| format!("semantic state poisoned: {err}"))?;
+        if guard.cluster_membership_opened_pins.as_slice()
+            != [(
+                request.generation.repo_id.clone(),
+                request.generation.revision_id.clone(),
+                request.generation.manifest_generation,
+            )]
+        {
+            return Err(format!(
+                "membership read must open its exact pin once: {:?}",
+                guard.cluster_membership_opened_pins
+            )
+            .into());
+        }
+        if guard.cluster_membership_requests.as_slice() != [request] {
+            return Err(format!(
+                "membership request must reach the searcher exactly once: {:?}",
+                guard.cluster_membership_requests
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cluster_membership_dispatch_rejects_forged_or_stale_searcher_authority_v1() -> TestResult {
+        let request = cluster_membership_batch_request_v1();
+        let mut forged = available_cluster_membership_batch_response_v1(&request);
+        let Some(quanta_index_contract::ClusterMembershipReadOutcomeV1::Available(snapshot)) =
+            forged.outcomes.first_mut()
+        else {
+            return Err("fixture must contain one available membership".into());
+        };
+        snapshot.authority_digest = "forged-authority".to_string();
+
+        let mut stale = available_cluster_membership_batch_response_v1(&request);
+        let Some(quanta_index_contract::ClusterMembershipReadOutcomeV1::Available(snapshot)) =
+            stale.outcomes.first_mut()
+        else {
+            return Err("fixture must contain one available membership".into());
+        };
+        snapshot.generation.manifest_generation = ManifestGeneration::new(8);
+
+        for (case, response) in [("forged", forged), ("stale", stale)] {
+            let state = Arc::new(Mutex::new(RecordingSemanticState {
+                cluster_membership_response: Some(response),
+                ..RecordingSemanticState::default()
+            }));
+            let dispatcher = SearchPlaneDispatcher::new(
+                Arc::new(RejectLexicalOpener),
+                Arc::new(RecordingSemanticOpener {
+                    state: Arc::clone(&state),
+                }),
+                Arc::new(StubRepoMapQueryPort),
+                Arc::new(FailClosedStructuralProducer),
+                ready_ledger(),
+                test_activation_catalog()?,
+            );
+
+            match dispatcher.cluster_membership_batch_read(&request) {
+                Err(CoreError::InvalidContract(message))
+                    if message.contains("invalid authority") => {}
+                other => {
+                    return Err(format!(
+                        "{case} membership authority must fail InvalidContract, got {other:?}"
+                    )
+                    .into());
+                }
+            }
+            let guard = state
+                .lock()
+                .map_err(|err| format!("semantic state poisoned: {err}"))?;
+            if guard.cluster_membership_opened_pins.len() != 1
+                || guard.cluster_membership_requests.as_slice() != [request.clone()]
+            {
+                return Err(format!(
+                    "{case} authority must be rejected after exactly one storage read"
+                )
+                .into());
+            }
+        }
+        Ok(())
     }
 
     struct StubLexicalSearcher {
@@ -5691,6 +5979,9 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+                _,
+            )
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected Error response, got {other:?}").into());
             }
@@ -5747,6 +6038,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected Text response, got {other:?}").into());
             }
@@ -5829,6 +6121,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected Text response, got {other:?}").into());
             }
@@ -5931,6 +6224,9 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+                _,
+            )
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected Semantic response, got {other:?}").into());
             }
@@ -6150,6 +6446,9 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+                _,
+            )
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected Hybrid response, got {other:?}").into());
             }
@@ -6274,6 +6573,9 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+                _,
+            )
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected HybridSeed response, got {other:?}").into());
             }
@@ -6341,6 +6643,7 @@ mod tests {
                     }
                 },
                 corpus_kind: Some(corpus_kind),
+                authority_digest: format!("authority:{record_id}"),
             }
         }
 
@@ -6418,6 +6721,7 @@ mod tests {
             owner_id: "test:session_commit".to_string(),
             owner_kind: quanta_index_contract::OwnerDocKind::Test,
             corpus_kind: Some(SemanticCorpusKindV1::TestBehavior),
+            authority_digest: "authority:test-behavior-record".to_string(),
         }]];
 
         let seeds = build_hybrid_seed_candidates_v2(&[], &semantic_lanes, &[], 1)?;
@@ -7106,6 +7410,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 Err(format!("expected Error response, got {other:?}"))
             }
@@ -7189,6 +7494,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -7341,6 +7647,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
@@ -7631,6 +7938,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -7718,6 +8026,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
@@ -7885,6 +8194,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -8091,6 +8401,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -8258,6 +8569,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected Text response, got {other:?}").into());
             }
@@ -8326,6 +8638,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -8449,6 +8762,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
@@ -8607,6 +8921,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
@@ -8707,6 +9022,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
@@ -8816,6 +9132,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
@@ -8879,6 +9196,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
@@ -8931,6 +9249,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
@@ -8992,6 +9311,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
@@ -9079,6 +9399,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
@@ -9145,6 +9466,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)

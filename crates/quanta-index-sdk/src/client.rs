@@ -147,6 +147,7 @@ impl QuantaIndex {
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => Ok(payload),
         }
     }
@@ -249,6 +250,9 @@ impl QuantaIndex {
             SearchPlaneQueryIpcResponse::Structural(_) => "structural",
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => "repomap",
             SearchPlaneQueryIpcResponse::Explain(_) => "explain",
+            SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
+                "cluster_membership_batch_read"
+            }
             SearchPlaneQueryIpcResponse::Error(_) => "error",
             SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => "runtime_metadata",
         }

@@ -30,6 +30,7 @@ use quanta_index_searchd::{SearchdCommand, SearchdConfig, SearchdRuntime, drive}
 use quanta_index_semantic::SemanticAdapter;
 
 pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
+    let search_corpus_history_retention = config.search_corpus_history_retention_policy()?;
     let state_root = config.state_root().to_path_buf();
     // Acquire process ownership before any adapter or authority store opens the
     // shared root. No loser may observe or mutate partially initialized state.
@@ -47,6 +48,7 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     let activation_catalog = Arc::new(ActivationCatalog::open(state_root.join("activations"))?);
     let aux_authority_store = Arc::new(AuxiliaryAuthorityStore::open(
         state_root.join("authorities"),
+        search_corpus_history_retention,
     )?);
     let legacy_semantic_journal_store = Arc::new(LegacySemanticJournalStore::open(
         state_root.join("semantic"),

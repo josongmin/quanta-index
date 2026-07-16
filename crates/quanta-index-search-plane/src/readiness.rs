@@ -26,6 +26,11 @@ use quanta_index_contract::{
 use quanta_index_core::CoreError;
 use quanta_index_ipc::{decode_cbor_payload, encode_cbor_payload};
 
+pub use crate::search_corpus_retention::SearchCorpusHistoryRetentionPolicyV1;
+use crate::search_corpus_retention::{
+    ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED, SearchCorpusHistoryRetentionItemV1,
+};
+
 type SharedLedger = Arc<RwLock<Ledger>>;
 type SharedActivationCatalog = Arc<ActivationCatalog>;
 
@@ -250,6 +255,11 @@ pub struct Ledger {
     // that its lower target was once sealed with this exact digest rather
     // than comparing it to the current head.
     sealed_search_track_identities: BTreeMap<TrackGenerationKey, String>,
+    // A durable authority mutation may have changed the retained set before
+    // its parent-directory fsync failed. Until a reconciled authoritative
+    // retained-set receipt is applied, every rollback for that pair must fail
+    // closed instead of consulting stale same-process history.
+    search_corpus_history_fenced_pairs: BTreeSet<(RepoId, RevisionId)>,
     semantic_generations: BTreeMap<AuthorityKey, SemanticGenerationState>,
     history: BTreeMap<AuthorityKey, HistoryAuthorityState>,
     runtime_metadata: BTreeMap<AuthorityKey, RuntimeMetadataState>,
@@ -408,6 +418,77 @@ impl Ledger {
         }
     }
 
+    pub(crate) fn apply_search_corpus_history_retention_receipt_v1(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        required_generation: ManifestGeneration,
+        receipt: &SearchCorpusHistoryRetentionReceiptV1,
+    ) -> Result<(), CoreError> {
+        if receipt.repo_id() != repo_id || receipt.revision_id() != revision_id {
+            return Err(CoreError::InvalidContract(format!(
+                "search-corpus history retention: receipt identity mismatch for repo={} revision={}",
+                repo_id.as_str(),
+                revision_id.as_str(),
+            )));
+        }
+        if !receipt.store_reconciled_v1 {
+            return Err(CoreError::InvalidContract(
+                "search-corpus history retention: receipt is not store-reconciled".to_string(),
+            ));
+        }
+        if !receipt.retains(required_generation) {
+            return Err(CoreError::InvalidContract(format!(
+                "search-corpus history retention: receipt does not retain required generation {} for repo={} revision={}",
+                required_generation.get(),
+                repo_id.as_str(),
+                revision_id.as_str(),
+            )));
+        }
+        if receipt
+            .reaped_generations()
+            .iter()
+            .any(|generation| receipt.retains(*generation))
+        {
+            return Err(CoreError::InvalidContract(
+                "search-corpus history retention: receipt retained/reaped sets overlap".to_string(),
+            ));
+        }
+        // `retained_generations` is the complete post-reconciliation durable
+        // set, not a delta. This remains correct after a prior partial delete:
+        // a retry can prune stale in-memory generations even when those files
+        // were already absent from the retry's observed `reaped_generations`.
+        self.sealed_search_track_identities.retain(|key, _digest| {
+            key.repo_id != *repo_id
+                || key.revision_id != *revision_id
+                || receipt.retains(key.generation)
+        });
+        let _removed = self
+            .search_corpus_history_fenced_pairs
+            .remove(&(repo_id.clone(), revision_id.clone()));
+        Ok(())
+    }
+
+    pub(crate) fn fence_search_corpus_history_v1(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) {
+        let _inserted = self
+            .search_corpus_history_fenced_pairs
+            .insert((repo_id.clone(), revision_id.clone()));
+    }
+
+    pub(crate) fn clear_search_corpus_history_fence_v1(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) {
+        let _removed = self
+            .search_corpus_history_fenced_pairs
+            .remove(&(repo_id.clone(), revision_id.clone()));
+    }
+
     /// Materialize a track in a single call: updates the global lexical/semantic
     /// ledger (for those tracks) and the per-(repo,revision,track) authority map
     /// together, so a caller cannot update one and silently forget the other.
@@ -518,6 +599,16 @@ impl Ledger {
         candidate: &GenerationSnapshot,
         plane: &str,
     ) -> Result<(), CoreError> {
+        if self
+            .search_corpus_history_fenced_pairs
+            .contains(&(candidate.repo_id.clone(), candidate.revision_id.clone()))
+        {
+            return Err(CoreError::NotReady(format!(
+                "{plane}: rollback authority is fenced pending durable retention reconciliation for repo={} revision={}",
+                candidate.repo_id.as_str(),
+                candidate.revision_id.as_str(),
+            )));
+        }
         let key = Self::track_generation_key(
             &candidate.repo_id,
             &candidate.revision_id,
@@ -1766,6 +1857,77 @@ struct SearchCorpusAuthorityRecordV1 {
     manifest_digest: String,
 }
 
+#[derive(Debug)]
+struct SearchCorpusAuthorityFileV1 {
+    path: PathBuf,
+    record: SearchCorpusAuthorityRecordV1,
+    encoded_len: u64,
+}
+
+#[derive(Debug, Default)]
+struct SearchCorpusAuthorityRootSnapshotV1 {
+    pair_directories: BTreeSet<PathBuf>,
+    pairs: BTreeMap<PathBuf, Vec<SearchCorpusAuthorityFileV1>>,
+    total_bytes: u64,
+}
+
+#[derive(Debug)]
+struct EnforcedSearchCorpusHistoryRetentionV1 {
+    retained: Vec<SearchCorpusAuthorityFileV1>,
+    receipt: SearchCorpusHistoryRetentionReceiptV1,
+}
+
+/// Durable result of enforcing one repo/revision history window.
+///
+/// Consumers must apply this receipt to the in-memory ledger before exposing a
+/// newly sealed generation. This keeps same-process rollback authority aligned
+/// with the durable retained window.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchCorpusHistoryRetentionReceiptV1 {
+    repo_id: RepoId,
+    revision_id: RevisionId,
+    retained_generations: BTreeSet<ManifestGeneration>,
+    reaped_generations: BTreeSet<ManifestGeneration>,
+    store_reconciled_v1: bool,
+}
+
+impl SearchCorpusHistoryRetentionReceiptV1 {
+    #[cfg(test)]
+    pub(crate) fn retaining_generations_v1(
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generations: impl IntoIterator<Item = ManifestGeneration>,
+    ) -> Self {
+        Self {
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            retained_generations: generations.into_iter().collect(),
+            reaped_generations: BTreeSet::new(),
+            store_reconciled_v1: true,
+        }
+    }
+
+    #[must_use]
+    pub fn repo_id(&self) -> &RepoId {
+        &self.repo_id
+    }
+
+    #[must_use]
+    pub fn revision_id(&self) -> &RevisionId {
+        &self.revision_id
+    }
+
+    #[must_use]
+    pub fn retains(&self, generation: ManifestGeneration) -> bool {
+        self.retained_generations.contains(&generation)
+    }
+
+    #[must_use]
+    pub fn reaped_generations(&self) -> &BTreeSet<ManifestGeneration> {
+        &self.reaped_generations
+    }
+}
+
 impl SearchCorpusAuthorityRecordV1 {
     fn new(
         repo_id: &RepoId,
@@ -1815,7 +1977,12 @@ pub struct AuxiliaryAuthorityStore {
     runtime: PathBuf,
     structural: PathBuf,
     search_corpus_dir: PathBuf,
+    // State-root count/byte admission must be atomic across pair stripes.
+    // Production also holds the process-level state-root lease, while this
+    // lock closes same-process races between different repo/revision pairs.
+    search_corpus_root_lock: Mutex<()>,
     search_corpus_write_locks: [Mutex<()>; SEARCH_CORPUS_LOCK_STRIPES_V1],
+    search_corpus_history_retention: SearchCorpusHistoryRetentionPolicyV1,
     parent_sync: Arc<dyn ParentDirectorySyncPort>,
 }
 
@@ -1924,12 +2091,20 @@ impl_struct_serde!(SearchCorpusAuthorityRecordV1 {
 });
 
 impl AuxiliaryAuthorityStore {
-    pub fn open(root: impl AsRef<Path>) -> Result<Self, CoreError> {
-        Self::open_with_parent_sync(root, Arc::new(FsParentDirectorySyncPort))
+    pub fn open(
+        root: impl AsRef<Path>,
+        search_corpus_history_retention: SearchCorpusHistoryRetentionPolicyV1,
+    ) -> Result<Self, CoreError> {
+        Self::open_with_parent_sync(
+            root,
+            search_corpus_history_retention,
+            Arc::new(FsParentDirectorySyncPort),
+        )
     }
 
     fn open_with_parent_sync(
         root: impl AsRef<Path>,
+        search_corpus_history_retention: SearchCorpusHistoryRetentionPolicyV1,
         parent_sync: Arc<dyn ParentDirectorySyncPort>,
     ) -> Result<Self, CoreError> {
         let root = root.as_ref();
@@ -1950,21 +2125,33 @@ impl AuxiliaryAuthorityStore {
             runtime: runtime_dir.join("state.cbor"),
             structural: structural_dir.join("state.cbor"),
             search_corpus_dir,
+            search_corpus_root_lock: Mutex::new(()),
             search_corpus_write_locks: std::array::from_fn(|_index| Mutex::new(())),
+            search_corpus_history_retention,
             parent_sync,
         })
     }
 
     /// Persist one complete sealed corpus as one immutable generation record.
     ///
-    /// A seal performs O(1) authority I/O and never rewrites prior generations.
+    /// Admission performs one authoritative state-root scan, O(P + G), where
+    /// `P` is the number of repo/revision pairs and `G` is the number of
+    /// retained generation records. The resulting snapshot is reused for
+    /// pair-local GC; no second pair scan occurs. Cross-pair deletion is
+    /// intentionally forbidden because this owner has no product-active pin
+    /// authority for choosing a safe victim.
     pub fn record_sealed_search_corpus(
         &self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
         generation: ManifestGeneration,
         manifest_digest: &str,
-    ) -> Result<(), CoreError> {
+    ) -> Result<SearchCorpusHistoryRetentionReceiptV1, CoreError> {
+        let _root_guard = self.search_corpus_root_lock.lock().map_err(|err| {
+            CoreError::Storage(format!(
+                "search-corpus authority: state-root retention lock poisoned: {err}"
+            ))
+        })?;
         let stripe = search_corpus_lock_stripe_v1(repo_id, revision_id);
         let pair_lock = self.search_corpus_write_locks.get(stripe).ok_or_else(|| {
             CoreError::Storage(format!(
@@ -1977,22 +2164,59 @@ impl AuxiliaryAuthorityStore {
             ))
         })?;
         let pair_dir = self.search_corpus_pair_dir(repo_id, revision_id);
-        ensure_durable_directory_v1(
-            &pair_dir,
-            "search-corpus authority",
-            self.parent_sync.as_ref(),
-        )?;
+        let mut root_snapshot = self.load_search_corpus_root_snapshot_v1()?;
+        let _pair_directory_was_present = root_snapshot.pair_directories.remove(&pair_dir);
+        let mut pair_records = root_snapshot.pairs.remove(&pair_dir).unwrap_or_default();
+        for authority in &pair_records {
+            if authority.record.repo_id != *repo_id || authority.record.revision_id != *revision_id
+            {
+                return Err(CoreError::Storage(format!(
+                    "search-corpus authority: pair directory contains foreign identity in {}",
+                    authority.path.display()
+                )));
+            }
+        }
         let path = self.search_corpus_authority_path(repo_id, revision_id, generation);
-        if let Some(record) =
-            self.read_cbor::<SearchCorpusAuthorityRecordV1>(&path, "search corpus")?
+        if let Some(existing) = pair_records
+            .iter()
+            .find(|authority| authority.record.generation == generation)
         {
-            record.validate_identity(repo_id, revision_id, generation, &path)?;
-            if record.manifest_digest == manifest_digest {
-                return sync_existing_file_parent_v1(
+            if existing.record.manifest_digest == manifest_digest {
+                sync_existing_file_parent_v1(
                     &path,
                     "search-corpus authority",
                     self.parent_sync.as_ref(),
-                );
+                )?;
+                let plan =
+                    self.plan_search_corpus_pair_records_v1(&pair_records, Some(generation))?;
+                self.validate_search_corpus_state_root_projection_v1(
+                    &root_snapshot,
+                    &pair_records,
+                    &plan,
+                )?;
+                let enforced = self.enforce_search_corpus_history_retention_snapshot_v1(
+                    repo_id,
+                    revision_id,
+                    &pair_dir,
+                    pair_records,
+                    &plan,
+                )?;
+                if !enforced
+                    .retained
+                    .iter()
+                    .any(|authority| authority.record.generation == generation)
+                {
+                    return Err(CoreError::Typed {
+                        code: ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED.to_string(),
+                        message: format!(
+                            "search-corpus history retention: generation {} has been reaped for repo={} revision={}",
+                            generation.get(),
+                            repo_id.as_str(),
+                            revision_id.as_str(),
+                        ),
+                    });
+                }
+                return Ok(enforced.receipt);
             }
             return Err(CoreError::Typed {
                 code: ERR_SEARCH_CORPUS_AUTHORITY_CONFLICT.to_string(),
@@ -2002,7 +2226,7 @@ impl AuxiliaryAuthorityStore {
                     revision_id.as_str(),
                     generation.get(),
                     manifest_digest,
-                    record.manifest_digest,
+                    existing.record.manifest_digest,
                 ),
             });
         }
@@ -2014,13 +2238,58 @@ impl AuxiliaryAuthorityStore {
                 path.display()
             ))
         })?;
+        let encoded_len = u64::try_from(bytes.len()).map_err(|_error| {
+            CoreError::Storage(
+                "search-corpus history retention: candidate record length exceeds u64".to_string(),
+            )
+        })?;
+        if encoded_len > self.search_corpus_history_retention.max_bytes() {
+            return Err(CoreError::Typed {
+                code: ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED.to_string(),
+                message: format!(
+                    "search-corpus history retention: generation {} record exceeds max_bytes={} for repo={} revision={}",
+                    generation.get(),
+                    self.search_corpus_history_retention.max_bytes(),
+                    repo_id.as_str(),
+                    revision_id.as_str(),
+                ),
+            });
+        }
+        pair_records.push(SearchCorpusAuthorityFileV1 {
+            path: path.clone(),
+            record,
+            encoded_len,
+        });
+        pair_records.sort_by(|left, right| {
+            right
+                .record
+                .generation
+                .get()
+                .cmp(&left.record.generation.get())
+        });
+        let plan = self.plan_search_corpus_pair_records_v1(&pair_records, Some(generation))?;
+        self.validate_search_corpus_state_root_projection_v1(&root_snapshot, &pair_records, &plan)?;
+        ensure_durable_directory_v1(
+            &pair_dir,
+            "search-corpus authority",
+            self.parent_sync.as_ref(),
+        )?;
         match atomic_replace_file_v1(
             &path,
             &bytes,
             "search-corpus authority",
             self.parent_sync.as_ref(),
         )? {
-            AtomicFileWriteOutcomeV1::Durable => Ok(()),
+            AtomicFileWriteOutcomeV1::Durable => {
+                let enforced = self.enforce_search_corpus_history_retention_snapshot_v1(
+                    repo_id,
+                    revision_id,
+                    &pair_dir,
+                    pair_records,
+                    &plan,
+                )?;
+                Ok(enforced.receipt)
+            }
             AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(error) => Err(error),
         }
     }
@@ -2051,6 +2320,287 @@ impl AuxiliaryAuthorityStore {
             });
         }
         Ok(SealedSearchCorpusAuthorityStateV1::Exact)
+    }
+
+    fn load_search_corpus_root_snapshot_v1(
+        &self,
+    ) -> Result<SearchCorpusAuthorityRootSnapshotV1, CoreError> {
+        let mut snapshot = SearchCorpusAuthorityRootSnapshotV1::default();
+        for pair_entry in fs::read_dir(&self.search_corpus_dir).map_err(|err| {
+            CoreError::Storage(format!(
+                "search-corpus authority: list {}: {err}",
+                self.search_corpus_dir.display()
+            ))
+        })? {
+            let pair_entry = pair_entry.map_err(|err| {
+                CoreError::Storage(format!(
+                    "search-corpus authority: read directory entry in {}: {err}",
+                    self.search_corpus_dir.display()
+                ))
+            })?;
+            let pair_path = pair_entry.path();
+            if !pair_entry
+                .file_type()
+                .map_err(|err| {
+                    CoreError::Storage(format!(
+                        "search-corpus authority: inspect {}: {err}",
+                        pair_path.display()
+                    ))
+                })?
+                .is_dir()
+            {
+                return Err(CoreError::Storage(format!(
+                    "search-corpus authority: foreign root entry {}",
+                    pair_path.display()
+                )));
+            }
+            if !pair_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+            {
+                return Err(CoreError::Storage(format!(
+                    "search-corpus authority: invalid pair directory name {}",
+                    pair_path.display()
+                )));
+            }
+            let _inserted = snapshot.pair_directories.insert(pair_path.clone());
+            let records = self.load_search_corpus_pair_records_v1(&pair_path)?;
+            if records.is_empty() {
+                continue;
+            }
+            for record in &records {
+                snapshot.total_bytes = snapshot
+                    .total_bytes
+                    .checked_add(record.encoded_len)
+                    .ok_or_else(|| {
+                        CoreError::Storage(
+                            "search-corpus history retention: state-root byte total overflow"
+                                .to_string(),
+                        )
+                    })?;
+            }
+            let _previous = snapshot.pairs.insert(pair_path, records);
+        }
+        Ok(snapshot)
+    }
+
+    fn load_search_corpus_pair_records_v1(
+        &self,
+        pair_dir: &Path,
+    ) -> Result<Vec<SearchCorpusAuthorityFileV1>, CoreError> {
+        let mut records = Vec::new();
+        for entry in fs::read_dir(pair_dir).map_err(|err| {
+            CoreError::Storage(format!(
+                "search-corpus authority: list {}: {err}",
+                pair_dir.display()
+            ))
+        })? {
+            let entry = entry.map_err(|err| {
+                CoreError::Storage(format!(
+                    "search-corpus authority: read directory entry in {}: {err}",
+                    pair_dir.display()
+                ))
+            })?;
+            let path = entry.path();
+            let file_type = entry.file_type().map_err(|err| {
+                CoreError::Storage(format!(
+                    "search-corpus authority: inspect {}: {err}",
+                    path.display()
+                ))
+            })?;
+            if !file_type.is_file() || path.extension().is_none_or(|extension| extension != "cbor")
+            {
+                return Err(CoreError::Storage(format!(
+                    "search-corpus authority: foreign history entry {}",
+                    path.display()
+                )));
+            }
+            let bytes = read_regular_file_nofollow_v1(&path).map_err(|err| {
+                CoreError::Storage(format!(
+                    "search-corpus authority: read {}: {err}",
+                    path.display()
+                ))
+            })?;
+            let record = decode_cbor_payload::<SearchCorpusAuthorityRecordV1>(bytes.as_slice())
+                .map_err(|err| {
+                    CoreError::Storage(format!(
+                        "search-corpus authority: decode {}: {err}",
+                        path.display()
+                    ))
+                })?;
+            record.validate_identity(
+                &record.repo_id,
+                &record.revision_id,
+                record.generation,
+                &path,
+            )?;
+            let expected_path = self.search_corpus_authority_path(
+                &record.repo_id,
+                &record.revision_id,
+                record.generation,
+            );
+            if expected_path != path {
+                return Err(CoreError::Storage(format!(
+                    "search-corpus authority: filename/payload identity mismatch in {}",
+                    path.display()
+                )));
+            }
+            let encoded_len = u64::try_from(bytes.len()).map_err(|_error| {
+                CoreError::Storage(format!(
+                    "search-corpus authority: record length exceeds u64 in {}",
+                    path.display()
+                ))
+            })?;
+            records.push(SearchCorpusAuthorityFileV1 {
+                path,
+                record,
+                encoded_len,
+            });
+        }
+        records.sort_by(|left, right| {
+            right
+                .record
+                .generation
+                .get()
+                .cmp(&left.record.generation.get())
+        });
+        Ok(records)
+    }
+
+    fn plan_search_corpus_pair_records_v1(
+        &self,
+        records: &[SearchCorpusAuthorityFileV1],
+        required_generation: Option<ManifestGeneration>,
+    ) -> Result<crate::search_corpus_retention::SearchCorpusHistoryRetentionPlanV1, CoreError> {
+        self.search_corpus_history_retention.plan(
+            records
+                .iter()
+                .map(|record| SearchCorpusHistoryRetentionItemV1 {
+                    generation: record.record.generation.get(),
+                    encoded_len: record.encoded_len,
+                    candidate: required_generation == Some(record.record.generation),
+                })
+                .collect(),
+        )
+    }
+
+    fn validate_search_corpus_state_root_projection_v1(
+        &self,
+        root_without_pair: &SearchCorpusAuthorityRootSnapshotV1,
+        pair_records: &[SearchCorpusAuthorityFileV1],
+        plan: &crate::search_corpus_retention::SearchCorpusHistoryRetentionPlanV1,
+    ) -> Result<(), CoreError> {
+        let existing_pair_bytes = pair_records
+            .iter()
+            .filter(|record| record.path.exists())
+            .try_fold(0_u64, |total, record| {
+                total.checked_add(record.encoded_len).ok_or_else(|| {
+                    CoreError::Storage(
+                        "search-corpus history retention: pair byte total overflow".to_string(),
+                    )
+                })
+            })?;
+        let retained_pair_bytes = pair_records
+            .iter()
+            .filter(|record| plan.retains(record.record.generation.get()))
+            .try_fold(0_u64, |total, record| {
+                total.checked_add(record.encoded_len).ok_or_else(|| {
+                    CoreError::Storage(
+                        "search-corpus history retention: retained byte total overflow".to_string(),
+                    )
+                })
+            })?;
+        let projected_pairs = root_without_pair
+            .pair_directories
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| {
+                CoreError::Storage(
+                    "search-corpus history retention: revision-pair count overflow".to_string(),
+                )
+            })?;
+        let projected_total_bytes = root_without_pair
+            .total_bytes
+            .checked_sub(existing_pair_bytes)
+            .and_then(|remaining| remaining.checked_add(retained_pair_bytes))
+            .ok_or_else(|| {
+                CoreError::Storage(
+                    "search-corpus history retention: projected state-root byte total overflow"
+                        .to_string(),
+                )
+            })?;
+        if projected_pairs > self.search_corpus_history_retention.max_revision_pairs()
+            || projected_total_bytes > self.search_corpus_history_retention.max_total_bytes()
+        {
+            return Err(CoreError::Typed {
+                code: ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED.to_string(),
+                message: format!(
+                    "search-corpus history retention: state-root admission requires revision_pairs={projected_pairs} total_bytes={projected_total_bytes}, limits are max_revision_pairs={} max_total_bytes={}; cross-pair deletion is unavailable without product-active pin authority",
+                    self.search_corpus_history_retention.max_revision_pairs(),
+                    self.search_corpus_history_retention.max_total_bytes(),
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    fn enforce_search_corpus_history_retention_snapshot_v1(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        pair_dir: &Path,
+        records: Vec<SearchCorpusAuthorityFileV1>,
+        plan: &crate::search_corpus_retention::SearchCorpusHistoryRetentionPlanV1,
+    ) -> Result<EnforcedSearchCorpusHistoryRetentionV1, CoreError> {
+        for record in &records {
+            if &record.record.repo_id != repo_id || &record.record.revision_id != revision_id {
+                return Err(CoreError::Storage(format!(
+                    "search-corpus authority: pair directory contains foreign identity in {}",
+                    record.path.display()
+                )));
+            }
+        }
+
+        let (retained, reaped): (Vec<_>, Vec<_>) = records
+            .into_iter()
+            .partition(|record| plan.retains(record.record.generation.get()));
+        let retained_generations = retained
+            .iter()
+            .map(|record| record.record.generation)
+            .collect();
+        let reaped_generations = reaped
+            .iter()
+            .map(|record| record.record.generation)
+            .collect();
+        for record in &reaped {
+            fs::remove_file(&record.path).map_err(|err| {
+                CoreError::Storage(format!(
+                    "search-corpus history retention: remove reaped authority {}: {err}",
+                    record.path.display()
+                ))
+            })?;
+        }
+        if !reaped.is_empty() {
+            self.parent_sync.sync_parent(pair_dir).map_err(|err| {
+                CoreError::Storage(format!(
+                    "search-corpus history retention: fsync pair directory {} after GC: {err}",
+                    pair_dir.display()
+                ))
+            })?;
+        }
+        Ok(EnforcedSearchCorpusHistoryRetentionV1 {
+            retained,
+            receipt: SearchCorpusHistoryRetentionReceiptV1 {
+                repo_id: repo_id.clone(),
+                revision_id: revision_id.clone(),
+                retained_generations,
+                reaped_generations,
+                store_reconciled_v1: true,
+            },
+        })
     }
 
     pub fn persist_from_ledger(&self, ledger: &Ledger) -> Result<(), CoreError> {
@@ -2102,76 +2652,81 @@ impl AuxiliaryAuthorityStore {
     }
 
     fn restore_search_corpus_history_into(&self, ledger: &mut Ledger) -> Result<(), CoreError> {
-        for pair_entry in fs::read_dir(&self.search_corpus_dir).map_err(|err| {
+        let _root_guard = self.search_corpus_root_lock.lock().map_err(|err| {
             CoreError::Storage(format!(
-                "search-corpus authority: list {}: {err}",
-                self.search_corpus_dir.display()
+                "search-corpus authority: restore state-root retention lock poisoned: {err}"
             ))
-        })? {
-            let pair_entry = pair_entry.map_err(|err| {
+        })?;
+        let snapshot = self.load_search_corpus_root_snapshot_v1()?;
+        if snapshot.pair_directories.len()
+            > self.search_corpus_history_retention.max_revision_pairs()
+        {
+            return Err(CoreError::Typed {
+                code: ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED.to_string(),
+                message: format!(
+                    "search-corpus history retention: restore observed {} revision pairs, exceeding max_revision_pairs={}; cross-pair deletion is unavailable without product-active pin authority",
+                    snapshot.pair_directories.len(),
+                    self.search_corpus_history_retention.max_revision_pairs(),
+                ),
+            });
+        }
+        let mut planned = Vec::with_capacity(snapshot.pairs.len());
+        let mut projected_total_bytes = 0_u64;
+        for (pair_path, observed) in snapshot.pairs {
+            let first = observed.first().ok_or_else(|| {
                 CoreError::Storage(format!(
-                    "search-corpus authority: read directory entry in {}: {err}",
-                    self.search_corpus_dir.display()
+                    "search-corpus history retention: non-empty root snapshot lost pair records for {}",
+                    pair_path.display()
                 ))
             })?;
-            if !pair_entry
-                .file_type()
-                .map_err(|err| {
-                    CoreError::Storage(format!(
-                        "search-corpus authority: inspect {}: {err}",
-                        pair_entry.path().display()
-                    ))
-                })?
-                .is_dir()
+            let repo_id = first.record.repo_id.clone();
+            let revision_id = first.record.revision_id.clone();
+            let plan = self.plan_search_corpus_pair_records_v1(&observed, None)?;
+            for record in observed
+                .iter()
+                .filter(|record| plan.retains(record.record.generation.get()))
             {
-                continue;
-            }
-            for record_entry in fs::read_dir(pair_entry.path()).map_err(|err| {
-                CoreError::Storage(format!(
-                    "search-corpus authority: list {}: {err}",
-                    pair_entry.path().display()
-                ))
-            })? {
-                let record_entry = record_entry.map_err(|err| {
-                    CoreError::Storage(format!(
-                        "search-corpus authority: read record in {}: {err}",
-                        pair_entry.path().display()
-                    ))
-                })?;
-                if !record_entry.path().is_file()
-                    || record_entry
-                        .path()
-                        .extension()
-                        .is_none_or(|extension| extension != "cbor")
-                {
-                    continue;
-                }
-                let path = record_entry.path();
-                let record = self
-                    .read_cbor::<SearchCorpusAuthorityRecordV1>(&path, "search corpus")?
+                projected_total_bytes = projected_total_bytes
+                    .checked_add(record.encoded_len)
                     .ok_or_else(|| {
-                        CoreError::Storage(format!(
-                            "search-corpus authority: listed file disappeared: {}",
-                            path.display()
-                        ))
+                        CoreError::Storage(
+                            "search-corpus history retention: restore byte total overflow"
+                                .to_string(),
+                        )
                     })?;
-                let expected_path = self.search_corpus_authority_path(
-                    &record.repo_id,
-                    &record.revision_id,
-                    record.generation,
-                );
-                if expected_path != path {
-                    return Err(CoreError::Storage(format!(
-                        "search-corpus authority: filename/payload identity mismatch in {}",
-                        path.display()
-                    )));
-                }
-                record.validate_identity(
-                    &record.repo_id,
-                    &record.revision_id,
-                    record.generation,
-                    &path,
-                )?;
+            }
+            planned.push((pair_path, observed, repo_id, revision_id, plan));
+        }
+        if projected_total_bytes > self.search_corpus_history_retention.max_total_bytes() {
+            return Err(CoreError::Typed {
+                code: ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED.to_string(),
+                message: format!(
+                    "search-corpus history retention: restore requires total_bytes={projected_total_bytes}, exceeding max_total_bytes={}; cross-pair deletion is unavailable without product-active pin authority",
+                    self.search_corpus_history_retention.max_total_bytes(),
+                ),
+            });
+        }
+        for (pair_path, observed, repo_id, revision_id, plan) in planned {
+            let stripe = search_corpus_lock_stripe_v1(&repo_id, &revision_id);
+            let pair_lock = self.search_corpus_write_locks.get(stripe).ok_or_else(|| {
+                CoreError::Storage(format!(
+                    "search-corpus authority: computed lock stripe {stripe} outside configured range"
+                ))
+            })?;
+            let _pair_guard = pair_lock.lock().map_err(|err| {
+                CoreError::Storage(format!(
+                    "search-corpus authority: restore lock stripe {stripe} poisoned: {err}"
+                ))
+            })?;
+            let enforced = self.enforce_search_corpus_history_retention_snapshot_v1(
+                &repo_id,
+                &revision_id,
+                &pair_path,
+                observed,
+                &plan,
+            )?;
+            for authority in enforced.retained {
+                let record = authority.record;
                 ledger.record_historically_sealed_search_corpus(
                     &record.repo_id,
                     &record.revision_id,
@@ -3282,6 +3837,7 @@ mod tests {
         clippy::panic_in_result_fn,
         reason = "Result-returning durability and CAS tests use assertions as test-failure reporting"
     )]
+    use std::collections::BTreeSet;
     use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
@@ -3305,8 +3861,36 @@ mod tests {
 
     use super::{
         ActivationCatalog, AuxiliaryAuthorityStore, Ledger, PreparedSearchCorpusGenerationV1,
-        SearchCorpusGenerationV1,
+        SearchCorpusGenerationV1, SearchCorpusHistoryRetentionPolicyV1,
     };
+
+    fn search_corpus_retention(
+        max_generations: usize,
+    ) -> Result<SearchCorpusHistoryRetentionPolicyV1, CoreError> {
+        SearchCorpusHistoryRetentionPolicyV1::new(
+            max_generations,
+            1024 * 1024,
+            64,
+            64 * 1024 * 1024,
+        )
+    }
+
+    fn search_corpus_authority_record_len(
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+        manifest_digest: &str,
+    ) -> Result<u64, Box<dyn std::error::Error>> {
+        let record = super::SearchCorpusAuthorityRecordV1::new(
+            repo_id,
+            revision_id,
+            generation,
+            manifest_digest,
+        );
+        Ok(u64::try_from(
+            quanta_index_ipc::encode_cbor_payload(&record)?.len(),
+        )?)
+    }
 
     #[derive(Debug)]
     struct AlwaysFailParentSync;
@@ -3878,6 +4462,7 @@ mod tests {
         let authority_root = dir.path().join("fresh-authority");
         let authority = AuxiliaryAuthorityStore::open_with_parent_sync(
             &authority_root,
+            search_corpus_retention(2)?,
             Arc::new(AlwaysFailParentSync),
         );
         let Err(CoreError::Storage(authority_error)) = authority else {
@@ -3917,27 +4502,38 @@ mod tests {
     }
 
     #[test]
-    fn sealed_search_corpus_history_is_bounded_durable_and_conflict_safe() -> TestResult {
+    fn sealed_search_corpus_history_reaps_max_plus_one_and_preserves_predecessor() -> TestResult {
         let dir = tempdir()?;
-        let store = AuxiliaryAuthorityStore::open(dir.path())?;
+        let store = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(2)?)?;
         let repo = RepoId::new("repo-corpus");
         let revision = RevisionId::new("rev-corpus");
-        store.record_sealed_search_corpus(
-            &repo,
-            &revision,
-            ManifestGeneration::new(17),
-            "digest-17",
-        )?;
-        store.record_sealed_search_corpus(
-            &repo,
-            &revision,
-            ManifestGeneration::new(18),
-            "digest-18",
-        )?;
+        let mut live_ledger = Ledger::new();
+        for generation in 17..=19 {
+            let manifest_generation = ManifestGeneration::new(generation);
+            let digest = format!("digest-{generation}");
+            let retention = store.record_sealed_search_corpus(
+                &repo,
+                &revision,
+                manifest_generation,
+                digest.as_str(),
+            )?;
+            live_ledger.apply_search_corpus_history_retention_receipt_v1(
+                &repo,
+                &revision,
+                manifest_generation,
+                &retention,
+            )?;
+            live_ledger.record_historically_sealed_search_corpus(
+                &repo,
+                &revision,
+                manifest_generation,
+                digest.as_str(),
+            );
+        }
         let conflict = store.record_sealed_search_corpus(
             &repo,
             &revision,
-            ManifestGeneration::new(17),
+            ManifestGeneration::new(18),
             "conflicting-digest",
         );
         let Err(CoreError::Typed { code, .. }) = conflict else {
@@ -3953,10 +4549,36 @@ mod tests {
         assert_eq!(
             std::fs::read_dir(pair_dir)?.count(),
             2,
-            "each sealed generation must remain one immutable record"
+            "count policy must keep only the newest generation and predecessor"
         );
+        assert!(
+            !store
+                .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(17))
+                .exists()
+        );
+        assert!(
+            store
+                .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(18))
+                .is_file()
+        );
+        assert!(
+            store
+                .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(19))
+                .is_file()
+        );
+        let reaped_same_process = live_ledger.validate_historically_sealed_track_identity(
+            &GenerationSnapshot {
+                repo_id: repo.clone(),
+                revision_id: revision.clone(),
+                track: SearchPlaneTrackKind::Lexical,
+                manifest_generation: ManifestGeneration::new(17),
+                manifest_digest: "digest-17".to_string(),
+            },
+            "test",
+        );
+        assert!(matches!(reaped_same_process, Err(CoreError::Typed { .. })));
 
-        let reopened = AuxiliaryAuthorityStore::open(dir.path())?;
+        let reopened = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(2)?)?;
         let mut ledger = Ledger::new();
         reopened.restore_into(&mut ledger)?;
         for track in [
@@ -3968,12 +4590,386 @@ mod tests {
                     repo_id: repo.clone(),
                     revision_id: revision.clone(),
                     track,
-                    manifest_generation: ManifestGeneration::new(17),
-                    manifest_digest: "digest-17".to_string(),
+                    manifest_generation: ManifestGeneration::new(18),
+                    manifest_digest: "digest-18".to_string(),
                 },
                 "test",
             )?;
         }
+        Ok(())
+    }
+
+    #[test]
+    fn unreconciled_retention_receipt_fails_before_ledger_pruning() -> TestResult {
+        let repo = RepoId::new("repo-incomplete-receipt");
+        let revision = RevisionId::new("rev-incomplete-receipt");
+        let mut ledger = Ledger::new();
+        ledger.record_historically_sealed_search_corpus(
+            &repo,
+            &revision,
+            ManifestGeneration::new(17),
+            "digest-17",
+        );
+        let receipt = super::SearchCorpusHistoryRetentionReceiptV1 {
+            repo_id: repo.clone(),
+            revision_id: revision.clone(),
+            retained_generations: BTreeSet::from([ManifestGeneration::new(18)]),
+            reaped_generations: BTreeSet::new(),
+            store_reconciled_v1: false,
+        };
+        assert!(
+            ledger
+                .apply_search_corpus_history_retention_receipt_v1(
+                    &repo,
+                    &revision,
+                    ManifestGeneration::new(18),
+                    &receipt,
+                )
+                .is_err()
+        );
+        ledger.validate_historically_sealed_track_identity(
+            &GenerationSnapshot {
+                repo_id: repo,
+                revision_id: revision,
+                track: SearchPlaneTrackKind::Lexical,
+                manifest_generation: ManifestGeneration::new(17),
+                manifest_digest: "digest-17".to_string(),
+            },
+            "test",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn sealed_search_corpus_history_enforces_byte_cap_without_losing_predecessor() -> TestResult {
+        let dir = tempdir()?;
+        let repo = RepoId::new("repo-byte-cap");
+        let revision = RevisionId::new("rev-byte-cap");
+        let first_len = search_corpus_authority_record_len(
+            &repo,
+            &revision,
+            ManifestGeneration::new(18),
+            "digest-18",
+        )?;
+        let second_len = search_corpus_authority_record_len(
+            &repo,
+            &revision,
+            ManifestGeneration::new(19),
+            "digest-19",
+        )?;
+        let policy = SearchCorpusHistoryRetentionPolicyV1::new(
+            4,
+            first_len + second_len,
+            64,
+            64 * 1024 * 1024,
+        )?;
+        let store = AuxiliaryAuthorityStore::open(dir.path(), policy)?;
+        for generation in 18..=20 {
+            let _retention_receipt = store.record_sealed_search_corpus(
+                &repo,
+                &revision,
+                ManifestGeneration::new(generation),
+                format!("digest-{generation}").as_str(),
+            )?;
+        }
+        let pair_dir = store.search_corpus_pair_dir(&repo, &revision);
+        assert_eq!(std::fs::read_dir(pair_dir)?.count(), 2);
+        assert!(
+            store
+                .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(19))
+                .is_file()
+        );
+        assert!(
+            store
+                .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(20))
+                .is_file()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sealed_search_corpus_history_rejects_write_before_predecessor_window_overflows() -> TestResult
+    {
+        let dir = tempdir()?;
+        let repo = RepoId::new("repo-byte-exhausted");
+        let revision = RevisionId::new("rev-byte-exhausted");
+        let first_len = search_corpus_authority_record_len(
+            &repo,
+            &revision,
+            ManifestGeneration::new(18),
+            "digest-18",
+        )?;
+        let second_len = search_corpus_authority_record_len(
+            &repo,
+            &revision,
+            ManifestGeneration::new(19),
+            "digest-19",
+        )?;
+        let pair_bytes = first_len
+            .checked_add(second_len)
+            .and_then(|sum| sum.checked_sub(1))
+            .ok_or("test byte cap underflow")?;
+        let policy =
+            SearchCorpusHistoryRetentionPolicyV1::new(4, pair_bytes, 64, 64 * 1024 * 1024)?;
+        let store = AuxiliaryAuthorityStore::open(dir.path(), policy)?;
+        let _initial_retention_receipt = store.record_sealed_search_corpus(
+            &repo,
+            &revision,
+            ManifestGeneration::new(18),
+            "digest-18",
+        )?;
+        let rejected = store.record_sealed_search_corpus(
+            &repo,
+            &revision,
+            ManifestGeneration::new(19),
+            "digest-19",
+        );
+        let Err(CoreError::Typed { code, .. }) = rejected else {
+            return Err("byte-exhausted predecessor window unexpectedly admitted".into());
+        };
+        assert_eq!(code, super::ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED);
+        assert_eq!(
+            std::fs::read_dir(store.search_corpus_pair_dir(&repo, &revision))?.count(),
+            1,
+            "preflight must reject before a durable max+1 write"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn state_root_revision_pair_cap_rejects_growth_without_cross_pair_deletion() -> TestResult {
+        let dir = tempdir()?;
+        let policy = SearchCorpusHistoryRetentionPolicyV1::new(2, 1024 * 1024, 1, 4 * 1024 * 1024)?;
+        let store = AuxiliaryAuthorityStore::open(dir.path(), policy)?;
+        let first_repo = RepoId::new("repo-global-first");
+        let first_revision = RevisionId::new("rev-global-first");
+        let _first_pair_retention_receipt = store.record_sealed_search_corpus(
+            &first_repo,
+            &first_revision,
+            ManifestGeneration::new(1),
+            "digest-first",
+        )?;
+
+        let second_repo = RepoId::new("repo-global-second");
+        let second_revision = RevisionId::new("rev-global-second");
+        let rejected = store.record_sealed_search_corpus(
+            &second_repo,
+            &second_revision,
+            ManifestGeneration::new(1),
+            "digest-second",
+        );
+        let Err(CoreError::Typed { code, .. }) = rejected else {
+            return Err("state-root revision-pair overflow unexpectedly admitted".into());
+        };
+        assert_eq!(code, super::ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED);
+        assert!(
+            store
+                .search_corpus_authority_path(
+                    &first_repo,
+                    &first_revision,
+                    ManifestGeneration::new(1),
+                )
+                .is_file(),
+            "global admission must not delete another pair without active-pin authority"
+        );
+        assert!(
+            !store
+                .search_corpus_pair_dir(&second_repo, &second_revision)
+                .exists(),
+            "rejected admission must not leave an empty durable pair directory"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn state_root_total_byte_cap_rejects_growth_before_write() -> TestResult {
+        let dir = tempdir()?;
+        let first_repo = RepoId::new("repo-byte-root-first");
+        let first_revision = RevisionId::new("rev-byte-root-first");
+        let second_repo = RepoId::new("repo-byte-root-second");
+        let second_revision = RevisionId::new("rev-byte-root-second");
+        let first_len = search_corpus_authority_record_len(
+            &first_repo,
+            &first_revision,
+            ManifestGeneration::new(1),
+            "digest-first",
+        )?;
+        let second_len = search_corpus_authority_record_len(
+            &second_repo,
+            &second_revision,
+            ManifestGeneration::new(1),
+            "digest-second",
+        )?;
+        let pair_limit = first_len.max(second_len);
+        let store = AuxiliaryAuthorityStore::open(
+            dir.path(),
+            SearchCorpusHistoryRetentionPolicyV1::new(2, pair_limit, 8, pair_limit)?,
+        )?;
+        let _first_pair_retention_receipt = store.record_sealed_search_corpus(
+            &first_repo,
+            &first_revision,
+            ManifestGeneration::new(1),
+            "digest-first",
+        )?;
+        let rejected = store.record_sealed_search_corpus(
+            &second_repo,
+            &second_revision,
+            ManifestGeneration::new(1),
+            "digest-second",
+        );
+        let Err(CoreError::Typed { code, .. }) = rejected else {
+            return Err("state-root byte overflow unexpectedly admitted".into());
+        };
+        assert_eq!(code, super::ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED);
+        assert!(
+            !store
+                .search_corpus_pair_dir(&second_repo, &second_revision)
+                .exists()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn restore_refuses_cross_pair_gc_when_state_root_pair_cap_shrinks() -> TestResult {
+        let dir = tempdir()?;
+        let writer = AuxiliaryAuthorityStore::open(
+            dir.path(),
+            SearchCorpusHistoryRetentionPolicyV1::new(2, 1024 * 1024, 2, 4 * 1024 * 1024)?,
+        )?;
+        for ordinal in 1..=2 {
+            let _retention_receipt = writer.record_sealed_search_corpus(
+                &RepoId::new(format!("repo-shrink-{ordinal}")),
+                &RevisionId::new(format!("rev-shrink-{ordinal}")),
+                ManifestGeneration::new(1),
+                format!("digest-{ordinal}").as_str(),
+            )?;
+        }
+        drop(writer);
+
+        let reopened = AuxiliaryAuthorityStore::open(
+            dir.path(),
+            SearchCorpusHistoryRetentionPolicyV1::new(2, 1024 * 1024, 1, 4 * 1024 * 1024)?,
+        )?;
+        let mut ledger = Ledger::new();
+        let Err(CoreError::Typed { code, .. }) = reopened.restore_into(&mut ledger) else {
+            return Err("restore guessed a cross-pair GC victim".into());
+        };
+        assert_eq!(code, super::ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED);
+        assert_eq!(
+            reopened.load_search_corpus_root_snapshot_v1()?.pairs.len(),
+            2,
+            "failed restore must preserve every pair when active-pin authority is unavailable"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn restart_repairs_one_over_limit_before_restoring_history() -> TestResult {
+        let dir = tempdir()?;
+        let repo = RepoId::new("repo-restart-gc");
+        let revision = RevisionId::new("rev-restart-gc");
+        let writer = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(3)?)?;
+        for generation in 17..=19 {
+            let _retention_receipt = writer.record_sealed_search_corpus(
+                &repo,
+                &revision,
+                ManifestGeneration::new(generation),
+                format!("digest-{generation}").as_str(),
+            )?;
+        }
+        drop(writer);
+
+        let reopened = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(2)?)?;
+        let mut ledger = Ledger::new();
+        reopened.restore_into(&mut ledger)?;
+        assert_eq!(
+            std::fs::read_dir(reopened.search_corpus_pair_dir(&repo, &revision))?.count(),
+            2
+        );
+        for generation in [18, 19] {
+            ledger.validate_historically_sealed_track_identity(
+                &GenerationSnapshot {
+                    repo_id: repo.clone(),
+                    revision_id: revision.clone(),
+                    track: SearchPlaneTrackKind::Lexical,
+                    manifest_generation: ManifestGeneration::new(generation),
+                    manifest_digest: format!("digest-{generation}"),
+                },
+                "test",
+            )?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn restore_fails_closed_on_foreign_pair_entry() -> TestResult {
+        let dir = tempdir()?;
+        let repo = RepoId::new("repo-foreign");
+        let revision = RevisionId::new("rev-foreign");
+        let store = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(2)?)?;
+        let _retention_receipt = store.record_sealed_search_corpus(
+            &repo,
+            &revision,
+            ManifestGeneration::new(17),
+            "digest-17",
+        )?;
+        std::fs::write(
+            store
+                .search_corpus_pair_dir(&repo, &revision)
+                .join("foreign.tmp"),
+            b"foreign",
+        )?;
+        let mut ledger = Ledger::new();
+        let Err(CoreError::Storage(message)) = store.restore_into(&mut ledger) else {
+            return Err("foreign history entry unexpectedly ignored".into());
+        };
+        assert!(message.contains("foreign history entry"));
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_history_writes_serialize_gc_and_remain_bounded() -> TestResult {
+        let dir = tempdir()?;
+        let store = Arc::new(AuxiliaryAuthorityStore::open(
+            dir.path(),
+            search_corpus_retention(3)?,
+        )?);
+        let repo = RepoId::new("repo-concurrent-gc");
+        let revision = RevisionId::new("rev-concurrent-gc");
+        let barrier = Arc::new(Barrier::new(8));
+        let mut workers = Vec::new();
+        for generation in 1..=8 {
+            let worker_store = store.clone();
+            let worker_repo = repo.clone();
+            let worker_revision = revision.clone();
+            let worker_barrier = barrier.clone();
+            workers.push(thread::spawn(move || {
+                let _barrier_receipt = worker_barrier.wait();
+                worker_store.record_sealed_search_corpus(
+                    &worker_repo,
+                    &worker_revision,
+                    ManifestGeneration::new(generation),
+                    format!("digest-{generation}").as_str(),
+                )
+            }));
+        }
+        for worker in workers {
+            match worker.join().map_err(|_| "history GC worker panicked")? {
+                Ok(_receipt) => {}
+                Err(CoreError::Typed { code, .. })
+                    if code == super::ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED => {}
+                Err(error) => return Err(format!("unexpected concurrent GC error: {error}").into()),
+            }
+        }
+        assert_eq!(
+            std::fs::read_dir(store.search_corpus_pair_dir(&repo, &revision))?.count(),
+            3
+        );
+        assert!(
+            store
+                .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(8))
+                .is_file()
+        );
         Ok(())
     }
 
@@ -3983,7 +4979,7 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let dir = tempdir()?;
-        let store = AuxiliaryAuthorityStore::open(dir.path())?;
+        let store = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(2)?)?;
         let repo = RepoId::new("repo-symlink");
         let revision = RevisionId::new("rev-symlink");
         let generation = ManifestGeneration::new(17);
@@ -4026,7 +5022,10 @@ mod tests {
     #[test]
     fn sealed_search_corpus_retry_revalidates_parent_durability() -> TestResult {
         let dir = tempdir()?;
-        drop(AuxiliaryAuthorityStore::open(dir.path())?);
+        drop(AuxiliaryAuthorityStore::open(
+            dir.path(),
+            search_corpus_retention(2)?,
+        )?);
         let sync = Arc::new(FailAtParentSync {
             calls: AtomicUsize::new(0),
             // Reopening the four existing authority subdirectories consumes
@@ -4034,7 +5033,11 @@ mod tests {
             // immutable record parent sync after rename is call five.
             fail_at: 5,
         });
-        let store = AuxiliaryAuthorityStore::open_with_parent_sync(dir.path(), sync.clone())?;
+        let store = AuxiliaryAuthorityStore::open_with_parent_sync(
+            dir.path(),
+            search_corpus_retention(2)?,
+            sync.clone(),
+        )?;
         let repo = RepoId::new("repo-retry");
         let revision = RevisionId::new("rev-retry");
         let first = store.record_sealed_search_corpus(
@@ -4045,7 +5048,7 @@ mod tests {
         );
         assert!(matches!(first, Err(CoreError::Storage(_))));
 
-        store.record_sealed_search_corpus(
+        let _retry_retention_receipt = store.record_sealed_search_corpus(
             &repo,
             &revision,
             ManifestGeneration::new(17),
@@ -4061,7 +5064,10 @@ mod tests {
     #[test]
     fn sealed_search_corpus_retry_repairs_post_rename_parent_sync_failure() -> TestResult {
         let dir = tempdir()?;
-        drop(AuxiliaryAuthorityStore::open(dir.path())?);
+        drop(AuxiliaryAuthorityStore::open(
+            dir.path(),
+            search_corpus_retention(2)?,
+        )?);
         let sync = Arc::new(FailAtParentSync {
             calls: AtomicUsize::new(0),
             // Reopening four existing authority subdirectories consumes calls
@@ -4069,7 +5075,11 @@ mod tests {
             // immutable-record parent sync after rename is call five.
             fail_at: 5,
         });
-        let store = AuxiliaryAuthorityStore::open_with_parent_sync(dir.path(), sync.clone())?;
+        let store = AuxiliaryAuthorityStore::open_with_parent_sync(
+            dir.path(),
+            search_corpus_retention(2)?,
+            sync.clone(),
+        )?;
         let repo = RepoId::new("repo-post-rename");
         let revision = RevisionId::new("rev-post-rename");
         let generation = ManifestGeneration::new(17);
@@ -4083,7 +5093,12 @@ mod tests {
             "rename must precede the injected parent sync failure"
         );
 
-        store.record_sealed_search_corpus(&repo, &revision, generation, "digest-post-rename")?;
+        let _retry_retention_receipt = store.record_sealed_search_corpus(
+            &repo,
+            &revision,
+            generation,
+            "digest-post-rename",
+        )?;
         assert!(sync.calls.load(Ordering::SeqCst) >= 4);
         assert_eq!(
             store.inspect_sealed_search_corpus(
@@ -4098,9 +5113,134 @@ mod tests {
     }
 
     #[test]
+    fn post_delete_fsync_failure_fences_rollback_and_retry_reconciles_authoritative_set()
+    -> TestResult {
+        let dir = tempdir()?;
+        let repo = RepoId::new("repo-post-delete");
+        let revision = RevisionId::new("rev-post-delete");
+        let writer = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(4)?)?;
+        let mut ledger = Ledger::new();
+        for generation in 1..=4 {
+            let generation = ManifestGeneration::new(generation);
+            let digest = format!("digest-{}", generation.get());
+            let _retention_receipt =
+                writer.record_sealed_search_corpus(&repo, &revision, generation, &digest)?;
+            ledger.record_historically_sealed_search_corpus(&repo, &revision, generation, &digest);
+        }
+        drop(writer);
+
+        let sync = Arc::new(FailAtParentSync {
+            calls: AtomicUsize::new(0),
+            // Reopening four existing authority subdirectories consumes calls
+            // 0..=3. Existing-record parent revalidation is call four; the GC
+            // pair-directory fsync after deleting generations 1 and 2 is five.
+            fail_at: 5,
+        });
+        let store = AuxiliaryAuthorityStore::open_with_parent_sync(
+            dir.path(),
+            search_corpus_retention(2)?,
+            sync,
+        )?;
+        ledger.fence_search_corpus_history_v1(&repo, &revision);
+        let first = store.record_sealed_search_corpus(
+            &repo,
+            &revision,
+            ManifestGeneration::new(4),
+            "digest-4",
+        );
+        assert!(matches!(first, Err(CoreError::Storage(_))));
+        assert!(
+            !store
+                .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(1))
+                .exists()
+        );
+        assert!(
+            !store
+                .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(2))
+                .exists()
+        );
+        let fenced = ledger.validate_historically_sealed_track_identity(
+            &GenerationSnapshot {
+                repo_id: repo.clone(),
+                revision_id: revision.clone(),
+                track: SearchPlaneTrackKind::Lexical,
+                manifest_generation: ManifestGeneration::new(3),
+                manifest_digest: "digest-3".to_string(),
+            },
+            "post-delete retry",
+        );
+        assert!(matches!(fenced, Err(CoreError::NotReady(_))));
+
+        let reconciled = store.record_sealed_search_corpus(
+            &repo,
+            &revision,
+            ManifestGeneration::new(4),
+            "digest-4",
+        )?;
+        assert!(
+            reconciled.reaped_generations().is_empty(),
+            "retry observes files already deleted before the failed fsync"
+        );
+        ledger.apply_search_corpus_history_retention_receipt_v1(
+            &repo,
+            &revision,
+            ManifestGeneration::new(4),
+            &reconciled,
+        )?;
+        let stale = ledger.validate_historically_sealed_track_identity(
+            &GenerationSnapshot {
+                repo_id: repo.clone(),
+                revision_id: revision.clone(),
+                track: SearchPlaneTrackKind::Lexical,
+                manifest_generation: ManifestGeneration::new(1),
+                manifest_digest: "digest-1".to_string(),
+            },
+            "post-delete retry",
+        );
+        assert!(matches!(stale, Err(CoreError::Typed { .. })));
+        ledger.validate_historically_sealed_track_identity(
+            &GenerationSnapshot {
+                repo_id: repo.clone(),
+                revision_id: revision.clone(),
+                track: SearchPlaneTrackKind::Lexical,
+                manifest_generation: ManifestGeneration::new(3),
+                manifest_digest: "digest-3".to_string(),
+            },
+            "post-delete retry",
+        )?;
+
+        drop(store);
+        let reopened = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(2)?)?;
+        let mut restored = Ledger::new();
+        reopened.restore_into(&mut restored)?;
+        restored.validate_historically_sealed_track_identity(
+            &GenerationSnapshot {
+                repo_id: repo.clone(),
+                revision_id: revision.clone(),
+                track: SearchPlaneTrackKind::Semantic,
+                manifest_generation: ManifestGeneration::new(3),
+                manifest_digest: "digest-3".to_string(),
+            },
+            "post-delete restart",
+        )?;
+        let reaped_after_restart = restored.validate_historically_sealed_track_identity(
+            &GenerationSnapshot {
+                repo_id: repo,
+                revision_id: revision,
+                track: SearchPlaneTrackKind::Semantic,
+                manifest_generation: ManifestGeneration::new(2),
+                manifest_digest: "digest-2".to_string(),
+            },
+            "post-delete restart",
+        );
+        assert!(matches!(reaped_after_restart, Err(CoreError::Typed { .. })));
+        Ok(())
+    }
+
+    #[test]
     fn auxiliary_authority_store_roundtrips_history_runtime_and_structural_state() -> TestResult {
         let dir = tempdir()?;
-        let store = AuxiliaryAuthorityStore::open(dir.path())?;
+        let store = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(2)?)?;
         let mut ledger = Ledger::default();
 
         ledger

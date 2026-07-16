@@ -16,7 +16,7 @@
     reason = "module is intentionally crate-internal; pub(crate) is the deliberate visibility — clippy normalizes to redundant but workspace `unreachable_pub = deny` blocks the alternate `pub` form"
 )]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -28,8 +28,13 @@ use lancedb::connect;
 use lancedb::query::{ExecutableQuery as _, QueryBase as _};
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
-    LexicalCandidate, ManifestGeneration, OwnerDocKind, QueryConstraintSetV1, RepoId,
-    RepoRelativePath, RevisionId, SemanticCorpusKindV1,
+    ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
+    ClusterMembershipCompletenessV1, ClusterMembershipReadFailureV1,
+    ClusterMembershipReadOutcomeV1, ClusterMembershipReadRejectionV1,
+    ClusterMembershipReadRequestV1, ClusterMembershipSnapshotV1, ClusterMembershipUnavailableV1,
+    GenerationPin, LexicalCandidate, ManifestGeneration, OwnerDocKind, QueryConstraintSetV1,
+    RepoId, RepoRelativePath, RevisionId, SemanticCorpusKindV1, SymbolId,
+    cluster_membership_content_digest_v1,
 };
 use quanta_index_core::CoreError;
 use quanta_index_core::domains::semantic::{SemanticPolicy, SemanticSearchHitV1, SemanticSearcher};
@@ -37,17 +42,27 @@ use quanta_index_core::domains::semantic::{SemanticPolicy, SemanticSearchHitV1, 
 use crate::errors::lancedb_err;
 use crate::generation_contract::GenerationContract;
 use crate::layout::{
-    self, COLUMN_CORPUS_KIND, COLUMN_EMBEDDING_ID, COLUMN_END_LINE, COLUMN_LANGUAGE,
-    COLUMN_OWNER_ID, COLUMN_OWNER_KIND, COLUMN_RECORD_ID, COLUMN_REPO_RELATIVE_PATH,
-    COLUMN_SNIPPET, COLUMN_START_LINE, TABLE_NAME, dataset_uri,
+    self, CLUSTER_MEMBERSHIP_TABLE_NAME, COLUMN_CORPUS_KIND, COLUMN_EMBEDDING_ID, COLUMN_END_LINE,
+    COLUMN_LANGUAGE, COLUMN_MEMBERSHIP_AUTHORITY_DIGEST, COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID,
+    COLUMN_MEMBERSHIP_CONTENT_DIGEST, COLUMN_MEMBERSHIP_MEMBER_COUNT,
+    COLUMN_MEMBERSHIP_MEMBER_SYMBOL_ID, COLUMN_MEMBERSHIP_ORDINAL, COLUMN_OWNER_ID,
+    COLUMN_OWNER_KIND, COLUMN_RECORD_ID, COLUMN_REPO_RELATIVE_PATH, COLUMN_SNIPPET,
+    COLUMN_START_LINE, TABLE_NAME, dataset_uri,
 };
 use crate::manifest::{
     FORMAT_VERSION, LEGACY_BUILD_CONTRACT_FORMAT_VERSION, LEGACY_LANCEDB_FORMAT_VERSION,
-    SemanticManifest,
+    LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION, SemanticManifest,
 };
 use crate::sql::build_id_in_filter;
 
 const COLUMN_DISTANCE: &str = "_distance";
+
+fn has_semantic_corpus_metadata_v1(format_version: u32) -> bool {
+    matches!(
+        format_version,
+        FORMAT_VERSION | LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION
+    )
+}
 
 fn load_generation_contract(generation_dir: &Path) -> Result<GenerationContract, CoreError> {
     let contract_path = layout::build_contract_path(generation_dir);
@@ -69,7 +84,9 @@ fn load_generation_contract_for_manifest(
         return load_generation_contract(generation_dir).map(Some);
     }
     match manifest.format_version {
-        FORMAT_VERSION | LEGACY_BUILD_CONTRACT_FORMAT_VERSION => Err(CoreError::Storage(format!(
+        FORMAT_VERSION
+        | LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION
+        | LEGACY_BUILD_CONTRACT_FORMAT_VERSION => Err(CoreError::Storage(format!(
             "semantic: manifest format version {} requires generation contract {}",
             manifest.format_version,
             contract_path.display()
@@ -97,6 +114,108 @@ pub(crate) struct LoadedGeneration {
     model_id: String,
     model_version: Option<String>,
     table: lancedb::Table,
+    cluster_membership: LoadedClusterMembershipV1,
+}
+
+enum LoadedClusterMembershipV1 {
+    Available(lancedb::Table),
+    LegacyUnavailable,
+    CurrentMissing,
+    CurrentCorrupt,
+}
+
+fn unavailable_or_rejected_membership_v1(
+    state: &LoadedClusterMembershipV1,
+    request: &ClusterMembershipReadRequestV1,
+) -> Option<ClusterMembershipReadOutcomeV1> {
+    match state {
+        LoadedClusterMembershipV1::Available(_) => None,
+        LoadedClusterMembershipV1::LegacyUnavailable => Some(
+            ClusterMembershipReadOutcomeV1::Unavailable(ClusterMembershipUnavailableV1 {
+                cluster_record_id: request.cluster_record_id.clone(),
+                generation: request.generation.clone(),
+                expected_authority_digest: request.expected_authority_digest.clone(),
+            }),
+        ),
+        LoadedClusterMembershipV1::CurrentMissing => Some(
+            ClusterMembershipReadOutcomeV1::Rejected(ClusterMembershipReadRejectionV1 {
+                cluster_record_id: request.cluster_record_id.clone(),
+                generation: request.generation.clone(),
+                expected_authority_digest: request.expected_authority_digest.clone(),
+                failure: ClusterMembershipReadFailureV1::CurrentGenerationMissing,
+            }),
+        ),
+        LoadedClusterMembershipV1::CurrentCorrupt => Some(
+            ClusterMembershipReadOutcomeV1::Rejected(ClusterMembershipReadRejectionV1 {
+                cluster_record_id: request.cluster_record_id.clone(),
+                generation: request.generation.clone(),
+                expected_authority_digest: request.expected_authority_digest.clone(),
+                failure: ClusterMembershipReadFailureV1::CorruptSidecar,
+            }),
+        ),
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ClusterMembershipStoredRowV1 {
+    ordinal: u32,
+    cluster_record_id: String,
+    authority_digest: String,
+    member_symbol_id: String,
+    member_count: u32,
+    membership_digest: String,
+}
+
+fn validate_cluster_membership_rows_v1(
+    mut rows: Vec<ClusterMembershipStoredRowV1>,
+    request: &ClusterMembershipReadRequestV1,
+) -> Result<Vec<SymbolId>, ClusterMembershipReadFailureV1> {
+    if rows.is_empty() {
+        return Err(ClusterMembershipReadFailureV1::CurrentGenerationMissing);
+    }
+    if rows.len() > quanta_index_contract::MAX_CLUSTER_MEMBERSHIP_READ_V1 as usize {
+        return Err(ClusterMembershipReadFailureV1::MemberLimitExceeded);
+    }
+    rows.sort_by_key(|row| row.ordinal);
+    let mut members = Vec::with_capacity(rows.len());
+    let mut committed_count = None;
+    let mut committed_digest = None;
+    for (index, row) in rows.into_iter().enumerate() {
+        if row.cluster_record_id != request.cluster_record_id {
+            return Err(ClusterMembershipReadFailureV1::ClusterIdentityMismatch);
+        }
+        if row.authority_digest != request.expected_authority_digest {
+            return Err(ClusterMembershipReadFailureV1::AuthorityDigestMismatch);
+        }
+        if usize::try_from(row.ordinal).ok() != Some(index) {
+            return Err(ClusterMembershipReadFailureV1::NonCanonicalMemberOrder);
+        }
+        if committed_count
+            .replace(row.member_count)
+            .is_some_and(|prior| prior != row.member_count)
+            || committed_digest
+                .replace(row.membership_digest.clone())
+                .is_some_and(|prior| prior != row.membership_digest)
+        {
+            return Err(ClusterMembershipReadFailureV1::CorruptSidecar);
+        }
+        members.push(SymbolId::new(row.member_symbol_id));
+    }
+    let computed_digest = cluster_membership_content_digest_v1(&members);
+    if usize::try_from(committed_count.unwrap_or_default()).ok() != Some(members.len())
+        || committed_digest.as_deref() != Some(computed_digest.as_str())
+    {
+        return Err(ClusterMembershipReadFailureV1::CorruptSidecar);
+    }
+    for pair in members.windows(2) {
+        if pair[0] == pair[1] {
+            return Err(ClusterMembershipReadFailureV1::DuplicateMemberIdentity);
+        }
+        if pair[0] > pair[1] {
+            return Err(ClusterMembershipReadFailureV1::NonCanonicalMemberOrder);
+        }
+    }
+    Ok(members)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -106,6 +225,7 @@ pub(crate) struct SemanticSearchHit {
     pub(crate) owner_id: String,
     pub(crate) owner_kind: String,
     pub(crate) corpus_kind: Option<String>,
+    pub(crate) authority_digest: String,
 }
 
 /// Open a sealed generation directly from durable state, failing closed on any
@@ -209,6 +329,44 @@ pub(crate) async fn open_generation(
         )));
     }
 
+    let cluster_membership = if manifest.format_version == FORMAT_VERSION {
+        let names = connection
+            .table_names()
+            .execute()
+            .await
+            .map_err(|err| lancedb_err("table_names", err))?;
+        if !names
+            .iter()
+            .any(|name| name == CLUSTER_MEMBERSHIP_TABLE_NAME)
+        {
+            LoadedClusterMembershipV1::CurrentMissing
+        } else {
+            match connection
+                .open_table(CLUSTER_MEMBERSHIP_TABLE_NAME)
+                .execute()
+                .await
+            {
+                Ok(membership_table) => match membership_table.schema().await {
+                    Ok(schema)
+                        if layout::cluster_membership_schema().fields().iter().all(
+                            |expected| {
+                                schema.field_with_name(expected.name()).is_ok_and(|live| {
+                                    live.data_type() == expected.data_type() && !live.is_nullable()
+                                })
+                            },
+                        ) =>
+                    {
+                        LoadedClusterMembershipV1::Available(membership_table)
+                    }
+                    Ok(_) | Err(_) => LoadedClusterMembershipV1::CurrentCorrupt,
+                },
+                Err(_error) => LoadedClusterMembershipV1::CurrentCorrupt,
+            }
+        }
+    } else {
+        LoadedClusterMembershipV1::LegacyUnavailable
+    };
+
     drop(connection);
     Ok(LoadedGeneration {
         repo_id: repo.clone(),
@@ -219,6 +377,7 @@ pub(crate) async fn open_generation(
         model_id: manifest.model_id.clone(),
         model_version: manifest.model_version.clone(),
         table,
+        cluster_membership,
     })
 }
 
@@ -289,26 +448,27 @@ fn extract_hits(
     let end_col = column_as::<UInt32Array>(batch, COLUMN_END_LINE, "UInt32")?;
     let snippet_col = column_as::<StringArray>(batch, COLUMN_SNIPPET, "Utf8")?;
     let distance_col = column_as::<Float32Array>(batch, COLUMN_DISTANCE, "Float32")?;
-    let record_id_col = if format_version == FORMAT_VERSION {
+    let record_id_col = if has_semantic_corpus_metadata_v1(format_version) {
         Some(column_as::<StringArray>(batch, COLUMN_RECORD_ID, "Utf8")?)
     } else {
         None
     };
-    let owner_id_col = if format_version == FORMAT_VERSION {
+    let owner_id_col = if has_semantic_corpus_metadata_v1(format_version) {
         Some(column_as::<StringArray>(batch, COLUMN_OWNER_ID, "Utf8")?)
     } else {
         None
     };
-    let owner_kind_col = if format_version == FORMAT_VERSION {
+    let owner_kind_col = if has_semantic_corpus_metadata_v1(format_version) {
         Some(column_as::<StringArray>(batch, COLUMN_OWNER_KIND, "Utf8")?)
     } else {
         None
     };
-    let corpus_kind_col = if format_version == FORMAT_VERSION {
+    let corpus_kind_col = if has_semantic_corpus_metadata_v1(format_version) {
         Some(column_as::<StringArray>(batch, COLUMN_CORPUS_KIND, "Utf8")?)
     } else {
         None
     };
+    let authority_digest_col = column_as::<StringArray>(batch, COLUMN_AUTHORITY_DIGEST, "Utf8")?;
     for row in 0..batch.num_rows() {
         let id = id_col.value(row).to_owned();
         let path = path_col.value(row).to_owned();
@@ -340,12 +500,264 @@ fn extract_hits(
                 |col| col.value(row).to_owned(),
             ),
             corpus_kind: corpus_kind_col.map(|col| col.value(row).to_owned()),
+            authority_digest: authority_digest_col.value(row).to_owned(),
         });
     }
     Ok(())
 }
 
 impl LoadedGeneration {
+    fn cluster_membership_rejection_v1(
+        &self,
+        request: &ClusterMembershipReadRequestV1,
+        failure: ClusterMembershipReadFailureV1,
+    ) -> ClusterMembershipReadOutcomeV1 {
+        ClusterMembershipReadOutcomeV1::Rejected(ClusterMembershipReadRejectionV1 {
+            cluster_record_id: request.cluster_record_id.clone(),
+            generation: request.generation.clone(),
+            expected_authority_digest: request.expected_authority_digest.clone(),
+            failure,
+        })
+    }
+
+    fn cluster_membership_outcome_from_rows_v1(
+        &self,
+        request: &ClusterMembershipReadRequestV1,
+        expected_pin: &GenerationPin,
+        rows: Vec<ClusterMembershipStoredRowV1>,
+    ) -> ClusterMembershipReadOutcomeV1 {
+        let mut members = match validate_cluster_membership_rows_v1(rows, request) {
+            Ok(members) => members,
+            Err(failure) => return self.cluster_membership_rejection_v1(request, failure),
+        };
+        let completeness = if members.len() > request.limit as usize {
+            members.truncate(request.limit as usize);
+            ClusterMembershipCompletenessV1::Truncated
+        } else {
+            ClusterMembershipCompletenessV1::Complete
+        };
+        let snapshot = ClusterMembershipSnapshotV1 {
+            cluster_record_id: request.cluster_record_id.clone(),
+            generation: expected_pin.clone(),
+            authority_digest: request.expected_authority_digest.clone(),
+            members,
+            completeness,
+        };
+        match snapshot.validate_against_v1(request) {
+            Ok(()) => ClusterMembershipReadOutcomeV1::Available(snapshot),
+            Err(failure) => self.cluster_membership_rejection_v1(request, failure),
+        }
+    }
+
+    fn cluster_membership_batch_rejection_v1(
+        &self,
+        request: &ClusterMembershipBatchReadRequestV1,
+        failure: ClusterMembershipReadFailureV1,
+    ) -> ClusterMembershipBatchReadResponseV1 {
+        ClusterMembershipBatchReadResponseV1 {
+            outcomes: request
+                .items
+                .iter()
+                .map(|item| {
+                    self.cluster_membership_rejection_v1(
+                        &item.as_single_request_v1(&request.generation),
+                        failure,
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    async fn cluster_membership_batch_read_async(
+        &self,
+        request: &ClusterMembershipBatchReadRequestV1,
+    ) -> Result<ClusterMembershipBatchReadResponseV1, CoreError> {
+        request
+            .validate_v1()
+            .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
+        let expected_pin = GenerationPin::new(
+            self.repo_id.clone(),
+            self.revision_id.clone(),
+            self.generation,
+        );
+        if request.generation != expected_pin {
+            return Ok(self.cluster_membership_batch_rejection_v1(
+                request,
+                ClusterMembershipReadFailureV1::GenerationMismatch,
+            ));
+        }
+        if !matches!(
+            self.cluster_membership,
+            LoadedClusterMembershipV1::Available(_)
+        ) {
+            let outcomes = request
+                .items
+                .iter()
+                .map(|item| item.as_single_request_v1(&request.generation))
+                .map(|single| {
+                    unavailable_or_rejected_membership_v1(&self.cluster_membership, &single)
+                        .unwrap_or_else(|| {
+                            self.cluster_membership_rejection_v1(
+                                &single,
+                                ClusterMembershipReadFailureV1::CorruptSidecar,
+                            )
+                        })
+                })
+                .collect();
+            return Ok(ClusterMembershipBatchReadResponseV1 { outcomes });
+        }
+        let LoadedClusterMembershipV1::Available(table) = &self.cluster_membership else {
+            return Err(CoreError::Storage(
+                "semantic: cluster membership state changed after terminal classification"
+                    .to_string(),
+            ));
+        };
+        let mut predicate = format!("{COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID} IN (");
+        for (index, item) in request.items.iter().enumerate() {
+            if index > 0 {
+                predicate.push_str(", ");
+            }
+            predicate.push_str(&crate::sql::quote_sql_string(
+                item.cluster_record_id.as_str(),
+            ));
+        }
+        predicate.push(')');
+        let stream = match table.query().only_if(predicate).execute().await {
+            Ok(stream) => stream,
+            Err(_error) => {
+                return Ok(self.cluster_membership_batch_rejection_v1(
+                    request,
+                    ClusterMembershipReadFailureV1::CorruptSidecar,
+                ));
+            }
+        };
+        let batches: Vec<RecordBatch> = match stream.try_collect().await {
+            Ok(batches) => batches,
+            Err(_error) => {
+                return Ok(self.cluster_membership_batch_rejection_v1(
+                    request,
+                    ClusterMembershipReadFailureV1::CorruptSidecar,
+                ));
+            }
+        };
+        let mut rows_by_cluster: BTreeMap<String, Vec<ClusterMembershipStoredRowV1>> =
+            BTreeMap::new();
+        for batch in batches {
+            let cluster_id =
+                match column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID, "Utf8")
+                {
+                    Ok(column) => column,
+                    Err(_error) => {
+                        return Ok(self.cluster_membership_batch_rejection_v1(
+                            request,
+                            ClusterMembershipReadFailureV1::CorruptSidecar,
+                        ));
+                    }
+                };
+            let authority_digest = match column_as::<StringArray>(
+                &batch,
+                COLUMN_MEMBERSHIP_AUTHORITY_DIGEST,
+                "Utf8",
+            ) {
+                Ok(column) => column,
+                Err(_error) => {
+                    return Ok(self.cluster_membership_batch_rejection_v1(
+                        request,
+                        ClusterMembershipReadFailureV1::CorruptSidecar,
+                    ));
+                }
+            };
+            let member_symbol_id = match column_as::<StringArray>(
+                &batch,
+                COLUMN_MEMBERSHIP_MEMBER_SYMBOL_ID,
+                "Utf8",
+            ) {
+                Ok(column) => column,
+                Err(_error) => {
+                    return Ok(self.cluster_membership_batch_rejection_v1(
+                        request,
+                        ClusterMembershipReadFailureV1::CorruptSidecar,
+                    ));
+                }
+            };
+            let ordinal =
+                match column_as::<UInt32Array>(&batch, COLUMN_MEMBERSHIP_ORDINAL, "UInt32") {
+                    Ok(column) => column,
+                    Err(_error) => {
+                        return Ok(self.cluster_membership_batch_rejection_v1(
+                            request,
+                            ClusterMembershipReadFailureV1::CorruptSidecar,
+                        ));
+                    }
+                };
+            let member_count =
+                match column_as::<UInt32Array>(&batch, COLUMN_MEMBERSHIP_MEMBER_COUNT, "UInt32") {
+                    Ok(column) => column,
+                    Err(_error) => {
+                        return Ok(self.cluster_membership_batch_rejection_v1(
+                            request,
+                            ClusterMembershipReadFailureV1::CorruptSidecar,
+                        ));
+                    }
+                };
+            let membership_digest =
+                match column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_CONTENT_DIGEST, "Utf8") {
+                    Ok(column) => column,
+                    Err(_error) => {
+                        return Ok(self.cluster_membership_batch_rejection_v1(
+                            request,
+                            ClusterMembershipReadFailureV1::CorruptSidecar,
+                        ));
+                    }
+                };
+            for row in 0..batch.num_rows() {
+                let cluster_record_id = cluster_id.value(row).to_owned();
+                rows_by_cluster
+                    .entry(cluster_record_id.clone())
+                    .or_default()
+                    .push(ClusterMembershipStoredRowV1 {
+                        ordinal: ordinal.value(row),
+                        cluster_record_id,
+                        authority_digest: authority_digest.value(row).to_owned(),
+                        member_symbol_id: member_symbol_id.value(row).to_owned(),
+                        member_count: member_count.value(row),
+                        membership_digest: membership_digest.value(row).to_owned(),
+                    });
+            }
+        }
+
+        if rows_by_cluster.keys().any(|record_id| {
+            request
+                .items
+                .binary_search_by(|item| item.cluster_record_id.as_str().cmp(record_id.as_str()))
+                .is_err()
+        }) {
+            return Ok(self.cluster_membership_batch_rejection_v1(
+                request,
+                ClusterMembershipReadFailureV1::CorruptSidecar,
+            ));
+        }
+
+        let outcomes = request
+            .items
+            .iter()
+            .map(|item| {
+                let single = item.as_single_request_v1(&request.generation);
+                let rows = rows_by_cluster
+                    .remove(item.cluster_record_id.as_str())
+                    .unwrap_or_default();
+                self.cluster_membership_outcome_from_rows_v1(&single, &expected_pin, rows)
+            })
+            .collect();
+        let response = ClusterMembershipBatchReadResponseV1 { outcomes };
+        response.validate_against_v1(request).map_err(|failure| {
+            CoreError::InvalidContract(format!(
+                "semantic: invalid cluster membership batch response: {failure}"
+            ))
+        })?;
+        Ok(response)
+    }
+
     fn model_id(&self) -> &str {
         &self.model_id
     }
@@ -440,6 +852,7 @@ impl LoadedGeneration {
                     owner_id: hit.owner_id,
                     owner_kind,
                     corpus_kind,
+                    authority_digest: hit.authority_digest,
                 })
             })
             .collect()
@@ -487,7 +900,7 @@ impl LoadedGeneration {
             return Ok(Vec::new());
         }
         if (corpus_kind.is_some() || !constraints.is_unconstrained())
-            && self.format_version != FORMAT_VERSION
+            && !has_semantic_corpus_metadata_v1(self.format_version)
         {
             return Err(CoreError::Storage(format!(
                 "semantic: corpus/language filters require format version {FORMAT_VERSION}, found {}",
@@ -583,6 +996,16 @@ fn top_k_limit(top_k: u32) -> Result<usize, CoreError> {
 }
 
 impl SemanticSearcher for PersistedSemanticSearcher {
+    fn cluster_membership_batch_read(
+        &self,
+        request: &ClusterMembershipBatchReadRequestV1,
+    ) -> Result<ClusterMembershipBatchReadResponseV1, CoreError> {
+        crate::run_blocking(
+            &self.runtime,
+            self.loaded.cluster_membership_batch_read_async(request),
+        )
+    }
+
     fn search(&self, query_vector: &[f32], top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError> {
         SemanticPolicy::validate_top_k(top_k)?;
         SemanticPolicy::validate_query_vector(query_vector)?;
@@ -733,8 +1156,16 @@ impl SemanticSearcher for PersistedSemanticSearcher {
 
 #[cfg(test)]
 mod tests {
-    use super::{cosine_distance_to_score_v1, parse_owner_kind_v1};
-    use quanta_index_contract::OwnerDocKind;
+    use super::{
+        ClusterMembershipStoredRowV1, LoadedClusterMembershipV1, cosine_distance_to_score_v1,
+        parse_owner_kind_v1, unavailable_or_rejected_membership_v1,
+        validate_cluster_membership_rows_v1,
+    };
+    use quanta_index_contract::{
+        ClusterMembershipReadFailureV1, ClusterMembershipReadOutcomeV1,
+        ClusterMembershipReadRequestV1, GenerationPin, ManifestGeneration, OwnerDocKind, RepoId,
+        RevisionId, SymbolId, cluster_membership_content_digest_v1,
+    };
     use quanta_index_core::CoreError;
 
     // CASE-COVERS: non-finite cosine distance must fail closed, not seed a NaN score.
@@ -782,5 +1213,96 @@ mod tests {
             }
             other => panic!("malformed v4 owner kind must fail closed, got {other:?}"),
         }
+    }
+
+    fn membership_request_v1() -> ClusterMembershipReadRequestV1 {
+        ClusterMembershipReadRequestV1 {
+            cluster_record_id: "cluster:a".to_string(),
+            generation: GenerationPin::new(
+                RepoId::new("repo"),
+                RevisionId::new("rev"),
+                ManifestGeneration::new(7),
+            ),
+            expected_authority_digest: "authority:a".to_string(),
+            limit: 8,
+        }
+    }
+
+    fn membership_rows_v1() -> Vec<ClusterMembershipStoredRowV1> {
+        let members = vec![SymbolId::new("symbol:a"), SymbolId::new("symbol:b")];
+        let digest = cluster_membership_content_digest_v1(&members);
+        members
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, member)| ClusterMembershipStoredRowV1 {
+                ordinal: u32::try_from(ordinal).expect("two-row fixture ordinal fits u32"),
+                cluster_record_id: "cluster:a".to_string(),
+                authority_digest: "authority:a".to_string(),
+                member_symbol_id: member.as_str().to_string(),
+                member_count: 2,
+                membership_digest: digest.clone(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn cluster_membership_legacy_missing_and_corrupt_states_are_distinct_v1() {
+        let request = membership_request_v1();
+        assert!(matches!(
+            unavailable_or_rejected_membership_v1(
+                &LoadedClusterMembershipV1::LegacyUnavailable,
+                &request
+            ),
+            Some(ClusterMembershipReadOutcomeV1::Unavailable(_))
+        ));
+        assert!(matches!(
+            unavailable_or_rejected_membership_v1(
+                &LoadedClusterMembershipV1::CurrentMissing,
+                &request
+            ),
+            Some(ClusterMembershipReadOutcomeV1::Rejected(rejection))
+                if rejection.failure
+                    == ClusterMembershipReadFailureV1::CurrentGenerationMissing
+        ));
+        assert!(matches!(
+            unavailable_or_rejected_membership_v1(
+                &LoadedClusterMembershipV1::CurrentCorrupt,
+                &request
+            ),
+            Some(ClusterMembershipReadOutcomeV1::Rejected(rejection))
+                if rejection.failure == ClusterMembershipReadFailureV1::CorruptSidecar
+        ));
+    }
+
+    #[test]
+    fn cluster_membership_committed_count_and_digest_reject_row_loss_substitution_and_reorder_v1() {
+        let request = membership_request_v1();
+        assert_eq!(
+            validate_cluster_membership_rows_v1(membership_rows_v1(), &request)
+                .expect("valid committed rows"),
+            [SymbolId::new("symbol:a"), SymbolId::new("symbol:b")]
+        );
+
+        let mut trailing_row_deleted = membership_rows_v1();
+        let _deleted = trailing_row_deleted.pop();
+        assert_eq!(
+            validate_cluster_membership_rows_v1(trailing_row_deleted, &request),
+            Err(ClusterMembershipReadFailureV1::CorruptSidecar)
+        );
+
+        let mut same_count_substitution = membership_rows_v1();
+        same_count_substitution[1].member_symbol_id = "symbol:c".to_string();
+        assert_eq!(
+            validate_cluster_membership_rows_v1(same_count_substitution, &request),
+            Err(ClusterMembershipReadFailureV1::CorruptSidecar)
+        );
+
+        let mut reordered = membership_rows_v1();
+        reordered[0].ordinal = 1;
+        reordered[1].ordinal = 0;
+        assert_eq!(
+            validate_cluster_membership_rows_v1(reordered, &request),
+            Err(ClusterMembershipReadFailureV1::CorruptSidecar)
+        );
     }
 }

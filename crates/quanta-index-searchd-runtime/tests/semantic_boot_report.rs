@@ -42,7 +42,14 @@ fn socket_paths() -> (PathBuf, PathBuf, PathBuf) {
 fn fresh_runtime_exposes_empty_semantic_boot_report() -> TestResult {
     let temp = tempfile::tempdir()?;
     let (query_socket, control_socket, ingest_socket) = socket_paths();
-    let mut config = SearchdConfig::from_state_root(temp.path().to_path_buf());
+    let mut config = SearchdConfig::from_state_root(temp.path().to_path_buf())
+        .try_with_search_corpus_history_retention_limits(
+            8,
+            16 * 1024 * 1024,
+            128,
+            256 * 1024 * 1024,
+        )
+        .expect("valid test retention policy");
     config = SearchdConfig::with_socket_overrides(config, query_socket, control_socket);
     config = SearchdConfig::with_ingest_socket_override(config, ingest_socket);
 
@@ -116,6 +123,7 @@ fn fixture_batch(generation: ManifestGeneration) -> Result<SemanticIngestBatch, 
                 view_kind: "raw_chunk".to_string().into_boxed_str(),
                 vector: vec![1.0_f32, 0.0, 0.0],
             }],
+            cluster_memberships: Vec::new(),
         }],
         tombstone_scopes: Vec::new(),
         seal: true,
@@ -124,7 +132,14 @@ fn fixture_batch(generation: ManifestGeneration) -> Result<SemanticIngestBatch, 
 
 fn build_config(state_root: &Path) -> SearchdConfig {
     let (query_socket, control_socket, ingest_socket) = socket_paths();
-    let mut config = SearchdConfig::from_state_root(state_root.to_path_buf());
+    let mut config = SearchdConfig::from_state_root(state_root.to_path_buf())
+        .try_with_search_corpus_history_retention_limits(
+            8,
+            16 * 1024 * 1024,
+            128,
+            256 * 1024 * 1024,
+        )
+        .expect("valid test retention policy");
     config = SearchdConfig::with_socket_overrides(config, query_socket, control_socket);
     SearchdConfig::with_ingest_socket_override(config, ingest_socket)
 }

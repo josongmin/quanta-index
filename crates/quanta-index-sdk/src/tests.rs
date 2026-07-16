@@ -180,6 +180,55 @@ fn revision_id() -> RevisionId {
     RevisionId::new("rev-1")
 }
 
+fn sample_cluster_membership_request() -> quanta_index_contract::ClusterMembershipReadRequestV1 {
+    quanta_index_contract::ClusterMembershipReadRequestV1 {
+        cluster_record_id: "cluster-card:auth-service".to_string(),
+        generation: sample_generation_pin(),
+        expected_authority_digest: "cluster-authority-digest".to_string(),
+        limit: 2,
+    }
+}
+
+fn sample_cluster_membership_batch(
+    count: usize,
+) -> quanta_index_contract::ClusterMembershipBatchReadRequestV1 {
+    quanta_index_contract::ClusterMembershipBatchReadRequestV1 {
+        generation: sample_generation_pin(),
+        items: (0..count)
+            .map(
+                |index| quanta_index_contract::ClusterMembershipBatchReadItemV1 {
+                    cluster_record_id: format!("cluster-card:{index:02}"),
+                    expected_authority_digest: format!("authority:{index:02}"),
+                    limit: 1,
+                },
+            )
+            .collect(),
+    }
+}
+
+fn sample_cluster_membership_batch_response(
+    request: &quanta_index_contract::ClusterMembershipBatchReadRequestV1,
+) -> quanta_index_contract::ClusterMembershipBatchReadResponseV1 {
+    quanta_index_contract::ClusterMembershipBatchReadResponseV1 {
+        outcomes: request
+            .items
+            .iter()
+            .map(|item| {
+                quanta_index_contract::ClusterMembershipReadOutcomeV1::Available(
+                    quanta_index_contract::ClusterMembershipSnapshotV1 {
+                        cluster_record_id: item.cluster_record_id.clone(),
+                        generation: request.generation.clone(),
+                        authority_digest: item.expected_authority_digest.clone(),
+                        members: vec![SymbolId::new(format!("symbol:{}", item.cluster_record_id))],
+                        completeness:
+                            quanta_index_contract::ClusterMembershipCompletenessV1::Complete,
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
 fn search_corpus_identity(generation: u64, digest: &str) -> SearchCorpusGenerationIdentityV1 {
     SearchCorpusGenerationIdentityV1 {
         lexical: GenerationSnapshot {
@@ -333,6 +382,35 @@ fn sample_semantic_source(owner_id: &str) -> SemanticSourceRecordV1 {
         render_policy_digest: "render:v1".to_string(),
         card_schema_version: 1,
         text: format!("semantic source for {owner_id}"),
+    }
+}
+
+fn sample_cluster_semantic_scope(owner_id: &str) -> SemanticSourceScopeKeyV1 {
+    SemanticSourceScopeKeyV1 {
+        corpus_kind: SemanticCorpusKindV1::ClusterCard,
+        owner_kind: OwnerDocKind::Module,
+        owner_id: owner_id.to_string(),
+    }
+}
+
+fn sample_cluster_semantic_source(owner_id: &str, record_suffix: &str) -> SemanticSourceRecordV1 {
+    let mut source = sample_semantic_source(owner_id);
+    source.record_id = format!("cluster-record-{record_suffix}");
+    source.corpus_kind = SemanticCorpusKindV1::ClusterCard;
+    source.owner_kind = OwnerDocKind::Module;
+    source.authority_digest = format!("cluster-authority-{record_suffix}");
+    source.text = "rendered text mentions symbol:fake and is not membership authority".to_string();
+    source
+}
+
+fn sample_cluster_membership(
+    source: &SemanticSourceRecordV1,
+    member_suffix: &str,
+) -> quanta_index_contract::ClusterMembershipReplaceV1 {
+    quanta_index_contract::ClusterMembershipReplaceV1 {
+        cluster_record_id: source.record_id.clone(),
+        authority_digest: source.authority_digest.clone(),
+        members: vec![SymbolId::new(format!("symbol:member:{member_suffix}"))],
     }
 }
 
@@ -575,6 +653,247 @@ fn connect_options_from_state_root_resolve_default_sockets() {
         PathBuf::from("/tmp/qi-state/search-plane/ingest.sock"),
         "QI-SDK-01: ingest socket resolves to state_root/search-plane/ingest.sock"
     );
+}
+
+#[test]
+fn cluster_membership_read_routes_exact_request_and_validates_available_authority_v1() {
+    let request = sample_cluster_membership_request();
+    let snapshot = quanta_index_contract::ClusterMembershipSnapshotV1 {
+        cluster_record_id: request.cluster_record_id.clone(),
+        generation: request.generation.clone(),
+        authority_digest: request.expected_authority_digest.clone(),
+        members: vec![
+            SymbolId::new("symbol:auth::authenticate"),
+            SymbolId::new("symbol:auth::authorize"),
+        ],
+        completeness: quanta_index_contract::ClusterMembershipCompletenessV1::Complete,
+    };
+    let expected = quanta_index_contract::ClusterMembershipReadOutcomeV1::Available(snapshot);
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+            quanta_index_contract::ClusterMembershipBatchReadResponseV1 {
+                outcomes: vec![expected.clone()],
+            },
+        ),
+    ));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+
+    let observed = ok_or_fail!(client.search().cluster_membership_read_v1(request.clone()));
+    assert_eq!(observed, expected);
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    assert_eq!(
+        captured.payload,
+        quanta_index_contract::SearchPlaneQueryIpcRequest::ClusterMembershipRead(
+            quanta_index_contract::ClusterMembershipBatchReadRequestV1::single_v1(request),
+        )
+    );
+}
+
+#[test]
+fn cluster_membership_read_preserves_matching_typed_absence_and_rejection_v1() {
+    let request = sample_cluster_membership_request();
+    let outcomes = [
+        quanta_index_contract::ClusterMembershipReadOutcomeV1::Unavailable(
+            quanta_index_contract::ClusterMembershipUnavailableV1 {
+                cluster_record_id: request.cluster_record_id.clone(),
+                generation: request.generation.clone(),
+                expected_authority_digest: request.expected_authority_digest.clone(),
+            },
+        ),
+        quanta_index_contract::ClusterMembershipReadOutcomeV1::Rejected(
+            quanta_index_contract::ClusterMembershipReadRejectionV1 {
+                cluster_record_id: request.cluster_record_id.clone(),
+                generation: request.generation.clone(),
+                expected_authority_digest: request.expected_authority_digest.clone(),
+                failure:
+                    quanta_index_contract::ClusterMembershipReadFailureV1::CurrentGenerationMissing,
+            },
+        ),
+    ];
+
+    for expected in outcomes {
+        let query = Arc::new(StubQueryTransport::new(
+            SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+                quanta_index_contract::ClusterMembershipBatchReadResponseV1 {
+                    outcomes: vec![expected.clone()],
+                },
+            ),
+        ));
+        let client = QuantaIndex::from_transports(query, unused_control(), unused_ingest());
+        let observed = ok_or_fail!(client.search().cluster_membership_read_v1(request.clone()));
+        assert_eq!(observed, expected);
+    }
+}
+
+#[test]
+fn cluster_membership_read_rejects_stale_response_authority_v1() {
+    let request = sample_cluster_membership_request();
+    let stale = quanta_index_contract::ClusterMembershipReadOutcomeV1::Available(
+        quanta_index_contract::ClusterMembershipSnapshotV1 {
+            cluster_record_id: request.cluster_record_id.clone(),
+            generation: request.generation.clone(),
+            authority_digest: "stale-authority-digest".to_string(),
+            members: vec![SymbolId::new("symbol:auth::authenticate")],
+            completeness: quanta_index_contract::ClusterMembershipCompletenessV1::Complete,
+        },
+    );
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+            quanta_index_contract::ClusterMembershipBatchReadResponseV1 {
+                outcomes: vec![stale],
+            },
+        ),
+    ));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+
+    let error = match client.search().cluster_membership_read_v1(request) {
+        Ok(outcome) => panic!("stale membership authority unexpectedly admitted: {outcome:?}"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, crate::SdkError::Protocol(_)));
+    assert_eq!(
+        ok_or_fail!(query.requests.lock()).len(),
+        1,
+        "authority mismatch must be detected after one exact transport read"
+    );
+}
+
+#[test]
+fn cluster_membership_read_rejects_mismatched_absence_and_rejection_authority_v1() {
+    let request = sample_cluster_membership_request();
+    let mismatched_outcomes = [
+        quanta_index_contract::ClusterMembershipReadOutcomeV1::Unavailable(
+            quanta_index_contract::ClusterMembershipUnavailableV1 {
+                cluster_record_id: "cluster-card:other".to_string(),
+                generation: request.generation.clone(),
+                expected_authority_digest: request.expected_authority_digest.clone(),
+            },
+        ),
+        quanta_index_contract::ClusterMembershipReadOutcomeV1::Rejected(
+            quanta_index_contract::ClusterMembershipReadRejectionV1 {
+                cluster_record_id: request.cluster_record_id.clone(),
+                generation: request.generation.clone(),
+                expected_authority_digest: "stale-authority-digest".to_string(),
+                failure:
+                    quanta_index_contract::ClusterMembershipReadFailureV1::AuthorityDigestMismatch,
+            },
+        ),
+    ];
+
+    for mismatched in mismatched_outcomes {
+        let query = Arc::new(StubQueryTransport::new(
+            SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+                quanta_index_contract::ClusterMembershipBatchReadResponseV1 {
+                    outcomes: vec![mismatched],
+                },
+            ),
+        ));
+        let client = QuantaIndex::from_transports(query, unused_control(), unused_ingest());
+        let error = match client.search().cluster_membership_read_v1(request.clone()) {
+            Ok(outcome) => {
+                panic!("mismatched membership outcome authority unexpectedly admitted: {outcome:?}")
+            }
+            Err(error) => error,
+        };
+        assert!(matches!(error, crate::SdkError::Protocol(_)));
+    }
+}
+
+#[test]
+fn cluster_membership_read_rejects_invalid_request_before_transport_v1() {
+    let mut request = sample_cluster_membership_request();
+    request.limit = 0;
+    let query = unused_query();
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+
+    let error = match client.search().cluster_membership_read_v1(request) {
+        Ok(outcome) => panic!("invalid membership request unexpectedly admitted: {outcome:?}"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, crate::SdkError::Usage(_)));
+    assert!(
+        ok_or_fail!(query.requests.lock()).is_empty(),
+        "invalid request must not reach query transport"
+    );
+}
+
+#[test]
+fn cluster_membership_read_rejects_unrelated_query_response_v1() {
+    let request = sample_cluster_membership_request();
+    let query = unused_query();
+    let client = QuantaIndex::from_transports(query, unused_control(), unused_ingest());
+
+    let error = match client.search().cluster_membership_read_v1(request) {
+        Ok(outcome) => panic!("unrelated query response unexpectedly admitted: {outcome:?}"),
+        Err(error) => error,
+    };
+    let crate::SdkError::Protocol(message) = error else {
+        panic!("expected protocol error for unrelated response");
+    };
+    assert_eq!(
+        message,
+        "expected cluster membership read response, got text"
+    );
+}
+
+#[test]
+fn cluster_membership_batch_read_routes_fifteen_items_once_and_preserves_order_v1() {
+    let request = sample_cluster_membership_batch(15);
+    let expected = sample_cluster_membership_batch_response(&request);
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::ClusterMembershipRead(expected.clone()),
+    ));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+
+    let observed = ok_or_fail!(
+        client
+            .search()
+            .cluster_membership_batch_read_v1(request.clone())
+    );
+    assert_eq!(observed, expected);
+    let requests = ok_or_fail!(query.requests.lock());
+    assert_eq!(
+        requests.len(),
+        1,
+        "one logical batch must use one transport call"
+    );
+    assert_eq!(
+        requests[0].payload,
+        quanta_index_contract::SearchPlaneQueryIpcRequest::ClusterMembershipRead(request)
+    );
+}
+
+#[test]
+fn cluster_membership_batch_read_rejects_partial_reordered_and_stale_response_v1() {
+    let request = sample_cluster_membership_batch(3);
+    let valid = sample_cluster_membership_batch_response(&request);
+
+    let mut partial = valid.clone();
+    let _removed = partial.outcomes.pop();
+
+    let mut reordered = valid.clone();
+    reordered.outcomes.swap(0, 1);
+
+    let mut stale = valid;
+    let quanta_index_contract::ClusterMembershipReadOutcomeV1::Available(snapshot) =
+        &mut stale.outcomes[1]
+    else {
+        panic!("fixture must contain an available outcome")
+    };
+    snapshot.authority_digest.push_str(":stale");
+
+    for malformed in [partial, reordered, stale] {
+        let query = Arc::new(StubQueryTransport::new(
+            SearchPlaneQueryIpcResponse::ClusterMembershipRead(malformed),
+        ));
+        let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+        let error = client
+            .search()
+            .cluster_membership_batch_read_v1(request.clone())
+            .expect_err("malformed batch response must fail the whole SDK call");
+        assert!(matches!(error, crate::SdkError::Protocol(_)));
+        assert_eq!(ok_or_fail!(query.requests.lock()).len(), 1);
+    }
 }
 
 #[test]
@@ -1074,6 +1393,135 @@ fn search_corpus_builder_preserves_semantic_lifecycle_in_canonical_wire_order() 
     assert!(!unsealed.seal_requested());
     assert_eq!(unsealed.semantic_replace_scopes().len(), 2);
     assert_eq!(unsealed.semantic_tombstone_scopes().len(), 2);
+}
+
+#[test]
+fn search_corpus_builder_preserves_typed_cluster_membership_without_text_inference_v1() {
+    let receipt = BatchPublishReceipt {
+        generation: ManifestGeneration::new(1),
+        manifest_digest: "manifest:cluster".to_string(),
+        accepted_clear_surfaces: 0,
+        accepted_replace_scopes: 0,
+        accepted_tombstone_scopes: 0,
+        sealed: true,
+    };
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+    let source_a = sample_cluster_semantic_source("auth-service", "a");
+    let source_b = sample_cluster_semantic_source("auth-service", "b");
+    let membership_a = sample_cluster_membership(&source_a, "a");
+    let membership_b = sample_cluster_membership(&source_b, "b");
+    let batch = SearchCorpusBatch::replace_generation(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(1),
+        "manifest:cluster",
+        "batch:cluster",
+    )
+    .replace_semantic_scope_with_cluster_memberships_v1(
+        sample_cluster_semantic_scope("auth-service"),
+        "scope:cluster",
+        vec![source_b, source_a],
+        vec![membership_b, membership_a.clone()],
+    );
+
+    let _receipt = ok_or_fail!(client.search_corpus().publish(&batch));
+    let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
+    let SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(wire) = captured.payload else {
+        panic!("expected search corpus wire batch");
+    };
+    let Some(scope) = wire.semantic_replace_scopes.first() else {
+        panic!("expected one semantic replace scope");
+    };
+    assert_eq!(scope.cluster_memberships.len(), 2);
+    assert_eq!(scope.cluster_memberships.first(), Some(&membership_a));
+    assert!(
+        scope
+            .cluster_memberships
+            .iter()
+            .flat_map(|membership| membership.members.iter())
+            .all(|member| member.as_str() != "symbol:fake"),
+        "rendered source text must never synthesize structured membership"
+    );
+}
+
+#[test]
+fn search_corpus_builder_rejects_missing_mismatched_or_misplaced_cluster_membership_v1() {
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt::default()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+    let cluster_source = sample_cluster_semantic_source("auth-service", "a");
+
+    let missing = SearchCorpusBatch::replace_generation(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(1),
+        "manifest:cluster-missing",
+        "batch:cluster-missing",
+    )
+    .replace_semantic_scope(
+        sample_cluster_semantic_scope("auth-service"),
+        "scope:cluster-missing",
+        vec![cluster_source.clone()],
+    );
+    let error = client
+        .search_corpus()
+        .publish(&missing)
+        .expect_err("ClusterCard without typed membership must fail closed");
+    assert!(error.to_string().contains("requires one typed membership"));
+
+    let mut stale_membership = sample_cluster_membership(&cluster_source, "a");
+    stale_membership.authority_digest = "stale-authority".to_string();
+    let mismatched = SearchCorpusBatch::replace_generation(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(1),
+        "manifest:cluster-mismatch",
+        "batch:cluster-mismatch",
+    )
+    .replace_semantic_scope_with_cluster_memberships_v1(
+        sample_cluster_semantic_scope("auth-service"),
+        "scope:cluster-mismatch",
+        vec![cluster_source],
+        vec![stale_membership],
+    );
+    let error = client
+        .search_corpus()
+        .publish(&mismatched)
+        .expect_err("stale typed membership authority must fail closed");
+    assert!(error.to_string().contains("digest does not match"));
+
+    let symbol_source = sample_semantic_source("symbol-a");
+    let misplaced = SearchCorpusBatch::replace_generation(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(1),
+        "manifest:membership-misplaced",
+        "batch:membership-misplaced",
+    )
+    .replace_semantic_scope_with_cluster_memberships_v1(
+        sample_semantic_scope("symbol-a"),
+        "scope:membership-misplaced",
+        vec![symbol_source.clone()],
+        vec![sample_cluster_membership(&symbol_source, "misplaced")],
+    );
+    let error = client
+        .search_corpus()
+        .publish(&misplaced)
+        .expect_err("non-ClusterCard scope with typed membership must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("must not carry cluster membership")
+    );
+
+    assert!(
+        ok_or_fail!(ingest.requests.lock()).is_empty(),
+        "invalid cluster membership authority must be rejected before transport"
+    );
 }
 
 #[test]

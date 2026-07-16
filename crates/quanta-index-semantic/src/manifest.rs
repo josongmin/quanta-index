@@ -29,8 +29,11 @@ use crate::generation_contract::GenerationContract;
 
 /// Current manifest format version. Bumped on any durable shape change.
 ///
-/// `4` = v4 semantic corpus coverage + storage metadata.
-pub(crate) const FORMAT_VERSION: u32 = 4;
+/// `5` = v4 semantic corpus coverage plus structured ClusterCard membership.
+pub(crate) const FORMAT_VERSION: u32 = 5;
+
+/// Legacy semantic-corpus manifest without structured membership capability.
+pub(crate) const LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION: u32 = 4;
 
 /// Legacy manifest format with build-contract sidecar but without v4 corpus
 /// coverage fields.
@@ -234,11 +237,12 @@ impl SemanticManifest {
         generation: ManifestGeneration,
     ) -> Result<(), CoreError> {
         if self.format_version != FORMAT_VERSION
+            && self.format_version != LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION
             && self.format_version != LEGACY_BUILD_CONTRACT_FORMAT_VERSION
             && self.format_version != LEGACY_LANCEDB_FORMAT_VERSION
         {
             return Err(CoreError::Storage(format!(
-                "semantic: manifest format version {} unsupported (expected {FORMAT_VERSION}, legacy {LEGACY_BUILD_CONTRACT_FORMAT_VERSION}, or legacy {LEGACY_LANCEDB_FORMAT_VERSION})",
+                "semantic: manifest format version {} unsupported (expected {FORMAT_VERSION}, legacy {LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION}, {LEGACY_BUILD_CONTRACT_FORMAT_VERSION}, or {LEGACY_LANCEDB_FORMAT_VERSION})",
                 self.format_version,
             )));
         }

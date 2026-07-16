@@ -869,6 +869,7 @@ fn search_scoped_restricts_to_allowlist() -> TestResult {
                 embedding_record("emb-1", "x.rs", vec![1.0, 0.0, 0.0])?,
                 embedding_record("emb-2", "x.rs", vec![0.9, 0.1, 0.0])?,
             ],
+            cluster_memberships: Vec::new(),
         }],
         tombstone_scopes: Vec::new(),
         seal: true,
@@ -978,6 +979,7 @@ fn delta_with_missing_base_fails_closed() -> TestResult {
             scope: scope("x.rs"),
             scope_digest: "scope:x".to_string(),
             embeddings: vec![embedding_record("emb-1", "x.rs", vec![1.0, 0.0, 0.0])?],
+            cluster_memberships: Vec::new(),
         }],
         tombstone_scopes: Vec::new(),
         seal: true,
@@ -1120,6 +1122,7 @@ fn reused_unsealed_generation_with_different_base_fails_closed() -> TestResult {
                 "delta.rs",
                 vec![1.0, 0.0, 0.0],
             )?],
+            cluster_memberships: Vec::new(),
         }],
         tombstone_scopes: Vec::new(),
         seal: false,
@@ -1146,6 +1149,7 @@ fn reused_unsealed_generation_with_different_base_fails_closed() -> TestResult {
                 "delta.rs",
                 vec![0.0, 1.0, 0.0],
             )?],
+            cluster_memberships: Vec::new(),
         }],
         tombstone_scopes: Vec::new(),
         seal: false,
@@ -1354,6 +1358,7 @@ fn ivf_hnsw_sq_index_built_at_seal_serves_vector_search() -> TestResult {
             scope: scope("p/0.rs"),
             scope_digest: "scope:p".to_string(),
             embeddings,
+            cluster_memberships: Vec::new(),
         }],
         tombstone_scopes: Vec::new(),
         seal: true,
@@ -1458,6 +1463,7 @@ fn delta_with_unsealed_base_fails_closed() -> TestResult {
             scope: scope("b.rs"),
             scope_digest: "scope:b".to_string(),
             embeddings: vec![embedding_record("emb-2", "b.rs", vec![0.0, 1.0, 0.0])?],
+            cluster_memberships: Vec::new(),
         }],
         tombstone_scopes: Vec::new(),
         seal: true,
@@ -1538,6 +1544,7 @@ fn validate_before_delete_preserves_prior_unsealed_rows() -> TestResult {
             record.vector = vec![1.0, 0.0];
             record
         }],
+        cluster_memberships: Vec::new(),
     });
 
     let Err(err) = adapter.build_batch(&batch2) else {

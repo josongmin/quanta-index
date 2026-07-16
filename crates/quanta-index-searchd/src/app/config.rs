@@ -7,6 +7,7 @@ use quanta_index_embed::{
     DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT, OpenAiProviderConfig,
 };
 use quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_DIMENSION;
+use quanta_index_search_plane::readiness::SearchCorpusHistoryRetentionPolicyV1;
 
 /// Default `OpenAI` embedding model and dimension when the `openai` profile is
 /// selected without explicit overrides.
@@ -135,6 +136,7 @@ pub struct SearchdConfig {
     /// direct authority path.
     ingest_socket_path: PathBuf,
     semantic_embedder_profile: SemanticEmbedderProfile,
+    search_corpus_history_retention_policy: Option<SearchCorpusHistoryRetentionPolicyV1>,
 }
 
 impl SearchdConfig {
@@ -147,12 +149,17 @@ impl SearchdConfig {
             control_socket_path: socket_dir.join("control.sock"),
             ingest_socket_path: socket_dir.join("ingest.sock"),
             semantic_embedder_profile: SemanticEmbedderProfile::default(),
+            search_corpus_history_retention_policy: None,
         }
     }
 
     pub fn from_env() -> Result<Self> {
-        let base = Self::from_state_root(Self::resolve_state_root_from_env()?);
-        Ok(base.with_semantic_embedder_profile(semantic_embedder_profile_from_env()?))
+        let retention = search_corpus_history_retention_policy_from_env()?;
+        let base = Self::from_state_root(Self::resolve_state_root_from_env()?)
+            .with_search_corpus_history_retention_policy_v1(retention)
+            .with_semantic_embedder_profile(semantic_embedder_profile_from_env()?);
+        let _validated = base.search_corpus_history_retention_policy()?;
+        Ok(base)
     }
 
     fn resolve_state_root_from_env() -> Result<PathBuf> {
@@ -198,6 +205,17 @@ impl SearchdConfig {
         &self.semantic_embedder_profile
     }
 
+    pub fn search_corpus_history_retention_policy(
+        &self,
+    ) -> Result<SearchCorpusHistoryRetentionPolicyV1> {
+        let Some(policy) = self.search_corpus_history_retention_policy else {
+            return Err(anyhow::anyhow!(
+                "search-corpus history retention policy is required; configure max_generations, max_bytes, max_revision_pairs, and max_total_bytes"
+            ));
+        };
+        Ok(policy)
+    }
+
     #[must_use]
     pub fn socket_path(&self) -> &Path {
         self.query_socket_path()
@@ -229,9 +247,98 @@ impl SearchdConfig {
     }
 
     #[must_use]
+    pub fn try_with_search_corpus_history_retention_limits(
+        mut self,
+        max_generations: usize,
+        max_bytes: u64,
+        max_revision_pairs: usize,
+        max_total_bytes: u64,
+    ) -> Result<Self> {
+        self.search_corpus_history_retention_policy = Some(
+            SearchCorpusHistoryRetentionPolicyV1::new(
+                max_generations,
+                max_bytes,
+                max_revision_pairs,
+                max_total_bytes,
+            )
+            .map_err(anyhow::Error::from)?,
+        );
+        Ok(self)
+    }
+
+    #[must_use]
+    pub(crate) fn with_search_corpus_history_retention_policy_v1(
+        mut self,
+        policy: SearchCorpusHistoryRetentionPolicyV1,
+    ) -> Self {
+        self.search_corpus_history_retention_policy = Some(policy);
+        self
+    }
+
+    #[must_use]
     pub fn with_provider_unavailable_query_text_embedder(self) -> Self {
         self.with_semantic_embedder_profile(SemanticEmbedderProfile::Unavailable)
     }
+}
+
+pub(crate) fn search_corpus_history_retention_policy_from_env()
+-> Result<SearchCorpusHistoryRetentionPolicyV1> {
+    search_corpus_history_retention_policy_from_lookup_v1(|name| std::env::var(name).ok())
+}
+
+fn search_corpus_history_retention_policy_from_lookup_v1<F>(
+    lookup: F,
+) -> Result<SearchCorpusHistoryRetentionPolicyV1>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let max_generations = required_positive_raw_usize(
+        "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS",
+        lookup("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS"),
+    )?;
+    let max_bytes = required_positive_raw_u64(
+        "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES",
+        lookup("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES"),
+    )?;
+    let max_revision_pairs = required_positive_raw_usize(
+        "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS",
+        lookup("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS"),
+    )?;
+    let max_total_bytes = required_positive_raw_u64(
+        "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES",
+        lookup("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES"),
+    )?;
+    SearchCorpusHistoryRetentionPolicyV1::new(
+        max_generations,
+        max_bytes,
+        max_revision_pairs,
+        max_total_bytes,
+    )
+    .map_err(anyhow::Error::from)
+}
+
+fn required_positive_raw_usize(name: &str, raw: Option<String>) -> Result<usize> {
+    let raw = raw.ok_or_else(|| anyhow::anyhow!("{name} is required"))?;
+    let value = raw
+        .trim()
+        .parse::<usize>()
+        .map_err(|error| anyhow::anyhow!("invalid {name} `{raw}`: {error}"))?;
+    if value == 0 {
+        return Err(anyhow::anyhow!("{name} must be non-zero"));
+    }
+    Ok(value)
+}
+
+fn required_positive_raw_u64(name: &str, raw: Option<String>) -> Result<u64> {
+    let raw = raw.ok_or_else(|| anyhow::anyhow!("{name} is required"))?;
+    let value = raw
+        .trim()
+        .parse::<u64>()
+        .map_err(|error| anyhow::anyhow!("invalid {name} `{raw}`: {error}"))?;
+    if value == 0 {
+        return Err(anyhow::anyhow!("{name} must be non-zero"));
+    }
+    Ok(value)
 }
 
 /// Resolve the semantic embedder profile from env. Defaults to the deterministic
@@ -449,6 +556,76 @@ mod tests {
             config.semantic_embedder_profile(),
             &SemanticEmbedderProfile::Unavailable
         );
+    }
+
+    #[test]
+    fn search_corpus_history_retention_is_required_and_validated() {
+        let missing = SearchdConfig::from_state_root(PathBuf::from("/tmp/quanta-index-cfg-test"));
+        assert!(missing.search_corpus_history_retention_policy().is_err());
+
+        let too_small = SearchdConfig::from_state_root(PathBuf::from("/tmp/quanta-index-cfg-test"))
+            .try_with_search_corpus_history_retention_limits(1, 1024, 8, 8192);
+        assert!(too_small.is_err());
+
+        let configured =
+            SearchdConfig::from_state_root(PathBuf::from("/tmp/quanta-index-cfg-test"))
+                .try_with_search_corpus_history_retention_limits(3, 4096, 17, 65_536)
+                .expect("valid explicit retention limits");
+        let policy = configured
+            .search_corpus_history_retention_policy()
+            .expect("valid explicit retention policy");
+        assert_eq!(policy.max_generations(), 3);
+        assert_eq!(policy.max_bytes(), 4096);
+        assert_eq!(policy.max_revision_pairs(), 17);
+        assert_eq!(policy.max_total_bytes(), 65_536);
+    }
+
+    #[test]
+    fn search_corpus_history_retention_env_binding_requires_all_four_knobs() {
+        const NAMES: [&str; 4] = [
+            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS",
+            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES",
+            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS",
+            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES",
+        ];
+        for missing in NAMES {
+            let result = search_corpus_history_retention_policy_from_lookup_v1(|name| {
+                if name == missing {
+                    None
+                } else {
+                    Some(
+                        match name {
+                            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS" => "3",
+                            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES" => "4096",
+                            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS" => "17",
+                            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES" => "65536",
+                            _ => return None,
+                        }
+                        .to_string(),
+                    )
+                }
+            });
+            let error = result.expect_err("missing required retention knob must fail closed");
+            assert!(error.to_string().contains(missing));
+        }
+
+        let policy = search_corpus_history_retention_policy_from_lookup_v1(|name| {
+            Some(
+                match name {
+                    "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS" => "3",
+                    "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES" => "4096",
+                    "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS" => "17",
+                    "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES" => "65536",
+                    _ => return None,
+                }
+                .to_string(),
+            )
+        })
+        .expect("all required retention env bindings");
+        assert_eq!(policy.max_generations(), 3);
+        assert_eq!(policy.max_bytes(), 4096);
+        assert_eq!(policy.max_revision_pairs(), 17);
+        assert_eq!(policy.max_total_bytes(), 65_536);
     }
 
     #[test]

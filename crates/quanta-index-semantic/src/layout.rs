@@ -39,7 +39,17 @@ pub(crate) const MARKER_SEALED_FILE_NAME: &str = "MARKER_SEALED";
 
 /// Lancedb table name for the semantic dataset.
 pub(crate) const TABLE_NAME: &str = "semantic";
-pub(crate) const PHYSICAL_LAYOUT_VERSION: u32 = 4;
+pub(crate) const CLUSTER_MEMBERSHIP_TABLE_NAME: &str = "cluster_membership";
+pub(crate) const PHYSICAL_LAYOUT_VERSION: u32 = 5;
+
+pub(crate) const COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID: &str = "cluster_record_id";
+pub(crate) const COLUMN_MEMBERSHIP_AUTHORITY_DIGEST: &str = "authority_digest";
+pub(crate) const COLUMN_MEMBERSHIP_OWNER_KIND: &str = "owner_kind";
+pub(crate) const COLUMN_MEMBERSHIP_OWNER_ID: &str = "owner_id";
+pub(crate) const COLUMN_MEMBERSHIP_MEMBER_SYMBOL_ID: &str = "member_symbol_id";
+pub(crate) const COLUMN_MEMBERSHIP_ORDINAL: &str = "ordinal";
+pub(crate) const COLUMN_MEMBERSHIP_MEMBER_COUNT: &str = "member_count";
+pub(crate) const COLUMN_MEMBERSHIP_CONTENT_DIGEST: &str = "membership_content_digest";
 
 // Column names for the semantic table. This is the single source of truth for
 // the physical schema shared by the build path (schema + record batch) and the
@@ -125,6 +135,19 @@ pub(crate) fn semantic_schema(dimension: i32) -> SchemaRef {
     ]))
 }
 
+pub(crate) fn cluster_membership_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new(COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID, DataType::Utf8, false),
+        Field::new(COLUMN_MEMBERSHIP_AUTHORITY_DIGEST, DataType::Utf8, false),
+        Field::new(COLUMN_MEMBERSHIP_OWNER_KIND, DataType::Utf8, false),
+        Field::new(COLUMN_MEMBERSHIP_OWNER_ID, DataType::Utf8, false),
+        Field::new(COLUMN_MEMBERSHIP_MEMBER_SYMBOL_ID, DataType::Utf8, false),
+        Field::new(COLUMN_MEMBERSHIP_ORDINAL, DataType::UInt32, false),
+        Field::new(COLUMN_MEMBERSHIP_MEMBER_COUNT, DataType::UInt32, false),
+        Field::new(COLUMN_MEMBERSHIP_CONTENT_DIGEST, DataType::Utf8, false),
+    ]))
+}
+
 pub(crate) fn semantic_schema_for_manifest_version(
     format_version: u32,
     dimension: i32,
@@ -133,6 +156,7 @@ pub(crate) fn semantic_schema_for_manifest_version(
         PHYSICAL_LAYOUT_VERSION if PHYSICAL_LAYOUT_VERSION == FORMAT_VERSION => {
             Ok(semantic_schema(dimension))
         }
+        crate::manifest::LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION => Ok(semantic_schema(dimension)),
         LEGACY_BUILD_CONTRACT_FORMAT_VERSION | LEGACY_LANCEDB_FORMAT_VERSION => {
             Ok(semantic_schema_v3(dimension))
         }

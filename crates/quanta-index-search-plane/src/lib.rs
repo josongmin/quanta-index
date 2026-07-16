@@ -15,6 +15,7 @@ mod lowering;
 mod query_dispatcher;
 mod query_embedder;
 pub mod readiness;
+mod search_corpus_retention;
 mod semantic_derive;
 
 pub use control_dispatcher::SearchPlaneControlDispatcher;

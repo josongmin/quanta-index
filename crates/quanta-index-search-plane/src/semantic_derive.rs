@@ -76,6 +76,7 @@ struct ValidatedSemanticSourceScope<'a> {
     scope_digest: String,
     semantic_scope: quanta_index_contract::SemanticSourceScopeKeyV1,
     records: Vec<&'a SemanticSourceRecordV1>,
+    cluster_memberships: Vec<quanta_index_contract::ClusterMembershipReplaceV1>,
 }
 
 fn embedding_model_contract_for(
@@ -185,6 +186,7 @@ pub(crate) fn derive_semantic_batch_from_search_corpus_batch(
                 scope: scope.scope.clone(),
                 scope_digest: scope.scope_digest.clone(),
                 embeddings,
+                cluster_memberships: Vec::new(),
             })
         })
         .collect::<Result<Vec<_>, CoreError>>()?;
@@ -313,6 +315,7 @@ pub(crate) fn derive_semantic_batch_from_semantic_sources_v1(
                 scope: scope.scope,
                 scope_digest: scope.scope_digest,
                 embeddings,
+                cluster_memberships: scope.cluster_memberships,
             })
         })
         .collect::<Result<Vec<_>, CoreError>>()?;
@@ -606,11 +609,63 @@ fn validated_semantic_source_scopes_v1(
                     )));
                 }
             }
+            let mut cluster_record_ids = BTreeSet::new();
+            for membership in &scope.cluster_memberships {
+                membership.validate_v1().map_err(|message| {
+                    CoreError::InvalidContract(format!(
+                        "semantic derivation: invalid cluster membership {}: {message}",
+                        membership.cluster_record_id
+                    ))
+                })?;
+                if !cluster_record_ids.insert(membership.cluster_record_id.as_str()) {
+                    return Err(CoreError::InvalidContract(format!(
+                        "semantic derivation: duplicate cluster membership record_id {:?}",
+                        membership.cluster_record_id
+                    )));
+                }
+                let source = records
+                    .iter()
+                    .find(|record| record.record_id == membership.cluster_record_id)
+                    .ok_or_else(|| {
+                        CoreError::InvalidContract(format!(
+                            "semantic derivation: cluster membership {:?} has no source record in the same replace scope",
+                            membership.cluster_record_id
+                        ))
+                    })?;
+                if source.authority_digest != membership.authority_digest {
+                    return Err(CoreError::InvalidContract(format!(
+                        "semantic derivation: cluster membership {:?} authority digest does not match its source record",
+                        membership.cluster_record_id
+                    )));
+                }
+            }
+            let cluster_source_count = records
+                .iter()
+                .filter(|record| record.corpus_kind == SemanticCorpusKindV1::ClusterCard)
+                .count();
+            if cluster_source_count != scope.cluster_memberships.len() {
+                return Err(CoreError::InvalidContract(format!(
+                    "semantic derivation: ClusterCard replace scope {:?} must carry one structured membership per source; sources={cluster_source_count} memberships={}",
+                    scope.scope.owner_id,
+                    scope.cluster_memberships.len()
+                )));
+            }
+            if !scope
+                .cluster_memberships
+                .windows(2)
+                .all(|pair| pair[0].cluster_record_id < pair[1].cluster_record_id)
+            {
+                return Err(CoreError::InvalidContract(format!(
+                    "semantic derivation: cluster memberships for scope {:?} must use canonical cluster_record_id order",
+                    scope.scope.owner_id
+                )));
+            }
             Ok(ValidatedSemanticSourceScope {
                 scope: scope_key,
                 scope_digest: scope.scope_digest.clone(),
                 semantic_scope: scope.scope.clone(),
                 records,
+                cluster_memberships: scope.cluster_memberships.clone(),
             })
         })
         .collect()
@@ -864,6 +919,7 @@ mod tests {
                 },
                 scope_digest: "scope:semantic".to_string(),
                 sources: vec![fixture_semantic_source()],
+                cluster_memberships: Vec::new(),
             }],
             semantic_tombstone_scopes: Vec::new(),
             seal: true,

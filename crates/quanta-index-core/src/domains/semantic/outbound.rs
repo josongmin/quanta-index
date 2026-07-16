@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 
 use quanta_index_contract::{
-    BatchPublishReceipt, LexicalCandidate, ManifestGeneration, OwnerDocKind, QueryConstraintSetV1,
-    RepoId, RevisionId, SemanticCorpusKindV1, SemanticIngestBatch,
+    BatchPublishReceipt, ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
+    LexicalCandidate, ManifestGeneration, OwnerDocKind, QueryConstraintSetV1, RepoId, RevisionId,
+    SemanticCorpusKindV1, SemanticIngestBatch,
 };
 
 use crate::error::CoreError;
@@ -69,9 +70,17 @@ pub struct SemanticSearchHitV1 {
     pub owner_id: String,
     pub owner_kind: OwnerDocKind,
     pub corpus_kind: Option<SemanticCorpusKindV1>,
+    pub authority_digest: String,
 }
 
 pub trait SemanticSearcher: Send + Sync {
+    /// Read a bounded set of structured ClusterCard memberships from this
+    /// exact sealed generation through one storage operation.
+    fn cluster_membership_batch_read(
+        &self,
+        request: &ClusterMembershipBatchReadRequestV1,
+    ) -> Result<ClusterMembershipBatchReadResponseV1, CoreError>;
+
     /// Embed the query externally and pass the dense vector to the searcher.
     /// Returning candidates as `LexicalCandidate` keeps the result shape uniform
     /// for the hybrid orchestrator's RRF fusion (`candidate_id`, score, snippet).

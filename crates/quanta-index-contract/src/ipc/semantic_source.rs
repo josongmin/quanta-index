@@ -1,12 +1,14 @@
 use core::fmt;
+use core::fmt::Write as _;
 
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::{self, MapAccess, Visitor},
     ser::SerializeStruct,
 };
+use sha2::{Digest as _, Sha256};
 
-use crate::{OwnerDocKind, RepoRelativePath};
+use crate::{MAX_CLUSTER_MEMBERSHIP_READ_V1, OwnerDocKind, RepoRelativePath, SymbolId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum SemanticCorpusKindV1 {
@@ -757,23 +759,169 @@ impl<'de> Deserialize<'de> for SemanticSourceRecordV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClusterMembershipReplaceV1 {
+    pub cluster_record_id: String,
+    pub authority_digest: String,
+    pub members: Vec<SymbolId>,
+}
+
+impl ClusterMembershipReplaceV1 {
+    pub fn validate_v1(&self) -> Result<(), &'static str> {
+        if self.cluster_record_id.is_empty() {
+            return Err("cluster membership cluster_record_id must not be empty");
+        }
+        if self.authority_digest.is_empty() {
+            return Err("cluster membership authority_digest must not be empty");
+        }
+        if self.members.is_empty() {
+            return Err("cluster membership members must not be empty");
+        }
+        if self.members.len() > MAX_CLUSTER_MEMBERSHIP_READ_V1 as usize {
+            return Err("cluster membership members exceed the bounded cardinality");
+        }
+        if self.members.iter().any(|member| member.as_str().is_empty()) {
+            return Err("cluster membership member identity must not be empty");
+        }
+        for pair in self.members.windows(2) {
+            if pair[0] == pair[1] {
+                return Err("cluster membership member identities must be duplicate-free");
+            }
+            if pair[0] > pair[1] {
+                return Err("cluster membership member identities must use canonical order");
+            }
+        }
+        Ok(())
+    }
+}
+
+#[must_use]
+pub fn cluster_membership_content_digest_v1(members: &[SymbolId]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"quanta-index:cluster-membership-content:v1\0");
+    for member in members {
+        let bytes = member.as_str().as_bytes();
+        hasher.update(bytes.len().to_string().as_bytes());
+        hasher.update([0]);
+        hasher.update(bytes);
+    }
+    let digest = hasher.finalize();
+    let mut encoded = String::with_capacity("sha256:".len() + digest.len() * 2);
+    encoded.push_str("sha256:");
+    for byte in digest {
+        let _written = write!(&mut encoded, "{byte:02x}");
+    }
+    encoded
+}
+
+const CLUSTER_MEMBERSHIP_REPLACE_V1_FIELDS: &[&str] =
+    &["cluster_record_id", "authority_digest", "members"];
+
+impl Serialize for ClusterMembershipReplaceV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.validate_v1().map_err(serde::ser::Error::custom)?;
+        let mut state = serializer.serialize_struct("ClusterMembershipReplaceV1", 3)?;
+        state.serialize_field("cluster_record_id", &self.cluster_record_id)?;
+        state.serialize_field("authority_digest", &self.authority_digest)?;
+        state.serialize_field("members", &self.members)?;
+        state.end()
+    }
+}
+
+struct ClusterMembershipReplaceV1Visitor;
+
+impl<'de> Visitor<'de> for ClusterMembershipReplaceV1Visitor {
+    type Value = ClusterMembershipReplaceV1;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a ClusterMembershipReplaceV1 map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut cluster_record_id = None;
+        let mut authority_digest = None;
+        let mut members = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "cluster_record_id" => {
+                    if cluster_record_id.is_some() {
+                        return Err(de::Error::duplicate_field("cluster_record_id"));
+                    }
+                    cluster_record_id = Some(map.next_value()?);
+                }
+                "authority_digest" => {
+                    if authority_digest.is_some() {
+                        return Err(de::Error::duplicate_field("authority_digest"));
+                    }
+                    authority_digest = Some(map.next_value()?);
+                }
+                "members" => {
+                    if members.is_some() {
+                        return Err(de::Error::duplicate_field("members"));
+                    }
+                    members = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        CLUSTER_MEMBERSHIP_REPLACE_V1_FIELDS,
+                    ));
+                }
+            }
+        }
+        let replacement = ClusterMembershipReplaceV1 {
+            cluster_record_id: cluster_record_id
+                .ok_or_else(|| de::Error::missing_field("cluster_record_id"))?,
+            authority_digest: authority_digest
+                .ok_or_else(|| de::Error::missing_field("authority_digest"))?,
+            members: members.ok_or_else(|| de::Error::missing_field("members"))?,
+        };
+        replacement.validate_v1().map_err(de::Error::custom)?;
+        Ok(replacement)
+    }
+}
+
+impl<'de> Deserialize<'de> for ClusterMembershipReplaceV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "ClusterMembershipReplaceV1",
+            CLUSTER_MEMBERSHIP_REPLACE_V1_FIELDS,
+            ClusterMembershipReplaceV1Visitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SemanticSourceReplaceScopeV1 {
     pub scope: SemanticSourceScopeKeyV1,
     pub scope_digest: String,
     pub sources: Vec<SemanticSourceRecordV1>,
+    /// Structured ClusterCard membership sealed with this semantic scope.
+    /// This is authority data, never a rendered-card parser input.
+    pub cluster_memberships: Vec<ClusterMembershipReplaceV1>,
 }
 
-const SEMANTIC_SOURCE_REPLACE_SCOPE_V1_FIELDS: &[&str] = &["scope", "scope_digest", "sources"];
+const SEMANTIC_SOURCE_REPLACE_SCOPE_V1_FIELDS: &[&str] =
+    &["scope", "scope_digest", "sources", "cluster_memberships"];
 
 impl Serialize for SemanticSourceReplaceScopeV1 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SemanticSourceReplaceScopeV1", 3)?;
+        let mut state = serializer.serialize_struct("SemanticSourceReplaceScopeV1", 4)?;
         state.serialize_field("scope", &self.scope)?;
         state.serialize_field("scope_digest", &self.scope_digest)?;
         state.serialize_field("sources", &self.sources)?;
+        state.serialize_field("cluster_memberships", &self.cluster_memberships)?;
         state.end()
     }
 }
@@ -794,6 +942,7 @@ impl<'de> Visitor<'de> for SemanticSourceReplaceScopeV1Visitor {
         let mut scope: Option<SemanticSourceScopeKeyV1> = None;
         let mut scope_digest: Option<String> = None;
         let mut sources: Option<Vec<SemanticSourceRecordV1>> = None;
+        let mut cluster_memberships: Option<Vec<ClusterMembershipReplaceV1>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "scope" => {
@@ -814,6 +963,12 @@ impl<'de> Visitor<'de> for SemanticSourceReplaceScopeV1Visitor {
                     }
                     sources = Some(map.next_value()?);
                 }
+                "cluster_memberships" => {
+                    if cluster_memberships.is_some() {
+                        return Err(de::Error::duplicate_field("cluster_memberships"));
+                    }
+                    cluster_memberships = Some(map.next_value()?);
+                }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -826,6 +981,10 @@ impl<'de> Visitor<'de> for SemanticSourceReplaceScopeV1Visitor {
             scope: scope.ok_or_else(|| de::Error::missing_field("scope"))?,
             scope_digest: scope_digest.ok_or_else(|| de::Error::missing_field("scope_digest"))?,
             sources: sources.ok_or_else(|| de::Error::missing_field("sources"))?,
+            // Bounded legacy wire compatibility: prior semantic-source batches
+            // did not carry structured membership. Current-format builders
+            // still reject a ClusterCard replacement without this authority.
+            cluster_memberships: cluster_memberships.unwrap_or_default(),
         })
     }
 }

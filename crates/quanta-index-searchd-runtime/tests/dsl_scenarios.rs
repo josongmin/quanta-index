@@ -140,7 +140,14 @@ fn unique_socket_paths() -> (PathBuf, PathBuf, PathBuf) {
 }
 
 fn build_config(state_root: &Path) -> SearchdConfig {
-    let mut cfg = SearchdConfig::from_state_root(state_root.to_path_buf());
+    let mut cfg = SearchdConfig::from_state_root(state_root.to_path_buf())
+        .try_with_search_corpus_history_retention_limits(
+            8,
+            16 * 1024 * 1024,
+            128,
+            256 * 1024 * 1024,
+        )
+        .expect("valid test retention policy");
     let (query_socket, control_socket, ingest_socket) = unique_socket_paths();
     cfg = SearchdConfig::with_socket_overrides(cfg, query_socket, control_socket);
     SearchdConfig::with_ingest_socket_override(cfg, ingest_socket)

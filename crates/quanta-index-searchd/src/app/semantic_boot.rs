@@ -247,6 +247,7 @@ mod tests {
                 },
                 scope_digest: format!("scope:{path}"),
                 embeddings: vec![embedding(id, path, vector)?],
+                cluster_memberships: Vec::new(),
             }],
             Vec::new(),
             seal,

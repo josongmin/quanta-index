@@ -34,7 +34,10 @@ use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::readiness::{SEARCH_CORPUS_LOCK_STRIPES_V1, search_corpus_lock_stripe_v1};
+use crate::readiness::{
+    SEARCH_CORPUS_LOCK_STRIPES_V1, SearchCorpusHistoryRetentionReceiptV1,
+    search_corpus_lock_stripe_v1,
+};
 use crate::semantic_derive::{
     DEFAULT_SEMANTIC_DERIVATION_MODE_V1, SemanticDerivationModeV1,
     derive_semantic_batch_with_mode_v1, semantic_derivation_mode_from_env_v1,
@@ -275,13 +278,18 @@ pub trait SearchCorpusAuthorityWritePort: Send + Sync {
         manifest_digest: &str,
     ) -> Result<SealedSearchCorpusAuthorityStateV1, CoreError>;
 
+    /// Persist and reconcile the complete retained set.
+    ///
+    /// Contract: typed/contract errors reject before durable mutation.
+    /// `CoreError::Storage` may describe a post-mutation durability ambiguity,
+    /// so callers must keep rollback fenced until a later receipt succeeds.
     fn record_sealed_search_corpus(
         &self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
         generation: ManifestGeneration,
         manifest_digest: &str,
-    ) -> Result<(), CoreError>;
+    ) -> Result<SearchCorpusHistoryRetentionReceiptV1, CoreError>;
 }
 
 impl SearchCorpusAuthorityWritePort for AuxiliaryAuthorityStore {
@@ -301,7 +309,7 @@ impl SearchCorpusAuthorityWritePort for AuxiliaryAuthorityStore {
         revision_id: &RevisionId,
         generation: ManifestGeneration,
         manifest_digest: &str,
-    ) -> Result<(), CoreError> {
+    ) -> Result<SearchCorpusHistoryRetentionReceiptV1, CoreError> {
         Self::record_sealed_search_corpus(self, repo_id, revision_id, generation, manifest_digest)
     }
 }
@@ -444,7 +452,7 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
             )?;
             self.finalize_sealed_generation_v1(batch)?;
         } else {
-            self.finalize_generation_v1(batch)?;
+            self.finalize_generation_v1(batch, None)?;
         }
         Ok(batch_publish_receipt_v1(batch))
     }
@@ -506,22 +514,71 @@ impl DirectSearchCorpusMaterializer {
         &self,
         batch: &SearchCorpusIngestBatch,
     ) -> Result<(), CoreError> {
-        self.authority.record_sealed_search_corpus(
+        // Fence rollback before entering the durable retention owner. A
+        // delete may succeed while the following directory fsync fails; in
+        // that state the old same-process ledger is not authoritative. Only a
+        // reconciled retained-set receipt clears this pair-local fence.
+        self.ledger
+            .write()
+            .map_err(|err| {
+                CoreError::Storage(format!(
+                    "direct search-corpus materialize: ledger poisoned while fencing retention mutation: {err}"
+                ))
+            })?
+            .fence_search_corpus_history_v1(&batch.repo_id, &batch.revision_id);
+        let retention = self.authority.record_sealed_search_corpus(
             &batch.repo_id,
             &batch.revision_id,
             batch.generation,
             batch.manifest_digest.as_str(),
-        )?;
-        self.finalize_generation_v1(batch)
+        );
+        let retention = match retention {
+            Ok(receipt) => receipt,
+            Err(error @ CoreError::Storage(_)) => return Err(error),
+            Err(error) => {
+                // Typed/contract rejections are pre-mutation outcomes of this
+                // port and therefore do not create durability ambiguity.
+                self.ledger
+                    .write()
+                    .map_err(|err| {
+                        CoreError::Storage(format!(
+                            "direct search-corpus materialize: ledger poisoned while clearing rejected retention mutation fence: {err}; original error: {error}"
+                        ))
+                    })?
+                    .clear_search_corpus_history_fence_v1(
+                        &batch.repo_id,
+                        &batch.revision_id,
+                    );
+                return Err(error);
+            }
+        };
+        self.finalize_generation_v1(batch, Some(&retention))
     }
 
-    fn finalize_generation_v1(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
+    fn finalize_generation_v1(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        retention: Option<&SearchCorpusHistoryRetentionReceiptV1>,
+    ) -> Result<(), CoreError> {
         {
             let mut guard = self.ledger.write().map_err(|err| {
                 CoreError::Storage(format!(
                     "direct search-corpus materialize: ledger poisoned while finalizing generation: {err}"
                 ))
             })?;
+            if let Some(retention) = retention {
+                guard.apply_search_corpus_history_retention_receipt_v1(
+                    &batch.repo_id,
+                    &batch.revision_id,
+                    batch.generation,
+                    retention,
+                )?;
+            } else if batch.seal {
+                return Err(CoreError::InvalidContract(
+                    "direct search-corpus materialize: sealed generation requires durable retention receipt"
+                        .to_string(),
+                ));
+            }
             guard.apply_search_corpus_batch(batch);
             guard.materialize_track(
                 &batch.repo_id,
@@ -1271,25 +1328,62 @@ mod tests {
             revision_id: &RevisionId,
             generation: ManifestGeneration,
             manifest_digest: &str,
-        ) -> Result<(), CoreError> {
-            self.identities
-                .lock()
-                .map_err(|err| {
-                    CoreError::Storage(format!("recording search-corpus authority poisoned: {err}"))
-                })?
-                .push((
-                    repo_id.clone(),
-                    revision_id.clone(),
-                    generation,
-                    manifest_digest.to_string(),
-                ));
-            Ok(())
+        ) -> Result<SearchCorpusHistoryRetentionReceiptV1, CoreError> {
+            let mut identities = self.identities.lock().map_err(|err| {
+                CoreError::Storage(format!("recording search-corpus authority poisoned: {err}"))
+            })?;
+            identities.push((
+                repo_id.clone(),
+                revision_id.clone(),
+                generation,
+                manifest_digest.to_string(),
+            ));
+            let retained_generations = identities
+                .iter()
+                .filter(|(observed_repo, observed_revision, _, _)| {
+                    observed_repo == repo_id && observed_revision == revision_id
+                })
+                .map(|(_, _, observed_generation, _)| *observed_generation)
+                .collect::<Vec<_>>();
+            Ok(
+                SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
+                    repo_id,
+                    revision_id,
+                    retained_generations,
+                ),
+            )
         }
     }
 
     fn recording_search_corpus_authority() -> Arc<dyn SearchCorpusAuthorityWritePort + Send + Sync>
     {
         Arc::new(RecordingSearchCorpusAuthority::default())
+    }
+
+    struct FailingRetentionAuthority;
+
+    impl SearchCorpusAuthorityWritePort for FailingRetentionAuthority {
+        fn inspect_sealed_search_corpus(
+            &self,
+            _repo_id: &RepoId,
+            _revision_id: &RevisionId,
+            _generation: ManifestGeneration,
+            _manifest_digest: &str,
+        ) -> Result<SealedSearchCorpusAuthorityStateV1, CoreError> {
+            Ok(SealedSearchCorpusAuthorityStateV1::Exact)
+        }
+
+        fn record_sealed_search_corpus(
+            &self,
+            _repo_id: &RepoId,
+            _revision_id: &RevisionId,
+            _generation: ManifestGeneration,
+            _manifest_digest: &str,
+        ) -> Result<SearchCorpusHistoryRetentionReceiptV1, CoreError> {
+            Err(CoreError::Storage(
+                "injected post-delete retention durability failure".to_string(),
+            ))
+        }
     }
 
     #[derive(Default)]
@@ -1521,6 +1615,7 @@ mod tests {
                 scope: fixture_scope(),
                 scope_digest: "scope:sem".to_string(),
                 embeddings: vec![fixture_embedding_record()?],
+                cluster_memberships: Vec::new(),
             }],
             tombstone_scopes: Vec::new(),
             seal: true,
@@ -1782,6 +1877,50 @@ mod tests {
             "test exact retry",
         )?;
         drop(guard);
+        Ok(())
+    }
+
+    #[test]
+    fn durable_retention_error_fences_same_process_rollback_authority() -> TestRes {
+        let batch = fixture_search_corpus_batch()?;
+        let ledger = Arc::new(RwLock::new(Ledger::new()));
+        ledger
+            .write()
+            .map_err(|err| format!("ledger poisoned: {err}"))?
+            .record_historically_sealed_search_corpus(
+                &batch.repo_id,
+                &batch.revision_id,
+                batch.generation,
+                &batch.manifest_digest,
+            );
+        let materializer = search_corpus_materializer!(
+            Arc::new(FakeSearchCorpusBuilder::default()),
+            Arc::clone(&ledger),
+            Arc::new(DirectSemanticMaterializer::new(
+                Arc::new(FakeSemanticBuilder::default()),
+                Arc::new(RwLock::new(Ledger::new())),
+            )),
+            Arc::new(crate::HashingQueryTextEmbedder::new(
+                SEARCH_OWNED_SEMANTIC_DIMENSION,
+            )),
+            Arc::new(FailingRetentionAuthority),
+            always_valid_generation(),
+            always_valid_generation(),
+            test_incomplete_generation_discard(),
+            test_incomplete_generation_discard(),
+        );
+        assert!(matches!(
+            materializer.publish_batch(&batch),
+            Err(CoreError::Storage(_))
+        ));
+        let rollback = ledger
+            .read()
+            .map_err(|err| format!("ledger poisoned: {err}"))?
+            .validate_historically_sealed_track_identity(
+                &generation_pair_from_batch_v1(&batch).0,
+                "retention failure",
+            );
+        assert!(matches!(rollback, Err(CoreError::NotReady(_))));
         Ok(())
     }
 

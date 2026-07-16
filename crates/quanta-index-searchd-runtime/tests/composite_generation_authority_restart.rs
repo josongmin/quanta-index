@@ -131,6 +131,13 @@ fn config_for(state_root: &Path) -> SearchdConfig {
     );
     let temp = std::env::temp_dir();
     SearchdConfig::from_state_root(state_root.to_path_buf())
+        .try_with_search_corpus_history_retention_limits(
+            8,
+            16 * 1024 * 1024,
+            128,
+            256 * 1024 * 1024,
+        )
+        .expect("valid test retention policy")
         .with_socket_overrides(
             temp.join(format!("{prefix}-query.sock")),
             temp.join(format!("{prefix}-control.sock")),

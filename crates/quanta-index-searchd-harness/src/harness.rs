@@ -1485,6 +1485,9 @@ impl E2eRuntime {
                 unexpected_history_response("RepoMapQuery")
             }
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_history_response("Explain"),
+            SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
+                unexpected_history_response("ClusterMembershipRead")
+            }
             SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
                 unexpected_history_response("RuntimeMetadata")
             }
@@ -1569,6 +1572,9 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
+            SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
+                unexpected_response("ClusterMembershipRead")
+            }
         }
     }
 
@@ -1658,6 +1664,9 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
+            SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
+                unexpected_response("ClusterMembershipRead")
+            }
             SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
                 unexpected_response("RuntimeMetadata")
             }
@@ -1747,6 +1756,9 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
+            SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
+                unexpected_response("ClusterMembershipRead")
+            }
             SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
                 unexpected_response("RuntimeMetadata")
             }
@@ -1837,6 +1849,9 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
+            SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
+                unexpected_response("ClusterMembershipRead")
+            }
             SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
                 unexpected_response("RuntimeMetadata")
             }
@@ -1926,6 +1941,9 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
+            SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
+                unexpected_response("ClusterMembershipRead")
+            }
             SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
                 unexpected_response("RuntimeMetadata")
             }
@@ -2033,6 +2051,9 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_explain_response("Structural"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => {
                 unexpected_explain_response("RepoMapQuery")
+            }
+            SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
+                unexpected_explain_response("ClusterMembershipRead")
             }
             SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
                 unexpected_explain_response("RuntimeMetadata")
@@ -2196,6 +2217,7 @@ fn query_response_ready(response: &SearchPlaneQueryIpcResponseEnvelope) -> bool 
         | SearchPlaneQueryIpcResponse::Structural(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => true,
     }
 }
@@ -2216,6 +2238,7 @@ fn query_response_ready_allow_structural_not_ready(
         | SearchPlaneQueryIpcResponse::Structural(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => true,
     }
 }
@@ -2269,7 +2292,7 @@ fn start_driver(
     state_root: &Path,
     embedder_profile: &SemanticEmbedderProfile,
 ) -> AnyResult<DriverHandles> {
-    let config = build_config(state_root, embedder_profile);
+    let config = build_config(state_root, embedder_profile)?;
     let runtime = build_runtime(config)?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
     let control_socket = runtime.control_server.socket_path().to_path_buf();
@@ -2310,12 +2333,21 @@ fn start_driver(
     ))
 }
 
-fn build_config(state_root: &Path, embedder_profile: &SemanticEmbedderProfile) -> SearchdConfig {
-    let mut cfg = SearchdConfig::from_state_root(state_root.to_path_buf());
+fn build_config(
+    state_root: &Path,
+    embedder_profile: &SemanticEmbedderProfile,
+) -> AnyResult<SearchdConfig> {
+    let mut cfg = SearchdConfig::from_state_root(state_root.to_path_buf())
+        .try_with_search_corpus_history_retention_limits(
+            8,
+            16 * 1024 * 1024,
+            128,
+            256 * 1024 * 1024,
+        )?;
     let (query_socket, control_socket, ingest_socket) = unique_socket_paths();
     cfg = SearchdConfig::with_socket_overrides(cfg, query_socket, control_socket);
     cfg = SearchdConfig::with_ingest_socket_override(cfg, ingest_socket);
-    cfg.with_semantic_embedder_profile(embedder_profile.clone())
+    Ok(cfg.with_semantic_embedder_profile(embedder_profile.clone()))
 }
 
 fn unexpected_response(kind: &str) -> E2eQueryResult {
