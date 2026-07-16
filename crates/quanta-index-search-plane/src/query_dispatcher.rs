@@ -23,15 +23,15 @@ use quanta_index_contract::{
     LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqQuery, LqSpan, LqStructuralBlock,
     LqStructuralConstraint, LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleRef,
     LqStructuralNode, LqType, LqYesNoOnly, ManifestGeneration, OwnerDocKind, PlannerStage,
-    PlannerTraceEntry, QueryConstraintSetV1, QueryErrorRepair, QueryResultWindowV1, RepairClass,
-    RepoId, RepoMapQueryRequest, RepoMapQueryResponse, RevisionId, RuntimeMetadataQueryRequest,
-    SearchExplanation, SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
-    SearchPlaneHistoryQueryResponse, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcResponse, SearchPlaneRuntimeMetadataQueryResponse,
-    SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind, SeedCandidateV2, SeedContributionV2,
-    SeedLaneV2, SemanticQueryRequest, SemanticQueryResponse, StructuralQueryRequest,
-    SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse,
-    TextQuerySyntax,
+    PlannerTraceEntry, QueryConstraintIntersectionV1, QueryConstraintSetV1, QueryErrorRepair,
+    QueryResultWindowV1, RepairClass, RepoId, RepoMapQueryRequest, RepoMapQueryResponse,
+    RevisionId, RuntimeMetadataQueryRequest, SearchExplanation, SearchPlaneExplainQueryRequest,
+    SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
+    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
+    SearchPlaneTrackKind, SeedCandidateV2, SeedContributionV2, SeedLaneV2, SemanticQueryRequest,
+    SemanticQueryResponse, StructuralQueryRequest, SymbolCandidate, SymbolQueryRequest,
+    SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_core::domains::structural::{
     StructuralExecutableFilter, StructuralProducerPort,
@@ -104,9 +104,12 @@ fn prepare_language_query_v1(
     }
     query.filters = retained;
     let dsl = QueryConstraintSetV1::from_languages(dsl_languages);
-    let both_constrained = !typed.is_unconstrained() && !dsl.is_unconstrained();
-    let constraints = typed.intersect(&dsl);
-    let force_empty = both_constrained && constraints.is_unconstrained();
+    let (constraints, force_empty) = match typed.intersect(&dsl) {
+        QueryConstraintIntersectionV1::Compatible(constraints) => (constraints, false),
+        QueryConstraintIntersectionV1::Contradiction => {
+            (QueryConstraintSetV1::unconstrained(), true)
+        }
+    };
     Ok(PreparedLanguageQueryV1 {
         query,
         constraints,
@@ -409,7 +412,10 @@ impl SearchPlaneDispatcher {
             &base_pin,
             prepared_language.query,
         )?;
-        LexicalPolicy::validate_query(&prepared.query)?;
+        LexicalPolicy::validate_query_with_constraints(
+            &prepared.query,
+            &prepared_language.constraints,
+        )?;
         let wants_file_owner_projection = query_selects_file_owner_projection(&prepared.query);
         if prepared.force_empty || prepared_language.force_empty {
             return Ok(TextQueryResponse {
@@ -467,7 +473,10 @@ impl SearchPlaneDispatcher {
         };
         let lowered = lower_lexical_text_query(&lexical_request)?;
         let prepared_language = prepare_language_query_v1(lowered, &lexical_request.constraints)?;
-        LexicalPolicy::validate_query(&prepared_language.query)?;
+        LexicalPolicy::validate_query_with_constraints(
+            &prepared_language.query,
+            &prepared_language.constraints,
+        )?;
         if prepared_language.force_empty {
             return Ok(SymbolQueryResponse {
                 generation: pin,
@@ -4692,7 +4701,7 @@ mod tests {
     };
     use quanta_index_contract::{
         ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
-        HybridSeedQueryRequest,
+        HybridSeedQueryRequest, QueryConstraintSetV1, SymbolQueryRequest,
     };
     use quanta_index_core::SemanticSearchHitV1;
 
@@ -4704,7 +4713,11 @@ mod tests {
         let typed = QueryConstraintSetV1::from_languages([
             LanguageCode::new("rust").expect("valid language"),
             LanguageCode::new("python").expect("valid language"),
-        ]);
+        ])
+        .with_exact_repo_relative_path(
+            quanta_index_contract::ExactRepoRelativePathV1::new("src/lib.rs")
+                .expect("valid exact path"),
+        );
         let mut query = build_probe_query("needle");
         query.filters.push(LqFilter::Lang {
             id: "Rust".to_string(),
@@ -4720,6 +4733,15 @@ mod tests {
                 .map(LanguageCode::as_str)
                 .collect::<Vec<_>>(),
             vec!["rust"]
+        );
+        assert_eq!(
+            prepared
+                .constraints
+                .repo_relative_path_exact
+                .as_ref()
+                .map(quanta_index_contract::ExactRepoRelativePathV1::as_str),
+            Some("src/lib.rs"),
+            "DSL language composition must preserve the independent path axis"
         );
 
         let typed_rust = QueryConstraintSetV1::from_languages([
@@ -5427,6 +5449,10 @@ mod tests {
         search_hit_vectors: Vec<Vec<f32>>,
         corpus_searches: Vec<(SemanticCorpusKindV1, u32)>,
         scoped_vectors: Vec<Vec<f32>>,
+        search_constraints: Vec<QueryConstraintSetV1>,
+        search_hit_constraints: Vec<QueryConstraintSetV1>,
+        corpus_constraints: Vec<QueryConstraintSetV1>,
+        scoped_constraints: Vec<QueryConstraintSetV1>,
         cluster_membership_opened_pins: Vec<(RepoId, RevisionId, ManifestGeneration)>,
         cluster_membership_requests: Vec<ClusterMembershipBatchReadRequestV1>,
         cluster_membership_response: Option<ClusterMembershipBatchReadResponseV1>,
@@ -5482,6 +5508,21 @@ mod tests {
             Ok(vec![candidate("semantic-inline", 1.0)])
         }
 
+        fn search_constrained(
+            &self,
+            query_vector: &[f32],
+            constraints: &QueryConstraintSetV1,
+            _top_k: u32,
+        ) -> Result<Vec<LexicalCandidate>, CoreError> {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?;
+            state.search_vectors.push(query_vector.to_vec());
+            state.search_constraints.push(constraints.clone());
+            Ok(vec![candidate("semantic-inline", 1.0)])
+        }
+
         fn search_hits(
             &self,
             query_vector: &[f32],
@@ -5492,6 +5533,28 @@ mod tests {
                 .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?
                 .search_hit_vectors
                 .push(query_vector.to_vec());
+            Ok(vec![SemanticSearchHitV1 {
+                candidate: candidate("semantic-inline", 1.0),
+                record_id: "semantic-inline-record".to_string(),
+                owner_id: "semantic-inline-owner".to_string(),
+                owner_kind: quanta_index_contract::OwnerDocKind::Chunk,
+                corpus_kind: None,
+                authority_digest: "authority:semantic-inline".to_string(),
+            }])
+        }
+
+        fn search_hits_constrained(
+            &self,
+            query_vector: &[f32],
+            constraints: &QueryConstraintSetV1,
+            _top_k: u32,
+        ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?;
+            state.search_hit_vectors.push(query_vector.to_vec());
+            state.search_hit_constraints.push(constraints.clone());
             Ok(vec![SemanticSearchHitV1 {
                 candidate: candidate("semantic-inline", 1.0),
                 record_id: "semantic-inline-record".to_string(),
@@ -5528,6 +5591,34 @@ mod tests {
             }])
         }
 
+        fn search_hits_for_corpus_constrained(
+            &self,
+            query_vector: &[f32],
+            corpus_kind: SemanticCorpusKindV1,
+            constraints: &QueryConstraintSetV1,
+            top_k: u32,
+        ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?;
+            state.search_hit_vectors.push(query_vector.to_vec());
+            state.corpus_searches.push((corpus_kind, top_k));
+            state.corpus_constraints.push(constraints.clone());
+            drop(state);
+            if corpus_kind == SemanticCorpusKindV1::RepositorySummary {
+                return Ok(Vec::new());
+            }
+            Ok(vec![SemanticSearchHitV1 {
+                candidate: candidate(corpus_kind.as_code_str(), 1.0),
+                record_id: format!("record:{}", corpus_kind.as_code_str()),
+                owner_id: format!("owner:{}", corpus_kind.as_code_str()),
+                owner_kind: quanta_index_contract::OwnerDocKind::Symbol,
+                corpus_kind: Some(corpus_kind),
+                authority_digest: format!("authority:{}", corpus_kind.as_code_str()),
+            }])
+        }
+
         fn search_scoped(
             &self,
             query_vector: &[f32],
@@ -5539,6 +5630,22 @@ mod tests {
                 .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?
                 .scoped_vectors
                 .push(query_vector.to_vec());
+            Ok(vec![candidate("semantic-scoped", 1.0)])
+        }
+
+        fn search_scoped_constrained(
+            &self,
+            query_vector: &[f32],
+            _allowed_ids: &std::collections::BTreeSet<String>,
+            constraints: &QueryConstraintSetV1,
+            _top_k: u32,
+        ) -> Result<Vec<LexicalCandidate>, CoreError> {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?;
+            state.scoped_vectors.push(query_vector.to_vec());
+            state.scoped_constraints.push(constraints.clone());
             Ok(vec![candidate("semantic-scoped", 1.0)])
         }
 
@@ -5797,6 +5904,9 @@ mod tests {
         search_all_calls: u32,
         opened_pins: Vec<(RepoId, RevisionId, ManifestGeneration)>,
         searched_queries: Vec<LqQuery>,
+        searched_constraints: Vec<QueryConstraintSetV1>,
+        symbol_constraints: Vec<QueryConstraintSetV1>,
+        search_all_constraints: Vec<QueryConstraintSetV1>,
     }
 
     struct RecordingLexicalSearcher {
@@ -5816,6 +5926,23 @@ mod tests {
                 .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?;
             guard.search_top_ks.push(top_k);
             guard.searched_queries.push(query.clone());
+            drop(guard);
+            Ok(self.results.clone())
+        }
+
+        fn search_constrained(
+            &self,
+            query: &quanta_index_contract::LqQuery,
+            constraints: &QueryConstraintSetV1,
+            top_k: u32,
+        ) -> Result<Vec<LexicalCandidate>, CoreError> {
+            let mut guard = self
+                .state
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?;
+            guard.search_top_ks.push(top_k);
+            guard.searched_queries.push(query.clone());
+            guard.searched_constraints.push(constraints.clone());
             drop(guard);
             Ok(self.results.clone())
         }
@@ -5854,6 +5981,26 @@ mod tests {
                 .collect())
         }
 
+        fn search_symbols_constrained(
+            &self,
+            _query: &quanta_index_contract::LqQuery,
+            constraints: &QueryConstraintSetV1,
+            top_k: u32,
+        ) -> Result<Vec<SymbolCandidate>, CoreError> {
+            let mut guard = self
+                .state
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?;
+            guard.symbol_top_ks.push(top_k);
+            guard.symbol_constraints.push(constraints.clone());
+            drop(guard);
+            Ok(self
+                .results
+                .iter()
+                .map(|candidate| symbol_candidate(candidate.candidate_id.as_str(), candidate.score))
+                .collect())
+        }
+
         fn search_all(
             &self,
             _query: &quanta_index_contract::LqQuery,
@@ -5863,6 +6010,21 @@ mod tests {
                 .lock()
                 .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?;
             guard.search_all_calls = guard.search_all_calls.saturating_add(1);
+            drop(guard);
+            Ok(self.results.clone())
+        }
+
+        fn search_all_constrained(
+            &self,
+            _query: &quanta_index_contract::LqQuery,
+            constraints: &QueryConstraintSetV1,
+        ) -> Result<Vec<LexicalCandidate>, CoreError> {
+            let mut guard = self
+                .state
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?;
+            guard.search_all_calls = guard.search_all_calls.saturating_add(1);
+            guard.search_all_constraints.push(constraints.clone());
             drop(guard);
             Ok(self.results.clone())
         }
@@ -6054,6 +6216,72 @@ mod tests {
             .into());
         }
         drop(guard);
+        Ok(())
+    }
+
+    #[test]
+    fn symbol_dispatch_admits_only_typed_exact_path_as_constraint_only_authority_v1() -> TestResult
+    {
+        let state = Arc::new(Mutex::new(RecordingLexicalState::default()));
+        let dispatcher = SearchPlaneDispatcher::new(
+            Arc::new(RecordingLexicalOpener {
+                state: Arc::clone(&state),
+                results: vec![candidate("path-owned", 1.0)],
+            }),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            ready_ledger(),
+            test_activation_catalog()?,
+        );
+        let path =
+            quanta_index_contract::ExactRepoRelativePathV1::new("src/a*)' \"literal file.rs")
+                .map_err(str::to_string)?;
+        let constraints = QueryConstraintSetV1::from_exact_repo_relative_path(path.clone());
+        let response = dispatcher.symbol(SymbolQueryRequest {
+            syntax: TextQuerySyntax::Native,
+            query_text: String::new(),
+            constraints: constraints.clone(),
+            generation: Some(ready_pin()),
+            generation_selector: None,
+            top_k: 3,
+        })?;
+        if response.results.len() != 1 {
+            return Err(format!(
+                "constraint-only symbol request did not reach the searcher: {:?}",
+                response.results
+            )
+            .into());
+        }
+        let guard = state
+            .lock()
+            .map_err(|err| format!("lexical state poisoned: {err}"))?;
+        if guard.symbol_constraints.as_slice() != [constraints] {
+            return Err(format!(
+                "typed exact path was not forwarded verbatim: {:?}",
+                guard.symbol_constraints
+            )
+            .into());
+        }
+        drop(guard);
+
+        match dispatcher.symbol(SymbolQueryRequest {
+            syntax: TextQuerySyntax::Native,
+            query_text: String::new(),
+            constraints: QueryConstraintSetV1::unconstrained(),
+            generation: Some(ready_pin()),
+            generation_selector: None,
+            top_k: 3,
+        }) {
+            Err(CoreError::InvalidContract(message))
+                if message.contains("empty query is rejected") => {}
+            other => {
+                return Err(format!(
+                    "empty unconstrained symbol request must fail before search: {other:?}"
+                )
+                .into());
+            }
+        }
         Ok(())
     }
 
@@ -6396,13 +6624,19 @@ mod tests {
 
     #[test]
     fn hybrid_dispatch_embeds_semantic_query_text() -> TestResult {
-        let state = Arc::new(Mutex::new(RecordingSemanticState::default()));
+        let semantic_state = Arc::new(Mutex::new(RecordingSemanticState::default()));
+        let lexical_state = Arc::new(Mutex::new(RecordingLexicalState::default()));
+        let constraints = QueryConstraintSetV1::from_exact_repo_relative_path(
+            quanta_index_contract::ExactRepoRelativePathV1::new("src/lib.rs")
+                .map_err(str::to_string)?,
+        );
         let dispatcher = SearchPlaneDispatcher::new(
-            Arc::new(StubLexicalOpener {
+            Arc::new(RecordingLexicalOpener {
+                state: Arc::clone(&lexical_state),
                 results: vec![candidate("alpha", 1.0), candidate("beta", 0.9)],
             }),
             Arc::new(RecordingSemanticOpener {
-                state: Arc::clone(&state),
+                state: Arc::clone(&semantic_state),
             }),
             Arc::new(StubRepoMapQueryPort),
             Arc::new(FailClosedStructuralProducer),
@@ -6420,7 +6654,7 @@ mod tests {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Sourcegraph,
                     query_text: "scope".to_string(),
-                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                    constraints: constraints.clone(),
                     generation: Some(pin.clone()),
                     generation_selector: None,
                     top_k: 2,
@@ -6454,11 +6688,15 @@ mod tests {
             }
         }
 
-        let (scoped_vectors, search_vectors) = {
-            let guard = state
+        let (scoped_vectors, search_vectors, scoped_constraints) = {
+            let guard = semantic_state
                 .lock()
                 .map_err(|err| format!("semantic state poisoned: {err}"))?;
-            (guard.scoped_vectors.clone(), guard.search_vectors.clone())
+            (
+                guard.scoped_vectors.clone(),
+                guard.search_vectors.clone(),
+                guard.scoped_constraints.clone(),
+            )
         };
         let expected = default_query_embedder().embed_query("scope alpha")?;
         if scoped_vectors.as_slice() != [expected] {
@@ -6467,18 +6705,40 @@ mod tests {
         if !search_vectors.is_empty() {
             return Err(format!("unexpected global vectors: {search_vectors:?}").into());
         }
+        if scoped_constraints.as_slice() != [constraints.clone()] {
+            return Err(format!(
+                "hybrid semantic scope lost exact-path constraints: {scoped_constraints:?}"
+            )
+            .into());
+        }
+        let guard = lexical_state
+            .lock()
+            .map_err(|err| format!("lexical state poisoned: {err}"))?;
+        if guard.searched_constraints.as_slice() != [constraints] {
+            return Err(format!(
+                "hybrid lexical leg lost exact-path constraints: {:?}",
+                guard.searched_constraints
+            )
+            .into());
+        }
         Ok(())
     }
 
     #[test]
     fn hybrid_seed_dispatch_includes_dense_only_entity_in_v2_seed_set() -> TestResult {
-        let state = Arc::new(Mutex::new(RecordingSemanticState::default()));
+        let semantic_state = Arc::new(Mutex::new(RecordingSemanticState::default()));
+        let lexical_state = Arc::new(Mutex::new(RecordingLexicalState::default()));
+        let constraints = QueryConstraintSetV1::from_exact_repo_relative_path(
+            quanta_index_contract::ExactRepoRelativePathV1::new("src/lib.rs")
+                .map_err(str::to_string)?,
+        );
         let dispatcher = SearchPlaneDispatcher::new(
-            Arc::new(StubLexicalOpener {
+            Arc::new(RecordingLexicalOpener {
+                state: Arc::clone(&lexical_state),
                 results: vec![candidate("alpha", 1.0), candidate("beta", 0.9)],
             }),
             Arc::new(RecordingSemanticOpener {
-                state: Arc::clone(&state),
+                state: Arc::clone(&semantic_state),
             }),
             Arc::new(StubRepoMapQueryPort),
             Arc::new(FailClosedStructuralProducer),
@@ -6496,7 +6756,7 @@ mod tests {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Sourcegraph,
                     query_text: "scope".to_string(),
-                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                    constraints: constraints.clone(),
                     generation: Some(pin.clone()),
                     generation_selector: None,
                     top_k: 3,
@@ -6601,8 +6861,15 @@ mod tests {
             }
         }
 
-        let (scoped_vectors, search_hit_vectors, search_vectors, corpus_searches) = {
-            let guard = state
+        let (
+            scoped_vectors,
+            search_hit_vectors,
+            search_vectors,
+            corpus_searches,
+            scoped_constraints,
+            corpus_constraints,
+        ) = {
+            let guard = semantic_state
                 .lock()
                 .map_err(|err| format!("semantic state poisoned: {err}"))?;
             (
@@ -6610,6 +6877,8 @@ mod tests {
                 guard.search_hit_vectors.clone(),
                 guard.search_vectors.clone(),
                 guard.corpus_searches.clone(),
+                guard.scoped_constraints.clone(),
+                guard.corpus_constraints.clone(),
             )
         };
         let expected = default_query_embedder().embed_query("scope alpha")?;
@@ -6634,6 +6903,29 @@ mod tests {
             return Err(
                 format!("unexpected corpus-prefiltered searches: {corpus_searches:?}").into(),
             );
+        }
+        if scoped_constraints.as_slice() != [constraints.clone()]
+            || corpus_constraints.as_slice()
+                != [
+                    constraints.clone(),
+                    constraints.clone(),
+                    constraints.clone(),
+                ]
+        {
+            return Err(format!(
+                "hybrid-seed constraints drifted: scoped={scoped_constraints:?} corpus={corpus_constraints:?}"
+            )
+            .into());
+        }
+        let guard = lexical_state
+            .lock()
+            .map_err(|err| format!("lexical state poisoned: {err}"))?;
+        if guard.searched_constraints.as_slice() != [constraints] {
+            return Err(format!(
+                "hybrid-seed lexical leg lost exact-path constraints: {:?}",
+                guard.searched_constraints
+            )
+            .into());
         }
         Ok(())
     }

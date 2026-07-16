@@ -4803,6 +4803,7 @@ impl TantivySearcher {
         &self,
         query: &LqQuery,
         prepared: &PreparedExecutableQuery,
+        constraints: &QueryConstraintSetV1,
         limit: usize,
         apply_select_projection: bool,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
@@ -4841,6 +4842,9 @@ impl TantivySearcher {
             let Some(repo_relative_path) = stored_text(&doc, self.fields.repo_relative_path) else {
                 continue;
             };
+            if !Self::manual_exact_path_allows(&repo_relative_path, constraints) {
+                continue;
+            }
             if !self.manual_doc_restrictions_allow(
                 &prepared.predicate_plan,
                 &candidate_id,
@@ -4890,6 +4894,7 @@ impl TantivySearcher {
         &self,
         query: &LqQuery,
         prepared: &PreparedExecutableQuery,
+        constraints: &QueryConstraintSetV1,
         limit: usize,
     ) -> Result<Vec<SymbolCandidate>, CoreError> {
         let searcher = self.reader.searcher();
@@ -4927,6 +4932,9 @@ impl TantivySearcher {
             let Some(repo_relative_path) = stored_text(&doc, self.fields.repo_relative_path) else {
                 continue;
             };
+            if !Self::manual_exact_path_allows(&repo_relative_path, constraints) {
+                continue;
+            }
             if !self.manual_doc_restrictions_allow(
                 &prepared.predicate_plan,
                 &candidate_id,
@@ -5111,6 +5119,28 @@ impl TantivySearcher {
         Box::new(BooleanQuery::new(clauses))
     }
 
+    fn manual_exact_path_allows(
+        repo_relative_path: &str,
+        constraints: &QueryConstraintSetV1,
+    ) -> bool {
+        constraints
+            .repo_relative_path_exact
+            .as_ref()
+            .is_none_or(|expected| expected.as_str() == repo_relative_path)
+    }
+
+    fn ensure_manual_scan_supports_constraints(
+        constraints: &QueryConstraintSetV1,
+        surface: &str,
+    ) -> Result<(), CoreError> {
+        if constraints.language_any_of.is_empty() {
+            return Ok(());
+        }
+        Err(CoreError::NotImplemented(format!(
+            "{surface}: typed language constraints require indexed execution; index:no cannot read the non-stored language field"
+        )))
+    }
+
     fn with_doc_kind_and_constraints(
         &self,
         query: Box<dyn Query>,
@@ -5121,10 +5151,17 @@ impl TantivySearcher {
         if constraints.is_unconstrained() {
             return typed;
         }
-        Box::new(BooleanQuery::new(vec![
-            (Occur::Must, typed),
-            (Occur::Must, self.language_any_of_query(constraints)),
-        ]))
+        let mut clauses = vec![(Occur::Must, typed)];
+        if !constraints.language_any_of.is_empty() {
+            clauses.push((Occur::Must, self.language_any_of_query(constraints)));
+        }
+        if let Some(path) = &constraints.repo_relative_path_exact {
+            clauses.push((
+                Occur::Must,
+                self.exact_text_query(self.fields.repo_relative_path, path.as_str()),
+            ));
+        }
+        Box::new(BooleanQuery::new(clauses))
     }
 
     fn collect_matching_paths_for_leaf(
@@ -7333,6 +7370,19 @@ impl TantivySearcher {
         }
     }
 
+    fn compile_query_with_constraints(
+        &self,
+        query: &LqQuery,
+        prepared: &PreparedPredicatePlan,
+        constraints: &QueryConstraintSetV1,
+    ) -> Result<Option<Box<dyn Query>>, CoreError> {
+        if matches!(prepared.expr, LqExpr::Empty) && constraints.repo_relative_path_exact.is_some()
+        {
+            return Ok(Some(Box::new(AllQuery)));
+        }
+        self.compile_query_from_prepared(query, prepared)
+    }
+
     fn prepare_executable_query(
         &self,
         query: &LqQuery,
@@ -7773,7 +7823,7 @@ impl LexicalSearcher for TantivySearcher {
         // a second planner/search implementation.
         let effective_query =
             rewrite_symbol_name_predicate_query(query)?.unwrap_or_else(|| query.clone());
-        LexicalPolicy::validate_query(&effective_query)?;
+        LexicalPolicy::validate_query_with_constraints(&effective_query, constraints)?;
         let Some(prepared_query) =
             self.prepare_executable_query(&effective_query, QueryDocKind::Text)?
         else {
@@ -7794,16 +7844,20 @@ impl LexicalSearcher for TantivySearcher {
             return Ok(Vec::new());
         }
         if Self::uses_unindexed_scan(&effective_query.options) {
-            if constraints.is_unconstrained() {
-                return self.manual_text_search(&effective_query, &prepared_query, limit, true);
-            }
-            return Err(CoreError::NotImplemented(
-                "lexical: typed language constraints require indexed execution; index:no cannot read the non-stored language field"
-                    .to_string(),
-            ));
+            Self::ensure_manual_scan_supports_constraints(constraints, "lexical")?;
+            return self.manual_text_search(
+                &effective_query,
+                &prepared_query,
+                constraints,
+                limit,
+                true,
+            );
         }
-        let Some(base) = self
-            .compile_query_from_prepared(&prepared_query.query, &prepared_query.predicate_plan)?
+        let Some(base) = self.compile_query_with_constraints(
+            &prepared_query.query,
+            &prepared_query.predicate_plan,
+            constraints,
+        )?
         else {
             return Ok(Vec::new());
         };
@@ -7920,7 +7974,7 @@ impl LexicalSearcher for TantivySearcher {
         // delegates here to prevent planner and scoring drift.
         let effective_query =
             rewrite_symbol_name_predicate_query(query)?.unwrap_or_else(|| query.clone());
-        LexicalPolicy::validate_query(&effective_query)?;
+        LexicalPolicy::validate_query_with_constraints(&effective_query, constraints)?;
         let Some(prepared_query) =
             self.prepare_executable_query(&effective_query, QueryDocKind::Symbol)?
         else {
@@ -7941,16 +7995,19 @@ impl LexicalSearcher for TantivySearcher {
             return Ok(Vec::new());
         }
         if Self::uses_unindexed_scan(&effective_query.options) {
-            if constraints.is_unconstrained() {
-                return self.manual_symbol_search(&effective_query, &prepared_query, limit);
-            }
-            return Err(CoreError::NotImplemented(
-                "symbol: typed language constraints require indexed execution; index:no cannot read the non-stored language field"
-                    .to_string(),
-            ));
+            Self::ensure_manual_scan_supports_constraints(constraints, "symbol")?;
+            return self.manual_symbol_search(
+                &effective_query,
+                &prepared_query,
+                constraints,
+                limit,
+            );
         }
-        let Some(base) = self
-            .compile_query_from_prepared(&prepared_query.query, &prepared_query.predicate_plan)?
+        let Some(base) = self.compile_query_with_constraints(
+            &prepared_query.query,
+            &prepared_query.predicate_plan,
+            constraints,
+        )?
         else {
             return Ok(Vec::new());
         };
@@ -8013,7 +8070,12 @@ impl LexicalSearcher for TantivySearcher {
             return Ok(Vec::new());
         }
         if Self::uses_unindexed_scan(&effective_query.options) {
-            return self.manual_symbol_search(&effective_query, &prepared_query, limit);
+            return self.manual_symbol_search(
+                &effective_query,
+                &prepared_query,
+                &QueryConstraintSetV1::unconstrained(),
+                limit,
+            );
         }
         let Some(base) = self
             .compile_query_from_prepared(&prepared_query.query, &prepared_query.predicate_plan)?
@@ -8051,7 +8113,7 @@ impl LexicalSearcher for TantivySearcher {
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
         // Single full-scope execution path; callers differ only in the
         // canonical constraint set attached to the compiled Boolean query.
-        LexicalPolicy::validate_query(query)?;
+        LexicalPolicy::validate_query_with_constraints(query, constraints)?;
         let Some(prepared_query) = self.prepare_executable_query(query, QueryDocKind::Text)? else {
             return Ok(Vec::new());
         };
@@ -8074,17 +8136,16 @@ impl LexicalSearcher for TantivySearcher {
             return Ok(Vec::new());
         }
         if Self::uses_unindexed_scan(&query.options) {
-            if constraints.is_unconstrained() {
-                let hits = self.manual_text_search(query, &prepared_query, limit, false)?;
-                return Ok(Self::collapse_repo_projection(query, hits));
-            }
-            return Err(CoreError::NotImplemented(
-                "lexical: typed language constraints require indexed execution; index:no cannot read the non-stored language field"
-                    .to_string(),
-            ));
+            Self::ensure_manual_scan_supports_constraints(constraints, "lexical")?;
+            let hits =
+                self.manual_text_search(query, &prepared_query, constraints, limit, false)?;
+            return Ok(Self::collapse_repo_projection(query, hits));
         }
-        let Some(base) = self
-            .compile_query_from_prepared(&prepared_query.query, &prepared_query.predicate_plan)?
+        let Some(base) = self.compile_query_with_constraints(
+            &prepared_query.query,
+            &prepared_query.predicate_plan,
+            constraints,
+        )?
         else {
             return Ok(Vec::new());
         };

@@ -1,5 +1,10 @@
 
 crate quanta_index_contract
+├── mod bounded_cluster_members: pub(crate)
+│   ├── type BoundedClusterMembersV1: pub(crate)
+│   ├── struct BoundedVecV1: pub(crate)
+│   └── struct BoundedVecV1Visitor: pub(self)
+│       └── type Value: pub(self)
 ├── mod channel: pub
 │   ├── mod ids: pub(self)
 │   │   ├── struct ChannelSeq: pub

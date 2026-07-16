@@ -11,6 +11,7 @@ pub use expression::*;
 pub use filters::*;
 pub use options::*;
 pub use quanta_index_contract_base::query::{
-    GenerationPin, GenerationSelector, QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax,
+    ExactRepoRelativePathV1, GenerationPin, GenerationSelector, QueryConstraintIntersectionV1,
+    QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax,
 };
 pub use requests::*;

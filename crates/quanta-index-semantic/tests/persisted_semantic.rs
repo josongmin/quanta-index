@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     BatchIngestMode, EmbeddingDistanceMetric, EmbeddingModelContract, EmbeddingRecord,
-    ManifestGeneration, OwnerDocKind, QueryConstraintSetV1, RepoId, RevisionId, SearchScopeKey,
-    SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
+    ExactRepoRelativePathV1, ManifestGeneration, OwnerDocKind, QueryConstraintSetV1, RepoId,
+    RevisionId, SearchScopeKey, SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
 };
 use quanta_index_core::{
     CoreError, GenerationStorageKeyV1, SemanticBatchBuildPort, SemanticIndexOpenPort,
@@ -246,6 +246,67 @@ fn language_constraint_is_applied_before_vector_limit_and_composes_with_scope_v1
         scoped.first().map(|hit| hit.candidate_id.as_str()),
         Some("rust-target")
     );
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts exact-path pushdown across the persisted vector engine"
+)]
+fn exact_path_constraint_is_applied_before_vector_limit_v1() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let generation = ManifestGeneration::new(82);
+    adapter.build_batch(&SemanticIngestBatch {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        generation,
+        base_generation: None,
+        manifest_digest: "manifest:82".to_string(),
+        batch_digest: "batch:82".to_string(),
+        mode: BatchIngestMode::ReplaceGeneration,
+        model_contract: model_contract(3),
+        required_corpora: Vec::new(),
+        corpus_policy_digest: None,
+        clear_surfaces: Vec::new(),
+        replace_scopes: vec![
+            SemanticReplaceScope {
+                scope: scope("other/lib.rs"),
+                scope_digest: "scope:other-lib".to_string(),
+                embeddings: vec![embedding_record(
+                    "wrong-best",
+                    "other/lib.rs",
+                    vec![1.0, 0.0, 0.0],
+                )?],
+                cluster_memberships: Vec::new(),
+            },
+            SemanticReplaceScope {
+                scope: scope("src/lib.rs"),
+                scope_digest: "scope:src-lib".to_string(),
+                embeddings: vec![embedding_record(
+                    "requested",
+                    "src/lib.rs",
+                    vec![0.8, 0.2, 0.0],
+                )?],
+                cluster_memberships: Vec::new(),
+            },
+        ],
+        tombstone_scopes: Vec::new(),
+        seal: true,
+    })?;
+
+    let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
+    let constraints = QueryConstraintSetV1::from_exact_repo_relative_path(
+        ExactRepoRelativePathV1::new("src/lib.rs").map_err(str::to_string)?,
+    );
+    let hits = searcher.search_constrained(&[1.0, 0.0, 0.0], &constraints, 1)?;
+    assert_eq!(
+        hits.first().map(|hit| hit.candidate_id.as_str()),
+        Some("requested"),
+        "post-limit filtering would lose the lower-scoring exact-path row"
+    );
+    assert_eq!(hits.len(), 1);
     Ok(())
 }
 

@@ -2,6 +2,7 @@ pub mod quanta_index_contract
 pub use quanta_index_contract::CandidateCountV1
 pub use quanta_index_contract::DiffCandidate
 pub use quanta_index_contract::DiffHunkSide
+pub use quanta_index_contract::ExactRepoRelativePathV1
 pub use quanta_index_contract::FileId
 pub use quanta_index_contract::GenerationId
 pub use quanta_index_contract::GenerationPin
@@ -34,6 +35,7 @@ pub use quanta_index_contract::LqVisibility
 pub use quanta_index_contract::LqYesNoOnly
 pub use quanta_index_contract::ManifestDigest
 pub use quanta_index_contract::ManifestGeneration
+pub use quanta_index_contract::QueryConstraintIntersectionV1
 pub use quanta_index_contract::QueryConstraintSetV1
 pub use quanta_index_contract::QueryResultWindowV1
 pub use quanta_index_contract::RepoId
@@ -4216,6 +4218,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::WeightsH
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::WeightsHashError
 pub fn quanta_index_contract::lex::compute_parse_tree_source_hash(text: &str) -> [u8; 32]
 pub mod quanta_index_contract::query
+pub use quanta_index_contract::query::ExactRepoRelativePathV1
 pub use quanta_index_contract::query::GenerationPin
 pub use quanta_index_contract::query::GenerationSelector
 pub use quanta_index_contract::query::LQ_VERSION_TAG
@@ -4242,6 +4245,7 @@ pub use quanta_index_contract::query::LqStructuralNode
 pub use quanta_index_contract::query::LqType
 pub use quanta_index_contract::query::LqVisibility
 pub use quanta_index_contract::query::LqYesNoOnly
+pub use quanta_index_contract::query::QueryConstraintIntersectionV1
 pub use quanta_index_contract::query::QueryConstraintSetV1
 pub use quanta_index_contract::query::TextQueryRequest
 pub use quanta_index_contract::query::TextQuerySyntax

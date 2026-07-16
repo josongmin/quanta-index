@@ -15,10 +15,10 @@ use quanta_index_contract::lex::{
     LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship, SymbolSpan,
 };
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, ClearLexicalSurface, LQ_VERSION_TAG, LexicalFullBundle,
-    LqCase, LqCountBound, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType,
-    LqPredicateArg, LqQuery, LqSelect, LqSpan, LqType, LqVisibility, LqYesNoOnly,
-    ManifestGeneration, QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId,
+    BatchIngestMode, ChunkId, ChunkRecord, ClearLexicalSurface, ExactRepoRelativePathV1,
+    LQ_VERSION_TAG, LexicalFullBundle, LqCase, LqCountBound, LqExpr, LqFileScope, LqFilter, LqLeaf,
+    LqOptions, LqPatternType, LqPredicateArg, LqQuery, LqSelect, LqSpan, LqType, LqVisibility,
+    LqYesNoOnly, ManifestGeneration, QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId,
     SearchCorpusIngestBatch, SearchScopeSurface, SymbolId, UpsertChunk, UpsertSymbol,
 };
 use quanta_index_core::{CoreError, LexicalIndexOpenPort, SearchCorpusBatchBuildPort};
@@ -558,6 +558,142 @@ fn language_constraint_is_pushed_into_one_pre_limit_candidate_query_v1() -> Test
         3,
         "OR-set constraints must not execute as an intersection"
     );
+    Ok(())
+}
+
+#[test]
+fn exact_path_constraint_is_applied_before_limit_and_on_index_no_scan_v1() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let ops = vec![
+        upsert_with_metadata(
+            "wrong-best",
+            "other/lib.rs",
+            "rust",
+            1,
+            1,
+            "needle needle needle",
+        )?,
+        upsert_with_metadata("requested", "src/lib.rs", "rust", 1, 1, "needle")?,
+        upsert_with_metadata("unrelated", "src/main.rs", "rust", 1, 1, "needle")?,
+        upsert_symbol("wrong-symbol", "other/lib.rs", "rust", "needle", 1, 1)?,
+        upsert_symbol("requested-symbol", "src/lib.rs", "rust", "needle", 1, 1)?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let constraints = QueryConstraintSetV1::from_exact_repo_relative_path(
+        ExactRepoRelativePathV1::new("src/lib.rs").map_err(str::to_string)?,
+    );
+    let query = make_query(LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())));
+
+    let indexed = searcher.search_constrained(&query, &constraints, 1)?;
+    assert_eq!(
+        indexed
+            .iter()
+            .map(|candidate| candidate.candidate_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["requested"],
+        "post-limit filtering would lose the lower-scoring exact-path candidate"
+    );
+
+    let symbols = searcher.search_symbols_constrained(&query, &constraints, 1)?;
+    assert_eq!(
+        symbols
+            .iter()
+            .map(|candidate| candidate.candidate_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["requested-symbol"],
+        "symbol ranking must receive the same exact-path predicate before top_k"
+    );
+
+    let all = searcher.search_all_constrained(&query, &constraints)?;
+    assert_eq!(
+        all.iter()
+            .map(|candidate| candidate.candidate_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["requested"],
+        "unbounded scope materialization must not admit another same-basename path"
+    );
+
+    let mut unindexed = query;
+    unindexed.options.index_mode = Some(LqYesNoOnly::No);
+    let scanned = searcher.search_constrained(&unindexed, &constraints, 10)?;
+    assert_eq!(
+        scanned
+            .iter()
+            .map(|candidate| candidate.candidate_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["requested"],
+        "index:no must constrain during the scan, before result stabilization"
+    );
+
+    let language_error = searcher
+        .search_constrained(
+            &unindexed,
+            &QueryConstraintSetV1::from_languages([language_code("rust")?]),
+            10,
+        )
+        .expect_err("index:no must not infer typed language authority from a path extension");
+    assert!(
+        matches!(&language_error, CoreError::NotImplemented(message) if message.contains("typed language constraints require indexed execution")),
+        "unexpected index:no typed-language error: {language_error:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn exact_path_constraint_only_query_treats_dsl_metacharacters_as_literal_v1() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let literal_path = "src/a*)' \"literal file.rs";
+    let ops = vec![
+        upsert_with_metadata("literal-chunk", literal_path, "rust", 1, 1, "body")?,
+        upsert_with_metadata("other-chunk", "src/other.rs", "rust", 1, 1, "body")?,
+        upsert_symbol("literal-symbol", literal_path, "rust", "TargetSymbol", 1, 1)?,
+        upsert_symbol("other-symbol", "src/other.rs", "rust", "TargetSymbol", 1, 1)?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let constraints = QueryConstraintSetV1::from_exact_repo_relative_path(
+        ExactRepoRelativePathV1::new(literal_path).map_err(str::to_string)?,
+    );
+    let constraint_only = make_query(LqExpr::Empty);
+
+    let symbols = searcher.search_symbols_constrained(&constraint_only, &constraints, 10)?;
+    assert_eq!(
+        symbols
+            .iter()
+            .map(|candidate| candidate.candidate_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["literal-symbol"],
+        "typed path characters must be an exact term, never parsed as Sourcegraph syntax"
+    );
+    let chunks = searcher.search_constrained(&constraint_only, &constraints, 10)?;
+    assert_eq!(
+        chunks
+            .iter()
+            .map(|candidate| candidate.candidate_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["literal-chunk"]
+    );
+
+    for error in [
+        searcher
+            .search_symbols_constrained(
+                &constraint_only,
+                &QueryConstraintSetV1::unconstrained(),
+                10,
+            )
+            .expect_err("empty unconstrained symbol query must remain rejected"),
+        searcher
+            .search_constrained(&constraint_only, &QueryConstraintSetV1::unconstrained(), 10)
+            .expect_err("empty unconstrained text query must remain rejected"),
+    ] {
+        assert!(
+            matches!(&error, CoreError::InvalidContract(message) if message.contains("empty query is rejected")),
+            "unexpected empty-query rejection: {error:?}"
+        );
+    }
     Ok(())
 }
 

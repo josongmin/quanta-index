@@ -693,8 +693,19 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
         languages: impl IntoIterator<Item = quanta_index_contract::lex::LanguageCode>,
     ) -> Self {
         self.transition(|state| {
+            state.constraints = std::mem::take(&mut state.constraints).with_languages(languages);
+        })
+    }
+
+    /// Restrict candidate generation to one validated repository-relative path.
+    #[must_use]
+    pub fn exact_repo_relative_path(
+        self,
+        path: quanta_index_contract::ExactRepoRelativePathV1,
+    ) -> Self {
+        self.transition(|state| {
             state.constraints =
-                quanta_index_contract::QueryConstraintSetV1::from_languages(languages);
+                std::mem::take(&mut state.constraints).with_exact_repo_relative_path(path);
         })
     }
 

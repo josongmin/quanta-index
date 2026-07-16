@@ -128,8 +128,20 @@ impl<
         languages: impl IntoIterator<Item = quanta_index_contract::lex::LanguageCode>,
     ) -> Self {
         self.transition(|state| {
+            state.constraints = std::mem::take(&mut state.constraints).with_languages(languages);
+        })
+    }
+
+    /// Restrict both dense recall and the optional lexical scope leg to one
+    /// validated repository-relative path.
+    #[must_use]
+    pub fn exact_repo_relative_path(
+        self,
+        path: quanta_index_contract::ExactRepoRelativePathV1,
+    ) -> Self {
+        self.transition(|state| {
             state.constraints =
-                quanta_index_contract::QueryConstraintSetV1::from_languages(languages);
+                std::mem::take(&mut state.constraints).with_exact_repo_relative_path(path);
         })
     }
 

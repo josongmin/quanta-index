@@ -1014,6 +1014,15 @@ impl LoadedGeneration {
         Some(format!("({})", clauses.join(" OR ")))
     }
 
+    fn exact_repo_relative_path_filter(constraints: &QueryConstraintSetV1) -> Option<String> {
+        constraints.repo_relative_path_exact.as_ref().map(|path| {
+            format!(
+                "{COLUMN_REPO_RELATIVE_PATH} = {}",
+                crate::sql::quote_sql_string(path.as_str())
+            )
+        })
+    }
+
     async fn search_hits_constrained_async(
         &self,
         query_vector: &[f32],
@@ -1026,7 +1035,7 @@ impl LoadedGeneration {
         if allowed_ids.is_some_and(BTreeSet::is_empty) {
             return Ok(Vec::new());
         }
-        if (corpus_kind.is_some() || !constraints.is_unconstrained())
+        if (corpus_kind.is_some() || !constraints.language_any_of.is_empty())
             && !has_semantic_corpus_metadata_v1(self.format_version)
         {
             return Err(CoreError::Storage(format!(
@@ -1044,7 +1053,8 @@ impl LoadedGeneration {
                         crate::sql::quote_sql_string(kind)
                     )
                 }))
-                .chain(Self::language_any_of_filter(constraints)),
+                .chain(Self::language_any_of_filter(constraints))
+                .chain(Self::exact_repo_relative_path_filter(constraints)),
         );
         self.run_vector_query(query_vector, top_k, filter).await
     }

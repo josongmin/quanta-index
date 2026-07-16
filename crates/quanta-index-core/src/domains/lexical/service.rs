@@ -1,5 +1,6 @@
 use quanta_index_contract::{
     LqExpr, LqFilter, LqLeaf, LqPatternType, LqQuery, LqSelect, LqType, ManifestGeneration,
+    QueryConstraintSetV1,
 };
 
 use crate::error::CoreError;
@@ -10,11 +11,24 @@ pub struct LexicalPolicy;
 
 impl LexicalPolicy {
     pub fn validate_query(query: &LqQuery) -> Result<(), CoreError> {
+        Self::validate_query_inner(query, false)
+    }
+
+    /// Admit an empty symbol expression only when a validated exact-path
+    /// constraint supplies the complete candidate-generation authority.
+    pub fn validate_query_with_constraints(
+        query: &LqQuery,
+        constraints: &QueryConstraintSetV1,
+    ) -> Result<(), CoreError> {
+        Self::validate_query_inner(query, constraints.repo_relative_path_exact.is_some())
+    }
+
+    fn validate_query_inner(query: &LqQuery, allow_exact_path_only: bool) -> Result<(), CoreError> {
         let has_content_filter = query
             .filters
             .iter()
             .any(|filter| matches!(filter, LqFilter::Content { .. }));
-        if matches!(query.expr, LqExpr::Empty) && !has_content_filter {
+        if matches!(query.expr, LqExpr::Empty) && !has_content_filter && !allow_exact_path_only {
             return Err(CoreError::InvalidContract(
                 "lexical: empty query is rejected (must carry an expression or content filter)"
                     .to_string(),

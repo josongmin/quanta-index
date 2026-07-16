@@ -53,12 +53,12 @@ pub use quanta_index_contract::lex::{
 };
 pub use quanta_index_contract::{
     ChunkId, ChunkRecord, ChunkStructuralMetadata, EmbeddingDistanceMetric, EmbeddingId,
-    EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, GenerationPin,
-    GenerationSelector, GenerationSnapshot, GenerationStatusReport, HybridSeedCandidate,
-    HybridSeedLane, HybridSeedQueryRequest, HybridSeedQueryResponse, LexicalCandidate,
-    ManifestGeneration, OwnerDocKind, RepoId, RepoMapActivateGenerationRequest, RepoMapCallEdge,
-    RepoMapChunkNode, RepoMapContainsEdge, RepoMapDependsOnEdge, RepoMapEdge, RepoMapFileNode,
-    RepoMapGraphCoverage, RepoMapImportEdge, RepoMapModuleId, RepoMapModuleNode,
+    EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, ExactRepoRelativePathV1,
+    GenerationPin, GenerationSelector, GenerationSnapshot, GenerationStatusReport,
+    HybridSeedCandidate, HybridSeedLane, HybridSeedQueryRequest, HybridSeedQueryResponse,
+    LexicalCandidate, ManifestGeneration, OwnerDocKind, RepoId, RepoMapActivateGenerationRequest,
+    RepoMapCallEdge, RepoMapChunkNode, RepoMapContainsEdge, RepoMapDependsOnEdge, RepoMapEdge,
+    RepoMapFileNode, RepoMapGraphCoverage, RepoMapImportEdge, RepoMapModuleId, RepoMapModuleNode,
     RepoMapMutationAck, RepoMapNode, RepoMapNodeRef, RepoMapOwnsChunkEdge, RepoMapQueryRequest,
     RepoMapQueryResponse, RepoMapSourceBundle, RepoMapSymbolNode, RepoRelativePath, RevisionId,
     SearchCorpusGenerationIdentityV1, SearchCorpusReplaceScope, SearchCorpusTombstoneScope,

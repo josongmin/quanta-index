@@ -8,14 +8,15 @@ use quanta_index_contract::lex::{
 };
 use quanta_index_contract::{
     BatchPublishReceipt, CapabilityStatusV1, ChunkId, ChunkRecord, DiffHunkSide,
-    GenerationSelector, GenerationSnapshot, HistoryQueryRequest, HybridSeedCandidate,
-    HybridSeedLane, HybridSeedQueryResponse, ManifestGeneration, OwnerDocKind, PlannerStage,
-    PlannerTraceEntry, QueryResultWindowV1, RepoId, RepoMapChunkExactness, RepoMapExactnessSummary,
-    RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapMutationAck,
-    RepoMapRedactionState, RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest,
-    SearchCorpusGenerationIdentityV1, SearchExplanation, SearchPlaneControlIpcRequestEnvelope,
-    SearchPlaneControlIpcResponseEnvelope, SearchPlaneHistoryQueryResponse,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    ExactRepoRelativePathV1, GenerationSelector, GenerationSnapshot, HistoryQueryRequest,
+    HybridSeedCandidate, HybridSeedLane, HybridSeedQueryResponse, ManifestGeneration, OwnerDocKind,
+    PlannerStage, PlannerTraceEntry, QueryResultWindowV1, RepoId, RepoMapChunkExactness,
+    RepoMapExactnessSummary, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
+    RepoMapMutationAck, RepoMapRedactionState, RepoRelativePath, RevisionId,
+    RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1, SearchExplanation,
+    SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponseEnvelope,
+    SearchPlaneHistoryQueryResponse, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneIpcError, SearchPlaneQueryIpcRequestEnvelope,
     SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneRuntimeMetadataQueryResponse,
@@ -1022,6 +1023,190 @@ fn lexical_query_builder_carries_top_k_to_wire_contract() {
     assert_eq!(
         req.top_k, 42,
         "QI-QRY-01: TextQueryRequest.top_k must be set from builder"
+    );
+}
+
+#[test]
+fn lexical_constraint_setters_preserve_path_and_language_axes_v1() {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
+        TextQueryResponse {
+            generation: sample_generation_pin(),
+            results: Vec::new(),
+            window: QueryResultWindowV1::exact(0),
+            file_owner_rows: None,
+        },
+    )));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let path = ExactRepoRelativePathV1::new("src/lib.rs").expect("valid exact path");
+    let rust = LanguageCode::new("rust").expect("valid language");
+    let _response = ok_or_fail!(
+        client
+            .lexical()
+            .query()
+            .native("needle")
+            .exact_repo_relative_path(path.clone())
+            .language_any_of([rust.clone()])
+            .active(repo_id(), revision_id())
+            .top_k(3)
+            .execute()
+    );
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            quanta_index_contract::SearchPlaneQueryIpcRequest::Text(_)
+        ),
+        "expected text query request, got {:?}",
+        captured.payload
+    );
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::Text(request) = &captured.payload else {
+        return;
+    };
+    assert_eq!(
+        request.constraints.repo_relative_path_exact.as_ref(),
+        Some(&path),
+        "language setter must not erase the exact-path axis"
+    );
+    assert_eq!(
+        request.constraints.language_any_of,
+        std::collections::BTreeSet::from([rust])
+    );
+}
+
+#[test]
+fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
+    let path = ExactRepoRelativePathV1::new("src/lib.rs").expect("valid exact path");
+    let rust = LanguageCode::new("rust").expect("valid language");
+    let expected_languages = std::collections::BTreeSet::from([rust.clone()]);
+
+    let semantic_transport = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
+            generation: sample_generation_pin(),
+            results: Vec::new(),
+            window: QueryResultWindowV1::exact(0),
+            explanation: sample_explanation(),
+        }),
+    ));
+    let semantic_client = QuantaIndex::from_transports(
+        semantic_transport.clone(),
+        unused_control(),
+        unused_ingest(),
+    );
+    let _semantic_response = ok_or_fail!(
+        semantic_client
+            .semantic()
+            .query()
+            .text("needle")
+            .language_any_of([rust.clone()])
+            .exact_repo_relative_path(path.clone())
+            .scope_native("needle")
+            .scope_top_k(3)
+            .active(repo_id(), revision_id())
+            .top_k(3)
+            .execute()
+    );
+    let semantic_request = ok_or_fail!(only_query_request(semantic_transport.as_ref()));
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::Semantic(semantic_request) =
+        &semantic_request.payload
+    else {
+        return;
+    };
+    assert_eq!(
+        semantic_request
+            .constraints
+            .repo_relative_path_exact
+            .as_ref(),
+        Some(&path)
+    );
+    assert_eq!(
+        semantic_request.constraints.language_any_of,
+        expected_languages
+    );
+    assert_eq!(
+        semantic_request
+            .lexical_scope
+            .as_ref()
+            .map(|scope| &scope.constraints),
+        Some(&semantic_request.constraints),
+        "semantic scope and dense leg must share the exact same constraint authority"
+    );
+
+    let hybrid_transport = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::HybridSeed(HybridSeedQueryResponse {
+            generation: sample_generation_pin(),
+            manifest_digest: "manifest-digest".to_string(),
+            seed_candidates: Vec::new(),
+            seed_candidates_v2: None,
+            window: QueryResultWindowV1::exact(0),
+            explanation: sample_explanation(),
+        }),
+    ));
+    let hybrid_client =
+        QuantaIndex::from_transports(hybrid_transport.clone(), unused_control(), unused_ingest());
+    let _hybrid_response = ok_or_fail!(
+        hybrid_client
+            .search()
+            .hybrid_seed()
+            .native("needle")
+            .semantic_text("needle")
+            .exact_repo_relative_path(path.clone())
+            .language_any_of([rust.clone()])
+            .active(repo_id(), revision_id())
+            .top_k(3)
+            .execute()
+    );
+    let hybrid_request = ok_or_fail!(only_query_request(hybrid_transport.as_ref()));
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::HybridSeed(hybrid_request) =
+        &hybrid_request.payload
+    else {
+        return;
+    };
+    assert_eq!(
+        hybrid_request
+            .text_query
+            .constraints
+            .repo_relative_path_exact
+            .as_ref(),
+        Some(&path)
+    );
+    assert_eq!(
+        hybrid_request.text_query.constraints.language_any_of,
+        expected_languages
+    );
+
+    let symbol_transport = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse {
+            generation: sample_generation_pin(),
+            results: Vec::new(),
+            window: QueryResultWindowV1::exact(0),
+        }),
+    ));
+    let symbol_client =
+        QuantaIndex::from_transports(symbol_transport.clone(), unused_control(), unused_ingest());
+    let _symbol_response = ok_or_fail!(
+        symbol_client
+            .symbol()
+            .query()
+            .native("")
+            .language_any_of([rust])
+            .exact_repo_relative_path(path.clone())
+            .active(repo_id(), revision_id())
+            .top_k(3)
+            .execute()
+    );
+    let symbol_request = ok_or_fail!(only_query_request(symbol_transport.as_ref()));
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::Symbol(symbol_request) =
+        &symbol_request.payload
+    else {
+        return;
+    };
+    assert_eq!(
+        symbol_request.constraints.repo_relative_path_exact.as_ref(),
+        Some(&path)
+    );
+    assert_eq!(
+        symbol_request.constraints.language_any_of,
+        expected_languages
     );
 }
 

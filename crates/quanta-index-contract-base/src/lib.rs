@@ -23,8 +23,8 @@ pub use ids::{
     FileId, GenerationId, ManifestDigest, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
 };
 pub use query::{
-    GenerationPin, GenerationSelector, LanguageCode, QueryConstraintSetV1, TextQueryRequest,
-    TextQuerySyntax,
+    ExactRepoRelativePathV1, GenerationPin, GenerationSelector, LanguageCode,
+    QueryConstraintIntersectionV1, QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax,
 };
 pub use results::{
     CandidateCountV1, DiffCandidate, DiffHunkSide, HighlightSpan, LexicalCandidate,
