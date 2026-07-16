@@ -10,17 +10,18 @@
 //! There is no steady-state journal authority and no full replay; seeding cost
 //! is bounded by the count of sealed generations, not total batch history.
 
-use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 use quanta_index_contract::{
-    ManifestGeneration, OwnerDocKind, RepoId, RevisionId, SearchPlaneTrackKind,
-    SemanticCorpusKindV1, SemanticIngestBatch,
+    ManifestGeneration, OwnerDocKind, SearchPlaneTrackKind, SemanticCorpusKindV1,
+    SemanticIngestBatch,
 };
 use quanta_index_core::{CoreError, SemanticBatchBuildPort};
-use quanta_index_search_plane::{Ledger, LegacySemanticJournalStore};
+use quanta_index_search_plane::Ledger;
 use quanta_index_semantic::scan_persisted_generations;
+
+use super::LegacySemanticJournalStore;
 
 /// Outcome of the one-shot legacy semantic journal migration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,9 +63,9 @@ pub struct SemanticBootReport {
     pub seed_micros: u128,
 }
 
-type GenerationKey = (RepoId, RevisionId, ManifestGeneration);
-
-fn normalize_legacy_semantic_batch_v1(batch: &SemanticIngestBatch) -> SemanticIngestBatch {
+pub(super) fn normalize_legacy_semantic_batch_v1(
+    batch: &SemanticIngestBatch,
+) -> SemanticIngestBatch {
     let mut normalized = batch.clone();
     for scope in &mut normalized.replace_scopes {
         let legacy_owner_id =
@@ -92,40 +93,7 @@ pub fn migrate_legacy_semantic_journal(
     builder: &(dyn SemanticBatchBuildPort + Send + Sync),
     semantic_root: &Path,
 ) -> Result<SemanticMigrationOutcome, CoreError> {
-    if store.migration_complete() {
-        return Ok(SemanticMigrationOutcome::AlreadyMigrated);
-    }
-    if !store.has_legacy_journal() {
-        return Ok(SemanticMigrationOutcome::NoLegacyJournal);
-    }
-
-    let mut sealed: BTreeSet<GenerationKey> = BTreeSet::new();
-    for record in scan_persisted_generations(semantic_root)? {
-        let _present = sealed.insert((record.repo_id, record.revision_id, record.generation));
-    }
-
-    let mut imported: usize = 0;
-    for legacy_batch in store.legacy_batches() {
-        let batch = normalize_legacy_semantic_batch_v1(legacy_batch);
-        let key: GenerationKey = (
-            batch.repo_id.clone(),
-            batch.revision_id.clone(),
-            batch.generation,
-        );
-        if sealed.contains(&key) {
-            continue;
-        }
-        builder.build_batch(&batch)?;
-        if batch.seal {
-            let _present = sealed.insert(key);
-        }
-        imported = imported.checked_add(1).ok_or_else(|| {
-            CoreError::Storage("semantic migration: imported counter overflow".to_string())
-        })?;
-    }
-
-    store.mark_migration_complete()?;
-    Ok(SemanticMigrationOutcome::Migrated { imported })
+    super::legacy_semantic_migration::migrate(store, builder, semantic_root)
 }
 
 /// Seed semantic readiness directly from sealed durable generations.
@@ -179,12 +147,13 @@ pub fn seed_persisted_semantic_readiness(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::path::PathBuf;
 
     use quanta_index_contract::{
         BatchIngestMode, EmbeddingDistanceMetric, EmbeddingModelContract, EmbeddingNormalization,
-        EmbeddingRecord, OwnerDocKind, RepoRelativePath, SearchScopeKey, SearchScopeSurface,
-        SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
+        EmbeddingRecord, OwnerDocKind, RepoId, RepoRelativePath, RevisionId, SearchScopeKey,
+        SearchScopeSurface, SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
     };
     use quanta_index_core::{GenerationStorageKeyV1, SemanticIndexOpenPort};
     use quanta_index_semantic::{
@@ -192,13 +161,14 @@ mod tests {
     };
 
     use super::{
-        Arc, BTreeSet, GenerationKey, Ledger, LegacySemanticJournalStore, ManifestGeneration,
-        RepoId, RevisionId, RwLock, SearchPlaneTrackKind, SemanticMigrationOutcome,
-        migrate_legacy_semantic_journal, normalize_legacy_semantic_batch_v1,
-        scan_persisted_generations, seed_persisted_semantic_readiness,
+        Arc, Ledger, LegacySemanticJournalStore, ManifestGeneration, RwLock, SearchPlaneTrackKind,
+        SemanticMigrationOutcome, migrate_legacy_semantic_journal,
+        normalize_legacy_semantic_batch_v1, scan_persisted_generations,
+        seed_persisted_semantic_readiness,
     };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+    type GenerationKey = (RepoId, RevisionId, ManifestGeneration);
 
     fn repo_id() -> RepoId {
         RepoId::new("repo-boot")
@@ -484,7 +454,7 @@ mod tests {
             vec![0.0, 1.0, 0.0],
             true,
         )?;
-        LegacySemanticJournalStore::write_legacy_journal(&legacy_root, &[first, second])?;
+        LegacySemanticJournalStore::stage_for_test(&legacy_root, &[first, second])?;
 
         let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
         let store = LegacySemanticJournalStore::open(&legacy_root)?;
@@ -508,6 +478,7 @@ mod tests {
             .collect();
 
         // Re-running migration is idempotent (marker present -> AlreadyMigrated).
+        drop(store);
         let store_again = LegacySemanticJournalStore::open(&legacy_root)?;
         let outcome_again =
             migrate_legacy_semantic_journal(&store_again, &adapter, &semantic_root)?;
@@ -586,7 +557,7 @@ mod tests {
             vec![0.0, 1.0, 0.0],
             true,
         )?;
-        LegacySemanticJournalStore::write_legacy_journal(&legacy_root, &[g1, g2])?;
+        LegacySemanticJournalStore::stage_for_test(&legacy_root, &[g1, g2])?;
 
         let store = LegacySemanticJournalStore::open(&legacy_root)?;
         let outcome = migrate_legacy_semantic_journal(&store, &adapter, &semantic_root)?;
@@ -631,7 +602,7 @@ mod tests {
         let resumed_adapter = SemanticAdapter::with_state_root(resumed_semantic.clone())?;
         build_legacy_durable(&resumed_adapter, &a)?;
         build_legacy_durable(&resumed_adapter, &b)?;
-        let store = LegacySemanticJournalStore::write_legacy_journal(
+        let store = LegacySemanticJournalStore::stage_for_test(
             resumed.path().join("semantic"),
             &[a.clone(), b.clone(), c.clone()],
         )

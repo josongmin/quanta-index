@@ -53,12 +53,13 @@ use crate::layout::{
 use crate::manifest::{
     FORMAT_VERSION, LEGACY_BUILD_CONTRACT_FORMAT_VERSION, LEGACY_LANCEDB_FORMAT_VERSION,
     LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION, LEGACY_UNCOMMITTED_MEMBERSHIP_FORMAT_VERSION,
-    SemanticManifest,
+    LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION, SemanticManifest,
 };
 use crate::membership_integrity::{
     ClusterMembershipStoredRowV1 as ClusterMembershipIntegrityRowV1,
     cluster_membership_commitment_v1,
 };
+use crate::semantic_row_integrity_v1::semantic_row_commitment_v1;
 use crate::sql::build_id_in_filter;
 
 const COLUMN_DISTANCE: &str = "_distance";
@@ -67,6 +68,7 @@ fn has_semantic_corpus_metadata_v1(format_version: u32) -> bool {
     matches!(
         format_version,
         FORMAT_VERSION
+            | LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION
             | LEGACY_UNCOMMITTED_MEMBERSHIP_FORMAT_VERSION
             | LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION
     )
@@ -93,6 +95,7 @@ fn load_generation_contract_for_manifest(
     }
     match manifest.format_version {
         FORMAT_VERSION
+        | LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION
         | LEGACY_UNCOMMITTED_MEMBERSHIP_FORMAT_VERSION
         | LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION
         | LEGACY_BUILD_CONTRACT_FORMAT_VERSION => Err(CoreError::Storage(format!(
@@ -319,8 +322,27 @@ pub(crate) async fn open_generation(
             manifest.row_count
         )));
     }
+    if manifest.format_version == FORMAT_VERSION {
+        let commitment = semantic_row_commitment_v1(&table).await?;
+        if commitment.row_count != manifest.row_count
+            || commitment.root_digest != manifest.semantic_row_root_digest
+        {
+            return Err(CoreError::Typed {
+                code: "SEMANTIC_ROW_ROOT_MISMATCH".to_string(),
+                message: format!(
+                    "semantic: main table does not match sealed row root for repo={} revision={} generation={}",
+                    repo.as_str(),
+                    revision.as_str(),
+                    generation.get()
+                ),
+            });
+        }
+    }
 
-    let cluster_membership = if manifest.format_version == FORMAT_VERSION {
+    let cluster_membership = if matches!(
+        manifest.format_version,
+        FORMAT_VERSION | LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION
+    ) {
         let names = connection
             .table_names()
             .execute()

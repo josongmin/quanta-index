@@ -10,11 +10,17 @@
 //! concrete adapter types (materializers, channel mirrors, repo-map ingest);
 //! this module holds only [`Arc<dyn ...Port>`] (CLAUDE.md DIP rule).
 
-use std::fmt;
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
+use crate::readiness::{
+    SEARCH_CORPUS_LOCK_STRIPES_V1, SearchCorpusHistoryRetentionReceiptV1,
+    search_corpus_lock_stripe_v1,
+};
+use crate::semantic_derive::{
+    DEFAULT_SEMANTIC_DERIVATION_MODE_V1, SemanticDerivationModeV1,
+    derive_semantic_batch_with_mode_v1, semantic_derivation_mode_from_env_v1,
+};
+use crate::{AuxiliaryAuthorityStore, Ledger, SealedSearchCorpusAuthorityStateV1};
 use quanta_index_contract::{
     BatchPublishReceipt, DirtyIngestBatch, DirtyMutation, GenerationSnapshot, HistoryIngestBatch,
     HistoryRefMutation, ManifestGeneration, RepoId, RepoMapMutationAck, RevisionId,
@@ -29,20 +35,6 @@ use quanta_index_core::{
     RepoMetaIngestPort, RepoTopicIngestPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
     SemanticBatchBuildPort, SemanticIngestPort, TextEmbeddingProvider,
 };
-use quanta_index_ipc::{decode_cbor_payload, encode_cbor_payload};
-use serde::de::{self, MapAccess, Visitor};
-use serde::ser::SerializeStruct;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-use crate::readiness::{
-    SEARCH_CORPUS_LOCK_STRIPES_V1, SearchCorpusHistoryRetentionReceiptV1,
-    search_corpus_lock_stripe_v1,
-};
-use crate::semantic_derive::{
-    DEFAULT_SEMANTIC_DERIVATION_MODE_V1, SemanticDerivationModeV1,
-    derive_semantic_batch_with_mode_v1, semantic_derivation_mode_from_env_v1,
-};
-use crate::{AuxiliaryAuthorityStore, Ledger, SealedSearchCorpusAuthorityStateV1};
 
 const ERR_INVALID: &str = "INVALID_REQUEST";
 const ERR_NOT_READY: &str = "NOT_READY";
@@ -50,68 +42,6 @@ const ERR_NOT_FOUND: &str = "NOT_FOUND";
 const ERR_NOT_IMPLEMENTED: &str = "NOT_IMPLEMENTED";
 const ERR_INTERNAL: &str = "INTERNAL";
 const ERR_SEARCH_CORPUS_GENERATION_CONFLICT: &str = "SEARCH_CORPUS_GENERATION_CONFLICT";
-
-macro_rules! impl_struct_serde {
-    ($ty:ident { $($field:ident : $field_ty:ty),+ $(,)? }) => {
-        impl Serialize for $ty {
-            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: Serializer,
-            {
-                const FIELDS: &[&str] = &[$(stringify!($field)),+];
-                let mut state = serializer.serialize_struct(stringify!($ty), FIELDS.len())?;
-                $(state.serialize_field(stringify!($field), &self.$field)?;)+
-                state.end()
-            }
-        }
-
-        impl<'de> Deserialize<'de> for $ty {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: Deserializer<'de>,
-            {
-                struct StructVisitor;
-
-                impl<'de> Visitor<'de> for StructVisitor {
-                    type Value = $ty;
-
-                    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                        formatter.write_str(concat!("struct ", stringify!($ty)))
-                    }
-
-                    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-                    where
-                        A: MapAccess<'de>,
-                    {
-                        const FIELDS: &[&str] = &[$(stringify!($field)),+];
-                        $(let mut $field: Option<$field_ty> = None;)+
-                        while let Some(key) = map.next_key::<String>()? {
-                            match key.as_str() {
-                                $(
-                                    stringify!($field) => {
-                                        if $field.is_some() {
-                                            return Err(de::Error::duplicate_field(stringify!($field)));
-                                        }
-                                        $field = Some(map.next_value()?);
-                                    }
-                                )+
-                                _ => return Err(de::Error::unknown_field(key.as_str(), FIELDS)),
-                            }
-                        }
-                        Ok($ty {
-                            $(
-                                $field: $field.ok_or_else(|| de::Error::missing_field(stringify!($field)))?,
-                            )+
-                        })
-                    }
-                }
-
-                const FIELDS: &[&str] = &[$(stringify!($field)),+];
-                deserializer.deserialize_struct(stringify!($ty), FIELDS, StructVisitor)
-            }
-        }
-    };
-}
 
 pub trait HistoryIngestPort: Send + Sync {
     fn publish_batch(&self, batch: &HistoryIngestBatch) -> Result<BatchPublishReceipt, CoreError>;
@@ -131,108 +61,6 @@ pub trait StructuralIngestPort: Send + Sync {
         &self,
         batch: &StructuralIngestBatch,
     ) -> Result<BatchPublishReceipt, CoreError>;
-}
-
-#[derive(Clone, Debug, Default)]
-struct SemanticAuthorityJournal {
-    batches: Vec<SemanticIngestBatch>,
-}
-
-impl_struct_serde!(SemanticAuthorityJournal {
-    batches: Vec<SemanticIngestBatch>,
-});
-
-/// Legacy semantic journal authority — **migration input only** (LDB-04).
-///
-/// Before the Lance cutover this was the live semantic durability path
-/// (`journal.cbor` plus boot replay). It is now read-only: the durable
-/// generation directories under `state_root/indexes/semantic` are the sole
-/// serve-time authority. This type exists solely to let a one-shot migration
-/// read legacy batches and record an idempotent completion marker. It is never
-/// a second live authority.
-#[derive(Debug)]
-pub struct LegacySemanticJournalStore {
-    journal_path: PathBuf,
-    migrated_marker_path: PathBuf,
-    batches: Vec<SemanticIngestBatch>,
-}
-
-impl LegacySemanticJournalStore {
-    pub fn open(root: impl AsRef<Path>) -> Result<Self, CoreError> {
-        let root = root.as_ref();
-        fs::create_dir_all(root).map_err(|err| {
-            CoreError::Storage(format!(
-                "semantic authority store: create root {}: {err}",
-                root.display()
-            ))
-        })?;
-        let journal_path = root.join("journal.cbor");
-        let migrated_marker_path = root.join("MIGRATED");
-        let journal = read_cbor::<SemanticAuthorityJournal>(&journal_path, "semantic journal")?
-            .unwrap_or_default();
-        Ok(Self {
-            journal_path,
-            migrated_marker_path,
-            batches: journal.batches,
-        })
-    }
-
-    /// True when a legacy `journal.cbor` is present on disk.
-    #[must_use]
-    pub fn has_legacy_journal(&self) -> bool {
-        self.journal_path.exists()
-    }
-
-    /// True when the one-shot migration completion marker is present.
-    #[must_use]
-    pub fn migration_complete(&self) -> bool {
-        self.migrated_marker_path.exists()
-    }
-
-    /// Legacy batches in journal order (empty when no journal exists).
-    #[must_use]
-    pub fn legacy_batches(&self) -> &[SemanticIngestBatch] {
-        &self.batches
-    }
-
-    /// Write a legacy-format semantic journal — the inverse of [`Self::open`]'s
-    /// read. The steady-state ingest path no longer writes a journal; this is
-    /// retained for migration round-trip proofs and offline journal staging.
-    pub fn write_legacy_journal(
-        root: impl AsRef<Path>,
-        batches: &[SemanticIngestBatch],
-    ) -> Result<(), CoreError> {
-        let root = root.as_ref();
-        fs::create_dir_all(root).map_err(|err| {
-            CoreError::Storage(format!(
-                "semantic authority store: create root {}: {err}",
-                root.display()
-            ))
-        })?;
-        let journal = SemanticAuthorityJournal {
-            batches: batches.to_vec(),
-        };
-        let bytes = encode_cbor_payload(&journal)
-            .map_err(|err| CoreError::Storage(format!("semantic journal: encode: {err}")))?;
-        let journal_path = root.join("journal.cbor");
-        fs::write(&journal_path, bytes).map_err(|err| {
-            CoreError::Storage(format!(
-                "semantic journal: write {}: {err}",
-                journal_path.display()
-            ))
-        })
-    }
-
-    /// Record idempotent migration completion. The legacy journal is retained
-    /// (not deleted) so the only recoverable legacy state survives validation.
-    pub fn mark_migration_complete(&self) -> Result<(), CoreError> {
-        fs::write(&self.migrated_marker_path, b"migrated").map_err(|err| {
-            CoreError::Storage(format!(
-                "semantic migration marker {}: {err}",
-                self.migrated_marker_path.display()
-            ))
-        })
-    }
 }
 
 /// Direct search-corpus batch materializer that commits lexical and derived
@@ -1202,30 +1030,6 @@ impl SearchPlaneIngestDispatcher {
     }
 }
 
-fn read_cbor<T: for<'de> Deserialize<'de>>(
-    path: &Path,
-    label: &str,
-) -> Result<Option<T>, CoreError> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(CoreError::Storage(format!(
-                "search-plane ingest: read {label} {}: {err}",
-                path.display()
-            )));
-        }
-    };
-    decode_cbor_payload(bytes.as_slice())
-        .map(Some)
-        .map_err(|err| {
-            CoreError::Storage(format!(
-                "search-plane ingest: decode {label} {}: {err}",
-                path.display()
-            ))
-        })
-}
-
 fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
     let (code, message) = match err {
         CoreError::InvalidContract(msg) => (ERR_INVALID.to_string(), msg),
@@ -1662,26 +1466,6 @@ mod tests {
             semantic_tombstone_scopes: Vec::new(),
             seal: true,
         })
-    }
-
-    #[test]
-    fn legacy_semantic_journal_store_exposes_migration_surface() -> TestRes {
-        let dir = tempfile::tempdir()?;
-        let store = LegacySemanticJournalStore::open(dir.path())?;
-        if store.has_legacy_journal() {
-            return Err("fresh store must report no legacy journal".into());
-        }
-        if !store.legacy_batches().is_empty() {
-            return Err("fresh store must expose no legacy batches".into());
-        }
-        if store.migration_complete() {
-            return Err("fresh store must not be marked migrated".into());
-        }
-        store.mark_migration_complete()?;
-        if !store.migration_complete() {
-            return Err("migration completion marker must persist".into());
-        }
-        Ok(())
     }
 
     #[test]
