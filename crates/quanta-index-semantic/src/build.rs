@@ -33,10 +33,11 @@ use lancedb::DistanceType;
 use lancedb::connect;
 use lancedb::index::Index;
 use lancedb::index::vector::IvfHnswSqIndexBuilder;
-use lancedb::query::ExecutableQuery as _;
+use lancedb::query::{ExecutableQuery as _, QueryBase as _};
 use quanta_index_contract::{
     EmbeddingDistanceMetric, OwnerDocKind, SearchScopeSurface, SemanticCorpusKindV1,
     SemanticIngestBatch, SemanticReplaceScope, SemanticTombstoneScope,
+    cluster_membership_content_digest_v1,
 };
 use quanta_index_core::CoreError;
 use quanta_index_core::domains::semantic::SemanticPolicy;
@@ -44,9 +45,11 @@ use quanta_index_core::domains::semantic::SemanticPolicy;
 use crate::errors::{arrow_err, fs_err, lancedb_err};
 use crate::generation_contract::GenerationContract;
 use crate::layout::{
-    self, COLUMN_CARD_SCHEMA_VERSION, COLUMN_CORPUS_KIND, COLUMN_OWNER_ID, COLUMN_OWNER_KIND,
+    self, CLUSTER_MEMBERSHIP_TABLE_NAME, COLUMN_AUTHORITY_DIGEST, COLUMN_CARD_SCHEMA_VERSION,
+    COLUMN_CORPUS_KIND, COLUMN_MEMBERSHIP_AUTHORITY_DIGEST, COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID,
+    COLUMN_MEMBERSHIP_OWNER_ID, COLUMN_MEMBERSHIP_OWNER_KIND, COLUMN_OWNER_ID, COLUMN_OWNER_KIND,
     COLUMN_RENDER_POLICY_DIGEST, COLUMN_REPO_RELATIVE_PATH, COLUMN_VECTOR, TABLE_NAME,
-    dimension_to_i32, semantic_schema,
+    cluster_membership_schema, dimension_to_i32, semantic_schema,
 };
 use crate::manifest::SemanticManifest;
 
@@ -361,6 +364,57 @@ async fn ensure_table(
         .map_err(|err| lancedb_err(&format!("create_empty_table {TABLE_NAME}"), err))
 }
 
+async fn ensure_cluster_membership_table(
+    connection: &lancedb::Connection,
+) -> Result<lancedb::Table, CoreError> {
+    let names = connection
+        .table_names()
+        .execute()
+        .await
+        .map_err(|err| lancedb_err("table_names", err))?;
+    if names
+        .iter()
+        .any(|name| name == CLUSTER_MEMBERSHIP_TABLE_NAME)
+    {
+        let table = connection
+            .open_table(CLUSTER_MEMBERSHIP_TABLE_NAME)
+            .execute()
+            .await
+            .map_err(|err| {
+                lancedb_err(&format!("open_table {CLUSTER_MEMBERSHIP_TABLE_NAME}"), err)
+            })?;
+        let schema = table
+            .schema()
+            .await
+            .map_err(|err| lancedb_err("read cluster membership schema", err))?;
+        for expected in cluster_membership_schema().fields() {
+            let live = schema.field_with_name(expected.name()).map_err(|err| {
+                CoreError::Storage(format!(
+                    "semantic: cluster membership table missing column `{}`: {err}",
+                    expected.name()
+                ))
+            })?;
+            if live.data_type() != expected.data_type() || live.is_nullable() {
+                return Err(CoreError::Storage(format!(
+                    "semantic: cluster membership column `{}` has incompatible schema",
+                    expected.name()
+                )));
+            }
+        }
+        return Ok(table);
+    }
+    connection
+        .create_empty_table(CLUSTER_MEMBERSHIP_TABLE_NAME, cluster_membership_schema())
+        .execute()
+        .await
+        .map_err(|err| {
+            lancedb_err(
+                &format!("create_empty_table {CLUSTER_MEMBERSHIP_TABLE_NAME}"),
+                err,
+            )
+        })
+}
+
 async fn verify_table_dimension(
     table: &lancedb::Table,
     expected_dimension: usize,
@@ -404,6 +458,63 @@ fn validate_replace_scope(scope: &SemanticReplaceScope, dimension: usize) -> Res
                 dimension
             )));
         }
+    }
+    let mut cluster_record_ids = BTreeSet::new();
+    for membership in &scope.cluster_memberships {
+        membership.validate_v1().map_err(|message| {
+            CoreError::InvalidContract(format!(
+                "semantic: invalid cluster membership {}: {message}",
+                membership.cluster_record_id
+            ))
+        })?;
+        if !cluster_record_ids.insert(membership.cluster_record_id.as_str()) {
+            return Err(CoreError::InvalidContract(format!(
+                "semantic: duplicate cluster membership record_id {:?}",
+                membership.cluster_record_id
+            )));
+        }
+        let embedding = scope
+            .embeddings
+            .iter()
+            .find(|embedding| embedding.record_id.as_ref() == membership.cluster_record_id)
+            .ok_or_else(|| {
+                CoreError::InvalidContract(format!(
+                    "semantic: cluster membership {:?} has no embedding in the same replace scope",
+                    membership.cluster_record_id
+                ))
+            })?;
+        if embedding.corpus_kind != SemanticCorpusKindV1::ClusterCard {
+            return Err(CoreError::InvalidContract(format!(
+                "semantic: membership {:?} does not identify a ClusterCard embedding",
+                membership.cluster_record_id
+            )));
+        }
+        if embedding.authority_digest.as_ref() != membership.authority_digest {
+            return Err(CoreError::InvalidContract(format!(
+                "semantic: membership {:?} authority digest does not match its ClusterCard embedding",
+                membership.cluster_record_id
+            )));
+        }
+    }
+    let cluster_embedding_count = scope
+        .embeddings
+        .iter()
+        .filter(|embedding| embedding.corpus_kind == SemanticCorpusKindV1::ClusterCard)
+        .count();
+    if cluster_embedding_count != scope.cluster_memberships.len() {
+        return Err(CoreError::InvalidContract(format!(
+            "semantic: ClusterCard embeddings require one structured membership each; embeddings={cluster_embedding_count} memberships={}",
+            scope.cluster_memberships.len()
+        )));
+    }
+    if !scope
+        .cluster_memberships
+        .windows(2)
+        .all(|pair| pair[0].cluster_record_id < pair[1].cluster_record_id)
+    {
+        return Err(CoreError::InvalidContract(
+            "semantic: cluster memberships must use canonical cluster_record_id order".to_string(),
+        ));
     }
     Ok(())
 }
@@ -603,6 +714,70 @@ async fn collect_manifest_coverage(
     })
 }
 
+async fn validate_cluster_membership_coverage_v1(
+    semantic_table: &lancedb::Table,
+    membership_table: &lancedb::Table,
+) -> Result<(), CoreError> {
+    let cluster_predicate = format!(
+        "{COLUMN_CORPUS_KIND} = {}",
+        crate::sql::quote_sql_string(SemanticCorpusKindV1::ClusterCard.as_code_str())
+    );
+    let semantic_batches: Vec<RecordBatch> = semantic_table
+        .query()
+        .only_if(cluster_predicate)
+        .execute()
+        .await
+        .map_err(|err| lancedb_err("query ClusterCard coverage", err))?
+        .try_collect()
+        .await
+        .map_err(|err| lancedb_err("collect ClusterCard coverage", err))?;
+    let mut expected = BTreeSet::new();
+    for batch in semantic_batches {
+        let record_ids = column_as::<StringArray>(&batch, crate::layout::COLUMN_RECORD_ID, "Utf8")?;
+        let authority_digests = column_as::<StringArray>(&batch, COLUMN_AUTHORITY_DIGEST, "Utf8")?;
+        for row in 0..batch.num_rows() {
+            if !expected.insert((
+                record_ids.value(row).to_owned(),
+                authority_digests.value(row).to_owned(),
+            )) {
+                return Err(CoreError::Storage(format!(
+                    "semantic: duplicate ClusterCard record_id {:?} in sealed dataset",
+                    record_ids.value(row)
+                )));
+            }
+        }
+    }
+    let membership_batches: Vec<RecordBatch> = membership_table
+        .query()
+        .execute()
+        .await
+        .map_err(|err| lancedb_err("query cluster membership coverage", err))?
+        .try_collect()
+        .await
+        .map_err(|err| lancedb_err("collect cluster membership coverage", err))?;
+    let mut observed = BTreeSet::new();
+    for batch in membership_batches {
+        let record_ids =
+            column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID, "Utf8")?;
+        let authority_digests =
+            column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_AUTHORITY_DIGEST, "Utf8")?;
+        for row in 0..batch.num_rows() {
+            let _inserted = observed.insert((
+                record_ids.value(row).to_owned(),
+                authority_digests.value(row).to_owned(),
+            ));
+        }
+    }
+    if observed != expected {
+        return Err(CoreError::InvalidContract(format!(
+            "semantic: sealed ClusterCard membership coverage mismatch; cluster_records={} membership_records={}",
+            expected.len(),
+            observed.len()
+        )));
+    }
+    Ok(())
+}
+
 fn build_record_batch(
     scope: &SemanticReplaceScope,
     dimension: usize,
@@ -727,6 +902,78 @@ fn build_record_batch(
     .map_err(|err| arrow_err("RecordBatch::try_new", err))
 }
 
+fn build_cluster_membership_record_batch(
+    scope: &SemanticReplaceScope,
+) -> Result<Option<RecordBatch>, CoreError> {
+    let row_count = scope
+        .cluster_memberships
+        .iter()
+        .map(|membership| membership.members.len())
+        .sum();
+    if row_count == 0 {
+        return Ok(None);
+    }
+    let mut cluster_record_ids = Vec::with_capacity(row_count);
+    let mut authority_digests = Vec::with_capacity(row_count);
+    let mut owner_kinds = Vec::with_capacity(row_count);
+    let mut owner_ids = Vec::with_capacity(row_count);
+    let mut member_symbol_ids = Vec::with_capacity(row_count);
+    let mut ordinals = Vec::with_capacity(row_count);
+    let mut member_counts = Vec::with_capacity(row_count);
+    let mut membership_digests = Vec::with_capacity(row_count);
+    for membership in &scope.cluster_memberships {
+        let embedding = scope
+            .embeddings
+            .iter()
+            .find(|embedding| embedding.record_id.as_ref() == membership.cluster_record_id)
+            .ok_or_else(|| {
+                CoreError::InvalidContract(format!(
+                    "semantic: cluster membership {:?} lost its validated embedding",
+                    membership.cluster_record_id
+                ))
+            })?;
+        let member_count = u32::try_from(membership.members.len()).map_err(|error| {
+            CoreError::InvalidContract(format!(
+                "semantic: cluster membership member count overflow: {error}"
+            ))
+        })?;
+        let membership_digest = cluster_membership_content_digest_v1(&membership.members);
+        for (ordinal, member) in membership.members.iter().enumerate() {
+            cluster_record_ids.push(membership.cluster_record_id.clone());
+            authority_digests.push(membership.authority_digest.clone());
+            owner_kinds.push(embedding.owner_kind.as_code_str().to_string());
+            owner_ids.push(embedding.owner_id.to_string());
+            member_symbol_ids.push(member.as_str().to_string());
+            ordinals.push(u32::try_from(ordinal).map_err(|error| {
+                CoreError::InvalidContract(format!(
+                    "semantic: cluster membership ordinal overflow: {error}"
+                ))
+            })?);
+            member_counts.push(member_count);
+            membership_digests.push(membership_digest.clone());
+        }
+    }
+    RecordBatch::try_new(
+        cluster_membership_schema(),
+        vec![
+            Arc::new(StringArray::from(cluster_record_ids)),
+            Arc::new(StringArray::from(authority_digests)),
+            Arc::new(StringArray::from(owner_kinds)),
+            Arc::new(StringArray::from(owner_ids)),
+            Arc::new(StringArray::from(member_symbol_ids)),
+            Arc::new(UInt32Array::from(ordinals)),
+            Arc::new(UInt32Array::from(member_counts)),
+            Arc::new(StringArray::from(membership_digests)),
+        ],
+    )
+    .map(Some)
+    .map_err(|error| {
+        CoreError::Storage(format!(
+            "semantic: build cluster membership record batch: {error}"
+        ))
+    })
+}
+
 fn semantic_scope_tuple_from_embedding(
     embedding: &quanta_index_contract::EmbeddingRecord,
 ) -> (String, String, String) {
@@ -775,6 +1022,53 @@ async fn delete_by_semantic_scope(
         .delete(predicate.as_str())
         .await
         .map_err(|err| lancedb_err(&format!("delete predicate `{predicate}`"), err))?;
+    Ok(())
+}
+
+async fn delete_cluster_membership_by_owner(
+    table: &lancedb::Table,
+    owner_kind: &str,
+    owner_id: &str,
+) -> Result<(), CoreError> {
+    let predicate = format!(
+        "{COLUMN_MEMBERSHIP_OWNER_KIND} = {} AND {COLUMN_MEMBERSHIP_OWNER_ID} = {}",
+        crate::sql::quote_sql_string(owner_kind),
+        crate::sql::quote_sql_string(owner_id),
+    );
+    let _result = table
+        .delete(predicate.as_str())
+        .await
+        .map_err(|err| lancedb_err(&format!("delete membership predicate `{predicate}`"), err))?;
+    Ok(())
+}
+
+async fn delete_cluster_membership_for_surface(
+    table: &lancedb::Table,
+    surface: SearchScopeSurface,
+) -> Result<(), CoreError> {
+    let owner_kinds = OwnerDocKind::ALL
+        .iter()
+        .copied()
+        .filter(|owner_kind| {
+            SearchScopeSurface::for_semantic_owner_v1(
+                *owner_kind,
+                SemanticCorpusKindV1::ClusterCard,
+            ) == surface
+        })
+        .map(OwnerDocKind::as_code_str)
+        .map(crate::sql::quote_sql_string)
+        .map(|owner_kind| format!("{COLUMN_MEMBERSHIP_OWNER_KIND} = {owner_kind}"))
+        .collect::<Vec<_>>();
+    if owner_kinds.is_empty() {
+        return Ok(());
+    }
+    let predicate = owner_kinds.join(" OR ");
+    let _result = table.delete(predicate.as_str()).await.map_err(|err| {
+        lancedb_err(
+            &format!("delete cluster membership surface predicate `{predicate}`"),
+            err,
+        )
+    })?;
     Ok(())
 }
 
@@ -863,6 +1157,43 @@ async fn delete_tombstone_scope_rows(
     delete_by_path(table, legacy_scope.repo_relative_path.as_str()).await
 }
 
+async fn delete_replace_scope_memberships(
+    table: &lancedb::Table,
+    scope: &SemanticReplaceScope,
+) -> Result<(), CoreError> {
+    let mut owners = BTreeSet::new();
+    for embedding in &scope.embeddings {
+        if embedding.corpus_kind == SemanticCorpusKindV1::ClusterCard {
+            let _inserted = owners.insert((
+                embedding.owner_kind.as_code_str(),
+                embedding.owner_id.as_ref(),
+            ));
+        }
+    }
+    for (owner_kind, owner_id) in owners {
+        delete_cluster_membership_by_owner(table, owner_kind, owner_id).await?;
+    }
+    Ok(())
+}
+
+async fn delete_tombstone_memberships(
+    table: &lancedb::Table,
+    scope: &SemanticTombstoneScope,
+) -> Result<(), CoreError> {
+    let Some(semantic_scope) = scope.semantic_scope.as_ref() else {
+        return Ok(());
+    };
+    if semantic_scope.corpus_kind != SemanticCorpusKindV1::ClusterCard {
+        return Ok(());
+    }
+    delete_cluster_membership_by_owner(
+        table,
+        semantic_scope.owner_kind.as_code_str(),
+        semantic_scope.owner_id.as_str(),
+    )
+    .await
+}
+
 async fn append_scope(
     table: &lancedb::Table,
     scope: &SemanticReplaceScope,
@@ -883,6 +1214,21 @@ async fn append_scope(
         .execute()
         .await
         .map_err(|err| lancedb_err("table.add", err))?;
+    Ok(())
+}
+
+async fn append_cluster_membership_scope(
+    table: &lancedb::Table,
+    scope: &SemanticReplaceScope,
+) -> Result<(), CoreError> {
+    let Some(batch) = build_cluster_membership_record_batch(scope)? else {
+        return Ok(());
+    };
+    let _result = table
+        .add(batch)
+        .execute()
+        .await
+        .map_err(|err| lancedb_err("cluster membership table.add", err))?;
     Ok(())
 }
 
@@ -1189,19 +1535,25 @@ pub(crate) async fn build_batch(
     let manifest_bytes = {
         let connection = open_connection(&working_dataset).await?;
         let table = ensure_table(&connection, dimension).await?;
+        let membership_table = ensure_cluster_membership_table(&connection).await?;
 
         for surface in &batch.clear_surfaces {
             delete_surface_rows(&table, *surface).await?;
+            delete_cluster_membership_for_surface(&membership_table, *surface).await?;
         }
         for scope in &batch.replace_scopes {
             delete_replace_scope_rows(&table, scope).await?;
+            delete_replace_scope_memberships(&membership_table, scope).await?;
             append_scope(&table, scope, dimension).await?;
+            append_cluster_membership_scope(&membership_table, scope).await?;
         }
         for scope in &batch.tombstone_scopes {
             delete_tombstone_scope_rows(&table, scope).await?;
+            delete_tombstone_memberships(&membership_table, scope).await?;
         }
 
         if batch.seal {
+            validate_cluster_membership_coverage_v1(&table, &membership_table).await?;
             Some(build_manifest_bytes(&table, batch, &generation_contract).await?)
         } else {
             None
@@ -1279,13 +1631,15 @@ mod tests {
     use tempfile::tempdir;
 
     use quanta_index_contract::{
-        BatchIngestMode, CapabilityStatusV1, EmbeddingDistanceMetric, EmbeddingId,
-        EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, ManifestGeneration,
-        OwnerDocKind, RepoId, RepoRelativePath, RevisionId, SearchScopeKey, SearchScopeSurface,
-        SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope, SemanticSourceScopeKeyV1,
-        SemanticTombstoneScope, SourceRoleV1, lex::LanguageCode,
+        BatchIngestMode, CapabilityStatusV1, ClusterMembershipReadFailureV1,
+        ClusterMembershipReadOutcomeV1, ClusterMembershipReadRequestV1, ClusterMembershipReplaceV1,
+        EmbeddingDistanceMetric, EmbeddingId, EmbeddingModelContract, EmbeddingNormalization,
+        EmbeddingRecord, GenerationPin, ManifestGeneration, OwnerDocKind, RepoId, RepoRelativePath,
+        RevisionId, SearchScopeKey, SearchScopeSurface, SemanticCorpusKindV1, SemanticIngestBatch,
+        SemanticReplaceScope, SemanticSourceScopeKeyV1, SemanticTombstoneScope, SourceRoleV1,
+        SymbolId, lex::LanguageCode,
     };
-    use quanta_index_core::CoreError;
+    use quanta_index_core::{CoreError, SemanticBatchBuildPort, SemanticIndexOpenPort};
 
     use super::{
         BACKUP_DIR_NAME, POST_DATASET_PRE_CONTRACT_PROMOTION, PRE_DATASET_PROMOTION,
@@ -1438,6 +1792,7 @@ mod tests {
                     SemanticCorpusKindV1::RawCodeFallback,
                     vector,
                 )?],
+                cluster_memberships: Vec::new(),
             }],
             tombstone_scopes: Vec::new(),
             seal,
@@ -1727,6 +2082,7 @@ mod tests {
                 SemanticCorpusKindV1::ModuleCard,
                 vec![0.0, 1.0, 0.0],
             )?],
+            cluster_memberships: Vec::new(),
         });
 
         validate_batch_scope_authority_v1(&batch)?;
@@ -1742,6 +2098,7 @@ mod tests {
                 SemanticCorpusKindV1::RawCodeFallback,
                 vec![0.0, 0.0, 1.0],
             )?],
+            cluster_memberships: Vec::new(),
         });
         let duplicate_owner = validate_batch_scope_authority_v1(&batch)
             .expect_err("duplicate semantic owner authority must remain rejected");
@@ -2085,6 +2442,7 @@ mod tests {
                     SemanticCorpusKindV1::SymbolCard,
                     vec![1.0, 0.0, 0.0],
                 )?],
+                cluster_memberships: Vec::new(),
             }],
             tombstone_scopes: Vec::new(),
             seal: true,
@@ -2203,6 +2561,7 @@ mod tests {
                         vec![0.0, 1.0, 0.0],
                     )?,
                 ],
+                cluster_memberships: Vec::new(),
             }],
             tombstone_scopes: Vec::new(),
             seal: false,
@@ -2303,6 +2662,7 @@ mod tests {
                         vec![0.0, 1.0, 0.0],
                     )?,
                 ],
+                cluster_memberships: Vec::new(),
             }],
             tombstone_scopes: Vec::new(),
             seal: false,
@@ -2433,6 +2793,7 @@ mod tests {
                     SemanticCorpusKindV1::SymbolCard,
                     vec![1.0, 0.0, 0.0],
                 )?],
+                cluster_memberships: Vec::new(),
             }],
             tombstone_scopes: Vec::new(),
             seal: true,
@@ -2497,6 +2858,7 @@ mod tests {
                         vec![0.0, 1.0, 0.0],
                     )?,
                 ],
+                cluster_memberships: Vec::new(),
             }],
             tombstone_scopes: Vec::new(),
             seal: true,
@@ -2522,6 +2884,140 @@ mod tests {
         assert_eq!(module_hits[0].record_id, "record-filter-module");
         assert_eq!(module_hits[0].owner_id, "module-filter");
         assert_eq!(module_hits[0].corpus_kind.as_deref(), Some("ModuleCard"));
+        Ok(())
+    }
+
+    #[test]
+    fn cluster_membership_same_seal_replace_base_clone_and_tombstone_v1() -> TestResult {
+        let temp = tempdir()?;
+        let root = temp.path().to_path_buf();
+        let adapter = crate::SemanticAdapter::with_state_root(root)?;
+        let base_generation = ManifestGeneration::new(71);
+        let replacement_generation = ManifestGeneration::new(72);
+        let tombstone_generation = ManifestGeneration::new(73);
+        let cluster_scope = SemanticSourceScopeKeyV1 {
+            corpus_kind: SemanticCorpusKindV1::ClusterCard,
+            owner_kind: OwnerDocKind::Module,
+            owner_id: "cluster-owner".to_string(),
+        };
+        let cluster_batch = |generation: ManifestGeneration,
+                             base_generation: Option<ManifestGeneration>,
+                             id: &str,
+                             members: Vec<SymbolId>|
+         -> Result<SemanticIngestBatch, String> {
+            Ok(SemanticIngestBatch {
+                repo_id: repo_id(),
+                revision_id: revision_id(),
+                generation,
+                base_generation,
+                manifest_digest: format!("manifest:{}", generation.get()),
+                batch_digest: format!("batch:{}", generation.get()),
+                mode: if base_generation.is_some() {
+                    BatchIngestMode::Delta
+                } else {
+                    BatchIngestMode::ReplaceGeneration
+                },
+                model_contract: model_contract(),
+                required_corpora: vec![SemanticCorpusKindV1::ClusterCard],
+                corpus_policy_digest: Some("policy:cluster:v1".to_string()),
+                clear_surfaces: Vec::new(),
+                replace_scopes: vec![SemanticReplaceScope {
+                    scope: scope("src/cluster.rs"),
+                    scope_digest: format!("scope:{id}"),
+                    embeddings: vec![embedding(
+                        id,
+                        "src/cluster.rs",
+                        OwnerDocKind::Module,
+                        "cluster-owner",
+                        SemanticCorpusKindV1::ClusterCard,
+                        vec![1.0, 0.0, 0.0],
+                    )?],
+                    cluster_memberships: vec![ClusterMembershipReplaceV1 {
+                        cluster_record_id: format!("record-{id}"),
+                        authority_digest: format!("auth:{id}"),
+                        members,
+                    }],
+                }],
+                tombstone_scopes: Vec::new(),
+                seal: true,
+            })
+        };
+        adapter.build_batch(&cluster_batch(
+            base_generation,
+            None,
+            "cluster-a",
+            vec![SymbolId::new("symbol:a"), SymbolId::new("symbol:b")],
+        )?)?;
+        adapter.build_batch(&cluster_batch(
+            replacement_generation,
+            Some(base_generation),
+            "cluster-b",
+            vec![SymbolId::new("symbol:c"), SymbolId::new("symbol:d")],
+        )?)?;
+
+        let replacement_searcher =
+            adapter.open(&repo_id(), &revision_id(), replacement_generation)?;
+        let available =
+            replacement_searcher.cluster_membership_read(&ClusterMembershipReadRequestV1 {
+                cluster_record_id: "record-cluster-b".to_string(),
+                generation: GenerationPin::new(repo_id(), revision_id(), replacement_generation),
+                expected_authority_digest: "auth:cluster-b".to_string(),
+                limit: 1,
+            })?;
+        assert!(matches!(
+            available,
+            ClusterMembershipReadOutcomeV1::Available(snapshot)
+                if snapshot.members == [SymbolId::new("symbol:c")]
+                    && snapshot.completeness
+                        == quanta_index_contract::ClusterMembershipCompletenessV1::Truncated
+        ));
+        let replaced =
+            replacement_searcher.cluster_membership_read(&ClusterMembershipReadRequestV1 {
+                cluster_record_id: "record-cluster-a".to_string(),
+                generation: GenerationPin::new(repo_id(), revision_id(), replacement_generation),
+                expected_authority_digest: "auth:cluster-a".to_string(),
+                limit: 2,
+            })?;
+        assert!(matches!(
+            replaced,
+            ClusterMembershipReadOutcomeV1::Rejected(rejection)
+                if rejection.failure
+                    == ClusterMembershipReadFailureV1::CurrentGenerationMissing
+        ));
+
+        adapter.build_batch(&SemanticIngestBatch {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation: tombstone_generation,
+            base_generation: Some(replacement_generation),
+            manifest_digest: "manifest:73".to_string(),
+            batch_digest: "batch:73".to_string(),
+            mode: BatchIngestMode::Delta,
+            model_contract: model_contract(),
+            required_corpora: Vec::new(),
+            corpus_policy_digest: None,
+            clear_surfaces: Vec::new(),
+            replace_scopes: Vec::new(),
+            tombstone_scopes: vec![SemanticTombstoneScope {
+                scope: None,
+                semantic_scope: Some(cluster_scope),
+            }],
+            seal: true,
+        })?;
+        let tombstoned = adapter
+            .open(&repo_id(), &revision_id(), tombstone_generation)?
+            .cluster_membership_read(&ClusterMembershipReadRequestV1 {
+                cluster_record_id: "record-cluster-b".to_string(),
+                generation: GenerationPin::new(repo_id(), revision_id(), tombstone_generation),
+                expected_authority_digest: "auth:cluster-b".to_string(),
+                limit: 2,
+            })?;
+        assert!(matches!(
+            tombstoned,
+            ClusterMembershipReadOutcomeV1::Rejected(rejection)
+                if rejection.failure
+                    == ClusterMembershipReadFailureV1::CurrentGenerationMissing
+        ));
         Ok(())
     }
 }

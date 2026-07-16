@@ -81,6 +81,7 @@ fn symbol_scope(embeddings: Vec<quanta_index_contract::EmbeddingRecord>) -> Sema
         scope: search_scope_v1("src/session.rs"),
         scope_digest: "scope:src/session.rs:symbol-cards".to_string(),
         embeddings,
+        cluster_memberships: Vec::new(),
     }
 }
 

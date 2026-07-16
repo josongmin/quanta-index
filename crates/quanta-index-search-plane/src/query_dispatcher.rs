@@ -15,15 +15,16 @@ use crate::{
 };
 use quanta_index_contract::lex::{CommitSha, LexicalErrorCode};
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, CommitCandidate, DiffCandidate, EarlyStopReason, EngineTouched,
-    GenerationPin, GenerationSelector, HistoryQueryRequest, HybridQueryRequest,
-    HybridQueryResponse, HybridSeedCandidate, HybridSeedLane, HybridSeedQueryRequest,
-    HybridSeedQueryResponse, LQ_VERSION_TAG, LexicalCandidate, LqCase, LqCountBound, LqExpr,
-    LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqQuery, LqSpan, LqStructuralBlock,
-    LqStructuralConstraint, LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleRef,
-    LqStructuralNode, LqType, LqYesNoOnly, ManifestGeneration, OwnerDocKind, PlannerStage,
-    PlannerTraceEntry, QueryConstraintSetV1, QueryErrorRepair, QueryResultWindowV1, RepairClass,
-    RepoId, RepoMapQueryRequest, RepoMapQueryResponse, RevisionId, RuntimeMetadataQueryRequest,
+    ChunkId, ChunkRecord, ClusterMembershipReadOutcomeV1, ClusterMembershipReadRequestV1,
+    CommitCandidate, DiffCandidate, EarlyStopReason, EngineTouched, GenerationPin,
+    GenerationSelector, HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse,
+    HybridSeedCandidate, HybridSeedLane, HybridSeedQueryRequest, HybridSeedQueryResponse,
+    LQ_VERSION_TAG, LexicalCandidate, LqCase, LqCountBound, LqExpr, LqFileScope, LqFilter, LqLeaf,
+    LqOptions, LqPatternType, LqQuery, LqSpan, LqStructuralBlock, LqStructuralConstraint,
+    LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleRef, LqStructuralNode, LqType,
+    LqYesNoOnly, ManifestGeneration, OwnerDocKind, PlannerStage, PlannerTraceEntry,
+    QueryConstraintSetV1, QueryErrorRepair, QueryResultWindowV1, RepairClass, RepoId,
+    RepoMapQueryRequest, RepoMapQueryResponse, RevisionId, RuntimeMetadataQueryRequest,
     SearchExplanation, SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
     SearchPlaneHistoryQueryResponse, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcResponse, SearchPlaneRuntimeMetadataQueryResponse,
@@ -1112,7 +1113,55 @@ impl SearchPlaneDispatcher {
             SearchPlaneQueryIpcRequest::RuntimeMetadata(req) => {
                 self.dispatch_runtime_metadata(&req)
             }
+            SearchPlaneQueryIpcRequest::ClusterMembershipRead(req) => {
+                self.dispatch_cluster_membership_read(&req)
+            }
         }
+    }
+
+    fn dispatch_cluster_membership_read(
+        &self,
+        request: &ClusterMembershipReadRequestV1,
+    ) -> SearchPlaneQueryIpcResponse {
+        match self.cluster_membership_read(request) {
+            Ok(outcome) => SearchPlaneQueryIpcResponse::ClusterMembershipRead(outcome),
+            Err(error) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(error)),
+        }
+    }
+
+    pub fn cluster_membership_read(
+        &self,
+        request: &ClusterMembershipReadRequestV1,
+    ) -> Result<ClusterMembershipReadOutcomeV1, CoreError> {
+        request
+            .validate_v1()
+            .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
+        {
+            let ledger = self
+                .ledger
+                .read()
+                .map_err(|error| CoreError::Storage(format!("ledger poisoned: {error}")))?;
+            ledger.validate_semantic_generation(
+                &request.generation.repo_id,
+                &request.generation.revision_id,
+                request.generation.manifest_generation,
+                None,
+                true,
+                "cluster membership read",
+            )?;
+        }
+        let searcher = self.sem_opener.open(
+            &request.generation.repo_id,
+            &request.generation.revision_id,
+            request.generation.manifest_generation,
+        )?;
+        let outcome = searcher.cluster_membership_read(request)?;
+        outcome.validate_against_v1(request).map_err(|failure| {
+            CoreError::InvalidContract(format!(
+                "cluster membership read: searcher returned invalid authority: {failure}"
+            ))
+        })?;
+        Ok(outcome)
     }
 
     fn dispatch_text(&self, request: TextQueryRequest) -> SearchPlaneQueryIpcResponse {
@@ -4641,7 +4690,9 @@ mod tests {
         ActivationCatalog, HashingQueryTextEmbedder, Ledger, PreparedSearchCorpusGenerationV1,
         QueryTextEmbedderPort, SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusGenerationV1,
     };
-    use quanta_index_contract::HybridSeedQueryRequest;
+    use quanta_index_contract::{
+        ClusterMembershipReadOutcomeV1, ClusterMembershipReadRequestV1, HybridSeedQueryRequest,
+    };
     use quanta_index_core::SemanticSearchHitV1;
 
     #[test]
@@ -4993,6 +5044,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 Err(format!("expected repo-map query response, got {other:?}").into())
             }
@@ -5324,6 +5376,7 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingSemanticState {
+        opened_pins: Vec<(RepoId, RevisionId, ManifestGeneration)>,
         search_vectors: Vec<Vec<f32>>,
         search_hit_vectors: Vec<Vec<f32>>,
         corpus_searches: Vec<(SemanticCorpusKindV1, u32)>,
@@ -5335,6 +5388,21 @@ mod tests {
     }
 
     impl SemanticSearcher for RecordingSemanticSearcher {
+        fn cluster_membership_read(
+            &self,
+            request: &ClusterMembershipReadRequestV1,
+        ) -> Result<ClusterMembershipReadOutcomeV1, CoreError> {
+            Ok(ClusterMembershipReadOutcomeV1::Rejected(
+                quanta_index_contract::ClusterMembershipReadRejectionV1 {
+                    cluster_record_id: request.cluster_record_id.clone(),
+                    generation: request.generation.clone(),
+                    expected_authority_digest: request.expected_authority_digest.clone(),
+                    failure:
+                        quanta_index_contract::ClusterMembershipReadFailureV1::CurrentGenerationMissing,
+                },
+            ))
+        }
+
         fn search(
             &self,
             query_vector: &[f32],
@@ -5425,10 +5493,15 @@ mod tests {
     impl SemanticIndexOpenPort for RecordingSemanticOpener {
         fn open(
             &self,
-            _repo: &RepoId,
-            _revision: &RevisionId,
-            _generation: ManifestGeneration,
+            repo: &RepoId,
+            revision: &RevisionId,
+            generation: ManifestGeneration,
         ) -> Result<Box<dyn SemanticSearcher>, CoreError> {
+            self.state
+                .lock()
+                .map_err(|error| CoreError::Storage(format!("semantic state poisoned: {error}")))?
+                .opened_pins
+                .push((repo.clone(), revision.clone(), generation));
             Ok(Box::new(RecordingSemanticSearcher {
                 state: Arc::clone(&self.state),
             }))
@@ -5655,6 +5728,69 @@ mod tests {
     }
 
     #[test]
+    fn cluster_membership_dispatch_preserves_exact_generation_and_terminal_authority_v1()
+    -> TestResult {
+        let state = Arc::new(Mutex::new(RecordingSemanticState::default()));
+        let dispatcher = SearchPlaneDispatcher::new(
+            Arc::new(RejectLexicalOpener),
+            Arc::new(RecordingSemanticOpener {
+                state: Arc::clone(&state),
+            }),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            ready_ledger(),
+            test_activation_catalog()?,
+        );
+        let request = ClusterMembershipReadRequestV1 {
+            cluster_record_id: "cluster-card:auth-service".to_string(),
+            generation: ready_pin(),
+            expected_authority_digest: "cluster-authority-digest".to_string(),
+            limit: 32,
+        };
+
+        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::ClusterMembershipRead(
+            request.clone(),
+        ));
+        let SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+            ClusterMembershipReadOutcomeV1::Rejected(rejection),
+        ) = response
+        else {
+            return Err(
+                format!("expected typed cluster membership rejection, got {response:?}").into(),
+            );
+        };
+        if rejection.cluster_record_id != request.cluster_record_id
+            || rejection.generation != request.generation
+            || rejection.expected_authority_digest != request.expected_authority_digest
+            || rejection.failure
+                != quanta_index_contract::ClusterMembershipReadFailureV1::CurrentGenerationMissing
+        {
+            return Err(format!(
+                "dispatcher changed cluster membership terminal authority: {rejection:?}"
+            )
+            .into());
+        }
+        let opened_pins = state
+            .lock()
+            .map_err(|error| format!("semantic state poisoned: {error}"))?
+            .opened_pins
+            .clone();
+        if opened_pins.as_slice()
+            != &[(
+                request.generation.repo_id,
+                request.generation.revision_id,
+                request.generation.manifest_generation,
+            )]
+        {
+            return Err(format!(
+                "dispatcher opened semantic authority with unexpected pins: {opened_pins:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn lexical_dispatch_fail_closed_when_generation_is_not_ready() -> TestResult {
         let dispatcher = SearchPlaneDispatcher::new(
             Arc::new(RejectLexicalOpener),
@@ -5691,6 +5827,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected Error response, got {other:?}").into());
             }
@@ -5747,6 +5884,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected Text response, got {other:?}").into());
             }
@@ -5829,6 +5967,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected Text response, got {other:?}").into());
             }
@@ -5931,6 +6070,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected Semantic response, got {other:?}").into());
             }
@@ -6150,6 +6290,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected Hybrid response, got {other:?}").into());
             }
@@ -6274,6 +6415,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected HybridSeed response, got {other:?}").into());
             }
@@ -7106,6 +7248,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 Err(format!("expected Error response, got {other:?}"))
             }
@@ -7193,6 +7336,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
                 return Err(format!("expected Hybrid response, got {other:?}").into());
             }
@@ -7344,6 +7488,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
                 return Err(format!("expected RepoMapQuery response, got {other:?}").into());
             }
@@ -7635,6 +7780,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
                 return Err(format!("expected History response, got {other:?}").into());
             }
@@ -7721,6 +7867,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
                 return Err(format!("expected Structural response, got {other:?}").into());
             }
@@ -7889,6 +8036,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
                 return Err(format!("expected Text response, got {other:?}").into());
             }
@@ -8095,6 +8243,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
                 return Err(format!("expected Text response, got {other:?}").into());
             }
@@ -8258,6 +8407,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected Text response, got {other:?}").into());
             }
@@ -8330,6 +8480,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
                 return Err(format!("expected Symbol response, got {other:?}").into());
             }
@@ -8452,6 +8603,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
                 return Err(format!("expected Structural response, got {other:?}").into());
             }
@@ -8610,6 +8762,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
                 return Err(format!("expected Structural response, got {other:?}").into());
             }
@@ -8710,6 +8863,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
                 return Err(format!(
                     "expected Structural response for SG structural route, got {other:?}"
@@ -8819,6 +8973,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
                 return Err(format!("expected Structural response, got {other:?}").into());
             }
@@ -8882,6 +9037,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
                 return Err(format!("expected Structural response, got {other:?}").into());
             }
@@ -8934,6 +9090,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
                 return Err(format!("expected Structural response, got {other:?}").into());
             }
@@ -8995,6 +9152,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
                 return Err(format!("expected Structural response, got {other:?}").into());
             }
@@ -9082,6 +9240,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
                 return Err(format!("expected Structural response, got {other:?}").into());
             }
@@ -9148,6 +9307,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
                 return Err(format!("expected Structural response, got {other:?}").into());
             }

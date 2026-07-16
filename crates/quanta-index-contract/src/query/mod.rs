@@ -1,9 +1,11 @@
+mod cluster_membership;
 mod directives;
 mod expression;
 mod filters;
 mod options;
 mod requests;
 
+pub use cluster_membership::*;
 pub use directives::*;
 pub use expression::*;
 pub use filters::*;

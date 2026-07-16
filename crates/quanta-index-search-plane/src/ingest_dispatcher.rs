@@ -1521,6 +1521,7 @@ mod tests {
                 scope: fixture_scope(),
                 scope_digest: "scope:sem".to_string(),
                 embeddings: vec![fixture_embedding_record()?],
+                cluster_memberships: Vec::new(),
             }],
             tombstone_scopes: Vec::new(),
             seal: true,

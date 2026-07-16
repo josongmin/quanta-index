@@ -184,6 +184,7 @@ pub fn sealed_replace_batch_v1(
             scope: search_scope_v1(path),
             scope_digest: format!("scope:{path}"),
             embeddings,
+            cluster_memberships: Vec::new(),
         }],
         Vec::new(),
         true,

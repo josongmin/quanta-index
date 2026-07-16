@@ -7,10 +7,11 @@ use serde::{
 };
 
 use crate::{
-    CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
-    HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest,
-    HybridSeedQueryResponse, RepoMapActivateGenerationRequest, RepoMapMutationAck,
-    RepoMapQueryRequest, RepoMapQueryResponse, RuntimeMetadataQueryRequest,
+    ClusterMembershipReadOutcomeV1, ClusterMembershipReadRequestV1, CurrentGenerationRequest,
+    GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest, HistoryQueryRequest,
+    HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest, HybridSeedQueryResponse,
+    RepoMapActivateGenerationRequest, RepoMapMutationAck, RepoMapQueryRequest,
+    RepoMapQueryResponse, RuntimeMetadataQueryRequest,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneExplainQueryRequest,
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneRuntimeMetadataQueryResponse,
@@ -33,6 +34,7 @@ const SEARCH_PLANE_QUERY_IPC_REQUEST_VARIANTS: &[&str] = &[
     "Structural",
     "RepoMapQuery",
     "Explain",
+    "ClusterMembershipRead",
 ];
 const SEARCH_PLANE_QUERY_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "Text",
@@ -45,6 +47,7 @@ const SEARCH_PLANE_QUERY_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "Structural",
     "RepoMapQuery",
     "Explain",
+    "ClusterMembershipRead",
     "Error",
 ];
 const SEARCH_PLANE_CONTROL_IPC_REQUEST_VARIANTS: &[&str] = &[
@@ -81,6 +84,7 @@ pub enum SearchPlaneQueryIpcRequest {
     Structural(StructuralQueryRequest),
     RepoMapQuery(RepoMapQueryRequest),
     Explain(SearchPlaneExplainQueryRequest),
+    ClusterMembershipRead(ClusterMembershipReadRequestV1),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -101,6 +105,7 @@ pub enum SearchPlaneQueryIpcResponse {
     Structural(SearchPlaneStructuralQueryResponse),
     RepoMapQuery(RepoMapQueryResponse),
     Explain(SearchPlaneExplainQueryResponse),
+    ClusterMembershipRead(ClusterMembershipReadOutcomeV1),
     Error(SearchPlaneIpcError),
 }
 
@@ -333,6 +338,12 @@ impl Serialize for SearchPlaneQueryIpcRequest {
                 payload,
                 serializer,
             ),
+            Self::ClusterMembershipRead(payload) => serialize_adjacent_tagged(
+                "SearchPlaneQueryIpcRequest",
+                "ClusterMembershipRead",
+                payload,
+                serializer,
+            ),
         }
     }
 }
@@ -382,6 +393,9 @@ impl<'de> Visitor<'de> for SearchPlaneQueryIpcRequestVisitor {
                             SearchPlaneQueryIpcRequest::RepoMapQuery(map.next_value()?)
                         }
                         "Explain" => SearchPlaneQueryIpcRequest::Explain(map.next_value()?),
+                        "ClusterMembershipRead" => {
+                            SearchPlaneQueryIpcRequest::ClusterMembershipRead(map.next_value()?)
+                        }
                         other => {
                             return Err(de::Error::unknown_variant(
                                 other,
@@ -537,6 +551,12 @@ impl Serialize for SearchPlaneQueryIpcResponse {
                 payload,
                 serializer,
             ),
+            Self::ClusterMembershipRead(payload) => serialize_adjacent_tagged(
+                "SearchPlaneQueryIpcResponse",
+                "ClusterMembershipRead",
+                payload,
+                serializer,
+            ),
             Self::Error(payload) => serialize_adjacent_tagged(
                 "SearchPlaneQueryIpcResponse",
                 "Error",
@@ -592,6 +612,9 @@ impl<'de> Visitor<'de> for SearchPlaneQueryIpcResponseVisitor {
                             SearchPlaneQueryIpcResponse::RepoMapQuery(map.next_value()?)
                         }
                         "Explain" => SearchPlaneQueryIpcResponse::Explain(map.next_value()?),
+                        "ClusterMembershipRead" => {
+                            SearchPlaneQueryIpcResponse::ClusterMembershipRead(map.next_value()?)
+                        }
                         "Error" => SearchPlaneQueryIpcResponse::Error(map.next_value()?),
                         other => {
                             return Err(de::Error::unknown_variant(
@@ -1468,6 +1491,76 @@ mod tests {
                 &encode(&response).expect("encode rollback response cbor")
             )
             .expect("decode rollback response cbor"),
+            response
+        );
+    }
+
+    #[test]
+    fn cluster_membership_query_variants_round_trip_over_json_and_cbor_v1() {
+        let generation = crate::GenerationPin::new(
+            fixture_repo(),
+            fixture_revision(),
+            ManifestGeneration::new(23),
+        );
+        let request = SearchPlaneQueryIpcRequestEnvelope {
+            request_id: 23,
+            payload: SearchPlaneQueryIpcRequest::ClusterMembershipRead(
+                ClusterMembershipReadRequestV1 {
+                    cluster_record_id: "cluster-card:auth-service".to_string(),
+                    generation: generation.clone(),
+                    expected_authority_digest: "cluster-authority-digest".to_string(),
+                    limit: 2,
+                },
+            ),
+        };
+        let request_value = serde_json::to_value(&request).expect("membership request JSON");
+        assert_eq!(
+            request_value.pointer("/payload/kind"),
+            Some(&json!("ClusterMembershipRead"))
+        );
+        assert_eq!(
+            serde_json::from_value::<SearchPlaneQueryIpcRequestEnvelope>(request_value)
+                .expect("membership request JSON decode"),
+            request
+        );
+        assert_eq!(
+            decode::<SearchPlaneQueryIpcRequestEnvelope>(
+                &encode(&request).expect("membership request CBOR")
+            )
+            .expect("membership request CBOR decode"),
+            request
+        );
+
+        let response = SearchPlaneQueryIpcResponseEnvelope {
+            request_id: 23,
+            payload: SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+                ClusterMembershipReadOutcomeV1::Available(crate::ClusterMembershipSnapshotV1 {
+                    cluster_record_id: "cluster-card:auth-service".to_string(),
+                    generation,
+                    authority_digest: "cluster-authority-digest".to_string(),
+                    members: vec![
+                        crate::SymbolId::new("symbol:auth::authenticate"),
+                        crate::SymbolId::new("symbol:auth::authorize"),
+                    ],
+                    completeness: crate::ClusterMembershipCompletenessV1::Complete,
+                }),
+            ),
+        };
+        let response_value = serde_json::to_value(&response).expect("membership response JSON");
+        assert_eq!(
+            response_value.pointer("/payload/kind"),
+            Some(&json!("ClusterMembershipRead"))
+        );
+        assert_eq!(
+            serde_json::from_value::<SearchPlaneQueryIpcResponseEnvelope>(response_value)
+                .expect("membership response JSON decode"),
+            response
+        );
+        assert_eq!(
+            decode::<SearchPlaneQueryIpcResponseEnvelope>(
+                &encode(&response).expect("membership response CBOR")
+            )
+            .expect("membership response CBOR decode"),
             response
         );
     }

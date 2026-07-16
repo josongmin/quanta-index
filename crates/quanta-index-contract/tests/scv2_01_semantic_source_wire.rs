@@ -97,6 +97,7 @@ fn fixture_search_corpus_batch() -> SearchCorpusIngestBatch {
             scope: fixture_scope_key("symbol-1"),
             scope_digest: "scope:semantic:1".to_string(),
             sources: vec![fixture_semantic_source_record()],
+            cluster_memberships: Vec::new(),
         }],
         semantic_tombstone_scopes: vec![fixture_scope_key("symbol-2")],
         seal: true,

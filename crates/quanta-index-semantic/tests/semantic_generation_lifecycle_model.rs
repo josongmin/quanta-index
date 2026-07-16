@@ -203,6 +203,7 @@ impl LifecycleModel {
                             scope: search_scope_v1(record.path),
                             scope_digest: format!("scope:{}:{}", record.path, record.owner),
                             embeddings: vec![record.embedding()?],
+                            cluster_memberships: Vec::new(),
                         })
                     })
                     .collect::<Result<Vec<_>, String>>()?;

@@ -46,7 +46,8 @@ use crate::{
 use super::{
     error::SearchPlaneIpcError,
     semantic_source::{
-        SemanticCorpusKindV1, SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1,
+        ClusterMembershipReplaceV1, SemanticCorpusKindV1, SemanticSourceReplaceScopeV1,
+        SemanticSourceScopeKeyV1,
     },
 };
 
@@ -1137,19 +1138,22 @@ pub struct SemanticReplaceScope {
     pub scope: SearchScopeKey,
     pub scope_digest: String,
     pub embeddings: Vec<EmbeddingRecord>,
+    pub cluster_memberships: Vec<ClusterMembershipReplaceV1>,
 }
 
-const SEMANTIC_REPLACE_SCOPE_FIELDS: &[&str] = &["scope", "scope_digest", "embeddings"];
+const SEMANTIC_REPLACE_SCOPE_FIELDS: &[&str] =
+    &["scope", "scope_digest", "embeddings", "cluster_memberships"];
 
 impl Serialize for SemanticReplaceScope {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SemanticReplaceScope", 3)?;
+        let mut state = serializer.serialize_struct("SemanticReplaceScope", 4)?;
         state.serialize_field("scope", &self.scope)?;
         state.serialize_field("scope_digest", &self.scope_digest)?;
         state.serialize_field("embeddings", &self.embeddings)?;
+        state.serialize_field("cluster_memberships", &self.cluster_memberships)?;
         state.end()
     }
 }
@@ -1170,6 +1174,7 @@ impl<'de> Visitor<'de> for SemanticReplaceScopeVisitor {
         let mut scope: Option<SearchScopeKey> = None;
         let mut scope_digest: Option<String> = None;
         let mut embeddings: Option<Vec<EmbeddingRecord>> = None;
+        let mut cluster_memberships: Option<Vec<ClusterMembershipReplaceV1>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "scope" => {
@@ -1190,6 +1195,12 @@ impl<'de> Visitor<'de> for SemanticReplaceScopeVisitor {
                     }
                     embeddings = Some(map.next_value()?);
                 }
+                "cluster_memberships" => {
+                    if cluster_memberships.is_some() {
+                        return Err(de::Error::duplicate_field("cluster_memberships"));
+                    }
+                    cluster_memberships = Some(map.next_value()?);
+                }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -1202,6 +1213,7 @@ impl<'de> Visitor<'de> for SemanticReplaceScopeVisitor {
             scope: scope.ok_or_else(|| de::Error::missing_field("scope"))?,
             scope_digest: scope_digest.ok_or_else(|| de::Error::missing_field("scope_digest"))?,
             embeddings: embeddings.ok_or_else(|| de::Error::missing_field("embeddings"))?,
+            cluster_memberships: cluster_memberships.unwrap_or_default(),
         })
     }
 }
@@ -5024,6 +5036,7 @@ mod tests {
                 scope: fixture_scope_key(),
                 scope_digest: "scope:feed".to_string(),
                 embeddings: vec![fixture_embedding_record()],
+                cluster_memberships: Vec::new(),
             }],
             tombstone_scopes: vec![SemanticTombstoneScope {
                 scope: Some(SearchScopeKey {

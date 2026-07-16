@@ -361,6 +361,7 @@ fn dispatch_structural_query_request_v1(
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
             "structural response",
             QuantaIndex::query_response_kind(&other),

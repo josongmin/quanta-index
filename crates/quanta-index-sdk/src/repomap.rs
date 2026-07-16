@@ -30,6 +30,7 @@ impl<'a> RepoMapNamespace<'a> {
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::Error(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 Err(SdkError::unexpected_response(

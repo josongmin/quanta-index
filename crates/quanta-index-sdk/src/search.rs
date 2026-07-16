@@ -1,7 +1,8 @@
 use quanta_index_contract::{
-    GenerationPin, GenerationSelector, HybridSeedQueryRequest, HybridSeedQueryResponse,
-    LexicalCandidate, RepoId, RevisionId, SearchPlaneExplainQueryRequest,
-    SearchPlaneExplainQueryResponse, SemanticCorpusKindV1,
+    ClusterMembershipReadOutcomeV1, ClusterMembershipReadRequestV1, GenerationPin,
+    GenerationSelector, HybridSeedQueryRequest, HybridSeedQueryResponse, LexicalCandidate, RepoId,
+    RevisionId, SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
+    SemanticCorpusKindV1,
 };
 
 use crate::{QuantaIndex, SdkError, text_query_builder::VectorQueryBuilderState};
@@ -27,6 +28,50 @@ impl<'a> SearchNamespace<'a> {
         dispatch_hybrid_seed_query_request_v1(self.client, request)
     }
 
+    /// Reads the structured members of one generation-pinned ClusterCard.
+    ///
+    /// The SDK validates both the request policy and the complete response
+    /// authority tuple before returning any outcome to a caller.
+    pub fn cluster_membership_read_v1(
+        &self,
+        request: ClusterMembershipReadRequestV1,
+    ) -> Result<ClusterMembershipReadOutcomeV1, SdkError> {
+        request
+            .validate_v1()
+            .map_err(|error| SdkError::Usage(error.to_string()))?;
+        let response = self.client.dispatch_query(
+            quanta_index_contract::SearchPlaneQueryIpcRequest::ClusterMembershipRead(
+                request.clone(),
+            ),
+        )?;
+        match response {
+            quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(outcome) => {
+                outcome.validate_against_v1(&request).map_err(|failure| {
+                    SdkError::Protocol(format!(
+                        "cluster membership response failed request authority validation: {failure}"
+                    ))
+                })?;
+                Ok(outcome)
+            }
+            other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::HybridSeed(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
+                Err(SdkError::unexpected_response(
+                    "cluster membership read response",
+                    QuantaIndex::query_response_kind(&other),
+                ))
+            }
+        }
+    }
+
     pub fn explain(
         &self,
         generation: GenerationPin,
@@ -50,6 +95,9 @@ impl<'a> SearchNamespace<'a> {
             | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+                _,
+            )
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 Err(SdkError::Protocol(format!(
@@ -213,6 +261,7 @@ fn dispatch_hybrid_seed_query_request_v1(
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             Err(SdkError::Protocol(format!(

@@ -3,14 +3,17 @@
     reason = "crate-private marker type stays visible across sibling SDK modules only"
 )]
 
+use std::collections::BTreeMap;
+
 use quanta_index_contract::lex::SymbolRecord;
 use quanta_index_contract::{
-    ChunkRecord, GenerationSelector, ManifestGeneration, RepoId, RevisionId,
-    SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
-    SearchCorpusTombstoneScope, SearchPlaneActivateSearchCorpusGenerationCasRequest,
-    SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcResponse, SearchPlaneSearchCorpusActivationCasAck, SearchPlaneTrackKind,
-    SearchScopeKey, SearchScopeSurface, SemanticSourceRecordV1, SemanticSourceReplaceScopeV1,
+    ChunkRecord, ClusterMembershipReplaceV1, GenerationSelector, ManifestGeneration, RepoId,
+    RevisionId, SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch,
+    SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
+    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
+    SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
+    SearchPlaneSearchCorpusActivationCasAck, SearchPlaneTrackKind, SearchScopeKey,
+    SearchScopeSurface, SemanticCorpusKindV1, SemanticSourceRecordV1, SemanticSourceReplaceScopeV1,
     SemanticSourceScopeKeyV1, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
 
@@ -128,7 +131,10 @@ impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
         scope: SemanticSourceScopeKeyV1,
         scope_digest: impl Into<String>,
         sources: Vec<SemanticSourceRecordV1>,
+        mut cluster_memberships: Vec<ClusterMembershipReplaceV1>,
     ) -> Self {
+        cluster_memberships
+            .sort_by(|left, right| left.cluster_record_id.cmp(&right.cluster_record_id));
         let search_result = self.semantic_replace_scopes.binary_search_by(|candidate| {
             semantic_scope_sort_key_v1(&candidate.scope).cmp(&semantic_scope_sort_key_v1(&scope))
         });
@@ -141,6 +147,7 @@ impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
                 scope,
                 scope_digest: scope_digest.into(),
                 sources,
+                cluster_memberships,
             },
         );
         self
@@ -430,6 +437,7 @@ fn dispatch_search_corpus_publish_v1<const SEALED: bool>(
     client: &QuantaIndex,
     batch: &SearchCorpusBatch<SEALED>,
 ) -> Result<BatchReceipt, SdkError> {
+    validate_semantic_cluster_membership_authority_v1(batch.semantic_replace_scopes())?;
     let wire_batch = batch.to_wire_batch();
     wire_batch.validate_surface_mutations_v1().map_err(|err| {
         SdkError::Protocol(format!("invalid search corpus surface mutation: {err}"))
@@ -458,6 +466,80 @@ fn dispatch_search_corpus_publish_v1<const SEALED: bool>(
             QuantaIndex::ingest_response_kind(&other),
         )),
     }
+}
+
+fn validate_semantic_cluster_membership_authority_v1(
+    scopes: &[SemanticSourceReplaceScopeV1],
+) -> Result<(), SdkError> {
+    for scope in scopes {
+        if scope.scope.corpus_kind != SemanticCorpusKindV1::ClusterCard {
+            if !scope.cluster_memberships.is_empty() {
+                return Err(SdkError::Protocol(format!(
+                    "non-ClusterCard semantic scope {:?} must not carry cluster membership authority",
+                    scope.scope.owner_id
+                )));
+            }
+            continue;
+        }
+
+        if scope.sources.is_empty() || scope.cluster_memberships.is_empty() {
+            return Err(SdkError::Protocol(format!(
+                "ClusterCard semantic scope {:?} requires one typed membership per source",
+                scope.scope.owner_id
+            )));
+        }
+        if scope.sources.len() != scope.cluster_memberships.len() {
+            return Err(SdkError::Protocol(format!(
+                "ClusterCard semantic scope {:?} source and membership counts differ: sources={} memberships={}",
+                scope.scope.owner_id,
+                scope.sources.len(),
+                scope.cluster_memberships.len()
+            )));
+        }
+
+        let mut source_authority_by_record_id = BTreeMap::new();
+        for source in &scope.sources {
+            if source.corpus_kind != SemanticCorpusKindV1::ClusterCard {
+                return Err(SdkError::Protocol(format!(
+                    "ClusterCard semantic scope {:?} contains a non-ClusterCard source {:?}",
+                    scope.scope.owner_id, source.record_id
+                )));
+            }
+            if source_authority_by_record_id
+                .insert(source.record_id.as_str(), source.authority_digest.as_str())
+                .is_some()
+            {
+                return Err(SdkError::Protocol(format!(
+                    "ClusterCard semantic scope {:?} contains duplicate source record {:?}",
+                    scope.scope.owner_id, source.record_id
+                )));
+            }
+        }
+
+        for membership in &scope.cluster_memberships {
+            membership.validate_v1().map_err(|message| {
+                SdkError::Protocol(format!(
+                    "invalid typed cluster membership {:?}: {message}",
+                    membership.cluster_record_id
+                ))
+            })?;
+            let Some(expected_authority_digest) =
+                source_authority_by_record_id.remove(membership.cluster_record_id.as_str())
+            else {
+                return Err(SdkError::Protocol(format!(
+                    "typed cluster membership {:?} has no matching source record",
+                    membership.cluster_record_id
+                )));
+            };
+            if expected_authority_digest != membership.authority_digest {
+                return Err(SdkError::Protocol(format!(
+                    "typed cluster membership {:?} authority digest does not match its source",
+                    membership.cluster_record_id
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_search_corpus_publish_receipt_v1<const SEALED: bool>(
@@ -651,6 +733,7 @@ fn dispatch_text_query_request_v1(
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             Err(SdkError::unexpected_response(
