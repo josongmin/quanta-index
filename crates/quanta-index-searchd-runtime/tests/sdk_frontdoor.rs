@@ -8,18 +8,20 @@
 
 #[path = "common/frontdoor_scenarios.rs"]
 mod frontdoor_scenarios;
+#[path = "common/searchd_binary_process.rs"]
+mod searchd_binary_process;
 
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use quanta_index_contract::lex::{
-    LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship, SymbolSpan,
-    compute_parse_tree_source_hash,
+    compute_parse_tree_source_hash, LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord,
+    SymbolRelationship, SymbolSpan,
 };
 use quanta_index_contract::{
     ChunkId, ChunkRecord, FileContributorIdentityEntry, GenerationPin, GenerationSelector,
@@ -43,13 +45,14 @@ use quanta_index_sdk::{
     RepoTopicBatch, SdkError, SearchCorpusBatch, SearchScopeKey, SearchScopeSurface,
     StructuralBatch,
 };
-use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::searchd::drive;
+use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd_runtime::build_runtime;
 
 use crate::frontdoor_scenarios::{
-    SDK_FRONTDOOR_SCENARIOS, SdkFrontdoorExpectation, SdkFrontdoorSurface,
+    SdkFrontdoorExpectation, SdkFrontdoorSurface, SDK_FRONTDOOR_SCENARIOS,
 };
+use crate::searchd_binary_process::SearchdBinaryProcess;
 
 type TestResult = Result<(), Box<dyn Error>>;
 type DriverJoin = thread::JoinHandle<anyhow::Result<()>>;
@@ -3793,8 +3796,8 @@ fn sdk_search_corpus_frontdoor_promotes_composite_generation_identity() -> TestR
 }
 
 #[test]
-fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_query_views()
--> TestResult {
+fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_query_views(
+) -> TestResult {
     let (_dir, client, shutdown, join) =
         start_sdk_frontdoor_runtime("sdk-frontdoor-tombstone-only")?;
 
@@ -4012,8 +4015,8 @@ fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() 
 }
 
 #[test]
-fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_composite_corpus()
--> TestResult {
+fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_composite_corpus(
+) -> TestResult {
     let complex_timeout = Duration::from_secs(30);
     let dir = tempfile::tempdir()?;
     let state_root = dir.path().to_path_buf();
@@ -4325,4 +4328,87 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_comp
     }
 
     stop_runtime(&shutdown, join)
+}
+
+#[test]
+fn sdk_binary_process_dsl_roundtrip() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let runtime = SearchdBinaryProcess::start(dir.path())?;
+    let result = (|| -> TestResult {
+        let client = runtime.connect()?;
+        let batch = lexical_frontdoor_matrix_batch()?;
+        let active = publish_and_activate_sdk_search_corpus(&client, &batch)?;
+        if active.lexical.manifest_generation != generation()
+            || active.semantic.manifest_generation != generation()
+            || active.lexical.manifest_digest != batch.manifest_digest()
+            || active.semantic.manifest_digest != batch.manifest_digest()
+        {
+            return Err(format!(
+                "binary process promoted an unexpected composite generation: {active:?}"
+            )
+            .into());
+        }
+
+        let response = wait_for_sdk_observation(
+            SOCKET_TIMEOUT,
+            || {
+                client
+                    .lexical()
+                    .query()
+                    .native("select:path sphinx")
+                    .active(repo(), revision())
+                    .top_k(5)
+                    .execute()
+            },
+            |response| response.generation == pin() && response.results.len() == 2,
+        )?;
+        let paths = response
+            .results
+            .iter()
+            .map(|candidate| candidate.repo_relative_path.as_str().to_string())
+            .collect::<BTreeSet<_>>();
+        if response.generation != pin()
+            || paths != BTreeSet::from(["src/alpha.rs".to_string(), "src/beta.rs".to_string()])
+        {
+            return Err(format!(
+                "binary process DSL query diverged: response={response:?} paths={paths:?}"
+            )
+            .into());
+        }
+
+        let _repo_meta_receipt = client.history().publish_repo_meta(&repo_meta_batch())?;
+        let predicate = wait_for_sdk_observation(
+            SOCKET_TIMEOUT,
+            || {
+                client
+                    .lexical()
+                    .query()
+                    .sourcegraph("repo:has.meta(license:apache-2.0) shared_oracle_needle")
+                    .active(repo(), revision())
+                    .top_k(5)
+                    .execute()
+            },
+            |response| response.generation == pin() && response.results.len() == 1,
+        )?;
+        let predicate_paths = predicate
+            .results
+            .iter()
+            .map(|candidate| candidate.repo_relative_path.as_str().to_string())
+            .collect::<Vec<_>>();
+        if predicate.generation != pin()
+            || predicate_paths
+                != [
+                    "src/recency_a.rs".to_string(),
+                    "src/recency_gate.rs".to_string(),
+                ]
+        {
+            return Err(format!(
+                "binary process predicate query lost source-repo correlation: response={predicate:?}"
+            )
+            .into());
+        }
+        Ok(())
+    })();
+    let stop = runtime.stop();
+    result.and(stop)
 }

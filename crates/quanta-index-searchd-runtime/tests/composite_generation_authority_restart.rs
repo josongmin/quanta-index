@@ -7,10 +7,13 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "common/searchd_binary_process.rs"]
+mod searchd_binary_process;
+
 use std::error::Error;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -21,21 +24,26 @@ use quanta_index_sdk::{
     RepoRelativePath, RevisionId, SdkError, SearchCorpusBatch, SearchCorpusGenerationIdentityV1,
     SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
 };
-use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::searchd::drive;
+use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd_runtime::build_runtime;
+
+use crate::searchd_binary_process::SearchdBinaryProcess;
 
 type TestResult = Result<(), Box<dyn Error>>;
 type DriverJoin = thread::JoinHandle<anyhow::Result<()>>;
 
 const REPO: &str = "repo-composite-restart";
 const REVISION: &str = "revision-composite-restart";
+const G0: u64 = 40;
 const G1: u64 = 41;
 const G2: u64 = 42;
+const G0_DIGEST: &str = "manifest:composite-restart:g0";
 const G1_DIGEST: &str = "manifest:composite-restart:g1";
 const G2_DIGEST: &str = "manifest:composite-restart:g2";
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
 const ERR_ROLLBACK_TARGET_UNOPENABLE: &str = "ROLLBACK_TARGET_UNOPENABLE";
+const ERR_ROLLBACK_CAS_CONFLICT: &str = "ROLLBACK_CAS_CONFLICT";
 const ERR_STATE_ROOT_IN_USE: &str = "STATE_ROOT_IN_USE";
 
 static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
@@ -194,16 +202,14 @@ fn batch(raw_generation: u64, digest: &str) -> Result<SearchCorpusBatch, Box<dyn
     ))
 }
 
-fn publish_two_generations(runtime: &RunningRuntime) -> Result<(), Box<dyn Error>> {
-    let first = runtime
-        .client
+fn publish_two_generations(client: &QuantaIndex) -> Result<(), Box<dyn Error>> {
+    let first = client
         .search_corpus()
         .publish_and_activate(&batch(G1, G1_DIGEST)?, None)?;
     if first.1.active.lexical.manifest_generation != generation(G1) {
         return Err("first composite activation did not select G1".into());
     }
-    let second = runtime
-        .client
+    let second = client
         .search_corpus()
         .publish_and_activate(&batch(G2, G2_DIGEST)?, Some(first.1.active))?;
     if second.1.active.lexical.manifest_generation != generation(G2) {
@@ -212,9 +218,24 @@ fn publish_two_generations(runtime: &RunningRuntime) -> Result<(), Box<dyn Error
     Ok(())
 }
 
-fn rollback_g2_to_g1(runtime: &RunningRuntime) -> Result<(), SdkError> {
-    runtime
-        .client
+fn publish_three_generations(client: &QuantaIndex) -> Result<(), Box<dyn Error>> {
+    let zero = client
+        .search_corpus()
+        .publish_and_activate(&batch(G0, G0_DIGEST)?, None)?;
+    let one = client
+        .search_corpus()
+        .publish_and_activate(&batch(G1, G1_DIGEST)?, Some(zero.1.active))?;
+    let two = client
+        .search_corpus()
+        .publish_and_activate(&batch(G2, G2_DIGEST)?, Some(one.1.active))?;
+    if two.1.active != composite_identity(G2, G2_DIGEST) {
+        return Err("three-generation setup did not activate exact G2 identity".into());
+    }
+    Ok(())
+}
+
+fn rollback_g2_to_g1(client: &QuantaIndex) -> Result<(), SdkError> {
+    client
         .generations()
         .rollback(SearchPlaneRollbackSearchCorpusGenerationCasRequest {
             expected_active: composite_identity(G2, G2_DIGEST),
@@ -242,17 +263,13 @@ fn composite_identity(raw_generation: u64, digest: &str) -> SearchCorpusGenerati
     }
 }
 
-fn current_composite(
-    runtime: &RunningRuntime,
-) -> Result<SearchCorpusGenerationIdentityV1, SdkError> {
+fn current_composite(client: &QuantaIndex) -> Result<SearchCorpusGenerationIdentityV1, SdkError> {
     let lexical =
-        runtime
-            .client
+        client
             .generations()
             .current(repo(), revision(), SearchPlaneTrackKind::Lexical)?;
     let semantic =
-        runtime
-            .client
+        client
             .generations()
             .current(repo(), revision(), SearchPlaneTrackKind::Semantic)?;
     Ok(SearchCorpusGenerationIdentityV1 { lexical, semantic })
@@ -262,12 +279,12 @@ fn current_composite(
 fn sealed_composite_history_survives_restart_and_admits_predecessor_rollback() -> TestResult {
     let directory = tempfile::tempdir()?;
     let first_process = RunningRuntime::start(directory.path(), "composite-history-first")?;
-    publish_two_generations(&first_process)?;
+    publish_two_generations(&first_process.client)?;
     first_process.stop()?;
 
     let second_process = RunningRuntime::start(directory.path(), "composite-history-second")?;
-    rollback_g2_to_g1(&second_process)?;
-    let current = current_composite(&second_process)?;
+    rollback_g2_to_g1(&second_process.client)?;
+    let current = current_composite(&second_process.client)?;
     current
         .validate_v1()
         .map_err(|error| format!("rollback produced split composite identity: {error}"))?;
@@ -288,7 +305,7 @@ enum MissingTargetTrack {
 fn assert_missing_target_rejected(track: MissingTargetTrack) -> TestResult {
     let directory = tempfile::tempdir()?;
     let first_process = RunningRuntime::start(directory.path(), "missing-target-first")?;
-    publish_two_generations(&first_process)?;
+    publish_two_generations(&first_process.client)?;
     first_process.stop()?;
 
     let target_root = match track {
@@ -306,7 +323,7 @@ fn assert_missing_target_rejected(track: MissingTargetTrack) -> TestResult {
     std::fs::remove_dir_all(&target_root)?;
 
     let second_process = RunningRuntime::start(directory.path(), "missing-target-second")?;
-    let rollback = rollback_g2_to_g1(&second_process);
+    let rollback = rollback_g2_to_g1(&second_process.client);
     let Err(SdkError::Remote { code, .. }) = rollback else {
         return Err(format!(
             "rollback with missing target track did not return a typed remote error: {rollback:?}"
@@ -319,7 +336,7 @@ fn assert_missing_target_rejected(track: MissingTargetTrack) -> TestResult {
         )
         .into());
     }
-    let current = current_composite(&second_process)?;
+    let current = current_composite(&second_process.client)?;
     current
         .validate_v1()
         .map_err(|error| format!("failed rollback split active authority: {error}"))?;
@@ -339,6 +356,115 @@ fn rollback_rejects_missing_lexical_target_and_preserves_active_composite() -> T
 #[test]
 fn rollback_rejects_missing_semantic_target_and_preserves_active_composite() -> TestResult {
     assert_missing_target_rejected(MissingTargetTrack::Semantic)
+}
+
+#[test]
+fn rollback_rejects_stale_expected_active_and_preserves_current_composite_v1() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let first_process = SearchdBinaryProcess::start(directory.path())?;
+    let first_client = first_process.connect()?;
+    publish_three_generations(&first_client)?;
+
+    let rollback =
+        first_client
+            .generations()
+            .rollback(SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+                expected_active: composite_identity(G1, G1_DIGEST),
+                target: composite_identity(G0, G0_DIGEST),
+            });
+    let Err(SdkError::Remote { code, .. }) = rollback else {
+        return Err(format!(
+            "rollback with stale expected active did not return a typed remote error: {rollback:?}"
+        )
+        .into());
+    };
+    if code != ERR_ROLLBACK_CAS_CONFLICT {
+        return Err(format!(
+            "stale expected active must report {ERR_ROLLBACK_CAS_CONFLICT}, got {code}"
+        )
+        .into());
+    }
+
+    let current = current_composite(&first_client)?;
+    current
+        .validate_v1()
+        .map_err(|error| format!("stale rollback split active authority: {error}"))?;
+    if current != composite_identity(G2, G2_DIGEST) {
+        return Err(format!("stale rollback changed active G2: {current:?}").into());
+    }
+    drop(first_client);
+    first_process.stop()?;
+
+    let second_process = SearchdBinaryProcess::start(directory.path())?;
+    let second_client = second_process.connect()?;
+    let reopened = current_composite(&second_client)?;
+    if reopened != composite_identity(G2, G2_DIGEST) {
+        return Err(format!("stale rollback changed reopened G2: {reopened:?}").into());
+    }
+    drop(second_client);
+    second_process.stop()
+}
+
+#[test]
+fn real_child_process_restart_preserves_and_rolls_back_composite_generation_v1() -> TestResult {
+    let directory = tempfile::tempdir()?;
+
+    let first_process = SearchdBinaryProcess::start(directory.path())?;
+    let first_client = first_process.connect()?;
+    publish_two_generations(&first_client)?;
+    if current_composite(&first_client)? != composite_identity(G2, G2_DIGEST) {
+        return Err("child process did not activate exact G2 composite identity".into());
+    }
+    drop(first_client);
+    first_process.stop()?;
+
+    let second_process = SearchdBinaryProcess::start(directory.path())?;
+    let second_client = second_process.connect()?;
+    if current_composite(&second_client)? != composite_identity(G2, G2_DIGEST) {
+        return Err("child process restart did not recover exact G2 composite identity".into());
+    }
+    rollback_g2_to_g1(&second_client)?;
+    if current_composite(&second_client)? != composite_identity(G1, G1_DIGEST) {
+        return Err("child process rollback did not activate exact G1 composite identity".into());
+    }
+    drop(second_client);
+    second_process.stop()?;
+
+    let third_process = SearchdBinaryProcess::start(directory.path())?;
+    let third_client = third_process.connect()?;
+    if current_composite(&third_client)? != composite_identity(G1, G1_DIGEST) {
+        return Err(
+            "second child process restart did not preserve rolled-back G1 authority".into(),
+        );
+    }
+    drop(third_client);
+    third_process.stop()
+}
+
+#[test]
+fn real_child_process_state_root_lease_rejects_second_owner_and_releases_v1() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let first_process = SearchdBinaryProcess::start(directory.path())?;
+
+    let rejected = SearchdBinaryProcess::require_start_failure(directory.path())?;
+    if rejected.status.success() {
+        return Err("second child process unexpectedly acquired the live state root".into());
+    }
+    let rejection_text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&rejected.stdout),
+        String::from_utf8_lossy(&rejected.stderr)
+    );
+    if !rejection_text.contains(ERR_STATE_ROOT_IN_USE) {
+        return Err(format!(
+            "second child process did not report {ERR_STATE_ROOT_IN_USE}: {rejection_text}"
+        )
+        .into());
+    }
+
+    first_process.stop()?;
+    let admitted_after_release = SearchdBinaryProcess::start(directory.path())?;
+    admitted_after_release.stop()
 }
 
 #[test]
