@@ -620,6 +620,41 @@ mod seed_fusion_tests {
     }
 
     #[test]
+    fn module_and_cluster_cards_with_one_owner_keep_distinct_authority_v2() {
+        let owner_id = "runtime_module_id_v1:src/shared.rs";
+        let semantic_lanes = vec![
+            vec![SemanticSearchHitV1 {
+                candidate: lexical_candidate("module-record"),
+                record_id: "module-record".to_string(),
+                owner_id: owner_id.to_string(),
+                owner_kind: OwnerDocKind::Module,
+                corpus_kind: Some(SemanticCorpusKindV1::ModuleCard),
+                authority_digest: "module-authority".to_string(),
+            }],
+            vec![SemanticSearchHitV1 {
+                candidate: lexical_candidate("cluster-record"),
+                record_id: "cluster-record".to_string(),
+                owner_id: owner_id.to_string(),
+                owner_kind: OwnerDocKind::Module,
+                corpus_kind: Some(SemanticCorpusKindV1::ClusterCard),
+                authority_digest: "cluster-authority".to_string(),
+            }],
+        ];
+
+        let seeds = build_hybrid_seed_candidates_v2(&[], &semantic_lanes, &[], 2)
+            .expect("typed corpus identities must remain independently ranked");
+        assert_eq!(seeds.len(), 2);
+        assert!(seeds.iter().any(|seed| {
+            seed.corpus_kind == Some(SemanticCorpusKindV1::ModuleCard)
+                && seed.authority_digest.as_deref() == Some("module-authority")
+        }));
+        assert!(seeds.iter().any(|seed| {
+            seed.corpus_kind == Some(SemanticCorpusKindV1::ClusterCard)
+                && seed.authority_digest.as_deref() == Some("cluster-authority")
+        }));
+    }
+
+    #[test]
     fn seed_fusion_merges_same_exact_symbol_identity_across_dense_lanes() {
         let seeds = build_hybrid_seed_candidates_v2(
             &[],

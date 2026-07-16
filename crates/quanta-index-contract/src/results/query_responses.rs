@@ -349,6 +349,23 @@ impl SeedFusionIdentityV2 {
     pub fn cmp_parts(
         left_owner_kind: OwnerDocKind,
         left_entity_id: &str,
+        right_owner_kind: OwnerDocKind,
+        right_entity_id: &str,
+    ) -> core::cmp::Ordering {
+        Self::cmp_parts_with_corpus_v2(
+            left_owner_kind,
+            left_entity_id,
+            None,
+            right_owner_kind,
+            right_entity_id,
+            None,
+        )
+    }
+
+    #[must_use]
+    pub fn cmp_parts_with_corpus_v2(
+        left_owner_kind: OwnerDocKind,
+        left_entity_id: &str,
         left_corpus_kind: Option<SemanticCorpusKindV1>,
         right_owner_kind: OwnerDocKind,
         right_entity_id: &str,
@@ -365,7 +382,7 @@ impl SeedFusionIdentityV2 {
 
 impl Ord for SeedFusionIdentityV2 {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        Self::cmp_parts(
+        Self::cmp_parts_with_corpus_v2(
             self.owner_kind,
             self.entity_id.as_str(),
             self.corpus_kind,
@@ -1818,13 +1835,26 @@ mod tests {
             for right in &identities {
                 assert_eq!(
                     left.cmp(right),
-                    SeedFusionIdentityV2::cmp_parts(
+                    SeedFusionIdentityV2::cmp_parts_with_corpus_v2(
                         left.owner_kind(),
                         left.entity_id(),
+                        left.corpus_kind(),
                         right.owner_kind(),
                         right.entity_id(),
+                        right.corpus_kind(),
                     )
                 );
+                if left.corpus_kind().is_none() && right.corpus_kind().is_none() {
+                    assert_eq!(
+                        left.cmp(right),
+                        SeedFusionIdentityV2::cmp_parts(
+                            left.owner_kind(),
+                            left.entity_id(),
+                            right.owner_kind(),
+                            right.entity_id(),
+                        )
+                    );
+                }
             }
         }
     }
@@ -1889,5 +1919,26 @@ mod tests {
         let decoded_cbor: HybridSeedQueryResponse = ciborium::de::from_reader(cbor.as_slice())
             .expect("response must deserialize from CBOR");
         assert_eq!(decoded_cbor, response);
+    }
+
+    #[test]
+    fn seed_candidate_v2_authority_digest_is_optional_but_round_trips_when_present() {
+        let candidate = sample_seed_candidate_v2();
+        let mut encoded = serde_json::to_value(&candidate).expect("seed candidate JSON");
+        assert_eq!(
+            encoded
+                .get("authority_digest")
+                .and_then(serde_json::Value::as_str),
+            Some("authority:symbol-card:demo")
+        );
+
+        let removed = encoded
+            .as_object_mut()
+            .expect("seed candidate object")
+            .remove("authority_digest");
+        assert!(removed.is_some());
+        let decoded: SeedCandidateV2 = serde_json::from_value(encoded)
+            .expect("legacy candidate without digest remains readable");
+        assert!(decoded.authority_digest.is_none());
     }
 }

@@ -6499,7 +6499,7 @@ mod tests {
                     constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                     generation: Some(pin.clone()),
                     generation_selector: None,
-                    top_k: 2,
+                    top_k: 3,
                 },
                 semantic_query_text: "scope alpha".to_string(),
                 generation: Some(pin),
@@ -6513,8 +6513,12 @@ mod tests {
                         corpus_kind: SemanticCorpusKindV1::RepositorySummary,
                         top_k: 11,
                     },
+                    SemanticSeedCorpusBudgetV1 {
+                        corpus_kind: SemanticCorpusKindV1::ClusterCard,
+                        top_k: 13,
+                    },
                 ],
-                top_k: 2,
+                top_k: 3,
             },
         ));
 
@@ -6540,6 +6544,22 @@ mod tests {
                 {
                     return Err(format!(
                         "dense-only semantic entity must enter v2 seed set, observed={seed_candidates_v2:?}"
+                    )
+                    .into());
+                }
+                let cluster_seed = seed_candidates_v2
+                    .iter()
+                    .find(|candidate| {
+                        candidate.corpus_kind == Some(SemanticCorpusKindV1::ClusterCard)
+                    })
+                    .ok_or_else(|| {
+                        format!(
+                            "requested ClusterCard lane must reach the hybrid seed response: {seed_candidates_v2:?}"
+                        )
+                    })?;
+                if cluster_seed.authority_digest.as_deref() != Some("authority:ClusterCard") {
+                    return Err(format!(
+                        "ClusterCard record authority must survive semantic search and seed assembly: {cluster_seed:?}"
                     )
                     .into());
                 }
@@ -6596,7 +6616,7 @@ mod tests {
         if scoped_vectors.as_slice() != [expected.clone()] {
             return Err(format!("unexpected scoped vectors: {scoped_vectors:?}").into());
         }
-        if search_hit_vectors.as_slice() != [expected.clone(), expected] {
+        if search_hit_vectors.as_slice() != [expected.clone(), expected.clone(), expected] {
             return Err(format!("unexpected corpus hit vectors: {search_hit_vectors:?}").into());
         }
         if !search_vectors.is_empty() {
@@ -6606,6 +6626,7 @@ mod tests {
         }
         if corpus_searches.as_slice()
             != [
+                (SemanticCorpusKindV1::ClusterCard, 13),
                 (SemanticCorpusKindV1::RepositorySummary, 11),
                 (SemanticCorpusKindV1::SymbolCard, 7),
             ]
