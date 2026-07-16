@@ -316,7 +316,14 @@ fn unique_socket_paths() -> (std::path::PathBuf, std::path::PathBuf) {
 }
 
 fn build_config(state_root: &Path) -> SearchdConfig {
-    let mut cfg = SearchdConfig::from_state_root(state_root.to_path_buf());
+    let mut cfg = SearchdConfig::from_state_root(state_root.to_path_buf())
+        .try_with_search_corpus_history_retention_limits(
+            8,
+            16 * 1024 * 1024,
+            128,
+            256 * 1024 * 1024,
+        )
+        .expect("valid test retention policy");
     // The unit socket path under tmpdir state root can exceed the 104-byte
     // AF_UNIX limit on macOS for long temp paths; use a flat path in
     // /tmp instead.
@@ -386,7 +393,14 @@ fn start_runtime_with_hash(
     state_root: &Path,
     thread_name: &str,
 ) -> Result<RuntimeHandles, Box<dyn Error>> {
-    let mut config = SearchdConfig::from_state_root(state_root.to_path_buf());
+    let mut config = SearchdConfig::from_state_root(state_root.to_path_buf())
+        .try_with_search_corpus_history_retention_limits(
+            8,
+            16 * 1024 * 1024,
+            128,
+            256 * 1024 * 1024,
+        )
+        .expect("valid test retention policy");
     let (query_socket, control_socket) = unique_socket_paths();
     config = SearchdConfig::with_socket_overrides(config, query_socket, control_socket);
     config = config.with_semantic_embedder_profile(SemanticEmbedderProfile::Hash {
@@ -1876,7 +1890,14 @@ fn start_runtime_with_openai(
     thread_name: &str,
     api_key: String,
 ) -> Result<RuntimeHandles, Box<dyn Error>> {
-    let mut config = SearchdConfig::from_state_root(state_root.to_path_buf());
+    let mut config = SearchdConfig::from_state_root(state_root.to_path_buf())
+        .try_with_search_corpus_history_retention_limits(
+            8,
+            16 * 1024 * 1024,
+            128,
+            256 * 1024 * 1024,
+        )
+        .expect("valid test retention policy");
     let (query_socket, control_socket) = unique_socket_paths();
     config = SearchdConfig::with_socket_overrides(config, query_socket, control_socket);
     config = config.with_semantic_embedder_profile(SemanticEmbedderProfile::OpenAi {
@@ -2471,6 +2492,13 @@ fn semantic_query_fails_closed_when_runtime_has_no_query_embedder() -> TestResul
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
     let mut config = SearchdConfig::from_state_root(state_root.to_path_buf())
+        .try_with_search_corpus_history_retention_limits(
+            8,
+            16 * 1024 * 1024,
+            128,
+            256 * 1024 * 1024,
+        )
+        .expect("valid test retention policy")
         .with_provider_unavailable_query_text_embedder();
     let (query_socket, control_socket) = unique_socket_paths();
     config = SearchdConfig::with_socket_overrides(config, query_socket, control_socket);

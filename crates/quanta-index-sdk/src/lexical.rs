@@ -122,11 +122,33 @@ impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
         self
     }
 
-    /// Replace one producer-authored semantic-source scope. Scope mutations
-    /// are kept in canonical key order so equivalent builder sequences emit
-    /// identical wire batches.
+    /// Replace one producer-authored semantic-source scope without structured
+    /// cluster membership authority.
+    ///
+    /// Existing non-ClusterCard producers retain this source-compatible entry
+    /// point. ClusterCard producers must use
+    /// [`Self::replace_semantic_scope_with_cluster_memberships_v1`].
     #[must_use]
     pub fn replace_semantic_scope(
+        self,
+        scope: SemanticSourceScopeKeyV1,
+        scope_digest: impl Into<String>,
+        sources: Vec<SemanticSourceRecordV1>,
+    ) -> Self {
+        self.replace_semantic_scope_with_cluster_memberships_v1(
+            scope,
+            scope_digest,
+            sources,
+            Vec::new(),
+        )
+    }
+
+    /// Replace one producer-authored semantic-source scope together with its
+    /// structured ClusterCard membership authority. Scope mutations and
+    /// memberships are kept in canonical key order so equivalent builder
+    /// sequences emit identical wire batches.
+    #[must_use]
+    pub fn replace_semantic_scope_with_cluster_memberships_v1(
         mut self,
         scope: SemanticSourceScopeKeyV1,
         scope_digest: impl Into<String>,

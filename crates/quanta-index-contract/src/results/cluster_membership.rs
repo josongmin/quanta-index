@@ -356,12 +356,43 @@ pub struct ClusterMembershipUnavailableV1 {
     pub expected_authority_digest: String,
 }
 
+impl ClusterMembershipUnavailableV1 {
+    pub fn validate_v1(&self) -> Result<(), ClusterMembershipReadFailureV1> {
+        validate_cluster_membership_terminal_authority_v1(
+            self.cluster_record_id.as_str(),
+            self.expected_authority_digest.as_str(),
+        )
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClusterMembershipReadRejectionV1 {
     pub cluster_record_id: String,
     pub generation: GenerationPin,
     pub expected_authority_digest: String,
     pub failure: ClusterMembershipReadFailureV1,
+}
+
+impl ClusterMembershipReadRejectionV1 {
+    pub fn validate_v1(&self) -> Result<(), ClusterMembershipReadFailureV1> {
+        validate_cluster_membership_terminal_authority_v1(
+            self.cluster_record_id.as_str(),
+            self.expected_authority_digest.as_str(),
+        )
+    }
+}
+
+fn validate_cluster_membership_terminal_authority_v1(
+    cluster_record_id: &str,
+    authority_digest: &str,
+) -> Result<(), ClusterMembershipReadFailureV1> {
+    if cluster_record_id.is_empty() {
+        return Err(ClusterMembershipReadFailureV1::ClusterIdentityMismatch);
+    }
+    if authority_digest.is_empty() {
+        return Err(ClusterMembershipReadFailureV1::AuthorityDigestMismatch);
+    }
+    Ok(())
 }
 
 fn validate_cluster_membership_authority_fields_v1(
@@ -485,25 +516,128 @@ pub enum ClusterMembershipReadOutcomeV1 {
 }
 
 impl ClusterMembershipReadOutcomeV1 {
+    pub fn validate_v1(&self) -> Result<(), ClusterMembershipReadFailureV1> {
+        match self {
+            Self::Available(snapshot) => snapshot.validate_v1(),
+            Self::Unavailable(unavailable) => unavailable.validate_v1(),
+            Self::Rejected(rejection) => rejection.validate_v1(),
+        }
+    }
+
     pub fn validate_against_v1(
         &self,
         request: &crate::ClusterMembershipReadRequestV1,
     ) -> Result<(), ClusterMembershipReadFailureV1> {
         match self {
             Self::Available(snapshot) => snapshot.validate_against_v1(request),
-            Self::Unavailable(unavailable) => validate_outcome_authority_v1(
-                unavailable.cluster_record_id.as_str(),
-                &unavailable.generation,
-                unavailable.expected_authority_digest.as_str(),
-                request,
-            ),
-            Self::Rejected(rejection) => validate_outcome_authority_v1(
-                rejection.cluster_record_id.as_str(),
-                &rejection.generation,
-                rejection.expected_authority_digest.as_str(),
-                request,
-            ),
+            Self::Unavailable(unavailable) => {
+                unavailable.validate_v1()?;
+                validate_outcome_authority_v1(
+                    unavailable.cluster_record_id.as_str(),
+                    &unavailable.generation,
+                    unavailable.expected_authority_digest.as_str(),
+                    request,
+                )
+            }
+            Self::Rejected(rejection) => {
+                rejection.validate_v1()?;
+                validate_outcome_authority_v1(
+                    rejection.cluster_record_id.as_str(),
+                    &rejection.generation,
+                    rejection.expected_authority_digest.as_str(),
+                    request,
+                )
+            }
         }
+    }
+}
+
+/// Ordered response for one bounded membership batch.
+///
+/// The vector position is authoritative: decoders and SDK callers revalidate
+/// every entry against the request at the same position before returning any
+/// outcome.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClusterMembershipBatchReadResponseV1 {
+    pub outcomes: Vec<ClusterMembershipReadOutcomeV1>,
+}
+
+impl ClusterMembershipBatchReadResponseV1 {
+    pub fn validate_against_v1(
+        &self,
+        request: &crate::ClusterMembershipBatchReadRequestV1,
+    ) -> Result<(), ClusterMembershipReadFailureV1> {
+        if self.outcomes.len() != request.items.len() {
+            return Err(ClusterMembershipReadFailureV1::ClusterIdentityMismatch);
+        }
+        for (outcome, item) in self.outcomes.iter().zip(&request.items) {
+            outcome.validate_against_v1(&item.as_single_request_v1(&request.generation))?;
+        }
+        Ok(())
+    }
+}
+
+const CLUSTER_MEMBERSHIP_BATCH_READ_RESPONSE_V1_FIELDS: &[&str] = &["outcomes"];
+
+impl Serialize for ClusterMembershipBatchReadResponseV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        for outcome in &self.outcomes {
+            outcome.validate_v1().map_err(serde::ser::Error::custom)?;
+        }
+        let mut state = serializer.serialize_struct("ClusterMembershipBatchReadResponseV1", 1)?;
+        state.serialize_field("outcomes", &self.outcomes)?;
+        state.end()
+    }
+}
+
+struct ClusterMembershipBatchReadResponseV1Visitor;
+
+impl<'de> Visitor<'de> for ClusterMembershipBatchReadResponseV1Visitor {
+    type Value = ClusterMembershipBatchReadResponseV1;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a ClusterMembershipBatchReadResponseV1 map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut outcomes = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "outcomes" => set_once_v1(&mut outcomes, "outcomes", &mut map)?,
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        CLUSTER_MEMBERSHIP_BATCH_READ_RESPONSE_V1_FIELDS,
+                    ));
+                }
+            }
+        }
+        let response = ClusterMembershipBatchReadResponseV1 {
+            outcomes: outcomes.ok_or_else(|| de::Error::missing_field("outcomes"))?,
+        };
+        for outcome in &response.outcomes {
+            outcome.validate_v1().map_err(de::Error::custom)?;
+        }
+        Ok(response)
+    }
+}
+
+impl<'de> Deserialize<'de> for ClusterMembershipBatchReadResponseV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "ClusterMembershipBatchReadResponseV1",
+            CLUSTER_MEMBERSHIP_BATCH_READ_RESPONSE_V1_FIELDS,
+            ClusterMembershipBatchReadResponseV1Visitor,
+        )
     }
 }
 
@@ -890,6 +1024,29 @@ mod tests {
         assert_eq!(
             forged_rejection.validate_against_v1(&request),
             Err(ClusterMembershipReadFailureV1::GenerationMismatch)
+        );
+
+        let malformed_unavailable =
+            ClusterMembershipReadOutcomeV1::Unavailable(ClusterMembershipUnavailableV1 {
+                cluster_record_id: String::new(),
+                generation: request.generation.clone(),
+                expected_authority_digest: request.expected_authority_digest.clone(),
+            });
+        assert_eq!(
+            malformed_unavailable.validate_against_v1(&request),
+            Err(ClusterMembershipReadFailureV1::ClusterIdentityMismatch)
+        );
+
+        let malformed_rejection =
+            ClusterMembershipReadOutcomeV1::Rejected(ClusterMembershipReadRejectionV1 {
+                cluster_record_id: request.cluster_record_id.clone(),
+                generation: request.generation.clone(),
+                expected_authority_digest: String::new(),
+                failure: ClusterMembershipReadFailureV1::CorruptSidecar,
+            });
+        assert_eq!(
+            malformed_rejection.validate_against_v1(&request),
+            Err(ClusterMembershipReadFailureV1::AuthorityDigestMismatch)
         );
     }
 

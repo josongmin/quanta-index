@@ -189,6 +189,46 @@ fn sample_cluster_membership_request() -> quanta_index_contract::ClusterMembersh
     }
 }
 
+fn sample_cluster_membership_batch(
+    count: usize,
+) -> quanta_index_contract::ClusterMembershipBatchReadRequestV1 {
+    quanta_index_contract::ClusterMembershipBatchReadRequestV1 {
+        generation: sample_generation_pin(),
+        items: (0..count)
+            .map(
+                |index| quanta_index_contract::ClusterMembershipBatchReadItemV1 {
+                    cluster_record_id: format!("cluster-card:{index:02}"),
+                    expected_authority_digest: format!("authority:{index:02}"),
+                    limit: 1,
+                },
+            )
+            .collect(),
+    }
+}
+
+fn sample_cluster_membership_batch_response(
+    request: &quanta_index_contract::ClusterMembershipBatchReadRequestV1,
+) -> quanta_index_contract::ClusterMembershipBatchReadResponseV1 {
+    quanta_index_contract::ClusterMembershipBatchReadResponseV1 {
+        outcomes: request
+            .items
+            .iter()
+            .map(|item| {
+                quanta_index_contract::ClusterMembershipReadOutcomeV1::Available(
+                    quanta_index_contract::ClusterMembershipSnapshotV1 {
+                        cluster_record_id: item.cluster_record_id.clone(),
+                        generation: request.generation.clone(),
+                        authority_digest: item.expected_authority_digest.clone(),
+                        members: vec![SymbolId::new(format!("symbol:{}", item.cluster_record_id))],
+                        completeness:
+                            quanta_index_contract::ClusterMembershipCompletenessV1::Complete,
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
 fn search_corpus_identity(generation: u64, digest: &str) -> SearchCorpusGenerationIdentityV1 {
     SearchCorpusGenerationIdentityV1 {
         lexical: GenerationSnapshot {
@@ -630,7 +670,11 @@ fn cluster_membership_read_routes_exact_request_and_validates_available_authorit
     };
     let expected = quanta_index_contract::ClusterMembershipReadOutcomeV1::Available(snapshot);
     let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::ClusterMembershipRead(expected.clone()),
+        SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+            quanta_index_contract::ClusterMembershipBatchReadResponseV1 {
+                outcomes: vec![expected.clone()],
+            },
+        ),
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
 
@@ -639,7 +683,9 @@ fn cluster_membership_read_routes_exact_request_and_validates_available_authorit
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
     assert_eq!(
         captured.payload,
-        quanta_index_contract::SearchPlaneQueryIpcRequest::ClusterMembershipRead(request)
+        quanta_index_contract::SearchPlaneQueryIpcRequest::ClusterMembershipRead(
+            quanta_index_contract::ClusterMembershipBatchReadRequestV1::single_v1(request),
+        )
     );
 }
 
@@ -667,7 +713,11 @@ fn cluster_membership_read_preserves_matching_typed_absence_and_rejection_v1() {
 
     for expected in outcomes {
         let query = Arc::new(StubQueryTransport::new(
-            SearchPlaneQueryIpcResponse::ClusterMembershipRead(expected.clone()),
+            SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+                quanta_index_contract::ClusterMembershipBatchReadResponseV1 {
+                    outcomes: vec![expected.clone()],
+                },
+            ),
         ));
         let client = QuantaIndex::from_transports(query, unused_control(), unused_ingest());
         let observed = ok_or_fail!(client.search().cluster_membership_read_v1(request.clone()));
@@ -688,7 +738,11 @@ fn cluster_membership_read_rejects_stale_response_authority_v1() {
         },
     );
     let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::ClusterMembershipRead(stale),
+        SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+            quanta_index_contract::ClusterMembershipBatchReadResponseV1 {
+                outcomes: vec![stale],
+            },
+        ),
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
 
@@ -728,7 +782,11 @@ fn cluster_membership_read_rejects_mismatched_absence_and_rejection_authority_v1
 
     for mismatched in mismatched_outcomes {
         let query = Arc::new(StubQueryTransport::new(
-            SearchPlaneQueryIpcResponse::ClusterMembershipRead(mismatched),
+            SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+                quanta_index_contract::ClusterMembershipBatchReadResponseV1 {
+                    outcomes: vec![mismatched],
+                },
+            ),
         ));
         let client = QuantaIndex::from_transports(query, unused_control(), unused_ingest());
         let error = match client.search().cluster_membership_read_v1(request.clone()) {
@@ -776,6 +834,66 @@ fn cluster_membership_read_rejects_unrelated_query_response_v1() {
         message,
         "expected cluster membership read response, got text"
     );
+}
+
+#[test]
+fn cluster_membership_batch_read_routes_fifteen_items_once_and_preserves_order_v1() {
+    let request = sample_cluster_membership_batch(15);
+    let expected = sample_cluster_membership_batch_response(&request);
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::ClusterMembershipRead(expected.clone()),
+    ));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+
+    let observed = ok_or_fail!(
+        client
+            .search()
+            .cluster_membership_batch_read_v1(request.clone())
+    );
+    assert_eq!(observed, expected);
+    let requests = ok_or_fail!(query.requests.lock());
+    assert_eq!(
+        requests.len(),
+        1,
+        "one logical batch must use one transport call"
+    );
+    assert_eq!(
+        requests[0].payload,
+        quanta_index_contract::SearchPlaneQueryIpcRequest::ClusterMembershipRead(request)
+    );
+}
+
+#[test]
+fn cluster_membership_batch_read_rejects_partial_reordered_and_stale_response_v1() {
+    let request = sample_cluster_membership_batch(3);
+    let valid = sample_cluster_membership_batch_response(&request);
+
+    let mut partial = valid.clone();
+    let _removed = partial.outcomes.pop();
+
+    let mut reordered = valid.clone();
+    reordered.outcomes.swap(0, 1);
+
+    let mut stale = valid;
+    let quanta_index_contract::ClusterMembershipReadOutcomeV1::Available(snapshot) =
+        &mut stale.outcomes[1]
+    else {
+        panic!("fixture must contain an available outcome")
+    };
+    snapshot.authority_digest.push_str(":stale");
+
+    for malformed in [partial, reordered, stale] {
+        let query = Arc::new(StubQueryTransport::new(
+            SearchPlaneQueryIpcResponse::ClusterMembershipRead(malformed),
+        ));
+        let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+        let error = client
+            .search()
+            .cluster_membership_batch_read_v1(request.clone())
+            .expect_err("malformed batch response must fail the whole SDK call");
+        assert!(matches!(error, crate::SdkError::Protocol(_)));
+        assert_eq!(ok_or_fail!(query.requests.lock()).len(), 1);
+    }
 }
 
 #[test]
@@ -1235,13 +1353,11 @@ fn search_corpus_builder_preserves_semantic_lifecycle_in_canonical_wire_order() 
         scope_b.clone(),
         "scope:b",
         vec![sample_semantic_source("symbol-b")],
-        Vec::new(),
     )
     .replace_semantic_scope(
         scope_a.clone(),
         "scope:a",
         vec![sample_semantic_source("symbol-a")],
-        Vec::new(),
     )
     .tombstone_semantic_scope(tombstone_d.clone())
     .tombstone_semantic_scope(tombstone_c.clone());
@@ -1304,7 +1420,7 @@ fn search_corpus_builder_preserves_typed_cluster_membership_without_text_inferen
         "manifest:cluster",
         "batch:cluster",
     )
-    .replace_semantic_scope(
+    .replace_semantic_scope_with_cluster_memberships_v1(
         sample_cluster_semantic_scope("auth-service"),
         "scope:cluster",
         vec![source_b, source_a],
@@ -1350,7 +1466,6 @@ fn search_corpus_builder_rejects_missing_mismatched_or_misplaced_cluster_members
         sample_cluster_semantic_scope("auth-service"),
         "scope:cluster-missing",
         vec![cluster_source.clone()],
-        Vec::new(),
     );
     let error = client
         .search_corpus()
@@ -1367,7 +1482,7 @@ fn search_corpus_builder_rejects_missing_mismatched_or_misplaced_cluster_members
         "manifest:cluster-mismatch",
         "batch:cluster-mismatch",
     )
-    .replace_semantic_scope(
+    .replace_semantic_scope_with_cluster_memberships_v1(
         sample_cluster_semantic_scope("auth-service"),
         "scope:cluster-mismatch",
         vec![cluster_source],
@@ -1387,7 +1502,7 @@ fn search_corpus_builder_rejects_missing_mismatched_or_misplaced_cluster_members
         "manifest:membership-misplaced",
         "batch:membership-misplaced",
     )
-    .replace_semantic_scope(
+    .replace_semantic_scope_with_cluster_memberships_v1(
         sample_semantic_scope("symbol-a"),
         "scope:membership-misplaced",
         vec![symbol_source.clone()],
@@ -1427,7 +1542,6 @@ fn search_corpus_semantic_surface_conflict_fails_before_transport_io() {
         sample_semantic_scope("symbol-conflict"),
         "scope:conflict",
         vec![sample_semantic_source("symbol-conflict")],
-        Vec::new(),
     );
 
     let error = client
@@ -1463,7 +1577,6 @@ fn search_corpus_semantic_scope_conflicts_fail_before_transport_io() {
         scope.clone(),
         "scope:conflict",
         vec![sample_semantic_source("symbol-conflict")],
-        Vec::new(),
     )
     .tombstone_semantic_scope(scope.clone());
 
@@ -1488,13 +1601,11 @@ fn search_corpus_semantic_scope_conflicts_fail_before_transport_io() {
         scope.clone(),
         "scope:first",
         vec![sample_semantic_source("symbol-conflict")],
-        Vec::new(),
     )
     .replace_semantic_scope(
         scope,
         "scope:second",
         vec![sample_semantic_source("symbol-conflict")],
-        Vec::new(),
     );
     let error = client
         .search_corpus()

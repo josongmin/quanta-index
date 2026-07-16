@@ -361,6 +361,12 @@ crate quanta_index_contract
 ├── mod macros: pub(crate)
 ├── mod query: pub
 │   ├── mod cluster_membership: pub(self)
+│   │   ├── struct ClusterMembershipBatchReadItemV1: pub
+│   │   ├── struct ClusterMembershipBatchReadItemV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct ClusterMembershipBatchReadRequestV1: pub
+│   │   ├── struct ClusterMembershipBatchReadRequestV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
 │   │   ├── enum ClusterMembershipReadPolicyErrorV1: pub
 │   │   ├── struct ClusterMembershipReadRequestV1: pub
 │   │   └── struct ClusterMembershipReadRequestV1Visitor: pub(self)
@@ -473,6 +479,9 @@ crate quanta_index_contract
 │       └── type Value: pub(self)
 └── mod results: pub
     ├── mod cluster_membership: pub(self)
+    │   ├── struct ClusterMembershipBatchReadResponseV1: pub
+    │   ├── struct ClusterMembershipBatchReadResponseV1Visitor: pub(self)
+    │   │   └── type Value: pub(self)
     │   ├── enum ClusterMembershipCompletenessV1: pub
     │   ├── struct ClusterMembershipOutcomePayloadBufferV1: pub(self)
     │   ├── struct ClusterMembershipOutcomePayloadBufferV1Visitor: pub(self)

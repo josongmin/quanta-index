@@ -7,11 +7,11 @@ use serde::{
 };
 
 use crate::{
-    ClusterMembershipReadOutcomeV1, ClusterMembershipReadRequestV1, CurrentGenerationRequest,
-    GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest, HistoryQueryRequest,
-    HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest, HybridSeedQueryResponse,
-    RepoMapActivateGenerationRequest, RepoMapMutationAck, RepoMapQueryRequest,
-    RepoMapQueryResponse, RuntimeMetadataQueryRequest,
+    ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
+    CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
+    HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest,
+    HybridSeedQueryResponse, RepoMapActivateGenerationRequest, RepoMapMutationAck,
+    RepoMapQueryRequest, RepoMapQueryResponse, RuntimeMetadataQueryRequest,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneExplainQueryRequest,
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneRuntimeMetadataQueryResponse,
@@ -84,7 +84,7 @@ pub enum SearchPlaneQueryIpcRequest {
     Structural(StructuralQueryRequest),
     RepoMapQuery(RepoMapQueryRequest),
     Explain(SearchPlaneExplainQueryRequest),
-    ClusterMembershipRead(ClusterMembershipReadRequestV1),
+    ClusterMembershipRead(ClusterMembershipBatchReadRequestV1),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -105,7 +105,7 @@ pub enum SearchPlaneQueryIpcResponse {
     Structural(SearchPlaneStructuralQueryResponse),
     RepoMapQuery(RepoMapQueryResponse),
     Explain(SearchPlaneExplainQueryResponse),
-    ClusterMembershipRead(ClusterMembershipReadOutcomeV1),
+    ClusterMembershipRead(ClusterMembershipBatchReadResponseV1),
     Error(SearchPlaneIpcError),
 }
 
@@ -1505,12 +1505,14 @@ mod tests {
         let request = SearchPlaneQueryIpcRequestEnvelope {
             request_id: 23,
             payload: SearchPlaneQueryIpcRequest::ClusterMembershipRead(
-                ClusterMembershipReadRequestV1 {
-                    cluster_record_id: "cluster-card:auth-service".to_string(),
-                    generation: generation.clone(),
-                    expected_authority_digest: "cluster-authority-digest".to_string(),
-                    limit: 2,
-                },
+                ClusterMembershipBatchReadRequestV1::single_v1(
+                    crate::ClusterMembershipReadRequestV1 {
+                        cluster_record_id: "cluster-card:auth-service".to_string(),
+                        generation: generation.clone(),
+                        expected_authority_digest: "cluster-authority-digest".to_string(),
+                        limit: 2,
+                    },
+                ),
             ),
         };
         let request_value = serde_json::to_value(&request).expect("membership request JSON");
@@ -1534,16 +1536,20 @@ mod tests {
         let response = SearchPlaneQueryIpcResponseEnvelope {
             request_id: 23,
             payload: SearchPlaneQueryIpcResponse::ClusterMembershipRead(
-                ClusterMembershipReadOutcomeV1::Available(crate::ClusterMembershipSnapshotV1 {
-                    cluster_record_id: "cluster-card:auth-service".to_string(),
-                    generation,
-                    authority_digest: "cluster-authority-digest".to_string(),
-                    members: vec![
-                        crate::SymbolId::new("symbol:auth::authenticate"),
-                        crate::SymbolId::new("symbol:auth::authorize"),
-                    ],
-                    completeness: crate::ClusterMembershipCompletenessV1::Complete,
-                }),
+                ClusterMembershipBatchReadResponseV1 {
+                    outcomes: vec![crate::ClusterMembershipReadOutcomeV1::Available(
+                        crate::ClusterMembershipSnapshotV1 {
+                            cluster_record_id: "cluster-card:auth-service".to_string(),
+                            generation,
+                            authority_digest: "cluster-authority-digest".to_string(),
+                            members: vec![
+                                crate::SymbolId::new("symbol:auth::authenticate"),
+                                crate::SymbolId::new("symbol:auth::authorize"),
+                            ],
+                            completeness: crate::ClusterMembershipCompletenessV1::Complete,
+                        },
+                    )],
+                },
             ),
         };
         let response_value = serde_json::to_value(&response).expect("membership response JSON");

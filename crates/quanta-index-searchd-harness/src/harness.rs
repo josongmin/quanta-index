@@ -2292,7 +2292,7 @@ fn start_driver(
     state_root: &Path,
     embedder_profile: &SemanticEmbedderProfile,
 ) -> AnyResult<DriverHandles> {
-    let config = build_config(state_root, embedder_profile);
+    let config = build_config(state_root, embedder_profile)?;
     let runtime = build_runtime(config)?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
     let control_socket = runtime.control_server.socket_path().to_path_buf();
@@ -2333,12 +2333,21 @@ fn start_driver(
     ))
 }
 
-fn build_config(state_root: &Path, embedder_profile: &SemanticEmbedderProfile) -> SearchdConfig {
-    let mut cfg = SearchdConfig::from_state_root(state_root.to_path_buf());
+fn build_config(
+    state_root: &Path,
+    embedder_profile: &SemanticEmbedderProfile,
+) -> AnyResult<SearchdConfig> {
+    let mut cfg = SearchdConfig::from_state_root(state_root.to_path_buf())
+        .try_with_search_corpus_history_retention_limits(
+            8,
+            16 * 1024 * 1024,
+            128,
+            256 * 1024 * 1024,
+        )?;
     let (query_socket, control_socket, ingest_socket) = unique_socket_paths();
     cfg = SearchdConfig::with_socket_overrides(cfg, query_socket, control_socket);
     cfg = SearchdConfig::with_ingest_socket_override(cfg, ingest_socket);
-    cfg.with_semantic_embedder_profile(embedder_profile.clone())
+    Ok(cfg.with_semantic_embedder_profile(embedder_profile.clone()))
 }
 
 fn unexpected_response(kind: &str) -> E2eQueryResult {

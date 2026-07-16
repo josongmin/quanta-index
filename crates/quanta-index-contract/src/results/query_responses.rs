@@ -281,6 +281,9 @@ pub struct SeedCandidateV2 {
     pub entity_id: String,
     pub owner_kind: OwnerDocKind,
     pub corpus_kind: Option<SemanticCorpusKindV1>,
+    /// Authority digest of the semantic record that produced this seed.
+    /// This is distinct from the generation manifest digest.
+    pub authority_digest: Option<String>,
     pub repo_relative_path: RepoRelativePath,
     pub snippet: String,
     pub seed_rank: u32,
@@ -293,10 +296,11 @@ pub struct SeedCandidateV2 {
 /// `entity_id` is opaque outside its owner domain. Including `owner_kind` in
 /// the ordered key prevents unrelated records with equal display text from
 /// collapsing during RRF fusion.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SeedFusionIdentityV2 {
     owner_kind: OwnerDocKind,
     entity_id: String,
+    corpus_kind: Option<SemanticCorpusKindV1>,
 }
 
 impl SeedFusionIdentityV2 {
@@ -305,6 +309,20 @@ impl SeedFusionIdentityV2 {
         Self {
             owner_kind,
             entity_id,
+            corpus_kind: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn new_with_corpus_v2(
+        owner_kind: OwnerDocKind,
+        entity_id: String,
+        corpus_kind: Option<SemanticCorpusKindV1>,
+    ) -> Self {
+        Self {
+            owner_kind,
+            entity_id,
+            corpus_kind,
         }
     }
 
@@ -318,10 +336,15 @@ impl SeedFusionIdentityV2 {
         &self.entity_id
     }
 
+    #[must_use]
+    pub const fn corpus_kind(&self) -> Option<SemanticCorpusKindV1> {
+        self.corpus_kind
+    }
+
     /// Compare borrowed identity parts without allocating temporary keys.
     ///
     /// The order is exactly the derived [`Ord`] order of this type:
-    /// `owner_kind` first, followed by the opaque `entity_id`.
+    /// `owner_kind` first, followed by the opaque `entity_id` and corpus kind.
     #[must_use]
     pub fn cmp_parts(
         left_owner_kind: OwnerDocKind,
@@ -329,15 +352,64 @@ impl SeedFusionIdentityV2 {
         right_owner_kind: OwnerDocKind,
         right_entity_id: &str,
     ) -> core::cmp::Ordering {
+        Self::cmp_parts_with_corpus_v2(
+            left_owner_kind,
+            left_entity_id,
+            None,
+            right_owner_kind,
+            right_entity_id,
+            None,
+        )
+    }
+
+    #[must_use]
+    pub fn cmp_parts_with_corpus_v2(
+        left_owner_kind: OwnerDocKind,
+        left_entity_id: &str,
+        left_corpus_kind: Option<SemanticCorpusKindV1>,
+        right_owner_kind: OwnerDocKind,
+        right_entity_id: &str,
+        right_corpus_kind: Option<SemanticCorpusKindV1>,
+    ) -> core::cmp::Ordering {
         left_owner_kind
             .cmp(&right_owner_kind)
             .then_with(|| left_entity_id.cmp(right_entity_id))
+            .then_with(|| {
+                corpus_kind_code_v2(left_corpus_kind).cmp(corpus_kind_code_v2(right_corpus_kind))
+            })
     }
+}
+
+impl Ord for SeedFusionIdentityV2 {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        Self::cmp_parts_with_corpus_v2(
+            self.owner_kind,
+            self.entity_id.as_str(),
+            self.corpus_kind,
+            other.owner_kind,
+            other.entity_id.as_str(),
+            other.corpus_kind,
+        )
+    }
+}
+
+impl PartialOrd for SeedFusionIdentityV2 {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn corpus_kind_code_v2(corpus_kind: Option<SemanticCorpusKindV1>) -> &'static str {
+    corpus_kind.map_or("", SemanticCorpusKindV1::as_code_str)
 }
 
 impl From<&SeedCandidateV2> for SeedFusionIdentityV2 {
     fn from(candidate: &SeedCandidateV2) -> Self {
-        Self::new(candidate.owner_kind, candidate.entity_id.clone())
+        Self::new_with_corpus_v2(
+            candidate.owner_kind,
+            candidate.entity_id.clone(),
+            candidate.corpus_kind,
+        )
     }
 }
 
@@ -385,6 +457,7 @@ const SEED_CANDIDATE_V2_FIELDS: &[&str] = &[
     "entity_id",
     "owner_kind",
     "corpus_kind",
+    "authority_digest",
     "repo_relative_path",
     "snippet",
     "seed_rank",
@@ -1227,11 +1300,18 @@ impl Serialize for SeedCandidateV2 {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SeedCandidateV2", 9)?;
+        let mut field_count = 9usize;
+        if self.authority_digest.is_some() {
+            field_count = field_count.saturating_add(1);
+        }
+        let mut state = serializer.serialize_struct("SeedCandidateV2", field_count)?;
         state.serialize_field("record_id", &self.record_id)?;
         state.serialize_field("entity_id", &self.entity_id)?;
         state.serialize_field("owner_kind", &self.owner_kind)?;
         state.serialize_field("corpus_kind", &self.corpus_kind)?;
+        if let Some(authority_digest) = &self.authority_digest {
+            state.serialize_field("authority_digest", authority_digest)?;
+        }
         state.serialize_field("repo_relative_path", &self.repo_relative_path)?;
         state.serialize_field("snippet", &self.snippet)?;
         state.serialize_field("seed_rank", &self.seed_rank)?;
@@ -1258,6 +1338,7 @@ impl<'de> Visitor<'de> for SeedCandidateV2Visitor {
         let mut entity_id: Option<String> = None;
         let mut owner_kind: Option<OwnerDocKind> = None;
         let mut corpus_kind: Option<Option<SemanticCorpusKindV1>> = None;
+        let mut authority_digest: Option<Option<String>> = None;
         let mut repo_relative_path: Option<RepoRelativePath> = None;
         let mut snippet: Option<String> = None;
         let mut seed_rank: Option<u32> = None;
@@ -1288,6 +1369,12 @@ impl<'de> Visitor<'de> for SeedCandidateV2Visitor {
                         return Err(de::Error::duplicate_field("corpus_kind"));
                     }
                     corpus_kind = Some(map.next_value()?);
+                }
+                "authority_digest" => {
+                    if authority_digest.is_some() {
+                        return Err(de::Error::duplicate_field("authority_digest"));
+                    }
+                    authority_digest = Some(map.next_value()?);
                 }
                 "repo_relative_path" => {
                     if repo_relative_path.is_some() {
@@ -1329,6 +1416,7 @@ impl<'de> Visitor<'de> for SeedCandidateV2Visitor {
             entity_id: entity_id.ok_or_else(|| de::Error::missing_field("entity_id"))?,
             owner_kind: owner_kind.ok_or_else(|| de::Error::missing_field("owner_kind"))?,
             corpus_kind: corpus_kind.unwrap_or(None),
+            authority_digest: authority_digest.unwrap_or(None),
             repo_relative_path: repo_relative_path
                 .ok_or_else(|| de::Error::missing_field("repo_relative_path"))?,
             snippet: snippet.ok_or_else(|| de::Error::missing_field("snippet"))?,
@@ -1720,6 +1808,7 @@ mod tests {
             entity_id: "symbol:demo".to_string(),
             owner_kind: OwnerDocKind::Symbol,
             corpus_kind: Some(SemanticCorpusKindV1::SymbolCard),
+            authority_digest: Some("authority:symbol-card:demo".to_string()),
             repo_relative_path: RepoRelativePath::new("src/lib.rs"),
             snippet: "symbol: symbol:demo".to_string(),
             seed_rank: 1,
@@ -1746,13 +1835,26 @@ mod tests {
             for right in &identities {
                 assert_eq!(
                     left.cmp(right),
-                    SeedFusionIdentityV2::cmp_parts(
+                    SeedFusionIdentityV2::cmp_parts_with_corpus_v2(
                         left.owner_kind(),
                         left.entity_id(),
+                        left.corpus_kind(),
                         right.owner_kind(),
                         right.entity_id(),
+                        right.corpus_kind(),
                     )
                 );
+                if left.corpus_kind().is_none() && right.corpus_kind().is_none() {
+                    assert_eq!(
+                        left.cmp(right),
+                        SeedFusionIdentityV2::cmp_parts(
+                            left.owner_kind(),
+                            left.entity_id(),
+                            right.owner_kind(),
+                            right.entity_id(),
+                        )
+                    );
+                }
             }
         }
     }
@@ -1817,5 +1919,26 @@ mod tests {
         let decoded_cbor: HybridSeedQueryResponse = ciborium::de::from_reader(cbor.as_slice())
             .expect("response must deserialize from CBOR");
         assert_eq!(decoded_cbor, response);
+    }
+
+    #[test]
+    fn seed_candidate_v2_authority_digest_is_optional_but_round_trips_when_present() {
+        let candidate = sample_seed_candidate_v2();
+        let mut encoded = serde_json::to_value(&candidate).expect("seed candidate JSON");
+        assert_eq!(
+            encoded
+                .get("authority_digest")
+                .and_then(serde_json::Value::as_str),
+            Some("authority:symbol-card:demo")
+        );
+
+        let removed = encoded
+            .as_object_mut()
+            .expect("seed candidate object")
+            .remove("authority_digest");
+        assert!(removed.is_some());
+        let decoded: SeedCandidateV2 = serde_json::from_value(encoded)
+            .expect("legacy candidate without digest remains readable");
+        assert!(decoded.authority_digest.is_none());
     }
 }

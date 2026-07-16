@@ -269,6 +269,7 @@ fn lexical_lane_seed_candidates_v2(
             entity_id,
             owner_kind: OwnerDocKind::Chunk,
             corpus_kind: None,
+            authority_digest: None,
             repo_relative_path: candidate.repo_relative_path.clone(),
             snippet: candidate.snippet.clone(),
             seed_rank: checked_rank_u32_v1(index, "hybrid seed v2 lexical")?,
@@ -291,7 +292,11 @@ fn one_semantic_lane_seed_candidates_v2(
     let mut collapsed = Vec::new();
     for (index, hit) in semantic_hits.iter().enumerate() {
         let entity_id = hit.owner_id.clone();
-        let identity = SeedFusionIdentityV2::new(hit.owner_kind, entity_id.clone());
+        let identity = SeedFusionIdentityV2::new_with_corpus_v2(
+            hit.owner_kind,
+            entity_id.clone(),
+            hit.corpus_kind,
+        );
         if !seen_identities.insert(identity) {
             continue;
         }
@@ -304,6 +309,7 @@ fn one_semantic_lane_seed_candidates_v2(
             entity_id,
             owner_kind: hit.owner_kind,
             corpus_kind: hit.corpus_kind,
+            authority_digest: Some(hit.authority_digest.clone()),
             repo_relative_path: hit.candidate.repo_relative_path.clone(),
             snippet: hit.candidate.snippet.clone(),
             seed_rank: checked_rank_u32_v1(index, "hybrid seed v2 semantic")?,
@@ -336,6 +342,7 @@ fn merge_seed_candidate_v2(acc: &mut SeedCandidateV2, incoming: SeedCandidateV2)
         acc.record_id = incoming.record_id;
         acc.owner_kind = incoming.owner_kind;
         acc.corpus_kind = incoming.corpus_kind;
+        acc.authority_digest = incoming.authority_digest;
         acc.repo_relative_path = incoming.repo_relative_path;
         acc.snippet = incoming.snippet;
     }
@@ -582,6 +589,7 @@ mod seed_fusion_tests {
             owner_id: owner_id.to_string(),
             owner_kind,
             corpus_kind: Some(corpus_kind),
+            authority_digest: format!("authority:{record_id}"),
         }
     }
 
@@ -609,6 +617,41 @@ mod seed_fusion_tests {
         assert_eq!(identities[1].entity_id(), "z");
         assert_eq!(identities[2].owner_kind(), OwnerDocKind::Chunk);
         assert_eq!(identities[2].entity_id(), "a");
+    }
+
+    #[test]
+    fn module_and_cluster_cards_with_one_owner_keep_distinct_authority_v2() {
+        let owner_id = "runtime_module_id_v1:src/shared.rs";
+        let semantic_lanes = vec![
+            vec![SemanticSearchHitV1 {
+                candidate: lexical_candidate("module-record"),
+                record_id: "module-record".to_string(),
+                owner_id: owner_id.to_string(),
+                owner_kind: OwnerDocKind::Module,
+                corpus_kind: Some(SemanticCorpusKindV1::ModuleCard),
+                authority_digest: "module-authority".to_string(),
+            }],
+            vec![SemanticSearchHitV1 {
+                candidate: lexical_candidate("cluster-record"),
+                record_id: "cluster-record".to_string(),
+                owner_id: owner_id.to_string(),
+                owner_kind: OwnerDocKind::Module,
+                corpus_kind: Some(SemanticCorpusKindV1::ClusterCard),
+                authority_digest: "cluster-authority".to_string(),
+            }],
+        ];
+
+        let seeds = build_hybrid_seed_candidates_v2(&[], &semantic_lanes, &[], 2)
+            .expect("typed corpus identities must remain independently ranked");
+        assert_eq!(seeds.len(), 2);
+        assert!(seeds.iter().any(|seed| {
+            seed.corpus_kind == Some(SemanticCorpusKindV1::ModuleCard)
+                && seed.authority_digest.as_deref() == Some("module-authority")
+        }));
+        assert!(seeds.iter().any(|seed| {
+            seed.corpus_kind == Some(SemanticCorpusKindV1::ClusterCard)
+                && seed.authority_digest.as_deref() == Some("cluster-authority")
+        }));
     }
 
     #[test]

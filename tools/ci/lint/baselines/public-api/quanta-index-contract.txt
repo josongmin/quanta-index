@@ -1273,7 +1273,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneIngestIpcRe
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneIngestIpcResponse
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneIngestIpcResponse
 pub enum quanta_index_contract::ipc::SearchPlaneQueryIpcRequest
-pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::ClusterMembershipRead(quanta_index_contract::ClusterMembershipReadRequestV1)
+pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::ClusterMembershipRead(quanta_index_contract::ClusterMembershipBatchReadRequestV1)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::Explain(quanta_index_contract::SearchPlaneExplainQueryRequest)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::History(quanta_index_contract::HistoryQueryRequest)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::Hybrid(quanta_index_contract::HybridQueryRequest)
@@ -1303,7 +1303,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneQueryIpcReq
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneQueryIpcRequest
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneQueryIpcRequest
 pub enum quanta_index_contract::ipc::SearchPlaneQueryIpcResponse
-pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::ClusterMembershipRead(quanta_index_contract::ClusterMembershipReadOutcomeV1)
+pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::ClusterMembershipRead(quanta_index_contract::ClusterMembershipBatchReadResponseV1)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::Explain(quanta_index_contract::SearchPlaneExplainQueryResponse)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::History(quanta_index_contract::SearchPlaneHistoryQueryResponse)
@@ -4246,11 +4246,20 @@ pub use quanta_index_contract::query::QueryConstraintSetV1
 pub use quanta_index_contract::query::TextQueryRequest
 pub use quanta_index_contract::query::TextQuerySyntax
 pub enum quanta_index_contract::query::ClusterMembershipReadPolicyErrorV1
+pub quanta_index_contract::query::ClusterMembershipReadPolicyErrorV1::BatchTooLarge
+pub quanta_index_contract::query::ClusterMembershipReadPolicyErrorV1::BatchTooLarge::items: usize
+pub quanta_index_contract::query::ClusterMembershipReadPolicyErrorV1::BatchTooLarge::max: usize
+pub quanta_index_contract::query::ClusterMembershipReadPolicyErrorV1::DuplicateClusterRecordId
+pub quanta_index_contract::query::ClusterMembershipReadPolicyErrorV1::EmptyBatch
 pub quanta_index_contract::query::ClusterMembershipReadPolicyErrorV1::EmptyClusterRecordId
 pub quanta_index_contract::query::ClusterMembershipReadPolicyErrorV1::EmptyExpectedAuthorityDigest
 pub quanta_index_contract::query::ClusterMembershipReadPolicyErrorV1::InvalidLimit
 pub quanta_index_contract::query::ClusterMembershipReadPolicyErrorV1::InvalidLimit::limit: u32
 pub quanta_index_contract::query::ClusterMembershipReadPolicyErrorV1::InvalidLimit::max: u32
+pub quanta_index_contract::query::ClusterMembershipReadPolicyErrorV1::NonCanonicalClusterRecordOrder
+pub quanta_index_contract::query::ClusterMembershipReadPolicyErrorV1::TotalLimitExceeded
+pub quanta_index_contract::query::ClusterMembershipReadPolicyErrorV1::TotalLimitExceeded::max: u32
+pub quanta_index_contract::query::ClusterMembershipReadPolicyErrorV1::TotalLimitExceeded::total: u32
 impl core::clone::Clone for quanta_index_contract::ClusterMembershipReadPolicyErrorV1
 pub fn quanta_index_contract::ClusterMembershipReadPolicyErrorV1::clone(&self) -> quanta_index_contract::ClusterMembershipReadPolicyErrorV1
 impl core::cmp::Eq for quanta_index_contract::ClusterMembershipReadPolicyErrorV1
@@ -4270,6 +4279,56 @@ impl core::marker::Unpin for quanta_index_contract::ClusterMembershipReadPolicyE
 impl core::marker::UnsafeUnpin for quanta_index_contract::ClusterMembershipReadPolicyErrorV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ClusterMembershipReadPolicyErrorV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ClusterMembershipReadPolicyErrorV1
+pub struct quanta_index_contract::query::ClusterMembershipBatchReadItemV1
+pub quanta_index_contract::query::ClusterMembershipBatchReadItemV1::cluster_record_id: alloc::string::String
+pub quanta_index_contract::query::ClusterMembershipBatchReadItemV1::expected_authority_digest: alloc::string::String
+pub quanta_index_contract::query::ClusterMembershipBatchReadItemV1::limit: u32
+impl quanta_index_contract::ClusterMembershipBatchReadItemV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadItemV1::as_single_request_v1(&self, generation: &quanta_index_contract_base::query::pin::GenerationPin) -> quanta_index_contract::ClusterMembershipReadRequestV1
+impl core::clone::Clone for quanta_index_contract::ClusterMembershipBatchReadItemV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadItemV1::clone(&self) -> quanta_index_contract::ClusterMembershipBatchReadItemV1
+impl core::cmp::Eq for quanta_index_contract::ClusterMembershipBatchReadItemV1
+impl core::cmp::PartialEq for quanta_index_contract::ClusterMembershipBatchReadItemV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadItemV1::eq(&self, other: &quanta_index_contract::ClusterMembershipBatchReadItemV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::ClusterMembershipBatchReadItemV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadItemV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::ClusterMembershipBatchReadItemV1
+impl serde_core::ser::Serialize for quanta_index_contract::ClusterMembershipBatchReadItemV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadItemV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ClusterMembershipBatchReadItemV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadItemV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ClusterMembershipBatchReadItemV1
+impl core::marker::Send for quanta_index_contract::ClusterMembershipBatchReadItemV1
+impl core::marker::Sync for quanta_index_contract::ClusterMembershipBatchReadItemV1
+impl core::marker::Unpin for quanta_index_contract::ClusterMembershipBatchReadItemV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ClusterMembershipBatchReadItemV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ClusterMembershipBatchReadItemV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ClusterMembershipBatchReadItemV1
+pub struct quanta_index_contract::query::ClusterMembershipBatchReadRequestV1
+pub quanta_index_contract::query::ClusterMembershipBatchReadRequestV1::generation: quanta_index_contract_base::query::pin::GenerationPin
+pub quanta_index_contract::query::ClusterMembershipBatchReadRequestV1::items: alloc::vec::Vec<quanta_index_contract::ClusterMembershipBatchReadItemV1>
+impl quanta_index_contract::ClusterMembershipBatchReadRequestV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadRequestV1::single_v1(request: quanta_index_contract::ClusterMembershipReadRequestV1) -> Self
+pub fn quanta_index_contract::ClusterMembershipBatchReadRequestV1::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::ClusterMembershipReadPolicyErrorV1>
+impl core::clone::Clone for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadRequestV1::clone(&self) -> quanta_index_contract::ClusterMembershipBatchReadRequestV1
+impl core::cmp::Eq for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+impl core::cmp::PartialEq for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadRequestV1::eq(&self, other: &quanta_index_contract::ClusterMembershipBatchReadRequestV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadRequestV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+impl serde_core::ser::Serialize for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadRequestV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadRequestV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+impl core::marker::Send for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+impl core::marker::Sync for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+impl core::marker::Unpin for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ClusterMembershipBatchReadRequestV1
 pub struct quanta_index_contract::query::ClusterMembershipReadRequestV1
 pub quanta_index_contract::query::ClusterMembershipReadRequestV1::cluster_record_id: alloc::string::String
 pub quanta_index_contract::query::ClusterMembershipReadRequestV1::expected_authority_digest: alloc::string::String
@@ -4503,6 +4562,7 @@ impl core::marker::Unpin for quanta_index_contract::SymbolQueryRequest
 impl core::marker::UnsafeUnpin for quanta_index_contract::SymbolQueryRequest
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SymbolQueryRequest
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SymbolQueryRequest
+pub const quanta_index_contract::query::MAX_CLUSTER_MEMBERSHIP_BATCH_ITEMS_V1: usize
 pub const quanta_index_contract::query::MAX_CLUSTER_MEMBERSHIP_READ_V1: u32
 pub type quanta_index_contract::query::LqQuery = quanta_index_contract::TextQueryAst
 pub type quanta_index_contract::query::TextQueryAst = quanta_index_lq_norm::ast::LqNormalizedQuery
@@ -5375,6 +5435,7 @@ pub quanta_index_contract::results::ClusterMembershipReadOutcomeV1::Rejected(qua
 pub quanta_index_contract::results::ClusterMembershipReadOutcomeV1::Unavailable(quanta_index_contract::ClusterMembershipUnavailableV1)
 impl quanta_index_contract::ClusterMembershipReadOutcomeV1
 pub fn quanta_index_contract::ClusterMembershipReadOutcomeV1::validate_against_v1(&self, request: &quanta_index_contract::ClusterMembershipReadRequestV1) -> core::result::Result<(), quanta_index_contract::ClusterMembershipReadFailureV1>
+pub fn quanta_index_contract::ClusterMembershipReadOutcomeV1::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::ClusterMembershipReadFailureV1>
 impl core::clone::Clone for quanta_index_contract::ClusterMembershipReadOutcomeV1
 pub fn quanta_index_contract::ClusterMembershipReadOutcomeV1::clone(&self) -> quanta_index_contract::ClusterMembershipReadOutcomeV1
 impl core::cmp::Eq for quanta_index_contract::ClusterMembershipReadOutcomeV1
@@ -5528,11 +5589,36 @@ impl core::marker::Unpin for quanta_index_contract::SeedLaneV2
 impl core::marker::UnsafeUnpin for quanta_index_contract::SeedLaneV2
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SeedLaneV2
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedLaneV2
+pub struct quanta_index_contract::results::ClusterMembershipBatchReadResponseV1
+pub quanta_index_contract::results::ClusterMembershipBatchReadResponseV1::outcomes: alloc::vec::Vec<quanta_index_contract::ClusterMembershipReadOutcomeV1>
+impl quanta_index_contract::ClusterMembershipBatchReadResponseV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadResponseV1::validate_against_v1(&self, request: &quanta_index_contract::ClusterMembershipBatchReadRequestV1) -> core::result::Result<(), quanta_index_contract::ClusterMembershipReadFailureV1>
+impl core::clone::Clone for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadResponseV1::clone(&self) -> quanta_index_contract::ClusterMembershipBatchReadResponseV1
+impl core::cmp::Eq for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+impl core::cmp::PartialEq for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadResponseV1::eq(&self, other: &quanta_index_contract::ClusterMembershipBatchReadResponseV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadResponseV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+impl serde_core::ser::Serialize for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadResponseV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadResponseV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+impl core::marker::Send for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+impl core::marker::Sync for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+impl core::marker::Unpin for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ClusterMembershipBatchReadResponseV1
 pub struct quanta_index_contract::results::ClusterMembershipReadRejectionV1
 pub quanta_index_contract::results::ClusterMembershipReadRejectionV1::cluster_record_id: alloc::string::String
 pub quanta_index_contract::results::ClusterMembershipReadRejectionV1::expected_authority_digest: alloc::string::String
 pub quanta_index_contract::results::ClusterMembershipReadRejectionV1::failure: quanta_index_contract::ClusterMembershipReadFailureV1
 pub quanta_index_contract::results::ClusterMembershipReadRejectionV1::generation: quanta_index_contract_base::query::pin::GenerationPin
+impl quanta_index_contract::ClusterMembershipReadRejectionV1
+pub fn quanta_index_contract::ClusterMembershipReadRejectionV1::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::ClusterMembershipReadFailureV1>
 impl core::clone::Clone for quanta_index_contract::ClusterMembershipReadRejectionV1
 pub fn quanta_index_contract::ClusterMembershipReadRejectionV1::clone(&self) -> quanta_index_contract::ClusterMembershipReadRejectionV1
 impl core::cmp::Eq for quanta_index_contract::ClusterMembershipReadRejectionV1
@@ -5584,6 +5670,8 @@ pub struct quanta_index_contract::results::ClusterMembershipUnavailableV1
 pub quanta_index_contract::results::ClusterMembershipUnavailableV1::cluster_record_id: alloc::string::String
 pub quanta_index_contract::results::ClusterMembershipUnavailableV1::expected_authority_digest: alloc::string::String
 pub quanta_index_contract::results::ClusterMembershipUnavailableV1::generation: quanta_index_contract_base::query::pin::GenerationPin
+impl quanta_index_contract::ClusterMembershipUnavailableV1
+pub fn quanta_index_contract::ClusterMembershipUnavailableV1::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::ClusterMembershipReadFailureV1>
 impl core::clone::Clone for quanta_index_contract::ClusterMembershipUnavailableV1
 pub fn quanta_index_contract::ClusterMembershipUnavailableV1::clone(&self) -> quanta_index_contract::ClusterMembershipUnavailableV1
 impl core::cmp::Eq for quanta_index_contract::ClusterMembershipUnavailableV1
@@ -5915,6 +6003,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneStructuralQ
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneStructuralQueryResponse
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneStructuralQueryResponse
 pub struct quanta_index_contract::results::SeedCandidateV2
+pub quanta_index_contract::results::SeedCandidateV2::authority_digest: core::option::Option<alloc::string::String>
 pub quanta_index_contract::results::SeedCandidateV2::contributions: alloc::vec::Vec<quanta_index_contract::SeedContributionV2>
 pub quanta_index_contract::results::SeedCandidateV2::corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>
 pub quanta_index_contract::results::SeedCandidateV2::degraded_reasons: alloc::vec::Vec<alloc::string::String>
@@ -5970,18 +6059,21 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedContrib
 pub struct quanta_index_contract::results::SeedFusionIdentityV2
 impl quanta_index_contract::SeedFusionIdentityV2
 pub fn quanta_index_contract::SeedFusionIdentityV2::cmp_parts(left_owner_kind: quanta_index_contract::OwnerDocKind, left_entity_id: &str, right_owner_kind: quanta_index_contract::OwnerDocKind, right_entity_id: &str) -> core::cmp::Ordering
+pub fn quanta_index_contract::SeedFusionIdentityV2::cmp_parts_with_corpus_v2(left_owner_kind: quanta_index_contract::OwnerDocKind, left_entity_id: &str, left_corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>, right_owner_kind: quanta_index_contract::OwnerDocKind, right_entity_id: &str, right_corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>) -> core::cmp::Ordering
+pub const fn quanta_index_contract::SeedFusionIdentityV2::corpus_kind(&self) -> core::option::Option<quanta_index_contract::SemanticCorpusKindV1>
 pub fn quanta_index_contract::SeedFusionIdentityV2::entity_id(&self) -> &str
 pub const fn quanta_index_contract::SeedFusionIdentityV2::new(owner_kind: quanta_index_contract::OwnerDocKind, entity_id: alloc::string::String) -> Self
+pub const fn quanta_index_contract::SeedFusionIdentityV2::new_with_corpus_v2(owner_kind: quanta_index_contract::OwnerDocKind, entity_id: alloc::string::String, corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>) -> Self
 pub const fn quanta_index_contract::SeedFusionIdentityV2::owner_kind(&self) -> quanta_index_contract::OwnerDocKind
 impl core::clone::Clone for quanta_index_contract::SeedFusionIdentityV2
 pub fn quanta_index_contract::SeedFusionIdentityV2::clone(&self) -> quanta_index_contract::SeedFusionIdentityV2
 impl core::cmp::Eq for quanta_index_contract::SeedFusionIdentityV2
 impl core::cmp::Ord for quanta_index_contract::SeedFusionIdentityV2
-pub fn quanta_index_contract::SeedFusionIdentityV2::cmp(&self, other: &quanta_index_contract::SeedFusionIdentityV2) -> core::cmp::Ordering
+pub fn quanta_index_contract::SeedFusionIdentityV2::cmp(&self, other: &Self) -> core::cmp::Ordering
 impl core::cmp::PartialEq for quanta_index_contract::SeedFusionIdentityV2
 pub fn quanta_index_contract::SeedFusionIdentityV2::eq(&self, other: &quanta_index_contract::SeedFusionIdentityV2) -> bool
 impl core::cmp::PartialOrd for quanta_index_contract::SeedFusionIdentityV2
-pub fn quanta_index_contract::SeedFusionIdentityV2::partial_cmp(&self, other: &quanta_index_contract::SeedFusionIdentityV2) -> core::option::Option<core::cmp::Ordering>
+pub fn quanta_index_contract::SeedFusionIdentityV2::partial_cmp(&self, other: &Self) -> core::option::Option<core::cmp::Ordering>
 impl core::convert::From<&quanta_index_contract::SeedCandidateV2> for quanta_index_contract::SeedFusionIdentityV2
 pub fn quanta_index_contract::SeedFusionIdentityV2::from(candidate: &quanta_index_contract::SeedCandidateV2) -> Self
 impl core::fmt::Debug for quanta_index_contract::SeedFusionIdentityV2
@@ -6232,6 +6324,7 @@ pub quanta_index_contract::ClusterMembershipReadOutcomeV1::Rejected(quanta_index
 pub quanta_index_contract::ClusterMembershipReadOutcomeV1::Unavailable(quanta_index_contract::ClusterMembershipUnavailableV1)
 impl quanta_index_contract::ClusterMembershipReadOutcomeV1
 pub fn quanta_index_contract::ClusterMembershipReadOutcomeV1::validate_against_v1(&self, request: &quanta_index_contract::ClusterMembershipReadRequestV1) -> core::result::Result<(), quanta_index_contract::ClusterMembershipReadFailureV1>
+pub fn quanta_index_contract::ClusterMembershipReadOutcomeV1::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::ClusterMembershipReadFailureV1>
 impl core::clone::Clone for quanta_index_contract::ClusterMembershipReadOutcomeV1
 pub fn quanta_index_contract::ClusterMembershipReadOutcomeV1::clone(&self) -> quanta_index_contract::ClusterMembershipReadOutcomeV1
 impl core::cmp::Eq for quanta_index_contract::ClusterMembershipReadOutcomeV1
@@ -6252,11 +6345,20 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::ClusterMembershipReadO
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ClusterMembershipReadOutcomeV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ClusterMembershipReadOutcomeV1
 pub enum quanta_index_contract::ClusterMembershipReadPolicyErrorV1
+pub quanta_index_contract::ClusterMembershipReadPolicyErrorV1::BatchTooLarge
+pub quanta_index_contract::ClusterMembershipReadPolicyErrorV1::BatchTooLarge::items: usize
+pub quanta_index_contract::ClusterMembershipReadPolicyErrorV1::BatchTooLarge::max: usize
+pub quanta_index_contract::ClusterMembershipReadPolicyErrorV1::DuplicateClusterRecordId
+pub quanta_index_contract::ClusterMembershipReadPolicyErrorV1::EmptyBatch
 pub quanta_index_contract::ClusterMembershipReadPolicyErrorV1::EmptyClusterRecordId
 pub quanta_index_contract::ClusterMembershipReadPolicyErrorV1::EmptyExpectedAuthorityDigest
 pub quanta_index_contract::ClusterMembershipReadPolicyErrorV1::InvalidLimit
 pub quanta_index_contract::ClusterMembershipReadPolicyErrorV1::InvalidLimit::limit: u32
 pub quanta_index_contract::ClusterMembershipReadPolicyErrorV1::InvalidLimit::max: u32
+pub quanta_index_contract::ClusterMembershipReadPolicyErrorV1::NonCanonicalClusterRecordOrder
+pub quanta_index_contract::ClusterMembershipReadPolicyErrorV1::TotalLimitExceeded
+pub quanta_index_contract::ClusterMembershipReadPolicyErrorV1::TotalLimitExceeded::max: u32
+pub quanta_index_contract::ClusterMembershipReadPolicyErrorV1::TotalLimitExceeded::total: u32
 impl core::clone::Clone for quanta_index_contract::ClusterMembershipReadPolicyErrorV1
 pub fn quanta_index_contract::ClusterMembershipReadPolicyErrorV1::clone(&self) -> quanta_index_contract::ClusterMembershipReadPolicyErrorV1
 impl core::cmp::Eq for quanta_index_contract::ClusterMembershipReadPolicyErrorV1
@@ -7115,7 +7217,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneIngestIpcRe
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneIngestIpcResponse
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneIngestIpcResponse
 pub enum quanta_index_contract::SearchPlaneQueryIpcRequest
-pub quanta_index_contract::SearchPlaneQueryIpcRequest::ClusterMembershipRead(quanta_index_contract::ClusterMembershipReadRequestV1)
+pub quanta_index_contract::SearchPlaneQueryIpcRequest::ClusterMembershipRead(quanta_index_contract::ClusterMembershipBatchReadRequestV1)
 pub quanta_index_contract::SearchPlaneQueryIpcRequest::Explain(quanta_index_contract::SearchPlaneExplainQueryRequest)
 pub quanta_index_contract::SearchPlaneQueryIpcRequest::History(quanta_index_contract::HistoryQueryRequest)
 pub quanta_index_contract::SearchPlaneQueryIpcRequest::Hybrid(quanta_index_contract::HybridQueryRequest)
@@ -7145,7 +7247,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneQueryIpcReq
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneQueryIpcRequest
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneQueryIpcRequest
 pub enum quanta_index_contract::SearchPlaneQueryIpcResponse
-pub quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(quanta_index_contract::ClusterMembershipReadOutcomeV1)
+pub quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(quanta_index_contract::ClusterMembershipBatchReadResponseV1)
 pub quanta_index_contract::SearchPlaneQueryIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError)
 pub quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(quanta_index_contract::SearchPlaneExplainQueryResponse)
 pub quanta_index_contract::SearchPlaneQueryIpcResponse::History(quanta_index_contract::SearchPlaneHistoryQueryResponse)
@@ -7480,11 +7582,86 @@ impl core::marker::Unpin for quanta_index_contract::ClearLexicalSurface
 impl core::marker::UnsafeUnpin for quanta_index_contract::ClearLexicalSurface
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ClearLexicalSurface
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ClearLexicalSurface
+pub struct quanta_index_contract::ClusterMembershipBatchReadItemV1
+pub quanta_index_contract::ClusterMembershipBatchReadItemV1::cluster_record_id: alloc::string::String
+pub quanta_index_contract::ClusterMembershipBatchReadItemV1::expected_authority_digest: alloc::string::String
+pub quanta_index_contract::ClusterMembershipBatchReadItemV1::limit: u32
+impl quanta_index_contract::ClusterMembershipBatchReadItemV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadItemV1::as_single_request_v1(&self, generation: &quanta_index_contract_base::query::pin::GenerationPin) -> quanta_index_contract::ClusterMembershipReadRequestV1
+impl core::clone::Clone for quanta_index_contract::ClusterMembershipBatchReadItemV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadItemV1::clone(&self) -> quanta_index_contract::ClusterMembershipBatchReadItemV1
+impl core::cmp::Eq for quanta_index_contract::ClusterMembershipBatchReadItemV1
+impl core::cmp::PartialEq for quanta_index_contract::ClusterMembershipBatchReadItemV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadItemV1::eq(&self, other: &quanta_index_contract::ClusterMembershipBatchReadItemV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::ClusterMembershipBatchReadItemV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadItemV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::ClusterMembershipBatchReadItemV1
+impl serde_core::ser::Serialize for quanta_index_contract::ClusterMembershipBatchReadItemV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadItemV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ClusterMembershipBatchReadItemV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadItemV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ClusterMembershipBatchReadItemV1
+impl core::marker::Send for quanta_index_contract::ClusterMembershipBatchReadItemV1
+impl core::marker::Sync for quanta_index_contract::ClusterMembershipBatchReadItemV1
+impl core::marker::Unpin for quanta_index_contract::ClusterMembershipBatchReadItemV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ClusterMembershipBatchReadItemV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ClusterMembershipBatchReadItemV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ClusterMembershipBatchReadItemV1
+pub struct quanta_index_contract::ClusterMembershipBatchReadRequestV1
+pub quanta_index_contract::ClusterMembershipBatchReadRequestV1::generation: quanta_index_contract_base::query::pin::GenerationPin
+pub quanta_index_contract::ClusterMembershipBatchReadRequestV1::items: alloc::vec::Vec<quanta_index_contract::ClusterMembershipBatchReadItemV1>
+impl quanta_index_contract::ClusterMembershipBatchReadRequestV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadRequestV1::single_v1(request: quanta_index_contract::ClusterMembershipReadRequestV1) -> Self
+pub fn quanta_index_contract::ClusterMembershipBatchReadRequestV1::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::ClusterMembershipReadPolicyErrorV1>
+impl core::clone::Clone for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadRequestV1::clone(&self) -> quanta_index_contract::ClusterMembershipBatchReadRequestV1
+impl core::cmp::Eq for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+impl core::cmp::PartialEq for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadRequestV1::eq(&self, other: &quanta_index_contract::ClusterMembershipBatchReadRequestV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadRequestV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+impl serde_core::ser::Serialize for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadRequestV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadRequestV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+impl core::marker::Send for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+impl core::marker::Sync for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+impl core::marker::Unpin for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ClusterMembershipBatchReadRequestV1
+pub struct quanta_index_contract::ClusterMembershipBatchReadResponseV1
+pub quanta_index_contract::ClusterMembershipBatchReadResponseV1::outcomes: alloc::vec::Vec<quanta_index_contract::ClusterMembershipReadOutcomeV1>
+impl quanta_index_contract::ClusterMembershipBatchReadResponseV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadResponseV1::validate_against_v1(&self, request: &quanta_index_contract::ClusterMembershipBatchReadRequestV1) -> core::result::Result<(), quanta_index_contract::ClusterMembershipReadFailureV1>
+impl core::clone::Clone for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadResponseV1::clone(&self) -> quanta_index_contract::ClusterMembershipBatchReadResponseV1
+impl core::cmp::Eq for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+impl core::cmp::PartialEq for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadResponseV1::eq(&self, other: &quanta_index_contract::ClusterMembershipBatchReadResponseV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadResponseV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+impl serde_core::ser::Serialize for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadResponseV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+pub fn quanta_index_contract::ClusterMembershipBatchReadResponseV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+impl core::marker::Send for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+impl core::marker::Sync for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+impl core::marker::Unpin for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ClusterMembershipBatchReadResponseV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ClusterMembershipBatchReadResponseV1
 pub struct quanta_index_contract::ClusterMembershipReadRejectionV1
 pub quanta_index_contract::ClusterMembershipReadRejectionV1::cluster_record_id: alloc::string::String
 pub quanta_index_contract::ClusterMembershipReadRejectionV1::expected_authority_digest: alloc::string::String
 pub quanta_index_contract::ClusterMembershipReadRejectionV1::failure: quanta_index_contract::ClusterMembershipReadFailureV1
 pub quanta_index_contract::ClusterMembershipReadRejectionV1::generation: quanta_index_contract_base::query::pin::GenerationPin
+impl quanta_index_contract::ClusterMembershipReadRejectionV1
+pub fn quanta_index_contract::ClusterMembershipReadRejectionV1::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::ClusterMembershipReadFailureV1>
 impl core::clone::Clone for quanta_index_contract::ClusterMembershipReadRejectionV1
 pub fn quanta_index_contract::ClusterMembershipReadRejectionV1::clone(&self) -> quanta_index_contract::ClusterMembershipReadRejectionV1
 impl core::cmp::Eq for quanta_index_contract::ClusterMembershipReadRejectionV1
@@ -7587,6 +7764,8 @@ pub struct quanta_index_contract::ClusterMembershipUnavailableV1
 pub quanta_index_contract::ClusterMembershipUnavailableV1::cluster_record_id: alloc::string::String
 pub quanta_index_contract::ClusterMembershipUnavailableV1::expected_authority_digest: alloc::string::String
 pub quanta_index_contract::ClusterMembershipUnavailableV1::generation: quanta_index_contract_base::query::pin::GenerationPin
+impl quanta_index_contract::ClusterMembershipUnavailableV1
+pub fn quanta_index_contract::ClusterMembershipUnavailableV1::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::ClusterMembershipReadFailureV1>
 impl core::clone::Clone for quanta_index_contract::ClusterMembershipUnavailableV1
 pub fn quanta_index_contract::ClusterMembershipUnavailableV1::clone(&self) -> quanta_index_contract::ClusterMembershipUnavailableV1
 impl core::cmp::Eq for quanta_index_contract::ClusterMembershipUnavailableV1
@@ -9906,6 +10085,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchScopeKey
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchScopeKey
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchScopeKey
 pub struct quanta_index_contract::SeedCandidateV2
+pub quanta_index_contract::SeedCandidateV2::authority_digest: core::option::Option<alloc::string::String>
 pub quanta_index_contract::SeedCandidateV2::contributions: alloc::vec::Vec<quanta_index_contract::SeedContributionV2>
 pub quanta_index_contract::SeedCandidateV2::corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>
 pub quanta_index_contract::SeedCandidateV2::degraded_reasons: alloc::vec::Vec<alloc::string::String>
@@ -9961,18 +10141,21 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedContrib
 pub struct quanta_index_contract::SeedFusionIdentityV2
 impl quanta_index_contract::SeedFusionIdentityV2
 pub fn quanta_index_contract::SeedFusionIdentityV2::cmp_parts(left_owner_kind: quanta_index_contract::OwnerDocKind, left_entity_id: &str, right_owner_kind: quanta_index_contract::OwnerDocKind, right_entity_id: &str) -> core::cmp::Ordering
+pub fn quanta_index_contract::SeedFusionIdentityV2::cmp_parts_with_corpus_v2(left_owner_kind: quanta_index_contract::OwnerDocKind, left_entity_id: &str, left_corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>, right_owner_kind: quanta_index_contract::OwnerDocKind, right_entity_id: &str, right_corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>) -> core::cmp::Ordering
+pub const fn quanta_index_contract::SeedFusionIdentityV2::corpus_kind(&self) -> core::option::Option<quanta_index_contract::SemanticCorpusKindV1>
 pub fn quanta_index_contract::SeedFusionIdentityV2::entity_id(&self) -> &str
 pub const fn quanta_index_contract::SeedFusionIdentityV2::new(owner_kind: quanta_index_contract::OwnerDocKind, entity_id: alloc::string::String) -> Self
+pub const fn quanta_index_contract::SeedFusionIdentityV2::new_with_corpus_v2(owner_kind: quanta_index_contract::OwnerDocKind, entity_id: alloc::string::String, corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>) -> Self
 pub const fn quanta_index_contract::SeedFusionIdentityV2::owner_kind(&self) -> quanta_index_contract::OwnerDocKind
 impl core::clone::Clone for quanta_index_contract::SeedFusionIdentityV2
 pub fn quanta_index_contract::SeedFusionIdentityV2::clone(&self) -> quanta_index_contract::SeedFusionIdentityV2
 impl core::cmp::Eq for quanta_index_contract::SeedFusionIdentityV2
 impl core::cmp::Ord for quanta_index_contract::SeedFusionIdentityV2
-pub fn quanta_index_contract::SeedFusionIdentityV2::cmp(&self, other: &quanta_index_contract::SeedFusionIdentityV2) -> core::cmp::Ordering
+pub fn quanta_index_contract::SeedFusionIdentityV2::cmp(&self, other: &Self) -> core::cmp::Ordering
 impl core::cmp::PartialEq for quanta_index_contract::SeedFusionIdentityV2
 pub fn quanta_index_contract::SeedFusionIdentityV2::eq(&self, other: &quanta_index_contract::SeedFusionIdentityV2) -> bool
 impl core::cmp::PartialOrd for quanta_index_contract::SeedFusionIdentityV2
-pub fn quanta_index_contract::SeedFusionIdentityV2::partial_cmp(&self, other: &quanta_index_contract::SeedFusionIdentityV2) -> core::option::Option<core::cmp::Ordering>
+pub fn quanta_index_contract::SeedFusionIdentityV2::partial_cmp(&self, other: &Self) -> core::option::Option<core::cmp::Ordering>
 impl core::convert::From<&quanta_index_contract::SeedCandidateV2> for quanta_index_contract::SeedFusionIdentityV2
 pub fn quanta_index_contract::SeedFusionIdentityV2::from(candidate: &quanta_index_contract::SeedCandidateV2) -> Self
 impl core::fmt::Debug for quanta_index_contract::SeedFusionIdentityV2
@@ -10748,6 +10931,7 @@ impl core::marker::Unpin for quanta_index_contract::WeightsHashError
 impl core::marker::UnsafeUnpin for quanta_index_contract::WeightsHashError
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::WeightsHashError
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::WeightsHashError
+pub const quanta_index_contract::MAX_CLUSTER_MEMBERSHIP_BATCH_ITEMS_V1: usize
 pub const quanta_index_contract::MAX_CLUSTER_MEMBERSHIP_READ_V1: u32
 pub fn quanta_index_contract::cluster_membership_content_digest_v1(members: &[quanta_index_contract::SymbolId]) -> alloc::string::String
 pub fn quanta_index_contract::validate_semantic_source_record_v1(record: &quanta_index_contract::SemanticSourceRecordV1) -> core::result::Result<(), &'static str>
