@@ -41,7 +41,7 @@ pub enum SemanticDerivationModeV1 {
 }
 
 pub(crate) const DEFAULT_SEMANTIC_DERIVATION_MODE_V1: SemanticDerivationModeV1 =
-    SemanticDerivationModeV1::LegacyAllChunkText;
+    SemanticDerivationModeV1::SemanticSourcesWithLegacyFallback;
 
 impl SemanticDerivationModeV1 {
     #[must_use]
@@ -126,6 +126,12 @@ pub(crate) fn derive_semantic_batch_from_search_corpus_batch(
     batch
         .validate_surface_mutations_v1()
         .map_err(|err| CoreError::InvalidContract(format!("semantic derivation: {err}")))?;
+    if !batch.semantic_replace_scopes.is_empty() || !batch.semantic_tombstone_scopes.is_empty() {
+        return Err(CoreError::InvalidContract(
+            "semantic derivation: legacy_all_chunk cannot consume typed semantic source mutations; select semantic_with_legacy_fallback or semantic_only"
+                .to_string(),
+        ));
+    }
     let dimension = embedder.dimension();
     if dimension == 0 {
         return Err(CoreError::InvalidContract(
@@ -249,9 +255,17 @@ pub(crate) fn derive_semantic_batch_from_semantic_sources_v1(
         || !batch.tombstone_scopes.is_empty()
         || !batch.clear_surfaces.is_empty()
         || batch.seal;
-    if batch.semantic_replace_scopes.is_empty() && !has_semantic_lifecycle_operation {
+    let requires_legacy_replacement_fallback = batch.semantic_replace_scopes.is_empty()
+        && (!batch.replace_scopes.is_empty() || !has_semantic_lifecycle_operation);
+    if requires_legacy_replacement_fallback {
         return match mode {
             SemanticDerivationModeV1::SemanticSourcesWithLegacyFallback => {
+                if !batch.semantic_tombstone_scopes.is_empty() {
+                    return Err(CoreError::InvalidContract(
+                        "semantic derivation: semantic_with_legacy_fallback cannot combine legacy chunk replacements with typed semantic tombstones"
+                            .to_string(),
+                    ));
+                }
                 let mut legacy = derive_semantic_batch_from_search_corpus_batch(batch, embedder)?;
                 legacy.batch_digest = format!(
                     "{}:semantic-derive:legacy-fallback-empty-semantic-sources",
@@ -843,9 +857,9 @@ mod tests {
     use super::*;
     use crate::{HashingQueryTextEmbedder, SEARCH_OWNED_SEMANTIC_DIMENSION};
     use quanta_index_contract::{
-        BatchIngestMode, ChunkId, ChunkRecord, ManifestGeneration, RepoId, RepoRelativePath,
-        RevisionId, SearchCorpusReplaceScope, SearchScopeSurface, SemanticSourceReplaceScopeV1,
-        SemanticSourceScopeKeyV1, lex::LanguageCode,
+        BatchIngestMode, ChunkId, ChunkRecord, ClusterMembershipReplaceV1, ManifestGeneration,
+        RepoId, RepoRelativePath, RevisionId, SearchCorpusReplaceScope, SearchScopeSurface,
+        SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SymbolId, lex::LanguageCode,
     };
 
     type TestRes = Result<(), Box<dyn std::error::Error>>;
@@ -1078,7 +1092,8 @@ mod tests {
     #[test]
     fn semantic_derivation_legacy_mode_still_embeds_chunks() -> TestRes {
         let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
-        let batch = fixture_search_batch()?;
+        let mut batch = fixture_search_batch()?;
+        batch.semantic_replace_scopes.clear();
         let derived = derive_semantic_batch_with_mode_v1(
             &batch,
             &embedder,
@@ -1100,6 +1115,186 @@ mod tests {
             .into());
         }
         Ok(())
+    }
+
+    #[test]
+    fn semantic_derivation_production_default_prefers_typed_semantic_sources_v1() -> TestRes {
+        if DEFAULT_SEMANTIC_DERIVATION_MODE_V1
+            != SemanticDerivationModeV1::SemanticSourcesWithLegacyFallback
+        {
+            return Err("production default must prefer typed semantic sources".into());
+        }
+        let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
+        let derived = derive_semantic_batch_with_mode_v1(
+            &fixture_search_batch()?,
+            &embedder,
+            DEFAULT_SEMANTIC_DERIVATION_MODE_V1,
+        )?;
+        let embedding = derived
+            .replace_scopes
+            .first()
+            .and_then(|scope| scope.embeddings.first())
+            .ok_or_else(|| "expected one typed semantic embedding".to_string())?;
+        if embedding.embedding_id.as_str() != "source-record-1"
+            || embedding.view_kind.as_ref() != "symbol.card"
+        {
+            return Err(format!(
+                "production default silently selected legacy chunk derivation: id={} view_kind={}",
+                embedding.embedding_id.as_str(),
+                embedding.view_kind
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_derivation_production_default_sealed_legacy_batch_falls_back_v1() -> TestRes {
+        let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
+        let mut batch = fixture_search_batch()?;
+        batch.semantic_replace_scopes.clear();
+        if !batch.seal {
+            return Err("fixture must exercise a sealed legacy replacement batch".into());
+        }
+        let derived = derive_semantic_batch_with_mode_v1(
+            &batch,
+            &embedder,
+            DEFAULT_SEMANTIC_DERIVATION_MODE_V1,
+        )?;
+        let embedding = derived
+            .replace_scopes
+            .first()
+            .and_then(|scope| scope.embeddings.first())
+            .ok_or_else(|| "sealed legacy replacement must not lose its embedding".to_string())?;
+        if embedding.embedding_id.as_str() != "chunk-1"
+            || embedding.view_kind.as_ref() != "chunk.text"
+        {
+            return Err(format!(
+                "sealed legacy replacement did not use explicit fallback: id={} view_kind={}",
+                embedding.embedding_id.as_str(),
+                embedding.view_kind
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_derivation_semantic_only_sealed_legacy_replacement_fails_v1() -> TestRes {
+        let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
+        let mut batch = fixture_search_batch()?;
+        batch.semantic_replace_scopes.clear();
+        match derive_semantic_batch_with_mode_v1(
+            &batch,
+            &embedder,
+            SemanticDerivationModeV1::SemanticSourcesOnly,
+        ) {
+            Err(CoreError::InvalidContract(message))
+                if message.contains("semantic sources required") =>
+            {
+                Ok(())
+            }
+            other => Err(format!(
+                "semantic_only must not discard a sealed legacy replacement, got {other:?}"
+            )
+            .into()),
+        }
+    }
+
+    #[test]
+    fn semantic_derivation_explicit_legacy_rejects_typed_semantic_replacement_v1() -> TestRes {
+        let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
+        match derive_semantic_batch_with_mode_v1(
+            &fixture_search_batch()?,
+            &embedder,
+            SemanticDerivationModeV1::LegacyAllChunkText,
+        ) {
+            Err(CoreError::InvalidContract(message))
+                if message.contains("cannot consume typed semantic source mutations") =>
+            {
+                Ok(())
+            }
+            other => Err(format!(
+                "legacy mode must reject typed semantic replacement instead of discarding it, got {other:?}"
+            )
+            .into()),
+        }
+    }
+
+    #[test]
+    fn semantic_derivation_explicit_legacy_rejects_typed_semantic_tombstone_v1() -> TestRes {
+        let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
+        let mut batch = fixture_search_batch()?;
+        batch.semantic_replace_scopes.clear();
+        batch
+            .semantic_tombstone_scopes
+            .push(SemanticSourceScopeKeyV1 {
+                corpus_kind: SemanticCorpusKindV1::ClusterCard,
+                owner_kind: OwnerDocKind::OwnerMap,
+                owner_id: "cluster-deleted".to_string(),
+            });
+        match derive_semantic_batch_with_mode_v1(
+            &batch,
+            &embedder,
+            SemanticDerivationModeV1::LegacyAllChunkText,
+        ) {
+            Err(CoreError::InvalidContract(message))
+                if message.contains("cannot consume typed semantic source mutations") =>
+            {
+                Ok(())
+            }
+            other => Err(format!(
+                "legacy mode must reject typed semantic tombstone instead of discarding it, got {other:?}"
+            )
+            .into()),
+        }
+    }
+
+    #[test]
+    fn semantic_derivation_explicit_legacy_rejects_structured_cluster_membership_v1() -> TestRes {
+        let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
+        let mut batch = fixture_search_batch()?;
+        let scope = batch
+            .semantic_replace_scopes
+            .first_mut()
+            .ok_or_else(|| "semantic fixture must contain one replace scope".to_string())?;
+        scope.scope.corpus_kind = SemanticCorpusKindV1::ClusterCard;
+        scope.scope.owner_kind = OwnerDocKind::OwnerMap;
+        scope.scope.owner_id = "cluster-1".to_string();
+        let source = scope
+            .sources
+            .first_mut()
+            .ok_or_else(|| "semantic fixture must contain one source".to_string())?;
+        source.record_id = "cluster-record-1".to_string();
+        source.corpus_kind = SemanticCorpusKindV1::ClusterCard;
+        source.owner_kind = OwnerDocKind::OwnerMap;
+        source.owner_id = "cluster-1".to_string();
+        source.symbol_kind = None;
+        source.visibility = None;
+        source.authority_digest = "cluster-authority:sha256:1".to_string();
+        let cluster_record_id = source.record_id.clone();
+        let authority_digest = source.authority_digest.clone();
+        scope.cluster_memberships = vec![ClusterMembershipReplaceV1 {
+            cluster_record_id,
+            authority_digest,
+            members: vec![SymbolId::new("symbol:a"), SymbolId::new("symbol:b")],
+        }];
+
+        match derive_semantic_batch_with_mode_v1(
+            &batch,
+            &embedder,
+            SemanticDerivationModeV1::LegacyAllChunkText,
+        ) {
+            Err(CoreError::InvalidContract(message))
+                if message.contains("cannot consume typed semantic source mutations") =>
+            {
+                Ok(())
+            }
+            other => Err(format!(
+                "legacy mode must reject structured cluster membership instead of discarding it, got {other:?}"
+            )
+            .into()),
+        }
     }
 
     #[test]

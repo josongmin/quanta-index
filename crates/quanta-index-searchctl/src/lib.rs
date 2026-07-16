@@ -1450,6 +1450,10 @@ fn render_pretty(
         SearchPlaneQueryIpcResponse::Structural(payload) => {
             render_structural_payload(payload, rendered)
         }
+        SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => Err(CliError::protocol(
+            "ClusterMembershipRead is an SDK authority response and has no searchctl command"
+                .to_string(),
+        )),
     }
 }
 
@@ -1736,6 +1740,7 @@ fn response_kind_name(response: &SearchPlaneQueryIpcResponse) -> &'static str {
         SearchPlaneQueryIpcResponse::Explain(_) => "Explain",
         SearchPlaneQueryIpcResponse::Error(_) => "Error",
         SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => "RuntimeMetadata",
+        SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => "ClusterMembershipRead",
     }
 }
 

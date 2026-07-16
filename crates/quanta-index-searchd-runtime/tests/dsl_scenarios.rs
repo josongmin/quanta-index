@@ -398,6 +398,9 @@ fn sourcegraph_repo_path_lang_filters_are_deterministic_across_repeated_runs() -
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+                _,
+            )
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 shutdown.store(true, Ordering::Release);
                 drop(join.join());
@@ -499,6 +502,9 @@ fn sourcegraph_boolean_text_query_is_deterministic_across_repeated_runs() -> Tes
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+                _,
+            )
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 shutdown.store(true, Ordering::Release);
                 drop(join.join());
@@ -570,6 +576,9 @@ fn sourcegraph_repo_has_file_predicate_executes_live() -> TestResult {
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+                _,
+            )
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 shutdown.store(true, Ordering::Release);
                 drop(join.join());
@@ -628,6 +637,7 @@ fn sourcegraph_phrase_and_regex_patterns_execute_live() -> TestResult {
                 | SearchPlaneQueryIpcResponse::Structural(_)
                 | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
                 | SearchPlaneQueryIpcResponse::Explain(_)
+                | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
                 | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => true,
                 SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
             },
@@ -651,6 +661,7 @@ fn sourcegraph_phrase_and_regex_patterns_execute_live() -> TestResult {
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
@@ -684,6 +695,7 @@ fn sourcegraph_phrase_and_regex_patterns_execute_live() -> TestResult {
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
@@ -741,6 +753,7 @@ fn lq_phrase_and_regex_patterns_execute_live() -> TestResult {
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
@@ -770,6 +783,7 @@ fn lq_phrase_and_regex_patterns_execute_live() -> TestResult {
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
@@ -841,6 +855,7 @@ fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scop
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
@@ -955,6 +970,7 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());

@@ -1485,6 +1485,9 @@ impl E2eRuntime {
                 unexpected_history_response("RepoMapQuery")
             }
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_history_response("Explain"),
+            SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
+                unexpected_history_response("ClusterMembershipRead")
+            }
             SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
                 unexpected_history_response("RuntimeMetadata")
             }
@@ -1569,6 +1572,9 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
+            SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
+                unexpected_response("ClusterMembershipRead")
+            }
         }
     }
 
@@ -1658,6 +1664,9 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
+            SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
+                unexpected_response("ClusterMembershipRead")
+            }
             SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
                 unexpected_response("RuntimeMetadata")
             }
@@ -1747,6 +1756,9 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
+            SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
+                unexpected_response("ClusterMembershipRead")
+            }
             SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
                 unexpected_response("RuntimeMetadata")
             }
@@ -1837,6 +1849,9 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
+            SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
+                unexpected_response("ClusterMembershipRead")
+            }
             SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
                 unexpected_response("RuntimeMetadata")
             }
@@ -1926,6 +1941,9 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
+            SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
+                unexpected_response("ClusterMembershipRead")
+            }
             SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
                 unexpected_response("RuntimeMetadata")
             }
@@ -2033,6 +2051,9 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_explain_response("Structural"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => {
                 unexpected_explain_response("RepoMapQuery")
+            }
+            SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
+                unexpected_explain_response("ClusterMembershipRead")
             }
             SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
                 unexpected_explain_response("RuntimeMetadata")
@@ -2196,6 +2217,7 @@ fn query_response_ready(response: &SearchPlaneQueryIpcResponseEnvelope) -> bool 
         | SearchPlaneQueryIpcResponse::Structural(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => true,
     }
 }
@@ -2216,6 +2238,7 @@ fn query_response_ready_allow_structural_not_ready(
         | SearchPlaneQueryIpcResponse::Structural(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => true,
     }
 }
