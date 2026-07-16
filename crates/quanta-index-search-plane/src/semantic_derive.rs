@@ -1003,6 +1003,7 @@ mod tests {
     -> TestRes {
         let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
         let mut batch = fixture_search_batch()?;
+        batch.replace_scopes.clear();
         batch.semantic_replace_scopes.clear();
         batch.semantic_tombstone_scopes = vec![SemanticSourceScopeKeyV1 {
             corpus_kind: SemanticCorpusKindV1::SymbolCard,
@@ -1033,6 +1034,7 @@ mod tests {
     fn semantic_derivation_semantic_only_seal_batch_does_not_require_replace_sources() -> TestRes {
         let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
         let mut batch = fixture_search_batch()?;
+        batch.replace_scopes.clear();
         batch.semantic_replace_scopes.clear();
         batch.semantic_tombstone_scopes.clear();
         batch.seal = true;
