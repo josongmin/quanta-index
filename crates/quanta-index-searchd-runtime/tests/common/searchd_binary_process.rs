@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use quanta_index_sdk::{ConnectOptions, QuantaIndex};
 
-const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
+const SOCKET_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) struct SearchdBinaryProcess {
     state_root: PathBuf,
