@@ -23,6 +23,11 @@ use quanta_index_contract::{
     SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponseEnvelope,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponseEnvelope,
 };
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
+use rustix::io::{Errno, ioctl_fioclex, ioctl_fionbio};
+use rustix::net::{
+    AddressFamily, SocketAddrUnix, SocketType, connect, socket, sockopt::socket_error,
+};
 
 use crate::codec::{
     IpcError, IpcIoOperation, decode_request, decode_response, encode_request, encode_response,
@@ -368,7 +373,8 @@ where
 {
     let deadline = io_policy.request_deadline()?;
     let frame = encode_request(request)?;
-    let stream = UnixStream::connect(socket).map_err(IpcError::Io)?;
+    let stream = connect_before_deadline(socket, deadline)
+        .map_err(|error| classify_client_io_error(error, IpcIoOperation::Connect, io_policy))?;
     let mut stream = DeadlineStream::new(stream, deadline);
     stream
         .write_all(&frame)
@@ -376,6 +382,63 @@ where
     let response = decode_response::<ResponseEnvelopeT, _>(&mut stream)
         .map_err(|error| classify_client_decode_error(error, IpcIoOperation::Read, io_policy))?;
     Ok(response)
+}
+
+fn connect_before_deadline(socket_path: &Path, deadline: Instant) -> std::io::Result<UnixStream> {
+    ensure_deadline_remaining(deadline)?;
+    let address = SocketAddrUnix::new(socket_path).map_err(std::io::Error::from)?;
+    let socket =
+        socket(AddressFamily::UNIX, SocketType::STREAM, None).map_err(std::io::Error::from)?;
+    ioctl_fioclex(&socket).map_err(std::io::Error::from)?;
+    ioctl_fionbio(&socket, true).map_err(std::io::Error::from)?;
+
+    match connect(&socket, &address) {
+        Ok(()) => {}
+        Err(Errno::INPROGRESS | Errno::ALREADY | Errno::WOULDBLOCK) => {
+            wait_for_connect(&socket, deadline)?;
+        }
+        Err(error) => return Err(error.into()),
+    }
+
+    let stream = UnixStream::from(socket);
+    stream.set_nonblocking(false)?;
+    ensure_deadline_remaining(deadline)?;
+    Ok(stream)
+}
+
+fn wait_for_connect(socket: &rustix::fd::OwnedFd, deadline: Instant) -> std::io::Result<()> {
+    let mut poll_fd = [PollFd::new(socket, PollFlags::OUT)];
+    loop {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(deadline_elapsed_error)?;
+        let timeout = Timespec::try_from(remaining)
+            .map_err(|error| std::io::Error::new(ErrorKind::InvalidInput, error))?;
+
+        match poll(&mut poll_fd, Some(&timeout)) {
+            Ok(0) => return Err(deadline_elapsed_error()),
+            Ok(_) => {
+                return socket_error(socket)
+                    .map_err(std::io::Error::from)?
+                    .map_err(std::io::Error::from);
+            }
+            Err(Errno::INTR) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn ensure_deadline_remaining(deadline: Instant) -> std::io::Result<()> {
+    if deadline > Instant::now() {
+        Ok(())
+    } else {
+        Err(deadline_elapsed_error())
+    }
+}
+
+fn deadline_elapsed_error() -> std::io::Error {
+    std::io::Error::new(ErrorKind::TimedOut, "IPC request deadline elapsed")
 }
 
 struct DeadlineStream {
@@ -454,13 +517,15 @@ mod tests {
     use super::{
         ClientIoPolicy, ConnectionCloseReason, IpcDispatcher, IpcError, RequestEnvelope,
         ResponseEnvelope, decode_response, encode_request, handle_connection, send_request,
+        wait_for_connect,
     };
     use std::io::Write;
     use std::net::Shutdown;
+    use std::os::fd::OwnedFd;
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::sync::{Arc, Barrier, mpsc};
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use serde::de::{self, MapAccess, Visitor};
     use serde::ser::SerializeStruct;
@@ -536,6 +601,38 @@ mod tests {
             return Err(format!(
                 "elapsed absolute deadline must fail before socket connect, got {result:?}"
             ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn connect_readiness_wait_obeys_absolute_deadline() -> TestRes {
+        let (mut writer, _reader) = UnixStream::pair().map_err(|error| error.to_string())?;
+        writer
+            .set_nonblocking(true)
+            .map_err(|error| error.to_string())?;
+        let payload = vec![0x5a_u8; 64 * 1024];
+        loop {
+            match writer.write(&payload) {
+                Ok(0) => return Err("socket send buffer closed while filling".to_string()),
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+
+        let socket = OwnedFd::from(writer);
+        let deadline = Instant::now() + Duration::from_millis(25);
+        let started = Instant::now();
+        let error = match wait_for_connect(&socket, deadline) {
+            Ok(()) => return Err("saturated socket unexpectedly became writable".to_string()),
+            Err(error) => error,
+        };
+        if error.kind() != std::io::ErrorKind::TimedOut {
+            return Err(format!("expected connect readiness timeout, got {error}"));
+        }
+        if started.elapsed() > Duration::from_secs(1) {
+            return Err("connect readiness exceeded its absolute deadline bound".to_string());
         }
         Ok(())
     }

@@ -3,10 +3,14 @@
 use std::io::{ErrorKind, Read};
 use std::time::Duration;
 
-/// Blocking client operation that exceeded its configured I/O timeout.
+/// Client operation that exceeded its configured I/O timeout.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IpcIoOperation {
+    /// Waiting for the Unix-domain socket connection to complete.
+    Connect,
+    /// Reading the response frame.
     Read,
+    /// Writing the request frame.
     Write,
 }
 
