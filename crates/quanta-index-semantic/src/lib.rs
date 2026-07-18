@@ -36,6 +36,7 @@ mod manifest;
 mod membership_integrity;
 mod search;
 mod semantic_ingest_fixtures_v1;
+mod semantic_row_integrity_v1;
 mod sql;
 
 pub use semantic_ingest_fixtures_v1::{
@@ -466,6 +467,71 @@ pub struct PersistedSemanticGeneration {
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
     pub manifest_digest: String,
+    format_version: u32,
+    semantic_row_root_digest: String,
+    row_count: u64,
+}
+
+/// Opaque proof minted only by a successful v7 durable scan/open.
+#[derive(Clone, Debug)]
+pub struct ValidatedPersistedSemanticGenerationV2 {
+    repo_id: RepoId,
+    revision_id: RevisionId,
+    generation: ManifestGeneration,
+    manifest_digest: String,
+    semantic_row_root_digest: String,
+    row_count: u64,
+}
+
+impl PersistedSemanticGeneration {
+    pub fn migration_witness_v2(
+        &self,
+    ) -> Result<ValidatedPersistedSemanticGenerationV2, CoreError> {
+        if self.format_version != manifest::FORMAT_VERSION {
+            return Err(CoreError::Typed {
+                code: "LEGACY_SEMANTIC_MIGRATION_DURABLE_FORMAT_UNVERIFIED".to_string(),
+                message: format!(
+                    "semantic generation format {} has no v7 row-root proof",
+                    self.format_version
+                ),
+            });
+        }
+        Ok(ValidatedPersistedSemanticGenerationV2 {
+            repo_id: self.repo_id.clone(),
+            revision_id: self.revision_id.clone(),
+            generation: self.generation,
+            manifest_digest: self.manifest_digest.clone(),
+            semantic_row_root_digest: self.semantic_row_root_digest.clone(),
+            row_count: self.row_count,
+        })
+    }
+}
+
+impl ValidatedPersistedSemanticGenerationV2 {
+    #[must_use]
+    pub fn repo_id(&self) -> &RepoId {
+        &self.repo_id
+    }
+    #[must_use]
+    pub fn revision_id(&self) -> &RevisionId {
+        &self.revision_id
+    }
+    #[must_use]
+    pub const fn generation(&self) -> ManifestGeneration {
+        self.generation
+    }
+    #[must_use]
+    pub fn manifest_digest(&self) -> &str {
+        self.manifest_digest.as_str()
+    }
+    #[must_use]
+    pub fn semantic_row_root_digest(&self) -> &str {
+        self.semantic_row_root_digest.as_str()
+    }
+    #[must_use]
+    pub const fn row_count(&self) -> u64 {
+        self.row_count
+    }
 }
 
 /// Scan a semantic state root for sealed generations.
@@ -584,6 +650,9 @@ pub fn scan_persisted_generations(
                 revision_id,
                 generation,
                 manifest_digest: manifest.manifest_digest,
+                format_version: manifest.format_version,
+                semantic_row_root_digest: manifest.semantic_row_root_digest,
+                row_count: manifest.row_count,
             });
         }
     }
@@ -650,6 +719,7 @@ mod incomplete_generation_discard_tests {
             distance_metric: "cosine".to_string(),
             normalization: "l2_unit".to_string(),
             row_count: 0,
+            semantic_row_root_digest: format!("sha256:{}", "0".repeat(64)),
             built_at_unix_nanos: 0,
             present_corpora: Vec::new(),
             required_corpora: Vec::new(),

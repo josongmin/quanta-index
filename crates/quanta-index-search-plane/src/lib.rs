@@ -22,8 +22,8 @@ pub use control_dispatcher::SearchPlaneControlDispatcher;
 pub use ingest_dispatcher::{
     DirectHistoryMaterializer, DirectRuntimeMetadataMaterializer, DirectSearchCorpusMaterializer,
     DirectSemanticMaterializer, DirectStructuralMaterializer, HistoryIngestPort,
-    LegacySemanticJournalStore, RuntimeMetadataIngestPort, SearchCorpusAuthorityWritePort,
-    SearchCorpusMaterializerParts, SearchPlaneIngestDispatcher, StructuralIngestPort,
+    RuntimeMetadataIngestPort, SearchCorpusAuthorityWritePort, SearchCorpusMaterializerParts,
+    SearchPlaneIngestDispatcher, StructuralIngestPort,
 };
 pub use lowering::{lower_lexical_text_query, lower_sourcegraph_query_text};
 pub use quanta_index_lq_obs::{MetricSample, ObsError};

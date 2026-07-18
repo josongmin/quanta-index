@@ -38,8 +38,9 @@ fn is_canonical_sha256_v1(value: &str) -> bool {
 
 /// Current manifest format version. Bumped on any durable shape change.
 ///
-/// `6` = v5 structured ClusterCard membership plus a sealed table commitment.
-pub(crate) const FORMAT_VERSION: u32 = 6;
+/// `7` = v6 membership commitment plus the canonical semantic-row root.
+pub(crate) const FORMAT_VERSION: u32 = 7;
+pub(crate) const LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION: u32 = 6;
 
 /// Legacy structured-membership manifest without a sealed sidecar commitment.
 pub(crate) const LEGACY_UNCOMMITTED_MEMBERSHIP_FORMAT_VERSION: u32 = 5;
@@ -70,6 +71,7 @@ pub(crate) struct SemanticManifest {
     pub(crate) distance_metric: String,
     pub(crate) normalization: String,
     pub(crate) row_count: u64,
+    pub(crate) semantic_row_root_digest: String,
     pub(crate) built_at_unix_nanos: u64,
     pub(crate) present_corpora: Vec<String>,
     pub(crate) required_corpora: Vec<String>,
@@ -82,6 +84,53 @@ pub(crate) struct SemanticManifest {
 }
 
 cbor_serde!(SemanticManifest {
+    format_version: u32,
+    repo_id: String,
+    revision_id: String,
+    generation: u64,
+    manifest_digest: String,
+    model_id: String,
+    model_version: Option<String>,
+    dimension: u32,
+    distance_metric: String,
+    normalization: String,
+    row_count: u64,
+    semantic_row_root_digest: String,
+    built_at_unix_nanos: u64,
+    present_corpora: Vec<String>,
+    required_corpora: Vec<String>,
+    card_schema_versions: Vec<u32>,
+    render_policy_digests: Vec<String>,
+    corpus_policy_digest: Option<String>,
+    cluster_membership_root_digest: String,
+    cluster_membership_cluster_count: u64,
+    cluster_membership_member_row_count: u64,
+});
+
+struct SemanticManifestV6 {
+    format_version: u32,
+    repo_id: String,
+    revision_id: String,
+    generation: u64,
+    manifest_digest: String,
+    model_id: String,
+    model_version: Option<String>,
+    dimension: u32,
+    distance_metric: String,
+    normalization: String,
+    row_count: u64,
+    built_at_unix_nanos: u64,
+    present_corpora: Vec<String>,
+    required_corpora: Vec<String>,
+    card_schema_versions: Vec<u32>,
+    render_policy_digests: Vec<String>,
+    corpus_policy_digest: Option<String>,
+    cluster_membership_root_digest: String,
+    cluster_membership_cluster_count: u64,
+    cluster_membership_member_row_count: u64,
+}
+
+cbor_serde!(SemanticManifestV6 {
     format_version: u32,
     repo_id: String,
     revision_id: String,
@@ -199,6 +248,7 @@ impl SemanticManifest {
         generation_contract: &GenerationContract,
         manifest_digest: &str,
         row_count: u64,
+        semantic_row_root_digest: String,
         built_at_unix_nanos: u64,
         present_corpora: Vec<String>,
         required_corpora: Vec<String>,
@@ -221,6 +271,7 @@ impl SemanticManifest {
             distance_metric: generation_contract.distance_metric.clone(),
             normalization: generation_contract.normalization.clone(),
             row_count,
+            semantic_row_root_digest,
             built_at_unix_nanos,
             present_corpora,
             required_corpora,
@@ -241,6 +292,33 @@ impl SemanticManifest {
         match codec::decode(bytes, "semantic manifest") {
             Ok(current) => Ok(current),
             Err(current_err) => {
+                if let Ok(legacy) = codec::decode::<SemanticManifestV6>(bytes, "semantic manifest")
+                {
+                    return Ok(Self {
+                        format_version: legacy.format_version,
+                        repo_id: legacy.repo_id,
+                        revision_id: legacy.revision_id,
+                        generation: legacy.generation,
+                        manifest_digest: legacy.manifest_digest,
+                        model_id: legacy.model_id,
+                        model_version: legacy.model_version,
+                        dimension: legacy.dimension,
+                        distance_metric: legacy.distance_metric,
+                        normalization: legacy.normalization,
+                        row_count: legacy.row_count,
+                        semantic_row_root_digest: String::new(),
+                        built_at_unix_nanos: legacy.built_at_unix_nanos,
+                        present_corpora: legacy.present_corpora,
+                        required_corpora: legacy.required_corpora,
+                        card_schema_versions: legacy.card_schema_versions,
+                        render_policy_digests: legacy.render_policy_digests,
+                        corpus_policy_digest: legacy.corpus_policy_digest,
+                        cluster_membership_root_digest: legacy.cluster_membership_root_digest,
+                        cluster_membership_cluster_count: legacy.cluster_membership_cluster_count,
+                        cluster_membership_member_row_count: legacy
+                            .cluster_membership_member_row_count,
+                    });
+                }
                 if let Ok(legacy) = codec::decode::<SemanticManifestV5>(bytes, "semantic manifest")
                 {
                     return Ok(Self {
@@ -255,6 +333,7 @@ impl SemanticManifest {
                         distance_metric: legacy.distance_metric,
                         normalization: legacy.normalization,
                         row_count: legacy.row_count,
+                        semantic_row_root_digest: String::new(),
                         built_at_unix_nanos: legacy.built_at_unix_nanos,
                         present_corpora: legacy.present_corpora,
                         required_corpora: legacy.required_corpora,
@@ -281,6 +360,7 @@ impl SemanticManifest {
                         distance_metric: legacy_v3.distance_metric,
                         normalization: legacy_v3.normalization,
                         row_count: legacy_v3.row_count,
+                        semantic_row_root_digest: String::new(),
                         built_at_unix_nanos: legacy_v3.built_at_unix_nanos,
                         present_corpora: Vec::new(),
                         required_corpora: Vec::new(),
@@ -307,6 +387,7 @@ impl SemanticManifest {
                         distance_metric: legacy_v2.distance_metric,
                         normalization: legacy_v2.normalization,
                         row_count: legacy_v2.row_count,
+                        semantic_row_root_digest: String::new(),
                         built_at_unix_nanos: legacy_v2.built_at_unix_nanos,
                         present_corpora: Vec::new(),
                         required_corpora: Vec::new(),
@@ -332,28 +413,40 @@ impl SemanticManifest {
         generation: ManifestGeneration,
     ) -> Result<(), CoreError> {
         if self.format_version != FORMAT_VERSION
+            && self.format_version != LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION
             && self.format_version != LEGACY_UNCOMMITTED_MEMBERSHIP_FORMAT_VERSION
             && self.format_version != LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION
             && self.format_version != LEGACY_BUILD_CONTRACT_FORMAT_VERSION
             && self.format_version != LEGACY_LANCEDB_FORMAT_VERSION
         {
             return Err(CoreError::Storage(format!(
-                "semantic: manifest format version {} unsupported (expected {FORMAT_VERSION}, legacy {LEGACY_UNCOMMITTED_MEMBERSHIP_FORMAT_VERSION}, {LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION}, {LEGACY_BUILD_CONTRACT_FORMAT_VERSION}, or {LEGACY_LANCEDB_FORMAT_VERSION})",
+                "semantic: manifest format version {} unsupported (expected {FORMAT_VERSION}, legacy {LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION}, {LEGACY_UNCOMMITTED_MEMBERSHIP_FORMAT_VERSION}, {LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION}, {LEGACY_BUILD_CONTRACT_FORMAT_VERSION}, or {LEGACY_LANCEDB_FORMAT_VERSION})",
                 self.format_version,
             )));
         }
         if self.format_version == FORMAT_VERSION
-            && !is_canonical_sha256_v1(&self.cluster_membership_root_digest)
+            && !is_canonical_sha256_v1(&self.semantic_row_root_digest)
+        {
+            return Err(CoreError::Storage(
+                "semantic: current manifest has an invalid semantic row root digest".to_string(),
+            ));
+        }
+        if matches!(
+            self.format_version,
+            FORMAT_VERSION | LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION
+        ) && !is_canonical_sha256_v1(&self.cluster_membership_root_digest)
         {
             return Err(CoreError::Storage(
                 "semantic: current manifest has an invalid cluster membership root digest"
                     .to_string(),
             ));
         }
-        if self.format_version == FORMAT_VERSION
-            && ((self.cluster_membership_cluster_count == 0)
-                != (self.cluster_membership_member_row_count == 0)
-                || self.cluster_membership_cluster_count > self.cluster_membership_member_row_count)
+        if matches!(
+            self.format_version,
+            FORMAT_VERSION | LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION
+        ) && ((self.cluster_membership_cluster_count == 0)
+            != (self.cluster_membership_member_row_count == 0)
+            || self.cluster_membership_cluster_count > self.cluster_membership_member_row_count)
         {
             return Err(CoreError::Storage(
                 "semantic: current manifest has inconsistent cluster membership counts".to_string(),
@@ -427,6 +520,46 @@ impl SemanticManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_v6_decodes_without_fabricating_semantic_row_root_v1() {
+        let legacy = SemanticManifestV6 {
+            format_version: LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION,
+            repo_id: "repo".to_string(),
+            revision_id: "rev".to_string(),
+            generation: 7,
+            manifest_digest: "manifest".to_string(),
+            model_id: "model".to_string(),
+            model_version: None,
+            dimension: 3,
+            distance_metric: "cosine".to_string(),
+            normalization: "l2_unit".to_string(),
+            row_count: 1,
+            built_at_unix_nanos: 0,
+            present_corpora: vec!["ClusterCard".to_string()],
+            required_corpora: vec!["ClusterCard".to_string()],
+            card_schema_versions: vec![1],
+            render_policy_digests: vec!["render".to_string()],
+            corpus_policy_digest: Some("policy".to_string()),
+            cluster_membership_root_digest: format!("sha256:{}", "1".repeat(64)),
+            cluster_membership_cluster_count: 1,
+            cluster_membership_member_row_count: 1,
+        };
+        let bytes = codec::encode(&legacy, "legacy semantic manifest").expect("encode legacy");
+        let decoded = SemanticManifest::decode(&bytes).expect("decode legacy");
+        assert_eq!(
+            decoded.format_version,
+            LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION
+        );
+        assert!(decoded.semantic_row_root_digest.is_empty());
+        decoded
+            .validate_scope(
+                &RepoId::new("repo"),
+                &RevisionId::new("rev"),
+                ManifestGeneration::new(7),
+            )
+            .expect("v6 membership proof remains valid");
+    }
 
     #[test]
     fn format_v5_decodes_without_fabricating_membership_commitment_v1() {

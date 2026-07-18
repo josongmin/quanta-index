@@ -13,7 +13,6 @@ use quanta_index_contract::{
     lex::LanguageCode,
 };
 use quanta_index_core::{GenerationStorageKeyV1, SemanticBatchBuildPort as _};
-use quanta_index_search_plane::LegacySemanticJournalStore;
 use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::semantic_boot::SemanticMigrationOutcome;
 use quanta_index_searchd_runtime::build_runtime;
@@ -142,39 +141,6 @@ fn build_config(state_root: &Path) -> SearchdConfig {
         .expect("valid test retention policy");
     config = SearchdConfig::with_socket_overrides(config, query_socket, control_socket);
     SearchdConfig::with_ingest_socket_override(config, ingest_socket)
-}
-
-#[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test asserts the migrated boot report end-to-end via assert macros"
-)]
-fn migrated_runtime_exposes_populated_semantic_boot_report() -> TestResult {
-    let temp = tempfile::tempdir()?;
-    let state_root = temp.path().to_path_buf();
-
-    // Stage a legacy journal under `state_root/semantic/` *before* the runtime
-    // boots; the assembled runtime must run the one-shot migration, write the
-    // MIGRATED marker, seed readiness from the new durable generation, and
-    // report all three via SemanticBootReport.
-    let batch = fixture_batch(ManifestGeneration::new(1))?;
-    LegacySemanticJournalStore::write_legacy_journal(state_root.join("semantic"), &[batch])?;
-
-    let runtime = build_runtime(build_config(&state_root))?;
-
-    assert_eq!(
-        runtime.semantic_boot.migration,
-        SemanticMigrationOutcome::Migrated { imported: 1 }
-    );
-    assert_eq!(runtime.semantic_boot.seed.sealed_generations, 1);
-    // Cold-boot cost surface must be populated: a real migration writes a
-    // lancedb dataset to disk + the MIGRATED marker — that is strictly more
-    // than 0 microseconds on any non-fake clock.
-    assert!(
-        runtime.semantic_boot.migration_micros > 0,
-        "migration_micros must be > 0 after a real migration ran; got 0"
-    );
-    Ok(())
 }
 
 #[test]

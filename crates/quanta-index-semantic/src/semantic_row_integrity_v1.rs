@@ -1,0 +1,256 @@
+//! Canonical content commitment for the serve-time semantic table.
+
+use std::fmt::Write as _;
+
+use arrow_array::{
+    Array, BooleanArray, FixedSizeListArray, Float32Array, RecordBatch, StringArray, UInt32Array,
+};
+use futures::TryStreamExt as _;
+use lancedb::query::ExecutableQuery as _;
+use quanta_index_core::CoreError;
+use sha2::{Digest as _, Sha256};
+
+use crate::errors::lancedb_err;
+use crate::layout::{
+    COLUMN_AUTHORITY_DIGEST, COLUMN_CAPABILITY_STATUS, COLUMN_CARD_SCHEMA_VERSION,
+    COLUMN_CORPUS_KIND, COLUMN_EMBEDDING_ID, COLUMN_EMBEDDING_INPUT_DIGEST, COLUMN_END_LINE,
+    COLUMN_GENERATED, COLUMN_LANGUAGE, COLUMN_OWNER_ID, COLUMN_OWNER_KIND, COLUMN_PACKAGE,
+    COLUMN_PARENT_OWNER_ID, COLUMN_RECORD_ID, COLUMN_RENDER_POLICY_DIGEST,
+    COLUMN_REPO_RELATIVE_PATH, COLUMN_SNIPPET, COLUMN_SOURCE_DOC_ID, COLUMN_SOURCE_ROLE,
+    COLUMN_START_LINE, COLUMN_SYMBOL_KIND, COLUMN_VECTOR, COLUMN_VECTOR_DIGEST, COLUMN_VISIBILITY,
+};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SemanticRowCommitmentV1 {
+    pub(crate) root_digest: String,
+    pub(crate) row_count: u64,
+}
+
+#[derive(Eq, PartialEq)]
+struct CanonicalSemanticRowV1 {
+    embedding_id: String,
+    record_id: String,
+    leaf_digest: [u8; 32],
+}
+
+fn column_as<'a, T: Array + 'static>(
+    batch: &'a RecordBatch,
+    name: &str,
+    arrow_type: &str,
+) -> Result<&'a T, CoreError> {
+    batch
+        .column_by_name(name)
+        .and_then(|column| column.as_any().downcast_ref::<T>())
+        .ok_or_else(|| {
+            CoreError::Storage(format!(
+                "semantic row root: column `{name}` missing or not {arrow_type}"
+            ))
+        })
+}
+
+fn required_str<'a>(column: &'a StringArray, row: usize, name: &str) -> Result<&'a str, CoreError> {
+    if column.is_null(row) {
+        return Err(CoreError::Storage(format!(
+            "semantic row root: required column `{name}` contains null"
+        )));
+    }
+    Ok(column.value(row))
+}
+
+fn optional_str(column: &StringArray, row: usize) -> Option<&str> {
+    (!column.is_null(row)).then(|| column.value(row))
+}
+
+fn hash_bytes_v1(hasher: &mut Sha256, bytes: &[u8]) -> Result<(), CoreError> {
+    let len = u64::try_from(bytes.len()).map_err(|error| {
+        CoreError::Storage(format!("semantic row root: field length overflow: {error}"))
+    })?;
+    hasher.update(len.to_le_bytes());
+    hasher.update(bytes);
+    Ok(())
+}
+
+fn hash_optional_v1(hasher: &mut Sha256, value: Option<&str>) -> Result<(), CoreError> {
+    match value {
+        Some(value) => {
+            hasher.update([1]);
+            hash_bytes_v1(hasher, value.as_bytes())?;
+        }
+        None => hasher.update([0]),
+    }
+    Ok(())
+}
+
+fn encode_sha256_v1(digest: impl IntoIterator<Item = u8>) -> String {
+    let mut encoded = String::with_capacity("sha256:".len() + 64);
+    encoded.push_str("sha256:");
+    for byte in digest {
+        let _written = write!(&mut encoded, "{byte:02x}");
+    }
+    encoded
+}
+
+pub(crate) async fn semantic_row_commitment_v1(
+    table: &lancedb::Table,
+) -> Result<SemanticRowCommitmentV1, CoreError> {
+    let counted = table
+        .count_rows(None)
+        .await
+        .map_err(|error| lancedb_err("count semantic rows for root", error))?;
+    let capacity = usize::try_from(counted).map_err(|error| {
+        CoreError::Storage(format!("semantic row root: row count overflow: {error}"))
+    })?;
+    let mut rows = Vec::with_capacity(capacity);
+    let mut stream = table
+        .query()
+        .execute()
+        .await
+        .map_err(|error| lancedb_err("query semantic rows for root", error))?;
+    while let Some(batch) = stream
+        .try_next()
+        .await
+        .map_err(|error| lancedb_err("stream semantic rows for root", error))?
+    {
+        if rows
+            .len()
+            .checked_add(batch.num_rows())
+            .is_none_or(|next| next > capacity)
+        {
+            return Err(CoreError::Storage(
+                "semantic row root: stream exceeded counted row bound".to_string(),
+            ));
+        }
+        let embedding_ids = column_as::<StringArray>(&batch, COLUMN_EMBEDDING_ID, "Utf8")?;
+        let record_ids = column_as::<StringArray>(&batch, COLUMN_RECORD_ID, "Utf8")?;
+        const REQUIRED_NAMES: [&str; 13] = [
+            COLUMN_REPO_RELATIVE_PATH,
+            COLUMN_OWNER_ID,
+            COLUMN_OWNER_KIND,
+            COLUMN_CORPUS_KIND,
+            COLUMN_SOURCE_DOC_ID,
+            COLUMN_LANGUAGE,
+            COLUMN_SOURCE_ROLE,
+            COLUMN_CAPABILITY_STATUS,
+            COLUMN_AUTHORITY_DIGEST,
+            COLUMN_RENDER_POLICY_DIGEST,
+            COLUMN_EMBEDDING_INPUT_DIGEST,
+            COLUMN_VECTOR_DIGEST,
+            COLUMN_SNIPPET,
+        ];
+        let required = REQUIRED_NAMES
+            .map(|name| column_as::<StringArray>(&batch, name, "Utf8"))
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        const OPTIONAL_NAMES: [&str; 4] = [
+            COLUMN_PARENT_OWNER_ID,
+            COLUMN_PACKAGE,
+            COLUMN_SYMBOL_KIND,
+            COLUMN_VISIBILITY,
+        ];
+        let optional = OPTIONAL_NAMES
+            .map(|name| column_as::<StringArray>(&batch, name, "Utf8"))
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        let generated = column_as::<BooleanArray>(&batch, COLUMN_GENERATED, "Boolean")?;
+        let card_schema = column_as::<UInt32Array>(&batch, COLUMN_CARD_SCHEMA_VERSION, "UInt32")?;
+        let starts = column_as::<UInt32Array>(&batch, COLUMN_START_LINE, "UInt32")?;
+        let ends = column_as::<UInt32Array>(&batch, COLUMN_END_LINE, "UInt32")?;
+        let vectors = column_as::<FixedSizeListArray>(&batch, COLUMN_VECTOR, "FixedSizeList")?;
+        for row in 0..batch.num_rows() {
+            if generated.is_null(row)
+                || card_schema.is_null(row)
+                || starts.is_null(row)
+                || ends.is_null(row)
+                || vectors.is_null(row)
+            {
+                return Err(CoreError::Storage(
+                    "semantic row root: required scalar/vector column contains null".to_string(),
+                ));
+            }
+            let vector = vectors.value(row);
+            let vector = vector
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .ok_or_else(|| {
+                    CoreError::Storage("semantic row root: vector child is not Float32".to_string())
+                })?;
+            let embedding_id = required_str(embedding_ids, row, COLUMN_EMBEDDING_ID)?;
+            let record_id = required_str(record_ids, row, COLUMN_RECORD_ID)?;
+            let mut leaf = Sha256::new();
+            leaf.update(b"quanta-index-semantic-row-leaf-v1\0");
+            hash_bytes_v1(&mut leaf, record_id.as_bytes())?;
+            hash_bytes_v1(&mut leaf, embedding_id.as_bytes())?;
+            for (index, column) in required.iter().enumerate() {
+                hash_optional_v1(
+                    &mut leaf,
+                    Some(required_str(column, row, REQUIRED_NAMES[index])?),
+                )?;
+            }
+            for column in &optional {
+                hash_optional_v1(&mut leaf, optional_str(column, row))?;
+            }
+            leaf.update([u8::from(generated.value(row))]);
+            leaf.update(card_schema.value(row).to_le_bytes());
+            leaf.update(starts.value(row).to_le_bytes());
+            leaf.update(ends.value(row).to_le_bytes());
+            let vector_len = u64::try_from(vector.len()).map_err(|error| {
+                CoreError::Storage(format!(
+                    "semantic row root: vector length overflow: {error}"
+                ))
+            })?;
+            leaf.update(vector_len.to_le_bytes());
+            for value in vector.iter() {
+                let value = value.ok_or_else(|| {
+                    CoreError::Storage("semantic row root: vector contains null".to_string())
+                })?;
+                if !value.is_finite() {
+                    return Err(CoreError::Storage(
+                        "semantic row root: vector contains non-finite value".to_string(),
+                    ));
+                }
+                leaf.update(value.to_bits().to_le_bytes());
+            }
+            rows.push(CanonicalSemanticRowV1 {
+                embedding_id: embedding_id.to_owned(),
+                record_id: record_id.to_owned(),
+                leaf_digest: leaf.finalize().into(),
+            });
+        }
+    }
+    if rows.len() != capacity {
+        return Err(CoreError::Storage(format!(
+            "semantic row root: streamed {} rows but counted {capacity}",
+            rows.len()
+        )));
+    }
+    rows.sort_unstable_by(|left, right| {
+        left.record_id
+            .cmp(&right.record_id)
+            .then_with(|| left.embedding_id.cmp(&right.embedding_id))
+    });
+    if rows.windows(2).any(|pair| {
+        pair[0].record_id == pair[1].record_id && pair[0].embedding_id == pair[1].embedding_id
+    }) {
+        return Err(CoreError::Storage(
+            "semantic row root: duplicate (record_id, embedding_id)".to_string(),
+        ));
+    }
+    let mut root = Sha256::new();
+    root.update(b"quanta-index-semantic-row-root-v1\0");
+    root.update(
+        u64::try_from(rows.len())
+            .map_err(|error| {
+                CoreError::Storage(format!("semantic row root: row count overflow: {error}"))
+            })?
+            .to_le_bytes(),
+    );
+    for row in rows {
+        root.update(row.leaf_digest);
+    }
+    Ok(SemanticRowCommitmentV1 {
+        root_digest: encode_sha256_v1(root.finalize()),
+        row_count: u64::try_from(capacity).map_err(|error| {
+            CoreError::Storage(format!("semantic row root: row count overflow: {error}"))
+        })?,
+    })
+}

@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use super::LegacySemanticJournalStore;
 use anyhow::Result;
 use fs2::FileExt;
 use memchr::memchr_iter;
@@ -44,7 +45,7 @@ use quanta_index_search_plane::{
     ActivationCatalog, AuxiliaryAuthorityStore, BoundedQueryObsStore, DirectHistoryMaterializer,
     DirectRuntimeMetadataMaterializer, DirectSearchCorpusMaterializer, DirectSemanticMaterializer,
     DirectStructuralMaterializer, HashingQueryTextEmbedder, HistoryIngestPort, Ledger,
-    LegacySemanticJournalStore, QueryObsSink, QueryTextEmbedderPort, RuntimeMetadataIngestPort,
+    QueryObsSink, QueryTextEmbedderPort, RuntimeMetadataIngestPort,
     SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusMaterializerParts, SearchPlaneControlDispatcher,
     SearchPlaneDispatcher, SearchPlaneIngestDispatcher, StructuralIngestPort,
 };

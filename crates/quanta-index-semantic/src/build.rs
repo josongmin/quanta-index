@@ -57,6 +57,7 @@ use crate::manifest::SemanticManifest;
 use crate::membership_integrity::{
     ClusterMembershipCommitmentV1, ClusterMembershipStoredRowV1, cluster_membership_commitment_v1,
 };
+use crate::semantic_row_integrity_v1::semantic_row_commitment_v1;
 
 /// Row-count floor below which we skip ANN index construction at seal.
 ///
@@ -1514,6 +1515,13 @@ async fn build_manifest_bytes(
     let row_count_u64 = u64::try_from(row_count)
         .map_err(|err| CoreError::Storage(format!("semantic: row count overflow: {err}")))?;
     let coverage = collect_manifest_coverage(table).await?;
+    let semantic_rows = semantic_row_commitment_v1(table).await?;
+    if semantic_rows.row_count != row_count_u64 {
+        return Err(CoreError::Storage(format!(
+            "semantic: row commitment count {} != table row count {row_count_u64}",
+            semantic_rows.row_count
+        )));
+    }
     let membership_commitment = collect_cluster_membership_commitment_v1(membership_table).await?;
 
     // SOTA++: build the ANN vector index once at seal so query-time
@@ -1544,6 +1552,7 @@ async fn build_manifest_bytes(
         generation_contract,
         batch.manifest_digest.as_str(),
         row_count_u64,
+        semantic_rows.root_digest,
         built_at,
         coverage.present_corpora,
         generation_contract.required_corpora.clone(),
@@ -3187,6 +3196,60 @@ mod tests {
             .is_err(),
             "cold open must reject a deleted membership sidecar table"
         );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test asserts same-cardinality content tampering is rejected at cold open"
+    )]
+    fn semantic_row_root_rejects_same_row_count_content_mutation() -> TestResult {
+        let temp = tempdir()?;
+        let root = temp.path().to_path_buf();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let generation = ManifestGeneration::new(701);
+        crate::run_blocking(
+            &runtime,
+            build_batch(
+                &root,
+                &batch(
+                    generation,
+                    "src/root.rs",
+                    "emb-root",
+                    vec![1.0, 0.0, 0.0],
+                    true,
+                )?,
+            ),
+        )?;
+        let generation_dir = layout::generation_dir(&root, &repo_id(), &revision_id(), generation);
+        let connection = crate::run_blocking(
+            &runtime,
+            open_connection(&layout::dataset_dir(&generation_dir)),
+        )?;
+        let table = crate::run_blocking(&runtime, connection.open_table(TABLE_NAME).execute())?;
+        let update = crate::run_blocking(
+            &runtime,
+            table
+                .update()
+                .only_if("embedding_id = 'emb-root'")
+                .column(layout::COLUMN_SNIPPET, "'fn tampered() {}'")
+                .execute(),
+        )?;
+        assert_eq!(update.rows_updated, 1);
+
+        let Err(error) = crate::run_blocking(
+            &runtime,
+            open_generation(&root, &repo_id(), &revision_id(), generation),
+        ) else {
+            return Err("same-row-count content mutation must fail closed".into());
+        };
+        assert!(matches!(
+            error,
+            CoreError::Typed { ref code, .. } if code == "SEMANTIC_ROW_ROOT_MISMATCH"
+        ));
         Ok(())
     }
 }

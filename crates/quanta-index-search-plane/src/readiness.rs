@@ -3843,7 +3843,7 @@ mod tests {
         reason = "Result-returning durability and CAS tests use assertions as test-failure reporting"
     )]
     use std::collections::BTreeSet;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -3919,6 +3919,28 @@ mod tests {
                 return Err(std::io::Error::other(format!(
                     "injected parent sync failure at call {call}"
                 )));
+            }
+            std::fs::File::open(parent)?.sync_all()
+        }
+    }
+
+    #[derive(Debug)]
+    struct FailNthSyncForParent {
+        target_parent: PathBuf,
+        matching_calls: AtomicUsize,
+        fail_at_matching_call: usize,
+    }
+
+    impl super::ParentDirectorySyncPort for FailNthSyncForParent {
+        fn sync_parent(&self, parent: &Path) -> std::io::Result<()> {
+            if parent == self.target_parent {
+                let matching_call = self.matching_calls.fetch_add(1, Ordering::SeqCst);
+                if matching_call == self.fail_at_matching_call {
+                    return Err(std::io::Error::other(format!(
+                        "injected parent sync failure for {} at matching call {matching_call}",
+                        parent.display()
+                    )));
+                }
             }
             std::fs::File::open(parent)?.sync_all()
         }
@@ -5132,19 +5154,20 @@ mod tests {
                 writer.record_sealed_search_corpus(&repo, &revision, generation, &digest)?;
             ledger.record_historically_sealed_search_corpus(&repo, &revision, generation, &digest);
         }
+        let pair_dir = writer.search_corpus_pair_dir(&repo, &revision);
         drop(writer);
 
-        let sync = Arc::new(FailAtParentSync {
-            calls: AtomicUsize::new(0),
-            // Reopening four existing authority subdirectories consumes calls
-            // 0..=3. Existing-record parent revalidation is call four; the GC
-            // pair-directory fsync after deleting generations 1 and 2 is five.
-            fail_at: 5,
+        let sync = Arc::new(FailNthSyncForParent {
+            target_parent: pair_dir,
+            matching_calls: AtomicUsize::new(0),
+            // The first pair sync revalidates the existing generation record;
+            // the second is the post-delete durability barrier.
+            fail_at_matching_call: 1,
         });
         let store = AuxiliaryAuthorityStore::open_with_parent_sync(
             dir.path(),
             search_corpus_retention(2)?,
-            sync,
+            sync.clone(),
         )?;
         ledger.fence_search_corpus_history_v1(&repo, &revision);
         let first = store.record_sealed_search_corpus(
@@ -5154,6 +5177,11 @@ mod tests {
             "digest-4",
         );
         assert!(matches!(first, Err(CoreError::Storage(_))));
+        assert_eq!(
+            sync.matching_calls.load(Ordering::SeqCst),
+            2,
+            "failure must occur at the post-delete pair-directory durability barrier"
+        );
         assert!(
             !store
                 .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(1))

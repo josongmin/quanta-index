@@ -22,9 +22,8 @@ use quanta_index_core::{
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_repomap::RepoMapGenerationStore;
-use quanta_index_search_plane::{
-    ActivationCatalog, AuxiliaryAuthorityStore, LegacySemanticJournalStore,
-};
+use quanta_index_search_plane::{ActivationCatalog, AuxiliaryAuthorityStore};
+use quanta_index_searchd::app::LegacySemanticJournalStore;
 use quanta_index_searchd::app::runtime::{SearchdRuntimeParts, StateRootLease};
 use quanta_index_searchd::{SearchdCommand, SearchdConfig, SearchdRuntime, drive};
 use quanta_index_semantic::SemanticAdapter;
