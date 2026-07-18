@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::SdkError;
 use quanta_index_ipc::ClientIoPolicy;
@@ -13,6 +13,7 @@ pub struct ConnectOptions {
     /// `state_root/search-plane/ingest.sock`.
     ingest_socket: Option<PathBuf>,
     request_io_timeout: Duration,
+    request_io_deadline: Option<Instant>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -32,6 +33,7 @@ impl Default for ConnectOptions {
             control_socket: None,
             ingest_socket: None,
             request_io_timeout: ClientIoPolicy::default().request_timeout(),
+            request_io_deadline: None,
         }
     }
 }
@@ -66,12 +68,22 @@ impl ConnectOptions {
     #[must_use]
     pub fn with_request_io_timeout(mut self, timeout: Duration) -> Self {
         self.request_io_timeout = timeout;
+        self.request_io_deadline = None;
+        self
+    }
+
+    #[must_use]
+    pub fn with_request_io_deadline(mut self, deadline: Instant) -> Self {
+        self.request_io_deadline = Some(deadline);
         self
     }
 
     pub(crate) fn resolve(self) -> Result<ResolvedConnectOptions, SdkError> {
-        let io_policy = ClientIoPolicy::try_new(self.request_io_timeout)
-            .map_err(|error| SdkError::Usage(error.to_string()))?;
+        let io_policy = match self.request_io_deadline {
+            Some(deadline) => ClientIoPolicy::try_with_deadline(deadline),
+            None => ClientIoPolicy::try_new(self.request_io_timeout),
+        }
+        .map_err(|error| SdkError::Usage(error.to_string()))?;
         let state_root = self.resolve_state_root()?;
         let query_socket = match (self.query_socket, &state_root) {
             (Some(path), _) => path,

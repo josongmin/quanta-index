@@ -38,6 +38,8 @@ pub enum IpcError {
     },
     /// Client request policy supplied a zero I/O timeout.
     InvalidClientIoTimeout,
+    /// The owner-supplied absolute request deadline elapsed before dispatch.
+    ClientIoDeadlineElapsed,
 }
 
 impl core::fmt::Display for IpcError {
@@ -64,6 +66,9 @@ impl core::fmt::Display for IpcError {
             Self::InvalidClientIoTimeout => {
                 f.write_str("client I/O timeout must be greater than zero")
             }
+            Self::ClientIoDeadlineElapsed => {
+                f.write_str("client I/O deadline elapsed before request dispatch")
+            }
         }
     }
 }
@@ -78,7 +83,8 @@ impl std::error::Error for IpcError {
             | Self::Encode(_)
             | Self::Decode(_)
             | Self::Timeout { .. }
-            | Self::InvalidClientIoTimeout => None,
+            | Self::InvalidClientIoTimeout
+            | Self::ClientIoDeadlineElapsed => None,
         }
     }
 }

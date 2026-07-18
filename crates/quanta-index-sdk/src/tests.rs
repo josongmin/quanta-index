@@ -672,6 +672,28 @@ fn connect_options_preserve_explicit_request_io_timeout() {
 }
 
 #[test]
+fn connect_options_preserve_absolute_request_io_deadline() {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let resolved = ok_or_fail!(
+        ConnectOptions::from_state_root("/tmp/qi-state")
+            .with_request_io_deadline(deadline)
+            .resolve()
+    );
+    assert_eq!(resolved.io_policy.absolute_deadline(), Some(deadline));
+}
+
+#[test]
+fn connect_options_reject_elapsed_request_io_deadline() {
+    let deadline = std::time::Instant::now() - std::time::Duration::from_millis(1);
+    let result = ConnectOptions::from_state_root("/tmp/qi-state")
+        .with_request_io_deadline(deadline)
+        .resolve();
+    assert!(
+        matches!(result, Err(crate::SdkError::Usage(message)) if message.contains("deadline elapsed"))
+    );
+}
+
+#[test]
 fn connect_options_reject_zero_request_io_timeout() {
     let result = ConnectOptions::from_state_root("/tmp/qi-state")
         .with_request_io_timeout(std::time::Duration::ZERO)

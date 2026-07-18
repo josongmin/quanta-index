@@ -233,6 +233,7 @@ pub const DEFAULT_CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClientIoPolicy {
     request_timeout: Duration,
+    absolute_deadline: Option<Instant>,
 }
 
 impl ClientIoPolicy {
@@ -240,12 +241,41 @@ impl ClientIoPolicy {
         if request_timeout.is_zero() {
             return Err(IpcError::InvalidClientIoTimeout);
         }
-        Ok(Self { request_timeout })
+        Ok(Self {
+            request_timeout,
+            absolute_deadline: None,
+        })
+    }
+
+    pub fn try_with_deadline(absolute_deadline: Instant) -> Result<Self, IpcError> {
+        let request_timeout = absolute_deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or(IpcError::ClientIoDeadlineElapsed)?;
+        Ok(Self {
+            request_timeout,
+            absolute_deadline: Some(absolute_deadline),
+        })
     }
 
     #[must_use]
     pub const fn request_timeout(self) -> Duration {
         self.request_timeout
+    }
+
+    #[must_use]
+    pub const fn absolute_deadline(self) -> Option<Instant> {
+        self.absolute_deadline
+    }
+
+    fn request_deadline(self) -> Result<Instant, IpcError> {
+        match self.absolute_deadline {
+            Some(deadline) if deadline > Instant::now() => Ok(deadline),
+            Some(_) => Err(IpcError::ClientIoDeadlineElapsed),
+            None => Instant::now()
+                .checked_add(self.request_timeout)
+                .ok_or(IpcError::InvalidClientIoTimeout),
+        }
     }
 }
 
@@ -253,6 +283,7 @@ impl Default for ClientIoPolicy {
     fn default() -> Self {
         Self {
             request_timeout: DEFAULT_CLIENT_IO_TIMEOUT,
+            absolute_deadline: None,
         }
     }
 }
@@ -335,11 +366,9 @@ where
     RequestEnvelopeT: serde::Serialize,
     ResponseEnvelopeT: serde::de::DeserializeOwned,
 {
+    let deadline = io_policy.request_deadline()?;
     let frame = encode_request(request)?;
     let stream = UnixStream::connect(socket).map_err(IpcError::Io)?;
-    let deadline = Instant::now()
-        .checked_add(io_policy.request_timeout())
-        .ok_or(IpcError::InvalidClientIoTimeout)?;
     let mut stream = DeadlineStream::new(stream, deadline);
     stream
         .write_all(&frame)
@@ -483,6 +512,30 @@ mod tests {
             }) if observed == timeout
         ) {
             return Err(format!("expected typed read timeout, got {result:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn absolute_client_deadline_does_not_restart_at_send_boundary() -> TestRes {
+        let deadline = std::time::Instant::now() + Duration::from_millis(20);
+        let policy =
+            ClientIoPolicy::try_with_deadline(deadline).map_err(|error| error.to_string())?;
+        thread::sleep(Duration::from_millis(30));
+
+        let result = send_request::<_, TestResponseEnvelope>(
+            std::path::Path::new("/path/that/must/not/be-connected.sock"),
+            &TestRequestEnvelope {
+                request_id: 99,
+                payload: 7,
+            },
+            policy,
+        );
+
+        if !matches!(result, Err(IpcError::ClientIoDeadlineElapsed)) {
+            return Err(format!(
+                "elapsed absolute deadline must fail before socket connect, got {result:?}"
+            ));
         }
         Ok(())
     }
