@@ -213,6 +213,7 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
             request_id: NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed),
             payload,
         },
+        quanta_index_ipc::ClientIoPolicy::default(),
     )?;
     match response.payload {
         SearchPlaneIngestIpcResponse::Error(err) => {

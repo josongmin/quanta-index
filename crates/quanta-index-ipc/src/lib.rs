@@ -11,9 +11,10 @@ mod codec;
 mod server;
 
 pub use codec::{
-    IpcError, MAX_FRAME_BODY_BYTES, decode_cbor_payload, decode_request, decode_response,
-    encode_cbor_payload, encode_request, encode_response,
+    IpcError, IpcIoOperation, MAX_FRAME_BODY_BYTES, decode_cbor_payload, decode_request,
+    decode_response, encode_cbor_payload, encode_request, encode_response,
 };
 pub use server::{
-    IpcDispatcher, RequestEnvelope, ResponseEnvelope, ShutdownHandle, UdsServer, send_request,
+    ClientIoPolicy, DEFAULT_CLIENT_IO_TIMEOUT, IpcDispatcher, RequestEnvelope, ResponseEnvelope,
+    ShutdownHandle, UdsServer, send_request,
 };

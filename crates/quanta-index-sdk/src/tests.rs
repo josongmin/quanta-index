@@ -640,19 +640,44 @@ fn only_ingest_request(
 #[test]
 fn connect_options_from_state_root_resolve_default_sockets() {
     let resolved = ok_or_fail!(ConnectOptions::from_state_root("/tmp/qi-state").resolve());
-    assert_eq!(resolved.0, Some(PathBuf::from("/tmp/qi-state")));
+    assert_eq!(resolved.state_root, Some(PathBuf::from("/tmp/qi-state")));
     assert_eq!(
-        resolved.1,
+        resolved.query_socket,
         PathBuf::from("/tmp/qi-state/search-plane/query.sock")
     );
     assert_eq!(
-        resolved.2,
+        resolved.control_socket,
         PathBuf::from("/tmp/qi-state/search-plane/control.sock")
     );
     assert_eq!(
-        resolved.3,
+        resolved.ingest_socket,
         PathBuf::from("/tmp/qi-state/search-plane/ingest.sock"),
         "QI-SDK-01: ingest socket resolves to state_root/search-plane/ingest.sock"
+    );
+    assert_eq!(
+        resolved.io_policy,
+        quanta_index_ipc::ClientIoPolicy::default()
+    );
+}
+
+#[test]
+fn connect_options_preserve_explicit_request_io_timeout() {
+    let timeout = std::time::Duration::from_millis(125);
+    let resolved = ok_or_fail!(
+        ConnectOptions::from_state_root("/tmp/qi-state")
+            .with_request_io_timeout(timeout)
+            .resolve()
+    );
+    assert_eq!(resolved.io_policy.request_timeout(), timeout);
+}
+
+#[test]
+fn connect_options_reject_zero_request_io_timeout() {
+    let result = ConnectOptions::from_state_root("/tmp/qi-state")
+        .with_request_io_timeout(std::time::Duration::ZERO)
+        .resolve();
+    assert!(
+        matches!(result, Err(crate::SdkError::Usage(message)) if message.contains("greater than zero"))
     );
 }
 

@@ -336,14 +336,14 @@ fn send_query_request(
     socket: &Path,
     request: &SearchPlaneQueryIpcRequestEnvelope,
 ) -> Result<SearchPlaneQueryIpcResponseEnvelope, quanta_index_ipc::IpcError> {
-    send_request(socket, request)
+    send_request(socket, request, quanta_index_ipc::ClientIoPolicy::default())
 }
 
 fn send_ingest_request(
     socket: &Path,
     request: &SearchPlaneIngestIpcRequestEnvelope,
 ) -> Result<SearchPlaneIngestIpcResponseEnvelope, quanta_index_ipc::IpcError> {
-    send_request(socket, request)
+    send_request(socket, request, quanta_index_ipc::ClientIoPolicy::default())
 }
 
 fn wait_until<F>(timeout: Duration, mut cond: F) -> bool

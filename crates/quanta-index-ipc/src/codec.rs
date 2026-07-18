@@ -1,6 +1,14 @@
 //! Length-prefixed CBOR frame codec for search-plane IPC envelopes.
 
 use std::io::{ErrorKind, Read};
+use std::time::Duration;
+
+/// Blocking client operation that exceeded its configured I/O timeout.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IpcIoOperation {
+    Read,
+    Write,
+}
 
 /// Maximum CBOR body size accepted on the wire.
 pub const MAX_FRAME_BODY_BYTES: usize = 16 * 1024 * 1024;
@@ -23,6 +31,13 @@ pub enum IpcError {
     Decode(String),
     /// Underlying transport returned an I/O error other than short read.
     Io(std::io::Error),
+    /// A blocking client read or write exceeded its configured timeout.
+    Timeout {
+        operation: IpcIoOperation,
+        timeout: Duration,
+    },
+    /// Client request policy supplied a zero I/O timeout.
+    InvalidClientIoTimeout,
 }
 
 impl core::fmt::Display for IpcError {
@@ -39,6 +54,16 @@ impl core::fmt::Display for IpcError {
             Self::Encode(msg) => write!(f, "ipc cbor encode failed: {msg}"),
             Self::Decode(msg) => write!(f, "ipc cbor decode failed: {msg}"),
             Self::Io(err) => write!(f, "ipc transport io error: {err}"),
+            Self::Timeout { operation, timeout } => {
+                write!(
+                    f,
+                    "ipc {operation:?} timed out after {} ms",
+                    timeout.as_millis()
+                )
+            }
+            Self::InvalidClientIoTimeout => {
+                f.write_str("client I/O timeout must be greater than zero")
+            }
         }
     }
 }
@@ -51,7 +76,9 @@ impl std::error::Error for IpcError {
             | Self::Oversized(_)
             | Self::EmptyFrame
             | Self::Encode(_)
-            | Self::Decode(_) => None,
+            | Self::Decode(_)
+            | Self::Timeout { .. }
+            | Self::InvalidClientIoTimeout => None,
         }
     }
 }

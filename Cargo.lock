@@ -4218,6 +4218,7 @@ dependencies = [
  "quanta-index-contract",
  "quanta-index-core",
  "serde",
+ "tempfile",
 ]
 
 [[package]]
@@ -4338,6 +4339,7 @@ version = "0.1.0"
 dependencies = [
  "quanta-index-contract",
  "quanta-index-ipc",
+ "serde",
  "thiserror 1.0.69",
 ]
 

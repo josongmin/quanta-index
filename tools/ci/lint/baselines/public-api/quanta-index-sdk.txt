@@ -166,13 +166,14 @@ pub fn quanta_index_sdk::ConnectOptions::from_state_root(path: impl core::conver
 pub fn quanta_index_sdk::ConnectOptions::with_control_socket(self, path: impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn quanta_index_sdk::ConnectOptions::with_ingest_socket(self, path: impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn quanta_index_sdk::ConnectOptions::with_query_socket(self, path: impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn quanta_index_sdk::ConnectOptions::with_request_io_timeout(self, timeout: core::time::Duration) -> Self
 impl core::clone::Clone for quanta_index_sdk::ConnectOptions
 pub fn quanta_index_sdk::ConnectOptions::clone(&self) -> quanta_index_sdk::ConnectOptions
 impl core::cmp::Eq for quanta_index_sdk::ConnectOptions
 impl core::cmp::PartialEq for quanta_index_sdk::ConnectOptions
 pub fn quanta_index_sdk::ConnectOptions::eq(&self, other: &quanta_index_sdk::ConnectOptions) -> bool
 impl core::default::Default for quanta_index_sdk::ConnectOptions
-pub fn quanta_index_sdk::ConnectOptions::default() -> quanta_index_sdk::ConnectOptions
+pub fn quanta_index_sdk::ConnectOptions::default() -> Self
 impl core::fmt::Debug for quanta_index_sdk::ConnectOptions
 pub fn quanta_index_sdk::ConnectOptions::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_sdk::ConnectOptions

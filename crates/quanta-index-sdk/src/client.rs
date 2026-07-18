@@ -32,12 +32,8 @@ pub struct QuantaIndex {
 
 impl QuantaIndex {
     pub fn connect(options: ConnectOptions) -> Result<Self, SdkError> {
-        let (_state_root, query_socket, control_socket, ingest_socket) = options.resolve()?;
-        Ok(Self::from_resolved(
-            query_socket,
-            control_socket,
-            ingest_socket,
-        ))
+        let resolved = options.resolve()?;
+        Ok(Self::from_resolved(resolved))
     }
 
     #[must_use]
@@ -299,14 +295,20 @@ impl QuantaIndex {
         }
     }
 
-    fn from_resolved(
-        query_socket: std::path::PathBuf,
-        control_socket: std::path::PathBuf,
-        ingest_socket: std::path::PathBuf,
-    ) -> Self {
-        let query_transport = Arc::new(UdsQueryTransport::new(query_socket));
-        let control_transport = Arc::new(UdsControlTransport::new(control_socket));
-        let ingest_transport = Arc::new(UdsIngestTransport::new(ingest_socket));
+    fn from_resolved(resolved: crate::config::ResolvedConnectOptions) -> Self {
+        let _state_root = resolved.state_root;
+        let query_transport = Arc::new(UdsQueryTransport::new(
+            resolved.query_socket,
+            resolved.io_policy,
+        ));
+        let control_transport = Arc::new(UdsControlTransport::new(
+            resolved.control_socket,
+            resolved.io_policy,
+        ));
+        let ingest_transport = Arc::new(UdsIngestTransport::new(
+            resolved.ingest_socket,
+            resolved.io_policy,
+        ));
         Self {
             inner: Arc::new(QuantaIndexInner {
                 query_transport,

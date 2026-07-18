@@ -1,8 +1,10 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::SdkError;
+use quanta_index_ipc::ClientIoPolicy;
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConnectOptions {
     state_root: Option<PathBuf>,
     query_socket: Option<PathBuf>,
@@ -10,6 +12,28 @@ pub struct ConnectOptions {
     /// QI-SDK-01: typed ingest socket override. Defaults to
     /// `state_root/search-plane/ingest.sock`.
     ingest_socket: Option<PathBuf>,
+    request_io_timeout: Duration,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedConnectOptions {
+    pub(crate) state_root: Option<PathBuf>,
+    pub(crate) query_socket: PathBuf,
+    pub(crate) control_socket: PathBuf,
+    pub(crate) ingest_socket: PathBuf,
+    pub(crate) io_policy: ClientIoPolicy,
+}
+
+impl Default for ConnectOptions {
+    fn default() -> Self {
+        Self {
+            state_root: None,
+            query_socket: None,
+            control_socket: None,
+            ingest_socket: None,
+            request_io_timeout: ClientIoPolicy::default().request_timeout(),
+        }
+    }
 }
 
 impl ConnectOptions {
@@ -17,9 +41,7 @@ impl ConnectOptions {
     pub fn from_state_root(path: impl Into<PathBuf>) -> Self {
         Self {
             state_root: Some(path.into()),
-            query_socket: None,
-            control_socket: None,
-            ingest_socket: None,
+            ..Self::default()
         }
     }
 
@@ -41,7 +63,15 @@ impl ConnectOptions {
         self
     }
 
-    pub(crate) fn resolve(self) -> Result<(Option<PathBuf>, PathBuf, PathBuf, PathBuf), SdkError> {
+    #[must_use]
+    pub fn with_request_io_timeout(mut self, timeout: Duration) -> Self {
+        self.request_io_timeout = timeout;
+        self
+    }
+
+    pub(crate) fn resolve(self) -> Result<ResolvedConnectOptions, SdkError> {
+        let io_policy = ClientIoPolicy::try_new(self.request_io_timeout)
+            .map_err(|error| SdkError::Usage(error.to_string()))?;
         let state_root = self.resolve_state_root()?;
         let query_socket = match (self.query_socket, &state_root) {
             (Some(path), _) => path,
@@ -72,7 +102,13 @@ impl ConnectOptions {
                 ));
             }
         };
-        Ok((state_root, query_socket, control_socket, ingest_socket))
+        Ok(ResolvedConnectOptions {
+            state_root,
+            query_socket,
+            control_socket,
+            ingest_socket,
+            io_policy,
+        })
     }
 
     fn resolve_state_root(&self) -> Result<Option<PathBuf>, SdkError> {

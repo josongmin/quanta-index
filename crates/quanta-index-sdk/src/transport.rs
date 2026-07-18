@@ -10,7 +10,7 @@ use quanta_index_contract::{
     SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponseEnvelope,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponseEnvelope,
 };
-use quanta_index_ipc::send_request;
+use quanta_index_ipc::{ClientIoPolicy, send_request};
 
 use crate::SdkError;
 
@@ -30,20 +30,15 @@ pub(crate) trait ControlTransport: Send + Sync {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct UdsQueryTransport {
-    socket_path: PathBuf,
+    inner: UdsTransport,
 }
 
 impl UdsQueryTransport {
     #[must_use]
-    pub(crate) fn new(socket_path: impl Into<PathBuf>) -> Self {
+    pub(crate) fn new(socket_path: impl Into<PathBuf>, io_policy: ClientIoPolicy) -> Self {
         Self {
-            socket_path: socket_path.into(),
+            inner: UdsTransport::new(socket_path, io_policy),
         }
-    }
-
-    #[must_use]
-    pub(crate) fn socket_path(&self) -> &Path {
-        &self.socket_path
     }
 }
 
@@ -52,26 +47,21 @@ impl QueryTransport for UdsQueryTransport {
         &self,
         request: SearchPlaneQueryIpcRequestEnvelope,
     ) -> Result<SearchPlaneQueryIpcResponseEnvelope, SdkError> {
-        send_request(self.socket_path(), &request).map_err(SdkError::Transport)
+        self.inner.send(&request)
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct UdsControlTransport {
-    socket_path: PathBuf,
+    inner: UdsTransport,
 }
 
 impl UdsControlTransport {
     #[must_use]
-    pub(crate) fn new(socket_path: impl Into<PathBuf>) -> Self {
+    pub(crate) fn new(socket_path: impl Into<PathBuf>, io_policy: ClientIoPolicy) -> Self {
         Self {
-            socket_path: socket_path.into(),
+            inner: UdsTransport::new(socket_path, io_policy),
         }
-    }
-
-    #[must_use]
-    pub(crate) fn socket_path(&self) -> &Path {
-        &self.socket_path
     }
 }
 
@@ -80,7 +70,7 @@ impl ControlTransport for UdsControlTransport {
         &self,
         request: SearchPlaneControlIpcRequestEnvelope,
     ) -> Result<SearchPlaneControlIpcResponseEnvelope, SdkError> {
-        send_request(self.socket_path(), &request).map_err(SdkError::Transport)
+        self.inner.send(&request)
     }
 }
 
@@ -98,20 +88,15 @@ pub(crate) trait IngestTransport: Send + Sync {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct UdsIngestTransport {
-    socket_path: PathBuf,
+    inner: UdsTransport,
 }
 
 impl UdsIngestTransport {
     #[must_use]
-    pub(crate) fn new(socket_path: impl Into<PathBuf>) -> Self {
+    pub(crate) fn new(socket_path: impl Into<PathBuf>, io_policy: ClientIoPolicy) -> Self {
         Self {
-            socket_path: socket_path.into(),
+            inner: UdsTransport::new(socket_path, io_policy),
         }
-    }
-
-    #[must_use]
-    pub(crate) fn socket_path(&self) -> &Path {
-        &self.socket_path
     }
 }
 
@@ -120,6 +105,33 @@ impl IngestTransport for UdsIngestTransport {
         &self,
         request: SearchPlaneIngestIpcRequestEnvelope,
     ) -> Result<SearchPlaneIngestIpcResponseEnvelope, SdkError> {
-        send_request(self.socket_path(), &request).map_err(SdkError::Transport)
+        self.inner.send(&request)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct UdsTransport {
+    socket_path: PathBuf,
+    io_policy: ClientIoPolicy,
+}
+
+impl UdsTransport {
+    fn new(socket_path: impl Into<PathBuf>, io_policy: ClientIoPolicy) -> Self {
+        Self {
+            socket_path: socket_path.into(),
+            io_policy,
+        }
+    }
+
+    fn socket_path(&self) -> &Path {
+        &self.socket_path
+    }
+
+    fn send<Request, Response>(&self, request: &Request) -> Result<Response, SdkError>
+    where
+        Request: serde::Serialize,
+        Response: serde::de::DeserializeOwned,
+    {
+        send_request(self.socket_path(), request, self.io_policy).map_err(SdkError::Transport)
     }
 }

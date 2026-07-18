@@ -15,4 +15,5 @@ workspace = true
 # dependency surface.
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
+serde.workspace = true
 thiserror.workspace = true

@@ -44,7 +44,7 @@ use quanta_index_contract::{
     StructuralQueryRequest, StructuralReplaceScope, StructuralTreeRecord, SymbolId,
     TextQueryRequest, TextQuerySyntax,
 };
-use quanta_index_ipc::{IpcError, send_request};
+use quanta_index_ipc::{ClientIoPolicy, IpcError, send_request};
 use quanta_index_search_plane::{BoundedQueryObsStore, MetricSample, ObsError};
 use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd::app::{SearchdConfig, SemanticEmbedderProfile};
@@ -2129,7 +2129,8 @@ impl E2eRuntime {
             request_id,
             payload,
         };
-        let response: SearchPlaneIngestIpcResponseEnvelope = send_request(&socket, &envelope)?;
+        let response: SearchPlaneIngestIpcResponseEnvelope =
+            send_request(&socket, &envelope, ClientIoPolicy::default())?;
         if response.request_id != request_id {
             return Err(anyhow::anyhow!(
                 "e2e-harness ingest response request_id {} differs from request {request_id}",
@@ -2170,7 +2171,8 @@ impl E2eRuntime {
             request_id,
             payload,
         };
-        let response: SearchPlaneControlIpcResponseEnvelope = send_request(&socket, &envelope)?;
+        let response: SearchPlaneControlIpcResponseEnvelope =
+            send_request(&socket, &envelope, ClientIoPolicy::default())?;
         if response.request_id != request_id {
             return Err(anyhow::anyhow!(
                 "e2e-harness control response request_id {} differs from request {request_id}",
@@ -2265,7 +2267,11 @@ fn wait_for_query_response(
         wait_until(
             READINESS_TIMEOUT,
             READINESS_POLL_INTERVAL,
-            || match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(socket, envelope) {
+            || match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(
+                socket,
+                envelope,
+                ClientIoPolicy::default(),
+            ) {
                 Ok(response) => {
                     if ready(&response) {
                         cached_response = Some(response);
@@ -2279,7 +2285,10 @@ fn wait_for_query_response(
     if let Some(response) = cached_response {
         return (readiness_reached, Ok(response));
     }
-    (readiness_reached, send_request(socket, envelope))
+    (
+        readiness_reached,
+        send_request(socket, envelope, ClientIoPolicy::default()),
+    )
 }
 
 fn explain_transport_error(
