@@ -3,6 +3,8 @@
 #![forbid(unsafe_code)]
 
 use std::error::Error;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::thread;
@@ -27,16 +29,27 @@ impl SearchdBinaryProcess {
         ];
         let start = Instant::now();
         while start.elapsed() < SOCKET_TIMEOUT {
-            if sockets.iter().all(|socket| socket.exists()) {
+            if sockets
+                .iter()
+                .all(|socket| socket_accepts_connection(socket))
+            {
                 return Ok(Self {
                     state_root: state_root.to_path_buf(),
                     child: Some(child),
                 });
             }
             if let Some(status) = child.try_wait()? {
-                return Err(
-                    format!("searchd binary exited before opening sockets: {status}").into(),
-                );
+                return match remove_socket_files(state_root) {
+                    Ok(()) => Err(format!(
+                        "searchd binary exited before opening sockets: {status}"
+                    )
+                    .into()),
+                    Err(cleanup_error) => Err(format!(
+                        "searchd binary exited before opening sockets: {status}; \
+                         partial socket cleanup failed: {cleanup_error}"
+                    )
+                    .into()),
+                };
             }
             thread::sleep(Duration::from_millis(10));
         }
@@ -94,10 +107,31 @@ impl Drop for SearchdBinaryProcess {
 
 fn terminate_child(child: &mut Child) -> Result<(), Box<dyn Error>> {
     if child.try_wait()?.is_none() {
-        child.kill()?;
+        match child.kill() {
+            Ok(()) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::InvalidInput | std::io::ErrorKind::NotFound
+                ) => {}
+            Err(error) => return Err(error.into()),
+        }
     }
     let _status = child.wait()?;
     Ok(())
+}
+
+#[cfg(unix)]
+fn socket_accepts_connection(path: &Path) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_socket())
+        && UnixStream::connect(path).is_ok()
+}
+
+#[cfg(not(unix))]
+fn socket_accepts_connection(_path: &Path) -> bool {
+    false
 }
 
 fn searchd_command(state_root: &Path) -> Command {
@@ -136,4 +170,18 @@ fn remove_socket_files(state_root: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::socket_accepts_connection;
+
+    #[test]
+    fn regular_file_does_not_satisfy_searchd_socket_readiness() {
+        let root = tempfile::tempdir().expect("socket fixture root");
+        let path = root.path().join("query.sock");
+        std::fs::write(&path, b"not-a-socket").expect("regular readiness sentinel");
+
+        assert!(!socket_accepts_connection(&path));
+    }
 }
