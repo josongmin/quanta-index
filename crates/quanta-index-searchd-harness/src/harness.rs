@@ -26,9 +26,10 @@ use quanta_index_contract::lex::{
     SymbolRecord, SymbolRelationship, SymbolSpan, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    BatchIngestMode, BatchPublishReceipt, ChunkId, ChunkRecord, CurrentGenerationRequest,
-    EngineTouched, FileOwnerProjectionRow, GenerationPin, GenerationSnapshot, HistoryQueryRequest,
-    HybridQueryRequest, LexicalCandidate, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    BatchIngestMode, BatchPublishReceipt, CapabilityStatusV1, ChunkId, ChunkRecord,
+    CurrentGenerationRequest, EngineTouched, FileOwnerProjectionRow, GenerationPin,
+    GenerationSnapshot, HistoryQueryRequest, HybridQueryRequest, LexicalCandidate,
+    ManifestGeneration, OwnerDocKind, RawFallbackReasonV1, RepoId, RepoRelativePath, RevisionId,
     RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch,
     SearchCorpusReplaceScope, SearchCorpusTombstoneScope, SearchExplanation,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
@@ -37,9 +38,11 @@ use quanta_index_contract::{
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind, SemanticQueryRequest,
-    StructuralCandidate, StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope,
-    StructuralTreeRecord, SymbolId, TextQueryRequest, TextQuerySyntax,
+    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind, SemanticCorpusKindV1,
+    SemanticQueryRequest, SemanticSourceRecordV1, SemanticSourceReplaceScopeV1,
+    SemanticSourceScopeKeyV1, SourceRoleV1, StructuralCandidate, StructuralIngestBatch,
+    StructuralQueryRequest, StructuralReplaceScope, StructuralTreeRecord, SymbolId,
+    TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::{IpcError, send_request};
 use quanta_index_search_plane::{BoundedQueryObsStore, MetricSample, ObsError};
@@ -577,7 +580,7 @@ impl E2eRuntime {
                     symbols: Vec::new(),
                 }],
                 tombstone_scopes: Vec::new(),
-                semantic_replace_scopes: Vec::new(),
+                semantic_replace_scopes: semantic_source_scopes_for_chunk_records(&records),
                 semantic_tombstone_scopes: Vec::new(),
                 seal: false,
             },
@@ -617,6 +620,7 @@ impl E2eRuntime {
         }
         let mut scopes = Vec::with_capacity(files.len());
         let mut all_ids = Vec::new();
+        let mut all_records = Vec::new();
         for (path, chunks) in files {
             if chunks.is_empty() {
                 return Err(anyhow::anyhow!(
@@ -654,6 +658,7 @@ impl E2eRuntime {
             for record in &records {
                 all_ids.push(record.chunk_id.as_str().to_string());
             }
+            all_records.extend(records.iter().cloned());
             if let Some(last_record) = records.last().cloned() {
                 let _old = self
                     .chunk_ids_by_path
@@ -690,7 +695,7 @@ impl E2eRuntime {
                 clear_surfaces: Vec::new(),
                 replace_scopes: scopes,
                 tombstone_scopes: Vec::new(),
-                semantic_replace_scopes: Vec::new(),
+                semantic_replace_scopes: semantic_source_scopes_for_chunk_records(&all_records),
                 semantic_tombstone_scopes: Vec::new(),
                 seal: false,
             },
@@ -700,6 +705,12 @@ impl E2eRuntime {
 
     pub fn publish_repo_metadata_bundle(&mut self, payload: Vec<u8>) -> AnyResult<()> {
         let (mode, base_generation) = self.lexical_batch_contract();
+        let semantic_records = self
+            .chunk_records_by_path
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let semantic_replace_scopes = semantic_source_scopes_for_chunk_records(&semantic_records);
         self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
             SearchCorpusIngestBatch {
                 repo_id: self.repo(),
@@ -716,7 +727,7 @@ impl E2eRuntime {
                 clear_surfaces: Vec::new(),
                 replace_scopes: Vec::new(),
                 tombstone_scopes: Vec::new(),
-                semantic_replace_scopes: Vec::new(),
+                semantic_replace_scopes,
                 semantic_tombstone_scopes: Vec::new(),
                 seal: false,
             },
@@ -1267,6 +1278,7 @@ impl E2eRuntime {
             .cloned()
             .into_iter()
             .collect::<Vec<_>>();
+        let semantic_replace_scopes = semantic_source_scopes_for_chunk_records(&chunks);
         let (mode, base_generation) = self.lexical_batch_contract();
         self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
             SearchCorpusIngestBatch {
@@ -1286,7 +1298,7 @@ impl E2eRuntime {
                     symbols: vec![record],
                 }],
                 tombstone_scopes: Vec::new(),
-                semantic_replace_scopes: Vec::new(),
+                semantic_replace_scopes,
                 semantic_tombstone_scopes: Vec::new(),
                 seal: false,
             },
@@ -2401,6 +2413,49 @@ fn language_from_path(path: &str) -> &'static str {
         Some("md") => "markdown",
         Some(_) | None => "text",
     }
+}
+
+fn semantic_source_scopes_for_chunk_records(
+    records: &[ChunkRecord],
+) -> Vec<SemanticSourceReplaceScopeV1> {
+    records
+        .iter()
+        .map(|record| {
+            let owner_id = record.chunk_id.as_str().to_string();
+            SemanticSourceReplaceScopeV1 {
+                scope: SemanticSourceScopeKeyV1 {
+                    corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
+                    owner_kind: OwnerDocKind::Chunk,
+                    owner_id: owner_id.clone(),
+                },
+                scope_digest: format!("e2e-harness:semantic-source:scope:{owner_id}"),
+                sources: vec![SemanticSourceRecordV1 {
+                    record_id: owner_id.clone(),
+                    corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
+                    owner_kind: OwnerDocKind::Chunk,
+                    owner_id: owner_id.clone(),
+                    source_doc_id: owner_id.clone(),
+                    parent_owner_id: Some(owner_id.clone()),
+                    repo_relative_path: record.repo_relative_path.clone(),
+                    language: Some(record.language.as_str().to_string()),
+                    package: None,
+                    symbol_kind: None,
+                    visibility: None,
+                    source_role: SourceRoleV1::RawFallbackText,
+                    generated: false,
+                    capability_status: CapabilityStatusV1::Degraded,
+                    raw_fallback_reason: Some(
+                        RawFallbackReasonV1::IntentNotRecoverableFromStructure,
+                    ),
+                    authority_digest: "e2e-harness:direct-text-source:v1".to_string(),
+                    render_policy_digest: "e2e-harness:direct-text-source:v1".to_string(),
+                    card_schema_version: 0,
+                    text: record.text.to_string(),
+                }],
+                cluster_memberships: Vec::new(),
+            }
+        })
+        .collect()
 }
 
 fn scope_key(path: &str) -> quanta_index_contract::SearchScopeKey {

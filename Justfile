@@ -225,12 +225,23 @@ rust-verify-hellgate-all samples="20":
 
 rust-test-e2e:
     @just rust-bench-dsl-truth
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_matrix_inventory --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_lexical_full_fidelity --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_dual_syntax_lowering_parity --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_filter_execution --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_text_route_hellgate --all-features --locked -- --nocapture
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_structural_hellgate --all-features --locked -- --nocapture
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_predicate_authority_boolean --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_predicate_authority_lifecycle --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_generation_activation_concurrency --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test dsl_scenarios --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test sdk_frontdoor --all-features --locked -- --nocapture
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test end_to_end --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_restart_replay_determinism --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_perf_chaos --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test explain --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test repo_map_end_to_end --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_full_corpus --all-features --locked -- --nocapture
 
 rust-test-full-corpus:
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_full_corpus --all-features --locked -- --nocapture

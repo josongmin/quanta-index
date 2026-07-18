@@ -947,7 +947,8 @@ impl DirectRuntimeMetadataMaterializer {
 
 impl RuntimeMetadataIngestPort for DirectRuntimeMetadataMaterializer {
     fn publish_batch(&self, batch: &DirtyIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
-        let mut receipt = BatchPublishReceipt::empty_for(batch.generation, String::new());
+        let mut receipt =
+            BatchPublishReceipt::empty_for(batch.generation, batch.batch_digest.clone());
         let mut guard = self.ledger.write().map_err(|err| {
             CoreError::Storage(format!("direct dirty materialize: ledger poisoned: {err}"))
         })?;
@@ -1664,6 +1665,22 @@ mod tests {
         })
     }
 
+    fn fixture_dirty_batch() -> DirtyIngestBatch {
+        DirtyIngestBatch {
+            repo_id: RepoId::new("r"),
+            revision_id: RevisionId::new("rev"),
+            generation: ManifestGeneration::new(9),
+            overlay_epoch_ms: 123,
+            batch_digest: "batch:dirty".to_string(),
+            entries: vec![DirtyMutation::Upsert(quanta_index_contract::lex::DirtyRecord {
+                wire_version: 1,
+                doc_id: ChunkId::new("chunk-1"),
+                applied_at_ms: 123,
+                payload_hash: [7; 32],
+            })],
+        }
+    }
+
     #[test]
     fn legacy_semantic_journal_store_exposes_migration_surface() -> TestRes {
         let dir = tempfile::tempdir()?;
@@ -1722,6 +1739,37 @@ mod tests {
             return Err("publish did not preserve manifest digest".into());
         }
         drop(guard);
+        Ok(())
+    }
+
+    #[test]
+    fn direct_dirty_materializer_echoes_batch_digest_in_receipt() -> TestRes {
+        let dir = tempfile::tempdir()?;
+        let authority_store = Arc::new(AuxiliaryAuthorityStore::open(
+            dir.path(),
+            crate::search_corpus_retention::SearchCorpusHistoryRetentionPolicyV1::new(
+                2,
+                1024 * 1024,
+                2,
+                4 * 1024 * 1024,
+            )?,
+        )?);
+        let ledger = Arc::new(RwLock::new(Ledger::new()));
+        let materializer =
+            DirectRuntimeMetadataMaterializer::new(authority_store, Arc::clone(&ledger));
+        let batch = fixture_dirty_batch();
+        let receipt = materializer.publish_batch(&batch)?;
+        if receipt.manifest_digest != batch.batch_digest
+            || receipt.generation != batch.generation
+            || receipt.accepted_replace_scopes != 1
+            || receipt.accepted_tombstone_scopes != 0
+            || receipt.sealed
+        {
+            return Err(format!(
+                "unexpected dirty materialize receipt: batch={batch:?} receipt={receipt:?}"
+            )
+            .into());
+        }
         Ok(())
     }
 

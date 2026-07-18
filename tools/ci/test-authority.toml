@@ -316,6 +316,24 @@ owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "searchd-runtime-predicate-authority-boolean"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_predicate_authority_boolean.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-predicate-authority-lifecycle"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_predicate_authority_lifecycle.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-generation-activation-concurrency"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_generation_activation_concurrency.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "searchd-runtime-full-corpus"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_full_corpus.rs"
 owner = "quanta-index-searchd-runtime"

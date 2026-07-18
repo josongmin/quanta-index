@@ -14,14 +14,14 @@ mod searchd_binary_process;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use quanta_index_contract::lex::{
-    compute_parse_tree_source_hash, LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord,
-    SymbolRelationship, SymbolSpan,
+    LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship, SymbolSpan,
+    compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
     ChunkId, ChunkRecord, FileContributorIdentityEntry, GenerationPin, GenerationSelector,
@@ -45,12 +45,12 @@ use quanta_index_sdk::{
     RepoTopicBatch, SdkError, SearchCorpusBatch, SearchScopeKey, SearchScopeSurface,
     StructuralBatch,
 };
-use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd::app::SearchdConfig;
+use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd_runtime::build_runtime;
 
 use crate::frontdoor_scenarios::{
-    SdkFrontdoorExpectation, SdkFrontdoorSurface, SDK_FRONTDOOR_SCENARIOS,
+    SDK_FRONTDOOR_SCENARIOS, SdkFrontdoorExpectation, SdkFrontdoorSurface,
 };
 use crate::searchd_binary_process::SearchdBinaryProcess;
 
@@ -3796,8 +3796,8 @@ fn sdk_search_corpus_frontdoor_promotes_composite_generation_identity() -> TestR
 }
 
 #[test]
-fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_query_views(
-) -> TestResult {
+fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_query_views()
+-> TestResult {
     let (_dir, client, shutdown, join) =
         start_sdk_frontdoor_runtime("sdk-frontdoor-tombstone-only")?;
 
@@ -4015,8 +4015,8 @@ fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() 
 }
 
 #[test]
-fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_composite_corpus(
-) -> TestResult {
+fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_composite_corpus()
+-> TestResult {
     let complex_timeout = Duration::from_secs(30);
     let dir = tempfile::tempdir()?;
     let state_root = dir.path().to_path_buf();

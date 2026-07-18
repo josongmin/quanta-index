@@ -12,8 +12,8 @@ mod searchd_binary_process;
 
 use std::error::Error;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -24,8 +24,8 @@ use quanta_index_sdk::{
     RepoRelativePath, RevisionId, SdkError, SearchCorpusBatch, SearchCorpusGenerationIdentityV1,
     SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
 };
-use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd::app::SearchdConfig;
+use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd_runtime::build_runtime;
 
 use crate::searchd_binary_process::SearchdBinaryProcess;

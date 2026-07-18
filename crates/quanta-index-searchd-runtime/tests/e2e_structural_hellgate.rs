@@ -6,8 +6,10 @@ use quanta_index_contract::lex::{
     SymbolRecord, SymbolRelationship, SymbolSpan, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
-    SearchScopeKey, SearchScopeSurface, StructuralIngestBatch, StructuralReplaceScope,
+    BatchIngestMode, CapabilityStatusV1, ChunkId, ChunkRecord, OwnerDocKind,
+    SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchScopeKey, SearchScopeSurface,
+    SemanticCorpusKindV1, SemanticSourceRecordV1, SemanticSourceReplaceScopeV1,
+    SemanticSourceScopeKeyV1, SourceRoleV1, StructuralIngestBatch, StructuralReplaceScope,
     StructuralTreeRecord, SymbolId, TextQuerySyntax,
 };
 use quanta_index_searchd_harness as e2e_harness;
@@ -23,6 +25,47 @@ fn scope_key(path: &str) -> SearchScopeKey {
         doc_surface: SearchScopeSurface::Chunk,
         repo_relative_path: quanta_index_contract::RepoRelativePath::new(path),
     }
+}
+
+fn semantic_source_scopes(chunks: &[ChunkRecord]) -> Vec<SemanticSourceReplaceScopeV1> {
+    chunks
+        .iter()
+        .map(|chunk| {
+            let owner_id = chunk.chunk_id.as_str().to_string();
+            SemanticSourceReplaceScopeV1 {
+                scope: SemanticSourceScopeKeyV1 {
+                    corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
+                    owner_kind: OwnerDocKind::Chunk,
+                    owner_id: owner_id.clone(),
+                },
+                scope_digest: format!("structural-hellgate:semantic:{owner_id}"),
+                sources: vec![SemanticSourceRecordV1 {
+                    record_id: owner_id.clone(),
+                    corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
+                    owner_kind: OwnerDocKind::Chunk,
+                    owner_id: owner_id.clone(),
+                    source_doc_id: owner_id.clone(),
+                    parent_owner_id: Some(owner_id.clone()),
+                    repo_relative_path: chunk.repo_relative_path.clone(),
+                    language: Some(chunk.language.as_str().to_string()),
+                    package: None,
+                    symbol_kind: None,
+                    visibility: None,
+                    source_role: SourceRoleV1::RawFallbackText,
+                    generated: false,
+                    capability_status: CapabilityStatusV1::Degraded,
+                    raw_fallback_reason: Some(
+                        quanta_index_contract::RawFallbackReasonV1::IntentNotRecoverableFromStructure,
+                    ),
+                    authority_digest: "structural-hellgate:source:v1".to_string(),
+                    render_policy_digest: "structural-hellgate:source:v1".to_string(),
+                    card_schema_version: 0,
+                    text: chunk.text.to_string(),
+                }],
+                cluster_memberships: Vec::new(),
+            }
+        })
+        .collect()
 }
 
 fn function_tree(content: &str, identifier: &str) -> AnyResult<ParseTreeRecord> {
@@ -166,7 +209,7 @@ fn boot_symbol_projection_fixture() -> AnyResult<E2eRuntime> {
             symbols: vec![symbol],
         }],
         tombstone_scopes: Vec::new(),
-        semantic_replace_scopes: Vec::new(),
+        semantic_replace_scopes: semantic_source_scopes(&[chunk_a.clone(), chunk_b.clone()]),
         semantic_tombstone_scopes: Vec::new(),
         seal: false,
     })?;
