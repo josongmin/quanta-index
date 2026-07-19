@@ -774,8 +774,7 @@ impl DirectRuntimeMetadataMaterializer {
 }
 
 fn dirty_publish_receipt_v1(batch: &DirtyIngestBatch) -> BatchPublishReceipt {
-    let mut receipt =
-        BatchPublishReceipt::empty_for(batch.generation, batch.batch_digest.clone());
+    let mut receipt = BatchPublishReceipt::empty_for(batch.generation, batch.batch_digest.clone());
     for entry in &batch.entries {
         match entry {
             DirtyMutation::Upsert(_) => receipt.accept_replace_scope(),
@@ -1498,12 +1497,14 @@ mod tests {
             generation: ManifestGeneration::new(9),
             overlay_epoch_ms: 123,
             batch_digest: "batch:dirty".to_string(),
-            entries: vec![DirtyMutation::Upsert(quanta_index_contract::lex::DirtyRecord {
-                wire_version: 1,
-                doc_id: ChunkId::new("chunk-1"),
-                applied_at_ms: 123,
-                payload_hash: [7; 32],
-            })],
+            entries: vec![DirtyMutation::Upsert(
+                quanta_index_contract::lex::DirtyRecord {
+                    wire_version: 1,
+                    doc_id: ChunkId::new("chunk-1"),
+                    applied_at_ms: 123,
+                    payload_hash: [7; 32],
+                },
+            )],
         }
     }
 

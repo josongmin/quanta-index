@@ -202,6 +202,46 @@ fn batch(raw_generation: u64, digest: &str) -> Result<SearchCorpusBatch, Box<dyn
     ))
 }
 
+fn batch_for(
+    repo_id: &str,
+    revision_id: &str,
+    raw_generation: u64,
+    digest: &str,
+) -> Result<SearchCorpusBatch, Box<dyn Error>> {
+    let path = format!("src/{repo_id}_generation_{raw_generation}.rs");
+    let text = format!("fn generation_{raw_generation}() {{}}");
+    let end_byte = u32::try_from(text.len())?;
+    let language = LanguageCode::new("rust")?;
+    Ok(SearchCorpusBatch::replace_generation(
+        RepoId::new(repo_id),
+        RevisionId::new(revision_id),
+        generation(raw_generation),
+        digest,
+        format!("batch:composite-restart:{repo_id}:{raw_generation}"),
+    )
+    .replace_scope(
+        SearchScopeKey {
+            doc_surface: SearchScopeSurface::File,
+            repo_relative_path: RepoRelativePath::new(path.clone()),
+        },
+        format!("scope:composite-restart:{raw_generation}"),
+        vec![ChunkRecord {
+            chunk_id: ChunkId::new(format!("chunk-generation-{raw_generation}")),
+            repo_relative_path: RepoRelativePath::new(path),
+            language,
+            start_byte: 0,
+            end_byte,
+            start_line: 1,
+            end_line: 1,
+            text: text.into_boxed_str(),
+            structural: None,
+            parent_chunk_id: None,
+            source_repo_id: None,
+        }],
+        Vec::new(),
+    ))
+}
+
 fn publish_two_generations(client: &QuantaIndex) -> Result<(), Box<dyn Error>> {
     let first = client
         .search_corpus()
@@ -245,17 +285,26 @@ fn rollback_g2_to_g1(client: &QuantaIndex) -> Result<(), SdkError> {
 }
 
 fn composite_identity(raw_generation: u64, digest: &str) -> SearchCorpusGenerationIdentityV1 {
+    composite_identity_for(REPO, REVISION, raw_generation, digest)
+}
+
+fn composite_identity_for(
+    repo_id: &str,
+    revision_id: &str,
+    raw_generation: u64,
+    digest: &str,
+) -> SearchCorpusGenerationIdentityV1 {
     SearchCorpusGenerationIdentityV1 {
         lexical: quanta_index_sdk::GenerationSnapshot {
-            repo_id: repo(),
-            revision_id: revision(),
+            repo_id: RepoId::new(repo_id),
+            revision_id: RevisionId::new(revision_id),
             track: SearchPlaneTrackKind::Lexical,
             manifest_generation: generation(raw_generation),
             manifest_digest: digest.to_string(),
         },
         semantic: quanta_index_sdk::GenerationSnapshot {
-            repo_id: repo(),
-            revision_id: revision(),
+            repo_id: RepoId::new(repo_id),
+            revision_id: RevisionId::new(revision_id),
             track: SearchPlaneTrackKind::Semantic,
             manifest_generation: generation(raw_generation),
             manifest_digest: digest.to_string(),
@@ -264,15 +313,48 @@ fn composite_identity(raw_generation: u64, digest: &str) -> SearchCorpusGenerati
 }
 
 fn current_composite(client: &QuantaIndex) -> Result<SearchCorpusGenerationIdentityV1, SdkError> {
-    let lexical =
-        client
-            .generations()
-            .current(repo(), revision(), SearchPlaneTrackKind::Lexical)?;
-    let semantic =
-        client
-            .generations()
-            .current(repo(), revision(), SearchPlaneTrackKind::Semantic)?;
+    current_composite_for(client, REPO, REVISION)
+}
+
+fn current_composite_for(
+    client: &QuantaIndex,
+    repo_id: &str,
+    revision_id: &str,
+) -> Result<SearchCorpusGenerationIdentityV1, SdkError> {
+    let lexical = client.generations().current(
+        RepoId::new(repo_id),
+        RevisionId::new(revision_id),
+        SearchPlaneTrackKind::Lexical,
+    )?;
+    let semantic = client.generations().current(
+        RepoId::new(repo_id),
+        RevisionId::new(revision_id),
+        SearchPlaneTrackKind::Semantic,
+    )?;
     Ok(SearchCorpusGenerationIdentityV1 { lexical, semantic })
+}
+
+fn publish_and_activate_for(
+    client: &QuantaIndex,
+    repo_id: &str,
+    revision_id: &str,
+    raw_generation: u64,
+    digest: &str,
+    expected_active: Option<SearchCorpusGenerationIdentityV1>,
+) -> Result<SearchCorpusGenerationIdentityV1, Box<dyn Error>> {
+    let (_publish, activation) = client.search_corpus().publish_and_activate(
+        &batch_for(repo_id, revision_id, raw_generation, digest)?,
+        expected_active,
+    )?;
+    let expected = composite_identity_for(repo_id, revision_id, raw_generation, digest);
+    if activation.active != expected {
+        return Err(format!(
+            "publish-and-activate selected a foreign composite identity: expected={expected:?} observed={:?}",
+            activation.active
+        )
+        .into());
+    }
+    Ok(activation.active)
 }
 
 #[test]
@@ -435,6 +517,117 @@ fn real_child_process_restart_preserves_and_rolls_back_composite_generation_v1()
     if current_composite(&third_client)? != composite_identity(G1, G1_DIGEST) {
         return Err(
             "second child process restart did not preserve rolled-back G1 authority".into(),
+        );
+    }
+    drop(third_client);
+    third_process.stop()
+}
+
+#[test]
+fn real_child_process_cross_repo_restart_retains_and_rolls_back_each_composite_v1() -> TestResult {
+    const REPO_B: &str = "repo-composite-restart-b";
+    const REVISION_B: &str = "revision-composite-restart-b";
+    const A0_DIGEST: &str = "manifest:cross-repo:a:g0";
+    const A1_DIGEST: &str = "manifest:cross-repo:a:g1";
+    const A2_DIGEST: &str = "manifest:cross-repo:a:g2";
+    const B0_DIGEST: &str = "manifest:cross-repo:b:g0";
+    const B1_DIGEST: &str = "manifest:cross-repo:b:g1";
+    const B2_DIGEST: &str = "manifest:cross-repo:b:g2";
+
+    let directory = tempfile::tempdir()?;
+    let first_process =
+        SearchdBinaryProcess::start_with_history_max_generations(directory.path(), 2)?;
+    let first_client = first_process.connect()?;
+
+    let a0 = publish_and_activate_for(&first_client, REPO, REVISION, G0, A0_DIGEST, None)?;
+    let b0 = publish_and_activate_for(&first_client, REPO_B, REVISION_B, G0, B0_DIGEST, None)?;
+    let a1 = publish_and_activate_for(&first_client, REPO, REVISION, G1, A1_DIGEST, Some(a0))?;
+    let b1 = publish_and_activate_for(&first_client, REPO_B, REVISION_B, G1, B1_DIGEST, Some(b0))?;
+    let a2 = publish_and_activate_for(
+        &first_client,
+        REPO,
+        REVISION,
+        G2,
+        A2_DIGEST,
+        Some(a1.clone()),
+    )?;
+    let b2 = publish_and_activate_for(
+        &first_client,
+        REPO_B,
+        REVISION_B,
+        G2,
+        B2_DIGEST,
+        Some(b1.clone()),
+    )?;
+
+    if current_composite_for(&first_client, REPO, REVISION)? != a2
+        || current_composite_for(&first_client, REPO_B, REVISION_B)? != b2
+    {
+        return Err("cross-repo setup did not preserve two independent active composites".into());
+    }
+    let rejected = SearchdBinaryProcess::require_start_failure(directory.path())?;
+    let rejection_text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&rejected.stdout),
+        String::from_utf8_lossy(&rejected.stderr)
+    );
+    if rejected.status.success() || !rejection_text.contains(ERR_STATE_ROOT_IN_USE) {
+        return Err(format!(
+            "second child did not reject the live cross-repo state root with {ERR_STATE_ROOT_IN_USE}: {rejection_text}"
+        )
+        .into());
+    }
+    drop(first_client);
+    first_process.stop()?;
+
+    let second_process =
+        SearchdBinaryProcess::start_with_history_max_generations(directory.path(), 2)?;
+    let second_client = second_process.connect()?;
+    if current_composite_for(&second_client, REPO, REVISION)? != a2
+        || current_composite_for(&second_client, REPO_B, REVISION_B)? != b2
+    {
+        return Err("restart aliased or lost one repo's active composite".into());
+    }
+
+    let a_rollback = second_client.generations().rollback(
+        SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+            expected_active: a2.clone(),
+            target: a1.clone(),
+        },
+    )?;
+    if a_rollback.active != a1 || a_rollback.previous_sealed_active != a2 {
+        return Err("repo A rollback ack did not bind the exact CAS transition".into());
+    }
+    if current_composite_for(&second_client, REPO, REVISION)? != a1
+        || current_composite_for(&second_client, REPO_B, REVISION_B)? != b2
+    {
+        return Err("repo A rollback changed repo B or failed to select retained A1".into());
+    }
+    let b_rollback = second_client.generations().rollback(
+        SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+            expected_active: b2.clone(),
+            target: b1.clone(),
+        },
+    )?;
+    if b_rollback.active != b1 || b_rollback.previous_sealed_active != b2 {
+        return Err("repo B rollback ack did not bind the exact CAS transition".into());
+    }
+    if current_composite_for(&second_client, REPO, REVISION)? != a1
+        || current_composite_for(&second_client, REPO_B, REVISION_B)? != b1
+    {
+        return Err("repo B rollback changed repo A or failed to select retained B1".into());
+    }
+    drop(second_client);
+    second_process.stop()?;
+
+    let third_process =
+        SearchdBinaryProcess::start_with_history_max_generations(directory.path(), 2)?;
+    let third_client = third_process.connect()?;
+    if current_composite_for(&third_client, REPO, REVISION)? != a1
+        || current_composite_for(&third_client, REPO_B, REVISION_B)? != b1
+    {
+        return Err(
+            "second restart did not preserve both independently rolled-back composites".into(),
         );
     }
     drop(third_client);

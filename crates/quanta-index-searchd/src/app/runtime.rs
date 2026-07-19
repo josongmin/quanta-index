@@ -42,12 +42,12 @@ use quanta_index_lq_structural::{
     compile_authoritative_pattern,
 };
 use quanta_index_search_plane::{
-    ActivationCatalog, AuxiliaryAuthorityStore, BoundedQueryObsStore, DirectHistoryMaterializer,
-    DirectRuntimeMetadataMaterializer, DirectSearchCorpusMaterializer, DirectSemanticMaterializer,
-    DirectStructuralMaterializer, HashingQueryTextEmbedder, HistoryIngestPort, Ledger,
-    QueryObsSink, QueryTextEmbedderPort, RuntimeMetadataIngestPort,
-    SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusMaterializerParts, SearchPlaneControlDispatcher,
-    SearchPlaneDispatcher, SearchPlaneIngestDispatcher, StructuralIngestPort,
+    BoundedQueryObsStore, DirectHistoryMaterializer, DirectRuntimeMetadataMaterializer,
+    DirectSearchCorpusMaterializer, DirectSemanticMaterializer, DirectStructuralMaterializer,
+    HashingQueryTextEmbedder, HistoryIngestPort, Ledger, QueryObsSink, QueryTextEmbedderPort,
+    RuntimeMetadataIngestPort, SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusLifecycleOwner,
+    SearchCorpusMaterializerParts, SearchPlaneControlDispatcher, SearchPlaneDispatcher,
+    SearchPlaneIngestDispatcher, StructuralIngestPort,
 };
 use regex::Regex;
 
@@ -82,8 +82,7 @@ pub struct SearchdRuntimeParts {
     pub repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync>,
     pub repo_map_bundle_ingest_port: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
     pub repo_map_generation_activate_port: Arc<dyn RepoMapGenerationActivatePort + Send + Sync>,
-    pub activation_catalog: Arc<ActivationCatalog>,
-    pub aux_authority_store: Arc<AuxiliaryAuthorityStore>,
+    pub search_corpus_lifecycle: Arc<SearchCorpusLifecycleOwner>,
     pub legacy_semantic_journal_store: Arc<LegacySemanticJournalStore>,
 }
 
@@ -95,12 +94,14 @@ pub struct SearchdRuntimeParts {
 #[derive(Debug)]
 pub struct StateRootLease {
     _file: File,
+    state_root_identity_v1: PathBuf,
 }
 
 impl StateRootLease {
     pub fn acquire(state_root: &Path) -> Result<Self, CoreError> {
         ensure_durable_state_root_v1(state_root)?;
-        let path = state_root.join(".searchd-state-root.lock");
+        let state_root_identity_v1 = canonical_state_root_identity_v1(state_root)?;
+        let path = state_root_identity_v1.join(".searchd-state-root.lock");
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -114,7 +115,10 @@ impl StateRootLease {
                 ))
             })?;
         match file.try_lock_exclusive() {
-            Ok(()) => Ok(Self { _file: file }),
+            Ok(()) => Ok(Self {
+                _file: file,
+                state_root_identity_v1,
+            }),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Err(CoreError::Typed {
                 code: "STATE_ROOT_IN_USE".to_string(),
                 message: format!(
@@ -128,6 +132,32 @@ impl StateRootLease {
             ))),
         }
     }
+
+    pub fn require_state_root_v1(&self, state_root: &Path) -> Result<(), CoreError> {
+        let observed = canonical_state_root_identity_v1(state_root)?;
+        if observed == self.state_root_identity_v1 {
+            return Ok(());
+        }
+        Err(CoreError::InvalidContract(format!(
+            "searchd state-root lease: identity mismatch: lease={} requested={}",
+            self.state_root_identity_v1.display(),
+            observed.display(),
+        )))
+    }
+
+    #[must_use]
+    pub fn state_root_identity_v1(&self) -> &Path {
+        &self.state_root_identity_v1
+    }
+}
+
+fn canonical_state_root_identity_v1(state_root: &Path) -> Result<PathBuf, CoreError> {
+    fs::canonicalize(state_root).map_err(|error| {
+        CoreError::Storage(format!(
+            "searchd state-root lease: resolve state-root identity {}: {error}",
+            state_root.display(),
+        ))
+    })
 }
 
 fn ensure_durable_state_root_v1(state_root: &Path) -> Result<(), CoreError> {
@@ -670,6 +700,7 @@ pub struct SearchdRuntime {
     pub repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync>,
     pub query_obs_store: Arc<BoundedQueryObsStore>,
     pub semantic_boot: semantic_boot::SemanticBootReport,
+    _search_corpus_lifecycle: Arc<SearchCorpusLifecycleOwner>,
     // Rust drops fields in declaration order. Keep the state-root lease last
     // so every adapter, server, and authority handle is gone before ownership
     // of the shared root is released.
@@ -699,17 +730,25 @@ impl SearchdRuntime {
             repo_map_query_port,
             repo_map_bundle_ingest_port,
             repo_map_generation_activate_port,
-            activation_catalog,
-            aux_authority_store,
+            search_corpus_lifecycle,
             legacy_semantic_journal_store,
         } = parts;
+        state_root_lease
+            .require_state_root_v1(config.state_root())
+            .map_err(anyhow::Error::from)?;
+        search_corpus_lifecycle
+            .require_state_root_v1(config.state_root())
+            .map_err(anyhow::Error::from)?;
+        let leased_state_root = state_root_lease.state_root_identity_v1().to_path_buf();
+        let activation_catalog = search_corpus_lifecycle.activation_catalog();
+        let aux_authority_store = search_corpus_lifecycle.authority_store();
         let ledger = Arc::new(RwLock::new(Ledger::new()));
         bootstrap_persisted_lexical_state(
             &ledger,
             lexical_generation_scanner.as_ref(),
             lexical_generation_validator.as_ref(),
         )?;
-        let semantic_root = quanta_index_semantic::semantic_state_root(config.state_root());
+        let semantic_root = quanta_index_semantic::semantic_state_root(&leased_state_root);
         let migration_start = std::time::Instant::now();
         let migration = semantic_boot::migrate_legacy_semantic_journal(
             legacy_semantic_journal_store.as_ref(),
@@ -727,6 +766,12 @@ impl SearchdRuntime {
             seed,
             seed_micros: seed_start.elapsed().as_micros(),
         };
+        search_corpus_lifecycle
+            .validate_rehydrated_active_generations_v1(
+                lexical_generation_validator.as_ref(),
+                semantic_generation_validator.as_ref(),
+            )
+            .map_err(anyhow::Error::from)?;
         {
             let mut guard = ledger.write().map_err(|err| {
                 anyhow::anyhow!("ledger poisoned during auxiliary authority bootstrap: {err}")
@@ -736,7 +781,7 @@ impl SearchdRuntime {
                 .map_err(anyhow::Error::from)?;
         }
         let (query_text_embedder, corpus_embedder) =
-            build_semantic_embedders(config.semantic_embedder_profile(), config.state_root())
+            build_semantic_embedders(config.semantic_embedder_profile(), &leased_state_root)
                 .map_err(anyhow::Error::from)?;
         let direct_sem_ingest_port: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
             DirectSemanticMaterializer::new(Arc::clone(&sem_build_port), Arc::clone(&ledger)),
@@ -843,6 +888,7 @@ impl SearchdRuntime {
             repo_map_query_port,
             query_obs_store,
             semantic_boot: boot_report,
+            _search_corpus_lifecycle: search_corpus_lifecycle,
             _state_root_lease: state_root_lease,
         })
     }
@@ -1296,6 +1342,20 @@ mod tests {
 
         assert!(format!("{error:?}").contains("injected parent sync failure"));
         assert!(!state_root.join(".searchd-state-root.lock").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn state_root_lease_rejects_a_foreign_runtime_root_v1() -> TestRes {
+        let owned_root = tempfile::tempdir()?;
+        let foreign_root = tempfile::tempdir()?;
+        let lease = super::StateRootLease::acquire(owned_root.path())?;
+
+        let rejected = lease.require_state_root_v1(foreign_root.path());
+        let Err(quanta_index_core::CoreError::InvalidContract(message)) = rejected else {
+            return Err("state-root lease accepted a foreign runtime root".into());
+        };
+        assert!(message.contains("identity mismatch"));
         Ok(())
     }
 }

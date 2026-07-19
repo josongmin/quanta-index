@@ -8,14 +8,15 @@ use std::sync::{Arc, RwLock};
 
 use quanta_index_contract::{
     CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
-    ManifestGeneration, RepoMapActivateGenerationRequest, RepoMapMutationAck,
-    SearchCorpusGenerationIdentityV1, SearchPlaneActivateSearchCorpusGenerationCasRequest,
-    SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIpcError,
+    RepoMapActivateGenerationRequest, RepoMapMutationAck, SearchCorpusGenerationIdentityV1,
+    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
+    SearchPlaneControlIpcResponse, SearchPlaneIpcError,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneSearchCorpusActivationCasAck,
     SearchPlaneSearchCorpusRollbackCasAck, TrackReadinessRecord,
 };
 use quanta_index_core::{CoreError, GenerationIdentityValidatePort, RepoMapGenerationActivatePort};
 
+use crate::search_corpus_lifecycle::SearchCorpusLifecycleService;
 use crate::{
     ActivationCatalog, Ledger, PreparedSearchCorpusGenerationV1, SearchCorpusGenerationActivationV1,
 };
@@ -25,8 +26,6 @@ const ERR_NOT_READY: &str = "NOT_READY";
 const ERR_NOT_FOUND: &str = "NOT_FOUND";
 const ERR_NOT_IMPLEMENTED: &str = "NOT_IMPLEMENTED";
 const ERR_INTERNAL: &str = "INTERNAL";
-const ERR_ACTIVATION_TARGET_UNOPENABLE: &str = "ACTIVATION_TARGET_UNOPENABLE";
-const ERR_ROLLBACK_TARGET_UNOPENABLE: &str = "ROLLBACK_TARGET_UNOPENABLE";
 #[cfg(test)]
 const ERR_ROLLBACK_CAS_CONFLICT: &str = crate::readiness::ERR_ROLLBACK_CAS_CONFLICT;
 
@@ -38,9 +37,7 @@ pub struct SearchPlaneControlDispatcher {
     // no longer needs the port.
     repo_map_activate: Arc<dyn RepoMapGenerationActivatePort + Send + Sync>,
     activation_catalog: Arc<ActivationCatalog>,
-    ledger: Arc<RwLock<Ledger>>,
-    lexical_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
-    semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
+    search_corpus_lifecycle: SearchCorpusLifecycleService,
 }
 
 impl SearchPlaneControlDispatcher {
@@ -52,12 +49,17 @@ impl SearchPlaneControlDispatcher {
         lexical_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
         semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
     ) -> Self {
-        Self {
-            repo_map_activate,
-            activation_catalog,
+        let search_corpus_lifecycle = SearchCorpusLifecycleService::new(
+            activation_catalog.lifecycle_coordinator(),
+            Arc::clone(&activation_catalog),
             ledger,
             lexical_generation_validator,
             semantic_generation_validator,
+        );
+        Self {
+            repo_map_activate,
+            activation_catalog,
+            search_corpus_lifecycle,
         }
     }
 
@@ -75,38 +77,11 @@ impl SearchPlaneControlDispatcher {
 
     /// Promote a prepared lexical plus semantic corpus after proving both
     /// sealed identities against the same readiness snapshot.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the readiness guard must remain held until the catalog CAS has durably committed the composite root"
-    )]
     pub fn activate_prepared_search_corpus_generation_v1(
         &self,
         prepared: &PreparedSearchCorpusGenerationV1,
     ) -> Result<SearchCorpusGenerationActivationV1, CoreError> {
-        let guard = self
-            .ledger
-            .read()
-            .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
-        validate_candidate_activation(&guard, prepared.candidate().lexical())?;
-        validate_candidate_activation(&guard, prepared.candidate().semantic())?;
-        guard.validate_historically_sealed_track_identity(
-            prepared.candidate().lexical(),
-            "search-corpus activation",
-        )?;
-        guard.validate_historically_sealed_track_identity(
-            prepared.candidate().semantic(),
-            "search-corpus activation",
-        )?;
-        self.validate_generation_pair_v1(
-            prepared.candidate(),
-            ERR_ACTIVATION_TARGET_UNOPENABLE,
-            "activation",
-        )?;
-        // Readiness only advances after sealing. Holding this guard through
-        // the durable catalog CAS prevents either half of a prepared corpus
-        // from becoming unsealed before the composite root is committed.
-        self.activation_catalog
-            .activate_prepared_search_corpus_generation_v1(prepared)
+        self.search_corpus_lifecycle.activate_prepared_v1(prepared)
     }
 
     fn activate_search_corpus_generation_cas(
@@ -146,39 +121,7 @@ impl SearchPlaneControlDispatcher {
             ))
         })?;
         let target = search_corpus_generation_from_validated_contract(&request.target)?;
-        let guard = self
-            .ledger
-            .read()
-            .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
-        guard.validate_historically_sealed_track_identity(
-            target.lexical(),
-            "search-corpus rollback",
-        )?;
-        guard.validate_historically_sealed_track_identity(
-            target.semantic(),
-            "search-corpus rollback",
-        )?;
-        drop(guard);
-        self.validate_generation_pair_v1(&target, ERR_ROLLBACK_TARGET_UNOPENABLE, "rollback")?;
-        self.activation_catalog.rollback(request)
-    }
-
-    fn validate_generation_pair_v1(
-        &self,
-        candidate: &crate::SearchCorpusGenerationV1,
-        error_code: &str,
-        operation: &str,
-    ) -> Result<(), CoreError> {
-        self.lexical_generation_validator
-            .validate_generation_identity(candidate.lexical())
-            .map_err(|source| {
-                generation_target_unopenable(candidate.lexical(), operation, error_code, &source)
-            })?;
-        self.semantic_generation_validator
-            .validate_generation_identity(candidate.semantic())
-            .map_err(|source| {
-                generation_target_unopenable(candidate.semantic(), operation, error_code, &source)
-            })
+        self.search_corpus_lifecycle.rollback_v1(request, &target)
     }
 
     /// QI-ACT-01: resolve one `(repo, revision, track)` triple to its active
@@ -266,24 +209,6 @@ impl SearchPlaneControlDispatcher {
     }
 }
 
-fn generation_target_unopenable(
-    candidate: &GenerationSnapshot,
-    operation: &str,
-    error_code: &str,
-    source: &CoreError,
-) -> CoreError {
-    CoreError::Typed {
-        code: error_code.to_string(),
-        message: format!(
-            "search-corpus {operation}: target is not physically valid for repo={} revision={} track={:?} generation={}: {source:?}",
-            candidate.repo_id.as_str(),
-            candidate.revision_id.as_str(),
-            candidate.track,
-            candidate.manifest_generation.get(),
-        ),
-    }
-}
-
 fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
     let (code, message) = match err {
         CoreError::InvalidContract(msg) => (ERR_INVALID.to_string(), msg),
@@ -300,31 +225,6 @@ fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
         message,
         repair: None,
     }
-}
-
-fn validate_candidate_activation(
-    guard: &Ledger,
-    candidate: &GenerationSnapshot,
-) -> Result<(), CoreError> {
-    let observed_generation =
-        guard.track_sealed(&candidate.repo_id, &candidate.revision_id, candidate.track);
-    let observed_digest =
-        guard.track_manifest_digest(&candidate.repo_id, &candidate.revision_id, candidate.track);
-    if observed_generation != Some(candidate.manifest_generation)
-        || observed_digest != Some(candidate.manifest_digest.as_str())
-    {
-        return Err(CoreError::NotReady(format!(
-            "activate-generation-cas: candidate is not the currently sealed track identity for repo={} revision={} track={:?}: candidate_generation={} candidate_digest={} observed_generation={:?} observed_digest={:?}",
-            candidate.repo_id.as_str(),
-            candidate.revision_id.as_str(),
-            candidate.track,
-            candidate.manifest_generation.get(),
-            candidate.manifest_digest,
-            observed_generation.map(ManifestGeneration::get),
-            observed_digest,
-        )));
-    }
-    Ok(())
 }
 
 fn search_corpus_generation_from_validated_contract(

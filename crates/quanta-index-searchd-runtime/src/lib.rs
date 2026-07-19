@@ -22,7 +22,7 @@ use quanta_index_core::{
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_repomap::RepoMapGenerationStore;
-use quanta_index_search_plane::{ActivationCatalog, AuxiliaryAuthorityStore};
+use quanta_index_search_plane::SearchCorpusLifecycleOwner;
 use quanta_index_searchd::app::LegacySemanticJournalStore;
 use quanta_index_searchd::app::runtime::{SearchdRuntimeParts, StateRootLease};
 use quanta_index_searchd::{SearchdCommand, SearchdConfig, SearchdRuntime, drive};
@@ -30,10 +30,13 @@ use quanta_index_semantic::SemanticAdapter;
 
 pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     let search_corpus_history_retention = config.search_corpus_history_retention_policy()?;
-    let state_root = config.state_root().to_path_buf();
+    let configured_state_root = config.state_root().to_path_buf();
     // Acquire process ownership before any adapter or authority store opens the
     // shared root. No loser may observe or mutate partially initialized state.
-    let state_root_lease = StateRootLease::acquire(&state_root)?;
+    let state_root_lease = StateRootLease::acquire(&configured_state_root)?;
+    // Every mutable adapter derives from the identity protected by the held
+    // lease, not from a path alias that can be retargeted during composition.
+    let state_root = state_root_lease.state_root_identity_v1().to_path_buf();
     let lex_adapter: Arc<LexicalAdapter> = Arc::new(LexicalAdapter::with_state_root(
         state_root.join("indexes/lexical"),
     ));
@@ -44,9 +47,8 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
         RepoMapGenerationStore::with_persistence_root(state_root.join("repo-map"))
             .map_err(anyhow::Error::from)?,
     );
-    let activation_catalog = Arc::new(ActivationCatalog::open(state_root.join("activations"))?);
-    let aux_authority_store = Arc::new(AuxiliaryAuthorityStore::open(
-        state_root.join("authorities"),
+    let search_corpus_lifecycle = Arc::new(SearchCorpusLifecycleOwner::open(
+        &state_root,
         search_corpus_history_retention,
     )?);
     let legacy_semantic_journal_store = Arc::new(LegacySemanticJournalStore::open(
@@ -106,8 +108,7 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
             repo_map_query_port,
             repo_map_bundle_ingest_port,
             repo_map_generation_activate_port,
-            activation_catalog,
-            aux_authority_store,
+            search_corpus_lifecycle,
             legacy_semantic_journal_store,
         },
     )

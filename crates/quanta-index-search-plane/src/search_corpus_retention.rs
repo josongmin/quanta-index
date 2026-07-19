@@ -94,19 +94,37 @@ impl SearchCorpusHistoryRetentionPolicyV1 {
     ) -> Result<SearchCorpusHistoryRetentionPlanV1, CoreError> {
         items.sort_by(|left, right| right.generation.cmp(&left.generation));
         for pair in items.windows(2) {
-            if pair[0].generation == pair[1].generation {
+            let [newer, older] = pair else {
+                continue;
+            };
+            if newer.generation == older.generation {
                 return Err(CoreError::Storage(format!(
                     "search-corpus history retention: duplicate generation {}",
-                    pair[0].generation
+                    newer.generation
                 )));
             }
         }
 
-        let minimum_rollback_window_bytes =
-            items.iter().take(2).try_fold(0_u64, |total, item| {
+        let mut required_generations: BTreeSet<u64> = items
+            .iter()
+            .filter(|item| item.candidate || item.active)
+            .map(|item| item.generation)
+            .collect();
+        let has_active = items.iter().any(|item| item.active);
+        if has_active {
+            if let Some(newest) = items.first() {
+                let _inserted = required_generations.insert(newest.generation);
+            }
+        } else {
+            required_generations.extend(items.iter().take(2).map(|item| item.generation));
+        }
+        let required_bytes = items
+            .iter()
+            .filter(|item| required_generations.contains(&item.generation))
+            .try_fold(0_u64, |total, item| {
                 total.checked_add(item.encoded_len).ok_or_else(|| {
                     CoreError::Storage(
-                        "search-corpus history retention: encoded byte total overflow".to_string(),
+                        "search-corpus history retention: required byte total overflow".to_string(),
                     )
                 })
             })?;
@@ -121,19 +139,24 @@ impl SearchCorpusHistoryRetentionPolicyV1 {
                 ),
             });
         }
-        if items.len() >= 2 && minimum_rollback_window_bytes > self.max_bytes {
+        if required_generations.len() > self.max_generations || required_bytes > self.max_bytes {
             return Err(CoreError::Typed {
                 code: ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED.to_string(),
                 message: format!(
-                    "search-corpus history retention: newest generation plus predecessor require {minimum_rollback_window_bytes} bytes, exceeding max_bytes={}",
+                    "search-corpus history retention: required active/candidate set needs generations={} bytes={required_bytes}, limits are max_generations={} max_bytes={}",
+                    required_generations.len(),
+                    self.max_generations,
                     self.max_bytes,
                 ),
             });
         }
 
-        let mut retained_generations = BTreeSet::new();
-        let mut retained_bytes = 0_u64;
+        let mut retained_generations = required_generations;
+        let mut retained_bytes = required_bytes;
         for item in &items {
+            if retained_generations.contains(&item.generation) {
+                continue;
+            }
             let next_bytes = retained_bytes
                 .checked_add(item.encoded_len)
                 .ok_or_else(|| {
@@ -147,17 +170,6 @@ impl SearchCorpusHistoryRetentionPolicyV1 {
             let _inserted = retained_generations.insert(item.generation);
             retained_bytes = next_bytes;
         }
-        if let Some(candidate) = items.iter().find(|item| item.candidate)
-            && !retained_generations.contains(&candidate.generation)
-        {
-            return Err(CoreError::Typed {
-                code: ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED.to_string(),
-                message: format!(
-                    "search-corpus history retention: candidate generation {} falls outside configured count/byte window",
-                    candidate.generation
-                ),
-            });
-        }
         Ok(SearchCorpusHistoryRetentionPlanV1 {
             retained_generations,
         })
@@ -169,6 +181,7 @@ pub(crate) struct SearchCorpusHistoryRetentionItemV1 {
     pub(crate) generation: u64,
     pub(crate) encoded_len: u64,
     pub(crate) candidate: bool,
+    pub(crate) active: bool,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -184,6 +197,11 @@ impl SearchCorpusHistoryRetentionPlanV1 {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::panic_in_result_fn,
+        reason = "Result-returning retention tests use assertions as test-failure reporting"
+    )]
+
     use super::{SearchCorpusHistoryRetentionItemV1, SearchCorpusHistoryRetentionPolicyV1};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -253,6 +271,36 @@ mod tests {
             generation,
             encoded_len,
             candidate,
+            active: false,
         }
+    }
+
+    #[test]
+    fn retention_plan_pins_rolled_back_active_generation_v1() -> TestResult {
+        let policy = SearchCorpusHistoryRetentionPolicyV1::new(2, 1024, 8, 8192)?;
+        let plan = policy.plan(vec![
+            SearchCorpusHistoryRetentionItemV1 {
+                generation: 3,
+                encoded_len: 10,
+                candidate: true,
+                active: false,
+            },
+            SearchCorpusHistoryRetentionItemV1 {
+                generation: 2,
+                encoded_len: 10,
+                candidate: false,
+                active: false,
+            },
+            SearchCorpusHistoryRetentionItemV1 {
+                generation: 1,
+                encoded_len: 10,
+                candidate: false,
+                active: true,
+            },
+        ])?;
+        assert!(plan.retains(3));
+        assert!(plan.retains(1));
+        assert!(!plan.retains(2));
+        Ok(())
     }
 }

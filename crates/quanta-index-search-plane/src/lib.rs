@@ -15,6 +15,7 @@ mod lowering;
 mod query_dispatcher;
 mod query_embedder;
 pub mod readiness;
+mod search_corpus_lifecycle;
 mod search_corpus_retention;
 mod semantic_derive;
 
@@ -40,4 +41,5 @@ pub use readiness::{
     PreparedSearchCorpusGenerationV1, SealedSearchCorpusAuthorityStateV1,
     SearchCorpusGenerationActivationV1, SearchCorpusGenerationV1, TrackLedger,
 };
+pub use search_corpus_lifecycle::SearchCorpusLifecycleOwner;
 pub use semantic_derive::SemanticDerivationModeV1;

@@ -21,7 +21,14 @@ pub(super) struct SearchdBinaryProcess {
 
 impl SearchdBinaryProcess {
     pub(super) fn start(state_root: &Path) -> Result<Self, Box<dyn Error>> {
-        let mut child = searchd_command(state_root).spawn()?;
+        Self::start_with_history_max_generations(state_root, 8)
+    }
+
+    pub(super) fn start_with_history_max_generations(
+        state_root: &Path,
+        max_generations: usize,
+    ) -> Result<Self, Box<dyn Error>> {
+        let mut child = searchd_command(state_root, max_generations).spawn()?;
         let sockets = [
             state_root.join("search-plane/query.sock"),
             state_root.join("search-plane/control.sock"),
@@ -80,7 +87,7 @@ impl SearchdBinaryProcess {
         reason = "the shared fixture's lease probe is used only by the composite lifecycle target"
     )]
     pub(super) fn require_start_failure(state_root: &Path) -> Result<Output, Box<dyn Error>> {
-        let mut child = searchd_command(state_root)
+        let mut child = searchd_command(state_root, 8)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
@@ -134,14 +141,17 @@ fn socket_accepts_connection(_path: &Path) -> bool {
     false
 }
 
-fn searchd_command(state_root: &Path) -> Command {
+fn searchd_command(state_root: &Path, max_generations: usize) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd"));
     let _configured = command
         .arg("serve")
         .arg("--state-root")
         .arg(state_root)
         .env("QUANTA_INDEX_EMBEDDER", "hash")
-        .env("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS", "8")
+        .env(
+            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS",
+            max_generations.to_string(),
+        )
         .env(
             "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES",
             (16 * 1024 * 1024).to_string(),
