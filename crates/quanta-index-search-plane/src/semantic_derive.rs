@@ -276,8 +276,11 @@ pub(crate) fn derive_semantic_batch_from_semantic_sources_v1(
                     SEMANTIC_SOURCE_POLICY_DIGEST,
                     Some(SEMANTIC_SOURCE_FALLBACK_VIEW_POLICY_DIGEST),
                 )?;
-                legacy.corpus_policy_digest =
-                    Some(SEMANTIC_SOURCE_FALLBACK_VIEW_POLICY_DIGEST.to_string());
+                // The fallback marker describes how these embeddings were rendered,
+                // not a different generation-wide corpus policy. Keeping the corpus
+                // policy stable lets a later mutation-free seal merge with the
+                // generation contract created by this replacement batch.
+                legacy.corpus_policy_digest = Some(SEMANTIC_SOURCE_POLICY_DIGEST.to_string());
                 Ok(legacy)
             }
             SemanticDerivationModeV1::SemanticSourcesOnly => Err(CoreError::InvalidContract(
@@ -1177,6 +1180,48 @@ mod tests {
                 embedding.view_kind
             )
             .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_derivation_fallback_replacement_and_empty_seal_share_generation_policy_v1()
+    -> TestRes {
+        let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
+        let mut replacement = fixture_search_batch()?;
+        replacement.semantic_replace_scopes.clear();
+        replacement.seal = false;
+        let replacement_derived = derive_semantic_batch_with_mode_v1(
+            &replacement,
+            &embedder,
+            DEFAULT_SEMANTIC_DERIVATION_MODE_V1,
+        )?;
+
+        let mut seal = replacement;
+        seal.replace_scopes.clear();
+        seal.seal = true;
+        let seal_derived = derive_semantic_batch_with_mode_v1(
+            &seal,
+            &embedder,
+            DEFAULT_SEMANTIC_DERIVATION_MODE_V1,
+        )?;
+
+        if replacement_derived.corpus_policy_digest != seal_derived.corpus_policy_digest {
+            return Err(format!(
+                "fallback replacement and empty seal must preserve one generation policy: replacement={:?} seal={:?}",
+                replacement_derived.corpus_policy_digest, seal_derived.corpus_policy_digest
+            )
+            .into());
+        }
+        if replacement_derived
+            .model_contract
+            .view_policy_digest
+            .as_deref()
+            != Some(SEMANTIC_SOURCE_FALLBACK_VIEW_POLICY_DIGEST)
+        {
+            return Err(
+                "fallback replacement must retain its distinct embedding view policy".into(),
+            );
         }
         Ok(())
     }

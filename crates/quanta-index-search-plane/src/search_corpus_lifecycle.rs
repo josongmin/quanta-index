@@ -526,6 +526,30 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn lifecycle_owner_refuses_symlink_activation_authority_root_v1() -> TestResult {
+        use std::os::unix::fs::symlink;
+
+        for root_name in ["activations", "authorities"] {
+            let state_root = tempdir()?;
+            let attacker_root = tempdir()?;
+            let attacker_authority = attacker_root.path().join(root_name);
+            std::fs::create_dir(&attacker_authority)?;
+            symlink(&attacker_authority, state_root.path().join(root_name))?;
+
+            let result = SearchCorpusLifecycleOwner::open(state_root.path(), retention()?);
+            let Err(CoreError::Storage(message)) = result else {
+                return Err(format!(
+                    "lifecycle owner followed a symlink {root_name} authority root"
+                )
+                .into());
+            };
+            assert!(message.contains("durable directory path is a symlink"));
+        }
+        Ok(())
+    }
+
     #[test]
     fn pair_guard_rejects_a_different_pair_even_on_the_same_stripe_v1() -> TestResult {
         let coordinator = SearchCorpusPairMutationCoordinator::shared();

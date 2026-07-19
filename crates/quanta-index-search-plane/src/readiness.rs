@@ -2155,6 +2155,7 @@ impl AuxiliaryAuthorityStore {
         parent_sync: Arc<dyn ParentDirectorySyncPort>,
     ) -> Result<Self, CoreError> {
         let root = root.as_ref();
+        ensure_durable_directory_v1(root, "search-plane authority store", parent_sync.as_ref())?;
         let history_dir = root.join("history");
         let runtime_dir = root.join("runtime");
         let structural_dir = root.join("structural");
@@ -3489,11 +3490,17 @@ impl ActivationCatalog {
                     root.display()
                 ))
             })?;
-            if !file_type.is_file() {
-                continue;
-            }
             let path = entry.path();
             if path == staging_dir {
+                continue;
+            }
+            if !file_type.is_file() {
+                if is_search_corpus_root_path(&path) {
+                    return Err(CoreError::Storage(format!(
+                        "search-plane activation catalog: activation root is not a regular non-symlink file: {}",
+                        path.display()
+                    )));
+                }
                 continue;
             }
             if path.extension().is_none_or(|value| value != "json") {
@@ -3505,7 +3512,7 @@ impl ActivationCatalog {
                     path.display()
                 )));
             }
-            let bytes = fs::read(&path).map_err(|err| {
+            let bytes = read_regular_file_nofollow_v1(&path).map_err(|err| {
                 CoreError::Storage(format!(
                     "search-plane activation catalog: read activation {}: {err}",
                     path.display()
@@ -4065,26 +4072,41 @@ fn ensure_durable_directory_from_boundary_v1(
     if path == boundary {
         return Ok(());
     }
-    if path.exists() {
-        if !path.is_dir() {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(CoreError::Storage(format!(
+                    "{owner}: durable directory path is a symlink: {}",
+                    path.display()
+                )));
+            }
+            if !metadata.is_dir() {
+                return Err(CoreError::Storage(format!(
+                    "{owner}: durable directory path is not a directory: {}",
+                    path.display()
+                )));
+            }
+            let parent = path.parent().ok_or_else(|| {
+                CoreError::Storage(format!(
+                    "{owner}: durable directory has no parent: {}",
+                    path.display()
+                ))
+            })?;
+            ensure_durable_directory_from_boundary_v1(parent, boundary, owner, parent_sync)?;
+            return parent_sync.sync_parent(parent).map_err(|err| {
+                CoreError::Storage(format!(
+                    "{owner}: revalidate durable-directory parent {}: {err}",
+                    parent.display()
+                ))
+            });
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
             return Err(CoreError::Storage(format!(
-                "{owner}: durable directory path is not a directory: {}",
+                "{owner}: inspect durable directory {}: {err}",
                 path.display()
             )));
         }
-        let parent = path.parent().ok_or_else(|| {
-            CoreError::Storage(format!(
-                "{owner}: durable directory has no parent: {}",
-                path.display()
-            ))
-        })?;
-        ensure_durable_directory_from_boundary_v1(parent, boundary, owner, parent_sync)?;
-        return parent_sync.sync_parent(parent).map_err(|err| {
-            CoreError::Storage(format!(
-                "{owner}: revalidate durable-directory parent {}: {err}",
-                parent.display()
-            ))
-        });
     }
     let parent = path.parent().ok_or_else(|| {
         CoreError::Storage(format!(
@@ -5393,6 +5415,31 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn activation_catalog_refuses_symlink_composite_root_v1() -> TestResult {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir()?;
+        let attacker_dir = tempdir()?;
+        let generation = corpus_generation(17, "digest-17")?;
+        let persisted = super::PersistedSearchCorpusGenerationRootV1::from_generation(&generation);
+        let attacker_target = attacker_dir.path().join("attacker-controlled.json");
+        std::fs::write(&attacker_target, serde_json::to_vec_pretty(&persisted)?)?;
+        let activation_path = dir.path().join(super::search_corpus_root_file_name(
+            generation.repo_id(),
+            generation.revision_id(),
+        ));
+        symlink(&attacker_target, &activation_path)?;
+
+        let result = ActivationCatalog::open(dir.path());
+        let Err(CoreError::Storage(message)) = result else {
+            return Err("activation catalog silently ignored a symlink composite root".into());
+        };
+        assert!(message.contains("not a regular non-symlink file"));
+        Ok(())
+    }
+
     #[test]
     fn sealed_search_corpus_history_reaps_max_plus_one_and_preserves_predecessor() -> TestResult {
         let dir = tempdir()?;
@@ -6214,9 +6261,9 @@ mod tests {
         )?);
         let sync = Arc::new(FailAtParentSync {
             calls: AtomicUsize::new(0),
-            // Reopening the five existing authority directories consumes
-            // calls 0..=4, pair-directory durability is call five, and the
-            // immutable record target-parent sync after rename is call six.
+            // Revalidating the authority root plus five owned directories
+            // consumes calls 0..=5. Fail pair-directory durability at call six
+            // so the retry must revalidate that existing directory.
             fail_at: 6,
         });
         let store = AuxiliaryAuthorityStore::open_with_parent_sync(
@@ -6258,10 +6305,10 @@ mod tests {
         )?);
         let sync = Arc::new(FailAtParentSync {
             calls: AtomicUsize::new(0),
-            // Reopening five existing authority directories consumes calls
-            // 0..=4, pair-directory durability is call five, and the
-            // immutable-record target-parent sync after rename is call six.
-            fail_at: 6,
+            // Revalidating the authority root plus five owned directories
+            // consumes calls 0..=5, pair-directory durability is call six,
+            // and target-parent sync after the immutable rename is call seven.
+            fail_at: 7,
         });
         let store = AuxiliaryAuthorityStore::open_with_parent_sync(
             dir.path(),

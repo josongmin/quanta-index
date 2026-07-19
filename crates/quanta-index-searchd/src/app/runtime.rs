@@ -1,7 +1,9 @@
 //! Composed runtime artefacts. Built once per daemon process.
 
 use std::collections::BTreeSet;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
+#[cfg(not(unix))]
+use std::fs::OpenOptions;
 use std::sync::{Arc, RwLock};
 use std::{
     fs,
@@ -102,18 +104,12 @@ impl StateRootLease {
         ensure_durable_state_root_v1(state_root)?;
         let state_root_identity_v1 = canonical_state_root_identity_v1(state_root)?;
         let path = state_root_identity_v1.join(".searchd-state-root.lock");
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .map_err(|error| {
-                CoreError::Storage(format!(
-                    "searchd state-root lease: open {}: {error}",
-                    path.display()
-                ))
-            })?;
+        let file = open_state_root_lock_nofollow_v1(&path).map_err(|error| {
+            CoreError::Storage(format!(
+                "searchd state-root lease: open {}: {error}",
+                path.display()
+            ))
+        })?;
         match file.try_lock_exclusive() {
             Ok(()) => Ok(Self {
                 _file: file,
@@ -149,6 +145,42 @@ impl StateRootLease {
     pub fn state_root_identity_v1(&self) -> &Path {
         &self.state_root_identity_v1
     }
+}
+
+#[cfg(unix)]
+fn open_state_root_lock_nofollow_v1(path: &Path) -> std::io::Result<File> {
+    use rustix::fs::{Mode, OFlags, open};
+
+    let file = open(
+        path,
+        OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::CREATE,
+        Mode::from_raw_mode(0o600),
+    )
+    .map(File::from)
+    .map_err(|error| std::io::Error::from_raw_os_error(error.raw_os_error()))?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other(format!(
+            "state-root lock is not a regular file: {}",
+            path.display()
+        )));
+    }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn open_state_root_lock_nofollow_v1(path: &Path) -> std::io::Result<File> {
+    if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(std::io::Error::other(format!(
+            "state-root lock is a symlink: {}",
+            path.display()
+        )));
+    }
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
 }
 
 fn canonical_state_root_identity_v1(state_root: &Path) -> Result<PathBuf, CoreError> {
@@ -1356,6 +1388,26 @@ mod tests {
             return Err("state-root lease accepted a foreign runtime root".into());
         };
         assert!(message.contains("identity mismatch"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_root_lease_refuses_symlink_lock_file_v1() -> TestRes {
+        use std::os::unix::fs::symlink;
+
+        let owned_root = tempfile::tempdir()?;
+        let attacker_root = tempfile::tempdir()?;
+        let attacker_target = attacker_root.path().join("attacker-lock");
+        std::fs::write(&attacker_target, b"attacker-controlled")?;
+        let lock_path = owned_root.path().join(".searchd-state-root.lock");
+        symlink(&attacker_target, &lock_path)?;
+
+        let result = super::StateRootLease::acquire(owned_root.path());
+        let Err(quanta_index_core::CoreError::Storage(message)) = result else {
+            return Err("state-root lease followed a symlink lock file".into());
+        };
+        assert!(message.contains(".searchd-state-root.lock"));
         Ok(())
     }
 }
