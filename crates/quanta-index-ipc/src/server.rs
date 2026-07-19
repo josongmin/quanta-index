@@ -12,7 +12,7 @@
 
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::OwnedFd;
-use std::os::unix::fs::FileTypeExt;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -132,7 +132,39 @@ impl ResponseEnvelope<quanta_index_contract::SearchPlaneIngestIpcResponse>
 pub struct UdsServer {
     listener: UnixListener,
     socket_path: PathBuf,
+    socket_path_identity: SocketPathIdentity,
     shutdown: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SocketPathIdentity {
+    device: u64,
+    inode: u64,
+}
+
+impl SocketPathIdentity {
+    fn capture(path: &Path) -> std::io::Result<Self> {
+        let metadata = std::fs::symlink_metadata(path)?;
+        if !metadata.file_type().is_socket() {
+            return Err(std::io::Error::other(
+                "bound uds path is no longer a socket",
+            ));
+        }
+        Ok(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+
+    fn still_owns(self, path: &Path) -> std::io::Result<bool> {
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) => Ok(metadata.file_type().is_socket()
+                && metadata.dev() == self.device
+                && metadata.ino() == self.inode),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 impl UdsServer {
@@ -158,10 +190,12 @@ impl UdsServer {
             Err(err) => return Err(IpcError::Io(err)),
         }
         let listener = UnixListener::bind(path).map_err(IpcError::Io)?;
+        let socket_path_identity = SocketPathIdentity::capture(path).map_err(IpcError::Io)?;
         listener.set_nonblocking(true).map_err(IpcError::Io)?;
         Ok(Self {
             listener,
             socket_path: path.to_path_buf(),
+            socket_path_identity,
             shutdown: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -212,14 +246,21 @@ impl UdsServer {
                 Err(err) => return Err(IpcError::Io(err)),
             }
         }
-        drop(std::fs::remove_file(&self.socket_path));
+        self.remove_owned_socket_path().map_err(IpcError::Io)?;
+        Ok(())
+    }
+
+    fn remove_owned_socket_path(&self) -> std::io::Result<()> {
+        if self.socket_path_identity.still_owns(&self.socket_path)? {
+            std::fs::remove_file(&self.socket_path)?;
+        }
         Ok(())
     }
 }
 
 impl Drop for UdsServer {
     fn drop(&mut self) {
-        drop(std::fs::remove_file(&self.socket_path));
+        drop(self.remove_owned_socket_path());
     }
 }
 
@@ -393,6 +434,8 @@ where
         .map_err(|error| classify_client_io_error(error, IpcIoOperation::Write, io_policy))?;
     let response = decode_response::<ResponseEnvelopeT, _>(&mut stream)
         .map_err(|error| classify_client_decode_error(error, IpcIoOperation::Read, io_policy))?;
+    ensure_deadline_remaining(deadline)
+        .map_err(|error| classify_client_io_error(error, IpcIoOperation::Read, io_policy))?;
     Ok(response)
 }
 
@@ -583,7 +626,7 @@ fn classify_client_io_error(
 mod tests {
     use super::{
         ClientIoPolicy, ConnectionCloseReason, IpcDispatcher, IpcError, RequestEnvelope,
-        ResponseEnvelope, connect_before_deadline, connect_requires_completion_wait,
+        ResponseEnvelope, UdsServer, connect_before_deadline, connect_requires_completion_wait,
         create_connect_socket, decode_response, encode_request, handle_connection, send_request,
         wait_for_connect,
     };
@@ -745,6 +788,23 @@ mod tests {
     #[test]
     fn interrupted_connect_enters_completion_wait_contract() {
         assert!(connect_requires_completion_wait(Errno::INTR));
+    }
+
+    #[test]
+    fn dropping_superseded_server_does_not_unlink_replacement_socket() -> TestRes {
+        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let socket_path = dir.path().join("replacement.sock");
+        let superseded = UdsServer::bind(&socket_path).map_err(|error| error.to_string())?;
+        std::fs::remove_file(&socket_path).map_err(|error| error.to_string())?;
+        let replacement = UdsServer::bind(&socket_path).map_err(|error| error.to_string())?;
+
+        drop(superseded);
+
+        let client = UnixStream::connect(&socket_path)
+            .map_err(|error| format!("replacement socket was unlinked: {error}"))?;
+        drop(client);
+        drop(replacement);
+        Ok(())
     }
 
     #[test]
@@ -1009,6 +1069,66 @@ mod tests {
                 payload,
             }
         }
+    }
+
+    #[derive(Debug)]
+    struct DelayedTestResponseEnvelope;
+
+    impl<'de> Deserialize<'de> for DelayedTestResponseEnvelope {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let _response = TestResponseEnvelope::deserialize(deserializer)?;
+            thread::sleep(Duration::from_millis(60));
+            Ok(Self)
+        }
+    }
+
+    #[test]
+    fn absolute_client_deadline_rejects_response_completed_after_decode() -> TestRes {
+        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let socket_path = dir.path().join("late-decode.sock");
+        let listener = UnixListener::bind(&socket_path).map_err(|error| error.to_string())?;
+        let server = thread::spawn(move || -> TestRes {
+            let (stream, _address) = listener.accept().map_err(|error| error.to_string())?;
+            let reason = handle_connection::<
+                TestRequestEnvelope,
+                u64,
+                TestResponseEnvelope,
+                u64,
+                TestDispatcher,
+            >(stream, &TestDispatcher);
+            if !matches!(reason, ConnectionCloseReason::PeerClosed) {
+                return Err(format!("unexpected close reason: {reason:?}"));
+            }
+            Ok(())
+        });
+
+        let deadline = Instant::now() + Duration::from_millis(30);
+        let policy =
+            ClientIoPolicy::try_with_deadline(deadline).map_err(|error| error.to_string())?;
+        let result = send_request::<_, DelayedTestResponseEnvelope>(
+            &socket_path,
+            &test_request(17, 4),
+            policy,
+        );
+        let server_result = server
+            .join()
+            .map_err(|_panic_payload| "server panicked".to_string())?;
+        server_result?;
+        if !matches!(
+            result,
+            Err(IpcError::Timeout {
+                operation: super::IpcIoOperation::Read,
+                ..
+            })
+        ) {
+            return Err(format!(
+                "response completed after its deadline must be rejected, got {result:?}"
+            ));
+        }
+        Ok(())
     }
 
     struct FailingResponseEnvelope;
