@@ -11,6 +11,7 @@
 //! response envelope.
 
 use std::io::{ErrorKind, Read, Write};
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -24,10 +25,21 @@ use quanta_index_contract::{
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponseEnvelope,
 };
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
-use rustix::io::{Errno, ioctl_fioclex, ioctl_fionbio};
-use rustix::net::{
-    AddressFamily, SocketAddrUnix, SocketType, connect, socket, sockopt::socket_error,
-};
+use rustix::io::Errno;
+#[cfg(not(target_os = "linux"))]
+use rustix::io::{ioctl_fioclex, ioctl_fionbio};
+#[cfg(not(target_os = "linux"))]
+use rustix::net::socket;
+#[cfg(any(
+    target_vendor = "apple",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+))]
+use rustix::net::sockopt::set_socket_nosigpipe;
+use rustix::net::{AddressFamily, SocketAddrUnix, SocketType, connect, sockopt::socket_error};
+#[cfg(target_os = "linux")]
+use rustix::net::{SocketFlags, socket_with};
 
 use crate::codec::{
     IpcError, IpcIoOperation, decode_request, decode_response, encode_request, encode_response,
@@ -387,14 +399,11 @@ where
 fn connect_before_deadline(socket_path: &Path, deadline: Instant) -> std::io::Result<UnixStream> {
     ensure_deadline_remaining(deadline)?;
     let address = SocketAddrUnix::new(socket_path).map_err(std::io::Error::from)?;
-    let socket =
-        socket(AddressFamily::UNIX, SocketType::STREAM, None).map_err(std::io::Error::from)?;
-    ioctl_fioclex(&socket).map_err(std::io::Error::from)?;
-    ioctl_fionbio(&socket, true).map_err(std::io::Error::from)?;
+    let socket = create_connect_socket()?;
 
     match connect(&socket, &address) {
         Ok(()) => {}
-        Err(Errno::INPROGRESS | Errno::ALREADY | Errno::WOULDBLOCK) => {
+        Err(error) if connect_requires_completion_wait(error) => {
             wait_for_connect(&socket, deadline)?;
         }
         Err(error) => return Err(error.into()),
@@ -406,7 +415,58 @@ fn connect_before_deadline(socket_path: &Path, deadline: Instant) -> std::io::Re
     Ok(stream)
 }
 
-fn wait_for_connect(socket: &rustix::fd::OwnedFd, deadline: Instant) -> std::io::Result<()> {
+fn connect_requires_completion_wait(error: Errno) -> bool {
+    matches!(
+        error,
+        Errno::INPROGRESS | Errno::ALREADY | Errno::WOULDBLOCK | Errno::INTR
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn create_connect_socket() -> std::io::Result<OwnedFd> {
+    socket_with(
+        AddressFamily::UNIX,
+        SocketType::STREAM,
+        SocketFlags::CLOEXEC | SocketFlags::NONBLOCK,
+        None,
+    )
+    .map_err(std::io::Error::from)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn create_connect_socket() -> std::io::Result<OwnedFd> {
+    let socket =
+        socket(AddressFamily::UNIX, SocketType::STREAM, None).map_err(std::io::Error::from)?;
+    ioctl_fioclex(&socket).map_err(std::io::Error::from)?;
+    ioctl_fionbio(&socket, true).map_err(std::io::Error::from)?;
+    configure_socket_write_safety(&socket)?;
+    Ok(socket)
+}
+
+#[cfg(any(
+    target_vendor = "apple",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+))]
+fn configure_socket_write_safety(socket: &OwnedFd) -> std::io::Result<()> {
+    set_socket_nosigpipe(socket, true).map_err(std::io::Error::from)
+}
+
+#[cfg(all(
+    not(target_os = "linux"),
+    not(any(
+        target_vendor = "apple",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+    )),
+))]
+const fn configure_socket_write_safety(_socket: &OwnedFd) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn wait_for_connect(socket: &OwnedFd, deadline: Instant) -> std::io::Result<()> {
     let mut poll_fd = [PollFd::new(socket, PollFlags::OUT)];
     loop {
         let remaining = deadline
@@ -493,7 +553,14 @@ fn classify_client_decode_error(
 ) -> IpcError {
     match error {
         IpcError::Io(error) => classify_client_io_error(error, operation, io_policy),
-        other => other,
+        other @ (IpcError::Truncated
+        | IpcError::Oversized(_)
+        | IpcError::EmptyFrame
+        | IpcError::Encode(_)
+        | IpcError::Decode(_)
+        | IpcError::Timeout { .. }
+        | IpcError::InvalidClientIoTimeout
+        | IpcError::ClientIoDeadlineElapsed) => other,
     }
 }
 
@@ -516,12 +583,14 @@ fn classify_client_io_error(
 mod tests {
     use super::{
         ClientIoPolicy, ConnectionCloseReason, IpcDispatcher, IpcError, RequestEnvelope,
-        ResponseEnvelope, decode_response, encode_request, handle_connection, send_request,
+        ResponseEnvelope, connect_before_deadline, connect_requires_completion_wait,
+        create_connect_socket, decode_response, encode_request, handle_connection, send_request,
         wait_for_connect,
     };
+    use rustix::fs::{OFlags, fcntl_getfl};
+    use rustix::io::{Errno, FdFlags, fcntl_getfd};
     use std::io::Write;
     use std::net::Shutdown;
-    use std::os::fd::OwnedFd;
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::sync::{Arc, Barrier, mpsc};
     use std::thread;
@@ -567,7 +636,9 @@ mod tests {
             policy,
         );
         release_tx.send(()).map_err(|error| error.to_string())?;
-        let server_result = server.join().map_err(|_| "server panicked".to_string())?;
+        let server_result = server
+            .join()
+            .map_err(|_panic_payload| "server panicked".to_string())?;
         server_result?;
         if !matches!(
             result,
@@ -621,7 +692,7 @@ mod tests {
             }
         }
 
-        let socket = OwnedFd::from(writer);
+        let socket = std::os::fd::OwnedFd::from(writer);
         let deadline = Instant::now() + Duration::from_millis(25);
         let started = Instant::now();
         let error = match wait_for_connect(&socket, deadline) {
@@ -635,6 +706,45 @@ mod tests {
             return Err("connect readiness exceeded its absolute deadline bound".to_string());
         }
         Ok(())
+    }
+
+    #[test]
+    fn connect_socket_preserves_descriptor_and_blocking_invariants() -> TestRes {
+        let socket = create_connect_socket().map_err(|error| error.to_string())?;
+        let descriptor_flags = fcntl_getfd(&socket).map_err(|error| error.to_string())?;
+        if !descriptor_flags.contains(FdFlags::CLOEXEC) {
+            return Err("connect socket must be close-on-exec".to_string());
+        }
+        let status_flags = fcntl_getfl(&socket).map_err(|error| error.to_string())?;
+        if !status_flags.contains(OFlags::NONBLOCK) {
+            return Err("connect socket must start nonblocking".to_string());
+        }
+        #[cfg(any(
+            target_vendor = "apple",
+            target_os = "dragonfly",
+            target_os = "freebsd",
+            target_os = "netbsd",
+        ))]
+        if !rustix::net::sockopt::socket_nosigpipe(&socket).map_err(|error| error.to_string())? {
+            return Err("connect socket must suppress SIGPIPE".to_string());
+        }
+        drop(socket);
+
+        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let socket_path = dir.path().join("descriptor-state.sock");
+        let _listener = UnixListener::bind(&socket_path).map_err(|error| error.to_string())?;
+        let stream = connect_before_deadline(&socket_path, Instant::now() + Duration::from_secs(1))
+            .map_err(|error| error.to_string())?;
+        let connected_flags = fcntl_getfl(&stream).map_err(|error| error.to_string())?;
+        if connected_flags.contains(OFlags::NONBLOCK) {
+            return Err("connected client stream must return to blocking mode".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn interrupted_connect_enters_completion_wait_contract() {
+        assert!(connect_requires_completion_wait(Errno::INTR));
     }
 
     #[test]
@@ -668,7 +778,9 @@ mod tests {
             policy,
         );
         release_tx.send(()).map_err(|error| error.to_string())?;
-        let server_result = server.join().map_err(|_| "server panicked".to_string())?;
+        let server_result = server
+            .join()
+            .map_err(|_panic_payload| "server panicked".to_string())?;
         server_result?;
         if !matches!(
             result,
@@ -708,7 +820,9 @@ mod tests {
         }
         let result = send_request::<_, TestResponseEnvelope>(&socket, &request, policy);
         release_tx.send(()).map_err(|error| error.to_string())?;
-        let server_result = server.join().map_err(|_| "server panicked".to_string())?;
+        let server_result = server
+            .join()
+            .map_err(|_panic_payload| "server panicked".to_string())?;
         server_result?;
         if !matches!(
             result,
