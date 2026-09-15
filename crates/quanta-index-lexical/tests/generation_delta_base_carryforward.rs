@@ -12,10 +12,21 @@
 //! topics, descriptions, file ownership, file contributors) are published per
 //! generation and create the generation directory as a side effect. If one of
 //! them lands before the lexical delta, the delta must still inherit the base.
+//!
+//! The third test pins the cost side of the same contract (QI-BB-006): a delta
+//! may not rewrite the bytes it did not change. It asserts on *newly written
+//! bytes*, computed by excluding storage the target shares with its base, so it
+//! measures the property rather than the mechanism that achieves it.
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeSet;
 use std::error::Error;
+use std::fmt::Write as _;
+use std::os::unix::fs::MetadataExt as _;
+use std::path::Path;
+
+use sha2::{Digest as _, Sha256};
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
@@ -35,7 +46,15 @@ const ALPHA_PATH: &str = "src/alpha.rs";
 const BETA_PATH: &str = "src/beta.rs";
 const ALPHA_MARKER: &str = "alpha_marker";
 const BETA_MARKER: &str = "beta_marker";
+/// Only present in the base body; a delta that replaces the scope must retire it.
+const BETA_RETIRED_WORD: &str = "retiredsentinel";
+/// Only present in the replacement body.
+const BETA_FRESH_WORD: &str = "freshsentinel";
 const BETA_MARKER_V2: &str = "gamma_replacement";
+/// Untouched scopes in the cost fixture's base. Large enough that inherited
+/// data dominates per-generation bookkeeping, small enough to stay a unit-speed
+/// test.
+const COST_FIXTURE_FILLER_SCOPES: usize = 400;
 
 fn repo() -> RepoId {
     RepoId::new("carryforward-repo")
@@ -78,6 +97,43 @@ fn scope(
 }
 
 fn base_batch(generation: ManifestGeneration) -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
+    base_batch_with_filler(generation, 0)
+}
+
+/// The two named scopes the correctness tests assert on, plus `filler_scopes`
+/// unrelated scopes.
+///
+/// The filler exists so the cost test has a base whose bulk is genuinely
+/// untouched by the delta. With only the two named scopes, per-generation
+/// bookkeeping (`meta.json` alone is ~4 KiB) dominates the byte count and the
+/// ratio says nothing about whether unchanged data was rewritten.
+fn base_batch_with_filler(
+    generation: ManifestGeneration,
+    filler_scopes: usize,
+) -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
+    let mut replace_scopes = vec![
+        scope(ALPHA_PATH, "chunk-alpha", ALPHA_MARKER)?,
+        scope(
+            BETA_PATH,
+            "chunk-beta",
+            &format!("{BETA_MARKER} {BETA_RETIRED_WORD}"),
+        )?,
+    ];
+    for index in 0..filler_scopes {
+        replace_scopes.push(scope(
+            &format!("src/filler/mod_{index:05}.rs"),
+            &format!("chunk-filler-{index:05}"),
+            &format!(
+                "fn filler_{index:05}() {{ let token = quartz_{index:05}; lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor }}"
+            ),
+        )?);
+    }
+    replace_scopes.sort_by(|left, right| {
+        left.scope
+            .repo_relative_path
+            .as_str()
+            .cmp(right.scope.repo_relative_path.as_str())
+    });
     Ok(SearchCorpusIngestBatch {
         repo_id: repo(),
         revision_id: revision(),
@@ -88,10 +144,7 @@ fn base_batch(generation: ManifestGeneration) -> Result<SearchCorpusIngestBatch,
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
         clear_surfaces: Vec::new(),
-        replace_scopes: vec![
-            scope(ALPHA_PATH, "chunk-alpha", ALPHA_MARKER)?,
-            scope(BETA_PATH, "chunk-beta", BETA_MARKER)?,
-        ],
+        replace_scopes,
         tombstone_scopes: Vec::new(),
         semantic_replace_scopes: Vec::new(),
         semantic_tombstone_scopes: Vec::new(),
@@ -114,7 +167,11 @@ fn delta_batch(
         mode: BatchIngestMode::Delta,
         bundle_payload: None,
         clear_surfaces: Vec::new(),
-        replace_scopes: vec![scope(BETA_PATH, "chunk-beta", BETA_MARKER_V2)?],
+        replace_scopes: vec![scope(
+            BETA_PATH,
+            "chunk-beta",
+            &format!("{BETA_MARKER_V2} {BETA_FRESH_WORD}"),
+        )?],
         tombstone_scopes: Vec::new(),
         semantic_replace_scopes: Vec::new(),
         semantic_tombstone_scopes: Vec::new(),
@@ -232,4 +289,260 @@ fn delta_generation_inherits_base_when_a_sidecar_authority_lands_first() -> Test
         "sidecar-first delta",
     )?;
     Ok(())
+}
+
+/// Total bytes of the per-generation text-authority sidecars under `root`.
+fn text_authority_bytes(root: &Path) -> Result<u64, Box<dyn Error>> {
+    let mut total = 0_u64;
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with("text-authority-"))
+        {
+            total = total.saturating_add(entry.metadata()?.len());
+        }
+    }
+    Ok(total)
+}
+
+/// Machine-readable cost evidence; visible with `-- --nocapture`.
+#[expect(
+    clippy::print_stdout,
+    reason = "QI-BB-006 is a cost claim, so the measured byte counts belong in the run log the finding cites"
+)]
+fn emit_evidence(fields: &[(&str, String)]) {
+    let rendered: Vec<String> = fields
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect();
+    println!("QI-BB-006-EVIDENCE {}", rendered.join(" "));
+}
+
+/// Bytes under `root` that do not share storage with `shared_inodes`, plus the
+/// per-entry breakdown so a regression names what was rewritten.
+fn bytes_not_shared_with(
+    root: &Path,
+    shared_inodes: &BTreeSet<u64>,
+) -> Result<(u64, Vec<(String, u64)>), Box<dyn Error>> {
+    let mut fresh = 0_u64;
+    let mut entries: Vec<(String, u64)> = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory)? {
+            let entry = entry?;
+            let metadata = entry.metadata()?;
+            if metadata.is_dir() {
+                pending.push(entry.path());
+                continue;
+            }
+            if metadata.is_file() && !shared_inodes.contains(&metadata.ino()) {
+                fresh = fresh.saturating_add(metadata.len());
+                entries.push((
+                    entry.file_name().to_string_lossy().into_owned(),
+                    metadata.len(),
+                ));
+            }
+        }
+    }
+    entries.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    Ok((fresh, entries))
+}
+
+fn inodes_and_bytes(root: &Path) -> Result<(BTreeSet<u64>, u64), Box<dyn Error>> {
+    let mut inodes = BTreeSet::new();
+    let mut total = 0_u64;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory)? {
+            let entry = entry?;
+            let metadata = entry.metadata()?;
+            if metadata.is_dir() {
+                pending.push(entry.path());
+                continue;
+            }
+            if metadata.is_file() {
+                let _inserted = inodes.insert(metadata.ino());
+                total = total.saturating_add(metadata.len());
+            }
+        }
+    }
+    Ok((inodes, total))
+}
+
+/// QI-BB-006: a one-scope delta must not rewrite the whole base generation.
+///
+/// The assertion is on newly written bytes, not on how the adapter avoids
+/// writing them, so it stays valid if the materialization strategy changes.
+#[test]
+fn delta_generation_does_not_rewrite_unchanged_base_bytes() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let g1 = ManifestGeneration::new(1);
+    let g2 = ManifestGeneration::new(2);
+
+    adapter.build_batch(&base_batch_with_filler(g1, COST_FIXTURE_FILLER_SCOPES)?)?;
+    let base_dir = generation_dir(dir.path(), g1)?;
+    let (base_inodes, base_bytes) = inodes_and_bytes(&base_dir)?;
+
+    adapter.build_batch(&delta_batch(g2, g1)?)?;
+    let delta_dir = generation_dir(dir.path(), g2)?;
+    let (fresh_bytes, fresh_entries) = bytes_not_shared_with(&delta_dir, &base_inodes)?;
+
+    // The base must still be intact and serving.
+    assert_hits(
+        &adapter,
+        g1,
+        ALPHA_MARKER,
+        &["chunk-alpha"],
+        "base after delta",
+    )?;
+    assert_hits(
+        &adapter,
+        g1,
+        BETA_MARKER,
+        &["chunk-beta"],
+        "base after delta",
+    )?;
+    // The delta must be correct.
+    assert_hits(&adapter, g2, ALPHA_MARKER, &["chunk-alpha"], "delta")?;
+    assert_hits(&adapter, g2, BETA_MARKER_V2, &["chunk-beta"], "delta")?;
+
+    let base_sidecar_bytes = text_authority_bytes(&base_dir)?;
+    let breakdown: Vec<String> = fresh_entries
+        .iter()
+        .map(|(name, len)| format!("{name}:{len}"))
+        .collect();
+    emit_evidence(&[
+        ("base_bytes", base_bytes.to_string()),
+        ("base_text_authority_bytes", base_sidecar_bytes.to_string()),
+        ("delta_fresh_bytes", fresh_bytes.to_string()),
+        ("delta_fresh_entries", breakdown.join(",")),
+    ]);
+
+    if base_bytes == 0 {
+        return Err("base generation wrote no bytes; the measurement is vacuous".into());
+    }
+    // Scope: the indexed-data half of QI-BB-006. The per-generation
+    // text-authority sidecars are still rebuilt in full whenever a batch
+    // touches indexed text, so they are excluded here and tracked as the named
+    // remaining half rather than folded into a number that would hide them.
+    let index_fresh_bytes: u64 = fresh_entries
+        .iter()
+        .filter(|(name, _)| !name.starts_with("text-authority-"))
+        .fold(0_u64, |total, (_, len)| total.saturating_add(*len));
+    let index_base_bytes = base_bytes.saturating_sub(base_sidecar_bytes);
+
+    if index_base_bytes == 0 {
+        return Err("base generation wrote no index bytes; the measurement is vacuous".into());
+    }
+    let budget = index_base_bytes.saturating_div(2);
+    if index_fresh_bytes > budget {
+        return Err(format!(
+            "delta generation wrote {index_fresh_bytes} fresh index bytes against a \
+             {index_base_bytes}-byte base index (budget {budget}): unchanged base data was \
+             rewritten rather than inherited. fresh entries: {breakdown:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Resolves the on-disk directory for one generation of the fixture corpus.
+///
+/// The adapter owns its layout, so the test discovers the directory instead of
+/// reconstructing the hash: exactly one repo/revision root exists under the
+/// state root for this fixture.
+fn generation_dir(
+    state_root: &Path,
+    generation: ManifestGeneration,
+) -> Result<std::path::PathBuf, Box<dyn Error>> {
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(state_root)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            roots.push(entry.path());
+        }
+    }
+    let [root] = roots.as_slice() else {
+        return Err(format!(
+            "expected exactly one corpus root under the state root, got {roots:?}"
+        )
+        .into());
+    };
+    let path = root.join(format!("g{}", generation.get()));
+    if !path.is_dir() {
+        return Err(format!("generation directory {} does not exist", path.display()).into());
+    }
+    Ok(path)
+}
+
+/// A delta must not mutate the base generation's text-authority sidecars.
+///
+/// The sidecars are rebuilt whenever a batch touches indexed text. They used to
+/// be written with `File::create`, which truncates in place: once a delta
+/// generation shares storage with its base (materialization inherits unchanged
+/// files), that rebuild rewrote the base's bytes out from under readers still
+/// pinned to it. The sidecars are published by atomic rename now, and this test
+/// is the regression: it compares the base's sidecar identity and size across a
+/// delta that rebuilds them.
+#[test]
+fn delta_generation_does_not_mutate_base_text_authority_sidecars() -> TestResult {
+    const SIDECARS: [&str; 5] = [
+        "text-authority-docs.cbor",
+        "text-authority-trigram.cbor",
+        "text-authority-trigram-folded.cbor",
+        "text-authority-positions.cbor",
+        "text-authority-positions-folded.cbor",
+    ];
+
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let g1 = ManifestGeneration::new(1);
+    let g2 = ManifestGeneration::new(2);
+
+    adapter.build_batch(&base_batch(g1)?)?;
+    let base_dir = generation_dir(dir.path(), g1)?;
+    let before = sidecar_facts(&base_dir, &SIDECARS)?;
+
+    adapter.build_batch(&delta_batch(g2, g1)?)?;
+    let after = sidecar_facts(&base_dir, &SIDECARS)?;
+
+    if before != after {
+        return Err(format!(
+            "delta rebuild mutated the base generation's text-authority sidecars: \
+             before={before:?} after={after:?}"
+        )
+        .into());
+    }
+
+    // The base must still answer from those sidecars exactly as it did.
+    assert_hits(
+        &adapter,
+        g1,
+        BETA_MARKER,
+        &["chunk-beta"],
+        "base after delta rebuild",
+    )?;
+    Ok(())
+}
+
+/// `(inode, length, sha256)` for each named sidecar under `generation_dir`.
+fn sidecar_facts(
+    generation_dir: &Path,
+    names: &[&str],
+) -> Result<Vec<(u64, u64, String)>, Box<dyn Error>> {
+    let mut facts = Vec::with_capacity(names.len());
+    for name in names {
+        let path = generation_dir.join(name);
+        let metadata = std::fs::metadata(&path)?;
+        let digest = Sha256::digest(std::fs::read(&path)?);
+        let mut encoded = String::with_capacity(digest.len().saturating_mul(2));
+        for byte in digest {
+            write!(&mut encoded, "{byte:02x}")?;
+        }
+        facts.push((metadata.ino(), metadata.len(), encoded));
+    }
+    Ok(facts)
 }

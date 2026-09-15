@@ -78,6 +78,10 @@ const LEXICAL_SEALED_IDENTITY_FILE_NAME: &str = "search-corpus-generation-identi
 const LEXICAL_DELTA_BASE_FILE_NAME: &str = "search-corpus-delta-base.cbor";
 /// Tantivy writes this on every commit; its presence proves index content exists.
 const TANTIVY_INDEX_META_FILE_NAME: &str = "meta.json";
+/// Tantivy's managed-file list, rewritten whenever the generation's file set changes.
+const TANTIVY_MANAGED_FILE_NAME: &str = ".managed.json";
+/// Prefix of Tantivy's lock files, which belong to one live writer only.
+const TANTIVY_LOCK_FILE_PREFIX: &str = ".tantivy";
 use quanta_index_lq_positions::{
     DocId as PositionsDocId, NormalizerVersion, Position, PositionsBuilder, PositionsError,
     PositionsErrorCode, PositionsIndex, query_phrase,
@@ -2713,64 +2717,64 @@ fn persist_text_authority_sidecars(
         .finish()
         .map_err(|err| map_positions_error("finalize folded positions sidecar", &err))?;
 
+    // Every sidecar is serialized into memory and then published by atomic
+    // rename. `File::create` would truncate the existing file in place, which
+    // has two consequences this path must not have: a crash mid-write leaves a
+    // half-written sidecar that still looks present, and an inode shared with
+    // another generation (delta materialization links unchanged files) would be
+    // rewritten out from under the generation that still reads it.
+    let mut trigram_bytes = Vec::new();
     trigram
-        .serialize_cbor(
-            std::fs::File::create(text_authority_trigram_path(path)).map_err(|err| {
-                CoreError::Storage(format!(
-                    "lexical: create trigram sidecar {}: {err}",
-                    text_authority_trigram_path(path).display()
-                ))
-            })?,
-        )
-        .map_err(|err| map_trigram_error("write trigram sidecar", &err))?;
+        .serialize_cbor(&mut trigram_bytes)
+        .map_err(|err| map_trigram_error("encode trigram sidecar", &err))?;
+    write_atomic_durable(
+        &text_authority_trigram_path(path),
+        &trigram_bytes,
+        "trigram sidecar",
+    )?;
+
+    let mut trigram_folded_bytes = Vec::new();
     trigram_folded
-        .serialize_cbor(
-            std::fs::File::create(text_authority_trigram_folded_path(path)).map_err(|err| {
-                CoreError::Storage(format!(
-                    "lexical: create folded trigram sidecar {}: {err}",
-                    text_authority_trigram_folded_path(path).display()
-                ))
-            })?,
-        )
-        .map_err(|err| map_trigram_error("write folded trigram sidecar", &err))?;
+        .serialize_cbor(&mut trigram_folded_bytes)
+        .map_err(|err| map_trigram_error("encode folded trigram sidecar", &err))?;
+    write_atomic_durable(
+        &text_authority_trigram_folded_path(path),
+        &trigram_folded_bytes,
+        "folded trigram sidecar",
+    )?;
+
+    let mut positions_bytes = Vec::new();
     positions
-        .serialize_cbor(
-            &mut std::fs::File::create(text_authority_positions_path(path)).map_err(|err| {
-                CoreError::Storage(format!(
-                    "lexical: create positions sidecar {}: {err}",
-                    text_authority_positions_path(path).display()
-                ))
-            })?,
-        )
-        .map_err(|err| map_positions_error("write positions sidecar", &err))?;
+        .serialize_cbor(&mut positions_bytes)
+        .map_err(|err| map_positions_error("encode positions sidecar", &err))?;
+    write_atomic_durable(
+        &text_authority_positions_path(path),
+        &positions_bytes,
+        "positions sidecar",
+    )?;
+
+    let mut positions_folded_bytes = Vec::new();
     positions_folded
-        .serialize_cbor(
-            &mut std::fs::File::create(text_authority_positions_folded_path(path)).map_err(
-                |err| {
-                    CoreError::Storage(format!(
-                        "lexical: create folded positions sidecar {}: {err}",
-                        text_authority_positions_folded_path(path).display()
-                    ))
-                },
-            )?,
-        )
-        .map_err(|err| map_positions_error("write folded positions sidecar", &err))?;
-    ciborium::into_writer(
-        &table,
-        std::fs::File::create(text_authority_doc_table_path(path)).map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: create text authority doc table {}: {err}",
-                text_authority_doc_table_path(path).display()
-            ))
-        })?,
-    )
-    .map_err(|err| {
+        .serialize_cbor(&mut positions_folded_bytes)
+        .map_err(|err| map_positions_error("encode folded positions sidecar", &err))?;
+    write_atomic_durable(
+        &text_authority_positions_folded_path(path),
+        &positions_folded_bytes,
+        "folded positions sidecar",
+    )?;
+
+    let mut table_bytes = Vec::new();
+    ciborium::into_writer(&table, &mut table_bytes).map_err(|err| {
         CoreError::Storage(format!(
-            "lexical: write text authority doc table {}: {err}",
+            "lexical: encode text authority doc table {}: {err}",
             text_authority_doc_table_path(path).display()
         ))
     })?;
-    Ok(())
+    write_atomic_durable(
+        &text_authority_doc_table_path(path),
+        &table_bytes,
+        "text authority doc table",
+    )
 }
 
 fn load_text_authority_sidecars(path: &Path) -> Result<Option<TextAuthorityShard>, CoreError> {
@@ -2928,11 +2932,72 @@ fn lexical_index_content_exists(generation_dir: &Path) -> bool {
     generation_dir.join(TANTIVY_INDEX_META_FILE_NAME).is_file()
 }
 
-/// Copies `src` into `dst` without replacing anything already present.
+/// Whether a generation-directory entry must be a private copy, not a link.
+///
+/// Tantivy rewrites these two under their existing names, so sharing the inode
+/// would let one generation's commit mutate what another generation still
+/// reads. Every other entry is either an immutable segment file or is replaced
+/// by atomic rename (`write_atomic_durable`), both of which leave a hard link
+/// pointing at the bytes it was created for.
+fn is_generation_local_entry(file_name: &str) -> bool {
+    matches!(
+        file_name,
+        TANTIVY_INDEX_META_FILE_NAME | TANTIVY_MANAGED_FILE_NAME
+    )
+}
+
+/// Whether an entry belongs to a live writer and must not be inherited at all.
+fn is_writer_lock_entry(file_name: &str) -> bool {
+    file_name.starts_with(TANTIVY_LOCK_FILE_PREFIX)
+}
+
+/// Materializes one inherited entry: link the immutable ones, copy the rest.
+fn inherit_generation_entry(source: &Path, target: &Path) -> Result<(), CoreError> {
+    let file_name = source
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .ok_or_else(|| {
+            CoreError::Storage(format!(
+                "lexical: base generation entry has no usable name: {}",
+                source.display()
+            ))
+        })?;
+    if is_generation_local_entry(file_name) {
+        let _bytes_copied: u64 = std::fs::copy(source, target).map_err(|err| {
+            CoreError::Storage(format!(
+                "lexical: copy generation-local entry {} -> {}: {err}",
+                source.display(),
+                target.display()
+            ))
+        })?;
+        return Ok(());
+    }
+    // Both paths live under one state root, so they are always on one device.
+    // A failure here is a real storage fault, not a reason to quietly fall back
+    // to a full byte copy and drop the incremental guarantee without saying so.
+    std::fs::hard_link(source, target).map_err(|err| {
+        CoreError::Storage(format!(
+            "lexical: link inherited entry {} -> {}: {err}",
+            source.display(),
+            target.display()
+        ))
+    })
+}
+
+/// Materializes `src` into `dst` without replacing anything already present.
 ///
 /// Delta semantics: an authority this generation published for itself outranks
 /// the base's copy of the same authority, so an existing destination entry
 /// wins. Only entries the target does not have are inherited.
+///
+/// Inherited entries are hard-linked rather than copied, so a delta's write
+/// cost is proportional to what it changes instead of to the size of its base
+/// (QI-BB-006). Tantivy segment files are immutable across commits and the
+/// sidecars are replaced by atomic rename, so a shared inode is only ever read
+/// through, never written through. The two entries Tantivy does rewrite in
+/// place are copied instead — see [`is_generation_local_entry`]. Gate evidence
+/// for the immutability claim lives in
+/// `docs/bugbash/sep-16/adr/G0-L-tantivy-snapshot-reuse.md`.
 fn clone_generation_directory_preserving_existing(src: &Path, dst: &Path) -> Result<(), CoreError> {
     if !src.exists() {
         return Err(CoreError::NotReady(format!(
@@ -2973,13 +3038,10 @@ fn clone_generation_directory_preserving_existing(src: &Path, dst: &Path) -> Res
         if target_path.exists() {
             continue;
         }
-        let _bytes_copied: u64 = std::fs::copy(&entry_path, &target_path).map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: copy {} -> {}: {err}",
-                entry_path.display(),
-                target_path.display()
-            ))
-        })?;
+        if entry.file_name().to_str().is_some_and(is_writer_lock_entry) {
+            continue;
+        }
+        inherit_generation_entry(&entry_path, &target_path)?;
     }
     Ok(())
 }

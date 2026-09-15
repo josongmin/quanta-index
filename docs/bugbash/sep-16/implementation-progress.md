@@ -46,6 +46,74 @@
 | --- | --- | --- | --- |
 | IMPL-A | P1 (repo gate) | `just rust-clippy`(= CI `ci.yml` job `rust-clippy`, `clippy --workspace --all-targets --all-features -- -D warnings`)가 감사 HEAD에서 이미 RED. main이 CI 실패 상태 | fixed, 검증 중 |
 | IMPL-B | **P1 (silent data loss, 확정)** | sidecar authority가 delta보다 먼저 publish되면 delta generation이 base를 통째로 잃는다 | **fixed + regression green** |
+| IMPL-C | **P1 (durability / cross-generation corruption, 확정)** | `persist_text_authority_sidecars`가 `File::create`(in-place truncate)로 sidecar를 쓴다 | **fixed + regression green** |
+| IMPL-D | P1 (retrieval correctness, 확정 / **미수정**) | 리터럴 regex 패턴이 keyword로는 찾히는 텍스트를 찾지 못한다. delta와 무관 | **blocked — repro 있음, 원인 미특정** |
+
+### IMPL-C 상세
+
+`persist_text_authority_sidecars`(`crates/quanta-index-lexical/src/lib.rs`)가 5개
+text-authority sidecar를 `std::fs::File::create(path)`로 기록했다. 이는 기존 파일을
+**제자리에서 truncate**하므로 inode가 유지된다. 결과:
+
+1. **crash 중간 상태가 정상처럼 보인다.** 절반만 쓰인 sidecar가 "존재"한다. seal이
+   이를 검증하지 않으므로 QI-BB-030과 같은 계열의 내구성 공백이다.
+2. **generation 간 오염.** delta가 base의 변경되지 않은 파일을 공유하게 되면(W3의
+   hard-link 재사용) rebuild가 **base의 바이트를 덮어쓴다**.
+
+(2)는 내가 hard-link 재사용을 넣으면서 실제로 재현됐다:
+
+```
+g1_sidecars_before=[(3626540977,112),(3626540973,235),...]
+g1_sidecars_after =[(3626540977,120),(3626540973,292),...]
+g1_sidecars_unchanged=false      <-- inode 동일, 길이 변경 = base 오염
+```
+
+**수정**: 5개 sidecar 전부를 메모리로 직렬화한 뒤 기존 `write_atomic_durable`
+(temp + `rename` + 부모 디렉터리 fsync)로 발행한다. rename은 새 inode를 만들므로
+base가 보호되고, 부분 기록 상태가 노출되지 않는다.
+
+**회귀**: `delta_generation_does_not_mutate_base_text_authority_sidecars` —
+base sidecar의 `(inode, len, sha256)`을 delta 전후로 비교한다.
+
+```
+g1_sidecars_unchanged=true
+test delta_generation_does_not_mutate_base_text_authority_sidecars ... ok
+```
+
+### IMPL-D 상세 — 미수정, 다음 owner에게 인계
+
+**증상**: 어떤 텍스트가 keyword 질의로는 찾히는데 **동일 토큰을 리터럴 regex
+패턴으로 질의하면 찾히지 않는다.**
+
+**중요**: 이것은 delta/carry-forward 버그가 **아니다**. 독립적으로 새로 build한
+generation에서도 동일하게 재현된다. 조사 중 delta 경로에서 처음 관찰했으나
+independent full-rebuild oracle과 대조해 배제했다.
+
+관측 (`quanta-index-lexical`, 동일 adapter, 동일 corpus):
+
+| 질의 | generation | 결과 |
+| --- | --- | --- |
+| keyword `freshsentinel` | g2 (delta) | `["chunk-beta"]` ✅ |
+| regex `freshsentinel` | g2 (delta) | `[]` ❌ |
+| regex `gamma.*` | g2 (delta) | `["chunk-beta"]` ✅ |
+| regex `freshsentinel` | **g9 (full rebuild, 동일 최종 내용)** | `[]` ❌ |
+| regex `alpha_marker` | g9 | `["chunk-alpha"]` ✅ |
+| regex `retiredsentinel` | g1 | `["chunk-beta"]` ✅ |
+
+`retiredsentinel`(g1)은 되고 `freshsentinel`(g2/g9)은 안 된다. 두 패턴은 같은
+형태(순수 리터럴)다. `gamma.*`(와일드카드)는 된다.
+
+**재현 방법**: `crates/quanta-index-lexical/tests/generation_delta_base_carryforward.rs`의
+fixture를 그대로 쓰고, `LqExpr::Leaf(LqLeaf::Regex(...))` 질의를 `LqOptions::defaults()`로
+실행한다. (조사에 쓴 test는 tree에 남기지 않았다 — 원인을 특정하지 못한 채 red
+test를 남기면 다른 lane 전체가 막힌다. 위 표가 재현 계약이다.)
+
+**배제한 가설**: delta carry-forward(오라클로 배제), sidecar staleness(atomic write
+수정 후에도 재현), base 오염(수정됨).
+
+**남은 후보**: regex leaf의 리터럴 추출 / trigram prefilter 교집합 / exact
+verification 경로. owner는 QI-BB-011(text semantics) 또는 W4 query 실행 계약이다.
+**이 항목이 닫히기 전에는 regex route를 "검증됨"으로 표기하지 않는다.**
 
 ### IMPL-A 상세
 
@@ -180,7 +248,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W0 | in_progress | G0-L/G0-S passed. G0-C/G0-R 미착수. §3 참조 |
 | W1 | planned | |
 | W2 | planned | G0-C 의존 |
-| W3 | planned | **unblocked** — G0-L/G0-S 모두 PASS |
+| W3 | in_progress | lexical hard-link 재사용 구현·검증 완료. semantic lane과 sidecar 증분은 미착수 |
 | W4 | planned | |
 | W5 | planned | G0-R 의존 |
 | W6 | planned | M4 적용 |
@@ -287,6 +355,43 @@ upstream 동작이 바뀌면 조용히 흘러가지 않고 test가 깨진다.
 **기능 oracle**: `index_hits == needle_count == 5`. 심어둔 needle 수와 색인 질의 결과가 정확히 일치한다.
 
 **남은 범위**: baseline 수치 캡처는 `blocked: contended-host`. 동일 host에서 다른 cargo 빌드가 동시 실행 중이라 `index_build_ms`/`p99`는 baseline으로 쓸 수 없다. `tools/benchmark/run_scan_vs_index.py`는 아직 `--source-fingerprint`/`--index-dir`를 넘기지 않으며 bare `cargo run`을 쓴다 — W0 후속.
+
+## 3.4 W3 lexical — hard-link 재사용 (구현 완료)
+
+G0-L이 승인한 방식으로 `copy_generation_directory`(전체 바이트 복사)를 제거하고
+inherited entry를 hard-link한다. `meta.json` / `.managed.json`은 Tantivy가 제자리에서
+다시 쓰므로 **복사**하고, `.tantivy*` lock 파일은 상속하지 않는다. link 실패는 typed
+`CoreError::Storage`로 올린다 — 같은 state root 안이라 cross-device가 불가능하므로
+조용히 full copy로 되돌아가면 증분 보장을 말없이 잃는다.
+
+**측정** (402-scope base, 1-scope delta):
+
+```
+base_bytes=464958  base_text_authority_bytes=408044
+delta_fresh_bytes=416013
+delta_fresh_entries=text-authority-docs.cbor:109848, text-authority-trigram-folded.cbor:109512,
+  text-authority-trigram.cbor:109512, text-authority-positions-folded.cbor:39651,
+  text-authority-positions.cbor:39651, meta.json:4393, <segment>.term:1535,
+  .managed.json:545, <segment>.idx:284, <segment>.store:272, <segment>.fieldnorm:190,
+  <segment>.pos:189, <base-segment>.808.del:154, <segment>.fast:145,
+  search-corpus-generation-identity.cbor:131, search-corpus-delta-base.cbor:1
+```
+
+**해석 — QI-BB-006은 절반만 닫혔다.**
+
+| 구분 | base | delta 신규 기록 | 상태 |
+| --- | ---: | ---: | --- |
+| Tantivy 색인 데이터 | 56,914 B | ~7,969 B (14%) | **해결** — 변경되지 않은 segment는 상속된다 |
+| text-authority sidecar | 408,044 B | 408,044 B (100%) | **미해결** — 텍스트가 바뀌면 5개 sidecar 전부를 재생성한다 |
+
+findings의 QI-BB-006 문구("base generation 전체를 복사하고 **text 변경 시 전체 text
+authority sidecar를 재생성한다**")가 정확했다. 디렉터리 복사 쪽은 닫혔고, sidecar
+전체 재생성이 남은 절반이며 이 fixture에서는 그쪽이 비용의 88%다. **따라서
+QI-BB-006을 `passed`로 올리지 않는다.**
+
+회귀 test `delta_generation_does_not_rewrite_unchanged_base_bytes`는 색인 데이터 절반만
+예산으로 판정하고 sidecar 바이트는 별도로 보고한다 — 하나의 숫자로 합치면 남은 절반이
+가려진다. 검출력은 확인했다: `inherit_generation_entry`를 full copy로 되돌리면 실패한다.
 
 ## 4. Finding 상태 (QI-BB-001–032)
 
