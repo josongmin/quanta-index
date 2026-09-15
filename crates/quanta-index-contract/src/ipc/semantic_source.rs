@@ -9,6 +9,7 @@ use serde::{
 use sha2::{Digest as _, Sha256};
 
 use crate::bounded_cluster_members::BoundedClusterMembersV1;
+use crate::canonical_order::{CanonicalOrderBreakV1, first_canonical_order_break_v1};
 use crate::{MAX_CLUSTER_MEMBERSHIP_READ_V1, OwnerDocKind, RepoRelativePath, SymbolId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -777,21 +778,24 @@ impl ClusterMembershipReplaceV1 {
         if self.members.is_empty() {
             return Err("cluster membership members must not be empty");
         }
-        if self.members.len() > MAX_CLUSTER_MEMBERSHIP_READ_V1 as usize {
+        let Ok(member_count) = u32::try_from(self.members.len()) else {
+            return Err("cluster membership members exceed the bounded cardinality");
+        };
+        if member_count > MAX_CLUSTER_MEMBERSHIP_READ_V1 {
             return Err("cluster membership members exceed the bounded cardinality");
         }
         if self.members.iter().any(|member| member.as_str().is_empty()) {
             return Err("cluster membership member identity must not be empty");
         }
-        for pair in self.members.windows(2) {
-            if pair[0] == pair[1] {
-                return Err("cluster membership member identities must be duplicate-free");
+        match first_canonical_order_break_v1(&self.members, |member| member.as_str()) {
+            Some(CanonicalOrderBreakV1::Duplicate) => {
+                Err("cluster membership member identities must be duplicate-free")
             }
-            if pair[0] > pair[1] {
-                return Err("cluster membership member identities must use canonical order");
+            Some(CanonicalOrderBreakV1::OutOfOrder) => {
+                Err("cluster membership member identities must use canonical order")
             }
+            None => Ok(()),
         }
-        Ok(())
     }
 }
 
@@ -806,7 +810,11 @@ pub fn cluster_membership_content_digest_v1(members: &[SymbolId]) -> String {
         hasher.update(bytes);
     }
     let digest = hasher.finalize();
-    let mut encoded = String::with_capacity("sha256:".len() + digest.len() * 2);
+    let mut encoded = String::with_capacity(
+        "sha256:"
+            .len()
+            .saturating_add(digest.len().saturating_mul(2)),
+    );
     encoded.push_str("sha256:");
     for byte in digest {
         let _written = write!(&mut encoded, "{byte:02x}");
@@ -907,7 +915,7 @@ pub struct SemanticSourceReplaceScopeV1 {
     pub scope: SemanticSourceScopeKeyV1,
     pub scope_digest: String,
     pub sources: Vec<SemanticSourceRecordV1>,
-    /// Structured ClusterCard membership sealed with this semantic scope.
+    /// Structured `ClusterCard` membership sealed with this semantic scope.
     /// This is authority data, never a rendered-card parser input.
     pub cluster_memberships: Vec<ClusterMembershipReplaceV1>,
 }

@@ -296,7 +296,8 @@ impl QuantaIndex {
     }
 
     fn from_resolved(resolved: crate::config::ResolvedConnectOptions) -> Self {
-        let _state_root = resolved.state_root;
+        // `state_root` is resolved for config validation only; the client talks
+        // to the daemon over sockets and never touches the state root itself.
         let query_transport = Arc::new(UdsQueryTransport::new(
             resolved.query_socket,
             resolved.io_policy,

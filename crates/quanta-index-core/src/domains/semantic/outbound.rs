@@ -74,7 +74,7 @@ pub struct SemanticSearchHitV1 {
 }
 
 pub trait SemanticSearcher: Send + Sync {
-    /// Read a bounded set of structured ClusterCard memberships from this
+    /// Read a bounded set of structured `ClusterCard` memberships from this
     /// exact sealed generation through one storage operation.
     fn cluster_membership_batch_read(
         &self,

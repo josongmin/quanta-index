@@ -69,6 +69,15 @@ use quanta_index_core::{
 };
 
 const LEXICAL_SEALED_IDENTITY_FILE_NAME: &str = "search-corpus-generation-identity.cbor";
+/// Records which base generation a delta generation actually carried forward.
+///
+/// Directory existence is not proof of carry-forward: the per-generation
+/// authority sidecars each create the generation directory as a side effect,
+/// so a sidecar published before the lexical delta would otherwise make the
+/// base clone look already done. This marker is the authority instead.
+const LEXICAL_DELTA_BASE_FILE_NAME: &str = "search-corpus-delta-base.cbor";
+/// Tantivy writes this on every commit; its presence proves index content exists.
+const TANTIVY_INDEX_META_FILE_NAME: &str = "meta.json";
 use quanta_index_lq_positions::{
     DocId as PositionsDocId, NormalizerVersion, Position, PositionsBuilder, PositionsError,
     PositionsErrorCode, PositionsIndex, query_phrase,
@@ -2870,7 +2879,61 @@ fn load_text_authority_sidecars(path: &Path) -> Result<Option<TextAuthorityShard
     }))
 }
 
-fn copy_generation_directory(src: &Path, dst: &Path) -> Result<(), CoreError> {
+fn lexical_delta_base_path(generation_dir: &Path) -> PathBuf {
+    generation_dir.join(LEXICAL_DELTA_BASE_FILE_NAME)
+}
+
+/// The base generation this directory already carried forward, if any.
+fn read_lexical_delta_base(generation_dir: &Path) -> Result<Option<ManifestGeneration>, CoreError> {
+    let path = lexical_delta_base_path(generation_dir);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(CoreError::Storage(format!(
+                "lexical: read delta base marker {}: {error}",
+                path.display()
+            )));
+        }
+    };
+    let raw: u64 = ciborium::from_reader(bytes.as_slice()).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: decode delta base marker {}: {error}",
+            path.display()
+        ))
+    })?;
+    Ok(Some(ManifestGeneration::new(raw)))
+}
+
+fn persist_lexical_delta_base(
+    generation_dir: &Path,
+    base_generation: ManifestGeneration,
+) -> Result<(), CoreError> {
+    let mut bytes = Vec::new();
+    ciborium::into_writer(&base_generation.get(), &mut bytes).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: encode delta base marker for generation {}: {error}",
+            base_generation.get()
+        ))
+    })?;
+    write_atomic_durable(
+        &lexical_delta_base_path(generation_dir),
+        &bytes,
+        "delta base marker",
+    )
+}
+
+/// Whether this directory already holds a materialized lexical index.
+fn lexical_index_content_exists(generation_dir: &Path) -> bool {
+    generation_dir.join(TANTIVY_INDEX_META_FILE_NAME).is_file()
+}
+
+/// Copies `src` into `dst` without replacing anything already present.
+///
+/// Delta semantics: an authority this generation published for itself outranks
+/// the base's copy of the same authority, so an existing destination entry
+/// wins. Only entries the target does not have are inherited.
+fn clone_generation_directory_preserving_existing(src: &Path, dst: &Path) -> Result<(), CoreError> {
     if !src.exists() {
         return Err(CoreError::NotReady(format!(
             "lexical: base generation missing at {}",
@@ -2904,7 +2967,10 @@ fn copy_generation_directory(src: &Path, dst: &Path) -> Result<(), CoreError> {
             ))
         })?;
         if file_type.is_dir() {
-            copy_generation_directory(&entry_path, &target_path)?;
+            clone_generation_directory_preserving_existing(&entry_path, &target_path)?;
+            continue;
+        }
+        if target_path.exists() {
             continue;
         }
         let _bytes_copied: u64 = std::fs::copy(&entry_path, &target_path).map_err(|err| {
@@ -3040,59 +3106,54 @@ impl LexicalAdapter {
         load_repo_metadata_snapshot(&self.repo_metadata_path(key))
     }
 
+    /// Materializes the base generation this batch declares, exactly once.
+    ///
+    /// The recorded marker is the authority for "already carried forward", not
+    /// directory existence: every per-generation authority sidecar creates the
+    /// generation directory as a side effect, so a sidecar published before the
+    /// lexical delta would otherwise skip the base clone and silently produce a
+    /// generation holding only the delta.
     fn prepare_generation_for_ops(
         &self,
         key: &GenKey,
         ops: &[LexicalChannelOp],
     ) -> Result<(), CoreError> {
-        let target_path = self.index_path(key);
-        if target_path.exists() {
+        let Some(requested_base) = declared_delta_base_generation(ops)? else {
             return Ok(());
-        }
-        for op in ops {
-            let base_generation = match op {
-                LexicalChannelOp::ReplaceLexicalScope(payload) => {
-                    let (_mode, base_generation, _scope) =
-                        decode_replace_scope_payload(&payload.payload)?;
-                    base_generation
-                }
-                LexicalChannelOp::TombstoneLexicalScope(payload) => {
-                    let (_mode, base_generation, _scope) =
-                        decode_tombstone_scope_payload(&payload.payload)?;
-                    base_generation
-                }
-                LexicalChannelOp::ClearLexicalSurface(payload) => payload.base_generation,
-                LexicalChannelOp::FullBundle(_)
-                | LexicalChannelOp::UpsertChunk(_)
-                | LexicalChannelOp::DeleteChunk(_)
-                | LexicalChannelOp::UpsertSymbol(_)
-                | LexicalChannelOp::DeleteSymbol(_)
-                | LexicalChannelOp::Seal(_)
-                | LexicalChannelOp::UpsertCommit(_)
-                | LexicalChannelOp::UpsertRef(_)
-                | LexicalChannelOp::UpsertTag(_)
-                | LexicalChannelOp::DeleteRef(_)
-                | LexicalChannelOp::DeleteTag(_)
-                | LexicalChannelOp::UpsertDirty(_)
-                | LexicalChannelOp::EvictDirty(_)
-                | LexicalChannelOp::UpsertParseTree(_)
-                | LexicalChannelOp::DeleteParseTree(_)
-                | LexicalChannelOp::ReplaceStructuralScope(_)
-                | LexicalChannelOp::TombstoneStructuralScope(_)
-                | LexicalChannelOp::UpsertDiffHunk(_) => continue,
-            };
-            if let Some(base_generation) = base_generation {
-                let base_key = GenKey {
-                    repo_id: key.repo_id.clone(),
-                    revision_id: key.revision_id.clone(),
-                    generation: base_generation,
-                };
-                copy_generation_directory(&self.index_path(&base_key), &target_path)?;
-                remove_inherited_lexical_sealed_identity(&target_path)?;
+        };
+        let target_path = self.index_path(key);
+        if let Some(recorded_base) = read_lexical_delta_base(&target_path)? {
+            if recorded_base == requested_base {
+                return Ok(());
             }
-            break;
+            return Err(CoreError::Typed {
+                code: "DELTA_BASE_CONFLICT".to_string(),
+                message: format!(
+                    "lexical: generation {} already carried forward base {}; refusing a batch that declares base {}",
+                    key.generation.get(),
+                    recorded_base.get(),
+                    requested_base.get()
+                ),
+            });
         }
-        Ok(())
+        if lexical_index_content_exists(&target_path) {
+            return Err(CoreError::Typed {
+                code: "DELTA_BASE_UNRESOLVED".to_string(),
+                message: format!(
+                    "lexical: generation {} already holds index content with no recorded base; cannot prove base {} was carried forward",
+                    key.generation.get(),
+                    requested_base.get()
+                ),
+            });
+        }
+        let base_key = GenKey {
+            repo_id: key.repo_id.clone(),
+            revision_id: key.revision_id.clone(),
+            generation: requested_base,
+        };
+        clone_generation_directory_preserving_existing(&self.index_path(&base_key), &target_path)?;
+        remove_inherited_lexical_sealed_identity(&target_path)?;
+        persist_lexical_delta_base(&target_path, requested_base)
     }
 
     fn delete_scope_docs(&self, writer: &IndexWriter, repo_relative_path: &RepoRelativePath) {
@@ -3304,6 +3365,53 @@ impl LexicalAdapter {
             | LexicalChannelOp::UpsertDiffHunk(_) => Ok(false),
         }
     }
+}
+
+/// The base generation declared by the first scope-bearing op in the batch.
+///
+/// `Ok(None)` means the batch replaces the generation outright and has no base
+/// to inherit. Only the first scope-bearing op is consulted: a single batch
+/// addresses one `(repo, revision, generation)` target and the dispatcher emits
+/// one base per batch, so a later disagreement is a contract violation rather
+/// than a second base to merge.
+fn declared_delta_base_generation(
+    ops: &[LexicalChannelOp],
+) -> Result<Option<ManifestGeneration>, CoreError> {
+    for op in ops {
+        let base_generation = match op {
+            LexicalChannelOp::ReplaceLexicalScope(payload) => {
+                let (_mode, base_generation, _scope) =
+                    decode_replace_scope_payload(&payload.payload)?;
+                base_generation
+            }
+            LexicalChannelOp::TombstoneLexicalScope(payload) => {
+                let (_mode, base_generation, _scope) =
+                    decode_tombstone_scope_payload(&payload.payload)?;
+                base_generation
+            }
+            LexicalChannelOp::ClearLexicalSurface(payload) => payload.base_generation,
+            LexicalChannelOp::FullBundle(_)
+            | LexicalChannelOp::UpsertChunk(_)
+            | LexicalChannelOp::DeleteChunk(_)
+            | LexicalChannelOp::UpsertSymbol(_)
+            | LexicalChannelOp::DeleteSymbol(_)
+            | LexicalChannelOp::Seal(_)
+            | LexicalChannelOp::UpsertCommit(_)
+            | LexicalChannelOp::UpsertRef(_)
+            | LexicalChannelOp::UpsertTag(_)
+            | LexicalChannelOp::DeleteRef(_)
+            | LexicalChannelOp::DeleteTag(_)
+            | LexicalChannelOp::UpsertDirty(_)
+            | LexicalChannelOp::EvictDirty(_)
+            | LexicalChannelOp::UpsertParseTree(_)
+            | LexicalChannelOp::DeleteParseTree(_)
+            | LexicalChannelOp::ReplaceStructuralScope(_)
+            | LexicalChannelOp::TombstoneStructuralScope(_)
+            | LexicalChannelOp::UpsertDiffHunk(_) => continue,
+        };
+        return Ok(base_generation);
+    }
+    Ok(None)
 }
 
 fn op_touches_text_authority(op: &LexicalChannelOp) -> bool {
@@ -3954,10 +4062,10 @@ pub fn scan_persisted_generations(
             let generation_name = generation_name
                 .to_str()
                 .ok_or_else(|| unsupported_legacy_generation_layout(&generation_entry.path()))?;
-            let canonical_generation_name = generation_name
-                .strip_prefix('g')
-                .and_then(|raw| raw.parse::<u64>().ok())
-                .is_some_and(|generation| format!("g{generation}") == generation_name);
+            let canonical_generation_name = generation_name.strip_prefix('g').is_some_and(|raw| {
+                raw.parse::<u64>()
+                    .is_ok_and(|generation| format!("g{generation}") == generation_name)
+            });
             if !canonical_generation_name {
                 return Err(unsupported_legacy_generation_layout(
                     &generation_entry.path(),
@@ -8281,7 +8389,7 @@ mod regex_match_cache_tests {
             exact_error,
             CoreError::Typed { ref code, .. } if code == "GENERATION_IMMUTABLE"
         ));
-        let mut conflict = sealed.clone();
+        let mut conflict = sealed;
         conflict.manifest_digest = "digest-b".to_string();
         let conflict_error = adapter
             .discard_incomplete_generation(&conflict)

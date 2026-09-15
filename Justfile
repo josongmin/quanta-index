@@ -184,8 +184,19 @@ rust-test-integration:
     {{cargo}} --lane test-integration-lane test -p quanta-index-core --test hybrid_policy --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-core --test semantic_policy --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test tantivy_smoke --all-features --locked
+    {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test generation_delta_base_carryforward --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-repomap --test bootstrap_owner_flow --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-repomap --test owner_surface --all-features --locked
+    {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test persisted_semantic --all-features --locked
+    {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test semantic_generation_lifecycle_model --all-features --locked
+    {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test scv2_persisted_scenarios --all-features --locked
+
+# W0 decision-gate probes (G0-L / G0-S). Vendor-capability evidence for the
+# structural remediation gates; `--nocapture` so the G0*-EVIDENCE lines land in
+# the run log the ADRs cite.
+rust-w0-storage-gates:
+    {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test g0l_tantivy_snapshot_probe --all-features --locked -- --nocapture
+    {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test g0s_lance_snapshot_probe --all-features --locked -- --nocapture
 
 rust-test-cli-smoke:
     {{cargo}} --lane test-cli-smoke-lane test -p quanta-index-searchctl --test cli_smoke --all-features --locked

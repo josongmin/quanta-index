@@ -29,7 +29,7 @@ impl<'a> SearchNamespace<'a> {
         dispatch_hybrid_seed_query_request_v1(self.client, request)
     }
 
-    /// Reads the structured members of one generation-pinned ClusterCard.
+    /// Reads the structured members of one generation-pinned `ClusterCard`.
     ///
     /// The SDK validates both the request policy and the complete response
     /// authority tuple before returning any outcome to a caller.
@@ -48,9 +48,13 @@ impl<'a> SearchNamespace<'a> {
         })
     }
 
-    /// Reads up to 16 ClusterCard memberships through one bounded transport
+    /// Reads up to 16 `ClusterCard` memberships through one bounded transport
     /// request and rejects the entire call if any response entry is missing,
     /// reordered, duplicated, or stale.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "taking the request by value binds the response-authority check to the exact request that was dispatched; a borrowed request could be mutated by the caller between dispatch and validate_against_v1"
+    )]
     pub fn cluster_membership_batch_read_v1(
         &self,
         request: ClusterMembershipBatchReadRequestV1,

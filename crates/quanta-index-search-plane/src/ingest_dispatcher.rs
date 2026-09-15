@@ -1155,22 +1155,24 @@ mod tests {
             generation: ManifestGeneration,
             manifest_digest: &str,
         ) -> Result<SearchCorpusHistoryRetentionReceiptV1, CoreError> {
-            let mut identities = self.identities.lock().map_err(|err| {
-                CoreError::Storage(format!("recording search-corpus authority poisoned: {err}"))
-            })?;
-            identities.push((
-                repo_id.clone(),
-                revision_id.clone(),
-                generation,
-                manifest_digest.to_string(),
-            ));
-            let retained_generations = identities
-                .iter()
-                .filter(|(observed_repo, observed_revision, _, _)| {
-                    observed_repo == repo_id && observed_revision == revision_id
-                })
-                .map(|(_, _, observed_generation, _)| *observed_generation)
-                .collect::<Vec<_>>();
+            let retained_generations = {
+                let mut identities = self.identities.lock().map_err(|err| {
+                    CoreError::Storage(format!("recording search-corpus authority poisoned: {err}"))
+                })?;
+                identities.push((
+                    repo_id.clone(),
+                    revision_id.clone(),
+                    generation,
+                    manifest_digest.to_string(),
+                ));
+                identities
+                    .iter()
+                    .filter(|(observed_repo, observed_revision, _, _)| {
+                        observed_repo == repo_id && observed_revision == revision_id
+                    })
+                    .map(|(_, _, observed_generation, _)| *observed_generation)
+                    .collect::<Vec<_>>()
+            };
             Ok(
                 SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
                     repo_id,
@@ -1549,6 +1551,10 @@ mod tests {
         Ok(())
     }
 
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "the receipt deliberately echoes the batch digest in its manifest_digest field; that field conflation is the behavior under test, not a mis-typed comparison"
+    )]
     #[test]
     fn direct_dirty_materializer_echoes_batch_digest_in_receipt() -> TestRes {
         let dir = tempfile::tempdir()?;

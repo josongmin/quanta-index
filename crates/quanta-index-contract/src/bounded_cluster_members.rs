@@ -3,7 +3,7 @@ use core::marker::PhantomData;
 
 use serde::de::{self, Deserialize, Deserializer, SeqAccess, Visitor};
 
-use crate::{MAX_CLUSTER_MEMBERSHIP_READ_V1, SymbolId};
+use crate::SymbolId;
 
 pub(crate) struct BoundedVecV1<T, const MAXIMUM: usize>(Vec<T>);
 
@@ -59,12 +59,26 @@ where
     }
 }
 
-pub(crate) type BoundedClusterMembersV1 =
-    BoundedVecV1<SymbolId, { MAX_CLUSTER_MEMBERSHIP_READ_V1 as usize }>;
+/// [`MAX_CLUSTER_MEMBERSHIP_READ_V1`] in the slice-length domain.
+///
+/// Declared from the same literal rather than narrowed with a silent cast; the
+/// two are pinned together by `bounded_capacity_matches_the_wire_bound_v1`.
+const CLUSTER_MEMBERS_CAPACITY_V1: usize = 4_096;
+
+pub(crate) type BoundedClusterMembersV1 = BoundedVecV1<SymbolId, CLUSTER_MEMBERS_CAPACITY_V1>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MAX_CLUSTER_MEMBERSHIP_READ_V1;
+
+    #[test]
+    fn bounded_capacity_matches_the_wire_bound_v1() {
+        assert_eq!(
+            u32::try_from(CLUSTER_MEMBERS_CAPACITY_V1),
+            Ok(MAX_CLUSTER_MEMBERSHIP_READ_V1)
+        );
+    }
 
     #[test]
     fn bounded_member_decoder_rejects_the_first_over_limit_element_v1() {

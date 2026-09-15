@@ -8,13 +8,14 @@ use serde::{
 
 use super::GenerationPin;
 use crate::bounded_cluster_members::BoundedVecV1;
+use crate::canonical_order::{CanonicalOrderBreakV1, first_canonical_order_break_v1};
 
-/// Hard upper bound for one structured ClusterCard membership read.
+/// Hard upper bound for one structured `ClusterCard` membership read.
 ///
 /// The limit is enforced by the contract decoder before any storage access.
 pub const MAX_CLUSTER_MEMBERSHIP_READ_V1: u32 = 4_096;
 
-/// Maximum number of ClusterCard records admitted by one transport read.
+/// Maximum number of `ClusterCard` records admitted by one transport read.
 pub const MAX_CLUSTER_MEMBERSHIP_BATCH_ITEMS_V1: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,6 +74,7 @@ pub struct ClusterMembershipBatchReadItemV1 {
 }
 
 impl ClusterMembershipBatchReadItemV1 {
+    #[must_use]
     pub fn as_single_request_v1(
         &self,
         generation: &GenerationPin,
@@ -176,7 +178,7 @@ impl<'de> Deserialize<'de> for ClusterMembershipBatchReadItemV1 {
     }
 }
 
-/// One bounded transport request for multiple ClusterCard records in one
+/// One bounded transport request for multiple `ClusterCard` records in one
 /// sealed generation. Items are canonicalized by record id before transport.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClusterMembershipBatchReadRequestV1 {
@@ -211,20 +213,18 @@ impl ClusterMembershipBatchReadRequestV1 {
                 max: MAX_CLUSTER_MEMBERSHIP_READ_V1,
             });
         }
-        for pair in self.items.windows(2) {
-            match pair[0].cluster_record_id.cmp(&pair[1].cluster_record_id) {
-                core::cmp::Ordering::Equal => {
-                    return Err(ClusterMembershipReadPolicyErrorV1::DuplicateClusterRecordId);
-                }
-                core::cmp::Ordering::Greater => {
-                    return Err(ClusterMembershipReadPolicyErrorV1::NonCanonicalClusterRecordOrder);
-                }
-                core::cmp::Ordering::Less => {}
+        match first_canonical_order_break_v1(&self.items, |item| item.cluster_record_id.as_str()) {
+            Some(CanonicalOrderBreakV1::Duplicate) => {
+                Err(ClusterMembershipReadPolicyErrorV1::DuplicateClusterRecordId)
             }
+            Some(CanonicalOrderBreakV1::OutOfOrder) => {
+                Err(ClusterMembershipReadPolicyErrorV1::NonCanonicalClusterRecordOrder)
+            }
+            None => Ok(()),
         }
-        Ok(())
     }
 
+    #[must_use]
     pub fn single_v1(request: ClusterMembershipReadRequestV1) -> Self {
         Self {
             generation: request.generation,
@@ -317,9 +317,9 @@ impl<'de> Deserialize<'de> for ClusterMembershipBatchReadRequestV1 {
 
 impl std::error::Error for ClusterMembershipReadPolicyErrorV1 {}
 
-/// Generation-pinned structured membership read for one ClusterCard record.
+/// Generation-pinned structured membership read for one `ClusterCard` record.
 ///
-/// `cluster_record_id` identifies the ClusterCard semantic-source record, not
+/// `cluster_record_id` identifies the `ClusterCard` semantic-source record, not
 /// rendered card text. `expected_authority_digest` binds the read to the exact
 /// structured facts that produced that record.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -448,6 +448,10 @@ impl<'de> Deserialize<'de> for ClusterMembershipReadRequestV1 {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "fixture rows are built in this module with known fixed lengths; an out-of-range index here is a test authoring bug that should fail loudly"
+)]
 mod cluster_membership_request_tests {
     use super::*;
     use crate::{ManifestGeneration, RepoId, RevisionId};
@@ -556,7 +560,13 @@ mod cluster_membership_request_tests {
         ));
 
         assert!(matches!(
-            batch(2, MAX_CLUSTER_MEMBERSHIP_READ_V1 / 2 + 1).validate_v1(),
+            batch(
+                2,
+                MAX_CLUSTER_MEMBERSHIP_READ_V1
+                    .div_euclid(2)
+                    .saturating_add(1)
+            )
+            .validate_v1(),
             Err(ClusterMembershipReadPolicyErrorV1::TotalLimitExceeded { .. })
         ));
 

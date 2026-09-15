@@ -18,6 +18,10 @@ pub(crate) const ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED: &str =
 /// product-active pin authority this owner must reject growth instead of
 /// guessing which other repo/revision pair is safe to delete.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "every field is a ceiling, and the `max_` prefix is what distinguishes a cap from an observed value; `bytes`/`total_bytes` would read as current usage"
+)]
 pub struct SearchCorpusHistoryRetentionPolicyV1 {
     max_generations: usize,
     max_bytes: u64,

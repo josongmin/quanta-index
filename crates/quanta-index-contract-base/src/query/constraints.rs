@@ -106,7 +106,7 @@ fn validate_exact_repo_relative_path_v1(value: &str) -> Result<(), &'static str>
         && value
             .as_bytes()
             .first()
-            .is_some_and(|byte| byte.is_ascii_alphabetic())
+            .is_some_and(u8::is_ascii_alphabetic)
     {
         return Err("exact repository-relative path must not use a drive prefix");
     }
@@ -428,9 +428,7 @@ mod tests {
         let right = QueryConstraintSetV1::from_languages([rust.clone()]);
         assert_eq!(
             left.intersect(&right),
-            QueryConstraintIntersectionV1::Compatible(QueryConstraintSetV1::from_languages([
-                rust.clone()
-            ]))
+            QueryConstraintIntersectionV1::Compatible(QueryConstraintSetV1::from_languages([rust]))
         );
         assert_eq!(
             left.intersect(&QueryConstraintSetV1::unconstrained()),
@@ -511,7 +509,7 @@ mod tests {
             serde_json::to_string(&old_wire).expect("serialize old shape"),
             r#"{"language_any_of":[]}"#
         );
-        let constrained = QueryConstraintSetV1::from_exact_repo_relative_path(path.clone());
+        let constrained = QueryConstraintSetV1::from_exact_repo_relative_path(path);
         let encoded = serde_json::to_string(&constrained).expect("serialize path constraint");
         assert_eq!(
             encoded,

@@ -18,7 +18,8 @@ use quanta_index_contract::{
     EmbeddingNormalization, EmbeddingRecord, OwnerDocKind, SearchCorpusIngestBatch, SearchScopeKey,
     SearchScopeSurface, SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
     SemanticSourceRecordV1, SemanticSourceScopeKeyV1, SemanticTombstoneScope, SourceRoleV1,
-    lex::LanguageCode, lex::SymbolKindCode, validate_semantic_source_record_v1,
+    canonical_order::first_canonical_order_break_v1, lex::LanguageCode, lex::SymbolKindCode,
+    validate_semantic_source_record_v1,
 };
 use quanta_index_core::{CoreError, TextEmbeddingProvider};
 use sha2::{Digest, Sha256};
@@ -667,10 +668,10 @@ fn validated_semantic_source_scopes_v1(
                     scope.cluster_memberships.len()
                 )));
             }
-            if !scope
-                .cluster_memberships
-                .windows(2)
-                .all(|pair| pair[0].cluster_record_id < pair[1].cluster_record_id)
+            if first_canonical_order_break_v1(&scope.cluster_memberships, |membership| {
+                membership.cluster_record_id.as_str()
+            })
+            .is_some()
             {
                 return Err(CoreError::InvalidContract(format!(
                     "semantic derivation: cluster memberships for scope {:?} must use canonical cluster_record_id order",

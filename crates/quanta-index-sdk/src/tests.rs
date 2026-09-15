@@ -684,7 +684,9 @@ fn connect_options_preserve_absolute_request_io_deadline() {
 
 #[test]
 fn connect_options_reject_elapsed_request_io_deadline() {
-    let deadline = std::time::Instant::now() - std::time::Duration::from_millis(1);
+    let deadline = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_millis(1))
+        .expect("monotonic clock must represent an instant 1ms in the past");
     let result = ConnectOptions::from_state_root("/tmp/qi-state")
         .with_request_io_deadline(deadline)
         .resolve();
@@ -899,14 +901,21 @@ fn cluster_membership_batch_read_routes_fifteen_items_once_and_preserves_order_v
             .cluster_membership_batch_read_v1(request.clone())
     );
     assert_eq!(observed, expected);
-    let requests = ok_or_fail!(query.requests.lock());
+    let dispatched = {
+        let requests = ok_or_fail!(query.requests.lock());
+        assert_eq!(
+            requests.len(),
+            1,
+            "one logical batch must use one transport call"
+        );
+        requests
+            .first()
+            .expect("transport call count was just asserted")
+            .payload
+            .clone()
+    };
     assert_eq!(
-        requests.len(),
-        1,
-        "one logical batch must use one transport call"
-    );
-    assert_eq!(
-        requests[0].payload,
+        dispatched,
         quanta_index_contract::SearchPlaneQueryIpcRequest::ClusterMembershipRead(request)
     );
 }
@@ -923,8 +932,10 @@ fn cluster_membership_batch_read_rejects_partial_reordered_and_stale_response_v1
     reordered.outcomes.swap(0, 1);
 
     let mut stale = valid;
-    let quanta_index_contract::ClusterMembershipReadOutcomeV1::Available(snapshot) =
-        &mut stale.outcomes[1]
+    let quanta_index_contract::ClusterMembershipReadOutcomeV1::Available(snapshot) = stale
+        .outcomes
+        .get_mut(1)
+        .expect("fixture batch must carry at least two outcomes")
     else {
         panic!("fixture must contain an available outcome")
     };

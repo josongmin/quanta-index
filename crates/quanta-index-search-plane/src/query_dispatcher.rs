@@ -5467,13 +5467,16 @@ mod tests {
             &self,
             request: &ClusterMembershipBatchReadRequestV1,
         ) -> Result<ClusterMembershipBatchReadResponseV1, CoreError> {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?;
-            state.cluster_membership_requests.push(request.clone());
-            if let Some(response) = &state.cluster_membership_response {
-                return Ok(response.clone());
+            let recorded_response = {
+                let mut state = self
+                    .state
+                    .lock()
+                    .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?;
+                state.cluster_membership_requests.push(request.clone());
+                state.cluster_membership_response.clone()
+            };
+            if let Some(response) = recorded_response {
+                return Ok(response);
             }
             Ok(ClusterMembershipBatchReadResponseV1 {
                 outcomes: request
@@ -5514,12 +5517,14 @@ mod tests {
             constraints: &QueryConstraintSetV1,
             _top_k: u32,
         ) -> Result<Vec<LexicalCandidate>, CoreError> {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?;
-            state.search_vectors.push(query_vector.to_vec());
-            state.search_constraints.push(constraints.clone());
+            {
+                let mut state = self
+                    .state
+                    .lock()
+                    .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?;
+                state.search_vectors.push(query_vector.to_vec());
+                state.search_constraints.push(constraints.clone());
+            }
             Ok(vec![candidate("semantic-inline", 1.0)])
         }
 
@@ -5549,12 +5554,14 @@ mod tests {
             constraints: &QueryConstraintSetV1,
             _top_k: u32,
         ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?;
-            state.search_hit_vectors.push(query_vector.to_vec());
-            state.search_hit_constraints.push(constraints.clone());
+            {
+                let mut state = self
+                    .state
+                    .lock()
+                    .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?;
+                state.search_hit_vectors.push(query_vector.to_vec());
+                state.search_hit_constraints.push(constraints.clone());
+            }
             Ok(vec![SemanticSearchHitV1 {
                 candidate: candidate("semantic-inline", 1.0),
                 record_id: "semantic-inline-record".to_string(),
@@ -5640,12 +5647,14 @@ mod tests {
             constraints: &QueryConstraintSetV1,
             _top_k: u32,
         ) -> Result<Vec<LexicalCandidate>, CoreError> {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?;
-            state.scoped_vectors.push(query_vector.to_vec());
-            state.scoped_constraints.push(constraints.clone());
+            {
+                let mut state = self
+                    .state
+                    .lock()
+                    .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?;
+                state.scoped_vectors.push(query_vector.to_vec());
+                state.scoped_constraints.push(constraints.clone());
+            }
             Ok(vec![candidate("semantic-scoped", 1.0)])
         }
 
@@ -5708,12 +5717,14 @@ mod tests {
             }
         }
 
-        let guard = state
-            .lock()
-            .map_err(|err| format!("semantic state poisoned: {err}"))?;
-        if !guard.cluster_membership_opened_pins.is_empty()
-            || !guard.cluster_membership_requests.is_empty()
-        {
+        let reached_storage = {
+            let guard = state
+                .lock()
+                .map_err(|err| format!("semantic state poisoned: {err}"))?;
+            !guard.cluster_membership_opened_pins.is_empty()
+                || !guard.cluster_membership_requests.is_empty()
+        };
+        if reached_storage {
             return Err("invalid membership request reached semantic storage".into());
         }
         Ok(())
@@ -5744,26 +5755,29 @@ mod tests {
             return Err(format!("membership authority drifted: {observed:?}").into());
         }
 
-        let guard = state
-            .lock()
-            .map_err(|err| format!("semantic state poisoned: {err}"))?;
-        if guard.cluster_membership_opened_pins.as_slice()
+        let (opened_pins, recorded_requests) = {
+            let guard = state
+                .lock()
+                .map_err(|err| format!("semantic state poisoned: {err}"))?;
+            (
+                guard.cluster_membership_opened_pins.clone(),
+                guard.cluster_membership_requests.clone(),
+            )
+        };
+        if opened_pins.as_slice()
             != [(
                 request.generation.repo_id.clone(),
                 request.generation.revision_id.clone(),
                 request.generation.manifest_generation,
             )]
         {
-            return Err(format!(
-                "membership read must open its exact pin once: {:?}",
-                guard.cluster_membership_opened_pins
-            )
-            .into());
+            return Err(
+                format!("membership read must open its exact pin once: {opened_pins:?}").into(),
+            );
         }
-        if guard.cluster_membership_requests.as_slice() != [request] {
+        if recorded_requests.as_slice() != [request] {
             return Err(format!(
-                "membership request must reach the searcher exactly once: {:?}",
-                guard.cluster_membership_requests
+                "membership request must reach the searcher exactly once: {recorded_requests:?}"
             )
             .into());
         }
@@ -5773,23 +5787,23 @@ mod tests {
     #[test]
     fn cluster_membership_dispatch_rejects_forged_or_stale_searcher_authority_v1() -> TestResult {
         let request = cluster_membership_batch_request_v1();
-        let mut forged = available_cluster_membership_batch_response_v1(&request);
+        let mut forged_response = available_cluster_membership_batch_response_v1(&request);
         let Some(quanta_index_contract::ClusterMembershipReadOutcomeV1::Available(snapshot)) =
-            forged.outcomes.first_mut()
+            forged_response.outcomes.first_mut()
         else {
             return Err("fixture must contain one available membership".into());
         };
         snapshot.authority_digest = "forged-authority".to_string();
 
-        let mut stale = available_cluster_membership_batch_response_v1(&request);
+        let mut stale_response = available_cluster_membership_batch_response_v1(&request);
         let Some(quanta_index_contract::ClusterMembershipReadOutcomeV1::Available(snapshot)) =
-            stale.outcomes.first_mut()
+            stale_response.outcomes.first_mut()
         else {
             return Err("fixture must contain one available membership".into());
         };
         snapshot.generation.manifest_generation = ManifestGeneration::new(8);
 
-        for (case, response) in [("forged", forged), ("stale", stale)] {
+        for (case, response) in [("forged", forged_response), ("stale", stale_response)] {
             let state = Arc::new(Mutex::new(RecordingSemanticState {
                 cluster_membership_response: Some(response),
                 ..RecordingSemanticState::default()
@@ -6237,7 +6251,7 @@ mod tests {
         let path =
             quanta_index_contract::ExactRepoRelativePathV1::new("src/a*)' \"literal file.rs")
                 .map_err(str::to_string)?;
-        let constraints = QueryConstraintSetV1::from_exact_repo_relative_path(path.clone());
+        let constraints = QueryConstraintSetV1::from_exact_repo_relative_path(path);
         let response = dispatcher.symbol(SymbolQueryRequest {
             syntax: TextQuerySyntax::Native,
             query_text: String::new(),
@@ -6711,13 +6725,15 @@ mod tests {
             )
             .into());
         }
-        let guard = lexical_state
-            .lock()
-            .map_err(|err| format!("lexical state poisoned: {err}"))?;
-        if guard.searched_constraints.as_slice() != [constraints] {
+        let searched_constraints = {
+            let guard = lexical_state
+                .lock()
+                .map_err(|err| format!("lexical state poisoned: {err}"))?;
+            guard.searched_constraints.clone()
+        };
+        if searched_constraints.as_slice() != [constraints] {
             return Err(format!(
-                "hybrid lexical leg lost exact-path constraints: {:?}",
-                guard.searched_constraints
+                "hybrid lexical leg lost exact-path constraints: {searched_constraints:?}"
             )
             .into());
         }
@@ -6917,13 +6933,15 @@ mod tests {
             )
             .into());
         }
-        let guard = lexical_state
-            .lock()
-            .map_err(|err| format!("lexical state poisoned: {err}"))?;
-        if guard.searched_constraints.as_slice() != [constraints] {
+        let searched_constraints = {
+            let guard = lexical_state
+                .lock()
+                .map_err(|err| format!("lexical state poisoned: {err}"))?;
+            guard.searched_constraints.clone()
+        };
+        if searched_constraints.as_slice() != [constraints] {
             return Err(format!(
-                "hybrid-seed lexical leg lost exact-path constraints: {:?}",
-                guard.searched_constraints
+                "hybrid-seed lexical leg lost exact-path constraints: {searched_constraints:?}"
             )
             .into());
         }

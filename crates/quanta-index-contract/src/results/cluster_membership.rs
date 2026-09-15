@@ -7,6 +7,7 @@ use serde::{
 };
 
 use crate::bounded_cluster_members::{BoundedClusterMembersV1, BoundedVecV1};
+use crate::canonical_order::{CanonicalOrderBreakV1, first_canonical_order_break_v1};
 use crate::{GenerationPin, MAX_CLUSTER_MEMBERSHIP_BATCH_ITEMS_V1, SymbolId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -178,7 +179,7 @@ impl<'de> Deserialize<'de> for ClusterMembershipReadFailureV1 {
     }
 }
 
-/// Exact structured ClusterCard membership for one sealed generation.
+/// Exact structured `ClusterCard` membership for one sealed generation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClusterMembershipSnapshotV1 {
     pub cluster_record_id: String,
@@ -199,7 +200,10 @@ impl ClusterMembershipSnapshotV1 {
         if self.members.is_empty() {
             return Err(ClusterMembershipReadFailureV1::EmptyMembership);
         }
-        if self.members.len() > crate::MAX_CLUSTER_MEMBERSHIP_READ_V1 as usize {
+        let Ok(member_count) = u32::try_from(self.members.len()) else {
+            return Err(ClusterMembershipReadFailureV1::MemberLimitExceeded);
+        };
+        if member_count > crate::MAX_CLUSTER_MEMBERSHIP_READ_V1 {
             return Err(ClusterMembershipReadFailureV1::MemberLimitExceeded);
         }
         for member in &self.members {
@@ -207,15 +211,15 @@ impl ClusterMembershipSnapshotV1 {
                 return Err(ClusterMembershipReadFailureV1::EmptyMemberIdentity);
             }
         }
-        for pair in self.members.windows(2) {
-            if pair[0] == pair[1] {
-                return Err(ClusterMembershipReadFailureV1::DuplicateMemberIdentity);
+        match first_canonical_order_break_v1(&self.members, |member| member.as_str()) {
+            Some(CanonicalOrderBreakV1::Duplicate) => {
+                Err(ClusterMembershipReadFailureV1::DuplicateMemberIdentity)
             }
-            if pair[0] > pair[1] {
-                return Err(ClusterMembershipReadFailureV1::NonCanonicalMemberOrder);
+            Some(CanonicalOrderBreakV1::OutOfOrder) => {
+                Err(ClusterMembershipReadFailureV1::NonCanonicalMemberOrder)
             }
+            None => Ok(()),
         }
-        Ok(())
     }
 
     /// Revalidates the response authority against the exact request before a
@@ -234,11 +238,14 @@ impl ClusterMembershipSnapshotV1 {
         if self.authority_digest != request.expected_authority_digest {
             return Err(ClusterMembershipReadFailureV1::AuthorityDigestMismatch);
         }
-        if self.members.len() > request.limit as usize {
+        let Ok(member_count) = u32::try_from(self.members.len()) else {
+            return Err(ClusterMembershipReadFailureV1::MemberLimitExceeded);
+        };
+        if member_count > request.limit {
             return Err(ClusterMembershipReadFailureV1::MemberLimitExceeded);
         }
         if self.completeness == ClusterMembershipCompletenessV1::Truncated
-            && self.members.len() != request.limit as usize
+            && member_count != request.limit
         {
             return Err(ClusterMembershipReadFailureV1::MemberLimitExceeded);
         }
@@ -291,11 +298,11 @@ impl<'de> Visitor<'de> for ClusterMembershipSnapshotV1Visitor {
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "cluster_record_id" => {
-                    set_once_v1(&mut cluster_record_id, "cluster_record_id", &mut map)?
+                    set_once_v1(&mut cluster_record_id, "cluster_record_id", &mut map)?;
                 }
                 "generation" => set_once_v1(&mut generation, "generation", &mut map)?,
                 "authority_digest" => {
-                    set_once_v1(&mut authority_digest, "authority_digest", &mut map)?
+                    set_once_v1(&mut authority_digest, "authority_digest", &mut map)?;
                 }
                 "members" => set_once_v1(&mut members, "members", &mut map)?,
                 "completeness" => set_once_v1(&mut completeness, "completeness", &mut map)?,
@@ -508,9 +515,11 @@ impl_cluster_membership_authority_payload_serde!(
     failure
 );
 
-/// Typed result of a membership read. `Unavailable` is reserved for a sealed
-/// legacy generation that did not advertise structured-membership capability.
-/// Current-format missing, stale, or invalid data is always `Rejected`.
+/// Typed result of a membership read.
+///
+/// `Unavailable` is reserved for a sealed legacy generation that did not
+/// advertise structured-membership capability. Current-format missing, stale,
+/// or invalid data is always `Rejected`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClusterMembershipReadOutcomeV1 {
     Available(ClusterMembershipSnapshotV1),
@@ -761,7 +770,7 @@ impl<'de> Visitor<'de> for ClusterMembershipOutcomePayloadBufferV1Visitor {
                 )?,
                 "generation" => set_once_v1(&mut payload.generation, "generation", &mut map)?,
                 "authority_digest" => {
-                    set_once_v1(&mut payload.authority_digest, "authority_digest", &mut map)?
+                    set_once_v1(&mut payload.authority_digest, "authority_digest", &mut map)?;
                 }
                 "expected_authority_digest" => set_once_v1(
                     &mut payload.expected_authority_digest,
@@ -933,6 +942,10 @@ impl<'de> Deserialize<'de> for ClusterMembershipReadOutcomeV1 {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "fixture rows are built in this module with known fixed lengths; an out-of-range index here is a test authoring bug that should fail loudly"
+)]
 mod tests {
     use super::*;
     use crate::{ManifestGeneration, RepoId, RevisionId};
@@ -1017,9 +1030,12 @@ mod tests {
         let ciborium::value::Value::Map(entries) = &mut encoded_value else {
             panic!("outcome must encode as a CBOR map");
         };
-        entries.sort_by_key(|(key, _value)| match key {
-            ciborium::value::Value::Text(name) if name == "payload" => 0,
-            _ => 1,
+        entries.sort_by_key(|(key, _value)| {
+            let payload_first = matches!(
+                key,
+                ciborium::value::Value::Text(name) if name == "payload"
+            );
+            u8::from(!payload_first)
         });
         let mut reversed_cbor = Vec::new();
         ciborium::ser::into_writer(&encoded_value, &mut reversed_cbor)

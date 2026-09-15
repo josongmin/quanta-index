@@ -4234,6 +4234,7 @@ dependencies = [
  "quanta-index-lq-trigram",
  "serde",
  "serde_json",
+ "sha2",
  "tantivy",
  "tempfile",
 ]
@@ -4327,11 +4328,11 @@ name = "quanta-index-scan-experiment"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ciborium",
  "quanta-index-contract",
  "quanta-index-core",
  "quanta-index-lexical",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

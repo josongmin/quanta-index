@@ -136,6 +136,18 @@ owner = "quanta-index-lexical"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "lexical-generation-delta-base-carryforward"
+path = "crates/quanta-index-lexical/tests/generation_delta_base_carryforward.rs"
+owner = "quanta-index-lexical"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lexical-g0l-tantivy-snapshot-probe"
+path = "crates/quanta-index-lexical/tests/g0l_tantivy_snapshot_probe.rs"
+owner = "quanta-index-lexical"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "lq-bridge-directive-packet"
 path = "crates/quanta-index-lq-bridge/tests/bridge_directive_packet.rs"
 owner = "quanta-index-lq-bridge"
@@ -420,6 +432,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "semantic-scv2-persisted-scenarios"
 path = "crates/quanta-index-semantic/tests/scv2_persisted_scenarios.rs"
+owner = "quanta-index-semantic"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "semantic-g0s-lance-snapshot-probe"
+path = "crates/quanta-index-semantic/tests/g0s_lance_snapshot_probe.rs"
 owner = "quanta-index-semantic"
 rail = "pr-workspace-nextest"
 
