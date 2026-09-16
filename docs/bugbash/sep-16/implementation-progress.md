@@ -288,7 +288,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W0 | **passed** | G0-L/G0-S/G0-C passed, G0-R baseline pinned(cooperative-only). §3 참조. timing 재측정만 `blocked: contended-host` |
 | W1 | planned | |
 | W2 | planned | G0-C PASS → SQLite(rusqlite bundled)로 진행. `quanta-index-catalog-probe`는 W2 landing 시 삭제 |
-| W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분 재도출(§3.4.1) + semantic hard-link(§3.4.2) 완료. 남은 것: sharded sidecar 포맷(O(delta) write), ANN index 재구축, physical GC / pinned-reader 강제 case |
+| W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) 완료. 남은 것: sharded sidecar 포맷(O(delta) write), ANN index 재구축/versioned artifact(QI-BB-027), seal durability(QI-BB-030) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), QI-BB-024 regex cache, streaming projection collector |
 | W5 | planned | G0-R 결론에 따라 cooperative checkpoint 설계 |
 | W6 | planned | M4 적용 |
@@ -688,6 +688,40 @@ count collector가 없어 `count` 옵션에서도 probe window(AtLeast)를 준�
 동시에 보내는데 `ScriptedTransport`는 요청 내용과 무관하게 script 순서로 응답한다 —
 두 worker가 두 응답을 경쟁. `with_concurrency(1)`로 test를 결정적으로 고정(5/5 green).
 product defect 아님 / test 설계 결함.
+
+## 3.9 QI-BB-003 — physical GC: retention이 실제 bytes를 회수한다 (구현 완료, byte 정책은 W2 이관)
+
+**진단 확정**: retention은 authority CBOR record만 `remove_file`했고 sealed generation의
+Tantivy/`LanceDB` 디렉터리는 영구히 남았다(변이 검출 시 `found {1,2,3,4,5}`가 그 상태).
+core의 destructive port는 incomplete 전용이라 sealed 삭제 경로 자체가 없었다.
+
+**설계**:
+- core `SealedGenerationReclaimPort { reclaim_sealed_generation(retired), sealed_generations_for_pair(repo, rev) }`
+  — `IncompleteGenerationDiscardPort`의 대칭. 삭제 전에 durable identity(scope + digest)를
+  검증하고 불일치는 typed 거부(`GENERATION_IDENTITY_DIGEST_MISMATCH` / `..._SCOPE_MISMATCH`),
+  unsealed 디렉터리는 `GENERATION_NOT_SEALED`로 거부(다른 protocol 소관). lexical/semantic
+  adapter 구현: bytes 측정 → `remove_dir_all` → pair dir fsync → adapter cache 정리.
+- search-plane `DirectSearchCorpusMaterializer::reclaim_retired_generations_v1` — 순서가 protocol이다:
+  authority reap → ledger 재조정(더 이상 어떤 query도 그 generation을 resolve/pin 못 함) →
+  **track별로 디스크의 sealed generation을 열거**(receipt의 reaped set이 아니라 filesystem;
+  reap과 delete 사이의 crash orphan을 다음 pass가 찾는 이유) → retained 또는 sealing 중인
+  generation 이상은 skip → `SnapshotRegistry::retire(key)` fence → holder가 남아 있으면
+  **defer**(reader 밑에서 지우지 않음) → reclaim. 실패는 seal 응답으로 올라오고, 재시도는
+  `finalize_only` 경로로 수렴한다.
+- composition: `SearchCorpusMaterializerParts { lexical_reclaim, semantic_reclaim, snapshots }`.
+  RepoMap generation은 별도 lifecycle(QI-BB-008, W6)이라 이번 범위 밖.
+
+**완료 기준 검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| 5개 sealed 후 cap=2 → backend 디렉터리도 정확히 2개 | `e2e_physical_gc::reaping_a_generation_removes_its_directories_on_both_tracks` (harness `boot_with_history_max_generations(2)`, 두 track `{4,5}`) |
+| active/candidate/predecessor는 삭제되지 않음 | 같은 E2E + `retained_generations_still_serve_after_gc` (newest lexical/semantic serve) |
+| pin된 generation은 삭제 안 함, crash orphan은 다음 pass에서 회수 | unit `reclaim_sweeps_orphans_and_defers_pinned_generations` — 디스크에만 남은 g1(orphan) 회수, registry가 pin한 g2는 `deferred_pinned{holders:1}`, pin 해제 후 두 번째 pass에서 회수 |
+| identity가 path와 모순되는 디렉터리 | `a_directory_whose_identity_contradicts_its_path_fails_closed` — 어느 identity로도 삭제하지 않고 typed 실패(boot scanner와 같은 fail-closed; quarantine은 QI-BB-026/W2) |
+| reported bytes vs `du` | reclaim은 삭제 직전 recursive bytes를 측정해 receipt에 싣는다. **retention 정책의 `max_bytes`는 여전히 authority record 길이**다 — physical bytes 기반 admission으로 바꾸는 것은 catalog(W2)에서 snapshot row에 physical/logical bytes를 두면서 한다(보완 #2, #5) |
+
+**검출력**: reclaim 호출을 `Absent`로 변이 → `expected {4, 5} on disk, found {1, 2, 3, 4, 5}`.
 
 ## 4. Finding 상태 (QI-BB-001–032)
 

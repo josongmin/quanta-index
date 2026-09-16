@@ -84,6 +84,48 @@ pub trait IncompleteGenerationDiscardPort: Send + Sync {
     ) -> Result<IncompleteGenerationDiscardOutcomeV1, CoreError>;
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SealedGenerationReclaimOutcomeV1 {
+    /// No durable state for the identity; nothing to do.
+    Absent,
+    /// The generation's bytes are gone; `bytes` is what was measured on disk
+    /// before deletion.
+    Reclaimed { bytes: u64 },
+}
+
+/// Destructive port for a sealed generation the search plane has retired
+/// from its authority (physical GC, QI-BB-003).
+///
+/// The counterpart of [`IncompleteGenerationDiscardPort`]: that one refuses
+/// sealed identities, this one refuses everything else. Implementations must
+/// verify the durable identity (scope and digest) against `retired` before
+/// deleting, so an authority record that was reaped can never delete a
+/// generation that was re-sealed under a different digest or that belongs to
+/// another scope. Missing storage is an idempotent `Absent`. A generation
+/// directory without a sealed identity is not this port's to remove.
+///
+/// The owner sequences the protocol around this port: authority reaped and
+/// the in-memory ledger reconciled first (so no query can pin the generation
+/// any more), the snapshot registry fenced (so no resident handle maps its
+/// files), then reclaim. A crash between reap and reclaim leaves an orphan
+/// that the next sweep finds through
+/// [`Self::sealed_generations_for_pair`].
+pub trait SealedGenerationReclaimPort: Send + Sync {
+    fn reclaim_sealed_generation(
+        &self,
+        retired: &GenerationSnapshot,
+    ) -> Result<SealedGenerationReclaimOutcomeV1, CoreError>;
+
+    /// Every sealed generation present on disk for the pair, with its durable
+    /// digest, in ascending generation order. Unsealed directories are not
+    /// listed: they belong to the incomplete-generation protocol.
+    fn sealed_generations_for_pair(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) -> Result<Vec<GenerationSnapshot>, CoreError>;
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Component;

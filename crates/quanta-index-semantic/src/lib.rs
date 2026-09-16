@@ -56,7 +56,8 @@ use quanta_index_core::{
     CoreError, GenerationIdentityValidatePort, SemanticBatchBuildPort, SemanticIndexOpenPort,
     domains::generation::{
         GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
-        IncompleteGenerationDiscardPort,
+        IncompleteGenerationDiscardPort, SealedGenerationReclaimOutcomeV1,
+        SealedGenerationReclaimPort,
     },
     domains::semantic::SemanticSearcher,
 };
@@ -336,6 +337,156 @@ impl IncompleteGenerationDiscardPort for SemanticAdapter {
             ))
         })?;
         Ok(IncompleteGenerationDiscardOutcomeV1::Discarded)
+    }
+}
+
+impl SealedGenerationReclaimPort for SemanticAdapter {
+    fn reclaim_sealed_generation(
+        &self,
+        retired: &GenerationSnapshot,
+    ) -> Result<SealedGenerationReclaimOutcomeV1, CoreError> {
+        if retired.track != SearchPlaneTrackKind::Semantic {
+            return Err(CoreError::InvalidContract(format!(
+                "semantic sealed-generation reclaim received {:?} track",
+                retired.track
+            )));
+        }
+        let generation_dir = layout::generation_dir(
+            &self.state_root,
+            &retired.repo_id,
+            &retired.revision_id,
+            retired.manifest_generation,
+        );
+        if !generation_dir.exists() {
+            return Ok(SealedGenerationReclaimOutcomeV1::Absent);
+        }
+        let marker_path = layout::sealed_marker_path(&generation_dir);
+        if !marker_path.exists() {
+            return Err(CoreError::Typed {
+                code: "GENERATION_NOT_SEALED".to_string(),
+                message: format!(
+                    "semantic: refusing to reclaim unsealed generation {} as retired history",
+                    retired.manifest_generation.get()
+                ),
+            });
+        }
+        let observed_digest = std::fs::read_to_string(&marker_path).map_err(|error| {
+            CoreError::Storage(format!(
+                "semantic: read sealed marker {}: {error}",
+                marker_path.display()
+            ))
+        })?;
+        if observed_digest != retired.manifest_digest {
+            return Err(generation_digest_mismatch(retired, "sealed marker"));
+        }
+        let manifest_path = layout::manifest_path(&generation_dir);
+        let manifest =
+            SemanticManifest::decode(&std::fs::read(&manifest_path).map_err(|error| {
+                CoreError::Storage(format!(
+                    "semantic: read manifest {}: {error}",
+                    manifest_path.display()
+                ))
+            })?)?;
+        manifest.validate_scope(
+            &retired.repo_id,
+            &retired.revision_id,
+            retired.manifest_generation,
+        )?;
+        if manifest.manifest_digest != retired.manifest_digest {
+            return Err(generation_digest_mismatch(retired, "manifest"));
+        }
+        let bytes = crate::search::dataset_tree_bytes(&generation_dir)?;
+        std::fs::remove_dir_all(&generation_dir).map_err(|error| {
+            CoreError::Storage(format!(
+                "semantic: reclaim sealed generation {}: {error}",
+                generation_dir.display()
+            ))
+        })?;
+        if let Some(parent) = generation_dir.parent() {
+            File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|error| {
+                    CoreError::Storage(format!(
+                        "semantic: fsync pair directory {} after reclaim: {error}",
+                        parent.display()
+                    ))
+                })?;
+        }
+        Ok(SealedGenerationReclaimOutcomeV1::Reclaimed { bytes })
+    }
+
+    fn sealed_generations_for_pair(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) -> Result<Vec<GenerationSnapshot>, CoreError> {
+        let pair_dir = self
+            .state_root
+            .join(GenerationStorageKeyV1::for_repo_revision(repo_id, revision_id).as_str());
+        let mut out = Vec::new();
+        if !pair_dir.exists() {
+            return Ok(out);
+        }
+        for entry in std::fs::read_dir(&pair_dir).map_err(|error| {
+            CoreError::Storage(format!("semantic: list {}: {error}", pair_dir.display()))
+        })? {
+            let entry = entry.map_err(|error| {
+                CoreError::Storage(format!("semantic: read generation entry: {error}"))
+            })?;
+            let generation_dir = entry.path();
+            if !generation_dir.is_dir() {
+                continue;
+            }
+            let marker_path = layout::sealed_marker_path(&generation_dir);
+            if !marker_path.exists() {
+                continue;
+            }
+            let manifest_path = layout::manifest_path(&generation_dir);
+            let manifest =
+                SemanticManifest::decode(&std::fs::read(&manifest_path).map_err(|error| {
+                    CoreError::Storage(format!(
+                        "semantic: read manifest {}: {error}",
+                        manifest_path.display()
+                    ))
+                })?)?;
+            let generation = ManifestGeneration::new(manifest.generation);
+            manifest.validate_scope(repo_id, revision_id, generation)?;
+            if layout::generation_dir(&self.state_root, repo_id, revision_id, generation)
+                != generation_dir
+            {
+                return Err(CoreError::Typed {
+                    code: "GENERATION_IDENTITY_SCOPE_MISMATCH".to_string(),
+                    message: format!(
+                        "semantic: manifest does not own physical path {}",
+                        generation_dir.display()
+                    ),
+                });
+            }
+            let marker_digest = std::fs::read_to_string(&marker_path).map_err(|error| {
+                CoreError::Storage(format!(
+                    "semantic: read sealed marker {}: {error}",
+                    marker_path.display()
+                ))
+            })?;
+            if marker_digest != manifest.manifest_digest {
+                return Err(CoreError::Typed {
+                    code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
+                    message: format!(
+                        "semantic: sealed marker and manifest disagree at {}",
+                        generation_dir.display()
+                    ),
+                });
+            }
+            out.push(GenerationSnapshot {
+                repo_id: repo_id.clone(),
+                revision_id: revision_id.clone(),
+                track: SearchPlaneTrackKind::Semantic,
+                manifest_generation: generation,
+                manifest_digest: manifest.manifest_digest.clone(),
+            });
+        }
+        out.sort_by_key(|identity| identity.manifest_generation);
+        Ok(out)
     }
 }
 

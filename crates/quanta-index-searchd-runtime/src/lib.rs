@@ -17,8 +17,9 @@ use quanta_index_core::{
     FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
     IncompleteGenerationDiscardPort, LexicalIndexOpenPort, RepoCommitRecencyIngestPort,
     RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
-    RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort, SealedGenerationScanPort,
-    SearchCorpusBatchBuildPort, SemanticBatchBuildPort, SemanticIndexOpenPort,
+    RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort, SealedGenerationReclaimPort,
+    SealedGenerationScanPort, SearchCorpusBatchBuildPort, SemanticBatchBuildPort,
+    SemanticIndexOpenPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_lexical::regex::RegexPolicy;
@@ -66,6 +67,8 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
         lex_adapter.clone();
     let lexical_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync> =
         lex_adapter.clone();
+    let lexical_sealed_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync> =
+        lex_adapter.clone();
     let lex_open_port: Arc<dyn LexicalIndexOpenPort + Send + Sync> = lex_adapter.clone();
     let repo_commit_recency_ingest_port: Arc<dyn RepoCommitRecencyIngestPort + Send + Sync> =
         lex_adapter.clone();
@@ -82,6 +85,8 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
         sem_adapter.clone();
     let semantic_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync> =
         sem_adapter.clone();
+    let semantic_sealed_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync> =
+        sem_adapter.clone();
     let sem_open_port: Arc<dyn SemanticIndexOpenPort + Send + Sync> = sem_adapter;
     let repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync> = repo_map_store.clone();
     let repo_map_bundle_ingest_port: Arc<dyn RepoMapBundleIngestPort + Send + Sync> =
@@ -97,6 +102,7 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
             lexical_generation_scanner,
             lexical_generation_validator,
             lexical_incomplete_discard,
+            lexical_sealed_reclaim,
             lex_open_port,
             repo_commit_recency_ingest_port,
             repo_topic_ingest_port,
@@ -107,6 +113,7 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
             sem_build_port,
             semantic_generation_validator,
             semantic_incomplete_discard,
+            semantic_sealed_reclaim,
             sem_open_port,
             repo_map_query_port,
             repo_map_bundle_ingest_port,

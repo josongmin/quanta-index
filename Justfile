@@ -252,6 +252,7 @@ rust-test-e2e:
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_semantic_scope_cap --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_snapshot_registry --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_exact_count_window --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_physical_gc --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_predicate_authority_lifecycle --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_generation_activation_concurrency --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test dsl_scenarios --all-features --locked

@@ -29,10 +29,10 @@ use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
     IncompleteGenerationDiscardPort, LexicalIndexOpenPort, RepoCommitRecencyIngestPort,
     RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
-    RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort, SealedGenerationScanPort,
-    SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticBatchBuildPort,
-    SemanticIndexOpenPort, SemanticIngestPort, StructuralError, StructuralMatchBinding,
-    StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider,
+    RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort, SealedGenerationReclaimPort,
+    SealedGenerationScanPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
+    SemanticBatchBuildPort, SemanticIndexOpenPort, SemanticIngestPort, StructuralError,
+    StructuralMatchBinding, StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider,
 };
 use quanta_index_embed::{CachingEmbeddingProvider, FileEmbeddingCache, OpenAiEmbeddingProvider};
 use quanta_index_ipc::IpcDispatcher;
@@ -70,6 +70,7 @@ pub struct SearchdRuntimeParts {
     pub lexical_generation_scanner: Arc<dyn SealedGenerationScanPort + Send + Sync>,
     pub lexical_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
     pub lexical_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>,
+    pub lexical_sealed_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
     pub lex_open_port: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
     pub repo_commit_recency_ingest_port: Arc<dyn RepoCommitRecencyIngestPort + Send + Sync>,
     pub repo_topic_ingest_port: Arc<dyn RepoTopicIngestPort + Send + Sync>,
@@ -80,6 +81,7 @@ pub struct SearchdRuntimeParts {
     pub sem_build_port: Arc<dyn SemanticBatchBuildPort + Send + Sync>,
     pub semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
     pub semantic_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>,
+    pub semantic_sealed_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
     pub sem_open_port: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
     pub repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync>,
     pub repo_map_bundle_ingest_port: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
@@ -753,6 +755,7 @@ impl SearchdRuntime {
             lexical_generation_scanner,
             lexical_generation_validator,
             lexical_incomplete_discard,
+            lexical_sealed_reclaim,
             lex_open_port,
             repo_commit_recency_ingest_port,
             repo_topic_ingest_port,
@@ -763,6 +766,7 @@ impl SearchdRuntime {
             sem_build_port,
             semantic_generation_validator,
             semantic_incomplete_discard,
+            semantic_sealed_reclaim,
             sem_open_port,
             repo_map_query_port,
             repo_map_bundle_ingest_port,
@@ -823,6 +827,7 @@ impl SearchdRuntime {
         let direct_sem_ingest_port: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
             DirectSemanticMaterializer::new(Arc::clone(&sem_build_port), Arc::clone(&ledger)),
         );
+        let snapshots = SnapshotRegistries::new(config.snapshot_registry_policy());
         let direct_search_corpus_ingest_port: Arc<dyn SearchCorpusIngestPort + Send + Sync> =
             Arc::new(
                 DirectSearchCorpusMaterializer::new_with_search_owned_semantics_from_env(
@@ -836,6 +841,9 @@ impl SearchdRuntime {
                         semantic_generation_validator: Arc::clone(&semantic_generation_validator),
                         lexical_incomplete_discard: Arc::clone(&lexical_incomplete_discard),
                         semantic_incomplete_discard: Arc::clone(&semantic_incomplete_discard),
+                        lexical_reclaim: lexical_sealed_reclaim,
+                        semantic_reclaim: semantic_sealed_reclaim,
+                        snapshots: snapshots.clone(),
                     },
                 )
                 .map_err(anyhow::Error::from)?,
@@ -859,7 +867,6 @@ impl SearchdRuntime {
             } else {
                 query_obs_store.clone()
             };
-        let snapshots = SnapshotRegistries::new(config.snapshot_registry_policy());
         let query_dispatcher = Arc::new(SearchPlaneDispatcher::new_with_obs(
             Arc::clone(&lex_open_port),
             Arc::clone(&sem_open_port),

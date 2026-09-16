@@ -16,7 +16,8 @@ pub use error::{CoreError, validate_internal_fetch_size, validate_query_top_k};
 
 pub use domains::generation::{
     GenerationIdentityValidatePort, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
-    IncompleteGenerationDiscardPort, SealedGenerationScanPort,
+    IncompleteGenerationDiscardPort, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
+    SealedGenerationScanPort,
 };
 pub use domains::hybrid::{ExplainQueryPort, HybridOrchestratorPolicy, HybridQueryPort};
 pub use domains::lexical::{

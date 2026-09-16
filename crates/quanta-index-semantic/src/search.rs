@@ -425,7 +425,7 @@ pub(crate) async fn open_generation(
 ///
 /// `LanceDB` maps the dataset's files on demand, so their on-disk size is the
 /// honest upper bound on what one open handle can make resident.
-fn dataset_tree_bytes(root: &Path) -> Result<u64, CoreError> {
+pub(crate) fn dataset_tree_bytes(root: &Path) -> Result<u64, CoreError> {
     let mut total = 0_u64;
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {

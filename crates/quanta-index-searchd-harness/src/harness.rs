@@ -144,6 +144,10 @@ pub struct E2eRuntime {
     /// Held on the runtime (not mutated through process-global env) so two
     /// harness instances in one process can disagree on embedder.
     embedder_profile: SemanticEmbedderProfile,
+    /// Sealed generations the daemon keeps per repo/revision pair. The
+    /// harness default (8) is wide enough that ordinary tests never reap;
+    /// GC tests narrow it through [`Self::boot_with_history_max_generations`].
+    history_max_generations: usize,
     driver: Option<DriverState>,
     query_obs_store: Option<Arc<BoundedQueryObsStore>>,
     chunk_ids_by_path: BTreeMap<String, ChunkId>,
@@ -254,12 +258,27 @@ impl E2eRuntime {
     /// locally — without touching process-global env. Selecting `OpenAi`
     /// requires a key/network at query time; CI MUST stay on the `Hash` default.
     pub fn boot_with_embedder_profile(profile: SemanticEmbedderProfile) -> AnyResult<Self> {
+        Self::boot_with_profile_and_history(profile, DEFAULT_HISTORY_MAX_GENERATIONS)
+    }
+
+    /// Like [`Self::boot`] but keeps only `max_generations` sealed
+    /// generations per pair, so retention (and the physical GC behind it)
+    /// runs inside a test instead of never.
+    pub fn boot_with_history_max_generations(max_generations: usize) -> AnyResult<Self> {
+        Self::boot_with_profile_and_history(SemanticEmbedderProfile::default(), max_generations)
+    }
+
+    fn boot_with_profile_and_history(
+        profile: SemanticEmbedderProfile,
+        history_max_generations: usize,
+    ) -> AnyResult<Self> {
         let tempdir = tempfile::tempdir()?;
         let state_root = tempdir.path().to_path_buf();
         Ok(Self {
             tempdir: Some(tempdir),
             state_root,
             embedder_profile: profile,
+            history_max_generations,
             driver: None,
             query_obs_store: None,
             chunk_ids_by_path: BTreeMap::new(),
@@ -321,7 +340,11 @@ impl E2eRuntime {
     fn ensure_driver(&mut self) -> AnyResult<PathBuf> {
         if self.driver.is_none() {
             let (query_socket, control_socket, ingest_socket, shutdown, join, query_obs_store) =
-                start_driver(&self.state_root, &self.embedder_profile)?;
+                start_driver(
+                    &self.state_root,
+                    &self.embedder_profile,
+                    self.history_max_generations,
+                )?;
             self.query_obs_store = Some(Arc::clone(&query_obs_store));
             self.driver = Some(DriverState {
                 query_socket,
@@ -2379,8 +2402,9 @@ fn explain_transport_error(
 fn start_driver(
     state_root: &Path,
     embedder_profile: &SemanticEmbedderProfile,
+    history_max_generations: usize,
 ) -> AnyResult<DriverHandles> {
-    let config = build_config(state_root, embedder_profile)?;
+    let config = build_config(state_root, embedder_profile, history_max_generations)?;
     let runtime = build_runtime(config)?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
     let control_socket = runtime.control_server.socket_path().to_path_buf();
@@ -2421,13 +2445,16 @@ fn start_driver(
     ))
 }
 
+const DEFAULT_HISTORY_MAX_GENERATIONS: usize = 8;
+
 fn build_config(
     state_root: &Path,
     embedder_profile: &SemanticEmbedderProfile,
+    history_max_generations: usize,
 ) -> AnyResult<SearchdConfig> {
     let mut cfg = SearchdConfig::from_state_root(state_root.to_path_buf())
         .try_with_search_corpus_history_retention_limits(
-            8,
+            history_max_generations,
             16 * 1024 * 1024,
             128,
             256 * 1024 * 1024,

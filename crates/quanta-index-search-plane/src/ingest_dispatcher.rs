@@ -10,6 +10,7 @@
 //! concrete adapter types (materializers, channel mirrors, repo-map ingest);
 //! this module holds only [`Arc<dyn ...Port>`] (CLAUDE.md DIP rule).
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::readiness::{
@@ -22,7 +23,7 @@ use crate::semantic_derive::{
 };
 use crate::{
     AuxiliaryAuthorityStore, Ledger, SealedSearchCorpusAuthorityStateV1, SnapshotKey,
-    SnapshotRegistries,
+    SnapshotRegistries, SnapshotRetireOutcome,
 };
 use quanta_index_contract::{
     BatchPublishReceipt, DirtyIngestBatch, DirtyMutation, GenerationSnapshot, HistoryIngestBatch,
@@ -35,7 +36,8 @@ use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
     IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort,
     RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
-    RepoMetaIngestPort, RepoTopicIngestPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
+    RepoMetaIngestPort, RepoTopicIngestPort, SealedGenerationReclaimOutcomeV1,
+    SealedGenerationReclaimPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
     SemanticBatchBuildPort, SemanticIngestPort, TextEmbeddingProvider,
 };
 
@@ -79,6 +81,12 @@ pub struct DirectSearchCorpusMaterializer {
     semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
     lexical_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>,
     semantic_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>,
+    /// Physical GC of retired sealed generations (QI-BB-003): one reclaim
+    /// port per track plus the registries that must release their handles
+    /// before any bytes go.
+    lexical_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
+    semantic_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
+    snapshots: SnapshotRegistries,
     operation_locks: [Mutex<()>; SEARCH_CORPUS_LOCK_STRIPES_V1],
     semantic_derivation_mode: SemanticDerivationModeV1,
 }
@@ -94,6 +102,9 @@ pub struct SearchCorpusMaterializerParts {
     pub semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
     pub lexical_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>,
     pub semantic_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>,
+    pub lexical_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
+    pub semantic_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
+    pub snapshots: SnapshotRegistries,
 }
 
 /// Durable owner for complete lexical+semantic rollback history.
@@ -172,6 +183,9 @@ impl DirectSearchCorpusMaterializer {
             semantic_generation_validator,
             lexical_incomplete_discard,
             semantic_incomplete_discard,
+            lexical_reclaim,
+            semantic_reclaim,
+            snapshots,
         } = parts;
         Self {
             builder,
@@ -183,6 +197,9 @@ impl DirectSearchCorpusMaterializer {
             semantic_generation_validator,
             lexical_incomplete_discard,
             semantic_incomplete_discard,
+            lexical_reclaim,
+            semantic_reclaim,
+            snapshots,
             operation_locks: std::array::from_fn(|_index| Mutex::new(())),
             semantic_derivation_mode,
         }
@@ -434,8 +451,77 @@ impl DirectSearchCorpusMaterializer {
                 );
             }
         }
+        if let Some(retention) = retention {
+            let _receipt = self.reclaim_retired_generations_v1(batch, retention)?;
+        }
         Ok(())
     }
+
+    /// Physical GC for the pair the batch just sealed (QI-BB-003).
+    ///
+    /// Runs only after the durable authority has been reaped and the ledger
+    /// reconciled from the receipt, so no query can resolve or pin a retired
+    /// generation any more. For each track, every sealed generation on disk
+    /// that the receipt does not retain and that is older than the one being
+    /// sealed is an orphan of this or an earlier retention pass; it is fenced
+    /// out of the snapshot registry first, and reclaimed only if nothing
+    /// still holds its handle. A pinned generation is deferred, not deleted
+    /// under a reader; the next pass will find it again. Sweeping from the
+    /// filesystem rather than from the receipt's reaped set is what makes a
+    /// crash between reap and reclaim recoverable.
+    fn reclaim_retired_generations_v1(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        retention: &SearchCorpusHistoryRetentionReceiptV1,
+    ) -> Result<SearchCorpusPhysicalReclaimReceiptV1, CoreError> {
+        let mut receipt = SearchCorpusPhysicalReclaimReceiptV1::default();
+        let tracks: [(
+            &Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
+            SearchPlaneTrackKind,
+        ); 2] = [
+            (&self.lexical_reclaim, SearchPlaneTrackKind::Lexical),
+            (&self.semantic_reclaim, SearchPlaneTrackKind::Semantic),
+        ];
+        for (port, track) in tracks {
+            for retired in port.sealed_generations_for_pair(&batch.repo_id, &batch.revision_id)? {
+                let generation = retired.manifest_generation;
+                if retention.retains(generation) || generation >= batch.generation {
+                    continue;
+                }
+                let key = SnapshotKey::new(&batch.repo_id, &batch.revision_id, generation);
+                let fence = match track {
+                    SearchPlaneTrackKind::Lexical => self.snapshots.lexical.retire(&key)?,
+                    SearchPlaneTrackKind::Semantic => self.snapshots.semantic.retire(&key)?,
+                    SearchPlaneTrackKind::Structural => {
+                        return Err(CoreError::InvalidContract(
+                            "search-corpus physical reclaim: structural is not a search-corpus track"
+                                .to_string(),
+                        ));
+                    }
+                };
+                if let SnapshotRetireOutcome::StillReferenced { holders } = fence {
+                    let _deferred = receipt.deferred_pinned.insert((track, generation, holders));
+                    continue;
+                }
+                match port.reclaim_sealed_generation(&retired)? {
+                    SealedGenerationReclaimOutcomeV1::Absent => {}
+                    SealedGenerationReclaimOutcomeV1::Reclaimed { bytes } => {
+                        let _prior = receipt.reclaimed.insert((track, generation), bytes);
+                    }
+                }
+            }
+        }
+        Ok(receipt)
+    }
+}
+
+/// What one physical reclaim pass did, per track and generation.
+#[derive(Debug, Default, Eq, PartialEq)]
+pub(crate) struct SearchCorpusPhysicalReclaimReceiptV1 {
+    /// Bytes given back per reclaimed generation.
+    pub(crate) reclaimed: BTreeMap<(SearchPlaneTrackKind, ManifestGeneration), u64>,
+    /// Generations left on disk because a resident handle still had holders.
+    pub(crate) deferred_pinned: BTreeSet<(SearchPlaneTrackKind, ManifestGeneration, usize)>,
 }
 
 fn generation_pair_from_batch_v1(
@@ -1188,6 +1274,9 @@ mod tests {
                     semantic_generation_validator: $semantic_generation_validator,
                     lexical_incomplete_discard: $lexical_incomplete_discard,
                     semantic_incomplete_discard: $semantic_incomplete_discard,
+                    lexical_reclaim: no_storage_sealed_reclaim(),
+                    semantic_reclaim: no_storage_sealed_reclaim(),
+                    snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
                 },
             )
         };
@@ -1357,6 +1446,269 @@ mod tests {
     fn test_incomplete_generation_discard() -> Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>
     {
         Arc::new(TestIncompleteGenerationDiscard)
+    }
+
+    /// A reclaim port over no storage.
+    ///
+    /// Nothing is ever on disk, so the sweep finds nothing. The materializer
+    /// tests here exercise the authority and ledger protocol; physical
+    /// reclaim is proven against the real adapters in the daemon-level
+    /// `e2e_physical_gc` test.
+    struct NoStorageSealedReclaim;
+
+    impl SealedGenerationReclaimPort for NoStorageSealedReclaim {
+        fn reclaim_sealed_generation(
+            &self,
+            _retired: &GenerationSnapshot,
+        ) -> Result<SealedGenerationReclaimOutcomeV1, CoreError> {
+            Ok(SealedGenerationReclaimOutcomeV1::Absent)
+        }
+
+        fn sealed_generations_for_pair(
+            &self,
+            _repo_id: &RepoId,
+            _revision_id: &RevisionId,
+        ) -> Result<Vec<GenerationSnapshot>, CoreError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn no_storage_sealed_reclaim() -> Arc<dyn SealedGenerationReclaimPort + Send + Sync> {
+        Arc::new(NoStorageSealedReclaim)
+    }
+
+    /// A reclaim port over a scripted set of on-disk sealed generations; it
+    /// records every reclaim so the protocol's decisions are observable.
+    struct ScriptedSealedReclaim {
+        track: SearchPlaneTrackKind,
+        on_disk: Mutex<Vec<ManifestGeneration>>,
+        reclaimed: Mutex<Vec<ManifestGeneration>>,
+    }
+
+    impl ScriptedSealedReclaim {
+        fn new(track: SearchPlaneTrackKind, on_disk: &[u64]) -> Arc<Self> {
+            Arc::new(Self {
+                track,
+                on_disk: Mutex::new(
+                    on_disk
+                        .iter()
+                        .copied()
+                        .map(ManifestGeneration::new)
+                        .collect(),
+                ),
+                reclaimed: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn reclaimed(&self) -> Vec<u64> {
+            match self.reclaimed.lock() {
+                Ok(guard) => guard.iter().map(|generation| generation.get()).collect(),
+                Err(poisoned) => poisoned
+                    .into_inner()
+                    .iter()
+                    .map(|generation| generation.get())
+                    .collect(),
+            }
+        }
+
+        fn remaining(&self) -> Vec<u64> {
+            match self.on_disk.lock() {
+                Ok(guard) => guard.iter().map(|generation| generation.get()).collect(),
+                Err(poisoned) => poisoned
+                    .into_inner()
+                    .iter()
+                    .map(|generation| generation.get())
+                    .collect(),
+            }
+        }
+    }
+
+    impl SealedGenerationReclaimPort for ScriptedSealedReclaim {
+        fn reclaim_sealed_generation(
+            &self,
+            retired: &GenerationSnapshot,
+        ) -> Result<SealedGenerationReclaimOutcomeV1, CoreError> {
+            let mut on_disk = self
+                .on_disk
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("scripted reclaim poisoned: {err}")))?;
+            let Some(index) = on_disk
+                .iter()
+                .position(|generation| *generation == retired.manifest_generation)
+            else {
+                return Ok(SealedGenerationReclaimOutcomeV1::Absent);
+            };
+            let _removed = on_disk.remove(index);
+            drop(on_disk);
+            self.reclaimed
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("scripted reclaim poisoned: {err}")))?
+                .push(retired.manifest_generation);
+            Ok(SealedGenerationReclaimOutcomeV1::Reclaimed { bytes: 1 })
+        }
+
+        fn sealed_generations_for_pair(
+            &self,
+            repo_id: &RepoId,
+            revision_id: &RevisionId,
+        ) -> Result<Vec<GenerationSnapshot>, CoreError> {
+            Ok(self
+                .on_disk
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("scripted reclaim poisoned: {err}")))?
+                .iter()
+                .map(|generation| GenerationSnapshot {
+                    repo_id: repo_id.clone(),
+                    revision_id: revision_id.clone(),
+                    track: self.track,
+                    manifest_generation: *generation,
+                    manifest_digest: format!("digest:{}", generation.get()),
+                })
+                .collect())
+        }
+    }
+
+    /// The smallest `LexicalSearcher` that can occupy a registry slot: it
+    /// exists only so a test can hold a pin on a generation.
+    struct PinnedLexicalHandle;
+
+    impl quanta_index_core::LexicalSearcher for PinnedLexicalHandle {
+        fn resident_bytes_estimate(&self) -> u64 {
+            1
+        }
+
+        fn search_constrained(
+            &self,
+            _query: &quanta_index_contract::LqQuery,
+            _constraints: &quanta_index_contract::QueryConstraintSetV1,
+            _top_k: u32,
+        ) -> Result<quanta_index_core::LexicalSearchPageV1, CoreError> {
+            Err(CoreError::NotImplemented("pin-only handle".to_string()))
+        }
+
+        fn project_file_owners(
+            &self,
+            _candidates: &[quanta_index_contract::LexicalCandidate],
+        ) -> Result<Vec<quanta_index_contract::FileOwnerProjectionRow>, CoreError> {
+            Err(CoreError::NotImplemented("pin-only handle".to_string()))
+        }
+
+        fn search_symbols(
+            &self,
+            _query: &quanta_index_contract::LqQuery,
+            _top_k: u32,
+        ) -> Result<Vec<quanta_index_contract::SymbolCandidate>, CoreError> {
+            Err(CoreError::NotImplemented("pin-only handle".to_string()))
+        }
+
+        fn search_all(
+            &self,
+            _query: &quanta_index_contract::LqQuery,
+        ) -> Result<Vec<quanta_index_contract::LexicalCandidate>, CoreError> {
+            Err(CoreError::NotImplemented("pin-only handle".to_string()))
+        }
+    }
+
+    /// The physical reclaim protocol under pins and orphans.
+    ///
+    /// Every sealed directory the receipt does not retain is reclaimed —
+    /// including one whose authority record was reaped by an earlier pass
+    /// (the crash orphan) — except a generation a resident handle still
+    /// pins, which is deferred and reclaimed on the next pass once the pin
+    /// is gone.
+    #[test]
+    fn reclaim_sweeps_orphans_and_defers_pinned_generations() -> TestRes {
+        let lexical_reclaim =
+            ScriptedSealedReclaim::new(SearchPlaneTrackKind::Lexical, &[1, 2, 3, 4, 5]);
+        let semantic_reclaim =
+            ScriptedSealedReclaim::new(SearchPlaneTrackKind::Semantic, &[2, 3, 4, 5]);
+        let snapshots = SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT);
+        let lexical_ledger = Arc::new(RwLock::new(Ledger::new()));
+        let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
+            Arc::new(DirectSemanticMaterializer::new(
+                Arc::new(FakeSemanticBuilder::default()),
+                Arc::new(RwLock::new(Ledger::new())),
+            ));
+        let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
+            SearchCorpusMaterializerParts {
+                builder: Arc::new(FakeSearchCorpusBuilder::default()),
+                ledger: lexical_ledger,
+                semantic_ingest: semantic_materializer,
+                semantic_embedder: Arc::new(crate::HashingQueryTextEmbedder::new(
+                    SEARCH_OWNED_SEMANTIC_DIMENSION,
+                )),
+                authority: Arc::new(RecordingSearchCorpusAuthority::default()),
+                lexical_generation_validator: always_valid_generation(),
+                semantic_generation_validator: always_valid_generation(),
+                lexical_incomplete_discard: test_incomplete_generation_discard(),
+                semantic_incomplete_discard: test_incomplete_generation_discard(),
+                lexical_reclaim: lexical_reclaim.clone(),
+                semantic_reclaim: semantic_reclaim.clone(),
+                snapshots: snapshots.clone(),
+            },
+        );
+        let mut batch = fixture_search_corpus_batch()?;
+        batch.generation = ManifestGeneration::new(5);
+        let receipt = SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
+            &batch.repo_id,
+            &batch.revision_id,
+            [ManifestGeneration::new(4), ManifestGeneration::new(5)],
+        );
+
+        // A query still holds generation 2 on the lexical track.
+        let pinned_key = SnapshotKey::new(
+            &batch.repo_id,
+            &batch.revision_id,
+            ManifestGeneration::new(2),
+        );
+        let pin = snapshots
+            .lexical
+            .acquire(&pinned_key, || {
+                let handle: Arc<dyn quanta_index_core::LexicalSearcher> =
+                    Arc::new(PinnedLexicalHandle);
+                Ok(crate::OpenedSnapshot {
+                    handle,
+                    resident_bytes: 1,
+                })
+            })?
+            .handle;
+
+        let first = materializer.reclaim_retired_generations_v1(&batch, &receipt)?;
+        if lexical_reclaim.reclaimed() != [1, 3] || semantic_reclaim.reclaimed() != [2, 3] {
+            return Err(format!(
+                "first pass drifted: lexical={:?} semantic={:?}",
+                lexical_reclaim.reclaimed(),
+                semantic_reclaim.reclaimed()
+            )
+            .into());
+        }
+        if !first.deferred_pinned.contains(&(
+            SearchPlaneTrackKind::Lexical,
+            ManifestGeneration::new(2),
+            1,
+        )) {
+            return Err(format!("pinned generation was not deferred: {first:?}").into());
+        }
+        if lexical_reclaim.remaining() != [2, 4, 5] {
+            return Err(format!(
+                "pinned generation 2 must survive the pass: {:?}",
+                lexical_reclaim.remaining()
+            )
+            .into());
+        }
+
+        // Release the pin: the next pass reclaims the orphan it left behind.
+        drop(pin);
+        let second = materializer.reclaim_retired_generations_v1(&batch, &receipt)?;
+        if !second.deferred_pinned.is_empty() || lexical_reclaim.remaining() != [4, 5] {
+            return Err(format!(
+                "second pass drifted: deferred={:?} remaining={:?}",
+                second.deferred_pinned,
+                lexical_reclaim.remaining()
+            )
+            .into());
+        }
+        Ok(())
     }
 
     #[derive(Default)]

@@ -58,6 +58,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::domains::generation::{
     GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort,
+    SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
 };
 use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
@@ -4407,6 +4408,156 @@ impl IncompleteGenerationDiscardPort for LexicalAdapter {
         self.invalidate_regex_match_cache_generation(&key)?;
         Ok(IncompleteGenerationDiscardOutcomeV1::Discarded)
     }
+}
+
+impl SealedGenerationReclaimPort for LexicalAdapter {
+    fn reclaim_sealed_generation(
+        &self,
+        retired: &GenerationSnapshot,
+    ) -> Result<SealedGenerationReclaimOutcomeV1, CoreError> {
+        if retired.track != SearchPlaneTrackKind::Lexical {
+            return Err(CoreError::InvalidContract(format!(
+                "lexical sealed-generation reclaim received {:?} track",
+                retired.track
+            )));
+        }
+        let key = GenKey {
+            repo_id: retired.repo_id.clone(),
+            revision_id: retired.revision_id.clone(),
+            generation: retired.manifest_generation,
+        };
+        let generation_dir = self.index_path(&key);
+        if !generation_dir.exists() {
+            return Ok(SealedGenerationReclaimOutcomeV1::Absent);
+        }
+        // Only a sealed generation is this port's to remove; an unsealed
+        // directory belongs to the incomplete-generation protocol.
+        if !lexical_sealed_identity_path(&generation_dir).exists() {
+            return Err(CoreError::Typed {
+                code: "GENERATION_NOT_SEALED".to_string(),
+                message: format!(
+                    "lexical: refusing to reclaim unsealed generation {} as retired history",
+                    retired.manifest_generation.get()
+                ),
+            });
+        }
+        let observed = read_lexical_sealed_identity(&generation_dir)?;
+        validate_lexical_sealed_identity(&observed, retired)?;
+        let bytes = generation_tree_bytes(&generation_dir)?;
+        // A sealed generation has no live writer, but a stale handle from an
+        // earlier attempt must not outlive the directory.
+        {
+            let mut writers = self
+                .writers
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?;
+            let _stale_writer = writers.remove(&key);
+        }
+        std::fs::remove_dir_all(&generation_dir).map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: reclaim sealed generation {}: {error}",
+                generation_dir.display()
+            ))
+        })?;
+        if let Some(parent) = generation_dir.parent() {
+            File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|error| {
+                    CoreError::Storage(format!(
+                        "lexical: fsync pair directory {} after reclaim: {error}",
+                        parent.display()
+                    ))
+                })?;
+        }
+        let _removed_metadata = self
+            .repo_metadata
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("lexical repo metadata poisoned: {err}")))?
+            .remove(&key);
+        self.invalidate_regex_match_cache_generation(&key)?;
+        Ok(SealedGenerationReclaimOutcomeV1::Reclaimed { bytes })
+    }
+
+    fn sealed_generations_for_pair(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) -> Result<Vec<GenerationSnapshot>, CoreError> {
+        let pair_dir = self
+            .state_root
+            .join(GenerationStorageKeyV1::for_repo_revision(repo_id, revision_id).as_str());
+        let mut out = Vec::new();
+        if !pair_dir.exists() {
+            return Ok(out);
+        }
+        for entry in std::fs::read_dir(&pair_dir).map_err(|error| {
+            CoreError::Storage(format!("lexical: list {}: {error}", pair_dir.display()))
+        })? {
+            let entry = entry.map_err(|error| {
+                CoreError::Storage(format!("lexical: read generation entry: {error}"))
+            })?;
+            let generation_dir = entry.path();
+            if !generation_dir.is_dir() || !lexical_sealed_identity_path(&generation_dir).exists() {
+                continue;
+            }
+            let identity = read_lexical_sealed_identity(&generation_dir)?;
+            if identity.repo_id != *repo_id
+                || identity.revision_id != *revision_id
+                || identity.track != SearchPlaneTrackKind::Lexical
+                || self.index_path(&GenKey {
+                    repo_id: identity.repo_id.clone(),
+                    revision_id: identity.revision_id.clone(),
+                    generation: identity.manifest_generation,
+                }) != generation_dir
+            {
+                return Err(CoreError::Typed {
+                    code: "GENERATION_IDENTITY_SCOPE_MISMATCH".to_string(),
+                    message: format!(
+                        "lexical: persisted identity does not own physical path {}",
+                        generation_dir.display()
+                    ),
+                });
+            }
+            out.push(identity);
+        }
+        out.sort_by_key(|identity| identity.manifest_generation);
+        Ok(out)
+    }
+}
+
+/// Sum of regular-file sizes under `root`, recursively: the bytes a reclaim
+/// gives back, measured before deletion.
+fn generation_tree_bytes(root: &Path) -> Result<u64, CoreError> {
+    let mut total = 0_u64;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let entries = std::fs::read_dir(&directory).map_err(|err| {
+            CoreError::Storage(format!(
+                "lexical: measure generation dir {}: {err}",
+                directory.display()
+            ))
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|err| {
+                CoreError::Storage(format!(
+                    "lexical: measure generation entry in {}: {err}",
+                    directory.display()
+                ))
+            })?;
+            let metadata = entry.metadata().map_err(|err| {
+                CoreError::Storage(format!(
+                    "lexical: measure generation entry {}: {err}",
+                    entry.path().display()
+                ))
+            })?;
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            } else if metadata.is_file() {
+                total = total.saturating_add(metadata.len());
+            }
+        }
+    }
+    Ok(total)
 }
 
 #[derive(Clone, Debug)]

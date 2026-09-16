@@ -6,6 +6,8 @@ crate quanta_index_core
 │   │   ├── struct GenerationStorageKeyV1: pub
 │   │   ├── enum IncompleteGenerationDiscardOutcomeV1: pub
 │   │   ├── trait IncompleteGenerationDiscardPort: pub
+│   │   ├── enum SealedGenerationReclaimOutcomeV1: pub
+│   │   ├── trait SealedGenerationReclaimPort: pub
 │   │   └── trait SealedGenerationScanPort: pub
 │   ├── mod hybrid: pub
 │   │   ├── mod inbound: pub(self)
