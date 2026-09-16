@@ -152,10 +152,11 @@ fn second_semantic_query_does_not_reopen_the_generation() -> TestResult {
     Ok(())
 }
 
-/// A routed mutation that names the generation drops its residency: after
-/// an auxiliary publish, the next query cold-opens and therefore fails on
-/// the deleted files. Without invalidation it would have kept serving the
-/// pre-mutation handle.
+/// A routed mutation that names the generation drops its residency.
+///
+/// After an auxiliary publish, the next query cold-opens and therefore
+/// fails on the deleted files. Without invalidation it would have kept
+/// serving the pre-mutation handle.
 #[test]
 fn an_auxiliary_publish_invalidates_the_resident_generation() -> TestResult {
     let mut rt = seeded_runtime()?;
@@ -178,9 +179,12 @@ fn an_auxiliary_publish_invalidates_the_resident_generation() -> TestResult {
 
     // Prove the mutation landed on disk in this generation before deleting.
     let dir = lexical_generation_dir(&rt)?;
-    let meta_written = std::fs::read_dir(&dir)?
-        .filter_map(Result::ok)
-        .any(|entry| entry.file_name().to_string_lossy().contains("repo-meta"));
+    let mut meta_written = false;
+    for entry in std::fs::read_dir(&dir)? {
+        if entry?.file_name().to_string_lossy().contains("repo-meta") {
+            meta_written = true;
+        }
+    }
     if !meta_written {
         return Err(format!("repo-meta snapshot was not written into {}", dir.display()).into());
     }
