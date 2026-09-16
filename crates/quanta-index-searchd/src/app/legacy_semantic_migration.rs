@@ -313,13 +313,13 @@ pub(super) fn migrate(
             source.revision_id.clone(),
             source.generation,
         );
-        if let Some(witness) = before.get(&key) {
-            if witness.manifest_digest() != source.manifest_digest {
-                return Err(CoreError::Typed {
-                    code: "LEGACY_SEMANTIC_MIGRATION_DIGEST_CONFLICT".to_string(),
-                    message: "journal conflicts with sealed durable generation".to_string(),
-                });
-            }
+        if let Some(witness) = before.get(&key)
+            && witness.manifest_digest() != source.manifest_digest
+        {
+            return Err(CoreError::Typed {
+                code: "LEGACY_SEMANTIC_MIGRATION_DIGEST_CONFLICT".to_string(),
+                message: "journal conflicts with sealed durable generation".to_string(),
+            });
         }
     }
     let mut imported = 0usize;
@@ -358,13 +358,13 @@ fn source_rows(batches: &[SemanticIngestBatch]) -> Result<Vec<SourceRow>, CoreEr
             batch.revision_id.clone(),
             batch.generation,
         );
-        if let Some(prior) = map.insert(key.clone(), batch.manifest_digest.clone()) {
-            if prior != batch.manifest_digest {
-                return Err(CoreError::Typed {
-                    code: "LEGACY_SEMANTIC_JOURNAL_GENERATION_CONFLICT".to_string(),
-                    message: "journal has multiple digests for one generation".to_string(),
-                });
-            }
+        if let Some(prior) = map.insert(key.clone(), batch.manifest_digest.clone())
+            && prior != batch.manifest_digest
+        {
+            return Err(CoreError::Typed {
+                code: "LEGACY_SEMANTIC_JOURNAL_GENERATION_CONFLICT".to_string(),
+                message: "journal has multiple digests for one generation".to_string(),
+            });
         }
     }
     Ok(map
@@ -472,7 +472,7 @@ fn validated_migration(
         format_version: RECEIPT_FORMAT,
         journal_digest: journal_digest.to_string(),
         batch_count: u64::try_from(store.batches.len())
-            .map_err(|_| CoreError::Storage("batch count overflow".to_string()))?,
+            .map_err(|err| CoreError::Storage(format!("batch count overflow: {err}")))?,
         sources,
         durable,
     }))
@@ -517,9 +517,9 @@ fn validate_receipt_shape(receipt: &Receipt) -> Result<(), CoreError> {
                     && !source.manifest_digest.is_empty()
                     && is_canonical_sha256(&durable.semantic_row_root_digest)
             });
-    let strictly_ordered = receipt.sources.windows(2).all(|pair| {
-        (&pair[0].repo_id, &pair[0].revision_id, pair[0].generation)
-            < (&pair[1].repo_id, &pair[1].revision_id, pair[1].generation)
+    let strictly_ordered = receipt.sources.is_sorted_by(|left, right| {
+        (&left.repo_id, &left.revision_id, left.generation)
+            < (&right.repo_id, &right.revision_id, right.generation)
     });
     if receipt.format_version != RECEIPT_FORMAT
         || !is_canonical_sha256(&receipt.journal_digest)
@@ -625,7 +625,7 @@ fn read_bounded(
     }
     let mut bytes = Vec::new();
     let _read = Read::by_ref(&mut file)
-        .take(max + 1)
+        .take(max.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(storage("read bounded input", path))?;
     if u64::try_from(bytes.len()).is_ok_and(|len| len > max) {
@@ -875,8 +875,27 @@ fn atomic_publish_noreplace(root: &Path, path: &Path, bytes: &[u8]) -> Result<()
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Result-returning migration tests assert with `assert!` on fixture invariants; a violated fixture invariant is not a propagatable error"
+)]
 mod tests {
     use super::*;
+
+    /// Whether any `.MIGRATED.tmp-*` staging file survives under `root`.
+    ///
+    /// Directory-entry errors propagate rather than being filtered away: a
+    /// test asserting that nothing leaked must not pass because it could not
+    /// list the directory.
+    fn leaked_migration_temp(root: &Path) -> Result<bool, Box<dyn std::error::Error>> {
+        let entries = fs::read_dir(root)?.collect::<Result<Vec<_>, _>>()?;
+        Ok(entries.iter().any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".MIGRATED.tmp-")
+        }))
+    }
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -890,14 +909,7 @@ mod tests {
             .expect_err("publication must fail when a destination appears");
         assert!(matches!(error, CoreError::Storage(_)));
         assert_eq!(fs::read(&receipt)?, b"existing-authority");
-        assert!(
-            fs::read_dir(root.path())?
-                .filter_map(Result::ok)
-                .all(|entry| !entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(".MIGRATED.tmp-"))
-        );
+        assert!(!leaked_migration_temp(root.path())?);
         Ok(())
     }
 
@@ -919,14 +931,7 @@ mod tests {
         failpoint::set(None);
         assert!(matches!(before_publish, CoreError::Storage(_)));
         assert!(!store.receipt_path.exists());
-        assert!(
-            fs::read_dir(&store.root)?
-                .filter_map(Result::ok)
-                .all(|entry| !entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(".MIGRATED.tmp-"))
-        );
+        assert!(!leaked_migration_temp(&store.root)?);
 
         failpoint::set(Some(FAIL_AFTER_RECEIPT_PUBLISH));
         let after_publish = write_receipt(&store, &witness)

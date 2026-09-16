@@ -1,11 +1,15 @@
 //! SCV2 persisted semantic product scenarios.
 //!
 //! These tests exercise the public semantic adapter ports against a real
-//! on-disk LanceDB generation. They intentionally combine multiple operations
+//! on-disk `LanceDB` generation. They intentionally combine multiple operations
 //! per scenario so unit-level row-shape tests cannot substitute for owner-scope,
 //! seal, restart, and identity behavior.
 
 #![forbid(unsafe_code)]
+#![expect(
+    clippy::panic_in_result_fn,
+    reason = "Result-returning scenarios assert with `assert!` on fixture invariants; a violated fixture invariant is not a propagatable error"
+)]
 
 use quanta_index_contract::{
     BatchIngestMode, ManifestGeneration, OwnerDocKind, RepoId, RevisionId, SemanticCorpusKindV1,
@@ -285,7 +289,13 @@ fn scv2_s04_seal_rejects_missing_required_corpus() -> TestResult {
             message.contains("required corpus `ModuleCard` missing"),
             "failure must name the missing required corpus: {message}",
         ),
-        other => return Err(format!("expected storage seal error, got {other:?}").into()),
+        other @ (CoreError::InvalidContract(_)
+        | CoreError::Typed { .. }
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)) => {
+            return Err(format!("expected storage seal error, got {other:?}").into());
+        }
     }
     Ok(())
 }

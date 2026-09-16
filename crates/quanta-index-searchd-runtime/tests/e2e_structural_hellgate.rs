@@ -45,7 +45,7 @@ fn semantic_source_scopes(chunks: &[ChunkRecord]) -> Vec<SemanticSourceReplaceSc
                     owner_kind: OwnerDocKind::Chunk,
                     owner_id: owner_id.clone(),
                     source_doc_id: owner_id.clone(),
-                    parent_owner_id: Some(owner_id.clone()),
+                    parent_owner_id: Some(owner_id),
                     repo_relative_path: chunk.repo_relative_path.clone(),
                     language: Some(chunk.language.as_str().to_string()),
                     package: None,

@@ -171,7 +171,7 @@ fn seed_semantic_relevance_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
     let mut chunk_specs: Vec<(&str, Vec<E2eTextChunkSpec<'_>>)> = Vec::new();
     for (path, content) in semantic_fixture_docs() {
         if path == "auth/token_refresh.rs" {
-            let half = content.len() / 2;
+            let half = content.len().div_euclid(2);
             let (head, tail) = content.split_at(half);
             chunk_specs.push((
                 path,
@@ -232,7 +232,7 @@ fn prepare_semantic_relevance_runtime_with_profile(
 /// blurred by lexical-corpus paths). `auth/token_refresh.rs` is ingested as TWO
 /// chunks so the same-path-collapse rule has repeated hits to collapse. Asserting
 /// the `Hash` profile keeps the CI semantic gate deterministic and
-/// neural-quality-free (RFC §5 P1-3); the OpenAI A/B is a separate local lane.
+/// neural-quality-free (RFC §5 P1-3); the `OpenAI` A/B is a separate local lane.
 pub fn prepare_semantic_relevance_runtime() -> AnyResult<E2eRuntime> {
     let rt = prepare_semantic_relevance_runtime_with_profile(SemanticEmbedderProfile::default())?;
     if !matches!(
@@ -485,7 +485,11 @@ fn capture_overlap_bucket(
 /// Run the full relevance rail against a freshly seeded runtime.
 pub fn run_relevance_report() -> AnyResult<RelevanceReport> {
     let mut rt = prepare_relevance_runtime()?;
-    let mut queries = Vec::with_capacity(JUDGED_QUERIES.len() + SEMANTIC_GATED_QUERIES.len());
+    let mut queries = Vec::with_capacity(
+        JUDGED_QUERIES
+            .len()
+            .saturating_add(SEMANTIC_GATED_QUERIES.len()),
+    );
     for query in JUDGED_QUERIES {
         let order = produced_order(&mut rt, query)?;
         queries.push(score_query(query, order)?);
@@ -585,10 +589,11 @@ pub fn openai_profile_from_env_for_relevance_ab() -> AnyResult<SemanticEmbedderP
     let config = SearchdConfig::from_env()?;
     match config.semantic_embedder_profile().clone() {
         profile @ SemanticEmbedderProfile::OpenAi { .. } => Ok(profile),
-        other => Err(anyhow::anyhow!(
-            "local OpenAI A/B requires an OpenAi semantic profile; got {:?}",
-            other
-        )),
+        other @ (SemanticEmbedderProfile::Hash { .. } | SemanticEmbedderProfile::Unavailable) => {
+            Err(anyhow::anyhow!(
+                "local OpenAI A/B requires an OpenAi semantic profile; got {other:?}"
+            ))
+        }
     }
 }
 
@@ -1074,9 +1079,11 @@ mod tests {
 
     // --- daemon-driven semantic route (Hash embedder, RFC P1-1/P1-2/P1-3) -
 
-    /// Build a `Semantic`-route judged query so the test drives the REAL
-    /// production dispatch arm (`produced_order` -> `query_semantic(None)` ->
-    /// path projection -> `collapse_same_repo_path`), not a parallel re-implementation.
+    /// Build a `Semantic`-route judged query.
+    ///
+    /// The test then drives the REAL production dispatch arm (`produced_order`
+    /// -> `query_semantic(None)` -> path projection ->
+    /// `collapse_same_repo_path`), not a parallel re-implementation.
     fn semantic_route_query(id: &'static str, query: &'static str) -> JudgedQuery {
         JudgedQuery {
             id,
@@ -1093,11 +1100,13 @@ mod tests {
         }
     }
 
-    /// Boot a HASH-embedder runtime, seed the semantic fixture, and activate the
-    /// Lexical + Semantic tracks. Delegates to the shared production helper so the
-    /// unit coverage and the gated `run_relevance_report` rail seed the SAME way
-    /// (no test/prod divergence). `auth/token_refresh.rs` is ingested as TWO
-    /// chunks so the same-path-collapse rule has repeated hits to collapse.
+    /// Boot a HASH-embedder runtime, seed the semantic fixture, and activate
+    /// the Lexical + Semantic tracks.
+    ///
+    /// Delegates to the shared production helper so the unit coverage and the
+    /// gated `run_relevance_report` rail seed the SAME way (no test/prod
+    /// divergence). `auth/token_refresh.rs` is ingested as TWO chunks so the
+    /// same-path-collapse rule has repeated hits to collapse.
     fn prepare_semantic_runtime() -> AnyResult<E2eRuntime> {
         super::prepare_semantic_relevance_runtime()
     }
@@ -1172,10 +1181,14 @@ mod tests {
             grade: 3,
         }];
         let grades = grade_index(&judged).expect("grade index");
-        assert_eq!(
-            recall_at_k(&order_a1, &grades, RECALL_K),
-            recall_at_k(&order_b, &grades, RECALL_K),
-            "recall must be identical across deterministic runs"
+        let recall_a = recall_at_k(&order_a1, &grades, RECALL_K);
+        let recall_b = recall_at_k(&order_b, &grades, RECALL_K);
+        // Both runs seed identical fixtures through a deterministic embedder,
+        // so the metric must agree to the bit; a tolerance would hide exactly
+        // the nondeterminism this test exists to catch.
+        assert!(
+            recall_a.to_bits() == recall_b.to_bits(),
+            "recall must be identical across deterministic runs: {recall_a} vs {recall_b}"
         );
     }
 

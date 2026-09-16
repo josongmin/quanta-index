@@ -373,9 +373,10 @@ fn file_authority_boolean_intersection_does_not_cross_join_same_path_repositorie
         "owner projection behind correlated file predicates",
     )?;
     ensure!(
-        selected.file_owner_rows.len() == 1
-            && selected.file_owner_rows[0].candidate_id == ids.gamma_target
-            && selected.file_owner_rows[0].owners == ["@alice"],
+        matches!(
+            selected.file_owner_rows.as_slice(),
+            [only] if only.candidate_id == ids.gamma_target && only.owners == ["@alice"]
+        ),
         "owner projection widened or lost correlated authority: {:?}",
         selected.file_owner_rows
     );

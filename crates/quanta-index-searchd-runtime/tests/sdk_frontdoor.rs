@@ -2,6 +2,10 @@
 
 #![forbid(unsafe_code)]
 #![expect(
+    clippy::expect_used,
+    reason = "integration-test helpers outside `#[test]` fns assert fixture setup with `expect`; the workspace already permits this inside test fns and a helper that cannot set up its fixture has no caller to propagate to"
+)]
+#![expect(
     clippy::disallowed_methods,
     reason = "integration polling uses explicit Result fallback checks"
 )]
@@ -1220,9 +1224,11 @@ fn current_sdk_search_corpus_or_none(
     }
 }
 
-/// Publishes once and promotes one complete corpus identity. This deliberately
-/// does not use the polling helper: retrying a mutating publish after an
-/// ambiguous transport or CAS outcome could duplicate the ingress operation.
+/// Publishes once and promotes one complete corpus identity.
+///
+/// This deliberately does not use the polling helper: retrying a mutating
+/// publish after an ambiguous transport or CAS outcome could duplicate the
+/// ingress operation.
 fn publish_and_activate_sdk_search_corpus(
     client: &QuantaIndex,
     batch: &SearchCorpusBatch,

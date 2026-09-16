@@ -76,10 +76,11 @@ fn generation_dir(root: &Path, generation: ManifestGeneration) -> PathBuf {
         .generation_dir(root, generation)
 }
 
-/// Pure exhaustive cosine oracle for the persisted adapter's constrained
-/// query contract. This intentionally does not share the LanceDB predicate or
-/// ranking implementation: it filters the fixture records in memory, computes
-/// cosine similarity directly, and applies the stable identity tie-break.
+/// Pure exhaustive cosine oracle for the constrained query contract.
+///
+/// This intentionally does not share the `LanceDB` predicate or ranking
+/// implementation: it filters the fixture records in memory, computes cosine
+/// similarity directly, and applies the stable identity tie-break.
 fn exhaustive_constrained_cosine_oracle(
     query: &[f32],
     records: &[EmbeddingRecord],
@@ -400,7 +401,9 @@ fn constrained_vector_search_matches_exhaustive_oracle_and_top_k_prefix_v1() -> 
         let top_k = u32::try_from(top_k).map_err(|err| format!("top_k conversion: {err}"))?;
         let actual =
             searcher.search_scoped_constrained(&query, &allowed_ids, &constraints, top_k)?;
-        let expected_prefix = &expected[..actual.len()];
+        let expected_prefix = expected
+            .get(..actual.len())
+            .ok_or("oracle produced fewer rows than the adapter returned")?;
         assert_eq!(
             actual
                 .iter()

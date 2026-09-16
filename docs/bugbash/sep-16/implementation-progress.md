@@ -44,7 +44,10 @@
 
 | ID | 등급 | 내용 | 상태 |
 | --- | --- | --- | --- |
-| IMPL-A | P1 (repo gate) | `just rust-clippy`(= CI `ci.yml` job `rust-clippy`, `clippy --workspace --all-targets --all-features -- -D warnings`)가 감사 HEAD에서 이미 RED. main이 CI 실패 상태 | fixed, 검증 중 |
+| IMPL-A | P1 (repo gate) | `just rust-clippy`(= CI `ci.yml` job `rust-clippy`, `clippy --workspace --all-targets --all-features -- -D warnings`)가 감사 HEAD에서 이미 RED. main이 CI 실패 상태 | **fixed — `just rust-clippy` exit 0** |
+| IMPL-E | P2 (repo gate) | `just semgrep`(CI job `semgrep` + pre-commit)이 감사 HEAD에서 RED: 317건, 그중 315건이 test 코드의 unwrap/expect/panic | **fixed** — §0.2 IMPL-E |
+| IMPL-F | P2 (supply chain) | `just rust-deny`가 RED: 2026년 advisory 7건 (event-listener, h2, rkyv×3, rustls, lru) | **fixed** — 6건 lock bump, 1건 범위 지정 ignore. §0.2 IMPL-F |
+| IMPL-G | P3 (dead surface) | `quanta-index-searchd`가 사용하지 않는 `quanta-index-lexical` 의존성을 선언 (`just rust-machete` RED) | **fixed** — 의존성 제거 |
 | IMPL-B | **P1 (silent data loss, 확정)** | sidecar authority가 delta보다 먼저 publish되면 delta generation이 base를 통째로 잃는다 | **fixed + regression green** |
 | IMPL-C | **P1 (durability / cross-generation corruption, 확정)** | `persist_text_authority_sidecars`가 `File::create`(in-place truncate)로 sidecar를 쓴다 | **fixed + regression green** |
 | IMPL-D | **P1 (retrieval correctness, 확정)** | regex prefilter가 리터럴 *교대(alternation)* 집합을 *논리곱(AND)*으로 처리해 조용히 결과를 떨어뜨린다 | **fixed + regression green** |

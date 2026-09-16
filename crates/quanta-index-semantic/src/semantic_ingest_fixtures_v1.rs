@@ -72,11 +72,7 @@ pub fn embedding_record_v1(
         capability_status,
         authority_digest: format!("auth:{id}").into_boxed_str(),
         render_policy_digest: format!("render:{id}").into_boxed_str(),
-        card_schema_version: if corpus_kind == SemanticCorpusKindV1::RawCodeFallback {
-            0
-        } else {
-            1
-        },
+        card_schema_version: u32::from(corpus_kind != SemanticCorpusKindV1::RawCodeFallback),
         start_byte: 0,
         end_byte: 12,
         start_line: 1,
@@ -89,6 +85,7 @@ pub fn embedding_record_v1(
     })
 }
 
+#[must_use]
 pub fn search_scope_v1(path: &str) -> SearchScopeKey {
     SearchScopeKey {
         doc_surface: SearchScopeSurface::Chunk,
@@ -96,6 +93,7 @@ pub fn search_scope_v1(path: &str) -> SearchScopeKey {
     }
 }
 
+#[must_use]
 pub fn tombstone_scope_v1(path: &str) -> SemanticTombstoneScope {
     SemanticTombstoneScope {
         scope: Some(search_scope_v1(path)),
@@ -103,6 +101,7 @@ pub fn tombstone_scope_v1(path: &str) -> SemanticTombstoneScope {
     }
 }
 
+#[must_use]
 pub fn tombstone_scope_with_semantic_owner_v1(
     path: &str,
     corpus_kind: SemanticCorpusKindV1,
@@ -119,6 +118,7 @@ pub fn tombstone_scope_with_semantic_owner_v1(
     }
 }
 
+#[must_use]
 pub fn model_contract_v1(dimension: u32) -> EmbeddingModelContract {
     EmbeddingModelContract {
         model_id: "text-embed".to_string().into_boxed_str(),
@@ -132,6 +132,11 @@ pub fn model_contract_v1(dimension: u32) -> EmbeddingModelContract {
 }
 
 /// Populate v4 batch metadata defaults on an in-progress batch builder.
+#[must_use]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "test fixtures deliberately expose every batch field positionally so a case can vary exactly one of them; grouping them into structs would make the varying field harder to see at each call site"
+)]
 pub fn ingest_batch_v1(
     repo_id: RepoId,
     revision_id: RevisionId,
@@ -163,6 +168,7 @@ pub fn ingest_batch_v1(
     }
 }
 
+#[must_use]
 pub fn sealed_replace_batch_v1(
     repo_id: RepoId,
     revision_id: RevisionId,

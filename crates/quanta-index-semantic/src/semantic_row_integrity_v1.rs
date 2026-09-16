@@ -82,13 +82,38 @@ fn hash_optional_v1(hasher: &mut Sha256, value: Option<&str>) -> Result<(), Core
 }
 
 fn encode_sha256_v1(digest: impl IntoIterator<Item = u8>) -> String {
-    let mut encoded = String::with_capacity("sha256:".len() + 64);
+    let mut encoded = String::with_capacity("sha256:".len().saturating_add(64));
     encoded.push_str("sha256:");
     for byte in digest {
         let _written = write!(&mut encoded, "{byte:02x}");
     }
     encoded
 }
+
+/// Non-nullable string columns every canonical semantic row commits to.
+const REQUIRED_NAMES: [&str; 13] = [
+    COLUMN_REPO_RELATIVE_PATH,
+    COLUMN_OWNER_ID,
+    COLUMN_OWNER_KIND,
+    COLUMN_CORPUS_KIND,
+    COLUMN_SOURCE_DOC_ID,
+    COLUMN_LANGUAGE,
+    COLUMN_SOURCE_ROLE,
+    COLUMN_CAPABILITY_STATUS,
+    COLUMN_AUTHORITY_DIGEST,
+    COLUMN_RENDER_POLICY_DIGEST,
+    COLUMN_EMBEDDING_INPUT_DIGEST,
+    COLUMN_VECTOR_DIGEST,
+    COLUMN_SNIPPET,
+];
+
+/// Nullable string columns committed as present-or-absent.
+const OPTIONAL_NAMES: [&str; 4] = [
+    COLUMN_PARENT_OWNER_ID,
+    COLUMN_PACKAGE,
+    COLUMN_SYMBOL_KIND,
+    COLUMN_VISIBILITY,
+];
 
 pub(crate) async fn semantic_row_commitment_v1(
     table: &lancedb::Table,
@@ -97,9 +122,7 @@ pub(crate) async fn semantic_row_commitment_v1(
         .count_rows(None)
         .await
         .map_err(|error| lancedb_err("count semantic rows for root", error))?;
-    let capacity = usize::try_from(counted).map_err(|error| {
-        CoreError::Storage(format!("semantic row root: row count overflow: {error}"))
-    })?;
+    let capacity = counted;
     let mut rows = Vec::with_capacity(capacity);
     let mut stream = table
         .query()
@@ -122,31 +145,10 @@ pub(crate) async fn semantic_row_commitment_v1(
         }
         let embedding_ids = column_as::<StringArray>(&batch, COLUMN_EMBEDDING_ID, "Utf8")?;
         let record_ids = column_as::<StringArray>(&batch, COLUMN_RECORD_ID, "Utf8")?;
-        const REQUIRED_NAMES: [&str; 13] = [
-            COLUMN_REPO_RELATIVE_PATH,
-            COLUMN_OWNER_ID,
-            COLUMN_OWNER_KIND,
-            COLUMN_CORPUS_KIND,
-            COLUMN_SOURCE_DOC_ID,
-            COLUMN_LANGUAGE,
-            COLUMN_SOURCE_ROLE,
-            COLUMN_CAPABILITY_STATUS,
-            COLUMN_AUTHORITY_DIGEST,
-            COLUMN_RENDER_POLICY_DIGEST,
-            COLUMN_EMBEDDING_INPUT_DIGEST,
-            COLUMN_VECTOR_DIGEST,
-            COLUMN_SNIPPET,
-        ];
         let required = REQUIRED_NAMES
             .map(|name| column_as::<StringArray>(&batch, name, "Utf8"))
             .into_iter()
             .collect::<Result<Vec<_>, _>>()?;
-        const OPTIONAL_NAMES: [&str; 4] = [
-            COLUMN_PARENT_OWNER_ID,
-            COLUMN_PACKAGE,
-            COLUMN_SYMBOL_KIND,
-            COLUMN_VISIBILITY,
-        ];
         let optional = OPTIONAL_NAMES
             .map(|name| column_as::<StringArray>(&batch, name, "Utf8"))
             .into_iter()
@@ -180,11 +182,8 @@ pub(crate) async fn semantic_row_commitment_v1(
             leaf.update(b"quanta-index-semantic-row-leaf-v1\0");
             hash_bytes_v1(&mut leaf, record_id.as_bytes())?;
             hash_bytes_v1(&mut leaf, embedding_id.as_bytes())?;
-            for (index, column) in required.iter().enumerate() {
-                hash_optional_v1(
-                    &mut leaf,
-                    Some(required_str(column, row, REQUIRED_NAMES[index])?),
-                )?;
+            for (name, column) in REQUIRED_NAMES.iter().zip(required.iter()) {
+                hash_optional_v1(&mut leaf, Some(required_str(column, row, name)?))?;
             }
             for column in &optional {
                 hash_optional_v1(&mut leaf, optional_str(column, row))?;
@@ -199,7 +198,7 @@ pub(crate) async fn semantic_row_commitment_v1(
                 ))
             })?;
             leaf.update(vector_len.to_le_bytes());
-            for value in vector.iter() {
+            for value in vector {
                 let value = value.ok_or_else(|| {
                     CoreError::Storage("semantic row root: vector contains null".to_string())
                 })?;
@@ -228,9 +227,10 @@ pub(crate) async fn semantic_row_commitment_v1(
             .cmp(&right.record_id)
             .then_with(|| left.embedding_id.cmp(&right.embedding_id))
     });
-    if rows.windows(2).any(|pair| {
-        pair[0].record_id == pair[1].record_id && pair[0].embedding_id == pair[1].embedding_id
-    }) {
+    let duplicated = rows.iter().zip(rows.iter().skip(1)).any(|(left, right)| {
+        left.record_id == right.record_id && left.embedding_id == right.embedding_id
+    });
+    if duplicated {
         return Err(CoreError::Storage(
             "semantic row root: duplicate (record_id, embedding_id)".to_string(),
         ));

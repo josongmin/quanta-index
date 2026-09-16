@@ -6,9 +6,15 @@
 //! track, and one state root has exactly one live daemon owner.
 
 #![forbid(unsafe_code)]
+#![expect(
+    clippy::expect_used,
+    reason = "integration-test helpers outside `#[test]` fns assert fixture setup with `expect`; the workspace already permits this inside test fns and a helper that cannot set up its fixture has no caller to propagate to"
+)]
 
 #[path = "common/searchd_binary_process.rs"]
 mod searchd_binary_process;
+#[path = "common/searchd_lease_probe.rs"]
+mod searchd_lease_probe;
 
 use std::error::Error;
 use std::path::Path;
@@ -565,7 +571,7 @@ fn real_child_process_cross_repo_restart_retains_and_rolls_back_each_composite_v
     {
         return Err("cross-repo setup did not preserve two independent active composites".into());
     }
-    let rejected = SearchdBinaryProcess::require_start_failure(directory.path())?;
+    let rejected = searchd_lease_probe::require_start_failure(directory.path())?;
     let rejection_text = format!(
         "{}\n{}",
         String::from_utf8_lossy(&rejected.stdout),
@@ -639,7 +645,7 @@ fn real_child_process_state_root_lease_rejects_second_owner_and_releases_v1() ->
     let directory = tempfile::tempdir()?;
     let first_process = SearchdBinaryProcess::start(directory.path())?;
 
-    let rejected = SearchdBinaryProcess::require_start_failure(directory.path())?;
+    let rejected = searchd_lease_probe::require_start_failure(directory.path())?;
     if rejected.status.success() {
         return Err("second child process unexpectedly acquired the live state root".into());
     }

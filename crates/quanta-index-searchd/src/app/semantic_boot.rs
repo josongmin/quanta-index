@@ -146,6 +146,14 @@ pub fn seed_persisted_semantic_readiness(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "fixtures in this module are built with known fixed lengths; an out-of-range index is a test authoring bug that should fail loudly"
+)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Result-returning boot tests assert with `assert!` on fixture invariants; a violated fixture invariant is not a propagatable error"
+)]
 mod tests {
     use std::collections::BTreeSet;
     use std::path::PathBuf;

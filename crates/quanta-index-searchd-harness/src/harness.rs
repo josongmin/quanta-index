@@ -268,6 +268,10 @@ impl E2eRuntime {
     /// driver stopped so first query lazy-starts a fresh runtime.
     /// Mirrors a process restart against persistent storage.
     #[must_use]
+    #[expect(
+        clippy::panic,
+        reason = "the harness is test infrastructure; a failed daemon restart invalidates every assertion that follows and must abort the test rather than return a runtime the test would keep driving"
+    )]
     pub fn reopen(mut self) -> Self {
         if let Err(error) = self.stop_driver() {
             panic!("e2e-harness: daemon process restart failed: {error:#}");
@@ -278,19 +282,15 @@ impl E2eRuntime {
     fn stop_driver(&mut self) -> AnyResult<()> {
         let outcome = if let Some(mut driver) = self.driver.take() {
             driver.shutdown.store(true, Ordering::Release);
-            if let Some(join) = driver.join.take() {
-                match join.join() {
-                    Ok(Ok(())) => Ok(()),
-                    Ok(Err(error)) => Err(anyhow::anyhow!(
-                        "e2e-harness: daemon driver returned an error: {error:#}"
-                    )),
-                    Err(panic) => Err(anyhow::anyhow!(
-                        "e2e-harness: daemon driver panicked: {panic:?}"
-                    )),
-                }
-            } else {
-                Ok(())
-            }
+            driver.join.take().map_or(Ok(()), |join| match join.join() {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(error)) => Err(anyhow::anyhow!(
+                    "e2e-harness: daemon driver returned an error: {error:#}"
+                )),
+                Err(panic) => Err(anyhow::anyhow!(
+                    "e2e-harness: daemon driver panicked: {panic:?}"
+                )),
+            })
         } else {
             Ok(())
         };
@@ -460,9 +460,14 @@ impl E2eRuntime {
                         error.code,
                         error.message
                     )),
-                    other => Err(anyhow::anyhow!(
-                        "e2e-harness: current generation returned an unexpected control response: {other:?}"
-                    )),
+                    other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+                    | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+                    | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+                    | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => {
+                        Err(anyhow::anyhow!(
+                            "e2e-harness: current generation returned an unexpected control response: {other:?}"
+                        ))
+                    }
                 }
             };
 
@@ -2137,28 +2142,29 @@ impl E2eRuntime {
                 response.request_id
             ));
         }
-        match response.payload {
-            SearchPlaneIngestIpcResponse::Error(err) => Err(anyhow::anyhow!(
+        if let SearchPlaneIngestIpcResponse::Error(err) = response.payload {
+            return Err(anyhow::anyhow!(
                 "e2e-harness ingest failed code={} message={}",
                 err.code,
                 err.message
-            )),
-            payload => Ok(payload),
+            ));
         }
+        Ok(response.payload)
     }
 
     fn dispatch_control(
         &mut self,
         payload: SearchPlaneControlIpcRequest,
     ) -> AnyResult<SearchPlaneControlIpcResponse> {
-        match self.dispatch_control_response_v1(payload)? {
-            SearchPlaneControlIpcResponse::Error(err) => Err(anyhow::anyhow!(
+        let response = self.dispatch_control_response_v1(payload)?;
+        if let SearchPlaneControlIpcResponse::Error(err) = response {
+            return Err(anyhow::anyhow!(
                 "e2e-harness control failed code={} message={}",
                 err.code,
                 err.message
-            )),
-            payload => Ok(payload),
+            ));
         }
+        Ok(response)
     }
 
     fn dispatch_control_response_v1(
@@ -2205,6 +2211,11 @@ fn unexpected_history_response(kind: &str) -> E2eHistoryResult {
 }
 
 impl Drop for E2eRuntime {
+    #[expect(
+        clippy::panic,
+        clippy::print_stderr,
+        reason = "the harness is test infrastructure: a driver that fails on teardown must fail the test, and while another panic is already unwinding the only channel left to report it on is stderr"
+    )]
     fn drop(&mut self) {
         if let Err(error) = self.stop_driver() {
             if thread::panicking() {
@@ -2444,7 +2455,7 @@ fn semantic_source_scopes_for_chunk_records(
                     owner_kind: OwnerDocKind::Chunk,
                     owner_id: owner_id.clone(),
                     source_doc_id: owner_id.clone(),
-                    parent_owner_id: Some(owner_id.clone()),
+                    parent_owner_id: Some(owner_id),
                     repo_relative_path: record.repo_relative_path.clone(),
                     language: Some(record.language.as_str().to_string()),
                     package: None,

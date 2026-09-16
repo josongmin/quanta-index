@@ -7,7 +7,7 @@
 //!
 //! It owns three things:
 //!
-//! - [`harness`] — the reusable tempdir-backed runtime harness (`E2eRuntime`)
+//! - `harness` — the reusable tempdir-backed runtime harness (`E2eRuntime`)
 //!   that boots a real searchd driver over a UDS frontdoor, ingests typed
 //!   batches, seals + activates generations, and issues query IPC requests.
 //!   Promoted here from the runtime crate's test-private `common/` tree so a

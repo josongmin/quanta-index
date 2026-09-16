@@ -3,6 +3,10 @@
 
 #![forbid(unsafe_code)]
 #![expect(
+    clippy::expect_used,
+    reason = "integration-test helpers outside `#[test]` fns assert fixture setup with `expect`; the workspace already permits this inside test fns and a helper that cannot set up its fixture has no caller to propagate to"
+)]
+#![expect(
     clippy::disallowed_methods,
     reason = "test polling paths still use explicit Result fallback checks"
 )]
@@ -1924,14 +1928,16 @@ fn start_runtime_with_openai(
     Ok((query_socket, ingest_socket, shutdown, join))
 }
 
-/// Manual release proof (gated, real OpenAI API): full daemon -> corpus embed -> lancedb
-/// cosine -> ranked results. The query shares NO meaningful token with either
-/// indexed doc (only the stopword "the"), so a token-distribution hash embedder
-/// (the prior FNV-1a default) cannot rank them by meaning. Real neural embeddings
-/// must rank the semantically-related "cat" doc above the unrelated "finance" doc.
-/// This is the end-to-end capability that was structurally impossible before.
+/// Manual release proof (gated, real `OpenAI` API).
 ///
-/// `#[ignore]` because it hits the real OpenAI API; run with OPENAI_API_KEY set:
+/// Full daemon -> corpus embed -> lancedb cosine -> ranked results. The query
+/// shares NO meaningful token with either indexed doc (only the stopword
+/// "the"), so a token-distribution hash embedder (the prior FNV-1a default)
+/// cannot rank them by meaning. Real neural embeddings must rank the
+/// semantically-related "cat" doc above the unrelated "finance" doc. This is
+/// the end-to-end capability that was structurally impossible before.
+///
+/// `#[ignore]` because it hits the real `OpenAI` API; run with `OPENAI_API_KEY` set:
 /// `OPENAI_API_KEY=<key> cargo test -p quanta-index-searchd-runtime --test end_to_end \
 ///   -- --ignored openai_semantic_paraphrase_outranks_unrelated_v1 --nocapture`
 #[test]
@@ -2148,7 +2154,7 @@ fn semantic_query_uses_search_owned_text_derivation_with_explicit_hash_profile()
         drop(join.join());
         return Err("semantic explicit hash response did not echo request pin".into());
     }
-    if semantic.results.len() != 1 || semantic.results[0].candidate_id != "alpha" {
+    if !matches!(semantic.results.as_slice(), [only] if only.candidate_id == "alpha") {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(format!(

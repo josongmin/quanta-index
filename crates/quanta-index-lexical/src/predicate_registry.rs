@@ -5,8 +5,8 @@
 //! target it resolves to.
 //!
 //! Before this module, predicate support was a set of hardcoded `match name`
-//! arms duplicated across lexical lowering ([`crate`] `lib.rs`) and the
-//! planner ([`crate::planner`]). Adding or widening a predicate meant editing
+//! arms duplicated across lexical lowering (`lib.rs`) and the planner
+//! (`planner.rs`). Adding or widening a predicate meant editing
 //! four string-match sites in lockstep — an Open/Closed violation that drifted
 //! easily. This module lifts the name → capability mapping into one table so
 //! callers dispatch on a typed [`PredicateKind`] instead of re-matching raw

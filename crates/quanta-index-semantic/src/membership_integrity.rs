@@ -1,9 +1,10 @@
-//! Canonical integrity commitment for the structured ClusterCard sidecar.
+//! Canonical integrity commitment for the structured `ClusterCard` sidecar.
 
 use std::fmt::Write as _;
 
 use quanta_index_contract::{
-    MAX_CLUSTER_MEMBERSHIP_READ_V1, SymbolId, cluster_membership_content_digest_v1,
+    MAX_CLUSTER_MEMBERSHIP_READ_V1, SymbolId, canonical_order::first_canonical_order_break_v1,
+    cluster_membership_content_digest_v1,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -33,7 +34,7 @@ fn hash_field_v1(hasher: &mut Sha256, value: &str) {
 }
 
 fn encode_sha256_v1(digest: impl IntoIterator<Item = u8>) -> String {
-    let mut encoded = String::with_capacity("sha256:".len() + 64);
+    let mut encoded = String::with_capacity("sha256:".len().saturating_add(64));
     encoded.push_str("sha256:");
     for byte in digest {
         let _written = write!(&mut encoded, "{byte:02x}");
@@ -41,10 +42,12 @@ fn encode_sha256_v1(digest: impl IntoIterator<Item = u8>) -> String {
     encoded
 }
 
-/// Computes one order-independent table commitment by first reducing rows into
-/// canonical `(cluster_record_id, ordinal)` order. Every durable column is
-/// committed, so replacing a sidecar with a self-consistent table from another
-/// generation cannot pass unless its exact authority content is identical.
+/// Computes one order-independent table commitment over the sidecar rows.
+///
+/// Rows are first reduced into canonical `(cluster_record_id, ordinal)` order.
+/// Every durable column is committed, so replacing a sidecar with a
+/// self-consistent table from another generation cannot pass unless its exact
+/// authority content is identical.
 pub(crate) fn cluster_membership_commitment_v1(
     mut rows: Vec<ClusterMembershipStoredRowV1>,
 ) -> Result<ClusterMembershipCommitmentV1, String> {
@@ -59,15 +62,14 @@ pub(crate) fn cluster_membership_commitment_v1(
     let mut root = Sha256::new();
     root.update(b"quanta-index:cluster-membership-table:v1\0");
     let mut cluster_count = 0_u64;
-    let mut start = 0;
-    while start < rows.len() {
-        let cluster_record_id = rows[start].cluster_record_id.as_str();
-        let end = rows[start..]
-            .iter()
-            .position(|row| row.cluster_record_id != cluster_record_id)
-            .map_or(rows.len(), |offset| start + offset);
-        let cluster = &rows[start..end];
-        let first = &cluster[0];
+    // Rows are sorted by `(cluster_record_id, ordinal)`, so each contiguous run
+    // is exactly one cluster. Grouping with `chunk_by` keeps the run boundaries
+    // out of index arithmetic that a malformed sidecar could walk off.
+    for cluster in rows.chunk_by(|left, right| left.cluster_record_id == right.cluster_record_id) {
+        let Some(first) = cluster.first() else {
+            continue;
+        };
+        let cluster_record_id = first.cluster_record_id.as_str();
         let observed_count = u32::try_from(cluster.len()).map_err(|error| {
             format!("cluster membership cardinality overflow for {cluster_record_id:?}: {error}")
         })?;
@@ -119,12 +121,10 @@ pub(crate) fn cluster_membership_commitment_v1(
                 "cluster membership content digest mismatch for {cluster_record_id:?}"
             ));
         }
-        for pair in members.windows(2) {
-            if pair[0] >= pair[1] {
-                return Err(format!(
-                    "cluster membership members are not unique canonical order for {cluster_record_id:?}"
-                ));
-            }
+        if first_canonical_order_break_v1(&members, |member| member.as_str()).is_some() {
+            return Err(format!(
+                "cluster membership members are not unique canonical order for {cluster_record_id:?}"
+            ));
         }
 
         hash_field_v1(&mut root, cluster_record_id);
@@ -140,7 +140,6 @@ pub(crate) fn cluster_membership_commitment_v1(
         cluster_count = cluster_count
             .checked_add(1)
             .ok_or_else(|| "cluster membership cluster count overflow".to_string())?;
-        start = end;
     }
 
     Ok(ClusterMembershipCommitmentV1 {
@@ -151,6 +150,10 @@ pub(crate) fn cluster_membership_commitment_v1(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "fixtures in this module are built with known fixed lengths; an out-of-range index is a test authoring bug that should fail loudly"
+)]
 mod tests {
     use super::*;
 
@@ -193,7 +196,7 @@ mod tests {
                 1 => corrupt[1].member_symbol_id = "symbol:c".to_string(),
                 2 => corrupt[1].ordinal = 0,
                 3 => corrupt[1].authority_digest = "authority:other".to_string(),
-                _ => unreachable!(),
+                other => panic!("mutation index {other} is outside the fixture's range"),
             }
             assert!(cluster_membership_commitment_v1(corrupt).is_err());
         }

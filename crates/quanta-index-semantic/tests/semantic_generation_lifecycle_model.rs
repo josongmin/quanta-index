@@ -5,9 +5,13 @@
 //! search-plane readiness catalog. This rail models activation as selecting a
 //! sealed adapter generation and rollback as reselecting an older sealed
 //! generation. Every selection is checked against a small reference model and
-//! the real on-disk LanceDB state.
+//! the real on-disk `LanceDB` state.
 
 #![forbid(unsafe_code)]
+#![expect(
+    clippy::panic_in_result_fn,
+    reason = "Result-returning model steps assert with `assert!` on model invariants; a violated model invariant is not a propagatable error"
+)]
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -253,13 +257,11 @@ impl LifecycleModel {
                     !state.sealed,
                     "unsealed activation assertion requires an unsealed model generation"
                 );
-                let error =
-                    match adapter.open(&repo_id(), &revision_id(), Self::generation(generation)) {
-                        Ok(_) => {
-                            return Err("unsealed generation must not become selectable".into());
-                        }
-                        Err(error) => error,
-                    };
+                let Err(error) =
+                    adapter.open(&repo_id(), &revision_id(), Self::generation(generation))
+                else {
+                    return Err("unsealed generation must not become selectable".into());
+                };
                 assert!(
                     matches!(error, CoreError::NotReady(ref message) if message.contains("not sealed")),
                     "unsealed activation must fail closed with NotReady, got {error:?}"
@@ -286,7 +288,7 @@ impl LifecycleModel {
                     .into_iter()
                     .map(|record| record.generation.get())
                     .collect::<Vec<_>>();
-                persisted.sort();
+                persisted.sort_unstable();
                 let expected = self
                     .generations
                     .iter()
@@ -434,13 +436,15 @@ fn record(
 }
 
 /// Produce a bounded, deterministic state-machine trace for the semantic
-/// adapter's actual durable API. `Activate` and `Rollback` intentionally mean
-/// "select this sealed adapter generation for query" here: the process-wide
-/// active-generation CAS belongs to searchd readiness and is not simulated.
+/// adapter's actual durable API.
+///
+/// `Activate` and `Rollback` intentionally mean "select this sealed adapter
+/// generation for query" here: the process-wide active-generation CAS belongs
+/// to searchd readiness and is not simulated.
 fn generated_lifecycle_trace(seed: u64, base: u64) -> Vec<LifecycleCommand> {
     let first = base;
-    let second = base + 1;
-    let incomplete = base + 2;
+    let second = base.saturating_add(1);
+    let incomplete = base.saturating_add(2);
     let (alpha, beta, gamma) = if seed & 1 == 0 {
         (
             record(

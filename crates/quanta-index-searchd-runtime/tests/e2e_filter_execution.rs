@@ -487,7 +487,7 @@ fn publish_revision_text_generation(
         revision_id: revision_id.clone(),
         generation,
         base_generation: None,
-        manifest_digest: manifest_digest.clone(),
+        manifest_digest,
         batch_digest: format!("lex-batch:{path}:{}", generation.get()),
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,

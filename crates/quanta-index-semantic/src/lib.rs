@@ -13,7 +13,7 @@
 //! the sync port surface via `Runtime::block_on` — this adapter *is* the
 //! deliberate async↔sync seam (the `disallowed_methods` rule against
 //! `block_on` is honored by a single, narrowly-scoped `#[expect]` on the
-//! crate-private [`run_blocking`] helper — the only `block_on` call site in
+//! crate-private `run_blocking` helper — the only `block_on` call site in
 //! the crate; both the build and query paths funnel through it).
 //!
 //! A sealed generation is built once (lancedb table + ANN index + scope
@@ -578,10 +578,10 @@ pub fn scan_persisted_generations(
             let generation_name = generation_name
                 .to_str()
                 .ok_or_else(|| unsupported_legacy_generation_layout(&generation_entry.path()))?;
-            let canonical_generation_name = generation_name
-                .strip_prefix('g')
-                .and_then(|raw| raw.parse::<u64>().ok())
-                .is_some_and(|generation| format!("g{generation}") == generation_name);
+            let canonical_generation_name = generation_name.strip_prefix('g').is_some_and(|raw| {
+                raw.parse::<u64>()
+                    .is_ok_and(|generation| format!("g{generation}") == generation_name)
+            });
             if !canonical_generation_name {
                 return Err(unsupported_legacy_generation_layout(
                     &generation_entry.path(),
@@ -789,7 +789,7 @@ mod incomplete_generation_discard_tests {
             exact_error,
             CoreError::Typed { ref code, .. } if code == "GENERATION_IMMUTABLE"
         ));
-        let mut conflict = sealed.clone();
+        let mut conflict = sealed;
         conflict.manifest_digest = "digest-b".to_string();
         let conflict_error = adapter
             .discard_incomplete_generation(&conflict)

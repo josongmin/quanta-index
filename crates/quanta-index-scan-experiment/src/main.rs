@@ -264,7 +264,7 @@ fn chunk_record(
     language: &LanguageCode,
 ) -> ChunkRecord {
     ChunkRecord {
-        chunk_id: ChunkId::new(&format!("c{index}")),
+        chunk_id: ChunkId::new(format!("c{index}")),
         repo_relative_path: RepoRelativePath::new(repo_relative_path),
         language: language.clone(),
         start_byte: 0,

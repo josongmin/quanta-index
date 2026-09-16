@@ -1,8 +1,8 @@
-//! G0-S — LanceDB snapshot reuse probe (W0 decision gate).
+//! G0-S — `LanceDB` snapshot reuse probe (W0 decision gate).
 //!
 //! The semantic lane currently materializes a delta generation by byte-copying
 //! the whole base dataset (`prepare_staging_dataset` -> `copy_dir`). The
-//! structural plan may only replace that with reuse if LanceDB supports it.
+//! structural plan may only replace that with reuse if `LanceDB` supports it.
 //! This target answers the question against a real dataset:
 //!
 //! 1. Are dataset files immutable across versions? (a reused file must never be
@@ -23,6 +23,18 @@
 //! Emits `G0S-EVIDENCE` lines; run with `-- --nocapture` for the gate ADR.
 
 #![forbid(unsafe_code)]
+// The probe drives lancedb's own futures, which are not `Send`, on a
+// current-thread runtime it owns. Both the non-`Send` futures and the
+// `block_on` seam are deliberate and local to this target — the same shape the
+// semantic owner tests already use for direct lancedb inspection.
+#![expect(
+    clippy::future_not_send,
+    reason = "lancedb's futures are not Send; the probe owns a current-thread runtime and never moves them across threads"
+)]
+#![expect(
+    clippy::disallowed_methods,
+    reason = "test-only direct lancedb inspection; the sync seam is the probe's own runtime"
+)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -77,8 +89,9 @@ fn vector_for(index: usize) -> Vec<Option<f32>> {
             let bounded = raw.checked_rem(997).unwrap_or(0);
             let scaled = f64::from(u32::try_from(bounded).unwrap_or(0)) / 997.0;
             #[expect(
+                clippy::as_conversions,
                 clippy::cast_possible_truncation,
-                reason = "probe vectors only need f32 precision; the f64 intermediate keeps the division exact enough for deterministic ordering"
+                reason = "probe vectors only need f32 precision; the f64 intermediate keeps the division exact enough for deterministic ordering, and f64->f32 has no checked form"
             )]
             Some(scaled as f32)
         })
@@ -216,7 +229,7 @@ fn inventory(root: &Path) -> Result<BTreeMap<String, FileFacts>, Box<dyn Error>>
     Ok(facts)
 }
 
-/// Files LanceDB owns as mutable bookkeeping rather than immutable data.
+/// Files `LanceDB` owns as mutable bookkeeping rather than immutable data.
 ///
 /// `_versions/latest_version_hint.json` is rewritten on every commit to point
 /// at the newest manifest. The versioned manifests beside it, and every data

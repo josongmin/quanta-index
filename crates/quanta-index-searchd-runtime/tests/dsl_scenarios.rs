@@ -2,6 +2,10 @@
 
 #![forbid(unsafe_code)]
 #![expect(
+    clippy::expect_used,
+    reason = "integration-test helpers outside `#[test]` fns assert fixture setup with `expect`; the workspace already permits this inside test fns and a helper that cannot set up its fixture has no caller to propagate to"
+)]
+#![expect(
     clippy::wildcard_enum_match_arm,
     reason = "integration response checks intentionally collapse non-target variants"
 )]

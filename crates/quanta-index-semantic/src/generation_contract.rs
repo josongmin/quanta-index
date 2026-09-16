@@ -296,6 +296,10 @@ impl GenerationContract {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Result-returning tests assert with `assert!` on fixture invariants; a violated fixture invariant is not a propagatable error"
+)]
 mod tests {
     use quanta_index_contract::BatchIngestMode;
 

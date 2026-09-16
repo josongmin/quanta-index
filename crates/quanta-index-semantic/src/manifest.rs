@@ -240,24 +240,46 @@ pub(crate) fn normalization_token(normalization: EmbeddingNormalization) -> &'st
     }
 }
 
+/// What the main semantic table committed to at seal time.
+pub(crate) struct SemanticRowSealV1 {
+    pub(crate) row_count: u64,
+    pub(crate) root_digest: String,
+    pub(crate) built_at_unix_nanos: u64,
+}
+
+/// Which corpora the sealed generation carries, and under which policies.
+pub(crate) struct SemanticCorpusCoverageV1 {
+    pub(crate) present: Vec<String>,
+    pub(crate) required: Vec<String>,
+    pub(crate) card_schema_versions: Vec<u32>,
+    pub(crate) render_policy_digests: Vec<String>,
+    pub(crate) policy_digest: Option<String>,
+}
+
+/// What the cluster-membership sidecar committed to at seal time.
+pub(crate) struct ClusterMembershipSealV1 {
+    pub(crate) root_digest: String,
+    pub(crate) cluster_count: u64,
+    pub(crate) member_row_count: u64,
+}
+
 impl SemanticManifest {
+    /// Assemble a manifest from the generation contract plus the three
+    /// commitment groups sealed alongside it.
+    ///
+    /// The groups are separate parameters rather than sixteen positional
+    /// arguments so a caller cannot transpose, say, the semantic row root and
+    /// the membership root: they have different types now, not just different
+    /// positions in a long list of `String`s and `u64`s.
     pub(crate) fn from_generation_contract(
         repo: &RepoId,
         revision: &RevisionId,
         generation: ManifestGeneration,
         generation_contract: &GenerationContract,
         manifest_digest: &str,
-        row_count: u64,
-        semantic_row_root_digest: String,
-        built_at_unix_nanos: u64,
-        present_corpora: Vec<String>,
-        required_corpora: Vec<String>,
-        card_schema_versions: Vec<u32>,
-        render_policy_digests: Vec<String>,
-        corpus_policy_digest: Option<String>,
-        cluster_membership_root_digest: String,
-        cluster_membership_cluster_count: u64,
-        cluster_membership_member_row_count: u64,
+        rows: SemanticRowSealV1,
+        corpora: SemanticCorpusCoverageV1,
+        cluster_membership: ClusterMembershipSealV1,
     ) -> Self {
         Self {
             format_version: FORMAT_VERSION,
@@ -270,17 +292,17 @@ impl SemanticManifest {
             dimension: generation_contract.dimension,
             distance_metric: generation_contract.distance_metric.clone(),
             normalization: generation_contract.normalization.clone(),
-            row_count,
-            semantic_row_root_digest,
-            built_at_unix_nanos,
-            present_corpora,
-            required_corpora,
-            card_schema_versions,
-            render_policy_digests,
-            corpus_policy_digest,
-            cluster_membership_root_digest,
-            cluster_membership_cluster_count,
-            cluster_membership_member_row_count,
+            row_count: rows.row_count,
+            semantic_row_root_digest: rows.root_digest,
+            built_at_unix_nanos: rows.built_at_unix_nanos,
+            present_corpora: corpora.present,
+            required_corpora: corpora.required,
+            card_schema_versions: corpora.card_schema_versions,
+            render_policy_digests: corpora.render_policy_digests,
+            corpus_policy_digest: corpora.policy_digest,
+            cluster_membership_root_digest: cluster_membership.root_digest,
+            cluster_membership_cluster_count: cluster_membership.cluster_count,
+            cluster_membership_member_row_count: cluster_membership.member_row_count,
         }
     }
 

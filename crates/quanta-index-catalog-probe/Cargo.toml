@@ -1,0 +1,25 @@
+[package]
+name = "quanta-index-catalog-probe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "W0 G0-C decision-gate probe: catalog storage engine capability evidence (not a product crate)"
+
+[lints]
+workspace = true
+
+# This crate exists only to run the G0-C gate. The engines under evaluation are
+# dev-dependencies on purpose: `cargo check --workspace` and every non-test lane
+# must not pay for a storage engine the plan has not yet admitted. Once the gate
+# selects an engine, the real catalog adapter crate takes the dependency and this
+# crate is deleted.
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+
+[dev-dependencies]
+redb = { workspace = true }
+rusqlite = { workspace = true }
+tempfile = { workspace = true }

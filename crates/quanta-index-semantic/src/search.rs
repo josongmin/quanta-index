@@ -34,6 +34,7 @@ use quanta_index_contract::{
     ClusterMembershipReadRequestV1, ClusterMembershipSnapshotV1, ClusterMembershipUnavailableV1,
     GenerationPin, LexicalCandidate, ManifestGeneration, OwnerDocKind, QueryConstraintSetV1,
     RepoId, RepoRelativePath, RevisionId, SemanticCorpusKindV1, SymbolId,
+    canonical_order::{CanonicalOrderBreakV1, first_canonical_order_break_v1},
     cluster_membership_content_digest_v1,
 };
 use quanta_index_core::CoreError;
@@ -167,7 +168,10 @@ fn validate_cluster_membership_rows_v1(
     if rows.is_empty() {
         return Err(ClusterMembershipReadFailureV1::CurrentGenerationMissing);
     }
-    if rows.len() > quanta_index_contract::MAX_CLUSTER_MEMBERSHIP_READ_V1 as usize {
+    let Ok(row_count) = u32::try_from(rows.len()) else {
+        return Err(ClusterMembershipReadFailureV1::MemberLimitExceeded);
+    };
+    if row_count > quanta_index_contract::MAX_CLUSTER_MEMBERSHIP_READ_V1 {
         return Err(ClusterMembershipReadFailureV1::MemberLimitExceeded);
     }
     rows.sort_by_key(|row| row.ordinal);
@@ -181,7 +185,10 @@ fn validate_cluster_membership_rows_v1(
         if row.authority_digest != request.expected_authority_digest {
             return Err(ClusterMembershipReadFailureV1::AuthorityDigestMismatch);
         }
-        if usize::try_from(row.ordinal).ok() != Some(index) {
+        let Ok(expected_ordinal) = u32::try_from(index) else {
+            return Err(ClusterMembershipReadFailureV1::NonCanonicalMemberOrder);
+        };
+        if row.ordinal != expected_ordinal {
             return Err(ClusterMembershipReadFailureV1::NonCanonicalMemberOrder);
         }
         if committed_count
@@ -196,20 +203,23 @@ fn validate_cluster_membership_rows_v1(
         members.push(SymbolId::new(row.member_symbol_id));
     }
     let computed_digest = cluster_membership_content_digest_v1(&members);
-    if usize::try_from(committed_count.unwrap_or_default()).ok() != Some(members.len())
+    let Ok(member_count) = u32::try_from(members.len()) else {
+        return Err(ClusterMembershipReadFailureV1::CorruptSidecar);
+    };
+    if committed_count != Some(member_count)
         || committed_digest.as_deref() != Some(computed_digest.as_str())
     {
         return Err(ClusterMembershipReadFailureV1::CorruptSidecar);
     }
-    for pair in members.windows(2) {
-        if pair[0] == pair[1] {
-            return Err(ClusterMembershipReadFailureV1::DuplicateMemberIdentity);
+    match first_canonical_order_break_v1(&members, |member| member.as_str()) {
+        Some(CanonicalOrderBreakV1::Duplicate) => {
+            Err(ClusterMembershipReadFailureV1::DuplicateMemberIdentity)
         }
-        if pair[0] > pair[1] {
-            return Err(ClusterMembershipReadFailureV1::NonCanonicalMemberOrder);
+        Some(CanonicalOrderBreakV1::OutOfOrder) => {
+            Err(ClusterMembershipReadFailureV1::NonCanonicalMemberOrder)
         }
+        None => Ok(members),
     }
-    Ok(members)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -324,9 +334,16 @@ pub(crate) async fn open_generation(
     }
     if manifest.format_version == FORMAT_VERSION {
         let commitment = semantic_row_commitment_v1(&table).await?;
-        if commitment.row_count != manifest.row_count
-            || commitment.root_digest != manifest.semantic_row_root_digest
-        {
+        // The commitment's `root_digest` is compared against the manifest's
+        // `semantic_row_root_digest`: the manifest carries a second, unrelated
+        // root for the membership sidecar, so the field names differ on purpose.
+        #[expect(
+            clippy::suspicious_operation_groupings,
+            reason = "the manifest has no `root_digest` field; `semantic_row_root_digest` is the main table's root and the comparison is deliberate"
+        )]
+        let row_root_mismatch = commitment.row_count != manifest.row_count
+            || commitment.root_digest != manifest.semantic_row_root_digest;
+        if row_root_mismatch {
             return Err(CoreError::Typed {
                 code: "SEMANTIC_ROW_ROOT_MISMATCH".to_string(),
                 message: format!(
@@ -542,8 +559,7 @@ fn cosine_distance_to_score_v1(distance: f32, candidate_id: &str) -> Result<f32,
 fn parse_owner_kind_v1(value: &str, record_id: &str) -> Result<OwnerDocKind, CoreError> {
     OwnerDocKind::from_code_str(value).ok_or_else(|| {
         CoreError::Storage(format!(
-            "semantic: unsupported owner_kind {:?} on record {}",
-            value, record_id
+            "semantic: unsupported owner_kind {value:?} on record {record_id}"
         ))
     })
 }
@@ -644,8 +660,14 @@ impl LoadedGeneration {
             Ok(members) => members,
             Err(failure) => return self.cluster_membership_rejection_v1(request, failure),
         };
-        let completeness = if members.len() > request.limit as usize {
-            members.truncate(request.limit as usize);
+        let limit = match usize::try_from(request.limit) {
+            Ok(limit) => limit,
+            // A `u32` limit wider than this platform's `usize` cannot truncate
+            // a result set that already fits in memory.
+            Err(_too_wide_for_platform) => usize::MAX,
+        };
+        let completeness = if members.len() > limit {
+            members.truncate(limit);
             ClusterMembershipCompletenessV1::Truncated
         } else {
             ClusterMembershipCompletenessV1::Complete
@@ -736,7 +758,12 @@ impl LoadedGeneration {
             ));
         }
         predicate.push(')');
-        let maximum_rows = (quanta_index_contract::MAX_CLUSTER_MEMBERSHIP_READ_V1 as usize)
+        let maximum_rows = usize::try_from(quanta_index_contract::MAX_CLUSTER_MEMBERSHIP_READ_V1)
+            .map_err(|error| {
+                CoreError::InvalidContract(format!(
+                    "semantic: cluster membership read cap does not fit this platform: {error}"
+                ))
+            })?
             .checked_mul(request.items.len())
             .and_then(|rows| rows.checked_add(1))
             .ok_or_else(|| {
@@ -1314,6 +1341,10 @@ impl SemanticSearcher for PersistedSemanticSearcher {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "fixtures in this module are built with known fixed lengths; an out-of-range index is a test authoring bug that should fail loudly"
+)]
 mod tests {
     use super::{
         ClusterMembershipReadRowV1, LoadedClusterMembershipV1, cosine_distance_to_score_v1,
@@ -1329,6 +1360,10 @@ mod tests {
 
     // CASE-COVERS: non-finite cosine distance must fail closed, not seed a NaN score.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the conversion is exact arithmetic (1.0 - distance) on values chosen to be representable, so the test pins the exact result rather than a tolerance that would hide a drifted formula"
+    )]
     fn cosine_distance_to_score_rejects_non_finite_v1() {
         // Finite distances convert to similarity = 1 - distance.
         assert_eq!(

@@ -3,6 +3,12 @@
 //! generation count + cold-boot seed timing). This proves the boot path
 //! surfaces direct-open vs migration, not just that the helpers compute it.
 
+#![forbid(unsafe_code)]
+#![expect(
+    clippy::expect_used,
+    reason = "integration-test helpers outside `#[test]` fns assert fixture setup with `expect`; the workspace already permits this inside test fns and a helper that cannot set up its fixture has no caller to propagate to"
+)]
+
 use std::path::{Path, PathBuf};
 
 use quanta_index_contract::{

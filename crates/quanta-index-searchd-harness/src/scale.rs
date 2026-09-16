@@ -254,8 +254,8 @@ fn vocab_index(state: u64) -> usize {
 /// `(tier, seed)`, different for a different seed. Each file is laid out as
 /// `repo{r}/src/file_{f}.rs` and carries:
 ///
-/// - a deterministic set of filler lines drawn from [`VOCAB`];
-/// - the query token [`SCALE_QUERY_TOKEN`] planted at the tier's `hit_density`;
+/// - a deterministic set of filler lines drawn from `VOCAB`;
+/// - the query token `SCALE_QUERY_TOKEN` planted at the tier's `hit_density`;
 /// - synthetic `fn` symbol lines at the tier's `symbol_density`.
 #[must_use]
 pub fn generate_corpus(tier: ScaleTier, seed: u64) -> Vec<(String, String)> {

@@ -1,7 +1,7 @@
 //! `tail_matrix` — latency-tail rail artifact producer + gate (J7Q-04).
 //!
 //! Boots one warm `E2eRuntime`, golden-validates each budgeted route's
-//! representative query, then times it [`TAIL_SAMPLES`] times to read p50/p95/p99
+//! representative query, then times it `TAIL_SAMPLES` times to read p50/p95/p99
 //! off a sorted sample, and writes the canonical artifacts under
 //! `artifacts/search-quality/tail/latest/`. Per-route budgets are declared in
 //! `route_budgets.json`; `summary.json` records the measured tails with

@@ -320,14 +320,20 @@ fn emit_evidence(fields: &[(&str, String)]) {
     println!("QI-BB-006-EVIDENCE {}", rendered.join(" "));
 }
 
+/// One directory entry's name and size, as the cost breakdown reports it.
+type FreshEntry = (String, u64);
+
+/// A generation-directory sidecar's `(inode, length, sha256)`.
+type SidecarFacts = (u64, u64, String);
+
 /// Bytes under `root` that do not share storage with `shared_inodes`, plus the
 /// per-entry breakdown so a regression names what was rewritten.
 fn bytes_not_shared_with(
     root: &Path,
     shared_inodes: &BTreeSet<u64>,
-) -> Result<(u64, Vec<(String, u64)>), Box<dyn Error>> {
+) -> Result<(u64, Vec<FreshEntry>), Box<dyn Error>> {
     let mut fresh = 0_u64;
-    let mut entries: Vec<(String, u64)> = Vec::new();
+    let mut entries: Vec<FreshEntry> = Vec::new();
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
         for entry in std::fs::read_dir(&directory)? {
@@ -532,7 +538,7 @@ fn delta_generation_does_not_mutate_base_text_authority_sidecars() -> TestResult
 fn sidecar_facts(
     generation_dir: &Path,
     names: &[&str],
-) -> Result<Vec<(u64, u64, String)>, Box<dyn Error>> {
+) -> Result<Vec<SidecarFacts>, Box<dyn Error>> {
     let mut facts = Vec::with_capacity(names.len());
     for name in names {
         let path = generation_dir.join(name);

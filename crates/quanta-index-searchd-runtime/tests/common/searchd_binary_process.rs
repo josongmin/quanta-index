@@ -6,13 +6,13 @@ use std::error::Error;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use quanta_index_sdk::{ConnectOptions, QuantaIndex};
 
-const SOCKET_TIMEOUT: Duration = Duration::from_secs(30);
+pub(super) const SOCKET_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) struct SearchdBinaryProcess {
     state_root: PathBuf,
@@ -81,26 +81,6 @@ impl SearchdBinaryProcess {
         remove_socket_files(&self.state_root)?;
         Ok(())
     }
-
-    #[allow(
-        dead_code,
-        reason = "the shared fixture's lease probe is used only by the composite lifecycle target"
-    )]
-    pub(super) fn require_start_failure(state_root: &Path) -> Result<Output, Box<dyn Error>> {
-        let mut child = searchd_command(state_root, 8)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        let start = Instant::now();
-        while start.elapsed() < SOCKET_TIMEOUT {
-            if child.try_wait()?.is_some() {
-                return Ok(child.wait_with_output()?);
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-        terminate_child(&mut child)?;
-        Err("second searchd process did not reject the occupied state root before timeout".into())
-    }
 }
 
 impl Drop for SearchdBinaryProcess {
@@ -112,7 +92,7 @@ impl Drop for SearchdBinaryProcess {
     }
 }
 
-fn terminate_child(child: &mut Child) -> Result<(), Box<dyn Error>> {
+pub(super) fn terminate_child(child: &mut Child) -> Result<(), Box<dyn Error>> {
     if child.try_wait()?.is_none() {
         match child.kill() {
             Ok(()) => {}
@@ -141,7 +121,7 @@ fn socket_accepts_connection(_path: &Path) -> bool {
     false
 }
 
-fn searchd_command(state_root: &Path, max_generations: usize) -> Command {
+pub(super) fn searchd_command(state_root: &Path, max_generations: usize) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd"));
     let _configured = command
         .arg("serve")

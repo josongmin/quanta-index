@@ -40,9 +40,11 @@ fn generation() -> ManifestGeneration {
     ManifestGeneration::new(1)
 }
 
-/// Direct lexical builds mutate an incomplete generation. The read port only
-/// accepts a generation sealed through the manifest-digest carrying batch
-/// authority, so planner fixtures seal after applying their compact op set.
+/// Direct lexical builds mutate an incomplete generation.
+///
+/// The read port only accepts a generation sealed through the manifest-digest
+/// carrying batch authority, so planner fixtures seal after applying their
+/// compact op set.
 trait SealedFixtureBuildPort {
     fn build(
         &self,

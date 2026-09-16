@@ -14,10 +14,11 @@ use quanta_index_search_plane::readiness::SearchCorpusHistoryRetentionPolicyV1;
 const DEFAULT_OPENAI_MODEL: &str = "text-embedding-3-small";
 const DEFAULT_OPENAI_DIMENSION: usize = 1536;
 
-/// Operational knobs for the `OpenAI` embedder, surfaced as daemon env so they can
-/// be tuned without a code change. Defaults mirror the provider's own defaults
-/// (single source of truth re-exported from `quanta_index_embed`); the embedding
-/// cache is on by default to control cost on rebuild / incremental.
+/// Operational knobs for the `OpenAI` embedder, surfaced as daemon env.
+///
+/// They can be tuned without a code change. Defaults mirror the provider's own
+/// defaults (single source of truth re-exported from `quanta_index_embed`); the
+/// embedding cache is on by default to control cost on rebuild / incremental.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OpenAiEmbedderTuning {
     /// Max inputs per `/v1/embeddings` request (`QUANTA_INDEX_EMBED_BATCH`).
@@ -71,9 +72,10 @@ impl OpenAiEmbedderTuning {
     }
 }
 
-/// How `searchd` resolves the semantic embedder for BOTH the query path and
-/// corpus derivation. One profile drives both, so the two sides can never
-/// disagree on model identity (the query-time model-identity gate then holds).
+/// How `searchd` resolves the semantic embedder for both query and corpus paths.
+///
+/// One profile drives both, so the two sides can never disagree on model
+/// identity (the query-time model-identity gate then holds).
 #[derive(Clone, Eq, PartialEq)]
 pub enum SemanticEmbedderProfile {
     /// Deterministic FNV-1a hash embedder (default; no network, free).
@@ -246,7 +248,6 @@ impl SearchdConfig {
         self
     }
 
-    #[must_use]
     pub fn try_with_search_corpus_history_retention_limits(
         mut self,
         max_generations: usize,
@@ -281,32 +282,48 @@ impl SearchdConfig {
     }
 }
 
+/// Read an optional daemon env var, distinguishing "unset" from "unreadable".
+///
+/// An unset variable is the ordinary absent case. A variable that is set but
+/// not valid UTF-8 is an operator error and is surfaced, not collapsed into
+/// "absent" where it would silently select a default the operator did not ask
+/// for.
+fn optional_env(name: &str) -> Result<Option<String>> {
+    match std::env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(err @ std::env::VarError::NotUnicode(_)) => {
+            Err(anyhow::anyhow!("{name} is set but not valid UTF-8: {err}"))
+        }
+    }
+}
+
 pub(crate) fn search_corpus_history_retention_policy_from_env()
 -> Result<SearchCorpusHistoryRetentionPolicyV1> {
-    search_corpus_history_retention_policy_from_lookup_v1(|name| std::env::var(name).ok())
+    search_corpus_history_retention_policy_from_lookup_v1(optional_env)
 }
 
 fn search_corpus_history_retention_policy_from_lookup_v1<F>(
     lookup: F,
 ) -> Result<SearchCorpusHistoryRetentionPolicyV1>
 where
-    F: Fn(&str) -> Option<String>,
+    F: Fn(&str) -> Result<Option<String>>,
 {
     let max_generations = required_positive_raw_usize(
         "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS",
-        lookup("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS"),
+        lookup("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS")?,
     )?;
     let max_bytes = required_positive_raw_u64(
         "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES",
-        lookup("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES"),
+        lookup("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES")?,
     )?;
     let max_revision_pairs = required_positive_raw_usize(
         "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS",
-        lookup("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS"),
+        lookup("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS")?,
     )?;
     let max_total_bytes = required_positive_raw_u64(
         "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES",
-        lookup("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES"),
+        lookup("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES")?,
     )?;
     SearchCorpusHistoryRetentionPolicyV1::new(
         max_generations,
@@ -341,14 +358,16 @@ fn required_positive_raw_u64(name: &str, raw: Option<String>) -> Result<u64> {
     Ok(value)
 }
 
-/// Resolve the semantic embedder profile from env. Defaults to the deterministic
-/// hash embedder; an unknown selector or a missing `OpenAI` key fails closed (no
-/// silent fallback). Applied on BOTH config entry points (state-root override and
-/// full from_env) so `QUANTA_INDEX_EMBEDDER` is honored regardless of how the
-/// state root was resolved.
+/// Resolve the semantic embedder profile from env.
+///
+/// Defaults to the deterministic hash embedder; an unknown selector or a
+/// missing `OpenAI` key fails closed (no silent fallback). Applied on both
+/// config entry points (state-root override and full `from_env`) so
+/// `QUANTA_INDEX_EMBEDDER` is honored regardless of how the state root was
+/// resolved.
 pub(crate) fn semantic_embedder_profile_from_env() -> Result<SemanticEmbedderProfile> {
-    match std::env::var("QUANTA_INDEX_EMBEDDER").ok().as_deref() {
-        None | Some("") | Some("hash") => Ok(SemanticEmbedderProfile::Hash {
+    match optional_env("QUANTA_INDEX_EMBEDDER")?.as_deref() {
+        None | Some("" | "hash") => Ok(SemanticEmbedderProfile::Hash {
             dimension: embed_dim_from_env(SEARCH_OWNED_SEMANTIC_DIMENSION)?,
         }),
         Some("unavailable") => Ok(SemanticEmbedderProfile::Unavailable),
@@ -359,8 +378,8 @@ pub(crate) fn semantic_embedder_profile_from_env() -> Result<SemanticEmbedderPro
             if api_key.trim().is_empty() {
                 return Err(anyhow::anyhow!("OPENAI_API_KEY is set but empty"));
             }
-            let model = std::env::var("QUANTA_INDEX_EMBED_MODEL")
-                .unwrap_or_else(|_err| DEFAULT_OPENAI_MODEL.to_string());
+            let model = optional_env("QUANTA_INDEX_EMBED_MODEL")?
+                .unwrap_or_else(|| DEFAULT_OPENAI_MODEL.to_string());
             Ok(SemanticEmbedderProfile::OpenAi {
                 model,
                 dimension: embed_dim_from_env(DEFAULT_OPENAI_DIMENSION)?,
@@ -375,42 +394,45 @@ pub(crate) fn semantic_embedder_profile_from_env() -> Result<SemanticEmbedderPro
 }
 
 fn embed_dim_from_env(default: usize) -> Result<usize> {
-    parse_embed_dim(
-        std::env::var("QUANTA_INDEX_EMBED_DIM").ok().as_deref(),
-        default,
-    )
+    parse_embed_dim(optional_env("QUANTA_INDEX_EMBED_DIM")?.as_deref(), default)
 }
 
-/// Resolve the `OpenAI` embedder operational knobs from env, falling back to the
-/// provider defaults for any unset knob. Each knob is parsed by a pure helper so
-/// the env→tuning mapping is unit-testable without mutating process env.
+/// Resolve the `OpenAI` embedder operational knobs from env.
+///
+/// Any unset knob falls back to the provider default. Each knob is parsed by a
+/// pure helper so the env→tuning mapping is unit-testable without mutating
+/// process env.
 fn openai_tuning_from_env() -> Result<OpenAiEmbedderTuning> {
-    openai_tuning_from_env_with(|name| std::env::var(name).ok())
+    openai_tuning_from_env_with(optional_env)
 }
 
-/// Resolve tuning from an injected `name -> value` lookup. Splitting the lookup
-/// from the real `std::env::var` call keeps the env-var-NAME -> field binding
-/// unit-testable without mutating process env (this crate forbids `unsafe`, so
-/// `std::env::set_var` is unavailable in tests).
+/// Resolve tuning from an injected `name -> value` lookup.
+///
+/// Splitting the lookup from the real `std::env::var` call keeps the
+/// env-var-NAME -> field binding unit-testable without mutating process env
+/// (this crate forbids `unsafe`, so `std::env::set_var` is unavailable in
+/// tests).
 fn openai_tuning_from_env_with<F>(lookup: F) -> Result<OpenAiEmbedderTuning>
 where
-    F: Fn(&str) -> Option<String>,
+    F: Fn(&str) -> Result<Option<String>>,
 {
     openai_tuning_from_raw(
-        lookup("QUANTA_INDEX_EMBED_BATCH").as_deref(),
-        lookup("QUANTA_INDEX_EMBED_MAX_EST_TOKENS").as_deref(),
-        lookup("QUANTA_INDEX_EMBED_MAX_RETRIES").as_deref(),
-        lookup("QUANTA_INDEX_EMBED_TIMEOUT_SECS").as_deref(),
-        lookup("QUANTA_INDEX_EMBED_CACHE").as_deref(),
-        lookup("QUANTA_INDEX_EMBED_CONCURRENCY").as_deref(),
+        lookup("QUANTA_INDEX_EMBED_BATCH")?.as_deref(),
+        lookup("QUANTA_INDEX_EMBED_MAX_EST_TOKENS")?.as_deref(),
+        lookup("QUANTA_INDEX_EMBED_MAX_RETRIES")?.as_deref(),
+        lookup("QUANTA_INDEX_EMBED_TIMEOUT_SECS")?.as_deref(),
+        lookup("QUANTA_INDEX_EMBED_CACHE")?.as_deref(),
+        lookup("QUANTA_INDEX_EMBED_CONCURRENCY")?.as_deref(),
     )
 }
 
-/// Pure assembler: maps the four raw knob strings onto their tuning fields,
-/// falling back to provider defaults for any unset knob. Extracted from
-/// [`openai_tuning_from_env`] so the env-var-name -> field mapping (not just the
-/// individual leaf parsers) is unit-testable without mutating process env — a
-/// cross-wired field or typo'd binding fails the test instead of shipping green.
+/// Pure assembler: maps the raw knob strings onto their tuning fields.
+///
+/// Any unset knob falls back to the provider default. Extracted from
+/// [`openai_tuning_from_env`] so the env-var-name -> field mapping (not just
+/// the individual leaf parsers) is unit-testable without mutating process env
+/// — a cross-wired field or typo'd binding fails the test instead of shipping
+/// green.
 fn openai_tuning_from_raw(
     batch: Option<&str>,
     max_estimated_tokens: Option<&str>,
@@ -451,13 +473,12 @@ fn parse_embed_concurrency(raw: Option<&str>, default: usize) -> Result<usize> {
 }
 
 fn parse_embed_dim(raw: Option<&str>, default: usize) -> Result<usize> {
-    match raw {
-        None => Ok(default),
-        Some(value) => value
+    raw.map_or(Ok(default), |value| {
+        value
             .trim()
             .parse::<usize>()
-            .map_err(|err| anyhow::anyhow!("invalid QUANTA_INDEX_EMBED_DIM '{value}': {err}")),
-    }
+            .map_err(|err| anyhow::anyhow!("invalid QUANTA_INDEX_EMBED_DIM '{value}': {err}"))
+    })
 }
 
 fn parse_embed_batch(raw: Option<&str>, default: usize) -> Result<usize> {
@@ -591,35 +612,32 @@ mod tests {
         for missing in NAMES {
             let result = search_corpus_history_retention_policy_from_lookup_v1(|name| {
                 if name == missing {
-                    None
-                } else {
-                    Some(
-                        match name {
-                            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS" => "3",
-                            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES" => "4096",
-                            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS" => "17",
-                            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES" => "65536",
-                            _ => return None,
-                        }
-                        .to_string(),
-                    )
+                    return Ok(None);
                 }
+                Ok(match name {
+                    "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS" => Some("3".to_string()),
+                    "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES" => Some("4096".to_string()),
+                    "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS" => {
+                        Some("17".to_string())
+                    }
+                    "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES" => {
+                        Some("65536".to_string())
+                    }
+                    _ => None,
+                })
             });
             let error = result.expect_err("missing required retention knob must fail closed");
             assert!(error.to_string().contains(missing));
         }
 
         let policy = search_corpus_history_retention_policy_from_lookup_v1(|name| {
-            Some(
-                match name {
-                    "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS" => "3",
-                    "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES" => "4096",
-                    "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS" => "17",
-                    "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES" => "65536",
-                    _ => return None,
-                }
-                .to_string(),
-            )
+            Ok(match name {
+                "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS" => Some("3".to_string()),
+                "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES" => Some("4096".to_string()),
+                "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS" => Some("17".to_string()),
+                "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES" => Some("65536".to_string()),
+                _ => None,
+            })
         })
         .expect("all required retention env bindings");
         assert_eq!(policy.max_generations(), 3);
@@ -796,8 +814,8 @@ mod tests {
         // values (7 / 1234 / 2 / 11 / off) so a name<->field cross-wire (e.g. reading
         // MAX_RETRIES into the batch slot, or a typo'd env name returning None ->
         // default) is caught. Uses an injected lookup — no process-env mutation.
-        let lookup = |name: &str| -> Option<String> {
-            match name {
+        let lookup = |name: &str| -> Result<Option<String>> {
+            Ok(match name {
                 "QUANTA_INDEX_EMBED_BATCH" => Some("7".to_string()),
                 "QUANTA_INDEX_EMBED_MAX_EST_TOKENS" => Some("1234".to_string()),
                 "QUANTA_INDEX_EMBED_MAX_RETRIES" => Some("2".to_string()),
@@ -805,7 +823,7 @@ mod tests {
                 "QUANTA_INDEX_EMBED_CACHE" => Some("off".to_string()),
                 "QUANTA_INDEX_EMBED_CONCURRENCY" => Some("5".to_string()),
                 _ => None,
-            }
+            })
         };
         let tuning =
             openai_tuning_from_env_with(lookup).expect("env tuning assembles from valid knobs");

@@ -350,10 +350,10 @@ fn committed_segment_files_are_immutable_across_later_commits() -> ProbeResult {
         }
     }
 
-    let introduced: Vec<&String> = after
+    let introduced = after
         .keys()
         .filter(|name| !before.contains_key(*name))
-        .collect();
+        .count();
     evidence(
         "immutability",
         &[
@@ -361,7 +361,7 @@ fn committed_segment_files_are_immutable_across_later_commits() -> ProbeResult {
             ("files_after", after.len().to_string()),
             ("retained_segment_files", retained.to_string()),
             ("rewritten_segment_files", rewritten.len().to_string()),
-            ("introduced_files", introduced.len().to_string()),
+            ("introduced_files", introduced.to_string()),
         ],
     );
 

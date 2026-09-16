@@ -265,7 +265,7 @@ impl QueryTextEmbedderPort for ProviderUnavailableQueryTextEmbedder {
         })
     }
 
-    fn model_id(&self) -> &str {
+    fn model_id(&self) -> &'static str {
         // Sentinel only: this embedder always fails `embed_query` before any
         // model-identity comparison runs, so this value is never used to decide
         // a query. It must not collide with a real model id.
@@ -283,9 +283,11 @@ impl QueryObsSink for NoopQueryObsSink {
     fn emit(&self, _sample: quanta_index_search_plane::MetricSample) {}
 }
 
-/// Adapts the batch-capable [`TextEmbeddingProvider`] to the query-side
-/// [`QueryTextEmbedderPort`] (single-text embed), so one provider instance serves
-/// both the query and corpus paths and they cannot diverge on model identity.
+/// Adapts the batch-capable [`TextEmbeddingProvider`] to the query side.
+///
+/// [`QueryTextEmbedderPort`] embeds one text at a time; routing it through the
+/// same provider instance the corpus path uses means the two cannot diverge on
+/// model identity.
 struct QueryEmbedderAdapter(Arc<dyn TextEmbeddingProvider + Send + Sync>);
 
 impl QueryTextEmbedderPort for QueryEmbedderAdapter {
@@ -308,20 +310,23 @@ impl QueryTextEmbedderPort for QueryEmbedderAdapter {
     }
 }
 
-/// Resolve the (query embedder, corpus embedder) pair for a profile. Both are
-/// backed by the SAME provider for `Hash`/`OpenAi` so model identity matches; for
-/// `Unavailable` the query embedder fails closed while the corpus still
-/// hash-derives (the deliberate degraded-config contract).
+/// The query-side and corpus-side embedders resolved for one profile.
+///
+/// Both halves are backed by the same provider for `Hash`/`OpenAi` so model
+/// identity matches; for `Unavailable` the query embedder fails closed while
+/// the corpus still hash-derives (the deliberate degraded-config contract).
+type SemanticEmbedders = (
+    Arc<dyn QueryTextEmbedderPort + Send + Sync>,
+    Arc<dyn TextEmbeddingProvider + Send + Sync>,
+);
+
+/// Resolve the (query embedder, corpus embedder) pair for a profile.
+///
+/// See [`SemanticEmbedders`] for the identity contract the pair upholds.
 fn build_semantic_embedders(
     profile: &SemanticEmbedderProfile,
     state_root: &Path,
-) -> Result<
-    (
-        Arc<dyn QueryTextEmbedderPort + Send + Sync>,
-        Arc<dyn TextEmbeddingProvider + Send + Sync>,
-    ),
-    CoreError,
-> {
+) -> Result<SemanticEmbedders, CoreError> {
     match profile {
         SemanticEmbedderProfile::Hash { dimension } => {
             let provider: Arc<dyn TextEmbeddingProvider + Send + Sync> =
@@ -985,6 +990,10 @@ fn seed_persisted_lexical_readiness(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Result-returning runtime tests assert with `assert!` on fixture invariants; a violated fixture invariant is not a propagatable error"
+)]
 mod tests {
     use super::{
         DomainStructuralQueryRequest, GenerationPin, GenerationSelector, Ledger,
@@ -1346,14 +1355,16 @@ mod tests {
         ensure_durable_state_root_with_v1(&state_root, &|path| {
             synced
                 .lock()
-                .map_err(|_| std::io::Error::other("sync log poisoned"))?
+                .map_err(|err| std::io::Error::other(format!("sync log poisoned: {err}")))?
                 .push(path.to_path_buf());
             Ok(())
         })?;
 
         assert!(state_root.is_dir());
         assert_eq!(
-            synced.into_inner().map_err(|_| "sync log poisoned")?,
+            synced
+                .into_inner()
+                .map_err(|err| format!("sync log poisoned: {err}"))?,
             vec![
                 parent.path().to_path_buf(),
                 parent.path().join("one"),

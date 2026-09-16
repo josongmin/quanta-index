@@ -37,7 +37,7 @@ use lancedb::query::{ExecutableQuery as _, QueryBase as _};
 use quanta_index_contract::{
     EmbeddingDistanceMetric, OwnerDocKind, SearchScopeSurface, SemanticCorpusKindV1,
     SemanticIngestBatch, SemanticReplaceScope, SemanticTombstoneScope,
-    cluster_membership_content_digest_v1,
+    canonical_order::first_canonical_order_break_v1, cluster_membership_content_digest_v1,
 };
 use quanta_index_core::CoreError;
 use quanta_index_core::domains::semantic::SemanticPolicy;
@@ -53,7 +53,9 @@ use crate::layout::{
     COLUMN_REPO_RELATIVE_PATH, COLUMN_VECTOR, TABLE_NAME, cluster_membership_schema,
     dimension_to_i32, semantic_schema,
 };
-use crate::manifest::SemanticManifest;
+use crate::manifest::{
+    ClusterMembershipSealV1, SemanticCorpusCoverageV1, SemanticManifest, SemanticRowSealV1,
+};
 use crate::membership_integrity::{
     ClusterMembershipCommitmentV1, ClusterMembershipStoredRowV1, cluster_membership_commitment_v1,
 };
@@ -93,8 +95,9 @@ const POST_DATASET_PRE_CONTRACT_PROMOTION: &str = "post-dataset-pre-contract-pro
     reason = "the subprocess-only crash matrix must terminate without stack unwinding"
 )]
 fn exit_for_promotion_crash_boundary(boundary: &str) {
-    let configured = std::env::var(PROMOTION_CRASH_BOUNDARY_ENV).ok();
-    if configured.as_deref() == Some(boundary) {
+    if let Ok(configured) = std::env::var(PROMOTION_CRASH_BOUNDARY_ENV)
+        && configured == boundary
+    {
         std::process::exit(PROMOTION_CRASH_EXIT_CODE);
     }
 }
@@ -513,10 +516,10 @@ fn validate_replace_scope(scope: &SemanticReplaceScope, dimension: usize) -> Res
             scope.cluster_memberships.len()
         )));
     }
-    if !scope
-        .cluster_memberships
-        .windows(2)
-        .all(|pair| pair[0].cluster_record_id < pair[1].cluster_record_id)
+    if first_canonical_order_break_v1(&scope.cluster_memberships, |membership| {
+        membership.cluster_record_id.as_str()
+    })
+    .is_some()
     {
         return Err(CoreError::InvalidContract(
             "semantic: cluster memberships must use canonical cluster_record_id order".to_string(),
@@ -546,11 +549,7 @@ fn validate_batch_scope_authority_v1(batch: &SemanticIngestBatch) -> Result<(), 
             )));
         }
     }
-    if !batch
-        .clear_surfaces
-        .windows(2)
-        .all(|pair| pair[0] < pair[1])
-    {
+    if first_canonical_order_break_v1(&batch.clear_surfaces, |surface| surface).is_some() {
         return Err(CoreError::InvalidContract(
             "semantic: clear surfaces must use canonical ascending order".to_string(),
         ));
@@ -1551,17 +1550,23 @@ async fn build_manifest_bytes(
         batch.generation,
         generation_contract,
         batch.manifest_digest.as_str(),
-        row_count_u64,
-        semantic_rows.root_digest,
-        built_at,
-        coverage.present_corpora,
-        generation_contract.required_corpora.clone(),
-        coverage.card_schema_versions,
-        coverage.render_policy_digests,
-        generation_contract.corpus_policy_digest.clone(),
-        membership_commitment.root_digest,
-        membership_commitment.cluster_count,
-        membership_commitment.member_row_count,
+        SemanticRowSealV1 {
+            row_count: row_count_u64,
+            root_digest: semantic_rows.root_digest,
+            built_at_unix_nanos: built_at,
+        },
+        SemanticCorpusCoverageV1 {
+            present: coverage.present_corpora,
+            required: generation_contract.required_corpora.clone(),
+            card_schema_versions: coverage.card_schema_versions,
+            render_policy_digests: coverage.render_policy_digests,
+            policy_digest: generation_contract.corpus_policy_digest.clone(),
+        },
+        ClusterMembershipSealV1 {
+            root_digest: membership_commitment.root_digest,
+            cluster_count: membership_commitment.cluster_count,
+            member_row_count: membership_commitment.member_row_count,
+        },
     );
     manifest.validate_corpus_coverage()?;
     manifest.encode()
@@ -1714,6 +1719,14 @@ pub(crate) async fn build_batch(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "fixtures in this module are built with known fixed lengths; an out-of-range index is a test authoring bug that should fail loudly"
+)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Result-returning tests assert with `assert!`/`panic!` on fixture invariants; a violated fixture invariant is not a propagatable error"
+)]
 mod tests {
     use std::env;
     use std::path::{Path, PathBuf};
@@ -1840,11 +1853,7 @@ mod tests {
             capability_status,
             authority_digest: format!("auth:{id}").into_boxed_str(),
             render_policy_digest: format!("render:{id}").into_boxed_str(),
-            card_schema_version: if corpus_kind == SemanticCorpusKindV1::RawCodeFallback {
-                0
-            } else {
-                1
-            },
+            card_schema_version: u32::from(corpus_kind != SemanticCorpusKindV1::RawCodeFallback),
             start_byte: 0,
             end_byte: 8,
             start_line: 1,
@@ -1926,11 +1935,8 @@ mod tests {
             CapabilityStatusV1::Full
         };
         record.parent_owner_id = None;
-        record.card_schema_version = if corpus_kind == SemanticCorpusKindV1::RawCodeFallback {
-            0
-        } else {
-            1
-        };
+        record.card_schema_version =
+            u32::from(corpus_kind != SemanticCorpusKindV1::RawCodeFallback);
         batch.required_corpora = required_corpora;
         batch.corpus_policy_digest = Some("semantic-source.v1".to_string());
         Ok(batch)
@@ -1971,11 +1977,8 @@ mod tests {
         }
     }
 
-    fn child_root_from_env() -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
-        match env::var_os(PROMOTION_CRASH_ROOT_ENV) {
-            Some(root) => Ok(Some(PathBuf::from(root))),
-            None => Ok(None),
-        }
+    fn child_root_from_env() -> Option<PathBuf> {
+        env::var_os(PROMOTION_CRASH_ROOT_ENV).map(PathBuf::from)
     }
 
     fn assert_recovered_promotion_state(
@@ -2050,11 +2053,7 @@ mod tests {
         assert_eq!(symbol_hits.len(), 1);
         assert_eq!(
             module_hits.len(),
-            if boundary == POST_DATASET_PRE_CONTRACT_PROMOTION {
-                1
-            } else {
-                0
-            },
+            usize::from(boundary == POST_DATASET_PRE_CONTRACT_PROMOTION),
             "recovered dataset must match the contract selected by recovery"
         );
         Ok(())
@@ -2113,7 +2112,7 @@ mod tests {
         reason = "test asserts subprocess crash recovery invariants"
     )]
     fn subprocess_crash_during_generation_promotion_recovers_complete_pair() -> TestResult {
-        if let Some(root) = child_root_from_env()? {
+        if let Some(root) = child_root_from_env() {
             let boundary = env::var(PROMOTION_CRASH_BOUNDARY_ENV)
                 .map_err(|err| format!("promotion crash child missing boundary: {err}"))?;
             return run_promotion_crash_child(&root, &boundary);
@@ -2284,7 +2283,7 @@ mod tests {
         let symbol_contract = GenerationContract::from_batch(&symbol_batch);
         persist_generation_contract(&generation_dir, &symbol_contract)?;
 
-        let mut module_batch = symbol_batch.clone();
+        let mut module_batch = symbol_batch;
         module_batch.required_corpora = vec![SemanticCorpusKindV1::ModuleCard];
         let merged_contract = symbol_contract.merge_batch(&module_batch)?;
         let staged_path = stage_generation_contract(&generation_dir, &merged_contract)?;
@@ -2900,7 +2899,13 @@ mod tests {
                 message.contains("required corpus `ModuleCard` missing"),
                 "seal failure must name the missing corpus, got {message}"
             ),
-            other => panic!("expected storage error for missing required corpus, got {other:?}"),
+            other @ (CoreError::InvalidContract(_)
+            | CoreError::Typed { .. }
+            | CoreError::NotReady(_)
+            | CoreError::NotImplemented(_)
+            | CoreError::NotFound(_)) => {
+                panic!("expected storage error for missing required corpus, got {other:?}")
+            }
         }
         Ok(())
     }

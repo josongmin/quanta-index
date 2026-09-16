@@ -1,49 +1,20 @@
 rules:
-  - id: rust-no-unwrap
-    message: Avoid unwrap/expect in Rust code. Propagate or assert through Result-returning tests instead.
-    languages: [rust]
-    severity: ERROR
-    patterns:
-      - pattern-either:
-          - pattern: $EXPR.unwrap()
-          - pattern: $EXPR.unwrap_err()
-          - pattern: $EXPR.expect($MSG)
-          - pattern: $EXPR.expect_err($MSG)
-
+  # unwrap/expect/panic/todo/unimplemented/dbg are NOT semgrep rules here on
+  # purpose. Clippy already denies them workspace-wide (`unwrap_used`,
+  # `expect_used`, `panic`, `todo`, `unimplemented`, `dbg_macro` in
+  # `[workspace.lints.clippy]`) and `clippy.toml` scopes the exemption for test
+  # code (`allow-*-in-tests`) with a written rationale. A second copy of those
+  # rules here could not express that scope — semgrep's Rust grammar does not
+  # let a pattern exclude `#[cfg(test)] mod` bodies — so it fired on every test
+  # module and kept the rail red while adding nothing to production
+  # enforcement, which `just rust-clippy` gates in CI. Semgrep keeps the
+  # shapes clippy has no lint for: silent-fallback conversions below.
   - id: rust-no-result-ok
     message: Do not discard Rust Result errors with ok(). Propagate or map the failure explicitly.
     languages: [rust]
     severity: ERROR
     patterns:
       - pattern: $EXPR.ok()
-
-  - id: rust-no-todo
-    message: Do not leave todo!/unimplemented! in Rust code.
-    languages: [rust]
-    severity: ERROR
-    patterns:
-      - pattern-either:
-          - pattern: todo!()
-          - pattern: todo!($MSG)
-          - pattern: unimplemented!()
-          - pattern: unimplemented!($MSG)
-
-  - id: rust-no-panic
-    message: Do not use panic! in Rust code. Return an error or assert through Result-returning tests instead.
-    languages: [rust]
-    severity: ERROR
-    patterns:
-      - pattern-either:
-          - pattern: panic!()
-          - pattern: panic!($MSG)
-          - pattern: panic!($FMT, ...)
-
-  - id: rust-no-dbg
-    message: Do not leave dbg! in Rust code.
-    languages: [rust]
-    severity: ERROR
-    patterns:
-      - pattern: dbg!(...)
 
   - id: rust-no-allow-attributes
     message: Do not use #[allow] in Rust code. Use #[expect(..., reason = ...)] only when a bounded exception is approved.

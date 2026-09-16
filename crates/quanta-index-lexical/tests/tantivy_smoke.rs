@@ -7,6 +7,10 @@
 //! or `.expect()` per the workspace lint policy).
 
 #![forbid(unsafe_code)]
+#![expect(
+    clippy::panic_in_result_fn,
+    reason = "Result-returning smoke tests assert with `assert!` on fixture invariants; a violated fixture invariant is not a propagatable error"
+)]
 
 use std::error::Error;
 
@@ -46,10 +50,11 @@ fn generation() -> ManifestGeneration {
     ManifestGeneration::new(1)
 }
 
-/// The legacy build port is deliberately mutation-only: it has no manifest
-/// digest, so it cannot prove a generation is safe to serve. Keep the compact
-/// per-test operation fixtures, but seal each finished fixture through the
-/// digest-carrying ingest port before opening it.
+/// The legacy build port is deliberately mutation-only.
+///
+/// It has no manifest digest, so it cannot prove a generation is safe to
+/// serve. Keep the compact per-test operation fixtures, but seal each finished
+/// fixture through the digest-carrying ingest port before opening it.
 trait SealedFixtureBuildPort {
     fn build(
         &self,
@@ -3337,7 +3342,10 @@ fn clear_only_delta_clones_base_and_removes_only_requested_surface_v1() -> TestR
     )?;
     assert!(chunk_hits.is_empty());
     assert_eq!(symbol_hits.len(), 1);
-    assert_eq!(symbol_hits[0].candidate_id, "kept-symbol");
+    let kept = symbol_hits
+        .first()
+        .ok_or("symbol hits empty after length check")?;
+    assert_eq!(kept.candidate_id, "kept-symbol");
     Ok(())
 }
 
