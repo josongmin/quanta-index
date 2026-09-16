@@ -1906,6 +1906,7 @@ fn start_runtime_with_openai(
     config = SearchdConfig::with_socket_overrides(config, query_socket, control_socket);
     config = config.with_semantic_embedder_profile(SemanticEmbedderProfile::OpenAi {
         model: "text-embedding-3-small".to_string(),
+        model_revision: "live".to_string(),
         dimension: 1536,
         api_key,
         tuning: OpenAiEmbedderTuning::default(),

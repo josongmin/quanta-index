@@ -63,6 +63,7 @@ crate quanta_index_core
 │   │   │   ├── trait SemanticSearcher: pub
 │   │   │   └── trait TextEmbeddingProvider: pub
 │   │   └── mod service: pub(self)
+│   │       ├── struct L2UnitEmbeddingProvider: pub
 │   │       └── struct SemanticPolicy: pub
 │   └── mod structural: pub
 │       ├── mod inbound: pub(self)

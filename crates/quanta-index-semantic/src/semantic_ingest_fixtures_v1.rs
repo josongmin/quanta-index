@@ -10,6 +10,7 @@ use quanta_index_contract::{
     SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope, SemanticSourceScopeKeyV1,
     SemanticTombstoneScope, SourceRoleV1, lex::LanguageCode,
 };
+use quanta_index_core::SemanticPolicy;
 
 /// Build a legacy raw-chunk style embedding row with all v4 metadata fields populated.
 pub fn legacy_chunk_embedding_record_v1(
@@ -28,14 +29,20 @@ pub fn legacy_chunk_embedding_record_v1(
 }
 
 /// Build an embedding row for an arbitrary owner/corpus pair.
+///
+/// The fixture contract is `L2Unit`, so the given direction is normalized
+/// the way the runtime's provider wrapper normalizes real output (QI-BB-031);
+/// a zero or non-finite direction is a fixture error.
 pub fn embedding_record_v1(
     id: &str,
     path: &str,
     owner_kind: OwnerDocKind,
     owner_id: &str,
     corpus_kind: SemanticCorpusKindV1,
-    vector: Vec<f32>,
+    mut vector: Vec<f32>,
 ) -> Result<EmbeddingRecord, String> {
+    SemanticPolicy::normalize_l2_unit_v1(&mut vector)
+        .map_err(|err| format!("fixture vector for {id} cannot be normalized: {err}"))?;
     let source_role = match corpus_kind {
         SemanticCorpusKindV1::RawCodeFallback => SourceRoleV1::RawFallbackText,
         SemanticCorpusKindV1::DocumentSummary => SourceRoleV1::SummaryText,

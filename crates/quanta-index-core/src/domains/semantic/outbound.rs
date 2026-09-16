@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 
 use quanta_index_contract::{
     BatchPublishReceipt, ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
-    LexicalCandidate, ManifestGeneration, OwnerDocKind, QueryConstraintSetV1, RepoId, RevisionId,
-    SemanticCorpusKindV1, SemanticIngestBatch,
+    EmbeddingNormalization, LexicalCandidate, ManifestGeneration, OwnerDocKind,
+    QueryConstraintSetV1, RepoId, RevisionId, SemanticCorpusKindV1, SemanticIngestBatch,
 };
 
 use crate::error::CoreError;
@@ -18,12 +18,17 @@ pub trait SemanticIngestPort: Send + Sync {
 ///
 /// This is the single embedder seam shared by BOTH the query path and corpus
 /// derivation, so the two can never disagree on model identity (the query-time
-/// model-identity gate compares [`Self::model_id`]/[`Self::model_version`]
+/// model-identity gate compares [`Self::model_id`]/[`Self::model_revision`]
 /// against the indexed generation's).
 ///
-/// Vectors are unit-normalized (cosine-comparable). `embed_batch` returns exactly
-/// one vector per input, in input order, and fails the whole batch closed on any
-/// error — a partial/misaligned batch must never reach the index.
+/// `embed_batch` returns exactly one vector per input, in input order, and
+/// fails the whole batch closed on any error — a partial/misaligned batch
+/// must never reach the index. What the vectors' bytes promise is stated by
+/// [`Self::normalization`]: a raw provider says [`EmbeddingNormalization::None`]
+/// and the composition root wraps it in
+/// [`L2UnitEmbeddingProvider`](crate::L2UnitEmbeddingProvider) before either
+/// path sees it, so every served or sealed vector is unit-normalized by the
+/// same code (QI-BB-031).
 pub trait TextEmbeddingProvider: Send + Sync {
     /// Embed `texts` into one vector each, in input order. Errors fail closed.
     fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError>;
@@ -31,11 +36,18 @@ pub trait TextEmbeddingProvider: Send + Sync {
     /// Stable identity of the model these vectors come from.
     fn model_id(&self) -> &str;
 
-    /// Optional model version/snapshot paired with [`Self::model_id`].
-    fn model_version(&self) -> Option<&str>;
+    /// The immutable revision of that model these vectors come from
+    /// (QI-BB-028). Two providers with the same `model_id` and different
+    /// revisions produce vectors that are not comparable and must not share
+    /// a cache namespace, a sealed generation, or a query gate; a provider
+    /// that cannot name its revision cannot be composed into a runtime.
+    fn model_revision(&self) -> &str;
 
     /// Output vector dimension every returned vector must have.
     fn dimension(&self) -> usize;
+
+    /// What every returned vector's bytes promise.
+    fn normalization(&self) -> EmbeddingNormalization;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -195,6 +207,9 @@ pub trait SemanticSearcher: Send + Sync {
     /// dimension.
     fn index_model_id(&self) -> &str;
 
-    /// Optional model version paired with [`Self::index_model_id`].
-    fn index_model_version(&self) -> Option<&str>;
+    /// The model revision the sealed generation recorded, paired with
+    /// [`Self::index_model_id`]. `None` means the generation was sealed
+    /// before revisions were required (QI-BB-028); the query gate refuses
+    /// it rather than guessing.
+    fn index_model_revision(&self) -> Option<&str>;
 }

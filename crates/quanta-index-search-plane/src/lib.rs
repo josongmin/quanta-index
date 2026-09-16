@@ -35,7 +35,7 @@ pub use query_dispatcher::{
 };
 pub use query_embedder::{
     HashingQueryTextEmbedder, QueryTextEmbedderPort, SEARCH_OWNED_SEMANTIC_DIMENSION,
-    SEARCH_OWNED_SEMANTIC_MODEL_ID,
+    SEARCH_OWNED_SEMANTIC_MODEL_ID, SEARCH_OWNED_SEMANTIC_MODEL_REVISION,
 };
 pub use readiness::{
     ActivationCatalog, ActiveGenerationRecord, AuxiliaryAuthorityStore, Ledger,

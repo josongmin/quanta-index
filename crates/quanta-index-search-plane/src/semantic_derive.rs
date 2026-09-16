@@ -91,11 +91,17 @@ fn embedding_model_contract_for(
         ))
     })?;
     let model_id = embedder.model_id();
+    // A sealed generation promises unit vectors; a provider that does not
+    // is a composition defect, not something to record as `None` and serve.
+    if embedder.normalization() != EmbeddingNormalization::L2Unit {
+        return Err(CoreError::InvalidContract(format!(
+            "semantic derivation: embedder {model_id} promises {:?}, the corpus contract requires L2Unit",
+            embedder.normalization()
+        )));
+    }
     Ok(EmbeddingModelContract {
         model_id: model_id.to_string().into_boxed_str(),
-        model_version: embedder
-            .model_version()
-            .map(|version| version.to_string().into_boxed_str()),
+        model_version: Some(embedder.model_revision().to_string().into_boxed_str()),
         dimension,
         normalization: EmbeddingNormalization::L2Unit,
         distance_metric: EmbeddingDistanceMetric::Cosine,

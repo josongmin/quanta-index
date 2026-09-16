@@ -702,16 +702,23 @@ fn build_rejects_contract_dimension_mismatch() -> TestResult {
     let Err(err) = adapter.build_batch(&batch) else {
         return Err("contract dimension mismatch must fail closed".into());
     };
+    // The vector contract is enforced by the shared validator (QI-BB-031),
+    // so a dimension mismatch is the typed vector code naming the embedding.
     match err {
-        CoreError::InvalidContract(message) => {
-            assert!(message.contains("embedding emb-1 dim 3 != contract dim 2"));
+        CoreError::Typed { code, message } => {
+            assert_eq!(code, "SEM_INVALID_VECTOR");
+            assert!(
+                message.contains("3 components, contract dimension is 2")
+                    && message.contains("emb-1"),
+                "{message}"
+            );
         }
-        other @ (CoreError::Typed { .. }
+        other @ (CoreError::InvalidContract(_)
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
         | CoreError::Storage(_)) => {
-            return Err(format!("expected InvalidContract, got {other:?}").into());
+            return Err(format!("expected SEM_INVALID_VECTOR, got {other:?}").into());
         }
     }
     Ok(())
@@ -1621,7 +1628,10 @@ fn validate_before_delete_preserves_prior_unsealed_rows() -> TestResult {
     let Err(err) = adapter.build_batch(&batch2) else {
         return Err("invalid-dim scope must reject batch".into());
     };
-    assert!(matches!(err, CoreError::InvalidContract(_)));
+    assert!(
+        matches!(err, CoreError::Typed { ref code, .. } if code == "SEM_INVALID_VECTOR"),
+        "{err:?}"
+    );
 
     // Batch 3: empty seal — opens the unsealed gen as-is. emb-1 MUST still be
     // present (no destructive delete from the rejected batch).

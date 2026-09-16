@@ -62,10 +62,11 @@ impl OpenAiEmbedderTuning {
     pub fn provider_config(
         &self,
         model: String,
+        model_revision: String,
         dimension: usize,
         api_key: String,
     ) -> OpenAiProviderConfig {
-        OpenAiProviderConfig::new(api_key, model, dimension)
+        OpenAiProviderConfig::new(api_key, model, model_revision, dimension)
             .with_max_batch(self.max_batch)
             .with_max_estimated_tokens_per_request(self.max_estimated_tokens_per_request)
             .with_max_retries(self.max_retries)
@@ -87,6 +88,11 @@ pub enum SemanticEmbedderProfile {
     /// operational knobs threaded into the provider/cache at the composition root.
     OpenAi {
         model: String,
+        /// The operator-pinned revision of `model` (QI-BB-028). `OpenAI`
+        /// does not expose one, so the operator names it and rotates it
+        /// when the served model changes; cache namespaces, sealed
+        /// generations and the query gate all key on it.
+        model_revision: String,
         dimension: usize,
         api_key: String,
         tuning: OpenAiEmbedderTuning,
@@ -106,12 +112,14 @@ impl std::fmt::Debug for SemanticEmbedderProfile {
                 .finish(),
             Self::OpenAi {
                 model,
+                model_revision,
                 dimension,
                 tuning,
                 ..
             } => f
                 .debug_struct("OpenAi")
                 .field("model", model)
+                .field("model_revision", model_revision)
                 .field("dimension", dimension)
                 .field("api_key", &"<redacted>")
                 .field("tuning", tuning)
@@ -546,8 +554,10 @@ pub(crate) fn semantic_embedder_profile_from_env() -> Result<SemanticEmbedderPro
             }
             let model = optional_env("QUANTA_INDEX_EMBED_MODEL")?
                 .unwrap_or_else(|| DEFAULT_OPENAI_MODEL.to_string());
+            let model_revision = openai_model_revision_from_lookup(optional_env)?;
             Ok(SemanticEmbedderProfile::OpenAi {
                 model,
+                model_revision,
                 dimension: embed_dim_from_env(DEFAULT_OPENAI_DIMENSION)?,
                 api_key,
                 tuning: openai_tuning_from_env()?,
@@ -561,6 +571,31 @@ pub(crate) fn semantic_embedder_profile_from_env() -> Result<SemanticEmbedderPro
 
 fn embed_dim_from_env(default: usize) -> Result<usize> {
     parse_embed_dim(optional_env("QUANTA_INDEX_EMBED_DIM")?.as_deref(), default)
+}
+
+/// The operator-pinned `OpenAI` model revision (QI-BB-028).
+///
+/// `QUANTA_INDEX_EMBED_MODEL_REVISION` is required for the `openai` profile:
+/// the provider cannot name its own revision, and without one a served-model
+/// change would mix embedding spaces in one cache namespace and one sealed
+/// generation. There is no default; an unset or blank revision fails boot.
+fn openai_model_revision_from_lookup<F>(lookup: F) -> Result<String>
+where
+    F: Fn(&str) -> Result<Option<String>>,
+{
+    const NAME: &str = "QUANTA_INDEX_EMBED_MODEL_REVISION";
+    let Some(raw) = lookup(NAME)? else {
+        return Err(anyhow::anyhow!(
+            "QUANTA_INDEX_EMBEDDER=openai requires {NAME}: name the model revision you are pinning (rotate it when the served model changes)"
+        ));
+    };
+    let revision = raw.trim();
+    if revision.is_empty() || !revision.bytes().all(|byte| byte.is_ascii_graphic()) {
+        return Err(anyhow::anyhow!(
+            "{NAME} must be a non-empty printable ASCII token, got `{raw}`"
+        ));
+    }
+    Ok(revision.to_string())
 }
 
 /// Resolve the `OpenAI` embedder operational knobs from env.
@@ -925,6 +960,27 @@ mod tests {
     }
 
     #[test]
+    fn openai_model_revision_is_required_and_must_be_a_token() {
+        let unset = openai_model_revision_from_lookup(|_name| Ok(None))
+            .expect_err("an unset revision must fail closed");
+        assert!(
+            unset
+                .to_string()
+                .contains("QUANTA_INDEX_EMBED_MODEL_REVISION"),
+            "{unset}"
+        );
+        let blank = openai_model_revision_from_lookup(|_name| Ok(Some("   ".to_string())))
+            .expect_err("a blank revision must fail closed");
+        assert!(blank.to_string().contains("non-empty"), "{blank}");
+        let spaced = openai_model_revision_from_lookup(|_name| Ok(Some("2024 01".to_string())))
+            .expect_err("whitespace inside the revision must fail closed");
+        assert!(spaced.to_string().contains("printable"), "{spaced}");
+        let pinned = openai_model_revision_from_lookup(|_name| Ok(Some(" 2024-01 ".to_string())))
+            .expect("a trimmed token binds");
+        assert_eq!(pinned, "2024-01");
+    }
+
+    #[test]
     fn unset_tuning_falls_back_to_provider_defaults() {
         // None for every knob -> exactly the provider defaults (no drift).
         assert_eq!(
@@ -1143,9 +1199,11 @@ mod tests {
         };
         let config = tuning.provider_config(
             "text-embedding-3-large".to_string(),
+            "2025-02".to_string(),
             3072,
             "sk-unit-test".to_string(),
         );
+        assert_eq!(config.model_revision, "2025-02");
         assert_eq!(config.max_batch, 13);
         assert_eq!(config.max_estimated_tokens_per_request, 8192);
         assert_eq!(config.max_retries, 4);

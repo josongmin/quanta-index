@@ -35,8 +35,8 @@ use lancedb::index::Index;
 use lancedb::index::vector::IvfHnswSqIndexBuilder;
 use lancedb::query::{ExecutableQuery as _, QueryBase as _};
 use quanta_index_contract::{
-    EmbeddingDistanceMetric, OwnerDocKind, SearchScopeSurface, SemanticCorpusKindV1,
-    SemanticIngestBatch, SemanticReplaceScope, SemanticTombstoneScope,
+    EmbeddingDistanceMetric, EmbeddingNormalization, OwnerDocKind, SearchScopeSurface,
+    SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope, SemanticTombstoneScope,
     canonical_order::first_canonical_order_break_v1, cluster_membership_content_digest_v1,
 };
 use quanta_index_core::CoreError;
@@ -484,17 +484,28 @@ async fn verify_table_dimension(
     Ok(())
 }
 
-fn validate_replace_scope(scope: &SemanticReplaceScope, dimension: usize) -> Result<(), CoreError> {
+/// Every ingested vector is held to the batch's model contract (QI-BB-031).
+///
+/// That is exactly `dimension` finite components, and under `L2Unit` a unit
+/// norm, so a generation sealed as `l2_unit` describes its rows' bytes.
+fn validate_replace_scope(
+    scope: &SemanticReplaceScope,
+    dimension: usize,
+    normalization: EmbeddingNormalization,
+) -> Result<(), CoreError> {
     for embedding in &scope.embeddings {
-        SemanticPolicy::validate_query_vector(&embedding.vector)?;
-        if embedding.vector.len() != dimension {
-            return Err(CoreError::InvalidContract(format!(
-                "semantic: embedding {} dim {} != contract dim {}",
-                embedding.embedding_id.as_str(),
-                embedding.vector.len(),
-                dimension
-            )));
-        }
+        SemanticPolicy::validate_embedding_vector_v1(&embedding.vector, dimension, normalization)
+            .map_err(|err| match err {
+            CoreError::Typed { code, message } => CoreError::Typed {
+                code,
+                message: format!("{message} (embedding {})", embedding.embedding_id.as_str()),
+            },
+            other @ (CoreError::InvalidContract(_)
+            | CoreError::NotReady(_)
+            | CoreError::NotImplemented(_)
+            | CoreError::NotFound(_)
+            | CoreError::Storage(_)) => other,
+        })?;
     }
     let mut cluster_record_ids = BTreeSet::new();
     for membership in &scope.cluster_memberships {
@@ -1642,7 +1653,7 @@ pub(crate) async fn build_batch(
     // error-to-default": destructive operations may only run after the entire
     // batch is known to be applicable.
     for scope in &batch.replace_scopes {
-        validate_replace_scope(scope, dimension)?;
+        validate_replace_scope(scope, dimension, batch.model_contract.normalization)?;
     }
     validate_batch_scope_authority_v1(batch)?;
 
@@ -2784,7 +2795,7 @@ mod tests {
                         OwnerDocKind::Callsite,
                         "callsite-fallback",
                         SemanticCorpusKindV1::RawCodeFallback,
-                        vec![0.9, 0.1, 0.0],
+                        vec![0.6, 0.8, 0.0],
                     )?,
                     embedding(
                         "module-kept",

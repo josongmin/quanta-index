@@ -1,7 +1,16 @@
 use quanta_index_contract::lex::LexicalErrorCode;
-use quanta_index_contract::{ManifestGeneration, PUBLIC_TOP_K_MAX};
+use quanta_index_contract::{EmbeddingNormalization, ManifestGeneration, PUBLIC_TOP_K_MAX};
 
+use crate::domains::semantic::outbound::TextEmbeddingProvider;
 use crate::error::{CoreError, validate_internal_fetch_size, validate_query_top_k};
+
+/// How far from 1.0 a unit vector's L2 norm may be before it is not one.
+///
+/// `f32` components normalized through an `f64` accumulator land within a
+/// few ULPs; the gross defects this guards against (a vector scaled by 0.5,
+/// a same-length cache corruption, a provider that never normalized) miss by
+/// orders of magnitude more.
+pub const L2_UNIT_NORM_TOLERANCE: f64 = 1e-3;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SemanticPolicy;
@@ -73,6 +82,164 @@ impl SemanticPolicy {
                 "semantic: no materialized generation yet".to_string(),
             )),
         }
+    }
+}
+
+impl SemanticPolicy {
+    /// Prove one embedding vector is what its contract says it is
+    /// (QI-BB-031): exactly `dimension` finite components with a non-zero
+    /// norm, and under [`EmbeddingNormalization::L2Unit`] a norm within
+    /// [`L2_UNIT_NORM_TOLERANCE`] of one. Applied to fresh provider output,
+    /// to cache hits, and to every ingested row, so the same defect is
+    /// refused the same way on every path.
+    pub fn validate_embedding_vector_v1(
+        vector: &[f32],
+        dimension: usize,
+        normalization: EmbeddingNormalization,
+    ) -> Result<(), CoreError> {
+        if vector.len() != dimension {
+            return Err(invalid_vector(format!(
+                "semantic: embedding vector has {} components, contract dimension is {dimension}",
+                vector.len()
+            )));
+        }
+        let norm = l2_norm_v1(vector)?;
+        if norm <= 0.0 {
+            return Err(invalid_vector(
+                "semantic: embedding vector has zero norm".to_string(),
+            ));
+        }
+        if normalization == EmbeddingNormalization::L2Unit
+            && (norm - 1.0).abs() > L2_UNIT_NORM_TOLERANCE
+        {
+            return Err(invalid_vector(format!(
+                "semantic: embedding vector norm {norm} is not unit under the L2Unit contract (tolerance {L2_UNIT_NORM_TOLERANCE})"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Scale `vector` to unit L2 norm in place, deterministically: the norm
+    /// is accumulated in `f64` and every component is divided by it. A
+    /// vector with a non-finite component or zero norm cannot be normalized
+    /// and is refused typed rather than turned into NaNs.
+    pub fn normalize_l2_unit_v1(vector: &mut [f32]) -> Result<(), CoreError> {
+        let norm = l2_norm_v1(vector)?;
+        if norm <= 0.0 {
+            return Err(invalid_vector(
+                "semantic: cannot normalize a zero-norm embedding vector".to_string(),
+            ));
+        }
+        for component in vector.iter_mut() {
+            *component = narrow_unit_component(f64::from(*component) / norm);
+        }
+        Ok(())
+    }
+}
+
+/// Narrow one unit-scaled component to `f32`.
+///
+/// The division of a finite `f32` by a positive finite `f64` norm is finite
+/// and no larger in magnitude than one, so the narrowing cannot overflow; it
+/// may round, which is the point of normalizing through `f64`.
+#[expect(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    reason = "a unit-scaled component is within [-1, 1]; narrowing to f32 only rounds"
+)]
+fn narrow_unit_component(scaled: f64) -> f32 {
+    scaled as f32
+}
+
+/// L2 norm accumulated in `f64`; refuses non-finite components typed.
+fn l2_norm_v1(vector: &[f32]) -> Result<f64, CoreError> {
+    let mut norm_sq = 0.0_f64;
+    for (index, component) in vector.iter().enumerate() {
+        if !component.is_finite() {
+            return Err(invalid_vector(format!(
+                "semantic: embedding vector component {index} is not finite ({component})"
+            )));
+        }
+        let value = f64::from(*component);
+        norm_sq += value * value;
+    }
+    if !norm_sq.is_finite() {
+        return Err(invalid_vector(
+            "semantic: embedding vector norm overflowed".to_string(),
+        ));
+    }
+    Ok(norm_sq.sqrt())
+}
+
+/// Wraps a raw provider so every vector it returns is unit-normalized and
+/// proven so (QI-BB-031).
+///
+/// The composition root applies this to every provider before either the
+/// corpus derivation or the query path sees it, so both paths normalize
+/// with the same code and record [`EmbeddingNormalization::L2Unit`]
+/// truthfully. A raw vector with a non-finite component, a zero norm or the
+/// wrong dimension fails the whole batch closed.
+pub struct L2UnitEmbeddingProvider<P: TextEmbeddingProvider> {
+    inner: P,
+}
+
+impl<P: TextEmbeddingProvider> L2UnitEmbeddingProvider<P> {
+    /// Wrap a raw provider. A provider that already promises `L2Unit` is
+    /// refused: stacking normalizers would hide which layer is trusted.
+    pub fn new(inner: P) -> Result<Self, CoreError> {
+        if inner.normalization() != EmbeddingNormalization::None {
+            return Err(CoreError::InvalidContract(format!(
+                "semantic: L2Unit wrapper requires a raw provider; {} already promises {:?}",
+                inner.model_id(),
+                inner.normalization()
+            )));
+        }
+        Ok(Self { inner })
+    }
+}
+
+impl<P: TextEmbeddingProvider> TextEmbeddingProvider for L2UnitEmbeddingProvider<P> {
+    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+        let mut vectors = self.inner.embed_batch(texts)?;
+        if vectors.len() != texts.len() {
+            return Err(CoreError::Storage(format!(
+                "semantic: provider {} returned {} vectors for {} texts",
+                self.inner.model_id(),
+                vectors.len(),
+                texts.len()
+            )));
+        }
+        let dimension = self.inner.dimension();
+        for vector in &mut vectors {
+            SemanticPolicy::validate_embedding_vector_v1(
+                vector,
+                dimension,
+                EmbeddingNormalization::None,
+            )?;
+            SemanticPolicy::normalize_l2_unit_v1(vector)?;
+            SemanticPolicy::validate_embedding_vector_v1(
+                vector,
+                dimension,
+                EmbeddingNormalization::L2Unit,
+            )?;
+        }
+        Ok(vectors)
+    }
+
+    fn model_id(&self) -> &str {
+        self.inner.model_id()
+    }
+
+    fn model_revision(&self) -> &str {
+        self.inner.model_revision()
+    }
+
+    fn dimension(&self) -> usize {
+        self.inner.dimension()
+    }
+
+    fn normalization(&self) -> EmbeddingNormalization {
+        EmbeddingNormalization::L2Unit
     }
 }
 

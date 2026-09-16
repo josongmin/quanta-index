@@ -687,9 +687,9 @@ impl SearchPlaneDispatcher {
             .map_err(|err| prefix_semantic_query_error(plane, err))?;
         ensure_query_model_matches_index_v1(
             self.query_embedder.model_id(),
-            self.query_embedder.model_version(),
+            self.query_embedder.model_revision(),
             sem_searcher.index_model_id(),
-            sem_searcher.index_model_version(),
+            sem_searcher.index_model_revision(),
             plane,
         )?;
         Ok(query_vector)
@@ -5234,43 +5234,42 @@ mod tests {
             }
         };
 
-        // POSITIVE: identical model id + version => Ok (matching path proceeds).
+        // POSITIVE: identical model id + revision => Ok (matching path proceeds).
         assert!(
             ensure_query_model_matches_index_v1(
                 "search-owned-hash-text-v1",
-                None,
+                "r1",
                 "search-owned-hash-text-v1",
-                None,
+                Some("r1"),
                 "semantic",
             )
             .is_ok()
         );
-        assert!(
-            ensure_query_model_matches_index_v1("m", Some("2"), "m", Some("2"), "hybrid").is_ok()
-        );
+        assert!(ensure_query_model_matches_index_v1("m", "2", "m", Some("2"), "hybrid").is_ok());
 
         // ORIGINAL TRIGGER: same dimension is irrelevant — a different model id
         // (the future same-dim engine swap) MUST fail closed, not silently rank.
         expect_model_mismatch(
             ensure_query_model_matches_index_v1(
                 "neural-768-v2",
-                None,
+                "r1",
                 "search-owned-hash-text-v1",
-                None,
+                Some("r1"),
                 "semantic",
             )
             .unwrap_err(),
         );
 
-        // EDGE: same id, version drift must also fail closed.
+        // EDGE: same id, revision drift must also fail closed (QI-BB-028).
         expect_model_mismatch(
-            ensure_query_model_matches_index_v1("m", Some("1"), "m", Some("2"), "hybrid seed")
+            ensure_query_model_matches_index_v1("m", "1", "m", Some("2"), "hybrid seed")
                 .unwrap_err(),
         );
 
-        // CORNER: version presence drift (Some vs None) at same id must fail closed.
+        // CORNER: an index sealed without a revision cannot be compared and
+        // is refused rather than assumed to match.
         expect_model_mismatch(
-            ensure_query_model_matches_index_v1("m", Some("1"), "m", None, "semantic").unwrap_err(),
+            ensure_query_model_matches_index_v1("m", "1", "m", None, "semantic").unwrap_err(),
         );
     }
     use quanta_index_contract::channel::{LexicalChannelOp, UpsertChunk};
@@ -6015,8 +6014,8 @@ mod tests {
             crate::SEARCH_OWNED_SEMANTIC_MODEL_ID
         }
 
-        fn index_model_version(&self) -> Option<&str> {
-            None
+        fn index_model_revision(&self) -> Option<&str> {
+            Some(crate::query_embedder::SEARCH_OWNED_SEMANTIC_MODEL_REVISION)
         }
     }
 
@@ -6844,7 +6843,7 @@ mod tests {
     /// query-time model drift can be exercised at the dispatcher boundary.
     struct FixedModelQueryEmbedder {
         model_id: &'static str,
-        model_version: Option<&'static str>,
+        model_revision: &'static str,
         dimension: usize,
     }
 
@@ -6855,8 +6854,8 @@ mod tests {
         fn model_id(&self) -> &'static str {
             self.model_id
         }
-        fn model_version(&self) -> Option<&str> {
-            self.model_version
+        fn model_revision(&self) -> &'static str {
+            self.model_revision
         }
     }
 
@@ -6876,8 +6875,8 @@ mod tests {
         fn model_id(&self) -> &'static str {
             "provider-unavailable"
         }
-        fn model_version(&self) -> Option<&str> {
-            None
+        fn model_revision(&self) -> &'static str {
+            "unavailable"
         }
     }
 
@@ -6914,7 +6913,7 @@ mod tests {
             test_activation_catalog()?,
             Arc::new(FixedModelQueryEmbedder {
                 model_id: "neural-768-v2",
-                model_version: None,
+                model_revision: "r1",
                 dimension: SEARCH_OWNED_SEMANTIC_DIMENSION,
             }),
             Arc::new(super::NoopQueryObsSink),

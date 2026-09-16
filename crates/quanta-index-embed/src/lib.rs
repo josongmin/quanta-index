@@ -11,7 +11,8 @@ mod openai;
 mod telemetry;
 
 pub use cache::{
-    CachingEmbeddingProvider, EmbeddingCache, FileEmbeddingCache, InMemoryEmbeddingCache,
+    CachingEmbeddingProvider, EmbeddingCache, EmbeddingCacheIdentityV1, FileEmbeddingCache,
+    InMemoryEmbeddingCache,
 };
 pub use openai::{
     DEFAULT_CONCURRENCY, DEFAULT_MAX_BATCH, DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST,

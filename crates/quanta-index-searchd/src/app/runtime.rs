@@ -27,14 +27,17 @@ use quanta_index_core::domains::structural::{
 };
 use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
-    IncompleteGenerationDiscardPort, LexicalIndexOpenPort, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
-    RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort, SealedGenerationReclaimPort,
-    SealedGenerationScanPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
-    SemanticBatchBuildPort, SemanticIndexOpenPort, SemanticIngestPort, StructuralError,
-    StructuralMatchBinding, StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider,
+    IncompleteGenerationDiscardPort, L2UnitEmbeddingProvider, LexicalIndexOpenPort,
+    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
+    RepoMapGenerationActivatePort, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
+    SealedGenerationReclaimPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
+    SearchCorpusIngestPort, SemanticBatchBuildPort, SemanticIndexOpenPort, SemanticIngestPort,
+    StructuralError, StructuralMatchBinding, StructuralMatchCandidate, StructuralReadiness,
+    TextEmbeddingProvider,
 };
-use quanta_index_embed::{CachingEmbeddingProvider, FileEmbeddingCache, OpenAiEmbeddingProvider};
+use quanta_index_embed::{
+    CachingEmbeddingProvider, EmbeddingCacheIdentityV1, FileEmbeddingCache, OpenAiEmbeddingProvider,
+};
 use quanta_index_ipc::{IpcDispatcher, ServerAdmissionPolicy};
 use quanta_index_lq_structural::{
     StructuralAuthorityCandidate as LqStructuralAuthorityCandidate, StructuralAuthorityMatcher,
@@ -276,8 +279,8 @@ impl QueryTextEmbedderPort for ProviderUnavailableQueryTextEmbedder {
         "provider-unavailable"
     }
 
-    fn model_version(&self) -> Option<&str> {
-        None
+    fn model_revision(&self) -> &'static str {
+        "unavailable"
     }
 }
 
@@ -309,8 +312,8 @@ impl QueryTextEmbedderPort for QueryEmbedderAdapter {
         self.0.model_id()
     }
 
-    fn model_version(&self) -> Option<&str> {
-        self.0.model_version()
+    fn model_revision(&self) -> &str {
+        self.0.model_revision()
     }
 }
 
@@ -342,6 +345,7 @@ fn build_semantic_embedders(
         }
         SemanticEmbedderProfile::OpenAi {
             model,
+            model_revision,
             dimension,
             api_key,
             tuning,
@@ -350,19 +354,27 @@ fn build_semantic_embedders(
             // (mapping owned + unit-tested on OpenAiEmbedderTuning::provider_config).
             let openai = OpenAiEmbeddingProvider::with_reqwest(tuning.provider_config(
                 model.clone(),
+                model_revision.clone(),
                 *dimension,
                 api_key.clone(),
             ))?;
+            // Raw provider output is unit-normalized by the shared wrapper
+            // before either the cache or a path sees it (QI-BB-031).
+            let normalized = L2UnitEmbeddingProvider::new(openai)?;
             let provider: Arc<dyn TextEmbeddingProvider + Send + Sync> = if tuning.cache_enabled {
-                // Persistent content-hash cache (model+dim scoped) so rebuilds /
-                // incrementals avoid paid re-embedding of unchanged chunks.
-                let cache = FileEmbeddingCache::new(state_root.join("embed-cache"))?;
+                // Persistent content-hash cache under the identity's own
+                // namespace (model, revision, dimension, policy — QI-BB-028)
+                // so rebuilds / incrementals avoid paid re-embedding of
+                // unchanged chunks and a revision rotation never reuses the
+                // previous revision's vectors.
+                let identity = EmbeddingCacheIdentityV1::of(&normalized);
+                let cache = FileEmbeddingCache::new(&state_root.join("embed-cache"), &identity)?;
                 Arc::new(CachingEmbeddingProvider::new(
-                    Box::new(openai),
+                    Box::new(normalized),
                     Box::new(cache),
                 ))
             } else {
-                Arc::new(openai)
+                Arc::new(normalized)
             };
             Ok((
                 Arc::new(QueryEmbedderAdapter(Arc::clone(&provider))),
@@ -1063,6 +1075,7 @@ mod tests {
     fn openai_profile(cache_enabled: bool) -> super::SemanticEmbedderProfile {
         super::SemanticEmbedderProfile::OpenAi {
             model: "text-embedding-3-small".to_string(),
+            model_revision: "unit-test".to_string(),
             dimension: 1536,
             api_key: "sk-unit-test".to_string(),
             tuning: crate::app::config::OpenAiEmbedderTuning {
@@ -1102,11 +1115,18 @@ mod tests {
             )
             .into());
         }
-        if query_embedder.model_version() != corpus_embedder.model_version() {
+        if query_embedder.model_revision() != corpus_embedder.model_revision() {
             return Err(format!(
-                "query/corpus model_version drift: query={:?} corpus={:?}",
-                query_embedder.model_version(),
-                corpus_embedder.model_version()
+                "query/corpus model_revision drift: query={:?} corpus={:?}",
+                query_embedder.model_revision(),
+                corpus_embedder.model_revision()
+            )
+            .into());
+        }
+        if query_embedder.model_revision() != "unit-test" {
+            return Err(format!(
+                "the pinned revision must reach both halves, got {:?}",
+                query_embedder.model_revision()
             )
             .into());
         }

@@ -1,5 +1,6 @@
+use quanta_index_contract::EmbeddingNormalization;
 use quanta_index_contract::lex::LexicalErrorCode;
-use quanta_index_core::{CoreError, TextEmbeddingProvider};
+use quanta_index_core::{CoreError, SemanticPolicy, TextEmbeddingProvider};
 
 /// Output dimension of the search-owned hash embedder.
 pub const SEARCH_OWNED_SEMANTIC_DIMENSION: usize = 64;
@@ -13,6 +14,13 @@ pub const SEARCH_OWNED_SEMANTIC_DIMENSION: usize = 64;
 /// mismatch (`SEM_MODEL_MISMATCH`).
 pub const SEARCH_OWNED_SEMANTIC_MODEL_ID: &str = "search-owned-hash-text-v1";
 
+/// The hash embedder's revision (QI-BB-028).
+///
+/// It names the slot hashing and the normalization it applies, so a change
+/// to either is a new revision and never shares a cache namespace or a query
+/// gate with the old one.
+pub const SEARCH_OWNED_SEMANTIC_MODEL_REVISION: &str = "fnv1a64-slots-l2unit-v1";
+
 pub trait QueryTextEmbedderPort {
     fn embed_query(&self, query_text: &str) -> Result<Vec<f32>, CoreError>;
 
@@ -22,8 +30,8 @@ pub trait QueryTextEmbedderPort {
     /// persisted model identity and fails closed (`SEM_MODEL_MISMATCH`) on drift.
     fn model_id(&self) -> &str;
 
-    /// Optional model version, compared alongside [`Self::model_id`].
-    fn model_version(&self) -> Option<&str>;
+    /// The model revision, compared alongside [`Self::model_id`].
+    fn model_revision(&self) -> &str;
 }
 
 pub struct HashingQueryTextEmbedder {
@@ -46,10 +54,8 @@ impl QueryTextEmbedderPort for HashingQueryTextEmbedder {
         SEARCH_OWNED_SEMANTIC_MODEL_ID
     }
 
-    fn model_version(&self) -> Option<&str> {
-        // The search-owned hash embedder carries no model version (matches the
-        // corpus EmbeddingModelContract.model_version = None).
-        None
+    fn model_revision(&self) -> &str {
+        SEARCH_OWNED_SEMANTIC_MODEL_REVISION
     }
 }
 
@@ -65,12 +71,18 @@ impl TextEmbeddingProvider for HashingQueryTextEmbedder {
         SEARCH_OWNED_SEMANTIC_MODEL_ID
     }
 
-    fn model_version(&self) -> Option<&str> {
-        None
+    fn model_revision(&self) -> &str {
+        SEARCH_OWNED_SEMANTIC_MODEL_REVISION
     }
 
     fn dimension(&self) -> usize {
         self.dimension
+    }
+
+    fn normalization(&self) -> EmbeddingNormalization {
+        // `hash_query_text` normalizes through the shared policy, so this
+        // embedder promises unit vectors itself (QI-BB-031).
+        EmbeddingNormalization::L2Unit
     }
 }
 
@@ -120,17 +132,20 @@ pub(crate) fn hash_query_text(text: &str, dimension: usize) -> Result<Vec<f32>, 
                 .to_string(),
         });
     }
-    let norm_sq: f32 = vector.iter().map(|value| value * value).sum();
-    if norm_sq <= f32::EPSILON {
-        return Err(CoreError::Typed {
-            code: LexicalErrorCode::SemInvalidVector.as_code_str().to_string(),
+    // The same normalization every provider gets (QI-BB-031); a text whose
+    // slots cancel to a zero vector is refused typed here, not turned into
+    // NaNs.
+    SemanticPolicy::normalize_l2_unit_v1(&mut vector).map_err(|err| match err {
+        CoreError::Typed { code, .. } => CoreError::Typed {
+            code,
             message: "semantic: hashed query text collapsed to a zero-norm embedding".to_string(),
-        });
-    }
-    let inv_norm = norm_sq.sqrt().recip();
-    for value in &mut vector {
-        *value *= inv_norm;
-    }
+        },
+        other @ (CoreError::InvalidContract(_)
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)
+        | CoreError::Storage(_)) => other,
+    })?;
     Ok(vector)
 }
 

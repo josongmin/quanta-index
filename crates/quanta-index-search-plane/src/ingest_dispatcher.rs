@@ -2664,11 +2664,14 @@ mod tests {
         fn model_id(&self) -> &'static str {
             "fake-embedder"
         }
-        fn model_version(&self) -> Option<&str> {
-            None
+        fn model_revision(&self) -> &'static str {
+            "r1"
         }
         fn dimension(&self) -> usize {
             self.dimension
+        }
+        fn normalization(&self) -> EmbeddingNormalization {
+            EmbeddingNormalization::L2Unit
         }
     }
 
@@ -2843,11 +2846,14 @@ mod tests {
         fn model_id(&self) -> &'static str {
             "counting-embedder"
         }
-        fn model_version(&self) -> Option<&str> {
-            None
+        fn model_revision(&self) -> &'static str {
+            "r1"
         }
         fn dimension(&self) -> usize {
             self.dimension
+        }
+        fn normalization(&self) -> EmbeddingNormalization {
+            EmbeddingNormalization::L2Unit
         }
     }
 

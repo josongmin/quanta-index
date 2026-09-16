@@ -292,7 +292,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) 완료. 남은 것: sharded sidecar 포맷(O(delta) write), ANN versioned artifact(QI-BB-027) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), QI-BB-024 regex cache, streaming projection collector |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. 남은 것: cancel을 lexical collector 내부(candidate batch 사이)까지 내리기, overload/refusal 서버 metric |
-| W6 | planned | M4 적용 |
+| W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), QI-BB-018/019 hybrid |
 | W7 | planned | |
 | C1 | planned | |
 | C2 | planned | |
@@ -915,6 +915,41 @@ boot도 (§3.13 전) 모든 sealed generation을 open했다.
 | core helper: 자기 commitment 검증 + bytes 합, drift 4종을 path 순으로 명명, streaming digest == one-shot digest | `core::domains::generation::tree_commitment_tests` 3 |
 
 **정직한 한계**: (a) seal-time membership commitment는 여전히 row DTO를 정렬용으로 물화한다(finding 보완 #5 streaming accumulator 미적용) — seal은 ingest가 이미 batch를 메모리에 쥔 시점이라 open과 달리 RSS 상한을 새로 넘기지 않는다. (b) legacy format(v2, uncommitted-root)은 sealed manifest 없이 열리는 기존 compat 경로가 그대로다 — 이번 finding 범위 밖, 정리 대상. (c) 현재 format으로 이미 seal된 production generation은 sealed manifest가 없어 `GENERATION_MANIFEST_MISSING` — reseal 필요(§3.10 lexical과 같은 breaking-first 결정; production state root는 건드리지 않음).
+
+## 3.15 QI-BB-028 + QI-BB-031 — embedding identity는 revision을 요구하고, vector는 계약대로다 (구현 완료)
+
+**진단 확정**: cache key가 `(model_id, dimension, text)`뿐이라 같은 model name의 provider revision이 바뀌어도
+old hit과 new miss가 한 generation에 섞였다. OpenAI provider는 `model_version() = None`, gate는 양쪽 `None`이면 통과.
+cache entry는 raw f32 배열(길이 4의 배수만 검사, checksum/dimension/finite 없음, direct overwrite). 계약은
+`L2Unit`을 기록하지만 아무도 norm을 검사·정규화하지 않았다(`[1,0,2]`가 valid로 pin된 test).
+
+**설계**:
+
+| 층 | 구현 |
+| --- | --- |
+| core `TextEmbeddingProvider` | `model_version() -> Option<&str>` 삭제 → **`model_revision() -> &str` 필수** + `normalization() -> EmbeddingNormalization`(raw provider는 `None`). `SemanticSearcher::index_model_version` → `index_model_revision() -> Option<&str>`(manifest의 값; `None`은 revision 이전 seal) |
+| core policy | `SemanticPolicy::validate_embedding_vector_v1(vector, dimension, normalization)` — dimension, finite, nonzero, `L2Unit`이면 `\|norm-1\| ≤ 1e-3`(`L2_UNIT_NORM_TOLERANCE`); `normalize_l2_unit_v1`(f64 accumulate, 결정적, zero/NaN typed 거부); `L2UnitEmbeddingProvider<P>` wrapper — raw output을 validate → normalize → validate, `L2Unit`을 이미 약속한 provider는 stacking 거부 |
+| embed OpenAI | `OpenAiProviderConfig::new(api_key, model, **model_revision**, dimension)` — 빈/비ASCII revision 거부. `normalization() = None`(raw) |
+| embed cache | `EmbeddingCacheIdentityV1 { model_id, revision, dimension, normalization }` → namespace dir(`sha256` 16 hex) + key(`sha256(domain, identity, text)`). entry format v2: `QIEC` magic + u16 format + u32 dimension + f32 LE payload + 16-byte truncated sha256; temp-write+fsync+rename+parent fsync; decode 실패 파일은 삭제. hit도 fresh output도 같은 validator; 통과 못한 hit은 evict+recompute, 통과 못한 fresh는 batch 실패(cache에 안 들어감). legacy flat layout read 삭제 |
+| search-plane | hash embedder revision `fnv1a64-slots-l2unit-v1`, 정규화를 공용 `normalize_l2_unit_v1`로 교체(`L2Unit` 약속). derive는 provider가 `L2Unit`이 아니면 InvalidContract(계약을 `None`으로 적지 않음), `model_version: Some(revision)`. gate: index revision `None`이면 `SEM_MODEL_MISMATCH`("reseal") — 추정으로 통과시키지 않음 |
+| semantic ingest | `validate_replace_scope`가 batch contract의 normalization으로 모든 row를 `validate_embedding_vector_v1` — `l2_unit`으로 seal된 generation은 row bytes를 정직하게 설명. fixture helper는 주어진 방향을 정규화(runtime wrapper와 동일 코드) |
+| searchd | `QUANTA_INDEX_EMBED_MODEL_REVISION` — openai profile에 **필수**(default 없음, unset/blank/whitespace는 boot 거부). 구성: `Caching(L2Unit(OpenAI))` — cache는 정규화된 vector를 identity namespace에 저장 |
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| 같은 model id/dimension/text에서 revision만 다른 provider가 old entry를 재사용하지 않음(+ model id 변경, namespace 분리) | `embed::cache::tests::a_revision_or_model_change_never_reuses_a_cached_vector` |
+| cache entry truncation / payload bit-flip / digest bit-flip / wrong magic / legacy raw floats / empty → miss + 파일 삭제 | `…::file_cache_refuses_and_removes_damaged_entries` |
+| decode는 되지만 계약 위반 hit(0.5 scale, NaN, dimension, zero) → evict + recompute + 교체 | `…::an_unusable_hit_is_evicted_and_recomputed` |
+| 계약을 어기는 fresh output은 batch 실패, cache 오염 0 | `…::a_provider_that_breaks_its_own_contract_poisons_nothing` |
+| 동시 writer 8×50 — 항상 온전한 entry | `…::concurrent_writers_leave_a_whole_entry` |
+| revision 없는 openai profile은 boot 거부, whitespace/blank 거부 | `searchd::config::tests::openai_model_revision_is_required_and_must_be_a_token` |
+| gate: revision drift 거부, index revision `None` 거부 | `query_dispatcher::tests` gate test 갱신 |
+| norm 0 / NaN / Inf / 0.5 / 2.0 / dimension: validator가 typed 거부, wrapper가 batch 실패 또는 정규화 — corpus/query 양쪽이 같은 wrapper | `core/tests/semantic_policy.rs::vector_contract` 4 tests(1536-dim 결정성 + tolerance 포함) |
+| ingest row가 `L2Unit` 계약을 어기면 typed `SEM_INVALID_VECTOR`(embedding id 명시) | `persisted_semantic` dimension mismatch 2 test 기대 갱신; 비단위 fixture(`[0.9,0.1,0]`) 1건 교정 |
+
+**남은 것**: finding 보완 #4(activation receipt에 semantic row root/ANN contract attestation)는 QI-BB-027과 함께. 기존 `embed-cache/<shard>/` v1 entry는 읽히지 않고 남는다 — 회수는 QI-BB-009(cache retention) 항목.
 
 ## 4. Finding 상태 (QI-BB-001–032)
 

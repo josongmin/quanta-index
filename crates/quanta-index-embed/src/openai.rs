@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use quanta_index_contract::EmbeddingNormalization;
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_core::{CoreError, TextEmbeddingProvider};
 use serde::{Deserialize, Serialize};
@@ -72,6 +73,11 @@ pub struct HttpResponse {
 pub struct OpenAiProviderConfig {
     pub api_key: String,
     pub model: String,
+    /// The immutable revision of `model` the operator is pinning (QI-BB-028).
+    /// `OpenAI` does not expose one on the wire, so the operator names it
+    /// and rotates it when the served model changes; every cache namespace,
+    /// sealed generation and query gate keys on it.
+    pub model_revision: String,
     pub dimension: usize,
     pub base_url: String,
     pub max_batch: usize,
@@ -82,13 +88,14 @@ pub struct OpenAiProviderConfig {
 }
 
 impl OpenAiProviderConfig {
-    /// Config for `model` at `dimension` against the public `OpenAI` endpoint, with
-    /// default tuning.
+    /// Config for `model` at `model_revision` and `dimension` against the
+    /// public `OpenAI` endpoint, with default tuning.
     #[must_use]
-    pub fn new(api_key: String, model: String, dimension: usize) -> Self {
+    pub fn new(api_key: String, model: String, model_revision: String, dimension: usize) -> Self {
         Self {
             api_key,
             model,
+            model_revision,
             dimension,
             base_url: DEFAULT_BASE_URL.to_string(),
             max_batch: DEFAULT_MAX_BATCH,
@@ -156,6 +163,7 @@ pub struct OpenAiEmbeddingProvider {
     api_key: String,
     model: String,
     model_id: String,
+    model_revision: String,
     dimension: usize,
     base_url: String,
     max_batch: usize,
@@ -179,6 +187,16 @@ impl OpenAiEmbeddingProvider {
         if config.model.trim().is_empty() {
             return Err(invalid("openai: model is empty"));
         }
+        if config.model_revision.trim().is_empty()
+            || !config
+                .model_revision
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic())
+        {
+            return Err(invalid(
+                "openai: model revision must be a non-empty printable ASCII token (QI-BB-028)",
+            ));
+        }
         if config.dimension == 0 {
             return Err(invalid("openai: dimension must be non-zero"));
         }
@@ -188,6 +206,7 @@ impl OpenAiEmbeddingProvider {
             api_key: config.api_key,
             model: config.model,
             model_id,
+            model_revision: config.model_revision,
             dimension: config.dimension,
             base_url: config.base_url,
             max_batch: config.max_batch.max(1),
@@ -434,12 +453,18 @@ impl TextEmbeddingProvider for OpenAiEmbeddingProvider {
         &self.model_id
     }
 
-    fn model_version(&self) -> Option<&str> {
-        None
+    fn model_revision(&self) -> &str {
+        &self.model_revision
     }
 
     fn dimension(&self) -> usize {
         self.dimension
+    }
+
+    fn normalization(&self) -> EmbeddingNormalization {
+        // Raw provider output; the composition root's L2Unit wrapper is what
+        // makes the served vectors unit-normalized (QI-BB-031).
+        EmbeddingNormalization::None
     }
 }
 
@@ -703,6 +728,7 @@ mod tests {
         OpenAiProviderConfig::new(
             "test-key".to_string(),
             "text-embedding-3-small".to_string(),
+            "2024-01".to_string(),
             dimension,
         )
     }
@@ -1223,6 +1249,7 @@ mod tests {
         let provider = OpenAiEmbeddingProvider::with_reqwest(OpenAiProviderConfig::new(
             api_key,
             "text-embedding-3-small".to_string(),
+            "live".to_string(),
             1536,
         ))
         .expect("provider builds with a real key");
@@ -1244,7 +1271,7 @@ mod tests {
     #[test]
     fn empty_api_key_is_rejected_at_construction() {
         let result = OpenAiEmbeddingProvider::new(
-            OpenAiProviderConfig::new(String::new(), "m".to_string(), 2),
+            OpenAiProviderConfig::new(String::new(), "m".to_string(), "r1".to_string(), 2),
             Box::new(ScriptedTransport::new(Vec::new())),
         );
         match result {

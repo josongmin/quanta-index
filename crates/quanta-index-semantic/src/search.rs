@@ -1414,7 +1414,7 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         self.loaded.model_id()
     }
 
-    fn index_model_version(&self) -> Option<&str> {
+    fn index_model_revision(&self) -> Option<&str> {
         self.loaded.model_version()
     }
 }

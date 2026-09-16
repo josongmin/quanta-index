@@ -479,18 +479,28 @@ pub(super) fn build_hybrid_seed_response_explanation_v2(
 /// silent garbage rankings. Fails closed (`SEM_MODEL_MISMATCH`).
 pub(super) fn ensure_query_model_matches_index_v1(
     embedder_model_id: &str,
-    embedder_model_version: Option<&str>,
+    embedder_model_revision: &str,
     index_model_id: &str,
-    index_model_version: Option<&str>,
+    index_model_revision: Option<&str>,
     plane: &str,
 ) -> Result<(), CoreError> {
-    if embedder_model_id == index_model_id && embedder_model_version == index_model_version {
+    // A generation sealed without a revision cannot prove it was embedded
+    // by this revision; it is refused, not assumed (QI-BB-028).
+    let Some(index_model_revision) = index_model_revision else {
+        return Err(CoreError::Typed {
+            code: LexicalErrorCode::SemModelMismatch.as_code_str().to_string(),
+            message: format!(
+                "{plane}: index model {index_model_id} was sealed without a model revision and cannot be compared to query embedder {embedder_model_id}/{embedder_model_revision}; reseal the generation"
+            ),
+        });
+    };
+    if embedder_model_id == index_model_id && embedder_model_revision == index_model_revision {
         return Ok(());
     }
     Err(CoreError::Typed {
         code: LexicalErrorCode::SemModelMismatch.as_code_str().to_string(),
         message: format!(
-            "{plane}: query embedder model {embedder_model_id}/{embedder_model_version:?} is not comparable to index model {index_model_id}/{index_model_version:?} (equal dimension is insufficient; vectors from different models are not cosine-comparable)"
+            "{plane}: query embedder model {embedder_model_id}/{embedder_model_revision} is not comparable to index model {index_model_id}/{index_model_revision} (equal dimension is insufficient; vectors from different models or revisions are not cosine-comparable)"
         ),
     })
 }
