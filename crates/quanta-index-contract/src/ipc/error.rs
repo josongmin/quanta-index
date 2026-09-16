@@ -197,6 +197,11 @@ impl<'de> Deserialize<'de> for QueryErrorRepair {
 /// projection.
 pub const ERR_RESULT_TOO_LARGE: &str = "RESULT_TOO_LARGE";
 
+/// Wire code for a request the server could not admit to a dispatch slot
+/// within its queue wait (QI-BB-002). Nothing was executed; the caller may
+/// retry with backoff.
+pub const ERR_SERVER_OVERLOADED: &str = "SERVER_OVERLOADED";
+
 /// Wire-level typed error carried in every search-plane IPC response.
 ///
 /// `code` + `message` are the load-bearing fail-closed fields; `repair` is
@@ -211,6 +216,21 @@ pub struct SearchPlaneIpcError {
 }
 
 impl SearchPlaneIpcError {
+    /// The refusal a transport sends when every dispatch slot stayed busy
+    /// for `waited`; `slots` is the server's concurrency so the caller can
+    /// size its backoff.
+    #[must_use]
+    pub fn overloaded(waited: core::time::Duration, slots: usize) -> Self {
+        Self {
+            code: ERR_SERVER_OVERLOADED.to_string(),
+            message: format!(
+                "no dispatch slot came free within {} ms ({slots} slots busy); retry with backoff",
+                waited.as_millis()
+            ),
+            repair: None,
+        }
+    }
+
     /// The refusal a transport sends in place of a response whose encoded
     /// body of `encoded_bytes` exceeds `limit_bytes`.
     #[must_use]

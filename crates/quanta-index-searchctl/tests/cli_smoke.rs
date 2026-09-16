@@ -27,7 +27,7 @@ use quanta_index_contract::{
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SemanticQueryResponse, TextQueryResponse, TextQuerySyntax,
 };
-use quanta_index_ipc::{IpcDispatcher, UdsServer};
+use quanta_index_ipc::{IpcDispatcher, RequestBudgetV1, UdsServer};
 use tempfile::tempdir;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,7 +46,11 @@ struct ScenarioDispatcher {
 static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 
 impl IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse> for ScenarioDispatcher {
-    fn dispatch(&self, request: SearchPlaneQueryIpcRequest) -> SearchPlaneQueryIpcResponse {
+    fn dispatch(
+        &self,
+        request: SearchPlaneQueryIpcRequest,
+        _budget: &RequestBudgetV1,
+    ) -> SearchPlaneQueryIpcResponse {
         match self.scenario {
             SmokeScenario::LexicalJson => dispatch_lexical_request(request),
             SmokeScenario::ExplainPretty => dispatch_explain_request(request),
@@ -504,7 +508,11 @@ impl ControlScenarioDispatcher {
 impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
     for ControlScenarioDispatcher
 {
-    fn dispatch(&self, request: SearchPlaneControlIpcRequest) -> SearchPlaneControlIpcResponse {
+    fn dispatch(
+        &self,
+        request: SearchPlaneControlIpcRequest,
+        _budget: &RequestBudgetV1,
+    ) -> SearchPlaneControlIpcResponse {
         match request {
             SearchPlaneControlIpcRequest::GenerationStatus(req) => self.generation_status(&req),
             SearchPlaneControlIpcRequest::CurrentGeneration(req) => self.current_generation(&req),

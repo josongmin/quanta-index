@@ -14,7 +14,9 @@ use quanta_index_contract::{
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneSearchCorpusActivationCasAck,
     SearchPlaneSearchCorpusRollbackCasAck, TrackReadinessRecord,
 };
-use quanta_index_core::{CoreError, GenerationIdentityValidatePort, RepoMapGenerationActivatePort};
+use quanta_index_core::{
+    CoreError, GenerationIdentityValidatePort, RepoMapGenerationActivatePort, RequestBudgetV1,
+};
 
 use crate::search_corpus_lifecycle::SearchCorpusLifecycleService;
 use crate::{
@@ -170,8 +172,23 @@ impl SearchPlaneControlDispatcher {
         })
     }
 
+    /// Serve one control request (QI-BB-002).
+    ///
+    /// The budget is checked once, at entry: a request whose peer left or
+    /// whose deadline passed while it waited for the serial dispatch slot is
+    /// refused before it takes any lock. Past that point a control mutation
+    /// is owned by the dispatcher and runs to its durable end regardless of
+    /// the peer, because a half-applied activation is worse than an answer
+    /// nobody reads.
     #[must_use]
-    pub fn dispatch(&self, request: SearchPlaneControlIpcRequest) -> SearchPlaneControlIpcResponse {
+    pub fn dispatch(
+        &self,
+        request: SearchPlaneControlIpcRequest,
+        budget: &RequestBudgetV1,
+    ) -> SearchPlaneControlIpcResponse {
+        if let Err(err) = budget.checkpoint("control:entry") {
+            return SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err));
+        }
         match request {
             SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(request) => {
                 match self.activate_search_corpus_generation_cas(&request) {
@@ -259,7 +276,7 @@ mod tests {
         SearchPlaneTrackKind,
     };
     use quanta_index_core::{
-        CoreError, GenerationIdentityValidatePort, RepoMapGenerationActivatePort,
+        CoreError, GenerationIdentityValidatePort, RepoMapGenerationActivatePort, RequestBudgetV1,
     };
     use tempfile::tempdir;
 
@@ -425,6 +442,7 @@ mod tests {
                 manifest_generation: ManifestGeneration::new(9),
                 manifest_digest: "manifest-digest-9".to_string(),
             }),
+            &RequestBudgetV1::unbounded(),
         ))?;
         if activate.manifest_generation.get() != 9 {
             return Err(format!(
@@ -456,6 +474,7 @@ mod tests {
                     expected_active: None,
                 },
             ),
+            &RequestBudgetV1::unbounded(),
         );
         let SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(activation) = response
         else {
@@ -525,6 +544,7 @@ mod tests {
                     expected_active: None,
                 },
             ),
+            &RequestBudgetV1::unbounded(),
         ))?;
         assert_eq!(code, super::ERR_INVALID);
         assert!(
@@ -612,6 +632,7 @@ mod tests {
                     )?,
                 },
             ),
+            &RequestBudgetV1::unbounded(),
         );
         let SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(ack) = response else {
             return Err("expected rollback ack".into());
@@ -678,6 +699,7 @@ mod tests {
                     )?,
                 },
             ),
+            &RequestBudgetV1::unbounded(),
         );
         let SearchPlaneControlIpcResponse::Error(error) = stale else {
             return Err("stale rollback unexpectedly succeeded".into());
@@ -703,6 +725,7 @@ mod tests {
                     )?,
                 },
             ),
+            &RequestBudgetV1::unbounded(),
         );
         let SearchPlaneControlIpcResponse::Error(error) = unsealed_target else {
             return Err("rollback to unsealed historical target unexpectedly succeeded".into());

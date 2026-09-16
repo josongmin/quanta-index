@@ -17,7 +17,7 @@ use quanta_index_contract::{
     SearchPlaneQueryIpcResponseEnvelope,
 };
 use quanta_index_ipc::{
-    IpcDispatcher, IpcError, RequestEnvelope, ResponseEnvelope,
+    IpcDispatcher, IpcError, RequestEnvelope, ResponseEnvelope, ServerAdmissionPolicy,
     ShutdownHandle as IpcShutdownHandle, UdsServer,
 };
 
@@ -66,13 +66,14 @@ where
     ResponseEnvelopeT: ResponseEnvelope<Response>,
     D: IpcDispatcher<Request, Response> + ?Sized + 'static,
 {
-    /// Bind a server to `socket_path`.
+    /// Bind a server to `socket_path` under `policy` (QI-BB-002).
     pub fn bind(
         thread_name: impl Into<String>,
         socket_path: &Path,
         dispatcher: Arc<D>,
+        policy: ServerAdmissionPolicy,
     ) -> Result<Self, IpcError> {
-        let server = UdsServer::bind(socket_path)?;
+        let server = UdsServer::bind_with_policy(socket_path, policy)?;
         Ok(Self {
             server,
             dispatcher,
@@ -91,6 +92,12 @@ where
     #[must_use]
     pub fn shutdown_handle(&self) -> IpcShutdownHandle {
         self.server.shutdown_handle()
+    }
+
+    /// The admission policy this socket was bound under.
+    #[must_use]
+    pub const fn admission_policy(&self) -> ServerAdmissionPolicy {
+        self.server.admission_policy()
     }
 
     /// Spawn a thread that runs the accept loop until shutdown is triggered.

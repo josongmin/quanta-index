@@ -1,14 +1,15 @@
-//! G0-R — runtime cancellation and scheduling probe (W0 decision gate).
+//! G0-R — runtime cancellation and scheduling probe, now the W5 proof.
 //!
-//! The structural plan's W5 work (bounded scheduling, flight-owned
-//! cancellation, drain on shutdown) has to start from what the transport
-//! actually does today. This target pins that baseline against the real
-//! `UdsServer::run` loop rather than from reading it:
+//! As a W0 gate this target pinned the transport's baseline against the real
+//! `UdsServer::run` loop: one in-flight dispatch blocked every other client,
+//! a disconnected peer's dispatch ran to completion for nobody, and shutdown
+//! drained the in-flight dispatch. W5 (QI-BB-002) changed the first two, and
+//! the same probe now proves the new contract against the same loop:
 //!
-//! 1. Does one in-flight dispatch block every other client? (head-of-line)
-//! 2. When the requesting peer disconnects, is its dispatch cancelled, or does
-//!    the server keep doing the work for nobody?
-//! 3. Does shutdown drain the in-flight dispatch, or abandon it?
+//! 1. An in-flight dispatch does not block another client. (head-of-line)
+//! 2. When the requesting peer disconnects, the dispatch's budget is
+//!    cancelled, and a dispatcher that checkpoints observes it.
+//! 3. Shutdown still drains the in-flight dispatch rather than abandoning it.
 //!
 //! Every ordering claim is enforced with a barrier or channel handshake. No
 //! test here sleeps and then assumes an interleaving happened.
@@ -30,7 +31,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use quanta_index_ipc::{
-    ClientIoPolicy, IpcDispatcher, IpcError, IpcIoOperation, RequestEnvelope, ResponseEnvelope,
+    ClientIoPolicy, IpcDispatcher, IpcError, RequestBudgetV1, RequestEnvelope, ResponseEnvelope,
     UdsServer, send_request,
 };
 use serde::de::{self, MapAccess, Visitor};
@@ -170,6 +171,10 @@ impl ResponseEnvelope<u64> for ProbeResponse {
     fn result_too_large(_request_id: u64, _encoded_bytes: u64, _limit_bytes: u64) -> Option<Self> {
         None
     }
+
+    fn overloaded(_request_id: u64, _waited: Duration, _slots: usize) -> Option<Self> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -187,10 +192,12 @@ struct GatedDispatcher {
     /// against other events without a clock.
     sequence: Arc<AtomicU64>,
     completion_sequence: Arc<Mutex<Vec<u64>>>,
+    /// Held dispatches whose budget reported cancellation once released.
+    cancelled_observed: Arc<AtomicU64>,
 }
 
 impl IpcDispatcher<u64, u64> for GatedDispatcher {
-    fn dispatch(&self, request: u64) -> u64 {
+    fn dispatch(&self, request: u64, budget: &RequestBudgetV1) -> u64 {
         if request == HOLD {
             // A probe that cannot observe entry has no ordering evidence; a
             // failed send means the test side already went away.
@@ -198,6 +205,11 @@ impl IpcDispatcher<u64, u64> for GatedDispatcher {
                 return u64::MAX;
             }
             let _wait = self.release.wait();
+            // The checkpoint a real route would place after its native work:
+            // it is the only place cooperative cancellation can be seen.
+            if budget.is_cancelled() {
+                let _observed = self.cancelled_observed.fetch_add(1, Ordering::SeqCst);
+            }
         }
         let stamp = self.sequence.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut log) = self.completion_sequence.lock() {
@@ -217,6 +229,7 @@ struct Server {
     completed: Arc<AtomicU64>,
     sequence: Arc<AtomicU64>,
     completion_sequence: Arc<Mutex<Vec<u64>>>,
+    cancelled_observed: Arc<AtomicU64>,
     _dir: tempfile::TempDir,
 }
 
@@ -230,12 +243,14 @@ fn start_server() -> Result<Server, Box<dyn Error>> {
     let completed = Arc::new(AtomicU64::new(0));
     let sequence = Arc::new(AtomicU64::new(0));
     let completion_sequence = Arc::new(Mutex::new(Vec::new()));
+    let cancelled_observed = Arc::new(AtomicU64::new(0));
     let dispatcher = Arc::new(GatedDispatcher {
         entered: entered_tx,
         release: Arc::clone(&release),
         completed: Arc::clone(&completed),
         sequence: Arc::clone(&sequence),
         completion_sequence: Arc::clone(&completion_sequence),
+        cancelled_observed: Arc::clone(&cancelled_observed),
     });
     let join = thread::spawn(move || {
         server
@@ -250,6 +265,7 @@ fn start_server() -> Result<Server, Box<dyn Error>> {
         completed,
         sequence,
         completion_sequence,
+        cancelled_observed,
         _dir: dir,
     })
 }
@@ -306,14 +322,15 @@ fn evidence(label: &str, fields: &[(&str, String)]) {
     println!("G0R-EVIDENCE {label} {}", rendered.join(" "));
 }
 
-/// (1) One in-flight dispatch blocks every other client.
+/// (1) One in-flight dispatch does not block another client.
 ///
 /// Client A parks inside the dispatcher on a barrier the test holds. While it
 /// is held, client B — an independent connection with an independent, trivial
-/// request — cannot be served: its bounded read times out. Releasing A lets B
-/// through on retry. The block is proven by the barrier, not by timing.
+/// request — is served on its own connection thread and its own dispatch
+/// slot. Releasing A then delivers A's own response. Under the W0 baseline B
+/// timed out here; that is the head-of-line block W5 removed.
 #[test]
-fn an_in_flight_dispatch_blocks_every_other_client() -> ProbeResult {
+fn an_in_flight_dispatch_does_not_block_other_clients() -> ProbeResult {
     let mut server = start_server()?;
     let holder = spawn_holder(server.socket.clone(), HANDSHAKE_BOUND);
     let entered = server.wait_entered()?;
@@ -321,47 +338,40 @@ fn an_in_flight_dispatch_blocks_every_other_client() -> ProbeResult {
         return Err(format!("dispatcher entered with unexpected payload {entered}").into());
     }
 
-    // B is a different client with a request the dispatcher would answer
-    // instantly. It is refused service only because A occupies the loop.
-    let blocked_started = Instant::now();
-    let blocked = send(&server.socket, 2, 5, BLOCKED_CLIENT_BUDGET);
-    let blocked_for = blocked_started.elapsed();
+    let served_started = Instant::now();
+    let served_while_held = send(&server.socket, 2, 5, HANDSHAKE_BOUND);
+    let served_in = served_started.elapsed();
+    let completions_while_held = server.completed.load(Ordering::SeqCst);
 
     let _released = server.release.wait();
     let holder_outcome = holder
         .join()
         .map_err(|panic| format!("holder thread panicked: {panic:?}"))?;
-    let served_after_release = send(&server.socket, 3, 5, HANDSHAKE_BOUND);
 
     evidence(
         "head_of_line",
         &[
-            ("blocked_client_outcome", describe(&blocked)),
-            (
-                "blocked_client_waited_ms",
-                blocked_for.as_millis().to_string(),
-            ),
+            ("served_while_held", describe(&served_while_held)),
+            ("served_in_ms", served_in.as_millis().to_string()),
+            ("completions_while_held", completions_while_held.to_string()),
             ("holder_outcome", describe(&holder_outcome)),
-            ("served_after_release", describe(&served_after_release)),
-            (
-                "dispatch_completions",
-                server.completed.load(Ordering::SeqCst).to_string(),
-            ),
         ],
     );
     server.stop()?;
 
-    match blocked {
-        Err(IpcError::Timeout {
-            operation: IpcIoOperation::Read | IpcIoOperation::Connect,
-            ..
-        }) => {}
-        other => {
-            return Err(format!(
-                "second client must be starved while the first dispatch is held, got {other:?}"
-            )
-            .into());
-        }
+    if served_while_held?
+        != (ProbeResponse {
+            request_id: 2,
+            payload: 6,
+        })
+    {
+        return Err("second client must be served while the first dispatch is held".into());
+    }
+    if completions_while_held != 1 {
+        return Err(format!(
+            "exactly the second client's dispatch must have completed while the first was held, got {completions_while_held}"
+        )
+        .into());
     }
     if holder_outcome?
         != (ProbeResponse {
@@ -371,55 +381,46 @@ fn an_in_flight_dispatch_blocks_every_other_client() -> ProbeResult {
     {
         return Err("held client must still receive its own response after release".into());
     }
-    if served_after_release?
-        != (ProbeResponse {
-            request_id: 3,
-            payload: 6,
-        })
-    {
-        return Err("client must be served once the loop is free".into());
-    }
     Ok(())
 }
 
-/// (2) A peer that disconnects mid-dispatch does not cancel its work.
+/// (2) A peer that disconnects mid-dispatch cancels its budget.
 ///
 /// Client A parks inside the dispatcher, then abandons its connection by
-/// letting its read budget expire. The dispatcher is still parked, still
-/// counted as in flight, and — once released — runs to completion and
-/// increments the completion counter for a response nobody will read.
+/// letting its read budget expire. The connection's peer watch sees the
+/// hang-up and cancels the request's budget; once the test releases the
+/// parked dispatch, the dispatcher's checkpoint observes the cancellation.
+/// The native work between checkpoints still runs — G0-R pinned that hard
+/// cancellation is not available — but nothing past the checkpoint does, and
+/// the server can name where it stopped.
 #[test]
-fn a_disconnected_peer_does_not_cancel_its_dispatch() -> ProbeResult {
+fn a_disconnected_peer_cancels_its_dispatch_budget() -> ProbeResult {
     let mut server = start_server()?;
     let holder = spawn_holder(server.socket.clone(), BLOCKED_CLIENT_BUDGET);
     let _entered = server.wait_entered()?;
 
     // A gives up: its read budget is shorter than the hold. This is the
-    // disconnect. The dispatcher has no way to observe it.
+    // disconnect the peer watch must notice.
     let abandoned = holder
         .join()
         .map_err(|panic| format!("holder thread panicked: {panic:?}"))?;
+    // Give the watch its poll interval to see the hang-up before release.
+    thread::sleep(Duration::from_millis(200));
     let completions_while_abandoned = server.completed.load(Ordering::SeqCst);
 
-    // Only now does the test release the parked dispatch.
     let _released = server.release.wait();
-    // A trivial follow-up request is only answerable after the abandoned
-    // dispatch has run to completion, so its success bounds that completion.
     let follow_up = send(&server.socket, 9, 1, HANDSHAKE_BOUND);
-    let completions_after_release = server.completed.load(Ordering::SeqCst);
+    let cancelled_observed = server.cancelled_observed.load(Ordering::SeqCst);
 
     evidence(
-        "disconnect_no_cancel",
+        "disconnect_cancels",
         &[
             ("abandoned_client_outcome", describe(&abandoned)),
             (
                 "completions_while_abandoned",
                 completions_while_abandoned.to_string(),
             ),
-            (
-                "completions_after_release",
-                completions_after_release.to_string(),
-            ),
+            ("cancelled_observed", cancelled_observed.to_string()),
             ("follow_up_outcome", describe(&follow_up)),
         ],
     );
@@ -431,10 +432,9 @@ fn a_disconnected_peer_does_not_cancel_its_dispatch() -> ProbeResult {
     if completions_while_abandoned != 0 {
         return Err("dispatch completed before the test released it".into());
     }
-    // The abandoned dispatch (1) plus the follow-up (1).
-    if completions_after_release != 2 {
+    if cancelled_observed != 1 {
         return Err(format!(
-            "expected the abandoned dispatch to run to completion for nobody (2 completions), got {completions_after_release}"
+            "the released dispatch must observe its peer's hang-up on the budget, observed {cancelled_observed}"
         )
         .into());
     }

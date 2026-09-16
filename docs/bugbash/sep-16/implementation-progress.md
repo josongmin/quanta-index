@@ -291,7 +291,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W2 | in_progress | QI-BB-029 preflight(§3.11) 완료. catalog 본체(session/receipt/SQLite)는 미착수 — G0-C PASS → SQLite(rusqlite bundled)로 진행. `quanta-index-catalog-probe`는 W2 landing 시 삭제 |
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + sealed manifest(§3.10) 완료. 남은 것: sharded sidecar 포맷(O(delta) write), ANN versioned artifact(QI-BB-027), semantic seal manifest 대칭 |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), QI-BB-024 regex cache, streaming projection collector |
-| W5 | planned | G0-R 결론에 따라 cooperative checkpoint 설계 |
+| W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. 남은 것: cancel을 lexical collector 내부(candidate batch 사이)까지 내리기, overload/refusal 서버 metric |
 | W6 | planned | M4 적용 |
 | W7 | planned | |
 | C1 | planned | |
@@ -798,6 +798,59 @@ base_generation`)이 있었고, 빈 digest는 build/authority까지 통과한 �
 **정직한 비용**: non-seal delta batch도 매번 base를 물리 검증하므로 base sidecar 해시 비용이 batch당
 든다(§3.10). registry처럼 검증 결과를 (key, digest)로 기억하는 것은 후속.
 
+## 3.12 QI-BB-002 — IPC admission + cooperative cancellation (phase 1 구현 완료)
+
+**진단 확정**(G0-R baseline, §3.0): `UdsServer::run`이 accept thread에서 connection을 inline 처리해
+한 peer의 native search 또는 stalled read가 socket 전체를 막았고, 떠난 peer의 query는 아무도 읽지
+않을 결과까지 끝까지 달렸으며, dispatcher는 deadline도 cancellation도 받지 못했다.
+
+**설계** (G0-R 결론 준수 — native call 사이의 hard cancellation은 없고, checkpoint만 있다):
+
+| 층 | 구현 |
+| --- | --- |
+| ingress | connection당 thread(`uds-connection`). `ServerAdmissionPolicy::max_connections` 초과는 accept에서 **닫고 count**(`refused_connections`), queue하지 않음 |
+| dispatch slot | `DispatchSlots`(mutex+condvar counting semaphore). `queue_wait` 안에 slot이 없으면 typed `SERVER_OVERLOADED`(`SearchPlaneIpcError::overloaded(waited, slots)`)를 **요청자 connection에** 회신. envelope type이 typed refusal이 없으면 close(`ConnectionCloseReason::Overloaded`) |
+| budget | `core::request_budget::RequestBudgetV1 { deadline, cancelled }` + `CancelHandleV1`. `checkpoint(stage)`는 `REQUEST_CANCELLED` / `REQUEST_DEADLINE_EXCEEDED`를 **checkpoint 이름과 함께** typed로 반환. `IpcDispatcher::dispatch(&self, request, budget)` — budget 없는 dispatch 시그니처는 없음 |
+| peer watch | dispatch 중 별도 thread가 `poll(POLLIN\|POLLHUP)` 50ms + `recv(PEEK)`로 hang-up을 감지해 cancel. pipelined data는 hang-up이 아님. watch를 못 세우면(`try_clone`/spawn 실패) dispatch하지 않고 connection을 닫는다(`PeerWatchFailed`) — cancel이 영원히 안 오는 dispatch를 만들지 않음 |
+| policy | `ServerAdmissionPolicy::new(max_connections, dispatch_slots, queue_wait, dispatch_budget, io_timeout)` — private field, zero limit / slots>connections 거부. `DEFAULT`(64/4/2s/20s/30s) = query socket, `SERIAL_DISPATCH`(64/1/10s/120s/30s) = control·ingest(mutation 직렬화는 정책이지 튜닝 항목이 아님) |
+| searchd | `QUANTA_INDEX_QUERY_MAX_CONNECTIONS` / `_DISPATCH_SLOTS` / `_QUEUE_WAIT_MS` / `_DISPATCH_BUDGET_MS` — 각각 optional, unset은 DEFAULT의 해당 field, 조합은 **하나의 policy로** 검증(boot에서 거부). `QueryServer::bind(..., policy)` |
+
+**checkpoint 배치** (query dispatcher, 모든 route는 core inbound port `*QueryPort::…(request, budget)`로 budget을 받는다):
+
+| route | checkpoint |
+| --- | --- |
+| text | `lexical:entry` → `lexical:search`(open 후, native 전) → `lexical:project` |
+| symbol | `symbol:entry` → `symbol:search` |
+| semantic | `semantic:entry` → `semantic:scope`(lexical scope native 전) → `semantic:embed` → `semantic:search` → `semantic:project` |
+| hybrid | `hybrid:entry` → `hybrid:lexical` → `hybrid:embed` → `hybrid:semantic` → `hybrid:fuse` |
+| hybrid seed | `hybrid-seed:entry` → `:lexical` → `:embed` → `:semantic` → `:dense`(corpus lane마다) → `:fuse` |
+| history / runtime / structural | `<route>:entry` → `<route>:execute`; structural의 lexical leaf마다 `structural:lexical-leaf` |
+| explain / repo-map / cluster-membership | `:entry` (+ `explain:probe`, `cluster-membership:read`) |
+| control / ingest | `control:entry` / `ingest:entry`만 — admission 후 mutation은 dispatcher 소유로 끝까지 간다(반쯤 적용된 activation/batch가 "아무도 안 읽는 답"보다 나쁘다) |
+
+error metric: 두 code는 `lq_typed_error_interrupted_total`(신규, closed taxonomy test에 추가). `other`로 새지 않는다.
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| in-flight dispatch가 다른 client를 막지 않음 | `g0r_runtime_cancellation_probe::an_in_flight_dispatch_does_not_block_other_clients` — `G0R-EVIDENCE head_of_line served_while_held=ok served_in_ms=1 completions_while_held=1` (W0 baseline에서는 timeout) |
+| 떠난 peer가 budget을 cancel | `…::a_disconnected_peer_cancels_its_dispatch_budget` — `cancelled_observed=1`, dispatcher checkpoint가 봄 |
+| shutdown drain 유지 | `…::shutdown_drains_the_in_flight_dispatch` |
+| slot 고갈 → typed overload, 요청자 connection에, holder를 기다리지 않고, slot 해제 후 재서비스 | `tests/admission.rs::a_full_dispatch_queue_is_refused_with_a_typed_overload_then_serves_again` (실 control envelope, `(1 slots busy)` 메시지) |
+| connection cap은 queue가 아니라 close + count | `…::connections_past_the_cap_are_closed_at_accept_and_counted` — mutation(cap 무한)으로 FAIL 확인 후 revert |
+| policy deadline이 dispatcher checkpoint까지 도달, checkpoint 이름 포함 | `…::the_dispatch_budget_deadline_reaches_the_dispatcher_checkpoint` |
+| 모든 query route가 entry에서 interrupted budget을 typed로 거부, opener 미접촉, metric은 `interrupted` | `query_dispatcher::tests::every_route_refuses_an_interrupted_budget_at_entry_without_opening` (8 route, reject opener) |
+| policy 검증 / slot semaphore / budget 단위 | `ipc::admission::tests` 3, `core::request_budget::tests` 4, `ipc::server::tests` 19(overload·peer-hangup 포함), searchd `query_admission_env_binding_…` |
+
+**남은 것 (W5 phase 2)**: (a) cancel을 lexical `collect_bounded` 내부 candidate batch 사이까지 —
+현재는 native search 한 덩어리가 끝나야 checkpoint. (b) `refused_connections`/overload/interrupted를
+서버 metric으로 (지금은 query dispatcher의 error metric만). (c) `SlotRefusal` 대기 fairness는 condvar
+`notify_one` 순서에 맡김 — 명시 FIFO는 필요가 증명되면.
+
+**정직한 한계**: 하나의 connection이 여러 request를 pipelined로 보내면 두 번째 request는 첫 번째 dispatch
+가 끝난 뒤 읽힌다(connection thread는 순차). 병렬성은 connection 단위다.
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -817,3 +870,5 @@ base_generation`)이 있었고, 빈 digest는 build/authority까지 통과한 �
 | 2026-09-17 | 21e7d26 | `just rust-profile verify-rust` | **GREEN** — exit 0, 1,981 passed / 0 failed (clippy·semgrep·deny·machete·doc·policy·public-api·hexagonal·test-authority 포함) |
 | 2026-09-17 | a9b0d90 | `just rust-profile verify-rust` | RED — `e2e_restart_replay_determinism`: history-only generation seal이 index를 만들지 않아 manifest가 meta.json을 못 찾음 (→ 022e80b) |
 | 2026-09-17 | 2504b33 | `just rust-profile verify-rust` | **GREEN** — exit 0, 1,989 passed / 0 failed |
+| 2026-09-17 | (W5 tree) | `cargow --lane test-integration-lane test -p quanta-index-ipc --test g0r_runtime_cancellation_probe` | 3/3 — `head_of_line served_while_held=ok … completions_while_held=1`, `disconnect_cancels … cancelled_observed=1` |
+| 2026-09-17 | (W5 tree) | `… --test admission` | 3/3; cap mutation → 1 FAIL, revert |

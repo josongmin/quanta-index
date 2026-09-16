@@ -10,9 +10,14 @@
 
 pub mod domains;
 pub mod error;
+pub mod request_budget;
 pub mod timeref;
 
 pub use error::{CoreError, validate_internal_fetch_size, validate_query_top_k};
+pub use request_budget::{
+    BudgetInterruptionV1, CancelHandleV1, REQUEST_CANCELLED_CODE, REQUEST_DEADLINE_EXCEEDED_CODE,
+    RequestBudgetV1,
+};
 
 pub use domains::generation::{
     GenerationIdentityValidatePort, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,

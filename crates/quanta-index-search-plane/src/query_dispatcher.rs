@@ -41,10 +41,10 @@ use quanta_index_core::domains::structural::{
 };
 use quanta_index_core::{
     CoreError, ExplainQueryPort, HybridOrchestratorPolicy, HybridQueryPort, LexicalIndexOpenPort,
-    LexicalPolicy, LexicalQueryPort, LexicalSearchPageV1, LexicalSearcher, RepoMapPolicy,
-    RepoMapQueryPort, SemanticIndexOpenPort, SemanticPolicy, SemanticQueryPort,
-    SemanticSearchHitV1, SemanticSearcher, StructuralMatchBinding, StructuralMatchCandidate,
-    StructuralService,
+    LexicalPolicy, LexicalQueryPort, LexicalSearchPageV1, LexicalSearcher, REQUEST_CANCELLED_CODE,
+    REQUEST_DEADLINE_EXCEEDED_CODE, RepoMapPolicy, RepoMapQueryPort, RequestBudgetV1,
+    SemanticIndexOpenPort, SemanticPolicy, SemanticQueryPort, SemanticSearchHitV1,
+    SemanticSearcher, StructuralMatchBinding, StructuralMatchCandidate, StructuralService,
     timeref::{parse_rev_at_time_spec, parse_search_timeref_ms},
     validate_query_top_k,
 };
@@ -326,6 +326,11 @@ fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 fn classify_error_metric_name(err: &CoreError) -> &'static str {
     match err {
         CoreError::Typed { code, .. }
+            if code == REQUEST_DEADLINE_EXCEEDED_CODE || code == REQUEST_CANCELLED_CODE =>
+        {
+            "lq_typed_error_interrupted_total"
+        }
+        CoreError::Typed { code, .. }
             if code.contains("PARSE")
                 || code.contains("TRANSLATE_FAIL")
                 || code.contains("INVALID_VECTOR")
@@ -544,7 +549,12 @@ impl SearchPlaneDispatcher {
     }
 
     /// Lower the request and forward it to the live lexical searcher.
-    fn lexical(&self, request: &TextQueryRequest) -> Result<TextQueryResponse, CoreError> {
+    fn lexical(
+        &self,
+        request: &TextQueryRequest,
+        budget: &RequestBudgetV1,
+    ) -> Result<TextQueryResponse, CoreError> {
+        budget.checkpoint("lexical:entry")?;
         let _accepted_top_k = validate_query_top_k(request.top_k)?;
         let lowered = lower_lexical_text_query(request)?;
         let prepared_language = prepare_language_query_v1(lowered, &request.constraints)?;
@@ -579,11 +589,13 @@ impl SearchPlaneDispatcher {
         let searcher =
             self.acquire_lexical(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let fetch_top_k = lexical_fetch_limit_v1(&prepared.query, request.top_k)?;
+        budget.checkpoint("lexical:search")?;
         let mut page = searcher.search_constrained(
             &prepared.query,
             &prepared_language.constraints,
             fetch_top_k,
         )?;
+        budget.checkpoint("lexical:project")?;
         stabilize_ranked_candidates(&mut page.candidates);
         let window = lexical_page_window_v1(&mut page, request.top_k, fetch_top_k)?;
         let results = page.candidates;
@@ -600,7 +612,12 @@ impl SearchPlaneDispatcher {
         })
     }
 
-    fn symbol(&self, request: SymbolQueryRequest) -> Result<SymbolQueryResponse, CoreError> {
+    fn symbol(
+        &self,
+        request: SymbolQueryRequest,
+        budget: &RequestBudgetV1,
+    ) -> Result<SymbolQueryResponse, CoreError> {
+        budget.checkpoint("symbol:entry")?;
         let _accepted_top_k = validate_query_top_k(request.top_k)?;
         let pin = resolve_optional_selection(
             self.activation_catalog.as_ref(),
@@ -639,6 +656,7 @@ impl SearchPlaneDispatcher {
             self.acquire_lexical(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         // The symbol port has no count collector yet, so a `count` option
         // still yields a probe-derived (at-least) window here.
+        budget.checkpoint("symbol:search")?;
         let mut results = searcher.search_symbols_constrained(
             &prepared_language.query,
             &prepared_language.constraints,
@@ -688,6 +706,7 @@ impl SearchPlaneDispatcher {
         semantic_query_text: &str,
         top_k: u32,
         plane: &str,
+        budget: &RequestBudgetV1,
     ) -> Result<HybridFusion, CoreError> {
         let pin = selection.pin.clone();
         let lex_materialized = self.snapshot_lex_materialized(&pin.repo_id, &pin.revision_id)?;
@@ -702,6 +721,7 @@ impl SearchPlaneDispatcher {
         let prepared_language = prepare_language_query_v1(lexical_query, &text_query.constraints)?;
         LexicalPolicy::validate_query(&prepared_language.query)?;
         let internal_top_k = hybrid_probe_top_k_v1(top_k)?;
+        budget.checkpoint("hybrid:lexical")?;
         let mut lex_results = if prepared_language.force_empty {
             Vec::new()
         } else {
@@ -718,14 +738,17 @@ impl SearchPlaneDispatcher {
             .iter()
             .map(|candidate| candidate.candidate_id.clone())
             .collect::<BTreeSet<_>>();
+        budget.checkpoint("hybrid:embed")?;
         let query_vector =
             self.embed_and_gate_query(semantic_query_text, sem_searcher.as_ref(), plane)?;
+        budget.checkpoint("hybrid:semantic")?;
         let mut sem_results = sem_searcher.search_scoped_constrained(
             &query_vector,
             &lexical_ids,
             &prepared_language.constraints,
             internal_top_k,
         )?;
+        budget.checkpoint("hybrid:fuse")?;
         stabilize_ranked_candidates(&mut sem_results);
         let internal_limit = usize::try_from(internal_top_k).map_err(|err| {
             CoreError::InvalidContract(format!("hybrid: internal top_k overflow: {err}"))
@@ -765,7 +788,12 @@ impl SearchPlaneDispatcher {
         })
     }
 
-    fn semantic(&self, request: &SemanticQueryRequest) -> Result<SemanticQueryResponse, CoreError> {
+    fn semantic(
+        &self,
+        request: &SemanticQueryRequest,
+        budget: &RequestBudgetV1,
+    ) -> Result<SemanticQueryResponse, CoreError> {
+        budget.checkpoint("semantic:entry")?;
         SemanticPolicy::validate_top_k(request.top_k)?;
         let selection =
             resolve_semantic_request_selection(self.activation_catalog.as_ref(), request)?;
@@ -797,6 +825,7 @@ impl SearchPlaneDispatcher {
             )?;
             let searcher =
                 self.acquire_lexical(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
+            budget.checkpoint("semantic:scope")?;
             let mut scoped = if prepared_language.force_empty {
                 Vec::new()
             } else {
@@ -828,9 +857,11 @@ impl SearchPlaneDispatcher {
         let scope_candidate_ids = scope.as_ref().map(|scope| &scope.candidate_ids);
         let searcher =
             self.acquire_semantic(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
+        budget.checkpoint("semantic:embed")?;
         let query_vector =
             self.embed_and_gate_query(request.query_text.as_str(), searcher.as_ref(), "semantic")?;
         let probe_top_k = probe_top_k_v1(request.top_k)?;
+        budget.checkpoint("semantic:search")?;
         let mut results = if let Some(scope_ids) = scope_candidate_ids {
             searcher.search_scoped_constrained(
                 &query_vector,
@@ -841,6 +872,7 @@ impl SearchPlaneDispatcher {
         } else {
             searcher.search_constrained(&query_vector, &effective_constraints, probe_top_k)?
         };
+        budget.checkpoint("semantic:project")?;
         let window = finalize_probe_window_v1(&mut results, request.top_k)?;
         let early_stop_reason = scope_candidate_ids.and_then(|scope_ids| {
             let limit = top_k_limit(request.top_k);
@@ -860,7 +892,12 @@ impl SearchPlaneDispatcher {
         })
     }
 
-    fn hybrid(&self, request: &HybridQueryRequest) -> Result<HybridQueryResponse, CoreError> {
+    fn hybrid(
+        &self,
+        request: &HybridQueryRequest,
+        budget: &RequestBudgetV1,
+    ) -> Result<HybridQueryResponse, CoreError> {
+        budget.checkpoint("hybrid:entry")?;
         HybridOrchestratorPolicy::validate_top_k(request.top_k)?;
         let selection =
             resolve_hybrid_request_selection(self.activation_catalog.as_ref(), request)?;
@@ -870,6 +907,7 @@ impl SearchPlaneDispatcher {
             request.semantic_query_text.as_str(),
             request.top_k,
             "hybrid",
+            budget,
         )?;
         Ok(HybridQueryResponse {
             generation: fusion.pin,
@@ -882,7 +920,9 @@ impl SearchPlaneDispatcher {
     fn hybrid_seed(
         &self,
         request: &HybridSeedQueryRequest,
+        budget: &RequestBudgetV1,
     ) -> Result<HybridSeedQueryResponse, CoreError> {
+        budget.checkpoint("hybrid-seed:entry")?;
         HybridOrchestratorPolicy::validate_top_k(request.top_k)?;
         let selection =
             resolve_hybrid_seed_request_selection(self.activation_catalog.as_ref(), request)?;
@@ -899,6 +939,7 @@ impl SearchPlaneDispatcher {
             prepare_language_query_v1(lexical_query, &request.text_query.constraints)?;
         LexicalPolicy::validate_query(&prepared_language.query)?;
         let internal_top_k = hybrid_probe_top_k_v1(request.top_k)?;
+        budget.checkpoint("hybrid-seed:lexical")?;
         let mut lex_results = if prepared_language.force_empty {
             Vec::new()
         } else {
@@ -915,11 +956,13 @@ impl SearchPlaneDispatcher {
             .iter()
             .map(|candidate| candidate.candidate_id.clone())
             .collect::<BTreeSet<_>>();
+        budget.checkpoint("hybrid-seed:embed")?;
         let query_vector = self.embed_and_gate_query(
             request.semantic_query_text.as_str(),
             sem_searcher.as_ref(),
             "hybrid seed",
         )?;
+        budget.checkpoint("hybrid-seed:semantic")?;
         let mut sem_results = sem_searcher.search_scoped_constrained(
             &query_vector,
             &lexical_ids,
@@ -942,6 +985,7 @@ impl SearchPlaneDispatcher {
         if prepared_language.force_empty {
             semantic_lanes.push(Vec::new());
         } else if dense_corpora.is_empty() {
+            budget.checkpoint("hybrid-seed:dense")?;
             let mut hits = sem_searcher.search_hits_constrained(
                 &query_vector,
                 &prepared_language.constraints,
@@ -950,23 +994,27 @@ impl SearchPlaneDispatcher {
             stabilize_semantic_seed_hits_v1(&mut hits);
             semantic_lanes.push(hits);
         } else {
-            for budget in dense_corpora {
+            for corpus_budget in dense_corpora {
+                // One dense lane per requested corpus; each is its own
+                // native call, so each gets its own checkpoint.
+                budget.checkpoint("hybrid-seed:dense")?;
                 let mut hits = sem_searcher.search_hits_for_corpus_constrained(
                     &query_vector,
-                    budget.corpus_kind,
+                    corpus_budget.corpus_kind,
                     &prepared_language.constraints,
-                    budget.top_k,
+                    corpus_budget.top_k,
                 )?;
                 stabilize_semantic_seed_hits_v1(&mut hits);
                 if hits.is_empty() {
                     unavailable_corpus_reasons.push(format!(
                         "requested_semantic_corpus_unavailable:{}",
-                        budget.corpus_kind.as_code_str()
+                        corpus_budget.corpus_kind.as_code_str()
                     ));
                 }
                 semantic_lanes.push(hits);
             }
         }
+        budget.checkpoint("hybrid-seed:fuse")?;
         let semantic_hits = semantic_lanes.iter().flatten().collect::<Vec<_>>();
         let lexical_entity_count = lex_results
             .iter()
@@ -1024,7 +1072,9 @@ impl SearchPlaneDispatcher {
     fn runtime_metadata(
         &self,
         request: &RuntimeMetadataQueryRequest,
+        budget: &RequestBudgetV1,
     ) -> Result<SearchPlaneRuntimeMetadataQueryResponse, CoreError> {
+        budget.checkpoint("runtime-metadata:entry")?;
         let _accepted_top_k = validate_query_top_k(request.text_query.top_k)?;
         let lowered = lower_lexical_text_query(&request.text_query)?;
         validate_runtime_metadata_query(&lowered)?;
@@ -1062,6 +1112,7 @@ impl SearchPlaneDispatcher {
                     pin.manifest_generation.get()
                 ))
             })?;
+        budget.checkpoint("runtime-metadata:execute")?;
         let mut results = execute_runtime_metadata_query(
             &pin,
             &lowered,
@@ -1080,7 +1131,9 @@ impl SearchPlaneDispatcher {
     fn history(
         &self,
         request: &HistoryQueryRequest,
+        budget: &RequestBudgetV1,
     ) -> Result<SearchPlaneHistoryQueryResponse, CoreError> {
+        budget.checkpoint("history:entry")?;
         let _accepted_top_k = validate_query_top_k(request.text_query.top_k)?;
         let lowered = lower_lexical_text_query(&request.text_query)?;
         validate_history_query(&lowered)?;
@@ -1099,6 +1152,7 @@ impl SearchPlaneDispatcher {
             .read()
             .map_err(|_poisoned| CoreError::Storage("search-plane ledger poisoned".to_string()))?;
         let history_state = resolve_history_state(&guard, &pin, &lowered)?;
+        budget.checkpoint("history:execute")?;
         let (commits, diffs) =
             execute_history_query(&pin, &lowered, history_state, request.text_query.top_k)?;
         drop(guard);
@@ -1112,11 +1166,14 @@ impl SearchPlaneDispatcher {
     fn structural(
         &self,
         request: &StructuralQueryRequest,
+        budget: &RequestBudgetV1,
     ) -> Result<SearchPlaneStructuralQueryResponse, CoreError> {
+        budget.checkpoint("structural:entry")?;
         let _accepted_top_k = validate_query_top_k(request.text_query.top_k)?;
         let (pin, lowered) =
             lower_structural_query_request(self.activation_catalog.as_ref(), request)?;
-        let results = self.execute_structural_results(&pin, &lowered, request.text_query.top_k)?;
+        let results =
+            self.execute_structural_results(&pin, &lowered, request.text_query.top_k, budget)?;
         Ok(SearchPlaneStructuralQueryResponse {
             generation: pin,
             results,
@@ -1126,7 +1183,9 @@ impl SearchPlaneDispatcher {
     fn explain(
         &self,
         request: SearchPlaneExplainQueryRequest,
+        budget: &RequestBudgetV1,
     ) -> Result<SearchPlaneExplainQueryResponse, CoreError> {
+        budget.checkpoint("explain:entry")?;
         let pin = request.generation;
         if request.candidate.manifest_generation != pin.manifest_generation {
             return Err(CoreError::InvalidContract(format!(
@@ -1152,6 +1211,7 @@ impl SearchPlaneDispatcher {
             request.candidate.snippet.clone()
         };
         let probe = build_probe_query(&probe_text);
+        budget.checkpoint("explain:probe")?;
         let results = searcher.search(&probe, default_top_k())?;
         let present = results
             .iter()
@@ -1196,7 +1256,12 @@ impl SearchPlaneDispatcher {
         })
     }
 
-    fn repo_map(&self, request: RepoMapQueryRequest) -> Result<RepoMapQueryResponse, CoreError> {
+    fn repo_map(
+        &self,
+        request: RepoMapQueryRequest,
+        budget: &RequestBudgetV1,
+    ) -> Result<RepoMapQueryResponse, CoreError> {
+        budget.checkpoint("repo-map:entry")?;
         RepoMapPolicy::validate_query(&request)?;
         self.repo_map_query.query(request)
     }
@@ -1206,6 +1271,7 @@ impl SearchPlaneDispatcher {
         pin: &GenerationPin,
         lowered: &LqQuery,
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<quanta_index_contract::StructuralCandidate>, CoreError> {
         if !structural_expr_has_structural_leaf(&lowered.expr) {
             return Err(structural_invalid_request(
@@ -1246,10 +1312,12 @@ impl SearchPlaneDispatcher {
                 dispatcher: self,
                 pin,
                 query: lowered,
+                budget,
             })
         } else {
             None
         };
+        budget.checkpoint("structural:execute")?;
         let candidates = evaluate_structural_expr(
             &mut ctx,
             &service,
@@ -1266,27 +1334,38 @@ impl SearchPlaneDispatcher {
         Ok(results)
     }
 
+    /// Serve one query under its request budget (QI-BB-002).
+    ///
+    /// The budget's deadline and cancellation are observed at every lane
+    /// boundary a route owns; a request that runs past either is answered
+    /// with a typed `REQUEST_DEADLINE_EXCEEDED` / `REQUEST_CANCELLED` naming
+    /// the checkpoint that saw it. The native call between two checkpoints
+    /// always runs to completion (G0-R).
     #[must_use]
-    pub fn dispatch(&self, request: SearchPlaneQueryIpcRequest) -> SearchPlaneQueryIpcResponse {
+    pub fn dispatch(
+        &self,
+        request: SearchPlaneQueryIpcRequest,
+        budget: &RequestBudgetV1,
+    ) -> SearchPlaneQueryIpcResponse {
         // One arm per variant; each delegates to a private handler that
         // returns the already-wrapped `SearchPlaneQueryIpcResponse`. Adding a
         // new variant means: add one handler fn + add one match arm — no
         // edits to encode/decode/match/factory all at once.
         match request {
-            SearchPlaneQueryIpcRequest::Text(req) => self.dispatch_text(req),
-            SearchPlaneQueryIpcRequest::Symbol(req) => self.dispatch_symbol(req),
-            SearchPlaneQueryIpcRequest::Semantic(req) => self.dispatch_semantic(req),
-            SearchPlaneQueryIpcRequest::Hybrid(req) => self.dispatch_hybrid(req),
-            SearchPlaneQueryIpcRequest::HybridSeed(req) => self.dispatch_hybrid_seed(&req),
-            SearchPlaneQueryIpcRequest::History(req) => self.dispatch_history(&req),
-            SearchPlaneQueryIpcRequest::Structural(req) => self.dispatch_structural(&req),
-            SearchPlaneQueryIpcRequest::RepoMapQuery(req) => self.dispatch_repo_map(req),
-            SearchPlaneQueryIpcRequest::Explain(req) => self.dispatch_explain(req),
+            SearchPlaneQueryIpcRequest::Text(req) => self.dispatch_text(req, budget),
+            SearchPlaneQueryIpcRequest::Symbol(req) => self.dispatch_symbol(req, budget),
+            SearchPlaneQueryIpcRequest::Semantic(req) => self.dispatch_semantic(req, budget),
+            SearchPlaneQueryIpcRequest::Hybrid(req) => self.dispatch_hybrid(req, budget),
+            SearchPlaneQueryIpcRequest::HybridSeed(req) => self.dispatch_hybrid_seed(&req, budget),
+            SearchPlaneQueryIpcRequest::History(req) => self.dispatch_history(&req, budget),
+            SearchPlaneQueryIpcRequest::Structural(req) => self.dispatch_structural(&req, budget),
+            SearchPlaneQueryIpcRequest::RepoMapQuery(req) => self.dispatch_repo_map(req, budget),
+            SearchPlaneQueryIpcRequest::Explain(req) => self.dispatch_explain(req, budget),
             SearchPlaneQueryIpcRequest::RuntimeMetadata(req) => {
-                self.dispatch_runtime_metadata(&req)
+                self.dispatch_runtime_metadata(&req, budget)
             }
             SearchPlaneQueryIpcRequest::ClusterMembershipRead(req) => {
-                self.dispatch_cluster_membership_batch_read(&req)
+                self.dispatch_cluster_membership_batch_read(&req, budget)
             }
         }
     }
@@ -1294,8 +1373,9 @@ impl SearchPlaneDispatcher {
     fn dispatch_cluster_membership_batch_read(
         &self,
         request: &ClusterMembershipBatchReadRequestV1,
+        budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
-        match self.cluster_membership_batch_read(request) {
+        match self.cluster_membership_batch_read(request, budget) {
             Ok(outcome) => SearchPlaneQueryIpcResponse::ClusterMembershipRead(outcome),
             Err(error) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(error)),
         }
@@ -1304,7 +1384,9 @@ impl SearchPlaneDispatcher {
     pub fn cluster_membership_batch_read(
         &self,
         request: &ClusterMembershipBatchReadRequestV1,
+        budget: &RequestBudgetV1,
     ) -> Result<ClusterMembershipBatchReadResponseV1, CoreError> {
+        budget.checkpoint("cluster-membership:entry")?;
         request
             .validate_v1()
             .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
@@ -1327,6 +1409,7 @@ impl SearchPlaneDispatcher {
             &request.generation.revision_id,
             request.generation.manifest_generation,
         )?;
+        budget.checkpoint("cluster-membership:read")?;
         let outcome = searcher.cluster_membership_batch_read(request)?;
         outcome.validate_against_v1(request).map_err(|failure| {
             CoreError::InvalidContract(format!(
@@ -1336,10 +1419,14 @@ impl SearchPlaneDispatcher {
         Ok(outcome)
     }
 
-    fn dispatch_text(&self, request: TextQueryRequest) -> SearchPlaneQueryIpcResponse {
+    fn dispatch_text(
+        &self,
+        request: TextQueryRequest,
+        budget: &RequestBudgetV1,
+    ) -> SearchPlaneQueryIpcResponse {
         let requested_pin = request.generation.clone();
         self.emit_intake_metric(requested_pin.as_ref());
-        match self.lexical_query(request) {
+        match self.lexical_query(request, budget) {
             Ok(response) => {
                 self.emit_planner_metric(&response.generation);
                 self.emit_engine_fanout_metric(&response.generation, 1);
@@ -1352,10 +1439,14 @@ impl SearchPlaneDispatcher {
         }
     }
 
-    fn dispatch_symbol(&self, request: SymbolQueryRequest) -> SearchPlaneQueryIpcResponse {
+    fn dispatch_symbol(
+        &self,
+        request: SymbolQueryRequest,
+        budget: &RequestBudgetV1,
+    ) -> SearchPlaneQueryIpcResponse {
         let requested_pin = request.generation.clone();
         self.emit_intake_metric(requested_pin.as_ref());
-        match self.symbol(request) {
+        match self.symbol(request, budget) {
             Ok(response) => {
                 self.emit_planner_metric(&response.generation);
                 self.emit_engine_fanout_metric(&response.generation, 1);
@@ -1368,10 +1459,14 @@ impl SearchPlaneDispatcher {
         }
     }
 
-    fn dispatch_semantic(&self, request: SemanticQueryRequest) -> SearchPlaneQueryIpcResponse {
+    fn dispatch_semantic(
+        &self,
+        request: SemanticQueryRequest,
+        budget: &RequestBudgetV1,
+    ) -> SearchPlaneQueryIpcResponse {
         let requested_pin = request.generation.clone();
         self.emit_intake_metric(requested_pin.as_ref());
-        match self.semantic_query(request) {
+        match self.semantic_query(request, budget) {
             Ok(response) => {
                 self.emit_planner_metric(&response.generation);
                 self.emit_engine_fanout_metric(
@@ -1391,10 +1486,14 @@ impl SearchPlaneDispatcher {
         }
     }
 
-    fn dispatch_hybrid(&self, request: HybridQueryRequest) -> SearchPlaneQueryIpcResponse {
+    fn dispatch_hybrid(
+        &self,
+        request: HybridQueryRequest,
+        budget: &RequestBudgetV1,
+    ) -> SearchPlaneQueryIpcResponse {
         let requested_pin = request.text_query.generation.clone();
         self.emit_intake_metric(requested_pin.as_ref());
-        match self.hybrid_query(request) {
+        match self.hybrid_query(request, budget) {
             Ok(response) => {
                 self.emit_planner_metric(&response.generation);
                 self.emit_engine_fanout_metric(
@@ -1418,10 +1517,11 @@ impl SearchPlaneDispatcher {
     fn dispatch_hybrid_seed(
         &self,
         request: &HybridSeedQueryRequest,
+        budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
         let requested_pin = request.text_query.generation.as_ref();
         self.emit_intake_metric(requested_pin);
-        match self.hybrid_seed(request) {
+        match self.hybrid_seed(request, budget) {
             Ok(response) => {
                 self.emit_planner_metric(&response.generation);
                 self.emit_engine_fanout_metric(
@@ -1442,10 +1542,14 @@ impl SearchPlaneDispatcher {
         }
     }
 
-    fn dispatch_history(&self, request: &HistoryQueryRequest) -> SearchPlaneQueryIpcResponse {
+    fn dispatch_history(
+        &self,
+        request: &HistoryQueryRequest,
+        budget: &RequestBudgetV1,
+    ) -> SearchPlaneQueryIpcResponse {
         let requested_pin = request.text_query.generation.as_ref();
         self.emit_intake_metric(requested_pin);
-        match self.history(request) {
+        match self.history(request, budget) {
             Ok(response) => {
                 self.emit_planner_metric(&response.generation);
                 self.emit_engine_fanout_metric(&response.generation, 1);
@@ -1462,10 +1566,14 @@ impl SearchPlaneDispatcher {
         }
     }
 
-    fn dispatch_structural(&self, request: &StructuralQueryRequest) -> SearchPlaneQueryIpcResponse {
+    fn dispatch_structural(
+        &self,
+        request: &StructuralQueryRequest,
+        budget: &RequestBudgetV1,
+    ) -> SearchPlaneQueryIpcResponse {
         let requested_pin = request.text_query.generation.as_ref();
         self.emit_intake_metric(requested_pin);
-        match self.structural(request) {
+        match self.structural(request, budget) {
             Ok(response) => {
                 self.emit_planner_metric(&response.generation);
                 self.emit_engine_fanout_metric(&response.generation, 1);
@@ -1479,14 +1587,18 @@ impl SearchPlaneDispatcher {
         }
     }
 
-    fn dispatch_repo_map(&self, request: RepoMapQueryRequest) -> SearchPlaneQueryIpcResponse {
+    fn dispatch_repo_map(
+        &self,
+        request: RepoMapQueryRequest,
+        budget: &RequestBudgetV1,
+    ) -> SearchPlaneQueryIpcResponse {
         let requested_pin = GenerationPin::new(
             request.repo_id.clone(),
             request.revision_id.clone(),
             request.manifest_generation,
         );
         self.emit_intake_metric(Some(&requested_pin));
-        match self.repo_map(request) {
+        match self.repo_map(request, budget) {
             Ok(response) => {
                 let response_pin = GenerationPin::new(
                     response.repo_id.clone(),
@@ -1508,10 +1620,11 @@ impl SearchPlaneDispatcher {
     fn dispatch_explain(
         &self,
         request: SearchPlaneExplainQueryRequest,
+        budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
         let requested_pin = request.generation.clone();
         self.emit_intake_metric(Some(&requested_pin));
-        match self.explain_query(request) {
+        match self.explain_query(request, budget) {
             Ok(response) => {
                 self.emit_planner_metric(&response.generation);
                 self.emit_engine_fanout_metric(
@@ -1537,10 +1650,11 @@ impl SearchPlaneDispatcher {
     fn dispatch_runtime_metadata(
         &self,
         request: &RuntimeMetadataQueryRequest,
+        budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
         let requested_pin = request.text_query.generation.as_ref();
         self.emit_intake_metric(requested_pin);
-        match self.runtime_metadata(request) {
+        match self.runtime_metadata(request, budget) {
             Ok(response) => {
                 self.emit_planner_metric(&response.generation);
                 self.emit_engine_fanout_metric(&response.generation, 1);
@@ -1697,8 +1811,12 @@ impl SearchPlaneDispatcher {
 }
 
 impl LexicalQueryPort for SearchPlaneDispatcher {
-    fn lexical_query(&self, request: TextQueryRequest) -> Result<TextQueryResponse, CoreError> {
-        self.lexical(&request)
+    fn lexical_query(
+        &self,
+        request: TextQueryRequest,
+        budget: &RequestBudgetV1,
+    ) -> Result<TextQueryResponse, CoreError> {
+        self.lexical(&request, budget)
     }
 }
 
@@ -1706,14 +1824,19 @@ impl SemanticQueryPort for SearchPlaneDispatcher {
     fn semantic_query(
         &self,
         request: SemanticQueryRequest,
+        budget: &RequestBudgetV1,
     ) -> Result<SemanticQueryResponse, CoreError> {
-        self.semantic(&request)
+        self.semantic(&request, budget)
     }
 }
 
 impl HybridQueryPort for SearchPlaneDispatcher {
-    fn hybrid_query(&self, request: HybridQueryRequest) -> Result<HybridQueryResponse, CoreError> {
-        self.hybrid(&request)
+    fn hybrid_query(
+        &self,
+        request: HybridQueryRequest,
+        budget: &RequestBudgetV1,
+    ) -> Result<HybridQueryResponse, CoreError> {
+        self.hybrid(&request, budget)
     }
 }
 
@@ -1721,8 +1844,9 @@ impl ExplainQueryPort for SearchPlaneDispatcher {
     fn explain_query(
         &self,
         request: SearchPlaneExplainQueryRequest,
+        budget: &RequestBudgetV1,
     ) -> Result<SearchPlaneExplainQueryResponse, CoreError> {
-        self.explain(request)
+        self.explain(request, budget)
     }
 }
 
@@ -2472,6 +2596,7 @@ struct LexicalSubexprEvaluator<'a> {
     dispatcher: &'a SearchPlaneDispatcher,
     pin: &'a GenerationPin,
     query: &'a LqQuery,
+    budget: &'a RequestBudgetV1,
 }
 
 impl LexicalSubexprEvaluator<'_> {
@@ -2501,6 +2626,9 @@ impl LexicalSubexprEvaluator<'_> {
             &self.pin.revision_id,
             self.pin.manifest_generation,
         )?;
+        // Every lexical leaf of a structural expression is its own native
+        // search; a boolean tree can hold many, so each one is a checkpoint.
+        self.budget.checkpoint("structural:lexical-leaf")?;
         if symbol_name_predicate_leaf(expr) {
             let results = searcher.search_symbols_all(&subquery)?;
             let structural_state = self.dispatcher.snapshot_structural_state(self.pin)?;
@@ -4868,7 +4996,10 @@ mod tests {
         HybridSeedQueryRequest, INTERNAL_FETCH_CEILING, PUBLIC_TOP_K_MAX, QueryConstraintSetV1,
         SymbolQueryRequest, TOP_K_OUT_OF_RANGE_CODE,
     };
-    use quanta_index_core::SemanticSearchHitV1;
+    use quanta_index_core::{
+        REQUEST_CANCELLED_CODE, REQUEST_DEADLINE_EXCEEDED_CODE, RequestBudgetV1,
+        SemanticSearchHitV1,
+    };
 
     #[test]
     fn typed_and_dsl_language_constraints_intersect_before_every_retrieval_lane_v1() {
@@ -5929,7 +6060,7 @@ mod tests {
             items: Vec::new(),
         };
 
-        match dispatcher.cluster_membership_batch_read(&request) {
+        match dispatcher.cluster_membership_batch_read(&request, &RequestBudgetV1::unbounded()) {
             Err(CoreError::InvalidContract(message)) if message.contains("must not be empty") => {}
             other => {
                 return Err(format!("expected invalid-contract rejection, got {other:?}").into());
@@ -5969,7 +6100,8 @@ mod tests {
             test_activation_catalog()?,
         );
 
-        let observed = dispatcher.cluster_membership_batch_read(&request)?;
+        let observed =
+            dispatcher.cluster_membership_batch_read(&request, &RequestBudgetV1::unbounded())?;
         if observed != expected {
             return Err(format!("membership authority drifted: {observed:?}").into());
         }
@@ -6038,7 +6170,8 @@ mod tests {
                 test_activation_catalog()?,
             );
 
-            match dispatcher.cluster_membership_batch_read(&request) {
+            match dispatcher.cluster_membership_batch_read(&request, &RequestBudgetV1::unbounded())
+            {
                 Err(CoreError::InvalidContract(message))
                     if message.contains("invalid authority") => {}
                 other => {
@@ -6275,9 +6408,10 @@ mod tests {
             test_activation_catalog()?,
         );
 
-        let response = into_repo_map_query_response(
-            dispatcher.dispatch(SearchPlaneQueryIpcRequest::RepoMapQuery(repo_map_request())),
-        )?;
+        let response = into_repo_map_query_response(dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::RepoMapQuery(repo_map_request()),
+            &RequestBudgetV1::unbounded(),
+        ))?;
 
         if response.repo_id.as_str() != "repo-map-ipc" {
             return Err(format!("unexpected repo id: {}", response.repo_id.as_str()).into());
@@ -6325,18 +6459,21 @@ mod tests {
             test_activation_catalog()?,
         );
 
-        match dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
-            syntax: TextQuerySyntax::Native,
-            query_text: "needle".to_string(),
-            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
-            generation: Some(make_pin(
-                RepoId::new("repo-map-ipc"),
-                RevisionId::new("rev-map-ipc"),
-                ManifestGeneration::new(9),
-            )),
-            generation_selector: None,
-            top_k: 50,
-        })) {
+        match dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "needle".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(make_pin(
+                    RepoId::new("repo-map-ipc"),
+                    RevisionId::new("rev-map-ipc"),
+                    ManifestGeneration::new(9),
+                )),
+                generation_selector: None,
+                top_k: 50,
+            }),
+            &RequestBudgetV1::unbounded(),
+        ) {
             SearchPlaneQueryIpcResponse::Error(err) => {
                 if err.code != "NOT_READY" {
                     return Err(format!("unexpected error code: {}", err.code).into());
@@ -6381,14 +6518,17 @@ mod tests {
             RevisionId::new("rev-map-ipc"),
             ManifestGeneration::new(9),
         );
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
-            syntax: TextQuerySyntax::Sourcegraph,
-            query_text: "repo:repo-map-ipc alpha".into(),
-            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
-            generation: Some(pin.clone()),
-            generation_selector: None,
-            top_k: 2,
-        }));
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
+                query_text: "repo:repo-map-ipc alpha".into(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(pin.clone()),
+                generation_selector: None,
+                top_k: 2,
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         match response {
             SearchPlaneQueryIpcResponse::Text(text) => {
@@ -6448,14 +6588,17 @@ mod tests {
             quanta_index_contract::ExactRepoRelativePathV1::new("src/a*)' \"literal file.rs")
                 .map_err(str::to_string)?;
         let constraints = QueryConstraintSetV1::from_exact_repo_relative_path(path);
-        let response = dispatcher.symbol(SymbolQueryRequest {
-            syntax: TextQuerySyntax::Native,
-            query_text: String::new(),
-            constraints: constraints.clone(),
-            generation: Some(ready_pin()),
-            generation_selector: None,
-            top_k: 3,
-        })?;
+        let response = dispatcher.symbol(
+            SymbolQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: String::new(),
+                constraints: constraints.clone(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 3,
+            },
+            &RequestBudgetV1::unbounded(),
+        )?;
         if response.results.len() != 1 {
             return Err(format!(
                 "constraint-only symbol request did not reach the searcher: {:?}",
@@ -6475,14 +6618,17 @@ mod tests {
         }
         drop(guard);
 
-        match dispatcher.symbol(SymbolQueryRequest {
-            syntax: TextQuerySyntax::Native,
-            query_text: String::new(),
-            constraints: QueryConstraintSetV1::unconstrained(),
-            generation: Some(ready_pin()),
-            generation_selector: None,
-            top_k: 3,
-        }) {
+        match dispatcher.symbol(
+            SymbolQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: String::new(),
+                constraints: QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 3,
+            },
+            &RequestBudgetV1::unbounded(),
+        ) {
             Err(CoreError::InvalidContract(message))
                 if message.contains("empty query is rejected") => {}
             other => {
@@ -6526,14 +6672,17 @@ mod tests {
             test_activation_catalog()?,
         );
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
-            syntax: TextQuerySyntax::Native,
-            query_text: "alpha".into(),
-            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
-            generation: Some(ready_pin()),
-            generation_selector: None,
-            top_k: 10,
-        }));
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "alpha".into(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 10,
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         match response {
             SearchPlaneQueryIpcResponse::Text(text) => {
@@ -6583,14 +6732,17 @@ mod tests {
             test_activation_catalog()?,
         );
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
-            syntax: TextQuerySyntax::Sourcegraph,
-            query_text: r#"patterntype:structural "function_item""#.into(),
-            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
-            generation: Some(ready_pin()),
-            generation_selector: None,
-            top_k: 2,
-        }));
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
+                query_text: r#"patterntype:structural "function_item""#.into(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 2,
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         let (code, message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
@@ -6629,8 +6781,8 @@ mod tests {
             test_activation_catalog()?,
         );
 
-        let response =
-            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
                 query_text: "focus alpha".to_string(),
                 constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(GenerationPin::new(
@@ -6641,7 +6793,9 @@ mod tests {
                 generation_selector: None,
                 lexical_scope: None,
                 top_k: 3,
-            }));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         match response {
             SearchPlaneQueryIpcResponse::Semantic(semantic) => {
@@ -6766,7 +6920,7 @@ mod tests {
             Arc::new(super::NoopQueryObsSink),
         );
 
-        match dispatcher.semantic(&semantic_focus_request()) {
+        match dispatcher.semantic(&semantic_focus_request(), &RequestBudgetV1::unbounded()) {
             Err(quanta_index_core::CoreError::Typed { code, .. }) => {
                 let expected =
                     quanta_index_contract::lex::LexicalErrorCode::SemModelMismatch.as_code_str();
@@ -6816,7 +6970,7 @@ mod tests {
             Arc::new(super::NoopQueryObsSink),
         );
 
-        match dispatcher.semantic(&semantic_focus_request()) {
+        match dispatcher.semantic(&semantic_focus_request(), &RequestBudgetV1::unbounded()) {
             Err(quanta_index_core::CoreError::Typed { code, .. }) => {
                 let provider = quanta_index_contract::lex::LexicalErrorCode::SemProviderUnavailable
                     .as_code_str();
@@ -6861,8 +7015,8 @@ mod tests {
             RevisionId::new("rev-map-ipc"),
             ManifestGeneration::new(9),
         );
-        let response =
-            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Sourcegraph,
                     query_text: "scope".to_string(),
@@ -6875,7 +7029,9 @@ mod tests {
                 generation: Some(pin),
                 generation_selector: None,
                 top_k: 2,
-            }));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         match response {
             SearchPlaneQueryIpcResponse::Hybrid(hybrid) => {
@@ -6965,8 +7121,8 @@ mod tests {
             RevisionId::new("rev-map-ipc"),
             ManifestGeneration::new(9),
         );
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::HybridSeed(
-            HybridSeedQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::HybridSeed(HybridSeedQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Sourcegraph,
                     query_text: "scope".to_string(),
@@ -6993,8 +7149,9 @@ mod tests {
                     },
                 ],
                 top_k: 3,
-            },
-        ));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         match response {
             SearchPlaneQueryIpcResponse::HybridSeed(hybrid_seed) => {
@@ -7308,8 +7465,8 @@ mod tests {
             activation_catalog,
         );
 
-        let response =
-            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
                 query_text: "focus alpha".to_string(),
                 constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: None,
@@ -7319,7 +7476,9 @@ mod tests {
                 }),
                 lexical_scope: None,
                 top_k: 3,
-            }));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         let (code, message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
@@ -7355,8 +7514,8 @@ mod tests {
             test_activation_catalog()?,
         );
 
-        let response =
-            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
                 query_text: "focus alpha".to_string(),
                 constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(GenerationPin::new(
@@ -7367,7 +7526,9 @@ mod tests {
                 generation_selector: None,
                 lexical_scope: None,
                 top_k: 3,
-            }));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         let (code, _message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
@@ -7411,8 +7572,8 @@ mod tests {
             test_activation_catalog()?,
         );
 
-        let response =
-            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "scope".to_string(),
@@ -7425,7 +7586,9 @@ mod tests {
                 generation: Some(ready_pin()),
                 generation_selector: None,
                 top_k: 2,
-            }));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         let (code, _message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
@@ -8002,8 +8165,8 @@ mod tests {
             obs_sink.clone(),
         )?;
 
-        let response =
-            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "scope".to_string(),
@@ -8016,7 +8179,9 @@ mod tests {
                 generation: Some(ready_pin()),
                 generation_selector: None,
                 top_k: 1,
-            }));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
         match response {
             SearchPlaneQueryIpcResponse::Hybrid(_) | SearchPlaneQueryIpcResponse::HybridSeed(_) => {
             }
@@ -8126,14 +8291,17 @@ mod tests {
             obs_sink.clone(),
         )?;
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
-            syntax: TextQuerySyntax::Native,
-            query_text: "/(?<=needle_)x/".to_string(),
-            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
-            generation: Some(ready_pin()),
-            generation_selector: None,
-            top_k: 10,
-        }));
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "/(?<=needle_)x/".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 10,
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
         let (code, _message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
         if code != "PARSE_FAIL" {
@@ -8158,6 +8326,107 @@ mod tests {
         Ok(())
     }
 
+    /// Every route observes its budget before it opens anything.
+    ///
+    /// An already-interrupted request is answered with the typed code naming
+    /// the entry checkpoint, no opener is consulted (the reject openers would
+    /// turn a consulted open into `NOT_IMPLEMENTED`), and the interruption
+    /// lands in its own error counter rather than `other`.
+    #[test]
+    fn every_route_refuses_an_interrupted_budget_at_entry_without_opening() -> TestResult {
+        let obs_sink = Arc::new(BoundedQueryObsStore::default());
+        let dispatcher = dispatcher_with_obs(
+            Arc::new(RejectLexicalOpener),
+            Arc::new(RejectSemanticOpener),
+            obs_sink.clone(),
+        )?;
+        let text = || TextQueryRequest {
+            syntax: TextQuerySyntax::Native,
+            query_text: "needle".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+            generation: Some(ready_pin()),
+            generation_selector: None,
+            top_k: 10,
+        };
+        let routes: Vec<(&str, SearchPlaneQueryIpcRequest)> = vec![
+            ("lexical:entry", SearchPlaneQueryIpcRequest::Text(text())),
+            (
+                "symbol:entry",
+                SearchPlaneQueryIpcRequest::Symbol(SymbolQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "needle".to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                    generation: Some(ready_pin()),
+                    generation_selector: None,
+                    top_k: 10,
+                }),
+            ),
+            (
+                "semantic:entry",
+                SearchPlaneQueryIpcRequest::Semantic(semantic_focus_request()),
+            ),
+            (
+                "hybrid:entry",
+                SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+                    text_query: text(),
+                    semantic_query_text: "needle".to_string(),
+                    generation: Some(ready_pin()),
+                    generation_selector: None,
+                    top_k: 10,
+                }),
+            ),
+            ("history:entry", history_query_request("type:commit needle")),
+            (
+                "runtime-metadata:entry",
+                runtime_query_request(TextQuerySyntax::Native, "dirty:only needle"),
+            ),
+            (
+                "structural:entry",
+                SearchPlaneQueryIpcRequest::Structural(
+                    quanta_index_contract::StructuralQueryRequest { text_query: text() },
+                ),
+            ),
+            (
+                "repo-map:entry",
+                SearchPlaneQueryIpcRequest::RepoMapQuery(repo_map_request()),
+            ),
+        ];
+        let cancelled = RequestBudgetV1::unbounded();
+        cancelled.cancel_handle().cancel();
+        for (checkpoint, request) in routes {
+            let (code, message) = ipc_error_from(dispatcher.dispatch(request, &cancelled))
+                .map_err(Box::<dyn std::error::Error>::from)?;
+            if code != REQUEST_CANCELLED_CODE {
+                return Err(format!(
+                    "{checkpoint}: expected REQUEST_CANCELLED, got {code}: {message}"
+                )
+                .into());
+            }
+            if !message.contains(&format!("checkpoint `{checkpoint}`")) {
+                return Err(format!(
+                    "{checkpoint}: interruption must name its checkpoint: {message}"
+                )
+                .into());
+            }
+        }
+        let interrupted = obs_sink
+            .snapshot()
+            .into_iter()
+            .filter(|sample| sample.name.as_ref() == "lq_typed_error_interrupted_total")
+            .count();
+        if interrupted != 8 {
+            return Err(format!("expected 8 interrupted-error samples, got {interrupted}").into());
+        }
+        if obs_sink
+            .snapshot()
+            .iter()
+            .any(|sample| sample.name.as_ref() == "lq_typed_error_other_total")
+        {
+            return Err("an interruption must not be counted as `other`".into());
+        }
+        Ok(())
+    }
+
     #[test]
     fn repo_map_dispatch_emits_closed_obs_metrics() -> TestResult {
         let obs_sink = Arc::new(BoundedQueryObsStore::default());
@@ -8173,8 +8442,10 @@ mod tests {
             obs_sink.clone(),
         );
 
-        let response =
-            dispatcher.dispatch(SearchPlaneQueryIpcRequest::RepoMapQuery(repo_map_request()));
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::RepoMapQuery(repo_map_request()),
+            &RequestBudgetV1::unbounded(),
+        );
         match response {
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => {}
             other @ (SearchPlaneQueryIpcResponse::Text(_)
@@ -8237,8 +8508,8 @@ mod tests {
             obs_sink.clone(),
         )?;
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::RuntimeMetadata(
-            RuntimeMetadataQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::RuntimeMetadata(RuntimeMetadataQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "changed:since=1970-01-01T00:00:00.010Z runtime".to_string(),
@@ -8247,8 +8518,9 @@ mod tests {
                     generation_selector: None,
                     top_k: 5,
                 },
-            },
-        ));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
         let (code, _message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
         if code != "NOT_READY" {
@@ -8277,10 +8549,10 @@ mod tests {
     fn runtime_metadata_dispatch_dirty_only_executes_like_dirty_yes() -> TestResult {
         let dispatcher =
             runtime_metadata_dispatcher_with_ledger(ready_runtime_metadata_ledger(100, 20))?;
-        let response = dispatcher.dispatch(runtime_query_request(
-            TextQuerySyntax::Native,
-            "dirty:only todo",
-        ));
+        let response = dispatcher.dispatch(
+            runtime_query_request(TextQuerySyntax::Native, "dirty:only todo"),
+            &RequestBudgetV1::unbounded(),
+        );
         let SearchPlaneQueryIpcResponse::RuntimeMetadata(response) = response else {
             return Err("expected RuntimeMetadata response".into());
         };
@@ -8298,10 +8570,13 @@ mod tests {
     #[test]
     fn runtime_metadata_dispatch_rejects_predicate_leaf_typed_error() -> TestResult {
         let dispatcher = runtime_metadata_dispatcher_with_ledger(ready_ledger())?;
-        let response = dispatcher.dispatch(runtime_query_request(
-            TextQuerySyntax::Native,
-            "changed:since=1970-01-01T00:00:00.010Z file.contains('catalog_changed_needle')",
-        ));
+        let response = dispatcher.dispatch(
+            runtime_query_request(
+                TextQuerySyntax::Native,
+                "changed:since=1970-01-01T00:00:00.010Z file.contains('catalog_changed_needle')",
+            ),
+            &RequestBudgetV1::unbounded(),
+        );
         let (code, message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
         if code != ERR_NOT_IMPLEMENTED {
@@ -8460,7 +8735,10 @@ mod tests {
             obs_sink.clone(),
         );
 
-        let response = dispatcher.dispatch(history_query_request("type:commit fix"));
+        let response = dispatcher.dispatch(
+            history_query_request("type:commit fix"),
+            &RequestBudgetV1::unbounded(),
+        );
         match response {
             SearchPlaneQueryIpcResponse::History(history) => {
                 if history.generation != ready_pin()
@@ -8511,7 +8789,10 @@ mod tests {
             obs_sink.clone(),
         );
 
-        let response = dispatcher.dispatch(history_query_request("type:commit fix"));
+        let response = dispatcher.dispatch(
+            history_query_request("type:commit fix"),
+            &RequestBudgetV1::unbounded(),
+        );
         let (code, _message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
         if code != ERR_HISTORY_PRODUCER_UNAVAILABLE {
@@ -8541,8 +8822,8 @@ mod tests {
             obs_sink.clone(),
         );
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
-            quanta_index_contract::StructuralQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "match { :[x] }".to_string(),
@@ -8551,8 +8832,9 @@ mod tests {
                     generation_selector: None,
                     top_k: 4,
                 },
-            },
-        ));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
         match response {
             SearchPlaneQueryIpcResponse::Structural(results) => {
                 if results.generation != ready_pin() || results.results.len() != 1 {
@@ -8615,6 +8897,20 @@ mod tests {
                     message: "plan".to_string(),
                 },
                 "lq_typed_error_plan_limit_total",
+            ),
+            (
+                CoreError::Typed {
+                    code: REQUEST_DEADLINE_EXCEEDED_CODE.to_string(),
+                    message: "deadline".to_string(),
+                },
+                "lq_typed_error_interrupted_total",
+            ),
+            (
+                CoreError::Typed {
+                    code: REQUEST_CANCELLED_CODE.to_string(),
+                    message: "cancelled".to_string(),
+                },
+                "lq_typed_error_interrupted_total",
             ),
             (
                 CoreError::Typed {
@@ -8709,14 +9005,17 @@ mod tests {
             test_activation_catalog()?,
         );
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
-            syntax: TextQuerySyntax::Native,
-            query_text: "fork:only foo".to_string(),
-            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
-            generation: Some(ready_pin()),
-            generation_selector: None,
-            top_k: 5,
-        }));
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "fork:only foo".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 5,
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         match response {
             SearchPlaneQueryIpcResponse::Text(text) => {
@@ -8760,7 +9059,8 @@ mod tests {
     #[test]
     fn history_dispatch_rejects_missing_type_with_invalid_request() -> TestResult {
         let dispatcher = history_dispatcher_with_ledger(ready_ledger())?;
-        let response = dispatcher.dispatch(history_query_request("fix"));
+        let response =
+            dispatcher.dispatch(history_query_request("fix"), &RequestBudgetV1::unbounded());
         let (code, message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
         if code != ERR_INVALID {
@@ -8775,8 +9075,10 @@ mod tests {
     #[test]
     fn history_dispatch_rejects_commit_file_filter_with_invalid_request() -> TestResult {
         let dispatcher = history_dispatcher_with_ledger(ready_ledger())?;
-        let response =
-            dispatcher.dispatch(history_query_request("type:commit file:src/lib.rs fix"));
+        let response = dispatcher.dispatch(
+            history_query_request("type:commit file:src/lib.rs fix"),
+            &RequestBudgetV1::unbounded(),
+        );
         let (code, message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
         if code != ERR_INVALID {
@@ -8791,8 +9093,10 @@ mod tests {
     #[test]
     fn history_dispatch_rejects_commit_diff_filter_with_invalid_request() -> TestResult {
         let dispatcher = history_dispatcher_with_ledger(ready_ledger())?;
-        let response =
-            dispatcher.dispatch(history_query_request("type:commit diff.added:history fix"));
+        let response = dispatcher.dispatch(
+            history_query_request("type:commit diff.added:history fix"),
+            &RequestBudgetV1::unbounded(),
+        );
         let (code, message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
         if code != ERR_INVALID {
@@ -8807,8 +9111,10 @@ mod tests {
     #[test]
     fn history_dispatch_rejects_predicate_leaf_with_not_implemented() -> TestResult {
         let dispatcher = history_dispatcher_with_ledger(ready_ledger())?;
-        let response =
-            dispatcher.dispatch(history_query_request("type:commit file.contains('fix')"));
+        let response = dispatcher.dispatch(
+            history_query_request("type:commit file.contains('fix')"),
+            &RequestBudgetV1::unbounded(),
+        );
         let (code, message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
         if code != ERR_NOT_IMPLEMENTED {
@@ -8862,14 +9168,17 @@ mod tests {
             test_activation_catalog()?,
         );
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
-            syntax: TextQuerySyntax::Native,
-            query_text: "rev:deadbeef foo".to_string(),
-            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
-            generation: Some(ready_pin()),
-            generation_selector: None,
-            top_k: 5,
-        }));
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "rev:deadbeef foo".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 5,
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         let (code, _message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
@@ -8908,18 +9217,21 @@ mod tests {
             activation_catalog,
         );
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
-            syntax: TextQuerySyntax::Sourcegraph,
-            query_text: "rev:at.time(1970-01-01T00:00:00.150Z) foo".to_string(),
-            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
-            generation: Some(GenerationPin::new(
-                RepoId::new("repo-map-ipc"),
-                RevisionId::new("2222222222222222222222222222222222222222"),
-                ManifestGeneration::new(9),
-            )),
-            generation_selector: None,
-            top_k: 5,
-        }));
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
+                query_text: "rev:at.time(1970-01-01T00:00:00.150Z) foo".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(GenerationPin::new(
+                    RepoId::new("repo-map-ipc"),
+                    RevisionId::new("2222222222222222222222222222222222222222"),
+                    ManifestGeneration::new(9),
+                )),
+                generation_selector: None,
+                top_k: 5,
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         match response {
             SearchPlaneQueryIpcResponse::Text(text) => {
@@ -8992,18 +9304,21 @@ mod tests {
             test_activation_catalog()?,
         );
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
-            syntax: TextQuerySyntax::Sourcegraph,
-            query_text: "rev:at.time(definitely-not-a-timeref) foo".to_string(),
-            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
-            generation: Some(GenerationPin::new(
-                RepoId::new("repo-map-ipc"),
-                RevisionId::new("2222222222222222222222222222222222222222"),
-                ManifestGeneration::new(9),
-            )),
-            generation_selector: None,
-            top_k: 5,
-        }));
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
+                query_text: "rev:at.time(definitely-not-a-timeref) foo".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(GenerationPin::new(
+                    RepoId::new("repo-map-ipc"),
+                    RevisionId::new("2222222222222222222222222222222222222222"),
+                    ManifestGeneration::new(9),
+                )),
+                generation_selector: None,
+                top_k: 5,
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         let (code, _message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
@@ -9031,18 +9346,21 @@ mod tests {
             )?])?,
         );
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
-            syntax: TextQuerySyntax::Sourcegraph,
-            query_text: "rev:at.time(1970-01-01T00:00:00.150Z) foo".to_string(),
-            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
-            generation: Some(GenerationPin::new(
-                RepoId::new("repo-map-ipc"),
-                RevisionId::new("2222222222222222222222222222222222222222"),
-                ManifestGeneration::new(9),
-            )),
-            generation_selector: None,
-            top_k: 5,
-        }));
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
+                query_text: "rev:at.time(1970-01-01T00:00:00.150Z) foo".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(GenerationPin::new(
+                    RepoId::new("repo-map-ipc"),
+                    RevisionId::new("2222222222222222222222222222222222222222"),
+                    ManifestGeneration::new(9),
+                )),
+                generation_selector: None,
+                top_k: 5,
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         let (code, message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
@@ -9078,14 +9396,17 @@ mod tests {
         // and would surface `Unimplemented` from the planner. The happy-path
         // witness here is therefore a single keyword leaf — full multi-token
         // queries land with LXE-03.
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
-            syntax: TextQuerySyntax::Native,
-            query_text: "needle".to_string(),
-            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
-            generation: Some(ready_pin()),
-            generation_selector: None,
-            top_k: 5,
-        }));
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "needle".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 5,
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         match response {
             SearchPlaneQueryIpcResponse::Text(text) => {
@@ -9144,16 +9465,17 @@ mod tests {
             test_activation_catalog()?,
         );
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Symbol(
-            quanta_index_contract::SymbolQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Symbol(quanta_index_contract::SymbolQueryRequest {
                 syntax: TextQuerySyntax::Native,
                 query_text: "type:symbol MySymbol".to_string(),
                 constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(ready_pin()),
                 generation_selector: None,
                 top_k: 3,
-            },
-        ));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         match response {
             SearchPlaneQueryIpcResponse::Symbol(symbols) => {
@@ -9205,7 +9527,10 @@ mod tests {
     fn history_dispatch_maps_generation_not_ready_before_lexical_materialization() -> TestResult {
         let dispatcher = history_dispatcher_with_ledger(Arc::new(RwLock::new(Ledger::default())))?;
 
-        let response = dispatcher.dispatch(history_query_request("type:commit fix"));
+        let response = dispatcher.dispatch(
+            history_query_request("type:commit fix"),
+            &RequestBudgetV1::unbounded(),
+        );
 
         let (code, _message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
@@ -9219,7 +9544,10 @@ mod tests {
     fn history_dispatch_maps_producer_unavailable_after_lexical_ready() -> TestResult {
         let dispatcher = history_dispatcher_with_ledger(ready_ledger())?;
 
-        let response = dispatcher.dispatch(history_query_request("type:commit fix"));
+        let response = dispatcher.dispatch(
+            history_query_request("type:commit fix"),
+            &RequestBudgetV1::unbounded(),
+        );
 
         let (code, _message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
@@ -9241,7 +9569,10 @@ mod tests {
             }),
         ])?)?;
 
-        let response = dispatcher.dispatch(history_query_request("type:diff history"));
+        let response = dispatcher.dispatch(
+            history_query_request("type:diff history"),
+            &RequestBudgetV1::unbounded(),
+        );
 
         let (code, _message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
@@ -9258,8 +9589,8 @@ mod tests {
         ]));
         let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
-            quanta_index_contract::StructuralQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "match { :[x] }".to_string(),
@@ -9268,8 +9599,9 @@ mod tests {
                     generation_selector: None,
                     top_k: 4,
                 },
-            },
-        ));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         match response {
             SearchPlaneQueryIpcResponse::Structural(results) => {
@@ -9333,8 +9665,8 @@ mod tests {
         ));
         let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
-            quanta_index_contract::StructuralQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "match { :[x] }".to_string(),
@@ -9343,8 +9675,9 @@ mod tests {
                     generation_selector: None,
                     top_k: 4,
                 },
-            },
-        ));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         let (code, _message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
@@ -9364,8 +9697,8 @@ mod tests {
         ));
         let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
-            quanta_index_contract::StructuralQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "match { :[x] }".to_string(),
@@ -9374,8 +9707,9 @@ mod tests {
                     generation_selector: None,
                     top_k: 4,
                 },
-            },
-        ));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         let (code, _message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
@@ -9395,8 +9729,8 @@ mod tests {
         ));
         let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
-            quanta_index_contract::StructuralQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "lang:java match { :[x] }".to_string(),
@@ -9405,8 +9739,9 @@ mod tests {
                     generation_selector: None,
                     top_k: 4,
                 },
-            },
-        ));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         let (code, _message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
@@ -9423,8 +9758,8 @@ mod tests {
         ]));
         let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
-            quanta_index_contract::StructuralQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "repo:repo-map-ipc file:src/lib.rs match { :[x] }".to_string(),
@@ -9433,8 +9768,9 @@ mod tests {
                     generation_selector: None,
                     top_k: 4,
                 },
-            },
-        ));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         match response {
             SearchPlaneQueryIpcResponse::Structural(results) => {
@@ -9485,8 +9821,8 @@ mod tests {
         ]));
         let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
-            quanta_index_contract::StructuralQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "select:repo match { :[x] }".to_string(),
@@ -9495,8 +9831,9 @@ mod tests {
                     generation_selector: None,
                     top_k: 4,
                 },
-            },
-        ));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         let (code, message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
@@ -9535,7 +9872,7 @@ mod tests {
                     top_k: 4,
                 },
             },
-        ));
+        ), &RequestBudgetV1::unbounded());
 
         match response {
             SearchPlaneQueryIpcResponse::Structural(results) => {
@@ -9588,8 +9925,8 @@ mod tests {
         ]));
         let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
-            quanta_index_contract::StructuralQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "match { function_item { { :[name.lambda] } } }".to_string(),
@@ -9598,8 +9935,9 @@ mod tests {
                     generation_selector: None,
                     top_k: 4,
                 },
-            },
-        ));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         let (code, message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
@@ -9624,8 +9962,8 @@ mod tests {
         let producer = Arc::new(PatternRoutingStructuralProducer::new());
         let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
-            quanta_index_contract::StructuralQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "match { alpha } AND match { beta }".to_string(),
@@ -9634,8 +9972,9 @@ mod tests {
                     generation_selector: None,
                     top_k: 10,
                 },
-            },
-        ));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         match response {
             SearchPlaneQueryIpcResponse::Structural(results) => {
@@ -9703,8 +10042,8 @@ mod tests {
         let producer = Arc::new(PatternRoutingStructuralProducer::new());
         let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
-            quanta_index_contract::StructuralQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "match { alpha } OR match { beta }".to_string(),
@@ -9713,8 +10052,9 @@ mod tests {
                     generation_selector: None,
                     top_k: 10,
                 },
-            },
-        ));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         match response {
             SearchPlaneQueryIpcResponse::Structural(results) => {
@@ -9755,8 +10095,8 @@ mod tests {
         let producer = Arc::new(PatternRoutingStructuralProducer::new());
         let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
-            quanta_index_contract::StructuralQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "match { alpha } AND NOT match { gamma }".to_string(),
@@ -9765,8 +10105,9 @@ mod tests {
                     generation_selector: None,
                     top_k: 10,
                 },
-            },
-        ));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         match response {
             SearchPlaneQueryIpcResponse::Structural(results) => {
@@ -9817,8 +10158,8 @@ mod tests {
         let producer = Arc::new(PatternRoutingStructuralProducer::new());
         let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
-            quanta_index_contract::StructuralQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "match { alpha } OR match { alpha }".to_string(),
@@ -9827,8 +10168,9 @@ mod tests {
                     generation_selector: None,
                     top_k: 10,
                 },
-            },
-        ));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         match response {
             SearchPlaneQueryIpcResponse::Structural(results) => {
@@ -9888,8 +10230,8 @@ mod tests {
             ready_ledger_with_structural_boolean_chunks(),
         )?;
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
-            quanta_index_contract::StructuralQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "needle AND match { alpha }".to_string(),
@@ -9898,8 +10240,9 @@ mod tests {
                     generation_selector: None,
                     top_k: 10,
                 },
-            },
-        ));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         match response {
             SearchPlaneQueryIpcResponse::Structural(results) => {
@@ -9964,8 +10307,8 @@ mod tests {
             ready_ledger_with_structural_boolean_chunks(),
         )?;
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
-            quanta_index_contract::StructuralQueryRequest {
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "NOT match { alpha }".to_string(),
@@ -9974,8 +10317,9 @@ mod tests {
                     generation_selector: None,
                     top_k: 10,
                 },
-            },
-        ));
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
 
         match response {
             SearchPlaneQueryIpcResponse::Structural(results) => {

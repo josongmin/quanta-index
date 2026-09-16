@@ -36,7 +36,7 @@ use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
     IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort,
     RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
-    RepoMetaIngestPort, RepoTopicIngestPort, SealedGenerationReclaimOutcomeV1,
+    RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1, SealedGenerationReclaimOutcomeV1,
     SealedGenerationReclaimPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
     SemanticBatchBuildPort, SemanticIngestPort, TextEmbeddingProvider,
 };
@@ -1148,8 +1148,24 @@ impl SearchPlaneIngestDispatcher {
         Ok(receipt)
     }
 
+    /// Serve one ingest request (QI-BB-002).
+    ///
+    /// The budget is checked once, at entry: a batch whose producer hung up
+    /// or whose deadline passed while it queued for the serial dispatch slot
+    /// is refused before any track mutates, so the producer's retry starts
+    /// from zero bytes changed. Once admitted, a publish runs to its durable
+    /// end under the dispatcher's ownership — a batch applied halfway and
+    /// then abandoned would leave the generation in a shape no retry can
+    /// reason about.
     #[must_use]
-    pub fn dispatch(&self, request: SearchPlaneIngestIpcRequest) -> SearchPlaneIngestIpcResponse {
+    pub fn dispatch(
+        &self,
+        request: SearchPlaneIngestIpcRequest,
+        budget: &RequestBudgetV1,
+    ) -> SearchPlaneIngestIpcResponse {
+        if let Err(err) = budget.checkpoint("ingest:entry") {
+            return SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err));
+        }
         match request {
             SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => {
                 match self.publish_generation_scoped(

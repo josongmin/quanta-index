@@ -5,6 +5,21 @@ claimed.** W5 starts from a serial, uncancellable transport; the plan's
 "cooperative deadline / flight-owned cancellation" work is confirmed as net-new
 rather than a refinement of something that exists.
 
+> **Superseded in part by W5 phase 1 (2026-09-17, QI-BB-002).** Decisions 1,
+> 3 and 5 are now implemented and the same probe file proves the new contract
+> against the same `UdsServer::run` loop: probe (1) shows an in-flight dispatch
+> no longer blocks another client (`served_while_held=ok`,
+> `completions_while_held=1`); probe (2) shows a disconnected peer cancels its
+> request's `RequestBudgetV1` and a checkpointing dispatcher observes it
+> (`cancelled_observed=1`); probe (3) shows shutdown still drains with
+> per-connection threads. `crates/quanta-index-ipc/tests/admission.rs` adds
+> the typed `SERVER_OVERLOADED` refusal, the connection cap and the dispatch
+> deadline over the contract's own envelopes. The baseline evidence below is
+> kept as the record of what W5 changed. Decision 4 (frame allocation after a
+> bounded read, QI-BB-016) is **not** addressed by phase 1 and remains open.
+> The cooperative limit stands: whatever native call sits between two
+> checkpoints runs to completion.
+
 - Decided: 2026-09-16
 - Gate owner: W0, informs W5 (QI-BB-002, QI-BB-016) and W4 single-flight (QI-BB-001)
 - Probe: [`crates/quanta-index-ipc/tests/g0r_runtime_cancellation_probe.rs`](../../../../crates/quanta-index-ipc/tests/g0r_runtime_cancellation_probe.rs)

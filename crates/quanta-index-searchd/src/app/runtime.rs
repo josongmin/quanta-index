@@ -35,7 +35,7 @@ use quanta_index_core::{
     StructuralMatchBinding, StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider,
 };
 use quanta_index_embed::{CachingEmbeddingProvider, FileEmbeddingCache, OpenAiEmbeddingProvider};
-use quanta_index_ipc::IpcDispatcher;
+use quanta_index_ipc::{IpcDispatcher, ServerAdmissionPolicy};
 use quanta_index_lq_structural::{
     StructuralAuthorityCandidate as LqStructuralAuthorityCandidate, StructuralAuthorityMatcher,
     StructuralAuthorityPatternError, StructuralAuthorityPatternRef, StructuralAuthorityView,
@@ -906,15 +906,19 @@ impl SearchdRuntime {
             "quanta-index-query-uds",
             config.query_socket_path(),
             query_adapter,
+            config.query_admission_policy(),
         )
         .map_err(anyhow::Error::from)?;
         let control_adapter: Arc<
             dyn IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>,
         > = Arc::new(SearchPlaneControlIpcAdapter::new(control_dispatcher));
+        // Control and ingest mutate; their dispatches serialize by policy
+        // while their connections still read independently (QI-BB-002).
         let control_server = SearchPlaneControlServer::bind(
             "quanta-index-control-uds",
             config.control_socket_path(),
             control_adapter,
+            ServerAdmissionPolicy::SERIAL_DISPATCH,
         )
         .map_err(anyhow::Error::from)?;
         let ingest_adapter: Arc<
@@ -924,6 +928,7 @@ impl SearchdRuntime {
             "quanta-index-ingest-uds",
             config.ingest_socket_path(),
             ingest_adapter,
+            ServerAdmissionPolicy::SERIAL_DISPATCH,
         )
         .map_err(anyhow::Error::from)?;
 

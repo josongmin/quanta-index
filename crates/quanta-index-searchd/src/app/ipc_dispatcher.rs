@@ -5,36 +5,48 @@ use quanta_index_contract::{
     SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
 };
-use quanta_index_ipc::IpcDispatcher;
+use quanta_index_ipc::{IpcDispatcher, RequestBudgetV1};
 use quanta_index_search_plane::{
     SearchPlaneControlDispatcher, SearchPlaneDispatcher, SearchPlaneIngestDispatcher,
 };
 
 pub(super) trait PlaneDispatch<Request, Response>: Send + Sync {
-    fn dispatch(&self, request: Request) -> Response;
+    fn dispatch(&self, request: Request, budget: &RequestBudgetV1) -> Response;
 }
 
 impl PlaneDispatch<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse>
     for SearchPlaneDispatcher
 {
-    fn dispatch(&self, request: SearchPlaneQueryIpcRequest) -> SearchPlaneQueryIpcResponse {
-        SearchPlaneDispatcher::dispatch(self, request)
+    fn dispatch(
+        &self,
+        request: SearchPlaneQueryIpcRequest,
+        budget: &RequestBudgetV1,
+    ) -> SearchPlaneQueryIpcResponse {
+        SearchPlaneDispatcher::dispatch(self, request, budget)
     }
 }
 
 impl PlaneDispatch<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
     for SearchPlaneControlDispatcher
 {
-    fn dispatch(&self, request: SearchPlaneControlIpcRequest) -> SearchPlaneControlIpcResponse {
-        SearchPlaneControlDispatcher::dispatch(self, request)
+    fn dispatch(
+        &self,
+        request: SearchPlaneControlIpcRequest,
+        budget: &RequestBudgetV1,
+    ) -> SearchPlaneControlIpcResponse {
+        SearchPlaneControlDispatcher::dispatch(self, request, budget)
     }
 }
 
 impl PlaneDispatch<SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse>
     for SearchPlaneIngestDispatcher
 {
-    fn dispatch(&self, request: SearchPlaneIngestIpcRequest) -> SearchPlaneIngestIpcResponse {
-        SearchPlaneIngestDispatcher::dispatch(self, request)
+    fn dispatch(
+        &self,
+        request: SearchPlaneIngestIpcRequest,
+        budget: &RequestBudgetV1,
+    ) -> SearchPlaneIngestIpcResponse {
+        SearchPlaneIngestDispatcher::dispatch(self, request, budget)
     }
 }
 
@@ -84,7 +96,7 @@ impl<Request, Response, D> IpcDispatcher<Request, Response>
 where
     D: PlaneDispatch<Request, Response>,
 {
-    fn dispatch(&self, request: Request) -> Response {
-        self.inner.dispatch(request)
+    fn dispatch(&self, request: Request, budget: &RequestBudgetV1) -> Response {
+        self.inner.dispatch(request, budget)
     }
 }

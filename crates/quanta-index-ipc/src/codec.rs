@@ -44,6 +44,9 @@ pub enum IpcError {
     InvalidClientIoTimeout,
     /// The owner-supplied absolute request deadline elapsed before dispatch.
     ClientIoDeadlineElapsed,
+    /// A server admission policy named a zero limit or more dispatch slots
+    /// than connections.
+    InvalidAdmissionPolicy,
 }
 
 impl core::fmt::Display for IpcError {
@@ -73,6 +76,9 @@ impl core::fmt::Display for IpcError {
             Self::ClientIoDeadlineElapsed => {
                 f.write_str("client I/O deadline elapsed before request dispatch")
             }
+            Self::InvalidAdmissionPolicy => f.write_str(
+                "server admission policy must have non-zero connections, slots, budget and I/O timeout, with slots <= connections",
+            ),
         }
     }
 }
@@ -88,7 +94,8 @@ impl std::error::Error for IpcError {
             | Self::Decode(_)
             | Self::Timeout { .. }
             | Self::InvalidClientIoTimeout
-            | Self::ClientIoDeadlineElapsed => None,
+            | Self::ClientIoDeadlineElapsed
+            | Self::InvalidAdmissionPolicy => None,
         }
     }
 }

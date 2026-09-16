@@ -166,6 +166,12 @@ owner = "quanta-index-ipc"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "ipc-admission"
+path = "crates/quanta-index-ipc/tests/admission.rs"
+owner = "quanta-index-ipc"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "catalog-probe-g0c-sqlite"
 path = "crates/quanta-index-catalog-probe/tests/g0c_sqlite_catalog_probe.rs"
 owner = "quanta-index-catalog-probe"

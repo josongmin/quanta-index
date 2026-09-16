@@ -1,14 +1,16 @@
 //! `AF_UNIX` stream server + client.
 //!
-//! The server accepts connections sequentially (phase-1 rule: at-most-one
-//! in-flight request per connection), decodes a single envelope per frame,
-//! routes through the [`IpcDispatcher`] supplied by the composition root,
-//! and writes the response back on the same connection.
+//! The accept loop hands every connection to its own thread, bounded by the
+//! server's [`ServerAdmissionPolicy`]; each connection decodes one envelope
+//! per frame, takes a dispatch slot, routes through the [`IpcDispatcher`]
+//! supplied by the composition root under a per-request
+//! [`RequestBudgetV1`], and writes the response back on the same connection.
+//! A peer that hangs up mid-dispatch cancels that request's budget.
 //!
 //! Connection-fatal failures (framing, oversized, CBOR decode) close the
 //! connection without writing a response. Request-domain failures (e.g.
-//! `NOT_READY`, `INVALID_REQUEST`) flow through as an `Error` variant in the
-//! response envelope.
+//! `NOT_READY`, `INVALID_REQUEST`), a full dispatch queue and an oversized
+//! response flow through as an `Error` variant in the response envelope.
 
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::OwnedFd;
@@ -16,8 +18,12 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+
+use quanta_index_core::RequestBudgetV1;
+
+use crate::admission::{DispatchSlots, ServerAdmissionPolicy, SlotRefusal};
 
 use quanta_index_contract::{
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponseEnvelope,
@@ -37,7 +43,9 @@ use rustix::net::socket;
     target_os = "netbsd",
 ))]
 use rustix::net::sockopt::set_socket_nosigpipe;
-use rustix::net::{AddressFamily, SocketAddrUnix, SocketType, connect, sockopt::socket_error};
+use rustix::net::{
+    AddressFamily, RecvFlags, SocketAddrUnix, SocketType, connect, recv, sockopt::socket_error,
+};
 #[cfg(target_os = "linux")]
 use rustix::net::{SocketFlags, socket_with};
 
@@ -52,7 +60,11 @@ use crate::codec::{
 /// payload. Domain errors MUST be surfaced through the response type rather
 /// than panicking.
 pub trait IpcDispatcher<Request, Response>: Send + Sync {
-    fn dispatch(&self, request: Request) -> Response;
+    /// Handle one request under its budget. The budget's deadline is the
+    /// server's dispatch budget from admission; its cancellation fires if the
+    /// peer disconnects while this call runs. Implementations check it at
+    /// their own boundaries and answer with a typed interruption.
+    fn dispatch(&self, request: Request, budget: &RequestBudgetV1) -> Response;
 }
 
 pub trait RequestEnvelope<Request>: serde::de::DeserializeOwned + Send + Sync + 'static {
@@ -67,6 +79,12 @@ pub trait ResponseEnvelope<Response>: serde::Serialize + Send + Sync + 'static {
     /// envelope type has no typed error payload and the connection closes,
     /// which is the only honest option for such a type.
     fn result_too_large(request_id: u64, encoded_bytes: u64, limit_bytes: u64) -> Option<Self>
+    where
+        Self: Sized;
+
+    /// The envelope to send when no dispatch slot came free within the
+    /// server's queue wait (QI-BB-002). `None` closes the connection.
+    fn overloaded(request_id: u64, waited: Duration, slots: usize) -> Option<Self>
     where
         Self: Sized;
 }
@@ -100,6 +118,15 @@ impl ResponseEnvelope<quanta_index_contract::SearchPlaneQueryIpcResponse>
                     encoded_bytes,
                     limit_bytes,
                 ),
+            ),
+        })
+    }
+
+    fn overloaded(request_id: u64, waited: Duration, slots: usize) -> Option<Self> {
+        Some(Self {
+            request_id,
+            payload: quanta_index_contract::SearchPlaneQueryIpcResponse::Error(
+                quanta_index_contract::SearchPlaneIpcError::overloaded(waited, slots),
             ),
         })
     }
@@ -137,6 +164,15 @@ impl ResponseEnvelope<quanta_index_contract::SearchPlaneControlIpcResponse>
             ),
         })
     }
+
+    fn overloaded(request_id: u64, waited: Duration, slots: usize) -> Option<Self> {
+        Some(Self {
+            request_id,
+            payload: quanta_index_contract::SearchPlaneControlIpcResponse::Error(
+                quanta_index_contract::SearchPlaneIpcError::overloaded(waited, slots),
+            ),
+        })
+    }
 }
 
 impl RequestEnvelope<quanta_index_contract::SearchPlaneIngestIpcRequest>
@@ -171,6 +207,15 @@ impl ResponseEnvelope<quanta_index_contract::SearchPlaneIngestIpcResponse>
             ),
         })
     }
+
+    fn overloaded(request_id: u64, waited: Duration, slots: usize) -> Option<Self> {
+        Some(Self {
+            request_id,
+            payload: quanta_index_contract::SearchPlaneIngestIpcResponse::Error(
+                quanta_index_contract::SearchPlaneIpcError::overloaded(waited, slots),
+            ),
+        })
+    }
 }
 
 /// Synchronous `AF_UNIX` stream server.
@@ -179,6 +224,12 @@ pub struct UdsServer {
     socket_path: PathBuf,
     socket_path_identity: SocketPathIdentity,
     shutdown: Arc<AtomicBool>,
+    policy: ServerAdmissionPolicy,
+    /// Connections whose threads are alive; the accept loop refuses past
+    /// the policy's cap instead of queueing without bound.
+    live_connections: Arc<AtomicUsize>,
+    /// Connections the accept loop closed because the cap was reached.
+    refused_connections: Arc<AtomicUsize>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -213,9 +264,14 @@ impl SocketPathIdentity {
 }
 
 impl UdsServer {
+    /// Bind a new listener at `path` under [`ServerAdmissionPolicy::DEFAULT`].
+    pub fn bind(path: &Path) -> Result<Self, IpcError> {
+        Self::bind_with_policy(path, ServerAdmissionPolicy::DEFAULT)
+    }
+
     /// Bind a new listener at `path`. Removes any pre-existing socket file
     /// at that path (only socket files — never a regular file).
-    pub fn bind(path: &Path) -> Result<Self, IpcError> {
+    pub fn bind_with_policy(path: &Path, policy: ServerAdmissionPolicy) -> Result<Self, IpcError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(IpcError::Io)?;
         }
@@ -242,7 +298,21 @@ impl UdsServer {
             socket_path: path.to_path_buf(),
             socket_path_identity,
             shutdown: Arc::new(AtomicBool::new(false)),
+            policy,
+            live_connections: Arc::new(AtomicUsize::new(0)),
+            refused_connections: Arc::new(AtomicUsize::new(0)),
         })
+    }
+
+    #[must_use]
+    pub const fn admission_policy(&self) -> ServerAdmissionPolicy {
+        self.policy
+    }
+
+    /// Connections the accept loop closed because the cap was reached.
+    #[must_use]
+    pub fn refused_connections(&self) -> usize {
+        self.refused_connections.load(Ordering::Acquire)
     }
 
     /// Trigger graceful shutdown. Safe to call from any thread / signal handler.
@@ -259,10 +329,15 @@ impl UdsServer {
         &self.socket_path
     }
 
-    /// Run the accept loop until `shutdown` is triggered. Each connection is
-    /// handled inline (phase-1: single-flight per connection); the listener is
+    /// Run the accept loop until `shutdown` is triggered.
+    ///
+    /// Every accepted connection runs on its own thread, so reading one
+    /// peer's request never waits on another's; dispatch concurrency is
+    /// bounded separately by the policy's slots. The listener is
     /// non-blocking, so an empty accept queue sleeps `accept_idle` before
-    /// retrying.
+    /// retrying. On shutdown the loop stops accepting and joins the
+    /// connection threads, each of which finishes its in-flight request
+    /// (bounded by the dispatch budget and I/O timeouts) before exiting.
     pub fn run<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
         &self,
         dispatcher: &Arc<D>,
@@ -271,25 +346,59 @@ impl UdsServer {
     where
         RequestEnvelopeT: RequestEnvelope<Request>,
         ResponseEnvelopeT: ResponseEnvelope<Response>,
-        D: IpcDispatcher<Request, Response> + ?Sized,
+        D: IpcDispatcher<Request, Response> + ?Sized + 'static,
     {
+        let slots = Arc::new(DispatchSlots::new(self.policy.dispatch_slots()));
+        let mut connection_threads: Vec<std::thread::JoinHandle<ConnectionCloseReason>> =
+            Vec::new();
         while !self.shutdown.load(Ordering::Acquire) {
+            connection_threads.retain(|handle| !handle.is_finished());
             match self.listener.accept() {
                 Ok((stream, _addr)) => {
+                    if self.live_connections.load(Ordering::Acquire)
+                        >= self.policy.max_connections()
+                    {
+                        let _refused = self.refused_connections.fetch_add(1, Ordering::AcqRel);
+                        drop(stream);
+                        continue;
+                    }
+                    let _live = self.live_connections.fetch_add(1, Ordering::AcqRel);
                     let dispatcher = Arc::clone(dispatcher);
-                    let _close_reason = handle_connection::<
-                        RequestEnvelopeT,
-                        Request,
-                        ResponseEnvelopeT,
-                        Response,
-                        D,
-                    >(stream, dispatcher.as_ref());
+                    let slots = Arc::clone(&slots);
+                    let live_connections = Arc::clone(&self.live_connections);
+                    let shutdown = Arc::clone(&self.shutdown);
+                    let policy = self.policy;
+                    let spawned = std::thread::Builder::new()
+                        .name("uds-connection".to_string())
+                        .spawn(move || {
+                            let reason = handle_connection::<
+                                RequestEnvelopeT,
+                                Request,
+                                ResponseEnvelopeT,
+                                Response,
+                                D,
+                            >(
+                                stream, dispatcher.as_ref(), &slots, policy, &shutdown
+                            );
+                            let _live = live_connections.fetch_sub(1, Ordering::AcqRel);
+                            reason
+                        });
+                    match spawned {
+                        Ok(handle) => connection_threads.push(handle),
+                        Err(err) => {
+                            let _live = self.live_connections.fetch_sub(1, Ordering::AcqRel);
+                            return Err(IpcError::Io(err));
+                        }
+                    }
                 }
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {
                     std::thread::sleep(accept_idle);
                 }
                 Err(err) => return Err(IpcError::Io(err)),
             }
+        }
+        for handle in connection_threads {
+            let _reason = handle.join();
         }
         self.remove_owned_socket_path().map_err(IpcError::Io)?;
         Ok(())
@@ -320,13 +429,6 @@ impl ShutdownHandle {
         self.inner.store(true, Ordering::Release);
     }
 }
-
-/// Per-connection read/write timeout.
-///
-/// Prevents slow-loris `DoS` where a peer opens a connection, writes a length
-/// prefix, and never sends a body — the single-flight accept loop would
-/// otherwise stall every other client.
-const CONNECTION_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Default bounded I/O policy for one-shot clients that do not supply a
 /// stricter owner deadline.
@@ -399,6 +501,16 @@ enum ConnectionCloseReason {
     RequestDecodeFailed(IpcError),
     ResponseEncodeFailed(IpcError),
     ResponseWriteFailed(String),
+    /// No dispatch slot within the queue wait and the envelope type has no
+    /// typed refusal to send.
+    Overloaded {
+        waited: Duration,
+    },
+    /// A request arrived after shutdown was triggered.
+    ShuttingDown,
+    /// The peer watch could not be armed, so the request could not be run
+    /// with a live cancellation; it is not run at all.
+    PeerWatchFailed(String),
 }
 
 impl core::fmt::Display for ConnectionCloseReason {
@@ -411,9 +523,16 @@ impl core::fmt::Display for ConnectionCloseReason {
                 write!(f, "timeout setup failed: {message}")
             }
             Self::PeerClosed => f.write_str("peer closed connection cleanly"),
+            Self::PeerWatchFailed(message) => write!(f, "peer watch setup failed: {message}"),
             Self::RequestDecodeFailed(err) => write!(f, "request decode failed: {err}"),
             Self::ResponseEncodeFailed(err) => write!(f, "response encode failed: {err}"),
             Self::ResponseWriteFailed(message) => write!(f, "response write failed: {message}"),
+            Self::Overloaded { waited } => write!(
+                f,
+                "no dispatch slot within {} ms and no typed refusal for this envelope",
+                waited.as_millis()
+            ),
+            Self::ShuttingDown => f.write_str("request arrived during shutdown"),
         }
     }
 }
@@ -421,6 +540,9 @@ impl core::fmt::Display for ConnectionCloseReason {
 fn handle_connection<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
     mut stream: UnixStream,
     dispatcher: &D,
+    slots: &DispatchSlots,
+    policy: ServerAdmissionPolicy,
+    shutdown: &AtomicBool,
 ) -> ConnectionCloseReason
 where
     RequestEnvelopeT: RequestEnvelope<Request>,
@@ -431,12 +553,12 @@ where
     if let Err(err) = stream.set_nonblocking(false) {
         return ConnectionCloseReason::BlockingModeConfigFailed(err.to_string());
     }
-    // Apply a bounded read/write timeout so a stalled peer cannot pin the
-    // dispatcher thread indefinitely.
-    if let Err(err) = stream.set_read_timeout(Some(CONNECTION_IO_TIMEOUT)) {
+    // Apply a bounded read/write timeout so a stalled peer cannot pin its
+    // own connection thread indefinitely.
+    if let Err(err) = stream.set_read_timeout(Some(policy.io_timeout())) {
         return ConnectionCloseReason::TimeoutConfigFailed(format!("set_read_timeout: {err}"));
     }
-    if let Err(err) = stream.set_write_timeout(Some(CONNECTION_IO_TIMEOUT)) {
+    if let Err(err) = stream.set_write_timeout(Some(policy.io_timeout())) {
         return ConnectionCloseReason::TimeoutConfigFailed(format!("set_write_timeout: {err}"));
     }
     loop {
@@ -446,7 +568,40 @@ where
             Err(err) => return ConnectionCloseReason::RequestDecodeFailed(err),
         };
         let (request_id, request_payload) = request.into_parts();
-        let response_payload = dispatcher.dispatch(request_payload);
+        // A request that arrives during shutdown is not dispatched; the
+        // connection closes so the peer retries against the next process.
+        if shutdown.load(Ordering::Acquire) {
+            return ConnectionCloseReason::ShuttingDown;
+        }
+        // Admission: ingress happened above, now the dispatch slot. A full
+        // queue is a typed answer, not an unbounded wait.
+        let permit = match slots.acquire(policy.queue_wait()) {
+            Ok(permit) => permit,
+            Err(SlotRefusal::QueueWaitExceeded { waited, slots }) => {
+                let Some(refusal) = ResponseEnvelopeT::overloaded(request_id, waited, slots) else {
+                    return ConnectionCloseReason::Overloaded { waited };
+                };
+                match write_response(&mut stream, &refusal) {
+                    Ok(()) => continue,
+                    Err(reason) => return reason,
+                }
+            }
+        };
+        let budget = RequestBudgetV1::for_duration(policy.dispatch_budget());
+        // A dispatch without a live watch would run with a cancellation that
+        // can never fire; refusing the connection is the honest alternative.
+        let watch = match PeerWatch::arm(&stream, budget.cancel_handle()) {
+            Ok(watch) => watch,
+            Err(err) => return ConnectionCloseReason::PeerWatchFailed(err.to_string()),
+        };
+        let response_payload = dispatcher.dispatch(request_payload, &budget);
+        let peer_hung_up = watch.disarm();
+        drop(permit);
+        if peer_hung_up {
+            // Nothing to write to; the dispatcher already saw the
+            // cancellation at its next checkpoint (or ran to completion).
+            return ConnectionCloseReason::PeerClosed;
+        }
         let response = ResponseEnvelopeT::from_parts(request_id, response_payload);
         let frame = match encode_response(&response) {
             Ok(frame) => frame,
@@ -474,6 +629,115 @@ where
             return ConnectionCloseReason::ResponseWriteFailed(err.to_string());
         }
         // continue: next request on same conn
+    }
+}
+
+fn write_response<ResponseEnvelopeT: serde::Serialize>(
+    stream: &mut UnixStream,
+    response: &ResponseEnvelopeT,
+) -> Result<(), ConnectionCloseReason> {
+    let frame = encode_response(response).map_err(ConnectionCloseReason::ResponseEncodeFailed)?;
+    stream
+        .write_all(&frame)
+        .map_err(|err| ConnectionCloseReason::ResponseWriteFailed(err.to_string()))
+}
+
+/// Watches a connection for a hang-up while its request is dispatching.
+///
+/// The dispatch runs synchronously on the connection thread, so a second
+/// thread polls the socket: `POLLHUP`, or readable with zero bytes, means the
+/// peer is gone and the request's cancellation is armed. Readable with data
+/// means the peer pipelined its next request; that is not a hang-up and the
+/// watch simply stops looking. The watch ends when the dispatch returns.
+struct PeerWatch {
+    stop: Arc<AtomicBool>,
+    hung_up: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl PeerWatch {
+    const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+    fn arm(
+        stream: &UnixStream,
+        cancel: quanta_index_core::CancelHandleV1,
+    ) -> std::io::Result<Self> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let hung_up = Arc::new(AtomicBool::new(false));
+        let watched = stream.try_clone()?;
+        let thread = {
+            let stop = Arc::clone(&stop);
+            let hung_up = Arc::clone(&hung_up);
+            std::thread::Builder::new()
+                .name("uds-peer-watch".to_string())
+                .spawn(move || {
+                    while !stop.load(Ordering::Acquire) {
+                        match peer_state(&watched) {
+                            PeerState::Alive => {}
+                            PeerState::Pipelined => return,
+                            PeerState::HungUp => {
+                                hung_up.store(true, Ordering::Release);
+                                cancel.cancel();
+                                return;
+                            }
+                        }
+                    }
+                })?
+        };
+        Ok(Self {
+            stop,
+            hung_up,
+            thread: Some(thread),
+        })
+    }
+
+    /// Stop watching; reports whether the peer hung up while we watched.
+    fn disarm(mut self) -> bool {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _joined = thread.join();
+        }
+        self.hung_up.load(Ordering::Acquire)
+    }
+}
+
+enum PeerState {
+    Alive,
+    Pipelined,
+    HungUp,
+}
+
+/// One bounded poll of the watched socket.
+fn peer_state(stream: &UnixStream) -> PeerState {
+    let fd = std::os::fd::AsFd::as_fd(stream);
+    let mut fds = [PollFd::new(&fd, PollFlags::IN | PollFlags::HUP)];
+    let timeout = Timespec {
+        tv_sec: 0,
+        tv_nsec: i64::try_from(PeerWatch::POLL_INTERVAL.as_nanos())
+            .map_or(50_000_000, |nanos| nanos),
+    };
+    match poll(&mut fds, Some(&timeout)) {
+        Ok(0) | Err(Errno::INTR) => PeerState::Alive,
+        Ok(_) => {
+            let revents = fds.first().map_or(PollFlags::empty(), PollFd::revents);
+            if revents.contains(PollFlags::HUP) || revents.contains(PollFlags::ERR) {
+                return PeerState::HungUp;
+            }
+            if revents.contains(PollFlags::IN) {
+                // Readable: either pipelined data or an orderly close (EOF).
+                // A peek leaves the bytes for the connection thread's next
+                // request read.
+                let mut probe = [0_u8; 1];
+                return match recv(fd, &mut probe, RecvFlags::PEEK) {
+                    Ok((0, _)) => PeerState::HungUp,
+                    Ok(_) => PeerState::Pipelined,
+                    Err(Errno::AGAIN | Errno::INTR) => PeerState::Alive,
+                    Err(_) => PeerState::HungUp,
+                };
+            }
+            PeerState::Alive
+        }
+        Err(_) => PeerState::HungUp,
     }
 }
 
@@ -666,7 +930,8 @@ fn classify_client_decode_error(
         | IpcError::Decode(_)
         | IpcError::Timeout { .. }
         | IpcError::InvalidClientIoTimeout
-        | IpcError::ClientIoDeadlineElapsed) => other,
+        | IpcError::ClientIoDeadlineElapsed
+        | IpcError::InvalidAdmissionPolicy) => other,
     }
 }
 
@@ -698,17 +963,28 @@ mod tests {
     use std::io::Write;
     use std::net::Shutdown;
     use std::os::unix::net::{UnixListener, UnixStream};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier, mpsc};
     use std::thread;
     use std::time::{Duration, Instant};
 
+    use quanta_index_core::RequestBudgetV1;
     use serde::de::{self, MapAccess, Visitor};
     use serde::ser::SerializeStruct;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+    use crate::admission::{DispatchSlots, ServerAdmissionPolicy};
     use crate::codec::MAX_FRAME_BODY_BYTES;
 
     type TestRes = Result<(), String>;
+
+    fn test_slots() -> DispatchSlots {
+        DispatchSlots::new(ServerAdmissionPolicy::DEFAULT.dispatch_slots())
+    }
+
+    fn test_policy() -> ServerAdmissionPolicy {
+        ServerAdmissionPolicy::DEFAULT
+    }
 
     struct ByteStringRequest(Vec<u8>);
 
@@ -964,7 +1240,7 @@ mod tests {
     struct TestDispatcher;
 
     impl IpcDispatcher<u64, u64> for TestDispatcher {
-        fn dispatch(&self, request: u64) -> u64 {
+        fn dispatch(&self, request: u64, _budget: &RequestBudgetV1) -> u64 {
             request.saturating_add(1)
         }
     }
@@ -1142,6 +1418,10 @@ mod tests {
         ) -> Option<Self> {
             None
         }
+
+        fn overloaded(_request_id: u64, _waited: Duration, _slots: usize) -> Option<Self> {
+            None
+        }
     }
 
     #[derive(Debug)]
@@ -1171,7 +1451,13 @@ mod tests {
                 TestResponseEnvelope,
                 u64,
                 TestDispatcher,
-            >(stream, &TestDispatcher);
+            >(
+                stream,
+                &TestDispatcher,
+                &test_slots(),
+                test_policy(),
+                &AtomicBool::new(false),
+            );
             if !matches!(reason, ConnectionCloseReason::PeerClosed) {
                 return Err(format!("unexpected close reason: {reason:?}"));
             }
@@ -1227,6 +1513,10 @@ mod tests {
             _encoded_bytes: u64,
             _limit_bytes: u64,
         ) -> Option<Self> {
+            None
+        }
+
+        fn overloaded(_request_id: u64, _waited: Duration, _slots: usize) -> Option<Self> {
             None
         }
     }
@@ -1293,21 +1583,36 @@ mod tests {
                 encoded_bytes,
             })
         }
+
+        fn overloaded(_request_id: u64, _waited: Duration, _slots: usize) -> Option<Self> {
+            None
+        }
     }
 
     struct BlockingDispatcher {
         entered: mpsc::Sender<()>,
         gate: Arc<Barrier>,
+        /// Whether, after the gate, the budget reported the peer's hang-up
+        /// within a bounded wait: the cooperative cancellation signal.
+        observed_cancel: Arc<AtomicBool>,
     }
 
     impl IpcDispatcher<u64, u64> for BlockingDispatcher {
-        fn dispatch(&self, request: u64) -> u64 {
+        fn dispatch(&self, request: u64, budget: &RequestBudgetV1) -> u64 {
             let send_result = self.entered.send(());
             assert!(
                 send_result.is_ok(),
                 "test must observe dispatcher entry: {send_result:?}"
             );
             let _wait = self.gate.wait();
+            let started = Instant::now();
+            while started.elapsed() < Duration::from_secs(2) {
+                if budget.is_cancelled() {
+                    self.observed_cancel.store(true, Ordering::Release);
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
             request.saturating_add(1)
         }
     }
@@ -1345,7 +1650,13 @@ mod tests {
                     TestResponseEnvelope,
                     u64,
                     TestDispatcher,
-                >(server, &TestDispatcher)
+                >(
+                    server,
+                    &TestDispatcher,
+                    &test_slots(),
+                    test_policy(),
+                    &AtomicBool::new(false),
+                )
             });
 
             let response = decode_response::<TestResponseEnvelope, _>(&mut client)
@@ -1385,7 +1696,13 @@ mod tests {
                 TestResponseEnvelope,
                 u64,
                 TestDispatcher,
-            >(server, &TestDispatcher);
+            >(
+                server,
+                &TestDispatcher,
+                &test_slots(),
+                test_policy(),
+                &AtomicBool::new(false),
+            );
             if !matches!(
                 reason,
                 ConnectionCloseReason::RequestDecodeFailed(IpcError::EmptyFrame)
@@ -1416,7 +1733,13 @@ mod tests {
                     OversizedResponseEnvelope,
                     u64,
                     TestDispatcher,
-                >(server, &TestDispatcher)
+                >(
+                    server,
+                    &TestDispatcher,
+                    &test_slots(),
+                    test_policy(),
+                    &AtomicBool::new(false),
+                )
             });
             let response: TestResponseEnvelope =
                 decode_response(&mut client).map_err(|err| err.to_string())?;
@@ -1460,7 +1783,13 @@ mod tests {
                 FailingResponseEnvelope,
                 u64,
                 TestDispatcher,
-            >(server, &TestDispatcher);
+            >(
+                server,
+                &TestDispatcher,
+                &test_slots(),
+                test_policy(),
+                &AtomicBool::new(false),
+            );
             if let ConnectionCloseReason::ResponseEncodeFailed(IpcError::Encode(message)) = &reason
                 && message.contains("simulated response encode failure")
             {
@@ -1471,8 +1800,13 @@ mod tests {
         assert_test_ok(&result);
     }
 
+    /// A mid-dispatch hang-up cancels the request's budget (QI-BB-002).
+    ///
+    /// The peer watch notices the hang-up, the dispatcher sees the
+    /// cancellation at its next checkpoint, and the connection closes as a
+    /// hang-up instead of a failed write.
     #[test]
-    fn handle_connection_surfaces_response_write_failure_reason() {
+    fn a_peer_that_hangs_up_mid_dispatch_cancels_the_budget() {
         let result = (|| -> TestRes {
             let (mut client, server) = UnixStream::pair().map_err(|err| err.to_string())?;
             let frame = encode_test_frame(9, 1)?;
@@ -1480,9 +1814,11 @@ mod tests {
 
             let (entered_tx, entered_rx) = mpsc::channel();
             let gate = Arc::new(Barrier::new(2));
+            let observed_cancel = Arc::new(AtomicBool::new(false));
             let dispatcher = BlockingDispatcher {
                 entered: entered_tx,
                 gate: Arc::clone(&gate),
+                observed_cancel: Arc::clone(&observed_cancel),
             };
             let handle = thread::spawn(move || {
                 handle_connection::<
@@ -1491,7 +1827,13 @@ mod tests {
                     TestResponseEnvelope,
                     u64,
                     BlockingDispatcher,
-                >(server, &dispatcher)
+                >(
+                    server,
+                    &dispatcher,
+                    &test_slots(),
+                    test_policy(),
+                    &AtomicBool::new(false),
+                )
             });
 
             entered_rx.recv().map_err(|err| {
@@ -1503,9 +1845,10 @@ mod tests {
             let reason = handle
                 .join()
                 .map_err(|join_err| format!("server thread panicked: {join_err:?}"))?;
-            if let ConnectionCloseReason::ResponseWriteFailed(message) = &reason
-                && !message.is_empty()
-            {
+            if !observed_cancel.load(Ordering::Acquire) {
+                return Err("dispatcher never saw the peer's hang-up on its budget".to_string());
+            }
+            if matches!(reason, ConnectionCloseReason::PeerClosed) {
                 return Ok(());
             }
             Err(format!("unexpected close reason: {reason:?}"))

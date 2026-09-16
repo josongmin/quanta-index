@@ -77,4 +77,8 @@ crate quanta_index_core
 │           └── struct StructuralMatchCandidate: pub
 ├── mod error: pub
 │   └── enum CoreError: pub
+├── mod request_budget: pub
+│   ├── enum BudgetInterruptionV1: pub
+│   ├── struct CancelHandleV1: pub
+│   └── struct RequestBudgetV1: pub
 └── mod timeref: pub

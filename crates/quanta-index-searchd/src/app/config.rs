@@ -7,6 +7,7 @@ use quanta_index_embed::{
     DEFAULT_CONCURRENCY, DEFAULT_MAX_BATCH, DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST,
     DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT, OpenAiProviderConfig,
 };
+use quanta_index_ipc::ServerAdmissionPolicy;
 use quanta_index_search_plane::readiness::SearchCorpusHistoryRetentionPolicyV1;
 use quanta_index_search_plane::{SEARCH_OWNED_SEMANTIC_DIMENSION, SnapshotRegistryPolicy};
 
@@ -147,6 +148,10 @@ pub struct SearchdConfig {
     /// Most candidates one lexical execution may materialize (QI-BB-005).
     /// Optional operator tuning with a documented default; zero is refused.
     lexical_execution_budget: LexicalExecutionBudgetV1,
+    /// Ingress and dispatch limits for the query socket (QI-BB-002). The
+    /// control and ingest sockets are not tunable: their mutations must not
+    /// interleave, so they always run [`ServerAdmissionPolicy::SERIAL_DISPATCH`].
+    query_admission_policy: ServerAdmissionPolicy,
 }
 
 impl SearchdConfig {
@@ -162,6 +167,7 @@ impl SearchdConfig {
             search_corpus_history_retention_policy: None,
             snapshot_registry_policy: SnapshotRegistryPolicy::DEFAULT,
             lexical_execution_budget: LexicalExecutionBudgetV1::DEFAULT,
+            query_admission_policy: ServerAdmissionPolicy::DEFAULT,
         }
     }
 
@@ -171,7 +177,8 @@ impl SearchdConfig {
             .with_search_corpus_history_retention_policy_v1(retention)
             .with_semantic_embedder_profile(semantic_embedder_profile_from_env()?)
             .with_snapshot_registry_policy(snapshot_registry_policy_from_env()?)
-            .with_lexical_execution_budget(lexical_execution_budget_from_env()?);
+            .with_lexical_execution_budget(lexical_execution_budget_from_env()?)
+            .with_query_admission_policy(query_admission_policy_from_env()?);
         let _validated = base.search_corpus_history_retention_policy()?;
         Ok(base)
     }
@@ -238,6 +245,17 @@ impl SearchdConfig {
     #[must_use]
     pub const fn with_lexical_execution_budget(mut self, budget: LexicalExecutionBudgetV1) -> Self {
         self.lexical_execution_budget = budget;
+        self
+    }
+
+    #[must_use]
+    pub const fn query_admission_policy(&self) -> ServerAdmissionPolicy {
+        self.query_admission_policy
+    }
+
+    #[must_use]
+    pub const fn with_query_admission_policy(mut self, policy: ServerAdmissionPolicy) -> Self {
+        self.query_admission_policy = policy;
         self
     }
 
@@ -414,6 +432,72 @@ where
         Some(raw) => LexicalExecutionBudgetV1::new(required_positive_raw_usize(NAME, Some(raw))?)
             .map_err(anyhow::Error::from),
     }
+}
+
+/// Resolve the query socket's admission policy from env (QI-BB-002).
+///
+/// Each knob is optional and, unset, takes the matching field of
+/// [`ServerAdmissionPolicy::DEFAULT`]; the combination is then validated as
+/// one policy, so a zero limit or more dispatch slots than connections is
+/// refused at boot rather than half-applied. The per-operation I/O timeout
+/// is not an operator knob.
+///
+/// - `QUANTA_INDEX_QUERY_MAX_CONNECTIONS` — live connections the accept loop
+///   admits; past it a connection is closed, not queued.
+/// - `QUANTA_INDEX_QUERY_DISPATCH_SLOTS` — requests executing concurrently.
+/// - `QUANTA_INDEX_QUERY_QUEUE_WAIT_MS` — how long a request waits for a slot
+///   before `SERVER_OVERLOADED`; zero means refuse immediately.
+/// - `QUANTA_INDEX_QUERY_DISPATCH_BUDGET_MS` — the deadline every dispatch
+///   runs under; a route past it answers `REQUEST_DEADLINE_EXCEEDED`.
+pub(crate) fn query_admission_policy_from_env() -> Result<ServerAdmissionPolicy> {
+    query_admission_policy_from_lookup(optional_env)
+}
+
+fn query_admission_policy_from_lookup<F>(lookup: F) -> Result<ServerAdmissionPolicy>
+where
+    F: Fn(&str) -> Result<Option<String>>,
+{
+    const CONNECTIONS: &str = "QUANTA_INDEX_QUERY_MAX_CONNECTIONS";
+    const SLOTS: &str = "QUANTA_INDEX_QUERY_DISPATCH_SLOTS";
+    const QUEUE_WAIT: &str = "QUANTA_INDEX_QUERY_QUEUE_WAIT_MS";
+    const BUDGET: &str = "QUANTA_INDEX_QUERY_DISPATCH_BUDGET_MS";
+    let defaults = ServerAdmissionPolicy::DEFAULT;
+    let max_connections = match lookup(CONNECTIONS)? {
+        None => defaults.max_connections(),
+        Some(raw) => required_positive_raw_usize(CONNECTIONS, Some(raw))?,
+    };
+    let dispatch_slots = match lookup(SLOTS)? {
+        None => defaults.dispatch_slots(),
+        Some(raw) => required_positive_raw_usize(SLOTS, Some(raw))?,
+    };
+    let queue_wait = match lookup(QUEUE_WAIT)? {
+        None => defaults.queue_wait(),
+        Some(raw) => Duration::from_millis(raw_u64(QUEUE_WAIT, &raw)?),
+    };
+    let dispatch_budget = match lookup(BUDGET)? {
+        None => defaults.dispatch_budget(),
+        Some(raw) => Duration::from_millis(required_positive_raw_u64(BUDGET, Some(raw))?),
+    };
+    ServerAdmissionPolicy::new(
+        max_connections,
+        dispatch_slots,
+        queue_wait,
+        dispatch_budget,
+        defaults.io_timeout(),
+    )
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "{CONNECTIONS}={max_connections} {SLOTS}={dispatch_slots} {QUEUE_WAIT}={}ms {BUDGET}={}ms is not a valid admission policy: {error}",
+            queue_wait.as_millis(),
+            dispatch_budget.as_millis()
+        )
+    })
+}
+
+fn raw_u64(name: &str, raw: &str) -> Result<u64> {
+    raw.trim()
+        .parse::<u64>()
+        .map_err(|error| anyhow::anyhow!("invalid {name} `{raw}`: {error}"))
 }
 
 fn required_positive_raw_usize(name: &str, raw: Option<String>) -> Result<usize> {
@@ -781,6 +865,63 @@ mod tests {
         })
         .expect("explicit budget binds");
         assert_eq!(explicit.max_examined_candidates(), 12);
+    }
+
+    #[test]
+    fn query_admission_env_binding_layers_over_the_default_and_validates_as_one_policy() {
+        const SLOTS: &str = "QUANTA_INDEX_QUERY_DISPATCH_SLOTS";
+        const CONNECTIONS: &str = "QUANTA_INDEX_QUERY_MAX_CONNECTIONS";
+        const QUEUE_WAIT: &str = "QUANTA_INDEX_QUERY_QUEUE_WAIT_MS";
+        const BUDGET: &str = "QUANTA_INDEX_QUERY_DISPATCH_BUDGET_MS";
+        let unset =
+            query_admission_policy_from_lookup(|_name| Ok(None)).expect("unset selects default");
+        assert_eq!(unset, ServerAdmissionPolicy::DEFAULT);
+
+        let slots_only =
+            query_admission_policy_from_lookup(|name| Ok((name == SLOTS).then(|| "2".to_string())))
+                .expect("one knob layers over the default");
+        assert_eq!(slots_only.dispatch_slots(), 2);
+        assert_eq!(
+            slots_only.max_connections(),
+            ServerAdmissionPolicy::DEFAULT.max_connections()
+        );
+        assert_eq!(
+            slots_only.dispatch_budget(),
+            ServerAdmissionPolicy::DEFAULT.dispatch_budget()
+        );
+
+        let zero_wait = query_admission_policy_from_lookup(|name| {
+            Ok((name == QUEUE_WAIT).then(|| "0".to_string()))
+        })
+        .expect("a zero queue wait is a valid immediate-refusal policy");
+        assert_eq!(zero_wait.queue_wait(), Duration::ZERO);
+
+        let zero_budget =
+            query_admission_policy_from_lookup(
+                |name| Ok((name == BUDGET).then(|| "0".to_string())),
+            )
+            .expect_err("a zero dispatch budget must fail closed");
+        assert!(zero_budget.to_string().contains(BUDGET));
+
+        let inverted = query_admission_policy_from_lookup(|name| {
+            Ok(match name {
+                CONNECTIONS => Some("2".to_string()),
+                SLOTS => Some("3".to_string()),
+                _ => None,
+            })
+        })
+        .expect_err("more slots than connections is refused as one policy");
+        assert!(
+            inverted
+                .to_string()
+                .contains("not a valid admission policy")
+        );
+
+        let garbage = query_admission_policy_from_lookup(|name| {
+            Ok((name == QUEUE_WAIT).then(|| "soon".to_string()))
+        })
+        .expect_err("non-numeric wait fails closed");
+        assert!(garbage.to_string().contains(QUEUE_WAIT));
     }
 
     #[test]
