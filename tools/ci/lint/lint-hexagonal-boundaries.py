@@ -72,6 +72,10 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     # Corpus parser/runner smoke helpers. No production deps; tests in
     # other crates consume it via dev-dependencies only.
     "quanta-index-corpus-smoke": frozenset(),
+    # W0 G0-C decision-gate probe: engines under evaluation are dev-dependencies
+    # only and it depends on no workspace crate. Deleted when the real catalog
+    # adapter crate lands (docs/bugbash/sep-16/adr/G0-C-catalog-engine.md).
+    "quanta-index-catalog-probe": frozenset(),
     # Non-production benchmark driver. It may drive the lexical adapter
     # directly, but must not depend on runtime/searchd orchestration.
     "quanta-index-scan-experiment": frozenset(

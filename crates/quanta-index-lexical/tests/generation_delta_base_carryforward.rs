@@ -552,3 +552,225 @@ fn sidecar_facts(
     }
     Ok(facts)
 }
+
+fn leaf_query(leaf: LqLeaf) -> LqQuery {
+    LqQuery {
+        lq_version: LQ_VERSION_TAG,
+        expr: LqExpr::Leaf(leaf),
+        filters: Vec::new(),
+        options: LqOptions::defaults(),
+        directives: Vec::new(),
+        source_span: LqSpan::eof(0),
+    }
+}
+
+fn leaf_hit_ids(
+    adapter: &LexicalAdapter,
+    generation: ManifestGeneration,
+    leaf: LqLeaf,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    let searcher = adapter.open(&repo(), &revision(), generation)?;
+    let mut ids: Vec<String> = searcher
+        .search(&leaf_query(leaf), 64)?
+        .iter()
+        .map(|candidate| candidate.candidate_id.clone())
+        .collect();
+    ids.sort();
+    Ok(ids)
+}
+
+/// DA-06: the incrementally updated text authority must answer exactly as an
+/// independent full rebuild of the same final corpus.
+///
+/// Regex and phrase leaves are answered from the text-authority sidecars, not
+/// from Tantivy postings, so this is the route that would diverge if the
+/// in-place sidecar update dropped a retired document, kept a stale one, or
+/// mis-assigned a doc id. The oracle (g9) is built from scratch with no base.
+#[test]
+fn delta_generation_text_authority_matches_independent_full_rebuild() -> TestResult {
+    const FILLERS: usize = 40;
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let g1 = ManifestGeneration::new(1);
+    let g2 = ManifestGeneration::new(2);
+    let g9 = ManifestGeneration::new(9);
+
+    // Base: alpha + beta + fillers.
+    adapter.build_batch(&base_batch_with_filler(g1, FILLERS)?)?;
+
+    // Delta: replace beta, tombstone filler 7, add a brand-new scope.
+    let mut delta = delta_batch(g2, g1)?;
+    delta.replace_scopes.push(scope(
+        "src/zeta.rs",
+        "chunk-zeta",
+        "zeta_marker novelword appears only in the delta",
+    )?);
+    delta.replace_scopes.sort_by(|left, right| {
+        left.scope
+            .repo_relative_path
+            .as_str()
+            .cmp(right.scope.repo_relative_path.as_str())
+    });
+    delta
+        .tombstone_scopes
+        .push(quanta_index_contract::SearchCorpusTombstoneScope {
+            scope: SearchScopeKey {
+                doc_surface: SearchScopeSurface::File,
+                repo_relative_path: RepoRelativePath::new("src/filler/mod_00007.rs"),
+            },
+        });
+    adapter.build_batch(&delta)?;
+
+    // Oracle: the same final content, built fresh with no base.
+    let mut oracle = base_batch_with_filler(g9, FILLERS)?;
+    oracle.replace_scopes.retain(|scope| {
+        let path = scope.scope.repo_relative_path.as_str();
+        path != "src/filler/mod_00007.rs" && path != BETA_PATH
+    });
+    oracle.replace_scopes.push(scope(
+        BETA_PATH,
+        "chunk-beta",
+        &format!("{BETA_MARKER_V2} {BETA_FRESH_WORD}"),
+    )?);
+    oracle.replace_scopes.push(scope(
+        "src/zeta.rs",
+        "chunk-zeta",
+        "zeta_marker novelword appears only in the delta",
+    )?);
+    oracle.replace_scopes.sort_by(|left, right| {
+        left.scope
+            .repo_relative_path
+            .as_str()
+            .cmp(right.scope.repo_relative_path.as_str())
+    });
+    adapter.build_batch(&oracle)?;
+
+    let probes: Vec<(&str, LqLeaf)> = vec![
+        (
+            "regex retired",
+            LqLeaf::Regex(BETA_RETIRED_WORD.to_string()),
+        ),
+        ("regex fresh", LqLeaf::Regex(BETA_FRESH_WORD.to_string())),
+        ("regex alpha", LqLeaf::Regex(ALPHA_MARKER.to_string())),
+        ("regex novel", LqLeaf::Regex("novelword".to_string())),
+        (
+            "regex filler prefix",
+            LqLeaf::Regex("quartz_0000.".to_string()),
+        ),
+        (
+            "regex tombstoned filler",
+            LqLeaf::Regex("quartz_00007".to_string()),
+        ),
+        (
+            "regex all fillers",
+            LqLeaf::Regex("filler_[0-9]+".to_string()),
+        ),
+        (
+            "phrase fresh",
+            LqLeaf::Phrase(format!("{BETA_MARKER_V2} {BETA_FRESH_WORD}")),
+        ),
+        (
+            "phrase retired",
+            LqLeaf::Phrase(format!("{BETA_MARKER} {BETA_RETIRED_WORD}")),
+        ),
+        (
+            "phrase novel",
+            LqLeaf::Phrase("novelword appears".to_string()),
+        ),
+        ("keyword novel", LqLeaf::Keyword("novelword".to_string())),
+    ];
+
+    let mut divergences: Vec<String> = Vec::new();
+    for (label, leaf) in probes {
+        let incremental = leaf_hit_ids(&adapter, g2, leaf.clone())?;
+        let rebuilt = leaf_hit_ids(&adapter, g9, leaf)?;
+        if incremental != rebuilt {
+            divergences.push(format!(
+                "{label}: incremental={incremental:?} rebuild={rebuilt:?}"
+            ));
+        }
+    }
+    if !divergences.is_empty() {
+        return Err(format!(
+            "incremental text authority diverged from the independent rebuild:\n  {}",
+            divergences.join("\n  ")
+        )
+        .into());
+    }
+
+    // Spot-check the oracle itself so agreement is not agreement on nothing.
+    assert_hits(&adapter, g9, BETA_FRESH_WORD, &["chunk-beta"], "oracle")?;
+    if leaf_hit_ids(&adapter, g9, LqLeaf::Regex(BETA_RETIRED_WORD.to_string()))?
+        != Vec::<String>::new()
+    {
+        return Err("oracle must not contain the retired text".into());
+    }
+    if leaf_hit_ids(&adapter, g9, LqLeaf::Regex("quartz_00007".to_string()))?
+        != Vec::<String>::new()
+    {
+        return Err("oracle must not contain the tombstoned filler".into());
+    }
+    if leaf_hit_ids(&adapter, g9, LqLeaf::Regex("filler_[0-9]+".to_string()))?.len() != FILLERS - 1
+    {
+        return Err("oracle must hold every filler but the tombstoned one".into());
+    }
+    Ok(())
+}
+
+/// Cost shape of the text-authority update: in-place delta vs full rebuild.
+///
+/// The sidecar files are monolithic, so a delta still rewrites every byte of
+/// them; what the in-place path removes is the re-derivation (scan every live
+/// document, re-tokenize, rebuild every posting). This test reports the wall
+/// time of a one-scope delta against a fresh build of the identical final
+/// corpus so the ledger can state what was and was not gained. Numbers are a
+/// shape on a shared host; the assertion is only that the delta is not slower.
+#[test]
+fn delta_text_authority_update_is_not_slower_than_a_full_rebuild() -> TestResult {
+    const FILLERS: usize = 1_500;
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let g1 = ManifestGeneration::new(1);
+    let g2 = ManifestGeneration::new(2);
+    let g9 = ManifestGeneration::new(9);
+
+    adapter.build_batch(&base_batch_with_filler(g1, FILLERS)?)?;
+
+    let delta_started = std::time::Instant::now();
+    adapter.build_batch(&delta_batch(g2, g1)?)?;
+    let delta_wall = delta_started.elapsed();
+
+    let mut full = base_batch_with_filler(g9, FILLERS)?;
+    full.replace_scopes
+        .retain(|scope| scope.scope.repo_relative_path.as_str() != BETA_PATH);
+    full.replace_scopes.push(scope(
+        BETA_PATH,
+        "chunk-beta",
+        &format!("{BETA_MARKER_V2} {BETA_FRESH_WORD}"),
+    )?);
+    full.replace_scopes.sort_by(|left, right| {
+        left.scope
+            .repo_relative_path
+            .as_str()
+            .cmp(right.scope.repo_relative_path.as_str())
+    });
+    let full_started = std::time::Instant::now();
+    adapter.build_batch(&full)?;
+    let full_wall = full_started.elapsed();
+
+    let base_dir = generation_dir(dir.path(), g1)?;
+    let sidecar_bytes = text_authority_bytes(&base_dir)?;
+    emit_evidence(&[
+        ("scopes", FILLERS.saturating_add(2).to_string()),
+        ("text_authority_bytes", sidecar_bytes.to_string()),
+        ("delta_one_scope_ms", delta_wall.as_millis().to_string()),
+        ("full_rebuild_ms", full_wall.as_millis().to_string()),
+    ]);
+    if delta_wall > full_wall {
+        return Err(format!(
+            "one-scope delta ({delta_wall:?}) was slower than a full rebuild ({full_wall:?})"
+        )
+        .into());
+    }
+    Ok(())
+}

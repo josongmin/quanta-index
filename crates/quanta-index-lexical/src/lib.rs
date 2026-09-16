@@ -2607,6 +2607,135 @@ fn map_positions_error(context: &str, err: &PositionsError) -> CoreError {
     }
 }
 
+/// Candidate ids of the text documents currently indexed under one path.
+///
+/// Read from the committed index before a scope mutation is applied, so an
+/// incremental sidecar update knows exactly which documents the mutation
+/// retires without a schema change to the sidecar itself.
+fn text_candidates_at_path(
+    index: &Index,
+    fields: &SchemaFields,
+    repo_relative_path: &str,
+) -> Result<Vec<String>, CoreError> {
+    let reader: IndexReader = index
+        .reader_builder()
+        .reload_policy(ReloadPolicy::Manual)
+        .try_into()
+        .map_err(|err| CoreError::Storage(format!("lexical: scope candidate reader: {err}")))?;
+    reader.reload().map_err(|err| {
+        CoreError::Storage(format!("lexical: scope candidate reader reload: {err}"))
+    })?;
+    let searcher = reader.searcher();
+    let query = TermQuery::new(
+        Term::from_field_text(fields.repo_relative_path, repo_relative_path),
+        IndexRecordOption::Basic,
+    );
+    let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
+        CoreError::InvalidContract(format!(
+            "lexical: num_docs overflow while collecting scope candidates: {err}"
+        ))
+    })?;
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let hits = searcher
+        .search(&query, &TopDocs::with_limit(limit))
+        .map_err(|err| CoreError::Storage(format!("lexical: scope candidate scan: {err}")))?;
+    let mut candidate_ids = Vec::with_capacity(hits.len());
+    for (_score, doc_address) in hits {
+        let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
+            CoreError::Storage(format!(
+                "lexical: fetch scope candidate doc {doc_address:?}: {err}"
+            ))
+        })?;
+        if stored_text(&doc, fields.doc_kind).as_deref() != Some(TEXT_DOC_KIND) {
+            continue;
+        }
+        let candidate_id = stored_text(&doc, fields.candidate_id).ok_or_else(|| {
+            CoreError::Storage(
+                "lexical: scope candidate doc missing candidate_id field".to_string(),
+            )
+        })?;
+        candidate_ids.push(candidate_id);
+    }
+    Ok(candidate_ids)
+}
+
+/// How a batch's text-authority impact is applied to the sidecars.
+enum TextAuthorityDelta {
+    /// Nothing in the batch touched indexed text.
+    None,
+    /// The batch retires whole surfaces or uses legacy per-chunk ops; the
+    /// sidecars are rebuilt from a full scan.
+    Rebuild,
+    /// The batch replaces or tombstones scopes only; the sidecars are updated
+    /// in place from the prior generation's copies.
+    Incremental {
+        retired_candidate_ids: BTreeSet<String>,
+        added_chunks: Vec<(String, String)>,
+    },
+}
+
+/// Classify a batch before it is applied, capturing the candidates each scope
+/// mutation will retire while the pre-mutation index can still name them.
+fn plan_text_authority_delta(
+    index: &Index,
+    fields: &SchemaFields,
+    ops: &[LexicalChannelOp],
+) -> Result<TextAuthorityDelta, CoreError> {
+    let mut retired_candidate_ids: BTreeSet<String> = BTreeSet::new();
+    let mut added_chunks: Vec<(String, String)> = Vec::new();
+    let mut touched = false;
+    for op in ops {
+        match op {
+            LexicalChannelOp::ReplaceLexicalScope(payload) => {
+                touched = true;
+                let (_mode, _base, scope) = decode_replace_scope_payload(&payload.payload)?;
+                let path = scope.scope.repo_relative_path.as_str();
+                retired_candidate_ids.extend(text_candidates_at_path(index, fields, path)?);
+                for chunk in &scope.chunks {
+                    added_chunks.push((
+                        chunk.chunk_id.as_str().to_string(),
+                        chunk.text.as_ref().to_string(),
+                    ));
+                }
+            }
+            LexicalChannelOp::TombstoneLexicalScope(payload) => {
+                touched = true;
+                let (_mode, _base, scope) = decode_tombstone_scope_payload(&payload.payload)?;
+                let path = scope.scope.repo_relative_path.as_str();
+                retired_candidate_ids.extend(text_candidates_at_path(index, fields, path)?);
+            }
+            LexicalChannelOp::ClearLexicalSurface(_)
+            | LexicalChannelOp::UpsertChunk(_)
+            | LexicalChannelOp::DeleteChunk(_) => return Ok(TextAuthorityDelta::Rebuild),
+            LexicalChannelOp::FullBundle(_)
+            | LexicalChannelOp::UpsertSymbol(_)
+            | LexicalChannelOp::DeleteSymbol(_)
+            | LexicalChannelOp::Seal(_)
+            | LexicalChannelOp::UpsertCommit(_)
+            | LexicalChannelOp::UpsertRef(_)
+            | LexicalChannelOp::UpsertTag(_)
+            | LexicalChannelOp::DeleteRef(_)
+            | LexicalChannelOp::DeleteTag(_)
+            | LexicalChannelOp::UpsertDirty(_)
+            | LexicalChannelOp::EvictDirty(_)
+            | LexicalChannelOp::UpsertParseTree(_)
+            | LexicalChannelOp::DeleteParseTree(_)
+            | LexicalChannelOp::ReplaceStructuralScope(_)
+            | LexicalChannelOp::TombstoneStructuralScope(_)
+            | LexicalChannelOp::UpsertDiffHunk(_) => {}
+        }
+    }
+    if !touched {
+        return Ok(TextAuthorityDelta::None);
+    }
+    Ok(TextAuthorityDelta::Incremental {
+        retired_candidate_ids,
+        added_chunks,
+    })
+}
+
 fn collect_text_authority_docs(
     index: &Index,
     fields: &SchemaFields,
@@ -2667,31 +2796,89 @@ fn phrase_term_positions(text: &str, case_sensitive: bool) -> Vec<(String, Posit
         .collect()
 }
 
-fn persist_text_authority_sidecars(
-    path: &Path,
-    fields: &SchemaFields,
-    index: &Index,
-    generation: ManifestGeneration,
-) -> Result<(), CoreError> {
-    let docs = collect_text_authority_docs(index, fields)?;
-    let sidecar_generation = sidecar_generation_id(generation);
-    let mut trigram = TrigramIndexBuilder::new(sidecar_generation)
-        .map_err(|err| map_trigram_error("init trigram sidecar", &err))?;
-    let mut trigram_folded = TrigramIndexBuilder::new(sidecar_generation)
-        .map_err(|err| map_trigram_error("init folded trigram sidecar", &err))?;
-    let mut positions = PositionsBuilder::new(sidecar_generation, POSITIONS_NORMALIZER_VERSION);
-    let mut positions_folded =
-        PositionsBuilder::new(sidecar_generation, POSITIONS_NORMALIZER_VERSION);
-    let mut table: Vec<TextAuthorityDocTableRow> = Vec::with_capacity(docs.len());
-    for (offset, (candidate_id, indexed_text, folded_indexed_text)) in docs.into_iter().enumerate()
-    {
-        let doc_id = u64::try_from(offset.saturating_add(1)).map_err(|err| {
-            CoreError::InvalidContract(format!("lexical: text authority doc id overflow: {err}"))
-        })?;
-        trigram.add_doc(TrigramDocId(doc_id), indexed_text.as_bytes());
-        trigram_folded.add_doc(TrigramDocId(doc_id), folded_indexed_text.as_bytes());
+/// The four derived indexes plus the doc table, under construction.
+///
+/// One type owns "add this document everywhere" and "retire this document
+/// everywhere" so the full rebuild and the incremental update cannot drift on
+/// which structures a document lives in.
+struct TextAuthorityBuilders {
+    trigram: TrigramIndexBuilder,
+    trigram_folded: TrigramIndexBuilder,
+    positions: PositionsBuilder,
+    positions_folded: PositionsBuilder,
+    table: BTreeMap<u64, TextAuthorityDoc>,
+}
+
+impl TextAuthorityBuilders {
+    fn empty(generation: ManifestGeneration) -> Result<Self, CoreError> {
+        let sidecar_generation = sidecar_generation_id(generation);
+        Ok(Self {
+            trigram: TrigramIndexBuilder::new(sidecar_generation)
+                .map_err(|err| map_trigram_error("init trigram sidecar", &err))?,
+            trigram_folded: TrigramIndexBuilder::new(sidecar_generation)
+                .map_err(|err| map_trigram_error("init folded trigram sidecar", &err))?,
+            positions: PositionsBuilder::new(sidecar_generation, POSITIONS_NORMALIZER_VERSION),
+            positions_folded: PositionsBuilder::new(
+                sidecar_generation,
+                POSITIONS_NORMALIZER_VERSION,
+            ),
+            table: BTreeMap::new(),
+        })
+    }
+
+    /// Continue from a prior generation's sidecars instead of from nothing.
+    fn from_prior(
+        generation: ManifestGeneration,
+        prior: TextAuthorityShard,
+    ) -> Result<Self, CoreError> {
+        let sidecar_generation = sidecar_generation_id(generation);
+        Ok(Self {
+            trigram: TrigramIndexBuilder::from_prior(&prior.trigram, sidecar_generation)
+                .map_err(|err| map_trigram_error("inherit trigram sidecar", &err))?,
+            trigram_folded: TrigramIndexBuilder::from_prior(
+                &prior.trigram_folded,
+                sidecar_generation,
+            )
+            .map_err(|err| map_trigram_error("inherit folded trigram sidecar", &err))?,
+            positions: PositionsBuilder::from_prior(
+                &prior.positions,
+                sidecar_generation,
+                POSITIONS_NORMALIZER_VERSION,
+            )
+            .map_err(|err| map_positions_error("inherit positions sidecar", &err))?,
+            positions_folded: PositionsBuilder::from_prior(
+                &prior.positions_folded,
+                sidecar_generation,
+                POSITIONS_NORMALIZER_VERSION,
+            )
+            .map_err(|err| map_positions_error("inherit folded positions sidecar", &err))?,
+            table: prior.docs_by_id,
+        })
+    }
+
+    fn next_doc_id(&self) -> Result<u64, CoreError> {
+        self.table.keys().next_back().map_or(Ok(1), |max| {
+            max.checked_add(1).ok_or_else(|| {
+                CoreError::InvalidContract("lexical: text authority doc id overflow".to_string())
+            })
+        })
+    }
+
+    fn upsert(
+        &mut self,
+        doc_id: u64,
+        candidate_id: String,
+        indexed_text: String,
+    ) -> Result<(), CoreError> {
+        let folded_indexed_text = indexed_text.to_ascii_lowercase();
+        self.trigram
+            .upsert_doc(TrigramDocId(doc_id), indexed_text.as_bytes())
+            .map_err(|err| map_trigram_error("build trigram sidecar", &err))?;
+        self.trigram_folded
+            .upsert_doc(TrigramDocId(doc_id), folded_indexed_text.as_bytes())
+            .map_err(|err| map_trigram_error("build folded trigram sidecar", &err))?;
         let sensitive_pairs = phrase_term_positions(&indexed_text, true);
-        positions
+        self.positions
             .upsert_doc(
                 PositionsDocId(doc_id),
                 sensitive_pairs
@@ -2700,81 +2887,183 @@ fn persist_text_authority_sidecars(
             )
             .map_err(|err| map_positions_error("build positions sidecar", &err))?;
         let folded_pairs = phrase_term_positions(&indexed_text, false);
-        positions_folded
+        self.positions_folded
             .upsert_doc(
                 PositionsDocId(doc_id),
                 folded_pairs.iter().map(|(term, pos)| (term.as_str(), *pos)),
             )
             .map_err(|err| map_positions_error("build folded positions sidecar", &err))?;
-        table.push((doc_id, candidate_id, indexed_text, folded_indexed_text));
+        let _prior = self.table.insert(
+            doc_id,
+            TextAuthorityDoc {
+                candidate_id,
+                indexed_text,
+                folded_indexed_text,
+            },
+        );
+        Ok(())
     }
-    let trigram = trigram.finish();
-    let trigram_folded = trigram_folded.finish();
-    let positions = positions
-        .finish()
-        .map_err(|err| map_positions_error("finalize positions sidecar", &err))?;
-    let positions_folded = positions_folded
-        .finish()
-        .map_err(|err| map_positions_error("finalize folded positions sidecar", &err))?;
 
-    // Every sidecar is serialized into memory and then published by atomic
-    // rename. `File::create` would truncate the existing file in place, which
-    // has two consequences this path must not have: a crash mid-write leaves a
-    // half-written sidecar that still looks present, and an inode shared with
-    // another generation (delta materialization links unchanged files) would be
-    // rewritten out from under the generation that still reads it.
-    let mut trigram_bytes = Vec::new();
-    trigram
-        .serialize_cbor(&mut trigram_bytes)
-        .map_err(|err| map_trigram_error("encode trigram sidecar", &err))?;
-    write_atomic_durable(
-        &text_authority_trigram_path(path),
-        &trigram_bytes,
-        "trigram sidecar",
-    )?;
+    fn retire(&mut self, doc_id: u64) -> Result<(), CoreError> {
+        let _removed = self
+            .trigram
+            .remove_doc(TrigramDocId(doc_id))
+            .map_err(|err| map_trigram_error("retire trigram sidecar doc", &err))?;
+        let _removed = self
+            .trigram_folded
+            .remove_doc(TrigramDocId(doc_id))
+            .map_err(|err| map_trigram_error("retire folded trigram sidecar doc", &err))?;
+        let _removed = self
+            .positions
+            .remove_doc(PositionsDocId(doc_id))
+            .map_err(|err| map_positions_error("retire positions sidecar doc", &err))?;
+        let _removed = self
+            .positions_folded
+            .remove_doc(PositionsDocId(doc_id))
+            .map_err(|err| map_positions_error("retire folded positions sidecar doc", &err))?;
+        let _removed = self.table.remove(&doc_id);
+        Ok(())
+    }
 
-    let mut trigram_folded_bytes = Vec::new();
-    trigram_folded
-        .serialize_cbor(&mut trigram_folded_bytes)
-        .map_err(|err| map_trigram_error("encode folded trigram sidecar", &err))?;
-    write_atomic_durable(
-        &text_authority_trigram_folded_path(path),
-        &trigram_folded_bytes,
-        "folded trigram sidecar",
-    )?;
+    /// Finalize and publish all five sidecars by atomic rename.
+    ///
+    /// `File::create` would truncate the existing file in place, which has two
+    /// consequences this path must not have: a crash mid-write leaves a
+    /// half-written sidecar that still looks present, and an inode shared with
+    /// another generation (delta materialization links unchanged files) would
+    /// be rewritten out from under the generation that still reads it.
+    fn publish(self, path: &Path) -> Result<(), CoreError> {
+        let trigram = self.trigram.finish();
+        let trigram_folded = self.trigram_folded.finish();
+        let positions = self
+            .positions
+            .finish()
+            .map_err(|err| map_positions_error("finalize positions sidecar", &err))?;
+        let positions_folded = self
+            .positions_folded
+            .finish()
+            .map_err(|err| map_positions_error("finalize folded positions sidecar", &err))?;
+        let table: Vec<TextAuthorityDocTableRow> = self
+            .table
+            .into_iter()
+            .map(|(doc_id, doc)| {
+                (
+                    doc_id,
+                    doc.candidate_id,
+                    doc.indexed_text,
+                    doc.folded_indexed_text,
+                )
+            })
+            .collect();
 
-    let mut positions_bytes = Vec::new();
-    positions
-        .serialize_cbor(&mut positions_bytes)
-        .map_err(|err| map_positions_error("encode positions sidecar", &err))?;
-    write_atomic_durable(
-        &text_authority_positions_path(path),
-        &positions_bytes,
-        "positions sidecar",
-    )?;
+        let mut trigram_bytes = Vec::new();
+        trigram
+            .serialize_cbor(&mut trigram_bytes)
+            .map_err(|err| map_trigram_error("encode trigram sidecar", &err))?;
+        write_atomic_durable(
+            &text_authority_trigram_path(path),
+            &trigram_bytes,
+            "trigram sidecar",
+        )?;
 
-    let mut positions_folded_bytes = Vec::new();
-    positions_folded
-        .serialize_cbor(&mut positions_folded_bytes)
-        .map_err(|err| map_positions_error("encode folded positions sidecar", &err))?;
-    write_atomic_durable(
-        &text_authority_positions_folded_path(path),
-        &positions_folded_bytes,
-        "folded positions sidecar",
-    )?;
+        let mut trigram_folded_bytes = Vec::new();
+        trigram_folded
+            .serialize_cbor(&mut trigram_folded_bytes)
+            .map_err(|err| map_trigram_error("encode folded trigram sidecar", &err))?;
+        write_atomic_durable(
+            &text_authority_trigram_folded_path(path),
+            &trigram_folded_bytes,
+            "folded trigram sidecar",
+        )?;
 
-    let mut table_bytes = Vec::new();
-    ciborium::into_writer(&table, &mut table_bytes).map_err(|err| {
-        CoreError::Storage(format!(
-            "lexical: encode text authority doc table {}: {err}",
-            text_authority_doc_table_path(path).display()
-        ))
-    })?;
-    write_atomic_durable(
-        &text_authority_doc_table_path(path),
-        &table_bytes,
-        "text authority doc table",
-    )
+        let mut positions_bytes = Vec::new();
+        positions
+            .serialize_cbor(&mut positions_bytes)
+            .map_err(|err| map_positions_error("encode positions sidecar", &err))?;
+        write_atomic_durable(
+            &text_authority_positions_path(path),
+            &positions_bytes,
+            "positions sidecar",
+        )?;
+
+        let mut positions_folded_bytes = Vec::new();
+        positions_folded
+            .serialize_cbor(&mut positions_folded_bytes)
+            .map_err(|err| map_positions_error("encode folded positions sidecar", &err))?;
+        write_atomic_durable(
+            &text_authority_positions_folded_path(path),
+            &positions_folded_bytes,
+            "folded positions sidecar",
+        )?;
+
+        let mut table_bytes = Vec::new();
+        ciborium::into_writer(&table, &mut table_bytes).map_err(|err| {
+            CoreError::Storage(format!(
+                "lexical: encode text authority doc table {}: {err}",
+                text_authority_doc_table_path(path).display()
+            ))
+        })?;
+        write_atomic_durable(
+            &text_authority_doc_table_path(path),
+            &table_bytes,
+            "text authority doc table",
+        )
+    }
+}
+
+/// Rebuild every text-authority sidecar from a full scan of the live index.
+///
+/// This is the path for a generation with no prior sidecars (a fresh
+/// `ReplaceGeneration`) and for batches whose ops retire whole surfaces. A
+/// delta that only replaces or tombstones scopes goes through
+/// [`update_text_authority_sidecars_incrementally`] instead.
+fn persist_text_authority_sidecars(
+    path: &Path,
+    fields: &SchemaFields,
+    index: &Index,
+    generation: ManifestGeneration,
+) -> Result<(), CoreError> {
+    let docs = collect_text_authority_docs(index, fields)?;
+    let mut builders = TextAuthorityBuilders::empty(generation)?;
+    for (offset, (candidate_id, indexed_text, _folded_indexed_text)) in docs.into_iter().enumerate()
+    {
+        let doc_id = u64::try_from(offset.saturating_add(1)).map_err(|err| {
+            CoreError::InvalidContract(format!("lexical: text authority doc id overflow: {err}"))
+        })?;
+        builders.upsert(doc_id, candidate_id, indexed_text)?;
+    }
+    builders.publish(path)
+}
+
+/// Apply a scope-level delta to inherited sidecars instead of rebuilding them.
+///
+/// The prior sidecars are the base generation's (hard-linked into this
+/// generation's directory). Retired candidates are removed from all four
+/// derived indexes and the doc table; new chunks are appended under fresh doc
+/// ids past the prior maximum. Cost is proportional to the changed scopes,
+/// not to the size of the base — the second half of QI-BB-006.
+fn update_text_authority_sidecars_incrementally(
+    path: &Path,
+    generation: ManifestGeneration,
+    prior: TextAuthorityShard,
+    retired_candidate_ids: &BTreeSet<String>,
+    added_chunks: &[(String, String)],
+) -> Result<(), CoreError> {
+    let mut builders = TextAuthorityBuilders::from_prior(generation, prior)?;
+    let retired_doc_ids: Vec<u64> = builders
+        .table
+        .iter()
+        .filter(|(_, doc)| retired_candidate_ids.contains(&doc.candidate_id))
+        .map(|(doc_id, _)| *doc_id)
+        .collect();
+    for doc_id in retired_doc_ids {
+        builders.retire(doc_id)?;
+    }
+    for (candidate_id, indexed_text) in added_chunks {
+        let doc_id = builders.next_doc_id()?;
+        builders.upsert(doc_id, candidate_id.clone(), indexed_text.clone())?;
+    }
+    builders.publish(path)
 }
 
 fn load_text_authority_sidecars(path: &Path) -> Result<Option<TextAuthorityShard>, CoreError> {
@@ -3476,17 +3765,6 @@ fn declared_delta_base_generation(
     Ok(None)
 }
 
-fn op_touches_text_authority(op: &LexicalChannelOp) -> bool {
-    matches!(
-        op,
-        LexicalChannelOp::UpsertChunk(_)
-            | LexicalChannelOp::DeleteChunk(_)
-            | LexicalChannelOp::ReplaceLexicalScope(_)
-            | LexicalChannelOp::TombstoneLexicalScope(_)
-            | LexicalChannelOp::ClearLexicalSurface(_)
-    )
-}
-
 fn legacy_ops_for_batch(
     batch: &SearchCorpusIngestBatch,
     include_seal: bool,
@@ -3807,10 +4085,9 @@ impl LexicalIndexBuildPort for LexicalAdapter {
 }
 
 impl LexicalAdapter {
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "writer guard must span the full op-apply + commit so partial commits cannot interleave with sibling builds for the same generation"
-    )]
+    /// The writer guard spans op-apply, commit, and the sidecar update so
+    /// partial commits cannot interleave with sibling builds for the same
+    /// generation; the sidecar update reads `guarded.index` after commit.
     fn commit_ops_under_lock(
         &self,
         handle: &Arc<Mutex<GenerationWriter>>,
@@ -3820,29 +4097,57 @@ impl LexicalAdapter {
         let mut guarded = handle
             .lock()
             .map_err(|err| CoreError::Storage(format!("lexical writer poisoned: {err}")))?;
+        // Planned before any op runs: the retired candidates are only nameable
+        // while the pre-mutation index still holds them.
+        let delta = plan_text_authority_delta(&guarded.index, &self.fields, ops)?;
         let mut needs_commit = false;
-        let mut needs_text_authority_rebuild = false;
         for op in ops {
             if self.apply_op(&guarded.writer, key, op)? {
                 needs_commit = true;
-                if op_touches_text_authority(op) {
-                    needs_text_authority_rebuild = true;
-                }
             }
         }
-        if needs_commit {
-            let _opstamp = guarded
-                .writer
-                .commit()
-                .map_err(|err| CoreError::Storage(format!("lexical: commit: {err}")))?;
-            if needs_text_authority_rebuild {
+        if !needs_commit {
+            return Ok(());
+        }
+        let _opstamp = guarded
+            .writer
+            .commit()
+            .map_err(|err| CoreError::Storage(format!("lexical: commit: {err}")))?;
+        let generation_dir = self.index_path(key);
+        match delta {
+            TextAuthorityDelta::None => {}
+            TextAuthorityDelta::Rebuild => {
                 self.invalidate_regex_match_cache_generation(key)?;
                 persist_text_authority_sidecars(
-                    self.index_path(key).as_path(),
+                    generation_dir.as_path(),
                     &self.fields,
                     &guarded.index,
                     key.generation,
                 )?;
+            }
+            TextAuthorityDelta::Incremental {
+                retired_candidate_ids,
+                added_chunks,
+            } => {
+                self.invalidate_regex_match_cache_generation(key)?;
+                // A generation with no prior sidecars (a fresh replace) has
+                // nothing to update in place; a prior that fails to load is a
+                // storage fault and propagates rather than being rebuilt over.
+                match load_text_authority_sidecars(generation_dir.as_path())? {
+                    Some(prior) => update_text_authority_sidecars_incrementally(
+                        generation_dir.as_path(),
+                        key.generation,
+                        prior,
+                        &retired_candidate_ids,
+                        &added_chunks,
+                    )?,
+                    None => persist_text_authority_sidecars(
+                        generation_dir.as_path(),
+                        &self.fields,
+                        &guarded.index,
+                        key.generation,
+                    )?,
+                }
             }
         }
         Ok(())

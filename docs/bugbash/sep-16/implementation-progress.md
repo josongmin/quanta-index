@@ -163,7 +163,7 @@ delta_fresh_entries=text-authority-docs.cbor:109848, text-authority-trigram-fold
   search-corpus-generation-identity.cbor:131, search-corpus-delta-base.cbor:1
 ```
 
-**해석 — QI-BB-006은 절반만 닫혔다.**
+**해석 — QI-BB-006은 절반만 닫혔다.** (아래 §3.4.1에서 두 번째 절반의 재도출 비용을 닫았다.)
 
 | 구분 | base | delta 신규 기록 | 상태 |
 | --- | ---: | ---: | --- |
@@ -178,6 +178,40 @@ QI-BB-006을 `passed`로 올리지 않는다.**
 회귀 test `delta_generation_does_not_rewrite_unchanged_base_bytes`는 색인 데이터 절반만
 예산으로 판정하고 sidecar 바이트는 별도로 보고한다 — 하나의 숫자로 합치면 남은 절반이
 가려진다. 검출력은 확인했다: `inherit_generation_entry`를 full copy로 되돌리면 실패한다.
+
+### 3.4.1 W3 lexical — text-authority sidecar 증분 갱신
+
+`quanta-index-lq-trigram` / `quanta-index-lq-positions`에는 `from_prior` +
+`upsert_doc`/`remove_doc`가 이미 있었다 — 증분 경로가 crate에 설계돼 있는데 adapter가
+배선하지 않고 매번 full scan + 재토큰화 + 재구성을 했다.
+
+**구현** (`crates/quanta-index-lexical/src/lib.rs`):
+- `TextAuthorityBuilders` — 4개 파생 인덱스 + doc table을 하나가 소유. "문서를 어디에
+  넣는가/빼는가"가 full rebuild와 증분 경로에서 갈라질 수 없다.
+- `plan_text_authority_delta(index, ops)` — op 적용 **전**에 batch를 분류한다.
+  `ReplaceLexicalScope`/`TombstoneLexicalScope`만이면 `Incremental { retired, added }`,
+  `ClearLexicalSurface`/legacy chunk op가 있으면 `Rebuild`. retired candidate는 mutation
+  전 index에서 path term query로 읽는다(sidecar 스키마 변경 없음).
+- 새 doc은 `max(doc_id)+1`. 이전 sidecar가 없으면(fresh replace) full rebuild. 이전
+  sidecar 로드 실패는 **propagate** — full rebuild로 조용히 덮지 않는다.
+
+**정확성 oracle (DA-06)**: `delta_generation_text_authority_matches_independent_full_rebuild`
+— replace + tombstone + 신규 scope를 delta로 적용한 g2와, 같은 최종 내용을 base 없이
+build한 g9를 regex/phrase/keyword 11개 probe로 대조. 전부 일치. 검출력: `retire`를
+무력화하면 `regex retired: incremental=["chunk-beta"] rebuild=[]`로 실패.
+
+**비용 실측** (1,502 scopes, sidecar 1.68 MB, contended host):
+
+```
+QI-BB-006-EVIDENCE scopes=1502 text_authority_bytes=1681370 delta_one_scope_ms=898 full_rebuild_ms=1516
+```
+
+**정직한 해석**: 1.7× 개선이지만 **write bytes는 그대로 O(N)**이다. sidecar 파일이
+단일 CBOR blob이라 어떤 갱신도 전체를 다시 쓴다. 이번에 O(delta)가 된 것은 재도출
+(scan + 토큰화 + posting 재구성)이고, load(`from_prior`는 O(P)) + serialize가 O(N)으로
+남는다. 진짜 O(delta) write는 **sharded sidecar 포맷**(scope/segment 단위 shard +
+manifest)이 필요하며 이는 W3의 포맷 버저닝 항목이다. **QI-BB-006은 여전히 `passed`가
+아니다** — 색인 절반 해결, sidecar 재도출 해결, sidecar write bytes 미해결.
 
 ## 4. Finding 상태 (QI-BB-001–032)
 
