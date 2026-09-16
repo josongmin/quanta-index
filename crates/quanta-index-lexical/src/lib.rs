@@ -2334,18 +2334,6 @@ fn lexical_sealed_identity_path(generation_dir: &Path) -> PathBuf {
 /// A delta generation inherits searchable data from its base, never the
 /// base's immutable sealed identity. The target remains mutable until its own
 /// seal batch durably writes a generation-scoped identity.
-fn remove_inherited_lexical_sealed_identity(generation_dir: &Path) -> Result<(), CoreError> {
-    let path = lexical_sealed_identity_path(generation_dir);
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(CoreError::Storage(format!(
-            "lexical: remove inherited sealed generation identity {}: {error}",
-            path.display()
-        ))),
-    }
-}
-
 fn write_atomic_durable(path: &Path, bytes: &[u8], label: &str) -> Result<(), CoreError> {
     static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let parent = path.parent().ok_or_else(|| {
@@ -2426,6 +2414,291 @@ fn persist_lexical_sealed_identity(
         &bytes,
         "sealed generation identity",
     )
+}
+
+/// File name of the sealed manifest: the content commitment every query
+/// open and every activation validator checks (QI-BB-030).
+const LEXICAL_SEALED_MANIFEST_FILE_NAME: &str = "search-corpus-generation-manifest.cbor";
+const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 1;
+
+fn lexical_sealed_manifest_path(generation_dir: &Path) -> PathBuf {
+    generation_dir.join(LEXICAL_SEALED_MANIFEST_FILE_NAME)
+}
+
+/// One query-required file the manifest commits to.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SealedArtifactCommitmentV1 {
+    name: String,
+    bytes: u64,
+    sha256: [u8; 32],
+}
+
+/// What a sealed lexical generation promises a query can open.
+///
+/// Written after every sidecar is durable and before the sealed identity, so
+/// the identity's presence implies the manifest's. It names the Tantivy
+/// commit (`meta.json` digest) and every text-authority sidecar with its
+/// length and SHA-256, and it carries the identity's `manifest_digest` so the
+/// two files bind each other. `text_authority` is explicit: a generation
+/// built without sidecars says so, instead of "no files" meaning either
+/// "not required" or "lost".
+///
+/// Auxiliary snapshots (repo meta, ownership, ...) are not committed here:
+/// under the current authority they are still published into a sealed
+/// generation after the seal, which is the mutable overlay W2 moves out.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LexicalSealedManifestV1 {
+    format_version: u32,
+    manifest_digest: String,
+    tantivy_meta_sha256: [u8; 32],
+    text_authority: bool,
+    artifacts: Vec<SealedArtifactCommitmentV1>,
+}
+
+/// Wire shape of the manifest: a fixed-order CBOR array so the encoding is
+/// auditable without a derive.
+type SealedManifestRowV1 = (u32, String, [u8; 32], bool, Vec<(String, u64, [u8; 32])>);
+
+impl LexicalSealedManifestV1 {
+    fn to_row(&self) -> SealedManifestRowV1 {
+        (
+            self.format_version,
+            self.manifest_digest.clone(),
+            self.tantivy_meta_sha256,
+            self.text_authority,
+            self.artifacts
+                .iter()
+                .map(|artifact| (artifact.name.clone(), artifact.bytes, artifact.sha256))
+                .collect(),
+        )
+    }
+
+    fn from_row(row: SealedManifestRowV1) -> Self {
+        let (format_version, manifest_digest, tantivy_meta_sha256, text_authority, artifacts) = row;
+        Self {
+            format_version,
+            manifest_digest,
+            tantivy_meta_sha256,
+            text_authority,
+            artifacts: artifacts
+                .into_iter()
+                .map(|(name, bytes, sha256)| SealedArtifactCommitmentV1 {
+                    name,
+                    bytes,
+                    sha256,
+                })
+                .collect(),
+        }
+    }
+}
+
+fn sha256_of_file(path: &Path, label: &str) -> Result<(u64, [u8; 32]), CoreError> {
+    use sha2::Digest as _;
+    let bytes = std::fs::read(path).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: read {label} {} for commitment: {error}",
+            path.display()
+        ))
+    })?;
+    let length = u64::try_from(bytes.len()).map_err(|error| {
+        CoreError::Storage(format!("lexical: {label} length overflow: {error}"))
+    })?;
+    Ok((length, sha2::Sha256::digest(&bytes).into()))
+}
+
+/// The text-authority files a sealed generation commits to, in manifest
+/// order.
+fn text_authority_sidecar_names() -> [&'static str; 5] {
+    [
+        TEXT_AUTHORITY_DOC_TABLE_FILE_NAME,
+        TEXT_AUTHORITY_TRIGRAM_FILE_NAME,
+        TEXT_AUTHORITY_TRIGRAM_FOLDED_FILE_NAME,
+        TEXT_AUTHORITY_POSITIONS_FILE_NAME,
+        TEXT_AUTHORITY_POSITIONS_FOLDED_FILE_NAME,
+    ]
+}
+
+/// Measure the generation directory as sealed and write its manifest.
+///
+/// Runs after the Tantivy commit and the sidecar publish are durable and
+/// before the sealed identity is written, so a crash in between leaves an
+/// unsealed generation (no identity), never a sealed one without a manifest.
+fn persist_lexical_sealed_manifest(
+    generation_dir: &Path,
+    identity: &GenerationSnapshot,
+) -> Result<(), CoreError> {
+    let (_meta_len, tantivy_meta_sha256) = sha256_of_file(
+        &generation_dir.join(TANTIVY_INDEX_META_FILE_NAME),
+        "tantivy meta",
+    )?;
+    let sidecars = text_authority_sidecar_names();
+    let present: Vec<&str> = sidecars
+        .iter()
+        .copied()
+        .filter(|name| generation_dir.join(name).is_file())
+        .collect();
+    if !present.is_empty() && present.len() != sidecars.len() {
+        return Err(CoreError::Storage(format!(
+            "lexical: refusing to seal {} with a partial text-authority sidecar set: present={present:?}",
+            generation_dir.display()
+        )));
+    }
+    let mut artifacts = Vec::with_capacity(present.len());
+    for name in present {
+        let (bytes, sha256) = sha256_of_file(&generation_dir.join(name), name)?;
+        artifacts.push(SealedArtifactCommitmentV1 {
+            name: name.to_string(),
+            bytes,
+            sha256,
+        });
+    }
+    let manifest = LexicalSealedManifestV1 {
+        format_version: LEXICAL_SEALED_MANIFEST_FORMAT_VERSION,
+        manifest_digest: identity.manifest_digest.clone(),
+        tantivy_meta_sha256,
+        text_authority: !artifacts.is_empty(),
+        artifacts,
+    };
+    let bytes = encode_cbor(&manifest.to_row(), "sealed generation manifest")?;
+    write_atomic_durable(
+        &lexical_sealed_manifest_path(generation_dir),
+        &bytes,
+        "sealed generation manifest",
+    )
+}
+
+fn read_lexical_sealed_manifest(
+    generation_dir: &Path,
+) -> Result<LexicalSealedManifestV1, CoreError> {
+    let path = lexical_sealed_manifest_path(generation_dir);
+    let bytes = std::fs::read(&path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            CoreError::Typed {
+                code: "GENERATION_MANIFEST_MISSING".to_string(),
+                message: format!(
+                    "lexical: sealed generation has no content manifest at {}; it predates the sealed-manifest format and requires explicit migration",
+                    path.display()
+                ),
+            }
+        } else {
+            CoreError::Storage(format!(
+                "lexical: read sealed generation manifest {}: {error}",
+                path.display()
+            ))
+        }
+    })?;
+    let row: SealedManifestRowV1 = ciborium::from_reader(bytes.as_slice()).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: decode sealed generation manifest {}: {error}",
+            path.display()
+        ))
+    })?;
+    let manifest = LexicalSealedManifestV1::from_row(row);
+    if manifest.format_version == LEXICAL_SEALED_MANIFEST_FORMAT_VERSION {
+        Ok(manifest)
+    } else {
+        Err(CoreError::Typed {
+            code: "GENERATION_MANIFEST_FORMAT_UNSUPPORTED".to_string(),
+            message: format!(
+                "lexical: sealed generation manifest {} has format {} (supported {})",
+                path.display(),
+                manifest.format_version,
+                LEXICAL_SEALED_MANIFEST_FORMAT_VERSION
+            ),
+        })
+    }
+}
+
+fn sidecar_corrupt(generation_dir: &Path, name: &str, reason: &str) -> CoreError {
+    CoreError::Typed {
+        code: "GENERATION_SIDECAR_CORRUPT".to_string(),
+        message: format!(
+            "lexical: sealed generation {} does not match its manifest: {name}: {reason}",
+            generation_dir.display()
+        ),
+    }
+}
+
+/// Prove that what is on disk is what the seal committed to.
+///
+/// This is the check the activation validator and the cold open share, so
+/// activation can only ack a generation a query can open. It reads and
+/// hashes every committed file — once per residency, thanks to the snapshot
+/// registry — and refuses on any missing, truncated, rewritten or extra
+/// text-authority file, on a Tantivy commit other than the sealed one, and
+/// on a manifest whose digest is not the identity's.
+fn verify_lexical_sealed_manifest(
+    generation_dir: &Path,
+    identity: &GenerationSnapshot,
+) -> Result<LexicalSealedManifestV1, CoreError> {
+    let manifest = read_lexical_sealed_manifest(generation_dir)?;
+    if manifest.manifest_digest != identity.manifest_digest {
+        return Err(CoreError::Typed {
+            code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
+            message: format!(
+                "lexical: sealed manifest under {} was written for digest {} but the identity says {}",
+                generation_dir.display(),
+                manifest.manifest_digest,
+                identity.manifest_digest
+            ),
+        });
+    }
+    let (_meta_len, meta_sha256) = sha256_of_file(
+        &generation_dir.join(TANTIVY_INDEX_META_FILE_NAME),
+        "tantivy meta",
+    )?;
+    if meta_sha256 != manifest.tantivy_meta_sha256 {
+        return Err(sidecar_corrupt(
+            generation_dir,
+            TANTIVY_INDEX_META_FILE_NAME,
+            "index commit differs from the sealed commit",
+        ));
+    }
+    let committed: BTreeSet<&str> = manifest
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.name.as_str())
+        .collect();
+    for name in text_authority_sidecar_names() {
+        let on_disk = generation_dir.join(name).is_file();
+        match (manifest.text_authority, committed.contains(name), on_disk) {
+            (true, true, true) | (false, false, false) => {}
+            (true, true, false) => return Err(sidecar_corrupt(generation_dir, name, "missing")),
+            (false, false, true) => {
+                return Err(sidecar_corrupt(
+                    generation_dir,
+                    name,
+                    "present although the seal committed to no text authority",
+                ));
+            }
+            (_, _, _) => {
+                return Err(sidecar_corrupt(
+                    generation_dir,
+                    name,
+                    "manifest text-authority capability and commitments disagree",
+                ));
+            }
+        }
+    }
+    for artifact in &manifest.artifacts {
+        let path = generation_dir.join(&artifact.name);
+        let (bytes, sha256) = sha256_of_file(&path, &artifact.name)?;
+        if bytes != artifact.bytes {
+            return Err(sidecar_corrupt(
+                generation_dir,
+                &artifact.name,
+                &format!("{bytes} bytes on disk, {} committed", artifact.bytes),
+            ));
+        }
+        if sha256 != artifact.sha256 {
+            return Err(sidecar_corrupt(
+                generation_dir,
+                &artifact.name,
+                "content digest differs from the committed digest",
+            ));
+        }
+    }
+    Ok(manifest)
 }
 
 fn read_lexical_sealed_identity(generation_dir: &Path) -> Result<GenerationSnapshot, CoreError> {
@@ -3241,6 +3514,19 @@ fn is_writer_lock_entry(file_name: &str) -> bool {
     file_name.starts_with(TANTIVY_LOCK_FILE_PREFIX)
 }
 
+/// Whether an entry is the base's seal (identity or content manifest).
+///
+/// A delta is unsealed until its own seal writes its own pair; inheriting
+/// the base's would make a half-built delta claim the base's identity on
+/// disk, which a crash before the seal would leave behind for the boot
+/// scanner to refuse.
+fn is_seal_marker_entry(file_name: &str) -> bool {
+    matches!(
+        file_name,
+        LEXICAL_SEALED_IDENTITY_FILE_NAME | LEXICAL_SEALED_MANIFEST_FILE_NAME
+    )
+}
+
 /// Materializes one inherited entry: link the immutable ones, copy the rest.
 fn inherit_generation_entry(source: &Path, target: &Path) -> Result<(), CoreError> {
     let file_name = source
@@ -3328,7 +3614,11 @@ fn clone_generation_directory_preserving_existing(src: &Path, dst: &Path) -> Res
         if target_path.exists() {
             continue;
         }
-        if entry.file_name().to_str().is_some_and(is_writer_lock_entry) {
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| is_writer_lock_entry(name) || is_seal_marker_entry(name))
+        {
             continue;
         }
         inherit_generation_entry(&entry_path, &target_path)?;
@@ -3393,6 +3683,29 @@ impl LexicalAdapter {
     fn index_path(&self, key: &GenKey) -> PathBuf {
         GenerationStorageKeyV1::for_repo_revision(&key.repo_id, &key.revision_id)
             .generation_dir(&self.state_root, key.generation)
+    }
+
+    /// Drop the cached writer for a generation about to be sealed, after one
+    /// final commit so the sealed `meta.json` is the last one this writer
+    /// will ever produce.
+    fn retire_writer(&self, key: &GenKey) -> Result<(), CoreError> {
+        let removed = self
+            .writers
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?
+            .remove(key);
+        if let Some(handle) = removed {
+            let mut guarded = handle
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("lexical writer poisoned: {err}")))?;
+            let _opstamp = guarded
+                .writer
+                .commit()
+                .map_err(|err| CoreError::Storage(format!("lexical: seal commit: {err}")))?;
+            drop(guarded);
+            drop(handle);
+        }
+        Ok(())
     }
 
     fn writer_handle(&self, key: &GenKey) -> Result<Arc<Mutex<GenerationWriter>>, CoreError> {
@@ -3513,7 +3826,6 @@ impl LexicalAdapter {
             generation: requested_base,
         };
         clone_generation_directory_preserving_existing(&self.index_path(&base_key), &target_path)?;
-        remove_inherited_lexical_sealed_identity(&target_path)?;
         persist_lexical_delta_base(&target_path, requested_base)
     }
 
@@ -3533,6 +3845,30 @@ impl LexicalAdapter {
         let term = Term::from_field_text(self.fields.doc_kind, doc_kind);
         let _opstamp = writer.delete_term(term);
         true
+    }
+
+    /// Apply an op that writes a generation-local snapshot rather than the
+    /// index. Returns `false` (nothing to commit) for every op it handles and
+    /// for ops this adapter does not act on.
+    fn apply_snapshot_op(&self, key: &GenKey, op: &LexicalChannelOp) -> Result<bool, CoreError> {
+        if let LexicalChannelOp::FullBundle(bundle) = op {
+            let metadata = decode_repo_metadata_payload(&bundle.payload)?;
+            {
+                let mut guard = self.repo_metadata.lock().map_err(|err| {
+                    CoreError::Storage(format!("lexical repo metadata poisoned: {err}"))
+                })?;
+                match metadata.clone() {
+                    Some(metadata) => {
+                        let _prior = guard.insert(key.clone(), metadata);
+                    }
+                    None => {
+                        let _prior = guard.remove(key);
+                    }
+                }
+            }
+            persist_repo_metadata_snapshot(&self.repo_metadata_path(key), metadata.as_ref())?;
+        }
+        Ok(false)
     }
 
     fn apply_op(
@@ -3693,24 +4029,7 @@ impl LexicalAdapter {
             }
             // FullBundle/Seal carry no document-level effect (dispatcher's
             // ledger update observes Seal).
-            LexicalChannelOp::FullBundle(bundle) => {
-                let metadata = decode_repo_metadata_payload(&bundle.payload)?;
-                {
-                    let mut guard = self.repo_metadata.lock().map_err(|err| {
-                        CoreError::Storage(format!("lexical repo metadata poisoned: {err}"))
-                    })?;
-                    match metadata.clone() {
-                        Some(metadata) => {
-                            let _prior = guard.insert(key.clone(), metadata);
-                        }
-                        None => {
-                            let _prior = guard.remove(key);
-                        }
-                    }
-                }
-                persist_repo_metadata_snapshot(&self.repo_metadata_path(key), metadata.as_ref())?;
-                Ok(false)
-            }
+            LexicalChannelOp::FullBundle(_) => self.apply_snapshot_op(key, op),
             LexicalChannelOp::Seal(_)
             | LexicalChannelOp::UpsertCommit(_)
             | LexicalChannelOp::UpsertRef(_)
@@ -3881,6 +4200,16 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
         let ops = legacy_ops_for_batch(batch, batch.seal)?;
         self.build(&batch.repo_id, &batch.revision_id, batch.generation, &ops)?;
         if batch.seal {
+            // Retire the writer before measuring: a cached writer would
+            // commit again on eviction and rewrite `meta.json` behind the
+            // manifest. Then manifest first, identity last: the identity's
+            // presence is the promotion point and implies a durable manifest.
+            self.retire_writer(&GenKey {
+                repo_id: batch.repo_id.clone(),
+                revision_id: batch.revision_id.clone(),
+                generation: batch.generation,
+            })?;
+            persist_lexical_sealed_manifest(&generation_dir, &candidate)?;
             persist_lexical_sealed_identity(&generation_dir, &candidate)?;
         }
         Ok(())
@@ -4061,6 +4390,39 @@ impl FileContributorIngestPort for LexicalAdapter {
     }
 }
 
+/// Whether an op changes the Tantivy index (and therefore needs a writer and
+/// a commit), as opposed to writing a generation-local snapshot file or
+/// being a no-op for this adapter.
+///
+/// The classification is what lets a sealed generation keep accepting the
+/// mutable overlay (repo metadata) while refusing anything that would change
+/// the committed index behind its sealed manifest.
+const fn op_mutates_index(op: &LexicalChannelOp) -> bool {
+    match op {
+        LexicalChannelOp::UpsertChunk(_)
+        | LexicalChannelOp::DeleteChunk(_)
+        | LexicalChannelOp::UpsertSymbol(_)
+        | LexicalChannelOp::DeleteSymbol(_)
+        | LexicalChannelOp::ReplaceLexicalScope(_)
+        | LexicalChannelOp::TombstoneLexicalScope(_)
+        | LexicalChannelOp::ClearLexicalSurface(_) => true,
+        LexicalChannelOp::FullBundle(_)
+        | LexicalChannelOp::Seal(_)
+        | LexicalChannelOp::UpsertCommit(_)
+        | LexicalChannelOp::UpsertRef(_)
+        | LexicalChannelOp::UpsertTag(_)
+        | LexicalChannelOp::DeleteRef(_)
+        | LexicalChannelOp::DeleteTag(_)
+        | LexicalChannelOp::UpsertDirty(_)
+        | LexicalChannelOp::EvictDirty(_)
+        | LexicalChannelOp::UpsertParseTree(_)
+        | LexicalChannelOp::DeleteParseTree(_)
+        | LexicalChannelOp::ReplaceStructuralScope(_)
+        | LexicalChannelOp::TombstoneStructuralScope(_)
+        | LexicalChannelOp::UpsertDiffHunk(_) => false,
+    }
+}
+
 impl LexicalIndexBuildPort for LexicalAdapter {
     fn build(
         &self,
@@ -4088,7 +4450,27 @@ impl LexicalIndexBuildPort for LexicalAdapter {
             revision_id: revision.clone(),
             generation,
         };
+        let mutates_index = ops.iter().any(op_mutates_index);
+        let sealed = lexical_sealed_identity_path(&self.index_path(&key)).exists();
+        if sealed && mutates_index {
+            return Err(CoreError::Typed {
+                code: "GENERATION_IMMUTABLE".to_string(),
+                message: format!(
+                    "lexical: generation {} is sealed; its index cannot change behind the sealed manifest",
+                    generation.get()
+                ),
+            });
+        }
         self.prepare_generation_for_ops(&key, ops)?;
+        if !mutates_index {
+            // Snapshot-only ops never touch the index, so they must not open
+            // a writer: a writer left in the cache would commit on eviction
+            // and rewrite `meta.json` under a sealed manifest.
+            for op in ops {
+                let _committed = self.apply_snapshot_op(&key, op)?;
+            }
+            return Ok(());
+        }
         let handle = self.writer_handle(&key)?;
         self.commit_ops_under_lock(&handle, &key, ops)
     }
@@ -4197,6 +4579,8 @@ impl LexicalIndexOpenPort for LexicalAdapter {
                 ),
             });
         }
+        // Prove the sealed commitment before decoding anything it covers.
+        let manifest = verify_lexical_sealed_manifest(&path, &identity)?;
         // Serving must never create or repair a generation. A cached writer
         // handle could survive deletion or corruption of the backing files,
         // so every open bypasses that cache and proves the durable directory.
@@ -4218,6 +4602,13 @@ impl LexicalIndexOpenPort for LexicalAdapter {
             .reload()
             .map_err(|err| CoreError::Storage(format!("lexical: reader reload: {err}")))?;
         let text_authority = load_text_authority_sidecars(&path)?;
+        if text_authority.is_some() != manifest.text_authority {
+            return Err(sidecar_corrupt(
+                &path,
+                "text-authority",
+                "loaded capability disagrees with the sealed manifest",
+            ));
+        }
         let repo_commit_recency =
             load_repo_commit_recency_snapshot(&self.repo_commit_recency_path(&key))?;
         let repo_meta = load_repo_meta_snapshot(&self.repo_meta_path(&key))?;
@@ -4310,6 +4701,9 @@ impl GenerationIdentityValidatePort for LexicalAdapter {
         }
         let observed = read_lexical_sealed_identity(&generation_dir)?;
         validate_lexical_sealed_identity(&observed, candidate)?;
+        // The same commitment a query open proves: every sidecar a query
+        // reads, by length and digest, plus the sealed Tantivy commit.
+        let _manifest = verify_lexical_sealed_manifest(&generation_dir, &observed)?;
         let index = Index::open_in_dir(&generation_dir).map_err(|error| {
             CoreError::Storage(format!(
                 "lexical: strict open existing generation {}: {error}",

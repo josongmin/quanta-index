@@ -50,6 +50,7 @@
 | IMPL-G | P3 (dead surface) | `quanta-index-searchd`가 사용하지 않는 `quanta-index-lexical` 의존성을 선언 (`just rust-machete` RED) | **fixed** — 의존성 제거 |
 | IMPL-B | **P1 (silent data loss, 확정)** | sidecar authority가 delta보다 먼저 publish되면 delta generation이 base를 통째로 잃는다 | **fixed + regression green** |
 | IMPL-C | **P1 (durability / cross-generation corruption, 확정)** | `persist_text_authority_sidecars`가 `File::create`(in-place truncate)로 sidecar를 쓴다 | **fixed + regression green** |
+| IMPL-I | **P1 (sealed corpus mutated after seal, 확정)** | writer cache eviction commit이 sealed generation의 `meta.json`을 재기록. sealed manifest 도입 즉시 검출 | **fixed** — seal 시 writer retire, sealed에 index mutation 거부. §3.10 |
 | IMPL-H | P3 (flaky merge gate) | `quanta-index-embed` `max_batch_knob_controls_request_splitting`이 concurrency race로 간헐 실패 | **fixed** — §3.8 IMPL-H |
 | IMPL-D | **P1 (retrieval correctness, 확정)** | regex prefilter가 리터럴 *교대(alternation)* 집합을 *논리곱(AND)*으로 처리해 조용히 결과를 떨어뜨린다 | **fixed + regression green** |
 
@@ -288,7 +289,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W0 | **passed** | G0-L/G0-S/G0-C passed, G0-R baseline pinned(cooperative-only). §3 참조. timing 재측정만 `blocked: contended-host` |
 | W1 | planned | |
 | W2 | planned | G0-C PASS → SQLite(rusqlite bundled)로 진행. `quanta-index-catalog-probe`는 W2 landing 시 삭제 |
-| W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) 완료. 남은 것: sharded sidecar 포맷(O(delta) write), ANN index 재구축/versioned artifact(QI-BB-027), seal durability(QI-BB-030) |
+| W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + sealed manifest(§3.10) 완료. 남은 것: sharded sidecar 포맷(O(delta) write), ANN versioned artifact(QI-BB-027), semantic seal manifest 대칭 |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), QI-BB-024 regex cache, streaming projection collector |
 | W5 | planned | G0-R 결론에 따라 cooperative checkpoint 설계 |
 | W6 | planned | M4 적용 |
@@ -722,6 +723,50 @@ core의 destructive port는 incomplete 전용이라 sealed 삭제 경로 자체�
 | reported bytes vs `du` | reclaim은 삭제 직전 recursive bytes를 측정해 receipt에 싣는다. **retention 정책의 `max_bytes`는 여전히 authority record 길이**다 — physical bytes 기반 admission으로 바꾸는 것은 catalog(W2)에서 snapshot row에 physical/logical bytes를 두면서 한다(보완 #2, #5) |
 
 **검출력**: reclaim 호출을 `Absent`로 변이 → `expected {4, 5} on disk, found {1, 2, 3, 4, 5}`.
+
+## 3.10 QI-BB-030 — sealed manifest: seal이 query-openable 상태를 약속한다 (구현 완료, handle 재사용은 후속)
+
+**진단 확정**: IMPL-C가 sidecar 쓰기를 atomic-durable로 바꿨지만 내용 commitment는 없었다.
+activation/restart validator(`validate_generation_identity`)는 identity + `Index::open_in_dir`만
+확인하고 query `open`이 추가로 decode하는 sidecar 5개는 보지 않았다 → publish/activation이
+성공한 뒤 첫 query가 실패할 수 있었다.
+
+**구현 중 발견한 추가 결함 (IMPL-I)**: writer cache의 eviction commit이 **sealed generation의
+`meta.json`을 다시 썼다**. seal 뒤에도 writer가 cache에 남아 있다가 evict될 때 commit(변경
+없음)이 실행돼 Tantivy가 meta.json을 새 opstamp로 재기록한다. 새 manifest가 이걸 즉시 잡아냈다
+(`writer_cache_evicts_lru_after_threshold`가 `index commit differs from the sealed commit`으로
+실패). 불변식 §4.5 "sealed corpus는 불변" 위반이 실재했던 것.
+
+**설계** (`crates/quanta-index-lexical/src/lib.rs`):
+- `search-corpus-generation-manifest.cbor` (`LexicalSealedManifestV1`, 고정 순서 CBOR array):
+  format version, identity의 `manifest_digest`(상호 결속), `meta.json` sha256(Tantivy commit
+  identity), `text_authority: bool`(명시적 capability — "파일 없음"이 "불필요"인지 "유실"인지
+  구분), 각 sidecar `(name, bytes, sha256)`. **sidecar publish → manifest → identity** 순서로
+  identity 존재가 durable manifest를 함축한다.
+- `verify_lexical_sealed_manifest`: digest 결속, meta.json digest, sidecar 집합/길이/해시,
+  capability 일치. `open`(cold, registry 덕에 residency당 1회)과 `validate_generation_identity`
+  (activation/restart)가 **같은 함수**를 부른다 — 두 문이 같은 파일 집합을 증명한다.
+- seal 시 writer를 **retire**(마지막 commit 후 cache에서 제거). sealed generation에 index
+  mutating op(`op_mutates_index`)가 오면 `GENERATION_IMMUTABLE`; overlay op(repo metadata)는
+  writer 없이 적용(`apply_snapshot_op`) — snapshot-only op가 writer를 만들지 않으므로 eviction
+  commit 경로 자체가 닫힌다.
+- delta clone이 base의 identity/manifest를 **상속하지 않는다**(`is_seal_marker_entry`). 이전에는
+  base identity를 link한 뒤 지우는 방식이라 그 사이 crash면 "base identity를 가진 gN" 디렉터리가
+  남아 boot scanner가 거부했다.
+- manifest 없는 sealed generation → `GENERATION_MANIFEST_MISSING`(explicit migration). legacy
+  fallback 없음 — 기존 dev state root는 재구축 대상.
+
+**검증** (`crates/quanta-index-lexical/tests/sealed_manifest.rs`, 실제 파일 fault injection):
+
+| 기준 | 검증 |
+| --- | --- |
+| 각 sidecar의 missing / truncation / bit flip / stale copy에서 activation·open 모두 거부 | `both_doors_refuse_a_sidecar_that_does_not_match_the_manifest` — 5 sidecar × 4 fault, 복원 후 재허용 |
+| Tantivy commit 결속 | `both_doors_refuse_an_index_commit_other_than_the_sealed_one` (meta.json에 개행 추가 — Tantivy는 열지만 manifest는 거부) |
+| manifest 부재 / identity-manifest 결속 | `..._without_a_manifest_...` (`GENERATION_MANIFEST_MISSING`), `an_identity_that_does_not_match_the_manifest_is_refused` (`GENERATION_IDENTITY_DIGEST_MISMATCH`) |
+| seal 후 index 불변 + overlay 허용 | `a_sealed_generation_refuses_index_mutation_but_keeps_its_overlay` |
+| sidecar 없는 generation의 명시적 capability | manifest `text_authority=false` + 있으면 안 되는 sidecar 등장 시 거부(`verify` 분기) |
+| activation 직후 동일 검증 handle로 query (보완 #3 후반) | **후속** — validator port가 handle을 반환하지 않는다. registry가 있으니 lifecycle이 activation 시 `acquire`로 warm 하는 것은 가능하지만 "재사용"은 port 변경이 필요 |
+| fsync/rename crash point 매트릭스 | 부분 — 순서(sidecar → manifest → identity)로 half-promoted 상태가 unsealed로 남는 것은 구조적으로 보장; crash 주입 fixture(§12.2)는 W7 qualification |
 
 ## 4. Finding 상태 (QI-BB-001–032)
 
