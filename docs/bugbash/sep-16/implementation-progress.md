@@ -1007,3 +1007,4 @@ key에 다른 body가 와도 거부되지 않았다. receipt는 `manifest_digest
 | 2026-09-17 | ae54693 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,013 passed / 0 failed (QI-BB-026 + QI-BB-017 포함) |
 | 2026-09-17 | 880a5c3 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,021 passed / 0 failed (QI-BB-028 + QI-BB-031 포함) |
 | 2026-09-17 | (W2 tree) | `just rust-fuzz-smoke 30` | 4 target × 30s, crash 0 (receipt wire DTO 변경에 대한 fail-closed 확인) |
+| 2026-09-17 | cb7bbd9 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,016 passed / 0 failed (QI-BB-032 catalog 포함) |
