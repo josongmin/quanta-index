@@ -815,3 +815,5 @@ base_generation`)이 있었고, 빈 digest는 build/authority까지 통과한 �
 | 2026-09-17 | 4741872 | `just rust-profile verify-rust` | RED — `quanta-index-embed` flaky (IMPL-H) |
 | 2026-09-17 | (dirty tree) | `just rust-profile verify-rust` | 무효 — GC 작업 중 tree를 컴파일함 |
 | 2026-09-17 | 21e7d26 | `just rust-profile verify-rust` | **GREEN** — exit 0, 1,981 passed / 0 failed (clippy·semgrep·deny·machete·doc·policy·public-api·hexagonal·test-authority 포함) |
+| 2026-09-17 | a9b0d90 | `just rust-profile verify-rust` | RED — `e2e_restart_replay_determinism`: history-only generation seal이 index를 만들지 않아 manifest가 meta.json을 못 찾음 (→ 022e80b) |
+| 2026-09-17 | 2504b33 | `just rust-profile verify-rust` | **GREEN** — exit 0, 1,989 passed / 0 failed |
