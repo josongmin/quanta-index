@@ -369,3 +369,25 @@ fn a_sealed_generation_refuses_index_mutation_but_keeps_its_overlay() -> TestRes
     adapter.build(&repo(), &revision(), generation, &[overlay])?;
     expect_admitted(&knock(&adapter, generation), "overlay after seal")
 }
+
+/// A generation that indexed nothing still seals to an openable state: the
+/// seal creates the empty index it commits to, and the manifest says
+/// explicitly that there is no text authority.
+#[test]
+fn a_generation_that_indexed_nothing_seals_openable() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(temp.path().to_path_buf());
+    let generation = ManifestGeneration::new(1);
+    let mut empty = sealed_batch(generation, "unused")?;
+    empty.replace_scopes.clear();
+    adapter.build_batch(&empty)?;
+    let doors = knock(&adapter, generation);
+    if let Err(err) = doors.validate {
+        return Err(format!("validator refused an empty sealed generation: {err}").into());
+    }
+    match doors.open {
+        Ok(0) => Ok(()),
+        Ok(hits) => Err(format!("empty generation served {hits} hits").into()),
+        Err(err) => Err(format!("open refused an empty sealed generation: {err}").into()),
+    }
+}

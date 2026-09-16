@@ -3685,16 +3685,14 @@ impl LexicalAdapter {
             .generation_dir(&self.state_root, key.generation)
     }
 
-    /// Drop the cached writer for a generation about to be sealed, after one
-    /// final commit so the sealed `meta.json` is the last one this writer
-    /// will ever produce.
-    fn retire_writer(&self, key: &GenKey) -> Result<(), CoreError> {
-        let removed = self
-            .writers
-            .lock()
-            .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?
-            .remove(key);
-        if let Some(handle) = removed {
+    /// Make the sealed index final: open the writer (creating an empty index
+    /// for a generation that indexed nothing, which must still be openable),
+    /// commit once so the sealed `meta.json` is the last one any writer
+    /// produces, and drop the writer from the cache so nothing can commit to
+    /// this generation again.
+    fn finalize_index_for_seal(&self, key: &GenKey) -> Result<(), CoreError> {
+        let handle = self.writer_handle(key)?;
+        {
             let mut guarded = handle
                 .lock()
                 .map_err(|err| CoreError::Storage(format!("lexical writer poisoned: {err}")))?;
@@ -3702,9 +3700,13 @@ impl LexicalAdapter {
                 .writer
                 .commit()
                 .map_err(|err| CoreError::Storage(format!("lexical: seal commit: {err}")))?;
-            drop(guarded);
-            drop(handle);
         }
+        let _removed = self
+            .writers
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?
+            .remove(key);
+        drop(handle);
         Ok(())
     }
 
@@ -4200,11 +4202,12 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
         let ops = legacy_ops_for_batch(batch, batch.seal)?;
         self.build(&batch.repo_id, &batch.revision_id, batch.generation, &ops)?;
         if batch.seal {
-            // Retire the writer before measuring: a cached writer would
-            // commit again on eviction and rewrite `meta.json` behind the
-            // manifest. Then manifest first, identity last: the identity's
-            // presence is the promotion point and implies a durable manifest.
-            self.retire_writer(&GenKey {
+            // Finalize and retire the writer before measuring: a cached
+            // writer would commit again on eviction and rewrite `meta.json`
+            // behind the manifest. Then manifest first, identity last: the
+            // identity's presence is the promotion point and implies a
+            // durable manifest.
+            self.finalize_index_for_seal(&GenKey {
                 repo_id: batch.repo_id.clone(),
                 revision_id: batch.revision_id.clone(),
                 generation: batch.generation,
