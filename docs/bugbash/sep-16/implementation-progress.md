@@ -732,3 +732,11 @@ core의 destructive port는 incomplete 전용이라 sealed 삭제 경로 자체�
 ## 5. 실행 command 기록
 
 <!-- RUN-LOG -->
+
+| 시각 (host) | HEAD | command | 결과 |
+| --- | --- | --- | --- |
+| 2026-09-16 | 2cdd9ec | `just rust-profile verify-rust` | RED — `end_to_end::hybrid_query_rejects_zero_top_k_with_typed_code`가 폐기된 `HYB_TOP_K_INVALID`를 pin (→ 5129bf4에서 shared code로 교체) |
+| 2026-09-17 | 966cf1e | `just rust-profile verify-rust` | RED — 새 test file 2개의 lint (→ 4741872, aa8dca9) |
+| 2026-09-17 | 4741872 | `just rust-profile verify-rust` | RED — `quanta-index-embed` flaky (IMPL-H) |
+| 2026-09-17 | (dirty tree) | `just rust-profile verify-rust` | 무효 — GC 작업 중 tree를 컴파일함 |
+| 2026-09-17 | 21e7d26 | `just rust-profile verify-rust` | **GREEN** — exit 0, 1,981 passed / 0 failed (clippy·semgrep·deny·machete·doc·policy·public-api·hexagonal·test-authority 포함) |
