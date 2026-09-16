@@ -939,3 +939,4 @@ boot도 (§3.13 전) 모든 sealed generation을 open했다.
 | 2026-09-17 | (W5 tree) | `… --test admission` | 3/3; cap mutation → 1 FAIL, revert |
 | 2026-09-17 | 120ee7c | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,001 passed / 0 failed (W5 phase 1 포함) |
 | 2026-09-17 | 1a2f440 | `just rust-profile verify-rust` | RED — 2,006 passed / 0 failed, `rust-doc`에서 stale intra-doc link(`scan_persisted_generations`) (→ 다음 commit) |
+| 2026-09-17 | ae54693 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,013 passed / 0 failed (QI-BB-026 + QI-BB-017 포함) |
