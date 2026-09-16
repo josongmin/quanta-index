@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
-use quanta_index_core::LexicalExecutionBudgetV1;
+use quanta_index_core::{LexicalExecutionBudgetV1, RegexMatchCachePolicy};
 use quanta_index_embed::{
     DEFAULT_CONCURRENCY, DEFAULT_MAX_BATCH, DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST,
     DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT, OpenAiProviderConfig,
@@ -160,6 +160,9 @@ pub struct SearchdConfig {
     /// control and ingest sockets are not tunable: their mutations must not
     /// interleave, so they always run [`ServerAdmissionPolicy::SERIAL_DISPATCH`].
     query_admission_policy: ServerAdmissionPolicy,
+    /// Bounds for the lexical regex match cache (QI-BB-024): entries,
+    /// resident bytes, and the widest match set one entry may hold.
+    regex_match_cache_policy: RegexMatchCachePolicy,
 }
 
 impl SearchdConfig {
@@ -176,6 +179,7 @@ impl SearchdConfig {
             snapshot_registry_policy: SnapshotRegistryPolicy::DEFAULT,
             lexical_execution_budget: LexicalExecutionBudgetV1::DEFAULT,
             query_admission_policy: ServerAdmissionPolicy::DEFAULT,
+            regex_match_cache_policy: RegexMatchCachePolicy::DEFAULT,
         }
     }
 
@@ -186,7 +190,8 @@ impl SearchdConfig {
             .with_semantic_embedder_profile(semantic_embedder_profile_from_env()?)
             .with_snapshot_registry_policy(snapshot_registry_policy_from_env()?)
             .with_lexical_execution_budget(lexical_execution_budget_from_env()?)
-            .with_query_admission_policy(query_admission_policy_from_env()?);
+            .with_query_admission_policy(query_admission_policy_from_env()?)
+            .with_regex_match_cache_policy(regex_match_cache_policy_from_env()?);
         let _validated = base.search_corpus_history_retention_policy()?;
         Ok(base)
     }
@@ -264,6 +269,17 @@ impl SearchdConfig {
     #[must_use]
     pub const fn with_query_admission_policy(mut self, policy: ServerAdmissionPolicy) -> Self {
         self.query_admission_policy = policy;
+        self
+    }
+
+    #[must_use]
+    pub const fn regex_match_cache_policy(&self) -> RegexMatchCachePolicy {
+        self.regex_match_cache_policy
+    }
+
+    #[must_use]
+    pub const fn with_regex_match_cache_policy(mut self, policy: RegexMatchCachePolicy) -> Self {
+        self.regex_match_cache_policy = policy;
         self
     }
 
@@ -500,6 +516,42 @@ where
             dispatch_budget.as_millis()
         )
     })
+}
+
+/// Resolve the regex match cache bounds from env (QI-BB-024).
+///
+/// Each knob is optional and, unset, takes the matching field of
+/// [`RegexMatchCachePolicy::DEFAULT`]; zero is refused.
+///
+/// - `QUANTA_INDEX_REGEX_CACHE_MAX_ENTRIES`
+/// - `QUANTA_INDEX_REGEX_CACHE_MAX_RESIDENT_BYTES`
+/// - `QUANTA_INDEX_REGEX_CACHE_MAX_MATCHES_PER_ENTRY`
+pub(crate) fn regex_match_cache_policy_from_env() -> Result<RegexMatchCachePolicy> {
+    regex_match_cache_policy_from_lookup(optional_env)
+}
+
+fn regex_match_cache_policy_from_lookup<F>(lookup: F) -> Result<RegexMatchCachePolicy>
+where
+    F: Fn(&str) -> Result<Option<String>>,
+{
+    const ENTRIES: &str = "QUANTA_INDEX_REGEX_CACHE_MAX_ENTRIES";
+    const BYTES: &str = "QUANTA_INDEX_REGEX_CACHE_MAX_RESIDENT_BYTES";
+    const MATCHES: &str = "QUANTA_INDEX_REGEX_CACHE_MAX_MATCHES_PER_ENTRY";
+    let defaults = RegexMatchCachePolicy::DEFAULT;
+    let max_entries = match lookup(ENTRIES)? {
+        None => defaults.max_entries(),
+        Some(raw) => required_positive_raw_usize(ENTRIES, Some(raw))?,
+    };
+    let max_resident_bytes = match lookup(BYTES)? {
+        None => defaults.max_resident_bytes(),
+        Some(raw) => required_positive_raw_u64(BYTES, Some(raw))?,
+    };
+    let max_matches_per_entry = match lookup(MATCHES)? {
+        None => defaults.max_matches_per_entry(),
+        Some(raw) => required_positive_raw_usize(MATCHES, Some(raw))?,
+    };
+    RegexMatchCachePolicy::new(max_entries, max_resident_bytes, max_matches_per_entry)
+        .map_err(anyhow::Error::from)
 }
 
 fn raw_u64(name: &str, raw: &str) -> Result<u64> {
@@ -978,6 +1030,28 @@ mod tests {
         let pinned = openai_model_revision_from_lookup(|_name| Ok(Some(" 2024-01 ".to_string())))
             .expect("a trimmed token binds");
         assert_eq!(pinned, "2024-01");
+    }
+
+    #[test]
+    fn regex_match_cache_env_binding_layers_over_the_default_and_refuses_zero() {
+        const BYTES: &str = "QUANTA_INDEX_REGEX_CACHE_MAX_RESIDENT_BYTES";
+        let unset =
+            regex_match_cache_policy_from_lookup(|_name| Ok(None)).expect("unset selects default");
+        assert_eq!(unset, RegexMatchCachePolicy::DEFAULT);
+        let bytes_only = regex_match_cache_policy_from_lookup(|name| {
+            Ok((name == BYTES).then(|| "4096".to_string()))
+        })
+        .expect("one knob layers over the default");
+        assert_eq!(bytes_only.max_resident_bytes(), 4096);
+        assert_eq!(
+            bytes_only.max_entries(),
+            RegexMatchCachePolicy::DEFAULT.max_entries()
+        );
+        let zero = regex_match_cache_policy_from_lookup(|name| {
+            Ok((name == BYTES).then(|| "0".to_string()))
+        })
+        .expect_err("zero must fail closed");
+        assert!(zero.to_string().contains(BYTES));
     }
 
     #[test]

@@ -504,3 +504,76 @@ mod tests {
         assert!(LexicalPolicy::validate_query_against_readiness(pin, None).is_err());
     }
 }
+
+/// Bounds for the regex match cache (QI-BB-024).
+///
+/// The cache used to be bounded by entry count alone, so 128 broad regexes
+/// over a large corpus could own 128 copies of the corpus's candidate ids.
+/// Now it is bounded by resident bytes and by the cardinality of one entry,
+/// and every bound is a refusal or an eviction the stats report, never a
+/// silent growth. Fields are private so every policy is valid.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegexMatchCachePolicy {
+    entries: usize,
+    resident_bytes: u64,
+    matches_per_entry: usize,
+}
+
+impl RegexMatchCachePolicy {
+    /// 128 entries, 64 MiB resident, and no single entry wider than the
+    /// default examined-candidate budget: a regex that matched more than
+    /// the budget allows to be examined would not have been served.
+    pub const DEFAULT: Self = Self {
+        entries: 128,
+        resident_bytes: 64 * 1024 * 1024,
+        matches_per_entry: 250_000,
+    };
+
+    pub fn new(
+        max_entries: usize,
+        max_resident_bytes: u64,
+        max_matches_per_entry: usize,
+    ) -> Result<Self, CoreError> {
+        if max_entries == 0 || max_resident_bytes == 0 || max_matches_per_entry == 0 {
+            return Err(CoreError::InvalidContract(
+                "lexical: regex match cache policy limits must be non-zero".to_string(),
+            ));
+        }
+        Ok(Self {
+            entries: max_entries,
+            resident_bytes: max_resident_bytes,
+            matches_per_entry: max_matches_per_entry,
+        })
+    }
+
+    #[must_use]
+    pub const fn max_entries(self) -> usize {
+        self.entries
+    }
+
+    #[must_use]
+    pub const fn max_resident_bytes(self) -> u64 {
+        self.resident_bytes
+    }
+
+    #[must_use]
+    pub const fn max_matches_per_entry(self) -> usize {
+        self.matches_per_entry
+    }
+}
+
+/// What the regex match cache did so far, for operators and tests.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RegexMatchCacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub entries: usize,
+    pub resident_bytes: u64,
+    /// Entries evicted to make room under the entry or byte bound.
+    pub evictions: u64,
+    /// Results not cached because they matched more candidates than one
+    /// entry may hold.
+    pub refused_cardinality: u64,
+    /// Results not cached because they alone would exceed the byte bound.
+    pub refused_bytes: u64,
+}

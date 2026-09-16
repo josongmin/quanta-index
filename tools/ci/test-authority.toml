@@ -148,6 +148,12 @@ owner = "quanta-index-lexical"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "lexical-regex-cache-bounds"
+path = "crates/quanta-index-lexical/tests/regex_cache_bounds.rs"
+owner = "quanta-index-lexical"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "semantic-sealed-manifest"
 path = "crates/quanta-index-semantic/tests/sealed_manifest.rs"
 owner = "quanta-index-semantic"

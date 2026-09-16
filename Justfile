@@ -188,6 +188,7 @@ rust-test-integration:
     {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test execution_budget --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test sealed_manifest --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test boot_inventory --all-features --locked
+    {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test regex_cache_bounds --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test regex_literal_alternation --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-ipc --test admission --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-catalog --test idempotency --all-features --locked

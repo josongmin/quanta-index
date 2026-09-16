@@ -64,8 +64,9 @@ use quanta_index_core::domains::generation::{
 use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
     LexicalExecutionBudgetV1, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalSearchPageV1,
-    LexicalSearcher, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMetaIngestPort,
-    RepoTopicIngestPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
+    LexicalSearcher, RegexMatchCachePolicy, RegexMatchCacheStats, RepoCommitRecencyIngestPort,
+    RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, SealedGenerationScanPort,
+    SearchCorpusBatchBuildPort,
     domains::lexical::LexicalPolicy,
     timeref::{is_rev_at_time_spec, parse_search_timeref_ms},
 };
@@ -128,7 +129,6 @@ const REPO_TOPIC_FILE_NAME: &str = "repo-topic.cbor";
 const REPO_DESCRIPTION_FILE_NAME: &str = "repo-description.cbor";
 const FILE_OWNERSHIP_FILE_NAME: &str = "file-ownership.cbor";
 const FILE_CONTRIBUTOR_FILE_NAME: &str = "file-contributor.cbor";
-const REGEX_MATCH_CACHE_MAX: usize = 128;
 const CASE_SENSITIVE_TOKENIZER_NAME: &str = "qi_case_sensitive";
 const TEXT_AUTHORITY_DOC_TABLE_FILE_NAME: &str = "text-authority-docs.cbor";
 const TEXT_AUTHORITY_TRIGRAM_FILE_NAME: &str = "text-authority-trigram.cbor";
@@ -385,16 +385,59 @@ struct RegexMatchCacheKey {
     normalized_source: String,
 }
 
+/// Why a computed match set was not cached.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RegexMatchCacheRefusal {
+    Cardinality { matches: usize },
+    Bytes { bytes: u64 },
+}
+
+/// Per-entry accounting overhead beyond the candidate id bytes: the
+/// `String` header and the tree node, rounded generously so the byte bound
+/// errs on the side of counting more.
+const REGEX_MATCH_CACHE_ENTRY_OVERHEAD: u64 = 64;
+
+/// Bytes one match set holds resident: every candidate id's bytes plus the
+/// per-id overhead.
+fn regex_match_set_bytes(matches: &BTreeSet<String>) -> u64 {
+    matches.iter().fold(0_u64, |total, id| {
+        total
+            .saturating_add(u64::try_from(id.len()).map_or(u64::MAX, |len| len))
+            .saturating_add(REGEX_MATCH_CACHE_ENTRY_OVERHEAD)
+    })
+}
+
+/// Byte-weighted LRU of regex match sets, shared by `Arc` (QI-BB-024).
+///
+/// A hit hands out the shared set — never a deep clone of every candidate
+/// id — and an insert evicts least-recently-used entries until both the
+/// entry and the byte bound hold. A result wider than one entry may be is
+/// refused rather than cached, so a run of broad regexes cannot turn the
+/// cache into copies of the corpus.
 struct RegexMatchCache {
-    entries: BTreeMap<RegexMatchCacheKey, BTreeSet<String>>,
+    entries: BTreeMap<RegexMatchCacheKey, Arc<BTreeSet<String>>>,
     order: VecDeque<RegexMatchCacheKey>,
+    policy: RegexMatchCachePolicy,
+    resident_bytes: u64,
+    hits: u64,
+    misses: u64,
+    evictions: u64,
+    refused_cardinality: u64,
+    refused_bytes: u64,
 }
 
 impl RegexMatchCache {
-    fn new() -> Self {
+    fn new(policy: RegexMatchCachePolicy) -> Self {
         Self {
             entries: BTreeMap::new(),
             order: VecDeque::new(),
+            policy,
+            resident_bytes: 0,
+            hits: 0,
+            misses: 0,
+            evictions: 0,
+            refused_cardinality: 0,
+            refused_bytes: 0,
         }
     }
 
@@ -407,32 +450,83 @@ impl RegexMatchCache {
         }
     }
 
-    fn get(&mut self, key: &RegexMatchCacheKey) -> Option<BTreeSet<String>> {
-        let cached = self.entries.get(key).cloned()?;
+    fn get(&mut self, key: &RegexMatchCacheKey) -> Option<Arc<BTreeSet<String>>> {
+        let Some(cached) = self.entries.get(key).map(Arc::clone) else {
+            self.misses = self.misses.saturating_add(1);
+            return None;
+        };
+        self.hits = self.hits.saturating_add(1);
         self.touch(key);
         Some(cached)
     }
 
-    fn insert(&mut self, key: RegexMatchCacheKey, matches: BTreeSet<String>) {
-        if self.entries.contains_key(&key) {
-            let _replaced = self.entries.insert(key.clone(), matches);
-            self.touch(&key);
-            return;
+    fn remove_entry(&mut self, key: &RegexMatchCacheKey) {
+        if let Some(removed) = self.entries.remove(key) {
+            self.resident_bytes = self
+                .resident_bytes
+                .saturating_sub(regex_match_set_bytes(&removed));
         }
-        while self.entries.len() >= REGEX_MATCH_CACHE_MAX {
+    }
+
+    fn insert(
+        &mut self,
+        key: RegexMatchCacheKey,
+        matches: Arc<BTreeSet<String>>,
+    ) -> Result<(), RegexMatchCacheRefusal> {
+        if matches.len() > self.policy.max_matches_per_entry() {
+            self.refused_cardinality = self.refused_cardinality.saturating_add(1);
+            return Err(RegexMatchCacheRefusal::Cardinality {
+                matches: matches.len(),
+            });
+        }
+        let bytes = regex_match_set_bytes(&matches);
+        if bytes > self.policy.max_resident_bytes() {
+            self.refused_bytes = self.refused_bytes.saturating_add(1);
+            return Err(RegexMatchCacheRefusal::Bytes { bytes });
+        }
+        if self.entries.contains_key(&key) {
+            self.remove_entry(&key);
+            self.order.retain(|candidate| candidate != &key);
+        }
+        while !self.entries.is_empty()
+            && (self.entries.len() >= self.policy.max_entries()
+                || self.resident_bytes.saturating_add(bytes) > self.policy.max_resident_bytes())
+        {
             let Some(evicted) = self.order.pop_front() else {
                 break;
             };
-            let _removed = self.entries.remove(&evicted);
+            self.remove_entry(&evicted);
+            self.evictions = self.evictions.saturating_add(1);
         }
         self.order.push_back(key.clone());
+        self.resident_bytes = self.resident_bytes.saturating_add(bytes);
         let _inserted = self.entries.insert(key, matches);
+        Ok(())
     }
 
     fn invalidate_generation(&mut self, generation: &GenKey) {
-        self.entries
-            .retain(|key, _matches| &key.generation != generation);
+        let stale: Vec<RegexMatchCacheKey> = self
+            .entries
+            .keys()
+            .filter(|key| &key.generation == generation)
+            .cloned()
+            .collect();
+        for key in &stale {
+            self.remove_entry(key);
+        }
         self.order.retain(|key| &key.generation != generation);
+    }
+
+    fn stats(&self) -> RegexMatchCacheStats {
+        RegexMatchCacheStats {
+            hits: self.hits,
+            misses: self.misses,
+            entries: self.entries.len(),
+            resident_bytes: self.resident_bytes,
+            evictions: self.evictions,
+            refused_cardinality: self.refused_cardinality,
+            refused_bytes: self.refused_bytes,
+        }
     }
 
     #[cfg(test)]
@@ -3645,6 +3739,7 @@ impl LexicalAdapter {
             state_root,
             RegexPolicy::defaults(),
             LexicalExecutionBudgetV1::DEFAULT,
+            RegexMatchCachePolicy::DEFAULT,
         )
     }
 
@@ -3657,16 +3752,25 @@ impl LexicalAdapter {
         state_root: PathBuf,
         regex_policy: RegexPolicy,
         execution_budget: LexicalExecutionBudgetV1,
+        regex_match_cache_policy: RegexMatchCachePolicy,
     ) -> Self {
         Self {
             state_root,
             fields: SchemaFields::build(),
             writers: Arc::new(Mutex::new(WriterCache::new())),
             repo_metadata: Arc::new(Mutex::new(BTreeMap::new())),
-            regex_match_cache: Arc::new(Mutex::new(RegexMatchCache::new())),
+            regex_match_cache: Arc::new(Mutex::new(RegexMatchCache::new(regex_match_cache_policy))),
             regex_policy,
             execution_budget,
         }
+    }
+
+    /// What the regex match cache has done so far (QI-BB-024).
+    pub fn regex_match_cache_stats(&self) -> Result<RegexMatchCacheStats, CoreError> {
+        self.regex_match_cache
+            .lock()
+            .map(|cache| cache.stats())
+            .map_err(|err| CoreError::Storage(format!("lexical regex cache poisoned: {err}")))
     }
 
     fn index_path(&self, key: &GenKey) -> PathBuf {
@@ -6472,7 +6576,7 @@ impl TantivySearcher {
         &self,
         source: &str,
         options: &LqOptions,
-    ) -> Result<BTreeSet<String>, CoreError> {
+    ) -> Result<Arc<BTreeSet<String>>, CoreError> {
         let normalized_source = Self::regex_source_for_options(source, options);
         let cache_key = options
             .timeout_ms
@@ -6482,6 +6586,7 @@ impl TantivySearcher {
             let mut cache = self.regex_match_cache.lock().map_err(|err| {
                 CoreError::Storage(format!("lexical regex cache poisoned: {err}"))
             })?;
+            // A hit shares the set; nothing is cloned per candidate.
             if let Some(cached) = cache.get(cache_key) {
                 return Ok(cached);
             }
@@ -6562,11 +6667,15 @@ impl TantivySearcher {
             };
             let _inserted: bool = out.insert(doc.candidate_id.clone());
         }
+        let out = Arc::new(out);
         if let Some(cache_key) = cache_key {
             let mut cache = self.regex_match_cache.lock().map_err(|err| {
                 CoreError::Storage(format!("lexical regex cache poisoned: {err}"))
             })?;
-            cache.insert(cache_key, out.clone());
+            // A result too wide for one entry is served but not kept; the
+            // refusal is counted in the stats rather than logged.
+            let _kept: Result<(), RegexMatchCacheRefusal> =
+                cache.insert(cache_key, Arc::clone(&out));
         }
         Ok(out)
     }
@@ -9380,10 +9489,16 @@ mod regex_match_cache_tests {
             generation: generation_two,
             normalized_source: "foo".to_string(),
         };
-        let mut cache = RegexMatchCache::new();
-        cache.insert(key_one.clone(), sample_matches("cand-1"));
-        cache.insert(key_two.clone(), sample_matches("cand-2"));
-        cache.insert(key_three.clone(), sample_matches("cand-3"));
+        let mut cache = RegexMatchCache::new(RegexMatchCachePolicy::DEFAULT);
+        cache
+            .insert(key_one.clone(), Arc::new(sample_matches("cand-1")))
+            .expect("fits");
+        cache
+            .insert(key_two.clone(), Arc::new(sample_matches("cand-2")))
+            .expect("fits");
+        cache
+            .insert(key_three.clone(), Arc::new(sample_matches("cand-3")))
+            .expect("fits");
         assert_eq!(cache.len(), 3);
 
         cache.invalidate_generation(&generation_one);
@@ -9391,7 +9506,82 @@ mod regex_match_cache_tests {
         assert_eq!(cache.len(), 1);
         assert!(cache.get(&key_one).is_none());
         assert!(cache.get(&key_two).is_none());
-        assert_eq!(cache.get(&key_three), Some(sample_matches("cand-3")));
+        assert_eq!(
+            cache.get(&key_three).as_deref(),
+            Some(&sample_matches("cand-3"))
+        );
+        assert_eq!(
+            cache.stats().resident_bytes,
+            regex_match_set_bytes(&sample_matches("cand-3")),
+            "invalidation gives back the evicted generation's bytes"
+        );
+    }
+
+    /// The cache is bounded by bytes and cardinality, not entries alone.
+    ///
+    /// A set wider than the policy is refused and counted, inserts evict
+    /// least-recently-used entries until the byte bound holds, and a hit is
+    /// the shared set rather than a copy (QI-BB-024).
+    #[test]
+    fn regex_match_cache_is_byte_bounded_and_shares_hits() {
+        let generation = sample_generation(1);
+        let key = |name: &str| RegexMatchCacheKey {
+            generation: generation.clone(),
+            normalized_source: name.to_string(),
+        };
+        let set = |ids: &[&str]| -> Arc<BTreeSet<String>> {
+            Arc::new(ids.iter().map(|id| (*id).to_string()).collect())
+        };
+        let one_entry_bytes = regex_match_set_bytes(&set(&["cand-1"]));
+        let policy =
+            RegexMatchCachePolicy::new(8, one_entry_bytes.saturating_mul(2).saturating_add(1), 2)
+                .expect("valid policy");
+        let mut cache = RegexMatchCache::new(policy);
+
+        // Too many matches for one entry: refused, counted, not resident.
+        assert_eq!(
+            cache.insert(key("broad"), set(&["cand-1", "cand-2", "cand-3"])),
+            Err(RegexMatchCacheRefusal::Cardinality { matches: 3 })
+        );
+        assert_eq!(cache.stats().refused_cardinality, 1);
+        assert_eq!(cache.stats().resident_bytes, 0);
+
+        // Two single-candidate entries fit under the byte bound.
+        cache.insert(key("a"), set(&["cand-1"])).expect("fits");
+        cache.insert(key("b"), set(&["cand-2"])).expect("fits");
+        assert_eq!(cache.stats().entries, 2);
+        assert_eq!(cache.stats().evictions, 0);
+
+        // A third does not: the least recently used ("a") goes.
+        cache
+            .insert(key("c"), set(&["cand-3"]))
+            .expect("fits after eviction");
+        let stats = cache.stats();
+        assert_eq!(stats.entries, 2);
+        assert_eq!(stats.evictions, 1);
+        assert!(stats.resident_bytes <= policy.max_resident_bytes());
+        assert!(cache.get(&key("a")).is_none());
+        assert_eq!(cache.stats().misses, 1);
+
+        // A hit is the same allocation the cache holds.
+        let first = cache.get(&key("b")).expect("b is resident");
+        let second = cache.get(&key("b")).expect("b is still resident");
+        assert!(Arc::ptr_eq(&first, &second), "a hit must share, not clone");
+        assert_eq!(cache.stats().hits, 2);
+
+        // A single set wider than the whole byte bound is refused on bytes.
+        let wide = set(&["cand-x", "cand-y"]);
+        assert!(regex_match_set_bytes(&wide) <= policy.max_resident_bytes());
+        let mut tiny = RegexMatchCache::new(
+            RegexMatchCachePolicy::new(8, one_entry_bytes.saturating_sub(1), 8).expect("policy"),
+        );
+        assert_eq!(
+            tiny.insert(key("z"), set(&["cand-1"])),
+            Err(RegexMatchCacheRefusal::Bytes {
+                bytes: one_entry_bytes
+            })
+        );
+        assert_eq!(tiny.stats().refused_bytes, 1);
     }
 
     #[test]

@@ -45,7 +45,9 @@ crate quanta_index_core
 │   │   │   └── trait SearchCorpusIngestPort: pub
 │   │   └── mod service: pub(self)
 │   │       ├── struct LexicalExecutionBudgetV1: pub
-│   │       └── struct LexicalPolicy: pub
+│   │       ├── struct LexicalPolicy: pub
+│   │       ├── struct RegexMatchCachePolicy: pub
+│   │       └── struct RegexMatchCacheStats: pub
 │   ├── mod repomap: pub
 │   │   ├── mod inbound: pub(self)
 │   │   │   └── trait RepoMapQueryPort: pub

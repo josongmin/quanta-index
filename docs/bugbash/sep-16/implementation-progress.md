@@ -290,7 +290,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W1 | planned | |
 | W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + **QI-BB-032 idempotency catalog(§3.16, `quanta-index-catalog` SQLite adapter 신설, probe crate 삭제)** 완료. 남은 것: QI-BB-020 auxiliary authority shard/persistence(catalog 확장), quarantine control surface |
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) 완료. 남은 것: sharded sidecar 포맷(O(delta) write), ANN versioned artifact(QI-BB-027) |
-| W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), QI-BB-024 regex cache, streaming projection collector |
+| W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), streaming projection collector |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. 남은 것: cancel을 lexical collector 내부(candidate batch 사이)까지 내리기, overload/refusal 서버 metric |
 | W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), QI-BB-018/019 hybrid |
 | W7 | planned | |
@@ -980,6 +980,36 @@ key에 다른 body가 와도 거부되지 않았다. receipt는 `manifest_digest
 | receipt wire shape(모든 field 필수, legacy receipt decode 거부) | `contract` receipt round-trip + `legacy_clearless_batches_decode_as_zero_clear_and_receipts_do_not_v1`; public-api baseline 갱신 |
 
 **정직한 한계**: (a) repo-map bundle route는 receipt가 아니라 `RepoMapMutationAck`를 내고 batch digest가 없어 catalog 밖 — 계약이 receipt 형태로 바뀔 때 편입. (b) caller의 `batch_digest`와 server body hash를 **대조**하지는 않는다(producer digest scheme이 다름) — 같은 key 아래 body 불변만 강제. (c) Resume 시 unsealed batch의 재적용은 op별 overwrite semantics에 기대며, 별도 "이미 적용됨" 판정은 없다.
+
+## 3.17 QI-BB-024 — regex match cache는 bytes와 cardinality로 bounded되고, hit은 공유한다 (구현 완료)
+
+**진단 확정**: `RegexMatchCache`는 entry 128개만 제한, value는 후보 ID 전체 `BTreeSet<String>`, hit마다
+deep clone, insert도 clone 보관 → broad regex 128개 × N doc.
+
+**구현**:
+- core `RegexMatchCachePolicy { max_entries, max_resident_bytes, max_matches_per_entry }`(private field, zero
+  거부; `DEFAULT` 128 / 64 MiB / 250,000 = `LexicalExecutionBudgetV1::DEFAULT`와 같은 폭) + `RegexMatchCacheStats
+  { hits, misses, entries, resident_bytes, evictions, refused_cardinality, refused_bytes }`.
+- lexical `RegexMatchCache`: `Arc<BTreeSet<String>>` 값, byte 가중 LRU(id bytes + entry당 64B overhead),
+  policy보다 넓은 결과는 **serve하되 cache하지 않음**(`refused_cardinality`/`refused_bytes` 카운트), insert는 entry·byte
+  bound 둘 다 만족할 때까지 LRU evict, generation invalidation은 bytes를 되돌려줌. hit은 `Arc::clone` — 후보 id
+  deep clone 0. `collect_matching_candidate_ids_for_regex -> Arc<BTreeSet<String>>`.
+- `LexicalAdapter::with_state_root_and_policies(root, RegexPolicy, budget, **RegexMatchCachePolicy**)` +
+  `regex_match_cache_stats()`. searchd env `QUANTA_INDEX_REGEX_CACHE_MAX_{ENTRIES,RESIDENT_BYTES,MATCHES_PER_ENTRY}`
+  (각각 optional, unset은 DEFAULT field, zero 거부).
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| broad regex(6/6 doc, policy 2)는 정확히 serve되지만 cache 안 됨(`refused_cardinality=1, entries=0`); narrow는 cache되고 반복은 hit, resident bytes 불변, 답 동일 | `lexical/tests/regex_cache_bounds.rs::a_broad_regex_is_served_but_not_cached_and_a_narrow_one_is_a_shared_hit` |
+| entry 2개분 byte bound 아래 distinct regex 6개 → 매 query 후 `resident_bytes ≤ policy`, entries=2, evictions=4, evict된 regex는 miss로 정확히 재계산 | `…::resident_bytes_never_exceed_the_policy_under_many_distinct_regexes` |
+| 단위: cardinality/bytes 거부·카운트, LRU eviction, `Arc::ptr_eq` hit 공유, invalidation이 bytes 반환 | `regex_match_cache_tests::regex_match_cache_is_byte_bounded_and_shares_hits`, `…_invalidates_only_target_generation` |
+| env knob 계층화·zero 거부 | `searchd::config::tests::regex_match_cache_env_binding_layers_over_the_default_and_refuses_zero` |
+
+**정직한 한계**: (a) 후보 restriction은 여전히 `candidate_restriction_query`가 id마다 term query를 만드는 O(matches) —
+compact doc-id bitmap(보완 #2)과 streaming collector는 W4 잔여. (b) stats는 adapter accessor뿐, lq-obs metric export는
+QI-BB-015와 함께. (c) 100만 doc 규모 RSS 측정은 미실행(contended host) — bound는 정책적으로 증명, 수치는 W7.
 
 ## 4. Finding 상태 (QI-BB-001–032)
 

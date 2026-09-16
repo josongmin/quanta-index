@@ -35,8 +35,9 @@ pub use domains::lexical::{
     FileContributorIngestPort, FileOwnershipIngestPort, LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE,
     LexicalExecutionBudgetV1, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPolicy,
     LexicalQueryPort, LexicalReadiness, LexicalSearchPageV1, LexicalSearcher,
-    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMetaIngestPort,
-    RepoTopicIngestPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
+    RegexMatchCachePolicy, RegexMatchCacheStats, RepoCommitRecencyIngestPort,
+    RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, SearchCorpusBatchBuildPort,
+    SearchCorpusIngestPort,
 };
 pub use domains::repomap::{
     RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapPolicy, RepoMapQueryPort,

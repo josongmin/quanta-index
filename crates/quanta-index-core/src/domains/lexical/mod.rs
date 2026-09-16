@@ -11,4 +11,7 @@ pub use outbound::{
     RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMetaIngestPort,
     RepoTopicIngestPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
 };
-pub use service::{LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE, LexicalExecutionBudgetV1, LexicalPolicy};
+pub use service::{
+    LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE, LexicalExecutionBudgetV1, LexicalPolicy,
+    RegexMatchCachePolicy, RegexMatchCacheStats,
+};
