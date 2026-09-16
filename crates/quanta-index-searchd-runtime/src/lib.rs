@@ -81,6 +81,8 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
         lex_adapter.clone();
     let repo_meta_ingest_port: Arc<dyn RepoMetaIngestPort + Send + Sync> = lex_adapter;
     let sem_build_port: Arc<dyn SemanticBatchBuildPort + Send + Sync> = sem_adapter.clone();
+    let semantic_generation_scanner: Arc<dyn SealedGenerationScanPort + Send + Sync> =
+        sem_adapter.clone();
     let semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync> =
         sem_adapter.clone();
     let semantic_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync> =
@@ -111,6 +113,7 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
             file_contributor_ingest_port,
             repo_meta_ingest_port,
             sem_build_port,
+            semantic_generation_scanner,
             semantic_generation_validator,
             semantic_incomplete_discard,
             semantic_sealed_reclaim,

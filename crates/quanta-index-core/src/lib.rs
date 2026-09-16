@@ -20,8 +20,9 @@ pub use request_budget::{
 };
 
 pub use domains::generation::{
-    GenerationIdentityValidatePort, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
-    IncompleteGenerationDiscardPort, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
+    GenerationIdentityValidatePort, GenerationQuarantineReasonV1, GenerationStorageKeyV1,
+    IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort, QuarantinedGenerationV1,
+    SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
     SealedGenerationScanPort,
 };
 pub use domains::hybrid::{ExplainQueryPort, HybridOrchestratorPolicy, HybridQueryPort};

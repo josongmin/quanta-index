@@ -142,6 +142,12 @@ owner = "quanta-index-lexical"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "lexical-boot-inventory"
+path = "crates/quanta-index-lexical/tests/boot_inventory.rs"
+owner = "quanta-index-lexical"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "lexical-execution-budget"
 path = "crates/quanta-index-lexical/tests/execution_budget.rs"
 owner = "quanta-index-lexical"
@@ -438,6 +444,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "searchd-runtime-e2e-physical-gc"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_physical_gc.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-e2e-boot-quarantine"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_boot_quarantine.rs"
 owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 

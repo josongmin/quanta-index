@@ -53,11 +53,12 @@ use quanta_index_contract::{
     GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
 };
 use quanta_index_core::{
-    CoreError, GenerationIdentityValidatePort, SemanticBatchBuildPort, SemanticIndexOpenPort,
+    CoreError, GenerationIdentityValidatePort, SealedGenerationScanPort, SemanticBatchBuildPort,
+    SemanticIndexOpenPort,
     domains::generation::{
-        GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
-        IncompleteGenerationDiscardPort, SealedGenerationReclaimOutcomeV1,
-        SealedGenerationReclaimPort,
+        GenerationQuarantineReasonV1, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
+        IncompleteGenerationDiscardPort, QuarantinedGenerationV1, SealedGenerationInventoryV1,
+        SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
     },
     domains::semantic::SemanticSearcher,
 };
@@ -514,11 +515,14 @@ pub fn semantic_state_root(state_root: &Path) -> PathBuf {
 
 /// A sealed semantic generation discovered on disk, for readiness seeding.
 ///
+/// Carries what the manifest says about the generation and nothing the
+/// inventory verified about its content: the row root and row count here are
+/// claims until [`validate_persisted_generation_v2`] opens the generation.
+///
 /// `#[non_exhaustive]` reserves the right to add fields without a breaking
 /// change at this public surface: this struct is **produced** by
-/// [`scan_persisted_generations`] and **consumed** by the composition root's
-/// readiness seeder, both of which already match on named fields. Adding e.g.
-/// a `materialized_at` or `index_state` later then does not break callers.
+/// [`inventory_persisted_generations`] and **consumed** by the composition
+/// root's readiness seeder, both of which already match on named fields.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct PersistedSemanticGeneration {
@@ -531,7 +535,27 @@ pub struct PersistedSemanticGeneration {
     row_count: u64,
 }
 
-/// Opaque proof minted only by a successful v7 durable scan/open.
+impl PersistedSemanticGeneration {
+    #[must_use]
+    pub fn identity(&self) -> GenerationSnapshot {
+        GenerationSnapshot {
+            repo_id: self.repo_id.clone(),
+            revision_id: self.revision_id.clone(),
+            track: SearchPlaneTrackKind::Semantic,
+            manifest_generation: self.generation,
+            manifest_digest: self.manifest_digest.clone(),
+        }
+    }
+}
+
+/// What the inventory found under a semantic state root (QI-BB-026).
+#[derive(Clone, Debug, Default)]
+pub struct SemanticGenerationInventoryV1 {
+    pub sealed: Vec<PersistedSemanticGeneration>,
+    pub quarantined: Vec<QuarantinedGenerationV1>,
+}
+
+/// Opaque proof minted only by a successful v7 durable open.
 #[derive(Clone, Debug)]
 pub struct ValidatedPersistedSemanticGenerationV2 {
     repo_id: RepoId,
@@ -542,28 +566,52 @@ pub struct ValidatedPersistedSemanticGenerationV2 {
     row_count: u64,
 }
 
-impl PersistedSemanticGeneration {
-    pub fn migration_witness_v2(
-        &self,
-    ) -> Result<ValidatedPersistedSemanticGenerationV2, CoreError> {
-        if self.format_version != manifest::FORMAT_VERSION {
-            return Err(CoreError::Typed {
-                code: "LEGACY_SEMANTIC_MIGRATION_DURABLE_FORMAT_UNVERIFIED".to_string(),
-                message: format!(
-                    "semantic generation format {} has no v7 row-root proof",
-                    self.format_version
-                ),
-            });
-        }
-        Ok(ValidatedPersistedSemanticGenerationV2 {
-            repo_id: self.repo_id.clone(),
-            revision_id: self.revision_id.clone(),
-            generation: self.generation,
-            manifest_digest: self.manifest_digest.clone(),
-            semantic_row_root_digest: self.semantic_row_root_digest.clone(),
-            row_count: self.row_count,
-        })
+/// Prove one inventoried generation's durable content and mint the witness
+/// the legacy migration records.
+///
+/// This is the deep step the inventory deliberately does not take: it opens
+/// the generation, which verifies the schema, the row count, the row root
+/// and the membership commitment against the manifest. Callers run it for
+/// exactly the generations they need proven.
+pub fn validate_persisted_generation_v2(
+    semantic_root: &Path,
+    record: &PersistedSemanticGeneration,
+) -> Result<ValidatedPersistedSemanticGenerationV2, CoreError> {
+    if record.format_version != manifest::FORMAT_VERSION {
+        return Err(CoreError::Typed {
+            code: "LEGACY_SEMANTIC_MIGRATION_DURABLE_FORMAT_UNVERIFIED".to_string(),
+            message: format!(
+                "semantic generation format {} has no v7 row-root proof",
+                record.format_version
+            ),
+        });
     }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .thread_name("quanta-index-semantic-validate")
+        .build()
+        .map_err(|err| {
+            CoreError::Storage(format!(
+                "semantic: tokio runtime init for persisted-generation validation: {err}"
+            ))
+        })?;
+    let _loaded = run_blocking(
+        &runtime,
+        open_generation(
+            semantic_root,
+            &record.repo_id,
+            &record.revision_id,
+            record.generation,
+        ),
+    )?;
+    Ok(ValidatedPersistedSemanticGenerationV2 {
+        repo_id: record.repo_id.clone(),
+        revision_id: record.revision_id.clone(),
+        generation: record.generation,
+        manifest_digest: record.manifest_digest.clone(),
+        semantic_row_root_digest: record.semantic_row_root_digest.clone(),
+        row_count: record.row_count,
+    })
 }
 
 impl ValidatedPersistedSemanticGenerationV2 {
@@ -593,29 +641,24 @@ impl ValidatedPersistedSemanticGenerationV2 {
     }
 }
 
-/// Scan a semantic state root for sealed generations.
+/// Inventory a semantic state root for sealed generations (QI-BB-026).
 ///
-/// Returns one record per `(repo, revision, generation)` directory that carries
-/// a SEALED marker and a scope-consistent manifest. In-progress (materialized
-/// but unsealed) generations are intentionally skipped so a crashed build never
-/// seeds false readiness. The composition root feeds these into the readiness
-/// ledger; all file-layout knowledge stays inside this crate.
-pub fn scan_persisted_generations(
+/// Returns one record per `(repo, revision, generation)` directory that
+/// carries a SEALED marker and a scope-consistent manifest whose digest the
+/// marker agrees with. This reads two small files per generation and opens
+/// nothing: content (schema, row count, row root, membership) is proven by
+/// [`validate_persisted_generation_v2`] and by every open, not here. A
+/// directory the inventory cannot trust is quarantined with its path and
+/// reason rather than failing the whole inventory; in-progress (materialized
+/// but unsealed) generations are skipped so a crashed build never seeds
+/// false readiness. Only an unreadable directory listing is an error.
+pub fn inventory_persisted_generations(
     semantic_root: &Path,
-) -> Result<Vec<PersistedSemanticGeneration>, CoreError> {
-    let mut out: Vec<PersistedSemanticGeneration> = Vec::new();
+) -> Result<SemanticGenerationInventoryV1, CoreError> {
+    let mut inventory = SemanticGenerationInventoryV1::default();
     if !semantic_root.exists() {
-        return Ok(out);
+        return Ok(inventory);
     }
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .thread_name("quanta-index-semantic-scan")
-        .build()
-        .map_err(|err| {
-            CoreError::Storage(format!(
-                "semantic: tokio runtime init for persisted-generation scan: {err}"
-            ))
-        })?;
     for family_entry in read_dir(semantic_root)? {
         let family_entry = dir_entry(family_entry)?;
         if !is_dir(&family_entry)? {
@@ -626,105 +669,139 @@ pub fn scan_persisted_generations(
             .to_str()
             .is_some_and(GenerationStorageKeyV1::is_canonical_name)
         {
-            return Err(unsupported_legacy_generation_layout(&family_entry.path()));
+            inventory.quarantined.push(quarantine(
+                family_entry.path(),
+                GenerationQuarantineReasonV1::NonCanonicalLayout,
+                "directory is not a canonical generation family; it needs explicit migration"
+                    .to_string(),
+            ));
+            continue;
         }
         for generation_entry in read_dir(&family_entry.path())? {
             let generation_entry = dir_entry(generation_entry)?;
             if !is_dir(&generation_entry)? {
                 continue;
             }
-            let generation_name = generation_entry.file_name();
-            let generation_name = generation_name
-                .to_str()
-                .ok_or_else(|| unsupported_legacy_generation_layout(&generation_entry.path()))?;
-            let canonical_generation_name = generation_name.strip_prefix('g').is_some_and(|raw| {
-                raw.parse::<u64>()
-                    .is_ok_and(|generation| format!("g{generation}") == generation_name)
-            });
-            if !canonical_generation_name {
-                return Err(unsupported_legacy_generation_layout(
-                    &generation_entry.path(),
-                ));
+            match inventory_generation_dir(semantic_root, &generation_entry.path()) {
+                Ok(Some(record)) => inventory.sealed.push(record),
+                Ok(None) => {}
+                Err(quarantined) => inventory.quarantined.push(quarantined),
             }
-            let generation_dir = generation_entry.path();
-            if !layout::sealed_marker_path(&generation_dir).exists() {
-                continue;
-            }
-            let manifest_path = layout::manifest_path(&generation_dir);
-            let manifest_bytes = std::fs::read(&manifest_path).map_err(|err| {
-                CoreError::Storage(format!(
-                    "semantic: read manifest {}: {err}",
-                    manifest_path.display()
-                ))
-            })?;
-            let manifest = SemanticManifest::decode(&manifest_bytes)?;
-            let repo_id = RepoId::new(manifest.repo_id.clone());
-            let revision_id = RevisionId::new(manifest.revision_id.clone());
-            let generation = ManifestGeneration::new(manifest.generation);
-            manifest.validate_scope(&repo_id, &revision_id, generation)?;
-            if GenerationStorageKeyV1::for_repo_revision(&repo_id, &revision_id)
-                .generation_dir(semantic_root, generation)
-                != generation_dir
-            {
-                return Err(CoreError::Typed {
-                    code: "GENERATION_IDENTITY_SCOPE_MISMATCH".to_string(),
-                    message: format!(
-                        "semantic: persisted manifest does not own physical path {}",
-                        generation_dir.display()
-                    ),
-                });
-            }
-            let sealed_digest = std::fs::read_to_string(layout::sealed_marker_path(
-                &generation_dir,
-            ))
-            .map_err(|err| {
-                CoreError::Storage(format!(
-                    "semantic: read sealed marker {}: {err}",
-                    generation_dir.display()
-                ))
-            })?;
-            if sealed_digest != manifest.manifest_digest {
-                return Err(CoreError::Typed {
-                    code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
-                    message: format!(
-                        "semantic: persisted marker/manifest digest mismatch at {}",
-                        generation_dir.display()
-                    ),
-                });
-            }
-            let _loaded = run_blocking(
-                &runtime,
-                open_generation(semantic_root, &repo_id, &revision_id, generation),
-            )?;
-            File::open(&generation_dir)
-                .and_then(|directory| directory.sync_all())
-                .map_err(|error| {
-                    CoreError::Storage(format!(
-                        "semantic: revalidate scanned generation-directory durability {}: {error}",
-                        generation_dir.display()
-                    ))
-                })?;
-            out.push(PersistedSemanticGeneration {
-                repo_id,
-                revision_id,
-                generation,
-                manifest_digest: manifest.manifest_digest,
-                format_version: manifest.format_version,
-                semantic_row_root_digest: manifest.semantic_row_root_digest,
-                row_count: manifest.row_count,
-            });
         }
     }
-    Ok(out)
+    Ok(inventory)
 }
 
-fn unsupported_legacy_generation_layout(path: &Path) -> CoreError {
-    CoreError::Typed {
-        code: "GENERATION_STORAGE_LEGACY_LAYOUT_UNSUPPORTED".to_string(),
-        message: format!(
-            "semantic: non-canonical generation storage directory requires explicit migration: {}",
-            path.display()
-        ),
+/// One generation directory's inventory outcome: `Ok(Some)` for a sealed
+/// manifest that owns the directory and agrees with its marker, `Ok(None)`
+/// for an in-progress build, `Err` for a quarantine.
+fn inventory_generation_dir(
+    semantic_root: &Path,
+    generation_dir: &Path,
+) -> Result<Option<PersistedSemanticGeneration>, QuarantinedGenerationV1> {
+    let Some(generation_name) = generation_dir.file_name().and_then(|name| name.to_str()) else {
+        return Err(quarantine(
+            generation_dir.to_path_buf(),
+            GenerationQuarantineReasonV1::NonCanonicalLayout,
+            "generation directory name is not UTF-8".to_string(),
+        ));
+    };
+    let canonical_generation_name = generation_name.strip_prefix('g').is_some_and(|raw| {
+        raw.parse::<u64>()
+            .is_ok_and(|generation| format!("g{generation}") == generation_name)
+    });
+    if !canonical_generation_name {
+        return Err(quarantine(
+            generation_dir.to_path_buf(),
+            GenerationQuarantineReasonV1::NonCanonicalLayout,
+            "generation directory is not `g<N>`; it needs explicit migration".to_string(),
+        ));
+    }
+    let marker_path = layout::sealed_marker_path(generation_dir);
+    if !marker_path.exists() {
+        return Ok(None);
+    }
+    let unreadable = |detail: String| {
+        quarantine(
+            generation_dir.to_path_buf(),
+            GenerationQuarantineReasonV1::IdentityUnreadable,
+            detail,
+        )
+    };
+    let manifest_path = layout::manifest_path(generation_dir);
+    let manifest_bytes = std::fs::read(&manifest_path)
+        .map_err(|err| unreadable(format!("read manifest {}: {err}", manifest_path.display())))?;
+    let manifest = SemanticManifest::decode(&manifest_bytes)
+        .map_err(|err| unreadable(format!("decode manifest: {err}")))?;
+    let repo_id = RepoId::new(manifest.repo_id.clone());
+    let revision_id = RevisionId::new(manifest.revision_id.clone());
+    let generation = ManifestGeneration::new(manifest.generation);
+    if let Err(err) = manifest.validate_scope(&repo_id, &revision_id, generation) {
+        return Err(quarantine(
+            generation_dir.to_path_buf(),
+            GenerationQuarantineReasonV1::ScopeMismatch,
+            err.to_string(),
+        ));
+    }
+    if GenerationStorageKeyV1::for_repo_revision(&repo_id, &revision_id)
+        .generation_dir(semantic_root, generation)
+        != generation_dir
+    {
+        return Err(quarantine(
+            generation_dir.to_path_buf(),
+            GenerationQuarantineReasonV1::ScopeMismatch,
+            format!(
+                "manifest names repo={} revision={} generation={}, which does not own this directory",
+                repo_id.as_str(),
+                revision_id.as_str(),
+                generation.get()
+            ),
+        ));
+    }
+    let sealed_digest = std::fs::read_to_string(&marker_path)
+        .map_err(|err| unreadable(format!("read sealed marker: {err}")))?;
+    if sealed_digest != manifest.manifest_digest {
+        return Err(quarantine(
+            generation_dir.to_path_buf(),
+            GenerationQuarantineReasonV1::IdentityDigestMismatch,
+            "sealed marker and manifest disagree on the manifest digest".to_string(),
+        ));
+    }
+    Ok(Some(PersistedSemanticGeneration {
+        repo_id,
+        revision_id,
+        generation,
+        manifest_digest: manifest.manifest_digest,
+        format_version: manifest.format_version,
+        semantic_row_root_digest: manifest.semantic_row_root_digest,
+        row_count: manifest.row_count,
+    }))
+}
+
+fn quarantine(
+    path: PathBuf,
+    reason: GenerationQuarantineReasonV1,
+    detail: String,
+) -> QuarantinedGenerationV1 {
+    QuarantinedGenerationV1 {
+        track: SearchPlaneTrackKind::Semantic,
+        path,
+        reason,
+        detail,
+    }
+}
+
+impl SealedGenerationScanPort for SemanticAdapter {
+    fn inventory_sealed_generations(&self) -> Result<SealedGenerationInventoryV1, CoreError> {
+        let inventory = inventory_persisted_generations(&self.state_root)?;
+        Ok(SealedGenerationInventoryV1 {
+            sealed: inventory
+                .sealed
+                .iter()
+                .map(PersistedSemanticGeneration::identity)
+                .collect(),
+            quarantined: inventory.quarantined,
+        })
     }
 }
 
@@ -892,18 +969,26 @@ mod incomplete_generation_discard_tests {
         assert!(generation_dir.exists());
     }
 
+    /// A legacy raw layout is quarantined with its path, not a boot failure
+    /// (QI-BB-026); the inventory is otherwise empty.
     #[test]
-    fn persisted_scan_fails_closed_on_legacy_raw_identity_directories() {
+    fn inventory_quarantines_legacy_raw_identity_directories() {
         let temp = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(temp.path().join("repo-alpha/rev-alpha/g1"))
-            .expect("create legacy layout");
+        let legacy_family = temp.path().join("repo-alpha");
+        std::fs::create_dir_all(legacy_family.join("rev-alpha/g1")).expect("create legacy layout");
 
-        let error = scan_persisted_generations(temp.path())
-            .expect_err("legacy raw layout must require explicit migration");
-        assert!(matches!(
-            error,
-            CoreError::Typed { ref code, .. }
-                if code == "GENERATION_STORAGE_LEGACY_LAYOUT_UNSUPPORTED"
-        ));
+        let inventory = inventory_persisted_generations(temp.path())
+            .expect("inventory tolerates legacy layout");
+        assert!(inventory.sealed.is_empty());
+        assert_eq!(inventory.quarantined.len(), 1);
+        let Some(entry) = inventory.quarantined.first() else {
+            panic!("one quarantine record expected");
+        };
+        assert_eq!(entry.path, legacy_family);
+        assert_eq!(
+            entry.reason,
+            GenerationQuarantineReasonV1::NonCanonicalLayout
+        );
+        assert_eq!(entry.track, SearchPlaneTrackKind::Semantic);
     }
 }

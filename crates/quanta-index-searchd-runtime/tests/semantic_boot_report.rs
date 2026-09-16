@@ -149,12 +149,17 @@ fn build_config(state_root: &Path) -> SearchdConfig {
     SearchdConfig::with_ingest_socket_override(config, ingest_socket)
 }
 
+/// A corrupted generation nothing activates is inventoried, not fatal.
+///
+/// Boot proves the active set only (QI-BB-026), and this state root has
+/// none. The door that opens the generation refuses it;
+/// `e2e_boot_quarantine` proves that end to end.
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
-    reason = "test asserts assembled runtime boot fails closed on corrupted sealed semantic state via assert macros"
+    reason = "test asserts the assembled boot report on an inactive corrupted generation via assert macros"
 )]
-fn runtime_boot_rejects_corrupted_sealed_semantic_generation() -> TestResult {
+fn runtime_boot_inventories_a_corrupted_inactive_semantic_generation() -> TestResult {
     let temp = tempfile::tempdir()?;
     let state_root = temp.path().to_path_buf();
     let semantic_root = state_root.join("indexes").join("semantic");
@@ -189,13 +194,14 @@ fn runtime_boot_rejects_corrupted_sealed_semantic_generation() -> TestResult {
         .map_err(|err| format!("encode manifest cbor: {err}"))?;
     std::fs::write(&manifest_path, &tampered)?;
 
-    let Err(err) = build_runtime(build_config(&state_root)) else {
-        return Err("corrupted sealed semantic generation must fail runtime boot".into());
-    };
-    let message = err.to_string();
-    assert!(
-        message.contains("row count"),
-        "expected row-count integrity failure during boot, got: {message}"
+    let runtime = build_runtime(build_config(&state_root))?;
+    assert_eq!(runtime.semantic_boot.seed.sealed_generations, 1);
+    assert_eq!(runtime.semantic_boot.seed.quarantined_generations, 0);
+    assert_eq!(runtime.boot_inventory.semantic.sealed_generations, 1);
+    assert!(runtime.boot_inventory.semantic.quarantined.is_empty());
+    assert_eq!(
+        runtime.boot_inventory.active_pairs_validated, 0,
+        "nothing is active, so boot proves nothing"
     );
     Ok(())
 }

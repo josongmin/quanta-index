@@ -17,9 +17,9 @@ use memchr::memchr_iter;
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
     ChunkId, ChunkRecord, GenerationPin, GenerationSelector, LqFileScope, LqStructuralBlock,
-    ManifestGeneration, SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcResponse, SearchPlaneTrackKind,
+    SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
+    SearchPlaneTrackKind,
 };
 use quanta_index_core::domains::structural::{
     StructuralExecutableFilter, StructuralProducerPort,
@@ -53,6 +53,7 @@ use quanta_index_search_plane::{
 };
 use regex::Regex;
 
+use crate::app::boot_inventory::{self, BootInventoryReportV1};
 use crate::app::config::{SearchdConfig, SemanticEmbedderProfile};
 use crate::app::ipc_dispatcher::{
     SearchPlaneControlIpcAdapter, SearchPlaneIngestIpcAdapter, SearchPlaneQueryIpcAdapter,
@@ -79,6 +80,7 @@ pub struct SearchdRuntimeParts {
     pub file_contributor_ingest_port: Arc<dyn FileContributorIngestPort + Send + Sync>,
     pub repo_meta_ingest_port: Arc<dyn RepoMetaIngestPort + Send + Sync>,
     pub sem_build_port: Arc<dyn SemanticBatchBuildPort + Send + Sync>,
+    pub semantic_generation_scanner: Arc<dyn SealedGenerationScanPort + Send + Sync>,
     pub semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
     pub semantic_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>,
     pub semantic_sealed_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
@@ -739,6 +741,8 @@ pub struct SearchdRuntime {
     pub repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync>,
     pub query_obs_store: Arc<BoundedQueryObsStore>,
     pub semantic_boot: semantic_boot::SemanticBootReport,
+    /// What boot inventoried, quarantined and proved (QI-BB-026).
+    pub boot_inventory: BootInventoryReportV1,
     _search_corpus_lifecycle: Arc<SearchCorpusLifecycleOwner>,
     // Rust drops fields in declaration order. Keep the state-root lease last
     // so every adapter, server, and authority handle is gone before ownership
@@ -764,6 +768,7 @@ impl SearchdRuntime {
             file_contributor_ingest_port,
             repo_meta_ingest_port,
             sem_build_port,
+            semantic_generation_scanner,
             semantic_generation_validator,
             semantic_incomplete_discard,
             semantic_sealed_reclaim,
@@ -784,10 +789,12 @@ impl SearchdRuntime {
         let activation_catalog = search_corpus_lifecycle.activation_catalog();
         let aux_authority_store = search_corpus_lifecycle.authority_store();
         let ledger = Arc::new(RwLock::new(Ledger::new()));
-        bootstrap_persisted_lexical_state(
+        // Boot inventory (QI-BB-026): identities only, per track; nothing is
+        // opened or hashed until the active pairs are proven below.
+        let lexical_inventory = boot_inventory::seed_track_readiness(
             &ledger,
+            SearchPlaneTrackKind::Lexical,
             lexical_generation_scanner.as_ref(),
-            lexical_generation_validator.as_ref(),
         )?;
         let semantic_root = quanta_index_semantic::semantic_state_root(&leased_state_root);
         let migration_start = std::time::Instant::now();
@@ -799,20 +806,30 @@ impl SearchdRuntime {
         .map_err(anyhow::Error::from)?;
         let migration_micros = migration_start.elapsed().as_micros();
         let seed_start = std::time::Instant::now();
-        let seed = semantic_boot::seed_persisted_semantic_readiness(&ledger, &semantic_root)
-            .map_err(anyhow::Error::from)?;
+        let semantic_inventory = semantic_boot::seed_persisted_semantic_readiness(
+            &ledger,
+            semantic_generation_scanner.as_ref(),
+        )
+        .map_err(anyhow::Error::from)?;
         let boot_report = semantic_boot::SemanticBootReport {
             migration,
             migration_micros,
-            seed,
+            seed: semantic_boot::SemanticSeedReport::from_track_report(&semantic_inventory),
             seed_micros: seed_start.elapsed().as_micros(),
         };
-        search_corpus_lifecycle
+        // The only deep validation boot performs: each active pair, once. A
+        // defective active generation fails here, typed, before any bind.
+        let active_pairs_validated = search_corpus_lifecycle
             .validate_rehydrated_active_generations_v1(
                 lexical_generation_validator.as_ref(),
                 semantic_generation_validator.as_ref(),
             )
             .map_err(anyhow::Error::from)?;
+        let boot_inventory = BootInventoryReportV1 {
+            lexical: lexical_inventory,
+            semantic: semantic_inventory,
+            active_pairs_validated,
+        };
         {
             let mut guard = ledger.write().map_err(|err| {
                 anyhow::anyhow!("ledger poisoned during auxiliary authority bootstrap: {err}")
@@ -940,68 +957,11 @@ impl SearchdRuntime {
             repo_map_query_port,
             query_obs_store,
             semantic_boot: boot_report,
+            boot_inventory,
             _search_corpus_lifecycle: search_corpus_lifecycle,
             _state_root_lease: state_root_lease,
         })
     }
-}
-
-fn bootstrap_persisted_lexical_state(
-    ledger: &Arc<RwLock<Ledger>>,
-    scanner: &dyn SealedGenerationScanPort,
-    validator: &dyn GenerationIdentityValidatePort,
-) -> Result<()> {
-    seed_persisted_lexical_readiness(ledger, scanner, validator)?;
-    Ok(())
-}
-
-fn seed_persisted_lexical_readiness(
-    ledger: &Arc<RwLock<Ledger>>,
-    scanner: &dyn SealedGenerationScanPort,
-    validator: &dyn GenerationIdentityValidatePort,
-) -> Result<()> {
-    let persisted = scanner
-        .scan_sealed_generations()
-        .map_err(anyhow::Error::from)?;
-    let mut guard = ledger
-        .write()
-        .map_err(|err| anyhow::anyhow!("ledger poisoned during lexical bootstrap: {err}"))?;
-    let mut max_generation: Option<ManifestGeneration> = None;
-    for candidate in persisted {
-        if candidate.track != SearchPlaneTrackKind::Lexical {
-            return Err(anyhow::anyhow!(
-                "lexical bootstrap scanner returned non-lexical track {:?}",
-                candidate.track
-            ));
-        }
-        validator
-            .validate_generation_identity(&candidate)
-            .map_err(anyhow::Error::from)?;
-        guard.record_track_materialized(
-            &candidate.repo_id,
-            &candidate.revision_id,
-            SearchPlaneTrackKind::Lexical,
-            candidate.manifest_generation,
-            Some(candidate.manifest_digest.as_str()),
-        );
-        guard.record_track_seal_with_digest(
-            &candidate.repo_id,
-            &candidate.revision_id,
-            SearchPlaneTrackKind::Lexical,
-            candidate.manifest_generation,
-            candidate.manifest_digest.as_str(),
-        );
-        max_generation = match max_generation {
-            Some(current) if current.get() >= candidate.manifest_generation.get() => Some(current),
-            _ => Some(candidate.manifest_generation),
-        };
-    }
-    if let Some(max_generation) = max_generation {
-        guard.lexical_materialize(max_generation, None);
-        guard.lexical_seal(max_generation);
-    }
-    drop(guard);
-    Ok(())
 }
 
 #[cfg(test)]

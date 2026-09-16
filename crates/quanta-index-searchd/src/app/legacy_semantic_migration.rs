@@ -10,7 +10,10 @@ use fs2::FileExt as _;
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SemanticIngestBatch};
 use quanta_index_core::{CoreError, SemanticBatchBuildPort};
 use quanta_index_ipc::{decode_cbor_payload, encode_cbor_payload};
-use quanta_index_semantic::{ValidatedPersistedSemanticGenerationV2, scan_persisted_generations};
+use quanta_index_semantic::{
+    ValidatedPersistedSemanticGenerationV2, inventory_persisted_generations,
+    validate_persisted_generation_v2,
+};
 use sha2::{Digest as _, Sha256};
 
 use super::semantic_boot::{SemanticMigrationOutcome, normalize_legacy_semantic_batch_v1};
@@ -279,9 +282,9 @@ pub(super) fn migrate(
         .collect();
     let sources = source_rows(&batches)?;
     let existing = read_receipt(store)?;
-    let persisted = scan_persisted_generations(semantic_root)?;
+    let persisted = inventory_persisted_generations(semantic_root)?.sealed;
     if let Some(receipt) = existing {
-        let durable = durable_rows(&sources, &persisted)?;
+        let durable = durable_rows(semantic_root, &sources, &persisted)?;
         let expected = validated_migration(store, journal_digest, sources, durable)?.0;
         if receipt != expected {
             return Err(CoreError::Typed {
@@ -292,7 +295,7 @@ pub(super) fn migrate(
         }
         return Ok(SemanticMigrationOutcome::AlreadyMigrated);
     }
-    let before = witness_map_for_sources(&persisted, &sources)?;
+    let before = witness_map_for_sources(semantic_root, &persisted, &sources)?;
     let preexisting: BTreeSet<Key> = sources
         .iter()
         .filter_map(|source| {
@@ -336,8 +339,8 @@ pub(super) fn migrate(
                 .ok_or_else(|| CoreError::Storage("migration count overflow".to_string()))?;
         }
     }
-    let persisted = scan_persisted_generations(semantic_root)?;
-    let durable = durable_rows(&sources, &persisted)?;
+    let persisted = inventory_persisted_generations(semantic_root)?.sealed;
+    let durable = durable_rows(semantic_root, &sources, &persisted)?;
     let receipt = validated_migration(store, journal_digest, sources, durable)?;
     revalidate_journal(store, journal_digest)?;
     write_receipt(store, &receipt)?;
@@ -380,7 +383,11 @@ fn source_rows(batches: &[SemanticIngestBatch]) -> Result<Vec<SourceRow>, CoreEr
         .collect())
 }
 
+/// Prove exactly the journal's generations durable (QI-BB-026): the
+/// inventory lists what is sealed, and only the generations the journal
+/// names are opened and verified here.
 fn witness_map_for_sources(
+    semantic_root: &Path,
     persisted: &[quanta_index_semantic::PersistedSemanticGeneration],
     sources: &[SourceRow],
 ) -> Result<BTreeMap<Key, ValidatedPersistedSemanticGenerationV2>, CoreError> {
@@ -402,7 +409,7 @@ fn witness_map_for_sources(
             record.generation,
         );
         if required.contains(&key) {
-            let witness = record.migration_witness_v2()?;
+            let witness = validate_persisted_generation_v2(semantic_root, record)?;
             if out.insert(key, witness).is_some() {
                 return Err(CoreError::Typed {
                     code: "LEGACY_SEMANTIC_MIGRATION_DURABLE_GENERATION_DUPLICATE".to_string(),
@@ -415,10 +422,11 @@ fn witness_map_for_sources(
 }
 
 fn durable_rows(
+    semantic_root: &Path,
     sources: &[SourceRow],
     persisted: &[quanta_index_semantic::PersistedSemanticGeneration],
 ) -> Result<Vec<DurableRow>, CoreError> {
-    let map = witness_map_for_sources(persisted, sources)?;
+    let map = witness_map_for_sources(semantic_root, persisted, sources)?;
     sources
         .iter()
         .map(|source| {

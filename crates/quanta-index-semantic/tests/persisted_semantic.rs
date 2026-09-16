@@ -16,9 +16,9 @@ use quanta_index_core::{
     CoreError, GenerationStorageKeyV1, SemanticBatchBuildPort, SemanticIndexOpenPort,
 };
 use quanta_index_semantic::{
-    SemanticAdapter, embedding_record_v1, legacy_chunk_embedding_record_v1, model_contract_v1,
-    scan_persisted_generations, sealed_replace_batch_v1, search_scope_v1, test_support,
-    tombstone_scope_v1,
+    SemanticAdapter, embedding_record_v1, inventory_persisted_generations,
+    legacy_chunk_embedding_record_v1, model_contract_v1, sealed_replace_batch_v1, search_scope_v1,
+    test_support, tombstone_scope_v1, validate_persisted_generation_v2,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -829,10 +829,16 @@ fn scan_reports_sealed_generations_only() -> TestResult {
     unsealed.seal = false;
     adapter.build_batch(&unsealed)?;
 
-    let scanned = scan_persisted_generations(&semantic_root)?;
+    let inventory = inventory_persisted_generations(&semantic_root)?;
+    assert!(
+        inventory.quarantined.is_empty(),
+        "{:?}",
+        inventory.quarantined
+    );
+    let scanned = inventory.sealed;
     assert_eq!(scanned.len(), 1);
     let Some(record) = scanned.first() else {
-        return Err("scan must report the sealed generation".into());
+        return Err("inventory must report the sealed generation".into());
     };
     assert_eq!(record.generation, ManifestGeneration::new(1));
     assert_eq!(record.manifest_digest, "manifest:1");
@@ -840,12 +846,17 @@ fn scan_reports_sealed_generations_only() -> TestResult {
     Ok(())
 }
 
+/// A tampered manifest row count is a content defect (QI-BB-026).
+///
+/// The inventory still lists the generation (it reads identities, not
+/// content), and the deep witness that boot no longer runs for every
+/// generation refuses it with the row-count integrity error.
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
-    reason = "test asserts corrupted sealed generations fail closed during scan via assert macros"
+    reason = "test asserts corrupted sealed generations fail closed at the deep witness via assert macros"
 )]
-fn scan_corrupted_sealed_generation_fails_closed() -> TestResult {
+fn inventory_lists_a_content_corrupted_generation_and_the_deep_witness_refuses_it() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().to_path_buf();
     let semantic_root = root.join("indexes").join("semantic");
@@ -884,8 +895,21 @@ fn scan_corrupted_sealed_generation_fails_closed() -> TestResult {
         .map_err(|err| format!("encode manifest cbor: {err}"))?;
     std::fs::write(&manifest_path, &tampered)?;
 
-    let Err(err) = scan_persisted_generations(&semantic_root) else {
-        return Err("corrupted sealed generation must fail scan".into());
+    let inventory = inventory_persisted_generations(&semantic_root)?;
+    assert!(
+        inventory.quarantined.is_empty(),
+        "{:?}",
+        inventory.quarantined
+    );
+    let Some(record) = inventory
+        .sealed
+        .iter()
+        .find(|record| record.generation == generation)
+    else {
+        return Err("the inventory must still list a content-corrupted generation".into());
+    };
+    let Err(err) = validate_persisted_generation_v2(&semantic_root, record) else {
+        return Err("the deep witness must refuse the corrupted generation".into());
     };
     match err {
         CoreError::Storage(message) => {
@@ -2073,12 +2097,12 @@ fn scan_reports_legacy_v2_generation_without_generation_contract() -> TestResult
     )?;
     std::fs::remove_file(generation_dir.join("semantic-build-contract.cbor"))?;
 
-    let scanned = scan_persisted_generations(&semantic_root)?;
+    let scanned = inventory_persisted_generations(&semantic_root)?.sealed;
     let Some(record) = scanned
         .iter()
         .find(|record| record.generation == generation)
     else {
-        return Err("legacy v2 sealed generation must still be reported by scan".into());
+        return Err("legacy v2 sealed generation must still be reported by the inventory".into());
     };
     assert_eq!(record.manifest_digest, "manifest:22");
     Ok(())

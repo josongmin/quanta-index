@@ -48,7 +48,7 @@ use quanta_index_contract::{
 use quanta_index_ipc::{ClientIoPolicy, IpcError, send_request};
 use quanta_index_search_plane::{BoundedQueryObsStore, MetricSample, ObsError};
 use quanta_index_searchd::app::searchd::drive;
-use quanta_index_searchd::app::{SearchdConfig, SemanticEmbedderProfile};
+use quanta_index_searchd::app::{BootInventoryReportV1, SearchdConfig, SemanticEmbedderProfile};
 use quanta_index_searchd_runtime::build_runtime;
 use tempfile::TempDir;
 
@@ -104,6 +104,7 @@ type DriverHandles = (
     Arc<AtomicBool>,
     DriverJoin,
     Arc<BoundedQueryObsStore>,
+    BootInventoryReportV1,
 );
 
 fn structural_role_tags(
@@ -163,6 +164,9 @@ struct DriverState {
     ingest_socket: PathBuf,
     shutdown: Arc<AtomicBool>,
     join: Option<DriverJoin>,
+    /// What this daemon start inventoried, quarantined and proved
+    /// (QI-BB-026).
+    boot_inventory: BootInventoryReportV1,
 }
 
 /// Test-only response shape.
@@ -337,14 +341,36 @@ impl E2eRuntime {
         outcome
     }
 
+    /// Start the daemon now instead of on the first query, surfacing a boot
+    /// refusal (a defective active generation, for instance) as the error it
+    /// is rather than as a failed query.
+    pub fn start(&mut self) -> AnyResult<()> {
+        drop(self.ensure_driver()?);
+        Ok(())
+    }
+
+    /// The running daemon's boot inventory report, or `None` while the
+    /// driver is stopped.
+    #[must_use]
+    pub fn boot_inventory(&self) -> Option<&BootInventoryReportV1> {
+        self.driver.as_ref().map(|driver| &driver.boot_inventory)
+    }
+
     fn ensure_driver(&mut self) -> AnyResult<PathBuf> {
         if self.driver.is_none() {
-            let (query_socket, control_socket, ingest_socket, shutdown, join, query_obs_store) =
-                start_driver(
-                    &self.state_root,
-                    &self.embedder_profile,
-                    self.history_max_generations,
-                )?;
+            let (
+                query_socket,
+                control_socket,
+                ingest_socket,
+                shutdown,
+                join,
+                query_obs_store,
+                boot_inventory,
+            ) = start_driver(
+                &self.state_root,
+                &self.embedder_profile,
+                self.history_max_generations,
+            )?;
             self.query_obs_store = Some(Arc::clone(&query_obs_store));
             self.driver = Some(DriverState {
                 query_socket,
@@ -352,6 +378,7 @@ impl E2eRuntime {
                 ingest_socket,
                 shutdown,
                 join: Some(join),
+                boot_inventory,
             });
         }
         self.driver
@@ -2046,6 +2073,29 @@ impl E2eRuntime {
         route_window_probe_from_response(response.payload)
     }
 
+    /// Issue one query exactly once and return the daemon's raw answer, with
+    /// no readiness retry: for asserting a `NOT_READY` that is the expected
+    /// steady state (a quarantined generation, for instance) rather than a
+    /// transient the harness should wait out.
+    pub fn query_once(
+        &mut self,
+        build: impl FnOnce(Option<GenerationPin>) -> SearchPlaneQueryIpcRequest,
+    ) -> AnyResult<SearchPlaneQueryIpcResponse> {
+        let payload = build(self.last_sealed_pin());
+        let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
+        let envelope = SearchPlaneQueryIpcRequestEnvelope {
+            request_id,
+            payload,
+        };
+        let socket = self.ensure_driver()?;
+        let response = send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(
+            &socket,
+            &envelope,
+            ClientIoPolicy::default(),
+        )?;
+        Ok(response.payload)
+    }
+
     pub fn candidate_id_for_path(&self, path: &str) -> AnyResult<String> {
         self.chunk_ids_by_path
             .get(path)
@@ -2410,6 +2460,7 @@ fn start_driver(
     let control_socket = runtime.control_server.socket_path().to_path_buf();
     let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
     let query_obs_store = Arc::clone(&runtime.query_obs_store);
+    let boot_inventory = runtime.boot_inventory.clone();
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
@@ -2442,6 +2493,7 @@ fn start_driver(
         shutdown,
         join,
         query_obs_store,
+        boot_inventory,
     ))
 }
 

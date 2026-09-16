@@ -1,6 +1,7 @@
 use quanta_index_contract::GenerationSnapshot;
-use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
+use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind};
 use sha2::{Digest, Sha256};
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::CoreError;
@@ -14,13 +15,84 @@ pub trait GenerationIdentityValidatePort: Send + Sync {
     -> Result<(), CoreError>;
 }
 
-/// Enumerates physically valid sealed generations owned by one adapter.
+/// Why boot set a persisted generation aside instead of seeding it
+/// (QI-BB-026).
 ///
-/// The adapter owns its storage layout and sealed-identity encoding. Callers
-/// receive only contract identities and must still apply their own readiness
-/// policy; they must not walk adapter directories or decode adapter sidecars.
+/// Each reason is something the inventory can see from the sealed identity
+/// alone. Content defects (a corrupt sidecar, a row root that no longer
+/// matches) are deliberately not here: the inventory does not look for them,
+/// and every door that serves or mutates a generation verifies content for
+/// itself.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum GenerationQuarantineReasonV1 {
+    /// A directory under the track root that is neither a canonical
+    /// generation family nor a `g<N>` generation directory.
+    NonCanonicalLayout,
+    /// The sealed identity (or manifest) could not be read or decoded.
+    IdentityUnreadable,
+    /// The identity names a different `(repo, revision, generation)` than the
+    /// directory it sits in.
+    ScopeMismatch,
+    /// The sealed marker and the manifest disagree on the digest.
+    IdentityDigestMismatch,
+}
+
+impl GenerationQuarantineReasonV1 {
+    #[must_use]
+    pub const fn as_code_str(self) -> &'static str {
+        match self {
+            Self::NonCanonicalLayout => "GENERATION_QUARANTINE_NON_CANONICAL_LAYOUT",
+            Self::IdentityUnreadable => "GENERATION_QUARANTINE_IDENTITY_UNREADABLE",
+            Self::ScopeMismatch => "GENERATION_QUARANTINE_SCOPE_MISMATCH",
+            Self::IdentityDigestMismatch => "GENERATION_QUARANTINE_IDENTITY_DIGEST_MISMATCH",
+        }
+    }
+}
+
+impl fmt::Display for GenerationQuarantineReasonV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_code_str())
+    }
+}
+
+/// One persisted generation the inventory refused to seed.
+///
+/// Carries where it is and why, so an operator can repair or remove it. It
+/// is excluded from readiness: nothing can serve, activate, or build on it
+/// until it is fixed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuarantinedGenerationV1 {
+    pub track: SearchPlaneTrackKind,
+    /// The adapter-owned directory (family or generation) that was set aside.
+    pub path: PathBuf,
+    pub reason: GenerationQuarantineReasonV1,
+    pub detail: String,
+}
+
+/// What one adapter found under its track root at boot.
+///
+/// `sealed` carries every generation whose sealed identity was readable and
+/// owns its path; nothing about their content has been verified. Callers
+/// decide which of them boot must prove (the active set) and prove exactly
+/// those, once, through [`GenerationIdentityValidatePort`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SealedGenerationInventoryV1 {
+    pub sealed: Vec<GenerationSnapshot>,
+    pub quarantined: Vec<QuarantinedGenerationV1>,
+}
+
+/// Inventories the sealed generations owned by one adapter (QI-BB-026).
+///
+/// This is the cheap boot step: it reads only each generation's sealed
+/// identity, never its content, so its cost is proportional to the number of
+/// generations on disk rather than their bytes. A generation whose identity
+/// cannot be read, or does not own its directory, is reported as quarantined
+/// instead of failing the whole inventory; only an unreadable track root is
+/// an error. The adapter owns its storage layout and sealed-identity
+/// encoding: callers receive contract identities and must not walk adapter
+/// directories or decode adapter sidecars.
 pub trait SealedGenerationScanPort: Send + Sync {
-    fn scan_sealed_generations(&self) -> Result<Vec<GenerationSnapshot>, CoreError>;
+    fn inventory_sealed_generations(&self) -> Result<SealedGenerationInventoryV1, CoreError>;
 }
 
 /// Bounded filesystem key for one logical `(repo, revision)` generation family.

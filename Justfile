@@ -187,6 +187,7 @@ rust-test-integration:
     {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test generation_delta_base_carryforward --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test execution_budget --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test sealed_manifest --all-features --locked
+    {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test boot_inventory --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test regex_literal_alternation --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-ipc --test admission --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-repomap --test bootstrap_owner_flow --all-features --locked
@@ -255,6 +256,7 @@ rust-test-e2e:
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_snapshot_registry --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_exact_count_window --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_physical_gc --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_boot_quarantine --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_predicate_authority_lifecycle --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_generation_activation_concurrency --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test dsl_scenarios --all-features --locked

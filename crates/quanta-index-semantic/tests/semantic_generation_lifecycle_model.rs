@@ -22,8 +22,8 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{CoreError, SemanticBatchBuildPort, SemanticIndexOpenPort};
 use quanta_index_semantic::{
-    SemanticAdapter, embedding_record_v1, ingest_batch_v1, model_contract_v1,
-    scan_persisted_generations, search_scope_v1, tombstone_scope_with_semantic_owner_v1,
+    SemanticAdapter, embedding_record_v1, ingest_batch_v1, inventory_persisted_generations,
+    model_contract_v1, search_scope_v1, tombstone_scope_with_semantic_owner_v1,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -284,7 +284,8 @@ impl LifecycleModel {
             }
             LifecycleCommand::RestartAndRecover => {
                 *adapter = SemanticAdapter::with_state_root(root.to_path_buf())?;
-                let mut persisted = scan_persisted_generations(root)?
+                let mut persisted = inventory_persisted_generations(root)?
+                    .sealed
                     .into_iter()
                     .map(|record| record.generation.get())
                     .collect::<Vec<_>>();

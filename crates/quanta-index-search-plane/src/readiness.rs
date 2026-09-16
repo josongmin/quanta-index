@@ -599,7 +599,8 @@ impl Ledger {
     /// The digest the ledger recorded when this track generation was sealed,
     /// if it ever was. Retention prunes the record when the generation is
     /// reaped, so a reaped base reads as never sealed here.
-    pub(crate) fn sealed_track_identity_digest(
+    #[must_use]
+    pub fn sealed_track_identity_digest(
         &self,
         repo_id: &RepoId,
         revision_id: &RevisionId,

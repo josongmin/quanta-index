@@ -57,7 +57,8 @@ use quanta_index_contract::{
     TombstoneLexicalScope,
 };
 use quanta_index_core::domains::generation::{
-    GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort,
+    GenerationQuarantineReasonV1, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
+    IncompleteGenerationDiscardPort, QuarantinedGenerationV1, SealedGenerationInventoryV1,
     SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
 };
 use quanta_index_core::{
@@ -4727,19 +4728,8 @@ impl GenerationIdentityValidatePort for LexicalAdapter {
 }
 
 impl SealedGenerationScanPort for LexicalAdapter {
-    fn scan_sealed_generations(&self) -> Result<Vec<GenerationSnapshot>, CoreError> {
-        scan_persisted_generations(&self.state_root).map(|generations| {
-            generations
-                .into_iter()
-                .map(|generation| GenerationSnapshot {
-                    repo_id: generation.repo_id,
-                    revision_id: generation.revision_id,
-                    track: SearchPlaneTrackKind::Lexical,
-                    manifest_generation: generation.generation,
-                    manifest_digest: generation.manifest_digest,
-                })
-                .collect()
-        })
+    fn inventory_sealed_generations(&self) -> Result<SealedGenerationInventoryV1, CoreError> {
+        inventory_sealed_generations(&self.state_root)
     }
 }
 
@@ -4957,24 +4947,23 @@ fn generation_tree_bytes(root: &Path) -> Result<u64, CoreError> {
     Ok(total)
 }
 
-#[derive(Clone, Debug)]
-#[non_exhaustive]
-pub struct PersistedLexicalGeneration {
-    pub repo_id: RepoId,
-    pub revision_id: RevisionId,
-    pub generation: ManifestGeneration,
-    pub manifest_digest: String,
-}
-
-/// Scan adapter-owned storage and return only physically valid sealed generations.
-pub fn scan_persisted_generations(
+/// Inventory the sealed generations under a lexical state root (QI-BB-026).
+///
+/// Reads each generation's sealed identity and nothing else: no sidecar is
+/// hashed and no index is opened, so the cost is one small file per sealed
+/// generation. A directory that is not a canonical family or `g<N>`, an
+/// identity that cannot be read or decoded, and an identity that does not
+/// own its directory are each reported as quarantined with the path and the
+/// reason, and boot continues without them. Generations without a sealed
+/// identity are in-progress builds and are skipped silently, as before. Only
+/// a directory listing that fails is an error.
+pub fn inventory_sealed_generations(
     lexical_root: &Path,
-) -> Result<Vec<PersistedLexicalGeneration>, CoreError> {
-    let mut out = Vec::new();
+) -> Result<SealedGenerationInventoryV1, CoreError> {
+    let mut inventory = SealedGenerationInventoryV1::default();
     if !lexical_root.exists() {
-        return Ok(out);
+        return Ok(inventory);
     }
-    let adapter = LexicalAdapter::with_state_root(lexical_root.to_path_buf());
     for family_entry in std::fs::read_dir(lexical_root).map_err(|error| {
         CoreError::Storage(format!("lexical: list {}: {error}", lexical_root.display()))
     })? {
@@ -4998,7 +4987,13 @@ pub fn scan_persisted_generations(
             .to_str()
             .is_some_and(GenerationStorageKeyV1::is_canonical_name)
         {
-            return Err(unsupported_legacy_generation_layout(&family_entry.path()));
+            inventory.quarantined.push(quarantine(
+                family_entry.path(),
+                GenerationQuarantineReasonV1::NonCanonicalLayout,
+                "directory is not a canonical generation family; it needs explicit migration"
+                    .to_string(),
+            ));
+            continue;
         }
         for generation_entry in std::fs::read_dir(family_entry.path()).map_err(|error| {
             CoreError::Storage(format!(
@@ -5021,59 +5016,82 @@ pub fn scan_persisted_generations(
             {
                 continue;
             }
-            let generation_name = generation_entry.file_name();
-            let generation_name = generation_name
-                .to_str()
-                .ok_or_else(|| unsupported_legacy_generation_layout(&generation_entry.path()))?;
-            let canonical_generation_name = generation_name.strip_prefix('g').is_some_and(|raw| {
-                raw.parse::<u64>()
-                    .is_ok_and(|generation| format!("g{generation}") == generation_name)
-            });
-            if !canonical_generation_name {
-                return Err(unsupported_legacy_generation_layout(
-                    &generation_entry.path(),
-                ));
-            }
             let generation_dir = generation_entry.path();
-            if !lexical_sealed_identity_path(&generation_dir).exists() {
-                continue;
+            match inventory_generation_dir(lexical_root, &generation_dir) {
+                Ok(Some(identity)) => inventory.sealed.push(identity),
+                Ok(None) => {}
+                Err(quarantined) => inventory.quarantined.push(quarantined),
             }
-            let identity = read_lexical_sealed_identity(&generation_dir)?;
-            if identity.track != SearchPlaneTrackKind::Lexical
-                || GenerationStorageKeyV1::for_repo_revision(
-                    &identity.repo_id,
-                    &identity.revision_id,
-                )
-                .generation_dir(lexical_root, identity.manifest_generation)
-                    != generation_dir
-            {
-                return Err(CoreError::Typed {
-                    code: "GENERATION_IDENTITY_SCOPE_MISMATCH".to_string(),
-                    message: format!(
-                        "lexical: persisted identity does not own physical path {}",
-                        generation_dir.display()
-                    ),
-                });
-            }
-            adapter.validate_generation_identity(&identity)?;
-            out.push(PersistedLexicalGeneration {
-                repo_id: identity.repo_id,
-                revision_id: identity.revision_id,
-                generation: identity.manifest_generation,
-                manifest_digest: identity.manifest_digest,
-            });
         }
     }
-    Ok(out)
+    Ok(inventory)
 }
 
-fn unsupported_legacy_generation_layout(path: &Path) -> CoreError {
-    CoreError::Typed {
-        code: "GENERATION_STORAGE_LEGACY_LAYOUT_UNSUPPORTED".to_string(),
-        message: format!(
-            "lexical: non-canonical generation storage directory requires explicit migration: {}",
-            path.display()
-        ),
+/// One generation directory's inventory outcome: `Ok(Some)` for a sealed
+/// identity that owns the directory, `Ok(None)` for an in-progress build,
+/// `Err` for a quarantine.
+fn inventory_generation_dir(
+    lexical_root: &Path,
+    generation_dir: &Path,
+) -> Result<Option<GenerationSnapshot>, QuarantinedGenerationV1> {
+    let Some(generation_name) = generation_dir.file_name().and_then(|name| name.to_str()) else {
+        return Err(quarantine(
+            generation_dir.to_path_buf(),
+            GenerationQuarantineReasonV1::NonCanonicalLayout,
+            "generation directory name is not UTF-8".to_string(),
+        ));
+    };
+    let canonical_generation_name = generation_name.strip_prefix('g').is_some_and(|raw| {
+        raw.parse::<u64>()
+            .is_ok_and(|generation| format!("g{generation}") == generation_name)
+    });
+    if !canonical_generation_name {
+        return Err(quarantine(
+            generation_dir.to_path_buf(),
+            GenerationQuarantineReasonV1::NonCanonicalLayout,
+            "generation directory is not `g<N>`; it needs explicit migration".to_string(),
+        ));
+    }
+    if !lexical_sealed_identity_path(generation_dir).exists() {
+        return Ok(None);
+    }
+    let identity = read_lexical_sealed_identity(generation_dir).map_err(|error| {
+        quarantine(
+            generation_dir.to_path_buf(),
+            GenerationQuarantineReasonV1::IdentityUnreadable,
+            error.to_string(),
+        )
+    })?;
+    if identity.track != SearchPlaneTrackKind::Lexical
+        || GenerationStorageKeyV1::for_repo_revision(&identity.repo_id, &identity.revision_id)
+            .generation_dir(lexical_root, identity.manifest_generation)
+            != generation_dir
+    {
+        return Err(quarantine(
+            generation_dir.to_path_buf(),
+            GenerationQuarantineReasonV1::ScopeMismatch,
+            format!(
+                "sealed identity names {:?} repo={} revision={} generation={}, which does not own this directory",
+                identity.track,
+                identity.repo_id.as_str(),
+                identity.revision_id.as_str(),
+                identity.manifest_generation.get()
+            ),
+        ));
+    }
+    Ok(Some(identity))
+}
+
+fn quarantine(
+    path: PathBuf,
+    reason: GenerationQuarantineReasonV1,
+    detail: String,
+) -> QuarantinedGenerationV1 {
+    QuarantinedGenerationV1 {
+        track: SearchPlaneTrackKind::Lexical,
+        path,
+        reason,
+        detail,
     }
 }
 
@@ -9444,20 +9462,5 @@ mod regex_match_cache_tests {
                 if code == "GENERATION_IDENTITY_DIGEST_MISMATCH"
         ));
         assert!(generation_dir.exists());
-    }
-
-    #[test]
-    fn persisted_scan_fails_closed_on_legacy_raw_identity_directories() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(temp.path().join("repo-alpha/rev-alpha/g1"))
-            .expect("create legacy layout");
-
-        let error = scan_persisted_generations(temp.path())
-            .expect_err("legacy raw layout must require explicit migration");
-        assert!(matches!(
-            error,
-            CoreError::Typed { ref code, .. }
-                if code == "GENERATION_STORAGE_LEGACY_LAYOUT_UNSUPPORTED"
-        ));
     }
 }

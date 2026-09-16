@@ -173,24 +173,28 @@ impl SearchCorpusLifecycleOwner {
 
     /// Revalidate every rehydrated active composite against both physical
     /// generation owners before the runtime publishes any serving socket.
+    /// Prove every active `(lexical, semantic)` pair physically, once, and
+    /// report how many were proven. This is boot's only deep validation
+    /// (QI-BB-026): a defective active pair fails boot with a typed cause
+    /// before any socket binds; inactive generations are not examined here.
     pub fn validate_rehydrated_active_generations_v1(
         &self,
         lexical_generation_validator: &dyn GenerationIdentityValidatePort,
         semantic_generation_validator: &dyn GenerationIdentityValidatePort,
-    ) -> Result<(), CoreError> {
-        for active in self
+    ) -> Result<usize, CoreError> {
+        let active_pairs = self
             .activation_catalog
-            .all_active_search_corpora_for_bootstrap_v1()?
-        {
+            .all_active_search_corpora_for_bootstrap_v1()?;
+        for active in &active_pairs {
             validate_physical_pair_v1(
                 lexical_generation_validator,
                 semantic_generation_validator,
-                &active,
+                active,
                 ERR_ACTIVATION_TARGET_UNOPENABLE,
                 "restart rehydrate",
             )?;
         }
-        Ok(())
+        Ok(active_pairs.len())
     }
 }
 
@@ -594,7 +598,10 @@ mod tests {
         let valid = RejectTrackGeneration {
             rejected_track: None,
         };
-        owner.validate_rehydrated_active_generations_v1(&valid, &valid)?;
+        let validated = owner.validate_rehydrated_active_generations_v1(&valid, &valid)?;
+        if validated != 1 {
+            return Err(format!("expected exactly one active pair proven, got {validated}").into());
+        }
         Ok(())
     }
 

@@ -3,9 +3,12 @@ crate quanta_index_core
 ├── mod domains: pub
 │   ├── mod generation: pub
 │   │   ├── trait GenerationIdentityValidatePort: pub
+│   │   ├── enum GenerationQuarantineReasonV1: pub
 │   │   ├── struct GenerationStorageKeyV1: pub
 │   │   ├── enum IncompleteGenerationDiscardOutcomeV1: pub
 │   │   ├── trait IncompleteGenerationDiscardPort: pub
+│   │   ├── struct QuarantinedGenerationV1: pub
+│   │   ├── struct SealedGenerationInventoryV1: pub
 │   │   ├── enum SealedGenerationReclaimOutcomeV1: pub
 │   │   ├── trait SealedGenerationReclaimPort: pub
 │   │   └── trait SealedGenerationScanPort: pub

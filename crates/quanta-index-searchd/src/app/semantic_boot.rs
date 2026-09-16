@@ -14,12 +14,12 @@ use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 use quanta_index_contract::{
-    ManifestGeneration, OwnerDocKind, SearchPlaneTrackKind, SemanticCorpusKindV1,
-    SemanticIngestBatch,
+    OwnerDocKind, SearchPlaneTrackKind, SemanticCorpusKindV1, SemanticIngestBatch,
 };
-use quanta_index_core::{CoreError, SemanticBatchBuildPort};
+use quanta_index_core::{CoreError, SealedGenerationScanPort, SemanticBatchBuildPort};
 use quanta_index_search_plane::Ledger;
-use quanta_index_semantic::scan_persisted_generations;
+
+use super::boot_inventory::{TrackInventoryReportV1, seed_track_readiness};
 
 use super::LegacySemanticJournalStore;
 
@@ -38,6 +38,19 @@ pub enum SemanticMigrationOutcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SemanticSeedReport {
     pub sealed_generations: usize,
+    /// Directories the inventory set aside (QI-BB-026); the paths and
+    /// reasons are on the runtime's `BootInventoryReportV1`.
+    pub quarantined_generations: usize,
+}
+
+impl SemanticSeedReport {
+    #[must_use]
+    pub fn from_track_report(report: &TrackInventoryReportV1) -> Self {
+        Self {
+            sealed_generations: report.sealed_generations,
+            quarantined_generations: report.quarantined.len(),
+        }
+    }
 }
 
 /// Bounded, payload-free semantic boot observability (LDB-E2E-01 §4).
@@ -96,53 +109,19 @@ pub fn migrate_legacy_semantic_journal(
     super::legacy_semantic_migration::migrate(store, builder, semantic_root)
 }
 
-/// Seed semantic readiness directly from sealed durable generations.
+/// Seed semantic readiness directly from the sealed-generation inventory.
 ///
-/// Mirrors the lexical readiness seed, but uses each generation's manifest
-/// digest so the per-`(repo, revision, generation)` semantic readiness state is
-/// reconstructed from durable truth rather than a replayed RAM graph.
+/// Mirrors the lexical readiness seed: each inventoried generation's manifest
+/// digest reconstructs the per-`(repo, revision, generation)` semantic
+/// readiness state from durable identity rather than a replayed RAM graph.
+/// Nothing is opened here (QI-BB-026); the active pairs are proven once by
+/// the lifecycle's restart rehydrate.
 pub fn seed_persisted_semantic_readiness(
     ledger: &Arc<RwLock<Ledger>>,
-    semantic_root: &Path,
-) -> Result<SemanticSeedReport, CoreError> {
-    let generations = scan_persisted_generations(semantic_root)?;
-    let mut guard = ledger
-        .write()
-        .map_err(|err| CoreError::Storage(format!("semantic seed: ledger poisoned: {err}")))?;
-
-    let mut highest: Option<(ManifestGeneration, String)> = None;
-    let mut sealed_generations: usize = 0;
-    for record in &generations {
-        guard.record_track_materialized(
-            &record.repo_id,
-            &record.revision_id,
-            SearchPlaneTrackKind::Semantic,
-            record.generation,
-            Some(record.manifest_digest.as_str()),
-        );
-        guard.record_track_seal_with_digest(
-            &record.repo_id,
-            &record.revision_id,
-            SearchPlaneTrackKind::Semantic,
-            record.generation,
-            record.manifest_digest.as_str(),
-        );
-        let take_higher = match &highest {
-            Some((current, _)) => record.generation.get() > current.get(),
-            None => true,
-        };
-        if take_higher {
-            highest = Some((record.generation, record.manifest_digest.clone()));
-        }
-        sealed_generations = sealed_generations.checked_add(1).ok_or_else(|| {
-            CoreError::Storage("semantic seed: generation counter overflow".to_string())
-        })?;
-    }
-    if let Some((generation, digest)) = highest {
-        guard.semantic_seal_with_digest(generation, digest.as_str());
-    }
-    drop(guard);
-    Ok(SemanticSeedReport { sealed_generations })
+    scanner: &dyn SealedGenerationScanPort,
+) -> Result<TrackInventoryReportV1, CoreError> {
+    seed_track_readiness(ledger, SearchPlaneTrackKind::Semantic, scanner)
+        .map_err(|err| CoreError::Storage(format!("semantic seed: {err}")))
 }
 
 #[cfg(test)]
@@ -158,6 +137,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::path::PathBuf;
 
+    use quanta_index_contract::ManifestGeneration;
     use quanta_index_contract::{
         BatchIngestMode, EmbeddingDistanceMetric, EmbeddingModelContract, EmbeddingNormalization,
         EmbeddingRecord, OwnerDocKind, RepoId, RepoRelativePath, RevisionId, SearchScopeKey,
@@ -165,14 +145,14 @@ mod tests {
     };
     use quanta_index_core::{GenerationStorageKeyV1, SemanticIndexOpenPort};
     use quanta_index_semantic::{
-        SemanticAdapter, embedding_record_v1, ingest_batch_v1, legacy_chunk_embedding_record_v1,
+        SemanticAdapter, embedding_record_v1, ingest_batch_v1, inventory_persisted_generations,
+        legacy_chunk_embedding_record_v1,
     };
 
     use super::{
-        Arc, Ledger, LegacySemanticJournalStore, ManifestGeneration, RwLock, SearchPlaneTrackKind,
+        Arc, Ledger, LegacySemanticJournalStore, RwLock, SearchPlaneTrackKind,
         SemanticMigrationOutcome, migrate_legacy_semantic_journal,
-        normalize_legacy_semantic_batch_v1, scan_persisted_generations,
-        seed_persisted_semantic_readiness,
+        normalize_legacy_semantic_batch_v1, seed_persisted_semantic_readiness,
     };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -294,7 +274,7 @@ mod tests {
     fn seed_reconstructs_readiness_from_sealed_generations() -> TestResult {
         let temp = tempfile::tempdir()?;
         let semantic_root: PathBuf = temp.path().join("indexes").join("semantic");
-        let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
+        let adapter = SemanticAdapter::with_state_root(semantic_root)?;
         build_durable(
             &adapter,
             &batch(
@@ -317,8 +297,9 @@ mod tests {
         )?;
 
         let ledger = Arc::new(RwLock::new(Ledger::new()));
-        let report = seed_persisted_semantic_readiness(&ledger, &semantic_root)?;
+        let report = seed_persisted_semantic_readiness(&ledger, &adapter)?;
         assert_eq!(report.sealed_generations, 2);
+        assert!(report.quarantined.is_empty());
 
         let guard = ledger
             .read()
@@ -344,7 +325,7 @@ mod tests {
     fn seed_skips_unsealed_generations() -> TestResult {
         let temp = tempfile::tempdir()?;
         let semantic_root: PathBuf = temp.path().join("indexes").join("semantic");
-        let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
+        let adapter = SemanticAdapter::with_state_root(semantic_root)?;
         build_durable(
             &adapter,
             &batch(
@@ -357,7 +338,7 @@ mod tests {
         )?;
 
         let ledger = Arc::new(RwLock::new(Ledger::new()));
-        let report = seed_persisted_semantic_readiness(&ledger, &semantic_root)?;
+        let report = seed_persisted_semantic_readiness(&ledger, &adapter)?;
         assert_eq!(report.sealed_generations, 0);
         let guard = ledger
             .read()
@@ -370,12 +351,16 @@ mod tests {
         Ok(())
     }
 
+    /// A content defect no longer stops boot seeding (QI-BB-026).
+    ///
+    /// The inventory lists the generation and the ledger seeds it; the door
+    /// that opens it refuses it with the typed row-count integrity error.
     #[test]
     #[expect(
         clippy::panic_in_result_fn,
-        reason = "test asserts corrupted sealed generations fail boot seeding via assert macros"
+        reason = "test asserts a content-corrupted generation seeds but does not open via assert macros"
     )]
-    fn seed_rejects_corrupted_sealed_generation() -> TestResult {
+    fn seed_lists_a_content_corrupted_generation_and_open_refuses_it() -> TestResult {
         let temp = tempfile::tempdir()?;
         let semantic_root: PathBuf = temp.path().join("indexes").join("semantic");
         let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
@@ -410,8 +395,11 @@ mod tests {
         std::fs::write(&manifest_path, &tampered)?;
 
         let ledger = Arc::new(RwLock::new(Ledger::new()));
-        let Err(err) = seed_persisted_semantic_readiness(&ledger, &semantic_root) else {
-            return Err("corrupted sealed generation must fail boot seeding".into());
+        let report = seed_persisted_semantic_readiness(&ledger, &adapter)?;
+        assert_eq!(report.sealed_generations, 1);
+        assert!(report.quarantined.is_empty());
+        let Err(err) = adapter.open(&repo_id(), &revision_id(), generation) else {
+            return Err("the corrupted generation must not open".into());
         };
         assert!(
             matches!(err, quanta_index_core::CoreError::Storage(ref message) if message.contains("row count")),
@@ -471,7 +459,7 @@ mod tests {
 
         // The durable generation now exists and serves both surviving embeddings.
         let mut migrated_keys: BTreeSet<GenerationKey> = BTreeSet::new();
-        for record in scan_persisted_generations(&semantic_root)? {
+        for record in inventory_persisted_generations(&semantic_root)?.sealed {
             let _present =
                 migrated_keys.insert((record.repo_id, record.revision_id, record.generation));
         }

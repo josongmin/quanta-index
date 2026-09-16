@@ -288,7 +288,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | --- | --- | --- |
 | W0 | **passed** | G0-L/G0-S/G0-C passed, G0-R baseline pinned(cooperative-only). §3 참조. timing 재측정만 `blocked: contended-host` |
 | W1 | planned | |
-| W2 | in_progress | QI-BB-029 preflight(§3.11) 완료. catalog 본체(session/receipt/SQLite)는 미착수 — G0-C PASS → SQLite(rusqlite bundled)로 진행. `quanta-index-catalog-probe`는 W2 landing 시 삭제 |
+| W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) 완료. catalog 본체(session/receipt/SQLite)는 미착수 — G0-C PASS → SQLite(rusqlite bundled)로 진행. `quanta-index-catalog-probe`는 W2 landing 시 삭제 |
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + sealed manifest(§3.10) 완료. 남은 것: sharded sidecar 포맷(O(delta) write), ANN versioned artifact(QI-BB-027), semantic seal manifest 대칭 |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), QI-BB-024 regex cache, streaming projection collector |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. 남은 것: cancel을 lexical collector 내부(candidate batch 사이)까지 내리기, overload/refusal 서버 metric |
@@ -850,6 +850,39 @@ error metric: 두 code는 `lq_typed_error_interrupted_total`(신규, closed taxo
 
 **정직한 한계**: 하나의 connection이 여러 request를 pipelined로 보내면 두 번째 request는 첫 번째 dispatch
 가 끝난 뒤 읽힌다(connection thread는 순차). 병렬성은 connection 단위다.
+
+## 3.13 QI-BB-026 — boot inventory + quarantine: boot는 active set만 증명한다 (구현 완료, control surface는 후속)
+
+**진단 확정**: lexical scanner가 모든 sealed generation을 `validate_generation_identity`(§3.10 이후엔 sidecar
+sha256까지)로 검증한 뒤 boot seed가 같은 후보를 **다시** 검증했고, semantic scanner는 모든 sealed generation을
+`open_generation`(row root + membership 전체 scan)했다. non-canonical directory 하나, 깨진 identity 하나, 아무도
+serve하지 않는 과거 generation의 sidecar 손상 하나가 전체 scan error → socket bind 전 boot 실패였다.
+
+**구현**:
+
+| 층 | 변경 |
+| --- | --- |
+| core | `SealedGenerationScanPort::inventory_sealed_generations() -> SealedGenerationInventoryV1 { sealed, quarantined }`; `QuarantinedGenerationV1 { track, path, reason, detail }`; `GenerationQuarantineReasonV1 { NonCanonicalLayout, IdentityUnreadable, ScopeMismatch, IdentityDigestMismatch }` — inventory가 identity만 보고 판단할 수 있는 결함만. content 결함은 의도적으로 없음 |
+| lexical | `inventory_sealed_generations(root)`: generation당 identity 파일 하나만 읽음. legacy layout / 비정규 `g<N>` / decode 실패 / scope mismatch → quarantine(경로+이유), 계속 진행. deep validation 없음. `PersistedLexicalGeneration`·`scan_persisted_generations`·`GENERATION_STORAGE_LEGACY_LAYOUT_UNSUPPORTED` 삭제 |
+| semantic | `inventory_persisted_generations(root)`: marker + manifest 두 파일. `open_generation` 호출 제거. `SemanticAdapter: SealedGenerationScanPort`. legacy migration의 durable witness는 `validate_persisted_generation_v2(root, record)`(open 1회)로 분리 — journal이 이름 붙인 generation만 증명 |
+| searchd | `app::boot_inventory::{seed_track_readiness, TrackInventoryReportV1, BootInventoryReportV1}` — 두 track이 하나의 seed 경로(mirror 제거). `SearchdRuntimeParts.semantic_generation_scanner` 추가. `SearchdRuntime.boot_inventory` 노출. `validate_rehydrated_active_generations_v1 -> usize`(증명한 active pair 수) |
+| harness | `E2eRuntime::start()`(lazy start 대신 boot 거부를 error로), `boot_inventory()`, `query_once()`(readiness retry 없는 단발 query) |
+
+boot 순서: lexical inventory → legacy semantic migration → semantic inventory → **active pair만** physical validation(track당 정확히 1회) → aux authority restore → bind. 비활성 generation의 content는 serve/activate/delta의 각 문(§3.10/§3.11 검증)이 자기 차례에 증명한다.
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| 손상된 비활성 generation(lexical sidecar bit-flip + semantic manifest row_count 변조) + legacy dir + garbage identity가 있어도 boot 성공, active 1쌍만 증명(`active_pairs_validated=1`), active serve, 비활성 pin query는 각 문에서 typed 거부(`GENERATION_SIDECAR_CORRUPT` / row-count), quarantine pin은 `NOT_READY`, report에 경로+이유 | `e2e_boot_quarantine::damage_to_an_inactive_generation_does_not_stop_the_daemon` — mutation(inventory가 deep validate)으로 FAIL 확인 후 revert |
+| 손상된 active generation은 bind 전 typed 거부(`ACTIVATION_TARGET_UNOPENABLE` + `GENERATION_SIDECAR_CORRUPT`), inventory 미노출 | `…::damage_to_the_active_generation_refuses_to_boot` |
+| lexical inventory: 4종 quarantine 이유 + in-progress skip + content 미검사(손상된 sidecar를 그대로 목록화, validator가 거부) | `lexical/tests/boot_inventory.rs` 2 tests |
+| semantic inventory: legacy layout quarantine; content 변조는 목록화되고 deep witness/open이 거부 | `semantic::tests::inventory_quarantines_legacy_raw_identity_directories`, `persisted_semantic::inventory_lists_a_content_corrupted_generation_and_the_deep_witness_refuses_it`, `semantic_boot::tests::seed_lists_a_content_corrupted_generation_and_open_refuses_it`, `semantic_boot_report::runtime_boot_inventories_a_corrupted_inactive_semantic_generation` |
+| seed: 정렬 무관 최고 generation이 head, quarantine은 ledger 부재, cross-track inventory 거부 | `boot_inventory::tests` 2 |
+
+**완료 기준 대비**: (1) 손상 비활성 + 정상 active → boot/query 성공 + quarantine receipt ✓ (receipt는 runtime report, 파일/IPC 아님). (2) 손상 active → bind 전 typed ✓. (3) 동기 boot 검증량 ∝ 필수 set — inventory는 generation당 파일 1–2개, deep은 active pair만 ✓. (4) generation당 deep validation boot당 최대 1회 ✓ (lexical 2회→1회, semantic scan+rehydrate 2회→1회).
+
+**남은 것**: quarantine 조회/삭제/재검증 typed control/CLI surface(finding 보완 #4) — contract IPC variant 추가가 필요해 W2 catalog와 함께. QI-BB-017 본체(semantic open의 row root/membership 전체 scan을 seal-time proof + file commitment로 대체)는 다음 항목.
 
 ## 4. Finding 상태 (QI-BB-001–032)
 
