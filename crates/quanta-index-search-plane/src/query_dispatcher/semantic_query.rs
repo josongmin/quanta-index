@@ -742,17 +742,32 @@ mod seed_fusion_tests {
     }
 }
 
+/// The lexical scope a semantic query was narrowed to: the cap the caller
+/// asked for and the ranked candidate ids the lexical lane produced under it.
+///
+/// `candidate_ids.len() <= requested_cap` by construction; the dispatcher
+/// refuses an adapter answer that exceeds the cap instead of truncating it.
+pub(super) struct SemanticScopeV1 {
+    pub(super) requested_cap: u32,
+    pub(super) candidate_ids: BTreeSet<String>,
+}
+
 pub(super) fn build_semantic_response_explanation(
-    scope_candidate_count: usize,
-    scoped: bool,
+    scope: Option<&SemanticScopeV1>,
     result_count: usize,
     early_stop_reason: Option<EarlyStopReason>,
 ) -> SearchExplanation {
+    let scoped = scope.is_some();
+    let scope_candidate_count = scope.map_or(0, |scope| scope.candidate_ids.len());
     let mut planner_trace = vec![PlannerTraceEntry {
         stage: PlannerStage::Plan,
         detail: format!("semantic.scope={scoped}"),
     }];
-    if scoped {
+    if let Some(scope) = scope {
+        planner_trace.push(PlannerTraceEntry {
+            stage: PlannerStage::Plan,
+            detail: format!("semantic.scope.cap={}", scope.requested_cap),
+        });
         planner_trace.push(PlannerTraceEntry {
             stage: PlannerStage::ExecFanout,
             detail: format!("semantic.scope.text_candidates={scope_candidate_count}"),

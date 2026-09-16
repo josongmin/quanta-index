@@ -611,13 +611,14 @@ fn exact_path_constraint_is_applied_before_limit_and_on_index_no_scan_v1() -> Te
         "symbol ranking must receive the same exact-path predicate before top_k"
     );
 
-    let all = searcher.search_all_constrained(&query, &constraints)?;
+    let capped = searcher.search_constrained(&query, &constraints, 16)?;
     assert_eq!(
-        all.iter()
+        capped
+            .iter()
             .map(|candidate| candidate.candidate_id.as_str())
             .collect::<Vec<_>>(),
         vec!["requested"],
-        "unbounded scope materialization must not admit another same-basename path"
+        "a capped scope materialization must not admit another same-basename path"
     );
 
     let mut unindexed = query;

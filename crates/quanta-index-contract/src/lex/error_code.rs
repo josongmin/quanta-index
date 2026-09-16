@@ -128,9 +128,17 @@ pub enum LexicalErrorCode {
     HybInvalidWeights,
     HybGenMismatch,
     HybPushdownIncomplete,
-    HybTopKInvalid,
     HybStrategyUnsupported,
     HybSubqueryInvalid,
+
+    // --- query contract (route-independent, QI-BB-025) ---
+    /// A public `top_k` outside `1..=PUBLIC_TOP_K_MAX`; every query route
+    /// reports this one code, replacing the former per-route
+    /// `HYB_TOP_K_INVALID`.
+    QueryTopKOutOfRange,
+    /// An adapter was handed a fetch size past the internal ceiling — a
+    /// search-plane defect, never a caller error.
+    QueryInternalFetchOutOfRange,
 
     // --- BRIDGE-01 ---
     BridgeUnsupportedFilter,
@@ -226,9 +234,10 @@ impl LexicalErrorCode {
         Self::HybInvalidWeights,
         Self::HybGenMismatch,
         Self::HybPushdownIncomplete,
-        Self::HybTopKInvalid,
         Self::HybStrategyUnsupported,
         Self::HybSubqueryInvalid,
+        Self::QueryTopKOutOfRange,
+        Self::QueryInternalFetchOutOfRange,
         Self::BridgeUnsupportedFilter,
         Self::BridgeUnsupportedDirective,
         Self::BridgeAmbiguousFilter,
@@ -319,9 +328,10 @@ impl LexicalErrorCode {
             Self::HybInvalidWeights => "HYB_INVALID_WEIGHTS",
             Self::HybGenMismatch => "HYB_GEN_MISMATCH",
             Self::HybPushdownIncomplete => "HYB_PUSHDOWN_INCOMPLETE",
-            Self::HybTopKInvalid => "HYB_TOP_K_INVALID",
             Self::HybStrategyUnsupported => "HYB_STRATEGY_UNSUPPORTED",
             Self::HybSubqueryInvalid => "HYB_SUBQUERY_INVALID",
+            Self::QueryTopKOutOfRange => crate::TOP_K_OUT_OF_RANGE_CODE,
+            Self::QueryInternalFetchOutOfRange => crate::INTERNAL_FETCH_OUT_OF_RANGE_CODE,
             Self::BridgeUnsupportedFilter => "BRIDGE_UNSUPPORTED_FILTER",
             Self::BridgeUnsupportedDirective => "BRIDGE_UNSUPPORTED_DIRECTIVE",
             Self::BridgeAmbiguousFilter => "BRIDGE_AMBIGUOUS_FILTER",

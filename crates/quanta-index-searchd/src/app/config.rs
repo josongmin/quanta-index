@@ -6,8 +6,8 @@ use quanta_index_embed::{
     DEFAULT_CONCURRENCY, DEFAULT_MAX_BATCH, DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST,
     DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT, OpenAiProviderConfig,
 };
-use quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_DIMENSION;
 use quanta_index_search_plane::readiness::SearchCorpusHistoryRetentionPolicyV1;
+use quanta_index_search_plane::{SEARCH_OWNED_SEMANTIC_DIMENSION, SnapshotRegistryPolicy};
 
 /// Default `OpenAI` embedding model and dimension when the `openai` profile is
 /// selected without explicit overrides.
@@ -139,6 +139,10 @@ pub struct SearchdConfig {
     ingest_socket_path: PathBuf,
     semantic_embedder_profile: SemanticEmbedderProfile,
     search_corpus_history_retention_policy: Option<SearchCorpusHistoryRetentionPolicyV1>,
+    /// Residency limits for opened sealed generations (QI-BB-001). Optional
+    /// operator tuning with a documented default; both env knobs must be
+    /// given together and neither may be zero.
+    snapshot_registry_policy: SnapshotRegistryPolicy,
 }
 
 impl SearchdConfig {
@@ -152,6 +156,7 @@ impl SearchdConfig {
             ingest_socket_path: socket_dir.join("ingest.sock"),
             semantic_embedder_profile: SemanticEmbedderProfile::default(),
             search_corpus_history_retention_policy: None,
+            snapshot_registry_policy: SnapshotRegistryPolicy::DEFAULT,
         }
     }
 
@@ -159,7 +164,8 @@ impl SearchdConfig {
         let retention = search_corpus_history_retention_policy_from_env()?;
         let base = Self::from_state_root(Self::resolve_state_root_from_env()?)
             .with_search_corpus_history_retention_policy_v1(retention)
-            .with_semantic_embedder_profile(semantic_embedder_profile_from_env()?);
+            .with_semantic_embedder_profile(semantic_embedder_profile_from_env()?)
+            .with_snapshot_registry_policy(snapshot_registry_policy_from_env()?);
         let _validated = base.search_corpus_history_retention_policy()?;
         Ok(base)
     }
@@ -205,6 +211,17 @@ impl SearchdConfig {
     #[must_use]
     pub fn semantic_embedder_profile(&self) -> &SemanticEmbedderProfile {
         &self.semantic_embedder_profile
+    }
+
+    #[must_use]
+    pub const fn snapshot_registry_policy(&self) -> SnapshotRegistryPolicy {
+        self.snapshot_registry_policy
+    }
+
+    #[must_use]
+    pub const fn with_snapshot_registry_policy(mut self, policy: SnapshotRegistryPolicy) -> Self {
+        self.snapshot_registry_policy = policy;
+        self
     }
 
     pub fn search_corpus_history_retention_policy(
@@ -332,6 +349,34 @@ where
         max_total_bytes,
     )
     .map_err(anyhow::Error::from)
+}
+
+/// Resolve the snapshot registry limits from env.
+///
+/// `QUANTA_INDEX_SNAPSHOT_MAX_ENTRIES` and
+/// `QUANTA_INDEX_SNAPSHOT_MAX_RESIDENT_BYTES` are optional as a pair: neither
+/// set selects [`SnapshotRegistryPolicy::DEFAULT`]; one without the other is
+/// an operator error rather than a half-applied override.
+pub(crate) fn snapshot_registry_policy_from_env() -> Result<SnapshotRegistryPolicy> {
+    snapshot_registry_policy_from_lookup(optional_env)
+}
+
+fn snapshot_registry_policy_from_lookup<F>(lookup: F) -> Result<SnapshotRegistryPolicy>
+where
+    F: Fn(&str) -> Result<Option<String>>,
+{
+    const ENTRIES: &str = "QUANTA_INDEX_SNAPSHOT_MAX_ENTRIES";
+    const BYTES: &str = "QUANTA_INDEX_SNAPSHOT_MAX_RESIDENT_BYTES";
+    match (lookup(ENTRIES)?, lookup(BYTES)?) {
+        (None, None) => Ok(SnapshotRegistryPolicy::DEFAULT),
+        (Some(entries), Some(bytes)) => SnapshotRegistryPolicy::new(
+            required_positive_raw_usize(ENTRIES, Some(entries))?,
+            required_positive_raw_u64(BYTES, Some(bytes))?,
+        )
+        .map_err(anyhow::Error::from),
+        (Some(_), None) => Err(anyhow::anyhow!("{ENTRIES} is set but {BYTES} is not")),
+        (None, Some(_)) => Err(anyhow::anyhow!("{BYTES} is set but {ENTRIES} is not")),
+    }
 }
 
 fn required_positive_raw_usize(name: &str, raw: Option<String>) -> Result<usize> {
@@ -644,6 +689,42 @@ mod tests {
         assert_eq!(policy.max_bytes(), 4096);
         assert_eq!(policy.max_revision_pairs(), 17);
         assert_eq!(policy.max_total_bytes(), 65_536);
+    }
+
+    #[test]
+    fn snapshot_registry_env_binding_is_all_or_nothing_and_nonzero() {
+        const ENTRIES: &str = "QUANTA_INDEX_SNAPSHOT_MAX_ENTRIES";
+        const BYTES: &str = "QUANTA_INDEX_SNAPSHOT_MAX_RESIDENT_BYTES";
+        let unset = snapshot_registry_policy_from_lookup(|_name| Ok(None))
+            .expect("no knobs selects the default");
+        assert_eq!(unset, SnapshotRegistryPolicy::DEFAULT);
+
+        let half = snapshot_registry_policy_from_lookup(|name| {
+            Ok((name == ENTRIES).then(|| "4".to_string()))
+        })
+        .expect_err("one knob without the other must fail closed");
+        assert!(half.to_string().contains(BYTES));
+
+        let zero = snapshot_registry_policy_from_lookup(|name| {
+            Ok(match name {
+                ENTRIES => Some("0".to_string()),
+                BYTES => Some("1024".to_string()),
+                _ => None,
+            })
+        })
+        .expect_err("zero entries must fail closed");
+        assert!(zero.to_string().contains(ENTRIES));
+
+        let explicit = snapshot_registry_policy_from_lookup(|name| {
+            Ok(match name {
+                ENTRIES => Some("4".to_string()),
+                BYTES => Some("1024".to_string()),
+                _ => None,
+            })
+        })
+        .expect("both knobs bind");
+        assert_eq!(explicit.max_entries(), 4);
+        assert_eq!(explicit.max_resident_bytes(), 1_024);
     }
 
     #[test]

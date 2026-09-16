@@ -189,6 +189,7 @@ rust-test-integration:
     {{cargo}} --lane test-integration-lane test -p quanta-index-repomap --test bootstrap_owner_flow --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-repomap --test owner_surface --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test persisted_semantic --all-features --locked
+    {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test generation_delta_reuse --all-features --locked -- --nocapture
     {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test semantic_generation_lifecycle_model --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test scv2_persisted_scenarios --all-features --locked
 
@@ -247,6 +248,8 @@ rust-test-e2e:
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_structural_hellgate --all-features --locked -- --nocapture
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_predicate_authority_boolean --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_top_k_truth_table --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_semantic_scope_cap --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_snapshot_registry --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_predicate_authority_lifecycle --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_generation_activation_concurrency --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test dsl_scenarios --all-features --locked

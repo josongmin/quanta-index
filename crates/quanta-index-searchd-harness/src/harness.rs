@@ -270,6 +270,13 @@ impl E2eRuntime {
         })
     }
 
+    /// The daemon's state root. Fault-injection tests use it to reach the
+    /// adapters' on-disk layout directly; it is never a query-path input.
+    #[must_use]
+    pub fn state_root(&self) -> &Path {
+        &self.state_root
+    }
+
     /// The embedder profile the (lazily-started) daemon is configured with.
     #[must_use]
     pub fn embedder_profile(&self) -> &SemanticEmbedderProfile {

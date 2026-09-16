@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::{
     ActivationCatalog, ActiveGenerationRecord, Ledger, SEARCH_OWNED_SEMANTIC_DIMENSION,
+    SnapshotAcquireOutcome, SnapshotKey, SnapshotRegistries, SnapshotRegistryPolicy,
     lower_lexical_text_query,
     lowering::lower_sourcegraph_structural_query_text,
     query_embedder::{HashingQueryTextEmbedder, QueryTextEmbedderPort},
@@ -40,9 +41,9 @@ use quanta_index_core::domains::structural::{
 };
 use quanta_index_core::{
     CoreError, ExplainQueryPort, HybridOrchestratorPolicy, HybridQueryPort, LexicalIndexOpenPort,
-    LexicalPolicy, LexicalQueryPort, RepoMapPolicy, RepoMapQueryPort, SemanticIndexOpenPort,
-    SemanticPolicy, SemanticQueryPort, SemanticSearchHitV1, SemanticSearcher,
-    StructuralMatchBinding, StructuralMatchCandidate, StructuralService,
+    LexicalPolicy, LexicalQueryPort, LexicalSearcher, RepoMapPolicy, RepoMapQueryPort,
+    SemanticIndexOpenPort, SemanticPolicy, SemanticQueryPort, SemanticSearchHitV1,
+    SemanticSearcher, StructuralMatchBinding, StructuralMatchCandidate, StructuralService,
     timeref::{parse_rev_at_time_spec, parse_search_timeref_ms},
     validate_query_top_k,
 };
@@ -328,6 +329,9 @@ fn classify_error_metric_name(err: &CoreError) -> &'static str {
 pub struct SearchPlaneDispatcher {
     lex_opener: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
     sem_opener: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
+    /// Resident opened generations, shared with the ingest side which
+    /// invalidates them (QI-BB-001).
+    snapshots: SnapshotRegistries,
     repo_map_query: Arc<dyn RepoMapQueryPort + Send + Sync>,
     /// Structural producer adapter wired by the composition root.
     structural_producer: Arc<dyn StructuralProducerPort + Send + Sync>,
@@ -342,7 +346,7 @@ pub type SearchPlaneQueryDispatcher = SearchPlaneDispatcher;
 
 mod semantic_query;
 use semantic_query::{
-    HybridFusion, SemanticSelection, build_hybrid_response_explanation,
+    HybridFusion, SemanticScopeV1, SemanticSelection, build_hybrid_response_explanation,
     build_hybrid_seed_candidates_v1, build_hybrid_seed_candidates_v2,
     build_hybrid_seed_response_explanation_v2, build_semantic_response_explanation,
     canonical_dense_corpus_budgets_v1, ensure_query_model_matches_index_v1,
@@ -363,6 +367,7 @@ impl SearchPlaneDispatcher {
         Self::new_with_obs(
             lex_opener,
             sem_opener,
+            SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
             repo_map_query,
             structural_producer,
             ledger,
@@ -374,9 +379,14 @@ impl SearchPlaneDispatcher {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "composition-root wiring of one collaborator per port; the registries and obs sink are shared with the ingest side and cannot be folded into an opener"
+    )]
     pub fn new_with_obs(
         lex_opener: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
         sem_opener: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
+        snapshots: SnapshotRegistries,
         repo_map_query: Arc<dyn RepoMapQueryPort + Send + Sync>,
         structural_producer: Arc<dyn StructuralProducerPort + Send + Sync>,
         ledger: Arc<RwLock<Ledger>>,
@@ -387,6 +397,7 @@ impl SearchPlaneDispatcher {
         Self {
             lex_opener,
             sem_opener,
+            snapshots,
             repo_map_query,
             structural_producer,
             ledger,
@@ -394,6 +405,106 @@ impl SearchPlaneDispatcher {
             query_embedder,
             obs_sink,
         }
+    }
+
+    /// Acquire the shared lexical handle for a pinned sealed generation.
+    ///
+    /// Goes through the snapshot registry: a resident handle is returned
+    /// without touching disk, a miss runs the adapter's cold open once and
+    /// concurrent misses wait for it. The outcome is emitted as a metric
+    /// under the pin's dimensions.
+    fn acquire_lexical(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> Result<Arc<dyn LexicalSearcher>, CoreError> {
+        let key = SnapshotKey::new(repo_id, revision_id, generation);
+        let acquired = self.snapshots.lexical.acquire(&key, || {
+            let handle: Arc<dyn LexicalSearcher> =
+                Arc::from(self.lex_opener.open(repo_id, revision_id, generation)?);
+            let resident_bytes = handle.resident_bytes_estimate();
+            Ok(crate::OpenedSnapshot {
+                handle,
+                resident_bytes,
+            })
+        })?;
+        self.emit_snapshot_metric("lexical", &key, acquired.outcome);
+        Ok(acquired.handle)
+    }
+
+    /// Semantic counterpart of [`Self::acquire_lexical`].
+    fn acquire_semantic(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> Result<Arc<dyn SemanticSearcher>, CoreError> {
+        let key = SnapshotKey::new(repo_id, revision_id, generation);
+        let acquired = self.snapshots.semantic.acquire(&key, || {
+            let handle: Arc<dyn SemanticSearcher> =
+                Arc::from(self.sem_opener.open(repo_id, revision_id, generation)?);
+            let resident_bytes = handle.resident_bytes_estimate();
+            Ok(crate::OpenedSnapshot {
+                handle,
+                resident_bytes,
+            })
+        })?;
+        self.emit_snapshot_metric("semantic", &key, acquired.outcome);
+        Ok(acquired.handle)
+    }
+
+    fn emit_snapshot_metric(
+        &self,
+        track: &'static str,
+        key: &SnapshotKey,
+        outcome: SnapshotAcquireOutcome,
+    ) {
+        let dimensions = Dimensions::new(
+            "LXE-10",
+            "8",
+            "local",
+            key.repo_id.as_str(),
+            key.generation.get(),
+        );
+        let (name, kind, value) = match outcome {
+            SnapshotAcquireOutcome::Hit => match track {
+                "lexical" => ("lq_snapshot_lexical_hit_total", MetricKind::Counter, 1.0),
+                _ => ("lq_snapshot_semantic_hit_total", MetricKind::Counter, 1.0),
+            },
+            SnapshotAcquireOutcome::Coalesced => match track {
+                "lexical" => (
+                    "lq_snapshot_lexical_coalesced_total",
+                    MetricKind::Counter,
+                    1.0,
+                ),
+                _ => (
+                    "lq_snapshot_semantic_coalesced_total",
+                    MetricKind::Counter,
+                    1.0,
+                ),
+            },
+            SnapshotAcquireOutcome::Miss { cold_open_nanos } => {
+                let millis = u64::try_from(cold_open_nanos.div_euclid(1_000_000))
+                    .map_or(f64::MAX, |value| {
+                        u32::try_from(value).map_or(f64::MAX, f64::from)
+                    });
+                match track {
+                    "lexical" => (
+                        "lq_snapshot_lexical_cold_open_ms",
+                        MetricKind::Histogram,
+                        millis,
+                    ),
+                    _ => (
+                        "lq_snapshot_semantic_cold_open_ms",
+                        MetricKind::Histogram,
+                        millis,
+                    ),
+                }
+            }
+        };
+        self.obs_sink
+            .emit(MetricSample::new(name, kind, value, dimensions));
     }
 
     /// Lower the request and forward it to the live lexical searcher.
@@ -430,8 +541,7 @@ impl SearchPlaneDispatcher {
         let materialized = self.snapshot_lex_materialized(&pin.repo_id, &pin.revision_id)?;
         LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, materialized)?;
         let searcher =
-            self.lex_opener
-                .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
+            self.acquire_lexical(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let fetch_top_k = lexical_fetch_limit_v1(&prepared.query, request.top_k)?;
         let mut results = searcher.search_constrained(
             &prepared.query,
@@ -489,8 +599,7 @@ impl SearchPlaneDispatcher {
         let materialized = self.snapshot_lex_materialized(&pin.repo_id, &pin.revision_id)?;
         LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, materialized)?;
         let searcher =
-            self.lex_opener
-                .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
+            self.acquire_lexical(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let mut results = searcher.search_symbols_constrained(
             &prepared_language.query,
             &prepared_language.constraints,
@@ -548,11 +657,9 @@ impl SearchPlaneDispatcher {
         self.validate_semantic_selection(selection, plane)?;
 
         let lex_searcher =
-            self.lex_opener
-                .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
+            self.acquire_lexical(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let sem_searcher =
-            self.sem_opener
-                .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
+            self.acquire_semantic(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let lexical_query = lower_lexical_text_query(text_query)?;
         let prepared_language = prepare_language_query_v1(lexical_query, &text_query.constraints)?;
         LexicalPolicy::validate_query(&prepared_language.query)?;
@@ -625,7 +732,13 @@ impl SearchPlaneDispatcher {
         let pin = selection.pin.clone();
         self.validate_semantic_selection(&selection, "semantic")?;
         let mut effective_constraints = request.constraints.clone();
-        let scope_candidate_ids = if let Some(scope) = request.lexical_scope.as_ref() {
+        let scope = if let Some(scope) = request.lexical_scope.as_ref() {
+            // QI-BB-004: the scope's `top_k` is the lexical candidate cap the
+            // contract promises. It is validated under the shared public
+            // gate, the lexical lane is asked for exactly that many ranked
+            // candidates, and the semantic allowlist is those ids and no
+            // more — never a full-recall materialization of the scope query.
+            let scope_cap = validate_query_top_k(scope.top_k)?;
             if scope.constraints != request.constraints {
                 return Err(CoreError::InvalidContract(
                     "semantic: lexical scope constraints must equal outer semantic constraints"
@@ -643,32 +756,40 @@ impl SearchPlaneDispatcher {
                 lex_materialized,
             )?;
             let searcher =
-                self.lex_opener
-                    .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
-            let scoped = if prepared_language.force_empty {
+                self.acquire_lexical(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
+            let mut scoped = if prepared_language.force_empty {
                 Vec::new()
             } else {
-                searcher.search_all_constrained(
+                searcher.search_constrained(
                     &prepared_language.query,
                     &prepared_language.constraints,
+                    scope_cap,
                 )?
             };
-            Some(
-                scoped
+            if scoped.len() > top_k_limit(scope_cap) {
+                return Err(CoreError::InvalidContract(format!(
+                    "semantic: lexical scope adapter returned {} candidates for a cap of {scope_cap}",
+                    scoped.len()
+                )));
+            }
+            stabilize_ranked_candidates(&mut scoped);
+            Some(SemanticScopeV1 {
+                requested_cap: scope_cap,
+                candidate_ids: scoped
                     .into_iter()
                     .map(|candidate| candidate.candidate_id)
                     .collect::<BTreeSet<_>>(),
-            )
+            })
         } else {
             None
         };
+        let scope_candidate_ids = scope.as_ref().map(|scope| &scope.candidate_ids);
         let searcher =
-            self.sem_opener
-                .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
+            self.acquire_semantic(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let query_vector =
             self.embed_and_gate_query(request.query_text.as_str(), searcher.as_ref(), "semantic")?;
         let probe_top_k = probe_top_k_v1(request.top_k)?;
-        let mut results = if let Some(scope_ids) = scope_candidate_ids.as_ref() {
+        let mut results = if let Some(scope_ids) = scope_candidate_ids {
             searcher.search_scoped_constrained(
                 &query_vector,
                 scope_ids,
@@ -679,7 +800,7 @@ impl SearchPlaneDispatcher {
             searcher.search_constrained(&query_vector, &effective_constraints, probe_top_k)?
         };
         let window = finalize_probe_window_v1(&mut results, request.top_k)?;
-        let early_stop_reason = scope_candidate_ids.as_ref().and_then(|scope_ids| {
+        let early_stop_reason = scope_candidate_ids.and_then(|scope_ids| {
             let limit = top_k_limit(request.top_k);
             if scope_ids.len() > results.len() && results.len() == limit {
                 Some(EarlyStopReason::CountReached)
@@ -687,12 +808,8 @@ impl SearchPlaneDispatcher {
                 None
             }
         });
-        let explanation = build_semantic_response_explanation(
-            scope_candidate_ids.as_ref().map_or(0, BTreeSet::len),
-            scope_candidate_ids.is_some(),
-            results.len(),
-            early_stop_reason,
-        );
+        let explanation =
+            build_semantic_response_explanation(scope.as_ref(), results.len(), early_stop_reason);
         Ok(SemanticQueryResponse {
             generation: pin,
             results,
@@ -732,11 +849,9 @@ impl SearchPlaneDispatcher {
         LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, lex_materialized)?;
         let manifest_digest = self.validated_semantic_manifest_digest(&selection, "hybrid seed")?;
         let lex_searcher =
-            self.lex_opener
-                .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
+            self.acquire_lexical(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let sem_searcher =
-            self.sem_opener
-                .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
+            self.acquire_semantic(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let lexical_query = lower_lexical_text_query(&request.text_query)?;
         let prepared_language =
             prepare_language_query_v1(lexical_query, &request.text_query.constraints)?;
@@ -986,8 +1101,7 @@ impl SearchPlaneDispatcher {
         let materialized = self.snapshot_lex_materialized(&pin.repo_id, &pin.revision_id)?;
         LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, materialized)?;
         let searcher =
-            self.lex_opener
-                .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
+            self.acquire_lexical(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let probe_text = if request.candidate.snippet.is_empty() {
             request.candidate.candidate_id.clone()
         } else {
@@ -1164,7 +1278,7 @@ impl SearchPlaneDispatcher {
                 "cluster membership read",
             )?;
         }
-        let searcher = self.sem_opener.open(
+        let searcher = self.acquire_semantic(
             &request.generation.repo_id,
             &request.generation.revision_id,
             request.generation.manifest_generation,
@@ -2338,7 +2452,7 @@ impl LexicalSubexprEvaluator<'_> {
             self.pin.manifest_generation,
             materialized,
         )?;
-        let searcher = self.dispatcher.lex_opener.open(
+        let searcher = self.dispatcher.acquire_lexical(
             &self.pin.repo_id,
             &self.pin.revision_id,
             self.pin.manifest_generation,
@@ -4703,6 +4817,7 @@ mod tests {
     use crate::{
         ActivationCatalog, HashingQueryTextEmbedder, Ledger, PreparedSearchCorpusGenerationV1,
         QueryTextEmbedderPort, SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusGenerationV1,
+        SnapshotRegistries, SnapshotRegistryPolicy,
     };
     use quanta_index_contract::{
         ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
@@ -5481,6 +5596,10 @@ mod tests {
     }
 
     impl SemanticSearcher for RecordingSemanticSearcher {
+        fn resident_bytes_estimate(&self) -> u64 {
+            0
+        }
+
         fn cluster_membership_batch_read(
             &self,
             request: &ClusterMembershipBatchReadRequestV1,
@@ -5867,6 +5986,10 @@ mod tests {
     }
 
     impl LexicalSearcher for StubLexicalSearcher {
+        fn resident_bytes_estimate(&self) -> u64 {
+            0
+        }
+
         fn search(
             &self,
             _query: &quanta_index_contract::LqQuery,
@@ -5933,12 +6056,10 @@ mod tests {
     struct RecordingLexicalState {
         search_top_ks: Vec<u32>,
         symbol_top_ks: Vec<u32>,
-        search_all_calls: u32,
         opened_pins: Vec<(RepoId, RevisionId, ManifestGeneration)>,
         searched_queries: Vec<LqQuery>,
         searched_constraints: Vec<QueryConstraintSetV1>,
         symbol_constraints: Vec<QueryConstraintSetV1>,
-        search_all_constraints: Vec<QueryConstraintSetV1>,
     }
 
     struct RecordingLexicalSearcher {
@@ -5947,6 +6068,10 @@ mod tests {
     }
 
     impl LexicalSearcher for RecordingLexicalSearcher {
+        fn resident_bytes_estimate(&self) -> u64 {
+            0
+        }
+
         fn search(
             &self,
             query: &quanta_index_contract::LqQuery,
@@ -6037,27 +6162,6 @@ mod tests {
             &self,
             _query: &quanta_index_contract::LqQuery,
         ) -> Result<Vec<LexicalCandidate>, CoreError> {
-            let mut guard = self
-                .state
-                .lock()
-                .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?;
-            guard.search_all_calls = guard.search_all_calls.saturating_add(1);
-            drop(guard);
-            Ok(self.results.clone())
-        }
-
-        fn search_all_constrained(
-            &self,
-            _query: &quanta_index_contract::LqQuery,
-            constraints: &QueryConstraintSetV1,
-        ) -> Result<Vec<LexicalCandidate>, CoreError> {
-            let mut guard = self
-                .state
-                .lock()
-                .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?;
-            guard.search_all_calls = guard.search_all_calls.saturating_add(1);
-            guard.search_all_constraints.push(constraints.clone());
-            drop(guard);
             Ok(self.results.clone())
         }
     }
@@ -6575,6 +6679,7 @@ mod tests {
             Arc::new(RecordingSemanticOpener {
                 state: Arc::clone(&state),
             }),
+            SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
             Arc::new(StubRepoMapQueryPort),
             Arc::new(FailClosedStructuralProducer),
             ready_ledger(),
@@ -6628,6 +6733,7 @@ mod tests {
             Arc::new(RecordingSemanticOpener {
                 state: Arc::clone(&state),
             }),
+            SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
             Arc::new(StubRepoMapQueryPort),
             Arc::new(FailClosedStructuralProducer),
             ready_ledger(),
@@ -7676,6 +7782,7 @@ mod tests {
         Ok(SearchPlaneDispatcher::new_with_obs(
             lex_opener,
             sem_opener,
+            SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
             Arc::new(StubRepoMapQueryPort),
             Arc::new(FailClosedStructuralProducer),
             ready_ledger(),
@@ -7858,8 +7965,13 @@ mod tests {
             .into_iter()
             .map(|sample| sample.name.into_string())
             .collect::<Vec<_>>();
+        // The closed metric set for one cold hybrid dispatch. The two
+        // snapshot samples are cold opens because the registry starts empty;
+        // a warm dispatch would report `..._hit_total` in their place.
         let expected = vec![
             "lq_query_intake_total".to_string(),
+            "lq_snapshot_lexical_cold_open_ms".to_string(),
+            "lq_snapshot_semantic_cold_open_ms".to_string(),
             "lq_planner_total".to_string(),
             "lq_engine_fanout_count".to_string(),
             "lq_merge_result_count".to_string(),
@@ -7978,6 +8090,7 @@ mod tests {
         let dispatcher = SearchPlaneDispatcher::new_with_obs(
             Arc::new(RejectLexicalOpener),
             Arc::new(RejectSemanticOpener),
+            SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
             Arc::new(StubRepoMapQueryPort),
             Arc::new(FailClosedStructuralProducer),
             Arc::new(RwLock::new(Ledger::default())),
@@ -8259,6 +8372,7 @@ mod tests {
         let dispatcher = SearchPlaneDispatcher::new_with_obs(
             Arc::new(RejectLexicalOpener),
             Arc::new(RejectSemanticOpener),
+            SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
             Arc::new(StubRepoMapQueryPort),
             Arc::new(FailClosedStructuralProducer),
             ledger_with_history_ops(vec![LexicalChannelOp::UpsertCommit(UpsertCommit {
@@ -8314,6 +8428,7 @@ mod tests {
         let dispatcher = SearchPlaneDispatcher::new_with_obs(
             Arc::new(RejectLexicalOpener),
             Arc::new(RejectSemanticOpener),
+            SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
             Arc::new(StubRepoMapQueryPort),
             Arc::new(FailClosedStructuralProducer),
             ready_ledger(),
@@ -8341,6 +8456,7 @@ mod tests {
         let dispatcher = SearchPlaneDispatcher::new_with_obs(
             Arc::new(RejectLexicalOpener),
             Arc::new(RejectSemanticOpener),
+            SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
             Arc::new(StubRepoMapQueryPort),
             Arc::new(RecordingStructuralProducer::ready_with(vec![
                 structural_match_candidate("chunk-tree"),

@@ -287,8 +287,8 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W0 | **passed** | G0-L/G0-S/G0-C passed, G0-R baseline pinned(cooperative-only). §3 참조. timing 재측정만 `blocked: contended-host` |
 | W1 | planned | |
 | W2 | planned | G0-C PASS → SQLite(rusqlite bundled)로 진행. `quanta-index-catalog-probe`는 W2 landing 시 삭제 |
-| W3 | in_progress | lexical hard-link 재사용(§3.4) + sidecar 증분 재도출(§3.4.1) 완료. 남은 것: sharded sidecar 포맷(O(delta) write), semantic lane hard-link, GC pinned-reader 강제 case |
-| W4 | planned | QI-BB-025 보완 #4(history/runtime/structural bounded window) 흡수 |
+| W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분 재도출(§3.4.1) + semantic hard-link(§3.4.2) 완료. 남은 것: sharded sidecar 포맷(O(delta) write), ANN index 재구축, physical GC / pinned-reader 강제 case |
+| W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), QI-BB-005 budgets, QI-BB-024 regex cache |
 | W5 | planned | G0-R 결론에 따라 cooperative checkpoint 설계 |
 | W6 | planned | M4 적용 |
 | W7 | planned | |
@@ -468,6 +468,63 @@ QI-BB-006-EVIDENCE scopes=1502 text_authority_bytes=1681370 delta_one_scope_ms=8
 manifest)이 필요하며 이는 W3의 포맷 버저닝 항목이다. **QI-BB-006은 여전히 `passed`가
 아니다** — 색인 절반 해결, sidecar 재도출 해결, sidecar write bytes 미해결.
 
+### 3.4.2 W3 semantic — dataset hard-link 상속 (구현 완료)
+
+G0-S 결정 1·2 그대로: `crates/quanta-index-semantic/src/build.rs`의 `copy_dir`를 삭제하고
+`inherit_dataset_tree`로 교체했다. `LanceDB`가 쓰는 모든 versioned object(data, manifest,
+transaction, index, deletion)는 hard link, `_versions/latest_version_hint.json`만 복사
+(generation-local; 매 commit마다 다시 쓰이므로 inode를 공유하면 한 generation의 commit이
+다른 generation을 가리킬 수 있다). link 실패는 typed `Storage` 오류 — 조용한 full copy 없음.
+같은 generation의 두 번째 batch(`dataset/` → `dataset.staging`)도 같은 경로를 쓴다.
+
+**측정** (`generation_delta_reuse.rs`, 512-row base, 1-row delta, contended host):
+
+```
+QI-BB-006-SEMANTIC-EVIDENCE base_files=1040 base_bytes=859451 delta_files=1049 shared_files=1037 fresh_bytes=66462
+```
+
+fresh bytes의 대부분은 `_indices/<uuid>/index.idx`(~43 KB) + `auxiliary.idx`(~9 KB) —
+**ANN index가 seal마다 전체 재구축**된다. dataset 공유는 닫혔고 index 재구축이 semantic
+쪽의 남은 O(N) 항목이다(QI-BB-027 versioned ANN artifact 항목과 같은 자리).
+
+**oracle**: base 파일 전부 inode/len/sha256 불변(hint 포함), delta의 hint는 base와 다른
+inode, exact-path scope로 본 serving(delta 신규 row / 상속 row / base 격리). **ANN top-1은
+oracle로 쓰지 않았다** — IVF_HNSW_SQ가 근사라서 같은 fixture에서 run마다 top-1이 달랐다.
+`build.rs`의 "determinism is preserved" 주석은 실측과 맞지 않으며 QI-BB-027(W3/W6)에서
+다룬다. 검출력: hint를 link하도록 변이 → `delta's version hint is a hard link` 실패.
+
+## 3.6 QI-BB-004 — semantic lexical scope의 `scope_top_k` (구현 완료)
+
+**진단 확정**: dispatcher `semantic()`이 scope의 `top_k`를 읽지 않고
+`search_all_constrained`(num_docs 기반 full recall)로 scope 전체를 실체화한 뒤 `BTreeSet`
+→ `embedding_id IN (...)`으로 넘겼다. 계약 위반이자 corpus 크기에 비례하는 allowlist.
+
+**수정** (`query_dispatcher.rs` / `query_dispatcher/semantic_query.rs`):
+- `scope.top_k`를 공용 gate(`validate_query_top_k`)로 검증 — raw IPC도 SDK와 같은 코드.
+- lexical lane에 `search_constrained(query, constraints, scope_cap)`로 **정확히 cap개**의
+  ranked candidate만 요청. adapter가 cap을 넘기면 truncate가 아니라 `InvalidContract`.
+- `SemanticScopeV1 { requested_cap, candidate_ids }`가 explanation에
+  `semantic.scope.cap=<n>`(Plan) + `semantic.scope.text_candidates=<m>`(ExecFanout)을 남긴다.
+- `LexicalSearcher::search_all_constrained`를 port에서 **삭제**(유일 production caller가
+  이 경로였다). `search_all`은 structural routing만 쓰며 doc에 "QI-BB-005 W4 budget 대상"을
+  명시. dispatcher test stub의 죽은 recorder 필드 2개 제거.
+
+**완료 기준 검증** (`e2e_semantic_scope_cap.rs`, daemon front door):
+
+| 기준 | 검증 |
+| --- | --- |
+| lexical match 100, `scope_top_k=2`, `top_k=10` → 후보가 lexical 상위 2 밖으로 안 나감 | lexical route 자체를 oracle로(같은 query, `top_k=2`) — scoped semantic ⊆ 그 집합, ≤2 rows, explanation에 cap/count |
+| `scope_top_k=0` / max / max+1 / u32::MAX | 0·10,001·MAX는 `QUERY_TOP_K_OUT_OF_RANGE`, 10,000 serve |
+| constraint contradiction | 기존 `InvalidContract("scope constraints must equal outer")` 유지 |
+| cap이 실제로 좁힌다 | scope 100 → outer `top_k=10` 전부 채움 |
+
+**검출력**: full recall로 되돌리면 `escaped=[item_090, item_005, ...] allowed={item_055, item_020}`.
+
+**정직한 한계**: tie boundary(같은 BM25 점수의 k번째/k+1번째)는 lexical route와 동일하게
+adapter의 tie-break에 맡긴다 — 고정 candidate set 안의 total order는 `stabilize_ranked_candidates`가
+보장하지만 경계 포함 여부는 generation 간 결정성을 약속하지 않는다(§4.12). `IN (...)` 술어는
+cap ≤ 10,000이라 bounded이며 chunked query(보완 #3)는 필요해질 때 adapter 안에서 처리한다.
+
 ## 3.5 QI-BB-025 — route 공통 `top_k` 계약 (구현 완료)
 
 **진단 확정**: findings의 증거 그대로였다. semantic/hybrid 정책은 `1..=10_000`을 선언했고
@@ -527,6 +584,54 @@ active"라 harness도 그 규칙을 따르게 했지만, 이중 result surface �
 
 **남은 항목**: 보완 #4(history/runtime/structural response의 bounded window/cursor 계약)는
 W4 read view 항목으로 넘긴다. 현재 세 route는 `top_k` 절단은 하지만 wire window가 없다.
+
+## 3.7 QI-BB-001 / QI-BB-017 — SnapshotRegistry: single-flight, byte-bounded 상주 handle (구현 완료)
+
+**진단 확정**: query route 8곳 전부가 매 요청마다 `lex_opener.open(...)` / `sem_opener.open(...)`을
+호출했다. lexical `open`은 sealed identity 검증 + `Index::open_in_dir` + tokenizer 등록 +
+reader reload + text-authority sidecar 5개 CBOR decode + metadata snapshot 6개 load를 **요청마다**
+반복했다. semantic adapter는 자체 8-entry FIFO cache(count-only, single-flight 없음)를 갖고 있었고
+lexical은 cache가 없었다.
+
+**설계** (`crates/quanta-index-search-plane/src/snapshot_registry.rs`, 구조안 §3의
+"QueryReadView + SnapshotRegistry" 자리):
+- search-plane이 **유일한 residency owner**. adapter는 cold `open`만 제공한다(semantic adapter의
+  private OpenCache 삭제 — 이중 cache는 resident bytes를 두 배로 만들고 invalidation을 가린다).
+- `SnapshotRegistry<H>`: key `(repo, revision, generation)`, `Arc<H>` handle, **single-flight**
+  (같은 key 동시 miss는 하나의 flight를 기다리고 성공/typed 실패를 공유; 실패는 retain하지 않아
+  다음 acquire가 재시도), **entries + bytes 이중 상한**(LRU eviction, 예산보다 큰 handle은 serve하되
+  retain하지 않음), **pin 생존**(eviction/invalidate는 registry 참조만 떨어뜨림; in-flight query의
+  Arc는 살아 있음), `retire(key)`가 남은 holder 수를 보고해 W3 physical GC가 삭제 전 확인한다.
+- `LexicalSearcher::resident_bytes_estimate` / `SemanticSearcher::resident_bytes_estimate`를
+  port 계약에 추가 — open 시 generation dir(lexical) / dataset tree(semantic)의 on-disk bytes.
+  count-only cache가 corpus 크기 handle을 "1개"로 세는 문제(보완 #3)를 막는다.
+- policy는 composition root(`SearchdConfig::snapshot_registry_policy`, env
+  `QUANTA_INDEX_SNAPSHOT_MAX_ENTRIES` + `..._MAX_RESIDENT_BYTES` 쌍, 기본 16 entries / 1 GiB)에서
+  주입. 0은 구성 오류로 거부하고 필드는 private — 존재하는 policy는 전부 유효하다.
+- **invalidation은 ingest side 소유**: `SearchPlaneIngestDispatcher`가 generation을 지명하는 7종
+  batch(search corpus, commit recency, topic, description, file ownership, file contributor,
+  repo meta)를 publish한 뒤 두 track의 residency를 떨어뜨린다. 현재 authority에서는 sealed
+  generation 뒤에도 aux snapshot이 같은 디렉터리에 쓰이므로(불변식 §4.5 위반, W2 overlay 대상)
+  이것이 stale serving을 막는 유일한 방어선이다.
+- metric: `lq_snapshot_{lexical,semantic}_{hit,coalesced}_total`, `..._cold_open_ms`(pin 차원).
+
+**완료 기준 검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| 같은 generation 두 번째 query에서 index open·sidecar read 0회 | `e2e_snapshot_registry.rs::second_lexical_query_reads_no_generation_file` — 첫 query 뒤 **generation 디렉터리 전체를 삭제**하고 두 번째 query가 동일 결과. reopen이면 NotFound. counter가 아니라 fault injection oracle |
+| semantic도 open-time full scan 반복 없음 (QI-BB-017 증상) | `second_semantic_query_does_not_reopen_the_generation` — sealed marker + manifest 삭제 후 동일 결과 |
+| 같은 key 32개 동시 query가 한 번만 load | unit `concurrent_misses_on_one_key_open_once` (Barrier 32 threads, opener 50ms hold → opens=1, coalesced=31). front door는 아직 serial UDS(QI-BB-002)라 E2E로는 증명 불가 — 정직하게 unit으로 |
+| eviction 중 in-flight query·GC 안전 | unit `eviction_and_retire_do_not_invalidate_handles_in_flight` (evicted handle 사용 가능, `retire` → `StillReferenced{holders}`) |
+| mutation 뒤 stale serving 없음 | `an_auxiliary_publish_invalidates_the_resident_generation` — repo-meta publish 후 디렉터리 삭제 → 다음 query가 **실패해야** 통과 |
+| cold/warm p50/p95/p99, RSS 실측 | **blocked: contended-host** (§0.1). metric 배선은 완료 |
+
+**검출력**: ingest invalidation을 다른 generation key로 변이 → `served from a stale resident
+handle: [e2e-1-src/needle.rs, e2e-3-src/other.rs]` 실패.
+
+**남은 것 (QI-BB-017 본체)**: open-time `semantic_row_commitment_v1` full scan 자체는 그대로다 —
+registry는 *반복*을 없앴고, seal-time proof / open-time root 검증 분리(보완 #1–#2, #5 streaming
+membership)와 boot inventory(#6, QI-BB-026)는 W2/W3 항목이다.
 
 ## 4. Finding 상태 (QI-BB-001–032)
 

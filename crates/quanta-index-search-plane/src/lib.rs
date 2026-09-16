@@ -18,6 +18,7 @@ pub mod readiness;
 mod search_corpus_lifecycle;
 mod search_corpus_retention;
 mod semantic_derive;
+mod snapshot_registry;
 
 pub use control_dispatcher::SearchPlaneControlDispatcher;
 pub use ingest_dispatcher::{
@@ -43,3 +44,7 @@ pub use readiness::{
 };
 pub use search_corpus_lifecycle::SearchCorpusLifecycleOwner;
 pub use semantic_derive::SemanticDerivationModeV1;
+pub use snapshot_registry::{
+    OpenedSnapshot, SnapshotAcquireOutcome, SnapshotAcquired, SnapshotKey, SnapshotRegistries,
+    SnapshotRegistry, SnapshotRegistryPolicy, SnapshotRegistryStats, SnapshotRetireOutcome,
+};

@@ -277,19 +277,46 @@ fn cleanup_atomic_temporary(staging: &Path, primary: CoreError) -> CoreError {
     }
 }
 
-fn copy_dir(src: &Path, dst: &Path) -> Result<(), CoreError> {
-    fs::create_dir_all(dst).map_err(|err| fs_err("create copy destination", dst, &err))?;
-    for entry in fs::read_dir(src).map_err(|err| fs_err("read source dir", src, &err))? {
-        let entry = entry.map_err(|err| fs_err("read source entry", src, &err))?;
+/// The one dataset file `LanceDB` rewrites on every commit.
+///
+/// It is the pointer to the newest manifest: bookkeeping, not content, and it
+/// must stay generation-local. Every other object `LanceDB` writes is an
+/// immutable versioned file (G0-S), safe to share between generations by hard
+/// link.
+const LANCE_LATEST_VERSION_HINT_FILE_NAME: &str = "latest_version_hint.json";
+
+fn is_dataset_local_entry(file_name: &std::ffi::OsStr) -> bool {
+    file_name == LANCE_LATEST_VERSION_HINT_FILE_NAME
+}
+
+/// Materialize `dst` from the immutable dataset at `src` without copying its
+/// bytes.
+///
+/// Regular files become hard links into `src`, directories recurse, and the
+/// generation-local version hint is copied because every commit rewrites it.
+/// Whether `LanceDB` replaces that file by rename or writes it in place is an
+/// implementation detail this adapter does not rely on: a shared inode would
+/// let one generation's commit repoint another's, so it is never linked.
+/// A link failure is a typed error, not a silent full copy: both trees live
+/// under the same state root, so a cross-device failure cannot happen, and any
+/// other failure would otherwise cost the incremental guarantee unnoticed.
+fn inherit_dataset_tree(src: &Path, dst: &Path) -> Result<(), CoreError> {
+    fs::create_dir_all(dst).map_err(|err| fs_err("create inherited dataset dir", dst, &err))?;
+    for entry in fs::read_dir(src).map_err(|err| fs_err("read source dataset dir", src, &err))? {
+        let entry = entry.map_err(|err| fs_err("read source dataset entry", src, &err))?;
         let from = entry.path();
         let to = dst.join(entry.file_name());
         let file_type = entry
             .file_type()
-            .map_err(|err| fs_err("file type", &from, &err))?;
+            .map_err(|err| fs_err("inherited dataset entry type", &from, &err))?;
         if file_type.is_dir() {
-            copy_dir(&from, &to)?;
+            inherit_dataset_tree(&from, &to)?;
+        } else if is_dataset_local_entry(&entry.file_name()) {
+            let _bytes = fs::copy(&from, &to)
+                .map_err(|err| fs_err("copy generation-local dataset entry", &from, &err))?;
         } else {
-            let _bytes = fs::copy(&from, &to).map_err(|err| fs_err("copy file", &from, &err))?;
+            fs::hard_link(&from, &to)
+                .map_err(|err| fs_err("link inherited dataset entry", &from, &err))?;
         }
     }
     Ok(())
@@ -1431,7 +1458,7 @@ fn prepare_staging_dataset(
     let paths = DatasetPaths::for_generation(generation_dir);
     remove_dir_if_exists("clean stale staging dir", &paths.staging)?;
     if paths.dataset.exists() {
-        copy_dir(&paths.dataset, &paths.staging)?;
+        inherit_dataset_tree(&paths.dataset, &paths.staging)?;
         return Ok(paths.staging);
     }
     if let Some(base_generation) = generation_contract.base_generation {
@@ -1453,7 +1480,7 @@ fn prepare_staging_dataset(
                 revision_id.as_str()
             )));
         }
-        copy_dir(&base_dataset, &paths.staging)?;
+        inherit_dataset_tree(&base_dataset, &paths.staging)?;
         return Ok(paths.staging);
     }
     fs::create_dir_all(&paths.staging)

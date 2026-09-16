@@ -548,3 +548,29 @@ fn search_explanation_cbor_roundtrip() -> TestRes {
     };
     roundtrip_eq(&explanation)
 }
+
+// QI-BB-025: the route-independent `top_k` codes live in the closed registry,
+// so a wire decoder can resolve them to typed variants like any other code,
+// and the former per-route `HYB_TOP_K_INVALID` is gone rather than aliased.
+#[test]
+fn query_contract_top_k_codes_resolve_through_the_closed_registry() -> TestRes {
+    let expected = [
+        (
+            quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE,
+            LexicalErrorCode::QueryTopKOutOfRange,
+        ),
+        (
+            quanta_index_contract::INTERNAL_FETCH_OUT_OF_RANGE_CODE,
+            LexicalErrorCode::QueryInternalFetchOutOfRange,
+        ),
+    ];
+    for (code, variant) in expected {
+        if LexicalErrorCode::from_code_str(code) != Some(variant) {
+            return Err(format!("`{code}` does not resolve to {variant:?}").into());
+        }
+    }
+    if LexicalErrorCode::from_code_str("HYB_TOP_K_INVALID").is_some() {
+        return Err("retired per-route top_k code is still registered".into());
+    }
+    Ok(())
+}

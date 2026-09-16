@@ -418,6 +418,18 @@ owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "searchd-runtime-e2e-snapshot-registry"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_snapshot_registry.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-e2e-semantic-scope-cap"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_semantic_scope_cap.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "searchd-runtime-e2e-top-k-truth-table"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_top_k_truth_table.rs"
 owner = "quanta-index-searchd-runtime"
@@ -462,6 +474,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "semantic-scv2-persisted-scenarios"
 path = "crates/quanta-index-semantic/tests/scv2_persisted_scenarios.rs"
+owner = "quanta-index-semantic"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "semantic-generation-delta-reuse"
+path = "crates/quanta-index-semantic/tests/generation_delta_reuse.rs"
 owner = "quanta-index-semantic"
 rail = "pr-workspace-nextest"
 

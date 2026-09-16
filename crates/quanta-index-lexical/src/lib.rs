@@ -4215,6 +4215,7 @@ impl LexicalIndexOpenPort for LexicalAdapter {
         let repo_description = load_repo_description_snapshot(&self.repo_description_path(&key))?;
         let file_ownership = load_file_ownership_snapshot(&self.file_ownership_path(&key))?;
         let file_contributor = load_file_contributor_snapshot(&self.file_contributor_path(&key))?;
+        let resident_bytes_estimate = generation_directory_bytes(&path)?;
         Ok(Box::new(TantivySearcher {
             repo_id: repo.clone(),
             revision_id: revision.clone(),
@@ -4232,8 +4233,45 @@ impl LexicalIndexOpenPort for LexicalAdapter {
             repo_description,
             file_ownership,
             file_contributor,
+            resident_bytes_estimate,
         }))
     }
+}
+
+/// Sum of regular-file sizes directly under a generation directory.
+///
+/// Tantivy maps segment files on demand and the sidecars are decoded whole,
+/// so the directory's on-disk size is the honest bound on what one open
+/// handle can make resident. Writer lock files are transient and excluded.
+fn generation_directory_bytes(path: &Path) -> Result<u64, CoreError> {
+    let mut total = 0_u64;
+    let entries = std::fs::read_dir(path).map_err(|err| {
+        CoreError::Storage(format!(
+            "lexical: measure generation dir {}: {err}",
+            path.display()
+        ))
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|err| {
+            CoreError::Storage(format!(
+                "lexical: measure generation entry in {}: {err}",
+                path.display()
+            ))
+        })?;
+        if is_writer_lock_entry(&entry.file_name().to_string_lossy()) {
+            continue;
+        }
+        let metadata = entry.metadata().map_err(|err| {
+            CoreError::Storage(format!(
+                "lexical: measure generation entry {}: {err}",
+                entry.path().display()
+            ))
+        })?;
+        if metadata.is_file() {
+            total = total.saturating_add(metadata.len());
+        }
+    }
+    Ok(total)
 }
 
 impl GenerationIdentityValidatePort for LexicalAdapter {
@@ -4501,6 +4539,9 @@ struct TantivySearcher {
     repo_description: Option<RepoDescriptionShard>,
     file_ownership: Option<FileOwnershipShard>,
     file_contributor: Option<FileContributorShard>,
+    /// On-disk bytes of the generation directory at open: mapped index
+    /// segments plus the sidecars and snapshots this handle decoded.
+    resident_bytes_estimate: u64,
 }
 
 struct PreparedPredicatePlan {
@@ -8288,6 +8329,10 @@ fn map_planner_error(err: &crate::planner::LexicalPlannerError) -> CoreError {
 }
 
 impl LexicalSearcher for TantivySearcher {
+    fn resident_bytes_estimate(&self) -> u64 {
+        self.resident_bytes_estimate
+    }
+
     fn search(&self, query: &LqQuery, top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError> {
         self.search_constrained(query, &QueryConstraintSetV1::unconstrained(), top_k)
     }
@@ -8583,16 +8628,7 @@ impl LexicalSearcher for TantivySearcher {
     }
 
     fn search_all(&self, query: &LqQuery) -> Result<Vec<LexicalCandidate>, CoreError> {
-        self.search_all_constrained(query, &QueryConstraintSetV1::unconstrained())
-    }
-
-    fn search_all_constrained(
-        &self,
-        query: &LqQuery,
-        constraints: &QueryConstraintSetV1,
-    ) -> Result<Vec<LexicalCandidate>, CoreError> {
-        // Single full-scope execution path; callers differ only in the
-        // canonical constraint set attached to the compiled Boolean query.
+        let constraints = &QueryConstraintSetV1::unconstrained();
         LexicalPolicy::validate_query_with_constraints(query, constraints)?;
         let Some(prepared_query) = self.prepare_executable_query(query, QueryDocKind::Text)? else {
             return Ok(Vec::new());
@@ -8634,7 +8670,7 @@ impl LexicalSearcher for TantivySearcher {
         let collect_limit = self.collect_limit(query, requested, limit);
         let hits = searcher
             .search(&*compiled, &TopDocs::with_limit(collect_limit))
-            .map_err(|err| CoreError::Storage(format!("lexical: constrained search_all: {err}")))?;
+            .map_err(|err| CoreError::Storage(format!("lexical: search_all: {err}")))?;
         let center_terms = snippet_center_terms(query);
         let mut out = Vec::with_capacity(hits.len());
         for (score, doc_address) in hits {

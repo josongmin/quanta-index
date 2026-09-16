@@ -74,6 +74,12 @@ pub struct SemanticSearchHitV1 {
 }
 
 pub trait SemanticSearcher: Send + Sync {
+    /// Bytes this handle keeps resident while open (the dataset files it
+    /// maps plus decoded manifests). An open-time estimate consumed by the
+    /// search plane's snapshot registry byte budget; see the lexical
+    /// counterpart for the monotonicity requirement.
+    fn resident_bytes_estimate(&self) -> u64;
+
     /// Read a bounded set of structured `ClusterCard` memberships from this
     /// exact sealed generation through one storage operation.
     fn cluster_membership_batch_read(

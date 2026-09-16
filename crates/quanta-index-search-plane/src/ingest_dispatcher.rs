@@ -20,7 +20,10 @@ use crate::semantic_derive::{
     DEFAULT_SEMANTIC_DERIVATION_MODE_V1, SemanticDerivationModeV1,
     derive_semantic_batch_with_mode_v1, semantic_derivation_mode_from_env_v1,
 };
-use crate::{AuxiliaryAuthorityStore, Ledger, SealedSearchCorpusAuthorityStateV1};
+use crate::{
+    AuxiliaryAuthorityStore, Ledger, SealedSearchCorpusAuthorityStateV1, SnapshotKey,
+    SnapshotRegistries,
+};
 use quanta_index_contract::{
     BatchPublishReceipt, DirtyIngestBatch, DirtyMutation, GenerationSnapshot, HistoryIngestBatch,
     HistoryRefMutation, ManifestGeneration, RepoId, RepoMapMutationAck, RevisionId,
@@ -913,6 +916,11 @@ pub struct SearchPlaneIngestDispatcher {
     runtime: Arc<dyn RuntimeMetadataIngestPort + Send + Sync>,
     structural: Arc<dyn StructuralIngestPort + Send + Sync>,
     repomap: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
+    /// Resident opened generations shared with the query side. Every routed
+    /// mutation that names a generation drops that generation's residency
+    /// after it lands, so a handle opened before the mutation is never
+    /// served after it (QI-BB-001; sealed-corpus overlay is W2's job).
+    snapshots: SnapshotRegistries,
 }
 
 impl SearchPlaneIngestDispatcher {
@@ -933,6 +941,7 @@ impl SearchPlaneIngestDispatcher {
         runtime: Arc<dyn RuntimeMetadataIngestPort + Send + Sync>,
         structural: Arc<dyn StructuralIngestPort + Send + Sync>,
         repomap: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
+        snapshots: SnapshotRegistries,
     ) -> Self {
         Self {
             lexical,
@@ -946,14 +955,41 @@ impl SearchPlaneIngestDispatcher {
             runtime,
             structural,
             repomap,
+            snapshots,
         }
+    }
+
+    /// Publish one generation-scoped batch and, on success, drop both
+    /// tracks' residency for that generation.
+    ///
+    /// The invalidation is unconditional on success rather than keyed to
+    /// "did the adapter actually change bytes": the adapter is the only party
+    /// that knows, and asking it would put a second cache-coherence contract
+    /// on every ingest port. Dropping a handle costs one cold open on the
+    /// next query; serving a stale one costs correctness.
+    fn publish_generation_scoped<R>(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+        publish: impl FnOnce() -> Result<R, CoreError>,
+    ) -> Result<R, CoreError> {
+        let receipt = publish()?;
+        self.snapshots
+            .invalidate(&SnapshotKey::new(repo_id, revision_id, generation))?;
+        Ok(receipt)
     }
 
     #[must_use]
     pub fn dispatch(&self, request: SearchPlaneIngestIpcRequest) -> SearchPlaneIngestIpcResponse {
         match request {
             SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => {
-                match self.lexical.publish_batch(&batch) {
+                match self.publish_generation_scoped(
+                    &batch.repo_id,
+                    &batch.revision_id,
+                    batch.generation,
+                    || self.lexical.publish_batch(&batch),
+                ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
@@ -965,37 +1001,67 @@ impl SearchPlaneIngestDispatcher {
                 }
             }
             SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(batch) => {
-                match self.repo_commit_recency.publish_batch(&batch) {
+                match self.publish_generation_scoped(
+                    &batch.repo_id,
+                    &batch.revision_id,
+                    batch.generation,
+                    || self.repo_commit_recency.publish_batch(&batch),
+                ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
             SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(batch) => {
-                match self.repo_topic.publish_batch(&batch) {
+                match self.publish_generation_scoped(
+                    &batch.repo_id,
+                    &batch.revision_id,
+                    batch.generation,
+                    || self.repo_topic.publish_batch(&batch),
+                ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RepoTopicReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
             SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(batch) => {
-                match self.repo_description.publish_batch(&batch) {
+                match self.publish_generation_scoped(
+                    &batch.repo_id,
+                    &batch.revision_id,
+                    batch.generation,
+                    || self.repo_description.publish_batch(&batch),
+                ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
             SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(batch) => {
-                match self.file_ownership.publish_batch(&batch) {
+                match self.publish_generation_scoped(
+                    &batch.repo_id,
+                    &batch.revision_id,
+                    batch.generation,
+                    || self.file_ownership.publish_batch(&batch),
+                ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::FileOwnershipReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
             SearchPlaneIngestIpcRequest::PublishFileContributorBatch(batch) => {
-                match self.file_contributor.publish_batch(&batch) {
+                match self.publish_generation_scoped(
+                    &batch.repo_id,
+                    &batch.revision_id,
+                    batch.generation,
+                    || self.file_contributor.publish_batch(&batch),
+                ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::FileContributorReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
             SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(batch) => {
-                match self.repo_meta.publish_batch(&batch) {
+                match self.publish_generation_scoped(
+                    &batch.repo_id,
+                    &batch.revision_id,
+                    batch.generation,
+                    || self.repo_meta.publish_batch(&batch),
+                ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RepoMetaReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }

@@ -49,7 +49,7 @@ use quanta_index_search_plane::{
     HashingQueryTextEmbedder, HistoryIngestPort, Ledger, QueryObsSink, QueryTextEmbedderPort,
     RuntimeMetadataIngestPort, SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusLifecycleOwner,
     SearchCorpusMaterializerParts, SearchPlaneControlDispatcher, SearchPlaneDispatcher,
-    SearchPlaneIngestDispatcher, StructuralIngestPort,
+    SearchPlaneIngestDispatcher, SnapshotRegistries, StructuralIngestPort,
 };
 use regex::Regex;
 
@@ -859,9 +859,11 @@ impl SearchdRuntime {
             } else {
                 query_obs_store.clone()
             };
+        let snapshots = SnapshotRegistries::new(config.snapshot_registry_policy());
         let query_dispatcher = Arc::new(SearchPlaneDispatcher::new_with_obs(
             Arc::clone(&lex_open_port),
             Arc::clone(&sem_open_port),
+            snapshots.clone(),
             Arc::clone(&repo_map_query_port),
             Arc::new(LedgerStructuralProducer::new(Arc::clone(&ledger))),
             Arc::clone(&ledger),
@@ -888,6 +890,7 @@ impl SearchdRuntime {
             direct_runtime_ingest_port,
             direct_structural_ingest_port,
             repo_map_bundle_ingest_port,
+            snapshots,
         ));
         let query_adapter: Arc<
             dyn IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse>,

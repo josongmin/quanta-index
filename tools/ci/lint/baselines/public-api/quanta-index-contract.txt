@@ -3033,7 +3033,6 @@ pub quanta_index_contract::lex::error_code::LexicalErrorCode::HybInvalidWeights
 pub quanta_index_contract::lex::error_code::LexicalErrorCode::HybPushdownIncomplete
 pub quanta_index_contract::lex::error_code::LexicalErrorCode::HybStrategyUnsupported
 pub quanta_index_contract::lex::error_code::LexicalErrorCode::HybSubqueryInvalid
-pub quanta_index_contract::lex::error_code::LexicalErrorCode::HybTopKInvalid
 pub quanta_index_contract::lex::error_code::LexicalErrorCode::IdfTableDeserialize
 pub quanta_index_contract::lex::error_code::LexicalErrorCode::IndexCorrupted
 pub quanta_index_contract::lex::error_code::LexicalErrorCode::IndexDeserialize
@@ -3059,7 +3058,9 @@ pub quanta_index_contract::lex::error_code::LexicalErrorCode::ObsInvalidSpan
 pub quanta_index_contract::lex::error_code::LexicalErrorCode::OversizedChunk
 pub quanta_index_contract::lex::error_code::LexicalErrorCode::ParseFail
 pub quanta_index_contract::lex::error_code::LexicalErrorCode::PlanLimitExceeded
+pub quanta_index_contract::lex::error_code::LexicalErrorCode::QueryInternalFetchOutOfRange
 pub quanta_index_contract::lex::error_code::LexicalErrorCode::QueryTimeout
+pub quanta_index_contract::lex::error_code::LexicalErrorCode::QueryTopKOutOfRange
 pub quanta_index_contract::lex::error_code::LexicalErrorCode::RankInvalidSignal
 pub quanta_index_contract::lex::error_code::LexicalErrorCode::RegexParse
 pub quanta_index_contract::lex::error_code::LexicalErrorCode::RegexPrefilterUnusable
@@ -3599,7 +3600,6 @@ pub quanta_index_contract::lex::LexicalErrorCode::HybInvalidWeights
 pub quanta_index_contract::lex::LexicalErrorCode::HybPushdownIncomplete
 pub quanta_index_contract::lex::LexicalErrorCode::HybStrategyUnsupported
 pub quanta_index_contract::lex::LexicalErrorCode::HybSubqueryInvalid
-pub quanta_index_contract::lex::LexicalErrorCode::HybTopKInvalid
 pub quanta_index_contract::lex::LexicalErrorCode::IdfTableDeserialize
 pub quanta_index_contract::lex::LexicalErrorCode::IndexCorrupted
 pub quanta_index_contract::lex::LexicalErrorCode::IndexDeserialize
@@ -3625,7 +3625,9 @@ pub quanta_index_contract::lex::LexicalErrorCode::ObsInvalidSpan
 pub quanta_index_contract::lex::LexicalErrorCode::OversizedChunk
 pub quanta_index_contract::lex::LexicalErrorCode::ParseFail
 pub quanta_index_contract::lex::LexicalErrorCode::PlanLimitExceeded
+pub quanta_index_contract::lex::LexicalErrorCode::QueryInternalFetchOutOfRange
 pub quanta_index_contract::lex::LexicalErrorCode::QueryTimeout
+pub quanta_index_contract::lex::LexicalErrorCode::QueryTopKOutOfRange
 pub quanta_index_contract::lex::LexicalErrorCode::RankInvalidSignal
 pub quanta_index_contract::lex::LexicalErrorCode::RegexParse
 pub quanta_index_contract::lex::LexicalErrorCode::RegexPrefilterUnusable

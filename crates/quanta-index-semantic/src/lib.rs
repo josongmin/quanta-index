@@ -45,10 +45,9 @@ pub use semantic_ingest_fixtures_v1::{
     tombstone_scope_with_semantic_owner_v1,
 };
 
-use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use quanta_index_contract::{
     GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
@@ -63,64 +62,13 @@ use quanta_index_core::{
 };
 
 use crate::manifest::SemanticManifest;
-use crate::search::{LoadedGeneration, PersistedSemanticSearcher, open_generation};
+use crate::search::{PersistedSemanticSearcher, open_generation};
 
 #[cfg(debug_assertions)]
 pub mod test_support {
     /// Debug-only test hook for injected append failure rails.
     pub fn set_append_fail_path(path: Option<&str>) {
         crate::build::set_append_fail_path_for_debug(path);
-    }
-}
-
-/// Capacity of the opened-generation cache.
-const OPEN_CACHE_CAPACITY: usize = 8;
-
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct GenKey {
-    repo_id: RepoId,
-    revision_id: RevisionId,
-    generation: ManifestGeneration,
-}
-
-/// Bounded cache of opened sealed generations, keyed by `(repo, revision,
-/// generation)`.
-///
-/// Sealed generations are immutable, so a content-keyed entry can never go
-/// stale — a fresh process reopens the lancedb dataset from disk and gets
-/// identical results, and eviction only costs a reopen. Eviction is FIFO (not
-/// LRU) on purpose: a cache *hit* takes only a read lock (so concurrent opens
-/// of a hot generation proceed in parallel), whereas LRU recency tracking
-/// would force a write lock on every hit.
-#[derive(Default)]
-struct OpenCache {
-    entries: BTreeMap<GenKey, Arc<LoadedGeneration>>,
-    order: Vec<GenKey>,
-}
-
-impl OpenCache {
-    fn get(&self, key: &GenKey) -> Option<Arc<LoadedGeneration>> {
-        self.entries.get(key).map(Arc::clone)
-    }
-
-    fn insert(&mut self, key: GenKey, value: Arc<LoadedGeneration>) {
-        if let std::collections::btree_map::Entry::Occupied(mut slot) =
-            self.entries.entry(key.clone())
-        {
-            let _prior = slot.insert(value);
-            return;
-        }
-        if self.order.len() >= OPEN_CACHE_CAPACITY && !self.order.is_empty() {
-            let evicted = self.order.remove(0);
-            let _removed = self.entries.remove(&evicted);
-        }
-        self.order.push(key.clone());
-        let _prior = self.entries.insert(key, value);
-    }
-
-    fn remove(&mut self, key: &GenKey) {
-        self.order.retain(|candidate| candidate != key);
-        let _removed = self.entries.remove(key);
     }
 }
 
@@ -132,7 +80,6 @@ impl OpenCache {
 pub struct SemanticAdapter {
     state_root: PathBuf,
     runtime: Arc<tokio::runtime::Runtime>,
-    cache: RwLock<OpenCache>,
 }
 
 /// Single crate-wide async↔sync seam funnel.
@@ -173,32 +120,7 @@ impl SemanticAdapter {
         Ok(Self {
             state_root,
             runtime: Arc::new(runtime),
-            cache: RwLock::new(OpenCache::default()),
         })
-    }
-
-    fn cache_get(&self, key: &GenKey) -> Result<Option<Arc<LoadedGeneration>>, CoreError> {
-        Ok(self
-            .cache
-            .read()
-            .map_err(|err| CoreError::Storage(format!("semantic open cache poisoned: {err}")))?
-            .get(key))
-    }
-
-    fn cache_put(&self, key: GenKey, value: Arc<LoadedGeneration>) -> Result<(), CoreError> {
-        self.cache
-            .write()
-            .map_err(|err| CoreError::Storage(format!("semantic open cache poisoned: {err}")))?
-            .insert(key, value);
-        Ok(())
-    }
-
-    fn cache_remove(&self, key: &GenKey) -> Result<(), CoreError> {
-        self.cache
-            .write()
-            .map_err(|err| CoreError::Storage(format!("semantic open cache poisoned: {err}")))?
-            .remove(key);
-        Ok(())
     }
 }
 
@@ -218,22 +140,14 @@ impl SemanticIndexOpenPort for SemanticAdapter {
         revision: &RevisionId,
         generation: ManifestGeneration,
     ) -> Result<Box<dyn SemanticSearcher>, CoreError> {
-        let key = GenKey {
-            repo_id: repo.clone(),
-            revision_id: revision.clone(),
-            generation,
-        };
-        if let Some(loaded) = self.cache_get(&key)? {
-            return Ok(Box::new(PersistedSemanticSearcher::new(
-                loaded,
-                Arc::clone(&self.runtime),
-            )));
-        }
+        // A cold open every time, by design: residency belongs to the search
+        // plane's snapshot registry, which is the single owner of opened
+        // handles across both tracks. A second cache here would double the
+        // resident bytes and hide staleness from the registry's invalidation.
         let loaded = Arc::new(run_blocking(
             &self.runtime,
             open_generation(&self.state_root, repo, revision, generation),
         )?);
-        self.cache_put(key, Arc::clone(&loaded))?;
         Ok(Box::new(PersistedSemanticSearcher::new(
             loaded,
             Arc::clone(&self.runtime),
@@ -351,11 +265,6 @@ impl IncompleteGenerationDiscardPort for SemanticAdapter {
                 candidate.track
             )));
         }
-        let key = GenKey {
-            repo_id: candidate.repo_id.clone(),
-            revision_id: candidate.revision_id.clone(),
-            generation: candidate.manifest_generation,
-        };
         let generation_dir = layout::generation_dir(
             &self.state_root,
             &candidate.repo_id,
@@ -420,7 +329,6 @@ impl IncompleteGenerationDiscardPort for SemanticAdapter {
                 return Err(generation_digest_mismatch(candidate, "incomplete manifest"));
             }
         }
-        self.cache_remove(&key)?;
         std::fs::remove_dir_all(&generation_dir).map_err(|error| {
             CoreError::Storage(format!(
                 "semantic: discard incomplete generation {}: {error}",

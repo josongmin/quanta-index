@@ -128,6 +128,8 @@ pub(crate) struct LoadedGeneration {
     model_version: Option<String>,
     table: lancedb::Table,
     cluster_membership: LoadedClusterMembershipV1,
+    /// On-disk bytes of the dataset this handle maps, measured at open.
+    resident_bytes_estimate: u64,
 }
 
 enum LoadedClusterMembershipV1 {
@@ -404,6 +406,7 @@ pub(crate) async fn open_generation(
     };
 
     drop(connection);
+    let resident_bytes_estimate = dataset_tree_bytes(&layout::dataset_dir(&generation_dir))?;
     Ok(LoadedGeneration {
         repo_id: repo.clone(),
         revision_id: revision.clone(),
@@ -414,7 +417,45 @@ pub(crate) async fn open_generation(
         model_version: manifest.model_version.clone(),
         table,
         cluster_membership,
+        resident_bytes_estimate,
     })
+}
+
+/// Sum of regular-file sizes under `root`, recursively.
+///
+/// `LanceDB` maps the dataset's files on demand, so their on-disk size is the
+/// honest upper bound on what one open handle can make resident.
+fn dataset_tree_bytes(root: &Path) -> Result<u64, CoreError> {
+    let mut total = 0_u64;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let entries = std::fs::read_dir(&directory).map_err(|err| {
+            CoreError::Storage(format!(
+                "semantic: measure dataset dir {}: {err}",
+                directory.display()
+            ))
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|err| {
+                CoreError::Storage(format!(
+                    "semantic: measure dataset entry in {}: {err}",
+                    directory.display()
+                ))
+            })?;
+            let metadata = entry.metadata().map_err(|err| {
+                CoreError::Storage(format!(
+                    "semantic: measure dataset entry {}: {err}",
+                    entry.path().display()
+                ))
+            })?;
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            } else if metadata.is_file() {
+                total = total.saturating_add(metadata.len());
+            }
+        }
+    }
+    Ok(total)
 }
 
 /// Downcast a named column to a concrete Arrow array type.
@@ -1182,6 +1223,10 @@ fn top_k_limit(top_k: u32) -> Result<usize, CoreError> {
 }
 
 impl SemanticSearcher for PersistedSemanticSearcher {
+    fn resident_bytes_estimate(&self) -> u64 {
+        self.loaded.resident_bytes_estimate
+    }
+
     fn cluster_membership_batch_read(
         &self,
         request: &ClusterMembershipBatchReadRequestV1,

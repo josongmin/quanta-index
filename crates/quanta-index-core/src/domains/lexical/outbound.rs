@@ -146,10 +146,19 @@ pub trait FileContributorIngestPort: Send + Sync {
 
 /// Searcher handle returned by [`LexicalIndexOpenPort::open`].
 ///
-/// One per opened generation. Searcher is non-Send for performance (some
-/// vendor handles are thread-local); the lexical module is responsible for
-/// cache management.
+/// One per opened sealed generation. The adapter performs a cold open and
+/// proves the durable state; residency (which handles stay open, for how
+/// long, under what budget) is the search plane's snapshot registry's job,
+/// so a handle must be shareable across concurrent queries and must report
+/// what it keeps resident.
 pub trait LexicalSearcher: Send + Sync {
+    /// Bytes this handle keeps resident while open: mapped index files plus
+    /// decoded sidecars and metadata snapshots. An estimate taken at open
+    /// time, used by the snapshot registry's byte budget; it must be
+    /// monotone in the real cost so that a count-only cache cannot admit a
+    /// corpus-sized handle as "one entry".
+    fn resident_bytes_estimate(&self) -> u64;
+
     fn search(&self, query: &LqQuery, top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError>;
 
     /// Search with candidate-generation constraints applied before ranking and
@@ -211,22 +220,11 @@ pub trait LexicalSearcher: Send + Sync {
     }
 
     /// Return every lexical match for the query within the opened generation.
-    /// Callers use this for exact scope materialization before downstream
-    /// semantic/hybrid narrowing.
+    ///
+    /// Only structural routing uses this, to project exact chunk hits into
+    /// structural buckets. It is unbounded by design and is the remaining
+    /// full-recall collect that QI-BB-005's execution budget must cap (W4).
+    /// Semantic scope narrowing does not use it: a lexical scope is a ranked,
+    /// capped `search_constrained` (QI-BB-004).
     fn search_all(&self, query: &LqQuery) -> Result<Vec<LexicalCandidate>, CoreError>;
-
-    fn search_all_constrained(
-        &self,
-        query: &LqQuery,
-        constraints: &QueryConstraintSetV1,
-    ) -> Result<Vec<LexicalCandidate>, CoreError> {
-        if constraints.is_unconstrained() {
-            self.search_all(query)
-        } else {
-            Err(CoreError::NotImplemented(
-                "lexical searcher does not provide native unbounded query-constraint pushdown"
-                    .to_string(),
-            ))
-        }
-    }
 }

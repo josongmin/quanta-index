@@ -2619,10 +2619,17 @@ fn hybrid_query_rejects_zero_top_k_with_typed_code() -> TestResult {
             return Err(format!("expected Error, got {other:?}").into());
         }
     };
-    if err.code != "HYB_TOP_K_INVALID" {
+    // QI-BB-025: `top_k` is one route-independent contract; the hybrid route
+    // no longer has a private code for it.
+    if err.code != quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
-        return Err(format!("expected HYB_TOP_K_INVALID, got {}", err.code).into());
+        return Err(format!(
+            "expected {}, got {}",
+            quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE,
+            err.code
+        )
+        .into());
     }
 
     shutdown.store(true, Ordering::Release);
