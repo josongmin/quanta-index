@@ -906,3 +906,4 @@ boot 순서: lexical inventory → legacy semantic migration → semantic invent
 | 2026-09-17 | (W5 tree) | `cargow --lane test-integration-lane test -p quanta-index-ipc --test g0r_runtime_cancellation_probe` | 3/3 — `head_of_line served_while_held=ok … completions_while_held=1`, `disconnect_cancels … cancelled_observed=1` |
 | 2026-09-17 | (W5 tree) | `… --test admission` | 3/3; cap mutation → 1 FAIL, revert |
 | 2026-09-17 | 120ee7c | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,001 passed / 0 failed (W5 phase 1 포함) |
+| 2026-09-17 | 1a2f440 | `just rust-profile verify-rust` | RED — 2,006 passed / 0 failed, `rust-doc`에서 stale intra-doc link(`scan_persisted_generations`) (→ 다음 commit) |

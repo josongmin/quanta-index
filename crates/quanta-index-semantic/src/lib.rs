@@ -20,9 +20,9 @@
 //! manifest + READY/SEALED markers) and opened directly from durable state at
 //! query time. There is no boot-time replay. Vendor / file-layout knowledge
 //! stays inside this crate; the public surface is the two ports plus
-//! [`scan_persisted_generations`] for readiness seeding at the composition
-//! root, and [`semantic_state_root`] so the composition root does not hardcode
-//! the layout root.
+//! [`inventory_persisted_generations`] for readiness seeding at the
+//! composition root, and [`semantic_state_root`] so the composition root does
+//! not hardcode the layout root.
 //!
 //! See `docs/plans/may-28-lancedb-adoption/` for the full backend decision and
 //! migration packet.
