@@ -872,3 +872,4 @@ error metric: 두 code는 `lq_typed_error_interrupted_total`(신규, closed taxo
 | 2026-09-17 | 2504b33 | `just rust-profile verify-rust` | **GREEN** — exit 0, 1,989 passed / 0 failed |
 | 2026-09-17 | (W5 tree) | `cargow --lane test-integration-lane test -p quanta-index-ipc --test g0r_runtime_cancellation_probe` | 3/3 — `head_of_line served_while_held=ok … completions_while_held=1`, `disconnect_cancels … cancelled_observed=1` |
 | 2026-09-17 | (W5 tree) | `… --test admission` | 3/3; cap mutation → 1 FAIL, revert |
+| 2026-09-17 | 120ee7c | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,001 passed / 0 failed (W5 phase 1 포함) |
