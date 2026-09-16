@@ -129,7 +129,7 @@ fn is_budget_refusal(err: &CoreError) -> bool {
 fn seeded(budget: usize) -> Result<(tempfile::TempDir, LexicalAdapter), Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
     let adapter = adapter_with_budget(dir.path().to_path_buf(), budget)?;
-    let _receipt = adapter.build_batch(&sealed_batch()?)?;
+    adapter.build_batch(&sealed_batch()?)?;
     Ok((dir, adapter))
 }
 
