@@ -3566,3 +3566,82 @@ fn search_corpus_public_surface_keeps_legacy_lexical_ingest_names_out_v1() {
         );
     }
 }
+
+// QI-BB-025: the builder refuses an out-of-range `top_k` locally, under the same
+// code the daemon answers with, and never puts the request on the wire.
+#[test]
+fn text_query_builder_refuses_out_of_range_top_k_before_any_round_trip() {
+    for top_k in [0, quanta_index_contract::PUBLIC_TOP_K_MAX + 1, u32::MAX] {
+        let query = unused_query();
+        let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+        let outcome = client
+            .lexical()
+            .query()
+            .native("needle")
+            .active(RepoId::new("repo"), RevisionId::new("rev"))
+            .top_k(top_k)
+            .execute();
+        match outcome {
+            Err(crate::SdkError::Remote { code, .. }) => assert_eq!(
+                code,
+                quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE,
+                "top_k={top_k}"
+            ),
+            other => panic!("top_k={top_k} must be refused with the shared code, got {other:?}"),
+        }
+        let sent = ok_or_fail!(query.requests.lock()).len();
+        assert_eq!(sent, 0, "a refused top_k must not reach the transport");
+    }
+}
+
+#[test]
+fn text_query_builder_accepts_the_public_maximum_top_k() {
+    let query = unused_query();
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let _response = ok_or_fail!(
+        client
+            .lexical()
+            .query()
+            .native("needle")
+            .active(RepoId::new("repo"), RevisionId::new("rev"))
+            .top_k(quanta_index_contract::PUBLIC_TOP_K_MAX)
+            .execute()
+    );
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::Text(request) = captured.payload else {
+        panic!(
+            "expected a text query on the wire, got {:?}",
+            captured.payload
+        );
+    };
+    assert_eq!(request.top_k, quanta_index_contract::PUBLIC_TOP_K_MAX);
+}
+
+// QI-BB-025: the hybrid-seed builder has its own request assembly path and
+// must apply the same local gate as the text builders — it is the one route
+// whose SDK builder does not go through `build_request`.
+#[test]
+fn hybrid_seed_builder_refuses_out_of_range_top_k_before_any_round_trip() {
+    for top_k in [0, quanta_index_contract::PUBLIC_TOP_K_MAX + 1, u32::MAX] {
+        let query = unused_query();
+        let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+        let outcome = client
+            .search()
+            .hybrid_seed()
+            .native("needle")
+            .semantic_text("needle")
+            .active(repo_id(), revision_id())
+            .top_k(top_k)
+            .execute();
+        match outcome {
+            Err(crate::SdkError::Remote { code, .. }) => assert_eq!(
+                code,
+                quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE,
+                "top_k={top_k}"
+            ),
+            other => panic!("top_k={top_k} must be refused with the shared code, got {other:?}"),
+        }
+        let sent = ok_or_fail!(query.requests.lock()).len();
+        assert_eq!(sent, 0, "a refused top_k must not reach the transport");
+    }
+}

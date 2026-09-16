@@ -1,36 +1,36 @@
-use quanta_index_contract::ManifestGeneration;
 use quanta_index_contract::lex::LexicalErrorCode;
+use quanta_index_contract::{ManifestGeneration, PUBLIC_TOP_K_MAX};
 
-use crate::error::CoreError;
+use crate::error::{CoreError, validate_internal_fetch_size, validate_query_top_k};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SemanticPolicy;
 
-const MAX_TOP_K: u32 = 10_000;
-
 impl SemanticPolicy {
+    /// The public result cap shared by every query route.
     #[must_use]
     pub const fn max_top_k() -> u32 {
-        MAX_TOP_K
+        PUBLIC_TOP_K_MAX
     }
 
+    /// Accept or refuse a caller's `top_k` under the shared contract.
+    ///
+    /// Delegates to the one policy every route uses so the semantic route
+    /// cannot accept a value the dispatcher's continuation probe later
+    /// refuses, and reports the same typed code as every other route.
     pub fn validate_top_k(top_k: u32) -> Result<(), CoreError> {
-        if top_k == 0 {
-            return Err(CoreError::Typed {
-                code: LexicalErrorCode::InvalidFilterValue
-                    .as_code_str()
-                    .to_string(),
-                message: format!("semantic: top_k must be within 1..={MAX_TOP_K}, got {top_k}"),
-            });
-        }
-        if top_k > MAX_TOP_K {
-            return Err(CoreError::Typed {
-                code: LexicalErrorCode::PlanLimitExceeded
-                    .as_code_str()
-                    .to_string(),
-                message: format!("semantic: top_k {top_k} exceeds ceiling {MAX_TOP_K}"),
-            });
-        }
+        let _accepted = validate_query_top_k(top_k)?;
+        Ok(())
+    }
+
+    /// Accept or refuse the fetch size an adapter is asked to serve.
+    ///
+    /// Adapters receive the continuation fetch size (public cap plus one) or a
+    /// hybrid over-fetch, never the caller's `top_k`; checking them against the
+    /// public cap refused the public maximum one layer below where it had just
+    /// been accepted.
+    pub fn validate_fetch_size(fetch: u32) -> Result<(), CoreError> {
+        let _accepted = validate_internal_fetch_size(fetch)?;
         Ok(())
     }
 
@@ -120,14 +120,18 @@ mod tests {
     }
 
     #[test]
-    fn validate_top_k_kills_boundary_gt_to_ge_mutation() {
-        // Boundary: top_k == MAX_TOP_K must be accepted under `>`.
-        // Under `>=` (mutant), it would be rejected.
-        assert!(SemanticPolicy::validate_top_k(MAX_TOP_K).is_ok());
-        // Above the ceiling must still be rejected.
-        assert!(SemanticPolicy::validate_top_k(MAX_TOP_K + 1).is_err());
-        // Zero must still be rejected (covers the `== 0` arm).
-        assert!(SemanticPolicy::validate_top_k(0).is_err());
+    fn validate_top_k_follows_the_shared_public_range() {
+        // The public maximum is accepted; the route may not narrow it.
+        assert!(SemanticPolicy::validate_top_k(PUBLIC_TOP_K_MAX).is_ok());
+        // Above the ceiling and zero are refused with the one shared code.
+        for refused in [0, PUBLIC_TOP_K_MAX + 1] {
+            match SemanticPolicy::validate_top_k(refused) {
+                Err(CoreError::Typed { code, .. }) => {
+                    assert_eq!(code, quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE);
+                }
+                other => panic!("top_k={refused} must be refused with the shared code: {other:?}"),
+            }
+        }
     }
 
     #[test]

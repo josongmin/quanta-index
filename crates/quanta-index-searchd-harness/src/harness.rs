@@ -29,13 +29,14 @@ use quanta_index_contract::{
     BatchIngestMode, BatchPublishReceipt, CapabilityStatusV1, ChunkId, ChunkRecord,
     CurrentGenerationRequest, EngineTouched, FileOwnerProjectionRow, GenerationPin,
     GenerationSnapshot, HistoryQueryRequest, HybridQueryRequest, LexicalCandidate,
-    ManifestGeneration, OwnerDocKind, RawFallbackReasonV1, RepoId, RepoRelativePath, RevisionId,
-    RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchCorpusTombstoneScope, SearchExplanation,
-    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
-    SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
-    SearchPlaneControlIpcResponseEnvelope, SearchPlaneExplainQueryRequest,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    ManifestGeneration, OwnerDocKind, QueryResultWindowV1, RawFallbackReasonV1, RepoId,
+    RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1,
+    SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
+    SearchExplanation, SearchPlaneActivateSearchCorpusGenerationCasRequest,
+    SearchPlaneControlIpcRequest, SearchPlaneControlIpcRequestEnvelope,
+    SearchPlaneControlIpcResponse, SearchPlaneControlIpcResponseEnvelope,
+    SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind, SemanticCorpusKindV1,
@@ -195,6 +196,18 @@ impl fmt::Display for E2eTypedError {
 }
 
 impl std::error::Error for E2eTypedError {}
+
+/// One query route's answer, reduced to what a bounded-result contract asserts on.
+///
+/// Carries the typed refusal if the daemon refused, else the row count and the
+/// wire window. Routes that answer without a window (history, runtime
+/// metadata, structural) report `None` for it.
+#[derive(Clone, Debug)]
+pub struct E2eRouteWindowProbe {
+    pub typed_error: Option<E2eTypedError>,
+    pub returned_rows: usize,
+    pub window: Option<QueryResultWindowV1>,
+}
 
 pub struct E2eExplainResult {
     pub explanation: Option<SearchExplanation>,
@@ -1967,6 +1980,42 @@ impl E2eRuntime {
         }
     }
 
+    /// Issue any query route, built by the caller from the last sealed pin,
+    /// and reduce the daemon's answer to typed error / row count / window.
+    ///
+    /// This is the route-agnostic front door for contract truth tables that
+    /// must drive every variant through the same code path: the caller owns
+    /// the payload shape, the harness owns transport and readiness. Harness
+    /// failures (driver start, transport, a route that has no result list)
+    /// are `Err`; only a daemon-typed refusal becomes `typed_error`.
+    pub fn probe_query_route(
+        &mut self,
+        build: impl FnOnce(Option<GenerationPin>) -> SearchPlaneQueryIpcRequest,
+    ) -> AnyResult<E2eRouteWindowProbe> {
+        let payload = build(self.last_sealed_pin());
+        let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
+        let envelope = SearchPlaneQueryIpcRequestEnvelope {
+            request_id,
+            payload,
+        };
+        let socket = self.ensure_driver()?;
+        let (readiness_reached, response) =
+            wait_for_query_response(&socket, &envelope, query_response_ready);
+        let response = match response {
+            Ok(response) => response,
+            Err(err) => {
+                let failure = self.semantic_transport_error(readiness_reached, err);
+                return Err(anyhow::anyhow!(
+                    "e2e-harness: route probe transport failure: {}",
+                    failure
+                        .typed_error
+                        .map_or_else(|| "no typed error".to_string(), |error| error.to_string())
+                ));
+            }
+        };
+        route_window_probe_from_response(response.payload)
+    }
+
     pub fn candidate_id_for_path(&self, path: &str) -> AnyResult<String> {
         self.chunk_ids_by_path
             .get(path)
@@ -2380,6 +2429,59 @@ fn build_config(
     cfg = SearchdConfig::with_socket_overrides(cfg, query_socket, control_socket);
     cfg = SearchdConfig::with_ingest_socket_override(cfg, ingest_socket);
     Ok(cfg.with_semantic_embedder_profile(embedder_profile.clone()))
+}
+
+/// Reduce one query response to its bounded-result shape. Routes that do
+/// not answer with a result list are not probe-able and are a harness error,
+/// not a daemon refusal.
+fn route_window_probe_from_response(
+    payload: SearchPlaneQueryIpcResponse,
+) -> AnyResult<E2eRouteWindowProbe> {
+    let (returned_rows, window) = match payload {
+        SearchPlaneQueryIpcResponse::Error(err) => {
+            return Ok(E2eRouteWindowProbe {
+                typed_error: Some(E2eTypedError {
+                    code: err.code,
+                    message: err.message,
+                }),
+                returned_rows: 0,
+                window: None,
+            });
+        }
+        SearchPlaneQueryIpcResponse::Text(text) => (text.results.len(), Some(text.window)),
+        SearchPlaneQueryIpcResponse::Symbol(symbol) => (symbol.results.len(), Some(symbol.window)),
+        SearchPlaneQueryIpcResponse::Semantic(semantic) => {
+            (semantic.results.len(), Some(semantic.window))
+        }
+        SearchPlaneQueryIpcResponse::Hybrid(hybrid) => (hybrid.results.len(), Some(hybrid.window)),
+        // The hybrid-seed window describes the active candidate list, which
+        // is `seed_candidates_v2` whenever it is present and the legacy list
+        // only otherwise (QI-BB-019 tracks collapsing the two).
+        SearchPlaneQueryIpcResponse::HybridSeed(seed) => (
+            seed.seed_candidates_v2
+                .as_ref()
+                .map_or(seed.seed_candidates.len(), Vec::len),
+            Some(seed.window),
+        ),
+        SearchPlaneQueryIpcResponse::History(history) => (
+            history.commits.len().saturating_add(history.diffs.len()),
+            None,
+        ),
+        SearchPlaneQueryIpcResponse::RuntimeMetadata(runtime) => (runtime.results.len(), None),
+        SearchPlaneQueryIpcResponse::Structural(structural) => (structural.results.len(), None),
+        SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
+            return Err(anyhow::anyhow!(
+                "e2e-harness: route answered without a bounded result list; it cannot be window-probed"
+            ));
+        }
+    };
+    Ok(E2eRouteWindowProbe {
+        typed_error: None,
+        returned_rows,
+        window,
+    })
 }
 
 fn unexpected_response(kind: &str) -> E2eQueryResult {

@@ -114,11 +114,14 @@ fn joint_readiness_both_unsealed_is_not_ready() {
     assert!(matches!(result, Err(CoreError::NotReady(_))));
 }
 
+// `top_k` is one contract for every route (QI-BB-025): the hybrid route reports
+// the shared `QUERY_TOP_K_OUT_OF_RANGE`, not a route-private code, so an SDK
+// caller sees one refusal regardless of which route it asked.
 #[test]
 fn hybrid_top_k_zero_is_invalid() {
     assert_eq!(
         typed_code_or_debug(HybridOrchestratorPolicy::validate_top_k(0)),
-        "HYB_TOP_K_INVALID"
+        quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE
     );
 }
 
@@ -128,7 +131,7 @@ fn hybrid_top_k_above_ceiling_is_invalid() {
         typed_code_or_debug(HybridOrchestratorPolicy::validate_top_k(
             quanta_index_core::SemanticPolicy::max_top_k() + 1,
         )),
-        "HYB_TOP_K_INVALID"
+        quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE
     );
 }
 

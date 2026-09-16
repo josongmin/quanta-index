@@ -23,8 +23,11 @@ pub use ids::{
     FileId, GenerationId, ManifestDigest, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
 };
 pub use query::{
-    ExactRepoRelativePathV1, GenerationPin, GenerationSelector, LanguageCode,
-    QueryConstraintIntersectionV1, QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax,
+    ExactRepoRelativePathV1, GenerationPin, GenerationSelector, INTERNAL_FETCH_CEILING,
+    INTERNAL_FETCH_OUT_OF_RANGE_CODE, InternalFetchOutOfRangeV1, LanguageCode, PUBLIC_TOP_K_MAX,
+    PUBLIC_TOP_K_MIN, QueryConstraintIntersectionV1, QueryConstraintSetV1, TOP_K_OUT_OF_RANGE_CODE,
+    TextQueryRequest, TextQuerySyntax, TopKOutOfRangeV1, continuation_fetch_size,
+    validate_internal_fetch_size, validate_public_top_k,
 };
 pub use results::{
     CandidateCountV1, DiffCandidate, DiffHunkSide, HighlightSpan, LexicalCandidate,

@@ -39,6 +39,7 @@ impl TextQueryBuilderState {
         let top_k = self
             .top_k
             .ok_or_else(|| SdkError::Usage(format!("{plane} top_k is required")))?;
+        let top_k = accepted_top_k(plane, top_k)?;
         let (generation, generation_selector) = QuantaIndex::selection_to_fields(selection);
         Ok(TextQueryRequest {
             syntax: self.syntax,
@@ -86,16 +87,17 @@ impl VectorQueryBuilderState {
         let top_k = self
             .top_k
             .ok_or_else(|| SdkError::Usage("semantic top_k is required".to_string()))?;
+        let top_k = accepted_top_k("semantic", top_k)?;
         let (generation, generation_selector) = Self::selection_fields(selection);
         let constraints = self.constraints;
         let lexical_scope = match (self.scope_leg, self.scope_top_k) {
             (Some((syntax, query_text)), Some(scope_top_k)) => Some(TextQueryRequest {
+                top_k: accepted_top_k("semantic scope", scope_top_k)?,
                 syntax,
                 query_text,
                 constraints: constraints.clone(),
                 generation: generation.clone(),
                 generation_selector: generation_selector.clone(),
-                top_k: scope_top_k,
             }),
             (Some(_), None) => {
                 return Err(SdkError::Usage(
@@ -138,6 +140,7 @@ impl VectorQueryBuilderState {
         let top_k = self
             .top_k
             .ok_or_else(|| SdkError::Usage("hybrid seed top_k is required".to_string()))?;
+        let top_k = accepted_top_k("hybrid seed", top_k)?;
         let (generation, generation_selector) = Self::selection_fields(selection);
         Ok(HybridSeedQueryRequest {
             text_query: TextQueryRequest {
@@ -161,4 +164,19 @@ impl VectorQueryBuilderState {
     ) -> (Option<GenerationPin>, Option<GenerationSelector>) {
         QuantaIndex::selection_to_fields(selection)
     }
+}
+
+/// Refuse an out-of-range `top_k` at build time with the same code the daemon
+/// would answer over the wire.
+///
+/// The SDK's type-state builders guarantee `top_k` is *present*; the value
+/// itself is a contract obligation shared with every query route, so a caller
+/// learns about a bad value before a round trip, and learns it under the same
+/// `QUERY_TOP_K_OUT_OF_RANGE` code it would otherwise get back.
+fn accepted_top_k(plane: &str, top_k: u32) -> Result<u32, SdkError> {
+    quanta_index_contract::validate_public_top_k(top_k).map_err(|refused| SdkError::Remote {
+        code: refused.code().to_string(),
+        message: format!("{plane}: {refused}"),
+        repair: None,
+    })
 }

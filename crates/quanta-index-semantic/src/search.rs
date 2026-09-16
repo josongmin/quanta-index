@@ -1193,7 +1193,7 @@ impl SemanticSearcher for PersistedSemanticSearcher {
     }
 
     fn search(&self, query_vector: &[f32], top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError> {
-        SemanticPolicy::validate_top_k(top_k)?;
+        SemanticPolicy::validate_fetch_size(top_k)?;
         SemanticPolicy::validate_query_vector(query_vector)?;
         let limit = top_k_limit(top_k)?;
         crate::run_blocking(&self.runtime, self.loaded.search_async(query_vector, limit))
@@ -1205,7 +1205,7 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         constraints: &QueryConstraintSetV1,
         top_k: u32,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
-        SemanticPolicy::validate_top_k(top_k)?;
+        SemanticPolicy::validate_fetch_size(top_k)?;
         SemanticPolicy::validate_query_vector(query_vector)?;
         let limit = top_k_limit(top_k)?;
         crate::run_blocking(
@@ -1221,7 +1221,7 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         query_vector: &[f32],
         top_k: u32,
     ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
-        SemanticPolicy::validate_top_k(top_k)?;
+        SemanticPolicy::validate_fetch_size(top_k)?;
         SemanticPolicy::validate_query_vector(query_vector)?;
         let limit = top_k_limit(top_k)?;
         crate::run_blocking(
@@ -1238,7 +1238,7 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         constraints: &QueryConstraintSetV1,
         top_k: u32,
     ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
-        SemanticPolicy::validate_top_k(top_k)?;
+        SemanticPolicy::validate_fetch_size(top_k)?;
         SemanticPolicy::validate_query_vector(query_vector)?;
         let limit = top_k_limit(top_k)?;
         crate::run_blocking(
@@ -1255,7 +1255,7 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         corpus_kind: SemanticCorpusKindV1,
         top_k: u32,
     ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
-        SemanticPolicy::validate_top_k(top_k)?;
+        SemanticPolicy::validate_fetch_size(top_k)?;
         SemanticPolicy::validate_query_vector(query_vector)?;
         let limit = top_k_limit(top_k)?;
         crate::run_blocking(
@@ -1276,7 +1276,7 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         constraints: &QueryConstraintSetV1,
         top_k: u32,
     ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
-        SemanticPolicy::validate_top_k(top_k)?;
+        SemanticPolicy::validate_fetch_size(top_k)?;
         SemanticPolicy::validate_query_vector(query_vector)?;
         let limit = top_k_limit(top_k)?;
         crate::run_blocking(
@@ -1298,7 +1298,7 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         allowed_ids: &BTreeSet<String>,
         top_k: u32,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
-        SemanticPolicy::validate_top_k(top_k)?;
+        SemanticPolicy::validate_fetch_size(top_k)?;
         SemanticPolicy::validate_query_vector(query_vector)?;
         let limit = top_k_limit(top_k)?;
         crate::run_blocking(
@@ -1315,7 +1315,7 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         constraints: &QueryConstraintSetV1,
         top_k: u32,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
-        SemanticPolicy::validate_top_k(top_k)?;
+        SemanticPolicy::validate_fetch_size(top_k)?;
         SemanticPolicy::validate_query_vector(query_vector)?;
         let limit = top_k_limit(top_k)?;
         crate::run_blocking(

@@ -42,8 +42,11 @@ pub use channel::{
 };
 pub use ipc::*;
 pub use quanta_index_contract_base::{
-    CandidateCountV1, FileId, GenerationId, ManifestDigest, ManifestGeneration,
-    QueryResultWindowV1, RepoId, RepoRelativePath, RevisionId,
+    CandidateCountV1, FileId, GenerationId, INTERNAL_FETCH_CEILING,
+    INTERNAL_FETCH_OUT_OF_RANGE_CODE, InternalFetchOutOfRangeV1, ManifestDigest,
+    ManifestGeneration, PUBLIC_TOP_K_MAX, PUBLIC_TOP_K_MIN, QueryResultWindowV1, RepoId,
+    RepoRelativePath, RevisionId, TOP_K_OUT_OF_RANGE_CODE, TopKOutOfRangeV1,
+    continuation_fetch_size, validate_internal_fetch_size, validate_public_top_k,
 };
 pub use query::*;
 pub use repomap::*;

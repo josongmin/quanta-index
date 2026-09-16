@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{LexicalCandidate, ManifestGeneration};
 
-use crate::{domains::semantic::SemanticPolicy, error::CoreError};
+use crate::{
+    domains::semantic::SemanticPolicy,
+    error::{CoreError, validate_query_top_k},
+};
 
 /// Reciprocal Rank Fusion constant. Tunable but fixed here so all callers
 /// produce identical fused rankings.
@@ -14,14 +16,12 @@ const MIN_INTERNAL_FETCH_K: u32 = 100;
 pub struct HybridOrchestratorPolicy;
 
 impl HybridOrchestratorPolicy {
+    /// Accept or refuse a caller's `top_k` under the shared contract.
+    ///
+    /// The hybrid route used to report its own `HYB_TOP_K_INVALID` for the
+    /// same defect every other route reports differently; one policy, one code.
     pub fn validate_top_k(top_k: u32) -> Result<(), CoreError> {
-        let max_top_k = SemanticPolicy::max_top_k();
-        if top_k == 0 || top_k > max_top_k {
-            return Err(CoreError::Typed {
-                code: LexicalErrorCode::HybTopKInvalid.as_code_str().to_string(),
-                message: format!("hybrid: top_k must be within 1..={max_top_k}, got {top_k}"),
-            });
-        }
+        let _accepted = validate_query_top_k(top_k)?;
         Ok(())
     }
 

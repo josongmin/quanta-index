@@ -32,6 +32,7 @@ use quanta_index_contract::{
     SearchPlaneTrackKind, SeedCandidateV2, SeedContributionV2, SeedLaneV2, SemanticQueryRequest,
     SemanticQueryResponse, StructuralQueryRequest, SymbolCandidate, SymbolQueryRequest,
     SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    continuation_fetch_size,
 };
 use quanta_index_core::domains::structural::{
     StructuralExecutableFilter, StructuralProducerPort,
@@ -43,6 +44,7 @@ use quanta_index_core::{
     SemanticPolicy, SemanticQueryPort, SemanticSearchHitV1, SemanticSearcher,
     StructuralMatchBinding, StructuralMatchCandidate, StructuralService,
     timeref::{parse_rev_at_time_spec, parse_search_timeref_ms},
+    validate_query_top_k,
 };
 use quanta_index_lq_obs::{
     CardinalityGuard, Dimensions, MetricKind, MetricSample, OBS_OVERFLOW_LABEL, ObsError,
@@ -117,17 +119,15 @@ fn prepare_language_query_v1(
     })
 }
 
+/// Rows to fetch for one query so the window can observe a continuation row.
+///
+/// The public cap and the internal fetch ceiling are different numbers owned
+/// by the contract: `top_k = 10_000` is accepted and fetches 10,001. This used
+/// to refuse the public maximum because it compared `top_k + 1` against the
+/// public cap itself (QI-BB-025).
 fn probe_top_k_v1(top_k: u32) -> Result<u32, CoreError> {
-    let probed = top_k.checked_add(1).ok_or_else(|| {
-        CoreError::InvalidContract("query top_k cannot be probed beyond u32::MAX".to_string())
-    })?;
-    if probed > SemanticPolicy::max_top_k() {
-        return Err(CoreError::InvalidContract(format!(
-            "query top_k must be below {} so the result window can observe one continuation row",
-            SemanticPolicy::max_top_k()
-        )));
-    }
-    Ok(probed)
+    let accepted = validate_query_top_k(top_k)?;
+    Ok(continuation_fetch_size(accepted))
 }
 
 fn requests_full_recall_v1(query: &LqQuery) -> bool {
@@ -398,6 +398,7 @@ impl SearchPlaneDispatcher {
 
     /// Lower the request and forward it to the live lexical searcher.
     fn lexical(&self, request: &TextQueryRequest) -> Result<TextQueryResponse, CoreError> {
+        let _accepted_top_k = validate_query_top_k(request.top_k)?;
         let lowered = lower_lexical_text_query(request)?;
         let prepared_language = prepare_language_query_v1(lowered, &request.constraints)?;
         let base_pin = resolve_lexical_request_pin(
@@ -453,6 +454,7 @@ impl SearchPlaneDispatcher {
     }
 
     fn symbol(&self, request: SymbolQueryRequest) -> Result<SymbolQueryResponse, CoreError> {
+        let _accepted_top_k = validate_query_top_k(request.top_k)?;
         let pin = resolve_optional_selection(
             self.activation_catalog.as_ref(),
             request.generation.clone(),
@@ -864,6 +866,7 @@ impl SearchPlaneDispatcher {
         &self,
         request: &RuntimeMetadataQueryRequest,
     ) -> Result<SearchPlaneRuntimeMetadataQueryResponse, CoreError> {
+        let _accepted_top_k = validate_query_top_k(request.text_query.top_k)?;
         let lowered = lower_lexical_text_query(&request.text_query)?;
         validate_runtime_metadata_query(&lowered)?;
         let pin = resolve_optional_selection(
@@ -919,6 +922,7 @@ impl SearchPlaneDispatcher {
         &self,
         request: &HistoryQueryRequest,
     ) -> Result<SearchPlaneHistoryQueryResponse, CoreError> {
+        let _accepted_top_k = validate_query_top_k(request.text_query.top_k)?;
         let lowered = lower_lexical_text_query(&request.text_query)?;
         validate_history_query(&lowered)?;
         let pin = resolve_optional_selection(
@@ -950,6 +954,7 @@ impl SearchPlaneDispatcher {
         &self,
         request: &StructuralQueryRequest,
     ) -> Result<SearchPlaneStructuralQueryResponse, CoreError> {
+        let _accepted_top_k = validate_query_top_k(request.text_query.top_k)?;
         let (pin, lowered) =
             lower_structural_query_request(self.activation_catalog.as_ref(), request)?;
         let results = self.execute_structural_results(&pin, &lowered, request.text_query.top_k)?;
@@ -4701,7 +4706,8 @@ mod tests {
     };
     use quanta_index_contract::{
         ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
-        HybridSeedQueryRequest, QueryConstraintSetV1, SymbolQueryRequest,
+        HybridSeedQueryRequest, INTERNAL_FETCH_CEILING, PUBLIC_TOP_K_MAX, QueryConstraintSetV1,
+        SymbolQueryRequest, TOP_K_OUT_OF_RANGE_CODE,
     };
     use quanta_index_core::SemanticSearchHitV1;
 
@@ -4782,8 +4788,20 @@ mod tests {
             probe_top_k_v1(9_999).expect("one-row probe within ceiling"),
             10_000
         );
-        assert!(probe_top_k_v1(10_000).is_err());
-        assert!(probe_top_k_v1(u32::MAX).is_err());
+        // The public maximum is accepted and probes one row past it; the
+        // internal fetch ceiling is the contract's, not the caller's.
+        assert_eq!(
+            probe_top_k_v1(PUBLIC_TOP_K_MAX).expect("public maximum is accepted"),
+            INTERNAL_FETCH_CEILING
+        );
+        for refused in [0, PUBLIC_TOP_K_MAX + 1, u32::MAX] {
+            match probe_top_k_v1(refused) {
+                Err(CoreError::Typed { code, .. }) => assert_eq!(code, TOP_K_OUT_OF_RANGE_CODE),
+                other => {
+                    panic!("top_k={refused} must be refused with the shared code, got {other:?}")
+                }
+            }
+        }
     }
 
     #[test]

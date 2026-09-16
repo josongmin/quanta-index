@@ -11,21 +11,34 @@ fn typed_code_or_debug(result: Result<(), CoreError>) -> String {
     }
 }
 
+// `top_k` is one contract for every route (QI-BB-025). The semantic route used
+// to answer zero with `INVALID_FILTER_VALUE` and above-ceiling with
+// `PLAN_LIMIT_EXCEEDED`, while hybrid answered both with its own code and the
+// dispatcher's probe refused the public maximum outright. One code now.
 #[test]
-fn semantic_top_k_zero_uses_invalid_filter_value_code() {
+fn semantic_top_k_zero_uses_the_shared_out_of_range_code() {
     assert_eq!(
         typed_code_or_debug(SemanticPolicy::validate_top_k(0)),
-        "INVALID_FILTER_VALUE"
+        quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE
     );
 }
 
 #[test]
-fn semantic_top_k_above_ceiling_uses_plan_limit_exceeded_code() {
+fn semantic_top_k_above_ceiling_uses_the_shared_out_of_range_code() {
     assert_eq!(
         typed_code_or_debug(SemanticPolicy::validate_top_k(
             SemanticPolicy::max_top_k().saturating_add(1),
         )),
-        "PLAN_LIMIT_EXCEEDED"
+        quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE
+    );
+}
+
+#[test]
+fn semantic_top_k_public_maximum_is_accepted() {
+    assert!(SemanticPolicy::validate_top_k(SemanticPolicy::max_top_k()).is_ok());
+    assert_eq!(
+        SemanticPolicy::max_top_k(),
+        quanta_index_contract::PUBLIC_TOP_K_MAX
     );
 }
 

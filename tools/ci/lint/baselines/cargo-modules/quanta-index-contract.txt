@@ -5,6 +5,8 @@ crate quanta_index_contract
 │   ├── struct BoundedVecV1: pub(crate)
 │   └── struct BoundedVecV1Visitor: pub(self)
 │       └── type Value: pub(self)
+├── mod canonical_order: pub
+│   └── enum CanonicalOrderBreakV1: pub
 ├── mod channel: pub
 │   ├── mod ids: pub(self)
 │   │   ├── struct ChannelSeq: pub

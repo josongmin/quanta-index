@@ -8,6 +8,9 @@ pub use quanta_index_contract::GenerationId
 pub use quanta_index_contract::GenerationPin
 pub use quanta_index_contract::GenerationSelector
 pub use quanta_index_contract::HighlightSpan
+pub use quanta_index_contract::INTERNAL_FETCH_CEILING
+pub use quanta_index_contract::INTERNAL_FETCH_OUT_OF_RANGE_CODE
+pub use quanta_index_contract::InternalFetchOutOfRangeV1
 pub use quanta_index_contract::LQ_VERSION_TAG
 pub use quanta_index_contract::LexicalCandidate
 pub use quanta_index_contract::LqCase
@@ -35,6 +38,8 @@ pub use quanta_index_contract::LqVisibility
 pub use quanta_index_contract::LqYesNoOnly
 pub use quanta_index_contract::ManifestDigest
 pub use quanta_index_contract::ManifestGeneration
+pub use quanta_index_contract::PUBLIC_TOP_K_MAX
+pub use quanta_index_contract::PUBLIC_TOP_K_MIN
 pub use quanta_index_contract::QueryConstraintIntersectionV1
 pub use quanta_index_contract::QueryConstraintSetV1
 pub use quanta_index_contract::QueryResultWindowV1
@@ -43,8 +48,34 @@ pub use quanta_index_contract::RepoRelativePath
 pub use quanta_index_contract::RevisionId
 pub use quanta_index_contract::StructuralBinding
 pub use quanta_index_contract::StructuralCandidate
+pub use quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE
 pub use quanta_index_contract::TextQueryRequest
 pub use quanta_index_contract::TextQuerySyntax
+pub use quanta_index_contract::TopKOutOfRangeV1
+pub use quanta_index_contract::continuation_fetch_size
+pub use quanta_index_contract::validate_internal_fetch_size
+pub use quanta_index_contract::validate_public_top_k
+pub mod quanta_index_contract::canonical_order
+pub enum quanta_index_contract::canonical_order::CanonicalOrderBreakV1
+pub quanta_index_contract::canonical_order::CanonicalOrderBreakV1::Duplicate
+pub quanta_index_contract::canonical_order::CanonicalOrderBreakV1::OutOfOrder
+impl core::clone::Clone for quanta_index_contract::canonical_order::CanonicalOrderBreakV1
+pub fn quanta_index_contract::canonical_order::CanonicalOrderBreakV1::clone(&self) -> quanta_index_contract::canonical_order::CanonicalOrderBreakV1
+impl core::cmp::Eq for quanta_index_contract::canonical_order::CanonicalOrderBreakV1
+impl core::cmp::PartialEq for quanta_index_contract::canonical_order::CanonicalOrderBreakV1
+pub fn quanta_index_contract::canonical_order::CanonicalOrderBreakV1::eq(&self, other: &quanta_index_contract::canonical_order::CanonicalOrderBreakV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::canonical_order::CanonicalOrderBreakV1
+pub fn quanta_index_contract::canonical_order::CanonicalOrderBreakV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::canonical_order::CanonicalOrderBreakV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::canonical_order::CanonicalOrderBreakV1
+impl core::marker::Freeze for quanta_index_contract::canonical_order::CanonicalOrderBreakV1
+impl core::marker::Send for quanta_index_contract::canonical_order::CanonicalOrderBreakV1
+impl core::marker::Sync for quanta_index_contract::canonical_order::CanonicalOrderBreakV1
+impl core::marker::Unpin for quanta_index_contract::canonical_order::CanonicalOrderBreakV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::canonical_order::CanonicalOrderBreakV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::canonical_order::CanonicalOrderBreakV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::canonical_order::CanonicalOrderBreakV1
+pub fn quanta_index_contract::canonical_order::first_canonical_order_break_v1<T, K, F>(values: &[T], key: F) -> core::option::Option<quanta_index_contract::canonical_order::CanonicalOrderBreakV1> where K: core::cmp::Ord + ?core::marker::Sized, F: core::ops::function::Fn(&T) -> &K
 pub mod quanta_index_contract::channel
 pub enum quanta_index_contract::channel::LexicalChannelOp
 pub quanta_index_contract::channel::LexicalChannelOp::ClearLexicalSurface(quanta_index_contract::ClearLexicalSurface)

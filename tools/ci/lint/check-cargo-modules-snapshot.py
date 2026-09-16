@@ -81,10 +81,18 @@ def workspace_member_names() -> set[str]:
 
 def render_module_tree(package: str) -> str:
     cmd = ["cargo", "modules", "structure", "--package", package, "--no-fns"]
+    # The snapshot is compared byte-for-byte against a plain-text baseline, so
+    # the tool must never colour its output. cargo-modules honours NO_COLOR; a
+    # shell that exports CLICOLOR_FORCE (or a tool version that colours when
+    # piped) would otherwise turn a one-module change into a whole-tree diff.
+    env = cargo_env("cargo-modules-lane")
+    env["NO_COLOR"] = "1"
+    env.pop("CLICOLOR_FORCE", None)
+    env.pop("FORCE_COLOR", None)
     result = subprocess.run(
         cmd,
         cwd=ROOT,
-        env=cargo_env("cargo-modules-lane"),
+        env=env,
         capture_output=True,
         text=True,
     )

@@ -12,7 +12,7 @@ pub mod domains;
 pub mod error;
 pub mod timeref;
 
-pub use error::CoreError;
+pub use error::{CoreError, validate_internal_fetch_size, validate_query_top_k};
 
 pub use domains::generation::{
     GenerationIdentityValidatePort, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
