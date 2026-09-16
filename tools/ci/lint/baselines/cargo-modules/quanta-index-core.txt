@@ -8,10 +8,12 @@ crate quanta_index_core
 │   │   ├── enum IncompleteGenerationDiscardOutcomeV1: pub
 │   │   ├── trait IncompleteGenerationDiscardPort: pub
 │   │   ├── struct QuarantinedGenerationV1: pub
+│   │   ├── struct SealedArtifactCommitmentV1: pub
 │   │   ├── struct SealedGenerationInventoryV1: pub
 │   │   ├── enum SealedGenerationReclaimOutcomeV1: pub
 │   │   ├── trait SealedGenerationReclaimPort: pub
-│   │   └── trait SealedGenerationScanPort: pub
+│   │   ├── trait SealedGenerationScanPort: pub
+│   │   └── enum TreeCommitmentMismatchV1: pub
 │   ├── mod hybrid: pub
 │   │   ├── mod inbound: pub(self)
 │   │   │   ├── trait ExplainQueryPort: pub

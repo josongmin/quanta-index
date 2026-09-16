@@ -22,8 +22,9 @@ pub use request_budget::{
 pub use domains::generation::{
     GenerationIdentityValidatePort, GenerationQuarantineReasonV1, GenerationStorageKeyV1,
     IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort, QuarantinedGenerationV1,
-    SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
-    SealedGenerationScanPort,
+    SealedArtifactCommitmentV1, SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1,
+    SealedGenerationReclaimPort, SealedGenerationScanPort, TreeCommitmentMismatchV1,
+    commit_tree_v1, sha256_of_file, verify_tree_commitment_v1,
 };
 pub use domains::hybrid::{ExplainQueryPort, HybridOrchestratorPolicy, HybridQueryPort};
 pub use domains::lexical::{

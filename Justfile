@@ -194,6 +194,7 @@ rust-test-integration:
     {{cargo}} --lane test-integration-lane test -p quanta-index-repomap --test owner_surface --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test persisted_semantic --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test generation_delta_reuse --all-features --locked -- --nocapture
+    {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test sealed_manifest --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test semantic_generation_lifecycle_model --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test scv2_persisted_scenarios --all-features --locked
 

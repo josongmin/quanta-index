@@ -59,6 +59,7 @@ use crate::manifest::{
 use crate::membership_integrity::{
     ClusterMembershipCommitmentV1, ClusterMembershipStoredRowV1, cluster_membership_commitment_v1,
 };
+use crate::sealed_manifest::{build_sealed_manifest_bytes, sealed_manifest_path};
 use crate::semantic_row_integrity_v1::semantic_row_commitment_v1;
 
 /// Row-count floor below which we skip ANN index construction at seal.
@@ -1736,6 +1737,17 @@ pub(crate) async fn build_batch(
             &manifest_bytes,
             "write manifest",
         )?;
+        // The file commitment every door re-measures instead of the rows
+        // (QI-BB-017): measured after the dataset, the contract and the
+        // scope manifest are durable, written before the marker that makes
+        // the generation sealed.
+        let sealed_manifest_bytes =
+            build_sealed_manifest_bytes(&generation_dir, batch.manifest_digest.as_str())?;
+        write_atomic(
+            &sealed_manifest_path(&generation_dir),
+            &sealed_manifest_bytes,
+            "write sealed generation manifest",
+        )?;
         write_atomic(
             &layout::sealed_marker_path(&generation_dir),
             batch.manifest_digest.as_bytes(),
@@ -3231,12 +3243,15 @@ mod tests {
         Ok(())
     }
 
+    /// A same-cardinality content mutation after the seal is a new dataset
+    /// version on disk; the sealed manifest's file commitment refuses it at
+    /// cold open (QI-BB-017) without re-deriving the row root.
     #[test]
     #[expect(
         clippy::panic_in_result_fn,
         reason = "test asserts same-cardinality content tampering is rejected at cold open"
     )]
-    fn semantic_row_root_rejects_same_row_count_content_mutation() -> TestResult {
+    fn sealed_manifest_rejects_same_row_count_content_mutation() -> TestResult {
         let temp = tempdir()?;
         let root = temp.path().to_path_buf();
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -3278,10 +3293,13 @@ mod tests {
         ) else {
             return Err("same-row-count content mutation must fail closed".into());
         };
-        assert!(matches!(
-            error,
-            CoreError::Typed { ref code, .. } if code == "SEMANTIC_ROW_ROOT_MISMATCH"
-        ));
+        assert!(
+            matches!(
+                error,
+                CoreError::Typed { ref code, .. } if code == "GENERATION_SIDECAR_CORRUPT"
+            ),
+            "{error:?}"
+        );
         Ok(())
     }
 }

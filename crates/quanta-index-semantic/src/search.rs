@@ -60,7 +60,7 @@ use crate::membership_integrity::{
     ClusterMembershipStoredRowV1 as ClusterMembershipIntegrityRowV1,
     cluster_membership_commitment_v1,
 };
-use crate::semantic_row_integrity_v1::semantic_row_commitment_v1;
+use crate::sealed_manifest::verify_sealed_manifest;
 use crate::sql::build_id_in_filter;
 
 const COLUMN_DISTANCE: &str = "_distance";
@@ -109,6 +109,17 @@ fn load_generation_contract_for_manifest(
             "semantic: manifest format version {other} unsupported during contract load"
         ))),
     }
+}
+
+fn read_scope_manifest(generation_dir: &Path) -> Result<SemanticManifest, CoreError> {
+    let manifest_path = layout::manifest_path(generation_dir);
+    let manifest_bytes = std::fs::read(&manifest_path).map_err(|err| {
+        CoreError::Storage(format!(
+            "semantic: read manifest {}: {err}",
+            manifest_path.display()
+        ))
+    })?;
+    SemanticManifest::decode(&manifest_bytes)
 }
 
 /// One sealed generation loaded against its lancedb dataset.
@@ -243,7 +254,8 @@ pub(crate) async fn open_generation(
     generation: ManifestGeneration,
 ) -> Result<LoadedGeneration, CoreError> {
     let generation_dir = layout::generation_dir(semantic_root, repo, revision, generation);
-    if !layout::sealed_marker_path(&generation_dir).exists() {
+    let marker_path = layout::sealed_marker_path(&generation_dir);
+    if !marker_path.exists() {
         return Err(CoreError::NotReady(format!(
             "semantic: generation {} for repo={} revision={} is not sealed (or absent)",
             generation.get(),
@@ -251,15 +263,41 @@ pub(crate) async fn open_generation(
             revision.as_str()
         )));
     }
-    let manifest_path = layout::manifest_path(&generation_dir);
-    let manifest_bytes = std::fs::read(&manifest_path).map_err(|err| {
+    // The marker carries the identity digest, which is all the file
+    // commitment needs: a current-format generation proves every dataset
+    // file, the scope manifest and the build contract against the seal
+    // (QI-BB-017) before the scope manifest is even decoded, so a forged
+    // manifest is refused as a corrupt sidecar rather than interpreted.
+    // Legacy formats predate the commitment and keep their row scans.
+    let sealed_digest = std::fs::read_to_string(&marker_path).map_err(|err| {
         CoreError::Storage(format!(
-            "semantic: read manifest {}: {err}",
-            manifest_path.display()
+            "semantic: read sealed marker {}: {err}",
+            marker_path.display()
         ))
     })?;
-    let manifest = SemanticManifest::decode(&manifest_bytes)?;
+    let sealed_manifest = match verify_sealed_manifest(&generation_dir, &sealed_digest) {
+        Ok(sealed) => Some(sealed),
+        Err(CoreError::Typed { code, message }) if code == "GENERATION_MANIFEST_MISSING" => {
+            let manifest = read_scope_manifest(&generation_dir)?;
+            if manifest.format_version == FORMAT_VERSION {
+                return Err(CoreError::Typed { code, message });
+            }
+            None
+        }
+        Err(other) => return Err(other),
+    };
+    let manifest = read_scope_manifest(&generation_dir)?;
     manifest.validate_scope(repo, revision, generation)?;
+    if manifest.manifest_digest != sealed_digest {
+        return Err(CoreError::Typed {
+            code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
+            message: format!(
+                "semantic: sealed marker says {sealed_digest} but the manifest says {} for generation {}",
+                manifest.manifest_digest,
+                generation.get()
+            ),
+        });
+    }
     if let Some(generation_contract) =
         load_generation_contract_for_manifest(&generation_dir, &manifest)?
     {
@@ -334,29 +372,6 @@ pub(crate) async fn open_generation(
             manifest.row_count
         )));
     }
-    if manifest.format_version == FORMAT_VERSION {
-        let commitment = semantic_row_commitment_v1(&table).await?;
-        // The commitment's `root_digest` is compared against the manifest's
-        // `semantic_row_root_digest`: the manifest carries a second, unrelated
-        // root for the membership sidecar, so the field names differ on purpose.
-        #[expect(
-            clippy::suspicious_operation_groupings,
-            reason = "the manifest has no `root_digest` field; `semantic_row_root_digest` is the main table's root and the comparison is deliberate"
-        )]
-        let row_root_mismatch = commitment.row_count != manifest.row_count
-            || commitment.root_digest != manifest.semantic_row_root_digest;
-        if row_root_mismatch {
-            return Err(CoreError::Typed {
-                code: "SEMANTIC_ROW_ROOT_MISMATCH".to_string(),
-                message: format!(
-                    "semantic: main table does not match sealed row root for repo={} revision={} generation={}",
-                    repo.as_str(),
-                    revision.as_str(),
-                    generation.get()
-                ),
-            });
-        }
-    }
 
     let cluster_membership = if matches!(
         manifest.format_version,
@@ -399,14 +414,25 @@ pub(crate) async fn open_generation(
                 "semantic: current cluster membership table has an incompatible schema".to_string(),
             ));
         }
-        verify_cluster_membership_commitment_v1(&membership_table, &manifest).await?;
+        // With the file commitment verified, the membership rows are the
+        // sealed rows; only the cheap count is re-checked. A generation
+        // without the commitment (legacy format) still streams and re-derives
+        // the membership root.
+        if sealed_manifest.is_some() {
+            verify_cluster_membership_row_count_v1(&membership_table, &manifest).await?;
+        } else {
+            verify_cluster_membership_commitment_v1(&membership_table, &manifest).await?;
+        }
         LoadedClusterMembershipV1::Available(membership_table)
     } else {
         LoadedClusterMembershipV1::LegacyUnavailable
     };
 
     drop(connection);
-    let resident_bytes_estimate = dataset_tree_bytes(&layout::dataset_dir(&generation_dir))?;
+    let resident_bytes_estimate = match &sealed_manifest {
+        Some(sealed) => sealed.dataset_bytes(),
+        None => dataset_tree_bytes(&layout::dataset_dir(&generation_dir))?,
+    };
     Ok(LoadedGeneration {
         repo_id: repo.clone(),
         revision_id: revision.clone(),
@@ -480,7 +506,7 @@ fn column_as<'a, T: Array + 'static>(
     })
 }
 
-async fn verify_cluster_membership_commitment_v1(
+async fn verify_cluster_membership_row_count_v1(
     table: &lancedb::Table,
     manifest: &SemanticManifest,
 ) -> Result<(), CoreError> {
@@ -499,6 +525,14 @@ async fn verify_cluster_membership_commitment_v1(
             manifest.cluster_membership_member_row_count
         )));
     }
+    Ok(())
+}
+
+async fn verify_cluster_membership_commitment_v1(
+    table: &lancedb::Table,
+    manifest: &SemanticManifest,
+) -> Result<(), CoreError> {
+    verify_cluster_membership_row_count_v1(table, manifest).await?;
 
     let committed_capacity = usize::try_from(manifest.cluster_membership_member_row_count)
         .map_err(|error| {

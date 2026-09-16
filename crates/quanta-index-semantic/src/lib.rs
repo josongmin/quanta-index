@@ -34,6 +34,7 @@ mod generation_contract;
 mod layout;
 mod manifest;
 mod membership_integrity;
+mod sealed_manifest;
 mod search;
 mod semantic_ingest_fixtures_v1;
 mod semantic_row_integrity_v1;
@@ -197,44 +198,24 @@ impl GenerationIdentityValidatePort for SemanticAdapter {
                     ))
                 }
             })?;
-        let manifest_bytes =
-            std::fs::read(layout::manifest_path(&generation_dir)).map_err(|error| {
-                if error.kind() == std::io::ErrorKind::NotFound {
-                    CoreError::Typed {
-                        code: "GENERATION_IDENTITY_INCOMPLETE".to_string(),
-                        message: format!(
-                            "semantic: incomplete generation has no manifest for generation {}",
-                            candidate.manifest_generation.get()
-                        ),
-                    }
-                } else {
-                    CoreError::Storage(format!(
-                        "semantic: read manifest for generation {}: {error}",
-                        candidate.manifest_generation.get()
-                    ))
-                }
-            })?;
-        let manifest = SemanticManifest::decode(&manifest_bytes)?;
-        manifest.validate_scope(
-            &candidate.repo_id,
-            &candidate.revision_id,
-            candidate.manifest_generation,
-        )?;
-        if sealed_digest != candidate.manifest_digest
-            || manifest.manifest_digest != candidate.manifest_digest
-        {
+        if sealed_digest != candidate.manifest_digest {
             return Err(CoreError::Typed {
                 code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
                 message: format!(
-                    "semantic: durable generation digest mismatch for repo={} revision={} generation={}",
+                    "semantic: sealed marker says {sealed_digest} but the candidate says {} for repo={} revision={} generation={}",
+                    candidate.manifest_digest,
                     candidate.repo_id.as_str(),
                     candidate.revision_id.as_str(),
                     candidate.manifest_generation.get(),
                 ),
             });
         }
-        // Bypass the query cache so deleted/corrupt physical state cannot be
-        // admitted from a stale in-memory searcher.
+        // The cold open is the proof (QI-BB-017): it verifies the sealed
+        // manifest's file commitment before decoding the scope manifest,
+        // checks scope and digest, and opens the tables. Nothing is served
+        // from a cache here, so deleted or corrupt physical state cannot be
+        // admitted from a stale in-memory searcher, and nothing is hashed
+        // twice.
         let _loaded = run_blocking(
             &self.runtime,
             open_generation(

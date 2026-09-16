@@ -1,7 +1,9 @@
 use quanta_index_contract::GenerationSnapshot;
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind};
 use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::CoreError;
@@ -260,5 +262,273 @@ mod tests {
             );
             assert!(key.as_str().len() < 96);
         }
+    }
+}
+
+/// One file a sealed generation commits to: its `/`-joined path relative to
+/// the generation directory, its length and its SHA-256.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SealedArtifactCommitmentV1 {
+    pub name: String,
+    pub bytes: u64,
+    pub sha256: [u8; 32],
+}
+
+/// Length and SHA-256 of one file, streamed through a fixed buffer so the
+/// cost is I/O and hashing, never the file's size in memory.
+pub fn sha256_of_file(path: &Path) -> std::io::Result<(u64, [u8; 32])> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 1 << 16];
+    let mut length = 0_u64;
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let chunk = buffer.get(..read).ok_or_else(|| {
+            std::io::Error::other("read returned more bytes than the buffer holds")
+        })?;
+        hasher.update(chunk);
+        length = length
+            .checked_add(u64::try_from(read).map_err(std::io::Error::other)?)
+            .ok_or_else(|| std::io::Error::other("file length overflows u64"))?;
+    }
+    Ok((length, hasher.finalize().into()))
+}
+
+/// Commit every regular file under `root`, recursively, in sorted path order.
+///
+/// Names are `/`-joined paths relative to `root`'s parent as `prefix/…`, so a
+/// commitment over `generation_dir/dataset` names `dataset/a/b`. Symlinks
+/// are refused: a sealed tree that points outside itself cannot be committed
+/// to. Directory entries themselves are not committed; a tree is its files.
+pub fn commit_tree_v1(
+    root: &Path,
+    prefix: &str,
+) -> std::io::Result<Vec<SealedArtifactCommitmentV1>> {
+    let mut artifacts = Vec::new();
+    let mut pending = vec![(root.to_path_buf(), prefix.to_string())];
+    while let Some((directory, name)) = pending.pop() {
+        let mut entries = Vec::new();
+        for entry in std::fs::read_dir(&directory)? {
+            let entry = entry?;
+            let file_name = entry.file_name();
+            let file_name = file_name.to_str().ok_or_else(|| {
+                std::io::Error::other(format!("non-UTF-8 file name under {}", directory.display()))
+            })?;
+            entries.push((
+                format!("{name}/{file_name}"),
+                entry.path(),
+                entry.file_type()?,
+            ));
+        }
+        for (entry_name, path, file_type) in entries {
+            if file_type.is_symlink() {
+                return Err(std::io::Error::other(format!(
+                    "refusing to commit symlink {entry_name}"
+                )));
+            }
+            if file_type.is_dir() {
+                pending.push((path, entry_name));
+            } else if file_type.is_file() {
+                let (bytes, sha256) = sha256_of_file(&path)?;
+                artifacts.push(SealedArtifactCommitmentV1 {
+                    name: entry_name,
+                    bytes,
+                    sha256,
+                });
+            }
+        }
+    }
+    artifacts.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(artifacts)
+}
+
+/// The first way a tree differed from its commitment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TreeCommitmentMismatchV1 {
+    /// A committed file is gone.
+    Missing { name: String },
+    /// A file exists that the seal did not commit to; for a versioned
+    /// dataset an extra file can change what opens, so it is a defect.
+    Extra { name: String },
+    /// A committed file has a different length.
+    Length {
+        name: String,
+        on_disk: u64,
+        committed: u64,
+    },
+    /// A committed file has different content.
+    Digest { name: String },
+}
+
+impl fmt::Display for TreeCommitmentMismatchV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Missing { name } => write!(formatter, "{name}: missing"),
+            Self::Extra { name } => {
+                write!(
+                    formatter,
+                    "{name}: present although the seal did not commit to it"
+                )
+            }
+            Self::Length {
+                name,
+                on_disk,
+                committed,
+            } => write!(
+                formatter,
+                "{name}: {on_disk} bytes on disk, {committed} committed"
+            ),
+            Self::Digest { name } => {
+                write!(
+                    formatter,
+                    "{name}: content digest differs from the committed digest"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for TreeCommitmentMismatchV1 {}
+
+/// Re-measure `root` and compare it with `committed`, file set included.
+///
+/// `Ok(Ok(bytes))` is the committed tree's total size; `Ok(Err(..))` is the
+/// first mismatch in path order; `Err` is an I/O failure that says nothing
+/// about the commitment. This is the check an activation validator and a
+/// cold open share: it reads and hashes every committed file once, which is
+/// I/O proportional to the tree's bytes with bounded memory, and never
+/// decodes a row.
+pub fn verify_tree_commitment_v1(
+    root: &Path,
+    prefix: &str,
+    committed: &[SealedArtifactCommitmentV1],
+) -> std::io::Result<Result<u64, TreeCommitmentMismatchV1>> {
+    let on_disk = commit_tree_v1(root, prefix)?;
+    let by_name: BTreeMap<&str, &SealedArtifactCommitmentV1> = on_disk
+        .iter()
+        .map(|artifact| (artifact.name.as_str(), artifact))
+        .collect();
+    let mut total = 0_u64;
+    for artifact in committed {
+        let Some(found) = by_name.get(artifact.name.as_str()) else {
+            return Ok(Err(TreeCommitmentMismatchV1::Missing {
+                name: artifact.name.clone(),
+            }));
+        };
+        if found.bytes != artifact.bytes {
+            return Ok(Err(TreeCommitmentMismatchV1::Length {
+                name: artifact.name.clone(),
+                on_disk: found.bytes,
+                committed: artifact.bytes,
+            }));
+        }
+        if found.sha256 != artifact.sha256 {
+            return Ok(Err(TreeCommitmentMismatchV1::Digest {
+                name: artifact.name.clone(),
+            }));
+        }
+        total = total.saturating_add(artifact.bytes);
+    }
+    let committed_names: BTreeSet<&str> = committed
+        .iter()
+        .map(|artifact| artifact.name.as_str())
+        .collect();
+    for artifact in &on_disk {
+        if !committed_names.contains(artifact.name.as_str()) {
+            return Ok(Err(TreeCommitmentMismatchV1::Extra {
+                name: artifact.name.clone(),
+            }));
+        }
+    }
+    Ok(Ok(total))
+}
+
+#[cfg(test)]
+mod tree_commitment_tests {
+    use super::{
+        TreeCommitmentMismatchV1, commit_tree_v1, sha256_of_file, verify_tree_commitment_v1,
+    };
+
+    fn write(root: &std::path::Path, name: &str, bytes: &[u8]) {
+        let path = root.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create parent");
+        }
+        std::fs::write(path, bytes).expect("write file");
+    }
+
+    #[test]
+    fn a_tree_verifies_against_its_own_commitment_and_reports_its_bytes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("dataset");
+        write(&root, "a.lance", b"alpha");
+        write(&root, "sub/b.manifest", b"bravo!");
+        let committed = commit_tree_v1(&root, "dataset").expect("commit");
+        assert_eq!(
+            committed
+                .iter()
+                .map(|artifact| artifact.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["dataset/a.lance", "dataset/sub/b.manifest"]
+        );
+        let verified = verify_tree_commitment_v1(&root, "dataset", &committed).expect("io");
+        assert_eq!(verified, Ok(11));
+    }
+
+    #[test]
+    fn every_way_a_tree_can_drift_is_named_in_path_order() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("dataset");
+        write(&root, "a.lance", b"alpha");
+        write(&root, "sub/b.manifest", b"bravo!");
+        let committed = commit_tree_v1(&root, "dataset").expect("commit");
+
+        std::fs::write(root.join("a.lance"), b"alphA").expect("flip");
+        assert_eq!(
+            verify_tree_commitment_v1(&root, "dataset", &committed).expect("io"),
+            Err(TreeCommitmentMismatchV1::Digest {
+                name: "dataset/a.lance".to_string()
+            })
+        );
+        std::fs::write(root.join("a.lance"), b"alph").expect("truncate");
+        assert_eq!(
+            verify_tree_commitment_v1(&root, "dataset", &committed).expect("io"),
+            Err(TreeCommitmentMismatchV1::Length {
+                name: "dataset/a.lance".to_string(),
+                on_disk: 4,
+                committed: 5
+            })
+        );
+        std::fs::remove_file(root.join("a.lance")).expect("remove");
+        assert_eq!(
+            verify_tree_commitment_v1(&root, "dataset", &committed).expect("io"),
+            Err(TreeCommitmentMismatchV1::Missing {
+                name: "dataset/a.lance".to_string()
+            })
+        );
+        write(&root, "a.lance", b"alpha");
+        write(&root, "sub/999.manifest", b"foreign");
+        assert_eq!(
+            verify_tree_commitment_v1(&root, "dataset", &committed).expect("io"),
+            Err(TreeCommitmentMismatchV1::Extra {
+                name: "dataset/sub/999.manifest".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn a_streamed_digest_matches_a_one_shot_digest() {
+        use sha2::Digest as _;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("big");
+        let content = vec![0xAB_u8; (1 << 16) * 3 + 17];
+        std::fs::write(&path, &content).expect("write");
+        let (length, digest) = sha256_of_file(&path).expect("hash");
+        assert_eq!(length, u64::try_from(content.len()).expect("len"));
+        let expected: [u8; 32] = sha2::Sha256::digest(&content).into();
+        assert_eq!(digest, expected);
     }
 }

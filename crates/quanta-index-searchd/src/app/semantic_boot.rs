@@ -354,7 +354,8 @@ mod tests {
     /// A content defect no longer stops boot seeding (QI-BB-026).
     ///
     /// The inventory lists the generation and the ledger seeds it; the door
-    /// that opens it refuses it with the typed row-count integrity error.
+    /// that opens it refuses the forged scope manifest as a corrupt sidecar
+    /// (QI-BB-017).
     #[test]
     #[expect(
         clippy::panic_in_result_fn,
@@ -402,8 +403,12 @@ mod tests {
             return Err("the corrupted generation must not open".into());
         };
         assert!(
-            matches!(err, quanta_index_core::CoreError::Storage(ref message) if message.contains("row count")),
-            "expected row-count integrity failure, got: {err:?}"
+            matches!(
+                err,
+                quanta_index_core::CoreError::Typed { ref code, ref message }
+                    if code == "GENERATION_SIDECAR_CORRUPT" && message.contains("semantic-manifest.cbor")
+            ),
+            "expected the sealed manifest to refuse the forged scope manifest, got: {err:?}"
         );
         Ok(())
     }

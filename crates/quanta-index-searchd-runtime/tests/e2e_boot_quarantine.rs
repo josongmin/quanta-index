@@ -55,9 +55,11 @@ fn flip_last_byte(path: &Path) -> TestResult {
     Ok(())
 }
 
-/// Rewrite the manifest's `row_count` so the marker still matches the
-/// manifest digest (the inventory is satisfied) but the table does not
-/// match the manifest (every open refuses).
+/// Rewrite the scope manifest's `row_count` in place.
+///
+/// The marker still matches the manifest digest (the inventory is
+/// satisfied) but the scope manifest no longer matches the sealed manifest's
+/// commitment (every open refuses).
 fn tamper_semantic_row_count(manifest_path: &Path) -> TestResult {
     let bytes = std::fs::read(manifest_path)?;
     let mut value: ciborium::value::Value =
@@ -235,10 +237,11 @@ fn damage_to_an_inactive_generation_does_not_stop_the_daemon() -> TestResult {
     }
     let semantic_answer = rt.query_once(|_| pinned_semantic(inactive_pin.clone()))?;
     match typed_code(&semantic_answer) {
-        Some((_, message)) if message.contains("row count") => {}
+        Some((code, message))
+            if code == "GENERATION_SIDECAR_CORRUPT" && message.contains(SEMANTIC_MANIFEST) => {}
         other => {
             return Err(format!(
-                "semantic query pinned to the damaged generation must be refused with the row-count error, got {other:?}"
+                "semantic query pinned to the damaged generation must be refused typed, got {other:?}"
             )
             .into());
         }

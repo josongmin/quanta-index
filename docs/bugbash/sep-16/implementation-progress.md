@@ -289,7 +289,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W0 | **passed** | G0-L/G0-S/G0-C passed, G0-R baseline pinned(cooperative-only). §3 참조. timing 재측정만 `blocked: contended-host` |
 | W1 | planned | |
 | W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) 완료. catalog 본체(session/receipt/SQLite)는 미착수 — G0-C PASS → SQLite(rusqlite bundled)로 진행. `quanta-index-catalog-probe`는 W2 landing 시 삭제 |
-| W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + sealed manifest(§3.10) 완료. 남은 것: sharded sidecar 포맷(O(delta) write), ANN versioned artifact(QI-BB-027), semantic seal manifest 대칭 |
+| W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) 완료. 남은 것: sharded sidecar 포맷(O(delta) write), ANN versioned artifact(QI-BB-027) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), QI-BB-024 regex cache, streaming projection collector |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. 남은 것: cancel을 lexical collector 내부(candidate batch 사이)까지 내리기, overload/refusal 서버 metric |
 | W6 | planned | M4 적용 |
@@ -882,7 +882,39 @@ boot 순서: lexical inventory → legacy semantic migration → semantic invent
 
 **완료 기준 대비**: (1) 손상 비활성 + 정상 active → boot/query 성공 + quarantine receipt ✓ (receipt는 runtime report, 파일/IPC 아님). (2) 손상 active → bind 전 typed ✓. (3) 동기 boot 검증량 ∝ 필수 set — inventory는 generation당 파일 1–2개, deep은 active pair만 ✓. (4) generation당 deep validation boot당 최대 1회 ✓ (lexical 2회→1회, semantic scan+rehydrate 2회→1회).
 
-**남은 것**: quarantine 조회/삭제/재검증 typed control/CLI surface(finding 보완 #4) — contract IPC variant 추가가 필요해 W2 catalog와 함께. QI-BB-017 본체(semantic open의 row root/membership 전체 scan을 seal-time proof + file commitment로 대체)는 다음 항목.
+**남은 것**: quarantine 조회/삭제/재검증 typed control/CLI surface(finding 보완 #4) — contract IPC variant 추가가 필요해 W2 catalog와 함께. QI-BB-017 본체는 §3.14.
+
+## 3.14 QI-BB-017 — semantic sealed manifest: open은 row가 아니라 file을 다시 잰다 (구현 완료)
+
+**진단 확정**: `open_generation`이 매번 main table 전체를 stream해 `semantic_row_commitment_v1`을 재계산하고,
+membership table도 전체 row를 `Vec<String>` DTO로 물화해 root를 재계산했다. seal → activation
+validation → first query(cold open) → registry eviction 뒤 재open마다 같은 generation을 전체 scan.
+boot도 (§3.13 전) 모든 sealed generation을 open했다.
+
+**설계** (§3.10 lexical과 대칭, 공통부는 core로 승격 — mirror 금지):
+
+| 층 | 구현 |
+| --- | --- |
+| core | `SealedArtifactCommitmentV1 { name, bytes, sha256 }`, `sha256_of_file`(64 KiB buffer streaming — lexical의 whole-file read도 이걸로 교체, RSS O(1)), `commit_tree_v1(root, prefix)`(재귀, 정렬, symlink 거부), `verify_tree_commitment_v1` → `Ok(Ok(bytes))` / `Ok(Err(TreeCommitmentMismatchV1::{Missing, Extra, Length, Digest}))` — **file set 전체 비교**: versioned dataset에서는 extra file(예: `_versions/999.manifest`)이 무엇이 열리는지를 바꾸므로 extra도 결함 |
+| semantic seal | `semantic-sealed-manifest.cbor` = `(format_version, manifest_digest, (len,sha) of semantic-manifest.cbor, (len,sha) of semantic-build-contract.cbor, dataset/ 전체 파일 commitment)`. dataset·contract promote → ready marker → scope manifest → **sealed manifest** → sealed marker 순. marker가 있으면 sealed manifest도 있다. row root/membership root는 seal에서 1회만 계산(기존) |
+| semantic open | marker의 digest로 sealed manifest를 **scope manifest를 decode하기 전에** 검증(위조된 manifest는 해석되지 않고 `GENERATION_SIDECAR_CORRUPT`) → manifest decode/scope/digest → table open, schema, `count_rows`(cheap) → membership은 schema + count만. row stream 0회. `resident_bytes_estimate`는 commitment의 합(트리 재순회 없음). legacy format(v2 등)은 sealed manifest가 없으면 종전 경로 유지; **현재 format인데 없으면 `GENERATION_MANIFEST_MISSING`(explicit migration 요구)** |
+| semantic validator | marker digest == candidate 확인 후 `open_generation`이 유일한 증명(이전엔 manifest 재decode + open 이중). activation/restart/delta-base preflight 모두 이 경로 |
+
+**cost model (seal 이후 같은 generation)**: row scan 0회. file hash는 door마다 1회(O(bytes) 순차 read, 메모리 상한 64 KiB) — activation 1회 + cold open 1회(registry가 상주시키는 동안 0회). seal은 row root 1회 + file hash 1회.
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| dataset의 **모든** 파일에 대해 truncate / bit-flip / remove 각각 양 문(`validate_generation_identity`, `open`+search)이 `GENERATION_SIDECAR_CORRUPT`로 거부, 복원 후 재허용; 외부 파일(`_versions/999.manifest`) 주입도 거부 | `semantic/tests/sealed_manifest.rs::both_doors_refuse_a_dataset_file_that_does_not_match_the_manifest` |
+| scope manifest / build contract 위조·삭제 거부, sealed manifest 부재는 `GENERATION_MANIFEST_MISSING` | `…::both_doors_refuse_forged_or_missing_sidecars` |
+| 다른 generation의 sealed manifest는 `GENERATION_IDENTITY_DIGEST_MISMATCH` | `…::the_sealed_manifest_binds_the_identity_digest` |
+| open이 commitment가 알아챌 어떤 것도 쓰지 않음(3회 연속 admit, search 포함) — Lance가 open에서 hint 파일 등을 rewrite하지 않는다는 실증 | `…::a_sealed_generation_is_admitted_repeatedly` |
+| seal 후 같은 row 수의 content mutation(Lance update → 새 version 파일)은 row root 재계산 없이 file commitment가 거부 | `build::tests::sealed_manifest_rejects_same_row_count_content_mutation`(구 `semantic_row_root_rejects_…`, 기대 code 변경) |
+| 기존 manifest 위조 test 9개(model_id/version/normalization/scope/distance/row_count/contract 삭제/깨진 CBOR)는 모두 **더 이른** typed 거부로 수렴 | `persisted_semantic.rs` — `expect_sidecar_corrupt(err, file)` helper로 통일 |
+| core helper: 자기 commitment 검증 + bytes 합, drift 4종을 path 순으로 명명, streaming digest == one-shot digest | `core::domains::generation::tree_commitment_tests` 3 |
+
+**정직한 한계**: (a) seal-time membership commitment는 여전히 row DTO를 정렬용으로 물화한다(finding 보완 #5 streaming accumulator 미적용) — seal은 ingest가 이미 batch를 메모리에 쥔 시점이라 open과 달리 RSS 상한을 새로 넘기지 않는다. (b) legacy format(v2, uncommitted-root)은 sealed manifest 없이 열리는 기존 compat 경로가 그대로다 — 이번 finding 범위 밖, 정리 대상. (c) 현재 format으로 이미 seal된 production generation은 sealed manifest가 없어 `GENERATION_MANIFEST_MISSING` — reseal 필요(§3.10 lexical과 같은 breaking-first 결정; production state root는 건드리지 않음).
 
 ## 4. Finding 상태 (QI-BB-001–032)
 

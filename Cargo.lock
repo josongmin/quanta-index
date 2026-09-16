@@ -4217,6 +4217,7 @@ version = "0.1.0"
 dependencies = [
  "quanta-index-contract",
  "sha2",
+ "tempfile",
  "thiserror 1.0.69",
 ]
 

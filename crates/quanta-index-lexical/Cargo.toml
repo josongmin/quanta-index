@@ -21,8 +21,8 @@ quanta-index-lq-regex = { version = "0.1.0", path = "../quanta-index-lq-regex" }
 quanta-index-lq-trigram = { version = "0.1.0", path = "../quanta-index-lq-trigram" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
 tantivy = { workspace = true }
 
 [dev-dependencies]
+sha2 = { workspace = true }
 tempfile = { workspace = true }

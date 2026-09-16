@@ -58,8 +58,8 @@ use quanta_index_contract::{
 };
 use quanta_index_core::domains::generation::{
     GenerationQuarantineReasonV1, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
-    IncompleteGenerationDiscardPort, QuarantinedGenerationV1, SealedGenerationInventoryV1,
-    SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
+    IncompleteGenerationDiscardPort, QuarantinedGenerationV1, SealedArtifactCommitmentV1,
+    SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
 };
 use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
@@ -2426,14 +2426,6 @@ fn lexical_sealed_manifest_path(generation_dir: &Path) -> PathBuf {
     generation_dir.join(LEXICAL_SEALED_MANIFEST_FILE_NAME)
 }
 
-/// One query-required file the manifest commits to.
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct SealedArtifactCommitmentV1 {
-    name: String,
-    bytes: u64,
-    sha256: [u8; 32],
-}
-
 /// What a sealed lexical generation promises a query can open.
 ///
 /// Written after every sidecar is durable and before the sealed identity, so
@@ -2493,18 +2485,14 @@ impl LexicalSealedManifestV1 {
     }
 }
 
+/// Length and SHA-256 of one committed file, streamed with bounded memory.
 fn sha256_of_file(path: &Path, label: &str) -> Result<(u64, [u8; 32]), CoreError> {
-    use sha2::Digest as _;
-    let bytes = std::fs::read(path).map_err(|error| {
+    quanta_index_core::sha256_of_file(path).map_err(|error| {
         CoreError::Storage(format!(
             "lexical: read {label} {} for commitment: {error}",
             path.display()
         ))
-    })?;
-    let length = u64::try_from(bytes.len()).map_err(|error| {
-        CoreError::Storage(format!("lexical: {label} length overflow: {error}"))
-    })?;
-    Ok((length, sha2::Sha256::digest(&bytes).into()))
+    })
 }
 
 /// The text-authority files a sealed generation commits to, in manifest

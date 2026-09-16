@@ -71,6 +71,28 @@ fn embedding_record_same_owner(
     Ok(record)
 }
 
+/// The sealed manifest's file commitment refuses a forged or missing sidecar
+/// before the manifest is interpreted (QI-BB-017), so every forgery below is
+/// answered by the same typed code naming the file.
+fn expect_sidecar_corrupt(err: CoreError, expected_file: &str) -> TestResult {
+    match err {
+        CoreError::Typed { code, message } if code == "GENERATION_SIDECAR_CORRUPT" => {
+            if !message.contains(expected_file) {
+                return Err(format!("sidecar refusal must name {expected_file}: {message}").into());
+            }
+            Ok(())
+        }
+        other @ (CoreError::Typed { .. }
+        | CoreError::Storage(_)
+        | CoreError::InvalidContract(_)
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)) => {
+            Err(format!("expected GENERATION_SIDECAR_CORRUPT, got {other:?}").into())
+        }
+    }
+}
+
 fn generation_dir(root: &Path, generation: ManifestGeneration) -> PathBuf {
     GenerationStorageKeyV1::for_repo_revision(&repo_id(), &revision_id())
         .generation_dir(root, generation)
@@ -735,10 +757,6 @@ fn query_dimension_mismatch_fails_closed() -> TestResult {
 }
 
 #[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test asserts corrupted manifest fails closed via assert macros"
-)]
 fn corrupt_manifest_open_fails_closed() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().to_path_buf();
@@ -763,8 +781,7 @@ fn corrupt_manifest_open_fails_closed() -> TestResult {
     let Err(err) = reopened.open(&repo_id(), &revision_id(), generation) else {
         return Err("corrupt manifest must fail closed".into());
     };
-    assert!(matches!(err, CoreError::Storage(_)));
-    Ok(())
+    expect_sidecar_corrupt(err, "semantic-manifest.cbor")
 }
 
 #[test]
@@ -911,22 +928,7 @@ fn inventory_lists_a_content_corrupted_generation_and_the_deep_witness_refuses_i
     let Err(err) = validate_persisted_generation_v2(&semantic_root, record) else {
         return Err("the deep witness must refuse the corrupted generation".into());
     };
-    match err {
-        CoreError::Storage(message) => {
-            assert!(
-                message.contains("row count"),
-                "expected row-count integrity error, got: {message}"
-            );
-        }
-        other @ (CoreError::InvalidContract(_)
-        | CoreError::Typed { .. }
-        | CoreError::NotReady(_)
-        | CoreError::NotImplemented(_)
-        | CoreError::NotFound(_)) => {
-            return Err(format!("expected Storage, got {other:?}").into());
-        }
-    }
-    Ok(())
+    expect_sidecar_corrupt(err, "semantic-manifest.cbor")
 }
 
 #[test]
@@ -974,10 +976,6 @@ fn search_scoped_restricts_to_allowlist() -> TestResult {
 }
 
 #[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test asserts the lancedb row-count cross-check fails closed via assert macros"
-)]
 fn manifest_row_count_mismatch_fails_closed() -> TestResult {
     // Build a sealed generation, then re-encode the manifest with a wrong
     // `row_count` so it stays **valid CBOR + valid scope** but disagrees with
@@ -1025,22 +1023,7 @@ fn manifest_row_count_mismatch_fails_closed() -> TestResult {
     let Err(err) = reopened.open(&repo_id(), &revision_id(), generation) else {
         return Err("manifest row_count mismatch must fail closed".into());
     };
-    match err {
-        CoreError::Storage(message) => {
-            assert!(
-                message.contains("row count") && message.contains("manifest row count"),
-                "expected row-count cross-check failure, got: {message}"
-            );
-        }
-        other @ (CoreError::InvalidContract(_)
-        | CoreError::Typed { .. }
-        | CoreError::NotReady(_)
-        | CoreError::NotImplemented(_)
-        | CoreError::NotFound(_)) => {
-            return Err(format!("expected storage row-count error, got {other:?}").into());
-        }
-    }
-    Ok(())
+    expect_sidecar_corrupt(err, "semantic-manifest.cbor")
 }
 
 #[test]
@@ -1812,10 +1795,6 @@ fn forge_manifest_u64_field(
 }
 
 #[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test asserts manifest-scope mismatch fails closed via assert macros"
-)]
 fn open_with_forged_manifest_scope_fails_closed() -> TestResult {
     // R4 MAJOR coverage: explicit negative for `SemanticManifest::validate_scope`'s
     // repo-mismatch branch. A built-and-sealed generation has its manifest
@@ -1845,22 +1824,7 @@ fn open_with_forged_manifest_scope_fails_closed() -> TestResult {
     let Err(err) = reopened.open(&repo_id(), &revision_id(), generation) else {
         return Err("manifest scope mismatch must fail closed".into());
     };
-    match err {
-        CoreError::Storage(message) => {
-            assert!(
-                message.contains("manifest repo") && message.contains("does not match requested"),
-                "expected repo scope-mismatch storage error, got: {message}"
-            );
-        }
-        other @ (CoreError::InvalidContract(_)
-        | CoreError::Typed { .. }
-        | CoreError::NotReady(_)
-        | CoreError::NotImplemented(_)
-        | CoreError::NotFound(_)) => {
-            return Err(format!("expected Storage scope-mismatch, got {other:?}").into());
-        }
-    }
-    Ok(())
+    expect_sidecar_corrupt(err, "semantic-manifest.cbor")
 }
 
 #[test]
@@ -1921,10 +1885,6 @@ fn cross_batch_dimension_mismatch_on_unsealed_generation_fails_closed() -> TestR
 }
 
 #[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test asserts manifest distance-metric guard fails closed via assert macros"
-)]
 fn open_with_forged_non_cosine_distance_metric_fails_closed() -> TestResult {
     // R4 MAJOR coverage: explicit negative for `SemanticManifest::validate_scope`'s
     // distance-metric guard. `build_batch` rejects non-cosine contracts up front
@@ -1955,29 +1915,10 @@ fn open_with_forged_non_cosine_distance_metric_fails_closed() -> TestResult {
     let Err(err) = reopened.open(&repo_id(), &revision_id(), generation) else {
         return Err("forged non-cosine distance_metric must fail closed".into());
     };
-    match err {
-        CoreError::Storage(message) => {
-            assert!(
-                message.contains("distance_metric") && message.contains("euclidean"),
-                "expected distance-metric storage error, got: {message}"
-            );
-        }
-        other @ (CoreError::InvalidContract(_)
-        | CoreError::Typed { .. }
-        | CoreError::NotReady(_)
-        | CoreError::NotImplemented(_)
-        | CoreError::NotFound(_)) => {
-            return Err(format!("expected Storage distance-metric error, got {other:?}").into());
-        }
-    }
-    Ok(())
+    expect_sidecar_corrupt(err, "semantic-manifest.cbor")
 }
 
 #[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test asserts current-format sealed generations require the sidecar contract via assert macros"
-)]
 fn open_with_missing_generation_contract_on_v3_manifest_fails_closed() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().to_path_buf();
@@ -2001,23 +1942,7 @@ fn open_with_missing_generation_contract_on_v3_manifest_fails_closed() -> TestRe
     let Err(err) = reopened.open(&repo_id(), &revision_id(), generation) else {
         return Err("v3 manifest without generation contract must fail closed".into());
     };
-    match err {
-        CoreError::Storage(message) => {
-            assert!(
-                message.contains("requires generation contract")
-                    && message.contains("semantic-build-contract.cbor"),
-                "expected missing-sidecar storage error, got: {message}"
-            );
-        }
-        other @ (CoreError::InvalidContract(_)
-        | CoreError::Typed { .. }
-        | CoreError::NotReady(_)
-        | CoreError::NotImplemented(_)
-        | CoreError::NotFound(_)) => {
-            return Err(format!("expected Storage missing-sidecar error, got {other:?}").into());
-        }
-    }
-    Ok(())
+    expect_sidecar_corrupt(err, "semantic-build-contract.cbor")
 }
 
 #[test]
@@ -2048,6 +1973,8 @@ fn legacy_v2_manifest_without_generation_contract_opens_for_compatibility() -> T
         2,
     )?;
     std::fs::remove_file(generation_dir.join("semantic-build-contract.cbor"))?;
+    // A generation sealed at format 2 predates the sealed manifest.
+    std::fs::remove_file(generation_dir.join("semantic-sealed-manifest.cbor"))?;
 
     let reopened = SemanticAdapter::with_state_root(root)?;
     let searcher = reopened.open(&repo_id(), &revision_id(), generation)?;
@@ -2109,10 +2036,6 @@ fn scan_reports_legacy_v2_generation_without_generation_contract() -> TestResult
 }
 
 #[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test asserts manifest model-id drift fails closed via assert macros"
-)]
 fn open_with_forged_model_id_fails_closed() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().to_path_buf();
@@ -2136,29 +2059,10 @@ fn open_with_forged_model_id_fails_closed() -> TestResult {
     let Err(err) = reopened.open(&repo_id(), &revision_id(), generation) else {
         return Err("forged model_id must fail closed".into());
     };
-    match err {
-        CoreError::Storage(message) => {
-            assert!(
-                message.contains("model_id") && message.contains("DIFFERENT-MODEL"),
-                "expected model_id contract error, got: {message}"
-            );
-        }
-        other @ (CoreError::InvalidContract(_)
-        | CoreError::Typed { .. }
-        | CoreError::NotReady(_)
-        | CoreError::NotImplemented(_)
-        | CoreError::NotFound(_)) => {
-            return Err(format!("expected Storage model_id error, got {other:?}").into());
-        }
-    }
-    Ok(())
+    expect_sidecar_corrupt(err, "semantic-manifest.cbor")
 }
 
 #[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test asserts manifest model-version drift fails closed via assert macros"
-)]
 fn open_with_forged_model_version_fails_closed() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().to_path_buf();
@@ -2182,29 +2086,10 @@ fn open_with_forged_model_version_fails_closed() -> TestResult {
     let Err(err) = reopened.open(&repo_id(), &revision_id(), generation) else {
         return Err("forged model_version must fail closed".into());
     };
-    match err {
-        CoreError::Storage(message) => {
-            assert!(
-                message.contains("model_version") && message.contains('2'),
-                "expected model_version contract error, got: {message}"
-            );
-        }
-        other @ (CoreError::InvalidContract(_)
-        | CoreError::Typed { .. }
-        | CoreError::NotReady(_)
-        | CoreError::NotImplemented(_)
-        | CoreError::NotFound(_)) => {
-            return Err(format!("expected Storage model_version error, got {other:?}").into());
-        }
-    }
-    Ok(())
+    expect_sidecar_corrupt(err, "semantic-manifest.cbor")
 }
 
 #[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test asserts manifest normalization drift fails closed via assert macros"
-)]
 fn open_with_forged_normalization_fails_closed() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().to_path_buf();
@@ -2228,20 +2113,5 @@ fn open_with_forged_normalization_fails_closed() -> TestResult {
     let Err(err) = reopened.open(&repo_id(), &revision_id(), generation) else {
         return Err("forged normalization must fail closed".into());
     };
-    match err {
-        CoreError::Storage(message) => {
-            assert!(
-                message.contains("normalization") && message.contains("none"),
-                "expected normalization contract error, got: {message}"
-            );
-        }
-        other @ (CoreError::InvalidContract(_)
-        | CoreError::Typed { .. }
-        | CoreError::NotReady(_)
-        | CoreError::NotImplemented(_)
-        | CoreError::NotFound(_)) => {
-            return Err(format!("expected Storage normalization error, got {other:?}").into());
-        }
-    }
-    Ok(())
+    expect_sidecar_corrupt(err, "semantic-manifest.cbor")
 }
