@@ -32,6 +32,25 @@ fn require_no_typed_error(error: Option<E2eTypedError>, context: &str) -> AnyRes
     Ok(())
 }
 
+/// The snapshot registry's closed metric family (QI-BB-001).
+///
+/// Every route emits one of these when it acquires a generation handle,
+/// between intake and the route's own pipeline metrics; the suffix
+/// assertions below are about the pipeline, so this family is allowed
+/// everywhere and skipped when the suffix is taken.
+const SNAPSHOT_METRIC_FAMILY: [&str; 6] = [
+    "lq_snapshot_lexical_hit_total",
+    "lq_snapshot_lexical_coalesced_total",
+    "lq_snapshot_lexical_cold_open_ms",
+    "lq_snapshot_semantic_hit_total",
+    "lq_snapshot_semantic_coalesced_total",
+    "lq_snapshot_semantic_cold_open_ms",
+];
+
+fn is_snapshot_metric(name: &str) -> bool {
+    SNAPSHOT_METRIC_FAMILY.contains(&name)
+}
+
 fn assert_closed_metric_suffix(
     rt: &E2eRuntime,
     expected_suffix: &[&str],
@@ -45,15 +64,23 @@ fn assert_closed_metric_suffix(
         ));
     }
     let samples = rt.query_metrics_snapshot()?;
-    let names = samples
+    let all_names = samples
         .iter()
         .map(|sample| sample.name.as_ref().to_string())
         .collect::<Vec<_>>();
-    if names.iter().any(|name| !allowed.contains(&name.as_str())) {
+    if all_names
+        .iter()
+        .any(|name| !allowed.contains(&name.as_str()) && !is_snapshot_metric(name))
+    {
         return Err(anyhow::anyhow!(
-            "runtime metric names escaped closed set: {names:?}"
+            "runtime metric names escaped closed set: {all_names:?}"
         ));
     }
+    let names = all_names
+        .iter()
+        .filter(|name| !is_snapshot_metric(name))
+        .cloned()
+        .collect::<Vec<_>>();
     let suffix = names
         .get(names.len().saturating_sub(expected_suffix.len())..)
         .unwrap_or_default()
@@ -741,7 +768,7 @@ fn hybrid_runtime_metrics_use_closed_labels_without_query_leakage() -> AnyResult
         ));
     }
     let samples = rt.query_metrics_snapshot()?;
-    let names = samples
+    let all_names = samples
         .iter()
         .map(|sample| sample.name.as_ref().to_string())
         .collect::<Vec<_>>();
@@ -760,11 +787,19 @@ fn hybrid_runtime_metrics_use_closed_labels_without_query_leakage() -> AnyResult
         "lq_merge_result_count",
         "lq_early_stop_total",
     ];
-    if names.iter().any(|name| !allowed.contains(&name.as_str())) {
+    if all_names
+        .iter()
+        .any(|name| !allowed.contains(&name.as_str()) && !is_snapshot_metric(name))
+    {
         return Err(anyhow::anyhow!(
-            "runtime metric names escaped closed set: {names:?}"
+            "runtime metric names escaped closed set: {all_names:?}"
         ));
     }
+    let names = all_names
+        .iter()
+        .filter(|name| !is_snapshot_metric(name))
+        .cloned()
+        .collect::<Vec<_>>();
     let success_suffix = names
         .get(names.len().saturating_sub(expected_success_suffix.len())..)
         .unwrap_or_default()
