@@ -7,7 +7,8 @@
 use std::collections::BTreeMap;
 
 use quanta_index_lq_trigram::{
-    DocId, DocResolver, TrigramIndex, TrigramIndexBuilder, query_raw_substring, regex_prefilter,
+    DocId, DocResolver, TrigramIndex, TrigramIndexBuilder, query_raw_substring,
+    regex_prefilter_any_of,
 };
 
 struct Map(BTreeMap<DocId, Vec<u8>>);
@@ -89,19 +90,21 @@ fn golden_substring_no_match() {
 }
 
 #[test]
-fn golden_regex_prefilter_fn_and_handle() {
+fn golden_regex_prefilter_alternation_fn_or_handle() {
     let (idx, _m) = corpus();
     let lits: &[Vec<u8>] = &[b"fn ".to_vec(), b"handle_".to_vec()];
-    let v = match regex_prefilter(&idx, lits) {
+    let v = match regex_prefilter_any_of(&idx, lits) {
         Ok(v) => v,
         Err(e) => fatal(&format!("{e}")),
     };
-    // The intersect produces docs that contain ALL trigrams from BOTH
-    // literals; docs 1 and 2 satisfy this. Doc 4 has "fn " but lacks
-    // "handle_" trigrams contiguously. Note: this is a trigram-level
-    // intersect, not a substring confirmation — verify is the caller's
-    // job for the regex path.
-    assert_eq!(v, vec![DocId(1), DocId(2)]);
+    // A literal extractor's output is an alternation: `/(fn |handle_)/` needs
+    // one of them. Docs 1 and 2 hold both; doc 4 (`impl Handler { fn new() ...`)
+    // holds only "fn " and must still be a candidate. The previous expectation
+    // here was [1, 2] because the prefilter intersected across literals, which
+    // is precisely the false negative this corpus now pins against. This is a
+    // trigram-level candidate set, not a substring confirmation — verify stays
+    // the caller's job on the regex path.
+    assert_eq!(v, vec![DocId(1), DocId(2), DocId(4)]);
 }
 
 #[test]

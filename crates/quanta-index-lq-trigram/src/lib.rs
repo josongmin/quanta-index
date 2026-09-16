@@ -10,7 +10,7 @@
 //! 1. raw-string substring leaves (`'…'` per the LQ DSL §3.3) via
 //!    [`query::query_raw_substring`].
 //! 2. regex prefilter over mandatory literals (extracted by a sibling
-//!    ticket, e.g. LEX-04) via [`regex_prefilter::regex_prefilter`].
+//!    ticket, e.g. LEX-04) via [`regex_prefilter::regex_prefilter_any_of`].
 //!
 //! ## Why **byte** trigrams (not code-point trigrams)
 //!
@@ -69,7 +69,7 @@ pub use builder::TrigramIndexBuilder;
 pub use errors::{LimitDimension, TrigramError, TrigramErrorCode};
 pub use index::TrigramIndex;
 pub use query::{DocResolver, query_raw_substring};
-pub use regex_prefilter::regex_prefilter;
+pub use regex_prefilter::regex_prefilter_any_of;
 pub use types::{
     DocId, MAX_CANDIDATE_PRE_VERIFY, MAX_TRIGRAMS_PER_QUERY, TRIGRAM_LEN, Trigram, trigrams_of,
 };

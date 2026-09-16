@@ -171,7 +171,7 @@ pub struct RegexTrace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegexPlan {
     source: String,
-    required_literals: Vec<Vec<u8>>,
+    literal_alternation: Vec<Vec<u8>>,
     candidate_cap: u32,
     trace: RegexTraceBuilder,
 }
@@ -183,10 +183,13 @@ impl RegexPlan {
         &self.source
     }
 
-    /// Borrow the planner-extracted mandatory byte literals.
+    /// Borrow the planner-extracted byte-literal alternation.
+    ///
+    /// A match must contain **one** of these, not all of them; see
+    /// `quanta_index_lq_regex::extract_prefilter_literal_alternation`.
     #[must_use]
-    pub fn required_literals(&self) -> &[Vec<u8>] {
-        &self.required_literals
+    pub fn literal_alternation(&self) -> &[Vec<u8>] {
+        &self.literal_alternation
     }
 
     /// Per-leaf candidate cap chosen by [`plan_regex`].
@@ -216,7 +219,7 @@ impl RegexPlan {
 ///    runs the dialect filter, parses to HIR, and applies the upstream
 ///    NFA-state budget;
 /// 2. extract mandatory byte literals via
-///    `RegexExecutor::required_literals`;
+///    `RegexExecutor::prefilter_literal_alternation`;
 /// 3. enforce [`RegexPolicy::require_literal`] when set.
 ///
 /// Errors are typed against [`RegexPlannerError`]; no silent fallback.
@@ -229,7 +232,7 @@ pub fn plan_regex(
         Ok(e) => e,
         Err(err) => return Err(map_compile_error(source, &err, policy)),
     };
-    let literals = match executor.required_literals() {
+    let literals = match executor.prefilter_literal_alternation() {
         Ok(v) => v,
         Err(err) => return Err(map_literal_error(source, &err, policy)),
     };
@@ -240,7 +243,7 @@ pub fn plan_regex(
     }
     Ok(RegexPlan {
         source: source.to_owned(),
-        required_literals: literals,
+        literal_alternation: literals,
         candidate_cap: policy.default_candidate_cap,
         trace: RegexTraceBuilder::new(),
     })

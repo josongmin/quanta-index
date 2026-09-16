@@ -16,7 +16,7 @@
 //!    [`RegexErrorCode::PlanLimitExceeded`] tagged
 //!    [`LimitDimension::NfaStates`];
 //! 4. extract mandatory byte literals with
-//!    [`literal_extract::extract_required_literals`] for the trigram
+//!    [`literal_extract::extract_prefilter_literal_alternation`] for the trigram
 //!    prefilter; pure-wildcard patterns surface
 //!    [`RegexErrorCode::RegexPrefilterUnusable`] so the caller can route
 //!    to a verify-only path explicitly (no silent fallback);
@@ -45,5 +45,5 @@ pub use dialect_ast_walk::ast_walk_filter;
 pub use errors::{ForbiddenKind, LimitDimension, RegexError, RegexErrorCode};
 pub use estimator::{MAX_NFA_STATES, estimate_nfa_states};
 pub use executor::RegexExecutor;
-pub use literal_extract::extract_required_literals;
+pub use literal_extract::extract_prefilter_literal_alternation;
 pub use quanta_index_lq_trigram::{DocId, DocResolver};

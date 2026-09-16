@@ -36,7 +36,7 @@ use crate::dialect::{classify_ast_error, classify_construct_from_slice, dialect_
 use crate::dialect_ast_walk::ast_walk_filter;
 use crate::errors::{RegexError, RegexErrorCode};
 use crate::estimator::estimate_nfa_states;
-use crate::literal_extract::extract_required_literals;
+use crate::literal_extract::extract_prefilter_literal_alternation;
 
 /// Compiled regex paired with its HIR so callers can re-run
 /// literal extraction without re-parsing.
@@ -96,9 +96,11 @@ impl RegexExecutor {
 
     /// Run the trigram-prefilter literal extractor on the compiled HIR.
     ///
-    /// See [`extract_required_literals`].
-    pub fn required_literals(&self) -> Result<Vec<Vec<u8>>, RegexError> {
-        extract_required_literals(&self.hir)
+    /// The result is an alternation: a match must contain one of the returned
+    /// literals, not all of them. See
+    /// [`extract_prefilter_literal_alternation`].
+    pub fn prefilter_literal_alternation(&self) -> Result<Vec<Vec<u8>>, RegexError> {
+        extract_prefilter_literal_alternation(&self.hir)
     }
 
     /// Verify a single document's bytes against the compiled regex.
@@ -432,7 +434,7 @@ mod tests {
     }
 
     #[test]
-    fn required_literals_typed_for_pure_wildcard() {
+    fn prefilter_literal_alternation_typed_for_pure_wildcard() {
         let exec = match RegexExecutor::compile(".*") {
             Ok(x) => x,
             Err(e) => {
@@ -440,7 +442,7 @@ mod tests {
                 return;
             }
         };
-        match exec.required_literals() {
+        match exec.prefilter_literal_alternation() {
             Ok(v) => assert!(false, "expected REGEX_PREFILTER_UNUSABLE, got {v:?}"),
             Err(e) => assert_eq!(e.code, RegexErrorCode::RegexPrefilterUnusable),
         }

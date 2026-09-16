@@ -148,6 +148,12 @@ owner = "quanta-index-lexical"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "lexical-regex-literal-alternation"
+path = "crates/quanta-index-lexical/tests/regex_literal_alternation.rs"
+owner = "quanta-index-lexical"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "lq-bridge-directive-packet"
 path = "crates/quanta-index-lq-bridge/tests/bridge_directive_packet.rs"
 owner = "quanta-index-lq-bridge"

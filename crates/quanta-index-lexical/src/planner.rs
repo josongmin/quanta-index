@@ -531,7 +531,7 @@ mod tests {
             let matched_leaf = matches!(
                 &plan.root,
                 PlanNode::Leaf { leaf: PlanLeaf::Regex { source, plan: regex_plan }, .. }
-                    if source == "foo.bar" && !regex_plan.required_literals().is_empty()
+                    if source == "foo.bar" && !regex_plan.literal_alternation().is_empty()
             );
             assert!(
                 matched_leaf,

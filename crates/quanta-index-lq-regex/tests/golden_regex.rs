@@ -96,12 +96,12 @@ fn golden_struct_or_impl_alternation() {
 }
 
 #[test]
-fn golden_required_literals_for_handler() {
+fn golden_prefilter_literal_alternation_for_handler() {
     let exec = match RegexExecutor::compile(r"fn\s+handle_\w+") {
         Ok(x) => x,
         Err(e) => fatal(&format!("{e}")),
     };
-    let lits = match exec.required_literals() {
+    let lits = match exec.prefilter_literal_alternation() {
         Ok(v) => v,
         Err(e) => fatal(&format!("{e}")),
     };
@@ -116,7 +116,7 @@ fn golden_pure_wildcard_typed_unusable() {
         Ok(x) => x,
         Err(e) => fatal(&format!("{e}")),
     };
-    match exec.required_literals() {
+    match exec.prefilter_literal_alternation() {
         Ok(v) => fatal(&format!("expected REGEX_PREFILTER_UNUSABLE, got {v:?}")),
         Err(e) => assert_eq!(e.code, RegexErrorCode::RegexPrefilterUnusable),
     }

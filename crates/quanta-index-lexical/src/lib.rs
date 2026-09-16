@@ -89,7 +89,7 @@ use quanta_index_lq_positions::{
 use quanta_index_lq_regex::RegexExecutor;
 use quanta_index_lq_trigram::{
     DocId as TrigramDocId, DocResolver, TrigramError, TrigramErrorCode, TrigramIndex,
-    TrigramIndexBuilder, query_raw_substring, regex_prefilter,
+    TrigramIndexBuilder, query_raw_substring, regex_prefilter_any_of,
 };
 
 use crate::phrase::{PhraseField, PhrasePolicy, plan_phrase, tokenize_phrase_terms};
@@ -5524,15 +5524,20 @@ impl TantivySearcher {
         } else {
             &authority.trigram
         };
-        let required_literals = if folded {
-            plan.required_literals()
+        // The planner hands back an alternation, not a conjunction: a match
+        // needs one of these literals. Case-insensitive patterns make that
+        // concrete — `(?i)fresh` extracts `fresh` and `freſh` — so the prefilter
+        // unions per alternative. AND-ing them filtered every document away.
+        let literal_alternation = if folded {
+            plan.literal_alternation()
                 .iter()
                 .map(|literal| literal.to_ascii_lowercase())
                 .collect::<Vec<_>>()
         } else {
-            plan.required_literals().to_vec()
+            plan.literal_alternation().to_vec()
         };
-        let prefiltered_doc_ids = match regex_prefilter(trigram_index, &required_literals) {
+        let prefiltered_doc_ids = match regex_prefilter_any_of(trigram_index, &literal_alternation)
+        {
             Ok(doc_ids) => doc_ids,
             Err(err) if err.code == TrigramErrorCode::RegexPrefilterUnusable => authority
                 .docs_by_id
