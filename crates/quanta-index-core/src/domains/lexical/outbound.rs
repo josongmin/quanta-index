@@ -144,6 +144,21 @@ pub trait FileContributorIngestPort: Send + Sync {
     ) -> Result<BatchPublishReceipt, CoreError>;
 }
 
+/// One page of lexical results plus what the adapter proved about the whole
+/// match set.
+///
+/// Rows are always bounded by the caller's `top_k`; a `count` option does not
+/// widen the page (QI-BB-005). What it does is make `exact_total` available:
+/// the number of rows the query matches in this generation after constraints
+/// and after any projection collapse that defines the row universe. Without a
+/// `count` option the adapter fetches only the page plus its continuation
+/// probe and reports `None`, and the caller derives an at-least window.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LexicalSearchPageV1 {
+    pub candidates: Vec<LexicalCandidate>,
+    pub exact_total: Option<u64>,
+}
+
 /// Searcher handle returned by [`LexicalIndexOpenPort::open`].
 ///
 /// One per opened sealed generation. The adapter performs a cold open and
@@ -159,7 +174,12 @@ pub trait LexicalSearcher: Send + Sync {
     /// corpus-sized handle as "one entry".
     fn resident_bytes_estimate(&self) -> u64;
 
-    fn search(&self, query: &LqQuery, top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError>;
+    /// Unconstrained page of results; the constrained form is the one
+    /// execution path.
+    fn search(&self, query: &LqQuery, top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError> {
+        self.search_constrained(query, &QueryConstraintSetV1::unconstrained(), top_k)
+            .map(|page| page.candidates)
+    }
 
     /// Search with candidate-generation constraints applied before ranking and
     /// `top_k`. Adapters that do not own native constraint pushdown must fail
@@ -169,15 +189,7 @@ pub trait LexicalSearcher: Send + Sync {
         query: &LqQuery,
         constraints: &QueryConstraintSetV1,
         top_k: u32,
-    ) -> Result<Vec<LexicalCandidate>, CoreError> {
-        if constraints.is_unconstrained() {
-            self.search(query, top_k)
-        } else {
-            Err(CoreError::NotImplemented(
-                "lexical searcher does not provide native query-constraint pushdown".to_string(),
-            ))
-        }
-    }
+    ) -> Result<LexicalSearchPageV1, CoreError>;
 
     /// Project owner rows for the supplied lexical candidates.
     ///

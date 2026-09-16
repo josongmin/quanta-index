@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
+use quanta_index_core::LexicalExecutionBudgetV1;
 use quanta_index_embed::{
     DEFAULT_CONCURRENCY, DEFAULT_MAX_BATCH, DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST,
     DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT, OpenAiProviderConfig,
@@ -143,6 +144,9 @@ pub struct SearchdConfig {
     /// operator tuning with a documented default; both env knobs must be
     /// given together and neither may be zero.
     snapshot_registry_policy: SnapshotRegistryPolicy,
+    /// Most candidates one lexical execution may materialize (QI-BB-005).
+    /// Optional operator tuning with a documented default; zero is refused.
+    lexical_execution_budget: LexicalExecutionBudgetV1,
 }
 
 impl SearchdConfig {
@@ -157,6 +161,7 @@ impl SearchdConfig {
             semantic_embedder_profile: SemanticEmbedderProfile::default(),
             search_corpus_history_retention_policy: None,
             snapshot_registry_policy: SnapshotRegistryPolicy::DEFAULT,
+            lexical_execution_budget: LexicalExecutionBudgetV1::DEFAULT,
         }
     }
 
@@ -165,7 +170,8 @@ impl SearchdConfig {
         let base = Self::from_state_root(Self::resolve_state_root_from_env()?)
             .with_search_corpus_history_retention_policy_v1(retention)
             .with_semantic_embedder_profile(semantic_embedder_profile_from_env()?)
-            .with_snapshot_registry_policy(snapshot_registry_policy_from_env()?);
+            .with_snapshot_registry_policy(snapshot_registry_policy_from_env()?)
+            .with_lexical_execution_budget(lexical_execution_budget_from_env()?);
         let _validated = base.search_corpus_history_retention_policy()?;
         Ok(base)
     }
@@ -221,6 +227,17 @@ impl SearchdConfig {
     #[must_use]
     pub const fn with_snapshot_registry_policy(mut self, policy: SnapshotRegistryPolicy) -> Self {
         self.snapshot_registry_policy = policy;
+        self
+    }
+
+    #[must_use]
+    pub const fn lexical_execution_budget(&self) -> LexicalExecutionBudgetV1 {
+        self.lexical_execution_budget
+    }
+
+    #[must_use]
+    pub const fn with_lexical_execution_budget(mut self, budget: LexicalExecutionBudgetV1) -> Self {
+        self.lexical_execution_budget = budget;
         self
     }
 
@@ -376,6 +393,26 @@ where
         .map_err(anyhow::Error::from),
         (Some(_), None) => Err(anyhow::anyhow!("{ENTRIES} is set but {BYTES} is not")),
         (None, Some(_)) => Err(anyhow::anyhow!("{BYTES} is set but {ENTRIES} is not")),
+    }
+}
+
+/// Resolve the lexical examined-candidate budget from env.
+///
+/// `QUANTA_INDEX_LEXICAL_MAX_EXAMINED_CANDIDATES` unset selects
+/// [`LexicalExecutionBudgetV1::DEFAULT`]; set, it must be a positive integer.
+pub(crate) fn lexical_execution_budget_from_env() -> Result<LexicalExecutionBudgetV1> {
+    lexical_execution_budget_from_lookup(optional_env)
+}
+
+fn lexical_execution_budget_from_lookup<F>(lookup: F) -> Result<LexicalExecutionBudgetV1>
+where
+    F: Fn(&str) -> Result<Option<String>>,
+{
+    const NAME: &str = "QUANTA_INDEX_LEXICAL_MAX_EXAMINED_CANDIDATES";
+    match lookup(NAME)? {
+        None => Ok(LexicalExecutionBudgetV1::DEFAULT),
+        Some(raw) => LexicalExecutionBudgetV1::new(required_positive_raw_usize(NAME, Some(raw))?)
+            .map_err(anyhow::Error::from),
     }
 }
 
@@ -725,6 +762,25 @@ mod tests {
         .expect("both knobs bind");
         assert_eq!(explicit.max_entries(), 4);
         assert_eq!(explicit.max_resident_bytes(), 1_024);
+    }
+
+    #[test]
+    fn lexical_execution_budget_env_binding_defaults_and_refuses_zero() {
+        const NAME: &str = "QUANTA_INDEX_LEXICAL_MAX_EXAMINED_CANDIDATES";
+        let unset =
+            lexical_execution_budget_from_lookup(|_name| Ok(None)).expect("unset selects default");
+        assert_eq!(unset, LexicalExecutionBudgetV1::DEFAULT);
+        let zero =
+            lexical_execution_budget_from_lookup(
+                |name| Ok((name == NAME).then(|| "0".to_string())),
+            )
+            .expect_err("zero must fail closed");
+        assert!(zero.to_string().contains(NAME));
+        let explicit = lexical_execution_budget_from_lookup(|name| {
+            Ok((name == NAME).then(|| "12".to_string()))
+        })
+        .expect("explicit budget binds");
+        assert_eq!(explicit.max_examined_candidates(), 12);
     }
 
     #[test]

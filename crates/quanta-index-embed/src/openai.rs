@@ -1081,12 +1081,20 @@ mod tests {
     fn max_batch_knob_controls_request_splitting() {
         // KNOB PROOF: max_batch=1 over 2 inputs -> exactly 2 HTTP requests; the
         // same inputs with the default (256) batch -> 1 request.
+        //
+        // The scripted transport answers in script order, not per input, so
+        // the batches must be issued by one worker for the vectors to line up
+        // with the inputs; with the default concurrency two workers race for
+        // the two responses and the assertion flips at random.
         let split_transport = ScriptedTransport::new(vec![
             Ok(ok_body(&[(0, vec![1.0, 0.0])])),
             Ok(ok_body(&[(0, vec![0.0, 1.0])])),
         ]);
         let split_calls = split_transport.calls_handle();
-        let split = provider_with(cfg(2).with_max_batch(1), split_transport);
+        let split = provider_with(
+            cfg(2).with_max_batch(1).with_concurrency(1),
+            split_transport,
+        );
         let vectors = split.embed_batch(&["a", "b"]).expect("batched ok");
         assert_eq!(vectors, vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
         assert_eq!(

@@ -61,9 +61,9 @@ use quanta_index_core::domains::generation::{
 };
 use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
-    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalSearcher, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, SealedGenerationScanPort,
-    SearchCorpusBatchBuildPort,
+    LexicalExecutionBudgetV1, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalSearchPageV1,
+    LexicalSearcher, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMetaIngestPort,
+    RepoTopicIngestPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
     domains::lexical::LexicalPolicy,
     timeref::{is_rev_at_time_spec, parse_search_timeref_ms},
 };
@@ -105,7 +105,7 @@ use crate::predicate_registry::{
     parse_repo_meta_arg, parse_repo_topic_arg, parse_timeref_scalar_arg, unimplemented_predicate,
 };
 use crate::regex::RegexPolicy;
-use tantivy::collector::TopDocs;
+use tantivy::collector::{Count, TopDocs};
 use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, QueryParser, RegexQuery, TermQuery};
 use tantivy::schema::{
     Field, IndexRecordOption, OwnedValue, STORED, STRING, Schema, TEXT, TantivyDocument,
@@ -3350,25 +3350,33 @@ pub struct LexicalAdapter {
     /// for the in-tree configuration; operator-facing tightening is plumbed
     /// here rather than at the call site.
     regex_policy: RegexPolicy,
+    /// Per-deployment cap on what one execution may materialize
+    /// (QI-BB-005), threaded to every opened searcher.
+    execution_budget: LexicalExecutionBudgetV1,
 }
 
 impl LexicalAdapter {
     /// Construct an adapter rooted at the given directory with the default
-    /// [`RegexPolicy`]. The directory will be created lazily as generations
-    /// are materialized.
+    /// [`RegexPolicy`] and [`LexicalExecutionBudgetV1`]. The directory will be
+    /// created lazily as generations are materialized.
     #[must_use]
     pub fn with_state_root(state_root: PathBuf) -> Self {
-        Self::with_state_root_and_regex_policy(state_root, RegexPolicy::defaults())
+        Self::with_state_root_and_policies(
+            state_root,
+            RegexPolicy::defaults(),
+            LexicalExecutionBudgetV1::DEFAULT,
+        )
     }
 
-    /// Construct an adapter rooted at the given directory with an explicit
-    /// [`RegexPolicy`]. Use this constructor when the deployment needs to
-    /// tighten or relax the regex dialect / candidate cap /
-    /// trigram-missing threshold defaults.
+    /// Construct an adapter rooted at the given directory with explicit
+    /// policies. Use this constructor when the deployment needs to tighten or
+    /// relax the regex dialect / candidate cap / trigram-missing threshold
+    /// defaults, or the examined-candidate budget.
     #[must_use]
-    pub fn with_state_root_and_regex_policy(
+    pub fn with_state_root_and_policies(
         state_root: PathBuf,
         regex_policy: RegexPolicy,
+        execution_budget: LexicalExecutionBudgetV1,
     ) -> Self {
         Self {
             state_root,
@@ -3377,6 +3385,7 @@ impl LexicalAdapter {
             repo_metadata: Arc::new(Mutex::new(BTreeMap::new())),
             regex_match_cache: Arc::new(Mutex::new(RegexMatchCache::new())),
             regex_policy,
+            execution_budget,
         }
     }
 
@@ -4226,6 +4235,7 @@ impl LexicalIndexOpenPort for LexicalAdapter {
             repo_metadata,
             regex_match_cache,
             regex_policy: self.regex_policy,
+            execution_budget: self.execution_budget,
             text_authority,
             repo_commit_recency,
             repo_meta,
@@ -4532,6 +4542,8 @@ struct TantivySearcher {
     /// Read at the regex-leaf compile site rather than fabricated there, so
     /// the dialect/literal/trigram-cap knobs are a single source of truth.
     regex_policy: RegexPolicy,
+    /// Examined-candidate budget every exact-set execution runs under.
+    execution_budget: LexicalExecutionBudgetV1,
     text_authority: Option<TextAuthorityShard>,
     repo_commit_recency: Option<RepoCommitRecencyShard>,
     repo_meta: Option<RepoMetaShard>,
@@ -4550,6 +4562,13 @@ struct PreparedPredicatePlan {
     allowed_repo_ids: Option<BTreeSet<String>>,
     allowed_candidate_ids: Option<BTreeSet<String>>,
     force_empty: bool,
+}
+
+/// What one bounded native collect produced.
+struct CollectedHits {
+    hits: Vec<(f32, DocAddress)>,
+    /// Exact match count from the count collector, when the query asked.
+    exact_total: Option<u64>,
 }
 
 struct PreparedExecutableQuery {
@@ -4640,58 +4659,99 @@ impl TantivySearcher {
         matches!(options.case, Some(quanta_index_contract::LqCase::Sensitive))
     }
 
-    fn full_recall_limit(&self, requested: usize, limit: usize) -> usize {
-        usize::try_from(self.reader.searcher().num_docs()).map_or_else(
-            |_| requested.max(limit),
-            |docs| requested.max(limit).max(docs),
-        )
-    }
-
-    fn effective_limit(&self, query: &LqQuery, requested: usize) -> usize {
+    /// Candidates a page needs: `top_k`, or `min(top_k, N)` under `count:N`.
+    ///
+    /// `count:all` no longer widens the page (QI-BB-005): rows are the
+    /// caller's `top_k` and the total is reported through the count
+    /// collector instead of by materializing every match.
+    fn page_limit(query: &LqQuery, requested: usize) -> usize {
         match query.options.count {
             Some(quanta_index_contract::LqCountBound::Bounded(bound)) => {
                 usize::try_from(bound).map_or(requested, |bound| requested.min(bound))
             }
-            Some(quanta_index_contract::LqCountBound::All) => {
-                self.full_recall_limit(requested, requested)
-            }
-            None => requested,
+            Some(quanta_index_contract::LqCountBound::All) | None => requested,
         }
     }
 
-    fn collect_limit(&self, query: &LqQuery, requested: usize, limit: usize) -> usize {
-        let full_recall_limit = self.full_recall_limit(requested, limit);
-        if Self::projects_repo_surface(query)
+    /// Whether an execution must see the whole match set to be exact: a
+    /// projection collapses groups (a page cut before collapse would drop
+    /// groups), and a bounded count orders the whole set before cutting.
+    fn needs_whole_match_set(query: &LqQuery) -> bool {
+        Self::projects_repo_surface(query)
             || Self::projects_path_surface(query)
             || Self::selects_file_projection(query)
             || matches!(
                 query.options.count,
                 Some(quanta_index_contract::LqCountBound::Bounded(_))
             )
-        {
-            return full_recall_limit;
-        }
-        if limit >= full_recall_limit {
-            full_recall_limit
-        } else {
-            limit.saturating_add(1).min(full_recall_limit)
-        }
     }
 
-    fn boundary_tie_detected(hits: &[(f32, DocAddress)], limit: usize) -> bool {
-        if limit == 0 || hits.len() <= limit {
-            return false;
+    fn wants_exact_total(query: &LqQuery) -> bool {
+        query.options.count.is_some()
+    }
+
+    fn corpus_docs(searcher: &tantivy::Searcher, surface: &str) -> Result<usize, CoreError> {
+        usize::try_from(searcher.num_docs()).map_err(|err| {
+            CoreError::InvalidContract(format!("lexical: num_docs overflow in {surface}: {err}"))
+        })
+    }
+
+    /// Run one native collect under the examined-candidate budget.
+    ///
+    /// A whole-set execution collects `min(num_docs, budget + 1)` so that an
+    /// overrun is observable and refused; a page execution collects the page
+    /// plus one continuation probe. When the query asks for a count, the
+    /// exact total comes from the count collector in the same pass, which
+    /// touches postings but materializes nothing. The collected hits are put
+    /// in the total order the page contract promises; equal scores past the
+    /// collected set are left to the index's own order, which is the
+    /// documented limit of boundary determinism (plan §4.12).
+    fn collect_bounded(
+        &self,
+        searcher: &tantivy::Searcher,
+        compiled: &dyn Query,
+        query: &LqQuery,
+        page_limit: usize,
+        whole_set: bool,
+        surface: &str,
+    ) -> Result<CollectedHits, CoreError> {
+        let budget = self.execution_budget.max_examined_candidates();
+        let num_docs = Self::corpus_docs(searcher, surface)?;
+        let collect_limit = if whole_set {
+            num_docs.min(budget.saturating_add(1))
+        } else {
+            page_limit
+                .saturating_add(1)
+                .min(num_docs)
+                .min(budget.saturating_add(1))
+        };
+        if collect_limit == 0 {
+            return Ok(CollectedHits {
+                hits: Vec::new(),
+                exact_total: Self::wants_exact_total(query).then_some(0),
+            });
         }
-        let Some(boundary_index) = limit.checked_sub(1) else {
-            return false;
+        let (count, hits) = if Self::wants_exact_total(query) {
+            let (count, hits) = searcher
+                .search(compiled, &(Count, TopDocs::with_limit(collect_limit)))
+                .map_err(|err| CoreError::Storage(format!("lexical: {surface} collect: {err}")))?;
+            (Some(count), hits)
+        } else {
+            let hits = searcher
+                .search(compiled, &TopDocs::with_limit(collect_limit))
+                .map_err(|err| CoreError::Storage(format!("lexical: {surface} collect: {err}")))?;
+            (None, hits)
         };
-        let Some(boundary_score) = hits.get(boundary_index).map(|hit| hit.0) else {
-            return false;
+        if whole_set && hits.len() > budget {
+            return Err(self.execution_budget.exceeded(surface));
+        }
+        let exact_total = match count {
+            Some(count) => Some(u64::try_from(count).map_err(|err| {
+                CoreError::InvalidContract(format!("lexical: {surface} count overflow: {err}"))
+            })?),
+            None => None,
         };
-        let Some(overflow_score) = hits.get(limit).map(|hit| hit.0) else {
-            return false;
-        };
-        boundary_score.total_cmp(&overflow_score).is_eq()
+        Ok(CollectedHits { hits, exact_total })
     }
 
     fn candidate_precedes(candidate: &LexicalCandidate, current: &LexicalCandidate) -> bool {
@@ -4726,26 +4786,21 @@ impl TantivySearcher {
                 ))
     }
 
+    /// Put the collected candidates in the one total order every lexical
+    /// page follows (score, then path, lines, id) and cut the page.
     fn stabilize_and_cap_hits(
-        &self,
-        query: &LqQuery,
         mut hits: Vec<LexicalCandidate>,
         limit: usize,
     ) -> Vec<LexicalCandidate> {
-        if matches!(
-            query.options.count,
-            Some(quanta_index_contract::LqCountBound::Bounded(_))
-        ) {
-            hits.sort_by(|left, right| {
-                if Self::candidate_precedes(left, right) {
-                    std::cmp::Ordering::Less
-                } else if Self::candidate_precedes(right, left) {
-                    std::cmp::Ordering::Greater
-                } else {
-                    std::cmp::Ordering::Equal
-                }
-            });
-        }
+        hits.sort_by(|left, right| {
+            if Self::candidate_precedes(left, right) {
+                std::cmp::Ordering::Less
+            } else if Self::candidate_precedes(right, left) {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        });
         if hits.len() > limit {
             hits.truncate(limit);
         }
@@ -5315,6 +5370,9 @@ impl TantivySearcher {
         }
     }
 
+    /// Explicit `index:no` execution: every document of the generation is
+    /// fetched and matched in memory, so the corpus itself is the examined
+    /// set and must fit the budget before the scan starts.
     fn manual_text_search(
         &self,
         query: &LqQuery,
@@ -5322,15 +5380,19 @@ impl TantivySearcher {
         constraints: &QueryConstraintSetV1,
         limit: usize,
         apply_select_projection: bool,
-    ) -> Result<Vec<LexicalCandidate>, CoreError> {
+    ) -> Result<LexicalSearchPageV1, CoreError> {
         let searcher = self.reader.searcher();
-        let doc_limit = usize::try_from(searcher.num_docs()).map_err(|err| {
-            CoreError::InvalidContract(format!(
-                "lexical: num_docs overflow while materializing unindexed scan: {err}"
-            ))
-        })?;
+        let doc_limit = Self::corpus_docs(&searcher, "unindexed text scan")?;
+        if doc_limit > self.execution_budget.max_examined_candidates() {
+            return Err(self
+                .execution_budget
+                .exceeded("unindexed text scan (index:no)"));
+        }
         if doc_limit == 0 {
-            return Ok(Vec::new());
+            return Ok(LexicalSearchPageV1 {
+                candidates: Vec::new(),
+                exact_total: Self::wants_exact_total(query).then_some(0),
+            });
         }
         let hits = searcher
             .search(&AllQuery, &TopDocs::with_limit(doc_limit))
@@ -5403,7 +5465,14 @@ impl TantivySearcher {
         } else {
             out
         };
-        Ok(self.stabilize_and_cap_hits(query, out, limit))
+        // The scan visited every document, so the total is exact for free.
+        let exact_total = Some(u64::try_from(out.len()).map_err(|err| {
+            CoreError::InvalidContract(format!("lexical: unindexed scan total overflow: {err}"))
+        })?);
+        Ok(LexicalSearchPageV1 {
+            candidates: Self::stabilize_and_cap_hits(out, limit),
+            exact_total,
+        })
     }
 
     fn manual_symbol_search(
@@ -5414,11 +5483,12 @@ impl TantivySearcher {
         limit: usize,
     ) -> Result<Vec<SymbolCandidate>, CoreError> {
         let searcher = self.reader.searcher();
-        let doc_limit = usize::try_from(searcher.num_docs()).map_err(|err| {
-            CoreError::InvalidContract(format!(
-                "lexical: num_docs overflow while materializing symbol unindexed scan: {err}"
-            ))
-        })?;
+        let doc_limit = Self::corpus_docs(&searcher, "unindexed symbol scan")?;
+        if doc_limit > self.execution_budget.max_examined_candidates() {
+            return Err(self
+                .execution_budget
+                .exceeded("unindexed symbol scan (index:no)"));
+        }
         if doc_limit == 0 {
             return Ok(Vec::new());
         }
@@ -8333,26 +8403,26 @@ impl LexicalSearcher for TantivySearcher {
         self.resident_bytes_estimate
     }
 
-    fn search(&self, query: &LqQuery, top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError> {
-        self.search_constrained(query, &QueryConstraintSetV1::unconstrained(), top_k)
-    }
-
     fn search_constrained(
         &self,
         query: &LqQuery,
         constraints: &QueryConstraintSetV1,
         top_k: u32,
-    ) -> Result<Vec<LexicalCandidate>, CoreError> {
+    ) -> Result<LexicalSearchPageV1, CoreError> {
         // This is the single text-query execution path. The unconstrained
-        // public method delegates here so constraint support cannot drift into
+        // port method delegates here so constraint support cannot drift into
         // a second planner/search implementation.
         let effective_query =
             rewrite_symbol_name_predicate_query(query)?.unwrap_or_else(|| query.clone());
         LexicalPolicy::validate_query_with_constraints(&effective_query, constraints)?;
+        let empty_page = || LexicalSearchPageV1 {
+            candidates: Vec::new(),
+            exact_total: Self::wants_exact_total(&effective_query).then_some(0),
+        };
         let Some(prepared_query) =
             self.prepare_executable_query(&effective_query, QueryDocKind::Text)?
         else {
-            return Ok(Vec::new());
+            return Ok(empty_page());
         };
         planner_preflight_expr(
             &prepared_query.query,
@@ -8360,13 +8430,13 @@ impl LexicalSearcher for TantivySearcher {
             self.repo_metadata.is_some(),
         )?;
         if !self.repo_filters_allow(&effective_query)? {
-            return Ok(Vec::new());
+            return Ok(empty_page());
         }
         let requested = usize::try_from(top_k)
             .map_err(|err| CoreError::InvalidContract(format!("lexical: top_k: {err}")))?;
-        let limit = self.effective_limit(&effective_query, requested);
+        let limit = Self::page_limit(&effective_query, requested);
         if limit == 0 {
-            return Ok(Vec::new());
+            return Ok(empty_page());
         }
         if Self::uses_unindexed_scan(&effective_query.options) {
             Self::ensure_manual_scan_supports_constraints(constraints, "lexical")?;
@@ -8384,27 +8454,28 @@ impl LexicalSearcher for TantivySearcher {
             constraints,
         )?
         else {
-            return Ok(Vec::new());
+            return Ok(empty_page());
         };
         let compiled =
             self.with_doc_kind_and_constraints(base, prepared_query.doc_kind.as_str(), constraints);
-        let collect_limit = self.collect_limit(&effective_query, requested, limit);
         let boosted_options = &effective_query.options;
         let searcher = self.reader.searcher();
-        let mut hits = searcher
-            .search(&*compiled, &TopDocs::with_limit(collect_limit))
-            .map_err(|err| CoreError::Storage(format!("lexical: constrained search: {err}")))?;
-        let full_recall_limit = self.full_recall_limit(requested, limit);
-        if collect_limit < full_recall_limit && Self::boundary_tie_detected(&hits, limit) {
-            hits = searcher
-                .search(&*compiled, &TopDocs::with_limit(full_recall_limit))
-                .map_err(|err| {
-                    CoreError::Storage(format!("lexical: constrained search full recall: {err}"))
-                })?;
-        }
+        let whole_set = Self::needs_whole_match_set(&effective_query);
+        let collected = self.collect_bounded(
+            &searcher,
+            &*compiled,
+            &effective_query,
+            limit,
+            whole_set,
+            if whole_set {
+                "exact-set text search (projection or bounded count)"
+            } else {
+                "text search"
+            },
+        )?;
         let center_terms = snippet_center_terms(&effective_query);
-        let mut out = Vec::with_capacity(hits.len());
-        for (score, doc_address) in hits {
+        let mut out = Vec::with_capacity(collected.hits.len());
+        for (score, doc_address) in collected.hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
@@ -8414,8 +8485,24 @@ impl LexicalSearcher for TantivySearcher {
                 &center_terms,
             )?);
         }
+        let projects = Self::projects_repo_surface(&effective_query)
+            || Self::projects_path_surface(&effective_query)
+            || Self::selects_file_projection(&effective_query);
         let projected = Self::collapse_select_projection(&effective_query, out);
-        Ok(self.stabilize_and_cap_hits(&effective_query, projected, limit))
+        // A projection collapses the whole (budgeted) match set, so its row
+        // universe is known exactly whether or not a count was requested;
+        // the document count from the collector would be the wrong number.
+        let exact_total = if projects {
+            Some(u64::try_from(projected.len()).map_err(|err| {
+                CoreError::InvalidContract(format!("lexical: projection total overflow: {err}"))
+            })?)
+        } else {
+            collected.exact_total
+        };
+        Ok(LexicalSearchPageV1 {
+            candidates: Self::stabilize_and_cap_hits(projected, limit),
+            exact_total,
+        })
     }
 
     fn project_file_owners(
@@ -8515,7 +8602,7 @@ impl LexicalSearcher for TantivySearcher {
         }
         let requested = usize::try_from(top_k)
             .map_err(|err| CoreError::InvalidContract(format!("symbol: top_k: {err}")))?;
-        let limit = self.effective_limit(&effective_query, requested);
+        let limit = Self::page_limit(&effective_query, requested);
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -8538,23 +8625,24 @@ impl LexicalSearcher for TantivySearcher {
         };
         let compiled =
             self.with_doc_kind_and_constraints(base, prepared_query.doc_kind.as_str(), constraints);
-        let collect_limit = self.collect_limit(&effective_query, requested, limit);
         let boosted_options = &effective_query.options;
         let searcher = self.reader.searcher();
-        let mut hits = searcher
-            .search(&*compiled, &TopDocs::with_limit(collect_limit))
-            .map_err(|err| CoreError::Storage(format!("symbol: constrained search: {err}")))?;
-        let full_recall_limit = self.full_recall_limit(requested, limit);
-        if collect_limit < full_recall_limit && Self::boundary_tie_detected(&hits, limit) {
-            hits = searcher
-                .search(&*compiled, &TopDocs::with_limit(full_recall_limit))
-                .map_err(|err| {
-                    CoreError::Storage(format!("symbol: constrained full recall: {err}"))
-                })?;
-        }
+        let whole_set = Self::needs_whole_match_set(&effective_query);
+        let collected = self.collect_bounded(
+            &searcher,
+            &*compiled,
+            &effective_query,
+            limit,
+            whole_set,
+            if whole_set {
+                "exact-set symbol search (bounded count)"
+            } else {
+                "symbol search"
+            },
+        )?;
         let center_terms = snippet_center_terms(&effective_query);
-        let mut out = Vec::with_capacity(hits.len());
-        for (score, doc_address) in hits {
+        let mut out = Vec::with_capacity(collected.hits.len());
+        for (score, doc_address) in collected.hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
@@ -8585,12 +8673,8 @@ impl LexicalSearcher for TantivySearcher {
             return Ok(Vec::new());
         }
         let searcher = self.reader.searcher();
-        let requested = usize::try_from(searcher.num_docs()).map_err(|err| {
-            CoreError::InvalidContract(format!(
-                "lexical: num_docs overflow while materializing symbol scope: {err}"
-            ))
-        })?;
-        let limit = self.effective_limit(&effective_query, requested);
+        let requested = Self::corpus_docs(&searcher, "symbol scope materialization")?;
+        let limit = Self::page_limit(&effective_query, requested);
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -8608,13 +8692,17 @@ impl LexicalSearcher for TantivySearcher {
             return Ok(Vec::new());
         };
         let compiled = self.with_doc_kind(base, prepared_query.doc_kind.as_str());
-        let collect_limit = self.collect_limit(&effective_query, requested, limit);
-        let hits = searcher
-            .search(&*compiled, &TopDocs::with_limit(collect_limit))
-            .map_err(|err| CoreError::Storage(format!("lexical: search_symbols_all: {err}")))?;
+        let collected = self.collect_bounded(
+            &searcher,
+            &*compiled,
+            &effective_query,
+            limit,
+            true,
+            "symbol scope materialization",
+        )?;
         let center_terms = snippet_center_terms(&effective_query);
-        let mut out: Vec<SymbolCandidate> = Vec::with_capacity(hits.len());
-        for (score, doc_address) in hits {
+        let mut out = Vec::with_capacity(collected.hits.len());
+        for (score, doc_address) in collected.hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
@@ -8642,20 +8730,16 @@ impl LexicalSearcher for TantivySearcher {
             return Ok(Vec::new());
         }
         let searcher = self.reader.searcher();
-        let requested = usize::try_from(searcher.num_docs()).map_err(|err| {
-            CoreError::InvalidContract(format!(
-                "lexical: num_docs overflow while materializing constrained scope: {err}"
-            ))
-        })?;
-        let limit = self.effective_limit(query, requested);
+        let requested = Self::corpus_docs(&searcher, "structural scope materialization")?;
+        let limit = Self::page_limit(query, requested);
         if limit == 0 {
             return Ok(Vec::new());
         }
         if Self::uses_unindexed_scan(&query.options) {
             Self::ensure_manual_scan_supports_constraints(constraints, "lexical")?;
-            let hits =
+            let page =
                 self.manual_text_search(query, &prepared_query, constraints, limit, false)?;
-            return Ok(Self::collapse_repo_projection(query, hits));
+            return Ok(Self::collapse_repo_projection(query, page.candidates));
         }
         let Some(base) = self.compile_query_with_constraints(
             &prepared_query.query,
@@ -8667,13 +8751,17 @@ impl LexicalSearcher for TantivySearcher {
         };
         let compiled =
             self.with_doc_kind_and_constraints(base, prepared_query.doc_kind.as_str(), constraints);
-        let collect_limit = self.collect_limit(query, requested, limit);
-        let hits = searcher
-            .search(&*compiled, &TopDocs::with_limit(collect_limit))
-            .map_err(|err| CoreError::Storage(format!("lexical: search_all: {err}")))?;
+        let collected = self.collect_bounded(
+            &searcher,
+            &*compiled,
+            query,
+            limit,
+            true,
+            "structural scope materialization",
+        )?;
         let center_terms = snippet_center_terms(query);
-        let mut out = Vec::with_capacity(hits.len());
-        for (score, doc_address) in hits {
+        let mut out = Vec::with_capacity(collected.hits.len());
+        for (score, doc_address) in collected.hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
@@ -8685,7 +8773,7 @@ impl LexicalSearcher for TantivySearcher {
         }
         Ok(Self::collapse_repo_projection(
             query,
-            self.stabilize_and_cap_hits(query, out, limit),
+            Self::stabilize_and_cap_hits(out, limit),
         ))
     }
 }

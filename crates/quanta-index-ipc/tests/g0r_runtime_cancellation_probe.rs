@@ -166,6 +166,10 @@ impl ResponseEnvelope<u64> for ProbeResponse {
             payload,
         }
     }
+
+    fn result_too_large(_request_id: u64, _encoded_bytes: u64, _limit_bytes: u64) -> Option<Self> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------

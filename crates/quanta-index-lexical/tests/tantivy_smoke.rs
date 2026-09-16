@@ -543,7 +543,9 @@ fn language_constraint_is_pushed_into_one_pre_limit_candidate_query_v1() -> Test
     let query = make_query(LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())));
 
     let rust_only = QueryConstraintSetV1::from_languages([language_code("rust")?]);
-    let hits = searcher.search_constrained(&query, &rust_only, 1)?;
+    let hits = searcher
+        .search_constrained(&query, &rust_only, 1)?
+        .candidates;
     assert_eq!(
         hits.iter()
             .map(|candidate| candidate.candidate_id.as_str())
@@ -557,7 +559,7 @@ fn language_constraint_is_pushed_into_one_pre_limit_candidate_query_v1() -> Test
         language_code("python")?,
         language_code("rust")?,
     ]);
-    let hits = searcher.search_constrained(&query, &either, 10)?;
+    let hits = searcher.search_constrained(&query, &either, 10)?.candidates;
     assert_eq!(
         hits.len(),
         3,
@@ -591,7 +593,9 @@ fn exact_path_constraint_is_applied_before_limit_and_on_index_no_scan_v1() -> Te
     );
     let query = make_query(LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())));
 
-    let indexed = searcher.search_constrained(&query, &constraints, 1)?;
+    let indexed = searcher
+        .search_constrained(&query, &constraints, 1)?
+        .candidates;
     assert_eq!(
         indexed
             .iter()
@@ -611,7 +615,9 @@ fn exact_path_constraint_is_applied_before_limit_and_on_index_no_scan_v1() -> Te
         "symbol ranking must receive the same exact-path predicate before top_k"
     );
 
-    let capped = searcher.search_constrained(&query, &constraints, 16)?;
+    let capped = searcher
+        .search_constrained(&query, &constraints, 16)?
+        .candidates;
     assert_eq!(
         capped
             .iter()
@@ -623,7 +629,9 @@ fn exact_path_constraint_is_applied_before_limit_and_on_index_no_scan_v1() -> Te
 
     let mut unindexed = query;
     unindexed.options.index_mode = Some(LqYesNoOnly::No);
-    let scanned = searcher.search_constrained(&unindexed, &constraints, 10)?;
+    let scanned = searcher
+        .search_constrained(&unindexed, &constraints, 10)?
+        .candidates;
     assert_eq!(
         scanned
             .iter()
@@ -674,7 +682,9 @@ fn exact_path_constraint_only_query_treats_dsl_metacharacters_as_literal_v1() ->
         vec!["literal-symbol"],
         "typed path characters must be an exact term, never parsed as Sourcegraph syntax"
     );
-    let chunks = searcher.search_constrained(&constraint_only, &constraints, 10)?;
+    let chunks = searcher
+        .search_constrained(&constraint_only, &constraints, 10)?
+        .candidates;
     assert_eq!(
         chunks
             .iter()
@@ -1447,7 +1457,11 @@ fn tantivy_top_k_stabilizes_keyword_path_surface_without_losing_content_hits() -
 }
 
 #[test]
-fn tantivy_count_all_ignores_request_top_k_and_returns_full_recall() -> TestResult {
+fn tantivy_count_all_keeps_the_page_and_reports_the_exact_total() -> TestResult {
+    // QI-BB-005: `count:all` no longer widens the page to the whole match
+    // set. The rows stay bounded by the caller's `top_k`; what the option
+    // buys is the exact total, computed by the count collector without
+    // materializing a single extra document.
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
 
@@ -1463,18 +1477,47 @@ fn tantivy_count_all_ignores_request_top_k_and_returns_full_recall() -> TestResu
         "count_all_needle".to_string(),
     )));
     query.options.count = Some(LqCountBound::All);
-    let hits = searcher.search(&query, 1)?;
-    let ids = hits
+    let page = searcher.search_constrained(&query, &QueryConstraintSetV1::unconstrained(), 1)?;
+    let ids = page
+        .candidates
         .iter()
         .map(|hit| hit.candidate_id.as_str())
         .collect::<Vec<_>>();
-    if ids != ["alpha", "beta", "gamma"] {
+    if ids.len() != 1 {
+        return Err(format!("count:all must keep the requested page of 1, got {ids:?}").into());
+    }
+    if page.exact_total != Some(3) {
         return Err(format!(
-            "expected count:all full recall ids [alpha, beta, gamma], got hits {hits:?}"
+            "count:all must report the exact total of 3, got {:?}",
+            page.exact_total
         )
         .into());
     }
 
+    // Without a count option the total is not proven and the page is
+    // exactly the requested rows.
+    query.options.count = None;
+    let plain = searcher.search_constrained(&query, &QueryConstraintSetV1::unconstrained(), 2)?;
+    if plain.candidates.len() != 2 || plain.exact_total.is_some() {
+        return Err(format!(
+            "plain page drifted: rows={} exact_total={:?}",
+            plain.candidates.len(),
+            plain.exact_total
+        )
+        .into());
+    }
+
+    // A bounded count caps the page at min(top_k, N) and still proves the total.
+    query.options.count = Some(LqCountBound::Bounded(2));
+    let bounded = searcher.search_constrained(&query, &QueryConstraintSetV1::unconstrained(), 5)?;
+    if bounded.candidates.len() != 2 || bounded.exact_total != Some(3) {
+        return Err(format!(
+            "count:2 drifted: rows={} exact_total={:?}",
+            bounded.candidates.len(),
+            bounded.exact_total
+        )
+        .into());
+    }
     Ok(())
 }
 

@@ -2493,6 +2493,8 @@ pub struct quanta_index_contract::ipc::SearchPlaneIpcError
 pub quanta_index_contract::ipc::SearchPlaneIpcError::code: alloc::string::String
 pub quanta_index_contract::ipc::SearchPlaneIpcError::message: alloc::string::String
 pub quanta_index_contract::ipc::SearchPlaneIpcError::repair: core::option::Option<quanta_index_contract::QueryErrorRepair>
+impl quanta_index_contract::SearchPlaneIpcError
+pub fn quanta_index_contract::SearchPlaneIpcError::result_too_large(encoded_bytes: u64, limit_bytes: u64) -> Self
 impl core::clone::Clone for quanta_index_contract::SearchPlaneIpcError
 pub fn quanta_index_contract::SearchPlaneIpcError::clone(&self) -> quanta_index_contract::SearchPlaneIpcError
 impl core::cmp::Eq for quanta_index_contract::SearchPlaneIpcError
@@ -2931,6 +2933,7 @@ impl core::marker::Unpin for quanta_index_contract::TrackReadinessRecord
 impl core::marker::UnsafeUnpin for quanta_index_contract::TrackReadinessRecord
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::TrackReadinessRecord
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::TrackReadinessRecord
+pub const quanta_index_contract::ipc::ERR_RESULT_TOO_LARGE: &str
 pub fn quanta_index_contract::ipc::cluster_membership_content_digest_v1(members: &[quanta_index_contract::SymbolId]) -> alloc::string::String
 pub fn quanta_index_contract::ipc::validate_semantic_source_record_v1(record: &quanta_index_contract::SemanticSourceRecordV1) -> core::result::Result<(), &'static str>
 pub type quanta_index_contract::ipc::HistoryTagDelete = quanta_index_contract::HistoryRefDelete
@@ -9926,6 +9929,8 @@ pub struct quanta_index_contract::SearchPlaneIpcError
 pub quanta_index_contract::SearchPlaneIpcError::code: alloc::string::String
 pub quanta_index_contract::SearchPlaneIpcError::message: alloc::string::String
 pub quanta_index_contract::SearchPlaneIpcError::repair: core::option::Option<quanta_index_contract::QueryErrorRepair>
+impl quanta_index_contract::SearchPlaneIpcError
+pub fn quanta_index_contract::SearchPlaneIpcError::result_too_large(encoded_bytes: u64, limit_bytes: u64) -> Self
 impl core::clone::Clone for quanta_index_contract::SearchPlaneIpcError
 pub fn quanta_index_contract::SearchPlaneIpcError::clone(&self) -> quanta_index_contract::SearchPlaneIpcError
 impl core::cmp::Eq for quanta_index_contract::SearchPlaneIpcError
@@ -10968,6 +10973,7 @@ impl core::marker::Unpin for quanta_index_contract::WeightsHashError
 impl core::marker::UnsafeUnpin for quanta_index_contract::WeightsHashError
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::WeightsHashError
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::WeightsHashError
+pub const quanta_index_contract::ERR_RESULT_TOO_LARGE: &str
 pub const quanta_index_contract::MAX_CLUSTER_MEMBERSHIP_BATCH_ITEMS_V1: usize
 pub const quanta_index_contract::MAX_CLUSTER_MEMBERSHIP_READ_V1: u32
 pub fn quanta_index_contract::cluster_membership_content_digest_v1(members: &[quanta_index_contract::SymbolId]) -> alloc::string::String

@@ -136,6 +136,12 @@ owner = "quanta-index-lexical"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "lexical-execution-budget"
+path = "crates/quanta-index-lexical/tests/execution_budget.rs"
+owner = "quanta-index-lexical"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "lexical-generation-delta-base-carryforward"
 path = "crates/quanta-index-lexical/tests/generation_delta_base_carryforward.rs"
 owner = "quanta-index-lexical"
@@ -414,6 +420,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "searchd-runtime-text-route-hellgate"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_text_route_hellgate.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-e2e-exact-count-window"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_exact_count_window.rs"
 owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 

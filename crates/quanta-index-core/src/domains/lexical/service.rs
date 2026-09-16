@@ -6,6 +6,69 @@ use quanta_index_contract::{
 use crate::error::CoreError;
 use crate::timeref::is_rev_at_time_spec;
 
+/// Wire code for a lexical execution that would have to examine more
+/// candidates than the policy allows (QI-BB-005).
+pub const LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE: &str = "LEXICAL_EXAMINED_BUDGET_EXCEEDED";
+
+/// How much one lexical execution may materialize (QI-BB-005).
+///
+/// A page query never needs more than `top_k + 1` (the continuation probe),
+/// but exact counts over projections, bounded counts with a deterministic
+/// total order and explicit unindexed scans all need the whole match set.
+/// Before this budget they collected `num_docs`, so a small request could
+/// materialize the whole corpus. Now such an execution collects at most
+/// `max_examined_candidates` documents plus one; if the extra one arrives,
+/// the adapter refuses with [`LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE`] rather
+/// than answer from a truncated set. Exact counts that need no
+/// materialization (a count collector over an indexed query) are not subject
+/// to it.
+///
+/// The field is private so every budget in existence is a valid one: zero
+/// would refuse every exact-set query and is a configuration defect.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LexicalExecutionBudgetV1 {
+    max_examined_candidates: usize,
+}
+
+impl LexicalExecutionBudgetV1 {
+    /// Deployment default. 250,000 keeps the worst case at a few hundred
+    /// megabytes of document fetches, the ceiling one query may cost the
+    /// process until W5's per-request byte ledger replaces the constant.
+    pub const DEFAULT: Self = Self {
+        max_examined_candidates: 250_000,
+    };
+
+    pub fn new(max_examined_candidates: usize) -> Result<Self, CoreError> {
+        if max_examined_candidates == 0 {
+            return Err(CoreError::InvalidContract(
+                "lexical execution budget must allow at least one examined candidate".to_string(),
+            ));
+        }
+        Ok(Self {
+            max_examined_candidates,
+        })
+    }
+
+    #[must_use]
+    pub const fn max_examined_candidates(self) -> usize {
+        self.max_examined_candidates
+    }
+
+    /// The typed refusal for an execution that would overrun this budget.
+    /// `surface` names the execution (projection, bounded count, unindexed
+    /// scan, ...) so the caller knows which part of the query to narrow.
+    #[must_use]
+    pub fn exceeded(self, surface: &str) -> CoreError {
+        CoreError::Typed {
+            code: LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE.to_string(),
+            message: format!(
+                "lexical: {surface} would examine more than {} candidates; narrow the query or drop the exact-set option",
+                self.max_examined_candidates
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LexicalPolicy;
 

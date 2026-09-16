@@ -23,6 +23,7 @@ crate quanta_index_core
 │   │   │   ├── trait LexicalIndexBuildPort: pub
 │   │   │   ├── trait LexicalIndexOpenPort: pub
 │   │   │   ├── struct LexicalReadiness: pub
+│   │   │   ├── struct LexicalSearchPageV1: pub
 │   │   │   ├── trait LexicalSearcher: pub
 │   │   │   ├── trait RepoCommitRecencyIngestPort: pub
 │   │   │   ├── trait RepoDescriptionIngestPort: pub
@@ -31,6 +32,7 @@ crate quanta_index_core
 │   │   │   ├── trait SearchCorpusBatchBuildPort: pub
 │   │   │   └── trait SearchCorpusIngestPort: pub
 │   │   └── mod service: pub(self)
+│   │       ├── struct LexicalExecutionBudgetV1: pub
 │   │       └── struct LexicalPolicy: pub
 │   ├── mod repomap: pub
 │   │   ├── mod inbound: pub(self)

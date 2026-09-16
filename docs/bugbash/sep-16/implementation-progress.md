@@ -50,6 +50,7 @@
 | IMPL-G | P3 (dead surface) | `quanta-index-searchd`가 사용하지 않는 `quanta-index-lexical` 의존성을 선언 (`just rust-machete` RED) | **fixed** — 의존성 제거 |
 | IMPL-B | **P1 (silent data loss, 확정)** | sidecar authority가 delta보다 먼저 publish되면 delta generation이 base를 통째로 잃는다 | **fixed + regression green** |
 | IMPL-C | **P1 (durability / cross-generation corruption, 확정)** | `persist_text_authority_sidecars`가 `File::create`(in-place truncate)로 sidecar를 쓴다 | **fixed + regression green** |
+| IMPL-H | P3 (flaky merge gate) | `quanta-index-embed` `max_batch_knob_controls_request_splitting`이 concurrency race로 간헐 실패 | **fixed** — §3.8 IMPL-H |
 | IMPL-D | **P1 (retrieval correctness, 확정)** | regex prefilter가 리터럴 *교대(alternation)* 집합을 *논리곱(AND)*으로 처리해 조용히 결과를 떨어뜨린다 | **fixed + regression green** |
 
 ### IMPL-C 상세
@@ -288,7 +289,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W1 | planned | |
 | W2 | planned | G0-C PASS → SQLite(rusqlite bundled)로 진행. `quanta-index-catalog-probe`는 W2 landing 시 삭제 |
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분 재도출(§3.4.1) + semantic hard-link(§3.4.2) 완료. 남은 것: sharded sidecar 포맷(O(delta) write), ANN index 재구축, physical GC / pinned-reader 강제 case |
-| W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), QI-BB-005 budgets, QI-BB-024 regex cache |
+| W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), QI-BB-024 regex cache, streaming projection collector |
 | W5 | planned | G0-R 결론에 따라 cooperative checkpoint 설계 |
 | W6 | planned | M4 적용 |
 | W7 | planned | |
@@ -632,6 +633,61 @@ handle: [e2e-1-src/needle.rs, e2e-3-src/other.rs]` 실패.
 **남은 것 (QI-BB-017 본체)**: open-time `semantic_row_commitment_v1` full scan 자체는 그대로다 —
 registry는 *반복*을 없앴고, seal-time proof / open-time root 검증 분리(보완 #1–#2, #5 streaming
 membership)와 boot inventory(#6, QI-BB-026)는 W2/W3 항목이다.
+
+## 3.8 QI-BB-005 — execution budget: 무제한 corpus collect 제거 (구현 완료, 일부 W5 이관)
+
+**진단 확정**: `count:all`은 `effective_limit = max(top_k, num_docs)`로 **모든 match를 반환**했고,
+projection / `count:N` / tie-boundary 재조회는 `collect_limit = num_docs`로 corpus 전체를
+`TopDocs`에 모은 뒤 문서를 전부 fetch했다. `index:no` scan은 `AllQuery` + num_docs. 응답이
+16 MiB frame을 넘으면 연산을 다 끝낸 뒤 connection이 그냥 닫혔다(typed 응답 없음).
+
+**계약 변경 (의도적, 구조안 §7.2 "`count`는 별도 operator")**:
+
+| 이전 | 이후 |
+| --- | --- |
+| `count:all` → 모든 match 행 반환, window `Exact(len)` | 행은 `top_k`로 bounded; **exact total은 count collector**로 계산해 window `Exact(total)` + `has_more` |
+| `count:N` → 전체 수집 후 정렬·N 절단 | 행 `min(top_k, N)`, exact total 보고, 전체 집합은 **budget 안에서만** 수집 |
+| projection → 전체 수집 후 collapse | budget 안에서 전체 수집·collapse, collapsed 수를 exact total로 보고(count 없이도) |
+| tie-boundary 재조회(num_docs) | 삭제. 수집 집합 전체를 total order(score, path, line, id)로 안정화; 경계 밖 동점은 index 순서(§4.12 범위 명시) |
+| `index:no` scan → corpus 전체 | corpus가 budget을 넘으면 scan 전에 typed 거부 |
+| frame 초과 → connection close | `RESULT_TOO_LARGE` typed 응답(양쪽 byte 수 포함), 연결 유지 |
+
+**새 계약 표면**:
+- `LexicalSearchPageV1 { candidates, exact_total: Option<u64> }` — `LexicalSearcher::search_constrained`
+  반환형. `search`는 port default(`.candidates`)로 위임. `search_all_constrained`는 이전 커밋에서 삭제.
+- `LexicalExecutionBudgetV1` (core; private field, 0 거부, DEFAULT 250,000) + 
+  `LEXICAL_EXAMINED_BUDGET_EXCEEDED` typed code. adapter는 `collect_bounded` **하나**로 4개
+  실행 경로(text/symbol constrained, `search_all`, `search_symbols_all`)를 돌린다 —
+  whole-set 실행은 `min(num_docs, budget+1)`을 수집해 초과가 관측 가능하고, count collector는
+  같은 pass에서 postings만 읽는다.
+- `SearchdConfig::lexical_execution_budget` (env `QUANTA_INDEX_LEXICAL_MAX_EXAMINED_CANDIDATES`,
+  optional, 0 거부) → `LexicalAdapter::with_state_root_and_policies`.
+- IPC `ResponseEnvelope::result_too_large` + `SearchPlaneIpcError::result_too_large`,
+  `ERR_RESULT_TOO_LARGE`. typed payload가 없는 envelope(테스트용)은 `None` → 기존처럼 close.
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| projection / `count:N` / `index:no`가 budget 초과 시 typed 거부, page·`count:all`은 serve | `crates/quanta-index-lexical/tests/execution_budget.rs` (budget 4, docs 5; budget 5면 exact total과 함께 serve) |
+| `count:all`이 page를 넓히지 않고 exact total 보고 | `tantivy_smoke::tantivy_count_all_keeps_the_page_and_reports_the_exact_total` (이전 test는 반대 의미를 pin하고 있었음 — 교체) |
+| front door window 의미: `count:all`/`count:N`/plain/`select:path` | `e2e_exact_count_window.rs` — Exact(5)+has_more / AtLeast(3) / Exact(5) 등 fixture가 미리 아는 값 |
+| dispatcher 계약 검사 | `count_options_take_an_exact_window_from_the_adapter_and_never_widen_the_page_v1` — adapter가 fetch보다 많이 주거나 total < returned면 InvalidContract |
+| frame 초과 typed 응답 | `ipc::server::tests::handle_connection_sends_a_typed_refusal_for_an_oversized_response` (16 MiB+1 응답 → 같은 연결로 refusal, request_id 유지) |
+| 100만 doc corpus에서 peak RSS/wall time | **blocked: contended-host** + 대형 fixture 미구축(W7 qualification) |
+| `max_wall_time` | **W5 이관** — cooperative deadline은 G0-R 결론에 따라 IPC scheduling과 함께 |
+
+**남은 것**: projection은 여전히 budget까지 in-memory aggregation(구조안 "초기 버전")이다.
+streaming grouped top-k collector(보완 #3)와 keyset pagination(보완 #4)은 후속. symbol port는
+count collector가 없어 `count` 옵션에서도 probe window(AtLeast)를 준다 — 문서화됨.
+
+### IMPL-H — `quanta-index-embed` flaky test (merge gate)
+
+`openai::tests::max_batch_knob_controls_request_splitting`이 verify-rust 전체 실행에서
+간헐 실패(`[[0,1],[1,0]] != [[1,0],[0,1]]`). 원인: provider가 batch를 worker 여러 개로
+동시에 보내는데 `ScriptedTransport`는 요청 내용과 무관하게 script 순서로 응답한다 —
+두 worker가 두 응답을 경쟁. `with_concurrency(1)`로 test를 결정적으로 고정(5/5 green).
+product defect 아님 / test 설계 결함.
 
 ## 4. Finding 상태 (QI-BB-001–032)
 

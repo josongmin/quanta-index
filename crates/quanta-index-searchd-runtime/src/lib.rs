@@ -21,6 +21,7 @@ use quanta_index_core::{
     SearchCorpusBatchBuildPort, SemanticBatchBuildPort, SemanticIndexOpenPort,
 };
 use quanta_index_lexical::LexicalAdapter;
+use quanta_index_lexical::regex::RegexPolicy;
 use quanta_index_repomap::RepoMapGenerationStore;
 use quanta_index_search_plane::SearchCorpusLifecycleOwner;
 use quanta_index_searchd::app::LegacySemanticJournalStore;
@@ -37,8 +38,10 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     // Every mutable adapter derives from the identity protected by the held
     // lease, not from a path alias that can be retargeted during composition.
     let state_root = state_root_lease.state_root_identity_v1().to_path_buf();
-    let lex_adapter: Arc<LexicalAdapter> = Arc::new(LexicalAdapter::with_state_root(
+    let lex_adapter: Arc<LexicalAdapter> = Arc::new(LexicalAdapter::with_state_root_and_policies(
         state_root.join("indexes/lexical"),
+        RegexPolicy::defaults(),
+        config.lexical_execution_budget(),
     ));
     let sem_adapter: Arc<SemanticAdapter> = Arc::new(SemanticAdapter::with_state_root(
         quanta_index_semantic::semantic_state_root(&state_root),

@@ -42,7 +42,8 @@ use rustix::net::{AddressFamily, SocketAddrUnix, SocketType, connect, sockopt::s
 use rustix::net::{SocketFlags, socket_with};
 
 use crate::codec::{
-    IpcError, IpcIoOperation, decode_request, decode_response, encode_request, encode_response,
+    IpcError, IpcIoOperation, MAX_FRAME_BODY_BYTES, decode_request, decode_response,
+    encode_request, encode_response,
 };
 
 /// Dispatch hook supplied by the composition root.
@@ -60,6 +61,14 @@ pub trait RequestEnvelope<Request>: serde::de::DeserializeOwned + Send + Sync + 
 
 pub trait ResponseEnvelope<Response>: serde::Serialize + Send + Sync + 'static {
     fn from_parts(request_id: u64, payload: Response) -> Self;
+
+    /// The envelope to send when the real response encoded to `encoded_bytes`
+    /// and does not fit under `limit_bytes` (QI-BB-005). `None` means the
+    /// envelope type has no typed error payload and the connection closes,
+    /// which is the only honest option for such a type.
+    fn result_too_large(request_id: u64, encoded_bytes: u64, limit_bytes: u64) -> Option<Self>
+    where
+        Self: Sized;
 }
 
 impl RequestEnvelope<quanta_index_contract::SearchPlaneQueryIpcRequest>
@@ -81,6 +90,18 @@ impl ResponseEnvelope<quanta_index_contract::SearchPlaneQueryIpcResponse>
             request_id,
             payload,
         }
+    }
+
+    fn result_too_large(request_id: u64, encoded_bytes: u64, limit_bytes: u64) -> Option<Self> {
+        Some(Self {
+            request_id,
+            payload: quanta_index_contract::SearchPlaneQueryIpcResponse::Error(
+                quanta_index_contract::SearchPlaneIpcError::result_too_large(
+                    encoded_bytes,
+                    limit_bytes,
+                ),
+            ),
+        })
     }
 }
 
@@ -104,6 +125,18 @@ impl ResponseEnvelope<quanta_index_contract::SearchPlaneControlIpcResponse>
             payload,
         }
     }
+
+    fn result_too_large(request_id: u64, encoded_bytes: u64, limit_bytes: u64) -> Option<Self> {
+        Some(Self {
+            request_id,
+            payload: quanta_index_contract::SearchPlaneControlIpcResponse::Error(
+                quanta_index_contract::SearchPlaneIpcError::result_too_large(
+                    encoded_bytes,
+                    limit_bytes,
+                ),
+            ),
+        })
+    }
 }
 
 impl RequestEnvelope<quanta_index_contract::SearchPlaneIngestIpcRequest>
@@ -125,6 +158,18 @@ impl ResponseEnvelope<quanta_index_contract::SearchPlaneIngestIpcResponse>
             request_id,
             payload,
         }
+    }
+
+    fn result_too_large(request_id: u64, encoded_bytes: u64, limit_bytes: u64) -> Option<Self> {
+        Some(Self {
+            request_id,
+            payload: quanta_index_contract::SearchPlaneIngestIpcResponse::Error(
+                quanta_index_contract::SearchPlaneIpcError::result_too_large(
+                    encoded_bytes,
+                    limit_bytes,
+                ),
+            ),
+        })
     }
 }
 
@@ -405,6 +450,24 @@ where
         let response = ResponseEnvelopeT::from_parts(request_id, response_payload);
         let frame = match encode_response(&response) {
             Ok(frame) => frame,
+            // The answer was computed but cannot cross the wire. Tell the
+            // caller so with a typed refusal instead of dropping the
+            // connection, which would be indistinguishable from a crash.
+            Err(IpcError::Oversized(encoded_bytes)) => {
+                let limit_bytes =
+                    u64::try_from(MAX_FRAME_BODY_BYTES).map_or(u64::MAX, |limit| limit);
+                let Some(refusal) =
+                    ResponseEnvelopeT::result_too_large(request_id, encoded_bytes, limit_bytes)
+                else {
+                    return ConnectionCloseReason::ResponseEncodeFailed(IpcError::Oversized(
+                        encoded_bytes,
+                    ));
+                };
+                match encode_response(&refusal) {
+                    Ok(frame) => frame,
+                    Err(err) => return ConnectionCloseReason::ResponseEncodeFailed(err),
+                }
+            }
             Err(err) => return ConnectionCloseReason::ResponseEncodeFailed(err),
         };
         if let Err(err) = stream.write_all(&frame) {
@@ -642,6 +705,8 @@ mod tests {
     use serde::de::{self, MapAccess, Visitor};
     use serde::ser::SerializeStruct;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use crate::codec::MAX_FRAME_BODY_BYTES;
 
     type TestRes = Result<(), String>;
 
@@ -1069,6 +1134,14 @@ mod tests {
                 payload,
             }
         }
+
+        fn result_too_large(
+            _request_id: u64,
+            _encoded_bytes: u64,
+            _limit_bytes: u64,
+        ) -> Option<Self> {
+            None
+        }
     }
 
     #[derive(Debug)]
@@ -1147,6 +1220,78 @@ mod tests {
     impl ResponseEnvelope<u64> for FailingResponseEnvelope {
         fn from_parts(_request_id: u64, _payload: u64) -> Self {
             Self
+        }
+
+        fn result_too_large(
+            _request_id: u64,
+            _encoded_bytes: u64,
+            _limit_bytes: u64,
+        ) -> Option<Self> {
+            None
+        }
+    }
+
+    /// Encodes past the frame limit on the first serialization and answers
+    /// the oversize refusal with a small typed marker, so the test can see
+    /// that the server sent the refusal rather than closing.
+    enum OversizedResponseEnvelope {
+        Oversized { request_id: u64 },
+        Refusal { request_id: u64, encoded_bytes: u64 },
+    }
+
+    impl Serialize for OversizedResponseEnvelope {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            match self {
+                Self::Oversized { request_id } => {
+                    let mut state = serializer.serialize_struct("OversizedResponseEnvelope", 2)?;
+                    state.serialize_field("request_id", request_id)?;
+                    let filler = vec![0_u8; MAX_FRAME_BODY_BYTES.saturating_add(1)];
+                    state.serialize_field("payload", &CborBytes(&filler))?;
+                    state.end()
+                }
+                Self::Refusal {
+                    request_id,
+                    encoded_bytes,
+                } => {
+                    let mut state = serializer.serialize_struct("OversizedResponseEnvelope", 2)?;
+                    state.serialize_field("request_id", request_id)?;
+                    state.serialize_field("payload", encoded_bytes)?;
+                    state.end()
+                }
+            }
+        }
+    }
+
+    /// Serialize a byte vector as a CBOR byte string without a `serde_bytes`
+    /// dependency: a `serde::Serialize` shim over `&[u8]`.
+    struct CborBytes<'a>(&'a [u8]);
+
+    impl Serialize for CborBytes<'_> {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            serializer.serialize_bytes(self.0)
+        }
+    }
+
+    impl ResponseEnvelope<u64> for OversizedResponseEnvelope {
+        fn from_parts(request_id: u64, _payload: u64) -> Self {
+            Self::Oversized { request_id }
+        }
+
+        fn result_too_large(
+            request_id: u64,
+            encoded_bytes: u64,
+            _limit_bytes: u64,
+        ) -> Option<Self> {
+            Some(Self::Refusal {
+                request_id,
+                encoded_bytes,
+            })
         }
     }
 
@@ -1245,6 +1390,53 @@ mod tests {
                 reason,
                 ConnectionCloseReason::RequestDecodeFailed(IpcError::EmptyFrame)
             ) {
+                return Err(format!("unexpected close reason: {reason:?}"));
+            }
+            Ok(())
+        })();
+        assert_test_ok(&result);
+    }
+
+    /// A response that encodes past the frame limit is answered with the
+    /// envelope's typed refusal, on the same connection, instead of a close.
+    #[test]
+    fn handle_connection_sends_a_typed_refusal_for_an_oversized_response() {
+        let result = (|| -> TestRes {
+            let (mut client, server) = UnixStream::pair().map_err(|err| err.to_string())?;
+            let frame = encode_test_frame(12, 4)?;
+            client.write_all(&frame).map_err(|err| err.to_string())?;
+            client
+                .shutdown(Shutdown::Write)
+                .map_err(|err| err.to_string())?;
+
+            let handle = thread::spawn(move || {
+                handle_connection::<
+                    TestRequestEnvelope,
+                    u64,
+                    OversizedResponseEnvelope,
+                    u64,
+                    TestDispatcher,
+                >(server, &TestDispatcher)
+            });
+            let response: TestResponseEnvelope =
+                decode_response(&mut client).map_err(|err| err.to_string())?;
+            let reason = handle
+                .join()
+                .map_err(|_panic| "server thread panicked".to_string())?;
+            if response.request_id != 12 {
+                return Err(format!(
+                    "refusal carried request_id {}",
+                    response.request_id
+                ));
+            }
+            let limit = u64::try_from(MAX_FRAME_BODY_BYTES).map_err(|err| err.to_string())?;
+            if response.payload <= limit {
+                return Err(format!(
+                    "refusal must report the oversized body, got {} bytes",
+                    response.payload
+                ));
+            }
+            if !matches!(reason, ConnectionCloseReason::PeerClosed) {
                 return Err(format!("unexpected close reason: {reason:?}"));
             }
             Ok(())

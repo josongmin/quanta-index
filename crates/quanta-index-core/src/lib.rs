@@ -20,8 +20,9 @@ pub use domains::generation::{
 };
 pub use domains::hybrid::{ExplainQueryPort, HybridOrchestratorPolicy, HybridQueryPort};
 pub use domains::lexical::{
-    FileContributorIngestPort, FileOwnershipIngestPort, LexicalIndexBuildPort,
-    LexicalIndexOpenPort, LexicalPolicy, LexicalQueryPort, LexicalReadiness, LexicalSearcher,
+    FileContributorIngestPort, FileOwnershipIngestPort, LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE,
+    LexicalExecutionBudgetV1, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPolicy,
+    LexicalQueryPort, LexicalReadiness, LexicalSearchPageV1, LexicalSearcher,
     RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMetaIngestPort,
     RepoTopicIngestPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
 };

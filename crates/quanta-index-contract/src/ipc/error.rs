@@ -188,6 +188,15 @@ impl<'de> Deserialize<'de> for QueryErrorRepair {
     }
 }
 
+/// Wire code for a response the server computed but cannot put on the wire
+/// because its encoded body exceeds the frame limit (QI-BB-005).
+///
+/// Before this code the connection was simply closed after the work was
+/// done, so the caller could not tell an oversized answer from a crash. The
+/// typed refusal names both sizes so the caller can narrow `top_k` or the
+/// projection.
+pub const ERR_RESULT_TOO_LARGE: &str = "RESULT_TOO_LARGE";
+
 /// Wire-level typed error carried in every search-plane IPC response.
 ///
 /// `code` + `message` are the load-bearing fail-closed fields; `repair` is
@@ -199,6 +208,21 @@ pub struct SearchPlaneIpcError {
     pub code: String,
     pub message: String,
     pub repair: Option<QueryErrorRepair>,
+}
+
+impl SearchPlaneIpcError {
+    /// The refusal a transport sends in place of a response whose encoded
+    /// body of `encoded_bytes` exceeds `limit_bytes`.
+    #[must_use]
+    pub fn result_too_large(encoded_bytes: u64, limit_bytes: u64) -> Self {
+        Self {
+            code: ERR_RESULT_TOO_LARGE.to_string(),
+            message: format!(
+                "response body of {encoded_bytes} bytes exceeds the {limit_bytes}-byte frame limit; narrow top_k or the projection"
+            ),
+            repair: None,
+        }
+    }
 }
 
 const SEARCH_PLANE_IPC_ERROR_FIELDS: &[&str] = &["code", "message", "repair"];

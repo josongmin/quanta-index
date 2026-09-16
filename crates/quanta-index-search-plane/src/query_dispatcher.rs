@@ -16,12 +16,12 @@ use crate::{
 };
 use quanta_index_contract::lex::{CommitSha, LexicalErrorCode};
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, ClusterMembershipBatchReadRequestV1,
+    CandidateCountV1, ChunkId, ChunkRecord, ClusterMembershipBatchReadRequestV1,
     ClusterMembershipBatchReadResponseV1, CommitCandidate, DiffCandidate, EarlyStopReason,
     EngineTouched, GenerationPin, GenerationSelector, HistoryQueryRequest, HybridQueryRequest,
     HybridQueryResponse, HybridSeedCandidate, HybridSeedLane, HybridSeedQueryRequest,
-    HybridSeedQueryResponse, LQ_VERSION_TAG, LexicalCandidate, LqCase, LqCountBound, LqExpr,
-    LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqQuery, LqSpan, LqStructuralBlock,
+    HybridSeedQueryResponse, LQ_VERSION_TAG, LexicalCandidate, LqCase, LqExpr, LqFileScope,
+    LqFilter, LqLeaf, LqOptions, LqPatternType, LqQuery, LqSpan, LqStructuralBlock,
     LqStructuralConstraint, LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleRef,
     LqStructuralNode, LqType, LqYesNoOnly, ManifestGeneration, OwnerDocKind, PlannerStage,
     PlannerTraceEntry, QueryConstraintIntersectionV1, QueryConstraintSetV1, QueryErrorRepair,
@@ -41,9 +41,10 @@ use quanta_index_core::domains::structural::{
 };
 use quanta_index_core::{
     CoreError, ExplainQueryPort, HybridOrchestratorPolicy, HybridQueryPort, LexicalIndexOpenPort,
-    LexicalPolicy, LexicalQueryPort, LexicalSearcher, RepoMapPolicy, RepoMapQueryPort,
-    SemanticIndexOpenPort, SemanticPolicy, SemanticQueryPort, SemanticSearchHitV1,
-    SemanticSearcher, StructuralMatchBinding, StructuralMatchCandidate, StructuralService,
+    LexicalPolicy, LexicalQueryPort, LexicalSearchPageV1, LexicalSearcher, RepoMapPolicy,
+    RepoMapQueryPort, SemanticIndexOpenPort, SemanticPolicy, SemanticQueryPort,
+    SemanticSearchHitV1, SemanticSearcher, StructuralMatchBinding, StructuralMatchCandidate,
+    StructuralService,
     timeref::{parse_rev_at_time_spec, parse_search_timeref_ms},
     validate_query_top_k,
 };
@@ -131,33 +132,68 @@ fn probe_top_k_v1(top_k: u32) -> Result<u32, CoreError> {
     Ok(continuation_fetch_size(accepted))
 }
 
-fn requests_full_recall_v1(query: &LqQuery) -> bool {
-    matches!(query.options.count, Some(LqCountBound::All))
+/// Whether the query carries a `count` option, in which case the adapter
+/// reports an exact total and the page needs no continuation probe.
+fn requests_exact_total_v1(query: &LqQuery) -> bool {
+    query.options.count.is_some()
 }
 
+/// Rows to ask the lexical adapter for.
+///
+/// The page plus one continuation probe, unless the adapter will report an
+/// exact total anyway (QI-BB-005: `count:all` no longer widens the page; the
+/// total comes from a count collector and the rows stay bounded by `top_k`).
 fn lexical_fetch_limit_v1(query: &LqQuery, requested_top_k: u32) -> Result<u32, CoreError> {
-    if requests_full_recall_v1(query) {
-        return Ok(requested_top_k);
+    if requests_exact_total_v1(query) {
+        return validate_query_top_k(requested_top_k);
     }
     probe_top_k_v1(requested_top_k)
 }
 
-fn full_recall_window_v1(returned: usize) -> Result<QueryResultWindowV1, CoreError> {
+/// Window for a page whose adapter proved the exact match total.
+fn exact_total_window_v1(returned: usize, total: u64) -> Result<QueryResultWindowV1, CoreError> {
     let returned = u32::try_from(returned).map_err(|err| {
-        CoreError::InvalidContract(format!("full-recall result count exceeds u32: {err}"))
+        CoreError::InvalidContract(format!("lexical page row count exceeds u32: {err}"))
     })?;
-    Ok(QueryResultWindowV1::exact(returned))
+    if total < u64::from(returned) {
+        return Err(CoreError::InvalidContract(format!(
+            "lexical adapter reported an exact total of {total} below the {returned} rows it returned"
+        )));
+    }
+    QueryResultWindowV1::new(
+        returned,
+        CandidateCountV1::Exact(total),
+        total > u64::from(returned),
+    )
+    .map_err(|err| CoreError::InvalidContract(format!("lexical exact window: {err}")))
 }
 
-fn lexical_result_window_v1<T>(
-    query: &LqQuery,
-    results: &mut Vec<T>,
+/// Window for one lexical page: exact when the adapter proved the total,
+/// otherwise derived from the continuation probe.
+///
+/// `fetched_top_k` is what the adapter was asked for (the page, or the page
+/// plus its probe row); more rows than that is a contract defect. With an
+/// exact total the probe row, if any, is simply cut — the total already
+/// says whether more exist.
+fn lexical_page_window_v1(
+    page: &mut LexicalSearchPageV1,
     requested_top_k: u32,
+    fetched_top_k: u32,
 ) -> Result<QueryResultWindowV1, CoreError> {
-    if requests_full_recall_v1(query) {
-        return full_recall_window_v1(results.len());
+    let fetched = top_k_limit(fetched_top_k);
+    if page.candidates.len() > fetched {
+        return Err(CoreError::InvalidContract(format!(
+            "lexical adapter returned {} rows for a fetch of {fetched}",
+            page.candidates.len()
+        )));
     }
-    finalize_probe_window_v1(results, requested_top_k)
+    match page.exact_total {
+        Some(total) => {
+            page.candidates.truncate(top_k_limit(requested_top_k));
+            exact_total_window_v1(page.candidates.len(), total)
+        }
+        None => finalize_probe_window_v1(&mut page.candidates, requested_top_k),
+    }
 }
 
 fn hybrid_probe_top_k_v1(top_k: u32) -> Result<u32, CoreError> {
@@ -543,13 +579,14 @@ impl SearchPlaneDispatcher {
         let searcher =
             self.acquire_lexical(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let fetch_top_k = lexical_fetch_limit_v1(&prepared.query, request.top_k)?;
-        let mut results = searcher.search_constrained(
+        let mut page = searcher.search_constrained(
             &prepared.query,
             &prepared_language.constraints,
             fetch_top_k,
         )?;
-        stabilize_ranked_candidates(&mut results);
-        let window = lexical_result_window_v1(&prepared.query, &mut results, request.top_k)?;
+        stabilize_ranked_candidates(&mut page.candidates);
+        let window = lexical_page_window_v1(&mut page, request.top_k, fetch_top_k)?;
+        let results = page.candidates;
         let file_owner_rows = if wants_file_owner_projection {
             Some(searcher.project_file_owners(&results)?)
         } else {
@@ -600,13 +637,14 @@ impl SearchPlaneDispatcher {
         LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, materialized)?;
         let searcher =
             self.acquire_lexical(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
+        // The symbol port has no count collector yet, so a `count` option
+        // still yields a probe-derived (at-least) window here.
         let mut results = searcher.search_symbols_constrained(
             &prepared_language.query,
             &prepared_language.constraints,
-            lexical_fetch_limit_v1(&prepared_language.query, request.top_k)?,
+            probe_top_k_v1(request.top_k)?,
         )?;
-        let window =
-            lexical_result_window_v1(&prepared_language.query, &mut results, request.top_k)?;
+        let window = finalize_probe_window_v1(&mut results, request.top_k)?;
         Ok(SymbolQueryResponse {
             generation: pin,
             results,
@@ -667,11 +705,13 @@ impl SearchPlaneDispatcher {
         let mut lex_results = if prepared_language.force_empty {
             Vec::new()
         } else {
-            lex_searcher.search_constrained(
-                &prepared_language.query,
-                &prepared_language.constraints,
-                internal_top_k,
-            )?
+            lex_searcher
+                .search_constrained(
+                    &prepared_language.query,
+                    &prepared_language.constraints,
+                    internal_top_k,
+                )?
+                .candidates
         };
         stabilize_ranked_candidates(&mut lex_results);
         let lexical_ids = lex_results
@@ -760,11 +800,13 @@ impl SearchPlaneDispatcher {
             let mut scoped = if prepared_language.force_empty {
                 Vec::new()
             } else {
-                searcher.search_constrained(
-                    &prepared_language.query,
-                    &prepared_language.constraints,
-                    scope_cap,
-                )?
+                searcher
+                    .search_constrained(
+                        &prepared_language.query,
+                        &prepared_language.constraints,
+                        scope_cap,
+                    )?
+                    .candidates
             };
             if scoped.len() > top_k_limit(scope_cap) {
                 return Err(CoreError::InvalidContract(format!(
@@ -860,11 +902,13 @@ impl SearchPlaneDispatcher {
         let mut lex_results = if prepared_language.force_empty {
             Vec::new()
         } else {
-            lex_searcher.search_constrained(
-                &prepared_language.query,
-                &prepared_language.constraints,
-                internal_top_k,
-            )?
+            lex_searcher
+                .search_constrained(
+                    &prepared_language.query,
+                    &prepared_language.constraints,
+                    internal_top_k,
+                )?
+                .candidates
         };
         stabilize_ranked_candidates(&mut lex_results);
         let lexical_ids = lex_results
@@ -4807,11 +4851,11 @@ mod tests {
         BoundedQueryObsStore, ERR_HISTORY_GENERATION_NOT_READY, ERR_HISTORY_INVALID_TIMEREF,
         ERR_HISTORY_PRODUCER_UNAVAILABLE, ERR_HISTORY_SHARD_UNAVAILABLE, ERR_INVALID,
         ERR_NOT_IMPLEMENTED, ERR_NOT_READY, ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED,
-        FailClosedStructuralProducer, MAX_OBS_SAMPLES, QueryObsSink, SearchPlaneDispatcher,
-        build_hybrid_seed_candidates_v2, build_probe_query, classify_error_metric_name,
-        finalize_probe_window_v1, fused_window_v1, lexical_fetch_limit_v1,
-        lexical_result_window_v1, make_pin, prepare_language_query_v1, probe_top_k_v1,
-        runtime_generation_is_stale, runtime_seed_ids, validate_history_query,
+        FailClosedStructuralProducer, LexicalSearchPageV1, MAX_OBS_SAMPLES, QueryObsSink,
+        SearchPlaneDispatcher, build_hybrid_seed_candidates_v2, build_probe_query,
+        classify_error_metric_name, finalize_probe_window_v1, fused_window_v1,
+        lexical_fetch_limit_v1, lexical_page_window_v1, make_pin, prepare_language_query_v1,
+        probe_top_k_v1, runtime_generation_is_stale, runtime_seed_ids, validate_history_query,
         validate_runtime_metadata_query,
     };
     use crate::{
@@ -4920,28 +4964,66 @@ mod tests {
     }
 
     #[test]
-    fn count_all_bypasses_page_probe_and_preserves_exact_full_recall_window_v1() {
-        use quanta_index_contract::{LqCountBound, QueryResultWindowV1};
+    fn count_options_take_an_exact_window_from_the_adapter_and_never_widen_the_page_v1() {
+        use quanta_index_contract::{CandidateCountV1, LqCountBound};
 
         let mut query = build_probe_query("needle");
         query.options.count = Some(LqCountBound::All);
         assert_eq!(
             lexical_fetch_limit_v1(&query, 1).expect("count:all fetch limit"),
             1,
-            "the lexical adapter expands count:all from the caller's requested page"
+            "an exact total makes the continuation probe unnecessary"
+        );
+        query.options.count = None;
+        assert_eq!(
+            lexical_fetch_limit_v1(&query, 1).expect("plain fetch limit"),
+            2,
+            "without a count the page carries one probe row"
         );
 
-        let mut results = vec!["alpha", "beta", "gamma"];
-        assert_eq!(
-            lexical_result_window_v1(&query, &mut results, 1)
-                .expect("count:all full-recall window"),
-            QueryResultWindowV1::exact(3)
-        );
-        assert_eq!(
-            results,
-            vec!["alpha", "beta", "gamma"],
-            "count:all must not be truncated again by the dispatcher page window"
-        );
+        // The adapter proved three matches but the page is one row.
+        let mut page = LexicalSearchPageV1 {
+            candidates: vec![candidate("alpha", 1.0)],
+            exact_total: Some(3),
+        };
+        let window = lexical_page_window_v1(&mut page, 1, 1).expect("exact window");
+        assert_eq!(window.returned(), 1);
+        assert_eq!(window.candidate_count(), CandidateCountV1::Exact(3));
+        assert!(window.has_more());
+
+        // A projection fetched with a probe row still cuts to the page and
+        // keeps the exact total.
+        let mut projected = LexicalSearchPageV1 {
+            candidates: vec![candidate("alpha", 1.0), candidate("beta", 0.5)],
+            exact_total: Some(5),
+        };
+        let window = lexical_page_window_v1(&mut projected, 1, 2).expect("projected window");
+        assert_eq!(projected.candidates.len(), 1);
+        assert_eq!(window.candidate_count(), CandidateCountV1::Exact(5));
+        assert!(window.has_more());
+
+        // An adapter that returns more rows than it was asked for is a contract defect.
+        let mut oversized = LexicalSearchPageV1 {
+            candidates: vec![candidate("alpha", 1.0), candidate("beta", 0.5)],
+            exact_total: Some(2),
+        };
+        assert!(lexical_page_window_v1(&mut oversized, 1, 1).is_err());
+
+        // An exact total below the returned rows is a contract defect.
+        let mut contradictory = LexicalSearchPageV1 {
+            candidates: vec![candidate("alpha", 1.0), candidate("beta", 0.5)],
+            exact_total: Some(1),
+        };
+        assert!(lexical_page_window_v1(&mut contradictory, 5, 6).is_err());
+
+        // Without an exact total the probe row is consumed into `has_more`.
+        let mut probed = LexicalSearchPageV1 {
+            candidates: vec![candidate("alpha", 1.0), candidate("beta", 0.5)],
+            exact_total: None,
+        };
+        let window = lexical_page_window_v1(&mut probed, 1, 2).expect("probe window");
+        assert_eq!(probed.candidates.len(), 1);
+        assert!(window.has_more());
     }
 
     // CASE-COVERS: hybrid explanation honesty (semantic lane scoped to lexical).
@@ -5990,12 +6072,16 @@ mod tests {
             0
         }
 
-        fn search(
+        fn search_constrained(
             &self,
             _query: &quanta_index_contract::LqQuery,
+            _constraints: &QueryConstraintSetV1,
             _top_k: u32,
-        ) -> Result<Vec<LexicalCandidate>, CoreError> {
-            Ok(self.results.clone())
+        ) -> Result<LexicalSearchPageV1, CoreError> {
+            Ok(LexicalSearchPageV1 {
+                candidates: self.results.clone(),
+                exact_total: None,
+            })
         }
 
         fn project_file_owners(
@@ -6072,27 +6158,12 @@ mod tests {
             0
         }
 
-        fn search(
-            &self,
-            query: &quanta_index_contract::LqQuery,
-            top_k: u32,
-        ) -> Result<Vec<LexicalCandidate>, CoreError> {
-            let mut guard = self
-                .state
-                .lock()
-                .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?;
-            guard.search_top_ks.push(top_k);
-            guard.searched_queries.push(query.clone());
-            drop(guard);
-            Ok(self.results.clone())
-        }
-
         fn search_constrained(
             &self,
             query: &quanta_index_contract::LqQuery,
             constraints: &QueryConstraintSetV1,
             top_k: u32,
-        ) -> Result<Vec<LexicalCandidate>, CoreError> {
+        ) -> Result<LexicalSearchPageV1, CoreError> {
             let mut guard = self
                 .state
                 .lock()
@@ -6101,7 +6172,10 @@ mod tests {
             guard.searched_queries.push(query.clone());
             guard.searched_constraints.push(constraints.clone());
             drop(guard);
-            Ok(self.results.clone())
+            Ok(LexicalSearchPageV1 {
+                candidates: self.results.clone(),
+                exact_total: None,
+            })
         }
 
         fn project_file_owners(
