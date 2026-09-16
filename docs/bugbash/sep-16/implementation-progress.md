@@ -288,7 +288,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | --- | --- | --- |
 | W0 | **passed** | G0-L/G0-S/G0-C passed, G0-R baseline pinned(cooperative-only). §3 참조. timing 재측정만 `blocked: contended-host` |
 | W1 | planned | |
-| W2 | planned | G0-C PASS → SQLite(rusqlite bundled)로 진행. `quanta-index-catalog-probe`는 W2 landing 시 삭제 |
+| W2 | in_progress | QI-BB-029 preflight(§3.11) 완료. catalog 본체(session/receipt/SQLite)는 미착수 — G0-C PASS → SQLite(rusqlite bundled)로 진행. `quanta-index-catalog-probe`는 W2 landing 시 삭제 |
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + sealed manifest(§3.10) 완료. 남은 것: sharded sidecar 포맷(O(delta) write), ANN versioned artifact(QI-BB-027), semantic seal manifest 대칭 |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), QI-BB-024 regex cache, streaming projection collector |
 | W5 | planned | G0-R 결론에 따라 cooperative checkpoint 설계 |
@@ -767,6 +767,36 @@ activation/restart validator(`validate_generation_identity`)는 identity + `Inde
 | sidecar 없는 generation의 명시적 capability | manifest `text_authority=false` + 있으면 안 되는 sidecar 등장 시 거부(`verify` 분기) |
 | activation 직후 동일 검증 handle로 query (보완 #3 후반) | **후속** — validator port가 handle을 반환하지 않는다. registry가 있으니 lifecycle이 activation 시 `acquire`로 warm 하는 것은 가능하지만 "재사용"은 port 변경이 필요 |
 | fsync/rename crash point 매트릭스 | 부분 — 순서(sidecar → manifest → identity)로 half-promoted 상태가 unsealed로 남는 것은 구조적으로 보장; crash 주입 fixture(§12.2)는 W7 qualification |
+
+## 3.11 QI-BB-029 — cross-track 계약을 mutation 전에 검증한다 (구현 완료)
+
+**진단 확정**: mode/base 쌍을 lexical은 허용하고 semantic은 거부하는 조합(`ReplaceGeneration +
+base_generation`)이 있었고, 빈 digest는 build/authority까지 통과한 뒤 activation identity에서만
+거부됐다. delta base는 lexical이 "디렉터리 존재"만 보고 clone·seal한 뒤 semantic이 거부할 수 있었다.
+
+**구현**:
+- contract `SearchCorpusIngestBatch::validate_v1()` + `SearchCorpusBatchShapeErrorV1` —
+  mode/base 형태(Replace는 base 없음, Delta는 base 필수), `base < generation`, `manifest_digest` /
+  `batch_digest`는 non-empty printable ASCII token. materializer가 **lock을 잡기 전에** 호출
+  (`SEARCH_CORPUS_BATCH_SHAPE_INVALID`).
+- materializer `preflight_delta_base_v1` — delta의 base를 **양 track 모두** exact sealed
+  identity로 검증한다: digest는 ledger의 sealed-track 기록에서 가져오고(`Ledger::sealed_track_identity_digest`),
+  없으면 `SEARCH_CORPUS_DELTA_BASE_NOT_SEALED`(디렉터리가 있어도 신뢰하지 않음), 있으면
+  `validate_generation_identity`(lexical은 §3.10 manifest 검증 포함)로 물리 상태를 확인. 어느
+  것도 어떤 adapter보다 먼저 실행된다.
+- 보완 #3/#4(half-sealed 수렴)는 감사 HEAD 이후 이미 들어와 있던 `SealedGenerationBuildPlanV1`
+  (`exact_lexical_missing_semantic_retry_builds_only_missing_track` 등)이 담당 — 이번엔 추가하지 않음.
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| invalid mode/base, 빈 digest, unsealed base, mismatched base가 lexical·semantic·authority bytes 0개 변경 | `ingest_dispatcher::tests::malformed_or_baseless_batches_change_zero_bytes` — recording fake builder 2개 + recording authority가 전부 비어 있음을 매 거부 후 확인 |
+| 계약 형태 검증 | `ipc::ingest::tests::search_corpus_batch_shape_is_validated_before_any_adapter` |
+| 재시도 수렴 | 기존 3개 retry test 유지 |
+
+**정직한 비용**: non-seal delta batch도 매번 base를 물리 검증하므로 base sidecar 해시 비용이 batch당
+든다(§3.10). registry처럼 검증 결과를 (key, digest)로 기억하는 것은 후속.
 
 ## 4. Finding 상태 (QI-BB-001–032)
 

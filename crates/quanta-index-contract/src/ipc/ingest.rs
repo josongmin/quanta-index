@@ -721,7 +721,100 @@ impl<'de> Deserialize<'de> for SearchCorpusIngestBatch {
     }
 }
 
+/// A batch whose shape the contract refuses before any adapter observes it
+/// (QI-BB-029).
+///
+/// These are the defects that used to be discovered one track at a time,
+/// after the other track had already mutated: a mode/base pairing that one
+/// backend accepts and the other refuses, a digest the activation identity
+/// can never carry, a base that cannot precede its target.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SearchCorpusBatchShapeErrorV1 {
+    /// `ReplaceGeneration` names a base, or `Delta` names none.
+    ModeBaseMismatch {
+        mode: BatchIngestMode,
+        base_generation: Option<ManifestGeneration>,
+    },
+    /// A delta base must be strictly older than its target.
+    BaseNotOlderThanTarget {
+        base_generation: ManifestGeneration,
+        generation: ManifestGeneration,
+    },
+    /// `manifest_digest` or `batch_digest` is empty or not a bare printable
+    /// ASCII token; the activation identity and the retention record both
+    /// key on it and neither can carry such a value.
+    DigestNotCanonical { field: &'static str },
+}
+
+impl fmt::Display for SearchCorpusBatchShapeErrorV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ModeBaseMismatch {
+                mode,
+                base_generation,
+            } => write!(
+                formatter,
+                "batch mode {mode:?} does not admit base_generation={base_generation:?}: ReplaceGeneration takes no base, Delta requires one"
+            ),
+            Self::BaseNotOlderThanTarget {
+                base_generation,
+                generation,
+            } => write!(
+                formatter,
+                "delta base generation {} must be older than target generation {}",
+                base_generation.get(),
+                generation.get()
+            ),
+            Self::DigestNotCanonical { field } => write!(
+                formatter,
+                "{field} must be a non-empty printable ASCII token without whitespace"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SearchCorpusBatchShapeErrorV1 {}
+
+fn is_canonical_digest_token(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_graphic())
+}
+
 impl SearchCorpusIngestBatch {
+    /// Validate everything about the batch that needs no storage access:
+    /// mode/base shape, base ordering, canonical digests and the surface
+    /// mutation authority. The materializer runs this before taking any
+    /// lock, so a malformed batch changes zero bytes on either track.
+    pub fn validate_v1(&self) -> Result<(), SearchCorpusBatchShapeErrorV1> {
+        match (self.mode, self.base_generation) {
+            (BatchIngestMode::ReplaceGeneration, None) => {}
+            (BatchIngestMode::Delta, Some(base_generation)) => {
+                if base_generation >= self.generation {
+                    return Err(SearchCorpusBatchShapeErrorV1::BaseNotOlderThanTarget {
+                        base_generation,
+                        generation: self.generation,
+                    });
+                }
+            }
+            (mode, base_generation) => {
+                return Err(SearchCorpusBatchShapeErrorV1::ModeBaseMismatch {
+                    mode,
+                    base_generation,
+                });
+            }
+        }
+        if !is_canonical_digest_token(&self.manifest_digest) {
+            return Err(SearchCorpusBatchShapeErrorV1::DigestNotCanonical {
+                field: "manifest_digest",
+            });
+        }
+        if !is_canonical_digest_token(&self.batch_digest) {
+            return Err(SearchCorpusBatchShapeErrorV1::DigestNotCanonical {
+                field: "batch_digest",
+            });
+        }
+        Ok(())
+    }
+
     /// Validate the mutation authority before any adapter observes the batch.
     /// A whole-surface clear and a scope mutation on that surface cannot be
     /// ordered safely without creating producer-dependent semantics.
@@ -5783,5 +5876,64 @@ mod tests {
             return;
         };
         assert!(err.to_string().contains("unknown variant"));
+    }
+
+    // QI-BB-029: the batch shape is refused by the contract before any
+    // adapter observes it, one defect per refusal, and a well-formed batch
+    // of either mode passes.
+    #[test]
+    fn search_corpus_batch_shape_is_validated_before_any_adapter() -> TestRes {
+        let mut batch = fixture_search_corpus_batch();
+        batch.validate_v1()?;
+
+        batch.base_generation = Some(ManifestGeneration::new(1));
+        assert!(matches!(
+            batch.validate_v1(),
+            Err(SearchCorpusBatchShapeErrorV1::ModeBaseMismatch {
+                mode: BatchIngestMode::ReplaceGeneration,
+                ..
+            })
+        ));
+
+        batch.mode = BatchIngestMode::Delta;
+        batch.base_generation = None;
+        assert!(matches!(
+            batch.validate_v1(),
+            Err(SearchCorpusBatchShapeErrorV1::ModeBaseMismatch {
+                mode: BatchIngestMode::Delta,
+                base_generation: None,
+            })
+        ));
+
+        batch.base_generation = Some(batch.generation);
+        assert!(matches!(
+            batch.validate_v1(),
+            Err(SearchCorpusBatchShapeErrorV1::BaseNotOlderThanTarget { .. })
+        ));
+
+        batch.base_generation = Some(ManifestGeneration::new(
+            batch.generation.get().saturating_sub(1),
+        ));
+        batch.validate_v1()?;
+
+        for (field, value) in [
+            ("manifest_digest", ""),
+            ("manifest_digest", "has space"),
+            ("batch_digest", "tab\there"),
+            ("batch_digest", "\u{e9}"),
+        ] {
+            let mut malformed = fixture_search_corpus_batch();
+            if field == "manifest_digest" {
+                malformed.manifest_digest = value.to_string();
+            } else {
+                malformed.batch_digest = value.to_string();
+            }
+            assert_eq!(
+                malformed.validate_v1(),
+                Err(SearchCorpusBatchShapeErrorV1::DigestNotCanonical { field }),
+                "value {value:?}"
+            );
+        }
+        Ok(())
     }
 }

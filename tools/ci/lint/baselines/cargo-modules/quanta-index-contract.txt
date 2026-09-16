@@ -217,6 +217,7 @@ crate quanta_index_contract
 │   │   ├── struct RuntimeSnapshotRecord: pub
 │   │   ├── struct RuntimeSnapshotRecordVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
+│   │   ├── enum SearchCorpusBatchShapeErrorV1: pub
 │   │   ├── struct SearchCorpusIngestBatch: pub
 │   │   ├── struct SearchCorpusIngestBatchVisitor: pub(self)
 │   │   │   └── type Value: pub(self)

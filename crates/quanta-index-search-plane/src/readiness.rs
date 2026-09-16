@@ -596,6 +596,26 @@ impl Ledger {
             .and_then(|state| state.manifest_digest.as_deref())
     }
 
+    /// The digest the ledger recorded when this track generation was sealed,
+    /// if it ever was. Retention prunes the record when the generation is
+    /// reaped, so a reaped base reads as never sealed here.
+    pub(crate) fn sealed_track_identity_digest(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        track: SearchPlaneTrackKind,
+        generation: ManifestGeneration,
+    ) -> Option<String> {
+        self.sealed_search_track_identities
+            .get(&Self::track_generation_key(
+                repo_id,
+                revision_id,
+                track,
+                generation,
+            ))
+            .cloned()
+    }
+
     pub(crate) fn validate_historically_sealed_track_identity(
         &self,
         candidate: &GenerationSnapshot,

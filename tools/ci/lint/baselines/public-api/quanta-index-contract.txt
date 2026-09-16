@@ -1110,6 +1110,33 @@ impl core::marker::Unpin for quanta_index_contract::SearchCorpusActivationValida
 impl core::marker::UnsafeUnpin for quanta_index_contract::SearchCorpusActivationValidationErrorV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchCorpusActivationValidationErrorV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchCorpusActivationValidationErrorV1
+pub enum quanta_index_contract::ipc::SearchCorpusBatchShapeErrorV1
+pub quanta_index_contract::ipc::SearchCorpusBatchShapeErrorV1::BaseNotOlderThanTarget
+pub quanta_index_contract::ipc::SearchCorpusBatchShapeErrorV1::BaseNotOlderThanTarget::base_generation: quanta_index_contract_base::ids::ManifestGeneration
+pub quanta_index_contract::ipc::SearchCorpusBatchShapeErrorV1::BaseNotOlderThanTarget::generation: quanta_index_contract_base::ids::ManifestGeneration
+pub quanta_index_contract::ipc::SearchCorpusBatchShapeErrorV1::DigestNotCanonical
+pub quanta_index_contract::ipc::SearchCorpusBatchShapeErrorV1::DigestNotCanonical::field: &'static str
+pub quanta_index_contract::ipc::SearchCorpusBatchShapeErrorV1::ModeBaseMismatch
+pub quanta_index_contract::ipc::SearchCorpusBatchShapeErrorV1::ModeBaseMismatch::base_generation: core::option::Option<quanta_index_contract_base::ids::ManifestGeneration>
+pub quanta_index_contract::ipc::SearchCorpusBatchShapeErrorV1::ModeBaseMismatch::mode: quanta_index_contract::BatchIngestMode
+impl core::clone::Clone for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+pub fn quanta_index_contract::SearchCorpusBatchShapeErrorV1::clone(&self) -> quanta_index_contract::SearchCorpusBatchShapeErrorV1
+impl core::cmp::Eq for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+impl core::cmp::PartialEq for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+pub fn quanta_index_contract::SearchCorpusBatchShapeErrorV1::eq(&self, other: &quanta_index_contract::SearchCorpusBatchShapeErrorV1) -> bool
+impl core::error::Error for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+impl core::fmt::Debug for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+pub fn quanta_index_contract::SearchCorpusBatchShapeErrorV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+pub fn quanta_index_contract::SearchCorpusBatchShapeErrorV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+impl core::marker::Freeze for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+impl core::marker::Send for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+impl core::marker::Sync for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+impl core::marker::Unpin for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchCorpusBatchShapeErrorV1
 pub enum quanta_index_contract::ipc::SearchCorpusGenerationIdentityValidationErrorV1
 pub quanta_index_contract::ipc::SearchCorpusGenerationIdentityValidationErrorV1::DigestMismatch
 pub quanta_index_contract::ipc::SearchCorpusGenerationIdentityValidationErrorV1::EmptyDigest
@@ -2317,6 +2344,7 @@ pub quanta_index_contract::ipc::SearchCorpusIngestBatch::semantic_tombstone_scop
 pub quanta_index_contract::ipc::SearchCorpusIngestBatch::tombstone_scopes: alloc::vec::Vec<quanta_index_contract::SearchCorpusTombstoneScope>
 impl quanta_index_contract::SearchCorpusIngestBatch
 pub fn quanta_index_contract::SearchCorpusIngestBatch::validate_surface_mutations_v1(&self) -> core::result::Result<(), quanta_index_contract::SearchCorpusSurfaceMutationConflictV1>
+pub fn quanta_index_contract::SearchCorpusIngestBatch::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::SearchCorpusBatchShapeErrorV1>
 impl core::clone::Clone for quanta_index_contract::SearchCorpusIngestBatch
 pub fn quanta_index_contract::SearchCorpusIngestBatch::clone(&self) -> quanta_index_contract::SearchCorpusIngestBatch
 impl core::cmp::Eq for quanta_index_contract::SearchCorpusIngestBatch
@@ -7061,6 +7089,33 @@ impl core::marker::Unpin for quanta_index_contract::SearchCorpusActivationValida
 impl core::marker::UnsafeUnpin for quanta_index_contract::SearchCorpusActivationValidationErrorV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchCorpusActivationValidationErrorV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchCorpusActivationValidationErrorV1
+pub enum quanta_index_contract::SearchCorpusBatchShapeErrorV1
+pub quanta_index_contract::SearchCorpusBatchShapeErrorV1::BaseNotOlderThanTarget
+pub quanta_index_contract::SearchCorpusBatchShapeErrorV1::BaseNotOlderThanTarget::base_generation: quanta_index_contract_base::ids::ManifestGeneration
+pub quanta_index_contract::SearchCorpusBatchShapeErrorV1::BaseNotOlderThanTarget::generation: quanta_index_contract_base::ids::ManifestGeneration
+pub quanta_index_contract::SearchCorpusBatchShapeErrorV1::DigestNotCanonical
+pub quanta_index_contract::SearchCorpusBatchShapeErrorV1::DigestNotCanonical::field: &'static str
+pub quanta_index_contract::SearchCorpusBatchShapeErrorV1::ModeBaseMismatch
+pub quanta_index_contract::SearchCorpusBatchShapeErrorV1::ModeBaseMismatch::base_generation: core::option::Option<quanta_index_contract_base::ids::ManifestGeneration>
+pub quanta_index_contract::SearchCorpusBatchShapeErrorV1::ModeBaseMismatch::mode: quanta_index_contract::BatchIngestMode
+impl core::clone::Clone for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+pub fn quanta_index_contract::SearchCorpusBatchShapeErrorV1::clone(&self) -> quanta_index_contract::SearchCorpusBatchShapeErrorV1
+impl core::cmp::Eq for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+impl core::cmp::PartialEq for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+pub fn quanta_index_contract::SearchCorpusBatchShapeErrorV1::eq(&self, other: &quanta_index_contract::SearchCorpusBatchShapeErrorV1) -> bool
+impl core::error::Error for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+impl core::fmt::Debug for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+pub fn quanta_index_contract::SearchCorpusBatchShapeErrorV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+pub fn quanta_index_contract::SearchCorpusBatchShapeErrorV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+impl core::marker::Freeze for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+impl core::marker::Send for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+impl core::marker::Sync for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+impl core::marker::Unpin for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchCorpusBatchShapeErrorV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchCorpusBatchShapeErrorV1
 pub enum quanta_index_contract::SearchCorpusGenerationIdentityValidationErrorV1
 pub quanta_index_contract::SearchCorpusGenerationIdentityValidationErrorV1::DigestMismatch
 pub quanta_index_contract::SearchCorpusGenerationIdentityValidationErrorV1::EmptyDigest
@@ -9635,6 +9690,7 @@ pub quanta_index_contract::SearchCorpusIngestBatch::semantic_tombstone_scopes: a
 pub quanta_index_contract::SearchCorpusIngestBatch::tombstone_scopes: alloc::vec::Vec<quanta_index_contract::SearchCorpusTombstoneScope>
 impl quanta_index_contract::SearchCorpusIngestBatch
 pub fn quanta_index_contract::SearchCorpusIngestBatch::validate_surface_mutations_v1(&self) -> core::result::Result<(), quanta_index_contract::SearchCorpusSurfaceMutationConflictV1>
+pub fn quanta_index_contract::SearchCorpusIngestBatch::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::SearchCorpusBatchShapeErrorV1>
 impl core::clone::Clone for quanta_index_contract::SearchCorpusIngestBatch
 pub fn quanta_index_contract::SearchCorpusIngestBatch::clone(&self) -> quanta_index_contract::SearchCorpusIngestBatch
 impl core::cmp::Eq for quanta_index_contract::SearchCorpusIngestBatch

@@ -47,6 +47,10 @@ const ERR_NOT_FOUND: &str = "NOT_FOUND";
 const ERR_NOT_IMPLEMENTED: &str = "NOT_IMPLEMENTED";
 const ERR_INTERNAL: &str = "INTERNAL";
 const ERR_SEARCH_CORPUS_GENERATION_CONFLICT: &str = "SEARCH_CORPUS_GENERATION_CONFLICT";
+/// The batch's own shape is invalid; nothing was mutated (QI-BB-029).
+const ERR_SEARCH_CORPUS_BATCH_SHAPE: &str = "SEARCH_CORPUS_BATCH_SHAPE_INVALID";
+/// A delta names a base the ledger never sealed; nothing was mutated.
+const ERR_SEARCH_CORPUS_DELTA_BASE_NOT_SEALED: &str = "SEARCH_CORPUS_DELTA_BASE_NOT_SEALED";
 
 pub trait HistoryIngestPort: Send + Sync {
     fn publish_batch(&self, batch: &HistoryIngestBatch) -> Result<BatchPublishReceipt, CoreError>;
@@ -211,6 +215,10 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
         &self,
         batch: &SearchCorpusIngestBatch,
     ) -> Result<BatchPublishReceipt, CoreError> {
+        batch.validate_v1().map_err(|err| CoreError::Typed {
+            code: ERR_SEARCH_CORPUS_BATCH_SHAPE.to_string(),
+            message: format!("direct search-corpus materialize: {err}"),
+        })?;
         batch.validate_surface_mutations_v1().map_err(|err| {
             CoreError::InvalidContract(format!("direct search-corpus materialize: {err}"))
         })?;
@@ -225,6 +233,10 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
                 "direct search-corpus materialize: operation-lock stripe {stripe} poisoned: {err}"
             ))
         })?;
+
+        if let Some(base_generation) = batch.base_generation {
+            self.preflight_delta_base_v1(batch, base_generation)?;
+        }
 
         if !batch.seal {
             let (lexical, semantic) = generation_pair_from_batch_v1(batch);
@@ -307,6 +319,76 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
 }
 
 impl DirectSearchCorpusMaterializer {
+    /// A delta may only build on a base that both tracks hold as the exact
+    /// sealed identity the ledger recorded (QI-BB-029).
+    ///
+    /// Runs before any adapter mutates, so an absent, unsealed or mismatched
+    /// base refuses the batch with zero bytes changed instead of letting the
+    /// lexical track clone and seal on it and the semantic track refuse it
+    /// afterwards. The digest comes from the ledger's sealed-track record;
+    /// a base the ledger never sealed is refused outright rather than
+    /// trusted because a directory happens to exist.
+    fn preflight_delta_base_v1(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        base_generation: ManifestGeneration,
+    ) -> Result<(), CoreError> {
+        let tracks = [
+            (
+                SearchPlaneTrackKind::Lexical,
+                &self.lexical_generation_validator,
+                "lexical",
+            ),
+            (
+                SearchPlaneTrackKind::Semantic,
+                &self.semantic_generation_validator,
+                "semantic",
+            ),
+        ];
+        for (track, validator, label) in tracks {
+            // Read the ledger only long enough to copy the digest out; the
+            // physical validation below reads files and must not hold it.
+            let recorded = self
+                .ledger
+                .read()
+                .map_err(|err| {
+                    CoreError::Storage(format!(
+                        "direct search-corpus materialize: ledger poisoned while preflighting delta base: {err}"
+                    ))
+                })?
+                .sealed_track_identity_digest(
+                    &batch.repo_id,
+                    &batch.revision_id,
+                    track,
+                    base_generation,
+                );
+            let Some(digest) = recorded else {
+                return Err(CoreError::Typed {
+                    code: ERR_SEARCH_CORPUS_DELTA_BASE_NOT_SEALED.to_string(),
+                    message: format!(
+                        "direct search-corpus materialize: delta base generation {} is not a sealed {label} track for repo={} revision={}; refusing before any mutation",
+                        base_generation.get(),
+                        batch.repo_id.as_str(),
+                        batch.revision_id.as_str(),
+                    ),
+                });
+            };
+            let base = GenerationSnapshot {
+                repo_id: batch.repo_id.clone(),
+                revision_id: batch.revision_id.clone(),
+                track,
+                manifest_generation: base_generation,
+                manifest_digest: digest,
+            };
+            validate_physical_generation_v1(
+                validator.as_ref(),
+                &base,
+                &format!("{label} delta base"),
+            )?;
+        }
+        Ok(())
+    }
+
     /// Computes the convergent per-track recovery plan before any mutation.
     fn preflight_sealed_generation_v1(
         &self,
@@ -1607,6 +1689,153 @@ mod tests {
         ) -> Result<Vec<quanta_index_contract::LexicalCandidate>, CoreError> {
             Err(CoreError::NotImplemented("pin-only handle".to_string()))
         }
+    }
+
+    /// One materializer over recording fakes, plus the fakes, so a test can
+    /// prove that a refused batch touched nothing.
+    struct ZeroMutationProbe {
+        materializer: DirectSearchCorpusMaterializer,
+        lexical_builder: Arc<FakeSearchCorpusBuilder>,
+        semantic_builder: Arc<FakeSemanticBuilder>,
+        authority: Arc<RecordingSearchCorpusAuthority>,
+        ledger: Arc<RwLock<Ledger>>,
+    }
+
+    impl ZeroMutationProbe {
+        fn new(validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>) -> Self {
+            let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
+            let semantic_builder = Arc::new(FakeSemanticBuilder::default());
+            let authority = Arc::new(RecordingSearchCorpusAuthority::default());
+            let ledger = Arc::new(RwLock::new(Ledger::new()));
+            let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
+                Arc::new(DirectSemanticMaterializer::new(
+                    semantic_builder.clone(),
+                    Arc::new(RwLock::new(Ledger::new())),
+                ));
+            let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
+                SearchCorpusMaterializerParts {
+                    builder: lexical_builder.clone(),
+                    ledger: Arc::clone(&ledger),
+                    semantic_ingest: semantic_materializer,
+                    semantic_embedder: Arc::new(crate::HashingQueryTextEmbedder::new(
+                        SEARCH_OWNED_SEMANTIC_DIMENSION,
+                    )),
+                    authority: authority.clone(),
+                    lexical_generation_validator: Arc::clone(&validator),
+                    semantic_generation_validator: validator,
+                    lexical_incomplete_discard: test_incomplete_generation_discard(),
+                    semantic_incomplete_discard: test_incomplete_generation_discard(),
+                    lexical_reclaim: no_storage_sealed_reclaim(),
+                    semantic_reclaim: no_storage_sealed_reclaim(),
+                    snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+                },
+            );
+            Self {
+                materializer,
+                lexical_builder,
+                semantic_builder,
+                authority,
+                ledger,
+            }
+        }
+
+        fn assert_nothing_touched(&self, what: &str) -> TestRes {
+            let lexical = self
+                .lexical_builder
+                .batches
+                .lock()
+                .map_err(|err| format!("fake lexical builder poisoned: {err}"))?
+                .len();
+            let semantic = self.semantic_builder.take()?.len();
+            let recorded = self
+                .authority
+                .identities
+                .lock()
+                .map_err(|err| format!("recording authority poisoned: {err}"))?
+                .len();
+            if lexical != 0 || semantic != 0 || recorded != 0 {
+                return Err(format!(
+                    "{what}: refused batch still mutated: lexical_builds={lexical} semantic_builds={semantic} authority_records={recorded}"
+                )
+                .into());
+            }
+            Ok(())
+        }
+    }
+
+    /// A validator that reports the base as sealed under a different digest.
+    struct MismatchedGeneration;
+
+    impl GenerationIdentityValidatePort for MismatchedGeneration {
+        fn validate_generation_identity(
+            &self,
+            candidate: &GenerationSnapshot,
+        ) -> Result<(), CoreError> {
+            Err(CoreError::Typed {
+                code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
+                message: format!(
+                    "injected digest mismatch for {:?} generation {}",
+                    candidate.track,
+                    candidate.manifest_generation.get()
+                ),
+            })
+        }
+    }
+
+    /// QI-BB-029: refused batches change nothing.
+    ///
+    /// A batch the contract refuses, a delta on a base the ledger never
+    /// sealed, and a delta on a base whose physical identity disagrees with
+    /// the ledger all refuse before either builder or the authority is
+    /// touched.
+    #[test]
+    fn malformed_or_baseless_batches_change_zero_bytes() -> TestRes {
+        let probe = ZeroMutationProbe::new(always_valid_generation());
+
+        let mut malformed = fixture_search_corpus_batch()?;
+        malformed.base_generation = Some(ManifestGeneration::new(3));
+        match probe.materializer.publish_batch(&malformed) {
+            Err(CoreError::Typed { code, .. }) if code == ERR_SEARCH_CORPUS_BATCH_SHAPE => {}
+            other => return Err(format!("mode/base mismatch answered {other:?}").into()),
+        }
+        probe.assert_nothing_touched("mode/base mismatch")?;
+
+        let mut empty_digest = fixture_search_corpus_batch()?;
+        empty_digest.manifest_digest = String::new();
+        match probe.materializer.publish_batch(&empty_digest) {
+            Err(CoreError::Typed { code, .. }) if code == ERR_SEARCH_CORPUS_BATCH_SHAPE => {}
+            other => return Err(format!("empty digest answered {other:?}").into()),
+        }
+        probe.assert_nothing_touched("empty digest")?;
+
+        let mut unsealed_base = fixture_search_corpus_batch()?;
+        unsealed_base.mode = BatchIngestMode::Delta;
+        unsealed_base.base_generation = Some(ManifestGeneration::new(3));
+        match probe.materializer.publish_batch(&unsealed_base) {
+            Err(CoreError::Typed { code, .. })
+                if code == ERR_SEARCH_CORPUS_DELTA_BASE_NOT_SEALED => {}
+            other => return Err(format!("unsealed base answered {other:?}").into()),
+        }
+        probe.assert_nothing_touched("base never sealed")?;
+
+        // The ledger knows the base, but the physical identity disagrees.
+        let mismatched = ZeroMutationProbe::new(Arc::new(MismatchedGeneration));
+        mismatched
+            .ledger
+            .write()
+            .map_err(|err| format!("ledger poisoned: {err}"))?
+            .record_historically_sealed_search_corpus(
+                &unsealed_base.repo_id,
+                &unsealed_base.revision_id,
+                ManifestGeneration::new(3),
+                "manifest:base",
+            );
+        match mismatched.materializer.publish_batch(&unsealed_base) {
+            Err(CoreError::Typed { code, .. }) if code == ERR_SEARCH_CORPUS_GENERATION_CONFLICT => {
+            }
+            other => return Err(format!("mismatched base answered {other:?}").into()),
+        }
+        mismatched.assert_nothing_touched("base identity mismatch")
     }
 
     /// The physical reclaim protocol under pins and orphans.
