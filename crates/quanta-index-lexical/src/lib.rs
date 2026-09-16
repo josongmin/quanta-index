@@ -4228,6 +4228,7 @@ impl RepoCommitRecencyIngestPort for LexicalAdapter {
         persist_repo_commit_recency_snapshot(self.repo_commit_recency_path(&key).as_path(), batch)?;
         let mut receipt = quanta_index_contract::BatchPublishReceipt::empty_for(
             batch.generation,
+            None,
             batch.batch_digest.clone(),
         );
         for _entry in &batch.entries {
@@ -4257,6 +4258,7 @@ impl RepoMetaIngestPort for LexicalAdapter {
         persist_repo_meta_snapshot(self.repo_meta_path(&key).as_path(), batch)?;
         let mut receipt = quanta_index_contract::BatchPublishReceipt::empty_for(
             batch.generation,
+            None,
             batch.batch_digest.clone(),
         );
         for _entry in &batch.entries {
@@ -4286,6 +4288,7 @@ impl RepoTopicIngestPort for LexicalAdapter {
         persist_repo_topic_snapshot(self.repo_topic_path(&key).as_path(), batch)?;
         let mut receipt = quanta_index_contract::BatchPublishReceipt::empty_for(
             batch.generation,
+            None,
             batch.batch_digest.clone(),
         );
         for _entry in &batch.entries {
@@ -4315,6 +4318,7 @@ impl RepoDescriptionIngestPort for LexicalAdapter {
         persist_repo_description_snapshot(self.repo_description_path(&key).as_path(), batch)?;
         let mut receipt = quanta_index_contract::BatchPublishReceipt::empty_for(
             batch.generation,
+            None,
             batch.batch_digest.clone(),
         );
         for _entry in &batch.entries {
@@ -4344,6 +4348,7 @@ impl FileOwnershipIngestPort for LexicalAdapter {
         persist_file_ownership_snapshot(self.file_ownership_path(&key).as_path(), batch)?;
         let mut receipt = quanta_index_contract::BatchPublishReceipt::empty_for(
             batch.generation,
+            None,
             batch.batch_digest.clone(),
         );
         for _entry in &batch.entries {
@@ -4373,6 +4378,7 @@ impl FileContributorIngestPort for LexicalAdapter {
         persist_file_contributor_snapshot(self.file_contributor_path(&key).as_path(), batch)?;
         let mut receipt = quanta_index_contract::BatchPublishReceipt::empty_for(
             batch.generation,
+            None,
             batch.batch_digest.clone(),
         );
         for _entry in &batch.entries {

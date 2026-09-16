@@ -1527,15 +1527,20 @@ pub struct quanta_index_contract::ipc::BatchPublishReceipt
 pub quanta_index_contract::ipc::BatchPublishReceipt::accepted_clear_surfaces: u32
 pub quanta_index_contract::ipc::BatchPublishReceipt::accepted_replace_scopes: u32
 pub quanta_index_contract::ipc::BatchPublishReceipt::accepted_tombstone_scopes: u32
+pub quanta_index_contract::ipc::BatchPublishReceipt::applied: bool
+pub quanta_index_contract::ipc::BatchPublishReceipt::batch_digest: alloc::string::String
+pub quanta_index_contract::ipc::BatchPublishReceipt::durable_sequence: u64
 pub quanta_index_contract::ipc::BatchPublishReceipt::generation: quanta_index_contract_base::ids::ManifestGeneration
-pub quanta_index_contract::ipc::BatchPublishReceipt::manifest_digest: alloc::string::String
+pub quanta_index_contract::ipc::BatchPublishReceipt::manifest_digest: core::option::Option<alloc::string::String>
 pub quanta_index_contract::ipc::BatchPublishReceipt::sealed: bool
 impl quanta_index_contract::BatchPublishReceipt
 pub fn quanta_index_contract::BatchPublishReceipt::accept_clear_surface(&mut self)
 pub fn quanta_index_contract::BatchPublishReceipt::accept_replace_scope(&mut self)
 pub fn quanta_index_contract::BatchPublishReceipt::accept_tombstone_scope(&mut self)
-pub fn quanta_index_contract::BatchPublishReceipt::empty_for(generation: quanta_index_contract_base::ids::ManifestGeneration, manifest_digest: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn quanta_index_contract::BatchPublishReceipt::empty_for(generation: quanta_index_contract_base::ids::ManifestGeneration, manifest_digest: core::option::Option<alloc::string::String>, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
 pub fn quanta_index_contract::BatchPublishReceipt::mark_sealed(&mut self)
+pub fn quanta_index_contract::BatchPublishReceipt::recorded_at(self, durable_sequence: u64) -> Self
+pub fn quanta_index_contract::BatchPublishReceipt::replayed(self) -> Self
 impl core::clone::Clone for quanta_index_contract::BatchPublishReceipt
 pub fn quanta_index_contract::BatchPublishReceipt::clone(&self) -> quanta_index_contract::BatchPublishReceipt
 impl core::cmp::Eq for quanta_index_contract::BatchPublishReceipt
@@ -7532,15 +7537,20 @@ pub struct quanta_index_contract::BatchPublishReceipt
 pub quanta_index_contract::BatchPublishReceipt::accepted_clear_surfaces: u32
 pub quanta_index_contract::BatchPublishReceipt::accepted_replace_scopes: u32
 pub quanta_index_contract::BatchPublishReceipt::accepted_tombstone_scopes: u32
+pub quanta_index_contract::BatchPublishReceipt::applied: bool
+pub quanta_index_contract::BatchPublishReceipt::batch_digest: alloc::string::String
+pub quanta_index_contract::BatchPublishReceipt::durable_sequence: u64
 pub quanta_index_contract::BatchPublishReceipt::generation: quanta_index_contract_base::ids::ManifestGeneration
-pub quanta_index_contract::BatchPublishReceipt::manifest_digest: alloc::string::String
+pub quanta_index_contract::BatchPublishReceipt::manifest_digest: core::option::Option<alloc::string::String>
 pub quanta_index_contract::BatchPublishReceipt::sealed: bool
 impl quanta_index_contract::BatchPublishReceipt
 pub fn quanta_index_contract::BatchPublishReceipt::accept_clear_surface(&mut self)
 pub fn quanta_index_contract::BatchPublishReceipt::accept_replace_scope(&mut self)
 pub fn quanta_index_contract::BatchPublishReceipt::accept_tombstone_scope(&mut self)
-pub fn quanta_index_contract::BatchPublishReceipt::empty_for(generation: quanta_index_contract_base::ids::ManifestGeneration, manifest_digest: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn quanta_index_contract::BatchPublishReceipt::empty_for(generation: quanta_index_contract_base::ids::ManifestGeneration, manifest_digest: core::option::Option<alloc::string::String>, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
 pub fn quanta_index_contract::BatchPublishReceipt::mark_sealed(&mut self)
+pub fn quanta_index_contract::BatchPublishReceipt::recorded_at(self, durable_sequence: u64) -> Self
+pub fn quanta_index_contract::BatchPublishReceipt::replayed(self) -> Self
 impl core::clone::Clone for quanta_index_contract::BatchPublishReceipt
 pub fn quanta_index_contract::BatchPublishReceipt::clone(&self) -> quanta_index_contract::BatchPublishReceipt
 impl core::cmp::Eq for quanta_index_contract::BatchPublishReceipt

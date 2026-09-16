@@ -11,15 +11,17 @@
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use anyhow::Result;
+use quanta_index_catalog::SqliteIdempotencyCatalog;
 use quanta_index_core::{
     FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
-    IncompleteGenerationDiscardPort, LexicalIndexOpenPort, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
-    RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort, SealedGenerationReclaimPort,
-    SealedGenerationScanPort, SearchCorpusBatchBuildPort, SemanticBatchBuildPort,
-    SemanticIndexOpenPort,
+    IdempotencyCatalogPort, IncompleteGenerationDiscardPort, LexicalIndexOpenPort,
+    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
+    RepoMapGenerationActivatePort, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
+    SealedGenerationReclaimPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
+    SemanticBatchBuildPort, SemanticIndexOpenPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_lexical::regex::RegexPolicy;
@@ -29,6 +31,9 @@ use quanta_index_searchd::app::LegacySemanticJournalStore;
 use quanta_index_searchd::app::runtime::{SearchdRuntimeParts, StateRootLease};
 use quanta_index_searchd::{SearchdCommand, SearchdConfig, SearchdRuntime, drive};
 use quanta_index_semantic::SemanticAdapter;
+
+/// How long a catalog write waits on a held lock before answering typed.
+const CATALOG_BUSY_BUDGET: Duration = Duration::from_secs(2);
 
 pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     let search_corpus_history_retention = config.search_corpus_history_retention_policy()?;
@@ -58,6 +63,13 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     let legacy_semantic_journal_store = Arc::new(LegacySemanticJournalStore::open(
         state_root.join("semantic"),
     )?);
+    // The durable idempotency catalog (QI-BB-032). Its busy budget only
+    // matters against a foreign writer, which the state-root lease excludes;
+    // it is bounded so a held lock is still a typed answer, never a hang.
+    let idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync> = Arc::new(
+        SqliteIdempotencyCatalog::open(&state_root, CATALOG_BUSY_BUDGET)
+            .map_err(anyhow::Error::from)?,
+    );
 
     let search_corpus_build_port: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync> =
         lex_adapter.clone();
@@ -123,6 +135,7 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
             repo_map_generation_activate_port,
             search_corpus_lifecycle,
             legacy_semantic_journal_store,
+            idempotency,
         },
     )
 }

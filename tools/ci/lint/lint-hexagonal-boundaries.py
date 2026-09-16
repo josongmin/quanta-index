@@ -72,10 +72,11 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     # Corpus parser/runner smoke helpers. No production deps; tests in
     # other crates consume it via dev-dependencies only.
     "quanta-index-corpus-smoke": frozenset(),
-    # W0 G0-C decision-gate probe: engines under evaluation are dev-dependencies
-    # only and it depends on no workspace crate. Deleted when the real catalog
-    # adapter crate lands (docs/bugbash/sep-16/adr/G0-C-catalog-engine.md).
-    "quanta-index-catalog-probe": frozenset(),
+    # Durable catalog adapter (W2, G0-C: SQLite via rusqlite). Owns the storage
+    # engine; the search plane reaches it only through core ports.
+    "quanta-index-catalog": frozenset(
+        {"quanta-index-contract", "quanta-index-core", "quanta-index-ipc"}
+    ),
     # Non-production benchmark driver. It may drive the lexical adapter
     # directly, but must not depend on runtime/searchd orchestration.
     "quanta-index-scan-experiment": frozenset(
@@ -98,6 +99,7 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     ),
     "quanta-index-searchd-runtime": frozenset(
         {
+            "quanta-index-catalog",
             "quanta-index-contract",
             "quanta-index-core",
             "quanta-index-ipc",

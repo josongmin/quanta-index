@@ -184,15 +184,9 @@ owner = "quanta-index-ipc"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
-id = "catalog-probe-g0c-sqlite"
-path = "crates/quanta-index-catalog-probe/tests/g0c_sqlite_catalog_probe.rs"
-owner = "quanta-index-catalog-probe"
-rail = "pr-workspace-nextest"
-
-[[integration_targets]]
-id = "catalog-probe-g0c-redb-alternative"
-path = "crates/quanta-index-catalog-probe/tests/g0c_redb_alternative_probe.rs"
-owner = "quanta-index-catalog-probe"
+id = "catalog-idempotency"
+path = "crates/quanta-index-catalog/tests/idempotency.rs"
+owner = "quanta-index-catalog"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
@@ -456,6 +450,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "searchd-runtime-e2e-boot-quarantine"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_boot_quarantine.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-e2e-ingest-idempotency"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_ingest_idempotency.rs"
 owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 

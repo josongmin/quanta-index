@@ -838,7 +838,7 @@ impl E2eRuntime {
                     "e2e-harness: sealed search-corpus publish receipt generation differs from the request"
                 ));
             }
-            if receipt.manifest_digest != manifest_digest {
+            if receipt.manifest_digest.as_deref() != Some(manifest_digest.as_str()) {
                 return Err(anyhow::anyhow!(
                     "e2e-harness: sealed search-corpus publish receipt manifest digest differs from the request"
                 ));
@@ -1444,7 +1444,7 @@ impl E2eRuntime {
                     "e2e-harness: seal receipt generation differs from the request"
                 ));
             }
-            if receipt.manifest_digest != manifest_digest {
+            if receipt.manifest_digest.as_deref() != Some(manifest_digest.as_str()) {
                 return Err(anyhow::anyhow!(
                     "e2e-harness: seal receipt manifest digest differs from the request"
                 ));
@@ -2226,20 +2226,23 @@ impl E2eRuntime {
         sealed: ManifestGeneration,
         receipt: &BatchPublishReceipt,
     ) -> AnyResult<SearchCorpusGenerationIdentityV1> {
+        let manifest_digest = receipt.manifest_digest.clone().ok_or_else(|| {
+            anyhow::anyhow!("e2e-harness: sealed search-corpus receipt carries no manifest digest")
+        })?;
         let identity = SearchCorpusGenerationIdentityV1 {
             lexical: GenerationSnapshot {
                 repo_id: repo_id.clone(),
                 revision_id: revision_id.clone(),
                 track: SearchPlaneTrackKind::Lexical,
                 manifest_generation: sealed,
-                manifest_digest: receipt.manifest_digest.clone(),
+                manifest_digest: manifest_digest.clone(),
             },
             semantic: GenerationSnapshot {
                 repo_id,
                 revision_id,
                 track: SearchPlaneTrackKind::Semantic,
                 manifest_generation: sealed,
-                manifest_digest: receipt.manifest_digest.clone(),
+                manifest_digest,
             },
         };
         identity.validate_v1().map_err(|err| {
@@ -2251,6 +2254,80 @@ impl E2eRuntime {
     fn dispatch_ingest(&mut self, payload: SearchPlaneIngestIpcRequest) -> AnyResult<()> {
         drop(self.dispatch_ingest_response(payload)?);
         Ok(())
+    }
+
+    /// The running daemon's ingest socket, for tests that drive the ingest
+    /// transport themselves (concurrent publishers, for instance).
+    pub fn ingest_socket_path(&mut self) -> AnyResult<PathBuf> {
+        self.ensure_ingest_socket()
+    }
+
+    /// Issue one ingest request and return the daemon's raw answer, typed
+    /// errors included, with no harness interpretation.
+    pub fn ingest_once(
+        &mut self,
+        payload: SearchPlaneIngestIpcRequest,
+    ) -> AnyResult<SearchPlaneIngestIpcResponse> {
+        let socket = self.ensure_ingest_socket()?;
+        let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
+        let envelope = SearchPlaneIngestIpcRequestEnvelope {
+            request_id,
+            payload,
+        };
+        let response: SearchPlaneIngestIpcResponseEnvelope =
+            send_request(&socket, &envelope, ClientIoPolicy::default())?;
+        Ok(response.payload)
+    }
+
+    /// Build, without publishing, the unsealed single-chunk search-corpus
+    /// batch `ingest_text` would publish for `path`, under an explicit batch
+    /// digest, so a test can publish the same body more than once.
+    pub fn text_search_corpus_batch(
+        &self,
+        path: &str,
+        content: &str,
+        batch_digest: &str,
+    ) -> AnyResult<SearchCorpusIngestBatch> {
+        let language = LanguageCode::new(language_from_path(path)).map_err(|err| {
+            anyhow::anyhow!("language_from_path must return canonical lowercase codes: {err}")
+        })?;
+        let record = ChunkRecord {
+            chunk_id: ChunkId::new(format!("e2e-idem-{path}")),
+            repo_relative_path: RepoRelativePath::new(path),
+            language,
+            start_byte: 0,
+            end_byte: u32::try_from(content.len())
+                .map_err(|err| anyhow::anyhow!("e2e harness content length overflow: {err}"))?,
+            start_line: 1,
+            end_line: 2,
+            text: content.to_string().into_boxed_str(),
+            structural: None,
+            parent_chunk_id: None,
+            source_repo_id: None,
+        };
+        let records = vec![record];
+        let (mode, base_generation) = self.lexical_batch_contract();
+        Ok(SearchCorpusIngestBatch {
+            repo_id: self.repo(),
+            revision_id: self.revision(),
+            generation: self.current_generation(),
+            base_generation,
+            manifest_digest: format!("lex:{path}:{}", self.current_generation().get()),
+            batch_digest: batch_digest.to_string(),
+            mode,
+            bundle_payload: None,
+            clear_surfaces: Vec::new(),
+            replace_scopes: vec![SearchCorpusReplaceScope {
+                scope: scope_key(path),
+                scope_digest: format!("scope:{path}:1-chunks"),
+                chunks: records.clone(),
+                symbols: Vec::new(),
+            }],
+            tombstone_scopes: Vec::new(),
+            semantic_replace_scopes: semantic_source_scopes_for_chunk_records(&records),
+            semantic_tombstone_scopes: Vec::new(),
+            seal: false,
+        })
     }
 
     fn dispatch_ingest_response(

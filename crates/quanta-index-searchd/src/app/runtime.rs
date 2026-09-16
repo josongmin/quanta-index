@@ -27,13 +27,13 @@ use quanta_index_core::domains::structural::{
 };
 use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
-    IncompleteGenerationDiscardPort, L2UnitEmbeddingProvider, LexicalIndexOpenPort,
-    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
-    RepoMapGenerationActivatePort, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
-    SealedGenerationReclaimPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
-    SearchCorpusIngestPort, SemanticBatchBuildPort, SemanticIndexOpenPort, SemanticIngestPort,
-    StructuralError, StructuralMatchBinding, StructuralMatchCandidate, StructuralReadiness,
-    TextEmbeddingProvider,
+    IdempotencyCatalogPort, IncompleteGenerationDiscardPort, L2UnitEmbeddingProvider,
+    LexicalIndexOpenPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
+    RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapQueryPort, RepoMetaIngestPort,
+    RepoTopicIngestPort, SealedGenerationReclaimPort, SealedGenerationScanPort,
+    SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticBatchBuildPort,
+    SemanticIndexOpenPort, SemanticIngestPort, StructuralError, StructuralMatchBinding,
+    StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider,
 };
 use quanta_index_embed::{
     CachingEmbeddingProvider, EmbeddingCacheIdentityV1, FileEmbeddingCache, OpenAiEmbeddingProvider,
@@ -93,6 +93,8 @@ pub struct SearchdRuntimeParts {
     pub repo_map_generation_activate_port: Arc<dyn RepoMapGenerationActivatePort + Send + Sync>,
     pub search_corpus_lifecycle: Arc<SearchCorpusLifecycleOwner>,
     pub legacy_semantic_journal_store: Arc<LegacySemanticJournalStore>,
+    /// Durable ingest idempotency records (QI-BB-032).
+    pub idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
 }
 
 /// Exclusive process-lifetime ownership of one daemon state root.
@@ -790,6 +792,7 @@ impl SearchdRuntime {
             repo_map_generation_activate_port,
             search_corpus_lifecycle,
             legacy_semantic_journal_store,
+            idempotency,
         } = parts;
         state_root_lease
             .require_state_root_v1(config.state_root())
@@ -873,6 +876,7 @@ impl SearchdRuntime {
                         lexical_reclaim: lexical_sealed_reclaim,
                         semantic_reclaim: semantic_sealed_reclaim,
                         snapshots: snapshots.clone(),
+                        idempotency: Arc::clone(&idempotency),
                     },
                 )
                 .map_err(anyhow::Error::from)?,
@@ -927,6 +931,7 @@ impl SearchdRuntime {
             direct_structural_ingest_port,
             repo_map_bundle_ingest_port,
             snapshots,
+            idempotency,
         ));
         let query_adapter: Arc<
             dyn IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse>,

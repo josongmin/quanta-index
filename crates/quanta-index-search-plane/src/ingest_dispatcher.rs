@@ -34,7 +34,8 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
-    IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort,
+    IdempotencyBeginV1, IdempotencyCatalogPort, IdempotencyKeyV1,
+    IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort, IngestOperationKindV1,
     RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
     RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1, SealedGenerationReclaimOutcomeV1,
     SealedGenerationReclaimPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
@@ -91,6 +92,7 @@ pub struct DirectSearchCorpusMaterializer {
     lexical_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
     semantic_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
     snapshots: SnapshotRegistries,
+    idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
     operation_locks: [Mutex<()>; SEARCH_CORPUS_LOCK_STRIPES_V1],
     semantic_derivation_mode: SemanticDerivationModeV1,
 }
@@ -109,6 +111,9 @@ pub struct SearchCorpusMaterializerParts {
     pub lexical_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
     pub semantic_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
     pub snapshots: SnapshotRegistries,
+    /// Idempotency records are forgotten with the generation they describe
+    /// (QI-BB-032 retention).
+    pub idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
 }
 
 /// Durable owner for complete lexical+semantic rollback history.
@@ -190,6 +195,7 @@ impl DirectSearchCorpusMaterializer {
             lexical_reclaim,
             semantic_reclaim,
             snapshots,
+            idempotency,
         } = parts;
         Self {
             builder,
@@ -204,6 +210,7 @@ impl DirectSearchCorpusMaterializer {
             lexical_reclaim,
             semantic_reclaim,
             snapshots,
+            idempotency,
             operation_locks: std::array::from_fn(|_index| Mutex::new(())),
             semantic_derivation_mode,
         }
@@ -593,6 +600,26 @@ impl DirectSearchCorpusMaterializer {
                 }
             }
         }
+        // A generation reclaimed on both tracks describes nothing a replay
+        // could still converge on; its idempotency records go with it.
+        let mut forgotten = BTreeSet::new();
+        for (track, generation) in receipt.reclaimed.keys() {
+            let other = match track {
+                SearchPlaneTrackKind::Lexical => SearchPlaneTrackKind::Semantic,
+                SearchPlaneTrackKind::Semantic => SearchPlaneTrackKind::Lexical,
+                SearchPlaneTrackKind::Structural => continue,
+            };
+            if receipt.reclaimed.contains_key(&(other, *generation)) {
+                let _new = forgotten.insert(*generation);
+            }
+        }
+        for generation in forgotten {
+            let _records = self.idempotency.forget_generation(
+                &batch.repo_id,
+                &batch.revision_id,
+                generation,
+            )?;
+        }
         Ok(receipt)
     }
 }
@@ -761,8 +788,11 @@ fn validate_physical_generation_v1(
 }
 
 fn batch_publish_receipt_v1(batch: &SearchCorpusIngestBatch) -> BatchPublishReceipt {
-    let mut receipt =
-        BatchPublishReceipt::empty_for(batch.generation, batch.manifest_digest.clone());
+    let mut receipt = BatchPublishReceipt::empty_for(
+        batch.generation,
+        Some(batch.manifest_digest.clone()),
+        batch.batch_digest.clone(),
+    );
     for _scope in &batch.replace_scopes {
         receipt.accept_replace_scope();
     }
@@ -798,7 +828,8 @@ fn validate_semantic_publish_receipt_v1(
         ))
     })?;
     if receipt.generation != batch.generation
-        || receipt.manifest_digest != batch.manifest_digest
+        || receipt.manifest_digest.as_deref() != Some(batch.manifest_digest.as_str())
+        || receipt.batch_digest != batch.batch_digest
         || receipt.accepted_replace_scopes != expected_replace
         || receipt.accepted_tombstone_scopes != expected_tombstone
         || receipt.accepted_clear_surfaces != expected_clear
@@ -858,8 +889,11 @@ impl SemanticIngestPort for DirectSemanticMaterializer {
             );
         }
         drop(guard);
-        let mut receipt =
-            BatchPublishReceipt::empty_for(batch.generation, batch.manifest_digest.clone());
+        let mut receipt = BatchPublishReceipt::empty_for(
+            batch.generation,
+            Some(batch.manifest_digest.clone()),
+            batch.batch_digest.clone(),
+        );
         for _scope in &batch.replace_scopes {
             receipt.accept_replace_scope();
         }
@@ -896,7 +930,11 @@ impl DirectHistoryMaterializer {
 
 impl HistoryIngestPort for DirectHistoryMaterializer {
     fn publish_batch(&self, batch: &HistoryIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
-        let mut receipt = BatchPublishReceipt::empty_for(batch.generation, String::new());
+        let mut receipt = BatchPublishReceipt::empty_for(
+            batch.generation,
+            batch.manifest_digest.clone(),
+            batch.batch_digest.clone(),
+        );
         let mut guard = self.ledger.write().map_err(|err| {
             CoreError::Storage(format!(
                 "direct history materialize: ledger poisoned: {err}"
@@ -945,7 +983,8 @@ impl DirectRuntimeMetadataMaterializer {
 }
 
 fn dirty_publish_receipt_v1(batch: &DirtyIngestBatch) -> BatchPublishReceipt {
-    let mut receipt = BatchPublishReceipt::empty_for(batch.generation, batch.batch_digest.clone());
+    let mut receipt =
+        BatchPublishReceipt::empty_for(batch.generation, None, batch.batch_digest.clone());
     for entry in &batch.entries {
         match entry {
             DirtyMutation::Upsert(_) => receipt.accept_replace_scope(),
@@ -971,7 +1010,7 @@ impl RuntimeMetadataIngestPort for DirectRuntimeMetadataMaterializer {
         batch: &RuntimeCatalogIngestBatch,
     ) -> Result<BatchPublishReceipt, CoreError> {
         let mut receipt =
-            BatchPublishReceipt::empty_for(batch.generation, batch.batch_digest.clone());
+            BatchPublishReceipt::empty_for(batch.generation, None, batch.batch_digest.clone());
         let mut guard = self.ledger.write().map_err(|err| {
             CoreError::Storage(format!(
                 "direct runtime catalog materialize: ledger poisoned: {err}"
@@ -1050,8 +1089,11 @@ impl StructuralIngestPort for DirectStructuralMaterializer {
         }
         self.authority_store.persist_from_ledger(&guard)?;
         drop(guard);
-        let mut receipt =
-            BatchPublishReceipt::empty_for(batch.generation, batch.manifest_digest.clone());
+        let mut receipt = BatchPublishReceipt::empty_for(
+            batch.generation,
+            Some(batch.manifest_digest.clone()),
+            batch.batch_digest.clone(),
+        );
         for _scope in &batch.replace_scopes {
             receipt.accept_replace_scope();
         }
@@ -1089,6 +1131,11 @@ pub struct SearchPlaneIngestDispatcher {
     /// after it lands, so a handle opened before the mutation is never
     /// served after it (QI-BB-001; sealed-corpus overlay is W2's job).
     snapshots: SnapshotRegistries,
+    /// Durable idempotency records (QI-BB-032): every receipt-bearing route
+    /// goes through intent → apply → finalize, so a replay of the same body
+    /// is answered from the record and a different body under the same key
+    /// is refused before any mutation.
+    idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
 }
 
 impl SearchPlaneIngestDispatcher {
@@ -1110,6 +1157,7 @@ impl SearchPlaneIngestDispatcher {
         structural: Arc<dyn StructuralIngestPort + Send + Sync>,
         repomap: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
         snapshots: SnapshotRegistries,
+        idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
     ) -> Self {
         Self {
             lexical,
@@ -1124,7 +1172,48 @@ impl SearchPlaneIngestDispatcher {
             structural,
             repomap,
             snapshots,
+            idempotency,
         }
+    }
+
+    /// Run one receipt-bearing publish under its idempotency record
+    /// (QI-BB-032).
+    ///
+    /// The canonical body is hashed, the record is begun, and then: a
+    /// finalized record with the same body answers with the recorded receipt
+    /// marked `applied = false` and nothing runs; a record with a different
+    /// body is refused typed by the catalog; otherwise `apply` runs and the
+    /// receipt it produces is recorded, stamped with the catalog's durable
+    /// sequence, and returned as `applied = true`. A record left in progress
+    /// by a crash re-runs `apply`, which every route makes idempotent.
+    fn publish_idempotent<B: serde::Serialize>(
+        &self,
+        kind: IngestOperationKindV1,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+        batch_digest: &str,
+        body: &B,
+        apply: impl FnOnce() -> Result<BatchPublishReceipt, CoreError>,
+    ) -> Result<BatchPublishReceipt, CoreError> {
+        let key = IdempotencyKeyV1 {
+            kind,
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            generation,
+            batch_digest: batch_digest.to_string(),
+        };
+        let body_sha256 = canonical_body_sha256_v1(kind, body)?;
+        match self.idempotency.begin(&key, &body_sha256)? {
+            IdempotencyBeginV1::Replay {
+                receipt,
+                durable_sequence,
+            } => return Ok(receipt.recorded_at(durable_sequence).replayed()),
+            IdempotencyBeginV1::Fresh | IdempotencyBeginV1::Resume => {}
+        }
+        let receipt = apply()?;
+        let durable_sequence = self.idempotency.finalize(&key, &body_sha256, &receipt)?;
+        Ok(receipt.recorded_at(durable_sequence))
     }
 
     /// Publish one generation-scoped batch and, on success, drop both
@@ -1168,102 +1257,204 @@ impl SearchPlaneIngestDispatcher {
         }
         match request {
             SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => {
-                match self.publish_generation_scoped(
+                match self.publish_idempotent(
+                    IngestOperationKindV1::SearchCorpus,
                     &batch.repo_id,
                     &batch.revision_id,
                     batch.generation,
-                    || self.lexical.publish_batch(&batch),
+                    &batch.batch_digest,
+                    &batch,
+                    || {
+                        self.publish_generation_scoped(
+                            &batch.repo_id,
+                            &batch.revision_id,
+                            batch.generation,
+                            || self.lexical.publish_batch(&batch),
+                        )
+                    },
                 ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
             SearchPlaneIngestIpcRequest::PublishHistoryBatch(batch) => {
-                match self.history.publish_batch(&batch) {
+                match self.publish_idempotent(
+                    IngestOperationKindV1::History,
+                    &batch.repo_id,
+                    &batch.revision_id,
+                    batch.generation,
+                    &batch.batch_digest,
+                    &batch,
+                    || self.history.publish_batch(&batch),
+                ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::HistoryReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
             SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(batch) => {
-                match self.publish_generation_scoped(
+                match self.publish_idempotent(
+                    IngestOperationKindV1::RepoCommitRecency,
                     &batch.repo_id,
                     &batch.revision_id,
                     batch.generation,
-                    || self.repo_commit_recency.publish_batch(&batch),
+                    &batch.batch_digest,
+                    &batch,
+                    || {
+                        self.publish_generation_scoped(
+                            &batch.repo_id,
+                            &batch.revision_id,
+                            batch.generation,
+                            || self.repo_commit_recency.publish_batch(&batch),
+                        )
+                    },
                 ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
             SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(batch) => {
-                match self.publish_generation_scoped(
+                match self.publish_idempotent(
+                    IngestOperationKindV1::RepoTopic,
                     &batch.repo_id,
                     &batch.revision_id,
                     batch.generation,
-                    || self.repo_topic.publish_batch(&batch),
+                    &batch.batch_digest,
+                    &batch,
+                    || {
+                        self.publish_generation_scoped(
+                            &batch.repo_id,
+                            &batch.revision_id,
+                            batch.generation,
+                            || self.repo_topic.publish_batch(&batch),
+                        )
+                    },
                 ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RepoTopicReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
             SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(batch) => {
-                match self.publish_generation_scoped(
+                match self.publish_idempotent(
+                    IngestOperationKindV1::RepoDescription,
                     &batch.repo_id,
                     &batch.revision_id,
                     batch.generation,
-                    || self.repo_description.publish_batch(&batch),
+                    &batch.batch_digest,
+                    &batch,
+                    || {
+                        self.publish_generation_scoped(
+                            &batch.repo_id,
+                            &batch.revision_id,
+                            batch.generation,
+                            || self.repo_description.publish_batch(&batch),
+                        )
+                    },
                 ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
             SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(batch) => {
-                match self.publish_generation_scoped(
+                match self.publish_idempotent(
+                    IngestOperationKindV1::FileOwnership,
                     &batch.repo_id,
                     &batch.revision_id,
                     batch.generation,
-                    || self.file_ownership.publish_batch(&batch),
+                    &batch.batch_digest,
+                    &batch,
+                    || {
+                        self.publish_generation_scoped(
+                            &batch.repo_id,
+                            &batch.revision_id,
+                            batch.generation,
+                            || self.file_ownership.publish_batch(&batch),
+                        )
+                    },
                 ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::FileOwnershipReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
             SearchPlaneIngestIpcRequest::PublishFileContributorBatch(batch) => {
-                match self.publish_generation_scoped(
+                match self.publish_idempotent(
+                    IngestOperationKindV1::FileContributor,
                     &batch.repo_id,
                     &batch.revision_id,
                     batch.generation,
-                    || self.file_contributor.publish_batch(&batch),
+                    &batch.batch_digest,
+                    &batch,
+                    || {
+                        self.publish_generation_scoped(
+                            &batch.repo_id,
+                            &batch.revision_id,
+                            batch.generation,
+                            || self.file_contributor.publish_batch(&batch),
+                        )
+                    },
                 ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::FileContributorReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
             SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(batch) => {
-                match self.publish_generation_scoped(
+                match self.publish_idempotent(
+                    IngestOperationKindV1::RepoMeta,
                     &batch.repo_id,
                     &batch.revision_id,
                     batch.generation,
-                    || self.repo_meta.publish_batch(&batch),
+                    &batch.batch_digest,
+                    &batch,
+                    || {
+                        self.publish_generation_scoped(
+                            &batch.repo_id,
+                            &batch.revision_id,
+                            batch.generation,
+                            || self.repo_meta.publish_batch(&batch),
+                        )
+                    },
                 ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RepoMetaReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
             SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch) => {
-                match self.runtime.publish_batch(&batch) {
+                match self.publish_idempotent(
+                    IngestOperationKindV1::Dirty,
+                    &batch.repo_id,
+                    &batch.revision_id,
+                    batch.generation,
+                    &batch.batch_digest,
+                    &batch,
+                    || self.runtime.publish_batch(&batch),
+                ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::DirtyReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
             SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(batch) => {
-                match self.runtime.publish_catalog_batch(&batch) {
+                match self.publish_idempotent(
+                    IngestOperationKindV1::RuntimeCatalog,
+                    &batch.repo_id,
+                    &batch.revision_id,
+                    batch.generation,
+                    &batch.batch_digest,
+                    &batch,
+                    || self.runtime.publish_catalog_batch(&batch),
+                ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
             SearchPlaneIngestIpcRequest::PublishStructuralBatch(batch) => {
-                match self.structural.publish_batch(&batch) {
+                match self.publish_idempotent(
+                    IngestOperationKindV1::Structural,
+                    &batch.repo_id,
+                    &batch.revision_id,
+                    batch.generation,
+                    &batch.batch_digest,
+                    &batch,
+                    || self.structural.publish_batch(&batch),
+                ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::StructuralReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
@@ -1282,6 +1473,26 @@ impl SearchPlaneIngestDispatcher {
               // No fallback arm needed.
         }
     }
+}
+
+/// SHA-256 over the batch's canonical CBOR encoding under a per-route
+/// domain: the identity a replay must match byte for byte.
+fn canonical_body_sha256_v1<B: serde::Serialize>(
+    kind: IngestOperationKindV1,
+    body: &B,
+) -> Result<[u8; 32], CoreError> {
+    use sha2::Digest as _;
+    let encoded = quanta_index_ipc::encode_cbor_payload(body).map_err(|err| {
+        CoreError::Storage(format!(
+            "ingest idempotency: encode {kind} batch body: {err}"
+        ))
+    })?;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(b"quanta-index:ingest-batch-body:v1\0");
+    hasher.update(kind.as_code_str().as_bytes());
+    hasher.update(b"\x1f");
+    hasher.update(&encoded);
+    Ok(hasher.finalize().into())
 }
 
 fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
@@ -1331,6 +1542,112 @@ mod tests {
 
     type TestRes = Result<(), Box<dyn std::error::Error>>;
 
+    /// One in-memory record: the body hash and, once finalized, the receipt
+    /// and its sequence.
+    type MemoryRecord = ([u8; 32], Option<(BatchPublishReceipt, u64)>);
+
+    /// An in-memory idempotency catalog with the port's exact semantics, for
+    /// tests that need the protocol without the storage engine.
+    #[derive(Default)]
+    pub(crate) struct MemoryIdempotencyCatalog {
+        records: Mutex<BTreeMap<IdempotencyKeyV1, MemoryRecord>>,
+        next_sequence: AtomicUsize,
+    }
+
+    impl MemoryIdempotencyCatalog {
+        pub(crate) fn records(&self) -> usize {
+            self.records.lock().map_or(0, |records| records.len())
+        }
+    }
+
+    impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
+        fn begin(
+            &self,
+            key: &IdempotencyKeyV1,
+            body_sha256: &[u8; 32],
+        ) -> Result<IdempotencyBeginV1, CoreError> {
+            let mut records = self
+                .records
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
+            let outcome = match records.get(key) {
+                None => {
+                    let _new = records.insert(key.clone(), (*body_sha256, None));
+                    Ok(IdempotencyBeginV1::Fresh)
+                }
+                Some((stored, _)) if stored != body_sha256 => Err(CoreError::Typed {
+                    code: quanta_index_core::BATCH_DIGEST_CONFLICT_CODE.to_string(),
+                    message: format!(
+                        "{} batch_digest={} body differs",
+                        key.kind, key.batch_digest
+                    ),
+                }),
+                Some((_, Some((receipt, durable_sequence)))) => Ok(IdempotencyBeginV1::Replay {
+                    receipt: receipt.clone(),
+                    durable_sequence: *durable_sequence,
+                }),
+                Some((_, None)) => Ok(IdempotencyBeginV1::Resume),
+            };
+            drop(records);
+            outcome
+        }
+
+        fn finalize(
+            &self,
+            key: &IdempotencyKeyV1,
+            body_sha256: &[u8; 32],
+            receipt: &BatchPublishReceipt,
+        ) -> Result<u64, CoreError> {
+            let mut records = self
+                .records
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
+            let Some(record) = records.get_mut(key) else {
+                return Err(CoreError::InvalidContract(
+                    "finalize before begin".to_string(),
+                ));
+            };
+            if record.0 != *body_sha256 {
+                return Err(CoreError::InvalidContract(
+                    "finalize under another body".to_string(),
+                ));
+            }
+            if record.1.is_some() {
+                return Err(CoreError::InvalidContract("finalize twice".to_string()));
+            }
+            let sequence = u64::try_from(self.next_sequence.fetch_add(1, Ordering::SeqCst))
+                .map_err(|err| CoreError::Storage(err.to_string()))?
+                .saturating_add(1);
+            record.1 = Some((receipt.clone(), sequence));
+            drop(records);
+            Ok(sequence)
+        }
+
+        fn forget_generation(
+            &self,
+            repo_id: &RepoId,
+            revision_id: &RevisionId,
+            generation: ManifestGeneration,
+        ) -> Result<u64, CoreError> {
+            let mut records = self
+                .records
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
+            let before = records.len();
+            records.retain(|key, _| {
+                !(key.repo_id == *repo_id
+                    && key.revision_id == *revision_id
+                    && key.generation == generation)
+            });
+            u64::try_from(before.saturating_sub(records.len()))
+                .map_err(|err| CoreError::Storage(err.to_string()))
+        }
+    }
+
+    fn memory_catalog() -> Arc<MemoryIdempotencyCatalog> {
+        Arc::new(MemoryIdempotencyCatalog::default())
+    }
+
     #[test]
     fn dirty_publish_receipt_binds_exact_auxiliary_batch_without_sealing_v1() {
         let batch = DirtyIngestBatch {
@@ -1343,7 +1660,8 @@ mod tests {
         };
         let receipt = dirty_publish_receipt_v1(&batch);
         assert_eq!(receipt.generation, batch.generation);
-        assert_eq!(receipt.manifest_digest, batch.batch_digest);
+        assert_eq!(receipt.manifest_digest, None);
+        assert_eq!(receipt.batch_digest, batch.batch_digest);
         assert_eq!(receipt.accepted_replace_scopes, 0);
         assert_eq!(receipt.accepted_tombstone_scopes, 0);
         assert!(!receipt.sealed);
@@ -1375,6 +1693,7 @@ mod tests {
                     lexical_reclaim: no_storage_sealed_reclaim(),
                     semantic_reclaim: no_storage_sealed_reclaim(),
                     snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+                    idempotency: memory_catalog(),
                 },
             )
         };
@@ -1744,6 +2063,7 @@ mod tests {
                     lexical_reclaim: no_storage_sealed_reclaim(),
                     semantic_reclaim: no_storage_sealed_reclaim(),
                     snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+                    idempotency: memory_catalog(),
                 },
             );
             Self {
@@ -1890,6 +2210,7 @@ mod tests {
                 lexical_reclaim: lexical_reclaim.clone(),
                 semantic_reclaim: semantic_reclaim.clone(),
                 snapshots: snapshots.clone(),
+                idempotency: memory_catalog(),
             },
         );
         let mut batch = fixture_search_corpus_batch()?;
@@ -1980,7 +2301,8 @@ mod tests {
         ) -> Result<BatchPublishReceipt, CoreError> {
             let mut receipt = BatchPublishReceipt::empty_for(
                 batch.generation,
-                "mismatched-semantic-digest".to_string(),
+                Some("mismatched-semantic-digest".to_string()),
+                batch.batch_digest.clone(),
             );
             if batch.seal {
                 receipt.mark_sealed();
@@ -2180,7 +2502,9 @@ mod tests {
         let materializer = DirectSemanticMaterializer::new(builder.clone(), Arc::clone(&ledger));
         let batch = fixture_semantic_batch()?;
         let receipt = materializer.publish_batch(&batch)?;
-        if !receipt.sealed || receipt.manifest_digest != batch.manifest_digest {
+        if !receipt.sealed
+            || receipt.manifest_digest.as_deref() != Some(batch.manifest_digest.as_str())
+        {
             return Err("unexpected semantic materialize receipt".into());
         }
 
@@ -2214,12 +2538,10 @@ mod tests {
         Ok(())
     }
 
-    #[expect(
-        clippy::suspicious_operation_groupings,
-        reason = "the receipt deliberately echoes the batch digest in its manifest_digest field; that field conflation is the behavior under test, not a mis-typed comparison"
-    )]
+    /// An auxiliary receipt names its batch digest and no manifest
+    /// (QI-BB-032): the two identities are distinct fields.
     #[test]
-    fn direct_dirty_materializer_echoes_batch_digest_in_receipt() -> TestRes {
+    fn direct_dirty_materializer_names_the_batch_digest_and_no_manifest() -> TestRes {
         let dir = tempfile::tempdir()?;
         let authority_store = Arc::new(AuxiliaryAuthorityStore::open(
             dir.path(),
@@ -2235,7 +2557,8 @@ mod tests {
             DirectRuntimeMetadataMaterializer::new(authority_store, Arc::clone(&ledger));
         let batch = fixture_dirty_batch();
         let receipt = materializer.publish_batch(&batch)?;
-        if receipt.manifest_digest != batch.batch_digest
+        if receipt.manifest_digest.is_some()
+            || receipt.batch_digest != batch.batch_digest
             || receipt.generation != batch.generation
             || receipt.accepted_replace_scopes != 1
             || receipt.accepted_tombstone_scopes != 0
@@ -2965,6 +3288,300 @@ mod tests {
         }
         if !vec_a.starts_with("search-owned-vec:sha256:") {
             return Err(format!("unexpected vector digest format: {vec_a}").into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod idempotency_tests {
+    //! QI-BB-032 — every receipt-bearing route runs under its idempotency
+    //! record, proven at the dispatcher with one live route and the rest
+    //! unreachable.
+
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use quanta_index_contract::lex::DirtyRecord;
+    use quanta_index_contract::{
+        BatchPublishReceipt, ChunkId, DirtyIngestBatch, DirtyMutation, FileContributorIngestBatch,
+        FileOwnershipIngestBatch, HistoryIngestBatch, ManifestGeneration,
+        RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId, RepoMapSourceBundle,
+        RepoMetaIngestBatch, RepoTopicIngestBatch, RevisionId, RuntimeCatalogIngestBatch,
+        SearchCorpusIngestBatch, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
+        StructuralIngestBatch,
+    };
+    use quanta_index_core::{
+        BATCH_DIGEST_CONFLICT_CODE, CoreError, FileContributorIngestPort, FileOwnershipIngestPort,
+        RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
+        RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1, SearchCorpusIngestPort,
+    };
+
+    use super::tests::MemoryIdempotencyCatalog;
+    use super::{
+        HistoryIngestPort, RuntimeMetadataIngestPort, SearchPlaneIngestDispatcher,
+        StructuralIngestPort, dirty_publish_receipt_v1,
+    };
+    use crate::{SnapshotRegistries, SnapshotRegistryPolicy};
+
+    type TestRes = Result<(), Box<dyn std::error::Error>>;
+
+    /// A route the test never expects to reach.
+    struct Unreachable;
+
+    fn unreachable_route(route: &str) -> CoreError {
+        CoreError::Storage(format!("test: {route} route must not be reached"))
+    }
+
+    impl SearchCorpusIngestPort for Unreachable {
+        fn publish_batch(
+            &self,
+            _batch: &SearchCorpusIngestBatch,
+        ) -> Result<BatchPublishReceipt, CoreError> {
+            Err(unreachable_route("search corpus"))
+        }
+    }
+    impl HistoryIngestPort for Unreachable {
+        fn publish_batch(
+            &self,
+            _batch: &HistoryIngestBatch,
+        ) -> Result<BatchPublishReceipt, CoreError> {
+            Err(unreachable_route("history"))
+        }
+    }
+    impl RepoCommitRecencyIngestPort for Unreachable {
+        fn publish_batch(
+            &self,
+            _batch: &RepoCommitRecencyIngestBatch,
+        ) -> Result<BatchPublishReceipt, CoreError> {
+            Err(unreachable_route("repo commit recency"))
+        }
+    }
+    impl RepoTopicIngestPort for Unreachable {
+        fn publish_batch(
+            &self,
+            _batch: &RepoTopicIngestBatch,
+        ) -> Result<BatchPublishReceipt, CoreError> {
+            Err(unreachable_route("repo topic"))
+        }
+    }
+    impl RepoDescriptionIngestPort for Unreachable {
+        fn publish_batch(
+            &self,
+            _batch: &RepoDescriptionIngestBatch,
+        ) -> Result<BatchPublishReceipt, CoreError> {
+            Err(unreachable_route("repo description"))
+        }
+    }
+    impl FileOwnershipIngestPort for Unreachable {
+        fn publish_batch(
+            &self,
+            _batch: &FileOwnershipIngestBatch,
+        ) -> Result<BatchPublishReceipt, CoreError> {
+            Err(unreachable_route("file ownership"))
+        }
+    }
+    impl FileContributorIngestPort for Unreachable {
+        fn publish_batch(
+            &self,
+            _batch: &FileContributorIngestBatch,
+        ) -> Result<BatchPublishReceipt, CoreError> {
+            Err(unreachable_route("file contributor"))
+        }
+    }
+    impl RepoMetaIngestPort for Unreachable {
+        fn publish_batch(
+            &self,
+            _batch: &RepoMetaIngestBatch,
+        ) -> Result<BatchPublishReceipt, CoreError> {
+            Err(unreachable_route("repo meta"))
+        }
+    }
+    impl StructuralIngestPort for Unreachable {
+        fn publish_batch(
+            &self,
+            _batch: &StructuralIngestBatch,
+        ) -> Result<BatchPublishReceipt, CoreError> {
+            Err(unreachable_route("structural"))
+        }
+    }
+    impl RepoMapBundleIngestPort for Unreachable {
+        fn ingest_bundle(&self, _bundle: &RepoMapSourceBundle) -> Result<(), CoreError> {
+            Err(unreachable_route("repo map bundle"))
+        }
+    }
+
+    /// The one live route: counts applies and answers the dirty receipt.
+    struct CountingRuntime {
+        applies: AtomicUsize,
+    }
+
+    impl RuntimeMetadataIngestPort for CountingRuntime {
+        fn publish_batch(
+            &self,
+            batch: &DirtyIngestBatch,
+        ) -> Result<BatchPublishReceipt, CoreError> {
+            let _prior = self.applies.fetch_add(1, Ordering::SeqCst);
+            Ok(dirty_publish_receipt_v1(batch))
+        }
+        fn publish_catalog_batch(
+            &self,
+            _batch: &RuntimeCatalogIngestBatch,
+        ) -> Result<BatchPublishReceipt, CoreError> {
+            Err(unreachable_route("runtime catalog"))
+        }
+    }
+
+    fn dispatcher(
+        runtime: Arc<CountingRuntime>,
+        catalog: Arc<MemoryIdempotencyCatalog>,
+    ) -> SearchPlaneIngestDispatcher {
+        let unreachable = Arc::new(Unreachable);
+        SearchPlaneIngestDispatcher::new(
+            unreachable.clone(),
+            unreachable.clone(),
+            unreachable.clone(),
+            unreachable.clone(),
+            unreachable.clone(),
+            unreachable.clone(),
+            unreachable.clone(),
+            unreachable.clone(),
+            runtime,
+            unreachable.clone(),
+            unreachable,
+            SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
+            catalog,
+        )
+    }
+
+    fn dirty_batch(digest: &str, doc: &str) -> DirtyIngestBatch {
+        DirtyIngestBatch {
+            repo_id: RepoId::new("repo-idem"),
+            revision_id: RevisionId::new("rev-idem"),
+            generation: ManifestGeneration::new(4),
+            overlay_epoch_ms: 11,
+            batch_digest: digest.to_string(),
+            entries: vec![DirtyMutation::Upsert(DirtyRecord {
+                wire_version: 1,
+                doc_id: ChunkId::new(doc),
+                applied_at_ms: 11,
+                payload_hash: [3; 32],
+            })],
+        }
+    }
+
+    fn typed_code_of(response: &SearchPlaneIngestIpcResponse) -> Option<String> {
+        match response {
+            SearchPlaneIngestIpcResponse::Error(error) => Some(error.code.clone()),
+            SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
+            | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
+            | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
+            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_) => None,
+        }
+    }
+
+    fn receipt_of(response: SearchPlaneIngestIpcResponse) -> Result<BatchPublishReceipt, String> {
+        match response {
+            SearchPlaneIngestIpcResponse::DirtyReceipt(receipt) => Ok(receipt),
+            SearchPlaneIngestIpcResponse::Error(error) => {
+                Err(format!("{}: {}", error.code, error.message))
+            }
+            other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
+            | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
+            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
+            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)) => {
+                Err(format!("unexpected response {other:?}"))
+            }
+        }
+    }
+
+    /// The same body twice applies once; a different body is refused.
+    ///
+    /// The second receipt is the first one's counts and sequence with
+    /// `applied = false`, and the route was not reached again. A different
+    /// body under the same key is refused typed and the route is not reached
+    /// at all.
+    #[test]
+    fn a_replay_is_answered_from_the_record_and_a_conflict_is_refused() -> TestRes {
+        let runtime = Arc::new(CountingRuntime {
+            applies: AtomicUsize::new(0),
+        });
+        let catalog = Arc::new(MemoryIdempotencyCatalog::default());
+        let dispatcher = dispatcher(Arc::clone(&runtime), Arc::clone(&catalog));
+        let budget = RequestBudgetV1::unbounded();
+
+        let first = receipt_of(dispatcher.dispatch(
+            SearchPlaneIngestIpcRequest::PublishDirtyBatch(dirty_batch("d1", "src/a.rs")),
+            &budget,
+        ))?;
+        if !first.applied || first.durable_sequence != 1 || first.batch_digest != "d1" {
+            return Err(format!("first publish must apply at sequence 1: {first:?}").into());
+        }
+        let replay = receipt_of(dispatcher.dispatch(
+            SearchPlaneIngestIpcRequest::PublishDirtyBatch(dirty_batch("d1", "src/a.rs")),
+            &budget,
+        ))?;
+        if replay.applied || replay.durable_sequence != 1 {
+            return Err(
+                format!("replay must be the recorded apply, not a new one: {replay:?}").into(),
+            );
+        }
+        if replay.accepted_replace_scopes != first.accepted_replace_scopes
+            || replay.generation != first.generation
+        {
+            return Err("replay counts must be the original apply's".into());
+        }
+        if runtime.applies.load(Ordering::SeqCst) != 1 {
+            return Err(format!(
+                "the route ran {} times for one body",
+                runtime.applies.load(Ordering::SeqCst)
+            )
+            .into());
+        }
+
+        let conflict = dispatcher.dispatch(
+            SearchPlaneIngestIpcRequest::PublishDirtyBatch(dirty_batch("d1", "src/b.rs")),
+            &budget,
+        );
+        match typed_code_of(&conflict) {
+            Some(code) if code == BATCH_DIGEST_CONFLICT_CODE => {}
+            other => {
+                return Err(format!(
+                    "a different body under the same digest must be refused typed, got {other:?}"
+                )
+                .into());
+            }
+        }
+        if runtime.applies.load(Ordering::SeqCst) != 1 {
+            return Err("a conflicting body must not reach the route".into());
+        }
+        if catalog.records() != 1 {
+            return Err(
+                format!("one key must hold one record, found {}", catalog.records()).into(),
+            );
+        }
+
+        let second = receipt_of(dispatcher.dispatch(
+            SearchPlaneIngestIpcRequest::PublishDirtyBatch(dirty_batch("d2", "src/b.rs")),
+            &budget,
+        ))?;
+        if !second.applied || second.durable_sequence != 2 {
+            return Err(format!("a new key applies at the next sequence: {second:?}").into());
         }
         Ok(())
     }

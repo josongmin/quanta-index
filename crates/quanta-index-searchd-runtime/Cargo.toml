@@ -16,6 +16,7 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+quanta-index-catalog = { version = "0.1.0", path = "../quanta-index-catalog" }
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 quanta-index-lexical = { version = "0.1.0", path = "../quanta-index-lexical" }

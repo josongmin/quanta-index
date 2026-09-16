@@ -1509,7 +1509,10 @@ fn lexical_sourcegraph_query_builder_dispatches_text_query_request() {
 fn search_corpus_publish_routes_through_ingest_transport_and_carries_typed_records() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(1),
-        manifest_digest: "manifest:feed".to_string(),
+        manifest_digest: Some("manifest:feed".to_string()),
+        batch_digest: "batch:feed".to_string(),
+        applied: true,
+        durable_sequence: 7,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 1,
         accepted_tombstone_scopes: 0,
@@ -1571,7 +1574,10 @@ fn search_corpus_publish_routes_through_ingest_transport_and_carries_typed_recor
 fn search_corpus_builder_preserves_semantic_lifecycle_in_canonical_wire_order() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(1),
-        manifest_digest: "manifest:semantic".to_string(),
+        manifest_digest: Some("manifest:semantic".to_string()),
+        batch_digest: "batch:semantic".to_string(),
+        applied: true,
+        durable_sequence: 7,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 0,
         accepted_tombstone_scopes: 0,
@@ -1642,7 +1648,10 @@ fn search_corpus_builder_preserves_semantic_lifecycle_in_canonical_wire_order() 
 fn search_corpus_builder_preserves_typed_cluster_membership_without_text_inference_v1() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(1),
-        manifest_digest: "manifest:cluster".to_string(),
+        manifest_digest: Some("manifest:cluster".to_string()),
+        batch_digest: "batch:cluster".to_string(),
+        applied: true,
+        durable_sequence: 7,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 0,
         accepted_tombstone_scopes: 0,
@@ -1909,7 +1918,10 @@ fn producer_client_publish_search_corpus_accepts_unsealed_batches() {
     let ingest = Arc::new(StubIngestTransport::new(
         SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt {
             generation: ManifestGeneration::new(2),
-            manifest_digest: "manifest:unsealed".to_string(),
+            manifest_digest: Some("manifest:unsealed".to_string()),
+            batch_digest: "batch:unsealed".to_string(),
+            applied: true,
+            durable_sequence: 7,
             accepted_clear_surfaces: 0,
             accepted_replace_scopes: 0,
             accepted_tombstone_scopes: 0,
@@ -1948,13 +1960,20 @@ fn producer_client_publish_search_corpus_accepts_unsealed_batches() {
 fn producer_client_publish_search_corpus_and_activate_routes_ingest_then_control() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(7),
-        manifest_digest: "manifest:activate".to_string(),
+        manifest_digest: Some("manifest:activate".to_string()),
+        batch_digest: "batch:activate".to_string(),
+        applied: true,
+        durable_sequence: 7,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 0,
         accepted_tombstone_scopes: 0,
         sealed: true,
     };
-    let active = search_corpus_identity(receipt.generation.get(), &receipt.manifest_digest);
+    let manifest_digest = receipt
+        .manifest_digest
+        .clone()
+        .expect("search corpus receipt carries its manifest digest");
+    let active = search_corpus_identity(receipt.generation.get(), &manifest_digest);
     let ack = SearchPlaneSearchCorpusActivationCasAck {
         active: active.clone(),
         previous_sealed_active: None,
@@ -2061,7 +2080,10 @@ fn producer_client_rejects_activation_ack_identity_mismatches_v1() {
         let ingest = Arc::new(StubIngestTransport::new(
             SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt {
                 generation: ManifestGeneration::new(7),
-                manifest_digest: "manifest:activate".to_string(),
+                manifest_digest: Some("manifest:activate".to_string()),
+                batch_digest: "batch:activate".to_string(),
+                applied: true,
+                durable_sequence: 7,
                 accepted_clear_surfaces: 0,
                 accepted_replace_scopes: 0,
                 accepted_tombstone_scopes: 0,
@@ -2091,7 +2113,10 @@ fn producer_client_rejects_activation_ack_identity_mismatches_v1() {
 fn producer_client_rejects_mismatched_sealed_receipt_before_composite_activation_v1() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(7),
-        manifest_digest: "manifest:unexpected".to_string(),
+        manifest_digest: Some("manifest:unexpected".to_string()),
+        batch_digest: "batch:unexpected".to_string(),
+        applied: true,
+        durable_sequence: 7,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 0,
         accepted_tombstone_scopes: 0,
@@ -2148,7 +2173,10 @@ fn producer_client_rejects_each_search_corpus_receipt_mismatch_before_activation
     });
     let valid = BatchPublishReceipt {
         generation: ManifestGeneration::new(7),
-        manifest_digest: "manifest:receipt-exact".to_string(),
+        manifest_digest: Some("manifest:receipt-exact".to_string()),
+        batch_digest: "batch:receipt-exact".to_string(),
+        applied: true,
+        durable_sequence: 7,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 1,
         accepted_tombstone_scopes: 1,
@@ -2161,8 +2189,12 @@ fn producer_client_rejects_each_search_corpus_receipt_mismatch_before_activation
     cases.push(("generation", wrong_generation));
 
     let mut wrong_digest = valid.clone();
-    wrong_digest.manifest_digest = "manifest:other".to_string();
+    wrong_digest.manifest_digest = Some("manifest:other".to_string());
     cases.push(("manifest digest", wrong_digest));
+
+    let mut wrong_batch_digest = valid.clone();
+    wrong_batch_digest.batch_digest = "batch:other".to_string();
+    cases.push(("batch digest", wrong_batch_digest));
 
     let mut wrong_seal = valid.clone();
     wrong_seal.sealed = false;
@@ -2286,7 +2318,10 @@ fn producer_client_delegates_non_advancing_activation_rejection_before_ingest_v1
 fn history_publish_routes_through_ingest_transport_and_carries_typed_authority_records() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(3),
-        manifest_digest: String::new(),
+        manifest_digest: None,
+        batch_digest: "batch:history".to_string(),
+        applied: true,
+        durable_sequence: 3,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 4,
         accepted_tombstone_scopes: 0,
@@ -2343,7 +2378,10 @@ fn history_publish_routes_through_ingest_transport_and_carries_typed_authority_r
 fn history_publish_repo_commit_recency_routes_through_ingest_transport() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(3),
-        manifest_digest: "batch:repo-commit-recency-3".to_string(),
+        manifest_digest: None,
+        batch_digest: "batch:repo-commit-recency-3".to_string(),
+        applied: true,
+        durable_sequence: 7,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 2,
         accepted_tombstone_scopes: 0,
@@ -2394,7 +2432,10 @@ fn history_publish_repo_commit_recency_routes_through_ingest_transport() {
 fn history_publish_repo_meta_routes_through_ingest_transport() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(4),
-        manifest_digest: "batch:repo-meta-4".to_string(),
+        manifest_digest: None,
+        batch_digest: "batch:repo-meta-4".to_string(),
+        applied: true,
+        durable_sequence: 7,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 2,
         accepted_tombstone_scopes: 0,
@@ -2447,7 +2488,10 @@ fn history_publish_repo_meta_routes_through_ingest_transport() {
 fn history_publish_repo_topic_routes_through_ingest_transport() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(5),
-        manifest_digest: "batch:repo-topic-5".to_string(),
+        manifest_digest: None,
+        batch_digest: "batch:repo-topic-5".to_string(),
+        applied: true,
+        durable_sequence: 7,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 3,
         accepted_tombstone_scopes: 0,
@@ -2501,7 +2545,10 @@ fn history_publish_repo_topic_routes_through_ingest_transport() {
 fn history_publish_file_ownership_routes_through_ingest_transport() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(5),
-        manifest_digest: "batch:file-ownership-5".to_string(),
+        manifest_digest: None,
+        batch_digest: "batch:file-ownership-5".to_string(),
+        applied: true,
+        durable_sequence: 7,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 2,
         accepted_tombstone_scopes: 0,
@@ -2562,7 +2609,10 @@ fn history_publish_file_ownership_routes_through_ingest_transport() {
 fn history_publish_file_contributor_routes_through_ingest_transport() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(6),
-        manifest_digest: "batch:file-contributor-6".to_string(),
+        manifest_digest: None,
+        batch_digest: "batch:file-contributor-6".to_string(),
+        applied: true,
+        durable_sequence: 7,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 2,
         accepted_tombstone_scopes: 0,
@@ -3342,7 +3392,10 @@ fn control_request_id_mismatch_is_rejected_for_activation_and_rollback_v1() {
     let ingest = Arc::new(StubIngestTransport::new(
         SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt {
             generation: ManifestGeneration::new(7),
-            manifest_digest: "manifest:request-id".to_string(),
+            manifest_digest: Some("manifest:request-id".to_string()),
+            batch_digest: "batch:request-id".to_string(),
+            applied: true,
+            durable_sequence: 7,
             accepted_clear_surfaces: 0,
             accepted_replace_scopes: 0,
             accepted_tombstone_scopes: 0,

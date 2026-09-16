@@ -288,7 +288,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | --- | --- | --- |
 | W0 | **passed** | G0-L/G0-S/G0-C passed, G0-R baseline pinned(cooperative-only). §3 참조. timing 재측정만 `blocked: contended-host` |
 | W1 | planned | |
-| W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) 완료. catalog 본체(session/receipt/SQLite)는 미착수 — G0-C PASS → SQLite(rusqlite bundled)로 진행. `quanta-index-catalog-probe`는 W2 landing 시 삭제 |
+| W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + **QI-BB-032 idempotency catalog(§3.16, `quanta-index-catalog` SQLite adapter 신설, probe crate 삭제)** 완료. 남은 것: QI-BB-020 auxiliary authority shard/persistence(catalog 확장), quarantine control surface |
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) 완료. 남은 것: sharded sidecar 포맷(O(delta) write), ANN versioned artifact(QI-BB-027) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), QI-BB-024 regex cache, streaming projection collector |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. 남은 것: cancel을 lexical collector 내부(candidate batch 사이)까지 내리기, overload/refusal 서버 metric |
@@ -951,6 +951,36 @@ cache entry는 raw f32 배열(길이 4의 배수만 검사, checksum/dimension/f
 
 **남은 것**: finding 보완 #4(activation receipt에 semantic row root/ANN contract attestation)는 QI-BB-027과 함께. 기존 `embed-cache/<shard>/` v1 entry는 읽히지 않고 남는다 — 회수는 QI-BB-009(cache retention) 항목.
 
+## 3.16 QI-BB-032 — `batch_digest`는 하나의 immutable body를 이름하고, 한 번만 적용된다 (W2 catalog 착수, 구현 완료)
+
+**진단 확정**: ack 유실 후 같은 batch 재전송을 duplicate로 판별하지 못해 derive/embed/build를 다시 했고, 같은
+key에 다른 body가 와도 거부되지 않았다. receipt는 `manifest_digest`만 돌려주고, aux route는 그 field에
+`batch_digest`를 넣어 route마다 의미가 달랐다.
+
+**설계** (G0-C 결정 조건 준수):
+
+| 층 | 구현 |
+| --- | --- |
+| core `domains::idempotency` | `IdempotencyCatalogPort { begin(key, body_sha256) -> Fresh \| Replay{receipt, seq} \| Resume, finalize(key, body, receipt) -> seq, forget_generation }`, `IdempotencyKeyV1 { kind, repo, revision, generation, batch_digest }`, `IngestOperationKindV1`(receipt를 내는 11 route), typed `BATCH_DIGEST_CONFLICT` / `CATALOG_ROW_CORRUPT` / `CATALOG_BUSY` |
+| `quanta-index-catalog` (신설, rusqlite bundled) | `state_root/catalog/catalog-v1.sqlite`: `idempotency_v1(kind, repo, revision, generation, batch_digest PK; body_sha256; applied; receipt_cbor; durable_sequence; row_sha256) WITHOUT ROWID` + `catalog_sequence_v1`. open 시 `journal_mode=WAL`, **`synchronous=FULL`**, `fullfsync=ON`을 요청하고 **읽어서 확인**(WAL/FULL 아니면 open 거부). 모든 row는 자기 digest(`row_sha256`)를 갖고 read마다 검증 → 불일치는 `CATALOG_ROW_CORRUPT`. `DatabaseBusy/Locked`는 `CATALOG_BUSY`(busy_timeout = caller budget). sequence는 finalize transaction 안에서 할당(전역 단조) |
+| search-plane dispatcher | receipt를 내는 11 route 전부 `publish_idempotent(kind, key, body, apply)`: canonical body hash = `sha256("quanta-index:ingest-batch-body:v1", kind, CBOR(batch))` → `begin` → Replay면 저장 receipt를 `applied=false`로 회신(adapter·embedder 호출 0) → 아니면 apply → `finalize` → `applied=true` + sequence. Resume(crash 후)은 재적용(모든 route가 op별 idempotent; seal은 `finalize_only` 수렴). materializer의 physical GC가 양 track에서 회수한 generation의 record를 `forget_generation` |
+| contract `BatchPublishReceipt` | `manifest_digest: Option<String>`(aux route는 `None` — field overloading 제거), `batch_digest`, `applied`, `durable_sequence` 추가; 모든 field 필수(legacy clear-surface default 삭제). SDK는 `batch_digest` 일치도 검증 |
+| composition | `SqliteIdempotencyCatalog::open(state_root, 2s)` → `SearchdRuntimeParts.idempotency` → dispatcher + materializer. ingest socket은 SERIAL_DISPATCH(§3.12)라 같은 key의 동시 publish는 직렬화되어 하나가 apply, 나머지는 Replay |
+| 삭제 | `quanta-index-catalog-probe` crate, `redb` workspace dep, 관련 Justfile/authority/hexagonal 항목 (G0-C 증거는 ADR에 기록됨) |
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| 같은 body replay → 한 번만 apply, 두 번째 receipt는 원 apply의 counts/sequence + `applied=false`; 같은 digest 1-byte 변경 body → mutation 전 `BATCH_DIGEST_CONFLICT`; 거부된 body는 serve되지 않음 | `e2e_ingest_idempotency::a_replay_is_acked_from_the_record_and_a_conflict_never_lands` (실 SQLite, ingest socket) |
+| 8 concurrent duplicate publish → applied 정확히 1, 모든 receipt 같은 sequence, corpus row 1개 | `…::concurrent_duplicate_publishes_converge_on_one_apply` |
+| daemon restart 후 replay도 Replay(원 sequence) | `…::a_replay_after_restart_is_still_a_replay` |
+| dispatcher: route 호출 1회, conflict는 route 미도달, key당 record 1개, 새 key는 다음 sequence | `ingest_dispatcher::idempotency_tests::…` — Replay short-circuit mutation으로 FAIL 확인 후 revert |
+| catalog: fresh→finalize→replay, conflict는 무기록, 이중 finalize 거부; crash-before-finalize → Resume → finalize; row digest bit-flip → `CATALOG_ROW_CORRUPT`; sequence 1..4 단조(재open 포함); 외부 writer가 lock 보유 → `CATALOG_BUSY`(60ms budget 준수); forget_generation은 해당 generation만 | `catalog/tests/idempotency.rs` 6 tests |
+| receipt wire shape(모든 field 필수, legacy receipt decode 거부) | `contract` receipt round-trip + `legacy_clearless_batches_decode_as_zero_clear_and_receipts_do_not_v1`; public-api baseline 갱신 |
+
+**정직한 한계**: (a) repo-map bundle route는 receipt가 아니라 `RepoMapMutationAck`를 내고 batch digest가 없어 catalog 밖 — 계약이 receipt 형태로 바뀔 때 편입. (b) caller의 `batch_digest`와 server body hash를 **대조**하지는 않는다(producer digest scheme이 다름) — 같은 key 아래 body 불변만 강제. (c) Resume 시 unsealed batch의 재적용은 op별 overwrite semantics에 기대며, 별도 "이미 적용됨" 판정은 없다.
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -976,3 +1006,4 @@ cache entry는 raw f32 배열(길이 4의 배수만 검사, checksum/dimension/f
 | 2026-09-17 | 1a2f440 | `just rust-profile verify-rust` | RED — 2,006 passed / 0 failed, `rust-doc`에서 stale intra-doc link(`scan_persisted_generations`) (→ 다음 commit) |
 | 2026-09-17 | ae54693 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,013 passed / 0 failed (QI-BB-026 + QI-BB-017 포함) |
 | 2026-09-17 | 880a5c3 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,021 passed / 0 failed (QI-BB-028 + QI-BB-031 포함) |
+| 2026-09-17 | (W2 tree) | `just rust-fuzz-smoke 30` | 4 target × 30s, crash 0 (receipt wire DTO 변경에 대한 fail-closed 확인) |

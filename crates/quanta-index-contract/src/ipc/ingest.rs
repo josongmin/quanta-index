@@ -4166,25 +4166,43 @@ impl<'de> Deserialize<'de> for StructuralIngestBatch {
 ///
 /// Receipt truth is generation/materialization scoped, not channel-sequence
 /// scoped. The ingest path may internally fan out to multiple storage writes,
-/// but the producer-facing ack reports the generation and how many scope
-/// mutations were accepted.
+/// but the producer-facing ack reports the generation, how many scope
+/// mutations were accepted, and — since QI-BB-032 — which idempotency key it
+/// answers, whether this call applied the batch or is replaying a durable
+/// earlier apply, and the catalog's durable sequence of that apply.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatchPublishReceipt {
     pub generation: ManifestGeneration,
-    pub manifest_digest: String,
+    /// The generation's manifest digest for routes that carry one; `None`
+    /// for auxiliary routes that name no manifest. Never the batch digest.
+    pub manifest_digest: Option<String>,
+    /// The batch digest the publish named: the idempotency key this receipt
+    /// answers.
+    pub batch_digest: String,
     pub accepted_replace_scopes: u32,
     pub accepted_tombstone_scopes: u32,
     pub accepted_clear_surfaces: u32,
     pub sealed: bool,
+    /// `true` when this call applied the batch; `false` when the same body
+    /// had already been applied and this is the durable receipt of that
+    /// apply (a replay ack that mutated nothing).
+    pub applied: bool,
+    /// The catalog's durable sequence of the apply, unique and monotonic
+    /// across the state root. A replay carries the original apply's
+    /// sequence, so a producer can prove two receipts describe one apply.
+    pub durable_sequence: u64,
 }
 
 const BATCH_PUBLISH_RECEIPT_FIELDS: &[&str] = &[
     "generation",
     "manifest_digest",
+    "batch_digest",
     "accepted_replace_scopes",
     "accepted_tombstone_scopes",
     "accepted_clear_surfaces",
     "sealed",
+    "applied",
+    "durable_sequence",
 ];
 
 impl Serialize for BatchPublishReceipt {
@@ -4192,13 +4210,16 @@ impl Serialize for BatchPublishReceipt {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("BatchPublishReceipt", 6)?;
+        let mut state = serializer.serialize_struct("BatchPublishReceipt", 9)?;
         state.serialize_field("generation", &self.generation)?;
         state.serialize_field("manifest_digest", &self.manifest_digest)?;
+        state.serialize_field("batch_digest", &self.batch_digest)?;
         state.serialize_field("accepted_replace_scopes", &self.accepted_replace_scopes)?;
         state.serialize_field("accepted_tombstone_scopes", &self.accepted_tombstone_scopes)?;
         state.serialize_field("accepted_clear_surfaces", &self.accepted_clear_surfaces)?;
         state.serialize_field("sealed", &self.sealed)?;
+        state.serialize_field("applied", &self.applied)?;
+        state.serialize_field("durable_sequence", &self.durable_sequence)?;
         state.end()
     }
 }
@@ -4217,11 +4238,14 @@ impl<'de> Visitor<'de> for BatchPublishReceiptVisitor {
         A: MapAccess<'de>,
     {
         let mut generation: Option<ManifestGeneration> = None;
-        let mut manifest_digest: Option<String> = None;
+        let mut manifest_digest: Option<Option<String>> = None;
+        let mut batch_digest: Option<String> = None;
         let mut accepted_replace_scopes: Option<u32> = None;
         let mut accepted_tombstone_scopes: Option<u32> = None;
         let mut accepted_clear_surfaces: Option<u32> = None;
         let mut sealed: Option<bool> = None;
+        let mut applied: Option<bool> = None;
+        let mut durable_sequence: Option<u64> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "generation" => {
@@ -4235,6 +4259,12 @@ impl<'de> Visitor<'de> for BatchPublishReceiptVisitor {
                         return Err(de::Error::duplicate_field("manifest_digest"));
                     }
                     manifest_digest = Some(map.next_value()?);
+                }
+                "batch_digest" => {
+                    if batch_digest.is_some() {
+                        return Err(de::Error::duplicate_field("batch_digest"));
+                    }
+                    batch_digest = Some(map.next_value()?);
                 }
                 "accepted_replace_scopes" => {
                     if accepted_replace_scopes.is_some() {
@@ -4260,6 +4290,18 @@ impl<'de> Visitor<'de> for BatchPublishReceiptVisitor {
                     }
                     sealed = Some(map.next_value()?);
                 }
+                "applied" => {
+                    if applied.is_some() {
+                        return Err(de::Error::duplicate_field("applied"));
+                    }
+                    applied = Some(map.next_value()?);
+                }
+                "durable_sequence" => {
+                    if durable_sequence.is_some() {
+                        return Err(de::Error::duplicate_field("durable_sequence"));
+                    }
+                    durable_sequence = Some(map.next_value()?);
+                }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -4272,14 +4314,17 @@ impl<'de> Visitor<'de> for BatchPublishReceiptVisitor {
             generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
             manifest_digest: manifest_digest
                 .ok_or_else(|| de::Error::missing_field("manifest_digest"))?,
+            batch_digest: batch_digest.ok_or_else(|| de::Error::missing_field("batch_digest"))?,
             accepted_replace_scopes: accepted_replace_scopes
                 .ok_or_else(|| de::Error::missing_field("accepted_replace_scopes"))?,
             accepted_tombstone_scopes: accepted_tombstone_scopes
                 .ok_or_else(|| de::Error::missing_field("accepted_tombstone_scopes"))?,
-            // Legacy receipts predate clear-surface admission; absence means
-            // zero accepted clears, while new writers always emit the count.
-            accepted_clear_surfaces: accepted_clear_surfaces.unwrap_or(0),
+            accepted_clear_surfaces: accepted_clear_surfaces
+                .ok_or_else(|| de::Error::missing_field("accepted_clear_surfaces"))?,
             sealed: sealed.ok_or_else(|| de::Error::missing_field("sealed"))?,
+            applied: applied.ok_or_else(|| de::Error::missing_field("applied"))?,
+            durable_sequence: durable_sequence
+                .ok_or_else(|| de::Error::missing_field("durable_sequence"))?,
         })
     }
 }
@@ -4298,15 +4343,26 @@ impl<'de> Deserialize<'de> for BatchPublishReceipt {
 }
 
 impl BatchPublishReceipt {
+    /// An empty receipt for `generation` under `batch_digest`, before any
+    /// scope is counted. It reads as applied with no durable sequence yet;
+    /// the ingest dispatcher stamps the sequence once the catalog has
+    /// recorded the apply, and rewrites `applied` on a replay.
     #[must_use]
-    pub fn empty_for(generation: ManifestGeneration, manifest_digest: impl Into<String>) -> Self {
+    pub fn empty_for(
+        generation: ManifestGeneration,
+        manifest_digest: Option<String>,
+        batch_digest: impl Into<String>,
+    ) -> Self {
         Self {
             generation,
-            manifest_digest: manifest_digest.into(),
+            manifest_digest,
+            batch_digest: batch_digest.into(),
             accepted_replace_scopes: 0,
             accepted_tombstone_scopes: 0,
             accepted_clear_surfaces: 0,
             sealed: false,
+            applied: true,
+            durable_sequence: 0,
         }
     }
 
@@ -4325,11 +4381,31 @@ impl BatchPublishReceipt {
     pub fn mark_sealed(&mut self) {
         self.sealed = true;
     }
+
+    /// The receipt of a fresh apply, stamped with the catalog's sequence.
+    #[must_use]
+    pub fn recorded_at(mut self, durable_sequence: u64) -> Self {
+        self.applied = true;
+        self.durable_sequence = durable_sequence;
+        self
+    }
+
+    /// The receipt of an earlier apply, re-issued for a replay of the same
+    /// body: the counts and sequence are the original apply's, `applied`
+    /// says this call mutated nothing.
+    #[must_use]
+    pub fn replayed(mut self) -> Self {
+        self.applied = false;
+        self
+    }
 }
 
 impl Default for BatchPublishReceipt {
+    /// A receipt for no publish at all: generation zero, no manifest, an
+    /// empty batch digest and no sequence. Only a scripted transport in a
+    /// test answers with it.
     fn default() -> Self {
-        Self::empty_for(ManifestGeneration::ZERO, String::new())
+        Self::empty_for(ManifestGeneration::ZERO, None, String::new())
     }
 }
 
@@ -5358,7 +5434,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_clearless_batches_and_receipts_decode_as_zero_clear_v1() -> TestRes {
+    fn legacy_clearless_batches_decode_as_zero_clear_and_receipts_do_not_v1() -> TestRes {
         let mut search_value = serde_json::to_value(fixture_search_corpus_batch())?;
         let _removed_clear_surfaces = search_value
             .as_object_mut()
@@ -5375,16 +5451,19 @@ mod tests {
         let semantic_batch: SemanticIngestBatch = serde_json::from_value(semantic_value)?;
         assert!(semantic_batch.clear_surfaces.is_empty());
 
+        // Receipts are produced only by the search plane and every field is
+        // required (QI-BB-032): a receipt without its clear-surface count
+        // does not decode instead of reading as zero.
         let mut receipt_value = serde_json::to_value(BatchPublishReceipt::empty_for(
             fixture_generation(),
-            "manifest:legacy",
+            Some("manifest:legacy".to_string()),
+            "batch:legacy",
         ))?;
         let _removed_accepted_clear_surfaces = receipt_value
             .as_object_mut()
             .ok_or("receipt fixture must encode as a map")?
             .remove("accepted_clear_surfaces");
-        let receipt: BatchPublishReceipt = serde_json::from_value(receipt_value)?;
-        assert_eq!(receipt.accepted_clear_surfaces, 0);
+        assert!(serde_json::from_value::<BatchPublishReceipt>(receipt_value).is_err());
         Ok(())
     }
 
@@ -5549,7 +5628,10 @@ mod tests {
     fn batch_publish_receipt_round_trip() -> TestRes {
         let receipt = BatchPublishReceipt {
             generation: ManifestGeneration::new(9),
-            manifest_digest: "sha256:feed".to_string(),
+            manifest_digest: Some("sha256:feed".to_string()),
+            batch_digest: "batch:fixture".to_string(),
+            applied: true,
+            durable_sequence: 7,
             accepted_replace_scopes: 2,
             accepted_tombstone_scopes: 1,
             accepted_clear_surfaces: 0,
@@ -5683,7 +5765,10 @@ mod tests {
             request_id: 3,
             payload: SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt {
                 generation: ManifestGeneration::new(1),
-                manifest_digest: "digest-lex".to_string(),
+                manifest_digest: Some("digest-lex".to_string()),
+                batch_digest: "batch:fixture".to_string(),
+                applied: true,
+                durable_sequence: 7,
                 accepted_replace_scopes: 1,
                 accepted_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
@@ -5718,7 +5803,10 @@ mod tests {
             request_id: 5,
             payload: SearchPlaneIngestIpcResponse::HistoryReceipt(BatchPublishReceipt {
                 generation: ManifestGeneration::new(3),
-                manifest_digest: "digest-hist".to_string(),
+                manifest_digest: Some("digest-hist".to_string()),
+                batch_digest: "batch:fixture".to_string(),
+                applied: true,
+                durable_sequence: 7,
                 accepted_replace_scopes: 4,
                 accepted_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
@@ -5737,7 +5825,10 @@ mod tests {
             request_id: 6,
             payload: SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(BatchPublishReceipt {
                 generation: ManifestGeneration::new(4),
-                manifest_digest: "digest-repo-commit-recency".to_string(),
+                manifest_digest: Some("digest-repo-commit-recency".to_string()),
+                batch_digest: "batch:fixture".to_string(),
+                applied: true,
+                durable_sequence: 7,
                 accepted_replace_scopes: 2,
                 accepted_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
@@ -5756,7 +5847,10 @@ mod tests {
             request_id: 7,
             payload: SearchPlaneIngestIpcResponse::RepoMetaReceipt(BatchPublishReceipt {
                 generation: ManifestGeneration::new(5),
-                manifest_digest: "digest-repo-meta".to_string(),
+                manifest_digest: Some("digest-repo-meta".to_string()),
+                batch_digest: "batch:fixture".to_string(),
+                applied: true,
+                durable_sequence: 7,
                 accepted_replace_scopes: 2,
                 accepted_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
@@ -5775,7 +5869,10 @@ mod tests {
             request_id: 13,
             payload: SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(BatchPublishReceipt {
                 generation: ManifestGeneration::new(7),
-                manifest_digest: "digest-repo-description".to_string(),
+                manifest_digest: Some("digest-repo-description".to_string()),
+                batch_digest: "batch:fixture".to_string(),
+                applied: true,
+                durable_sequence: 7,
                 accepted_replace_scopes: 2,
                 accepted_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
@@ -5794,7 +5891,10 @@ mod tests {
             request_id: 8,
             payload: SearchPlaneIngestIpcResponse::RepoTopicReceipt(BatchPublishReceipt {
                 generation: ManifestGeneration::new(6),
-                manifest_digest: "digest-repo-topic".to_string(),
+                manifest_digest: Some("digest-repo-topic".to_string()),
+                batch_digest: "batch:fixture".to_string(),
+                applied: true,
+                durable_sequence: 7,
                 accepted_replace_scopes: 2,
                 accepted_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
@@ -5813,7 +5913,10 @@ mod tests {
             request_id: 12,
             payload: SearchPlaneIngestIpcResponse::FileContributorReceipt(BatchPublishReceipt {
                 generation: ManifestGeneration::new(7),
-                manifest_digest: "digest-file-contributor".to_string(),
+                manifest_digest: Some("digest-file-contributor".to_string()),
+                batch_digest: "batch:fixture".to_string(),
+                applied: true,
+                durable_sequence: 7,
                 accepted_replace_scopes: 2,
                 accepted_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
@@ -5832,7 +5935,10 @@ mod tests {
             request_id: 8,
             payload: SearchPlaneIngestIpcResponse::DirtyReceipt(BatchPublishReceipt {
                 generation: ManifestGeneration::new(4),
-                manifest_digest: "digest-dirty".to_string(),
+                manifest_digest: Some("digest-dirty".to_string()),
+                batch_digest: "batch:fixture".to_string(),
+                applied: true,
+                durable_sequence: 7,
                 accepted_replace_scopes: 1,
                 accepted_tombstone_scopes: 1,
                 accepted_clear_surfaces: 0,
@@ -5851,7 +5957,10 @@ mod tests {
             request_id: 9,
             payload: SearchPlaneIngestIpcResponse::StructuralReceipt(BatchPublishReceipt {
                 generation: ManifestGeneration::new(5),
-                manifest_digest: "digest-struct".to_string(),
+                manifest_digest: Some("digest-struct".to_string()),
+                batch_digest: "batch:fixture".to_string(),
+                applied: true,
+                durable_sequence: 7,
                 accepted_replace_scopes: 1,
                 accepted_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,

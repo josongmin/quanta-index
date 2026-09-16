@@ -3832,7 +3832,7 @@ fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_quer
         .publish_and_activate(&tombstone_only, Some(expected_active))?;
     if !receipt.sealed
         || receipt.generation != generation_two()
-        || receipt.manifest_digest != tombstone_only.manifest_digest()
+        || receipt.manifest_digest.as_deref() != Some(tombstone_only.manifest_digest())
         || receipt.accepted_replace_scopes != 0
         || receipt.accepted_tombstone_scopes != 1
         || activation.active.lexical.manifest_generation != generation_two()

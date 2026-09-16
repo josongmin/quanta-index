@@ -7,6 +7,7 @@
 
 pub mod generation;
 pub mod hybrid;
+pub mod idempotency;
 pub mod lexical;
 pub mod repomap;
 pub mod semantic;

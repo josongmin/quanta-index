@@ -190,6 +190,7 @@ rust-test-integration:
     {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test boot_inventory --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test regex_literal_alternation --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-ipc --test admission --all-features --locked
+    {{cargo}} --lane test-integration-lane test -p quanta-index-catalog --test idempotency --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-repomap --test bootstrap_owner_flow --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-repomap --test owner_surface --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test persisted_semantic --all-features --locked
@@ -198,14 +199,15 @@ rust-test-integration:
     {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test semantic_generation_lifecycle_model --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test scv2_persisted_scenarios --all-features --locked
 
-# W0 decision-gate probes (G0-L / G0-S / G0-R / G0-C). Vendor- and transport-capability
+# W0 decision-gate probes (G0-L / G0-S / G0-R). Vendor- and transport-capability
 # evidence for the structural remediation gates; `--nocapture` so the
-# G0*-EVIDENCE lines land in the run log the ADRs cite.
+# G0*-EVIDENCE lines land in the run log the ADRs cite. The G0-C probe crate
+# was deleted when the catalog adapter (`quanta-index-catalog`) landed; its
+# evidence is recorded in the G0-C ADR.
 rust-w0-storage-gates:
     {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test g0l_tantivy_snapshot_probe --all-features --locked -- --nocapture
     {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test g0s_lance_snapshot_probe --all-features --locked -- --nocapture
     {{cargo}} --lane test-integration-lane test -p quanta-index-ipc --test g0r_runtime_cancellation_probe --all-features --locked -- --nocapture
-    {{cargo}} --lane test-integration-lane test -p quanta-index-catalog-probe --all-features --locked -- --nocapture --test-threads=1
 
 rust-test-cli-smoke:
     {{cargo}} --lane test-cli-smoke-lane test -p quanta-index-searchctl --test cli_smoke --all-features --locked
@@ -258,6 +260,7 @@ rust-test-e2e:
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_exact_count_window --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_physical_gc --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_boot_quarantine --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_ingest_idempotency --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_predicate_authority_lifecycle --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_generation_activation_concurrency --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test dsl_scenarios --all-features --locked

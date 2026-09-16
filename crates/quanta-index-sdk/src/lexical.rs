@@ -573,9 +573,14 @@ fn validate_search_corpus_publish_receipt_v1<const SEALED: bool>(
             "search corpus receipt generation differs from the published batch".to_string(),
         ));
     }
-    if receipt.manifest_digest != batch.manifest_digest() {
+    if receipt.manifest_digest.as_deref() != Some(batch.manifest_digest()) {
         return Err(SdkError::Protocol(
             "search corpus receipt manifest digest differs from the published batch".to_string(),
+        ));
+    }
+    if receipt.batch_digest != batch.batch_digest() {
+        return Err(SdkError::Protocol(
+            "search corpus receipt batch digest differs from the published batch".to_string(),
         ));
     }
     if receipt.sealed != SEALED {

@@ -27,6 +27,10 @@ pub use domains::generation::{
     commit_tree_v1, sha256_of_file, verify_tree_commitment_v1,
 };
 pub use domains::hybrid::{ExplainQueryPort, HybridOrchestratorPolicy, HybridQueryPort};
+pub use domains::idempotency::{
+    BATCH_DIGEST_CONFLICT_CODE, CATALOG_BUSY_CODE, CATALOG_ROW_CORRUPT_CODE, IdempotencyBeginV1,
+    IdempotencyCatalogPort, IdempotencyKeyV1, IngestOperationKindV1,
+};
 pub use domains::lexical::{
     FileContributorIngestPort, FileOwnershipIngestPort, LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE,
     LexicalExecutionBudgetV1, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPolicy,
