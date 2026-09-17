@@ -1443,3 +1443,4 @@ row로 펼치지 않는다 — 1 row가 정확히 emitted score와 일치하는 
 | 2026-09-17 | 75899ef | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,066 passed / 0 failed (QI-BB-018 true hybrid 포함) |
 | 2026-09-17 | a9644a3 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,082 passed / 0 failed (QI-BB-027 ANN sealed contract 포함) |
 | 2026-09-17 | 1cf1b5b | `just rust-profile verify-rust` | RED — `searchd-harness::ui::tests::seeded_ui_rail_runs_and_anchors_every_probe`: UI rail이 옛 `presence_probe` strategy를 기대. rail을 scored explain 계약(row Σ == score)으로 갱신(→ 다음 commit) |
+| 2026-09-17 | 80b4fda | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,091 passed / 0 failed (QI-BB-022 explain score trace + UI rail 포함) |
