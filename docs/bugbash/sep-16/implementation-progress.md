@@ -1305,3 +1305,4 @@ lane에 최소 similarity threshold 또는 score-aware fusion을 두는 것은 Q
 | 2026-09-17 | dd2246b | `just rust-profile verify-rust` | RED — `quanta-index-ipc::handle_connection_returns_peer_closed_after_successful_round_trip` frame truncated: W5 peer watch의 half-close 오분류(IMPL-J, → 다음 commit) |
 | 2026-09-17 | 46a2159 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,064 passed / 0 failed (QI-BB-023 history order/cursor + IMPL-J 포함) |
 | 2026-09-17 | 46d6675 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,066 passed / 0 failed (QI-BB-019 canonical hybrid seed 포함) |
+| 2026-09-17 | 75899ef | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,066 passed / 0 failed (QI-BB-018 true hybrid 포함) |
