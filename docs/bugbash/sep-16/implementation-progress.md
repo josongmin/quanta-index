@@ -1741,7 +1741,7 @@ module-discipline(33 facade)/error-shape/public-api(불변)/cargo-modules(불변
 `e2e_perf_chaos` 43·`e2e_top_k_truth_table` 4 green. main rebase 후(§3.31 quarantine 포함) 250+38 green.
 
 **남긴 것(agent가 발견, 의도적으로 미변경)**: (a) `dispatcher.rs::dispatch_runtime_metadata`의 "QI-RT-02 in-flight … not wired"
-주석이 구현과 모순 — doc 정정 대상. (b) `ledger_apply`가 state struct의 map에 직접 쓴다(`pub(super)` field) — delta 적용을 state
+주석이 구현과 모순 — verify #34 직후 정정(주석이 route를 서술). (b) `ledger_apply`가 state struct의 map에 직접 쓴다(`pub(super)` field) — delta 적용을 state
 type의 method로 옮기면 field가 다시 private. (c) `text_plane::ExecutableTextPlanePolicy` 2-plane enum, `Ledger::lexical_seal`/
 `semantic_seal` mirror, `SearchPlaneDispatcher` 9 collaborator — 기존 smell. (d) `search_corpus_history.rs` 833줄·`routes/history.rs`
 1,084줄은 2차 분할 후보.
@@ -1980,4 +1980,5 @@ unit test). (b) retention(대체된 snapshot)은 restart를 넘지 않는다 —
 | 2026-09-18 | worktree C (2f41a00→6fa50eb rebase) | agent: contract 238·core 89·search-plane 294·sdk 78·harness 77·searchctl 58 + e2e slice 24 + workspace clippy(0) + fmt/semgrep/hexagonal/module/error-shape/derive/digest/cargo-toml/test-authority + public-api/cargo-modules update + fuzz smoke; rebase 후 check + 834 + e2e 43, baselines 불변 | 전부 green (§3.36) |
 | 2026-09-18 | 47294db | `just rust-profile verify-rust` (nohup) | RED at `rust-doc` — **2,209 tests passed / 0 failed**, 이후 rustdoc `-D warnings`: `lexical/src/phrase.rs` module doc이 crate-private `normalize`를 intra-doc link(§3.33 잔여) → link 제거(다음 commit) |
 | 2026-09-18 | worktree F (2f41a00→47294db rebase, 충돌 5 file) | agent: search-plane 261·searchd 53·contract 237·core 85·sdk 78·searchctl 55·catalog 12 + e2e 10 target + `just rust-clippy` 0 + fmt/semgrep/hexagonal/no-allow/derive/cargo-toml/module/error-shape/digest/test-authority/ignored-policy/workspace-lints/deny + public-api/cargo-modules update + fuzz smoke; rebase 후 unit 914 + e2e 11 target 74 + clippy 0 + semgrep 0 + module/hexagonal | 전부 green (§3.37) |
+| 2026-09-18 | fc3ee5c | `just rust-profile verify-rust` (nohup) | **GREEN** — exit 0, **2,225 passed / 0 failed** (026 quarantine surface + 013 split + 011 normalizer + 027 ANN append + hybrid lane provenance + aux read epoch + 작업량 oracle 통합; clippy·semgrep·deny·doc·public-api·hexagonal·test-authority 포함) |
 | 2026-09-18 | worktree 011 (7a5ce5e→034c4fd rebase) | agent: workspace clippy(0) + lexical 15 target·lq-norm 88·search-plane 285 + e2e text_route_hellgate 8·perf_chaos 43·dsl_scenarios 8·lexical_full_fidelity 1·dual_syntax_parity 4·full_corpus 4 + harness 77 + hexagonal/semgrep/module/error-shape/cargo-toml/derive/test-authority/deny; rebase 후 lexical carryforward 6 + goldens 8 | 전부 green (§3.33) |

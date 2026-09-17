@@ -430,9 +430,10 @@ impl SearchPlaneDispatcher {
         })
     }
 
-    // QI-RT-02 (in-flight): runtime-metadata query path is defined in the
-    // contract but the producer-backed implementation is not wired yet.
-    // Fail-closed with a dedicated typed-unavailable code.
+    /// The runtime-metadata route: the lexical text plan over the dirty
+    /// overlay and structural chunk universe, read at one auxiliary epoch
+    /// (`routes/runtime_metadata.rs`); refusals come back as the typed
+    /// error the route raised.
     fn dispatch_runtime_metadata(
         &self,
         request: &RuntimeMetadataQueryRequest,
