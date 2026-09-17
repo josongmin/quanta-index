@@ -311,7 +311,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W0 | **passed** | G0-L/G0-S/G0-C passed, G0-R baseline pinned(cooperative-only). §3 참조. timing 재측정만 `blocked: contended-host` |
 | W1 | in_progress | **QI-BB-011 Unicode normalizer(§3.33)** + **QI-BB-013 search-plane 3 monolith 분할(§3.32)** 완료. 남은 것: snake/camel sub-token 확장(LEX-00, 제품 결정), route×predicate `RequiredDomains`(plan §5.6) |
 | W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + **quarantine control surface(§3.31: live inventory + as-listed discard, control IPC/SDK/CLI)** + QI-BB-032 idempotency catalog(§3.16) + QI-BB-020 auxiliary authority rows(§3.19) 완료. + **aux read epoch(§3.37: epoch-named snapshot, cursor 연속은 시작 epoch에서, retention bounded)** 완료. 남은 것: 없음(W2 항목 전부 착지; runtime-metadata의 structural epoch wire 노출·epoch metric은 §3.37 한계) |
-| W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + QI-BB-027 ANN sealed contract(§3.23) + **QI-BB-016 lexical writer envelope(§3.26)** 완료. + **QI-BB-027 보완 ANN append per delta seal(§3.35)** 완료. 남은 것: sharded sidecar 포맷(O(delta) write, 진행 중), scope 단위 streamed embed→append(§3.18 한계) |
+| W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + QI-BB-027 ANN sealed contract(§3.23) + **QI-BB-016 lexical writer envelope(§3.26)** 완료. + **QI-BB-027 보완 ANN append per delta seal(§3.35)** 완료. + **QI-BB-006 완결 sharded text-authority(§3.38)** 완료. 남은 것: scope 단위 streamed embed→append(§3.18 한계, 진행 중) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) + **QI-BB-025 보완 #4 runtime/structural window(§3.30)** 완료. 남은 것: runtime/structural keyset cursor, streaming projection collector |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. QI-BB-014 UDS/state-root private hardening(§3.27) 완료. QI-BB-015 metrics 집계 + scrape(§3.28) 완료. **phase 2(§3.29): budget이 lexical native collect/scan/regex verify/predicate scope 안에서 관측** 완료. 남은 것: shared mode(group/ACL + peer credential), semantic lane 내부 관측 |
 | W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + QI-BB-018 true hybrid(§3.22) + QI-BB-022 explain = exact presence + lexical score trace(§3.24) + **QI-BB-008 RepoMap bounded query + durable store(§3.25)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), history relevance order(Tantivy history index, §3.20 한계), judged corpus recall/NDCG gate(§3.22 한계), **hybrid per-lane contribution(§3.36)** 완료 |
@@ -1924,6 +1924,50 @@ unit test). (b) retention(대체된 snapshot)은 restart를 넘지 않는다 —
 같은 lock 아래 일관된 cut이지만 그 epoch는 wire에 없다. (d) epoch metrics counter 없음. (e) `rust-profile test-daemon` 전체·workspace
 `cargo test`·miri/tsan/asan/mutants/llvm-lines는 agent 미실행(main 통합 verify-rust가 대신).
 
+## 3.38 QI-BB-006 완결 — text-authority는 doc-id range shard로 나뉘고, delta는 건드린 shard만 쓴다 (구현 완료)
+
+**진단 확정**: §3.4.1 이후에도 text-authority sidecar 5개는 단일 CBOR blob이라 어떤 delta든 전체를 다시 썼다(write bytes O(N);
+`QI-BB-006-EVIDENCE text_authority_bytes=1681370`이 delta마다 그대로). plan §6.1: "whole-corpus CBOR를 stable key 기반 불변 block +
+bounded manifest로, 변경 없는 block은 hard link".
+
+**구현** (26 files, +3,847/−921):
+
+- **포맷**: generation dir 안 `text-authority/manifest.cbor` + `shard-<index:08>-<sha256[..8]>.cbor`, `SHARD_DOCS = 2048`(측정 ~1.1 KiB/doc →
+  shard ~2 MiB, 100k doc = 49 file; shard당 candidate set이 pre-verify cap 아래). shard 하나가 그 doc-id 범위의 doc table + trigram 2종 +
+  positions 2종 slice를 모두 가짐(파일 5개 아님). manifest: format 1, shard_docs, normalizer stamp(`TEXT_NORMALIZER_VERSION`, §3.33), `max_doc_id`
+  watermark, shard별 (index, rows, min/max doc id, bytes, sha256). 거부: 다른 format/shard size → `GENERATION_TEXT_AUTHORITY_FORMAT_UNSUPPORTED`,
+  다른 normalizer → `GENERATION_NORMALIZER_UNSUPPORTED`, 중복/비정렬/빈 shard·범위 밖 id·digest/length/row 불일치·decode 실패 → `GENERATION_SIDECAR_CORRUPT`.
+- **write**: 모든 text doc이 Tantivy에 `text_authority_doc_id`(STORED u64)를 가짐 — id는 prior manifest watermark부터 op 순서로 한 번 할당, 재사용
+  없음 → scope mutation이 retire하는 doc(= 건드리는 shard)을 **shard decode 없이** pre-mutation index가 이름함. `plan_text_authority_delta` →
+  `None | Rebuild | Incremental{retired, touched_shards}`; `update`는 touched shard만 load(digest 증명) + `from_prior`/retire/upsert, 나머지는
+  manifest에 그대로 나열(파일은 base의 hard link, 기존 recursive clone). content-named shard라 rewrite = 새 파일, manifest rename이 atomic switch,
+  publish 뒤 manifest가 소유하지 않는 파일 제거. 전부 `write_atomic_durable`.
+- **read**: lq-trigram `TrigramPostingSource` + `ShardedTrigramIndex`, lq-positions `TermPostingSource`(GAT) + `ShardedPositionsIndex`;
+  `query_raw_substring`/`regex_prefilter_any_of`/`query_phrase`/`query_adjacency`가 source에 generic — **알고리즘 하나**, 순서 byte-identical,
+  candidate cap은 union에, adjacency scan-depth는 chain 전체에; shard 경계에서 doc id 비증가 → typed `IndexCorrupted`. `ShardedTextAuthority`가
+  adapter query 경로(불변)에 union view를 공급.
+- **seal/문**: sealed manifest format 3이 `text-authority/` tree를 core `commit_tree_v1`로 commit, open/validate에서 `verify_tree_commitment_v1`
+  (missing/extra/length/digest). seal은 추가로 shard digest == text-authority manifest, 그리고 manifest rows == index의 live text doc 수(count
+  query 1회)를 증명 → commit 뒤 crash한 publish는 seal 불가. format-2(whole-corpus) generation은 open/validate/delta-base에서 typed 거부(rebuild가
+  migration). `sha2`는 lexical의 일반 dep으로.
+- **stats**: `TextAuthorityUpdateStats`/receipt에 `shards_written`/`shards_inherited`; scrape `lexical_text_authority_shards_{written,inherited}_total`.
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| **bytes oracle**(inode): 4-shard base(6,194 doc)에 1-scope delta → 새로 쓴 파일 = shard 2 + manifest(1,903,903 B = base 5,727,748 B의 33%), 나머지 shard 2개는 base inode; stats twin(written 2/inherited 2) == disk; >2 shard 쓰거나 untouched shard가 link 아니거나 new > base/2면 실패 | `lexical/tests/text_authority_shards.rs` — `QI-BB-006-SHARD-EVIDENCE docs=6194 base_bytes=5727748 delta_new_bytes=1903903 shards=4 touched=2 linked=2` |
+| 정확성: doc id 2047/2048/4096 경계 + 이동/tombstone/추가 doc에 regex/phrase/raw/keyword 17 probe vs 독립 full rebuild — 전부 일치 | 같은 파일 |
+| manifest 거부(중복 shard, 파일 없는 shard, disowned shard → row-count 불일치, digest 변경, 다른 format/shard size/normalizer) 각각 typed, generation 열리지 않음; delta는 digest 바뀐 shard 거부; crash한 publish 복구(index가 앞서면 rebuild 1회, id는 index 뒤에서 계속); format-2 거부 3문 | 같은 파일 + `sealed_manifest.rs` |
+| lq unit: sharded source == 단일 index(substring/prefilter/phrase/adjacency), 빈 shard set cap, 비정렬 거부 | lq-trigram 80, lq-positions 94, lq-regex 82 |
+| §3.4.1 evidence 재실행: `delta_docs_derived=1 full_docs_derived=1502 delta_one_scope_ms=921 full_rebuild_ms=1468`(이 fixture는 shard 1개에 들어가 shard 1 + manifest 씀) | `generation_delta_base_carryforward` 6 |
+| 회귀 | lexical 225(15 integration target), core 85, search-plane+searchd 341, **searchd-runtime e2e crate 전체 242/0/1 ignored**, workspace clippy 0, fmt, semgrep 0(신규 파일 stage 후), module(34)/error-shape/digest/derive/test-authority/cargo-toml/hexagonal/ignored-policy/no-allow/workspace-lints. main rebase(0aad39d 위) 후 check + public-api/cargo-modules 불변 + lexical 5 target 28 + e2e 5 target 49 green |
+
+**정직한 한계**: (a) rename 지점 crash injection은 구조로 논증(content-named shard + manifest rename + unowned 정리 + seal count) — fault
+injection은 "index ahead" case를 파일 복원으로 staging한 것뿐. (b) adjacency는 adapter의 LQ surface에 leaf가 없어 lq-positions 수준에서만 증명.
+(c) 이후 어떤 batch도 건드리지 않는 path에서 index가 authority보다 앞선 상태는 다음 batch가 아니라 seal에서 잡힌다(count check).
+**QI-BB-006은 이제 `passed`**: 색인 절반(§3.4) + 재도출(§3.4.1) + write bytes(§3.38).
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -1982,4 +2026,5 @@ unit test). (b) retention(대체된 snapshot)은 restart를 넘지 않는다 —
 | 2026-09-18 | 47294db | `just rust-profile verify-rust` (nohup) | RED at `rust-doc` — **2,209 tests passed / 0 failed**, 이후 rustdoc `-D warnings`: `lexical/src/phrase.rs` module doc이 crate-private `normalize`를 intra-doc link(§3.33 잔여) → link 제거(다음 commit) |
 | 2026-09-18 | worktree F (2f41a00→47294db rebase, 충돌 5 file) | agent: search-plane 261·searchd 53·contract 237·core 85·sdk 78·searchctl 55·catalog 12 + e2e 10 target + `just rust-clippy` 0 + fmt/semgrep/hexagonal/no-allow/derive/cargo-toml/module/error-shape/digest/test-authority/ignored-policy/workspace-lints/deny + public-api/cargo-modules update + fuzz smoke; rebase 후 unit 914 + e2e 11 target 74 + clippy 0 + semgrep 0 + module/hexagonal | 전부 green (§3.37) |
 | 2026-09-18 | fc3ee5c | `just rust-profile verify-rust` (nohup) | **GREEN** — exit 0, **2,225 passed / 0 failed** (026 quarantine surface + 013 split + 011 normalizer + 027 ANN append + hybrid lane provenance + aux read epoch + 작업량 oracle 통합; clippy·semgrep·deny·doc·public-api·hexagonal·test-authority 포함) |
+| 2026-09-18 | worktree E (960be81→0aad39d rebase) | agent: lexical 225 + lq 256 + core 85 + search-plane/searchd 341 + searchd-runtime e2e 전체 242 + workspace clippy(0) + fmt/semgrep/module/error-shape/digest/derive/test-authority/cargo-toml/hexagonal; rebase 후 check + baselines 불변 + lexical 28 + e2e 49 | 전부 green (§3.38) |
 | 2026-09-18 | worktree 011 (7a5ce5e→034c4fd rebase) | agent: workspace clippy(0) + lexical 15 target·lq-norm 88·search-plane 285 + e2e text_route_hellgate 8·perf_chaos 43·dsl_scenarios 8·lexical_full_fidelity 1·dual_syntax_parity 4·full_corpus 4 + harness 77 + hexagonal/semgrep/module/error-shape/cargo-toml/derive/test-authority/deny; rebase 후 lexical carryforward 6 + goldens 8 | 전부 green (§3.33) |
