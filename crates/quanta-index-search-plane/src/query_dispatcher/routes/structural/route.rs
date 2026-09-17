@@ -1,10 +1,10 @@
-//! Structural query route entry: lowering, seeding, evaluation, projection.
+//! Structural query route entry: lowering, pinning the read, seeding,
+//! evaluation, projection.
 
 use std::sync::Arc;
 
 use quanta_index_contract::{
-    GenerationPin, LqQuery, QueryResultWindowV1, SearchPlaneStructuralQueryResponse,
-    StructuralQueryRequest,
+    LqQuery, QueryResultWindowV1, SearchPlaneStructuralQueryResponse, StructuralQueryRequest,
 };
 use quanta_index_core::{CoreError, RequestBudgetV1, StructuralService, validate_query_top_k};
 
@@ -20,6 +20,7 @@ use crate::query_dispatcher::routes::structural::lowering::{
     extract_structural_filters, lower_structural_query_request,
 };
 use crate::query_dispatcher::routes::structural::projection::project_structural_query_results;
+use crate::query_dispatcher::routes::structural::read::StructuralRead;
 use crate::query_dispatcher::routes::structural::universe::build_pinned_structural_universe;
 use crate::query_dispatcher::window::{exact_total_window_v1, top_k_limit};
 
@@ -33,22 +34,33 @@ impl SearchPlaneDispatcher {
         let _accepted_top_k = validate_query_top_k(request.text_query.top_k)?;
         let (pin, lowered) =
             lower_structural_query_request(self.activation_catalog.as_ref(), request)?;
+        // The whole query — the pinned universe, every parse-tree leaf the
+        // producer executes, every symbol projection — reads one structural
+        // snapshot, taken here (QI-BB-020 W2).
+        let structural = self.structural_read(&pin)?;
+        let read = StructuralRead {
+            pin: &pin,
+            epoch: structural.epoch,
+            state: structural.state.as_ref(),
+        };
         let (results, window) =
-            self.execute_structural_results(&pin, &lowered, request.text_query.top_k, budget)?;
+            self.execute_structural_results(read, &lowered, request.text_query.top_k, budget)?;
         Ok(SearchPlaneStructuralQueryResponse {
             generation: pin,
             results,
             window,
+            read_epoch: structural.epoch,
         })
     }
 
-    /// Evaluate the structural expression and cut the page.
+    /// Evaluate the structural expression against the pinned read and cut
+    /// the page.
     ///
     /// Evaluation materializes the whole match set, so the window carries
     /// its exact size (QI-BB-025) and `has_more` says the page cut it.
     fn execute_structural_results(
         &self,
-        pin: &GenerationPin,
+        read: StructuralRead<'_>,
         lowered: &LqQuery,
         top_k: u32,
         budget: &RequestBudgetV1,
@@ -69,22 +81,9 @@ impl SearchPlaneDispatcher {
         let (requested_lang, executable_filters) =
             extract_structural_filters(lowered, requested_lang.as_deref())?;
         let seed = if structural_expr_is_pure_negative_root(&lowered.expr) {
-            let structural_state = self
-                .ledger
-                .read()
-                .map_err(|_poisoned| {
-                    CoreError::Storage("search-plane ledger poisoned".to_string())
-                })?
-                .structural_snapshot(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
-                .ok_or_else(|| {
-                    CoreError::NotReady(format!(
-                        "structural: generation {} chunk authority is not materialized",
-                        pin.manifest_generation.get()
-                    ))
-                })?;
             Some(build_pinned_structural_universe(
-                pin,
-                &structural_state,
+                read.pin,
+                read.state,
                 requested_lang.as_deref(),
                 &executable_filters,
             )?)
@@ -96,7 +95,7 @@ impl SearchPlaneDispatcher {
         let lexical_eval = if has_lexical {
             Some(LexicalSubexprEvaluator {
                 dispatcher: self,
-                pin,
+                read,
                 query: lowered,
                 budget,
             })
@@ -107,7 +106,7 @@ impl SearchPlaneDispatcher {
         let candidates = evaluate_structural_expr(
             &mut ctx,
             &service,
-            pin,
+            read,
             &lowered.expr,
             requested_lang.as_deref(),
             &executable_filters,

@@ -1,51 +1,84 @@
 //! How ingest batches, catalog deltas, and lexical channel ops land on the
 //! ledger's auxiliary authority states.
+//!
+//! Every application produces the next epoch of the generation and
+//! domain it touches (QI-BB-020 W2): a delta carries the epoch its rows
+//! were made durable under and is applied through
+//! [`Ledger::aux_advance`], which refuses any drift from the sequence;
+//! the in-memory batch paths and the channel ops (tests and fixtures)
+//! take the next epoch themselves.
+
+use std::collections::BTreeSet;
+use std::time::Instant;
 
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord, ParseTreeRecord};
 use quanta_index_contract::{
-    ChunkId, DirtyIngestBatch, HistoryIngestBatch, ManifestGeneration, RuntimeCatalogIngestBatch,
-    SearchCorpusIngestBatch, SearchPlaneTrackKind, SearchScopeSurface, StructuralIngestBatch,
+    ChunkId, DirtyIngestBatch, HistoryIngestBatch, ManifestGeneration, RepoId, RevisionId,
+    RuntimeCatalogIngestBatch, SearchCorpusIngestBatch, SearchPlaneTrackKind, SearchScopeSurface,
+    StructuralIngestBatch,
 };
 use quanta_index_core::CoreError;
 use quanta_index_ipc::decode_cbor_payload;
 
 use crate::auxiliary_authority;
-use crate::readiness::history_state::HistoryDiffKey;
-use crate::readiness::ledger::Ledger;
-use crate::readiness::runtime_state::DirtyDocState;
-use crate::readiness::structural_state::verify_parse_tree_against_chunk;
+use crate::readiness::history_state::{HistoryAuthorityState, HistoryDiffKey};
+use crate::readiness::ledger::{AuxDomainState, Ledger};
+use crate::readiness::runtime_state::{DirtyDocState, RuntimeMetadataState};
+use crate::readiness::structural_state::{
+    StructuralAuthorityState, verify_parse_tree_against_chunk,
+};
 
 impl Ledger {
     /// Apply a search-corpus batch's chunk universe in memory, without
     /// the durable step (tests and in-memory fixtures; production goes
     /// through the transition, the catalog and then the delta).
-    pub fn apply_search_corpus_batch(&mut self, batch: &SearchCorpusIngestBatch) {
+    pub fn apply_search_corpus_batch(
+        &mut self,
+        batch: &SearchCorpusIngestBatch,
+        now: Instant,
+    ) -> Result<(), CoreError> {
+        let epoch =
+            self.structural_next_epoch(&batch.repo_id, &batch.revision_id, batch.generation)?;
         let delta = auxiliary_authority::structural_chunks_transition(
             self.structural_state(&batch.repo_id, &batch.revision_id, batch.generation),
+            epoch,
             batch,
         );
-        self.apply_structural_chunks_delta(&delta);
+        self.apply_structural_chunks_delta(&delta, now)
     }
 
     /// Validate and apply a history batch in memory, without the durable
     /// step.
-    pub fn apply_history_batch(&mut self, batch: &HistoryIngestBatch) -> Result<(), CoreError> {
+    pub fn apply_history_batch(
+        &mut self,
+        batch: &HistoryIngestBatch,
+        now: Instant,
+    ) -> Result<(), CoreError> {
+        let epoch =
+            self.history_next_epoch(&batch.repo_id, &batch.revision_id, batch.generation)?;
         let delta = auxiliary_authority::history_transition(
             self.history_state(&batch.repo_id, &batch.revision_id, batch.generation),
+            epoch,
             batch,
         )?;
-        self.apply_history_delta(&delta);
-        Ok(())
+        self.apply_history_delta(&delta, now)
     }
 
     /// Apply a dirty-overlay batch in memory, without the durable step.
-    pub fn apply_runtime_batch(&mut self, batch: &DirtyIngestBatch) {
+    pub fn apply_runtime_batch(
+        &mut self,
+        batch: &DirtyIngestBatch,
+        now: Instant,
+    ) -> Result<(), CoreError> {
+        let epoch =
+            self.runtime_next_epoch(&batch.repo_id, &batch.revision_id, batch.generation)?;
         let delta = auxiliary_authority::runtime_dirty_transition(
             self.runtime_state(&batch.repo_id, &batch.revision_id, batch.generation),
+            epoch,
             batch,
         );
-        self.apply_runtime_dirty_delta(&delta);
+        self.apply_runtime_dirty_delta(&delta, now)
     }
 
     /// Validate and apply a runtime catalog batch in memory, without the
@@ -53,14 +86,17 @@ impl Ledger {
     pub fn apply_runtime_catalog_batch(
         &mut self,
         batch: &RuntimeCatalogIngestBatch,
+        now: Instant,
     ) -> Result<(), CoreError> {
+        let epoch =
+            self.runtime_next_epoch(&batch.repo_id, &batch.revision_id, batch.generation)?;
         let delta = auxiliary_authority::runtime_catalog_transition(
             self.structural_state(&batch.repo_id, &batch.revision_id, batch.generation),
             self.runtime_state(&batch.repo_id, &batch.revision_id, batch.generation),
+            epoch,
             batch,
         )?;
-        self.apply_runtime_catalog_delta(&delta);
-        Ok(())
+        self.apply_runtime_catalog_delta(&delta, now)
     }
 
     /// Validate and apply a structural batch's parse trees in memory,
@@ -68,7 +104,10 @@ impl Ledger {
     pub fn apply_structural_batch(
         &mut self,
         batch: &StructuralIngestBatch,
+        now: Instant,
     ) -> Result<(), CoreError> {
+        let epoch =
+            self.structural_next_epoch(&batch.repo_id, &batch.revision_id, batch.generation)?;
         let delta = auxiliary_authority::structural_transition(
             self.structural_state(&batch.repo_id, &batch.revision_id, batch.generation),
             self.track_state(
@@ -76,391 +115,497 @@ impl Ledger {
                 &batch.revision_id,
                 SearchPlaneTrackKind::Structural,
             ),
+            epoch,
             batch,
         )?;
-        self.apply_structural_trees_delta(&delta);
-        Ok(())
+        self.apply_structural_trees_delta(&delta, now)
     }
 
-    /// Apply a validated history delta: the durable rows it was encoded
-    /// from are already committed.
-    pub(crate) fn apply_history_delta(&mut self, delta: &auxiliary_authority::HistoryDelta) {
-        let state = self.history_state_mut(
+    /// Apply a validated history delta at the epoch its durable rows were
+    /// stamped with.
+    pub(crate) fn apply_history_delta(
+        &mut self,
+        delta: &auxiliary_authority::HistoryDelta,
+        now: Instant,
+    ) -> Result<(), CoreError> {
+        self.aux_advance::<HistoryAuthorityState>(
             &delta.generation.repo_id,
             &delta.generation.revision_id,
             delta.generation.generation,
-        );
-        for record in &delta.commits {
-            let _previous = state.commits.insert(record.sha, record.clone());
-        }
-        for (changes, map) in [
-            (&delta.refs, &mut state.refs),
-            (&delta.tags, &mut state.tags),
-        ] {
-            for change in changes {
-                match change {
-                    auxiliary_authority::RefChange::Upsert(name, sha) => {
-                        let _previous = map.insert(name.clone(), *sha);
-                    }
-                    auxiliary_authority::RefChange::Delete(name) => {
-                        let _removed = map.remove(name.as_ref());
+            delta.epoch,
+            now,
+            |state| {
+                for record in &delta.commits {
+                    let _previous = state.commits.insert(record.sha, record.clone());
+                }
+                for (changes, map) in [
+                    (&delta.refs, &mut state.refs),
+                    (&delta.tags, &mut state.tags),
+                ] {
+                    for change in changes {
+                        match change {
+                            auxiliary_authority::RefChange::Upsert(name, sha) => {
+                                let _previous = map.insert(name.clone(), *sha);
+                            }
+                            auxiliary_authority::RefChange::Delete(name) => {
+                                let _removed = map.remove(name.as_ref());
+                            }
+                        }
                     }
                 }
-            }
-        }
-        for (key, record) in &delta.diff_hunks {
-            let _previous = state.diff_hunks.insert(key.clone(), record.clone());
-        }
-        state.restore_meta(delta.meta);
+                for (key, record) in &delta.diff_hunks {
+                    let _previous = state.diff_hunks.insert(key.clone(), record.clone());
+                }
+                state.restore_meta(delta.meta);
+                Ok(())
+            },
+        )
     }
 
-    /// Apply a dirty-overlay delta.
+    /// Apply a dirty-overlay delta at the epoch its durable rows were
+    /// stamped with.
     pub(crate) fn apply_runtime_dirty_delta(
         &mut self,
         delta: &auxiliary_authority::RuntimeDirtyDelta,
-    ) {
-        let state = self.runtime_state_mut(
+        now: Instant,
+    ) -> Result<(), CoreError> {
+        self.aux_advance::<RuntimeMetadataState>(
             &delta.generation.repo_id,
             &delta.generation.revision_id,
             delta.generation.generation,
-        );
-        for (chunk_id, doc) in &delta.upserts {
-            let _previous = state.dirty_docs.insert(chunk_id.clone(), doc.clone());
-        }
-        for chunk_id in &delta.deletes {
-            let _removed = state.dirty_docs.remove(chunk_id);
-        }
+            delta.epoch,
+            now,
+            |state| {
+                for (chunk_id, doc) in &delta.upserts {
+                    let _previous = state.dirty_docs.insert(chunk_id.clone(), doc.clone());
+                }
+                for chunk_id in &delta.deletes {
+                    let _removed = state.dirty_docs.remove(chunk_id);
+                }
+                Ok(())
+            },
+        )
     }
 
-    /// Apply a validated runtime catalog delta: the generation's catalog is
-    /// replaced whole.
+    /// Apply a validated runtime catalog delta at the epoch its durable
+    /// rows were stamped with: the generation's catalog is replaced whole.
     pub(crate) fn apply_runtime_catalog_delta(
         &mut self,
         delta: &auxiliary_authority::RuntimeCatalogDelta,
-    ) {
-        let state = self.runtime_state_mut(
+        now: Instant,
+    ) -> Result<(), CoreError> {
+        self.aux_advance::<RuntimeMetadataState>(
             &delta.generation.repo_id,
             &delta.generation.revision_id,
             delta.generation.generation,
-        );
-        state.restore_meta(delta.meta.clone());
-        state.changed_docs.clone_from(&delta.changed_docs);
-        state.doc_facets.clone_from(&delta.doc_facets);
-        state.snapshots.clone_from(&delta.snapshots);
-        state.affected_docs.clone_from(&delta.affected_docs);
-        state
-            .invalidated_by_docs
-            .clone_from(&delta.invalidated_by_docs);
+            delta.epoch,
+            now,
+            |state| {
+                state.restore_meta(delta.meta.clone());
+                state.changed_docs = delta.changed_docs.clone();
+                state.doc_facets = delta.doc_facets.clone();
+                state.snapshots = delta.snapshots.clone();
+                state.affected_docs = delta.affected_docs.clone();
+                state.invalidated_by_docs = delta.invalidated_by_docs.clone();
+                Ok(())
+            },
+        )
     }
 
-    /// Apply a validated structural delta: parse trees, the seal request
-    /// and the structural track's state.
+    /// Apply a validated structural delta at the epoch its durable rows
+    /// were stamped with: parse trees, the seal request and the
+    /// structural track's state.
     pub(crate) fn apply_structural_trees_delta(
         &mut self,
         delta: &auxiliary_authority::StructuralTreesDelta,
-    ) {
-        let state = self.structural_state_mut(
+        now: Instant,
+    ) -> Result<(), CoreError> {
+        self.aux_advance::<StructuralAuthorityState>(
             &delta.generation.repo_id,
             &delta.generation.revision_id,
             delta.generation.generation,
-        );
-        state
-            .parse_trees
-            .retain(|chunk_id, _tree| !delta.removed.contains(chunk_id));
-        for (chunk_id, record) in &delta.upserts {
-            let _previous = state.parse_trees.insert(chunk_id.clone(), record.clone());
-        }
-        state.seal_requested = delta.seal_requested;
+            delta.epoch,
+            now,
+            |state| {
+                for chunk_id in &delta.removed {
+                    let _removed = state.parse_trees.remove(chunk_id);
+                }
+                for (chunk_id, record) in &delta.upserts {
+                    let _previous = state.parse_trees.insert(chunk_id.clone(), record.clone());
+                }
+                state.seal_requested = delta.seal_requested;
+                Ok(())
+            },
+        )?;
         self.restore_track_state(
             &delta.generation.repo_id,
             &delta.generation.revision_id,
             SearchPlaneTrackKind::Structural,
             delta.track.clone(),
         );
+        Ok(())
     }
 
-    /// Apply a chunk-universe delta.
+    /// Apply a chunk-universe delta at the epoch its durable rows were
+    /// stamped with.
     pub(crate) fn apply_structural_chunks_delta(
         &mut self,
         delta: &auxiliary_authority::StructuralChunksDelta,
-    ) {
-        let state = self.structural_state_mut(
+        now: Instant,
+    ) -> Result<(), CoreError> {
+        self.aux_advance::<StructuralAuthorityState>(
             &delta.generation.repo_id,
             &delta.generation.revision_id,
             delta.generation.generation,
-        );
-        if delta.clear {
-            state.chunks.clear();
-        }
-        state
-            .chunks
-            .retain(|chunk_id, _chunk| !delta.removed.contains(chunk_id));
-        for chunk in &delta.upserts {
-            let _previous = state.chunks.insert(chunk.chunk_id.clone(), chunk.clone());
-        }
+            delta.epoch,
+            now,
+            |state| {
+                if delta.clear {
+                    state.chunks.clear();
+                }
+                for chunk_id in &delta.removed {
+                    let _removed = state.chunks.remove(chunk_id);
+                }
+                for chunk in &delta.upserts {
+                    let _previous = state.chunks.insert(chunk.chunk_id.clone(), chunk.clone());
+                }
+                Ok(())
+            },
+        )
     }
 
-    pub fn apply_lexical_authority_op(&mut self, op: &LexicalChannelOp) -> Result<(), CoreError> {
+    /// One in-memory mutation of one authority generation at its next
+    /// epoch (the channel-op path; tests and fixtures).
+    fn advance_next<S: AuxDomainState>(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+        now: Instant,
+        mutate: impl FnOnce(&mut S) -> Result<(), CoreError>,
+    ) -> Result<(), CoreError> {
+        let epoch = self.aux_next_epoch::<S>(repo_id, revision_id, generation)?;
+        self.aux_advance::<S>(repo_id, revision_id, generation, epoch, now, mutate)
+    }
+
+    /// Apply one lexical channel op to the auxiliary authorities in memory
+    /// (tests and fixtures). Each op is one mutation and so one epoch; an
+    /// op the authority refuses leaves it unchanged.
+    pub fn apply_lexical_authority_op(
+        &mut self,
+        op: &LexicalChannelOp,
+        now: Instant,
+    ) -> Result<(), CoreError> {
         match op {
             LexicalChannelOp::UpsertChunk(payload) => {
-                let _previous = self
-                    .structural_state_mut(
-                        &payload.repo_id,
-                        &payload.revision_id,
-                        payload.generation,
-                    )
-                    .chunks
-                    .insert(
-                        payload.chunk_id.clone(),
-                        decode_record(&payload.payload, "chunk")?,
-                    );
-            }
-            LexicalChannelOp::DeleteChunk(payload) => {
-                let _removed = self
-                    .structural_state_mut(
-                        &payload.repo_id,
-                        &payload.revision_id,
-                        payload.generation,
-                    )
-                    .chunks
-                    .remove(&payload.chunk_id);
-            }
-            LexicalChannelOp::ReplaceLexicalScope(payload) => {
-                let (_mode, _base_generation, scope) =
-                    decode_lexical_replace_scope(&payload.payload)?;
-                let state = self.structural_state_mut(
+                let chunk = decode_record(&payload.payload, "chunk")?;
+                self.advance_next::<StructuralAuthorityState>(
                     &payload.repo_id,
                     &payload.revision_id,
                     payload.generation,
-                );
-                state.chunks.retain(|_chunk_id, chunk| {
-                    chunk.repo_relative_path != scope.scope.repo_relative_path
-                });
-                for chunk in scope.chunks {
-                    let _previous = state.chunks.insert(chunk.chunk_id.clone(), chunk);
-                }
+                    now,
+                    |state| {
+                        let _previous = state.chunks.insert(payload.chunk_id.clone(), chunk);
+                        Ok(())
+                    },
+                )
+            }
+            LexicalChannelOp::DeleteChunk(payload) => self
+                .advance_next::<StructuralAuthorityState>(
+                    &payload.repo_id,
+                    &payload.revision_id,
+                    payload.generation,
+                    now,
+                    |state| {
+                        let _removed = state.chunks.remove(&payload.chunk_id);
+                        Ok(())
+                    },
+                ),
+            LexicalChannelOp::ReplaceLexicalScope(payload) => {
+                let (_mode, _base_generation, scope) =
+                    decode_lexical_replace_scope(&payload.payload)?;
+                self.advance_next::<StructuralAuthorityState>(
+                    &payload.repo_id,
+                    &payload.revision_id,
+                    payload.generation,
+                    now,
+                    |state| {
+                        remove_chunks_at_path(state, scope.scope.repo_relative_path.as_str());
+                        for chunk in scope.chunks {
+                            let _previous = state.chunks.insert(chunk.chunk_id.clone(), chunk);
+                        }
+                        Ok(())
+                    },
+                )
             }
             LexicalChannelOp::TombstoneLexicalScope(payload) => {
                 let (_mode, _base_generation, scope) =
                     decode_lexical_tombstone_scope(&payload.payload)?;
-                self.structural_state_mut(
+                self.advance_next::<StructuralAuthorityState>(
                     &payload.repo_id,
                     &payload.revision_id,
                     payload.generation,
+                    now,
+                    |state| {
+                        remove_chunks_at_path(state, scope.scope.repo_relative_path.as_str());
+                        Ok(())
+                    },
                 )
-                .chunks
-                .retain(|_chunk_id, chunk| {
-                    chunk.repo_relative_path != scope.scope.repo_relative_path
-                });
             }
             LexicalChannelOp::ClearLexicalSurface(payload) => {
-                if payload.surface == SearchScopeSurface::Chunk {
-                    self.structural_state_mut(
-                        &payload.repo_id,
-                        &payload.revision_id,
-                        payload.generation,
-                    )
-                    .chunks
-                    .clear();
+                if payload.surface != SearchScopeSurface::Chunk {
+                    return Ok(());
                 }
+                self.advance_next::<StructuralAuthorityState>(
+                    &payload.repo_id,
+                    &payload.revision_id,
+                    payload.generation,
+                    now,
+                    |state| {
+                        state.chunks.clear();
+                        Ok(())
+                    },
+                )
             }
             LexicalChannelOp::UpsertCommit(payload) => {
                 let record: CommitRecord = decode_record(&payload.payload, "commit")?;
-                let state = self.history_state_mut(
+                self.advance_next::<HistoryAuthorityState>(
                     &payload.repo_id,
                     &payload.revision_id,
                     payload.generation,
-                );
-                state.note_commits_materialized();
-                for parent in &record.parents {
-                    if !state.commits.contains_key(parent) {
-                        return Err(CoreError::Typed {
-                            code: "HISTORY_COMMIT_PARENT_UNKNOWN".to_string(),
-                            message: format!(
-                                "history ingest: parent {} missing before child {}",
-                                parent, record.sha
-                            ),
-                        });
-                    }
-                }
-                let _previous = state.commits.insert(record.sha, record);
+                    now,
+                    |state| {
+                        state.note_commits_materialized();
+                        for parent in &record.parents {
+                            if !state.commits.contains_key(parent) {
+                                return Err(CoreError::Typed {
+                                    code: "HISTORY_COMMIT_PARENT_UNKNOWN".to_string(),
+                                    message: format!(
+                                        "history ingest: parent {} missing before child {}",
+                                        parent, record.sha
+                                    ),
+                                });
+                            }
+                        }
+                        let _previous = state.commits.insert(record.sha, record);
+                        Ok(())
+                    },
+                )
             }
             LexicalChannelOp::UpsertRef(payload) => {
                 let sha = CommitSha::from_bytes(payload.sha);
-                let state = self.history_state_mut(
+                self.advance_next::<HistoryAuthorityState>(
                     &payload.repo_id,
                     &payload.revision_id,
                     payload.generation,
-                );
-                state.note_refs_materialized();
-                if !state.commits.contains_key(&sha) {
-                    return Err(CoreError::Typed {
-                        code: "HISTORY_REF_NOT_FOUND".to_string(),
-                        message: format!(
-                            "history ingest: ref `{}` points to unknown commit {}",
-                            payload.name, sha
-                        ),
-                    });
-                }
-                let _previous = state.refs.insert(payload.name.clone(), sha);
+                    now,
+                    |state| {
+                        state.note_refs_materialized();
+                        if !state.commits.contains_key(&sha) {
+                            return Err(history_ref_not_found(format!(
+                                "history ingest: ref `{}` points to unknown commit {}",
+                                payload.name, sha
+                            )));
+                        }
+                        let _previous = state.refs.insert(payload.name.clone(), sha);
+                        Ok(())
+                    },
+                )
             }
-            LexicalChannelOp::DeleteRef(payload) => {
-                let state = self.history_state_mut(
-                    &payload.repo_id,
-                    &payload.revision_id,
-                    payload.generation,
-                );
-                state.note_refs_materialized();
-                let _removed = state.refs.remove(payload.name.as_ref());
-            }
+            LexicalChannelOp::DeleteRef(payload) => self.advance_next::<HistoryAuthorityState>(
+                &payload.repo_id,
+                &payload.revision_id,
+                payload.generation,
+                now,
+                |state| {
+                    state.note_refs_materialized();
+                    let _removed = state.refs.remove(payload.name.as_ref());
+                    Ok(())
+                },
+            ),
             LexicalChannelOp::UpsertTag(payload) => {
                 let sha = CommitSha::from_bytes(payload.sha);
-                let state = self.history_state_mut(
+                self.advance_next::<HistoryAuthorityState>(
                     &payload.repo_id,
                     &payload.revision_id,
                     payload.generation,
-                );
-                state.note_tags_materialized();
-                if !state.commits.contains_key(&sha) {
-                    return Err(CoreError::Typed {
-                        code: "HISTORY_REF_NOT_FOUND".to_string(),
-                        message: format!(
-                            "history ingest: tag `{}` points to unknown commit {}",
-                            payload.name, sha
-                        ),
-                    });
-                }
-                let _previous = state.tags.insert(payload.name.clone(), sha);
+                    now,
+                    |state| {
+                        state.note_tags_materialized();
+                        if !state.commits.contains_key(&sha) {
+                            return Err(history_ref_not_found(format!(
+                                "history ingest: tag `{}` points to unknown commit {}",
+                                payload.name, sha
+                            )));
+                        }
+                        let _previous = state.tags.insert(payload.name.clone(), sha);
+                        Ok(())
+                    },
+                )
             }
-            LexicalChannelOp::DeleteTag(payload) => {
-                let state = self.history_state_mut(
-                    &payload.repo_id,
-                    &payload.revision_id,
-                    payload.generation,
-                );
-                state.note_tags_materialized();
-                let _removed = state.tags.remove(payload.name.as_ref());
-            }
+            LexicalChannelOp::DeleteTag(payload) => self.advance_next::<HistoryAuthorityState>(
+                &payload.repo_id,
+                &payload.revision_id,
+                payload.generation,
+                now,
+                |state| {
+                    state.note_tags_materialized();
+                    let _removed = state.tags.remove(payload.name.as_ref());
+                    Ok(())
+                },
+            ),
             LexicalChannelOp::UpsertDiffHunk(payload) => {
                 let record: DiffHunkRecord = decode_record(&payload.payload, "diff_hunk")?;
                 let commit_sha = CommitSha::from_bytes(payload.commit_sha);
-                let state = self.history_state_mut(
+                self.advance_next::<HistoryAuthorityState>(
                     &payload.repo_id,
                     &payload.revision_id,
                     payload.generation,
-                );
-                state.note_diff_hunks_materialized();
-                if !state.commits.contains_key(&commit_sha) {
-                    return Err(CoreError::Typed {
-                        code: "HISTORY_REF_NOT_FOUND".to_string(),
-                        message: format!(
-                            "history ingest: diff hunk for unknown commit {commit_sha}"
-                        ),
-                    });
-                }
-                let _previous = state.diff_hunks.insert(
-                    HistoryDiffKey {
-                        commit_sha,
-                        file_path: payload.file_path.clone(),
+                    now,
+                    |state| {
+                        state.note_diff_hunks_materialized();
+                        if !state.commits.contains_key(&commit_sha) {
+                            return Err(history_ref_not_found(format!(
+                                "history ingest: diff hunk for unknown commit {commit_sha}"
+                            )));
+                        }
+                        let _previous = state.diff_hunks.insert(
+                            HistoryDiffKey {
+                                commit_sha,
+                                file_path: payload.file_path.clone(),
+                            },
+                            record,
+                        );
+                        Ok(())
                     },
-                    record,
-                );
+                )
             }
-            LexicalChannelOp::UpsertDirty(payload) => {
-                let _previous = self
-                    .runtime_state_mut(&payload.repo_id, &payload.revision_id, payload.generation)
-                    .dirty_docs
-                    .insert(
+            LexicalChannelOp::UpsertDirty(payload) => self.advance_next::<RuntimeMetadataState>(
+                &payload.repo_id,
+                &payload.revision_id,
+                payload.generation,
+                now,
+                |state| {
+                    let _previous = state.dirty_docs.insert(
                         payload.doc_id.clone(),
                         DirtyDocState {
                             applied_at_ms: payload.applied_at_ms,
                             payload_hash: payload.payload_hash,
                         },
                     );
-            }
-            LexicalChannelOp::EvictDirty(payload) => {
-                let _removed = self
-                    .runtime_state_mut(&payload.repo_id, &payload.revision_id, payload.generation)
-                    .dirty_docs
-                    .remove(&payload.doc_id);
-            }
+                    Ok(())
+                },
+            ),
+            LexicalChannelOp::EvictDirty(payload) => self.advance_next::<RuntimeMetadataState>(
+                &payload.repo_id,
+                &payload.revision_id,
+                payload.generation,
+                now,
+                |state| {
+                    let _removed = state.dirty_docs.remove(&payload.doc_id);
+                    Ok(())
+                },
+            ),
             LexicalChannelOp::UpsertParseTree(payload) => {
                 let record: ParseTreeRecord = decode_record(&payload.payload, "parse_tree")?;
-                let state = self.structural_state_mut(
+                self.advance_next::<StructuralAuthorityState>(
                     &payload.repo_id,
                     &payload.revision_id,
                     payload.generation,
-                );
-                verify_parse_tree_against_chunk(state, &payload.chunk_id, &record, None)?;
-                let _previous = state.parse_trees.insert(payload.chunk_id.clone(), record);
+                    now,
+                    |state| {
+                        verify_parse_tree_against_chunk(state, &payload.chunk_id, &record, None)?;
+                        let _previous = state.parse_trees.insert(payload.chunk_id.clone(), record);
+                        Ok(())
+                    },
+                )
             }
-            LexicalChannelOp::DeleteParseTree(payload) => {
-                let _removed = self
-                    .structural_state_mut(
-                        &payload.repo_id,
-                        &payload.revision_id,
-                        payload.generation,
-                    )
-                    .parse_trees
-                    .remove(&payload.chunk_id);
-            }
+            LexicalChannelOp::DeleteParseTree(payload) => self
+                .advance_next::<StructuralAuthorityState>(
+                    &payload.repo_id,
+                    &payload.revision_id,
+                    payload.generation,
+                    now,
+                    |state| {
+                        let _removed = state.parse_trees.remove(&payload.chunk_id);
+                        Ok(())
+                    },
+                ),
             LexicalChannelOp::ReplaceStructuralScope(payload) => {
                 let (_mode, _base_generation, scope) =
                     decode_structural_replace_scope(&payload.payload)?;
-                let state = self.structural_state_mut(
+                self.advance_next::<StructuralAuthorityState>(
                     &payload.repo_id,
                     &payload.revision_id,
                     payload.generation,
-                );
-                let allowed_chunk_ids: std::collections::BTreeSet<ChunkId> = state
-                    .chunks
-                    .iter()
-                    .filter(|(_chunk_id, chunk)| {
-                        chunk.repo_relative_path == scope.scope.repo_relative_path
-                    })
-                    .map(|(chunk_id, _chunk)| chunk_id.clone())
-                    .collect();
-                for tree in &scope.trees {
-                    verify_parse_tree_against_chunk(
-                        state,
-                        &tree.chunk_id,
-                        &tree.record,
-                        Some(scope.scope.repo_relative_path.as_str()),
-                    )?;
-                }
-                state
-                    .parse_trees
-                    .retain(|chunk_id, _tree| !allowed_chunk_ids.contains(chunk_id));
-                for tree in scope.trees {
-                    let _previous = state.parse_trees.insert(tree.chunk_id.clone(), tree.record);
-                }
+                    now,
+                    |state| {
+                        let path = scope.scope.repo_relative_path.as_str();
+                        for tree in &scope.trees {
+                            verify_parse_tree_against_chunk(
+                                state,
+                                &tree.chunk_id,
+                                &tree.record,
+                                Some(path),
+                            )?;
+                        }
+                        remove_parse_trees_at_path(state, path);
+                        for tree in scope.trees {
+                            let _previous =
+                                state.parse_trees.insert(tree.chunk_id.clone(), tree.record);
+                        }
+                        Ok(())
+                    },
+                )
             }
             LexicalChannelOp::TombstoneStructuralScope(payload) => {
                 let (_mode, _base_generation, scope) =
                     decode_structural_tombstone_scope(&payload.payload)?;
-                let state = self.structural_state_mut(
+                self.advance_next::<StructuralAuthorityState>(
                     &payload.repo_id,
                     &payload.revision_id,
                     payload.generation,
-                );
-                let allowed_chunk_ids: std::collections::BTreeSet<ChunkId> = state
-                    .chunks
-                    .iter()
-                    .filter(|(_chunk_id, chunk)| {
-                        chunk.repo_relative_path == scope.scope.repo_relative_path
-                    })
-                    .map(|(chunk_id, _chunk)| chunk_id.clone())
-                    .collect();
-                state
-                    .parse_trees
-                    .retain(|chunk_id, _tree| !allowed_chunk_ids.contains(chunk_id));
+                    now,
+                    |state| {
+                        remove_parse_trees_at_path(state, scope.scope.repo_relative_path.as_str());
+                        Ok(())
+                    },
+                )
             }
             LexicalChannelOp::FullBundle(_)
             | LexicalChannelOp::UpsertSymbol(_)
             | LexicalChannelOp::DeleteSymbol(_)
-            | LexicalChannelOp::Seal(_) => {}
+            | LexicalChannelOp::Seal(_) => Ok(()),
         }
-        Ok(())
+    }
+}
+
+fn history_ref_not_found(message: String) -> CoreError {
+    CoreError::Typed {
+        code: "HISTORY_REF_NOT_FOUND".to_string(),
+        message,
+    }
+}
+
+/// The chunk ids of one path in the chunk universe.
+fn chunk_ids_at_path(state: &StructuralAuthorityState, path: &str) -> BTreeSet<ChunkId> {
+    state
+        .chunks
+        .iter()
+        .filter(|(_chunk_id, chunk)| chunk.repo_relative_path.as_str() == path)
+        .map(|(chunk_id, _chunk)| chunk_id.clone())
+        .collect()
+}
+
+fn remove_chunks_at_path(state: &mut StructuralAuthorityState, path: &str) {
+    for chunk_id in chunk_ids_at_path(state, path) {
+        let _removed = state.chunks.remove(&chunk_id);
+    }
+}
+
+fn remove_parse_trees_at_path(state: &mut StructuralAuthorityState, path: &str) {
+    for chunk_id in chunk_ids_at_path(state, path) {
+        let _removed = state.parse_trees.remove(&chunk_id);
     }
 }
 

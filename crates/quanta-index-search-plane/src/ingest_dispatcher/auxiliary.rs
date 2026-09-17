@@ -3,6 +3,7 @@
 //! writes.
 
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Instant;
 
 use quanta_index_contract::{
     BatchPublishReceipt, DirtyIngestBatch, DirtyMutation, HistoryIngestBatch, HistoryRefMutation,
@@ -23,13 +24,15 @@ use crate::ingest_dispatcher::ports::{
 /// Serializes the validate → persist → apply protocol of every auxiliary
 /// mutation (QI-BB-020).
 ///
-/// A transition is validated against the ledger under its read lock,
-/// made durable in the catalog, then applied under the write lock. Two
-/// mutations interleaving between those steps could validate against a
-/// state the other is about to change, so every auxiliary materializer —
-/// and the search-corpus path that owns the chunk universe — takes this
-/// lock for the whole protocol. Queries never take it: they clone a
-/// snapshot under the ledger's read lock and scan outside it.
+/// A transition is validated against the ledger under its read lock and
+/// stamped with the next epoch of its generation and domain, made
+/// durable in the catalog together with that epoch, then applied under
+/// the write lock at exactly that epoch (W2). Two mutations interleaving
+/// between those steps could validate against a state the other is about
+/// to change — or claim the same epoch — so every auxiliary materializer
+/// and the search-corpus path that owns the chunk universe take this lock
+/// for the whole protocol. Queries never take it: they clone a snapshot
+/// under the ledger's read lock and scan outside it.
 #[derive(Debug, Default)]
 pub struct AuxiliaryMutationCoordinator {
     serial: Mutex<()>,
@@ -95,15 +98,18 @@ impl HistoryIngestPort for DirectHistoryMaterializer {
         let _serial = self.parts.coordinator.lock()?;
         let delta = {
             let guard = self.parts.read_ledger(WHAT)?;
+            let epoch =
+                guard.history_next_epoch(&batch.repo_id, &batch.revision_id, batch.generation)?;
             history_transition(
                 guard.history_state(&batch.repo_id, &batch.revision_id, batch.generation),
+                epoch,
                 batch,
             )?
         };
         let _durable = self.parts.catalog.apply(&history_delta_rows(&delta)?)?;
         {
             let mut guard = self.parts.write_ledger(WHAT)?;
-            guard.apply_history_delta(&delta);
+            guard.apply_history_delta(&delta, Instant::now())?;
         }
         let mut receipt = BatchPublishReceipt::empty_for(
             batch.generation,
@@ -158,8 +164,11 @@ impl RuntimeMetadataIngestPort for DirectRuntimeMetadataMaterializer {
         let _serial = self.parts.coordinator.lock()?;
         let delta = {
             let guard = self.parts.read_ledger(WHAT)?;
+            let epoch =
+                guard.runtime_next_epoch(&batch.repo_id, &batch.revision_id, batch.generation)?;
             runtime_dirty_transition(
                 guard.runtime_state(&batch.repo_id, &batch.revision_id, batch.generation),
+                epoch,
                 batch,
             )
         };
@@ -169,7 +178,7 @@ impl RuntimeMetadataIngestPort for DirectRuntimeMetadataMaterializer {
             .apply(&runtime_dirty_delta_rows(&delta)?)?;
         {
             let mut guard = self.parts.write_ledger(WHAT)?;
-            guard.apply_runtime_dirty_delta(&delta);
+            guard.apply_runtime_dirty_delta(&delta, Instant::now())?;
         }
         Ok(dirty_publish_receipt_v1(batch))
     }
@@ -182,9 +191,12 @@ impl RuntimeMetadataIngestPort for DirectRuntimeMetadataMaterializer {
         let _serial = self.parts.coordinator.lock()?;
         let delta = {
             let guard = self.parts.read_ledger(WHAT)?;
+            let epoch =
+                guard.runtime_next_epoch(&batch.repo_id, &batch.revision_id, batch.generation)?;
             runtime_catalog_transition(
                 guard.structural_state(&batch.repo_id, &batch.revision_id, batch.generation),
                 guard.runtime_state(&batch.repo_id, &batch.revision_id, batch.generation),
+                epoch,
                 batch,
             )?
         };
@@ -194,7 +206,7 @@ impl RuntimeMetadataIngestPort for DirectRuntimeMetadataMaterializer {
             .apply(&runtime_catalog_delta_rows(&delta)?)?;
         {
             let mut guard = self.parts.write_ledger(WHAT)?;
-            guard.apply_runtime_catalog_delta(&delta);
+            guard.apply_runtime_catalog_delta(&delta, Instant::now())?;
         }
         let mut receipt =
             BatchPublishReceipt::empty_for(batch.generation, None, batch.batch_digest.clone());
@@ -237,6 +249,11 @@ impl StructuralIngestPort for DirectStructuralMaterializer {
         let _serial = self.parts.coordinator.lock()?;
         let delta = {
             let guard = self.parts.read_ledger(WHAT)?;
+            let epoch = guard.structural_next_epoch(
+                &batch.repo_id,
+                &batch.revision_id,
+                batch.generation,
+            )?;
             structural_transition(
                 guard.structural_state(&batch.repo_id, &batch.revision_id, batch.generation),
                 guard.track_state(
@@ -244,13 +261,14 @@ impl StructuralIngestPort for DirectStructuralMaterializer {
                     &batch.revision_id,
                     SearchPlaneTrackKind::Structural,
                 ),
+                epoch,
                 batch,
             )?
         };
         let _durable = self.parts.catalog.apply(&structural_delta_rows(&delta)?)?;
         {
             let mut guard = self.parts.write_ledger(WHAT)?;
-            guard.apply_structural_trees_delta(&delta);
+            guard.apply_structural_trees_delta(&delta, Instant::now())?;
         }
         let mut receipt = BatchPublishReceipt::empty_for(
             batch.generation,

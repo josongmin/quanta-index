@@ -7,7 +7,7 @@ use serde::{
 };
 
 use crate::{
-    CommitCandidate, DiffCandidate, GenerationPin, HistoryCursor, LexicalCandidate,
+    AuxEpochV1, CommitCandidate, DiffCandidate, GenerationPin, HistoryCursor, LexicalCandidate,
     ManifestGeneration, OwnerDocKind, QueryResultWindowV1, RepoId, RepoRelativePath, RevisionId,
     SemanticCorpusKindV1, StructuralCandidate,
     lex::{SymbolKindCode, SymbolKindFamily},
@@ -691,12 +691,15 @@ const SEED_CANDIDATE_V2_FIELDS: &[&str] = &[
 /// rows on it, `candidate_count` the exact number of matches after the
 /// request's cursor, `has_more` whether a next page exists, in which case
 /// `next_cursor` positions it. `examined` is how many records the plane
-/// evaluated to answer.
+/// evaluated to answer. `read_epoch` is the history authority epoch the
+/// page was cut from (QI-BB-020 W2): the current one for a fresh walk,
+/// the cursor's for a continuation; `next_cursor` carries it forward.
 pub struct SearchPlaneHistoryQueryResponse {
     pub generation: GenerationPin,
     pub commits: Vec<CommitCandidate>,
     pub diffs: Vec<DiffCandidate>,
     pub window: QueryResultWindowV1,
+    pub read_epoch: AuxEpochV1,
     pub examined: u64,
     pub next_cursor: Option<HistoryCursor>,
 }
@@ -706,6 +709,7 @@ const SEARCH_PLANE_HISTORY_QUERY_RESPONSE_FIELDS: &[&str] = &[
     "commits",
     "diffs",
     "window",
+    "read_epoch",
     "examined",
     "next_cursor",
 ];
@@ -715,13 +719,14 @@ impl Serialize for SearchPlaneHistoryQueryResponse {
     where
         S: Serializer,
     {
-        let field_count = if self.next_cursor.is_some() { 6 } else { 5 };
+        let field_count = if self.next_cursor.is_some() { 7 } else { 6 };
         let mut state =
             serializer.serialize_struct("SearchPlaneHistoryQueryResponse", field_count)?;
         state.serialize_field("generation", &self.generation)?;
         state.serialize_field("commits", &self.commits)?;
         state.serialize_field("diffs", &self.diffs)?;
         state.serialize_field("window", &self.window)?;
+        state.serialize_field("read_epoch", &self.read_epoch)?;
         state.serialize_field("examined", &self.examined)?;
         if let Some(next_cursor) = &self.next_cursor {
             state.serialize_field("next_cursor", next_cursor)?;
@@ -747,6 +752,7 @@ impl<'de> Visitor<'de> for SearchPlaneHistoryQueryResponseVisitor {
         let mut commits: Option<Vec<CommitCandidate>> = None;
         let mut diffs: Option<Vec<DiffCandidate>> = None;
         let mut window: Option<QueryResultWindowV1> = None;
+        let mut read_epoch: Option<AuxEpochV1> = None;
         let mut examined: Option<u64> = None;
         let mut next_cursor: Option<HistoryCursor> = None;
         let mut next_cursor_seen = false;
@@ -775,6 +781,12 @@ impl<'de> Visitor<'de> for SearchPlaneHistoryQueryResponseVisitor {
                         return Err(de::Error::duplicate_field("window"));
                     }
                     window = Some(map.next_value()?);
+                }
+                "read_epoch" => {
+                    if read_epoch.is_some() {
+                        return Err(de::Error::duplicate_field("read_epoch"));
+                    }
+                    read_epoch = Some(map.next_value()?);
                 }
                 "examined" => {
                     if examined.is_some() {
@@ -821,11 +833,23 @@ impl<'de> Visitor<'de> for SearchPlaneHistoryQueryResponseVisitor {
                 "history page has_more and next_cursor disagree",
             ));
         }
+        let read_epoch = read_epoch.ok_or_else(|| de::Error::missing_field("read_epoch"))?;
+        // The continuation is cut from the epoch this page read; a cursor
+        // naming another epoch could not have been issued by this page.
+        if next_cursor
+            .as_ref()
+            .is_some_and(|cursor| cursor.aux_epoch != read_epoch)
+        {
+            return Err(de::Error::custom(
+                "history page next_cursor names an epoch other than read_epoch",
+            ));
+        }
         Ok(SearchPlaneHistoryQueryResponse {
             generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
             commits,
             diffs,
             window,
+            read_epoch,
             examined: examined.ok_or_else(|| de::Error::missing_field("examined"))?,
             next_cursor,
         })
@@ -845,17 +869,23 @@ impl<'de> Deserialize<'de> for SearchPlaneHistoryQueryResponse {
     }
 }
 
+/// Manual serde for a `{ generation, results, window, .. }` response.
+///
+/// The trailing `$extra: $extra_ty` fields are required on the wire, one
+/// per extra field: the runtime-metadata and structural responses carry
+/// their `read_epoch` this way (QI-BB-020 W2).
 macro_rules! impl_generation_results_response_serde {
-    ($ty:ident, $fields:ident, $visitor:ident, $result_ty:ty) => {
+    ($ty:ident, $fields:ident, $visitor:ident, $result_ty:ty $(, $extra:ident : $extra_ty:ty)* $(,)?) => {
         impl Serialize for $ty {
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
                 S: Serializer,
             {
-                let mut state = serializer.serialize_struct(stringify!($ty), 3)?;
+                let mut state = serializer.serialize_struct(stringify!($ty), $fields.len())?;
                 state.serialize_field("generation", &self.generation)?;
                 state.serialize_field("results", &self.results)?;
                 state.serialize_field("window", &self.window)?;
+                $(state.serialize_field(stringify!($extra), &self.$extra)?;)*
                 state.end()
             }
         }
@@ -876,6 +906,7 @@ macro_rules! impl_generation_results_response_serde {
                 let mut generation: Option<GenerationPin> = None;
                 let mut results: Option<Vec<$result_ty>> = None;
                 let mut window: Option<QueryResultWindowV1> = None;
+                $(let mut $extra: Option<$extra_ty> = None;)*
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "generation" => {
@@ -896,6 +927,14 @@ macro_rules! impl_generation_results_response_serde {
                             }
                             window = Some(map.next_value()?);
                         }
+                        $(
+                            stringify!($extra) => {
+                                if $extra.is_some() {
+                                    return Err(de::Error::duplicate_field(stringify!($extra)));
+                                }
+                                $extra = Some(map.next_value()?);
+                            }
+                        )*
                         other => {
                             return Err(de::Error::unknown_field(other, $fields));
                         }
@@ -917,6 +956,7 @@ macro_rules! impl_generation_results_response_serde {
                     generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
                     results,
                     window,
+                    $($extra: $extra.ok_or_else(|| de::Error::missing_field(stringify!($extra)))?,)*
                 })
             }
         }
@@ -1892,15 +1932,22 @@ pub struct SearchPlaneRuntimeMetadataQueryResponse {
     /// `candidate_count`, with `has_more` when the route's continuation
     /// probe found a row past the page.
     pub window: QueryResultWindowV1,
+    /// The runtime-metadata authority epoch the page was cut from
+    /// (QI-BB-020 W2). The chunk universe it was joined with is the
+    /// structural authority's snapshot taken in the same ledger read, so
+    /// the pair is one consistent cut; only the route's own authority is
+    /// named here, since this route has no continuation to resume.
+    pub read_epoch: AuxEpochV1,
 }
 
 const SEARCH_PLANE_RUNTIME_METADATA_QUERY_RESPONSE_FIELDS: &[&str] =
-    &["generation", "results", "window"];
+    &["generation", "results", "window", "read_epoch"];
 impl_generation_results_response_serde!(
     SearchPlaneRuntimeMetadataQueryResponse,
     SEARCH_PLANE_RUNTIME_METADATA_QUERY_RESPONSE_FIELDS,
     SearchPlaneRuntimeMetadataQueryResponseVisitor,
-    LexicalCandidate
+    LexicalCandidate,
+    read_epoch: AuxEpochV1,
 );
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1911,14 +1958,20 @@ pub struct SearchPlaneStructuralQueryResponse {
     /// the whole match set before the page is cut, so `candidate_count`
     /// is exact.
     pub window: QueryResultWindowV1,
+    /// The structural authority epoch every leaf of the query — the
+    /// pinned universe, each parse-tree match, each symbol projection —
+    /// was evaluated against (QI-BB-020 W2).
+    pub read_epoch: AuxEpochV1,
 }
 
-const SEARCH_PLANE_STRUCTURAL_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "window"];
+const SEARCH_PLANE_STRUCTURAL_QUERY_RESPONSE_FIELDS: &[&str] =
+    &["generation", "results", "window", "read_epoch"];
 impl_generation_results_response_serde!(
     SearchPlaneStructuralQueryResponse,
     SEARCH_PLANE_STRUCTURAL_QUERY_RESPONSE_FIELDS,
     SearchPlaneStructuralQueryResponseVisitor,
-    StructuralCandidate
+    StructuralCandidate,
+    read_epoch: AuxEpochV1,
 );
 
 /// What the search plane says about one candidate (QI-BB-022).

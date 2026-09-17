@@ -135,9 +135,10 @@ fn a_one_row_dirty_mutation_writes_one_row() -> TestRes {
         .collect();
     let _seeded = materializer.publish_batch(&seed)?;
     let before = catalog.rows_written();
-    // 1,000 doc rows and the generation's one meta row.
-    if before != 1_001 {
-        return Err(format!("seeding wrote {before} rows, expected 1001").into());
+    // 1,000 doc rows, the generation's one meta row and its one epoch row
+    // (QI-BB-020 W2).
+    if before != 1_002 {
+        return Err(format!("seeding wrote {before} rows, expected 1002").into());
     }
     let mut one = fixture_dirty_batch();
     one.batch_digest = "batch:dirty:one".to_string();
@@ -150,10 +151,10 @@ fn a_one_row_dirty_mutation_writes_one_row() -> TestRes {
         },
     )];
     let _receipt = materializer.publish_batch(&one)?;
-    // The one doc row plus the generation's meta row: two rows, not a
-    // thousand.
+    // The one doc row plus the generation's meta and epoch rows: three
+    // rows, not a thousand.
     let written = catalog.rows_written().saturating_sub(before);
-    if written != 2 {
+    if written != 3 {
         return Err(format!("a one-row mutation wrote {written} rows").into());
     }
     let guard = ledger
@@ -188,8 +189,15 @@ fn a_reader_holding_a_snapshot_neither_blocks_nor_sees_a_mutation() -> TestRes {
     let snapshot = ledger
         .read()
         .map_err(|err| format!("ledger poisoned: {err}"))?
-        .history_snapshot(&first.repo_id, &first.revision_id, first.generation)
-        .ok_or("the first batch is visible")?;
+        .history_read_at(
+            &first.repo_id,
+            &first.revision_id,
+            first.generation,
+            None,
+            std::time::Instant::now(),
+        )?
+        .ok_or("the first batch is visible")?
+        .state;
     // The reader has released the lock but still holds the snapshot;
     // a mutation on another thread must complete.
     let second = fixture_history_batch(9, vec![fixture_commit(2, &[1])]);
@@ -206,7 +214,7 @@ fn a_reader_holding_a_snapshot_neither_blocks_nor_sees_a_mutation() -> TestRes {
     let after = ledger
         .read()
         .map_err(|err| format!("ledger poisoned: {err}"))?
-        .history_snapshot(&first.repo_id, &first.revision_id, first.generation)
+        .history_state(&first.repo_id, &first.revision_id, first.generation)
         .map(|state| state.commits().len());
     if after != Some(2) {
         return Err(format!("the ledger must hold the mutation, saw {after:?}").into());

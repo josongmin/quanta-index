@@ -59,6 +59,14 @@ pub enum StructuralError {
     InvalidRequest(String),
     #[error("structural: producer execution failed: {0}")]
     ProducerExecution(String),
+    /// The request pinned a structural authority epoch the producer no
+    /// longer retains (QI-BB-020 W2). Stable code: `AUX_EPOCH_EXPIRED`.
+    #[error("structural: {0}")]
+    AuxEpochExpired(String),
+    /// The request pinned a structural authority epoch newer than the
+    /// producer's current one. Stable code: `AUX_EPOCH_UNKNOWN`.
+    #[error("structural: {0}")]
+    AuxEpochUnknown(String),
 }
 
 impl StructuralError {
@@ -76,6 +84,8 @@ impl StructuralError {
             Self::HoleKindUnsupported(_) => "STR_HOLE_KIND_UNSUPPORTED",
             Self::InvalidRequest(_) => "STR_INVALID_REQUEST",
             Self::ProducerExecution(_) => "STR_PRODUCER_EXECUTION_FAILED",
+            Self::AuxEpochExpired(_) => crate::domains::auxiliary::AUX_EPOCH_EXPIRED_CODE,
+            Self::AuxEpochUnknown(_) => crate::domains::auxiliary::AUX_EPOCH_UNKNOWN_CODE,
         }
     }
 }

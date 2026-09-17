@@ -1,4 +1,5 @@
 pub mod quanta_index_sdk
+pub use quanta_index_sdk::AuxEpochV1
 pub use quanta_index_sdk::ChunkId
 pub use quanta_index_sdk::ChunkRecord
 pub use quanta_index_sdk::ChunkStructuralMetadata
@@ -17,6 +18,7 @@ pub use quanta_index_sdk::GenerationPin
 pub use quanta_index_sdk::GenerationSelector
 pub use quanta_index_sdk::GenerationSnapshot
 pub use quanta_index_sdk::GenerationStatusReport
+pub use quanta_index_sdk::HistoryCursor
 pub use quanta_index_sdk::HybridCandidateV1
 pub use quanta_index_sdk::HybridLaneContributionV1
 pub use quanta_index_sdk::HybridLaneV1

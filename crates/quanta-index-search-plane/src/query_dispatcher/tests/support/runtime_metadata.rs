@@ -71,53 +71,61 @@ pub(crate) fn ready_runtime_metadata_ledger(
             install_structural_test_chunk(&mut guard, chunk_id, path, text)
                 .expect("runtime metadata test chunk install");
         }
-        guard.apply_runtime_batch(&DirtyIngestBatch {
-            repo_id: RepoId::new("repo-map-ipc"),
-            revision_id: RevisionId::new("rev-map-ipc"),
-            generation: ManifestGeneration::new(9),
-            overlay_epoch_ms: 100,
-            batch_digest: "dirty:test".to_string(),
-            entries: vec![DirtyMutation::Upsert(DirtyRecord {
-                wire_version: 1,
-                doc_id: ChunkId::new("chunk-dirty"),
-                applied_at_ms: 100,
-                payload_hash: [0x5a; 32],
-            })],
-        });
         guard
-            .apply_runtime_catalog_batch(&RuntimeCatalogIngestBatch {
-                repo_id: RepoId::new("repo-map-ipc"),
-                revision_id: RevisionId::new("rev-map-ipc"),
-                generation: ManifestGeneration::new(9),
-                overlay_epoch_ms: 20,
-                batch_digest: "catalog:test".to_string(),
-                producer_head_applied_at_ms,
-                generation_materialized_at_ms,
-                changed_entries: vec![RuntimeChangedRecord {
-                    doc_id: ChunkId::new("chunk-changed"),
-                    applied_at_ms: 25,
-                    payload_hash: [0xaa; 32],
-                }],
-                facet_entries: vec![RuntimeDocFacetRecord {
-                    doc_id: ChunkId::new("chunk-owner"),
-                    owner: Some("team-a".to_string()),
-                    service: Some("search".to_string()),
-                    layer: Some("index".to_string()),
-                    surface: Some("lexical".to_string()),
-                }],
-                snapshot_entries: vec![RuntimeSnapshotRecord {
-                    name: "active".to_string(),
-                    doc_ids: vec![ChunkId::new("chunk-snapshot")],
-                }],
-                affected_entries: vec![RuntimeEdgeAuthorityRecord {
-                    key: "rebuild=lexical".to_string(),
-                    doc_ids: vec![ChunkId::new("chunk-changed")],
-                }],
-                invalidated_by_entries: vec![RuntimeEdgeAuthorityRecord {
-                    key: "rebuild=lexical".to_string(),
-                    doc_ids: vec![ChunkId::new("chunk-changed")],
-                }],
-            })
+            .apply_runtime_batch(
+                &DirtyIngestBatch {
+                    repo_id: RepoId::new("repo-map-ipc"),
+                    revision_id: RevisionId::new("rev-map-ipc"),
+                    generation: ManifestGeneration::new(9),
+                    overlay_epoch_ms: 100,
+                    batch_digest: "dirty:test".to_string(),
+                    entries: vec![DirtyMutation::Upsert(DirtyRecord {
+                        wire_version: 1,
+                        doc_id: ChunkId::new("chunk-dirty"),
+                        applied_at_ms: 100,
+                        payload_hash: [0x5a; 32],
+                    })],
+                },
+                std::time::Instant::now(),
+            )
+            .expect("runtime metadata test dirty batch");
+        guard
+            .apply_runtime_catalog_batch(
+                &RuntimeCatalogIngestBatch {
+                    repo_id: RepoId::new("repo-map-ipc"),
+                    revision_id: RevisionId::new("rev-map-ipc"),
+                    generation: ManifestGeneration::new(9),
+                    overlay_epoch_ms: 20,
+                    batch_digest: "catalog:test".to_string(),
+                    producer_head_applied_at_ms,
+                    generation_materialized_at_ms,
+                    changed_entries: vec![RuntimeChangedRecord {
+                        doc_id: ChunkId::new("chunk-changed"),
+                        applied_at_ms: 25,
+                        payload_hash: [0xaa; 32],
+                    }],
+                    facet_entries: vec![RuntimeDocFacetRecord {
+                        doc_id: ChunkId::new("chunk-owner"),
+                        owner: Some("team-a".to_string()),
+                        service: Some("search".to_string()),
+                        layer: Some("index".to_string()),
+                        surface: Some("lexical".to_string()),
+                    }],
+                    snapshot_entries: vec![RuntimeSnapshotRecord {
+                        name: "active".to_string(),
+                        doc_ids: vec![ChunkId::new("chunk-snapshot")],
+                    }],
+                    affected_entries: vec![RuntimeEdgeAuthorityRecord {
+                        key: "rebuild=lexical".to_string(),
+                        doc_ids: vec![ChunkId::new("chunk-changed")],
+                    }],
+                    invalidated_by_entries: vec![RuntimeEdgeAuthorityRecord {
+                        key: "rebuild=lexical".to_string(),
+                        doc_ids: vec![ChunkId::new("chunk-changed")],
+                    }],
+                },
+                std::time::Instant::now(),
+            )
             .expect("runtime metadata test catalog install");
     }
     ledger

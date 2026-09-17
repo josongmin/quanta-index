@@ -10,9 +10,9 @@ use tempfile::tempdir;
 
 use crate::auxiliary_authority;
 use crate::readiness::auxiliary_store::{AuxiliaryAuthorityStore, restore_auxiliary_rows_into};
-use crate::readiness::history_state::HistoryAuthoritySnapshot;
+use crate::readiness::history_state::{HistoryAuthoritySnapshot, HistoryAuthorityState};
 use crate::readiness::ledger::Ledger;
-use crate::readiness::runtime_state::RuntimeAuthoritySnapshot;
+use crate::readiness::runtime_state::{RuntimeAuthoritySnapshot, RuntimeMetadataState};
 use crate::readiness::structural_state::StructuralAuthoritySnapshot;
 use crate::readiness::tests::support::{
     TestResult, generation, install_chunk, install_chunk_with_id, persist_whole_ledger, repo_id,
@@ -28,10 +28,10 @@ fn auxiliary_authorities_roundtrip_through_catalog_rows() -> TestResult {
     let mut ledger = Ledger::default();
 
     ledger
-        .history_state_mut(&repo_id(), &revision_id(), generation())
+        .aux_restore_mut::<HistoryAuthorityState>(&repo_id(), &revision_id(), generation())
         .note_commits_materialized();
     let _previous = ledger
-        .runtime_state_mut(&repo_id(), &revision_id(), generation())
+        .aux_restore_mut::<RuntimeMetadataState>(&repo_id(), &revision_id(), generation())
         .dirty_docs
         .insert(
             ChunkId::new("dirty-1"),
@@ -41,7 +41,12 @@ fn auxiliary_authorities_roundtrip_through_catalog_rows() -> TestResult {
             },
         );
     install_chunk(&mut ledger, "src/lib.rs", "fn main() {}")?;
-    ledger.request_structural_seal(&repo_id(), &revision_id(), generation());
+    ledger.request_structural_seal(
+        &repo_id(),
+        &revision_id(),
+        generation(),
+        std::time::Instant::now(),
+    )?;
     ledger.record_track_materialized(
         &repo_id(),
         &revision_id(),
@@ -67,6 +72,29 @@ fn auxiliary_authorities_roundtrip_through_catalog_rows() -> TestResult {
         .is_some_and(crate::readiness::history_state::HistoryAuthorityState::commits_materialized)
     {
         return Err("history authority did not restore commit materialization".into());
+    }
+    // The epoch row restores the epoch each domain was at (QI-BB-020 W2):
+    // the structural authority advanced through the chunk install and the
+    // seal request, the history one was filled in place.
+    let now = std::time::Instant::now();
+    let structural_epoch = |ledger: &Ledger| -> Result<
+        quanta_index_contract::AuxEpochV1,
+        Box<dyn std::error::Error>,
+    > {
+        Ok(ledger
+            .structural_read_at(&repo_id(), &revision_id(), generation(), None, now)?
+            .ok_or("structural authority exists")?
+            .epoch)
+    };
+    if structural_epoch(&restored)? != structural_epoch(&ledger)?
+        || structural_epoch(&ledger)? == quanta_index_contract::AuxEpochV1::GENESIS
+    {
+        return Err(format!(
+            "the structural epoch must restore as written: {:?} vs {:?}",
+            structural_epoch(&restored)?,
+            structural_epoch(&ledger)?
+        )
+        .into());
     }
     if restored
         .runtime_state(&repo_id(), &revision_id(), generation())
@@ -96,39 +124,42 @@ fn auxiliary_authorities_roundtrip_through_catalog_rows() -> TestResult {
         "src/invalidated.rs",
         "fn invalidated() {}",
     )?;
-    ledger.apply_runtime_catalog_batch(&RuntimeCatalogIngestBatch {
-        repo_id: repo_id(),
-        revision_id: revision_id(),
-        generation: generation(),
-        overlay_epoch_ms: 99,
-        batch_digest: "catalog-roundtrip".to_string(),
-        producer_head_applied_at_ms: 100,
-        generation_materialized_at_ms: 20,
-        changed_entries: vec![RuntimeChangedRecord {
-            doc_id: ChunkId::new("changed-1"),
-            applied_at_ms: 25,
-            payload_hash: [0xbb; 32],
-        }],
-        facet_entries: vec![RuntimeDocFacetRecord {
-            doc_id: ChunkId::new("facet-1"),
-            owner: Some("team-a".to_string()),
-            service: None,
-            layer: None,
-            surface: None,
-        }],
-        snapshot_entries: vec![RuntimeSnapshotRecord {
-            name: "active".to_string(),
-            doc_ids: vec![ChunkId::new("snap-1")],
-        }],
-        affected_entries: vec![RuntimeEdgeAuthorityRecord {
-            key: "rebuild=lexical".to_string(),
-            doc_ids: vec![ChunkId::new("affected-1")],
-        }],
-        invalidated_by_entries: vec![RuntimeEdgeAuthorityRecord {
-            key: "rebuild=lexical".to_string(),
-            doc_ids: vec![ChunkId::new("invalidated-1")],
-        }],
-    })?;
+    ledger.apply_runtime_catalog_batch(
+        &RuntimeCatalogIngestBatch {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation: generation(),
+            overlay_epoch_ms: 99,
+            batch_digest: "catalog-roundtrip".to_string(),
+            producer_head_applied_at_ms: 100,
+            generation_materialized_at_ms: 20,
+            changed_entries: vec![RuntimeChangedRecord {
+                doc_id: ChunkId::new("changed-1"),
+                applied_at_ms: 25,
+                payload_hash: [0xbb; 32],
+            }],
+            facet_entries: vec![RuntimeDocFacetRecord {
+                doc_id: ChunkId::new("facet-1"),
+                owner: Some("team-a".to_string()),
+                service: None,
+                layer: None,
+                surface: None,
+            }],
+            snapshot_entries: vec![RuntimeSnapshotRecord {
+                name: "active".to_string(),
+                doc_ids: vec![ChunkId::new("snap-1")],
+            }],
+            affected_entries: vec![RuntimeEdgeAuthorityRecord {
+                key: "rebuild=lexical".to_string(),
+                doc_ids: vec![ChunkId::new("affected-1")],
+            }],
+            invalidated_by_entries: vec![RuntimeEdgeAuthorityRecord {
+                key: "rebuild=lexical".to_string(),
+                doc_ids: vec![ChunkId::new("invalidated-1")],
+            }],
+        },
+        std::time::Instant::now(),
+    )?;
     persist_whole_ledger(&store, &ledger)?;
     let mut restored_catalog = Ledger::default();
     let _rows = restore_auxiliary_rows_into(&mut restored_catalog, &store)?;
@@ -208,10 +239,10 @@ fn legacy_auxiliary_snapshots_migrate_into_the_catalog_once() -> TestResult {
     let store = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(2)?)?;
     let mut ledger = Ledger::default();
     ledger
-        .history_state_mut(&repo_id(), &revision_id(), generation())
+        .aux_restore_mut::<HistoryAuthorityState>(&repo_id(), &revision_id(), generation())
         .note_commits_materialized();
     let _previous = ledger
-        .runtime_state_mut(&repo_id(), &revision_id(), generation())
+        .aux_restore_mut::<RuntimeMetadataState>(&repo_id(), &revision_id(), generation())
         .dirty_docs
         .insert(
             ChunkId::new("dirty-legacy"),
@@ -221,7 +252,12 @@ fn legacy_auxiliary_snapshots_migrate_into_the_catalog_once() -> TestResult {
             },
         );
     install_chunk(&mut ledger, "src/legacy.rs", "fn legacy() {}")?;
-    ledger.request_structural_seal(&repo_id(), &revision_id(), generation());
+    ledger.request_structural_seal(
+        &repo_id(),
+        &revision_id(),
+        generation(),
+        std::time::Instant::now(),
+    )?;
     ledger.record_track_seal_with_digest(
         &repo_id(),
         &revision_id(),
@@ -240,7 +276,7 @@ fn legacy_auxiliary_snapshots_migrate_into_the_catalog_once() -> TestResult {
             entries: ledger
                 .history
                 .iter()
-                .map(|(key, state)| (key.clone(), (**state).clone()))
+                .map(|(key, registry)| (key.clone(), registry.current().clone()))
                 .collect(),
         })?,
     )?;
@@ -250,7 +286,7 @@ fn legacy_auxiliary_snapshots_migrate_into_the_catalog_once() -> TestResult {
             entries: ledger
                 .runtime_metadata
                 .iter()
-                .map(|(key, state)| (key.clone(), (**state).clone()))
+                .map(|(key, registry)| (key.clone(), registry.current().clone()))
                 .collect(),
         })?,
     )?;
@@ -260,7 +296,7 @@ fn legacy_auxiliary_snapshots_migrate_into_the_catalog_once() -> TestResult {
             entries: ledger
                 .structural
                 .iter()
-                .map(|(key, state)| (key.clone(), (**state).clone()))
+                .map(|(key, registry)| (key.clone(), registry.current().clone()))
                 .collect(),
             tracks: ledger.search_tracks.clone(),
         })?,

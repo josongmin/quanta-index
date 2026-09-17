@@ -796,6 +796,10 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 
     /// Continue from the cursor a previous page returned (QI-BB-023): the
     /// page holds the next `top_k` results in recency order after it.
+    ///
+    /// The page is cut from the epoch the cursor names (QI-BB-020 W2). The
+    /// cursor is passed through untouched; a walk whose epoch the plane no
+    /// longer retains is refused `AUX_EPOCH_EXPIRED` and must start over.
     #[must_use]
     pub fn after(mut self, cursor: HistoryCursor) -> Self {
         self.cursor = Some(cursor);

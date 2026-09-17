@@ -13,13 +13,22 @@
 //! The same row encoding restores a ledger from the catalog at boot, and
 //! encodes a whole state for the one-shot migration of the pre-catalog
 //! snapshot files.
+//!
+//! Every delta is stamped with the epoch its snapshot will have
+//! (QI-BB-020 W2): the transition takes the next epoch of the generation
+//! and domain, the rows carry it as the `Epoch` row of that generation
+//! and domain in the same transaction, and the ledger applies the delta
+//! at exactly that epoch. A generation restored without an `Epoch` row
+//! is at [`AuxEpochV1::GENESIS`]: its rows predate epoch stamping, and
+//! the first stamped mutation starts its sequence at one.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
+use imbl::OrdMap;
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, DirtyIngestBatch, DirtyMutation, HistoryIngestBatch, HistoryRefMutation,
-    ManifestGeneration, RepoId, RevisionId, RuntimeCatalogIngestBatch, SearchCorpusIngestBatch,
-    SearchPlaneTrackKind, SearchScopeSurface, StructuralIngestBatch,
+    AuxEpochV1, ChunkId, ChunkRecord, DirtyIngestBatch, DirtyMutation, HistoryIngestBatch,
+    HistoryRefMutation, ManifestGeneration, RepoId, RevisionId, RuntimeCatalogIngestBatch,
+    SearchCorpusIngestBatch, SearchPlaneTrackKind, SearchScopeSurface, StructuralIngestBatch,
     lex::{CommitRecord, CommitSha, DiffHunkRecord, ParseTreeRecord},
 };
 use quanta_index_core::{
@@ -30,10 +39,11 @@ use quanta_index_ipc::{decode_cbor_payload, encode_cbor_payload};
 use serde::{Deserialize, Serialize};
 
 use crate::readiness::{
-    ChangedDocState, DirtyDocState, DocFacetState, HistoryAuthorityState, HistoryDiffKey,
-    HistoryStateMeta, Ledger, RuntimeMetadataState, RuntimeStateMeta, StructuralAuthorityState,
-    StructuralStateMeta, TrackAuthorityState, enforce_runtime_catalog_batch_order,
-    validate_runtime_catalog_doc_ids, verify_parse_tree_against_chunk_map,
+    AuxDomainState, ChangedDocState, DirtyDocState, DocFacetState, HistoryAuthorityState,
+    HistoryDiffKey, HistoryStateMeta, Ledger, RuntimeMetadataState, RuntimeStateMeta,
+    StructuralAuthorityState, StructuralStateMeta, TrackAuthorityState,
+    enforce_runtime_catalog_batch_order, validate_runtime_catalog_doc_ids,
+    verify_parse_tree_against_chunk_map,
 };
 
 /// Separator between the commit sha and the path in a diff-hunk row key.
@@ -113,6 +123,22 @@ fn clear(
     }
 }
 
+/// The one `Epoch` row of a generation and domain: the read epoch of the
+/// snapshot the rows in the same transaction produce.
+fn epoch_row(
+    domain: AuxiliaryDomainV1,
+    generation: &AuxiliaryGenerationKeyV1,
+    epoch: AuxEpochV1,
+) -> Result<AuxiliaryRowMutationV1, CoreError> {
+    upsert(
+        domain,
+        generation,
+        AuxiliaryRowFamilyV1::Epoch,
+        Vec::new(),
+        &epoch,
+    )
+}
+
 fn diff_key_bytes(key: &HistoryDiffKey) -> Vec<u8> {
     let mut bytes = key.commit_sha().as_bytes().to_vec();
     bytes.push(DIFF_KEY_SEPARATOR);
@@ -174,6 +200,8 @@ pub(crate) enum RefChange {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct HistoryDelta {
     pub(crate) generation: AuxiliaryGenerationKeyV1,
+    /// The epoch the snapshot after this delta has.
+    pub(crate) epoch: AuxEpochV1,
     pub(crate) commits: Vec<CommitRecord>,
     pub(crate) refs: Vec<RefChange>,
     pub(crate) tags: Vec<RefChange>,
@@ -190,6 +218,8 @@ pub(crate) struct HistoryDelta {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RuntimeDirtyDelta {
     pub(crate) generation: AuxiliaryGenerationKeyV1,
+    /// The epoch the snapshot after this delta has.
+    pub(crate) epoch: AuxEpochV1,
     pub(crate) upserts: Vec<(ChunkId, DirtyDocState)>,
     pub(crate) deletes: Vec<ChunkId>,
     pub(crate) meta: RuntimeStateMeta,
@@ -200,12 +230,14 @@ pub(crate) struct RuntimeDirtyDelta {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RuntimeCatalogDelta {
     pub(crate) generation: AuxiliaryGenerationKeyV1,
+    /// The epoch the snapshot after this delta has.
+    pub(crate) epoch: AuxEpochV1,
     pub(crate) meta: RuntimeStateMeta,
-    pub(crate) changed_docs: BTreeMap<ChunkId, ChangedDocState>,
-    pub(crate) doc_facets: BTreeMap<ChunkId, DocFacetState>,
-    pub(crate) snapshots: BTreeMap<Box<str>, BTreeSet<ChunkId>>,
-    pub(crate) affected_docs: BTreeMap<Box<str>, BTreeSet<ChunkId>>,
-    pub(crate) invalidated_by_docs: BTreeMap<Box<str>, BTreeSet<ChunkId>>,
+    pub(crate) changed_docs: OrdMap<ChunkId, ChangedDocState>,
+    pub(crate) doc_facets: OrdMap<ChunkId, DocFacetState>,
+    pub(crate) snapshots: OrdMap<Box<str>, BTreeSet<ChunkId>>,
+    pub(crate) affected_docs: OrdMap<Box<str>, BTreeSet<ChunkId>>,
+    pub(crate) invalidated_by_docs: OrdMap<Box<str>, BTreeSet<ChunkId>>,
 }
 
 /// What one structural batch changes: parse trees removed and written,
@@ -214,6 +246,8 @@ pub(crate) struct RuntimeCatalogDelta {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct StructuralTreesDelta {
     pub(crate) generation: AuxiliaryGenerationKeyV1,
+    /// The epoch the snapshot after this delta has.
+    pub(crate) epoch: AuxEpochV1,
     pub(crate) removed: BTreeSet<ChunkId>,
     pub(crate) upserts: Vec<(ChunkId, ParseTreeRecord)>,
     pub(crate) seal_requested: bool,
@@ -231,6 +265,8 @@ pub(crate) struct StructuralTreesDelta {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct StructuralChunksDelta {
     pub(crate) generation: AuxiliaryGenerationKeyV1,
+    /// The epoch the snapshot after this delta has.
+    pub(crate) epoch: AuxEpochV1,
     /// Every chunk goes before the upserts (a `Chunk` surface clear).
     pub(crate) clear: bool,
     pub(crate) removed: BTreeSet<ChunkId>,
@@ -245,9 +281,11 @@ fn history_typed(code: &str, message: String) -> CoreError {
     }
 }
 
-/// Validate `batch` against `current` and name what it changes.
+/// Validate `batch` against `current` and name what it changes; the
+/// snapshot after it is stamped `epoch`.
 pub(crate) fn history_transition(
     current: Option<&HistoryAuthorityState>,
+    epoch: AuxEpochV1,
     batch: &HistoryIngestBatch,
 ) -> Result<HistoryDelta, CoreError> {
     let generation = generation_key(&batch.repo_id, &batch.revision_id, batch.generation);
@@ -322,6 +360,7 @@ pub(crate) fn history_transition(
     }
     Ok(HistoryDelta {
         generation,
+        epoch,
         commits,
         refs,
         tags,
@@ -330,9 +369,11 @@ pub(crate) fn history_transition(
     })
 }
 
-/// Name what one dirty-overlay batch changes; nothing to validate.
+/// Name what one dirty-overlay batch changes; nothing to validate. The
+/// snapshot after it is stamped `epoch`.
 pub(crate) fn runtime_dirty_transition(
     current: Option<&RuntimeMetadataState>,
+    epoch: AuxEpochV1,
     batch: &DirtyIngestBatch,
 ) -> RuntimeDirtyDelta {
     let generation = generation_key(&batch.repo_id, &batch.revision_id, batch.generation);
@@ -349,6 +390,7 @@ pub(crate) fn runtime_dirty_transition(
     }
     RuntimeDirtyDelta {
         generation,
+        epoch,
         upserts,
         deletes,
         meta: current.map(RuntimeMetadataState::meta).unwrap_or_default(),
@@ -358,9 +400,13 @@ pub(crate) fn runtime_dirty_transition(
 /// Validate a runtime catalog batch against the chunk universe and the
 /// current catalog epoch, and name the catalog it replaces the current one
 /// with.
+///
+/// The snapshot after it is stamped `epoch` (the read epoch, not the
+/// producer's overlay epoch the batch carries).
 pub(crate) fn runtime_catalog_transition(
     structural: Option<&StructuralAuthorityState>,
     current: Option<&RuntimeMetadataState>,
+    epoch: AuxEpochV1,
     batch: &RuntimeCatalogIngestBatch,
 ) -> Result<RuntimeCatalogDelta, CoreError> {
     let chunk_universe = structural
@@ -381,6 +427,7 @@ pub(crate) fn runtime_catalog_transition(
     };
     Ok(RuntimeCatalogDelta {
         generation: generation_key(&batch.repo_id, &batch.revision_id, batch.generation),
+        epoch,
         meta: RuntimeStateMeta {
             catalog_overlay_epoch_ms: Some(batch.overlay_epoch_ms),
             catalog_batch_digest: Some(batch.batch_digest.clone().into_boxed_str()),
@@ -419,7 +466,11 @@ pub(crate) fn runtime_catalog_transition(
             .map(|record| {
                 (
                     record.name.clone().into_boxed_str(),
-                    record.doc_ids.iter().cloned().collect(),
+                    record
+                        .doc_ids
+                        .iter()
+                        .cloned()
+                        .collect::<BTreeSet<ChunkId>>(),
                 )
             })
             .collect(),
@@ -429,7 +480,11 @@ pub(crate) fn runtime_catalog_transition(
             .map(|record| {
                 (
                     record.key.clone().into_boxed_str(),
-                    record.doc_ids.iter().cloned().collect(),
+                    record
+                        .doc_ids
+                        .iter()
+                        .cloned()
+                        .collect::<BTreeSet<ChunkId>>(),
                 )
             })
             .collect(),
@@ -439,7 +494,11 @@ pub(crate) fn runtime_catalog_transition(
             .map(|record| {
                 (
                     record.key.clone().into_boxed_str(),
-                    record.doc_ids.iter().cloned().collect(),
+                    record
+                        .doc_ids
+                        .iter()
+                        .cloned()
+                        .collect::<BTreeSet<ChunkId>>(),
                 )
             })
             .collect(),
@@ -449,9 +508,12 @@ pub(crate) fn runtime_catalog_transition(
 /// Validate a structural batch against the chunk universe and name the
 /// parse trees it removes and writes, the seal request after it, and the
 /// structural track's state after it.
+///
+/// The snapshot after it is stamped `epoch`.
 pub(crate) fn structural_transition(
     current: Option<&StructuralAuthorityState>,
     track: Option<&TrackAuthorityState>,
+    epoch: AuxEpochV1,
     batch: &StructuralIngestBatch,
 ) -> Result<StructuralTreesDelta, CoreError> {
     let generation = generation_key(&batch.repo_id, &batch.revision_id, batch.generation);
@@ -501,6 +563,7 @@ pub(crate) fn structural_transition(
     }
     Ok(StructuralTreesDelta {
         generation,
+        epoch,
         removed,
         upserts,
         seal_requested,
@@ -511,8 +574,10 @@ pub(crate) fn structural_transition(
 
 /// Name what one search-corpus batch changes in the structural chunk
 /// universe; nothing to validate here, the batch was validated at entry.
+/// The snapshot after it is stamped `epoch`.
 pub(crate) fn structural_chunks_transition(
     current: Option<&StructuralAuthorityState>,
+    epoch: AuxEpochV1,
     batch: &SearchCorpusIngestBatch,
 ) -> StructuralChunksDelta {
     let generation = generation_key(&batch.repo_id, &batch.revision_id, batch.generation);
@@ -545,6 +610,7 @@ pub(crate) fn structural_chunks_transition(
         .collect();
     StructuralChunksDelta {
         generation,
+        epoch,
         clear,
         removed,
         upserts,
@@ -605,6 +671,7 @@ pub(crate) fn history_delta_rows(
         Vec::new(),
         &delta.meta,
     )?);
+    rows.push(epoch_row(DOMAIN, generation, delta.epoch)?);
     Ok(AuxiliaryMutationBatchV1 {
         rows,
         tracks: Vec::new(),
@@ -642,6 +709,7 @@ pub(crate) fn runtime_dirty_delta_rows(
         Vec::new(),
         &delta.meta,
     )?);
+    rows.push(epoch_row(DOMAIN, generation, delta.epoch)?);
     Ok(AuxiliaryMutationBatchV1 {
         rows,
         tracks: Vec::new(),
@@ -651,7 +719,7 @@ pub(crate) fn runtime_dirty_delta_rows(
 fn chunk_set_rows(
     generation: &AuxiliaryGenerationKeyV1,
     family: AuxiliaryRowFamilyV1,
-    sets: &BTreeMap<Box<str>, BTreeSet<ChunkId>>,
+    sets: &OrdMap<Box<str>, BTreeSet<ChunkId>>,
     rows: &mut Vec<AuxiliaryRowMutationV1>,
 ) -> Result<(), CoreError> {
     rows.push(clear(AuxiliaryDomainV1::Runtime, generation, family));
@@ -720,6 +788,7 @@ pub(crate) fn runtime_catalog_delta_rows(
         Vec::new(),
         &delta.meta,
     )?);
+    rows.push(epoch_row(DOMAIN, generation, delta.epoch)?);
     Ok(AuxiliaryMutationBatchV1 {
         rows,
         tracks: Vec::new(),
@@ -772,6 +841,7 @@ pub(crate) fn structural_delta_rows(
             seal_requested: delta.seal_requested,
         },
     )?);
+    rows.push(epoch_row(DOMAIN, generation, delta.epoch)?);
     Ok(AuxiliaryMutationBatchV1 {
         rows,
         tracks: vec![track_row(generation, &delta.track)?],
@@ -812,6 +882,7 @@ pub(crate) fn structural_chunks_delta_rows(
         Vec::new(),
         &delta.meta,
     )?);
+    rows.push(epoch_row(DOMAIN, generation, delta.epoch)?);
     Ok(AuxiliaryMutationBatchV1 {
         rows,
         tracks: Vec::new(),
@@ -822,9 +893,10 @@ pub(crate) fn structural_chunks_delta_rows(
 // Rows for whole states (migration) and restore
 // ---------------------------------------------------------------------------
 
-/// Every row one history state amounts to.
+/// Every row one history state amounts to, stamped `epoch`.
 pub(crate) fn history_state_rows(
     generation: &AuxiliaryGenerationKeyV1,
+    epoch: AuxEpochV1,
     state: &HistoryAuthorityState,
 ) -> Result<Vec<AuxiliaryRowMutationV1>, CoreError> {
     const DOMAIN: AuxiliaryDomainV1 = AuxiliaryDomainV1::History;
@@ -868,12 +940,14 @@ pub(crate) fn history_state_rows(
         Vec::new(),
         &state.meta(),
     )?);
+    rows.push(epoch_row(DOMAIN, generation, epoch)?);
     Ok(rows)
 }
 
-/// Every row one runtime state amounts to.
+/// Every row one runtime state amounts to, stamped `epoch`.
 pub(crate) fn runtime_state_rows(
     generation: &AuxiliaryGenerationKeyV1,
+    epoch: AuxEpochV1,
     state: &RuntimeMetadataState,
 ) -> Result<Vec<AuxiliaryRowMutationV1>, CoreError> {
     const DOMAIN: AuxiliaryDomainV1 = AuxiliaryDomainV1::Runtime;
@@ -930,12 +1004,14 @@ pub(crate) fn runtime_state_rows(
         Vec::new(),
         &state.meta(),
     )?);
+    rows.push(epoch_row(DOMAIN, generation, epoch)?);
     Ok(rows)
 }
 
-/// Every row one structural state amounts to.
+/// Every row one structural state amounts to, stamped `epoch`.
 pub(crate) fn structural_state_rows(
     generation: &AuxiliaryGenerationKeyV1,
+    epoch: AuxEpochV1,
     state: &StructuralAuthorityState,
 ) -> Result<Vec<AuxiliaryRowMutationV1>, CoreError> {
     const DOMAIN: AuxiliaryDomainV1 = AuxiliaryDomainV1::Structural;
@@ -967,6 +1043,7 @@ pub(crate) fn structural_state_rows(
             seal_requested: state.seal_requested(),
         },
     )?);
+    rows.push(epoch_row(DOMAIN, generation, epoch)?);
     Ok(rows)
 }
 
@@ -990,13 +1067,36 @@ fn mismatched_family(domain: AuxiliaryDomainV1, family: AuxiliaryRowFamilyV1) ->
     ))
 }
 
+/// Restore the `Epoch` row of one generation and domain into the ledger.
+fn restore_epoch_row<S: AuxDomainState>(
+    ledger: &mut Ledger,
+    generation: &AuxiliaryGenerationKeyV1,
+    value: &[u8],
+) -> Result<(), CoreError> {
+    let epoch: AuxEpochV1 = decode("epoch", value)?;
+    ledger.aux_restore_epoch::<S>(
+        &generation.repo_id,
+        &generation.revision_id,
+        generation.generation,
+        epoch,
+    );
+    Ok(())
+}
+
 /// Restore one stored row into the ledger.
+///
+/// Rows rebuild the current snapshot in place; the `Epoch` row names the
+/// epoch that snapshot has. A generation whose rows carry no `Epoch` row
+/// stays at [`AuxEpochV1::GENESIS`].
 pub(crate) fn restore_row_into(ledger: &mut Ledger, row: &AuxiliaryRowV1) -> Result<(), CoreError> {
     let key = &row.key;
     let generation = &key.generation;
     match key.domain {
         AuxiliaryDomainV1::History => {
-            let state = ledger.history_state_mut(
+            if key.family == AuxiliaryRowFamilyV1::Epoch {
+                return restore_epoch_row::<HistoryAuthorityState>(ledger, generation, &row.value);
+            }
+            let state = ledger.aux_restore_mut::<HistoryAuthorityState>(
                 &generation.repo_id,
                 &generation.revision_id,
                 generation.generation,
@@ -1033,13 +1133,17 @@ pub(crate) fn restore_row_into(ledger: &mut Ledger, row: &AuxiliaryRowV1) -> Res
                 | AuxiliaryRowFamilyV1::AffectedDocs
                 | AuxiliaryRowFamilyV1::InvalidatedByDocs
                 | AuxiliaryRowFamilyV1::Chunk
-                | AuxiliaryRowFamilyV1::ParseTree => {
+                | AuxiliaryRowFamilyV1::ParseTree
+                | AuxiliaryRowFamilyV1::Epoch => {
                     return Err(mismatched_family(key.domain, key.family));
                 }
             }
         }
         AuxiliaryDomainV1::Runtime => {
-            let state = ledger.runtime_state_mut(
+            if key.family == AuxiliaryRowFamilyV1::Epoch {
+                return restore_epoch_row::<RuntimeMetadataState>(ledger, generation, &row.value);
+            }
+            let state = ledger.aux_restore_mut::<RuntimeMetadataState>(
                 &generation.repo_id,
                 &generation.revision_id,
                 generation.generation,
@@ -1081,13 +1185,19 @@ pub(crate) fn restore_row_into(ledger: &mut Ledger, row: &AuxiliaryRowV1) -> Res
                 | AuxiliaryRowFamilyV1::Tag
                 | AuxiliaryRowFamilyV1::DiffHunk
                 | AuxiliaryRowFamilyV1::Chunk
-                | AuxiliaryRowFamilyV1::ParseTree => {
+                | AuxiliaryRowFamilyV1::ParseTree
+                | AuxiliaryRowFamilyV1::Epoch => {
                     return Err(mismatched_family(key.domain, key.family));
                 }
             }
         }
         AuxiliaryDomainV1::Structural => {
-            let state = ledger.structural_state_mut(
+            if key.family == AuxiliaryRowFamilyV1::Epoch {
+                return restore_epoch_row::<StructuralAuthorityState>(
+                    ledger, generation, &row.value,
+                );
+            }
+            let state = ledger.aux_restore_mut::<StructuralAuthorityState>(
                 &generation.repo_id,
                 &generation.revision_id,
                 generation.generation,
@@ -1114,7 +1224,8 @@ pub(crate) fn restore_row_into(ledger: &mut Ledger, row: &AuxiliaryRowV1) -> Res
                 | AuxiliaryRowFamilyV1::DocFacet
                 | AuxiliaryRowFamilyV1::Snapshot
                 | AuxiliaryRowFamilyV1::AffectedDocs
-                | AuxiliaryRowFamilyV1::InvalidatedByDocs => {
+                | AuxiliaryRowFamilyV1::InvalidatedByDocs
+                | AuxiliaryRowFamilyV1::Epoch => {
                     return Err(mismatched_family(key.domain, key.family));
                 }
             }

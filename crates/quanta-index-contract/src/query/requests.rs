@@ -676,7 +676,11 @@ impl_symbol_query_request_serde!(SYMBOL_QUERY_REQUEST_FIELDS, SymbolQueryRequest
 /// the cursor the previous page returned (QI-BB-023).
 ///
 /// Results are ordered by recency under the total order documented on
-/// [`HistoryCursor`]; `top_k` bounds one page.
+/// [`HistoryCursor`]; `top_k` bounds one page. A continuation is served
+/// from the history authority epoch its cursor names (QI-BB-020 W2), so
+/// the pages of one walk partition one snapshot; a cursor whose epoch the
+/// plane no longer retains is refused `AUX_EPOCH_EXPIRED`, one naming an
+/// epoch the plane never produced `AUX_EPOCH_UNKNOWN`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HistoryQueryRequest {
     pub text_query: TextQueryRequest,

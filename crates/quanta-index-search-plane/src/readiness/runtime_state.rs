@@ -1,9 +1,14 @@
 //! Runtime-metadata authority state: dirty overlay and the runtime catalog
 //! (changed docs, facets, snapshots, edge authorities) per generation.
+//!
+//! The record maps are persistent (structurally shared) so the ledger can
+//! retain superseded epoch snapshots at the cost of the deltas alone
+//! (QI-BB-020 W2); see `history_state`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use imbl::OrdMap;
 use quanta_index_contract::{ChunkId, RuntimeCatalogIngestBatch};
 use quanta_index_core::CoreError;
 use serde::de::{MapAccess, Visitor};
@@ -116,12 +121,12 @@ impl DocFacetState {
 
 #[derive(Clone, Debug, Default)]
 pub struct RuntimeMetadataState {
-    pub(super) dirty_docs: BTreeMap<ChunkId, DirtyDocState>,
-    pub(super) changed_docs: BTreeMap<ChunkId, ChangedDocState>,
-    pub(super) doc_facets: BTreeMap<ChunkId, DocFacetState>,
-    pub(super) snapshots: BTreeMap<Box<str>, BTreeSet<ChunkId>>,
-    pub(super) affected_docs: BTreeMap<Box<str>, BTreeSet<ChunkId>>,
-    pub(super) invalidated_by_docs: BTreeMap<Box<str>, BTreeSet<ChunkId>>,
+    pub(super) dirty_docs: OrdMap<ChunkId, DirtyDocState>,
+    pub(super) changed_docs: OrdMap<ChunkId, ChangedDocState>,
+    pub(super) doc_facets: OrdMap<ChunkId, DocFacetState>,
+    pub(super) snapshots: OrdMap<Box<str>, BTreeSet<ChunkId>>,
+    pub(super) affected_docs: OrdMap<Box<str>, BTreeSet<ChunkId>>,
+    pub(super) invalidated_by_docs: OrdMap<Box<str>, BTreeSet<ChunkId>>,
     catalog_overlay_epoch_ms: Option<u64>,
     catalog_batch_digest: Option<Box<str>>,
     producer_head_applied_at_ms: Option<u64>,
@@ -186,32 +191,32 @@ impl RuntimeMetadataState {
     }
 
     #[must_use]
-    pub fn dirty_docs(&self) -> &BTreeMap<ChunkId, DirtyDocState> {
+    pub fn dirty_docs(&self) -> &OrdMap<ChunkId, DirtyDocState> {
         &self.dirty_docs
     }
 
     #[must_use]
-    pub fn changed_docs(&self) -> &BTreeMap<ChunkId, ChangedDocState> {
+    pub fn changed_docs(&self) -> &OrdMap<ChunkId, ChangedDocState> {
         &self.changed_docs
     }
 
     #[must_use]
-    pub fn doc_facets(&self) -> &BTreeMap<ChunkId, DocFacetState> {
+    pub fn doc_facets(&self) -> &OrdMap<ChunkId, DocFacetState> {
         &self.doc_facets
     }
 
     #[must_use]
-    pub fn snapshots(&self) -> &BTreeMap<Box<str>, BTreeSet<ChunkId>> {
+    pub fn snapshots(&self) -> &OrdMap<Box<str>, BTreeSet<ChunkId>> {
         &self.snapshots
     }
 
     #[must_use]
-    pub fn affected_docs(&self) -> &BTreeMap<Box<str>, BTreeSet<ChunkId>> {
+    pub fn affected_docs(&self) -> &OrdMap<Box<str>, BTreeSet<ChunkId>> {
         &self.affected_docs
     }
 
     #[must_use]
-    pub fn invalidated_by_docs(&self) -> &BTreeMap<Box<str>, BTreeSet<ChunkId>> {
+    pub fn invalidated_by_docs(&self) -> &OrdMap<Box<str>, BTreeSet<ChunkId>> {
         &self.invalidated_by_docs
     }
 
@@ -349,12 +354,12 @@ impl_struct_serde!(DocFacetState {
 });
 
 impl_struct_serde!(RuntimeMetadataState {
-    dirty_docs: BTreeMap<ChunkId, DirtyDocState>,
-    changed_docs: BTreeMap<ChunkId, ChangedDocState>,
-    doc_facets: BTreeMap<ChunkId, DocFacetState>,
-    snapshots: BTreeMap<Box<str>, BTreeSet<ChunkId>>,
-    affected_docs: BTreeMap<Box<str>, BTreeSet<ChunkId>>,
-    invalidated_by_docs: BTreeMap<Box<str>, BTreeSet<ChunkId>>,
+    dirty_docs: OrdMap<ChunkId, DirtyDocState>,
+    changed_docs: OrdMap<ChunkId, ChangedDocState>,
+    doc_facets: OrdMap<ChunkId, DocFacetState>,
+    snapshots: OrdMap<Box<str>, BTreeSet<ChunkId>>,
+    affected_docs: OrdMap<Box<str>, BTreeSet<ChunkId>>,
+    invalidated_by_docs: OrdMap<Box<str>, BTreeSet<ChunkId>>,
     catalog_overlay_epoch_ms: Option<u64>,
     catalog_batch_digest: Option<Box<str>>,
     producer_head_applied_at_ms: Option<u64>,

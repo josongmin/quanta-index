@@ -1,16 +1,16 @@
 //! Ledger-backed readiness reads shared by every route: lexical materialization
 //! snapshots, structural chunk authority, and semantic selection validation.
 
-use std::sync::Arc;
+use std::time::Instant;
 
 use quanta_index_contract::{
     GenerationPin, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
 };
-use quanta_index_core::CoreError;
+use quanta_index_core::{CoreError, StructuralError};
 
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::selection::SemanticSelection;
-use crate::readiness::StructuralAuthorityState;
+use crate::readiness::{AuxRead, StructuralAuthorityState};
 
 impl SearchPlaneDispatcher {
     pub(super) fn snapshot_lex_materialized(
@@ -25,23 +25,37 @@ impl SearchPlaneDispatcher {
         Ok(guard.track_materialized(repo_id, revision_id, SearchPlaneTrackKind::Lexical))
     }
 
-    /// The structural snapshot of the pinned generation, shared rather
-    /// than copied (QI-BB-020).
-    pub(super) fn snapshot_structural_state(
+    /// The current structural snapshot of the pinned generation and its
+    /// epoch, shared rather than copied (QI-BB-020 W2).
+    ///
+    /// A generation with no structural authority at all is refused with
+    /// the structural domain's own readiness code, the same one its
+    /// producer reports.
+    pub(super) fn structural_read(
         &self,
         pin: &GenerationPin,
-    ) -> Result<Arc<StructuralAuthorityState>, CoreError> {
+    ) -> Result<AuxRead<StructuralAuthorityState>, CoreError> {
         let guard = self
             .ledger
             .read()
             .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
         guard
-            .structural_snapshot(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
+            .structural_read_at(
+                &pin.repo_id,
+                &pin.revision_id,
+                pin.manifest_generation,
+                None,
+                Instant::now(),
+            )?
             .ok_or_else(|| {
-                CoreError::NotReady(format!(
-                    "structural: generation {} chunk authority is not materialized",
-                    pin.manifest_generation.get()
-                ))
+                let not_ready = StructuralError::GenerationNotReady;
+                CoreError::Typed {
+                    code: not_ready.code().to_string(),
+                    message: format!(
+                        "{not_ready}: generation {} has no structural authority to pin",
+                        pin.manifest_generation.get()
+                    ),
+                }
             })
     }
 

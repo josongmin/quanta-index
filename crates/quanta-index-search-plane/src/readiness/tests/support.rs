@@ -217,7 +217,7 @@ pub(super) fn install_chunk_with_id(
             },
         ))?,
     });
-    ledger.apply_lexical_authority_op(&op)?;
+    ledger.apply_lexical_authority_op(&op, std::time::Instant::now())?;
     Ok(())
 }
 
@@ -229,7 +229,7 @@ pub(super) fn install_parse_tree(ledger: &mut Ledger, text: &str) -> TestResult 
         chunk_id: ChunkId::new("chunk-1"),
         payload: encode_cbor(&parse_tree_record(text)?)?,
     });
-    ledger.apply_lexical_authority_op(&op)?;
+    ledger.apply_lexical_authority_op(&op, std::time::Instant::now())?;
     Ok(())
 }
 
@@ -335,24 +335,30 @@ pub(super) fn persist_whole_ledger(
         generation: key.generation,
     };
     let mut batch = AuxiliaryMutationBatchV1::default();
-    for (key, state) in &ledger.history {
+    for (key, registry) in &ledger.history {
+        let read = registry.read_current();
         batch.rows.extend(auxiliary_authority::history_state_rows(
             &generation_key(key),
-            state,
+            read.epoch,
+            &read.state,
         )?);
     }
-    for (key, state) in &ledger.runtime_metadata {
+    for (key, registry) in &ledger.runtime_metadata {
+        let read = registry.read_current();
         batch.rows.extend(auxiliary_authority::runtime_state_rows(
             &generation_key(key),
-            state,
+            read.epoch,
+            &read.state,
         )?);
     }
-    for (key, state) in &ledger.structural {
+    for (key, registry) in &ledger.structural {
+        let read = registry.read_current();
         batch
             .rows
             .extend(auxiliary_authority::structural_state_rows(
                 &generation_key(key),
-                state,
+                read.epoch,
+                &read.state,
             )?);
     }
     for (key, state) in &ledger.search_tracks {

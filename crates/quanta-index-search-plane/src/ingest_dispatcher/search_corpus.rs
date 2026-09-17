@@ -531,8 +531,14 @@ impl DirectSearchCorpusMaterializer {
                     "{WHAT}: ledger poisoned while finalizing generation: {err}"
                 ))
             })?;
+            let epoch = guard.structural_next_epoch(
+                &batch.repo_id,
+                &batch.revision_id,
+                batch.generation,
+            )?;
             structural_chunks_transition(
                 guard.structural_state(&batch.repo_id, &batch.revision_id, batch.generation),
+                epoch,
                 batch,
             )
         };
@@ -558,7 +564,7 @@ impl DirectSearchCorpusMaterializer {
                         .to_string(),
                 ));
             }
-            guard.apply_structural_chunks_delta(&chunks);
+            guard.apply_structural_chunks_delta(&chunks, std::time::Instant::now())?;
             guard.materialize_track(
                 &batch.repo_id,
                 &batch.revision_id,

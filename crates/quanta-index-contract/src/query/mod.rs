@@ -1,3 +1,4 @@
+mod aux_epoch;
 mod cluster_membership;
 mod directives;
 mod expression;
@@ -6,6 +7,7 @@ mod history_cursor;
 mod options;
 mod requests;
 
+pub use aux_epoch::*;
 pub use cluster_membership::*;
 pub use directives::*;
 pub use expression::*;

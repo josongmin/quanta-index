@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use quanta_index_contract::channel::{LexicalChannelOp, UpsertChunk};
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    AuxEpochV1, ChunkId, ChunkRecord, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
     SearchPlaneTrackKind,
 };
 use quanta_index_core::domains::structural::StructuralQueryRequest as DomainStructuralQueryRequest;
@@ -61,6 +61,9 @@ pub(crate) struct RecordingStructuralProducer {
     pub(crate) execute_error: Option<StructuralError>,
     pub(crate) readiness_calls: AtomicUsize,
     pub(crate) execute_calls: AtomicUsize,
+    /// The structural authority epoch each executed request pinned
+    /// (QI-BB-020 W2), in call order.
+    pub(crate) executed_epochs: Mutex<Vec<AuxEpochV1>>,
 }
 
 impl RecordingStructuralProducer {
@@ -71,6 +74,7 @@ impl RecordingStructuralProducer {
             execute_error: None,
             readiness_calls: AtomicUsize::new(0),
             execute_calls: AtomicUsize::new(0),
+            executed_epochs: Mutex::new(Vec::new()),
         }
     }
 
@@ -81,6 +85,7 @@ impl RecordingStructuralProducer {
             execute_error: None,
             readiness_calls: AtomicUsize::new(0),
             execute_calls: AtomicUsize::new(0),
+            executed_epochs: Mutex::new(Vec::new()),
         }
     }
 
@@ -91,6 +96,7 @@ impl RecordingStructuralProducer {
             execute_error: Some(execute_error),
             readiness_calls: AtomicUsize::new(0),
             execute_calls: AtomicUsize::new(0),
+            executed_epochs: Mutex::new(Vec::new()),
         }
     }
 }
@@ -103,9 +109,13 @@ impl StructuralProducerPort for RecordingStructuralProducer {
 
     fn execute(
         &self,
-        _request: &StructuralQueryRequest,
+        request: &StructuralQueryRequest,
     ) -> Result<Vec<StructuralMatchCandidate>, StructuralError> {
         let _prev: usize = self.execute_calls.fetch_add(1, Ordering::SeqCst);
+        self.executed_epochs
+            .lock()
+            .map_err(|err| StructuralError::ProducerExecution(format!("recorder poisoned: {err}")))?
+            .push(request.aux_epoch);
         if let Some(err) = self.execute_error.as_ref() {
             return Err(match err {
                 StructuralError::ParseTreeProducerUnavailable => {
@@ -124,6 +134,12 @@ impl StructuralProducerPort for RecordingStructuralProducer {
                 }
                 StructuralError::ProducerExecution(message) => {
                     StructuralError::ProducerExecution(message.clone())
+                }
+                StructuralError::AuxEpochExpired(message) => {
+                    StructuralError::AuxEpochExpired(message.clone())
+                }
+                StructuralError::AuxEpochUnknown(message) => {
+                    StructuralError::AuxEpochUnknown(message.clone())
                 }
             });
         }
@@ -210,13 +226,29 @@ pub(crate) fn structural_pattern_key(
     }
 }
 
+/// A ready ledger whose pinned generation has a structural authority to
+/// pin a read epoch on (QI-BB-020 W2): one chunk, so the route can name
+/// the snapshot every leaf reads before it consults the producer.
+pub(crate) fn ready_ledger_with_structural_universe() -> Arc<RwLock<Ledger>> {
+    let ledger = ready_ledger();
+    {
+        let mut guard = ledger.write().expect("structural test ledger poisoned");
+        install_structural_test_chunk(&mut guard, "chunk-universe", "src/universe.rs", "fn u() {}")
+            .expect("structural test chunk install");
+    }
+    ledger
+}
+
 pub(crate) fn structural_dispatcher_with_producer<P>(
     producer: Arc<P>,
 ) -> Result<SearchPlaneDispatcher, Box<dyn std::error::Error>>
 where
     P: StructuralProducerPort + Send + Sync + 'static,
 {
-    structural_dispatcher_with_producer_and_ledger(producer, ready_ledger())
+    structural_dispatcher_with_producer_and_ledger(
+        producer,
+        ready_ledger_with_structural_universe(),
+    )
 }
 
 pub(crate) fn structural_dispatcher_with_producer_and_ledger<P>(
@@ -314,7 +346,7 @@ pub(crate) fn install_structural_test_chunk(
         chunk_id: ChunkId::new(chunk_id),
         payload: encode_cbor(&record)?,
     });
-    ledger.apply_lexical_authority_op(&op)?;
+    ledger.apply_lexical_authority_op(&op, std::time::Instant::now())?;
     Ok(())
 }
 

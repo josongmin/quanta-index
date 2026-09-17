@@ -5,6 +5,7 @@ use std::fs::File;
 #[cfg(not(unix))]
 use std::fs::OpenOptions;
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -26,16 +27,16 @@ use quanta_index_core::domains::structural::{
     StructuralQueryRequest as DomainStructuralQueryRequest,
 };
 use quanta_index_core::{
-    AuxiliaryAuthorityCatalogPort, CoreError, FileContributorIngestPort, FileOwnershipIngestPort,
-    GenerationIdentityValidatePort, IdempotencyCatalogPort, IncompleteGenerationDiscardPort,
-    L2UnitEmbeddingProvider, LexicalIndexOpenPort, MetricSourcePort,
-    QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
-    RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapOpenReportV1,
-    RepoMapQuarantinePort, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
-    SealedGenerationReclaimPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
-    SearchCorpusIngestPort, SemanticBatchBuildPort, SemanticIndexOpenPort, SemanticIngestPort,
-    StructuralError, StructuralMatchBinding, StructuralMatchCandidate, StructuralReadiness,
-    TextEmbeddingProvider,
+    AUX_EPOCH_EXPIRED_CODE, AUX_EPOCH_UNKNOWN_CODE, AuxiliaryAuthorityCatalogPort, CoreError,
+    FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
+    IdempotencyCatalogPort, IncompleteGenerationDiscardPort, L2UnitEmbeddingProvider,
+    LexicalIndexOpenPort, MetricSourcePort, QuarantinedGenerationDiscardPort,
+    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
+    RepoMapGenerationActivatePort, RepoMapOpenReportV1, RepoMapQuarantinePort, RepoMapQueryPort,
+    RepoMetaIngestPort, RepoTopicIngestPort, SealedGenerationReclaimPort, SealedGenerationScanPort,
+    SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticBatchBuildPort,
+    SemanticIndexOpenPort, SemanticIngestPort, StructuralError, StructuralMatchBinding,
+    StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider,
 };
 use quanta_index_embed::{
     CachingEmbeddingProvider, EmbeddingCacheIdentityV1, FileEmbeddingCache, OpenAiEmbeddingProvider,
@@ -495,6 +496,12 @@ impl LedgerStructuralProducer {
 }
 
 impl StructuralProducerPort for LedgerStructuralProducer {
+    /// Readiness is a gate on the generation's current structural
+    /// materialization.
+    ///
+    /// The query itself executes against the snapshot its `aux_epoch`
+    /// pins (see [`Self::execute`]), which is the one the route read when
+    /// it resolved the request.
     fn readiness(&self, request: &DomainStructuralQueryRequest) -> StructuralReadiness {
         let pin = match resolve_structural_pin(request) {
             Ok(pin) => pin,
@@ -545,14 +552,26 @@ impl StructuralProducerPort for LedgerStructuralProducer {
             .or(request.pattern.lang.as_deref())
             .map(str::trim)
             .filter(|lang| !lang.is_empty());
+        // The request pins the structural authority epoch the whole query
+        // reads (QI-BB-020 W2): every leaf executes against that snapshot,
+        // and an epoch the ledger no longer retains — or never had — is
+        // refused typed rather than served from the current one.
         let state = self
             .ledger
             .read()
             .map_err(|err| {
                 StructuralError::ProducerExecution(format!("structural ledger poisoned: {err}"))
             })?
-            .structural_snapshot(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
-            .ok_or(StructuralError::GenerationNotReady)?;
+            .structural_read_at(
+                &pin.repo_id,
+                &pin.revision_id,
+                pin.manifest_generation,
+                Some(request.aux_epoch),
+                Instant::now(),
+            )
+            .map_err(map_structural_read_error)?
+            .ok_or(StructuralError::GenerationNotReady)?
+            .state;
         let requested_pattern = requested_lang
             .map(|lang| compile_live_structural_pattern(&request.pattern, lang))
             .transpose()?;
@@ -623,6 +642,28 @@ impl StructuralProducerPort for LedgerStructuralProducer {
             return Err(StructuralError::LangNotSupported(lang));
         }
         Ok(results)
+    }
+}
+
+/// The structural producer's typed refusal for a ledger read at a pinned
+/// epoch: the two epoch refusals keep their wire codes, anything else is
+/// a producer execution failure.
+fn map_structural_read_error(err: CoreError) -> StructuralError {
+    match err {
+        CoreError::Typed { code, message } if code == AUX_EPOCH_EXPIRED_CODE => {
+            StructuralError::AuxEpochExpired(message)
+        }
+        CoreError::Typed { code, message } if code == AUX_EPOCH_UNKNOWN_CODE => {
+            StructuralError::AuxEpochUnknown(message)
+        }
+        other @ (CoreError::InvalidContract(_)
+        | CoreError::Typed { .. }
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)
+        | CoreError::Storage(_)) => StructuralError::ProducerExecution(format!(
+            "structural ledger read at the pinned epoch failed: {other}"
+        )),
     }
 }
 
@@ -1159,6 +1200,7 @@ mod tests {
             candidate_scope: None,
             options: LqOptions::defaults(),
             generation,
+            aux_epoch: quanta_index_contract::AuxEpochV1::GENESIS,
         }
     }
 

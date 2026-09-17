@@ -11,12 +11,12 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use quanta_index_contract::{
-    EarlyStopReason, EngineTouched, ExplainCandidateV1, GenerationPin, HistoryQueryRequest,
-    HybridCandidateV1, HybridQueryResponse, HybridSeedQueryRequest, HybridSeedQueryResponse,
-    LexicalCandidate, ManifestGeneration, PlannerTraceEntry, QueryConstraintSetV1,
-    QueryErrorRepair, QueryResultWindowV1, RepoId, RepoMapDocType, RepoMapFocusSubjectDto,
-    RepoMapQueryRequest, RevisionId, RuntimeMetadataQueryRequest, SearchExplanation,
-    SearchPlaneHistoryQueryResponse, SearchPlaneQueryIpcResponse,
+    AuxEpochV1, EarlyStopReason, EngineTouched, ExplainCandidateV1, GenerationPin,
+    HistoryQueryRequest, HybridCandidateV1, HybridQueryResponse, HybridSeedQueryRequest,
+    HybridSeedQueryResponse, LexicalCandidate, ManifestGeneration, PlannerTraceEntry,
+    QueryConstraintSetV1, QueryErrorRepair, QueryResultWindowV1, RepoId, RepoMapDocType,
+    RepoMapFocusSubjectDto, RepoMapQueryRequest, RevisionId, RuntimeMetadataQueryRequest,
+    SearchExplanation, SearchPlaneHistoryQueryResponse, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRuntimeMetadataQueryResponse,
     SearchPlaneStructuralQueryResponse, SemanticQueryRequest, StructuralQueryRequest,
     SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse,
@@ -2039,17 +2039,19 @@ fn render_history_payload(
         payload.examined,
         payload.window.has_more()
     ))?;
+    render_read_epoch_line(payload.read_epoch, rendered)?;
     if let Some(cursor) = &payload.next_cursor {
         fmt_ok(writeln!(
             rendered,
-            "next_cursor: committer_time_ms={} sha={}{}",
+            "next_cursor: committer_time_ms={} sha={}{} aux_epoch={}",
             cursor.committer_time_ms,
             cursor.sha.to_hex(),
             cursor
                 .file_path
                 .as_deref()
                 .map(|path| format!(" file_path={path}"))
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            cursor.aux_epoch
         ))?;
     }
     for (index, commit) in payload.commits.iter().enumerate() {
@@ -2106,6 +2108,12 @@ fn render_window_line(window: QueryResultWindowV1, rendered: &mut String) -> Cli
     ))
 }
 
+/// One line for the auxiliary authority epoch a page was cut from
+/// (QI-BB-020 W2); JSON output carries it as `read_epoch`.
+fn render_read_epoch_line(epoch: AuxEpochV1, rendered: &mut String) -> CliResult<()> {
+    fmt_ok(writeln!(rendered, "epoch: {epoch}"))
+}
+
 fn render_structural_payload(
     payload: &SearchPlaneStructuralQueryResponse,
     rendered: &mut String,
@@ -2114,6 +2122,7 @@ fn render_structural_payload(
     render_generation(&payload.generation, rendered)?;
     fmt_ok(writeln!(rendered, "results: {}", payload.results.len()))?;
     render_window_line(payload.window, rendered)?;
+    render_read_epoch_line(payload.read_epoch, rendered)?;
     for (index, candidate) in payload.results.iter().enumerate() {
         let display_index = index
             .checked_add(1)
@@ -2246,6 +2255,7 @@ fn render_runtime_metadata_payload(
     render_generation(&payload.generation, rendered)?;
     fmt_ok(writeln!(rendered, "results: {}", payload.results.len()))?;
     render_window_line(payload.window, rendered)?;
+    render_read_epoch_line(payload.read_epoch, rendered)?;
     for (index, candidate) in payload.results.iter().enumerate() {
         let display_index = index.checked_add(1).ok_or_else(|| {
             CliError::protocol("runtime-metadata candidate index overflow".to_string())
@@ -2971,6 +2981,7 @@ mod tests {
                         highlights: Vec::new(),
                     }],
                     window: probe_window,
+                    read_epoch: AuxEpochV1::new(4),
                 },
             ),
         };
@@ -2982,6 +2993,10 @@ mod tests {
         if let Ok(text) = text {
             assert!(text.contains("kind: runtime-metadata"));
             assert!(text.contains("results: 1"));
+            assert!(
+                text.contains("epoch: 4"),
+                "the read epoch is rendered: {text}"
+            );
             assert!(
                 text.contains("matched: >=2 has_more: true"),
                 "the probe window is rendered: {text}"
@@ -3177,11 +3192,13 @@ mod tests {
                     true,
                 )
                 .expect("a page of one out of three"),
+                read_epoch: AuxEpochV1::new(12),
                 examined: 9,
                 next_cursor: Some(quanta_index_contract::HistoryCursor {
                     committer_time_ms: 1_700_000_000_000,
                     sha: quanta_index_contract::lex::CommitSha::ZERO,
                     file_path: None,
+                    aux_epoch: AuxEpochV1::new(12),
                 }),
             }),
         };
@@ -3196,6 +3213,14 @@ mod tests {
         assert!(
             text.contains("next_cursor: committer_time_ms=1700000000000 sha="),
             "{text}"
+        );
+        assert!(
+            text.contains("epoch: 12"),
+            "the read epoch is rendered: {text}"
+        );
+        assert!(
+            text.contains(" aux_epoch=12"),
+            "the cursor carries the epoch: {text}"
         );
         assert!(text.contains("kind: history"));
         assert!(text.contains("commits: 1 diffs: 0"));
@@ -3771,6 +3796,7 @@ mod tests {
                     }],
                 }],
                 window: quanta_index_contract::QueryResultWindowV1::exact(1),
+                read_epoch: AuxEpochV1::new(3),
             }),
         };
         let mut stdout = Vec::new();
@@ -3780,6 +3806,10 @@ mod tests {
         assert!(text.is_ok());
         if let Ok(text) = text {
             assert!(text.contains("kind: structural"));
+            assert!(
+                text.contains("epoch: 3"),
+                "the read epoch is rendered: {text}"
+            );
             assert!(text.contains("results: 1"));
             assert!(text.contains("candidate_id=struct-1"));
             assert!(text.contains("$NAME: bytes=10-14"));

@@ -924,11 +924,13 @@ fn search_plane_ipc_response_v2_history_variant_roundtrips() -> TestRes {
                 quanta_index_contract::CandidateCountV1::Exact(3),
                 true,
             )?,
+            read_epoch: quanta_index_contract::AuxEpochV1::new(9),
             examined: 7,
             next_cursor: Some(quanta_index_contract::HistoryCursor {
                 committer_time_ms: 1_717_171_717_000,
                 sha: CommitSha::from_bytes([1u8; 20]),
                 file_path: None,
+                aux_epoch: quanta_index_contract::AuxEpochV1::new(9),
             }),
         },
     );
@@ -939,6 +941,7 @@ fn search_plane_ipc_response_v2_history_variant_roundtrips() -> TestRes {
             commits: Vec::new(),
             diffs: vec![history_diff_candidate()],
             window: QueryResultWindowV1::exact(1),
+            read_epoch: quanta_index_contract::AuxEpochV1::GENESIS,
             examined: 1,
             next_cursor: None,
         },
@@ -952,10 +955,12 @@ fn search_plane_ipc_response_v2_history_variant_roundtrips() -> TestRes {
 #[test]
 fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> TestRes {
     let generation = generation_pin();
+    let read_epoch = quanta_index_contract::AuxEpochV1::new(4);
     let cursor = quanta_index_contract::HistoryCursor {
         committer_time_ms: 5,
         sha: CommitSha::from_bytes([1u8; 20]),
         file_path: None,
+        aux_epoch: read_epoch,
     };
     let cases: Vec<(&str, quanta_index_contract::SearchPlaneHistoryQueryResponse)> = vec![
         (
@@ -969,6 +974,7 @@ fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> Te
                     quanta_index_contract::CandidateCountV1::Exact(3),
                     true,
                 )?,
+                read_epoch,
                 examined: 3,
                 next_cursor: None,
             },
@@ -980,8 +986,9 @@ fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> Te
                 commits: vec![history_commit_candidate()],
                 diffs: Vec::new(),
                 window: QueryResultWindowV1::exact(1),
+                read_epoch,
                 examined: 1,
-                next_cursor: Some(cursor),
+                next_cursor: Some(cursor.clone()),
             },
         ),
         (
@@ -991,6 +998,7 @@ fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> Te
                 commits: vec![history_commit_candidate()],
                 diffs: vec![history_diff_candidate()],
                 window: QueryResultWindowV1::exact(2),
+                read_epoch,
                 examined: 2,
                 next_cursor: None,
             },
@@ -998,12 +1006,29 @@ fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> Te
         (
             "a window that does not count the rows",
             quanta_index_contract::SearchPlaneHistoryQueryResponse {
-                generation,
+                generation: generation.clone(),
                 commits: vec![history_commit_candidate()],
                 diffs: Vec::new(),
                 window: QueryResultWindowV1::exact(2),
+                read_epoch,
                 examined: 2,
                 next_cursor: None,
+            },
+        ),
+        (
+            "a cursor naming another epoch than the page read",
+            quanta_index_contract::SearchPlaneHistoryQueryResponse {
+                generation,
+                commits: vec![history_commit_candidate()],
+                diffs: Vec::new(),
+                window: QueryResultWindowV1::new(
+                    1,
+                    quanta_index_contract::CandidateCountV1::Exact(3),
+                    true,
+                )?,
+                read_epoch: quanta_index_contract::AuxEpochV1::new(5),
+                examined: 3,
+                next_cursor: Some(cursor),
             },
         ),
     ];
@@ -1387,4 +1412,86 @@ fn explain_response_round_trips_its_presence_and_rejects_a_missing_one() -> Test
         },
     )?;
     expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&bytes, "maybe")
+}
+
+/// QI-BB-020 W2 — the auxiliary read epoch is required and typed.
+///
+/// It is part of every history / runtime-metadata / structural page and
+/// of the history cursor: it round-trips, a cursor or page without it
+/// does not decode, and the runtime-metadata / structural pages carry it
+/// beside their window.
+#[test]
+fn search_plane_ipc_response_v2_aux_read_epoch_is_required_and_round_trips() -> TestRes {
+    use quanta_index_contract::{
+        AuxEpochV1, HistoryCursor, SearchPlaneHistoryQueryResponse,
+        SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
+    };
+
+    let cursor = HistoryCursor {
+        committer_time_ms: 42,
+        sha: CommitSha::from_bytes([3u8; 20]),
+        file_path: Some("src/lib.rs".to_string()),
+        aux_epoch: AuxEpochV1::new(17),
+    };
+    roundtrip_eq(&cursor)?;
+    let mut without_epoch = serde_json::to_value(&cursor)?;
+    if without_epoch
+        .as_object_mut()
+        .ok_or("cursor is a map")?
+        .remove("aux_epoch")
+        .is_none()
+    {
+        return Err("the cursor serializes its epoch".into());
+    }
+    if serde_json::from_value::<HistoryCursor>(without_epoch).is_ok() {
+        return Err("a cursor without an epoch must not decode".into());
+    }
+
+    let runtime_page =
+        SearchPlaneQueryIpcResponse::RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse {
+            generation: generation_pin(),
+            results: vec![lexical_candidate()],
+            window: QueryResultWindowV1::exact(1),
+            read_epoch: AuxEpochV1::new(3),
+        });
+    roundtrip_eq(&runtime_page)?;
+    let structural_page =
+        SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
+            generation: generation_pin(),
+            results: Vec::new(),
+            window: QueryResultWindowV1::exact(0),
+            read_epoch: AuxEpochV1::GENESIS,
+        });
+    roundtrip_eq(&structural_page)?;
+    let history_page = SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
+        generation: generation_pin(),
+        commits: Vec::new(),
+        diffs: vec![history_diff_candidate()],
+        window: QueryResultWindowV1::exact(1),
+        read_epoch: AuxEpochV1::new(17),
+        examined: 1,
+        next_cursor: None,
+    });
+    roundtrip_eq(&history_page)?;
+
+    // Without `read_epoch` none of the three pages decodes: a page that
+    // does not say which snapshot it read is not a page.
+    for (label, page) in [
+        ("runtime-metadata", runtime_page),
+        ("structural", structural_page),
+        ("history", history_page),
+    ] {
+        let mut value = serde_json::to_value(&page)?;
+        let payload = value
+            .get_mut("payload")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(|| format!("{label}: the response is a tagged map"))?;
+        if payload.remove("read_epoch").is_none() {
+            return Err(format!("{label}: the page serializes its read epoch").into());
+        }
+        if serde_json::from_value::<SearchPlaneQueryIpcResponse>(value).is_ok() {
+            return Err(format!("{label}: a page without a read epoch must not decode").into());
+        }
+    }
+    Ok(())
 }

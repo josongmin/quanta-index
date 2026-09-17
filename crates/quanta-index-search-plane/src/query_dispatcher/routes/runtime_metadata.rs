@@ -1,8 +1,10 @@
 //! Runtime-metadata query route: catalog-seeded chunk matching over the
 //! runtime and structural authorities.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
+use std::time::Instant;
 
+use imbl::OrdMap;
 use quanta_index_contract::{
     ChunkId, ChunkRecord, GenerationPin, LqFilter, LqQuery, LqYesNoOnly,
     RuntimeMetadataQueryRequest, SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneTrackKind,
@@ -46,35 +48,52 @@ impl SearchPlaneDispatcher {
         .ok_or_else(|| {
             CoreError::InvalidContract("runtime metadata: generation selector required".to_string())
         })?;
-        // Snapshots are cloned under the read lock and scanned outside it
-        // (QI-BB-020): a long scan never holds up an ingest, and an ingest
-        // never holds up a query.
-        let (runtime_state, structural_state) = {
+        // Snapshots are taken under one read lock and scanned outside it
+        // (QI-BB-020): a long scan never holds up an ingest, an ingest
+        // never holds up a query, and the runtime snapshot and the chunk
+        // universe it is joined with are one consistent cut. The response
+        // names the runtime authority's epoch (W2).
+        let (runtime_read, structural_read) = {
+            let now = Instant::now();
             let guard = self.ledger.read().map_err(|_poisoned| {
                 CoreError::Storage("search-plane ledger poisoned".to_string())
             })?;
-            let snapshots = (
-                guard.runtime_snapshot(&pin.repo_id, &pin.revision_id, pin.manifest_generation),
-                guard.structural_snapshot(&pin.repo_id, &pin.revision_id, pin.manifest_generation),
+            let reads = (
+                guard.runtime_read_at(
+                    &pin.repo_id,
+                    &pin.revision_id,
+                    pin.manifest_generation,
+                    None,
+                    now,
+                )?,
+                guard.structural_read_at(
+                    &pin.repo_id,
+                    &pin.revision_id,
+                    pin.manifest_generation,
+                    None,
+                    now,
+                )?,
             );
             drop(guard);
-            snapshots
+            reads
         };
-        let runtime_state = runtime_state.ok_or_else(|| {
+        let runtime_read = runtime_read.ok_or_else(|| {
             CoreError::NotReady(format!(
                 "runtime metadata: generation {} is not materialized",
                 pin.manifest_generation.get()
             ))
         })?;
-        let structural_state = structural_state.ok_or_else(|| {
+        let structural_read = structural_read.ok_or_else(|| {
             CoreError::NotReady(format!(
                 "runtime metadata: lexical chunk authority for generation {} is not materialized",
                 pin.manifest_generation.get()
             ))
         })?;
+        let runtime_state = runtime_read.state.as_ref();
+        let structural_state = structural_read.state.as_ref();
         if runtime_query_requires_catalog(&lowered) {
-            ensure_runtime_catalog_ready(&runtime_state)?;
-            ensure_runtime_snapshot_names_known(&lowered, &runtime_state)?;
+            ensure_runtime_catalog_ready(runtime_state)?;
+            ensure_runtime_snapshot_names_known(&lowered, runtime_state)?;
         }
         budget.checkpoint("runtime-metadata:execute")?;
         // One row past the page is the continuation probe (QI-BB-025): the
@@ -83,8 +102,8 @@ impl SearchPlaneDispatcher {
         let mut results = execute_runtime_metadata_query(
             &pin,
             &lowered,
-            &runtime_state,
-            &structural_state,
+            runtime_state,
+            structural_state,
             probe_top_k_v1(request.text_query.top_k)?,
         )?;
         let window = finalize_probe_window_v1(&mut results, request.text_query.top_k)?;
@@ -93,6 +112,7 @@ impl SearchPlaneDispatcher {
             generation: pin,
             results,
             window,
+            read_epoch: runtime_read.epoch,
         })
     }
 }
@@ -480,7 +500,7 @@ fn runtime_doc_facet_matches(
 }
 
 fn runtime_edge_matches(
-    edges: &BTreeMap<Box<str>, BTreeSet<quanta_index_contract::ChunkId>>,
+    edges: &OrdMap<Box<str>, BTreeSet<quanta_index_contract::ChunkId>>,
     expected: &str,
     chunk_id: &quanta_index_contract::ChunkId,
 ) -> bool {

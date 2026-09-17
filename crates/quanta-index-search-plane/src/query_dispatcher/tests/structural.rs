@@ -21,8 +21,8 @@ use crate::observability::BoundedQueryObsStore;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::routes::structural::lexical_leaves::symbol_hits_to_structural_buckets;
 use crate::query_dispatcher::tests::support::common::{
-    TestResult, assert_closed_obs_metrics, default_query_embedder, ipc_error_from, ready_ledger,
-    ready_pin, test_activation_catalog,
+    TestResult, assert_closed_obs_metrics, default_query_embedder, ipc_error_from, ready_pin,
+    test_activation_catalog,
 };
 use crate::query_dispatcher::tests::support::lexical::{
     RecordingLexicalOpener, RecordingLexicalState, RejectLexicalOpener, recording_lexical_candidate,
@@ -31,9 +31,10 @@ use crate::query_dispatcher::tests::support::repo_map::StubRepoMapQueryPort;
 use crate::query_dispatcher::tests::support::semantic::RejectSemanticOpener;
 use crate::query_dispatcher::tests::support::structural::{
     PatternRoutingStructuralProducer, RecordingStructuralProducer,
-    ready_ledger_with_structural_boolean_chunks, structural_dispatcher_mixed,
-    structural_dispatcher_with_producer, structural_dispatcher_with_producer_and_ledger,
-    structural_match_candidate, structural_state_for_test_chunks,
+    ready_ledger_with_structural_boolean_chunks, ready_ledger_with_structural_universe,
+    structural_dispatcher_mixed, structural_dispatcher_with_producer,
+    structural_dispatcher_with_producer_and_ledger, structural_match_candidate,
+    structural_state_for_test_chunks,
 };
 use crate::{SnapshotRegistries, SnapshotRegistryPolicy};
 
@@ -102,7 +103,7 @@ fn structural_dispatch_success_emits_closed_obs_metrics() -> TestResult {
         Arc::new(RecordingStructuralProducer::ready_with(vec![
             structural_match_candidate("chunk-tree"),
         ])),
-        ready_ledger(),
+        ready_ledger_with_structural_universe(),
         test_activation_catalog()?,
         default_query_embedder(),
         obs_sink.clone(),
@@ -199,6 +200,16 @@ fn structural_dispatch_routes_happy_path_through_structural_service() -> TestRes
             if first.candidate_id != "chunk-tree" {
                 return Err(format!("expected candidate_id=chunk-tree, got {first:?}").into());
             }
+            // The page names the structural epoch it pinned (QI-BB-020
+            // W2): one chunk install, so epoch 1 — and the producer executed
+            // the leaf against that same epoch.
+            if results.read_epoch != quanta_index_contract::AuxEpochV1::new(1) {
+                return Err(format!(
+                    "the structural page reads epoch 1, got {:?}",
+                    results.read_epoch
+                )
+                .into());
+            }
         }
         other @ (SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
@@ -225,6 +236,17 @@ fn structural_dispatch_routes_happy_path_through_structural_service() -> TestRes
     if executed != 1 {
         return Err(format!(
             "expected structural execute to be consulted exactly once, got {executed} call(s)"
+        )
+        .into());
+    }
+    let executed_epochs = producer
+        .executed_epochs
+        .lock()
+        .map_err(|err| format!("recorder poisoned: {err}"))?
+        .clone();
+    if executed_epochs != vec![quanta_index_contract::AuxEpochV1::new(1)] {
+        return Err(format!(
+            "the leaf executes at the epoch the route pinned, got {executed_epochs:?}"
         )
         .into());
     }

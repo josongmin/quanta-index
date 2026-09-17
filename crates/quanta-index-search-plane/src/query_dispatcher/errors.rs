@@ -5,7 +5,7 @@ use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
     GenerationPin, ManifestGeneration, QueryErrorRepair, RepairClass, SearchPlaneIpcError,
 };
-use quanta_index_core::CoreError;
+use quanta_index_core::{AUX_EPOCH_EXPIRED_CODE, AUX_EPOCH_UNKNOWN_CODE, CoreError};
 
 pub(super) const ERR_INVALID: &str = "INVALID_REQUEST";
 pub(super) const ERR_NOT_READY: &str = "NOT_READY";
@@ -51,7 +51,9 @@ pub(super) fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
 ///
 /// The alternative shapes are intentionally the small set verified to exist in
 /// this plane (`repo:` / `file:` / `path:` / `lang:` / `rev:`); the anchor is the
-/// authority for the full list.
+/// authority for the full list. The auxiliary-epoch refusals (QI-BB-020
+/// W2) name the one repair that exists for a stale continuation: start
+/// the walk over without a cursor.
 ///
 /// `pub` so the J7Q-06 ambiguity rail can snapshot the exact payloads the wire
 /// boundary emits without re-deriving the policy.
@@ -74,6 +76,19 @@ pub fn repair_for_code(code: &str) -> Option<QueryErrorRepair> {
         c if c == LexicalErrorCode::BridgeVersionPin.as_code_str() => (
             RepairClass::Malformed,
             &["rev:<git-ref>", "remove the version pin"],
+        ),
+        // A continuation named an auxiliary epoch the plane no longer
+        // retains (QI-BB-020 W2): resuming is impossible without mixing
+        // epochs, so the caller starts the walk over.
+        AUX_EPOCH_EXPIRED_CODE => (
+            RepairClass::Expired,
+            &["restart the page walk without a cursor"],
+        ),
+        // A cursor naming an epoch this state root never produced cannot
+        // have come from a page it served.
+        AUX_EPOCH_UNKNOWN_CODE => (
+            RepairClass::Malformed,
+            &["restart the page walk without a cursor"],
         ),
         _ => return None,
     };
@@ -186,6 +201,26 @@ mod repair_for_code_tests {
         let repair = repair_for_code(LexicalErrorCode::BridgeVersionPin.as_code_str())
             .expect("version pin is repairable");
         assert_eq!(repair.class, RepairClass::Malformed);
+    }
+
+    /// QI-BB-020 W2: an expired continuation is repaired by restarting the
+    /// walk; an unknown epoch is a malformed cursor, repaired the same way.
+    #[test]
+    fn aux_epoch_refusals_say_to_restart_the_page_walk() {
+        let expired = repair_for_code(quanta_index_core::AUX_EPOCH_EXPIRED_CODE)
+            .expect("an expired epoch is repairable");
+        assert_eq!(expired.class, RepairClass::Expired);
+        assert_eq!(
+            expired.supported_alternatives,
+            vec!["restart the page walk without a cursor".to_string()]
+        );
+        let unknown = repair_for_code(quanta_index_core::AUX_EPOCH_UNKNOWN_CODE)
+            .expect("an unknown epoch is repairable");
+        assert_eq!(unknown.class, RepairClass::Malformed);
+        assert_eq!(
+            unknown.supported_alternatives,
+            expired.supported_alternatives
+        );
     }
 
     #[test]

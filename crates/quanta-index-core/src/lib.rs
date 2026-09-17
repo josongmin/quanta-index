@@ -25,6 +25,7 @@ pub use request_budget::{
 };
 
 pub use domains::auxiliary::{
+    AUX_EPOCH_EXPIRED_CODE, AUX_EPOCH_RETAIN, AUX_EPOCH_RETAIN_FOR, AUX_EPOCH_UNKNOWN_CODE,
     AuxiliaryAuthorityCatalogPort, AuxiliaryDomainV1, AuxiliaryGenerationKeyV1,
     AuxiliaryMutationBatchV1, AuxiliaryMutationReceiptV1, AuxiliaryRowFamilyV1, AuxiliaryRowKeyV1,
     AuxiliaryRowMutationV1, AuxiliaryRowV1, AuxiliaryTrackRowV1,

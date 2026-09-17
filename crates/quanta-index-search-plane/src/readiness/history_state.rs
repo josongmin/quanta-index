@@ -1,8 +1,14 @@
 //! History authority state: commits, refs, tags, diff hunks per generation.
+//!
+//! The record maps are persistent (structurally shared): cloning a state
+//! is `O(1)` and a mutation rewrites only the paths it touches, which is
+//! what lets the ledger retain superseded epoch snapshots beside the
+//! current one at the cost of the deltas alone (QI-BB-020 W2).
 
 use std::collections::BTreeMap;
 use std::fmt;
 
+use imbl::OrdMap;
 use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord};
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeStruct;
@@ -17,10 +23,10 @@ use crate::readiness::serde_support::impl_struct_serde;
 )]
 #[derive(Clone, Debug, Default)]
 pub struct HistoryAuthorityState {
-    pub(super) commits: BTreeMap<CommitSha, CommitRecord>,
-    pub(super) refs: BTreeMap<Box<str>, CommitSha>,
-    pub(super) tags: BTreeMap<Box<str>, CommitSha>,
-    pub(super) diff_hunks: BTreeMap<HistoryDiffKey, DiffHunkRecord>,
+    pub(super) commits: OrdMap<CommitSha, CommitRecord>,
+    pub(super) refs: OrdMap<Box<str>, CommitSha>,
+    pub(super) tags: OrdMap<Box<str>, CommitSha>,
+    pub(super) diff_hunks: OrdMap<HistoryDiffKey, DiffHunkRecord>,
     commits_materialized: bool,
     refs_materialized: bool,
     tags_materialized: bool,
@@ -93,22 +99,22 @@ impl HistoryAuthorityState {
     }
 
     #[must_use]
-    pub fn commits(&self) -> &BTreeMap<CommitSha, CommitRecord> {
+    pub fn commits(&self) -> &OrdMap<CommitSha, CommitRecord> {
         &self.commits
     }
 
     #[must_use]
-    pub fn refs(&self) -> &BTreeMap<Box<str>, CommitSha> {
+    pub fn refs(&self) -> &OrdMap<Box<str>, CommitSha> {
         &self.refs
     }
 
     #[must_use]
-    pub fn tags(&self) -> &BTreeMap<Box<str>, CommitSha> {
+    pub fn tags(&self) -> &OrdMap<Box<str>, CommitSha> {
         &self.tags
     }
 
     #[must_use]
-    pub fn diff_hunks(&self) -> &BTreeMap<HistoryDiffKey, DiffHunkRecord> {
+    pub fn diff_hunks(&self) -> &OrdMap<HistoryDiffKey, DiffHunkRecord> {
         &self.diff_hunks
     }
 
@@ -171,10 +177,10 @@ impl_struct_serde!(HistoryStateMeta {
     diff_hunks_materialized: bool,
 });
 impl_struct_serde!(HistoryAuthorityState {
-    commits: BTreeMap<CommitSha, CommitRecord>,
-    refs: BTreeMap<Box<str>, CommitSha>,
-    tags: BTreeMap<Box<str>, CommitSha>,
-    diff_hunks: BTreeMap<HistoryDiffKey, DiffHunkRecord>,
+    commits: OrdMap<CommitSha, CommitRecord>,
+    refs: OrdMap<Box<str>, CommitSha>,
+    tags: OrdMap<Box<str>, CommitSha>,
+    diff_hunks: OrdMap<HistoryDiffKey, DiffHunkRecord>,
     commits_materialized: bool,
     refs_materialized: bool,
     tags_materialized: bool,

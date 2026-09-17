@@ -136,6 +136,7 @@ mod tests {
                 repo_id: RepoId::new("repo".to_string()),
                 revision_id: RevisionId::new("rev".to_string()),
             },
+            aux_epoch: quanta_index_contract::AuxEpochV1::GENESIS,
         }
     }
 

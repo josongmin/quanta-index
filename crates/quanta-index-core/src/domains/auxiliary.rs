@@ -23,6 +23,32 @@ use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SearchPlaneT
 
 use crate::error::CoreError;
 
+/// Wire code for a read that named an auxiliary epoch the plane no longer
+/// retains (QI-BB-020 W2): the continuation must be restarted, it is never
+/// served from a newer epoch.
+pub const AUX_EPOCH_EXPIRED_CODE: &str = "AUX_EPOCH_EXPIRED";
+
+/// Wire code for a read that named an auxiliary epoch newer than the
+/// authority's current one: no snapshot of this state root ever had it.
+pub const AUX_EPOCH_UNKNOWN_CODE: &str = "AUX_EPOCH_UNKNOWN";
+
+/// How many superseded snapshots of one auxiliary authority the plane
+/// keeps beside the current one (QI-BB-020 W2).
+///
+/// The bound is per `(repo, revision, generation, domain)`, so in-flight
+/// keyset continuations can be served from the epoch they started in.
+/// Memory is bounded by this count times the paths each retained
+/// snapshot no longer shares with the current one.
+pub const AUX_EPOCH_RETAIN: usize = 8;
+
+/// How long a superseded snapshot stays servable after the mutation that
+/// superseded it.
+///
+/// Past this a continuation is refused [`AUX_EPOCH_EXPIRED_CODE`] even
+/// when the count bound would have kept it. Retention is in-memory only:
+/// a restart keeps the current epoch and nothing older.
+pub const AUX_EPOCH_RETAIN_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
 /// Which authority a row belongs to.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum AuxiliaryDomainV1 {
@@ -64,7 +90,10 @@ impl fmt::Display for AuxiliaryDomainV1 {
 /// `StateMeta` is the one row per generation that carries what is not a
 /// record: which families a history generation has materialized, a
 /// runtime generation's catalog epoch and digests, whether a structural
-/// generation requested its seal.
+/// generation requested its seal. `Epoch` is the one row per generation
+/// and domain that carries the read epoch of the domain's snapshot
+/// (QI-BB-020 W2): it is written in the same transaction as the rows
+/// that produced that snapshot, so a restart continues the sequence.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum AuxiliaryRowFamilyV1 {
     Commit,
@@ -80,11 +109,12 @@ pub enum AuxiliaryRowFamilyV1 {
     Chunk,
     ParseTree,
     StateMeta,
+    Epoch,
 }
 
 impl AuxiliaryRowFamilyV1 {
     /// Every family, in catalog order.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Commit,
         Self::Ref,
         Self::Tag,
@@ -98,6 +128,7 @@ impl AuxiliaryRowFamilyV1 {
         Self::Chunk,
         Self::ParseTree,
         Self::StateMeta,
+        Self::Epoch,
     ];
 
     #[must_use]
@@ -116,6 +147,7 @@ impl AuxiliaryRowFamilyV1 {
             Self::Chunk => "chunk",
             Self::ParseTree => "parse-tree",
             Self::StateMeta => "state-meta",
+            Self::Epoch => "epoch",
         }
     }
 

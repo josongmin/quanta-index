@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use quanta_index_contract::SearchPlaneTrackKind;
+use quanta_index_contract::{AuxEpochV1, SearchPlaneTrackKind};
 use quanta_index_core::{
     AuxiliaryAuthorityCatalogPort, AuxiliaryGenerationKeyV1, AuxiliaryMutationBatchV1, CoreError,
 };
@@ -322,6 +322,10 @@ impl AuxiliaryAuthorityStore {
     /// the auxiliary row catalog as one transaction, then remove them
     /// (QI-BB-020, one-shot).
     ///
+    /// The migrated generations are stamped [`AuxEpochV1::GENESIS`]: they
+    /// predate epoch stamping, and their first stamped mutation starts the
+    /// sequence.
+    ///
     /// A crash after the transaction and before the removal re-runs the
     /// migration on the next open; every row is an upsert of the same
     /// content, so the second run converges on the same catalog.
@@ -349,6 +353,7 @@ impl AuxiliaryAuthorityStore {
                 let _new = generations.insert(key.clone());
                 batch.rows.extend(auxiliary_authority::history_state_rows(
                     &generation_key(key),
+                    AuxEpochV1::GENESIS,
                     state,
                 )?);
             }
@@ -358,6 +363,7 @@ impl AuxiliaryAuthorityStore {
                 let _new = generations.insert(key.clone());
                 batch.rows.extend(auxiliary_authority::runtime_state_rows(
                     &generation_key(key),
+                    AuxEpochV1::GENESIS,
                     state,
                 )?);
             }
@@ -369,6 +375,7 @@ impl AuxiliaryAuthorityStore {
                     .rows
                     .extend(auxiliary_authority::structural_state_rows(
                         &generation_key(key),
+                        AuxEpochV1::GENESIS,
                         state,
                     )?);
             }

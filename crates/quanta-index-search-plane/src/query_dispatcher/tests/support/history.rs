@@ -92,7 +92,7 @@ pub(crate) fn ledger_with_history_ops(
             .write()
             .map_err(|err| format!("history test ledger poisoned: {err}"))?;
         for op in ops {
-            guard.apply_lexical_authority_op(&op)?;
+            guard.apply_lexical_authority_op(&op, std::time::Instant::now())?;
         }
     }
     Ok(ledger)
@@ -134,57 +134,60 @@ pub(crate) fn ledger_with_rev_at_time_history()
             SearchPlaneTrackKind::Lexical,
             ManifestGeneration::new(7),
         );
-        guard.apply_history_batch(&quanta_index_contract::HistoryIngestBatch {
-            repo_id,
-            revision_id: base_revision_id,
-            generation: ManifestGeneration::new(9),
-            manifest_digest: Some("history-rev-at-time".to_string()),
-            batch_digest: "history-rev-at-time-batch".to_string(),
-            commits: vec![
-                CommitRecord {
-                    wire_version: 1,
-                    sha: rev_at_time_ancestor_sha(),
-                    parents: Vec::new(),
-                    author_time_ms: 100,
-                    committer_time_ms: 100,
-                    applied_at_ms: 100,
-                    author: "alice".to_string().into_boxed_str(),
-                    author_name: None,
-                    author_email: None,
-                    committer: "alice".to_string().into_boxed_str(),
-                    committer_name: None,
-                    committer_email: None,
-                    message: "old commit".to_string().into_boxed_str(),
-                    is_merge: false,
-                    tags: Vec::new(),
-                },
-                CommitRecord {
-                    wire_version: 1,
-                    sha: rev_at_time_head_sha(),
-                    parents: vec![rev_at_time_ancestor_sha()],
-                    author_time_ms: 200,
-                    committer_time_ms: 200,
-                    applied_at_ms: 200,
-                    author: "alice".to_string().into_boxed_str(),
-                    author_name: None,
-                    author_email: None,
-                    committer: "alice".to_string().into_boxed_str(),
-                    committer_name: None,
-                    committer_email: None,
-                    message: "head commit".to_string().into_boxed_str(),
-                    is_merge: false,
-                    tags: Vec::new(),
-                },
-            ],
-            refs: vec![quanta_index_contract::HistoryRefMutation::Upsert(
-                quanta_index_contract::HistoryRefUpsert {
-                    name: "HEAD".to_string().into_boxed_str(),
-                    sha: rev_at_time_head_sha(),
-                },
-            )],
-            tags: Vec::new(),
-            diff_hunks: Vec::new(),
-        })?;
+        guard.apply_history_batch(
+            &quanta_index_contract::HistoryIngestBatch {
+                repo_id,
+                revision_id: base_revision_id,
+                generation: ManifestGeneration::new(9),
+                manifest_digest: Some("history-rev-at-time".to_string()),
+                batch_digest: "history-rev-at-time-batch".to_string(),
+                commits: vec![
+                    CommitRecord {
+                        wire_version: 1,
+                        sha: rev_at_time_ancestor_sha(),
+                        parents: Vec::new(),
+                        author_time_ms: 100,
+                        committer_time_ms: 100,
+                        applied_at_ms: 100,
+                        author: "alice".to_string().into_boxed_str(),
+                        author_name: None,
+                        author_email: None,
+                        committer: "alice".to_string().into_boxed_str(),
+                        committer_name: None,
+                        committer_email: None,
+                        message: "old commit".to_string().into_boxed_str(),
+                        is_merge: false,
+                        tags: Vec::new(),
+                    },
+                    CommitRecord {
+                        wire_version: 1,
+                        sha: rev_at_time_head_sha(),
+                        parents: vec![rev_at_time_ancestor_sha()],
+                        author_time_ms: 200,
+                        committer_time_ms: 200,
+                        applied_at_ms: 200,
+                        author: "alice".to_string().into_boxed_str(),
+                        author_name: None,
+                        author_email: None,
+                        committer: "alice".to_string().into_boxed_str(),
+                        committer_name: None,
+                        committer_email: None,
+                        message: "head commit".to_string().into_boxed_str(),
+                        is_merge: false,
+                        tags: Vec::new(),
+                    },
+                ],
+                refs: vec![quanta_index_contract::HistoryRefMutation::Upsert(
+                    quanta_index_contract::HistoryRefUpsert {
+                        name: "HEAD".to_string().into_boxed_str(),
+                        sha: rev_at_time_head_sha(),
+                    },
+                )],
+                tags: Vec::new(),
+                diff_hunks: Vec::new(),
+            },
+            std::time::Instant::now(),
+        )?;
     }
     Ok(ledger)
 }

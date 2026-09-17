@@ -1,8 +1,13 @@
 //! Structural authority state: chunk universe and parse trees per generation.
+//!
+//! The record maps are persistent (structurally shared) so the ledger can
+//! retain superseded epoch snapshots at the cost of the deltas alone
+//! (QI-BB-020 W2); see `history_state`.
 
 use std::collections::BTreeMap;
 use std::fmt;
 
+use imbl::OrdMap;
 use quanta_index_contract::lex::{ParseTreeRecord, compute_parse_tree_source_hash};
 use quanta_index_contract::{ChunkId, ChunkRecord};
 use quanta_index_core::CoreError;
@@ -31,7 +36,7 @@ pub(super) fn verify_parse_tree_against_chunk(
 }
 
 pub(crate) fn verify_parse_tree_against_chunk_map(
-    chunks: &BTreeMap<ChunkId, ChunkRecord>,
+    chunks: &OrdMap<ChunkId, ChunkRecord>,
     chunk_id: &ChunkId,
     record: &ParseTreeRecord,
     expected_scope_path: Option<&str>,
@@ -64,8 +69,8 @@ pub(crate) fn verify_parse_tree_against_chunk_map(
 
 #[derive(Clone, Debug, Default)]
 pub struct StructuralAuthorityState {
-    pub(super) chunks: BTreeMap<ChunkId, ChunkRecord>,
-    pub(super) parse_trees: BTreeMap<ChunkId, ParseTreeRecord>,
+    pub(super) chunks: OrdMap<ChunkId, ChunkRecord>,
+    pub(super) parse_trees: OrdMap<ChunkId, ParseTreeRecord>,
     pub(super) seal_requested: bool,
 }
 
@@ -89,12 +94,12 @@ impl StructuralAuthorityState {
     }
 
     #[must_use]
-    pub fn chunks(&self) -> &BTreeMap<ChunkId, ChunkRecord> {
+    pub fn chunks(&self) -> &OrdMap<ChunkId, ChunkRecord> {
         &self.chunks
     }
 
     #[must_use]
-    pub fn parse_trees(&self) -> &BTreeMap<ChunkId, ParseTreeRecord> {
+    pub fn parse_trees(&self) -> &OrdMap<ChunkId, ParseTreeRecord> {
         &self.parse_trees
     }
 
@@ -118,8 +123,8 @@ impl_struct_serde!(StructuralStateMeta {
 });
 
 impl_struct_serde!(StructuralAuthorityState {
-    chunks: BTreeMap<ChunkId, ChunkRecord>,
-    parse_trees: BTreeMap<ChunkId, ParseTreeRecord>,
+    chunks: OrdMap<ChunkId, ChunkRecord>,
+    parse_trees: OrdMap<ChunkId, ParseTreeRecord>,
     seal_requested: bool,
 });
 

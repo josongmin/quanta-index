@@ -1,12 +1,19 @@
 //! History query route: commit/diff matching and keyset paging over the
 //! history authority.
+//!
+//! A page is cut from one epoch-named snapshot of the history authority
+//! (QI-BB-020 W2): a fresh walk reads the current epoch, a continuation
+//! reads the epoch its cursor names, and the response says which. A
+//! cursor whose epoch is no longer retained is refused typed; it is never
+//! served from a newer snapshot where a row could repeat or go missing.
 
-use std::sync::Arc;
+use std::time::Instant;
 
 use quanta_index_contract::lex::CommitSha;
 use quanta_index_contract::{
-    CommitCandidate, DiffCandidate, GenerationPin, HistoryCursor, HistoryQueryRequest, LqFilter,
-    LqQuery, LqType, QueryResultWindowV1, SearchPlaneHistoryQueryResponse, SearchPlaneTrackKind,
+    AuxEpochV1, CommitCandidate, DiffCandidate, GenerationPin, HistoryCursor, HistoryQueryRequest,
+    LqFilter, LqQuery, LqType, QueryResultWindowV1, SearchPlaneHistoryQueryResponse,
+    SearchPlaneTrackKind,
 };
 use quanta_index_core::{CoreError, RequestBudgetV1, validate_query_top_k};
 
@@ -22,7 +29,7 @@ use crate::query_dispatcher::text_plane::{
 };
 use crate::query_dispatcher::timeref::{parse_history_timeref_ms, unix_seconds_from_ms};
 use crate::query_dispatcher::window::top_k_limit;
-use crate::readiness::HistoryAuthorityState;
+use crate::readiness::{AuxRead, HistoryAuthorityState};
 use crate::{Ledger, lower_lexical_text_query};
 
 impl SearchPlaneDispatcher {
@@ -45,16 +52,23 @@ impl SearchPlaneDispatcher {
         .ok_or_else(|| {
             CoreError::InvalidContract("history: generation selector required".to_string())
         })?;
-        let history_state = {
+        let read = {
             let guard = self.ledger.read().map_err(|_poisoned| {
                 CoreError::Storage("search-plane ledger poisoned".to_string())
             })?;
-            resolve_history_state(&guard, &pin, &lowered)?
+            resolve_history_read(
+                &guard,
+                &pin,
+                &lowered,
+                request.cursor.as_ref().map(|cursor| cursor.aux_epoch),
+                Instant::now(),
+            )?
         };
         budget.checkpoint("history:execute")?;
         let page = execute_history_query(
             &lowered,
-            &history_state,
+            &read.state,
+            read.epoch,
             request.text_query.top_k,
             request.cursor.as_ref(),
         )?;
@@ -63,6 +77,7 @@ impl SearchPlaneDispatcher {
             commits: page.commits,
             diffs: page.diffs,
             window: page.window,
+            read_epoch: read.epoch,
             examined: page.examined,
             next_cursor: page.next_cursor,
         })
@@ -131,13 +146,24 @@ struct HistoryShardRequirements {
 
 /// The history snapshot a query scans, taken under the ledger lock and
 /// scanned after it is released.
-fn resolve_history_state(
+///
+/// A fresh walk reads the current epoch, a continuation the epoch its
+/// cursor names (refused typed when it is no longer retained or never
+/// existed).
+fn resolve_history_read(
     ledger: &Ledger,
     pin: &GenerationPin,
     query: &LqQuery,
-) -> Result<Arc<HistoryAuthorityState>, CoreError> {
-    let Some(history_state) =
-        ledger.history_snapshot(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
+    cursor_epoch: Option<AuxEpochV1>,
+    now: Instant,
+) -> Result<AuxRead<HistoryAuthorityState>, CoreError> {
+    let Some(read) = ledger.history_read_at(
+        &pin.repo_id,
+        &pin.revision_id,
+        pin.manifest_generation,
+        cursor_epoch,
+        now,
+    )?
     else {
         let lexical_materialized = ledger.track_materialized(
             &pin.repo_id,
@@ -146,8 +172,8 @@ fn resolve_history_state(
         );
         return Err(history_absent_error(pin, lexical_materialized));
     };
-    ensure_history_shards_ready(&history_state, query)?;
-    Ok(history_state)
+    ensure_history_shards_ready(&read.state, query)?;
+    Ok(read)
 }
 
 fn ensure_history_shards_ready(
@@ -241,11 +267,13 @@ impl HistoryRank {
         }
     }
 
-    fn into_cursor(self) -> HistoryCursor {
+    /// The cursor for this rank, in the epoch the page was cut from.
+    fn into_cursor(self, aux_epoch: AuxEpochV1) -> HistoryCursor {
         HistoryCursor {
             committer_time_ms: self.newest_first.0,
             sha: self.sha,
             file_path: self.file_path.map(Into::into),
+            aux_epoch,
         }
     }
 }
@@ -258,16 +286,19 @@ struct HistoryPageSelector {
     matched: u64,
     examined: u64,
     after: Option<HistoryRank>,
+    /// The epoch the page is cut from; its continuation names it.
+    epoch: AuxEpochV1,
 }
 
 impl HistoryPageSelector {
-    fn new(limit: usize, cursor: Option<&HistoryCursor>) -> Self {
+    fn new(limit: usize, cursor: Option<&HistoryCursor>, epoch: AuxEpochV1) -> Self {
         Self {
             limit,
             kept: std::collections::BinaryHeap::new(),
             matched: 0,
             examined: 0,
             after: cursor.map(HistoryRank::from_cursor),
+            epoch,
         }
     }
 
@@ -305,7 +336,10 @@ impl HistoryPageSelector {
         )
         .map_err(|error| CoreError::Storage(format!("history: result window: {error}")))?;
         let next_cursor = if has_more {
-            ranks.last().cloned().map(HistoryRank::into_cursor)
+            ranks
+                .last()
+                .cloned()
+                .map(|rank| rank.into_cursor(self.epoch))
         } else {
             None
         };
@@ -327,18 +361,22 @@ struct HistoryPage {
 /// matches after `cursor`, and return them in recency order with an exact
 /// match count (QI-BB-023).
 ///
+/// `epoch` is the epoch `state` is the snapshot of; the page's
+/// continuation names it.
+///
 /// The scan is complete on purpose: the authority is keyed by sha, so the
 /// newest matches can be anywhere in it, and the count the window
 /// reports is exact rather than a bound.
 fn execute_history_query(
     query: &LqQuery,
     state: &HistoryAuthorityState,
+    epoch: AuxEpochV1,
     top_k: u32,
     cursor: Option<&HistoryCursor>,
 ) -> Result<HistoryPage, CoreError> {
     let kind = resolve_history_query_kind(query)?;
     let limit = top_k_limit(top_k);
-    let mut selector = HistoryPageSelector::new(limit, cursor);
+    let mut selector = HistoryPageSelector::new(limit, cursor, epoch);
     match kind {
         HistoryQueryKind::Commit => {
             if cursor.is_some_and(|cursor| cursor.file_path.is_some()) {
@@ -814,16 +852,18 @@ fn resolve_history_commit_timeref_ms(
 #[cfg(test)]
 mod history_page_tests {
     use std::collections::BTreeSet;
+    use std::time::Instant;
 
     use quanta_index_contract::DiffHunkSide;
     use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord};
     use quanta_index_contract::{
-        HistoryCursor, HistoryDiffHunkUpsert, HistoryIngestBatch, LQ_VERSION_TAG, LqExpr, LqFilter,
-        LqLeaf, LqOptions, LqQuery, LqSpan, LqType, ManifestGeneration, RepoId, RevisionId,
+        AuxEpochV1, HistoryCursor, HistoryDiffHunkUpsert, HistoryIngestBatch, LQ_VERSION_TAG,
+        LqExpr, LqFilter, LqLeaf, LqOptions, LqQuery, LqSpan, LqType, ManifestGeneration, RepoId,
+        RevisionId,
     };
     use quanta_index_core::CoreError;
 
-    use super::{HistoryPage, execute_history_query};
+    use super::{HistoryPage, execute_history_query, resolve_history_read};
     use crate::readiness::{HistoryAuthorityState, Ledger};
 
     type TestRes = Result<(), Box<dyn std::error::Error>>;
@@ -876,17 +916,20 @@ mod history_page_tests {
         hunks: Vec<HistoryDiffHunkUpsert>,
     ) -> Result<HistoryAuthorityState, CoreError> {
         let mut ledger = Ledger::new();
-        ledger.apply_history_batch(&HistoryIngestBatch {
-            repo_id: RepoId::new("r"),
-            revision_id: RevisionId::new("rev"),
-            generation: ManifestGeneration::new(1),
-            manifest_digest: None,
-            batch_digest: "history-order".to_string(),
-            commits,
-            refs: Vec::new(),
-            tags: Vec::new(),
-            diff_hunks: hunks,
-        })?;
+        ledger.apply_history_batch(
+            &HistoryIngestBatch {
+                repo_id: RepoId::new("r"),
+                revision_id: RevisionId::new("rev"),
+                generation: ManifestGeneration::new(1),
+                manifest_digest: None,
+                batch_digest: "history-order".to_string(),
+                commits,
+                refs: Vec::new(),
+                tags: Vec::new(),
+                diff_hunks: hunks,
+            },
+            Instant::now(),
+        )?;
         ledger
             .history_state(
                 &RepoId::new("r"),
@@ -928,7 +971,7 @@ mod history_page_tests {
         top_k: u32,
         cursor: Option<&HistoryCursor>,
     ) -> Result<HistoryPage, CoreError> {
-        execute_history_query(&query(kind), state, top_k, cursor)
+        execute_history_query(&query(kind), state, AuxEpochV1::new(1), top_k, cursor)
     }
 
     #[test]
@@ -1066,6 +1109,7 @@ mod history_page_tests {
             committer_time_ms: 200,
             sha: sha(1),
             file_path: None,
+            aux_epoch: AuxEpochV1::new(1),
         };
         match page(&state, LqType::Diff, 3, Some(&commit_cursor)) {
             Err(CoreError::InvalidContract(_)) => {}
@@ -1080,5 +1124,124 @@ mod history_page_tests {
             }
         }
         Ok(())
+    }
+
+    /// QI-BB-020 W2 — a continuation is served from the epoch its cursor
+    /// names.
+    ///
+    /// The pages of one walk partition exactly the row set of that epoch
+    /// even when an ingest lands between them; a cursor whose epoch has
+    /// been pruned is refused, never served from a newer one.
+    #[test]
+    fn a_continuation_reads_the_epoch_its_cursor_names() -> TestRes {
+        use quanta_index_contract::GenerationPin;
+        use quanta_index_core::{AUX_EPOCH_EXPIRED_CODE, AUX_EPOCH_RETAIN};
+
+        let now = Instant::now();
+        let repo = RepoId::new("r");
+        let rev = RevisionId::new("rev");
+        let generation = ManifestGeneration::new(1);
+        let pin = GenerationPin::new(repo.clone(), rev.clone(), generation);
+        let batch = |digest: &str, commits: Vec<CommitRecord>| HistoryIngestBatch {
+            repo_id: repo.clone(),
+            revision_id: rev.clone(),
+            generation,
+            manifest_digest: None,
+            batch_digest: digest.to_string(),
+            commits,
+            refs: Vec::new(),
+            tags: Vec::new(),
+            diff_hunks: Vec::new(),
+        };
+        let mut ledger = Ledger::new();
+        // Epoch 1: five matches, times 100..500.
+        ledger.apply_history_batch(
+            &batch(
+                "epoch-1",
+                vec![
+                    commit(5, 100, "fix one"),
+                    commit(4, 200, "fix two"),
+                    commit(3, 300, "fix three"),
+                    commit(2, 400, "fix four"),
+                    commit(1, 500, "fix five"),
+                ],
+            ),
+            now,
+        )?;
+        let epoch_one_rows: BTreeSet<CommitSha> = [1, 2, 3, 4, 5].map(sha).into_iter().collect();
+        let query = query(LqType::Commit);
+
+        // Page one at the current epoch.
+        let first_read = resolve_history_read(&ledger, &pin, &query, None, now)?;
+        if first_read.epoch != AuxEpochV1::new(1) {
+            return Err(
+                format!("the first mutation is epoch 1, read {:?}", first_read.epoch).into(),
+            );
+        }
+        let first = execute_history_query(&query, &first_read.state, first_read.epoch, 2, None)?;
+        let cursor = first.next_cursor.ok_or("page one continues")?;
+        if cursor.aux_epoch != AuxEpochV1::new(1) {
+            return Err(format!("the cursor names the epoch it was cut from: {cursor:?}").into());
+        }
+
+        // An ingest between page one and page two: a commit at time 350
+        // that would sort into page two by recency.
+        ledger.apply_history_batch(&batch("epoch-2", vec![commit(7, 350, "fix seven")]), now)?;
+
+        // The continuation reads epoch 1: the new commit is absent and the
+        // pages partition epoch 1's row set exactly.
+        let mut seen: Vec<CommitSha> = first.commits.iter().map(|c| c.sha).collect();
+        let mut next = Some(cursor.clone());
+        while let Some(cursor) = next.take() {
+            let read = resolve_history_read(&ledger, &pin, &query, Some(cursor.aux_epoch), now)?;
+            if read.epoch != AuxEpochV1::new(1) {
+                return Err(
+                    format!("a continuation reads its own epoch, read {:?}", read.epoch).into(),
+                );
+            }
+            let page = execute_history_query(&query, &read.state, read.epoch, 2, Some(&cursor))?;
+            seen.extend(page.commits.iter().map(|c| c.sha));
+            next = page.next_cursor;
+        }
+        let distinct: BTreeSet<CommitSha> = seen.iter().copied().collect();
+        if distinct.len() != seen.len() {
+            return Err(format!("a commit appeared on two pages: {seen:?}").into());
+        }
+        if distinct != epoch_one_rows {
+            return Err(format!("the walk must yield epoch 1's rows exactly, got {seen:?}").into());
+        }
+
+        // A fresh walk reads the current epoch and sees the new commit.
+        let fresh_read = resolve_history_read(&ledger, &pin, &query, None, now)?;
+        let fresh = execute_history_query(&query, &fresh_read.state, fresh_read.epoch, 10, None)?;
+        if fresh_read.epoch != AuxEpochV1::new(2) || fresh.commits.len() != 6 {
+            return Err(format!(
+                "a fresh walk is at epoch 2 with six rows, got {:?} / {}",
+                fresh_read.epoch,
+                fresh.commits.len()
+            )
+            .into());
+        }
+
+        // `AUX_EPOCH_RETAIN` more mutations push epoch 1 out of retention.
+        for step in 0..AUX_EPOCH_RETAIN {
+            let byte = u8::try_from(step.saturating_add(10))?;
+            let digest = format!("epoch-{}", step.saturating_add(3));
+            ledger
+                .apply_history_batch(&batch(&digest, vec![commit(byte, 600, "unrelated")]), now)?;
+        }
+        let retained = ledger
+            .history_read_at(&repo, &rev, generation, None, now)?
+            .ok_or("the generation exists")?
+            .retained;
+        if retained > AUX_EPOCH_RETAIN {
+            return Err(
+                format!("retained {retained} epochs exceeds the bound {AUX_EPOCH_RETAIN}").into(),
+            );
+        }
+        match resolve_history_read(&ledger, &pin, &query, Some(cursor.aux_epoch), now) {
+            Err(CoreError::Typed { code, .. }) if code == AUX_EPOCH_EXPIRED_CODE => Ok(()),
+            other => Err(format!("a pruned epoch is refused expired, got {other:?}").into()),
+        }
     }
 }

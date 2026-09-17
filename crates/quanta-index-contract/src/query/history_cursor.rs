@@ -9,8 +9,11 @@
 //!
 //! A [`HistoryCursor`] names the last element a page returned under that
 //! order; the next page holds the elements strictly after it. The cursor
-//! is a keyset, not an offset: an ingest between two pages neither skips
-//! nor repeats an element that was already positioned relative to it.
+//! is a keyset, not an offset, and it names the read epoch the walk
+//! started in (QI-BB-020 W2): the next page is cut from that epoch's
+//! snapshot, so an ingest between two pages neither skips nor repeats an
+//! element. A continuation whose epoch the plane no longer retains is
+//! refused typed (`AUX_EPOCH_EXPIRED`), never served from a newer epoch.
 
 use core::fmt;
 
@@ -21,8 +24,10 @@ use serde::{
 };
 
 use crate::lex::CommitSha;
+use crate::query::AuxEpochV1;
 
-/// The position of one history element under the recency order.
+/// The position of one history element under the recency order, in the
+/// read epoch the page walk started in.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HistoryCursor {
     /// The commit's committer time; higher sorts first.
@@ -32,22 +37,26 @@ pub struct HistoryCursor {
     /// For diff pages, the hunk's path; lower sorts first among equal
     /// commits. Absent on commit pages.
     pub file_path: Option<String>,
+    /// The history authority epoch the page that issued this cursor was
+    /// cut from; the continuation is served from exactly that epoch.
+    pub aux_epoch: AuxEpochV1,
 }
 
-const HISTORY_CURSOR_FIELDS: &[&str] = &["committer_time_ms", "sha", "file_path"];
+const HISTORY_CURSOR_FIELDS: &[&str] = &["committer_time_ms", "sha", "file_path", "aux_epoch"];
 
 impl Serialize for HistoryCursor {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let field_count = if self.file_path.is_some() { 3 } else { 2 };
+        let field_count = if self.file_path.is_some() { 4 } else { 3 };
         let mut state = serializer.serialize_struct("HistoryCursor", field_count)?;
         state.serialize_field("committer_time_ms", &self.committer_time_ms)?;
         state.serialize_field("sha", &self.sha)?;
         if let Some(file_path) = &self.file_path {
             state.serialize_field("file_path", file_path)?;
         }
+        state.serialize_field("aux_epoch", &self.aux_epoch)?;
         state.end()
     }
 }
@@ -69,6 +78,7 @@ impl<'de> Visitor<'de> for HistoryCursorVisitor {
         let mut sha: Option<CommitSha> = None;
         let mut file_path: Option<String> = None;
         let mut file_path_seen = false;
+        let mut aux_epoch: Option<AuxEpochV1> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "committer_time_ms" => {
@@ -90,6 +100,12 @@ impl<'de> Visitor<'de> for HistoryCursorVisitor {
                     file_path_seen = true;
                     file_path = map.next_value()?;
                 }
+                "aux_epoch" => {
+                    if aux_epoch.is_some() {
+                        return Err(de::Error::duplicate_field("aux_epoch"));
+                    }
+                    aux_epoch = Some(map.next_value()?);
+                }
                 other => return Err(de::Error::unknown_field(other, HISTORY_CURSOR_FIELDS)),
             }
         }
@@ -98,6 +114,7 @@ impl<'de> Visitor<'de> for HistoryCursorVisitor {
                 .ok_or_else(|| de::Error::missing_field("committer_time_ms"))?,
             sha: sha.ok_or_else(|| de::Error::missing_field("sha"))?,
             file_path,
+            aux_epoch: aux_epoch.ok_or_else(|| de::Error::missing_field("aux_epoch"))?,
         })
     }
 }

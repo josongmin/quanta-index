@@ -88,6 +88,17 @@ fn runtime_metadata_dispatch_dirty_only_executes_like_dirty_yes() -> TestResult 
     if candidate_ids != ["chunk-dirty"] {
         return Err(format!("expected [\"chunk-dirty\"], got {candidate_ids:?}").into());
     }
+    // The page names the runtime authority's epoch (QI-BB-020 W2): the
+    // fixture applies one dirty batch and one catalog batch, so the
+    // runtime domain is at epoch 2 — not the structural domain's epoch,
+    // which the six chunk installs advanced further.
+    if response.read_epoch != quanta_index_contract::AuxEpochV1::new(2) {
+        return Err(format!(
+            "the runtime page reads the runtime epoch 2, got {:?}",
+            response.read_epoch
+        )
+        .into());
+    }
     Ok(())
 }
 

@@ -21,7 +21,7 @@ fn structural_upsert_parse_tree_rejects_unknown_chunk() -> TestResult {
         payload: encode_cbor(&parse_tree_record("fn main() {}")?)?,
     });
     let err = ledger
-        .apply_lexical_authority_op(&op)
+        .apply_lexical_authority_op(&op, std::time::Instant::now())
         .err()
         .ok_or_else(|| "expected unknown-chunk parse tree apply to fail".to_string())?;
     expect_decode_fail(err, "reason=source_chunk_missing")
@@ -39,7 +39,7 @@ fn structural_upsert_parse_tree_rejects_source_hash_mismatch() -> TestResult {
         payload: encode_cbor(&parse_tree_record("fn other() {}")?)?,
     });
     let err = ledger
-        .apply_lexical_authority_op(&op)
+        .apply_lexical_authority_op(&op, std::time::Instant::now())
         .err()
         .ok_or_else(|| "expected source_hash mismatch to fail".to_string())?;
     expect_decode_fail(err, "reason=source_hash_mismatch")
@@ -67,7 +67,7 @@ fn structural_replace_scope_rejects_chunk_outside_scope_path() -> TestResult {
         ))?,
     });
     let err = ledger
-        .apply_lexical_authority_op(&op)
+        .apply_lexical_authority_op(&op, std::time::Instant::now())
         .err()
         .ok_or_else(|| "expected structural scope mismatch to fail".to_string())?;
     expect_decode_fail(err, "reason=scope_chunk_path_mismatch")
@@ -104,7 +104,7 @@ fn structural_replace_scope_failure_preserves_existing_parse_tree_set() -> TestR
         ))?,
     });
     let err = ledger
-        .apply_lexical_authority_op(&op)
+        .apply_lexical_authority_op(&op, std::time::Instant::now())
         .err()
         .ok_or_else(|| "expected structural replace with bad tree to fail".to_string())?;
     expect_decode_fail(err, "reason=source_hash_mismatch")?;

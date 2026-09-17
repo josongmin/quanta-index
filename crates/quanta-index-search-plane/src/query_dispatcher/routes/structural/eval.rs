@@ -1,8 +1,6 @@
 //! Structural boolean-tree evaluation with per-leaf memoization.
 
-use quanta_index_contract::{
-    GenerationPin, GenerationSelector, LqExpr, LqLeaf, LqOptions, LqStructuralBlock,
-};
+use quanta_index_contract::{GenerationSelector, LqExpr, LqLeaf, LqOptions, LqStructuralBlock};
 use quanta_index_core::domains::structural::StructuralExecutableFilter;
 use quanta_index_core::domains::structural::StructuralQueryRequest as DomainStructuralQueryRequest;
 use quanta_index_core::{CoreError, StructuralService};
@@ -13,6 +11,7 @@ use crate::query_dispatcher::routes::structural::buckets::{
     structural_candidate_scope_ids, subtract_structural_buckets, union_structural_buckets,
 };
 use crate::query_dispatcher::routes::structural::lexical_leaves::LexicalSubexprEvaluator;
+use crate::query_dispatcher::routes::structural::read::StructuralRead;
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 struct StructuralLeafExecutionKey {
@@ -136,7 +135,7 @@ fn merge_structural_requested_lang(
 pub(super) fn evaluate_structural_expr(
     ctx: &mut StructuralEvalContext,
     service: &StructuralService,
-    pin: &GenerationPin,
+    read: StructuralRead<'_>,
     expr: &LqExpr,
     requested_lang: Option<&str>,
     filters: &[StructuralExecutableFilter],
@@ -151,7 +150,7 @@ pub(super) fn evaluate_structural_expr(
         LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => execute_structural_block(
             ctx,
             service,
-            pin,
+            read,
             block,
             requested_lang,
             filters,
@@ -175,7 +174,7 @@ pub(super) fn evaluate_structural_expr(
             let blocked = evaluate_structural_expr(
                 ctx,
                 service,
-                pin,
+                read,
                 inner,
                 requested_lang,
                 filters,
@@ -198,7 +197,7 @@ pub(super) fn evaluate_structural_expr(
                 let mut current = evaluate_structural_expr(
                     ctx,
                     service,
-                    pin,
+                    read,
                     first_positive,
                     requested_lang,
                     filters,
@@ -210,7 +209,7 @@ pub(super) fn evaluate_structural_expr(
                     let next = evaluate_structural_expr(
                         ctx,
                         service,
-                        pin,
+                        read,
                         child,
                         requested_lang,
                         filters,
@@ -236,7 +235,7 @@ pub(super) fn evaluate_structural_expr(
                     current = evaluate_structural_expr(
                         ctx,
                         service,
-                        pin,
+                        read,
                         child,
                         requested_lang,
                         filters,
@@ -262,7 +261,7 @@ pub(super) fn evaluate_structural_expr(
                 let child_matches = evaluate_structural_expr(
                     ctx,
                     service,
-                    pin,
+                    read,
                     child,
                     requested_lang,
                     filters,
@@ -280,7 +279,7 @@ pub(super) fn evaluate_structural_expr(
 fn execute_structural_block(
     ctx: &mut StructuralEvalContext,
     service: &StructuralService,
-    pin: &GenerationPin,
+    read: StructuralRead<'_>,
     block: &LqStructuralBlock,
     requested_lang: Option<&str>,
     filters: &[StructuralExecutableFilter],
@@ -308,7 +307,8 @@ fn execute_structural_block(
             filters: filters.to_vec(),
             candidate_scope,
             options: options.clone(),
-            generation: GenerationSelector::Pinned(pin.clone()),
+            generation: GenerationSelector::Pinned(read.pin.clone()),
+            aux_epoch: read.epoch,
         })
         .map_err(|err| map_structural_error(&err))?;
     let buckets = bucket_structural_matches(response.candidates);

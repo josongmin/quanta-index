@@ -16,8 +16,10 @@
 //!   `search_corpus_generation`, `pair_digest`, `durable_fs`.
 //! - `ledger_apply` — how batches, deltas and channel ops land on the
 //!   ledger's auxiliary states. Depends on `ledger`, the state modules.
-//! - `ledger` — the in-memory `Ledger`. Depends on the state modules,
-//!   `keys`, `track_state`, `retention_receipt`, `errors`.
+//! - `ledger` — the in-memory `Ledger`. Depends on `aux_epoch`, the state
+//!   modules, `keys`, `track_state`, `retention_receipt`, `errors`.
+//! - `aux_epoch` — the epoch-named, retention-bounded snapshot registry
+//!   of one auxiliary authority generation (QI-BB-020 W2). Leaf.
 //! - `history_state`, `runtime_state`, `structural_state` — one authority
 //!   state family each. Depend on `keys`, `track_state`, `serde_support`,
 //!   `errors`.
@@ -27,6 +29,7 @@
 //!   `serde_support`, `errors` — leaves.
 
 mod activation_catalog;
+mod aux_epoch;
 mod auxiliary_store;
 mod durable_fs;
 mod errors;
@@ -46,10 +49,12 @@ mod track_state;
 pub use crate::search_corpus_retention::SearchCorpusHistoryRetentionPolicyV1;
 
 pub use activation_catalog::{ActivationCatalog, ActiveGenerationRecord};
+pub use aux_epoch::{AuxEpochRefusedError, AuxRead};
 pub use auxiliary_store::{
     AuxiliaryAuthorityStore, LegacyAuxiliaryMigrationReceipt, restore_auxiliary_rows_into,
 };
 pub use history_state::{HistoryAuthorityState, HistoryDiffKey};
+pub(crate) use ledger::AuxDomainState;
 pub use ledger::Ledger;
 pub use retention_receipt::SearchCorpusHistoryRetentionReceiptV1;
 pub use runtime_state::{ChangedDocState, DirtyDocState, DocFacetState, RuntimeMetadataState};

@@ -10,7 +10,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use crate::readiness::serde_support::impl_struct_serde;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(super) struct AuthorityKey {
+pub(crate) struct AuthorityKey {
     pub(super) repo_id: RepoId,
     pub(super) revision_id: RevisionId,
     pub(super) generation: ManifestGeneration,

@@ -24,6 +24,10 @@ pub enum RepairClass {
     WrongRoute,
     /// The query shape itself is malformed (e.g. a bad version pin).
     Malformed,
+    /// The request continued a read the plane no longer retains (e.g. a
+    /// keyset cursor whose auxiliary epoch was pruned); the caller must
+    /// start the walk over rather than resume it.
+    Expired,
 }
 
 impl RepairClass {
@@ -35,6 +39,7 @@ impl RepairClass {
             Self::Unsupported => "UNSUPPORTED",
             Self::WrongRoute => "WRONG_ROUTE",
             Self::Malformed => "MALFORMED",
+            Self::Expired => "EXPIRED",
         }
     }
 
@@ -46,6 +51,7 @@ impl RepairClass {
             "UNSUPPORTED" => Self::Unsupported,
             "WRONG_ROUTE" => Self::WrongRoute,
             "MALFORMED" => Self::Malformed,
+            "EXPIRED" => Self::Expired,
             _ => return None,
         };
         Some(v)
@@ -79,7 +85,13 @@ impl<'de> Deserialize<'de> for RepairClass {
                 RepairClass::from_code_str(value).ok_or_else(|| {
                     de::Error::unknown_variant(
                         value,
-                        &["AMBIGUOUS", "UNSUPPORTED", "WRONG_ROUTE", "MALFORMED"],
+                        &[
+                            "AMBIGUOUS",
+                            "UNSUPPORTED",
+                            "WRONG_ROUTE",
+                            "MALFORMED",
+                            "EXPIRED",
+                        ],
                     )
                 })
             }
@@ -350,6 +362,7 @@ mod tests {
             RepairClass::Unsupported,
             RepairClass::WrongRoute,
             RepairClass::Malformed,
+            RepairClass::Expired,
         ] {
             assert_eq!(RepairClass::from_code_str(class.as_code_str()), Some(class));
         }

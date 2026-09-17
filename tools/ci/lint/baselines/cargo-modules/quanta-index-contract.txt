@@ -415,6 +415,10 @@ crate quanta_index_contract
 │           └── type Value: pub(self)
 ├── mod macros: pub(crate)
 ├── mod query: pub
+│   ├── mod aux_epoch: pub(self)
+│   │   ├── struct AuxEpochV1: pub
+│   │   └── struct AuxEpochV1Visitor: pub(self)
+│   │       └── type Value: pub(self)
 │   ├── mod cluster_membership: pub(self)
 │   │   ├── struct ClusterMembershipBatchReadItemV1: pub
 │   │   ├── struct ClusterMembershipBatchReadItemV1Visitor: pub(self)

@@ -26,7 +26,7 @@ use quanta_index_contract::lex::{
     SymbolRecord, SymbolRelationship, SymbolSpan, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    BatchIngestMode, BatchPublishReceipt, CapabilityStatusV1, ChunkId, ChunkRecord,
+    AuxEpochV1, BatchIngestMode, BatchPublishReceipt, CapabilityStatusV1, ChunkId, ChunkRecord,
     CurrentGenerationRequest, EngineTouched, ExplainCandidateV1, FileOwnerProjectionRow,
     GenerationPin, GenerationSnapshot, HistoryCursor, HistoryQueryRequest, HybridCandidateV1,
     HybridQueryRequest, LexicalCandidate, ManifestGeneration, MetricsSnapshotRequest,
@@ -201,6 +201,9 @@ pub struct E2eHistoryResult {
     pub diff_paths: Vec<String>,
     /// The page's window and continuation, when the daemon answered.
     pub window: Option<QueryResultWindowV1>,
+    /// The history authority epoch the page was cut from, when the daemon
+    /// answered (QI-BB-020 W2).
+    pub read_epoch: Option<AuxEpochV1>,
     pub examined: u64,
     pub next_cursor: Option<HistoryCursor>,
     pub typed_error: Option<E2eTypedError>,
@@ -1616,6 +1619,7 @@ impl E2eRuntime {
                     commit_ids: Vec::new(),
                     diff_paths: Vec::new(),
                     window: None,
+                    read_epoch: None,
                     examined: 0,
                     next_cursor: None,
                     typed_error: Some(E2eTypedError {
@@ -1635,6 +1639,7 @@ impl E2eRuntime {
                     commit_ids: Vec::new(),
                     diff_paths: Vec::new(),
                     window: None,
+                    read_epoch: None,
                     examined: 0,
                     next_cursor: None,
                     typed_error: query_result.typed_error,
@@ -1654,6 +1659,7 @@ impl E2eRuntime {
                     .map(|candidate| candidate.repo_relative_path.as_str().to_string())
                     .collect(),
                 window: Some(history.window),
+                read_epoch: Some(history.read_epoch),
                 examined: history.examined,
                 next_cursor: history.next_cursor,
                 typed_error: None,
@@ -1662,6 +1668,7 @@ impl E2eRuntime {
                 commit_ids: Vec::new(),
                 diff_paths: Vec::new(),
                 window: None,
+                read_epoch: None,
                 examined: 0,
                 next_cursor: None,
                 typed_error: Some(E2eTypedError {
@@ -2572,6 +2579,7 @@ fn unexpected_history_response(kind: &str) -> E2eHistoryResult {
         commit_ids: Vec::new(),
         diff_paths: Vec::new(),
         window: None,
+        read_epoch: None,
         examined: 0,
         next_cursor: None,
         typed_error: Some(E2eTypedError {

@@ -1,15 +1,18 @@
 //! The in-memory readiness ledger: per-track seal state, historically
 //! sealed search-corpus identities, semantic generation state, and the
-//! per-generation auxiliary authority snapshots.
+//! per-generation, epoch-named auxiliary authority snapshots.
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
 use quanta_index_contract::{
-    GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
+    AuxEpochV1, GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
 };
-use quanta_index_core::CoreError;
+use quanta_index_core::{AuxiliaryDomainV1, CoreError};
 
+use crate::readiness::aux_epoch::{AuxRead, AuxSnapshots};
 use crate::readiness::errors::{
     ERR_SEARCH_TRACK_GENERATION_NOT_SEALED, ERR_SEARCH_TRACK_MANIFEST_DIGEST_MISMATCH,
     ERR_SEMANTIC_GENERATION_NOT_MATERIALIZED, ERR_SEMANTIC_GENERATION_NOT_SEALED,
@@ -23,6 +26,53 @@ use crate::readiness::structural_state::StructuralAuthorityState;
 use crate::readiness::track_state::{SemanticGenerationState, TrackAuthorityState, TrackLedger};
 
 pub(super) type SharedLedger = Arc<RwLock<Ledger>>;
+
+/// One of the three auxiliary authority state families as the ledger
+/// holds it: which domain names it and which map its registries live in.
+///
+/// Implemented by the three state types only; it is what lets one generic
+/// read / advance / restore path serve every domain.
+pub(crate) trait AuxDomainState: Clone + Default + Send + Sync + 'static {
+    const DOMAIN: AuxiliaryDomainV1;
+    fn registries(ledger: &Ledger) -> &BTreeMap<AuthorityKey, AuxSnapshots<Self>>;
+    fn registries_mut(ledger: &mut Ledger) -> &mut BTreeMap<AuthorityKey, AuxSnapshots<Self>>;
+}
+
+impl AuxDomainState for HistoryAuthorityState {
+    const DOMAIN: AuxiliaryDomainV1 = AuxiliaryDomainV1::History;
+
+    fn registries(ledger: &Ledger) -> &BTreeMap<AuthorityKey, AuxSnapshots<Self>> {
+        &ledger.history
+    }
+
+    fn registries_mut(ledger: &mut Ledger) -> &mut BTreeMap<AuthorityKey, AuxSnapshots<Self>> {
+        &mut ledger.history
+    }
+}
+
+impl AuxDomainState for RuntimeMetadataState {
+    const DOMAIN: AuxiliaryDomainV1 = AuxiliaryDomainV1::Runtime;
+
+    fn registries(ledger: &Ledger) -> &BTreeMap<AuthorityKey, AuxSnapshots<Self>> {
+        &ledger.runtime_metadata
+    }
+
+    fn registries_mut(ledger: &mut Ledger) -> &mut BTreeMap<AuthorityKey, AuxSnapshots<Self>> {
+        &mut ledger.runtime_metadata
+    }
+}
+
+impl AuxDomainState for StructuralAuthorityState {
+    const DOMAIN: AuxiliaryDomainV1 = AuxiliaryDomainV1::Structural;
+
+    fn registries(ledger: &Ledger) -> &BTreeMap<AuthorityKey, AuxSnapshots<Self>> {
+        &ledger.structural
+    }
+
+    fn registries_mut(ledger: &mut Ledger) -> &mut BTreeMap<AuthorityKey, AuxSnapshots<Self>> {
+        &mut ledger.structural
+    }
+}
 
 /// Shared in-memory readiness ledger for query/readiness gating and direct authority recovery.
 #[derive(Debug, Default)]
@@ -40,13 +90,14 @@ pub struct Ledger {
     // closed instead of consulting stale same-process history.
     search_corpus_history_fenced_pairs: BTreeSet<(RepoId, RevisionId)>,
     semantic_generations: BTreeMap<AuthorityKey, SemanticGenerationState>,
-    // The auxiliary authorities are held as immutable snapshots per
-    // generation (QI-BB-020): a query clones the `Arc` under the read lock
-    // and scans outside it, and a mutation copies the one generation it
-    // changes only while a reader still holds the previous snapshot.
-    pub(super) history: BTreeMap<AuthorityKey, Arc<HistoryAuthorityState>>,
-    pub(super) runtime_metadata: BTreeMap<AuthorityKey, Arc<RuntimeMetadataState>>,
-    pub(super) structural: BTreeMap<AuthorityKey, Arc<StructuralAuthorityState>>,
+    // The auxiliary authorities are held as epoch-named immutable snapshots
+    // per generation and domain (QI-BB-020 W2): a query takes the current
+    // snapshot — or the retained one a continuation names — under the read
+    // lock and scans outside it, and a mutation produces the next snapshot
+    // from a structurally shared clone that costs only what it changes.
+    pub(super) history: BTreeMap<AuthorityKey, AuxSnapshots<HistoryAuthorityState>>,
+    pub(super) runtime_metadata: BTreeMap<AuthorityKey, AuxSnapshots<RuntimeMetadataState>>,
+    pub(super) structural: BTreeMap<AuthorityKey, AuxSnapshots<StructuralAuthorityState>>,
 }
 
 impl Ledger {
@@ -158,7 +209,7 @@ impl Ledger {
             && !self
                 .structural
                 .get(&Self::authority_key(repo_id, revision_id, generation))
-                .is_some_and(|state| state.seal_requested())
+                .is_some_and(|registry| registry.current().seal_requested())
         {
             return;
         }
@@ -571,34 +622,134 @@ impl Ledger {
         }
     }
 
-    pub(crate) fn history_state_mut(
-        &mut self,
+    // -----------------------------------------------------------------
+    // Auxiliary authorities: epoch-named snapshots per generation and
+    // domain (QI-BB-020 W2). One generic path per operation; the domain
+    // methods below are its named entry points.
+    // -----------------------------------------------------------------
+
+    fn aux_registry<S: AuxDomainState>(
+        &self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
         generation: ManifestGeneration,
-    ) -> &mut HistoryAuthorityState {
-        let key = Self::authority_key(repo_id, revision_id, generation);
-        Arc::make_mut(self.history.entry(key).or_default())
+    ) -> Option<&AuxSnapshots<S>> {
+        S::registries(self).get(&Self::authority_key(repo_id, revision_id, generation))
     }
 
-    pub(crate) fn runtime_state_mut(
+    fn aux_registry_or_genesis<S: AuxDomainState>(
         &mut self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
         generation: ManifestGeneration,
-    ) -> &mut RuntimeMetadataState {
-        let key = Self::authority_key(repo_id, revision_id, generation);
-        Arc::make_mut(self.runtime_metadata.entry(key).or_default())
+    ) -> &mut AuxSnapshots<S> {
+        S::registries_mut(self)
+            .entry(Self::authority_key(repo_id, revision_id, generation))
+            .or_insert_with(|| AuxSnapshots::genesis(S::DOMAIN))
     }
 
-    pub(crate) fn structural_state_mut(
+    /// The current state of one authority generation, if it exists.
+    pub(crate) fn aux_current<S: AuxDomainState>(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> Option<&S> {
+        self.aux_registry::<S>(repo_id, revision_id, generation)
+            .map(AuxSnapshots::current)
+    }
+
+    /// The epoch the next durable mutation of one authority generation
+    /// produces; a generation that does not exist yet starts the sequence.
+    pub(crate) fn aux_next_epoch<S: AuxDomainState>(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> Result<AuxEpochV1, CoreError> {
+        self.aux_registry::<S>(repo_id, revision_id, generation)
+            .map_or_else(
+                || AuxSnapshots::<S>::genesis(S::DOMAIN).next_epoch(),
+                AuxSnapshots::next_epoch,
+            )
+    }
+
+    /// The snapshot of one authority generation a reader may scan after
+    /// releasing the lock: the current one, or the one at `epoch` when a
+    /// continuation names it.
+    ///
+    /// `Ok(None)` is a generation with no state at all; a named epoch the
+    /// registry no longer holds — or never had — is refused typed, never
+    /// served from another epoch.
+    pub(crate) fn aux_read_at<S: AuxDomainState>(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+        epoch: Option<AuxEpochV1>,
+        now: Instant,
+    ) -> Result<Option<AuxRead<S>>, CoreError> {
+        let Some(registry) = self.aux_registry::<S>(repo_id, revision_id, generation) else {
+            return Ok(None);
+        };
+        match epoch {
+            Some(epoch) => Ok(Some(registry.read_at(epoch, now)?)),
+            None => Ok(Some(registry.read_current())),
+        }
+    }
+
+    /// Produce the next snapshot of one authority generation at `epoch`
+    /// (the epoch the caller made durable with the rows) from `mutate`
+    /// applied to a clone of the current state; see
+    /// [`AuxSnapshots::advance`].
+    ///
+    /// A generation that does not exist yet comes into existence only if
+    /// the mutation succeeds: a refused mutation leaves the ledger exactly
+    /// as it was.
+    pub(crate) fn aux_advance<S: AuxDomainState>(
         &mut self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
         generation: ManifestGeneration,
-    ) -> &mut StructuralAuthorityState {
-        let key = Self::authority_key(repo_id, revision_id, generation);
-        Arc::make_mut(self.structural.entry(key).or_default())
+        epoch: AuxEpochV1,
+        now: Instant,
+        mutate: impl FnOnce(&mut S) -> Result<(), CoreError>,
+    ) -> Result<(), CoreError> {
+        match S::registries_mut(self).entry(Self::authority_key(repo_id, revision_id, generation)) {
+            Entry::Occupied(mut occupied) => occupied.get_mut().advance(epoch, now, mutate),
+            Entry::Vacant(vacant) => {
+                let mut registry = AuxSnapshots::genesis(S::DOMAIN);
+                registry.advance(epoch, now, mutate)?;
+                let _inserted = vacant.insert(registry);
+                Ok(())
+            }
+        }
+    }
+
+    /// Mutate the current snapshot of one authority generation in place
+    /// without advancing its epoch: for restoring durable rows at boot
+    /// only, before the ledger is shared.
+    pub(crate) fn aux_restore_mut<S: AuxDomainState>(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> &mut S {
+        self.aux_registry_or_genesis::<S>(repo_id, revision_id, generation)
+            .restore_state_mut()
+    }
+
+    /// Install the epoch the durable rows of one authority generation
+    /// were stamped with (boot only).
+    pub(crate) fn aux_restore_epoch<S: AuxDomainState>(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+        epoch: AuxEpochV1,
+    ) {
+        self.aux_registry_or_genesis::<S>(repo_id, revision_id, generation)
+            .restore_epoch(epoch);
     }
 
     #[must_use]
@@ -608,8 +759,7 @@ impl Ledger {
         revision_id: &RevisionId,
         generation: ManifestGeneration,
     ) -> Option<&HistoryAuthorityState> {
-        let key = Self::authority_key(repo_id, revision_id, generation);
-        self.history.get(&key).map(Arc::as_ref)
+        self.aux_current(repo_id, revision_id, generation)
     }
 
     #[must_use]
@@ -619,8 +769,7 @@ impl Ledger {
         revision_id: &RevisionId,
         generation: ManifestGeneration,
     ) -> Option<&RuntimeMetadataState> {
-        let key = Self::authority_key(repo_id, revision_id, generation);
-        self.runtime_metadata.get(&key).map(Arc::as_ref)
+        self.aux_current(repo_id, revision_id, generation)
     }
 
     #[must_use]
@@ -630,47 +779,82 @@ impl Ledger {
         revision_id: &RevisionId,
         generation: ManifestGeneration,
     ) -> Option<&StructuralAuthorityState> {
-        let key = Self::authority_key(repo_id, revision_id, generation);
-        self.structural.get(&key).map(Arc::as_ref)
+        self.aux_current(repo_id, revision_id, generation)
+    }
+
+    /// The epoch the next durable history mutation of one generation
+    /// produces.
+    pub(crate) fn history_next_epoch(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> Result<AuxEpochV1, CoreError> {
+        self.aux_next_epoch::<HistoryAuthorityState>(repo_id, revision_id, generation)
+    }
+
+    /// The epoch the next durable runtime-metadata mutation of one
+    /// generation produces.
+    pub(crate) fn runtime_next_epoch(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> Result<AuxEpochV1, CoreError> {
+        self.aux_next_epoch::<RuntimeMetadataState>(repo_id, revision_id, generation)
+    }
+
+    /// The epoch the next durable structural mutation of one generation
+    /// produces.
+    pub(crate) fn structural_next_epoch(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> Result<AuxEpochV1, CoreError> {
+        self.aux_next_epoch::<StructuralAuthorityState>(repo_id, revision_id, generation)
     }
 
     /// The history authority of one generation as an immutable snapshot a
-    /// caller may scan after releasing the ledger lock.
-    #[must_use]
-    pub fn history_snapshot(
+    /// caller may scan after releasing the ledger lock: the current one,
+    /// or the retained one at `epoch` when a continuation names it.
+    pub fn history_read_at(
         &self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
         generation: ManifestGeneration,
-    ) -> Option<Arc<HistoryAuthorityState>> {
-        let key = Self::authority_key(repo_id, revision_id, generation);
-        self.history.get(&key).map(Arc::clone)
+        epoch: Option<AuxEpochV1>,
+        now: Instant,
+    ) -> Result<Option<AuxRead<HistoryAuthorityState>>, CoreError> {
+        self.aux_read_at(repo_id, revision_id, generation, epoch, now)
     }
 
     /// The runtime-metadata authority of one generation as an immutable
-    /// snapshot a caller may scan after releasing the ledger lock.
-    #[must_use]
-    pub fn runtime_snapshot(
+    /// snapshot a caller may scan after releasing the ledger lock; see
+    /// [`Ledger::history_read_at`].
+    pub fn runtime_read_at(
         &self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
         generation: ManifestGeneration,
-    ) -> Option<Arc<RuntimeMetadataState>> {
-        let key = Self::authority_key(repo_id, revision_id, generation);
-        self.runtime_metadata.get(&key).map(Arc::clone)
+        epoch: Option<AuxEpochV1>,
+        now: Instant,
+    ) -> Result<Option<AuxRead<RuntimeMetadataState>>, CoreError> {
+        self.aux_read_at(repo_id, revision_id, generation, epoch, now)
     }
 
     /// The structural authority of one generation as an immutable snapshot
-    /// a caller may scan after releasing the ledger lock.
-    #[must_use]
-    pub fn structural_snapshot(
+    /// a caller may scan after releasing the ledger lock; see
+    /// [`Ledger::history_read_at`].
+    pub fn structural_read_at(
         &self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
         generation: ManifestGeneration,
-    ) -> Option<Arc<StructuralAuthorityState>> {
-        let key = Self::authority_key(repo_id, revision_id, generation);
-        self.structural.get(&key).map(Arc::clone)
+        epoch: Option<AuxEpochV1>,
+        now: Instant,
+    ) -> Result<Option<AuxRead<StructuralAuthorityState>>, CoreError> {
+        self.aux_read_at(repo_id, revision_id, generation, epoch, now)
     }
 
     /// The structural track's authority state for one pair, if any.
@@ -706,7 +890,9 @@ impl Ledger {
         );
     }
 
-    /// Forget every auxiliary authority of one generation (retention).
+    /// Forget every auxiliary authority of one generation (retention),
+    /// retained epochs included: a reaped generation has no continuation
+    /// to serve.
     pub(crate) fn forget_auxiliary_generation(
         &mut self,
         repo_id: &RepoId,
@@ -740,13 +926,27 @@ impl Ledger {
             .collect()
     }
 
+    /// Request the structural seal of one generation as an in-memory
+    /// mutation (tests and in-memory fixtures; production carries the
+    /// request in the structural delta).
     pub fn request_structural_seal(
         &mut self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
         generation: ManifestGeneration,
-    ) {
-        self.structural_state_mut(repo_id, revision_id, generation)
-            .request_seal();
+        now: Instant,
+    ) -> Result<(), CoreError> {
+        let epoch = self.structural_next_epoch(repo_id, revision_id, generation)?;
+        self.aux_advance::<StructuralAuthorityState>(
+            repo_id,
+            revision_id,
+            generation,
+            epoch,
+            now,
+            |state| {
+                state.request_seal();
+                Ok(())
+            },
+        )
     }
 }
