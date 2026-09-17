@@ -10,7 +10,8 @@ use crate::{
     ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
     CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
     HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest,
-    HybridSeedQueryResponse, MetricsSnapshotRequest, MetricsSnapshotV1,
+    HybridSeedQueryResponse, MetricsSnapshotRequest, MetricsSnapshotV1, QuarantineDiscardAck,
+    QuarantineDiscardRequest, QuarantineInventoryRequest, QuarantineInventoryV1,
     RepoMapActivateGenerationRequest, RepoMapMutationAck, RepoMapQueryRequest,
     RepoMapQueryResponse, RuntimeMetadataQueryRequest,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneExplainQueryRequest,
@@ -58,6 +59,8 @@ const SEARCH_PLANE_CONTROL_IPC_REQUEST_VARIANTS: &[&str] = &[
     "CurrentGeneration",
     "GenerationStatus",
     "MetricsSnapshot",
+    "QuarantineInventory",
+    "QuarantineDiscard",
 ];
 const SEARCH_PLANE_CONTROL_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "SearchCorpusActivationCasAck",
@@ -67,6 +70,8 @@ const SEARCH_PLANE_CONTROL_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "CurrentGenerationSnapshot",
     "GenerationStatusReport",
     "MetricsSnapshot",
+    "QuarantineInventory",
+    "QuarantineDiscardAck",
 ];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -139,6 +144,10 @@ pub enum SearchPlaneControlIpcRequest {
     GenerationStatus(GenerationStatusRequest),
     /// QI-BB-015: read-only scrape of every metric the daemon aggregates.
     MetricsSnapshot(MetricsSnapshotRequest),
+    /// QI-BB-026: what the adapters quarantine right now.
+    QuarantineInventory(QuarantineInventoryRequest),
+    /// QI-BB-026: remove one quarantined entry exactly as it was listed.
+    QuarantineDiscard(QuarantineDiscardRequest),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -159,6 +168,10 @@ pub enum SearchPlaneControlIpcResponse {
     GenerationStatusReport(GenerationStatusReport),
     /// QI-BB-015: response to [`SearchPlaneControlIpcRequest::MetricsSnapshot`].
     MetricsSnapshot(MetricsSnapshotV1),
+    /// QI-BB-026: response to [`SearchPlaneControlIpcRequest::QuarantineInventory`].
+    QuarantineInventory(QuarantineInventoryV1),
+    /// QI-BB-026: response to [`SearchPlaneControlIpcRequest::QuarantineDiscard`].
+    QuarantineDiscardAck(QuarantineDiscardAck),
 }
 
 fn serialize_envelope<S, Payload>(
@@ -754,6 +767,18 @@ impl Serialize for SearchPlaneControlIpcRequest {
                 payload,
                 serializer,
             ),
+            Self::QuarantineInventory(payload) => serialize_adjacent_tagged(
+                "SearchPlaneControlIpcRequest",
+                "QuarantineInventory",
+                payload,
+                serializer,
+            ),
+            Self::QuarantineDiscard(payload) => serialize_adjacent_tagged(
+                "SearchPlaneControlIpcRequest",
+                "QuarantineDiscard",
+                payload,
+                serializer,
+            ),
         }
     }
 }
@@ -810,6 +835,12 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcRequestVisitor {
                         }
                         "MetricsSnapshot" => {
                             SearchPlaneControlIpcRequest::MetricsSnapshot(map.next_value()?)
+                        }
+                        "QuarantineInventory" => {
+                            SearchPlaneControlIpcRequest::QuarantineInventory(map.next_value()?)
+                        }
+                        "QuarantineDiscard" => {
+                            SearchPlaneControlIpcRequest::QuarantineDiscard(map.next_value()?)
                         }
                         other => {
                             return Err(de::Error::unknown_variant(
@@ -948,6 +979,18 @@ impl Serialize for SearchPlaneControlIpcResponse {
                 payload,
                 serializer,
             ),
+            Self::QuarantineInventory(payload) => serialize_adjacent_tagged(
+                "SearchPlaneControlIpcResponse",
+                "QuarantineInventory",
+                payload,
+                serializer,
+            ),
+            Self::QuarantineDiscardAck(payload) => serialize_adjacent_tagged(
+                "SearchPlaneControlIpcResponse",
+                "QuarantineDiscardAck",
+                payload,
+                serializer,
+            ),
         }
     }
 }
@@ -1007,6 +1050,12 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcResponseVisitor {
                         }
                         "MetricsSnapshot" => {
                             SearchPlaneControlIpcResponse::MetricsSnapshot(map.next_value()?)
+                        }
+                        "QuarantineInventory" => {
+                            SearchPlaneControlIpcResponse::QuarantineInventory(map.next_value()?)
+                        }
+                        "QuarantineDiscardAck" => {
+                            SearchPlaneControlIpcResponse::QuarantineDiscardAck(map.next_value()?)
                         }
                         other => {
                             return Err(de::Error::unknown_variant(

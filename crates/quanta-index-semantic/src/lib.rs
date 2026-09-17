@@ -59,8 +59,9 @@ use quanta_index_core::{
     SemanticIndexOpenPort,
     domains::generation::{
         GenerationQuarantineReasonV1, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
-        IncompleteGenerationDiscardPort, QuarantinedGenerationV1, SealedGenerationInventoryV1,
-        SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
+        IncompleteGenerationDiscardPort, QUARANTINE_TARGET_NOT_QUARANTINED_CODE,
+        QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort, QuarantinedGenerationV1,
+        SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
     },
     domains::semantic::SemanticSearcher,
 };
@@ -773,6 +774,99 @@ fn quarantine(
         reason,
         detail,
     }
+}
+
+impl QuarantinedGenerationDiscardPort for SemanticAdapter {
+    fn discard_quarantined_generation(
+        &self,
+        entry: &QuarantinedGenerationV1,
+    ) -> Result<QuarantineDiscardOutcomeV1, CoreError> {
+        if entry.track != SearchPlaneTrackKind::Semantic {
+            return Err(CoreError::InvalidContract(format!(
+                "semantic quarantine discard received {:?} track",
+                entry.track
+            )));
+        }
+        discard_quarantined_directory(
+            &self.state_root,
+            &inventory_persisted_generations(&self.state_root)?.quarantined,
+            entry,
+        )
+    }
+}
+
+/// Remove `entry.path` if `quarantined_now` — the inventory taken this
+/// instant — names it under the same reason (QI-BB-026).
+///
+/// The lexical adapter keeps the same protocol over its own inventory and
+/// byte measure; the two diverge only in those, and each adapter must own
+/// the deletion of what it owns, so the protocol is not shared as code.
+fn discard_quarantined_directory(
+    semantic_root: &Path,
+    quarantined_now: &[QuarantinedGenerationV1],
+    entry: &QuarantinedGenerationV1,
+) -> Result<QuarantineDiscardOutcomeV1, CoreError> {
+    let not_quarantined = |why: String| CoreError::Typed {
+        code: QUARANTINE_TARGET_NOT_QUARANTINED_CODE.to_string(),
+        message: format!(
+            "semantic: refusing to discard {}: {why}",
+            entry.path.display()
+        ),
+    };
+    let Some(current) = quarantined_now
+        .iter()
+        .find(|quarantined| quarantined.path == entry.path)
+    else {
+        if std::fs::symlink_metadata(&entry.path).is_ok() {
+            return Err(not_quarantined(
+                "the path is not quarantined now; a sealed, in-progress or repaired directory is not this port's to remove"
+                    .to_string(),
+            ));
+        }
+        return Ok(QuarantineDiscardOutcomeV1::Absent);
+    };
+    if current.reason != entry.reason {
+        return Err(not_quarantined(format!(
+            "it is quarantined as {} now, not {} as listed; list again",
+            current.reason.as_code_str(),
+            entry.reason.as_code_str()
+        )));
+    }
+    if !entry.path.starts_with(semantic_root) {
+        return Err(not_quarantined(format!(
+            "the path is outside the semantic root {}",
+            semantic_root.display()
+        )));
+    }
+    let metadata = std::fs::symlink_metadata(&entry.path).map_err(|error| {
+        CoreError::Storage(format!(
+            "semantic: inspect quarantined {}: {error}",
+            entry.path.display()
+        ))
+    })?;
+    if !metadata.is_dir() {
+        return Err(not_quarantined(
+            "the path is not a directory; the inventory quarantines directories only".to_string(),
+        ));
+    }
+    let bytes = crate::search::dataset_tree_bytes(&entry.path)?;
+    std::fs::remove_dir_all(&entry.path).map_err(|error| {
+        CoreError::Storage(format!(
+            "semantic: discard quarantined {}: {error}",
+            entry.path.display()
+        ))
+    })?;
+    if let Some(parent) = entry.path.parent() {
+        std::fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| {
+                CoreError::Storage(format!(
+                    "semantic: fsync {} after discarding quarantine: {error}",
+                    parent.display()
+                ))
+            })?;
+    }
+    Ok(QuarantineDiscardOutcomeV1::Discarded { bytes })
 }
 
 impl SealedGenerationScanPort for SemanticAdapter {

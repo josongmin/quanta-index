@@ -30,14 +30,16 @@ use quanta_index_contract::{
     CurrentGenerationRequest, EngineTouched, FileOwnerProjectionRow, GenerationPin,
     GenerationSnapshot, HistoryCursor, HistoryQueryRequest, HybridQueryRequest, LexicalCandidate,
     ManifestGeneration, MetricsSnapshotRequest, MetricsSnapshotV1, OwnerDocKind,
-    QueryResultWindowV1, RawFallbackReasonV1, RepoId, RepoRelativePath, RevisionId,
-    RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchCorpusTombstoneScope, SearchExplanation,
-    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
-    SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
-    SearchPlaneControlIpcResponseEnvelope, SearchPlaneExplainQueryRequest,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
-    SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
+    QuarantineDiscardAck, QuarantineDiscardRequest, QuarantineInventoryRequest,
+    QuarantineInventoryV1, QuarantineTargetV1, QueryResultWindowV1, RawFallbackReasonV1, RepoId,
+    RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1,
+    SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
+    SearchExplanation, SearchPlaneActivateSearchCorpusGenerationCasRequest,
+    SearchPlaneControlIpcRequest, SearchPlaneControlIpcRequestEnvelope,
+    SearchPlaneControlIpcResponse, SearchPlaneControlIpcResponseEnvelope,
+    SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    SearchPlaneIngestIpcResponseEnvelope, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind, SemanticCorpusKindV1,
     SemanticQueryRequest, SemanticSourceRecordV1, SemanticSourceReplaceScopeV1,
@@ -474,6 +476,45 @@ impl E2eRuntime {
         Ok(store.errors())
     }
 
+    /// What the daemon quarantines right now, over its public control UDS
+    /// (QI-BB-026).
+    pub fn quarantine_inventory(&mut self) -> AnyResult<QuarantineInventoryV1> {
+        let response = self.dispatch_control(SearchPlaneControlIpcRequest::QuarantineInventory(
+            QuarantineInventoryRequest,
+        ))?;
+        let SearchPlaneControlIpcResponse::QuarantineInventory(inventory) = response else {
+            return Err(anyhow::anyhow!(
+                "e2e-harness: quarantine inventory returned an unexpected control response: {response:?}"
+            ));
+        };
+        Ok(inventory)
+    }
+
+    /// Discard one quarantined entry as listed (QI-BB-026). The outer error
+    /// is the harness failing to ask; the inner one is the daemon's typed
+    /// refusal, which a test asserts on.
+    pub fn discard_quarantined(
+        &mut self,
+        target: QuarantineTargetV1,
+    ) -> AnyResult<Result<QuarantineDiscardAck, SearchPlaneIpcError>> {
+        let response = self.dispatch_control_response_v1(
+            SearchPlaneControlIpcRequest::QuarantineDiscard(QuarantineDiscardRequest { target }),
+        )?;
+        match response {
+            SearchPlaneControlIpcResponse::QuarantineDiscardAck(ack) => Ok(Ok(ack)),
+            SearchPlaneControlIpcResponse::Error(error) => Ok(Err(error)),
+            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
+            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
+            | SearchPlaneControlIpcResponse::QuarantineInventory(_)) => Err(anyhow::anyhow!(
+                "e2e-harness: quarantine discard returned an unexpected control response: {other:?}"
+            )),
+        }
+    }
+
     /// The daemon's metrics snapshot, scraped over its public control UDS
     /// exactly as `searchctl metrics` does (QI-BB-015).
     pub fn metrics_snapshot(&mut self) -> AnyResult<MetricsSnapshotV1> {
@@ -570,9 +611,13 @@ impl E2eRuntime {
                     | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
                     | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
                     | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
-                    | SearchPlaneControlIpcResponse::MetricsSnapshot(_)) => Err(anyhow::anyhow!(
-                        "e2e-harness: current generation returned an unexpected control response: {other:?}"
-                    )),
+                    | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
+                    | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+                    | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
+                        Err(anyhow::anyhow!(
+                            "e2e-harness: current generation returned an unexpected control response: {other:?}"
+                        ))
+                    }
                 }
             };
 

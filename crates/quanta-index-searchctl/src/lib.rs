@@ -20,7 +20,11 @@ use quanta_index_contract::{
     SearchPlaneStructuralQueryResponse, SemanticQueryRequest, StructuralQueryRequest,
     SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse,
     TextQuerySyntax,
-    ipc::{GenerationStatusReport, MetricHistogramV1, MetricsSnapshotV1, SearchPlaneTrackKind},
+    ipc::{
+        GenerationStatusReport, MetricHistogramV1, MetricsSnapshotV1, QuarantineDiscardAck,
+        QuarantineDiscardOutcomeDtoV1, QuarantineInventoryV1, QuarantineTargetV1,
+        QuarantinedGenerationEntryV1, QuarantinedRepoMapFileEntryV1, SearchPlaneTrackKind,
+    },
 };
 use quanta_index_sdk::{ConnectOptions, QuantaIndex, SdkError};
 
@@ -97,6 +101,19 @@ where
             write_stdout(stdout, &render_metrics(&snapshot, output)?)?;
             Ok(ExitCode::SUCCESS)
         }
+        CliRequest::QuarantineList => {
+            let inventory = client.quarantine().inventory().map_err(map_sdk_error)?;
+            write_stdout(stdout, &render_quarantine_inventory(&inventory, output)?)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        CliRequest::QuarantineDiscard(target) => {
+            let ack = client
+                .quarantine()
+                .discard(&target)
+                .map_err(map_sdk_error)?;
+            write_stdout(stdout, &render_quarantine_discard(&ack, output)?)?;
+            Ok(ExitCode::SUCCESS)
+        }
         query_request @ (CliRequest::Lexical(_)
         | CliRequest::Symbol(_)
         | CliRequest::Semantic(_)
@@ -170,6 +187,7 @@ enum CommandKind {
     Readiness,
     Doctor,
     Metrics,
+    Quarantine,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -250,6 +268,10 @@ enum CliRequest {
     },
     /// QI-BB-015: the daemon's metrics snapshot; takes no arguments.
     Metrics,
+    /// QI-BB-026: what the daemon quarantines right now.
+    QuarantineList,
+    /// QI-BB-026: discard one quarantined entry exactly as listed.
+    QuarantineDiscard(QuarantineTargetV1),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -316,9 +338,13 @@ impl ParsedCommand {
             ),
             "doctor" => (CommandKind::Doctor, parse_doctor(&mut common, &mut rest)?),
             "metrics" => (CommandKind::Metrics, parse_metrics(&mut common, &mut rest)?),
+            "quarantine" => (
+                CommandKind::Quarantine,
+                parse_quarantine(&mut common, &mut rest)?,
+            ),
             other => {
                 return Err(CliError::usage(format!(
-                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid-seed|explain|repomap|runtime-metadata|history|structural|readiness|doctor|metrics"
+                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid-seed|explain|repomap|runtime-metadata|history|structural|readiness|doctor|metrics|quarantine"
                 )));
             }
         };
@@ -646,6 +672,115 @@ fn parse_metrics(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
         return Err(CliError::usage(format!("unknown metrics flag `{current}`")));
     }
     Ok(CliRequest::Metrics)
+}
+
+/// QI-BB-026: parse `quarantine list` and `quarantine discard …`.
+///
+/// A discard names one entry the way `quarantine list` printed it: a
+/// generation directory by track, path and reason (the detail is optional
+/// and echoed back), or a `RepoMap` file by name. Every value is required
+/// so the daemon can refuse a stale listing typed; nothing is defaulted.
+fn parse_quarantine(
+    common: &mut CommonOptions,
+    rest: &mut VecDeque<String>,
+) -> CliResult<CliRequest> {
+    let verb = loop {
+        let Some(current) = rest.pop_front() else {
+            return Err(CliError::usage(
+                "quarantine requires `list` or `discard`".to_string(),
+            ));
+        };
+        if common.parse_flag(&current, rest)? {
+            continue;
+        }
+        break current;
+    };
+    match verb.as_str() {
+        "list" => {
+            while let Some(current) = rest.pop_front() {
+                if common.parse_flag(&current, rest)? {
+                    continue;
+                }
+                return Err(CliError::usage(format!(
+                    "unknown quarantine list flag `{current}`"
+                )));
+            }
+            Ok(CliRequest::QuarantineList)
+        }
+        "discard" => parse_quarantine_discard(common, rest),
+        other => Err(CliError::usage(format!(
+            "unknown quarantine verb `{other}`; expected `list` or `discard`"
+        ))),
+    }
+}
+
+fn parse_quarantine_discard(
+    common: &mut CommonOptions,
+    rest: &mut VecDeque<String>,
+) -> CliResult<CliRequest> {
+    let mut track: Option<String> = None;
+    let mut path: Option<String> = None;
+    let mut reason: Option<String> = None;
+    let mut detail: Option<String> = None;
+    let mut repomap_file: Option<String> = None;
+    while let Some(current) = rest.pop_front() {
+        if common.parse_flag(&current, rest)? {
+            continue;
+        }
+        match current.as_str() {
+            "--track" => track = Some(take_value(rest, "--track")?),
+            "--path" => path = Some(take_value(rest, "--path")?),
+            "--reason" => reason = Some(take_value(rest, "--reason")?),
+            "--detail" => detail = Some(take_value(rest, "--detail")?),
+            "--repomap-file" => repomap_file = Some(take_value(rest, "--repomap-file")?),
+            other => {
+                return Err(CliError::usage(format!(
+                    "unknown quarantine discard flag `{other}`"
+                )));
+            }
+        }
+    }
+    let target = match (repomap_file, track, path) {
+        (Some(file_name), None, None) => {
+            QuarantineTargetV1::RepoMapFile(QuarantinedRepoMapFileEntryV1 {
+                file_name,
+                reason: reason.ok_or_else(|| {
+                    CliError::usage("--repomap-file requires --reason as listed".to_string())
+                })?,
+            })
+        }
+        (None, Some(track), Some(path)) => {
+            let track = match track.as_str() {
+                "lexical" => SearchPlaneTrackKind::Lexical,
+                "semantic" => SearchPlaneTrackKind::Semantic,
+                other => {
+                    return Err(CliError::usage(format!(
+                        "unsupported quarantine track `{other}`; expected `lexical` or `semantic`"
+                    )));
+                }
+            };
+            QuarantineTargetV1::Generation(QuarantinedGenerationEntryV1 {
+                track,
+                path,
+                reason: reason.ok_or_else(|| {
+                    CliError::usage("--path requires --reason as listed".to_string())
+                })?,
+                detail: detail.unwrap_or_default(),
+            })
+        }
+        (None, _, _) => {
+            return Err(CliError::usage(
+                "quarantine discard needs --track and --path (a generation directory) or --repomap-file"
+                    .to_string(),
+            ));
+        }
+        (Some(_), _, _) => {
+            return Err(CliError::usage(
+                "--repomap-file cannot be combined with --track/--path".to_string(),
+            ));
+        }
+    };
+    Ok(CliRequest::QuarantineDiscard(target))
 }
 
 /// J7Q-05: parse `doctor --repo-id <ID> --revision-id <REV>`.
@@ -1006,9 +1141,13 @@ fn dispatch_query_request(
         // them before reaching the query dispatcher. Reaching here is a routing
         // bug, so fail-closed with a typed protocol error rather than fabricate a
         // query.
-        CliRequest::Readiness { .. } | CliRequest::Doctor { .. } | CliRequest::Metrics => {
+        CliRequest::Readiness { .. }
+        | CliRequest::Doctor { .. }
+        | CliRequest::Metrics
+        | CliRequest::QuarantineList
+        | CliRequest::QuarantineDiscard(_) => {
             return Err(CliError::protocol(
-                "readiness/doctor/metrics are control-plane commands and must not reach the query dispatcher"
+                "readiness/doctor/metrics/quarantine are control-plane commands and must not reach the query dispatcher"
                     .to_string(),
             ));
         }
@@ -1331,6 +1470,87 @@ fn render_prometheus_histogram(
         histogram.name, histogram.count
     ))?;
     Ok(())
+}
+
+/// QI-BB-026: render a [`QuarantineInventoryV1`].
+///
+/// `pretty` prints each entry on one line exactly as `quarantine discard`
+/// wants it back, so an operator can copy a line into a discard.
+fn render_quarantine_inventory(
+    inventory: &QuarantineInventoryV1,
+    output: OutputMode,
+) -> CliResult<String> {
+    match output {
+        OutputMode::Json => serde_json::to_string_pretty(inventory)
+            .map(|mut text| {
+                text.push('\n');
+                text
+            })
+            .map_err(|err| CliError::protocol(format!("failed to encode json output: {err}"))),
+        OutputMode::Prometheus => Err(prometheus_is_metrics_only("quarantine")),
+        OutputMode::Pretty => {
+            let mut rendered = String::new();
+            fmt_ok(writeln!(rendered, "kind: quarantine"))?;
+            for (label, entries) in [
+                ("lexical", &inventory.lexical),
+                ("semantic", &inventory.semantic),
+            ] {
+                fmt_ok(writeln!(rendered, "{label}: {}", entries.len()))?;
+                for entry in entries {
+                    fmt_ok(writeln!(
+                        rendered,
+                        "  --track {label} --path {} --reason {} --detail {:?}",
+                        entry.path, entry.reason, entry.detail
+                    ))?;
+                }
+            }
+            fmt_ok(writeln!(rendered, "repo_map: {}", inventory.repo_map.len()))?;
+            for entry in &inventory.repo_map {
+                fmt_ok(writeln!(
+                    rendered,
+                    "  --repomap-file {} --reason {:?}",
+                    entry.file_name, entry.reason
+                ))?;
+            }
+            Ok(rendered)
+        }
+    }
+}
+
+/// QI-BB-026: render a [`QuarantineDiscardAck`].
+fn render_quarantine_discard(ack: &QuarantineDiscardAck, output: OutputMode) -> CliResult<String> {
+    match output {
+        OutputMode::Json => serde_json::to_string_pretty(ack)
+            .map(|mut text| {
+                text.push('\n');
+                text
+            })
+            .map_err(|err| CliError::protocol(format!("failed to encode json output: {err}"))),
+        OutputMode::Prometheus => Err(prometheus_is_metrics_only("quarantine")),
+        OutputMode::Pretty => {
+            let mut rendered = String::new();
+            fmt_ok(writeln!(rendered, "kind: quarantine-discard"))?;
+            let target = match &ack.target {
+                QuarantineTargetV1::Generation(entry) => {
+                    format!(
+                        "{} {}",
+                        entry.track.as_code_str().to_ascii_lowercase(),
+                        entry.path
+                    )
+                }
+                QuarantineTargetV1::RepoMapFile(entry) => format!("repo_map {}", entry.file_name),
+            };
+            let outcome = match ack.outcome {
+                QuarantineDiscardOutcomeDtoV1::Discarded { bytes } => {
+                    format!("discarded bytes={bytes}")
+                }
+                QuarantineDiscardOutcomeDtoV1::Absent => "absent".to_string(),
+            };
+            fmt_ok(writeln!(rendered, "target: {target}"))?;
+            fmt_ok(writeln!(rendered, "outcome: {outcome}"))?;
+            Ok(rendered)
+        }
+    }
 }
 
 /// J7Q-05: one activated track's slot in the composite [`DoctorReport`].
@@ -2055,6 +2275,7 @@ fn command_kind_name(kind: CommandKind) -> &'static str {
         CommandKind::Readiness => "readiness",
         CommandKind::Doctor => "doctor",
         CommandKind::Metrics => "metrics",
+        CommandKind::Quarantine => "quarantine",
     }
 }
 
@@ -2165,6 +2386,9 @@ Read-only subcommands:
   readiness        --repo-id ID --revision-id REV
   doctor           --repo-id ID --revision-id REV
   metrics
+  quarantine       list
+  quarantine       discard --track lexical|semantic --path PATH --reason CODE [--detail TEXT]
+  quarantine       discard --repomap-file NAME --reason TEXT
 
 `doctor` is the composite read-only diagnosis: it fuses the activation-catalog
 listing with per-track serve-time resolution and reports a machine-readable
@@ -2177,6 +2401,12 @@ to *reach* a verdict.
 since it started (route latency and outcomes, socket admission, caches, boot
 inventory) over the control socket; `--output prometheus` emits the text
 exposition format for a scraper.
+
+`quarantine list` prints what the daemon has set aside as it cannot trust it
+(a generation directory with an unreadable or foreign identity, a RepoMap file
+that does not decode), each line in the form `quarantine discard` takes back.
+A discard names one entry exactly as listed; the daemon re-checks before it
+removes anything and refuses a stale or invented entry typed.
 "
 }
 
@@ -3094,6 +3324,272 @@ mod tests {
             "{}",
             error.message
         );
+    }
+
+    /// QI-BB-026: `quarantine list` takes only the global flags; a discard
+    /// names one entry exactly and every incomplete or mixed form is a
+    /// usage error before anything reaches the socket.
+    #[test]
+    fn quarantine_parses_list_and_exact_discard_targets_only() {
+        let parsed = ParsedCommand::parse(["quarantine", "list", "--output", "json"]);
+        assert!(parsed.is_ok(), "{parsed:?}");
+        let Ok(parsed) = parsed else {
+            return;
+        };
+        assert_eq!(parsed.kind, CommandKind::Quarantine);
+        assert_eq!(parsed.output, OutputMode::Json);
+        assert_eq!(parsed.request, CliRequest::QuarantineList);
+
+        let generation = ParsedCommand::parse([
+            "quarantine",
+            "discard",
+            "--track",
+            "semantic",
+            "--path",
+            "/state/indexes/semantic/repo/rev/g3",
+            "--reason",
+            "GENERATION_QUARANTINE_SCOPE_MISMATCH",
+            "--detail",
+            "identity names repo other",
+        ]);
+        assert!(generation.is_ok(), "{generation:?}");
+        let Ok(generation) = generation else {
+            return;
+        };
+        assert_eq!(
+            generation.request,
+            CliRequest::QuarantineDiscard(QuarantineTargetV1::Generation(
+                QuarantinedGenerationEntryV1 {
+                    track: SearchPlaneTrackKind::Semantic,
+                    path: "/state/indexes/semantic/repo/rev/g3".to_string(),
+                    reason: "GENERATION_QUARANTINE_SCOPE_MISMATCH".to_string(),
+                    detail: "identity names repo other".to_string(),
+                }
+            ))
+        );
+        let without_detail = ParsedCommand::parse([
+            "quarantine",
+            "discard",
+            "--track",
+            "lexical",
+            "--path",
+            "/state/indexes/lexical/repo-legacy",
+            "--reason",
+            "GENERATION_QUARANTINE_NON_CANONICAL_LAYOUT",
+        ]);
+        assert!(without_detail.is_ok(), "{without_detail:?}");
+        let Ok(without_detail) = without_detail else {
+            return;
+        };
+        assert_eq!(
+            without_detail.request,
+            CliRequest::QuarantineDiscard(QuarantineTargetV1::Generation(
+                QuarantinedGenerationEntryV1 {
+                    track: SearchPlaneTrackKind::Lexical,
+                    path: "/state/indexes/lexical/repo-legacy".to_string(),
+                    reason: "GENERATION_QUARANTINE_NON_CANONICAL_LAYOUT".to_string(),
+                    detail: String::new(),
+                }
+            ))
+        );
+        let repo_map = ParsedCommand::parse([
+            "quarantine",
+            "discard",
+            "--repomap-file",
+            "stale--marker.json",
+            "--reason",
+            "snapshot does not decode",
+        ]);
+        assert!(repo_map.is_ok(), "{repo_map:?}");
+        let Ok(repo_map) = repo_map else {
+            return;
+        };
+        assert_eq!(
+            repo_map.request,
+            CliRequest::QuarantineDiscard(QuarantineTargetV1::RepoMapFile(
+                QuarantinedRepoMapFileEntryV1 {
+                    file_name: "stale--marker.json".to_string(),
+                    reason: "snapshot does not decode".to_string(),
+                }
+            ))
+        );
+
+        for (args, needle) in [
+            (vec!["quarantine"], "requires `list` or `discard`"),
+            (
+                vec!["quarantine", "purge"],
+                "unknown quarantine verb `purge`",
+            ),
+            (
+                vec!["quarantine", "list", "--all"],
+                "unknown quarantine list flag `--all`",
+            ),
+            (vec!["quarantine", "discard"], "needs --track and --path"),
+            (
+                vec![
+                    "quarantine",
+                    "discard",
+                    "--track",
+                    "lexical",
+                    "--path",
+                    "/p",
+                ],
+                "--path requires --reason",
+            ),
+            (
+                vec![
+                    "quarantine",
+                    "discard",
+                    "--track",
+                    "lexical",
+                    "--reason",
+                    "R",
+                ],
+                "needs --track and --path",
+            ),
+            (
+                vec!["quarantine", "discard", "--path", "/p", "--reason", "R"],
+                "needs --track and --path",
+            ),
+            (
+                vec![
+                    "quarantine",
+                    "discard",
+                    "--track",
+                    "repomap",
+                    "--path",
+                    "/p",
+                    "--reason",
+                    "R",
+                ],
+                "unsupported quarantine track `repomap`",
+            ),
+            (
+                vec!["quarantine", "discard", "--repomap-file", "x.json"],
+                "--repomap-file requires --reason",
+            ),
+            (
+                vec![
+                    "quarantine",
+                    "discard",
+                    "--repomap-file",
+                    "x.json",
+                    "--track",
+                    "lexical",
+                    "--reason",
+                    "R",
+                ],
+                "cannot be combined",
+            ),
+            (
+                vec!["quarantine", "discard", "--force"],
+                "unknown quarantine discard flag `--force`",
+            ),
+            (
+                vec!["quarantine", "list", "--output", "prometheus"],
+                "renders only `metrics`, not `quarantine`",
+            ),
+        ] {
+            let parsed = ParsedCommand::parse(args.clone());
+            let Err(error) = parsed else {
+                panic!("{args:?} must be a usage error, parsed {parsed:?}");
+            };
+            assert_eq!(error.exit_code, EXIT_USAGE, "{args:?}: {}", error.message);
+            assert!(
+                error.message.contains(needle),
+                "{args:?}: {} lacks {needle:?}",
+                error.message
+            );
+        }
+    }
+
+    /// QI-BB-026: the pretty inventory prints each entry as the discard
+    /// flags that name it, the JSON form is the wire DTO, and the ack
+    /// renders the target and outcome the daemon returned.
+    #[test]
+    fn render_quarantine_prints_discardable_lines_and_the_ack() {
+        let inventory = QuarantineInventoryV1 {
+            lexical: vec![QuarantinedGenerationEntryV1 {
+                track: SearchPlaneTrackKind::Lexical,
+                path: "/state/indexes/lexical/repo/rev/g9".to_string(),
+                reason: "GENERATION_QUARANTINE_IDENTITY_UNREADABLE".to_string(),
+                detail: "identity file does not decode".to_string(),
+            }],
+            semantic: Vec::new(),
+            repo_map: vec![QuarantinedRepoMapFileEntryV1 {
+                file_name: "stale--marker.json".to_string(),
+                reason: "snapshot does not decode".to_string(),
+            }],
+        };
+        let pretty = render_quarantine_inventory(&inventory, OutputMode::Pretty);
+        let Ok(pretty) = pretty else {
+            panic!("pretty inventory renders: {pretty:?}");
+        };
+        let expected = [
+            "kind: quarantine",
+            "lexical: 1",
+            r#"  --track lexical --path /state/indexes/lexical/repo/rev/g9 --reason GENERATION_QUARANTINE_IDENTITY_UNREADABLE --detail "identity file does not decode""#,
+            "semantic: 0",
+            "repo_map: 1",
+            r#"  --repomap-file stale--marker.json --reason "snapshot does not decode""#,
+            "",
+        ]
+        .join("\n");
+        assert_eq!(pretty, expected);
+        let json = render_quarantine_inventory(&inventory, OutputMode::Json);
+        let Ok(json) = json else {
+            panic!("json inventory renders: {json:?}");
+        };
+        let Ok(decoded) = serde_json::from_str::<QuarantineInventoryV1>(&json) else {
+            panic!("json inventory decodes back: {json}");
+        };
+        assert_eq!(decoded, inventory);
+        let prometheus = render_quarantine_inventory(&inventory, OutputMode::Prometheus);
+        let Err(error) = prometheus else {
+            panic!("prometheus output is metrics-only: {prometheus:?}");
+        };
+        assert_eq!(error.exit_code, EXIT_USAGE);
+
+        let ack = QuarantineDiscardAck {
+            target: QuarantineTargetV1::RepoMapFile(QuarantinedRepoMapFileEntryV1 {
+                file_name: "stale--marker.json".to_string(),
+                reason: "snapshot does not decode".to_string(),
+            }),
+            outcome: QuarantineDiscardOutcomeDtoV1::Discarded { bytes: 15 },
+        };
+        let pretty = render_quarantine_discard(&ack, OutputMode::Pretty);
+        let Ok(pretty) = pretty else {
+            panic!("pretty ack renders: {pretty:?}");
+        };
+        assert_eq!(
+            pretty,
+            "kind: quarantine-discard\ntarget: repo_map stale--marker.json\noutcome: discarded bytes=15\n"
+        );
+        let absent = QuarantineDiscardAck {
+            target: QuarantineTargetV1::Generation(QuarantinedGenerationEntryV1 {
+                track: SearchPlaneTrackKind::Semantic,
+                path: "/state/indexes/semantic/repo/rev/g1".to_string(),
+                reason: "GENERATION_QUARANTINE_SCOPE_MISMATCH".to_string(),
+                detail: String::new(),
+            }),
+            outcome: QuarantineDiscardOutcomeDtoV1::Absent,
+        };
+        let pretty = render_quarantine_discard(&absent, OutputMode::Pretty);
+        let Ok(pretty) = pretty else {
+            panic!("pretty ack renders: {pretty:?}");
+        };
+        assert_eq!(
+            pretty,
+            "kind: quarantine-discard\ntarget: semantic /state/indexes/semantic/repo/rev/g1\noutcome: absent\n"
+        );
+        let json = render_quarantine_discard(&absent, OutputMode::Json);
+        let Ok(json) = json else {
+            panic!("json ack renders: {json:?}");
+        };
+        let Ok(decoded) = serde_json::from_str::<QuarantineDiscardAck>(&json) else {
+            panic!("json ack decodes back: {json}");
+        };
+        assert_eq!(decoded, absent);
     }
 
     #[test]

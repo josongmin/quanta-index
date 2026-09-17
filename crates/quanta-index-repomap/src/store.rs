@@ -8,8 +8,9 @@ use quanta_index_contract::{
 };
 use quanta_index_contract::{RepoMapActivateGenerationRequest, RepoMapSourceBundle};
 use quanta_index_core::{
-    CoreError, RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapOpenReportV1,
-    RepoMapQueryPort,
+    CoreError, QUARANTINE_TARGET_NOT_QUARANTINED_CODE, QuarantineDiscardOutcomeV1,
+    QuarantinedRepoMapFileV1, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
+    RepoMapOpenReportV1, RepoMapQuarantinePort, RepoMapQueryPort,
 };
 
 use crate::{
@@ -351,6 +352,31 @@ impl RepoMapGenerationStore {
 impl RepoMapBundleIngestPort for RepoMapGenerationStore {
     fn ingest_bundle(&self, bundle: &RepoMapSourceBundle) -> Result<(), CoreError> {
         Self::ingest_bundle(self, bundle)
+    }
+}
+
+impl RepoMapQuarantinePort for RepoMapGenerationStore {
+    fn quarantined_files(&self) -> Result<Vec<QuarantinedRepoMapFileV1>, CoreError> {
+        self.persistence.as_ref().map_or_else(
+            || Ok(Vec::new()),
+            RepoMapSnapshotPersistence::quarantined_files,
+        )
+    }
+
+    fn discard_quarantined_file(
+        &self,
+        entry: &QuarantinedRepoMapFileV1,
+    ) -> Result<QuarantineDiscardOutcomeV1, CoreError> {
+        let Some(persistence) = self.persistence.as_ref() else {
+            return Err(CoreError::Typed {
+                code: QUARANTINE_TARGET_NOT_QUARANTINED_CODE.to_string(),
+                message: format!(
+                    "repomap: refusing to discard quarantined `{}`: this store has no durable quarantine",
+                    entry.file_name
+                ),
+            });
+        };
+        persistence.discard_quarantined_file(entry)
     }
 }
 

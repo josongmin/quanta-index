@@ -178,6 +178,12 @@ owner = "quanta-index-contract"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "contract-ipc-control-quarantine"
+path = "crates/quanta-index-contract/tests/ipc_control_quarantine_contract.rs"
+owner = "quanta-index-contract"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "lexical-explain-candidate"
 path = "crates/quanta-index-lexical/tests/explain_candidate.rs"
 owner = "quanta-index-lexical"

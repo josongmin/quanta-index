@@ -6,6 +6,24 @@ pub trait RepoMapBundleIngestPort: Send + Sync {
     fn ingest_bundle(&self, bundle: &RepoMapSourceBundle) -> Result<(), CoreError>;
 }
 
+/// The `RepoMap` store's quarantine, listed and discarded one file at a
+/// time (QI-BB-026).
+///
+/// A discard names one file exactly as [`Self::quarantined_files`] listed
+/// it, name and reason; an implementation removes only a regular file that
+/// sits in its quarantine directory right now under that recorded reason,
+/// refuses anything else typed under
+/// [`QUARANTINE_TARGET_NOT_QUARANTINED_CODE`](crate::QUARANTINE_TARGET_NOT_QUARANTINED_CODE),
+/// and answers `Absent` for a name that is already gone.
+pub trait RepoMapQuarantinePort: Send + Sync {
+    fn quarantined_files(&self) -> Result<Vec<QuarantinedRepoMapFileV1>, CoreError>;
+
+    fn discard_quarantined_file(
+        &self,
+        entry: &QuarantinedRepoMapFileV1,
+    ) -> Result<crate::domains::generation::QuarantineDiscardOutcomeV1, CoreError>;
+}
+
 pub trait RepoMapGenerationActivatePort: Send + Sync {
     fn activate_generation(
         &self,

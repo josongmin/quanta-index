@@ -19,6 +19,7 @@ use quanta_index_core::{
 };
 
 use crate::observability::ObservabilityScrape;
+use crate::quarantine::QuarantineService;
 use crate::search_corpus_lifecycle::SearchCorpusLifecycleService;
 use crate::{
     ActivationCatalog, Ledger, PreparedSearchCorpusGenerationV1, SearchCorpusGenerationActivationV1,
@@ -44,6 +45,8 @@ pub struct SearchPlaneControlDispatcher {
     /// The metrics scrape (QI-BB-015): the query plane's aggregates and
     /// every source the composition root registered.
     observability: Arc<ObservabilityScrape>,
+    /// The live quarantine inventory and discard (QI-BB-026).
+    quarantine: QuarantineService,
 }
 
 impl SearchPlaneControlDispatcher {
@@ -55,6 +58,7 @@ impl SearchPlaneControlDispatcher {
         lexical_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
         semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
         observability: Arc<ObservabilityScrape>,
+        quarantine: QuarantineService,
     ) -> Self {
         let search_corpus_lifecycle = SearchCorpusLifecycleService::new(
             activation_catalog.lifecycle_coordinator(),
@@ -68,6 +72,7 @@ impl SearchPlaneControlDispatcher {
             activation_catalog,
             search_corpus_lifecycle,
             observability,
+            quarantine,
         }
     }
 
@@ -239,6 +244,18 @@ impl SearchPlaneControlDispatcher {
                     Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
+            SearchPlaneControlIpcRequest::QuarantineInventory(_request) => {
+                match self.quarantine.inventory() {
+                    Ok(inventory) => SearchPlaneControlIpcResponse::QuarantineInventory(inventory),
+                    Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
+                }
+            }
+            SearchPlaneControlIpcRequest::QuarantineDiscard(request) => {
+                match self.quarantine.discard(&request.target) {
+                    Ok(ack) => SearchPlaneControlIpcResponse::QuarantineDiscardAck(ack),
+                    Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
+                }
+            }
         }
     }
 }
@@ -286,20 +303,24 @@ mod tests {
 
     use super::SearchPlaneControlDispatcher;
     use quanta_index_contract::{
-        GenerationSnapshot, ManifestGeneration, MetricsSnapshotRequest, MetricsSnapshotV1, RepoId,
-        RepoMapActivateGenerationRequest, RepoMapMutationAck, RevisionId,
-        SearchCorpusGenerationIdentityV1, SearchPlaneActivateSearchCorpusGenerationCasRequest,
-        SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIpcError,
+        GenerationSnapshot, ManifestGeneration, MetricsSnapshotRequest, MetricsSnapshotV1,
+        QuarantineDiscardOutcomeDtoV1, QuarantineDiscardRequest, QuarantineInventoryRequest,
+        QuarantineTargetV1, RepoId, RepoMapActivateGenerationRequest, RepoMapMutationAck,
+        RevisionId, SearchCorpusGenerationIdentityV1,
+        SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
+        SearchPlaneControlIpcResponse, SearchPlaneIpcError,
         SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneTrackKind,
     };
     use quanta_index_core::{
-        CoreError, GenerationIdentityValidatePort, MetricPointV1, MetricSourcePort,
-        RepoMapGenerationActivatePort, RequestBudgetV1,
+        CoreError, GenerationIdentityValidatePort, GenerationQuarantineReasonV1, MetricPointV1,
+        MetricSourcePort, QUARANTINE_TARGET_NOT_QUARANTINED_CODE, RepoMapGenerationActivatePort,
+        RequestBudgetV1,
     };
     use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
     use tempfile::tempdir;
 
     use crate::observability::{BoundedQueryObsStore, ObservabilityScrape, QueryObsSink};
+    use crate::quarantine::QuarantineService;
     use crate::{
         ActivationCatalog, Ledger, PreparedSearchCorpusGenerationV1, SearchCorpusGenerationV1,
     };
@@ -360,6 +381,13 @@ mod tests {
         Arc::new(AlwaysValidGeneration)
     }
 
+    /// A quarantine service whose adapters quarantine nothing.
+    fn empty_quarantine() -> QuarantineService {
+        let (service, _lexical_discard) =
+            crate::quarantine::tests::service(Vec::new(), Vec::new(), Vec::new());
+        service
+    }
+
     fn empty_scrape() -> Arc<ObservabilityScrape> {
         Arc::new(ObservabilityScrape::new(
             Arc::new(BoundedQueryObsStore::default()),
@@ -392,6 +420,7 @@ mod tests {
             always_valid_generation(),
             always_valid_generation(),
             Arc::new(ObservabilityScrape::new(store, sources)),
+            empty_quarantine(),
         ))
     }
 
@@ -408,13 +437,13 @@ mod tests {
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
-            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => {
-                Err(SearchPlaneIpcError {
-                    code: "TEST_UNEXPECTED_RESPONSE".to_string(),
-                    message: format!("{other:?}"),
-                    repair: None,
-                })
-            }
+            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => Err(SearchPlaneIpcError {
+                code: "TEST_UNEXPECTED_RESPONSE".to_string(),
+                message: format!("{other:?}"),
+                repair: None,
+            }),
         }
     }
 
@@ -579,7 +608,9 @@ mod tests {
             | SearchPlaneControlIpcResponse::Error(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
-            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)) => {
+            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
+            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
                 Err(format!("expected repo-map mutation ack, got {other:?}").into())
             }
         }
@@ -595,7 +626,9 @@ mod tests {
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
-            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)) => {
+            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
+            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
                 Err(format!("expected error response, got {other:?}").into())
             }
         }
@@ -651,6 +684,7 @@ mod tests {
             always_valid_generation(),
             always_valid_generation(),
             empty_scrape(),
+            empty_quarantine(),
         );
 
         let activate = into_repo_map_mutation_ack(dispatcher.dispatch(
@@ -740,6 +774,7 @@ mod tests {
             always_valid_generation(),
             always_valid_generation(),
             empty_scrape(),
+            empty_quarantine(),
         );
         let code = into_error_code(dispatcher.dispatch(
             SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
@@ -833,6 +868,7 @@ mod tests {
             always_valid_generation(),
             always_valid_generation(),
             empty_scrape(),
+            empty_quarantine(),
         );
 
         let response = dispatcher.dispatch(
@@ -952,6 +988,104 @@ mod tests {
         };
         if error.code != crate::readiness::ERR_SEARCH_TRACK_GENERATION_NOT_SEALED {
             return Err(format!("unexpected unsealed rollback code: {}", error.code).into());
+        }
+        Ok(())
+    }
+
+    /// The quarantine routes (QI-BB-026) answer with the listing, the ack
+    /// and the typed refusal.
+    ///
+    /// The inventory request answers with the adapters' live listing, a
+    /// discard of a listed entry answers with an ack naming that entry,
+    /// and a discard the adapter refuses crosses the control surface as
+    /// the typed error, not as a panic or an empty ack.
+    #[test]
+    fn quarantine_routes_answer_with_the_listing_the_ack_and_the_typed_refusal() -> TestResult {
+        let dir = tempdir()?;
+        let activation_catalog = Arc::new(ActivationCatalog::open(dir.path())?);
+        let listed = crate::quarantine::tests::quarantined(
+            SearchPlaneTrackKind::Lexical,
+            "/state/indexes/lexical/repo/rev/g3",
+        );
+        let (quarantine, lexical_discard) =
+            crate::quarantine::tests::service(vec![listed.clone()], Vec::new(), Vec::new());
+        let dispatcher = SearchPlaneControlDispatcher::new(
+            Arc::new(StubRepoMapActivatePort),
+            activation_catalog,
+            Arc::new(RwLock::new(Ledger::new())),
+            always_valid_generation(),
+            always_valid_generation(),
+            empty_scrape(),
+            quarantine,
+        );
+
+        let SearchPlaneControlIpcResponse::QuarantineInventory(inventory) = dispatcher.dispatch(
+            SearchPlaneControlIpcRequest::QuarantineInventory(QuarantineInventoryRequest),
+            &RequestBudgetV1::unbounded(),
+        ) else {
+            return Err("the inventory request answers with the inventory".into());
+        };
+        let Some(entry) = inventory.lexical.first().cloned() else {
+            return Err("the lexical listing carries the quarantined generation".into());
+        };
+        if inventory.lexical.len() != 1
+            || !inventory.semantic.is_empty()
+            || !inventory.repo_map.is_empty()
+        {
+            return Err(format!("the listing is exactly the adapters' own: {inventory:?}").into());
+        }
+        if entry.path != listed.path.display().to_string()
+            || entry.reason != listed.reason.as_code_str()
+        {
+            return Err(format!("the entry is the adapter's, verbatim: {entry:?}").into());
+        }
+
+        let mut stale = entry.clone();
+        stale.reason = GenerationQuarantineReasonV1::ScopeMismatch
+            .as_code_str()
+            .to_string();
+        let SearchPlaneControlIpcResponse::Error(error) = dispatcher.dispatch(
+            SearchPlaneControlIpcRequest::QuarantineDiscard(QuarantineDiscardRequest {
+                target: QuarantineTargetV1::Generation(stale),
+            }),
+            &RequestBudgetV1::unbounded(),
+        ) else {
+            return Err("a stale target is refused, not acked".into());
+        };
+        if error.code != QUARANTINE_TARGET_NOT_QUARANTINED_CODE {
+            return Err(format!("the refusal is typed: {}", error.code).into());
+        }
+        if !lexical_discard
+            .discarded
+            .lock()
+            .map_err(|err| err.to_string())?
+            .is_empty()
+        {
+            return Err("a refused discard removes nothing".into());
+        }
+
+        let target = QuarantineTargetV1::Generation(entry);
+        let SearchPlaneControlIpcResponse::QuarantineDiscardAck(ack) = dispatcher.dispatch(
+            SearchPlaneControlIpcRequest::QuarantineDiscard(QuarantineDiscardRequest {
+                target: target.clone(),
+            }),
+            &RequestBudgetV1::unbounded(),
+        ) else {
+            return Err("a listed target is discarded and acked".into());
+        };
+        if ack.target != target {
+            return Err(format!("the ack names the target as sent: {ack:?}").into());
+        }
+        if ack.outcome != (QuarantineDiscardOutcomeDtoV1::Discarded { bytes: 42 }) {
+            return Err(format!("the ack carries the adapter's outcome: {:?}", ack.outcome).into());
+        }
+        let discarded = lexical_discard
+            .discarded
+            .lock()
+            .map_err(|err| err.to_string())?
+            .clone();
+        if discarded != vec![listed] {
+            return Err(format!("exactly the listed entry was discarded: {discarded:?}").into());
         }
         Ok(())
     }

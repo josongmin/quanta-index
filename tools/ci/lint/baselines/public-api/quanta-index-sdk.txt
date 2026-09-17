@@ -31,6 +31,12 @@ pub use quanta_index_sdk::OwnerDocKind
 pub use quanta_index_sdk::ParseNode
 pub use quanta_index_sdk::ParseRoleTag
 pub use quanta_index_sdk::ParseTreeRecord
+pub use quanta_index_sdk::QuarantineDiscardAck
+pub use quanta_index_sdk::QuarantineDiscardOutcomeDtoV1
+pub use quanta_index_sdk::QuarantineInventoryV1
+pub use quanta_index_sdk::QuarantineTargetV1
+pub use quanta_index_sdk::QuarantinedGenerationEntryV1
+pub use quanta_index_sdk::QuarantinedRepoMapFileEntryV1
 pub use quanta_index_sdk::RepoId
 pub use quanta_index_sdk::RepoMapActivateGenerationRequest
 pub use quanta_index_sdk::RepoMapCallEdge
@@ -196,7 +202,9 @@ pub struct quanta_index_sdk::ControlClient<'a>
 impl<'a> quanta_index_sdk::ControlClient<'a>
 pub fn quanta_index_sdk::ControlClient<'a>::activate_repomap(&self, request: quanta_index_contract::repomap::RepoMapActivateGenerationRequest) -> core::result::Result<quanta_index_contract::repomap::RepoMapMutationAck, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ControlClient<'a>::current(&self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, track: quanta_index_contract::ipc::control::SearchPlaneTrackKind) -> core::result::Result<quanta_index_contract::ipc::control::GenerationSnapshot, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::ControlClient<'a>::discard_quarantined(&self, target: &quanta_index_contract::ipc::quarantine::QuarantineTargetV1) -> core::result::Result<quanta_index_contract::ipc::quarantine::QuarantineDiscardAck, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ControlClient<'a>::metrics_snapshot(&self) -> core::result::Result<quanta_index_contract::ipc::metrics::MetricsSnapshotV1, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::ControlClient<'a>::quarantine_inventory(&self) -> core::result::Result<quanta_index_contract::ipc::quarantine::QuarantineInventoryV1, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ControlClient<'a>::rollback(&self, request: quanta_index_contract::ipc::control::SearchPlaneRollbackSearchCorpusGenerationCasRequest) -> core::result::Result<quanta_index_contract::ipc::control::SearchPlaneSearchCorpusRollbackCasAck, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ControlClient<'a>::status(&self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId) -> core::result::Result<quanta_index_contract::ipc::control::GenerationStatusReport, quanta_index_sdk::SdkError>
 impl<'a> core::clone::Clone for quanta_index_sdk::ControlClient<'a>
@@ -508,6 +516,7 @@ pub fn quanta_index_sdk::QuantaIndex::history(&self) -> quanta_index_sdk::Histor
 pub fn quanta_index_sdk::QuantaIndex::lexical(&self) -> quanta_index_sdk::LexicalNamespace<'_>
 pub fn quanta_index_sdk::QuantaIndex::observability(&self) -> quanta_index_sdk::ObservabilityNamespace<'_>
 pub fn quanta_index_sdk::QuantaIndex::producer(&self) -> quanta_index_sdk::ProducerClient<'_>
+pub fn quanta_index_sdk::QuantaIndex::quarantine(&self) -> quanta_index_sdk::QuarantineNamespace<'_>
 pub fn quanta_index_sdk::QuantaIndex::reader(&self) -> quanta_index_sdk::ReaderClient<'_>
 pub fn quanta_index_sdk::QuantaIndex::repomap(&self) -> quanta_index_sdk::RepoMapNamespace<'_>
 pub fn quanta_index_sdk::QuantaIndex::runtime(&self) -> quanta_index_sdk::RuntimeNamespace<'_>
@@ -525,6 +534,17 @@ impl core::marker::Unpin for quanta_index_sdk::QuantaIndex
 impl core::marker::UnsafeUnpin for quanta_index_sdk::QuantaIndex
 impl !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::QuantaIndex
 impl !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::QuantaIndex
+pub struct quanta_index_sdk::QuarantineNamespace<'a>
+impl<'a> quanta_index_sdk::QuarantineNamespace<'a>
+pub fn quanta_index_sdk::QuarantineNamespace<'a>::discard(&self, target: &quanta_index_contract::ipc::quarantine::QuarantineTargetV1) -> core::result::Result<quanta_index_contract::ipc::quarantine::QuarantineDiscardAck, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::QuarantineNamespace<'a>::inventory(&self) -> core::result::Result<quanta_index_contract::ipc::quarantine::QuarantineInventoryV1, quanta_index_sdk::SdkError>
+impl<'a> core::marker::Freeze for quanta_index_sdk::QuarantineNamespace<'a>
+impl<'a> core::marker::Send for quanta_index_sdk::QuarantineNamespace<'a>
+impl<'a> core::marker::Sync for quanta_index_sdk::QuarantineNamespace<'a>
+impl<'a> core::marker::Unpin for quanta_index_sdk::QuarantineNamespace<'a>
+impl<'a> core::marker::UnsafeUnpin for quanta_index_sdk::QuarantineNamespace<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::QuarantineNamespace<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::QuarantineNamespace<'a>
 pub struct quanta_index_sdk::ReaderClient<'a>
 impl<'a> quanta_index_sdk::ReaderClient<'a>
 pub fn quanta_index_sdk::ReaderClient<'a>::explain(&self, generation: quanta_index_contract_base::query::pin::GenerationPin, candidate: quanta_index_contract_base::results::candidates::LexicalCandidate) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneExplainQueryResponse, quanta_index_sdk::SdkError>

@@ -31,10 +31,12 @@ pub use domains::auxiliary::{
 };
 pub use domains::generation::{
     GenerationIdentityValidatePort, GenerationQuarantineReasonV1, GenerationStorageKeyV1,
-    IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort, QuarantinedGenerationV1,
-    SealedArtifactCommitmentV1, SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1,
-    SealedGenerationReclaimPort, SealedGenerationScanPort, TreeCommitmentMismatchV1,
-    commit_tree_v1, sha256_of_file, verify_tree_commitment_v1,
+    IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort,
+    QUARANTINE_TARGET_NOT_QUARANTINED_CODE, QuarantineDiscardOutcomeV1,
+    QuarantinedGenerationDiscardPort, QuarantinedGenerationV1, SealedArtifactCommitmentV1,
+    SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
+    SealedGenerationScanPort, TreeCommitmentMismatchV1, commit_tree_v1, sha256_of_file,
+    verify_tree_commitment_v1,
 };
 pub use domains::hybrid::{ExplainQueryPort, HybridOrchestratorPolicy, HybridQueryPort};
 pub use domains::idempotency::{
@@ -56,7 +58,7 @@ pub use domains::observability::{
 };
 pub use domains::repomap::{
     QuarantinedRepoMapFileV1, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
-    RepoMapOpenReportV1, RepoMapPolicy, RepoMapQueryPort, RepoMapService,
+    RepoMapOpenReportV1, RepoMapPolicy, RepoMapQuarantinePort, RepoMapQueryPort, RepoMapService,
 };
 pub use domains::semantic::{
     DenseIndexEffortV1, DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1,

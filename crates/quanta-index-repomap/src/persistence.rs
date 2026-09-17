@@ -18,7 +18,10 @@ use std::{
 };
 
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
-use quanta_index_core::{CoreError, QuarantinedRepoMapFileV1, RepoMapOpenReportV1};
+use quanta_index_core::{
+    CoreError, QUARANTINE_TARGET_NOT_QUARANTINED_CODE, QuarantineDiscardOutcomeV1,
+    QuarantinedRepoMapFileV1, RepoMapOpenReportV1,
+};
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::{self, MapAccess, Visitor},
@@ -286,6 +289,17 @@ fn lower_hex_char(nibble: u8) -> char {
         .map_or('0', std::convert::identity)
 }
 
+/// Suffix of the file that records why its sibling was quarantined.
+const QUARANTINE_REASON_SUFFIX: &str = ".reason";
+/// What a quarantined file is listed under when no reason sits beside it:
+/// it was moved aside by a build that did not yet record reasons.
+const QUARANTINE_REASON_NOT_RECORDED: &str =
+    "reason not recorded: quarantined before reasons were persisted";
+
+fn quarantine_reason_path(quarantine: &Path, file_name: &str) -> PathBuf {
+    quarantine.join(format!("{file_name}{QUARANTINE_REASON_SUFFIX}"))
+}
+
 fn storage_error(action: &str, path: &Path, err: &dyn fmt::Display) -> CoreError {
     CoreError::Storage(format!(
         "repomap persistence failed to {action} {}: {err}",
@@ -486,6 +500,11 @@ impl RepoMapSnapshotPersistence {
             })?;
         let destination = self.quarantine.join(&file_name);
         fs::rename(path, &destination).map_err(|err| storage_error("quarantine", path, &err))?;
+        // The reason sits beside the file so a later process can still say
+        // why it was set aside (QI-BB-026).
+        let reason_path = quarantine_reason_path(&self.quarantine, &file_name);
+        fs::write(&reason_path, reason.as_bytes())
+            .map_err(|err| storage_error("record quarantine reason", &reason_path, &err))?;
         File::open(&self.quarantine)
             .and_then(|directory| directory.sync_all())
             .map_err(|err| storage_error("sync directory", &self.quarantine, &err))?;
@@ -493,6 +512,118 @@ impl RepoMapSnapshotPersistence {
             .quarantined
             .push(QuarantinedRepoMapFileV1 { file_name, reason });
         Ok(())
+    }
+
+    /// Every file in the quarantine directory right now, with the reason
+    /// recorded beside it.
+    pub(crate) fn quarantined_files(&self) -> Result<Vec<QuarantinedRepoMapFileV1>, CoreError> {
+        let mut out = Vec::new();
+        for entry in fs::read_dir(&self.quarantine)
+            .map_err(|err| storage_error("list dir", &self.quarantine, &err))?
+        {
+            let entry =
+                entry.map_err(|err| storage_error("read dir entry in", &self.quarantine, &err))?;
+            let Some(file_name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if file_name.ends_with(QUARANTINE_REASON_SUFFIX) {
+                continue;
+            }
+            if !entry
+                .file_type()
+                .map_err(|err| storage_error("inspect", &entry.path(), &err))?
+                .is_file()
+            {
+                continue;
+            }
+            let reason = self.quarantine_reason(&file_name)?;
+            out.push(QuarantinedRepoMapFileV1 { file_name, reason });
+        }
+        out.sort_by(|left, right| left.file_name.cmp(&right.file_name));
+        Ok(out)
+    }
+
+    /// The reason recorded beside a quarantined file.
+    ///
+    /// A file quarantined before reasons were recorded has none on disk;
+    /// it is listed under a fixed sentence saying so, and a discard must
+    /// name that sentence back, exactly as with any other reason.
+    fn quarantine_reason(&self, file_name: &str) -> Result<String, CoreError> {
+        let reason_path = quarantine_reason_path(&self.quarantine, file_name);
+        match fs::read_to_string(&reason_path) {
+            Ok(reason) => Ok(reason),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                Ok(QUARANTINE_REASON_NOT_RECORDED.to_string())
+            }
+            Err(err) => Err(storage_error("read quarantine reason", &reason_path, &err)),
+        }
+    }
+
+    /// Remove one quarantined file and its recorded reason.
+    ///
+    /// `entry` names the file as [`Self::quarantined_files`] listed it: a
+    /// single path segment naming a regular file in the quarantine
+    /// directory, under the reason recorded beside it right now. A name
+    /// that is already gone is `Absent`; anything else — a nested name, a
+    /// directory, a reason the record does not carry — is refused typed,
+    /// so a listing that went stale removes nothing.
+    pub(crate) fn discard_quarantined_file(
+        &self,
+        entry: &QuarantinedRepoMapFileV1,
+    ) -> Result<QuarantineDiscardOutcomeV1, CoreError> {
+        let file_name = entry.file_name.as_str();
+        let refuse = |why: String| CoreError::Typed {
+            code: QUARANTINE_TARGET_NOT_QUARANTINED_CODE.to_string(),
+            message: format!("repomap: refusing to discard quarantined `{file_name}`: {why}"),
+        };
+        if file_name.is_empty()
+            || file_name == "."
+            || file_name == ".."
+            || file_name.contains('/')
+            || file_name.ends_with(QUARANTINE_REASON_SUFFIX)
+        {
+            return Err(refuse(
+                "the name is not a quarantined file's name".to_string(),
+            ));
+        }
+        let path = self.quarantine.join(file_name);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(QuarantineDiscardOutcomeV1::Absent);
+            }
+            Err(err) => return Err(storage_error("inspect quarantined", &path, &err)),
+        };
+        if !metadata.is_file() {
+            return Err(refuse(
+                "it is not a regular file in the quarantine directory".to_string(),
+            ));
+        }
+        let recorded = self.quarantine_reason(file_name)?;
+        if recorded != entry.reason {
+            return Err(refuse(format!(
+                "it is recorded as quarantined for `{recorded}` now, not `{}` as listed; list again",
+                entry.reason
+            )));
+        }
+        let bytes = metadata.len();
+        fs::remove_file(&path).map_err(|err| storage_error("discard quarantined", &path, &err))?;
+        let reason_path = quarantine_reason_path(&self.quarantine, file_name);
+        match fs::remove_file(&reason_path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(storage_error(
+                    "discard quarantine reason",
+                    &reason_path,
+                    &err,
+                ));
+            }
+        }
+        File::open(&self.quarantine)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|err| storage_error("sync directory", &self.quarantine, &err))?;
+        Ok(QuarantineDiscardOutcomeV1::Discarded { bytes })
     }
 
     /// Remove temporaries a crashed write left in `dir`; their content was
@@ -669,10 +800,15 @@ mod tests {
     };
     use tempfile::tempdir;
 
+    use quanta_index_core::{
+        CoreError, QUARANTINE_TARGET_NOT_QUARANTINED_CODE, QuarantineDiscardOutcomeV1,
+        QuarantinedRepoMapFileV1,
+    };
+
     use super::{
         AFTER_RENAME, AFTER_TEMPORARY_SYNC, CRASH_BOUNDARY_ENV, CRASH_EXIT_CODE,
-        RepoMapActivationRecordV1, RepoMapSnapshotPersistence, TEMPORARY_PREFIX,
-        snapshot_file_name,
+        QUARANTINE_REASON_NOT_RECORDED, QUARANTINE_REASON_SUFFIX, RepoMapActivationRecordV1,
+        RepoMapSnapshotPersistence, TEMPORARY_PREFIX, quarantine_reason_path, snapshot_file_name,
     };
     use crate::model::{RepoMapEntry, RepoMapSnapshot};
 
@@ -872,6 +1008,126 @@ mod tests {
         let again = persistence.load()?;
         assert!(again.report.quarantined.is_empty());
         assert_eq!(again.snapshots.len(), 1);
+        Ok(())
+    }
+
+    /// QI-BB-026 follow-up: the quarantine is discarded only as listed.
+    ///
+    /// The listing is live and carries the reason recorded beside each
+    /// file; a discard names the file and that reason and removes both
+    /// files; a stale reason, a nested name, a reason sidecar named
+    /// directly or a directory removes nothing and is refused typed; a
+    /// name already gone is `Absent`; a file quarantined by a build that
+    /// recorded no reason is listed under the fixed sentence and discarded
+    /// by naming it back.
+    #[test]
+    fn the_quarantine_is_listed_with_reasons_and_discarded_only_as_listed() -> TestResult {
+        let root = tempdir()?;
+        let persistence = RepoMapSnapshotPersistence::open(root.path())?;
+        let rotted = fixture_snapshot(2, "rotted");
+        persistence.persist_snapshot(&rotted)?;
+        let snapshots_dir = root.path().join("snapshots");
+        let rotted_path = snapshots_dir.join(snapshot_file_name(&rotted));
+        let text = std::fs::read_to_string(&rotted_path)?;
+        std::fs::write(
+            &rotted_path,
+            text.replacen("\"snapshot-rotted\"", "\"snapshot-rottex\"", 1),
+        )?;
+        let _loaded = persistence.load()?;
+        let quarantine_dir = root.path().join("quarantine");
+        // A file set aside by a build that recorded no reason.
+        std::fs::write(quarantine_dir.join("old--file.json"), b"{}")?;
+        // Things that live in the quarantine directory but are not
+        // quarantined files: a directory, and the reason sidecars.
+        std::fs::create_dir(quarantine_dir.join("a-directory"))?;
+
+        let listed = persistence.quarantined_files()?;
+        let names: Vec<&str> = listed
+            .iter()
+            .map(|entry| entry.file_name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["old--file.json", snapshot_file_name(&rotted).as_str()]
+        );
+        let Some(old) = listed
+            .iter()
+            .find(|entry| entry.file_name == "old--file.json")
+        else {
+            return Err("the unrecorded file is listed".into());
+        };
+        assert_eq!(old.reason, QUARANTINE_REASON_NOT_RECORDED);
+        let Some(listed_rotted) = listed
+            .iter()
+            .find(|entry| entry.file_name == snapshot_file_name(&rotted))
+        else {
+            return Err("the rotted snapshot is listed".into());
+        };
+        assert!(
+            listed_rotted.reason.contains("digest"),
+            "{}",
+            listed_rotted.reason
+        );
+        assert_eq!(
+            std::fs::read_to_string(quarantine_reason_path(
+                &quarantine_dir,
+                &listed_rotted.file_name
+            ))?,
+            listed_rotted.reason,
+            "the listed reason is the recorded one"
+        );
+
+        let refused = |entry: QuarantinedRepoMapFileV1| -> TestResult {
+            match persistence.discard_quarantined_file(&entry) {
+                Err(CoreError::Typed { code, .. })
+                    if code == QUARANTINE_TARGET_NOT_QUARANTINED_CODE =>
+                {
+                    Ok(())
+                }
+                other => Err(format!("{entry:?} must be refused typed, got {other:?}").into()),
+            }
+        };
+        refused(QuarantinedRepoMapFileV1 {
+            file_name: listed_rotted.file_name.clone(),
+            reason: "some other reason".to_string(),
+        })?;
+        refused(QuarantinedRepoMapFileV1 {
+            file_name: format!("../snapshots/{}", listed_rotted.file_name),
+            reason: listed_rotted.reason.clone(),
+        })?;
+        refused(QuarantinedRepoMapFileV1 {
+            file_name: format!("{}{QUARANTINE_REASON_SUFFIX}", listed_rotted.file_name),
+            reason: listed_rotted.reason.clone(),
+        })?;
+        refused(QuarantinedRepoMapFileV1 {
+            file_name: "a-directory".to_string(),
+            reason: "anything".to_string(),
+        })?;
+        assert!(quarantine_dir.join(&listed_rotted.file_name).is_file());
+        assert!(quarantine_reason_path(&quarantine_dir, &listed_rotted.file_name).is_file());
+        assert!(quarantine_dir.join("a-directory").is_dir());
+        assert_eq!(
+            persistence.quarantined_files()?,
+            listed,
+            "a refused discard changes nothing"
+        );
+
+        let bytes = std::fs::metadata(quarantine_dir.join(&listed_rotted.file_name))?.len();
+        assert_eq!(
+            persistence.discard_quarantined_file(listed_rotted)?,
+            QuarantineDiscardOutcomeV1::Discarded { bytes }
+        );
+        assert!(!quarantine_dir.join(&listed_rotted.file_name).exists());
+        assert!(!quarantine_reason_path(&quarantine_dir, &listed_rotted.file_name).exists());
+        assert_eq!(
+            persistence.discard_quarantined_file(listed_rotted)?,
+            QuarantineDiscardOutcomeV1::Absent
+        );
+        assert_eq!(
+            persistence.discard_quarantined_file(old)?,
+            QuarantineDiscardOutcomeV1::Discarded { bytes: 2 }
+        );
+        assert!(persistence.quarantined_files()?.is_empty());
         Ok(())
     }
 

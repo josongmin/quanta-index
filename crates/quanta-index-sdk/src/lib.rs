@@ -12,6 +12,7 @@ mod history;
 pub(crate) mod lexical;
 mod namespace;
 mod observability;
+mod quarantine;
 mod repomap;
 mod runtime;
 mod search;
@@ -37,6 +38,7 @@ pub use lexical::{
 };
 pub(crate) use namespace::{NamespaceIngest, NamespaceQuery};
 pub use observability::ObservabilityNamespace;
+pub use quarantine::QuarantineNamespace;
 pub use repomap::RepoMapNamespace;
 pub use runtime::{DirtyBatch, DirtyBatchMutation, RuntimeNamespace, RuntimeQueryBuilder};
 pub use search::{HybridSeedQueryBuilder, SearchNamespace};
@@ -59,7 +61,9 @@ pub use quanta_index_contract::{
     GenerationPin, GenerationSelector, GenerationSnapshot, GenerationStatusReport,
     HybridSeedQueryRequest, HybridSeedQueryResponse, LexicalCandidate, ManifestGeneration,
     MetricBucketV1, MetricCounterV1, MetricGaugeV1, MetricHistogramV1, MetricsDiagnosticsV1,
-    MetricsSnapshotV1, OwnerDocKind, RepoId, RepoMapActivateGenerationRequest, RepoMapCallEdge,
+    MetricsSnapshotV1, OwnerDocKind, QuarantineDiscardAck, QuarantineDiscardOutcomeDtoV1,
+    QuarantineInventoryV1, QuarantineTargetV1, QuarantinedGenerationEntryV1,
+    QuarantinedRepoMapFileEntryV1, RepoId, RepoMapActivateGenerationRequest, RepoMapCallEdge,
     RepoMapChunkNode, RepoMapContainsEdge, RepoMapDependsOnEdge, RepoMapEdge, RepoMapFileNode,
     RepoMapGraphCoverage, RepoMapImportEdge, RepoMapModuleId, RepoMapModuleNode,
     RepoMapMutationAck, RepoMapNode, RepoMapNodeRef, RepoMapOwnsChunkEdge, RepoMapQueryRequest,

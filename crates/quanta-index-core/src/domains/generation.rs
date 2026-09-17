@@ -49,6 +49,19 @@ impl GenerationQuarantineReasonV1 {
             Self::IdentityDigestMismatch => "GENERATION_QUARANTINE_IDENTITY_DIGEST_MISMATCH",
         }
     }
+
+    /// Inverse of [`Self::as_code_str`], for a reason that crossed a wire.
+    #[must_use]
+    pub fn from_code_str(code: &str) -> Option<Self> {
+        [
+            Self::NonCanonicalLayout,
+            Self::IdentityUnreadable,
+            Self::ScopeMismatch,
+            Self::IdentityDigestMismatch,
+        ]
+        .into_iter()
+        .find(|reason| reason.as_code_str() == code)
+    }
 }
 
 impl fmt::Display for GenerationQuarantineReasonV1 {
@@ -156,6 +169,34 @@ pub trait IncompleteGenerationDiscardPort: Send + Sync {
         &self,
         candidate: &GenerationSnapshot,
     ) -> Result<IncompleteGenerationDiscardOutcomeV1, CoreError>;
+}
+
+/// Wire code for a discard whose target is not quarantined right now.
+pub const QUARANTINE_TARGET_NOT_QUARANTINED_CODE: &str = "QUARANTINE_TARGET_NOT_QUARANTINED";
+
+/// What discarding a quarantined entry did.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QuarantineDiscardOutcomeV1 {
+    /// The entry's bytes are gone; `bytes` is what was on disk before.
+    Discarded { bytes: u64 },
+    /// Nothing was at the path any more.
+    Absent,
+}
+
+/// Destructive port for a directory the inventory set aside (QI-BB-026).
+///
+/// The only way a quarantined directory leaves the disk. Implementations
+/// re-run their own inventory and remove `entry.path` only if that
+/// inventory reports it quarantined at that moment, under the same reason:
+/// a sealed generation, an in-progress build, a directory repaired since
+/// the caller listed it, or any path the inventory does not name is refused
+/// typed as [`QUARANTINE_TARGET_NOT_QUARANTINED_CODE`], never removed. A
+/// path that is already gone is an idempotent `Absent`.
+pub trait QuarantinedGenerationDiscardPort: Send + Sync {
+    fn discard_quarantined_generation(
+        &self,
+        entry: &QuarantinedGenerationV1,
+    ) -> Result<QuarantineDiscardOutcomeV1, CoreError>;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

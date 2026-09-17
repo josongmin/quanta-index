@@ -310,7 +310,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | --- | --- | --- |
 | W0 | **passed** | G0-L/G0-S/G0-C passed, G0-R baseline pinned(cooperative-only). §3 참조. timing 재측정만 `blocked: contended-host` |
 | W1 | planned | |
-| W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + QI-BB-032 idempotency catalog(§3.16) + **QI-BB-020 auxiliary authority rows(§3.19, catalog 확장: per-record row, validate→persist→apply, Arc snapshot read, retention prune, legacy 일회 migration)** 완료. 남은 것: quarantine control surface, aux read epoch/visibility interval(§3.19 한계) |
+| W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + **quarantine control surface(§3.31: live inventory + as-listed discard, control IPC/SDK/CLI)** + QI-BB-032 idempotency catalog(§3.16) + QI-BB-020 auxiliary authority rows(§3.19) 완료. 남은 것: aux read epoch/visibility interval(§3.19 한계) |
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + QI-BB-027 ANN sealed contract(§3.23) + **QI-BB-016 lexical writer envelope(§3.26)** 완료. 남은 것: sharded sidecar 포맷(O(delta) write), seal마다 ANN 전체 재구축(O(N), §3.23 한계), scope 단위 streamed embed→append(§3.18 한계) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) + **QI-BB-025 보완 #4 runtime/structural window(§3.30)** 완료. 남은 것: runtime/structural keyset cursor, streaming projection collector |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. QI-BB-014 UDS/state-root private hardening(§3.27) 완료. QI-BB-015 metrics 집계 + scrape(§3.28) 완료. **phase 2(§3.29): budget이 lexical native collect/scan/regex verify/predicate scope 안에서 관측** 완료. 남은 것: shared mode(group/ACL + peer credential), semantic lane 내부 관측 |
@@ -873,7 +873,7 @@ error metric: 두 code는 `lq_typed_error_interrupted_total`(신규, closed taxo
 **정직한 한계**: 하나의 connection이 여러 request를 pipelined로 보내면 두 번째 request는 첫 번째 dispatch
 가 끝난 뒤 읽힌다(connection thread는 순차). 병렬성은 connection 단위다.
 
-## 3.13 QI-BB-026 — boot inventory + quarantine: boot는 active set만 증명한다 (구현 완료, control surface는 후속)
+## 3.13 QI-BB-026 — boot inventory + quarantine: boot는 active set만 증명한다 (구현 완료, control surface는 §3.31)
 
 **진단 확정**: lexical scanner가 모든 sealed generation을 `validate_generation_identity`(§3.10 이후엔 sidecar
 sha256까지)로 검증한 뒤 boot seed가 같은 후보를 **다시** 검증했고, semantic scanner는 모든 sealed generation을
@@ -904,7 +904,7 @@ boot 순서: lexical inventory → legacy semantic migration → semantic invent
 
 **완료 기준 대비**: (1) 손상 비활성 + 정상 active → boot/query 성공 + quarantine receipt ✓ (receipt는 runtime report, 파일/IPC 아님). (2) 손상 active → bind 전 typed ✓. (3) 동기 boot 검증량 ∝ 필수 set — inventory는 generation당 파일 1–2개, deep은 active pair만 ✓. (4) generation당 deep validation boot당 최대 1회 ✓ (lexical 2회→1회, semantic scan+rehydrate 2회→1회).
 
-**남은 것**: quarantine 조회/삭제/재검증 typed control/CLI surface(finding 보완 #4) — contract IPC variant 추가가 필요해 W2 catalog와 함께. QI-BB-017 본체는 §3.14.
+**남은 것**: quarantine 조회/삭제 typed control/CLI surface(finding 보완 #4)는 §3.31에서 완료. QI-BB-017 본체는 §3.14.
 
 ## 3.14 QI-BB-017 — semantic sealed manifest: open은 row가 아니라 file을 다시 잰다 (구현 완료)
 
@@ -1677,6 +1677,45 @@ code로 번역하므로 IPC에는 나가지 않는다.
 route에 없다. (b) history처럼 keyset cursor는 두 route에 아직 없다 — `has_more`만 알려주고 다음 page를 요청하는 방법은
 `top_k`를 키우는 것뿐(finding 보완 #4의 "cursor" 절반은 미구현, 정직하게 남김). (c) SDK는 응답을 그대로 노출하므로 별도
 builder 변경은 없다.
+
+## 3.31 QI-BB-026 보완 #4 — quarantine는 control socket으로 살아있는 목록이 되고, 목록에 적힌 그대로만 지워진다 (구현 완료)
+
+**진단 확정**: §3.13이 boot에서 set aside한 것은 runtime report(harness 전용)로만 보였다 — 운영자가 어떤 디렉터리가
+왜 격리됐는지 daemon에 물을 수 없었고, 지우려면 state root를 직접 뒤져야 했다(finding 보완 #4의 "조회/삭제 typed surface"
+미구현). `RepoMap` store의 `quarantine/`는 이유를 기록하지 않아 파일명만 남았다.
+
+**구현**:
+
+| 층 | 변경 |
+| --- | --- |
+| core | `QuarantinedGenerationDiscardPort::discard_quarantined_generation(&QuarantinedGenerationV1) -> QuarantineDiscardOutcomeV1 { Discarded{bytes}, Absent }`; `RepoMapQuarantinePort::{quarantined_files, discard_quarantined_file(&QuarantinedRepoMapFileV1)}`; `QUARANTINE_TARGET_NOT_QUARANTINED_CODE`; `GenerationQuarantineReasonV1::from_code_str` (wire code → 도메인, 모르는 code는 거부) |
+| lexical / semantic | `impl QuarantinedGenerationDiscardPort`: **지금** inventory를 다시 떠서 같은 path가 같은 reason으로 격리돼 있을 때만 `remove_dir_all` + parent fsync, bytes 보고. 목록에 없는데 존재하는 경로(sealed·in-progress·repaired) → typed 거부, 없는 경로 → `Absent`. track root 밖·디렉터리 아님도 거부 |
+| repomap | `quarantine/<name>.reason` sidecar(격리 시 함께 기록, dir fsync). `quarantined_files()`는 sidecar를 읽어 reason을 싣고(sidecar 없는 옛 파일은 고정 문장 `reason not recorded: …`), `discard_quarantined_file(entry)`는 이름이 한 segment의 regular file이고 **기록된 reason이 entry.reason과 같을 때만** 파일+sidecar 삭제. `.reason`을 직접 이름하면 거부 |
+| contract | `ipc/quarantine.rs`: `QuarantineInventoryRequest`(빈 map, field 하나라도 거부), `QuarantinedGenerationEntryV1 {track,path,reason,detail}`(path/reason 비면 거부), `QuarantinedRepoMapFileEntryV1 {file_name,reason}`(빈 이름·`.`·`..`·`/` 포함 거부), `QuarantineInventoryV1 {lexical,semantic,repo_map}`(track 불일치 거부), `QuarantineTargetV1 {Generation,RepoMapFile}` adjacent-tagged(`kind` 뒤에 `payload`, 모르는 kind 거부), `QuarantineDiscardRequest{target}`, `QuarantineDiscardOutcomeDtoV1 {Discarded{bytes},Absent}`, `QuarantineDiscardAck{target,outcome}`. control request/response에 `QuarantineInventory`/`QuarantineDiscard`·`QuarantineDiscardAck` variant |
+| search-plane | `QuarantineService::{inventory, discard}` (`QuarantineServiceParts`: track별 scanner+discard port, repo-map port) — inventory는 매번 adapter에서 읽고(boot snapshot 아님), scanner가 다른 track을 보고하면 defect로 surfaced. `SearchPlaneControlDispatcher`가 두 route를 service로 위임 |
+| searchd | composition root가 `lexical_quarantine_discard`/`semantic_quarantine_discard`/`repo_map_quarantine` part를 adapter에서 만들어 service로 조립 |
+| sdk | `client.quarantine().{inventory(), discard(&target)}` — ack의 target이 보낸 것과 다르면 protocol error; `SearchPlaneControlClient::{quarantine_inventory, discard_quarantined}` |
+| searchctl | `quarantine list [--output pretty\|json]` — pretty는 각 entry를 **`quarantine discard`가 받는 flag 형태 그대로** 한 줄로(복사해서 지움); `quarantine discard --track lexical\|semantic --path P --reason CODE [--detail T]` / `--repomap-file NAME --reason TEXT`. 불완전·혼합 조합은 socket 전에 usage error |
+| harness | `E2eRuntime::{quarantine_inventory, discard_quarantined}` (후자는 daemon의 typed 거부를 `Ok(Err(SearchPlaneIpcError))`로 돌려줘 test가 code를 단언) |
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| 살아있는 daemon에서 lexical legacy dir + garbage identity + semantic legacy dir + repo-map 깨진 snapshot이 경로·이유와 함께 목록됨; 같은 path를 다른 reason으로 → `QUARANTINE_TARGET_NOT_QUARANTINED` + 디렉터리 유지; **active sealed generation**을 격리된 척 이름해도 거부 + 유지; repo-map stale reason 거부 + 파일 유지; 목록 entry 그대로 discard → `Discarded{bytes}` + ack target echo + 경로 소멸(repo-map 15 bytes 정확); 두 번째 discard는 `Absent`; 이후 live 목록 비고 **재부팅** boot inventory도 비고 sealed 2/2 유지 | `e2e_boot_quarantine::quarantine_is_listed_discarded_as_named_and_gone_after_a_reboot` |
+| control dispatcher route: inventory 응답이 adapter 목록 그대로, stale discard는 typed Error로 건너오고 port 호출 0, 목록 entry discard는 ack(target echo + adapter outcome) + port에 정확히 그 entry | `control_dispatcher::tests::quarantine_routes_answer_with_the_listing_the_ack_and_the_typed_refusal` |
+| service: track별 routing, wire code ↔ 도메인 reason, 모르는 reason code 거부, structural track 거부 | `quarantine::tests` 2 |
+| repomap persistence: reason sidecar 기록·목록, stale reason/nested name/`.reason` 직접/디렉터리 거부 + 무변경, Discarded bytes = 파일 크기, 재discard `Absent`, sidecar 없는 옛 파일은 고정 문장으로 목록·discard | `persistence::tests::the_quarantine_is_listed_with_reasons_and_discarded_only_as_listed` |
+| wire: 모든 DTO CBOR/JSON round-trip + envelope kind tag; 빈 path/reason/file_name, `..`·`/` 포함 이름, track 불일치, 모르는 kind, payload 선행, stray field, `Discarded` bytes 누락, `Absent`+bytes, 음수 bytes, request에 field — 전부 decode 거부 | `contract/tests/ipc_control_quarantine_contract.rs` 3 (test-authority 등록) |
+| SDK: 요청이 wire에 그대로, 다른 target의 ack는 protocol error, wrong kind는 kind 이름과 함께 protocol error, typed 거부는 `Remote{code}` | `sdk::tests::quarantine_*` 2 |
+| CLI: parse(list/discard 정상 3 + usage 12), render(pretty 줄 = discard flag, json round-trip, prometheus 거부, ack 2종); 실 UDS mock으로 `list --output json` round-trip, pretty 줄 정확, discard ack pretty/json, stale reason → stderr에 code + exit≠0 + stdout 비움, `--reason` 누락·혼합은 socket 전 usage | `searchctl::tests::{quarantine_parses_…, render_quarantine_…}`, `cli_smoke::quarantine_*` 4 |
+| 회귀·rail | contract/sdk/searchctl/search-plane/repomap/core/harness/searchd 896 + lexical boot_inventory·semantic inventory + e2e boot_quarantine/metrics_scrape/perf_chaos + cli_smoke + ipc admission, workspace clippy, hexagonal/semgrep/module-discipline/error-shape/digest/derive/cargo-toml/test-authority/fmt, `just rust-fuzz-smoke` 4 target 완주 crash 0, public-api(contract·sdk)·cargo-modules(contract·core) baseline 갱신은 additive |
+
+**설계 메모**: (a) "re-inventory then delete"가 핵심 — discard는 목록의 snapshot을 믿지 않고 adapter가 그 순간 다시 판단한다. 그래서
+sealed generation을 이름해도 `symlink_metadata` 존재 + 목록 부재 = 거부이지 `Absent`가 아니다. (b) repo-map도 같은 규칙: 이름만이
+아니라 **기록된 reason**까지 일치해야 지운다(§3.25의 quarantine에 reason 영속화가 없던 것을 이번에 채움). (c) `detail`은 정보성 —
+adapter는 path+reason으로 맞춘다(CLI `--detail` optional). (d) "재검증(re-validate)"은 넣지 않았다: inventory가 identity만 보므로
+재검증 = 다음 boot inventory와 같고, 별도 route는 같은 답을 두 번 주는 셈이라 정직하게 제외.
 
 ## 4. Finding 상태 (QI-BB-001–032)
 

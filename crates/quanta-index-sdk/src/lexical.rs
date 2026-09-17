@@ -375,7 +375,9 @@ impl<'a> SearchCorpusNamespace<'a> {
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
-            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)) => {
+            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
+            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
                 return Err(SdkError::Protocol(format!(
                     "expected composite search corpus activation CAS ack, got {}",
                     QuantaIndex::control_response_kind(&other)

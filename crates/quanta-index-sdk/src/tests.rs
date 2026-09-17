@@ -3703,6 +3703,154 @@ fn observability_metrics_snapshot_refuses_wrong_kind_and_surfaces_remote_errors(
     }
 }
 
+/// QI-BB-026: the quarantine listing rides the control socket and comes
+/// back as the typed inventory; a discard sends the target verbatim and
+/// returns the daemon's ack once it names the same target.
+#[test]
+fn quarantine_inventory_and_discard_carry_the_target_verbatim() {
+    use quanta_index_contract::{
+        QuarantineDiscardAck, QuarantineDiscardOutcomeDtoV1, QuarantineInventoryV1,
+        QuarantineTargetV1, QuarantinedGenerationEntryV1, QuarantinedRepoMapFileEntryV1,
+        SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneTrackKind,
+    };
+    let inventory = QuarantineInventoryV1 {
+        lexical: vec![QuarantinedGenerationEntryV1 {
+            track: SearchPlaneTrackKind::Lexical,
+            path: "/state/indexes/lexical/repo/rev/g2".to_string(),
+            reason: "GENERATION_QUARANTINE_IDENTITY_UNREADABLE".to_string(),
+            detail: "identity file does not decode".to_string(),
+        }],
+        semantic: Vec::new(),
+        repo_map: vec![QuarantinedRepoMapFileEntryV1 {
+            file_name: "stale--marker.json".to_string(),
+            reason: "snapshot does not decode".to_string(),
+        }],
+    };
+    let control = Arc::new(StubControlTransport::new(
+        SearchPlaneControlIpcResponse::QuarantineInventory(inventory.clone()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), control.clone(), unused_ingest());
+    let listed = ok_or_fail!(client.quarantine().inventory());
+    assert_eq!(listed, inventory);
+    let sent = ok_or_fail!(only_control_request(&control));
+    assert!(
+        matches!(
+            sent.payload,
+            SearchPlaneControlIpcRequest::QuarantineInventory(_)
+        ),
+        "the inventory request is what went over the wire: {sent:?}"
+    );
+
+    let target = QuarantineTargetV1::RepoMapFile(QuarantinedRepoMapFileEntryV1 {
+        file_name: "stale--marker.json".to_string(),
+        reason: "snapshot does not decode".to_string(),
+    });
+    let ack = QuarantineDiscardAck {
+        target: target.clone(),
+        outcome: QuarantineDiscardOutcomeDtoV1::Discarded { bytes: 15 },
+    };
+    let control = Arc::new(StubControlTransport::new(
+        SearchPlaneControlIpcResponse::QuarantineDiscardAck(ack.clone()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), control.clone(), unused_ingest());
+    let observed = ok_or_fail!(client.quarantine().discard(&target));
+    assert_eq!(observed, ack);
+    let sent = ok_or_fail!(only_control_request(&control));
+    let SearchPlaneControlIpcRequest::QuarantineDiscard(request) = sent.payload else {
+        panic!("expected the discard request on the wire, got {sent:?}");
+    };
+    assert_eq!(
+        request.target, target,
+        "the target goes over the wire verbatim"
+    );
+}
+
+/// QI-BB-026: a mismatched ack, a wrong kind and a typed refusal each
+/// surface as what they are.
+///
+/// An ack that names a different target than was sent is a protocol
+/// error (the daemon answered some other discard); an answer of the wrong
+/// kind is a protocol error; the daemon's typed refusal of a stale target
+/// surfaces as the remote error it is.
+#[test]
+fn quarantine_discard_refuses_mismatched_acks_wrong_kinds_and_surfaces_refusals() {
+    use quanta_index_contract::{
+        QuarantineDiscardAck, QuarantineDiscardOutcomeDtoV1, QuarantineInventoryV1,
+        QuarantineTargetV1, QuarantinedGenerationEntryV1, SearchPlaneControlIpcResponse,
+        SearchPlaneIpcError, SearchPlaneTrackKind,
+    };
+    let entry = |path: &str| QuarantinedGenerationEntryV1 {
+        track: SearchPlaneTrackKind::Semantic,
+        path: path.to_string(),
+        reason: "GENERATION_QUARANTINE_SCOPE_MISMATCH".to_string(),
+        detail: String::new(),
+    };
+    let sent = QuarantineTargetV1::Generation(entry("/state/indexes/semantic/repo/rev/g5"));
+    let mismatched = Arc::new(StubControlTransport::new(
+        SearchPlaneControlIpcResponse::QuarantineDiscardAck(QuarantineDiscardAck {
+            target: QuarantineTargetV1::Generation(entry("/state/indexes/semantic/repo/rev/g6")),
+            outcome: QuarantineDiscardOutcomeDtoV1::Absent,
+        }),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), mismatched, unused_ingest());
+    match client.quarantine().discard(&sent) {
+        Err(crate::SdkError::Protocol(message)) => {
+            assert!(
+                message.contains("different target"),
+                "the protocol error says the ack is for another target: {message}"
+            );
+        }
+        other => panic!("expected a protocol error, got {other:?}"),
+    }
+    let wrong_kind = Arc::new(StubControlTransport::new(
+        SearchPlaneControlIpcResponse::QuarantineInventory(QuarantineInventoryV1::default()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), wrong_kind, unused_ingest());
+    match client.quarantine().discard(&sent) {
+        Err(crate::SdkError::Protocol(message)) => {
+            assert!(
+                message.contains("quarantine_inventory"),
+                "the protocol error names what arrived: {message}"
+            );
+        }
+        other => panic!("expected a protocol error, got {other:?}"),
+    }
+    let wrong_kind = Arc::new(StubControlTransport::new(
+        SearchPlaneControlIpcResponse::QuarantineDiscardAck(QuarantineDiscardAck {
+            target: sent.clone(),
+            outcome: QuarantineDiscardOutcomeDtoV1::Absent,
+        }),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), wrong_kind, unused_ingest());
+    match client.quarantine().inventory() {
+        Err(crate::SdkError::Protocol(message)) => {
+            assert!(
+                message.contains("quarantine_discard_ack"),
+                "the protocol error names what arrived: {message}"
+            );
+        }
+        other => panic!("expected a protocol error, got {other:?}"),
+    }
+    let refused = Arc::new(StubControlTransport::new(
+        SearchPlaneControlIpcResponse::Error(SearchPlaneIpcError {
+            code: "QUARANTINE_TARGET_NOT_QUARANTINED".to_string(),
+            message: "semantic: refusing to discard /state/indexes/semantic/repo/rev/g5: it is quarantined as GENERATION_QUARANTINE_IDENTITY_UNREADABLE now".to_string(),
+            repair: None,
+        }),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), refused, unused_ingest());
+    match client.quarantine().discard(&sent) {
+        Err(crate::SdkError::Remote { code, message, .. }) => {
+            assert_eq!(code, "QUARANTINE_TARGET_NOT_QUARANTINED");
+            assert!(
+                message.contains("list again") || message.contains("now"),
+                "{message}"
+            );
+        }
+        other => panic!("expected the daemon's typed refusal, got {other:?}"),
+    }
+}
+
 #[test]
 fn search_corpus_public_surface_keeps_legacy_lexical_ingest_names_out_v1() {
     let sdk_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

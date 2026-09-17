@@ -68,10 +68,11 @@ use quanta_index_core::{
     LEXICAL_WRITER_HEAP_BYTES_MIN, LexicalCandidateExplanationV1, LexicalExecutionBudgetV1,
     LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalScoreEngineV1, LexicalScoreTraceV1,
     LexicalSearchPageV1, LexicalSearcher, LexicalWriterCacheStats, LexicalWriterPolicy,
-    MetricPointV1, MetricSourcePort, RegexMatchCachePolicy, RegexMatchCacheStats,
-    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMetaIngestPort,
-    RepoTopicIngestPort, RequestBudgetV1, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
-    count_from_usize,
+    MetricPointV1, MetricSourcePort, QUARANTINE_TARGET_NOT_QUARANTINED_CODE,
+    QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort, RegexMatchCachePolicy,
+    RegexMatchCacheStats, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
+    RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1, SealedGenerationScanPort,
+    SearchCorpusBatchBuildPort, count_from_usize,
     domains::lexical::LexicalPolicy,
     timeref::{is_rev_at_time_spec, parse_search_timeref_ms},
 };
@@ -4966,6 +4967,25 @@ impl SealedGenerationScanPort for LexicalAdapter {
     }
 }
 
+impl QuarantinedGenerationDiscardPort for LexicalAdapter {
+    fn discard_quarantined_generation(
+        &self,
+        entry: &QuarantinedGenerationV1,
+    ) -> Result<QuarantineDiscardOutcomeV1, CoreError> {
+        if entry.track != SearchPlaneTrackKind::Lexical {
+            return Err(CoreError::InvalidContract(format!(
+                "lexical quarantine discard received {:?} track",
+                entry.track
+            )));
+        }
+        discard_quarantined_directory(
+            &self.state_root,
+            &inventory_sealed_generations(&self.state_root)?.quarantined,
+            entry,
+        )
+    }
+}
+
 impl IncompleteGenerationDiscardPort for LexicalAdapter {
     fn discard_incomplete_generation(
         &self,
@@ -5258,6 +5278,82 @@ pub fn inventory_sealed_generations(
         }
     }
     Ok(inventory)
+}
+
+/// Remove `entry.path` if `quarantined_now` — the track's inventory taken
+/// this instant — names it under the same reason (QI-BB-026).
+///
+/// The inventory built every quarantined path from a directory walk under
+/// `track_root`, so a path it names is under the root by construction; the
+/// containment check below is the belt to that brace. Anything the
+/// inventory does not name now is refused typed, never removed: a
+/// directory repaired or sealed since the caller listed it stays.
+fn discard_quarantined_directory(
+    track_root: &Path,
+    quarantined_now: &[QuarantinedGenerationV1],
+    entry: &QuarantinedGenerationV1,
+) -> Result<QuarantineDiscardOutcomeV1, CoreError> {
+    let not_quarantined = |why: String| CoreError::Typed {
+        code: QUARANTINE_TARGET_NOT_QUARANTINED_CODE.to_string(),
+        message: format!(
+            "lexical: refusing to discard {}: {why}",
+            entry.path.display()
+        ),
+    };
+    let Some(current) = quarantined_now
+        .iter()
+        .find(|quarantined| quarantined.path == entry.path)
+    else {
+        if std::fs::symlink_metadata(&entry.path).is_ok() {
+            return Err(not_quarantined(
+                "the path is not quarantined now; a sealed, in-progress or repaired directory is not this port's to remove"
+                    .to_string(),
+            ));
+        }
+        return Ok(QuarantineDiscardOutcomeV1::Absent);
+    };
+    if current.reason != entry.reason {
+        return Err(not_quarantined(format!(
+            "it is quarantined as {} now, not {} as listed; list again",
+            current.reason.as_code_str(),
+            entry.reason.as_code_str()
+        )));
+    }
+    if !entry.path.starts_with(track_root) {
+        return Err(not_quarantined(format!(
+            "the path is outside the track root {}",
+            track_root.display()
+        )));
+    }
+    let metadata = std::fs::symlink_metadata(&entry.path).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: inspect quarantined {}: {error}",
+            entry.path.display()
+        ))
+    })?;
+    if !metadata.is_dir() {
+        return Err(not_quarantined(
+            "the path is not a directory; the inventory quarantines directories only".to_string(),
+        ));
+    }
+    let bytes = generation_tree_bytes(&entry.path)?;
+    std::fs::remove_dir_all(&entry.path).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: discard quarantined {}: {error}",
+            entry.path.display()
+        ))
+    })?;
+    if let Some(parent) = entry.path.parent() {
+        File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| {
+                CoreError::Storage(format!(
+                    "lexical: fsync {} after discarding quarantine: {error}",
+                    parent.display()
+                ))
+            })?;
+    }
+    Ok(QuarantineDiscardOutcomeV1::Discarded { bytes })
 }
 
 /// One generation directory's inventory outcome: `Ok(Some)` for a sealed

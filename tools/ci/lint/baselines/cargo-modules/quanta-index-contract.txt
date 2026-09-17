@@ -289,6 +289,31 @@ crate quanta_index_contract
 │   │   ├── struct MetricsSnapshotV1: pub
 │   │   └── struct MetricsSnapshotVisitor: pub(self)
 │   │       └── type Value: pub(self)
+│   ├── mod quarantine: pub(self)
+│   │   ├── struct QuarantineDiscardAck: pub
+│   │   ├── struct QuarantineDiscardAckVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── enum QuarantineDiscardOutcomeDtoV1: pub
+│   │   ├── struct QuarantineDiscardOutcomeVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct QuarantineDiscardRequest: pub
+│   │   ├── struct QuarantineDiscardRequestVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct QuarantineInventoryRequest: pub
+│   │   ├── struct QuarantineInventoryRequestVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct QuarantineInventoryV1: pub
+│   │   ├── struct QuarantineInventoryVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── enum QuarantineTargetV1: pub
+│   │   ├── struct QuarantineTargetVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct QuarantinedGenerationEntryV1: pub
+│   │   ├── struct QuarantinedGenerationEntryVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct QuarantinedRepoMapFileEntryV1: pub
+│   │   └── struct QuarantinedRepoMapFileEntryVisitor: pub(self)
+│   │       └── type Value: pub(self)
 │   ├── mod semantic_source: pub(self)
 │   │   ├── enum CapabilityStatusV1: pub
 │   │   ├── struct CapabilityStatusV1Visitor: pub(self)

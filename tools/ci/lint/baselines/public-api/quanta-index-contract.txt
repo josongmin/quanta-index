@@ -1020,6 +1020,52 @@ impl core::marker::Unpin for quanta_index_contract::HistoryRefMutation
 impl core::marker::UnsafeUnpin for quanta_index_contract::HistoryRefMutation
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HistoryRefMutation
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HistoryRefMutation
+pub enum quanta_index_contract::ipc::QuarantineDiscardOutcomeDtoV1
+pub quanta_index_contract::ipc::QuarantineDiscardOutcomeDtoV1::Absent
+pub quanta_index_contract::ipc::QuarantineDiscardOutcomeDtoV1::Discarded
+pub quanta_index_contract::ipc::QuarantineDiscardOutcomeDtoV1::Discarded::bytes: u64
+impl core::clone::Clone for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+pub fn quanta_index_contract::QuarantineDiscardOutcomeDtoV1::clone(&self) -> quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+impl core::cmp::Eq for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+impl core::cmp::PartialEq for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+pub fn quanta_index_contract::QuarantineDiscardOutcomeDtoV1::eq(&self, other: &quanta_index_contract::QuarantineDiscardOutcomeDtoV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+pub fn quanta_index_contract::QuarantineDiscardOutcomeDtoV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+impl serde_core::ser::Serialize for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+pub fn quanta_index_contract::QuarantineDiscardOutcomeDtoV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+pub fn quanta_index_contract::QuarantineDiscardOutcomeDtoV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+impl core::marker::Send for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+impl core::marker::Sync for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+impl core::marker::Unpin for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+pub enum quanta_index_contract::ipc::QuarantineTargetV1
+pub quanta_index_contract::ipc::QuarantineTargetV1::Generation(quanta_index_contract::QuarantinedGenerationEntryV1)
+pub quanta_index_contract::ipc::QuarantineTargetV1::RepoMapFile(quanta_index_contract::QuarantinedRepoMapFileEntryV1)
+impl core::clone::Clone for quanta_index_contract::QuarantineTargetV1
+pub fn quanta_index_contract::QuarantineTargetV1::clone(&self) -> quanta_index_contract::QuarantineTargetV1
+impl core::cmp::Eq for quanta_index_contract::QuarantineTargetV1
+impl core::cmp::PartialEq for quanta_index_contract::QuarantineTargetV1
+pub fn quanta_index_contract::QuarantineTargetV1::eq(&self, other: &quanta_index_contract::QuarantineTargetV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::QuarantineTargetV1
+pub fn quanta_index_contract::QuarantineTargetV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantineTargetV1
+impl serde_core::ser::Serialize for quanta_index_contract::QuarantineTargetV1
+pub fn quanta_index_contract::QuarantineTargetV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::QuarantineTargetV1
+pub fn quanta_index_contract::QuarantineTargetV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::QuarantineTargetV1
+impl core::marker::Send for quanta_index_contract::QuarantineTargetV1
+impl core::marker::Sync for quanta_index_contract::QuarantineTargetV1
+impl core::marker::Unpin for quanta_index_contract::QuarantineTargetV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineTargetV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineTargetV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineTargetV1
 pub enum quanta_index_contract::ipc::RawFallbackReasonV1
 pub quanta_index_contract::ipc::RawFallbackReasonV1::AlgorithmBodyDependent
 pub quanta_index_contract::ipc::RawFallbackReasonV1::DslConfigOrSchema
@@ -1225,6 +1271,8 @@ pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::ActivateSearchCorp
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::CurrentGeneration(quanta_index_contract::CurrentGenerationRequest)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::GenerationStatus(quanta_index_contract::GenerationStatusRequest)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::MetricsSnapshot(quanta_index_contract::MetricsSnapshotRequest)
+pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::QuarantineDiscard(quanta_index_contract::QuarantineDiscardRequest)
+pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::QuarantineInventory(quanta_index_contract::QuarantineInventoryRequest)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::RepoMapActivate(quanta_index_contract::RepoMapActivateGenerationRequest)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneControlIpcRequest
@@ -1250,6 +1298,8 @@ pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::CurrentGeneration
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::GenerationStatusReport(quanta_index_contract::GenerationStatusReport)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::MetricsSnapshot(quanta_index_contract::MetricsSnapshotV1)
+pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::QuarantineDiscardAck(quanta_index_contract::QuarantineDiscardAck)
+pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::QuarantineInventory(quanta_index_contract::QuarantineInventoryV1)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::RepoMapMutationAck(quanta_index_contract::RepoMapMutationAck)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(quanta_index_contract::SearchPlaneSearchCorpusRollbackCasAck)
@@ -2137,6 +2187,143 @@ impl core::marker::Unpin for quanta_index_contract::MetricsSnapshotV1
 impl core::marker::UnsafeUnpin for quanta_index_contract::MetricsSnapshotV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::MetricsSnapshotV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::MetricsSnapshotV1
+pub struct quanta_index_contract::ipc::QuarantineDiscardAck
+pub quanta_index_contract::ipc::QuarantineDiscardAck::outcome: quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+pub quanta_index_contract::ipc::QuarantineDiscardAck::target: quanta_index_contract::QuarantineTargetV1
+impl core::clone::Clone for quanta_index_contract::QuarantineDiscardAck
+pub fn quanta_index_contract::QuarantineDiscardAck::clone(&self) -> quanta_index_contract::QuarantineDiscardAck
+impl core::cmp::Eq for quanta_index_contract::QuarantineDiscardAck
+impl core::cmp::PartialEq for quanta_index_contract::QuarantineDiscardAck
+pub fn quanta_index_contract::QuarantineDiscardAck::eq(&self, other: &quanta_index_contract::QuarantineDiscardAck) -> bool
+impl core::fmt::Debug for quanta_index_contract::QuarantineDiscardAck
+pub fn quanta_index_contract::QuarantineDiscardAck::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantineDiscardAck
+impl serde_core::ser::Serialize for quanta_index_contract::QuarantineDiscardAck
+pub fn quanta_index_contract::QuarantineDiscardAck::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::QuarantineDiscardAck
+pub fn quanta_index_contract::QuarantineDiscardAck::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::QuarantineDiscardAck
+impl core::marker::Send for quanta_index_contract::QuarantineDiscardAck
+impl core::marker::Sync for quanta_index_contract::QuarantineDiscardAck
+impl core::marker::Unpin for quanta_index_contract::QuarantineDiscardAck
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineDiscardAck
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineDiscardAck
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineDiscardAck
+pub struct quanta_index_contract::ipc::QuarantineDiscardRequest
+pub quanta_index_contract::ipc::QuarantineDiscardRequest::target: quanta_index_contract::QuarantineTargetV1
+impl core::clone::Clone for quanta_index_contract::QuarantineDiscardRequest
+pub fn quanta_index_contract::QuarantineDiscardRequest::clone(&self) -> quanta_index_contract::QuarantineDiscardRequest
+impl core::cmp::Eq for quanta_index_contract::QuarantineDiscardRequest
+impl core::cmp::PartialEq for quanta_index_contract::QuarantineDiscardRequest
+pub fn quanta_index_contract::QuarantineDiscardRequest::eq(&self, other: &quanta_index_contract::QuarantineDiscardRequest) -> bool
+impl core::fmt::Debug for quanta_index_contract::QuarantineDiscardRequest
+pub fn quanta_index_contract::QuarantineDiscardRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantineDiscardRequest
+impl serde_core::ser::Serialize for quanta_index_contract::QuarantineDiscardRequest
+pub fn quanta_index_contract::QuarantineDiscardRequest::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::QuarantineDiscardRequest
+pub fn quanta_index_contract::QuarantineDiscardRequest::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::QuarantineDiscardRequest
+impl core::marker::Send for quanta_index_contract::QuarantineDiscardRequest
+impl core::marker::Sync for quanta_index_contract::QuarantineDiscardRequest
+impl core::marker::Unpin for quanta_index_contract::QuarantineDiscardRequest
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineDiscardRequest
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineDiscardRequest
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineDiscardRequest
+pub struct quanta_index_contract::ipc::QuarantineInventoryRequest
+impl core::clone::Clone for quanta_index_contract::QuarantineInventoryRequest
+pub fn quanta_index_contract::QuarantineInventoryRequest::clone(&self) -> quanta_index_contract::QuarantineInventoryRequest
+impl core::cmp::Eq for quanta_index_contract::QuarantineInventoryRequest
+impl core::cmp::PartialEq for quanta_index_contract::QuarantineInventoryRequest
+pub fn quanta_index_contract::QuarantineInventoryRequest::eq(&self, other: &quanta_index_contract::QuarantineInventoryRequest) -> bool
+impl core::default::Default for quanta_index_contract::QuarantineInventoryRequest
+pub fn quanta_index_contract::QuarantineInventoryRequest::default() -> quanta_index_contract::QuarantineInventoryRequest
+impl core::fmt::Debug for quanta_index_contract::QuarantineInventoryRequest
+pub fn quanta_index_contract::QuarantineInventoryRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::QuarantineInventoryRequest
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantineInventoryRequest
+impl serde_core::ser::Serialize for quanta_index_contract::QuarantineInventoryRequest
+pub fn quanta_index_contract::QuarantineInventoryRequest::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::QuarantineInventoryRequest
+pub fn quanta_index_contract::QuarantineInventoryRequest::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::QuarantineInventoryRequest
+impl core::marker::Send for quanta_index_contract::QuarantineInventoryRequest
+impl core::marker::Sync for quanta_index_contract::QuarantineInventoryRequest
+impl core::marker::Unpin for quanta_index_contract::QuarantineInventoryRequest
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineInventoryRequest
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineInventoryRequest
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineInventoryRequest
+pub struct quanta_index_contract::ipc::QuarantineInventoryV1
+pub quanta_index_contract::ipc::QuarantineInventoryV1::lexical: alloc::vec::Vec<quanta_index_contract::QuarantinedGenerationEntryV1>
+pub quanta_index_contract::ipc::QuarantineInventoryV1::repo_map: alloc::vec::Vec<quanta_index_contract::QuarantinedRepoMapFileEntryV1>
+pub quanta_index_contract::ipc::QuarantineInventoryV1::semantic: alloc::vec::Vec<quanta_index_contract::QuarantinedGenerationEntryV1>
+impl core::clone::Clone for quanta_index_contract::QuarantineInventoryV1
+pub fn quanta_index_contract::QuarantineInventoryV1::clone(&self) -> quanta_index_contract::QuarantineInventoryV1
+impl core::cmp::Eq for quanta_index_contract::QuarantineInventoryV1
+impl core::cmp::PartialEq for quanta_index_contract::QuarantineInventoryV1
+pub fn quanta_index_contract::QuarantineInventoryV1::eq(&self, other: &quanta_index_contract::QuarantineInventoryV1) -> bool
+impl core::default::Default for quanta_index_contract::QuarantineInventoryV1
+pub fn quanta_index_contract::QuarantineInventoryV1::default() -> quanta_index_contract::QuarantineInventoryV1
+impl core::fmt::Debug for quanta_index_contract::QuarantineInventoryV1
+pub fn quanta_index_contract::QuarantineInventoryV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantineInventoryV1
+impl serde_core::ser::Serialize for quanta_index_contract::QuarantineInventoryV1
+pub fn quanta_index_contract::QuarantineInventoryV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::QuarantineInventoryV1
+pub fn quanta_index_contract::QuarantineInventoryV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::QuarantineInventoryV1
+impl core::marker::Send for quanta_index_contract::QuarantineInventoryV1
+impl core::marker::Sync for quanta_index_contract::QuarantineInventoryV1
+impl core::marker::Unpin for quanta_index_contract::QuarantineInventoryV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineInventoryV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineInventoryV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineInventoryV1
+pub struct quanta_index_contract::ipc::QuarantinedGenerationEntryV1
+pub quanta_index_contract::ipc::QuarantinedGenerationEntryV1::detail: alloc::string::String
+pub quanta_index_contract::ipc::QuarantinedGenerationEntryV1::path: alloc::string::String
+pub quanta_index_contract::ipc::QuarantinedGenerationEntryV1::reason: alloc::string::String
+pub quanta_index_contract::ipc::QuarantinedGenerationEntryV1::track: quanta_index_contract::SearchPlaneTrackKind
+impl core::clone::Clone for quanta_index_contract::QuarantinedGenerationEntryV1
+pub fn quanta_index_contract::QuarantinedGenerationEntryV1::clone(&self) -> quanta_index_contract::QuarantinedGenerationEntryV1
+impl core::cmp::Eq for quanta_index_contract::QuarantinedGenerationEntryV1
+impl core::cmp::PartialEq for quanta_index_contract::QuarantinedGenerationEntryV1
+pub fn quanta_index_contract::QuarantinedGenerationEntryV1::eq(&self, other: &quanta_index_contract::QuarantinedGenerationEntryV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::QuarantinedGenerationEntryV1
+pub fn quanta_index_contract::QuarantinedGenerationEntryV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantinedGenerationEntryV1
+impl serde_core::ser::Serialize for quanta_index_contract::QuarantinedGenerationEntryV1
+pub fn quanta_index_contract::QuarantinedGenerationEntryV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::QuarantinedGenerationEntryV1
+pub fn quanta_index_contract::QuarantinedGenerationEntryV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::QuarantinedGenerationEntryV1
+impl core::marker::Send for quanta_index_contract::QuarantinedGenerationEntryV1
+impl core::marker::Sync for quanta_index_contract::QuarantinedGenerationEntryV1
+impl core::marker::Unpin for quanta_index_contract::QuarantinedGenerationEntryV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantinedGenerationEntryV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantinedGenerationEntryV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantinedGenerationEntryV1
+pub struct quanta_index_contract::ipc::QuarantinedRepoMapFileEntryV1
+pub quanta_index_contract::ipc::QuarantinedRepoMapFileEntryV1::file_name: alloc::string::String
+pub quanta_index_contract::ipc::QuarantinedRepoMapFileEntryV1::reason: alloc::string::String
+impl core::clone::Clone for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+pub fn quanta_index_contract::QuarantinedRepoMapFileEntryV1::clone(&self) -> quanta_index_contract::QuarantinedRepoMapFileEntryV1
+impl core::cmp::Eq for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+impl core::cmp::PartialEq for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+pub fn quanta_index_contract::QuarantinedRepoMapFileEntryV1::eq(&self, other: &quanta_index_contract::QuarantinedRepoMapFileEntryV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+pub fn quanta_index_contract::QuarantinedRepoMapFileEntryV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+impl serde_core::ser::Serialize for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+pub fn quanta_index_contract::QuarantinedRepoMapFileEntryV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+pub fn quanta_index_contract::QuarantinedRepoMapFileEntryV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+impl core::marker::Send for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+impl core::marker::Sync for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+impl core::marker::Unpin for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantinedRepoMapFileEntryV1
 pub struct quanta_index_contract::ipc::QueryErrorRepair
 pub quanta_index_contract::ipc::QueryErrorRepair::class: quanta_index_contract::RepairClass
 pub quanta_index_contract::ipc::QueryErrorRepair::docs_anchor: core::option::Option<alloc::string::String>
@@ -6874,6 +7061,52 @@ impl core::marker::Unpin for quanta_index_contract::PlannerStage
 impl core::marker::UnsafeUnpin for quanta_index_contract::PlannerStage
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::PlannerStage
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::PlannerStage
+pub enum quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+pub quanta_index_contract::QuarantineDiscardOutcomeDtoV1::Absent
+pub quanta_index_contract::QuarantineDiscardOutcomeDtoV1::Discarded
+pub quanta_index_contract::QuarantineDiscardOutcomeDtoV1::Discarded::bytes: u64
+impl core::clone::Clone for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+pub fn quanta_index_contract::QuarantineDiscardOutcomeDtoV1::clone(&self) -> quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+impl core::cmp::Eq for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+impl core::cmp::PartialEq for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+pub fn quanta_index_contract::QuarantineDiscardOutcomeDtoV1::eq(&self, other: &quanta_index_contract::QuarantineDiscardOutcomeDtoV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+pub fn quanta_index_contract::QuarantineDiscardOutcomeDtoV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+impl serde_core::ser::Serialize for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+pub fn quanta_index_contract::QuarantineDiscardOutcomeDtoV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+pub fn quanta_index_contract::QuarantineDiscardOutcomeDtoV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+impl core::marker::Send for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+impl core::marker::Sync for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+impl core::marker::Unpin for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+pub enum quanta_index_contract::QuarantineTargetV1
+pub quanta_index_contract::QuarantineTargetV1::Generation(quanta_index_contract::QuarantinedGenerationEntryV1)
+pub quanta_index_contract::QuarantineTargetV1::RepoMapFile(quanta_index_contract::QuarantinedRepoMapFileEntryV1)
+impl core::clone::Clone for quanta_index_contract::QuarantineTargetV1
+pub fn quanta_index_contract::QuarantineTargetV1::clone(&self) -> quanta_index_contract::QuarantineTargetV1
+impl core::cmp::Eq for quanta_index_contract::QuarantineTargetV1
+impl core::cmp::PartialEq for quanta_index_contract::QuarantineTargetV1
+pub fn quanta_index_contract::QuarantineTargetV1::eq(&self, other: &quanta_index_contract::QuarantineTargetV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::QuarantineTargetV1
+pub fn quanta_index_contract::QuarantineTargetV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantineTargetV1
+impl serde_core::ser::Serialize for quanta_index_contract::QuarantineTargetV1
+pub fn quanta_index_contract::QuarantineTargetV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::QuarantineTargetV1
+pub fn quanta_index_contract::QuarantineTargetV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::QuarantineTargetV1
+impl core::marker::Send for quanta_index_contract::QuarantineTargetV1
+impl core::marker::Sync for quanta_index_contract::QuarantineTargetV1
+impl core::marker::Unpin for quanta_index_contract::QuarantineTargetV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineTargetV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineTargetV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineTargetV1
 pub enum quanta_index_contract::RawFallbackReasonV1
 pub quanta_index_contract::RawFallbackReasonV1::AlgorithmBodyDependent
 pub quanta_index_contract::RawFallbackReasonV1::DslConfigOrSchema
@@ -7384,6 +7617,8 @@ pub quanta_index_contract::SearchPlaneControlIpcRequest::ActivateSearchCorpusGen
 pub quanta_index_contract::SearchPlaneControlIpcRequest::CurrentGeneration(quanta_index_contract::CurrentGenerationRequest)
 pub quanta_index_contract::SearchPlaneControlIpcRequest::GenerationStatus(quanta_index_contract::GenerationStatusRequest)
 pub quanta_index_contract::SearchPlaneControlIpcRequest::MetricsSnapshot(quanta_index_contract::MetricsSnapshotRequest)
+pub quanta_index_contract::SearchPlaneControlIpcRequest::QuarantineDiscard(quanta_index_contract::QuarantineDiscardRequest)
+pub quanta_index_contract::SearchPlaneControlIpcRequest::QuarantineInventory(quanta_index_contract::QuarantineInventoryRequest)
 pub quanta_index_contract::SearchPlaneControlIpcRequest::RepoMapActivate(quanta_index_contract::RepoMapActivateGenerationRequest)
 pub quanta_index_contract::SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneControlIpcRequest
@@ -7409,6 +7644,8 @@ pub quanta_index_contract::SearchPlaneControlIpcResponse::CurrentGenerationSnaps
 pub quanta_index_contract::SearchPlaneControlIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError)
 pub quanta_index_contract::SearchPlaneControlIpcResponse::GenerationStatusReport(quanta_index_contract::GenerationStatusReport)
 pub quanta_index_contract::SearchPlaneControlIpcResponse::MetricsSnapshot(quanta_index_contract::MetricsSnapshotV1)
+pub quanta_index_contract::SearchPlaneControlIpcResponse::QuarantineDiscardAck(quanta_index_contract::QuarantineDiscardAck)
+pub quanta_index_contract::SearchPlaneControlIpcResponse::QuarantineInventory(quanta_index_contract::QuarantineInventoryV1)
 pub quanta_index_contract::SearchPlaneControlIpcResponse::RepoMapMutationAck(quanta_index_contract::RepoMapMutationAck)
 pub quanta_index_contract::SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck)
 pub quanta_index_contract::SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(quanta_index_contract::SearchPlaneSearchCorpusRollbackCasAck)
@@ -9105,6 +9342,143 @@ impl core::marker::Unpin for quanta_index_contract::PlannerTraceEntry
 impl core::marker::UnsafeUnpin for quanta_index_contract::PlannerTraceEntry
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::PlannerTraceEntry
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::PlannerTraceEntry
+pub struct quanta_index_contract::QuarantineDiscardAck
+pub quanta_index_contract::QuarantineDiscardAck::outcome: quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+pub quanta_index_contract::QuarantineDiscardAck::target: quanta_index_contract::QuarantineTargetV1
+impl core::clone::Clone for quanta_index_contract::QuarantineDiscardAck
+pub fn quanta_index_contract::QuarantineDiscardAck::clone(&self) -> quanta_index_contract::QuarantineDiscardAck
+impl core::cmp::Eq for quanta_index_contract::QuarantineDiscardAck
+impl core::cmp::PartialEq for quanta_index_contract::QuarantineDiscardAck
+pub fn quanta_index_contract::QuarantineDiscardAck::eq(&self, other: &quanta_index_contract::QuarantineDiscardAck) -> bool
+impl core::fmt::Debug for quanta_index_contract::QuarantineDiscardAck
+pub fn quanta_index_contract::QuarantineDiscardAck::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantineDiscardAck
+impl serde_core::ser::Serialize for quanta_index_contract::QuarantineDiscardAck
+pub fn quanta_index_contract::QuarantineDiscardAck::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::QuarantineDiscardAck
+pub fn quanta_index_contract::QuarantineDiscardAck::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::QuarantineDiscardAck
+impl core::marker::Send for quanta_index_contract::QuarantineDiscardAck
+impl core::marker::Sync for quanta_index_contract::QuarantineDiscardAck
+impl core::marker::Unpin for quanta_index_contract::QuarantineDiscardAck
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineDiscardAck
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineDiscardAck
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineDiscardAck
+pub struct quanta_index_contract::QuarantineDiscardRequest
+pub quanta_index_contract::QuarantineDiscardRequest::target: quanta_index_contract::QuarantineTargetV1
+impl core::clone::Clone for quanta_index_contract::QuarantineDiscardRequest
+pub fn quanta_index_contract::QuarantineDiscardRequest::clone(&self) -> quanta_index_contract::QuarantineDiscardRequest
+impl core::cmp::Eq for quanta_index_contract::QuarantineDiscardRequest
+impl core::cmp::PartialEq for quanta_index_contract::QuarantineDiscardRequest
+pub fn quanta_index_contract::QuarantineDiscardRequest::eq(&self, other: &quanta_index_contract::QuarantineDiscardRequest) -> bool
+impl core::fmt::Debug for quanta_index_contract::QuarantineDiscardRequest
+pub fn quanta_index_contract::QuarantineDiscardRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantineDiscardRequest
+impl serde_core::ser::Serialize for quanta_index_contract::QuarantineDiscardRequest
+pub fn quanta_index_contract::QuarantineDiscardRequest::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::QuarantineDiscardRequest
+pub fn quanta_index_contract::QuarantineDiscardRequest::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::QuarantineDiscardRequest
+impl core::marker::Send for quanta_index_contract::QuarantineDiscardRequest
+impl core::marker::Sync for quanta_index_contract::QuarantineDiscardRequest
+impl core::marker::Unpin for quanta_index_contract::QuarantineDiscardRequest
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineDiscardRequest
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineDiscardRequest
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineDiscardRequest
+pub struct quanta_index_contract::QuarantineInventoryRequest
+impl core::clone::Clone for quanta_index_contract::QuarantineInventoryRequest
+pub fn quanta_index_contract::QuarantineInventoryRequest::clone(&self) -> quanta_index_contract::QuarantineInventoryRequest
+impl core::cmp::Eq for quanta_index_contract::QuarantineInventoryRequest
+impl core::cmp::PartialEq for quanta_index_contract::QuarantineInventoryRequest
+pub fn quanta_index_contract::QuarantineInventoryRequest::eq(&self, other: &quanta_index_contract::QuarantineInventoryRequest) -> bool
+impl core::default::Default for quanta_index_contract::QuarantineInventoryRequest
+pub fn quanta_index_contract::QuarantineInventoryRequest::default() -> quanta_index_contract::QuarantineInventoryRequest
+impl core::fmt::Debug for quanta_index_contract::QuarantineInventoryRequest
+pub fn quanta_index_contract::QuarantineInventoryRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::QuarantineInventoryRequest
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantineInventoryRequest
+impl serde_core::ser::Serialize for quanta_index_contract::QuarantineInventoryRequest
+pub fn quanta_index_contract::QuarantineInventoryRequest::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::QuarantineInventoryRequest
+pub fn quanta_index_contract::QuarantineInventoryRequest::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::QuarantineInventoryRequest
+impl core::marker::Send for quanta_index_contract::QuarantineInventoryRequest
+impl core::marker::Sync for quanta_index_contract::QuarantineInventoryRequest
+impl core::marker::Unpin for quanta_index_contract::QuarantineInventoryRequest
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineInventoryRequest
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineInventoryRequest
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineInventoryRequest
+pub struct quanta_index_contract::QuarantineInventoryV1
+pub quanta_index_contract::QuarantineInventoryV1::lexical: alloc::vec::Vec<quanta_index_contract::QuarantinedGenerationEntryV1>
+pub quanta_index_contract::QuarantineInventoryV1::repo_map: alloc::vec::Vec<quanta_index_contract::QuarantinedRepoMapFileEntryV1>
+pub quanta_index_contract::QuarantineInventoryV1::semantic: alloc::vec::Vec<quanta_index_contract::QuarantinedGenerationEntryV1>
+impl core::clone::Clone for quanta_index_contract::QuarantineInventoryV1
+pub fn quanta_index_contract::QuarantineInventoryV1::clone(&self) -> quanta_index_contract::QuarantineInventoryV1
+impl core::cmp::Eq for quanta_index_contract::QuarantineInventoryV1
+impl core::cmp::PartialEq for quanta_index_contract::QuarantineInventoryV1
+pub fn quanta_index_contract::QuarantineInventoryV1::eq(&self, other: &quanta_index_contract::QuarantineInventoryV1) -> bool
+impl core::default::Default for quanta_index_contract::QuarantineInventoryV1
+pub fn quanta_index_contract::QuarantineInventoryV1::default() -> quanta_index_contract::QuarantineInventoryV1
+impl core::fmt::Debug for quanta_index_contract::QuarantineInventoryV1
+pub fn quanta_index_contract::QuarantineInventoryV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantineInventoryV1
+impl serde_core::ser::Serialize for quanta_index_contract::QuarantineInventoryV1
+pub fn quanta_index_contract::QuarantineInventoryV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::QuarantineInventoryV1
+pub fn quanta_index_contract::QuarantineInventoryV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::QuarantineInventoryV1
+impl core::marker::Send for quanta_index_contract::QuarantineInventoryV1
+impl core::marker::Sync for quanta_index_contract::QuarantineInventoryV1
+impl core::marker::Unpin for quanta_index_contract::QuarantineInventoryV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineInventoryV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineInventoryV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineInventoryV1
+pub struct quanta_index_contract::QuarantinedGenerationEntryV1
+pub quanta_index_contract::QuarantinedGenerationEntryV1::detail: alloc::string::String
+pub quanta_index_contract::QuarantinedGenerationEntryV1::path: alloc::string::String
+pub quanta_index_contract::QuarantinedGenerationEntryV1::reason: alloc::string::String
+pub quanta_index_contract::QuarantinedGenerationEntryV1::track: quanta_index_contract::SearchPlaneTrackKind
+impl core::clone::Clone for quanta_index_contract::QuarantinedGenerationEntryV1
+pub fn quanta_index_contract::QuarantinedGenerationEntryV1::clone(&self) -> quanta_index_contract::QuarantinedGenerationEntryV1
+impl core::cmp::Eq for quanta_index_contract::QuarantinedGenerationEntryV1
+impl core::cmp::PartialEq for quanta_index_contract::QuarantinedGenerationEntryV1
+pub fn quanta_index_contract::QuarantinedGenerationEntryV1::eq(&self, other: &quanta_index_contract::QuarantinedGenerationEntryV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::QuarantinedGenerationEntryV1
+pub fn quanta_index_contract::QuarantinedGenerationEntryV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantinedGenerationEntryV1
+impl serde_core::ser::Serialize for quanta_index_contract::QuarantinedGenerationEntryV1
+pub fn quanta_index_contract::QuarantinedGenerationEntryV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::QuarantinedGenerationEntryV1
+pub fn quanta_index_contract::QuarantinedGenerationEntryV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::QuarantinedGenerationEntryV1
+impl core::marker::Send for quanta_index_contract::QuarantinedGenerationEntryV1
+impl core::marker::Sync for quanta_index_contract::QuarantinedGenerationEntryV1
+impl core::marker::Unpin for quanta_index_contract::QuarantinedGenerationEntryV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantinedGenerationEntryV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantinedGenerationEntryV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantinedGenerationEntryV1
+pub struct quanta_index_contract::QuarantinedRepoMapFileEntryV1
+pub quanta_index_contract::QuarantinedRepoMapFileEntryV1::file_name: alloc::string::String
+pub quanta_index_contract::QuarantinedRepoMapFileEntryV1::reason: alloc::string::String
+impl core::clone::Clone for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+pub fn quanta_index_contract::QuarantinedRepoMapFileEntryV1::clone(&self) -> quanta_index_contract::QuarantinedRepoMapFileEntryV1
+impl core::cmp::Eq for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+impl core::cmp::PartialEq for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+pub fn quanta_index_contract::QuarantinedRepoMapFileEntryV1::eq(&self, other: &quanta_index_contract::QuarantinedRepoMapFileEntryV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+pub fn quanta_index_contract::QuarantinedRepoMapFileEntryV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+impl serde_core::ser::Serialize for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+pub fn quanta_index_contract::QuarantinedRepoMapFileEntryV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+pub fn quanta_index_contract::QuarantinedRepoMapFileEntryV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+impl core::marker::Send for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+impl core::marker::Sync for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+impl core::marker::Unpin for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantinedRepoMapFileEntryV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantinedRepoMapFileEntryV1
 pub struct quanta_index_contract::QueryErrorRepair
 pub quanta_index_contract::QueryErrorRepair::class: quanta_index_contract::RepairClass
 pub quanta_index_contract::QueryErrorRepair::docs_anchor: core::option::Option<alloc::string::String>

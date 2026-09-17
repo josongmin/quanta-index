@@ -18,6 +18,8 @@ crate quanta_index_core
 │   │   ├── struct GenerationStorageKeyV1: pub
 │   │   ├── enum IncompleteGenerationDiscardOutcomeV1: pub
 │   │   ├── trait IncompleteGenerationDiscardPort: pub
+│   │   ├── enum QuarantineDiscardOutcomeV1: pub
+│   │   ├── trait QuarantinedGenerationDiscardPort: pub
 │   │   ├── struct QuarantinedGenerationV1: pub
 │   │   ├── struct SealedArtifactCommitmentV1: pub
 │   │   ├── struct SealedGenerationInventoryV1: pub
@@ -75,7 +77,8 @@ crate quanta_index_core
 │   │   │   ├── struct QuarantinedRepoMapFileV1: pub
 │   │   │   ├── trait RepoMapBundleIngestPort: pub
 │   │   │   ├── trait RepoMapGenerationActivatePort: pub
-│   │   │   └── struct RepoMapOpenReportV1: pub
+│   │   │   ├── struct RepoMapOpenReportV1: pub
+│   │   │   └── trait RepoMapQuarantinePort: pub
 │   │   ├── mod policy: pub(self)
 │   │   │   └── struct RepoMapPolicy: pub
 │   │   └── mod service: pub(self)

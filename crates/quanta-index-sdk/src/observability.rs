@@ -30,10 +30,14 @@ impl<'a> ObservabilityNamespace<'a> {
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
-            | SearchPlaneControlIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
-                "expected metrics snapshot, got {}",
-                QuantaIndex::control_response_kind(&other)
-            ))),
+            | SearchPlaneControlIpcResponse::Error(_)
+            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
+                Err(SdkError::Protocol(format!(
+                    "expected metrics snapshot, got {}",
+                    QuantaIndex::control_response_kind(&other)
+                )))
+            }
         }
     }
 }

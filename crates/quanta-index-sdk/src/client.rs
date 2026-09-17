@@ -12,9 +12,10 @@ use quanta_index_contract::{
 
 use crate::{
     ConnectOptions, GenerationNamespace, HistoryNamespace, LexicalNamespace,
-    ObservabilityNamespace, QueryTransport, RepoMapNamespace, RuntimeNamespace, SdkError,
-    SearchCorpusNamespace, SearchNamespace, SemanticNamespace, StructuralNamespace,
-    SymbolNamespace, UdsControlTransport, UdsIngestTransport, UdsQueryTransport,
+    ObservabilityNamespace, QuarantineNamespace, QueryTransport, RepoMapNamespace,
+    RuntimeNamespace, SdkError, SearchCorpusNamespace, SearchNamespace, SemanticNamespace,
+    StructuralNamespace, SymbolNamespace, UdsControlTransport, UdsIngestTransport,
+    UdsQueryTransport,
 };
 use crate::{ControlTransport, IngestTransport};
 
@@ -89,6 +90,11 @@ impl QuantaIndex {
     #[must_use]
     pub fn observability(&self) -> ObservabilityNamespace<'_> {
         ObservabilityNamespace::new(self)
+    }
+
+    #[must_use]
+    pub fn quarantine(&self) -> QuarantineNamespace<'_> {
+        QuarantineNamespace::new(self)
     }
 
     #[must_use]
@@ -180,7 +186,9 @@ impl QuantaIndex {
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
-            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)) => Ok(payload),
+            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
+            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => Ok(payload),
         }
     }
 
@@ -276,6 +284,8 @@ impl QuantaIndex {
             }
             SearchPlaneControlIpcResponse::GenerationStatusReport(_) => "generation_status_report",
             SearchPlaneControlIpcResponse::MetricsSnapshot(_) => "metrics_snapshot",
+            SearchPlaneControlIpcResponse::QuarantineInventory(_) => "quarantine_inventory",
+            SearchPlaneControlIpcResponse::QuarantineDiscardAck(_) => "quarantine_discard_ack",
             SearchPlaneControlIpcResponse::Error(_) => "error",
         }
     }
@@ -566,5 +576,20 @@ impl<'a> ControlClient<'a> {
     /// The daemon's metrics snapshot (QI-BB-015).
     pub fn metrics_snapshot(&self) -> Result<quanta_index_contract::MetricsSnapshotV1, SdkError> {
         self.client.observability().metrics_snapshot()
+    }
+
+    /// What the daemon quarantines right now (QI-BB-026).
+    pub fn quarantine_inventory(
+        &self,
+    ) -> Result<quanta_index_contract::QuarantineInventoryV1, SdkError> {
+        self.client.quarantine().inventory()
+    }
+
+    /// Discard one quarantined entry as it was listed (QI-BB-026).
+    pub fn discard_quarantined(
+        &self,
+        target: &quanta_index_contract::QuarantineTargetV1,
+    ) -> Result<quanta_index_contract::QuarantineDiscardAck, SdkError> {
+        self.client.quarantine().discard(target)
     }
 }

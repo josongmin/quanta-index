@@ -2,6 +2,7 @@ mod control;
 mod error;
 mod ingest;
 mod metrics;
+mod quarantine;
 mod semantic_source;
 mod split;
 
@@ -9,5 +10,6 @@ pub use control::*;
 pub use error::*;
 pub use ingest::*;
 pub use metrics::*;
+pub use quarantine::*;
 pub use semantic_source::*;
 pub use split::*;

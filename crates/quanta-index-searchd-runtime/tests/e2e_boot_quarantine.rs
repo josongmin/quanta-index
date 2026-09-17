@@ -10,6 +10,10 @@
 //! door with the same typed code the validator would give; a query pinned
 //! to a quarantined generation is `NOT_READY`; and the boot report on the
 //! harness names what was set aside.
+//!
+//! The follow-up adds the operator's side: what boot set aside is listed
+//! live over the control socket and discarded exactly as listed, never a
+//! sealed generation and never a stale listing.
 
 #![forbid(unsafe_code)]
 
@@ -17,8 +21,9 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use quanta_index_contract::{
-    GenerationPin, ManifestGeneration, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
-    SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
+    GenerationPin, ManifestGeneration, QuarantineDiscardOutcomeDtoV1, QuarantineTargetV1,
+    QuarantinedGenerationEntryV1, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
+    SearchPlaneTrackKind, SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_core::{GenerationQuarantineReasonV1, GenerationStorageKeyV1};
 use quanta_index_searchd_harness as e2e_harness;
@@ -287,4 +292,217 @@ fn damage_to_the_active_generation_refuses_to_boot() -> TestResult {
             Ok(())
         }
     }
+}
+
+/// The quarantine control surface (QI-BB-026 follow-up) lists what boot
+/// set aside and discards it only as listed.
+///
+/// What boot set aside is listed live over the control socket with paths
+/// and reasons, each entry is discarded exactly as listed, a stale or
+/// invented entry is refused typed and removes nothing, and after every
+/// discard the disk and a fresh boot agree that nothing is quarantined.
+#[test]
+fn quarantine_is_listed_discarded_as_named_and_gone_after_a_reboot() -> TestResult {
+    let mut rt = E2eRuntime::boot()?;
+    let (_inactive, active) = seal_two_generations(&mut rt)?;
+    let mut rt = rt.reopen();
+
+    let state_root = std::fs::canonicalize(rt.state_root())?;
+    let lexical_legacy = state_root.join("indexes/lexical").join("repo-legacy");
+    std::fs::create_dir_all(lexical_legacy.join("rev-legacy/g1"))?;
+    std::fs::write(
+        lexical_legacy.join("rev-legacy/g1/leftover.bin"),
+        [7_u8; 64],
+    )?;
+    let lexical_garbage = pair_dir(&rt, "indexes/lexical")?.join("g9");
+    std::fs::create_dir_all(&lexical_garbage)?;
+    std::fs::write(lexical_garbage.join(LEXICAL_IDENTITY), b"\xff\x00not-cbor")?;
+    let semantic_legacy = state_root.join("indexes/semantic").join("repo-legacy");
+    std::fs::create_dir_all(semantic_legacy.join("rev-legacy/g1"))?;
+    let repo_map_snapshots = state_root.join("repo-map").join("snapshots");
+    std::fs::create_dir_all(&repo_map_snapshots)?;
+    std::fs::write(
+        repo_map_snapshots.join("stale--marker.json"),
+        b"not json at all",
+    )?;
+
+    rt.start()?;
+
+    // Listed live, per authority, with reasons.
+    let inventory = rt.quarantine_inventory()?;
+    let mut lexical: Vec<(String, String)> = inventory
+        .lexical
+        .iter()
+        .map(|entry| (entry.path.clone(), entry.reason.clone()))
+        .collect();
+    lexical.sort();
+    let mut expected = vec![
+        (
+            lexical_legacy.display().to_string(),
+            "GENERATION_QUARANTINE_NON_CANONICAL_LAYOUT".to_string(),
+        ),
+        (
+            lexical_garbage.display().to_string(),
+            "GENERATION_QUARANTINE_IDENTITY_UNREADABLE".to_string(),
+        ),
+    ];
+    expected.sort();
+    if lexical != expected {
+        return Err(format!("lexical quarantine listing drifted: {lexical:?}").into());
+    }
+    let semantic: Vec<(String, String)> = inventory
+        .semantic
+        .iter()
+        .map(|entry| (entry.path.clone(), entry.reason.clone()))
+        .collect();
+    if semantic
+        != vec![(
+            semantic_legacy.display().to_string(),
+            "GENERATION_QUARANTINE_NON_CANONICAL_LAYOUT".to_string(),
+        )]
+    {
+        return Err(format!("semantic quarantine listing drifted: {semantic:?}").into());
+    }
+    let repo_map: Vec<&str> = inventory
+        .repo_map
+        .iter()
+        .map(|entry| entry.file_name.as_str())
+        .collect();
+    if repo_map != vec!["stale--marker.json"] {
+        return Err(format!("repo-map quarantine listing drifted: {repo_map:?}").into());
+    }
+    if inventory
+        .repo_map
+        .first()
+        .is_some_and(|entry| entry.reason.is_empty())
+    {
+        return Err("the repo-map entry carries the reason it was set aside".into());
+    }
+
+    // A stale entry (wrong reason for a listed path) removes nothing.
+    let Some(listed_garbage) = inventory
+        .lexical
+        .iter()
+        .find(|entry| entry.path == lexical_garbage.display().to_string())
+        .cloned()
+    else {
+        return Err("the garbage generation is listed".into());
+    };
+    let mut stale = listed_garbage.clone();
+    stale.reason = "GENERATION_QUARANTINE_SCOPE_MISMATCH".to_string();
+    match rt.discard_quarantined(QuarantineTargetV1::Generation(stale))? {
+        Err(error) if error.code == "QUARANTINE_TARGET_NOT_QUARANTINED" => {}
+        other => return Err(format!("a stale entry must be refused typed: {other:?}").into()),
+    }
+    if !lexical_garbage.is_dir() {
+        return Err("a refused discard removes nothing".into());
+    }
+    // A sealed generation named as if quarantined removes nothing.
+    let sealed = QuarantinedGenerationEntryV1 {
+        track: SearchPlaneTrackKind::Lexical,
+        path: generation_dir(&rt, "indexes/lexical", active)?
+            .display()
+            .to_string(),
+        reason: "GENERATION_QUARANTINE_IDENTITY_UNREADABLE".to_string(),
+        detail: String::new(),
+    };
+    match rt.discard_quarantined(QuarantineTargetV1::Generation(sealed))? {
+        Err(error) if error.code == "QUARANTINE_TARGET_NOT_QUARANTINED" => {}
+        other => {
+            return Err(
+                format!("a sealed generation must never be discarded here: {other:?}").into(),
+            );
+        }
+    }
+    if !generation_dir(&rt, "indexes/lexical", active)?.is_dir() {
+        return Err("the active generation is untouched".into());
+    }
+
+    // Every listed entry discards exactly as listed, with its bytes.
+    for entry in inventory.lexical.iter().chain(inventory.semantic.iter()) {
+        let ack = rt
+            .discard_quarantined(QuarantineTargetV1::Generation(entry.clone()))?
+            .map_err(|error| format!("discard {}: {error:?}", entry.path))?;
+        match ack.outcome {
+            QuarantineDiscardOutcomeDtoV1::Discarded { .. } => {}
+            QuarantineDiscardOutcomeDtoV1::Absent => {
+                return Err(
+                    format!("{} was listed, so it was there to discard", entry.path).into(),
+                );
+            }
+        }
+        if ack.target != QuarantineTargetV1::Generation(entry.clone()) {
+            return Err("the ack names the target as it was sent".into());
+        }
+        if Path::new(&entry.path).exists() {
+            return Err(format!("{} is gone after its discard", entry.path).into());
+        }
+    }
+    let Some(repo_map_entry) = inventory.repo_map.first().cloned() else {
+        return Err("the repo-map entry is listed".into());
+    };
+    let mut stale_file = repo_map_entry.clone();
+    stale_file.reason = "some other reason".to_string();
+    match rt.discard_quarantined(QuarantineTargetV1::RepoMapFile(stale_file))? {
+        Err(error) if error.code == "QUARANTINE_TARGET_NOT_QUARANTINED" => {}
+        other => return Err(format!("a stale repo-map reason is refused typed: {other:?}").into()),
+    }
+    if !state_root
+        .join("repo-map/quarantine")
+        .join("stale--marker.json")
+        .is_file()
+    {
+        return Err("a refused repo-map discard removes nothing".into());
+    }
+    let ack = rt
+        .discard_quarantined(QuarantineTargetV1::RepoMapFile(repo_map_entry.clone()))?
+        .map_err(|error| format!("discard the repo-map file: {error:?}"))?;
+    if ack.outcome != (QuarantineDiscardOutcomeDtoV1::Discarded { bytes: 15 }) {
+        return Err(format!(
+            "the repo-map file's 15 bytes are reported: {:?}",
+            ack.outcome
+        )
+        .into());
+    }
+    if state_root
+        .join("repo-map/quarantine")
+        .join("stale--marker.json")
+        .exists()
+    {
+        return Err("the repo-map file is gone after its discard".into());
+    }
+    // Discarding again is idempotent: nothing is there.
+    let again = rt
+        .discard_quarantined(QuarantineTargetV1::RepoMapFile(repo_map_entry))?
+        .map_err(|error| format!("a second repo-map discard: {error:?}"))?;
+    if again.outcome != QuarantineDiscardOutcomeDtoV1::Absent {
+        return Err(format!("a second discard is Absent, got {:?}", again.outcome).into());
+    }
+    let again = rt
+        .discard_quarantined(QuarantineTargetV1::Generation(listed_garbage))?
+        .map_err(|error| format!("a second generation discard: {error:?}"))?;
+    if again.outcome != QuarantineDiscardOutcomeDtoV1::Absent {
+        return Err(format!("a second discard is Absent, got {:?}", again.outcome).into());
+    }
+
+    // The live listing and a fresh boot agree: nothing is quarantined.
+    let after = rt.quarantine_inventory()?;
+    if !(after.lexical.is_empty() && after.semantic.is_empty() && after.repo_map.is_empty()) {
+        return Err(format!("nothing is quarantined after the discards: {after:?}").into());
+    }
+    let mut rt = rt.reopen();
+    rt.start()?;
+    let report = rt
+        .boot_inventory()
+        .ok_or("the running daemon must expose its boot inventory")?;
+    if !(report.lexical.quarantined.is_empty()
+        && report.semantic.quarantined.is_empty()
+        && report.repo_map.quarantined.is_empty())
+    {
+        return Err(format!("a fresh boot finds nothing to quarantine: {report:?}").into());
+    }
+    if report.lexical.sealed_generations != 2 || report.semantic.sealed_generations != 2 {
+        return Err("the sealed generations survived the discards".into());
+    }
+    Ok(())
 }

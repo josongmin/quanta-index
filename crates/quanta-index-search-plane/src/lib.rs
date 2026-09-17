@@ -14,6 +14,7 @@ mod control_dispatcher;
 mod ingest_dispatcher;
 mod lowering;
 mod observability;
+mod quarantine;
 mod query_dispatcher;
 mod query_embedder;
 pub mod readiness;
@@ -36,6 +37,7 @@ pub use observability::{
     ObservabilityScrape, QueryObsSink,
 };
 pub use quanta_index_lq_obs::{MetricSample, ObsError};
+pub use quarantine::{QuarantineService, QuarantineServiceParts};
 pub use query_dispatcher::{
     SearchPlaneDispatcher, SearchPlaneQueryDispatcher, SearchPlaneQueryService, make_pin,
     repair_for_code,

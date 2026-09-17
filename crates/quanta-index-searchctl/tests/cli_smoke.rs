@@ -13,9 +13,11 @@ use std::time::Duration;
 use quanta_index_contract::ipc::{
     CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
     MetricBucketV1, MetricCounterV1, MetricGaugeV1, MetricHistogramV1, MetricsDiagnosticsV1,
-    MetricsSnapshotV1, SearchPlaneControlIpcRequest, SearchPlaneControlIpcRequestEnvelope,
-    SearchPlaneControlIpcResponse, SearchPlaneControlIpcResponseEnvelope, SearchPlaneTrackKind,
-    TrackReadinessRecord,
+    MetricsSnapshotV1, QuarantineDiscardAck, QuarantineDiscardOutcomeDtoV1,
+    QuarantineDiscardRequest, QuarantineInventoryV1, QuarantineTargetV1,
+    QuarantinedGenerationEntryV1, QuarantinedRepoMapFileEntryV1, SearchPlaneControlIpcRequest,
+    SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
+    SearchPlaneControlIpcResponseEnvelope, SearchPlaneTrackKind, TrackReadinessRecord,
 };
 use quanta_index_contract::lex::ExplanationRow;
 use quanta_index_contract::{
@@ -526,6 +528,10 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
             SearchPlaneControlIpcRequest::MetricsSnapshot(_) => {
                 SearchPlaneControlIpcResponse::MetricsSnapshot(metrics_fixture())
             }
+            SearchPlaneControlIpcRequest::QuarantineInventory(_) => {
+                SearchPlaneControlIpcResponse::QuarantineInventory(quarantine_fixture())
+            }
+            SearchPlaneControlIpcRequest::QuarantineDiscard(request) => quarantine_discard(request),
             other @ (SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RepoMapActivate(_)) => control_error_response(
@@ -642,6 +648,257 @@ fn metrics_json_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
     let decoded: MetricsSnapshotV1 = serde_json::from_str(&stdout)?;
     if decoded != metrics_fixture() {
         return Err(format!("json output does not round-trip the snapshot: {stdout}").into());
+    }
+    Ok(())
+}
+
+/// The inventory the control mock lists (QI-BB-026): one quarantined
+/// generation per track plus one `RepoMap` file, each with a reason.
+fn quarantine_fixture() -> QuarantineInventoryV1 {
+    QuarantineInventoryV1 {
+        lexical: vec![QuarantinedGenerationEntryV1 {
+            track: SearchPlaneTrackKind::Lexical,
+            path: "/state/indexes/lexical/repo-doctor/rev-doctor/g9".to_string(),
+            reason: "GENERATION_QUARANTINE_IDENTITY_UNREADABLE".to_string(),
+            detail: "identity file does not decode".to_string(),
+        }],
+        semantic: vec![QuarantinedGenerationEntryV1 {
+            track: SearchPlaneTrackKind::Semantic,
+            path: "/state/indexes/semantic/repo-legacy".to_string(),
+            reason: "GENERATION_QUARANTINE_NON_CANONICAL_LAYOUT".to_string(),
+            detail: String::new(),
+        }],
+        repo_map: vec![QuarantinedRepoMapFileEntryV1 {
+            file_name: "stale--marker.json".to_string(),
+            reason: "snapshot does not decode: expected value at line 1".to_string(),
+        }],
+    }
+}
+
+/// The mock discards exactly what it lists (by path and reason, as the
+/// adapters do) and refuses anything else typed, as the daemon does.
+fn quarantine_discard(request: QuarantineDiscardRequest) -> SearchPlaneControlIpcResponse {
+    let fixture = quarantine_fixture();
+    let listed = match &request.target {
+        QuarantineTargetV1::Generation(entry) => fixture
+            .lexical
+            .iter()
+            .chain(fixture.semantic.iter())
+            .any(|listed| {
+                listed.track == entry.track
+                    && listed.path == entry.path
+                    && listed.reason == entry.reason
+            }),
+        QuarantineTargetV1::RepoMapFile(entry) => fixture
+            .repo_map
+            .iter()
+            .any(|listed| listed.file_name == entry.file_name && listed.reason == entry.reason),
+    };
+    if listed {
+        SearchPlaneControlIpcResponse::QuarantineDiscardAck(QuarantineDiscardAck {
+            target: request.target,
+            outcome: QuarantineDiscardOutcomeDtoV1::Discarded { bytes: 4_096 },
+        })
+    } else {
+        control_error_response(
+            "QUARANTINE_TARGET_NOT_QUARANTINED",
+            format!("not quarantined now: {:?}", request.target),
+        )
+    }
+}
+
+/// Run `quarantine …` against the control mock; the exit status and both
+/// streams come back so a refusal can be asserted as well as a listing.
+fn run_quarantine(args: &[&str]) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+    let dir = tempdir()?;
+    let query_socket = dir.path().join("query.sock");
+    let control_socket = dir.path().join("control.sock");
+    let shutdown = start_control_server(&control_socket, ControlScenario::EmptyTracks)?;
+    let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("quarantine")
+        .args(args)
+        .arg("--socket")
+        .arg(&query_socket)
+        .output()?;
+    shutdown.trigger();
+    Ok(output)
+}
+
+fn stdout_of(output: &std::process::Output) -> Result<String, Box<dyn std::error::Error>> {
+    if !output.status.success() {
+        return Err(format!(
+            "quarantine exited non-zero ({:?}): {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(String::from_utf8(output.stdout.clone())?)
+}
+
+/// QI-BB-026: `quarantine list --output json` is the wire inventory,
+/// decodable back into the typed contract.
+#[test]
+fn quarantine_list_json_roundtrip() {
+    let result = quarantine_list_json_roundtrip_impl();
+    assert!(result.is_ok(), "{result:?}");
+}
+
+fn quarantine_list_json_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
+    let stdout = stdout_of(&run_quarantine(&["list", "--output", "json"])?)?;
+    let decoded: QuarantineInventoryV1 = serde_json::from_str(&stdout)?;
+    if decoded != quarantine_fixture() {
+        return Err(format!("json output does not round-trip the inventory: {stdout}").into());
+    }
+    Ok(())
+}
+
+/// QI-BB-026: the pretty listing prints every entry as the flags
+/// `quarantine discard` takes back, so an operator copies a line verbatim.
+#[test]
+fn quarantine_list_pretty_prints_discardable_lines() {
+    let result = quarantine_list_pretty_prints_discardable_lines_impl();
+    assert!(result.is_ok(), "{result:?}");
+}
+
+fn quarantine_list_pretty_prints_discardable_lines_impl() -> Result<(), Box<dyn std::error::Error>>
+{
+    let stdout = stdout_of(&run_quarantine(&["list"])?)?;
+    let expected = [
+        "kind: quarantine",
+        "lexical: 1",
+        r#"  --track lexical --path /state/indexes/lexical/repo-doctor/rev-doctor/g9 --reason GENERATION_QUARANTINE_IDENTITY_UNREADABLE --detail "identity file does not decode""#,
+        "semantic: 1",
+        r#"  --track semantic --path /state/indexes/semantic/repo-legacy --reason GENERATION_QUARANTINE_NON_CANONICAL_LAYOUT --detail """#,
+        "repo_map: 1",
+        r#"  --repomap-file stale--marker.json --reason "snapshot does not decode: expected value at line 1""#,
+        "",
+    ]
+    .join("\n");
+    if stdout != expected {
+        return Err(format!(
+            "unexpected listing:
+{stdout}
+--- expected ---
+{expected}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// QI-BB-026: a discard names the entry as listed and prints the daemon's
+/// ack; the json form is the wire ack with the target echoed verbatim.
+#[test]
+fn quarantine_discard_acks_the_listed_entry() {
+    let result = quarantine_discard_acks_the_listed_entry_impl();
+    assert!(result.is_ok(), "{result:?}");
+}
+
+fn quarantine_discard_acks_the_listed_entry_impl() -> Result<(), Box<dyn std::error::Error>> {
+    let pretty = stdout_of(&run_quarantine(&[
+        "discard",
+        "--track",
+        "lexical",
+        "--path",
+        "/state/indexes/lexical/repo-doctor/rev-doctor/g9",
+        "--reason",
+        "GENERATION_QUARANTINE_IDENTITY_UNREADABLE",
+    ])?)?;
+    let expected = [
+        "kind: quarantine-discard",
+        "target: lexical /state/indexes/lexical/repo-doctor/rev-doctor/g9",
+        "outcome: discarded bytes=4096",
+        "",
+    ]
+    .join("\n");
+    if pretty != expected {
+        return Err(format!(
+            "unexpected ack:
+{pretty}
+--- expected ---
+{expected}"
+        )
+        .into());
+    }
+    let json = stdout_of(&run_quarantine(&[
+        "discard",
+        "--repomap-file",
+        "stale--marker.json",
+        "--reason",
+        "snapshot does not decode: expected value at line 1",
+        "--output",
+        "json",
+    ])?)?;
+    let decoded: QuarantineDiscardAck = serde_json::from_str(&json)?;
+    let expected = QuarantineDiscardAck {
+        target: QuarantineTargetV1::RepoMapFile(QuarantinedRepoMapFileEntryV1 {
+            file_name: "stale--marker.json".to_string(),
+            reason: "snapshot does not decode: expected value at line 1".to_string(),
+        }),
+        outcome: QuarantineDiscardOutcomeDtoV1::Discarded { bytes: 4_096 },
+    };
+    if decoded != expected {
+        return Err(format!("json ack does not round-trip: {json}").into());
+    }
+    Ok(())
+}
+
+/// QI-BB-026: a stale listing (wrong reason) is the daemon's typed refusal
+/// on stderr with a non-zero exit, and an incomplete discard never reaches
+/// the socket: it is a usage error.
+#[test]
+fn quarantine_discard_refusals_are_typed_and_usage_errors_stay_local() {
+    let result = quarantine_discard_refusals_are_typed_and_usage_errors_stay_local_impl();
+    assert!(result.is_ok(), "{result:?}");
+}
+
+fn quarantine_discard_refusals_are_typed_and_usage_errors_stay_local_impl()
+-> Result<(), Box<dyn std::error::Error>> {
+    let stale = run_quarantine(&[
+        "discard",
+        "--track",
+        "lexical",
+        "--path",
+        "/state/indexes/lexical/repo-doctor/rev-doctor/g9",
+        "--reason",
+        "GENERATION_QUARANTINE_SCOPE_MISMATCH",
+    ])?;
+    if stale.status.success() {
+        return Err("a stale discard exits non-zero".into());
+    }
+    let stderr = String::from_utf8_lossy(&stale.stderr);
+    if !stderr.contains("QUARANTINE_TARGET_NOT_QUARANTINED") {
+        return Err(format!("the refusal carries the daemon's code: {stderr}").into());
+    }
+    if !stale.stdout.is_empty() {
+        return Err("a refused discard prints no ack".into());
+    }
+    let missing_reason = run_quarantine(&[
+        "discard",
+        "--track",
+        "lexical",
+        "--path",
+        "/state/indexes/lexical/repo-doctor/rev-doctor/g9",
+    ])?;
+    if missing_reason.status.success() {
+        return Err("a discard without --reason is refused".into());
+    }
+    let stderr = String::from_utf8_lossy(&missing_reason.stderr);
+    if !stderr.contains("--reason") {
+        return Err(format!("the usage error names the missing flag: {stderr}").into());
+    }
+    let mixed = run_quarantine(&[
+        "discard",
+        "--repomap-file",
+        "stale--marker.json",
+        "--track",
+        "lexical",
+        "--reason",
+        "x",
+    ])?;
+    if mixed.status.success() {
+        return Err("--repomap-file with --track is refused".into());
     }
     Ok(())
 }

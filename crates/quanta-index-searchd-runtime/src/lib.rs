@@ -18,8 +18,9 @@ use quanta_index_catalog::SqliteCatalog;
 use quanta_index_core::{
     AuxiliaryAuthorityCatalogPort, FileContributorIngestPort, FileOwnershipIngestPort,
     GenerationIdentityValidatePort, IdempotencyCatalogPort, IncompleteGenerationDiscardPort,
-    LexicalIndexOpenPort, MetricSourcePort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
-    RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapQueryPort, RepoMetaIngestPort,
+    LexicalIndexOpenPort, MetricSourcePort, QuarantinedGenerationDiscardPort,
+    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
+    RepoMapGenerationActivatePort, RepoMapQuarantinePort, RepoMapQueryPort, RepoMetaIngestPort,
     RepoTopicIngestPort, SealedGenerationReclaimPort, SealedGenerationScanPort,
     SearchCorpusBatchBuildPort, SemanticBatchBuildPort, SemanticIndexOpenPort,
 };
@@ -96,6 +97,8 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     let file_contributor_ingest_port: Arc<dyn FileContributorIngestPort + Send + Sync> =
         lex_adapter.clone();
     let repo_meta_ingest_port: Arc<dyn RepoMetaIngestPort + Send + Sync> = lex_adapter.clone();
+    let lexical_quarantine_discard: Arc<dyn QuarantinedGenerationDiscardPort + Send + Sync> =
+        lex_adapter.clone();
     // The lexical adapter keeps the writer envelope and regex cache tallies
     // (QI-BB-015); nothing else built here keeps accounting of its own.
     let lexical_metric_source: Arc<dyn MetricSourcePort> = lex_adapter;
@@ -108,12 +111,15 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
         sem_adapter.clone();
     let semantic_sealed_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync> =
         sem_adapter.clone();
+    let semantic_quarantine_discard: Arc<dyn QuarantinedGenerationDiscardPort + Send + Sync> =
+        sem_adapter.clone();
     let sem_open_port: Arc<dyn SemanticIndexOpenPort + Send + Sync> = sem_adapter;
     let repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync> = repo_map_store.clone();
     let repo_map_bundle_ingest_port: Arc<dyn RepoMapBundleIngestPort + Send + Sync> =
         repo_map_store.clone();
     let repo_map_generation_activate_port: Arc<dyn RepoMapGenerationActivatePort + Send + Sync> =
-        repo_map_store;
+        repo_map_store.clone();
+    let repo_map_quarantine: Arc<dyn RepoMapQuarantinePort + Send + Sync> = repo_map_store;
 
     SearchdRuntime::assemble(
         config,
@@ -140,6 +146,9 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
             repo_map_query_port,
             repo_map_bundle_ingest_port,
             repo_map_generation_activate_port,
+            lexical_quarantine_discard,
+            semantic_quarantine_discard,
+            repo_map_quarantine,
             repo_map_open_report,
             search_corpus_lifecycle,
             legacy_semantic_journal_store,

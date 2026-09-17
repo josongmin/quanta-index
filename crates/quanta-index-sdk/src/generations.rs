@@ -47,7 +47,9 @@ impl<'a> GenerationNamespace<'a> {
             | SearchPlaneControlIpcResponse::Error(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
-            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)) => {
+            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
+            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected rollback ack, got {}",
                     QuantaIndex::control_response_kind(&other)
@@ -79,10 +81,14 @@ impl<'a> GenerationNamespace<'a> {
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
-            | SearchPlaneControlIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
-                "expected current generation snapshot, got {}",
-                QuantaIndex::control_response_kind(&other)
-            ))),
+            | SearchPlaneControlIpcResponse::Error(_)
+            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
+                Err(SdkError::Protocol(format!(
+                    "expected current generation snapshot, got {}",
+                    QuantaIndex::control_response_kind(&other)
+                )))
+            }
         }
     }
 
@@ -107,10 +113,14 @@ impl<'a> GenerationNamespace<'a> {
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
-            | SearchPlaneControlIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
-                "expected generation status report, got {}",
-                QuantaIndex::control_response_kind(&other)
-            ))),
+            | SearchPlaneControlIpcResponse::Error(_)
+            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
+                Err(SdkError::Protocol(format!(
+                    "expected generation status report, got {}",
+                    QuantaIndex::control_response_kind(&other)
+                )))
+            }
         }
     }
 }

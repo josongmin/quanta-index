@@ -28,9 +28,10 @@ use quanta_index_core::domains::structural::{
 use quanta_index_core::{
     AuxiliaryAuthorityCatalogPort, CoreError, FileContributorIngestPort, FileOwnershipIngestPort,
     GenerationIdentityValidatePort, IdempotencyCatalogPort, IncompleteGenerationDiscardPort,
-    L2UnitEmbeddingProvider, LexicalIndexOpenPort, MetricSourcePort, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
-    RepoMapOpenReportV1, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
+    L2UnitEmbeddingProvider, LexicalIndexOpenPort, MetricSourcePort,
+    QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
+    RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapOpenReportV1,
+    RepoMapQuarantinePort, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
     SealedGenerationReclaimPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
     SearchCorpusIngestPort, SemanticBatchBuildPort, SemanticIndexOpenPort, SemanticIngestPort,
     StructuralError, StructuralMatchBinding, StructuralMatchCandidate, StructuralReadiness,
@@ -51,10 +52,11 @@ use quanta_index_search_plane::{
     AuxiliaryMaterializerParts, AuxiliaryMutationCoordinator, BoundedQueryObsStore,
     DirectHistoryMaterializer, DirectRuntimeMetadataMaterializer, DirectSearchCorpusMaterializer,
     DirectSemanticMaterializer, DirectStructuralMaterializer, HashingQueryTextEmbedder,
-    HistoryIngestPort, Ledger, ObservabilityScrape, QueryObsSink, QueryTextEmbedderPort,
-    RuntimeMetadataIngestPort, SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusLifecycleOwner,
-    SearchCorpusMaterializerParts, SearchPlaneControlDispatcher, SearchPlaneDispatcher,
-    SearchPlaneIngestDispatcher, SnapshotRegistries, StructuralIngestPort,
+    HistoryIngestPort, Ledger, ObservabilityScrape, QuarantineService, QuarantineServiceParts,
+    QueryObsSink, QueryTextEmbedderPort, RuntimeMetadataIngestPort,
+    SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusLifecycleOwner, SearchCorpusMaterializerParts,
+    SearchPlaneControlDispatcher, SearchPlaneDispatcher, SearchPlaneIngestDispatcher,
+    SnapshotRegistries, StructuralIngestPort,
 };
 use regex::Regex;
 
@@ -93,6 +95,11 @@ pub struct SearchdRuntimeParts {
     pub repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync>,
     pub repo_map_bundle_ingest_port: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
     pub repo_map_generation_activate_port: Arc<dyn RepoMapGenerationActivatePort + Send + Sync>,
+    /// The quarantine's destructive side (QI-BB-026): one discard port per
+    /// generation track, and the `RepoMap` store's own list-and-discard.
+    pub lexical_quarantine_discard: Arc<dyn QuarantinedGenerationDiscardPort + Send + Sync>,
+    pub semantic_quarantine_discard: Arc<dyn QuarantinedGenerationDiscardPort + Send + Sync>,
+    pub repo_map_quarantine: Arc<dyn RepoMapQuarantinePort + Send + Sync>,
     /// What the `RepoMap` store found on disk when the composition root
     /// opened it (QI-BB-008); surfaced through the boot inventory.
     pub repo_map_open_report: RepoMapOpenReportV1,
@@ -870,6 +877,9 @@ impl SearchdRuntime {
             repo_map_query_port,
             repo_map_bundle_ingest_port,
             repo_map_generation_activate_port,
+            lexical_quarantine_discard,
+            semantic_quarantine_discard,
+            repo_map_quarantine,
             repo_map_open_report,
             search_corpus_lifecycle,
             legacy_semantic_journal_store,
@@ -1039,6 +1049,13 @@ impl SearchdRuntime {
             query_text_embedder,
             query_obs_sink,
         ));
+        let quarantine = QuarantineService::new(QuarantineServiceParts {
+            lexical_scanner: Arc::clone(&lexical_generation_scanner),
+            semantic_scanner: Arc::clone(&semantic_generation_scanner),
+            lexical_discard: lexical_quarantine_discard,
+            semantic_discard: semantic_quarantine_discard,
+            repo_map: repo_map_quarantine,
+        });
         let control_dispatcher = Arc::new(SearchPlaneControlDispatcher::new(
             repo_map_generation_activate_port,
             activation_catalog,
@@ -1046,6 +1063,7 @@ impl SearchdRuntime {
             lexical_generation_validator,
             semantic_generation_validator,
             observability,
+            quarantine,
         ));
         let ingest_dispatcher = Arc::new(SearchPlaneIngestDispatcher::new(
             direct_search_corpus_ingest_port,
