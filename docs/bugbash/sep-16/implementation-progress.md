@@ -1741,8 +1741,9 @@ module-discipline(33 facade)/error-shape/public-api(불변)/cargo-modules(불변
 `e2e_perf_chaos` 43·`e2e_top_k_truth_table` 4 green. main rebase 후(§3.31 quarantine 포함) 250+38 green.
 
 **남긴 것(agent가 발견, 의도적으로 미변경)**: (a) `dispatcher.rs::dispatch_runtime_metadata`의 "QI-RT-02 in-flight … not wired"
-주석이 구현과 모순 — verify #34 직후 정정(주석이 route를 서술). (b) `ledger_apply`가 state struct의 map에 직접 쓴다(`pub(super)` field) — delta 적용을 state
-type의 method로 옮기면 field가 다시 private. (c) `text_plane::ExecutableTextPlanePolicy` 2-plane enum, `Ledger::lexical_seal`/
+주석이 구현과 모순 — verify #34 직후 정정(주석이 route를 서술). (b) `ledger_apply`가 state struct의 map에 직접 쓴다(`pub(super)` field) — f2d5bdc에서 delta
+적용·channel op mutation을 state type의 method(`apply_delta`, `upsert_commit`, `replace_scope_parse_trees` …)로 옮기고 map을
+private으로(동작 불변: search-plane 267+38, aux e2e 27 green). (c) `text_plane::ExecutableTextPlanePolicy` 2-plane enum, `Ledger::lexical_seal`/
 `semantic_seal` mirror, `SearchPlaneDispatcher` 9 collaborator — 기존 smell. (d) `search_corpus_history.rs` 833줄·`routes/history.rs`
 1,084줄은 2차 분할 후보.
 
