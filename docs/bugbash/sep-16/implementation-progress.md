@@ -313,7 +313,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + **quarantine control surface(§3.31: live inventory + as-listed discard, control IPC/SDK/CLI)** + QI-BB-032 idempotency catalog(§3.16) + QI-BB-020 auxiliary authority rows(§3.19) 완료. + **aux read epoch(§3.37: epoch-named snapshot, cursor 연속은 시작 epoch에서, retention bounded)** 완료. 남은 것: 없음(W2 항목 전부 착지; runtime-metadata의 structural epoch wire 노출·epoch metric은 §3.37 한계) |
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + QI-BB-027 ANN sealed contract(§3.23) + **QI-BB-016 lexical writer envelope(§3.26)** 완료. + **QI-BB-027 보완 ANN append per delta seal(§3.35)** 완료. + **QI-BB-006 완결 sharded text-authority(§3.38)** 완료. 남은 것: scope 단위 streamed embed→append(§3.18 한계, 진행 중) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) + **QI-BB-025 보완 #4 runtime/structural window(§3.30)** + **keyset cursor + streaming collector(§3.39)** 완료. 남은 것: 없음(W4 항목 전부 착지; history selector의 collector 이관은 §3.39 한계 b) |
-| W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. QI-BB-014 UDS/state-root private hardening(§3.27) 완료. QI-BB-015 metrics 집계 + scrape(§3.28) 완료. **phase 2(§3.29): budget이 lexical native collect/scan/regex verify/predicate scope 안에서 관측** 완료. 남은 것: shared mode(group/ACL + peer credential), semantic lane 내부 관측 |
+| W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. QI-BB-014 UDS/state-root private hardening(§3.27) 완료. QI-BB-015 metrics 집계 + scrape(§3.28) 완료. **phase 2(§3.29): budget이 lexical native collect/scan/regex verify/predicate scope 안에서 관측** 완료. + **shared socket mode + peer credential(§3.40)** 완료. 남은 것: semantic lane 내부 budget 관측(진행 예정) |
 | W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + QI-BB-018 true hybrid(§3.22) + QI-BB-022 explain = exact presence + lexical score trace(§3.24) + **QI-BB-008 RepoMap bounded query + durable store(§3.25)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), history relevance order(Tantivy history index, §3.20 한계), judged corpus recall/NDCG gate(§3.22 한계), **hybrid per-lane contribution(§3.36)** 완료 |
 | W7 | planned | |
 | C1 | planned | |
@@ -2007,6 +2007,48 @@ runtime-metadata는 seed 집합을 전부 materialize한 뒤 잘랐다. history(
 **정직한 한계**: (a) RSS/latency 실측 없음 — 메모리 bound는 계측 collector로만. (b) `HistoryPageSelector`(§3.20)는 `KeysetPageCollector`와 같은
 모양이라 이관 후보(미착수), `HistoryQueryRequest` serde도 새 macro로 통합 가능. (c) `E2eRoutePage::refusal()`은 typed accessor로만 존재.
 
+## 3.40 QI-BB-014 완결 — shared socket mode: 모든 accept가 peer credential을 확인한다 (구현 완료)
+
+**진단 확정**: §3.27은 private mode만 만들었다(한계 b) — group/ACL 분리, socket role별 권한 분리, `SO_PEERCRED`/`getpeereid` 없음. plan §7.3:
+"UDS directory/socket mode와 peer credential policy를 명시하고 OS별 검증을 분리한다".
+
+**구현** (23 files, +2,424/−133):
+
+- **정책**(`ipc/src/socket_access.rs`): `SocketAccessPolicy { Private, Shared(SharedSocketAccess { group: Option<gid>, allowed_uids }) }`(V 접미사
+  없음 — ipc crate 관례), `PeerCredentials { uid, gid, pid: Option }`, `PeerRefusal`, 순수 함수 `admit_peer(policy, peer, self_euid)`. Private =
+  소유자만(root도 예외 아님 — **private socket도 accept에서 확인**해 bind→chmod 창을 닫음; 행동 변화: root `searchctl`이 user daemon에 붙으려면
+  listed여야 함). Shared: group이 있으면 `0660`+chgrp, uid list가 있으면 `0666`(group 밖 listed uid가 `0660` 파일에 닿을 수 없어 dead config가 되므로;
+  doc이 group 방식을 권장 — kernel이 stranger를 공짜로 거부). 거부된 peer는 frame 없이 close.
+- **peer credential**(`ipc/src/peer_credentials.rs`, `PeerCredentialsSource` port): Linux/Android `rustix::net::sockopt::socket_peercred`(SO_PEERCRED:
+  pid+euid+egid), BSD/macOS `nix::unistd::getpeereid`(euid+egid, pid None; `nix 0.31.3` MIT, `socket`/`user` feature, ipc에서는 target-gated dep),
+  그 외 platform은 `compile_error!`. nix의 `LOCAL_PEERCRED`/`XuCred`는 `cr_ngroups` 없이 16-slot groups를 돌려줘 supplementary group을 정직하게
+  읽을 수 없어 기각 — 검사는 effective gid만(문서화).
+- **bind**(`UdsServer::bind_observed(path, admission, access, counters)`): group membership 확인(`getegid`+`getgroups`) → dir 생성/검증(component별
+  `0700/0710/0711` + chgrp, umask-proof, 재확인) → 모든 resolved ancestor의 **reachability walk**(`o+x` 또는 공유 group dir의 `g+x`; 막힌 dir을
+  typed로 이름 — daemon은 state root나 기존 dir을 절대 넓히지 않음) → reclaim → bind → chown+chmod(`0600/0660/0666`) → 재확인. accept loop가
+  reader thread 생성 전에 peer creds → policy → cap을 검사. `IpcError::SocketAccessUnsatisfiable`. counter `ipc_<plane>_peer_refused_total`(정책)과
+  `ipc_<plane>_peer_credentials_unreadable_total`(kernel 미보고) 분리 — uid는 어디에도 기록 안 함.
+- **searchd**: `SocketAccessPolicies { query, control, ingest }`(기본 전부 Private), env `QUANTA_INDEX_{QUERY,CONTROL,INGEST}_SOCKET_ACCESS =
+  private | shared:group=<name|gid>[,uid=<name|uid>...]`(`PrincipalResolver` port + `SystemPrincipals`; 모르는 group/user는 bind 전 typed);
+  boot inventory `socket_access` + gauge `boot_socket_<role>_{shared,allowed_uids,group_gid}`. harness `boot_with_socket_access`, shared mode의
+  socket은 daemon이 `/tmp` 아래 만드는 dir(sticky·world-traversable인 유일한 곳; `temp_dir()`는 macOS에서 `0700`).
+- `check-cargo-toml-hygiene.py`가 `[target.<cfg>.dependencies]` table도 감사(이전엔 조용히 skip) + pytest 2 case.
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| 정책 table(private=self만, shared=self/listed uid/group gid 허용, 그 외 거부, 빈 allow+group 없음=self만) | `socket_access.rs` unit |
+| 실제 UDS: Shared{group=own gid} → mode `0660`+gid, self 연결 admitted; `allowed_uids={other}`+주입 `PeerCredentialsSource`(scripted uid) → frame 전 거부, counter +1, dispatcher 호출 0, listener 생존 후 listed uid 서빙; Private socket `0600` 유지 | `ipc/tests/socket_access.rs` 5 (test-authority 등록) |
+| e2e: query=Shared(group=own), control/ingest=Private로 boot → query 서빙, boot inventory/scrape에 정책; `group="no-such-group-xyz"` → socket 파일 하나도 만들기 전 typed 거부 | `searchd-runtime/tests/e2e_socket_access.rs` 2 (등록) |
+| 회귀·rail | **`just rust-test` workspace 전체 164 binary 2,242 passed / 0 failed / 2 ignored**, `just rust-clippy` 0, fmt, deny(nix MIT), machete, public-api 불변, workspace-lints/hexagonal/no-allow/derive/cargo-toml(24)/module(33)/error-shape(338)/digest/test-authority/ignored-policy, semgrep 0, hygiene pytest 12. main rebase(86d1a34 위) 후 check + hygiene + public-api + ipc/searchd/harness 180 + e2e 5 target 44 + deny green |
+
+**정직한 한계**: (a) 두 번째 uid 없이 실제 stranger의 kernel 거부·SO_PEERCRED 보고는 미실행(주입 source로 accept 경로 증명); root daemon case
+미검증. (b) Linux branch는 이 host에 target이 없어 컴파일 안 됨(rustix 1.1.4 소스 대조; CI ubuntu가 컴파일). (c) 거부된 client는 typed code가
+아니라 transport error(`Truncated`/`ConnectionReset`)를 본다 — frame을 쓰지 않는 설계의 귀결. (d) `--state-root` CLI override 경로는 기존
+패턴대로 retention/embedder env만 적용해 socket-access knob을 무시 — `QUANTA_INDEX_STATE_ROOT` env는 전부 적용; override를 같은 env-policy chain으로
+돌리는 후속. (e) `pm.py lint`는 fresh worktree에 gitignored `.cursor/rules/*`가 없어 실패(환경, prompt-manager 미변경).
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -2067,4 +2109,5 @@ runtime-metadata는 seed 집합을 전부 materialize한 뒤 잘랐다. history(
 | 2026-09-18 | fc3ee5c | `just rust-profile verify-rust` (nohup) | **GREEN** — exit 0, **2,225 passed / 0 failed** (026 quarantine surface + 013 split + 011 normalizer + 027 ANN append + hybrid lane provenance + aux read epoch + 작업량 oracle 통합; clippy·semgrep·deny·doc·public-api·hexagonal·test-authority 포함) |
 | 2026-09-18 | worktree E (960be81→0aad39d rebase) | agent: lexical 225 + lq 256 + core 85 + search-plane/searchd 341 + searchd-runtime e2e 전체 242 + workspace clippy(0) + fmt/semgrep/module/error-shape/digest/derive/test-authority/cargo-toml/hexagonal; rebase 후 check + baselines 불변 + lexical 28 + e2e 49 | 전부 green (§3.38) |
 | 2026-09-18 | worktree H (fc3ee5c→b8e3ac3 rebase) | agent: contract 246·sdk 80·search-plane 319·searchctl 59·harness 77 + e2e 16 target 159 + workspace clippy(0) + fmt/semgrep/module/error-shape/derive/hexagonal/cargo-toml/digest/test-authority + public-api/cargo-modules update + fuzz smoke; rebase 후 check + baselines 불변 + unit 781 + e2e 66 | 전부 green (§3.39) |
+| 2026-09-18 | worktree I (36d9d53→86d1a34 rebase) | agent: `just rust-test` 2,242/0/2 ignored + `just rust-clippy` 0 + fmt/deny/machete/public-api/workspace-lints/hexagonal/no-allow/derive/cargo-toml/module/error-shape/digest/test-authority/ignored-policy + semgrep 0; rebase 후 check + hygiene + public-api + 180 + e2e 44 + deny | 전부 green (§3.40) |
 | 2026-09-18 | worktree 011 (7a5ce5e→034c4fd rebase) | agent: workspace clippy(0) + lexical 15 target·lq-norm 88·search-plane 285 + e2e text_route_hellgate 8·perf_chaos 43·dsl_scenarios 8·lexical_full_fidelity 1·dual_syntax_parity 4·full_corpus 4 + harness 77 + hexagonal/semgrep/module/error-shape/cargo-toml/derive/test-authority/deny; rebase 후 lexical carryforward 6 + goldens 8 | 전부 green (§3.33) |
