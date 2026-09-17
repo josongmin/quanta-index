@@ -2,22 +2,27 @@
 //!
 //! Selection resolution, the query-time model-identity gate, RRF/seed
 //! candidate assembly, and response-explanation builders for the semantic,
-//! hybrid, and hybrid-seed query paths. Split out of `query_dispatcher` so the
-//! dispatcher file is not the sole home for every query mode. This is a child
-//! module: `use super::*` pulls in the shared resolvers, policies, and types it
-//! builds on, and the moved items are `pub(super)` so the dispatcher methods
-//! (which stay in `query_dispatcher`) keep calling them unchanged.
+//! hybrid, and hybrid-seed query paths. The items are `pub(super)` so the
+//! route bodies under `routes/` keep calling them unchanged; this module
+//! depends only on `selection` and the contract/core crates.
 
-use super::{
-    ActivationCatalog, BTreeMap, BTreeSet, CoreError, EarlyStopReason, EngineTouched,
-    GenerationPin, HybridOrchestratorPolicy, HybridQueryRequest, HybridSeedQueryRequest,
-    LexicalCandidate, LexicalErrorCode, OwnerDocKind, PlannerStage, PlannerTraceEntry,
-    QueryResultWindowV1, SearchExplanation, SearchPlaneTrackKind, SeedCandidate, SeedContribution,
-    SeedLane, SemanticPolicy, SemanticQueryRequest, SemanticSearchHitV1,
-    resolve_lexical_request_pin, resolve_semantic_selector_selection,
+use std::collections::{BTreeMap, BTreeSet};
+
+use quanta_index_contract::lex::LexicalErrorCode;
+use quanta_index_contract::{
+    EarlyStopReason, EngineTouched, GenerationPin, HybridQueryRequest, HybridSeedQueryRequest,
+    LexicalCandidate, OwnerDocKind, PlannerStage, PlannerTraceEntry, QueryResultWindowV1,
+    SearchExplanation, SearchPlaneTrackKind, SeedCandidate, SeedContribution, SeedFusionIdentity,
+    SeedLane, SemanticCorpusKindV1, SemanticQueryRequest, SemanticSeedCorpusBudgetV1,
 };
-use quanta_index_contract::{SeedFusionIdentity, SemanticCorpusKindV1, SemanticSeedCorpusBudgetV1};
-use quanta_index_core::DenseLaneContractV1;
+use quanta_index_core::{
+    CoreError, DenseLaneContractV1, HybridOrchestratorPolicy, SemanticPolicy, SemanticSearchHitV1,
+};
+
+use crate::ActivationCatalog;
+use crate::query_dispatcher::selection::{
+    SemanticSelection, resolve_lexical_request_pin, resolve_semantic_selector_selection,
+};
 
 /// The plan-stage trace entry naming the dense lane every semantic route
 /// ran through (QI-BB-027): its index, whether the seal proved it, and the
@@ -27,12 +32,6 @@ fn dense_lane_trace_entry_v1(dense_lane: &DenseLaneContractV1) -> PlannerTraceEn
         stage: PlannerStage::Plan,
         detail: dense_lane.trace_detail(),
     }
-}
-
-#[derive(Clone, Debug)]
-pub(super) struct SemanticSelection {
-    pub(super) pin: GenerationPin,
-    pub(super) expected_manifest_digest: Option<String>,
 }
 
 /// Outcome of the shared hybrid lexical+semantic fusion, before the caller

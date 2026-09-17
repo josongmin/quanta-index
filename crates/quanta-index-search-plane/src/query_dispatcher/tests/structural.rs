@@ -1,0 +1,930 @@
+// ------------------------------------------------------------------
+// LXE-02 / LXE-09 wiring tests.
+//
+// These exercise the new planner short-circuit and the structural
+// domain-port routing path. They are additive — existing dispatcher
+// tests remain unchanged.
+// ------------------------------------------------------------------
+
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
+
+use quanta_index_contract::lex::{SymbolKindCode, SymbolKindFamily};
+use quanta_index_contract::{
+    ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcResponse, SymbolCandidate, TextQueryRequest, TextQuerySyntax,
+};
+use quanta_index_core::RequestBudgetV1;
+use quanta_index_core::domains::structural::{StructuralError, StructuralReadiness};
+
+use crate::observability::BoundedQueryObsStore;
+use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
+use crate::query_dispatcher::routes::structural::lexical_leaves::symbol_hits_to_structural_buckets;
+use crate::query_dispatcher::tests::support::common::{
+    TestResult, assert_closed_obs_metrics, default_query_embedder, ipc_error_from, ready_ledger,
+    ready_pin, test_activation_catalog,
+};
+use crate::query_dispatcher::tests::support::lexical::{
+    RecordingLexicalOpener, RecordingLexicalState, RejectLexicalOpener, recording_lexical_candidate,
+};
+use crate::query_dispatcher::tests::support::repo_map::StubRepoMapQueryPort;
+use crate::query_dispatcher::tests::support::semantic::RejectSemanticOpener;
+use crate::query_dispatcher::tests::support::structural::{
+    PatternRoutingStructuralProducer, RecordingStructuralProducer,
+    ready_ledger_with_structural_boolean_chunks, structural_dispatcher_mixed,
+    structural_dispatcher_with_producer, structural_dispatcher_with_producer_and_ledger,
+    structural_match_candidate, structural_state_for_test_chunks,
+};
+use crate::{SnapshotRegistries, SnapshotRegistryPolicy};
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "`assert!`/`assert_eq!` invariant checks in a Result-returning test; a failed assertion is the intended test failure"
+)]
+fn symbol_hits_project_into_all_overlapping_chunks_deterministically()
+-> Result<(), Box<dyn std::error::Error>> {
+    let structural_state = structural_state_for_test_chunks(&[
+        (
+            "chunk-symbol-left",
+            "src/symbol.rs",
+            "fn ParityTypeSymbol() {}",
+        ),
+        (
+            "chunk-symbol-right",
+            "src/symbol.rs",
+            "fn ParityTypeSymbol() {}",
+        ),
+    ])?;
+    let buckets = symbol_hits_to_structural_buckets(
+        vec![SymbolCandidate {
+            candidate_id: "symbol-hit-1".to_string(),
+            repo_id: RepoId::new("repo-map-ipc"),
+            revision_id: RevisionId::new("rev-map-ipc"),
+            manifest_generation: ManifestGeneration::new(9),
+            repo_relative_path: RepoRelativePath::new("src/symbol.rs"),
+            start_line: 1,
+            end_line: 1,
+            score: 1.0,
+            snippet: "ParityTypeSymbol".to_string(),
+            symbol_kind: SymbolKindCode::from_code_str("function")
+                .expect("function symbol kind code"),
+            symbol_kind_family: Some(SymbolKindFamily::Callable),
+        }],
+        &structural_state,
+    );
+    let projected_ids = buckets.keys().cloned().collect::<Vec<_>>();
+    assert_eq!(
+        projected_ids,
+        vec![
+            "chunk-symbol-left".to_string(),
+            "chunk-symbol-right".to_string(),
+        ]
+    );
+    for bucket in buckets.values() {
+        assert_eq!(
+            bucket.len(),
+            1,
+            "each overlapping chunk must receive exactly one projected structural bucket"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn structural_dispatch_success_emits_closed_obs_metrics() -> TestResult {
+    let obs_sink = Arc::new(BoundedQueryObsStore::default());
+    let dispatcher = SearchPlaneDispatcher::new_with_obs(
+        Arc::new(RejectLexicalOpener),
+        Arc::new(RejectSemanticOpener),
+        SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
+        Arc::new(StubRepoMapQueryPort),
+        Arc::new(RecordingStructuralProducer::ready_with(vec![
+            structural_match_candidate("chunk-tree"),
+        ])),
+        ready_ledger(),
+        test_activation_catalog()?,
+        default_query_embedder(),
+        obs_sink.clone(),
+    );
+
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "match { :[x] }".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 4,
+            },
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+    match response {
+        SearchPlaneQueryIpcResponse::Structural(results) => {
+            if results.generation != ready_pin() || results.results.len() != 1 {
+                return Err(format!("unexpected structural response: {results:?}").into());
+            }
+        }
+        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
+        | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::HybridSeed(_)
+        | SearchPlaneQueryIpcResponse::History(_)
+        | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+        | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::Error(_)) => {
+            return Err(format!("expected Structural response, got {other:?}").into());
+        }
+    }
+
+    assert_closed_obs_metrics(
+        &obs_sink,
+        &[
+            "lq_query_intake_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+            "lq_route_structural_latency_ms",
+            "lq_route_structural_served_total",
+        ],
+    )
+}
+
+#[test]
+fn structural_dispatch_routes_happy_path_through_structural_service() -> TestResult {
+    let producer = Arc::new(RecordingStructuralProducer::ready_with(vec![
+        structural_match_candidate("chunk-tree"),
+    ]));
+    let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "match { :[x] }".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 4,
+            },
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+
+    match response {
+        SearchPlaneQueryIpcResponse::Structural(results) => {
+            if results.generation != ready_pin() {
+                return Err(format!(
+                    "expected structural generation {:?}, got {:?}",
+                    ready_pin(),
+                    results.generation
+                )
+                .into());
+            }
+            if results.results.len() != 1 {
+                return Err(format!(
+                    "expected 1 structural candidate, got {}",
+                    results.results.len()
+                )
+                .into());
+            }
+            let Some(first) = results.results.first() else {
+                return Err("expected structural results to contain one candidate".into());
+            };
+            if first.candidate_id != "chunk-tree" {
+                return Err(format!("expected candidate_id=chunk-tree, got {first:?}").into());
+            }
+        }
+        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
+        | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::HybridSeed(_)
+        | SearchPlaneQueryIpcResponse::History(_)
+        | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+        | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::Error(_)) => {
+            return Err(format!("expected Structural response, got {other:?}").into());
+        }
+    }
+    let consulted = producer.readiness_calls.load(Ordering::SeqCst);
+    if consulted != 1 {
+        return Err(format!(
+            "expected structural readiness to be consulted exactly once, got {consulted} call(s)"
+        )
+        .into());
+    }
+    let executed = producer.execute_calls.load(Ordering::SeqCst);
+    if executed != 1 {
+        return Err(format!(
+            "expected structural execute to be consulted exactly once, got {executed} call(s)"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[test]
+fn structural_dispatch_maps_generation_not_ready() -> TestResult {
+    let producer = Arc::new(RecordingStructuralProducer::new(
+        StructuralReadiness::GenerationNotReady,
+    ));
+    let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "match { :[x] }".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 4,
+            },
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+
+    let (code, _message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+    if code != "STR_GENERATION_NOT_READY" {
+        return Err(format!("expected STR_GENERATION_NOT_READY, got {code}").into());
+    }
+    if producer.execute_calls.load(Ordering::SeqCst) != 0 {
+        return Err("execute must not run when readiness is GenerationNotReady".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn structural_dispatch_maps_shard_unavailable() -> TestResult {
+    let producer = Arc::new(RecordingStructuralProducer::new(
+        StructuralReadiness::ShardUnavailable,
+    ));
+    let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "match { :[x] }".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 4,
+            },
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+
+    let (code, _message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+    if code != "STR_SHARD_UNAVAILABLE" {
+        return Err(format!("expected STR_SHARD_UNAVAILABLE, got {code}").into());
+    }
+    if producer.execute_calls.load(Ordering::SeqCst) != 0 {
+        return Err("execute must not run when readiness is ShardUnavailable".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn structural_dispatch_maps_lang_not_supported() -> TestResult {
+    let producer = Arc::new(RecordingStructuralProducer::ready_with_error(
+        StructuralError::LangNotSupported("java".to_string()),
+    ));
+    let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "lang:java match { :[x] }".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 4,
+            },
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+
+    let (code, _message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+    if code != "STR_LANG_NOT_SUPPORTED" {
+        return Err(format!("expected STR_LANG_NOT_SUPPORTED, got {code}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn structural_dispatch_routes_repo_and_file_filters_to_producer() -> TestResult {
+    let producer = Arc::new(RecordingStructuralProducer::ready_with(vec![
+        structural_match_candidate("chunk-tree"),
+    ]));
+    let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "repo:repo-map-ipc file:src/lib.rs match { :[x] }".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 4,
+            },
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+
+    match response {
+        SearchPlaneQueryIpcResponse::Structural(results) => {
+            if results.generation != ready_pin() {
+                return Err(format!(
+                    "expected structural generation {:?}, got {:?}",
+                    ready_pin(),
+                    results.generation
+                )
+                .into());
+            }
+            if results.results.len() != 1 {
+                return Err(format!(
+                    "expected 1 structural candidate, got {}",
+                    results.results.len()
+                )
+                .into());
+            }
+        }
+        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
+        | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::HybridSeed(_)
+        | SearchPlaneQueryIpcResponse::History(_)
+        | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+        | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::Error(_)) => {
+            return Err(format!("expected Structural response, got {other:?}").into());
+        }
+    }
+    if producer.readiness_calls.load(Ordering::SeqCst) != 1 {
+        return Err("producer readiness must run for executable structural filters".into());
+    }
+    if producer.execute_calls.load(Ordering::SeqCst) != 1 {
+        return Err("producer execute must run for executable structural filters".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn structural_dispatch_rejects_non_executable_filters_before_consulting_producer() -> TestResult {
+    let producer = Arc::new(RecordingStructuralProducer::ready_with(vec![
+        structural_match_candidate("chunk-tree"),
+    ]));
+    let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "select:repo match { :[x] }".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 4,
+            },
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+
+    let (code, message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+    if code != "STR_INVALID_REQUEST" {
+        return Err(format!("expected STR_INVALID_REQUEST, got {code}").into());
+    }
+    if !message.contains("filter `select` is not executable") {
+        return Err(format!("expected select-filter rejection message, got {message}").into());
+    }
+    if producer.readiness_calls.load(Ordering::SeqCst) != 0 {
+        return Err("producer readiness must not run for invalid structural filters".into());
+    }
+    if producer.execute_calls.load(Ordering::SeqCst) != 0 {
+        return Err("producer execute must not run for invalid structural filters".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn structural_dispatch_routes_sourcegraph_structural_subset_to_producer() -> TestResult {
+    let producer = Arc::new(RecordingStructuralProducer::ready_with(vec![
+        structural_match_candidate("chunk-tree"),
+    ]));
+    let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+
+    let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
+        quanta_index_contract::StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
+                query_text:
+                    r#"repo:repo-map-ipc path:src/lib.rs lang:rust patterntype:structural "function_item { { identifier :[x] } }""#
+                        .to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 4,
+            },
+        },
+    ), &RequestBudgetV1::unbounded());
+
+    match response {
+        SearchPlaneQueryIpcResponse::Structural(results) => {
+            if results.generation != ready_pin() {
+                return Err(format!(
+                    "expected structural generation {:?}, got {:?}",
+                    ready_pin(),
+                    results.generation
+                )
+                .into());
+            }
+            if results.results.len() != 1 {
+                return Err(format!(
+                    "expected 1 structural candidate from SG structural route, got {}",
+                    results.results.len()
+                )
+                .into());
+            }
+        }
+        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
+        | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::HybridSeed(_)
+        | SearchPlaneQueryIpcResponse::History(_)
+        | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+        | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::Error(_)) => {
+            return Err(format!(
+                "expected Structural response for SG structural route, got {other:?}"
+            )
+            .into());
+        }
+    }
+    if producer.readiness_calls.load(Ordering::SeqCst) != 1 {
+        return Err("producer readiness must run for SG structural subset".into());
+    }
+    if producer.execute_calls.load(Ordering::SeqCst) != 1 {
+        return Err("producer execute must run for SG structural subset".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn structural_dispatch_rejects_typed_hole_kind_with_exact_code() -> TestResult {
+    let producer = Arc::new(RecordingStructuralProducer::ready_with(vec![
+        structural_match_candidate("chunk-tree"),
+    ]));
+    let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "match { function_item { { :[name.lambda] } } }".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 4,
+            },
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+
+    let (code, message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+    if code != "STR_HOLE_KIND_UNSUPPORTED" {
+        return Err(format!("expected STR_HOLE_KIND_UNSUPPORTED, got {code}").into());
+    }
+    if !message.contains("typed hole kind `lambda`") {
+        return Err(format!("expected typed-hole rejection message, got {message}").into());
+    }
+    if producer.readiness_calls.load(Ordering::SeqCst) != 0 {
+        return Err("producer readiness must not run for typed-hole rejection".into());
+    }
+    if producer.execute_calls.load(Ordering::SeqCst) != 0 {
+        return Err("producer execute must not run for typed-hole rejection".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn structural_dispatch_executes_structural_boolean_and_with_canonical_projection() -> TestResult {
+    let producer = Arc::new(PatternRoutingStructuralProducer::new());
+    let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "match { alpha } AND match { beta }".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 10,
+            },
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+
+    match response {
+        SearchPlaneQueryIpcResponse::Structural(results) => {
+            if results.results.len() != 1 {
+                return Err(format!(
+                    "expected 1 structural candidate from boolean AND, got {}",
+                    results.results.len()
+                )
+                .into());
+            }
+            let candidate = results
+                .results
+                .first()
+                .ok_or_else(|| "missing structural candidate after size check".to_string())?;
+            if candidate.candidate_id != "chunk-shared" {
+                return Err(format!("expected chunk-shared, got {candidate:?}").into());
+            }
+            let start_bytes: Vec<u32> = candidate
+                .bindings
+                .iter()
+                .map(|binding| binding.start_byte)
+                .collect();
+            if start_bytes != vec![5, 30] {
+                return Err(format!(
+                    "expected canonical merged bindings [5, 30], got {start_bytes:?}"
+                )
+                .into());
+            }
+        }
+        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
+        | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::HybridSeed(_)
+        | SearchPlaneQueryIpcResponse::History(_)
+        | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+        | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::Error(_)) => {
+            return Err(format!("expected Structural response, got {other:?}").into());
+        }
+    }
+
+    if producer.readiness_calls.load(Ordering::SeqCst) != 2 {
+        return Err("boolean AND should consult readiness once per structural leaf".into());
+    }
+    if producer.execute_calls.load(Ordering::SeqCst) != 2 {
+        return Err("boolean AND should execute once per structural leaf".into());
+    }
+    let scopes = producer.recorded_scopes()?;
+    if scopes
+        != vec![
+            None,
+            Some(vec!["chunk-a".to_string(), "chunk-shared".to_string()]),
+        ]
+    {
+        return Err(format!("unexpected AND candidate scopes: {scopes:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn structural_dispatch_executes_structural_boolean_or() -> TestResult {
+    let producer = Arc::new(PatternRoutingStructuralProducer::new());
+    let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "match { alpha } OR match { beta }".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 10,
+            },
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+
+    match response {
+        SearchPlaneQueryIpcResponse::Structural(results) => {
+            let ids: Vec<&str> = results
+                .results
+                .iter()
+                .map(|candidate| candidate.candidate_id.as_str())
+                .collect();
+            if ids != vec!["chunk-a", "chunk-shared"] {
+                return Err(format!("expected OR ids [chunk-a, chunk-shared], got {ids:?}").into());
+            }
+        }
+        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
+        | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::HybridSeed(_)
+        | SearchPlaneQueryIpcResponse::History(_)
+        | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+        | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::Error(_)) => {
+            return Err(format!("expected Structural response, got {other:?}").into());
+        }
+    }
+
+    if producer.execute_calls.load(Ordering::SeqCst) != 2 {
+        return Err("boolean OR should execute once per structural leaf".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn structural_dispatch_executes_bounded_not() -> TestResult {
+    let producer = Arc::new(PatternRoutingStructuralProducer::new());
+    let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "match { alpha } AND NOT match { gamma }".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 10,
+            },
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+
+    match response {
+        SearchPlaneQueryIpcResponse::Structural(results) => {
+            let ids: Vec<&str> = results
+                .results
+                .iter()
+                .map(|candidate| candidate.candidate_id.as_str())
+                .collect();
+            if ids != vec!["chunk-shared"] {
+                return Err(format!(
+                    "expected bounded NOT to retain only chunk-shared, got {ids:?}"
+                )
+                .into());
+            }
+        }
+        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
+        | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::HybridSeed(_)
+        | SearchPlaneQueryIpcResponse::History(_)
+        | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+        | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::Error(_)) => {
+            return Err(format!("expected Structural response, got {other:?}").into());
+        }
+    }
+
+    if producer.execute_calls.load(Ordering::SeqCst) != 2 {
+        return Err("bounded NOT should execute once per structural leaf".into());
+    }
+    let scopes = producer.recorded_scopes()?;
+    if scopes
+        != vec![
+            None,
+            Some(vec!["chunk-a".to_string(), "chunk-shared".to_string()]),
+        ]
+    {
+        return Err(format!("unexpected bounded-NOT candidate scopes: {scopes:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn structural_dispatch_memoizes_identical_leaf_execution() -> TestResult {
+    let producer = Arc::new(PatternRoutingStructuralProducer::new());
+    let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "match { alpha } OR match { alpha }".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 10,
+            },
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+
+    match response {
+        SearchPlaneQueryIpcResponse::Structural(results) => {
+            let ids: Vec<&str> = results
+                .results
+                .iter()
+                .map(|candidate| candidate.candidate_id.as_str())
+                .collect();
+            if ids != vec!["chunk-a", "chunk-shared"] {
+                return Err(format!(
+                    "expected memoized OR ids [chunk-a, chunk-shared], got {ids:?}"
+                )
+                .into());
+            }
+        }
+        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
+        | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::HybridSeed(_)
+        | SearchPlaneQueryIpcResponse::History(_)
+        | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+        | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::Error(_)) => {
+            return Err(format!("expected Structural response, got {other:?}").into());
+        }
+    }
+
+    if producer.readiness_calls.load(Ordering::SeqCst) != 1 {
+        return Err("identical structural leaves should consult readiness once".into());
+    }
+    if producer.execute_calls.load(Ordering::SeqCst) != 1 {
+        return Err("identical structural leaves should execute once".into());
+    }
+    let scopes = producer.recorded_scopes()?;
+    if scopes != vec![None] {
+        return Err(format!("unexpected memoized candidate scopes: {scopes:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn structural_dispatch_executes_mixed_lexical_and_structural_and() -> TestResult {
+    let producer = Arc::new(PatternRoutingStructuralProducer::new());
+    let lex_opener = Arc::new(RecordingLexicalOpener {
+        state: Arc::new(Mutex::new(RecordingLexicalState::default())),
+        results: vec![
+            recording_lexical_candidate("chunk-a"),
+            recording_lexical_candidate("chunk-shared"),
+        ],
+    });
+    let dispatcher = structural_dispatcher_mixed(
+        Arc::clone(&producer),
+        lex_opener,
+        ready_ledger_with_structural_boolean_chunks(),
+    )?;
+
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "needle AND match { alpha }".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 10,
+            },
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+
+    match response {
+        SearchPlaneQueryIpcResponse::Structural(results) => {
+            let mut ids = results
+                .results
+                .iter()
+                .map(|candidate| candidate.candidate_id.as_str())
+                .collect::<Vec<_>>();
+            ids.sort_unstable();
+            if ids != ["chunk-a", "chunk-shared"] {
+                return Err(format!(
+                    "expected mixed AND to keep chunk-a and chunk-shared, got {ids:?}"
+                )
+                .into());
+            }
+            let shared = results
+                .results
+                .iter()
+                .find(|candidate| candidate.candidate_id == "chunk-shared")
+                .ok_or_else(|| "missing chunk-shared structural binding".to_string())?;
+            let start_bytes: Vec<u32> = shared
+                .bindings
+                .iter()
+                .map(|binding| binding.start_byte)
+                .collect();
+            if start_bytes != [5, 20] {
+                return Err(format!(
+                    "expected canonical merged bindings [5, 20], got {start_bytes:?}"
+                )
+                .into());
+            }
+        }
+        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
+        | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::HybridSeed(_)
+        | SearchPlaneQueryIpcResponse::History(_)
+        | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+        | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::Error(_)) => {
+            return Err(format!("expected Structural response, got {other:?}").into());
+        }
+    }
+
+    if producer.readiness_calls.load(Ordering::SeqCst) != 1 {
+        return Err("mixed AND should consult structural readiness once".into());
+    }
+    if producer.execute_calls.load(Ordering::SeqCst) != 1 {
+        return Err("mixed AND should execute structural leaf once".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn structural_dispatch_executes_pure_negative_root_from_pinned_universe() -> TestResult {
+    let producer = Arc::new(PatternRoutingStructuralProducer::new());
+    let dispatcher = structural_dispatcher_with_producer_and_ledger(
+        Arc::clone(&producer),
+        ready_ledger_with_structural_boolean_chunks(),
+    )?;
+
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "NOT match { alpha }".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 10,
+            },
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+
+    match response {
+        SearchPlaneQueryIpcResponse::Structural(results) => {
+            if results.results.len() != 1 {
+                return Err(format!(
+                    "expected 1 pure-negative survivor, got {:?}",
+                    results.results
+                )
+                .into());
+            }
+            let candidate = results
+                .results
+                .first()
+                .ok_or_else(|| "missing pure-negative candidate".to_string())?;
+            if candidate.candidate_id != "chunk-beta" {
+                return Err(format!("expected chunk-beta, got {candidate:?}").into());
+            }
+            if !candidate.bindings.is_empty() {
+                return Err("pure-negative universe placeholder must not invent bindings".into());
+            }
+        }
+        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
+        | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::HybridSeed(_)
+        | SearchPlaneQueryIpcResponse::History(_)
+        | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+        | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::Error(_)) => {
+            return Err(format!("expected Structural response, got {other:?}").into());
+        }
+    }
+
+    if producer.readiness_calls.load(Ordering::SeqCst) != 1 {
+        return Err("pure-negative root should consult structural readiness once".into());
+    }
+    if producer.execute_calls.load(Ordering::SeqCst) != 1 {
+        return Err("pure-negative root should execute inner structural leaf once".into());
+    }
+    Ok(())
+}
