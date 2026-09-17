@@ -54,6 +54,7 @@ pub use domains::repomap::{
     RepoMapService,
 };
 pub use domains::semantic::{
+    DenseIndexEffortV1, DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1,
     L2_UNIT_NORM_TOLERANCE, L2UnitEmbeddingProvider, SemanticBatchBuildPort, SemanticIndexOpenPort,
     SemanticIngestPort, SemanticPolicy, SemanticQueryPort, SemanticReadiness, SemanticSearchHitV1,
     SemanticSearcher, TextEmbeddingProvider,

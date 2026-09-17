@@ -311,7 +311,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W0 | **passed** | G0-L/G0-S/G0-C passed, G0-R baseline pinned(cooperative-only). §3 참조. timing 재측정만 `blocked: contended-host` |
 | W1 | planned | |
 | W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + QI-BB-032 idempotency catalog(§3.16) + **QI-BB-020 auxiliary authority rows(§3.19, catalog 확장: per-record row, validate→persist→apply, Arc snapshot read, retention prune, legacy 일회 migration)** 완료. 남은 것: quarantine control surface, aux read epoch/visibility interval(§3.19 한계) |
-| W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + **QI-BB-021 ingest resource envelope(§3.18)** 완료. 남은 것: sharded sidecar 포맷(O(delta) write), ANN versioned artifact(QI-BB-027), scope 단위 streamed embed→append(§3.18 한계) |
+| W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + **QI-BB-027 ANN sealed contract(§3.23)** 완료. 남은 것: sharded sidecar 포맷(O(delta) write), seal마다 ANN 전체 재구축(O(N), §3.23 한계), scope 단위 streamed embed→append(§3.18 한계) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), streaming projection collector |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. 남은 것: cancel을 lexical collector 내부(candidate batch 사이)까지 내리기, overload/refusal 서버 metric |
 | W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + **QI-BB-018 true hybrid(§3.22)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), history relevance order(Tantivy history index, §3.20 한계), judged corpus recall/NDCG gate(§3.22 한계) |
@@ -1271,6 +1271,77 @@ lane(`rrf | lexical_only | semantic_only | empty`). scoped port(`search_scoped_c
 소규모 corpus에서는 `internal_top_k(100)`이 corpus보다 커 dense lane이 전 문서를 반환하므로 RRF가 "양 lane 존재"를 과대 보상한다
 (e2e fixture 설계에서 관측: gamma가 cosine≈0으로도 alpha를 이김). 실제 corpus에서는 lane당 100 bound가 의미를 가지지만, dense
 lane에 최소 similarity threshold 또는 score-aware fusion을 두는 것은 QI-BB-022(contribution)와 함께 다룰 후속.
+
+## 3.23 QI-BB-027 — ANN index는 sealed generation의 운영 계약이다 (구현 완료)
+
+**진단 확정**: seal이 256 row 이상에서 `IvfHnswSqIndexBuilder::default()`+cosine만 넘겨 index를 만들고, manifest는 index의
+존재·종류·파라미터·library를 기록하지 않았으며, open은 `list_indices`를 보지 않았고, query는 library default effort
+(nprobes 20, ef 1.5k, refine 없음 → `_distance`가 SQ8 근사값)로 돌았다. 실측으로 확인한 추가 사실: lance 7.0.0의
+IvfHnswSq default `target_partition_size = 1<<20`이라 1M row 미만은 partition 1개 — 즉 topology가 dependency default에
+전적으로 의존했고, `build.rs` 주석의 "sample_rate=256이라 partition=1"은 근거가 틀렸다. delta generation은 base dataset을
+hard link로 상속하므로 **base의 index도 상속**됐다: delta row 수가 floor 아래로 내려가도 상속 index가 남아 서비스 mode가 seal
+정책과 달랐고, 이름이 다른 index가 base 것 옆에 쌓일 수 있었다.
+
+**구현** (`quanta-index-semantic/src/vector_index.rs`, manifest `FORMAT_VERSION 7→8`):
+
+- **Policy는 전부 명시**: `VECTOR_INDEX_MIN_ROWS=256`, `VECTOR_INDEX_NAME="vector_ivf_hnsw_sq"`, partitions =
+  `clamp(rows / 2^20, 1, 4096)`, IVF `sample_rate=256`/`max_iterations=50`, HNSW `m=20`/`ef_construction=300`, cosine —
+  builder에 전부 명시 전달(default 의존 0). query effort: `nprobes=min(20, partitions)`, `ef=max(64, 2·k·refine)`,
+  `refine_factor=2`(top-2k를 원본 vector로 재정렬 → 반환 score가 **정확한 cosine**). exact lane은 `bypass_vector_index()`로 명시.
+- **Seal**: 상속된 vector index를 이름 불문 전부 `drop_index` → floor 이상이면 정책 index를 `replace(false)`로 build →
+  `index_stats`를 읽어 `indexed_rows == row_count && unindexed_rows == 0 && type/distance 일치`가 아니면 seal 거부 →
+  `VectorIndexSealV1 { mode, library, library_version, index_min_rows, ann: Option<AnnIndexSealV1 {name, distance,
+  num_partitions, sample_rate, max_iterations, hnsw_m, hnsw_ef_construction, indexed_rows, index_segments, nprobes, ef_floor,
+  ef_per_candidate, refine_factor} > }`를 scope manifest에 기록. `library_version`은 `Cargo.lock`의 lancedb 버전과 unit test로 pin.
+- **Open**: file commitment(§3.14) 통과 후 `list_indices`/`index_stats`를 seal과 대조. exact seal인데 index가 있으면
+  `ANN_INDEX_INCOMPATIBLE`; ann seal의 이름이 없거나 stats가 없으면 `ANN_INDEX_MISSING`; type/distance/coverage/segment 수/
+  index 개수가 다르면 `ANN_INDEX_INCOMPATIBLE`; 다른 library가 build한 seal은 `ANN_INDEX_INCOMPATIBLE`. 같은 library의 다른
+  버전은 서비스하되 attestation을 `SealedByAnotherLibraryVersion`으로 구분(아래 결정).
+- **Query**: `LoadedVectorIndexV1`이 sealed effort를 `VectorQuery`에 그대로 pin. legacy(≤v7) generation은
+  `LegacyUnverified` — dataset이 보고하는 index로(있으면 policy effort, 없으면 exact) 서비스하고 아무것도 증명하지 않는다.
+- **관측성**: core `DenseLaneContractV1 { index: Exact | Approximate(effort), attestation: Sealed |
+  SealedByAnotherLibraryVersion | LegacyUnverified }` + `SemanticSearcher::dense_lane()`; semantic/hybrid/hybrid-seed
+  explanation의 Plan trace에 `dense.index=…; dense.attestation=…; dense.partitions=…; dense.nprobes=…; dense.ef=max(a,b*candidates);
+  dense.refine_factor=…`.
+- **format-version 분기 → capability 모델**: 6개 legacy 상수를 5곳 이상에서 match하던 것을 `FormatCapabilitiesV1 { build_contract,
+  corpus_metadata, membership_commitment, semantic_row_root, file_commitment, vector_index_seal }` predicate로 대체 —
+  layout schema, contract 요구, membership 검증, sealed-manifest 요구, migration row-root 증명이 모두 이 한 곳을 본다. v7은
+  `file_commitment` 유지(QI-BB-017 결정 보존), v8부터 `vector_index_seal`.
+
+**결정 — library 버전 drift는 거부하지 않는다**: 대안 "recorded `library_version != 서비스 library` ⇒ open 거부"는
+기각. lancedb patch bump마다 모든 repo의 전 generation을 강제 reseal해야 하고, 보완 #4의 dependency-upgrade A/B(같은
+artifact를 새 library로 열어 비교) 자체를 불가능하게 만든다. 대신 (a) file commitment가 byte 동일성을, (b) `index_stats`
+대조가 metadata 동일성을 증명하고, (c) attestation이 "recall은 다른 library로 측정됨"을 trace에 노출한다. 다른 **library**
+(이름 불일치)는 거부.
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| 255 row → `exact`/Sealed, library index 0개, index 파일 0개; 256 row → `ivf_hnsw_sq`(partitions 1, nprobes 1, ef 64/2, refine 2)/Sealed, library가 정확히 `vector_ivf_hnsw_sq` 1개, stats (256, 0, 1 segment); self-vector top-1 score = 1.0 ± 1e-5 | `semantic/tests/vector_index_contract.rs::the_seal_and_the_dataset_agree_at_the_255_256_boundary` |
+| base 300(index) → delta tombstone으로 200 row: delta는 exact + 상속 index drop, base는 index 그대로(stats 300/0/1) | `…::a_delta_that_shrinks_below_the_floor_drops_the_inherited_index` |
+| base 300 → delta +100: index 정확히 1개(base 것 옆에 안 쌓임), stats (400, 0, 1), delta-only row가 top-1 | `…::a_delta_that_grows_seals_one_index_covering_every_row` |
+| index 파일 1byte 변조 / 전부 삭제 → validate·open·restart 모두 `GENERATION_SIDECAR_CORRUPT`, 복원 후 다시 admit | `…::losing_or_damaging_the_index_files_refuses_both_doors_and_a_restart` |
+| v7 manifest(byte 단위 downgrade + sealed manifest 재commit): index 있는 generation은 Approximate/LegacyUnverified로 서비스, 없는 것은 Exact/LegacyUnverified | `…::a_generation_sealed_before_the_contract_serves_unverified_on_what_it_carries` |
+| **recall gate**: 4,096 row × 64-dim random unit vector(cluster 구조 없음, 최악 case), 64 query(절반은 row 근처 paraphrase, 절반 fresh), 순수 Rust exhaustive cosine oracle 대비 recall@10 ≥ 0.95, 반환 score == exact cosine ± 1e-4 | `…::the_sealed_effort_keeps_recall_against_an_exact_oracle_and_returns_exact_scores` |
+| verifier typed 동작(file commitment 뒤에 있어 통합 test로는 도달 불가): exact seal + index 존재 → INCOMPATIBLE; coverage/segment 불일치 → INCOMPATIBLE; 이름 불일치·drop 후 → MISSING; 다른 버전 → Sealed­ByAnotherLibraryVersion; 다른 library → INCOMPATIBLE; legacy 관찰 | `vector_index::tests::{the_verifier_refuses_every_disagreement_between_seal_and_dataset, a_legacy_generation_is_observed_not_verified}` |
+| seal이 이름 다른 상속 index를 교체, floor 아래에서 drop | `vector_index::tests::the_seal_replaces_an_inherited_index_of_any_name` |
+| `ANN_LIBRARY_VERSION == Cargo.lock` | `vector_index::tests::the_recorded_library_version_is_the_locked_one` |
+| manifest: v7 decode(seal 날조 없음), v8 round-trip, seal 없는 v8 거부, capability 단조성, seal 자기모순 8종 거부 | `manifest::tests::*` |
+| e2e trace `dense.index=exact; dense.attestation=sealed` (semantic scoped, hybrid) | `dsl_scenarios` |
+| legacy v2 fixture를 정직하게(후행 field 제거) 재작성 — version만 바꾼 v8 body는 이제 "predates the seal it carries"로 거부 | `persisted_semantic.rs::{legacy_v2_*, scan_reports_legacy_v2_*}` |
+
+**측정 (current HEAD, 3회, 4,096×64)**: recall@10 **0.984 / 0.989 / 0.984**, p50 8.8–12.7 ms, p95 9.6–21 ms, p99 10–25 ms
+(contended host, lance plan overhead 지배), build 14.8–19 s(row append 포함), index bytes **1,154,009–1,154,265**(build은
+비결정적 — §3.4.2에서 관측한 것과 일치; seal이 결정적으로 만드는 것은 recipe와 effort이지 top-k가 아니다).
+
+**정직한 한계**: (a) seal마다 index **전체 재구축**(O(N))은 그대로 — delta에서 상속 index를 drop하고 새로 만든다(lance
+`optimize` delta-index는 segment가 늘어 seal의 "segment 1" 계약과 충돌; 별도 항목). (b) recall gate는 synthetic corpus 1 tier의
+floor이지 corpus tier별 recall/latency gate(보완 #3)가 아니다 — 실 corpus tier 측정은 QI-BB-007(M4) production profile
+이후. (c) activation receipt에 ANN attestation 노출(QI-BB-031 보완 #4)은 미구현 — searcher `dense_lane()`과 explanation
+trace까지. (d) dependency-upgrade A/B(보완 #4)는 process이며 code gate가 아니다; attestation과 recorded recipe가 그 A/B의
+입력을 제공한다. (e) prefilter(allowlist/language/path)가 index row의 10% 이상을 남기면 lance는 bitset을 든 HNSW walk를
+하므로 filtered recall은 unfiltered gate와 같지 않다 — scoped route의 recall은 별도 측정 항목.
 
 ## 4. Finding 상태 (QI-BB-001–032)
 

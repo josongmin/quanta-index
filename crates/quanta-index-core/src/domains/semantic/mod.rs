@@ -6,6 +6,7 @@ mod service;
 
 pub use inbound::SemanticQueryPort;
 pub use outbound::{
+    DenseIndexEffortV1, DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1,
     SemanticBatchBuildPort, SemanticIndexOpenPort, SemanticIngestPort, SemanticReadiness,
     SemanticSearchHitV1, SemanticSearcher, TextEmbeddingProvider,
 };

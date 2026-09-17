@@ -75,6 +75,86 @@ pub trait SemanticIndexOpenPort: Send + Sync {
     ) -> Result<Box<dyn SemanticSearcher>, CoreError>;
 }
 
+/// How a sealed generation serves its dense lane (QI-BB-027).
+///
+/// The seal records which index the lane runs through and how much effort a
+/// query spends in it; the open verifies the dataset against that record, so
+/// a query never runs on an index topology nobody sealed. The searcher
+/// reports the contract so explanations can name it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DenseLaneContractV1 {
+    /// The index the lane runs through.
+    pub index: DenseIndexV1,
+    /// Whether the seal recorded this contract and the open proved it.
+    pub attestation: DenseLaneAttestationV1,
+}
+
+/// The index a dense lane runs through.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DenseIndexV1 {
+    /// Every row is scored; the result is exact.
+    Exact,
+    /// An approximate index, with the bounded effort one query spends in it.
+    Approximate(DenseIndexEffortV1),
+}
+
+/// The bounded effort one query spends in an approximate index.
+///
+/// The candidate list an index returns is `refine_factor` times the
+/// requested top-k, re-ranked by exact distance; the graph search widens to
+/// `max(ef_floor, ef_per_candidate * candidates)` entries and probes
+/// `nprobes` of the `partitions` partitions.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DenseIndexEffortV1 {
+    /// The algorithm family, e.g. `ivf_hnsw_sq`.
+    pub index_kind: String,
+    pub partitions: u32,
+    pub nprobes: u32,
+    pub ef_floor: u32,
+    pub ef_per_candidate: u32,
+    pub refine_factor: u32,
+}
+
+/// Whether a dense lane's contract was sealed and verified.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DenseLaneAttestationV1 {
+    /// The seal recorded the contract, the open verified the index against
+    /// it, and the library serving it is the one that built it.
+    Sealed,
+    /// As `Sealed`, but a different version of the library built the index
+    /// than serves it: the metadata agrees, the recall was measured elsewhere.
+    SealedByAnotherLibraryVersion,
+    /// The generation predates the contract; the lane runs on what the
+    /// dataset reports and nothing proved it.
+    LegacyUnverified,
+}
+
+impl DenseLaneContractV1 {
+    /// One-line, key=value rendering for planner traces.
+    #[must_use]
+    pub fn trace_detail(&self) -> String {
+        let attestation = match self.attestation {
+            DenseLaneAttestationV1::Sealed => "sealed",
+            DenseLaneAttestationV1::SealedByAnotherLibraryVersion => {
+                "sealed_by_another_library_version"
+            }
+            DenseLaneAttestationV1::LegacyUnverified => "legacy_unverified",
+        };
+        match &self.index {
+            DenseIndexV1::Exact => format!("dense.index=exact; dense.attestation={attestation}"),
+            DenseIndexV1::Approximate(effort) => format!(
+                "dense.index={}; dense.attestation={attestation}; dense.partitions={}; dense.nprobes={}; dense.ef=max({},{}*candidates); dense.refine_factor={}",
+                effort.index_kind,
+                effort.partitions,
+                effort.nprobes,
+                effort.ef_floor,
+                effort.ef_per_candidate,
+                effort.refine_factor
+            ),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticSearchHitV1 {
     pub candidate: LexicalCandidate,
@@ -212,4 +292,8 @@ pub trait SemanticSearcher: Send + Sync {
     /// before revisions were required (QI-BB-028); the query gate refuses
     /// it rather than guessing.
     fn index_model_revision(&self) -> Option<&str>;
+
+    /// The index this searcher's dense lane runs through, and whether the
+    /// seal recorded and the open verified it (QI-BB-027).
+    fn dense_lane(&self) -> DenseLaneContractV1;
 }

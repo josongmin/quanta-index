@@ -39,6 +39,7 @@ mod search;
 mod semantic_ingest_fixtures_v1;
 mod semantic_row_integrity_v1;
 mod sql;
+mod vector_index;
 
 pub use semantic_ingest_fixtures_v1::{
     embedding_record_v1, ingest_batch_v1, legacy_chunk_embedding_record_v1, model_contract_v1,
@@ -558,11 +559,13 @@ pub fn validate_persisted_generation_v2(
     semantic_root: &Path,
     record: &PersistedSemanticGeneration,
 ) -> Result<ValidatedPersistedSemanticGenerationV2, CoreError> {
-    if record.format_version != manifest::FORMAT_VERSION {
+    if !manifest::format_capabilities_v1(record.format_version)
+        .is_some_and(manifest::FormatCapabilitiesV1::semantic_row_root)
+    {
         return Err(CoreError::Typed {
             code: "LEGACY_SEMANTIC_MIGRATION_DURABLE_FORMAT_UNVERIFIED".to_string(),
             message: format!(
-                "semantic generation format {} has no v7 row-root proof",
+                "semantic generation format {} has no row-root proof",
                 record.format_version
             ),
         });
@@ -846,6 +849,13 @@ mod incomplete_generation_discard_tests {
             cluster_membership_root_digest: membership_commitment.root_digest,
             cluster_membership_cluster_count: membership_commitment.cluster_count,
             cluster_membership_member_row_count: membership_commitment.member_row_count,
+            vector_index: Some(crate::manifest::VectorIndexSealV1 {
+                mode: crate::manifest::VECTOR_INDEX_MODE_EXACT.to_string(),
+                library: "lancedb".to_string(),
+                library_version: "0.30.0".to_string(),
+                index_min_rows: 256,
+                ann: None,
+            }),
         }
     }
 

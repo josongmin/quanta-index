@@ -1373,136 +1373,6 @@ fn concurrent_open_of_same_generation_is_consistent() -> TestResult {
     Ok(())
 }
 
-/// Deterministic pseudo-random vector seeded by `seed`; reproducible across
-/// runs and platforms without a PRNG dep. Mirrors the helper from the old
-/// hnsw recall test.
-fn pseudo_vector(seed: u64, dim: usize) -> Vec<f32> {
-    let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
-    let mut vector = Vec::with_capacity(dim);
-    for _ in 0..dim {
-        state = state
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1_442_695_040_888_963_407);
-        let bytes = state.to_le_bytes();
-        let low = bytes.first().copied().unwrap_or(0);
-        let high = bytes.get(1).copied().unwrap_or(0);
-        let lane = u16::from_le_bytes([low, high]);
-        vector.push(f32::from(lane) / 32768.0_f32 - 1.0);
-    }
-    vector
-}
-
-fn u32_from_usize(value: usize) -> Result<u32, String> {
-    u32::try_from(value).map_err(|err| format!("usize -> u32 overflow: {err}"))
-}
-
-#[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test asserts the IVF_HNSW_SQ index built at seal serves vector_search via assert macros"
-)]
-fn ivf_hnsw_sq_index_built_at_seal_serves_vector_search() -> TestResult {
-    // SOTA++ proof: a sealed generation above the 256-row threshold must
-    // actually build the IVF_HNSW_SQ index at seal time AND serve top-k
-    // vector_search through it. Below this row count create_index is skipped;
-    // here we cross the threshold to exercise the real index code path.
-    let temp = tempfile::tempdir()?;
-    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
-    let generation = ManifestGeneration::new(1);
-    let dim = 8_usize;
-    let count = 300_u64;
-    let dim_u32 = u32_from_usize(dim)?;
-
-    let mut embeddings: Vec<EmbeddingRecord> = Vec::new();
-    for i in 0..count {
-        let id = format!("emb-{i}");
-        let path = format!("p/{i}.rs");
-        let vector = pseudo_vector(i, dim);
-        embeddings.push(embedding_record(&id, &path, vector)?);
-    }
-    let batch = SemanticIngestBatch {
-        repo_id: repo_id(),
-        revision_id: revision_id(),
-        generation,
-        base_generation: None,
-        manifest_digest: "manifest:ivf".to_string(),
-        batch_digest: "batch:ivf".to_string(),
-        mode: BatchIngestMode::ReplaceGeneration,
-        model_contract: model_contract(dim_u32),
-        required_corpora: Vec::new(),
-        corpus_policy_digest: None,
-        clear_surfaces: Vec::new(),
-        replace_scopes: vec![SemanticReplaceScope {
-            scope: scope("p/0.rs"),
-            scope_digest: "scope:p".to_string(),
-            embeddings,
-            cluster_memberships: Vec::new(),
-        }],
-        tombstone_scopes: Vec::new(),
-        seal: true,
-    };
-    adapter.build_batch(&batch)?;
-
-    // Search-side proof: querying with a known-inserted vector must return that
-    // vector at rank 1 (cosine similarity to self ≈ 1.0). This proves index
-    // trained without panic and the query path serves through vector_search.
-    let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
-    let query = pseudo_vector(0, dim);
-    let hits = searcher.search(&query, 10)?;
-    let ids: Vec<String> = hits.iter().map(|c| c.candidate_id.clone()).collect();
-    assert!(
-        !hits.is_empty(),
-        "IVF_HNSW_SQ-indexed sealed gen must return hits"
-    );
-    assert!(
-        ids.contains(&"emb-0".to_string()),
-        "expected the self-vector emb-0 in top-10, got {ids:?}"
-    );
-
-    // Structural proof that the IVF_HNSW_SQ index was actually built at seal,
-    // not silently skipped or downgraded to brute-force scan. Self-query above
-    // would also pass under brute-force, so we cross-check by listing lancedb
-    // indices on the sealed dataset directly.
-    let dataset_uri = generation_dir(temp.path(), generation)
-        .join("dataset")
-        .to_string_lossy()
-        .into_owned();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "test-only direct lancedb inspection to verify the IVF index exists alongside the dataset; sync seam is the test's own runtime"
-    )]
-    let index_kinds: Vec<lancedb::index::IndexType> = {
-        let probe_runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        probe_runtime.block_on(async {
-            let conn = lancedb::connect(&dataset_uri)
-                .execute()
-                .await
-                .map_err(|err| format!("lancedb connect: {err}"))?;
-            let table = conn
-                .open_table("semantic")
-                .execute()
-                .await
-                .map_err(|err| format!("lancedb open_table: {err}"))?;
-            let configs = table
-                .list_indices()
-                .await
-                .map_err(|err| format!("lancedb list_indices: {err}"))?;
-            Ok::<Vec<lancedb::index::IndexType>, String>(
-                configs.into_iter().map(|c| c.index_type).collect(),
-            )
-        })?
-    };
-    assert!(
-        index_kinds
-            .iter()
-            .any(|k| matches!(k, lancedb::index::IndexType::IvfHnswSq)),
-        "expected IvfHnswSq in lancedb indices after seal at row_count={count}, got {index_kinds:?}"
-    );
-    Ok(())
-}
-
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
@@ -1804,6 +1674,52 @@ fn forge_manifest_u64_field(
     Ok(())
 }
 
+/// Fields the format-2 manifest never carried, in any later format's order.
+const POST_V2_MANIFEST_FIELDS: &[&str] = &[
+    "semantic_row_root_digest",
+    "present_corpora",
+    "required_corpora",
+    "card_schema_versions",
+    "render_policy_digests",
+    "corpus_policy_digest",
+    "cluster_membership_root_digest",
+    "cluster_membership_cluster_count",
+    "cluster_membership_member_row_count",
+    "vector_index",
+];
+
+/// Rewrite a current manifest as an honest format-2 manifest.
+///
+/// The version field says `2` and every later field is gone, so the adapter
+/// decodes it through its legacy shape rather than through a current shape
+/// with a forged version.
+fn forge_legacy_v2_manifest(manifest_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    forge_manifest_u64_field(manifest_path, "format_version", 2)?;
+    let bytes = std::fs::read(manifest_path)?;
+    let mut value: ciborium::value::Value =
+        ciborium::from_reader(&bytes[..]).map_err(|err| format!("decode manifest cbor: {err}"))?;
+    let ciborium::value::Value::Map(entries) = &mut value else {
+        return Err("manifest CBOR is not a map".into());
+    };
+    let before = entries.len();
+    entries.retain(|(key, _)| {
+        !key.as_text()
+            .is_some_and(|name| POST_V2_MANIFEST_FIELDS.contains(&name))
+    });
+    if before.saturating_sub(entries.len()) != POST_V2_MANIFEST_FIELDS.len() {
+        return Err(format!(
+            "expected every post-v2 field in the current manifest, removed {}",
+            before.saturating_sub(entries.len())
+        )
+        .into());
+    }
+    let mut legacy = Vec::new();
+    ciborium::into_writer(&value, &mut legacy)
+        .map_err(|err| format!("encode manifest cbor: {err}"))?;
+    std::fs::write(manifest_path, &legacy)?;
+    Ok(())
+}
+
 #[test]
 fn open_with_forged_manifest_scope_fails_closed() -> TestResult {
     // R4 MAJOR coverage: explicit negative for `SemanticManifest::validate_scope`'s
@@ -1977,11 +1893,7 @@ fn legacy_v2_manifest_without_generation_contract_opens_for_compatibility() -> T
     ))?;
 
     let generation_dir = generation_dir(&root, generation);
-    forge_manifest_u64_field(
-        &generation_dir.join("semantic-manifest.cbor"),
-        "format_version",
-        2,
-    )?;
+    forge_legacy_v2_manifest(&generation_dir.join("semantic-manifest.cbor"))?;
     std::fs::remove_file(generation_dir.join("semantic-build-contract.cbor"))?;
     // A generation sealed at format 2 predates the sealed manifest.
     std::fs::remove_file(generation_dir.join("semantic-sealed-manifest.cbor"))?;
@@ -2027,11 +1939,7 @@ fn scan_reports_legacy_v2_generation_without_generation_contract() -> TestResult
     ))?;
 
     let generation_dir = generation_dir(&semantic_root, generation);
-    forge_manifest_u64_field(
-        &generation_dir.join("semantic-manifest.cbor"),
-        "format_version",
-        2,
-    )?;
+    forge_legacy_v2_manifest(&generation_dir.join("semantic-manifest.cbor"))?;
     std::fs::remove_file(generation_dir.join("semantic-build-contract.cbor"))?;
 
     let scanned = inventory_persisted_generations(&semantic_root)?.sealed;

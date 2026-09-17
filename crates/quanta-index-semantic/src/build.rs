@@ -29,13 +29,10 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field};
 use futures::TryStreamExt as _;
-use lancedb::DistanceType;
 use lancedb::connect;
-use lancedb::index::Index;
-use lancedb::index::vector::IvfHnswSqIndexBuilder;
 use lancedb::query::{ExecutableQuery as _, QueryBase as _};
 use quanta_index_contract::{
-    EmbeddingDistanceMetric, EmbeddingNormalization, EmbeddingRecord, OwnerDocKind,
+    EmbeddingDistanceMetric, EmbeddingNormalization, EmbeddingRecord, GenerationPin, OwnerDocKind,
     SearchScopeSurface, SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
     SemanticTombstoneScope, canonical_order::first_canonical_order_break_v1,
     cluster_membership_content_digest_v1,
@@ -62,15 +59,7 @@ use crate::membership_integrity::{
 };
 use crate::sealed_manifest::{build_sealed_manifest_bytes, sealed_manifest_path};
 use crate::semantic_row_integrity_v1::semantic_row_commitment_v1;
-
-/// Row-count floor below which we skip ANN index construction at seal.
-///
-/// Lancedb IVF training requires a meaningful sample, and at this scale a
-/// brute-force scan is genuinely faster than the IVF training + per-query
-/// partition traversal overhead. 256 is **our** policy choice (not a lancedb-
-/// imposed minimum) — matching lancedb's PQ `sample_rate=256` default so that
-/// the auto-derived `num_partitions=1` for ~256 rows trains without sampling.
-const VECTOR_INDEX_MIN_ROWS: u64 = 256;
+use crate::vector_index::seal_vector_index_v1;
 
 /// Sibling-of-`dataset/` staging dir used to make delta-base cloning
 /// crash-atomic — see `prepare_generation_dir`.
@@ -1529,31 +1518,20 @@ async fn build_manifest_bytes(
     }
     let membership_commitment = collect_cluster_membership_commitment_v1(membership_table).await?;
 
-    // SOTA++: build the ANN vector index once at seal so query-time
-    // `vector_search` uses IVF_HNSW_SQ (lancedb's HNSW + scalar quantization)
-    // instead of a brute-force flat scan. Distance type pinned to Cosine to
-    // match the query path. Skipped below `VECTOR_INDEX_MIN_ROWS` because
-    // lancedb cannot meaningfully train IVF on too few rows (and brute-force
-    // is faster at small scale). The index is built on an immutable sealed
-    // dataset so determinism is preserved.
-    if row_count_u64 >= VECTOR_INDEX_MIN_ROWS {
-        table
-            .create_index(
-                &[COLUMN_VECTOR],
-                Index::IvfHnswSq(
-                    IvfHnswSqIndexBuilder::default().distance_type(DistanceType::Cosine),
-                ),
-            )
-            .execute()
-            .await
-            .map_err(|err| lancedb_err("create_index IvfHnswSq(cosine)", err))?;
-    }
+    // The dense lane's index contract (QI-BB-027): built with every
+    // parameter explicit, read back from the library, and recorded in the
+    // manifest so the open can verify the dataset against the seal. The
+    // index is approximate; what the seal makes deterministic is its
+    // recipe and effort, not its top-k.
+    let vector_index = seal_vector_index_v1(table, row_count_u64).await?;
 
     let built_at = built_at_unix_nanos()?;
     let manifest = SemanticManifest::from_generation_contract(
-        &batch.repo_id,
-        &batch.revision_id,
-        batch.generation,
+        &GenerationPin::new(
+            batch.repo_id.clone(),
+            batch.revision_id.clone(),
+            batch.generation,
+        ),
         generation_contract,
         batch.manifest_digest.as_str(),
         SemanticRowSealV1 {
@@ -1573,6 +1551,7 @@ async fn build_manifest_bytes(
             cluster_count: membership_commitment.cluster_count,
             member_row_count: membership_commitment.member_row_count,
         },
+        vector_index,
     );
     manifest.validate_corpus_coverage()?;
     manifest.encode()

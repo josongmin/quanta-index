@@ -24,11 +24,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::manifest::{
-    FORMAT_VERSION, LEGACY_BUILD_CONTRACT_FORMAT_VERSION, LEGACY_LANCEDB_FORMAT_VERSION,
-    LEGACY_UNCOMMITTED_MEMBERSHIP_FORMAT_VERSION,
-    LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION,
-};
+use crate::manifest::format_capabilities_v1;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
 use quanta_index_core::{CoreError, domains::generation::GenerationStorageKeyV1};
@@ -42,7 +38,6 @@ pub(crate) const MARKER_SEALED_FILE_NAME: &str = "MARKER_SEALED";
 /// Lancedb table name for the semantic dataset.
 pub(crate) const TABLE_NAME: &str = "semantic";
 pub(crate) const CLUSTER_MEMBERSHIP_TABLE_NAME: &str = "cluster_membership";
-pub(crate) const PHYSICAL_LAYOUT_VERSION: u32 = 7;
 
 pub(crate) const COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID: &str = "cluster_record_id";
 pub(crate) const COLUMN_MEMBERSHIP_AUTHORITY_DIGEST: &str = "authority_digest";
@@ -150,23 +145,24 @@ pub(crate) fn cluster_membership_schema() -> SchemaRef {
     ]))
 }
 
+/// The table schema a manifest format version was written with.
+///
+/// The physical layout changed once, at the corpus-metadata format; every
+/// later format (membership, row root, file commitment, index seal) added
+/// sidecars and manifest fields, not columns.
 pub(crate) fn semantic_schema_for_manifest_version(
     format_version: u32,
     dimension: i32,
 ) -> Result<SchemaRef, CoreError> {
-    match format_version {
-        PHYSICAL_LAYOUT_VERSION if PHYSICAL_LAYOUT_VERSION == FORMAT_VERSION => {
-            Ok(semantic_schema(dimension))
-        }
-        LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION
-        | LEGACY_UNCOMMITTED_MEMBERSHIP_FORMAT_VERSION
-        | crate::manifest::LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION => Ok(semantic_schema(dimension)),
-        LEGACY_BUILD_CONTRACT_FORMAT_VERSION | LEGACY_LANCEDB_FORMAT_VERSION => {
-            Ok(semantic_schema_v3(dimension))
-        }
-        other => Err(CoreError::Storage(format!(
-            "semantic: no physical schema registered for manifest format version {other}"
-        ))),
+    let capabilities = format_capabilities_v1(format_version).ok_or_else(|| {
+        CoreError::Storage(format!(
+            "semantic: no physical schema registered for manifest format version {format_version}"
+        ))
+    })?;
+    if capabilities.corpus_metadata() {
+        Ok(semantic_schema(dimension))
+    } else {
+        Ok(semantic_schema_v3(dimension))
     }
 }
 

@@ -166,6 +166,12 @@ owner = "quanta-index-semantic"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "semantic-vector-index-contract"
+path = "crates/quanta-index-semantic/tests/vector_index_contract.rs"
+owner = "quanta-index-semantic"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "lexical-execution-budget"
 path = "crates/quanta-index-lexical/tests/execution_budget.rs"
 owner = "quanta-index-lexical"

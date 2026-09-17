@@ -387,12 +387,12 @@ pub type SearchPlaneQueryDispatcher = SearchPlaneDispatcher;
 
 mod semantic_query;
 use semantic_query::{
-    HybridFusion, SemanticScopeV1, SemanticSelection, build_hybrid_response_explanation,
-    build_hybrid_seed_candidates, build_hybrid_seed_response_explanation,
-    build_semantic_response_explanation, canonical_dense_corpus_budgets_v1,
-    ensure_query_model_matches_index_v1, prefix_semantic_query_error,
-    resolve_hybrid_request_selection, resolve_hybrid_seed_request_selection,
-    resolve_semantic_request_selection,
+    HybridFusion, SeedLaneTallyV1, SemanticScopeV1, SemanticSelection,
+    build_hybrid_response_explanation, build_hybrid_seed_candidates,
+    build_hybrid_seed_response_explanation, build_semantic_response_explanation,
+    canonical_dense_corpus_budgets_v1, ensure_query_model_matches_index_v1,
+    prefix_semantic_query_error, resolve_hybrid_request_selection,
+    resolve_hybrid_seed_request_selection, resolve_semantic_request_selection,
 };
 
 impl SearchPlaneDispatcher {
@@ -783,6 +783,7 @@ impl SearchPlaneDispatcher {
             fused.len(),
             internal_top_k,
             early_stop_reason,
+            &sem_searcher.dense_lane(),
         );
         let window = fused_window_v1(top_k, fused.len(), fused_universe_size, lane_limit_reached)?;
         Ok(HybridFusion {
@@ -887,8 +888,12 @@ impl SearchPlaneDispatcher {
                 None
             }
         });
-        let explanation =
-            build_semantic_response_explanation(scope.as_ref(), results.len(), early_stop_reason);
+        let explanation = build_semantic_response_explanation(
+            scope.as_ref(),
+            results.len(),
+            early_stop_reason,
+            &searcher.dense_lane(),
+        );
         Ok(SemanticQueryResponse {
             generation: pin,
             results,
@@ -1035,14 +1040,17 @@ impl SearchPlaneDispatcher {
             None
         };
         let explanation = build_hybrid_seed_response_explanation(
-            lex_results.len(),
-            lexical_entity_count,
-            semantic_hits.len(),
-            semantic_entity_count,
-            seed_candidates.len(),
+            &SeedLaneTallyV1 {
+                lexical_hits: lex_results.len(),
+                lexical_entities: lexical_entity_count,
+                semantic_hits: semantic_hits.len(),
+                semantic_entities: semantic_entity_count,
+                fused_hits: seed_candidates.len(),
+            },
             internal_top_k,
             &unavailable_corpus_reasons,
             early_stop_reason,
+            &sem_searcher.dense_lane(),
         );
         let window = fused_window_v1(
             request.top_k,
@@ -5190,8 +5198,8 @@ mod tests {
         SymbolQueryRequest, TOP_K_OUT_OF_RANGE_CODE,
     };
     use quanta_index_core::{
-        REQUEST_CANCELLED_CODE, REQUEST_DEADLINE_EXCEEDED_CODE, RequestBudgetV1,
-        SemanticSearchHitV1,
+        DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1, REQUEST_CANCELLED_CODE,
+        REQUEST_DEADLINE_EXCEEDED_CODE, RequestBudgetV1, SemanticSearchHitV1,
     };
 
     #[test]
@@ -5350,15 +5358,22 @@ mod tests {
         assert!(window.has_more());
     }
 
+    fn exact_dense_lane() -> DenseLaneContractV1 {
+        DenseLaneContractV1 {
+            index: DenseIndexV1::Exact,
+            attestation: DenseLaneAttestationV1::Sealed,
+        }
+    }
+
     // CASE-COVERS: hybrid explanation honesty over two independent lanes.
     #[test]
     fn build_hybrid_response_explanation_reports_honest_lane_contribution_v1() {
         use super::build_hybrid_response_explanation;
         use quanta_index_contract::EngineTouched;
-        // args: (lexical_hits, semantic_hits, fused_universe, fused, top_k, stop)
+        // args: (lexical_hits, semantic_hits, fused_universe, fused, top_k, stop, dense lane)
         // Both lanes contributed -> genuine RRF over both engines, and the
         // trace says the lanes are independent (QI-BB-018).
-        let both = build_hybrid_response_explanation(2, 2, 3, 2, 100, None);
+        let both = build_hybrid_response_explanation(2, 2, 3, 2, 100, None, &exact_dense_lane());
         assert_eq!(both.strategy, "rrf", "both-lane hybrid must stay rrf");
         assert_eq!(
             both.engines_touched,
@@ -5375,7 +5390,8 @@ mod tests {
         // Lexical found candidates but the dense lane matched none -> must
         // NOT claim a symmetric rrf fusion; it is lexical-only and the
         // Semantic engine is not touched.
-        let lex_only = build_hybrid_response_explanation(3, 0, 3, 3, 100, None);
+        let lex_only =
+            build_hybrid_response_explanation(3, 0, 3, 3, 100, None, &exact_dense_lane());
         assert_eq!(
             lex_only.strategy, "lexical_only",
             "semantic-empty hybrid must report lexical_only, not rrf"
@@ -5387,7 +5403,7 @@ mod tests {
         );
 
         // No lane found anything: honest "empty", no engines claimed.
-        let empty = build_hybrid_response_explanation(0, 0, 0, 0, 100, None);
+        let empty = build_hybrid_response_explanation(0, 0, 0, 0, 100, None, &exact_dense_lane());
         assert_eq!(empty.strategy, "empty", "no-hit hybrid must report empty");
         assert!(
             empty.engines_touched.is_empty(),
@@ -5397,7 +5413,8 @@ mod tests {
 
         // Dense-only recall is a real outcome now: the lexical lane found
         // nothing but the dense lane did.
-        let semantic_only = build_hybrid_response_explanation(0, 1, 1, 1, 100, None);
+        let semantic_only =
+            build_hybrid_response_explanation(0, 1, 1, 1, 100, None, &exact_dense_lane());
         assert_eq!(semantic_only.strategy, "semantic_only");
         assert_eq!(semantic_only.engines_touched, vec![EngineTouched::Semantic]);
     }
@@ -6207,6 +6224,13 @@ mod tests {
 
         fn index_model_revision(&self) -> Option<&str> {
             Some(crate::query_embedder::SEARCH_OWNED_SEMANTIC_MODEL_REVISION)
+        }
+
+        fn dense_lane(&self) -> DenseLaneContractV1 {
+            DenseLaneContractV1 {
+                index: DenseIndexV1::Exact,
+                attestation: DenseLaneAttestationV1::Sealed,
+            }
         }
     }
 

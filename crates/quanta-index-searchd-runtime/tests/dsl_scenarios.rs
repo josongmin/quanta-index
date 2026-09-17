@@ -913,11 +913,17 @@ fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scop
         entry.stage == PlannerStage::ExecFanout
             && entry.detail == "semantic.scope.text_candidates=2"
     });
-    if !has_scope_plan || !has_scope_exec {
+    // The dense lane names its sealed index contract (QI-BB-027): this
+    // fixture is below the index floor, so the lane is exact and sealed.
+    let has_dense_lane = explanation.planner_trace.iter().any(|entry| {
+        entry.stage == PlannerStage::Plan
+            && entry.detail == "dense.index=exact; dense.attestation=sealed"
+    });
+    if !has_scope_plan || !has_scope_exec || !has_dense_lane {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(format!(
-            "semantic planner trace missing scoped details: {:?}",
+            "semantic planner trace missing scoped or dense-lane details: {:?}",
             explanation.planner_trace
         )
         .into());
@@ -1022,11 +1028,15 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
     let has_merge = explanation.planner_trace.iter().any(|entry| {
         entry.stage == PlannerStage::Merge && entry.detail == "hybrid.fused_results=2"
     });
-    if !has_plan || !has_exec || !has_merge {
+    let has_dense_lane = explanation.planner_trace.iter().any(|entry| {
+        entry.stage == PlannerStage::Plan
+            && entry.detail == "dense.index=exact; dense.attestation=sealed"
+    });
+    if !has_plan || !has_exec || !has_merge || !has_dense_lane {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(format!(
-            "hybrid planner trace missing accounting details: {:?}",
+            "hybrid planner trace missing accounting or dense-lane details: {:?}",
             explanation.planner_trace
         )
         .into());

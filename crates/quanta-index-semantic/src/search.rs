@@ -38,7 +38,9 @@ use quanta_index_contract::{
     cluster_membership_content_digest_v1,
 };
 use quanta_index_core::CoreError;
-use quanta_index_core::domains::semantic::{SemanticPolicy, SemanticSearchHitV1, SemanticSearcher};
+use quanta_index_core::domains::semantic::{
+    DenseLaneContractV1, SemanticPolicy, SemanticSearchHitV1, SemanticSearcher,
+};
 
 use crate::errors::lancedb_err;
 use crate::generation_contract::GenerationContract;
@@ -52,9 +54,8 @@ use crate::layout::{
     dataset_uri,
 };
 use crate::manifest::{
-    FORMAT_VERSION, LEGACY_BUILD_CONTRACT_FORMAT_VERSION, LEGACY_LANCEDB_FORMAT_VERSION,
-    LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION, LEGACY_UNCOMMITTED_MEMBERSHIP_FORMAT_VERSION,
-    LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION, SemanticManifest,
+    FormatCapabilitiesV1, LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION, SemanticManifest,
+    format_capabilities_v1,
 };
 use crate::membership_integrity::{
     ClusterMembershipStoredRowV1 as ClusterMembershipIntegrityRowV1,
@@ -62,17 +63,12 @@ use crate::membership_integrity::{
 };
 use crate::sealed_manifest::verify_sealed_manifest;
 use crate::sql::build_id_in_filter;
+use crate::vector_index::{LoadedVectorIndexV1, verify_vector_index_v1};
 
 const COLUMN_DISTANCE: &str = "_distance";
 
 fn has_semantic_corpus_metadata_v1(format_version: u32) -> bool {
-    matches!(
-        format_version,
-        FORMAT_VERSION
-            | LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION
-            | LEGACY_UNCOMMITTED_MEMBERSHIP_FORMAT_VERSION
-            | LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION
-    )
+    format_capabilities_v1(format_version).is_some_and(FormatCapabilitiesV1::corpus_metadata)
 }
 
 fn load_generation_contract(generation_dir: &Path) -> Result<GenerationContract, CoreError> {
@@ -89,26 +85,20 @@ fn load_generation_contract(generation_dir: &Path) -> Result<GenerationContract,
 fn load_generation_contract_for_manifest(
     generation_dir: &Path,
     manifest: &SemanticManifest,
+    capabilities: FormatCapabilitiesV1,
 ) -> Result<Option<GenerationContract>, CoreError> {
     let contract_path = layout::build_contract_path(generation_dir);
     if contract_path.exists() {
         return load_generation_contract(generation_dir).map(Some);
     }
-    match manifest.format_version {
-        FORMAT_VERSION
-        | LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION
-        | LEGACY_UNCOMMITTED_MEMBERSHIP_FORMAT_VERSION
-        | LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION
-        | LEGACY_BUILD_CONTRACT_FORMAT_VERSION => Err(CoreError::Storage(format!(
+    if capabilities.build_contract() {
+        return Err(CoreError::Storage(format!(
             "semantic: manifest format version {} requires generation contract {}",
             manifest.format_version,
             contract_path.display()
-        ))),
-        LEGACY_LANCEDB_FORMAT_VERSION => Ok(None),
-        other => Err(CoreError::Storage(format!(
-            "semantic: manifest format version {other} unsupported during contract load"
-        ))),
+        )));
     }
+    Ok(None)
 }
 
 fn read_scope_manifest(generation_dir: &Path) -> Result<SemanticManifest, CoreError> {
@@ -139,6 +129,8 @@ pub(crate) struct LoadedGeneration {
     model_version: Option<String>,
     table: lancedb::Table,
     cluster_membership: LoadedClusterMembershipV1,
+    /// The dense lane's index, verified against the seal at open.
+    vector_index: LoadedVectorIndexV1,
     /// On-disk bytes of the dataset this handle maps, measured at open.
     resident_bytes_estimate: u64,
 }
@@ -279,7 +271,7 @@ pub(crate) async fn open_generation(
         Ok(sealed) => Some(sealed),
         Err(CoreError::Typed { code, message }) if code == "GENERATION_MANIFEST_MISSING" => {
             let manifest = read_scope_manifest(&generation_dir)?;
-            if manifest.format_version == FORMAT_VERSION {
+            if manifest.capabilities()?.file_commitment() {
                 return Err(CoreError::Typed { code, message });
             }
             None
@@ -288,6 +280,7 @@ pub(crate) async fn open_generation(
     };
     let manifest = read_scope_manifest(&generation_dir)?;
     manifest.validate_scope(repo, revision, generation)?;
+    let capabilities = manifest.capabilities()?;
     if manifest.manifest_digest != sealed_digest {
         return Err(CoreError::Typed {
             code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
@@ -299,7 +292,7 @@ pub(crate) async fn open_generation(
         });
     }
     if let Some(generation_contract) =
-        load_generation_contract_for_manifest(&generation_dir, &manifest)?
+        load_generation_contract_for_manifest(&generation_dir, &manifest, capabilities)?
     {
         generation_contract.validate_manifest(&manifest)?;
     }
@@ -373,10 +366,10 @@ pub(crate) async fn open_generation(
         )));
     }
 
-    let cluster_membership = if matches!(
-        manifest.format_version,
-        FORMAT_VERSION | LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION
-    ) {
+    let vector_index =
+        verify_vector_index_v1(&table, manifest.vector_index_seal()?, manifest.row_count).await?;
+
+    let cluster_membership = if capabilities.membership_commitment() {
         let names = connection
             .table_names()
             .execute()
@@ -443,6 +436,7 @@ pub(crate) async fn open_generation(
         model_version: manifest.model_version.clone(),
         table,
         cluster_membership,
+        vector_index,
         resident_bytes_estimate,
     })
 }
@@ -1039,12 +1033,17 @@ impl LoadedGeneration {
         filter: Option<String>,
     ) -> Result<Vec<SemanticSearchHit>, CoreError> {
         let query_owned: Vec<f32> = query_vector.to_vec();
-        let mut vector_query = self
-            .table
-            .vector_search(query_owned)
-            .map_err(|err| lancedb_err("vector_search build", err))?
-            .distance_type(DistanceType::Cosine)
-            .limit(top_k);
+        // The sealed effort is the only effort: an approximate lane probes,
+        // walks and refines exactly as its seal recorded, and an exact lane
+        // bypasses every index (QI-BB-027).
+        let mut vector_query = self.vector_index.apply(
+            self.table
+                .vector_search(query_owned)
+                .map_err(|err| lancedb_err("vector_search build", err))?
+                .distance_type(DistanceType::Cosine)
+                .limit(top_k),
+            top_k,
+        )?;
         if let Some(predicate) = filter {
             vector_query = vector_query.only_if(predicate);
         }
@@ -1416,6 +1415,10 @@ impl SemanticSearcher for PersistedSemanticSearcher {
 
     fn index_model_revision(&self) -> Option<&str> {
         self.loaded.model_version()
+    }
+
+    fn dense_lane(&self) -> DenseLaneContractV1 {
+        self.loaded.vector_index.contract()
     }
 }
 

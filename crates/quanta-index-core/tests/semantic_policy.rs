@@ -260,3 +260,43 @@ mod vector_contract {
         ));
     }
 }
+
+// The dense lane contract renders one trace line a reader can act on
+// (QI-BB-027): the index, whether the seal proved it, and the effort.
+#[test]
+fn dense_lane_trace_names_index_attestation_and_effort() {
+    use quanta_index_core::{
+        DenseIndexEffortV1, DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1,
+    };
+    let exact = DenseLaneContractV1 {
+        index: DenseIndexV1::Exact,
+        attestation: DenseLaneAttestationV1::Sealed,
+    };
+    assert_eq!(
+        exact.trace_detail(),
+        "dense.index=exact; dense.attestation=sealed"
+    );
+    let approximate = DenseLaneContractV1 {
+        index: DenseIndexV1::Approximate(DenseIndexEffortV1 {
+            index_kind: "ivf_hnsw_sq".to_string(),
+            partitions: 3,
+            nprobes: 3,
+            ef_floor: 64,
+            ef_per_candidate: 2,
+            refine_factor: 2,
+        }),
+        attestation: DenseLaneAttestationV1::SealedByAnotherLibraryVersion,
+    };
+    assert_eq!(
+        approximate.trace_detail(),
+        "dense.index=ivf_hnsw_sq; dense.attestation=sealed_by_another_library_version; dense.partitions=3; dense.nprobes=3; dense.ef=max(64,2*candidates); dense.refine_factor=2"
+    );
+    let legacy = DenseLaneContractV1 {
+        index: DenseIndexV1::Exact,
+        attestation: DenseLaneAttestationV1::LegacyUnverified,
+    };
+    assert_eq!(
+        legacy.trace_detail(),
+        "dense.index=exact; dense.attestation=legacy_unverified"
+    );
+}

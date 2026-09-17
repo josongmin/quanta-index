@@ -17,6 +17,17 @@ use super::{
     resolve_lexical_request_pin, resolve_semantic_selector_selection,
 };
 use quanta_index_contract::{SeedFusionIdentity, SemanticCorpusKindV1, SemanticSeedCorpusBudgetV1};
+use quanta_index_core::DenseLaneContractV1;
+
+/// The plan-stage trace entry naming the dense lane every semantic route
+/// ran through (QI-BB-027): its index, whether the seal proved it, and the
+/// effort it spent.
+fn dense_lane_trace_entry_v1(dense_lane: &DenseLaneContractV1) -> PlannerTraceEntry {
+    PlannerTraceEntry {
+        stage: PlannerStage::Plan,
+        detail: dense_lane.trace_detail(),
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(super) struct SemanticSelection {
@@ -359,16 +370,29 @@ pub(super) fn build_hybrid_seed_candidates(
         .collect()
 }
 
+/// What each seed lane produced, as hits and as fused entities.
+pub(super) struct SeedLaneTallyV1 {
+    pub(super) lexical_hits: usize,
+    pub(super) lexical_entities: usize,
+    pub(super) semantic_hits: usize,
+    pub(super) semantic_entities: usize,
+    pub(super) fused_hits: usize,
+}
+
 pub(super) fn build_hybrid_seed_response_explanation(
-    lexical_hits: usize,
-    lexical_entities: usize,
-    semantic_hits: usize,
-    semantic_entities: usize,
-    fused_hits: usize,
+    tally: &SeedLaneTallyV1,
     internal_top_k: u32,
     unavailable_corpus_reasons: &[String],
     early_stop_reason: Option<EarlyStopReason>,
+    dense_lane: &DenseLaneContractV1,
 ) -> SearchExplanation {
+    let SeedLaneTallyV1 {
+        lexical_hits,
+        lexical_entities,
+        semantic_hits,
+        semantic_entities,
+        fused_hits,
+    } = *tally;
     let mut engines_touched = Vec::new();
     if lexical_hits > 0 {
         engines_touched.push(EngineTouched::Lexical);
@@ -389,6 +413,7 @@ pub(super) fn build_hybrid_seed_response_explanation(
                 stage: PlannerStage::Plan,
                 detail: format!("hybrid_seed.internal_top_k={internal_top_k}"),
             },
+            dense_lane_trace_entry_v1(dense_lane),
             PlannerTraceEntry {
                 stage: PlannerStage::ExecFanout,
                 detail: format!(
@@ -763,13 +788,17 @@ pub(super) fn build_semantic_response_explanation(
     scope: Option<&SemanticScopeV1>,
     result_count: usize,
     early_stop_reason: Option<EarlyStopReason>,
+    dense_lane: &DenseLaneContractV1,
 ) -> SearchExplanation {
     let scoped = scope.is_some();
     let scope_candidate_count = scope.map_or(0, |scope| scope.candidate_ids.len());
-    let mut planner_trace = vec![PlannerTraceEntry {
-        stage: PlannerStage::Plan,
-        detail: format!("semantic.scope={scoped}"),
-    }];
+    let mut planner_trace = vec![
+        PlannerTraceEntry {
+            stage: PlannerStage::Plan,
+            detail: format!("semantic.scope={scoped}"),
+        },
+        dense_lane_trace_entry_v1(dense_lane),
+    ];
     if let Some(scope) = scope {
         planner_trace.push(PlannerTraceEntry {
             stage: PlannerStage::Plan,
@@ -826,6 +855,7 @@ pub(super) fn build_hybrid_response_explanation(
     fused_hits: usize,
     internal_top_k: u32,
     early_stop_reason: Option<EarlyStopReason>,
+    dense_lane: &DenseLaneContractV1,
 ) -> SearchExplanation {
     // Two independent lanes (QI-BB-018): report which of them contributed
     // and the strategy that actually ran — a genuine two-lane RRF only when
@@ -851,6 +881,7 @@ pub(super) fn build_hybrid_response_explanation(
                 stage: PlannerStage::Plan,
                 detail: format!("hybrid.internal_top_k={internal_top_k}"),
             },
+            dense_lane_trace_entry_v1(dense_lane),
             PlannerTraceEntry {
                 stage: PlannerStage::ExecFanout,
                 detail: format!(
