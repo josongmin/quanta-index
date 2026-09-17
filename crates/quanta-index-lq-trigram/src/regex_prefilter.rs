@@ -26,14 +26,16 @@
 //! than silently degrading.
 
 use crate::errors::{LimitDimension, TrigramError, TrigramErrorCode};
-use crate::index::TrigramIndex;
+use crate::source::TrigramPostingSource;
 use crate::types::{DocId, MAX_TRIGRAMS_PER_QUERY, TRIGRAM_LEN, Trigram, trigrams_of};
 
 /// Candidate documents for a regex whose match must contain at least one of
 /// `literal_alternation`.
 ///
 /// The result is the union, over alternatives, of the documents holding every
-/// trigram of that alternative.
+/// trigram of that alternative. `idx` is any [`TrigramPostingSource`]: one
+/// [`crate::TrigramIndex`] or a [`crate::ShardedTrigramIndex`] over a doc-id
+/// partition; the algorithm is the same and so is the answer.
 ///
 /// Inputs:
 ///
@@ -47,8 +49,8 @@ use crate::types::{DocId, MAX_TRIGRAMS_PER_QUERY, TRIGRAM_LEN, Trigram, trigrams
 /// - aggregate distinct-trigram count across alternatives >
 ///   [`MAX_TRIGRAMS_PER_QUERY`] → [`TrigramErrorCode::PlanLimitExceeded`] with
 ///   [`LimitDimension::Trigrams`].
-pub fn regex_prefilter_any_of(
-    idx: &TrigramIndex,
+pub fn regex_prefilter_any_of<S: TrigramPostingSource + ?Sized>(
+    idx: &S,
     literal_alternation: &[Vec<u8>],
 ) -> Result<Vec<DocId>, TrigramError> {
     if literal_alternation.is_empty() {

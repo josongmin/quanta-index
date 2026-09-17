@@ -668,13 +668,16 @@ pub struct LexicalWriterCacheStats {
     pub seal_releases: u64,
 }
 
-/// How much text-authority derivation the adapter has done so far
-/// (QI-BB-006), for operators and tests.
+/// How much text-authority derivation and writing the adapter has done so
+/// far (QI-BB-006), for operators and tests.
 ///
 /// A rebuild scans every live document; an incremental update derives
 /// only the chunks a batch added and retires only those it replaced or
 /// tombstoned. `docs_derived` is the tokenize-and-post work in documents,
-/// whichever path ran, so a test can assert the cost shape without a clock.
+/// whichever path ran, so a test can assert the cost shape without a
+/// clock. The text authority is sharded by doc-id range: `shards_written`
+/// counts the shard files a write produced and `shards_inherited` the
+/// shards it listed unchanged, so the write-bytes shape is a count too.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TextAuthorityUpdateStats {
     /// Sidecar rebuilds from a full scan of the live index.
@@ -685,6 +688,11 @@ pub struct TextAuthorityUpdateStats {
     pub docs_derived: u64,
     /// Documents removed from inherited sidecars by incremental updates.
     pub docs_retired: u64,
+    /// Shard files written, over both paths.
+    pub shards_written: u64,
+    /// Shards listed unchanged — not read, serialized or written — over
+    /// both paths.
+    pub shards_inherited: u64,
 }
 
 /// What the regex match cache did so far, for operators and tests.

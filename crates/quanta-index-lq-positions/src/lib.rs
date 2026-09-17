@@ -29,6 +29,14 @@
 //! - **Adjacency default window = 8 tokens.** Configurable via
 //!   [`AdjacencyConfig`]; the ceiling is [`MAX_WINDOW_TOKENS`].
 //!
+//! ## Posting sources
+//!
+//! Both query paths take any [`TermPostingSource`]: a single
+//! [`PositionsIndex`], or a [`ShardedPositionsIndex`] over indexes that
+//! partition the doc-id space in ascending ranges. One algorithm, one
+//! answer — the sharded chain is byte-identical to the single index,
+//! ordering and caps included.
+//!
 //! ## Wire shape
 //!
 //! D18 — every serialized shape uses hand-rolled
@@ -47,6 +55,7 @@ pub mod builder;
 pub mod errors;
 pub mod index;
 pub mod phrase_query;
+pub mod source;
 pub mod types;
 pub mod varint;
 
@@ -55,6 +64,7 @@ pub use builder::PositionsBuilder;
 pub use errors::{LimitDimension, PositionsError, PositionsErrorCode};
 pub use index::{PositionsIndex, TermPostings, TermPostingsEntry};
 pub use phrase_query::{PhraseMatch, PhraseMatches, query_phrase};
+pub use source::{ShardedPositionsIndex, ShardedTermPostings, TermPostingSource};
 pub use types::{
     AdjacencyConfig, DEFAULT_WINDOW_TOKENS, DocId, MAX_ADJACENCY_SCAN_DEPTH, MAX_DOCS_PER_TERM,
     MAX_PHRASE_LEN, MAX_POSITIONS_PER_CELL, MAX_WINDOW_TOKENS, NormalizerVersion, Position,

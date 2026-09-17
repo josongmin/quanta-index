@@ -292,20 +292,26 @@ fn delta_generation_inherits_base_when_a_sidecar_authority_lands_first() -> Test
     Ok(())
 }
 
-/// Total bytes of the per-generation text-authority sidecars under `root`.
-fn text_authority_bytes(root: &Path) -> Result<u64, Box<dyn Error>> {
-    let mut total = 0_u64;
-    for entry in std::fs::read_dir(root)? {
+/// The generation-local directory holding the text authority: its manifest
+/// and its shard files.
+const TEXT_AUTHORITY_DIR: &str = "text-authority";
+
+/// The text-authority files under `root`, sorted, with their sizes.
+fn text_authority_files(root: &Path) -> Result<Vec<(std::path::PathBuf, u64)>, Box<dyn Error>> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(root.join(TEXT_AUTHORITY_DIR))? {
         let entry = entry?;
-        if entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| name.starts_with("text-authority-"))
-        {
-            total = total.saturating_add(entry.metadata()?.len());
-        }
+        files.push((entry.path(), entry.metadata()?.len()));
     }
-    Ok(total)
+    files.sort();
+    Ok(files)
+}
+
+/// Total bytes of the per-generation text authority under `root`.
+fn text_authority_bytes(root: &Path) -> Result<u64, Box<dyn Error>> {
+    Ok(text_authority_files(root)?
+        .iter()
+        .fold(0_u64, |total, (_, len)| total.saturating_add(*len)))
 }
 
 /// Machine-readable cost evidence; visible with `-- --nocapture`.
@@ -321,7 +327,8 @@ fn emit_evidence(fields: &[(&str, String)]) {
     println!("QI-BB-006-EVIDENCE {}", rendered.join(" "));
 }
 
-/// One directory entry's name and size, as the cost breakdown reports it.
+/// One entry's path relative to the generation directory and its size, as
+/// the cost breakdown reports it.
 type FreshEntry = (String, u64);
 
 /// A generation-directory sidecar's `(inode, length, sha256)`.
@@ -347,7 +354,11 @@ fn bytes_not_shared_with(
             if metadata.is_file() && !shared_inodes.contains(&metadata.ino()) {
                 fresh = fresh.saturating_add(metadata.len());
                 entries.push((
-                    entry.file_name().to_string_lossy().into_owned(),
+                    entry
+                        .path()
+                        .strip_prefix(root)?
+                        .to_string_lossy()
+                        .into_owned(),
                     metadata.len(),
                 ));
             }
@@ -431,13 +442,12 @@ fn delta_generation_does_not_rewrite_unchanged_base_bytes() -> TestResult {
     if base_bytes == 0 {
         return Err("base generation wrote no bytes; the measurement is vacuous".into());
     }
-    // Scope: the indexed-data half of QI-BB-006. The per-generation
-    // text-authority sidecars are still rebuilt in full whenever a batch
-    // touches indexed text, so they are excluded here and tracked as the named
-    // remaining half rather than folded into a number that would hide them.
+    // Scope: the indexed-data half of QI-BB-006. The text-authority half has
+    // its own oracle (`text_authority_shards.rs`, by shard and inode), so the
+    // two halves stay separately visible rather than folded into one number.
     let index_fresh_bytes: u64 = fresh_entries
         .iter()
-        .filter(|(name, _)| !name.starts_with("text-authority-"))
+        .filter(|(name, _)| !name.starts_with(TEXT_AUTHORITY_DIR))
         .fold(0_u64, |total, (_, len)| total.saturating_add(*len));
     let index_base_bytes = base_bytes.saturating_sub(base_sidecar_bytes);
 
@@ -485,25 +495,18 @@ fn generation_dir(
     Ok(path)
 }
 
-/// A delta must not mutate the base generation's text-authority sidecars.
+/// A delta must not mutate the base generation's text-authority files.
 ///
-/// The sidecars are rebuilt whenever a batch touches indexed text. They used to
-/// be written with `File::create`, which truncates in place: once a delta
-/// generation shares storage with its base (materialization inherits unchanged
-/// files), that rebuild rewrote the base's bytes out from under readers still
-/// pinned to it. The sidecars are published by atomic rename now, and this test
-/// is the regression: it compares the base's sidecar identity and size across a
-/// delta that rebuilds them.
+/// The touched shards and the manifest are rewritten whenever a batch
+/// touches indexed text. They used to be written with `File::create`, which
+/// truncates in place: once a delta generation shares storage with its base
+/// (materialization inherits unchanged files), that rewrite mutated the
+/// base's bytes out from under readers still pinned to it. Every file is
+/// published by atomic rename now, and this test is the regression: it
+/// compares the base's file identities and sizes across a delta that
+/// rewrites its one shard and its manifest.
 #[test]
 fn delta_generation_does_not_mutate_base_text_authority_sidecars() -> TestResult {
-    const SIDECARS: [&str; 5] = [
-        "text-authority-docs.cbor",
-        "text-authority-trigram.cbor",
-        "text-authority-trigram-folded.cbor",
-        "text-authority-positions.cbor",
-        "text-authority-positions-folded.cbor",
-    ];
-
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let g1 = ManifestGeneration::new(1);
@@ -511,10 +514,14 @@ fn delta_generation_does_not_mutate_base_text_authority_sidecars() -> TestResult
 
     adapter.build_batch(&base_batch(g1)?)?;
     let base_dir = generation_dir(dir.path(), g1)?;
-    let before = sidecar_facts(&base_dir, &SIDECARS)?;
+    let base_files: Vec<std::path::PathBuf> = text_authority_files(&base_dir)?
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect();
+    let before = sidecar_facts(&base_files)?;
 
     adapter.build_batch(&delta_batch(g2, g1)?)?;
-    let after = sidecar_facts(&base_dir, &SIDECARS)?;
+    let after = sidecar_facts(&base_files)?;
 
     if before != after {
         return Err(format!(
@@ -535,16 +542,12 @@ fn delta_generation_does_not_mutate_base_text_authority_sidecars() -> TestResult
     Ok(())
 }
 
-/// `(inode, length, sha256)` for each named sidecar under `generation_dir`.
-fn sidecar_facts(
-    generation_dir: &Path,
-    names: &[&str],
-) -> Result<Vec<SidecarFacts>, Box<dyn Error>> {
-    let mut facts = Vec::with_capacity(names.len());
-    for name in names {
-        let path = generation_dir.join(name);
-        let metadata = std::fs::metadata(&path)?;
-        let digest = Sha256::digest(std::fs::read(&path)?);
+/// `(inode, length, sha256)` for each file in `paths`.
+fn sidecar_facts(paths: &[std::path::PathBuf]) -> Result<Vec<SidecarFacts>, Box<dyn Error>> {
+    let mut facts = Vec::with_capacity(paths.len());
+    for path in paths {
+        let metadata = std::fs::metadata(path)?;
+        let digest = Sha256::digest(std::fs::read(path)?);
         let mut encoded = String::with_capacity(digest.len().saturating_mul(2));
         for byte in digest {
             write!(&mut encoded, "{byte:02x}")?;
@@ -720,13 +723,11 @@ fn delta_generation_text_authority_matches_independent_full_rebuild() -> TestRes
 
 /// Cost shape of the text-authority update: in-place delta vs full rebuild.
 ///
-/// The sidecar files are monolithic, so a delta still rewrites every byte of
-/// them; what the in-place path removes is the re-derivation (scan every live
-/// document, re-tokenize, rebuild every posting). The oracle is the
-/// adapter's own work count, not a clock: a one-scope delta derives exactly
-/// the one chunk the scope carries and retires exactly the one it replaced,
-/// while a fresh build of the identical final corpus derives every document.
-/// Wall times are printed for the ledger only; on a shared host they are a
+/// The oracle is the adapter's own work count, not a clock: a one-scope
+/// delta derives exactly the one chunk the scope carries, retires exactly
+/// the one it replaced and writes exactly the one shard both live in, while
+/// a fresh build of the identical final corpus derives every document. Wall
+/// times are printed for the ledger only; on a shared host they are a
 /// shape, not an assertion.
 #[test]
 fn delta_text_authority_update_derives_only_the_changed_scope() -> TestResult {
@@ -740,9 +741,18 @@ fn delta_text_authority_update_derives_only_the_changed_scope() -> TestResult {
     adapter.build_batch(&base_batch_with_filler(g1, FILLERS)?)?;
     let after_base = adapter.text_authority_update_stats()?;
     let total_docs = u64::try_from(FILLERS.saturating_add(2))?;
-    if after_base.rebuilds != 1 || after_base.docs_derived != total_docs {
+    if after_base
+        != (TextAuthorityUpdateStats {
+            rebuilds: 1,
+            incremental_updates: 0,
+            docs_derived: total_docs,
+            docs_retired: 0,
+            shards_written: 1,
+            shards_inherited: 0,
+        })
+    {
         return Err(format!(
-            "a fresh generation rebuilds its sidecars from every document: {after_base:?}"
+            "a fresh generation rebuilds its text authority from every document into one shard: {after_base:?}"
         )
         .into());
     }
@@ -762,13 +772,23 @@ fn delta_text_authority_update_derives_only_the_changed_scope() -> TestResult {
         docs_retired: after_delta
             .docs_retired
             .saturating_sub(after_base.docs_retired),
+        shards_written: after_delta
+            .shards_written
+            .saturating_sub(after_base.shards_written),
+        shards_inherited: after_delta
+            .shards_inherited
+            .saturating_sub(after_base.shards_inherited),
     };
+    // The corpus fits one shard, so the one touched shard is the one
+    // written; the multi-shard shape is the shard test's oracle.
     if delta_work
         != (TextAuthorityUpdateStats {
             rebuilds: 0,
             incremental_updates: 1,
             docs_derived: 1,
             docs_retired: 1,
+            shards_written: 1,
+            shards_inherited: 0,
         })
     {
         return Err(format!(

@@ -14,11 +14,15 @@
 //! Missing terms surface as an empty result set — not an error.
 
 use crate::errors::{LimitDimension, PositionsError, PositionsErrorCode};
-use crate::index::PositionsIndex;
 use crate::phrase_query::{PhraseMatch, PhraseMatches, collect_term_postings};
+use crate::source::TermPostingSource;
 use crate::types::{AdjacencyConfig, MAX_ADJACENCY_SCAN_DEPTH, MAX_WINDOW_TOKENS};
 
 /// Run an adjacency query for `term_a` near `term_b` within `cfg`.
+///
+/// `idx` is any [`TermPostingSource`]: one [`crate::PositionsIndex`] or a
+/// [`crate::ShardedPositionsIndex`] over a doc-id partition; the algorithm
+/// is the same and so is the answer, scan-depth cap included.
 ///
 /// Symmetric semantics: `b` may appear before or after `a`. The emitted
 /// [`PhraseMatch::start_position`] is `min(pos_a, pos_b)` and
@@ -29,8 +33,8 @@ use crate::types::{AdjacencyConfig, MAX_ADJACENCY_SCAN_DEPTH, MAX_WINDOW_TOKENS}
 /// - `cfg.window_tokens == 0` → [`PositionsErrorCode::WindowOutOfRange`].
 /// - `cfg.window_tokens > MAX_WINDOW_TOKENS` →
 ///   [`PositionsErrorCode::WindowOutOfRange`].
-pub fn query_adjacency(
-    idx: &PositionsIndex,
+pub fn query_adjacency<S: TermPostingSource + ?Sized>(
+    idx: &S,
     term_a: &str,
     term_b: &str,
     cfg: &AdjacencyConfig,

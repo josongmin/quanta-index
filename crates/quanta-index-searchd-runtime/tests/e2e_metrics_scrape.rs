@@ -370,8 +370,10 @@ fn boot_gauges_match_the_boot_inventory_and_the_writer_envelope_reflects_the_sea
     )?;
     expect_eq("open writers", &scrape.gauge("lexical_writers_open")?, &0.0)?;
     // Two chunks were ingested into one generation: the first batch found
-    // no sidecars and rebuilt from its one document, the second updated
-    // them in place with its one chunk; nothing was retired (QI-BB-006).
+    // no text authority and rebuilt from its one document, the second
+    // updated it in place with its one chunk; nothing was retired, and
+    // both documents live in the one shard each write produced — nothing
+    // could be inherited within a single generation (QI-BB-006).
     expect_eq(
         "text-authority rebuilds",
         &scrape.counter("lexical_text_authority_rebuilds_total")?,
@@ -390,6 +392,16 @@ fn boot_gauges_match_the_boot_inventory_and_the_writer_envelope_reflects_the_sea
     expect_eq(
         "text-authority docs retired",
         &scrape.counter("lexical_text_authority_docs_retired_total")?,
+        &0,
+    )?;
+    expect_eq(
+        "text-authority shards written",
+        &scrape.counter("lexical_text_authority_shards_written_total")?,
+        &2,
+    )?;
+    expect_eq(
+        "text-authority shards inherited",
+        &scrape.counter("lexical_text_authority_shards_inherited_total")?,
         &0,
     )?;
     if scrape.gauge("lexical_writers_max")? < 1.0 {

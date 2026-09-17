@@ -34,7 +34,9 @@ use quanta_index_lexical::LexicalAdapter;
 type TestResult = Result<(), Box<dyn Error>>;
 
 const IDENTITY: &str = "search-corpus-generation-identity.cbor";
-const DOCS_SIDECAR: &str = "text-authority-docs.cbor";
+/// The text-authority manifest inside the generation directory: one of the
+/// files the seal commits to and the inventory must not read.
+const TEXT_AUTHORITY_MANIFEST: &str = "text-authority/manifest.cbor";
 
 fn repo() -> RepoId {
     RepoId::new("inventory-repo")
@@ -154,7 +156,7 @@ fn inventory_quarantines_untrusted_directories_and_never_reads_content() -> Test
     std::fs::create_dir_all(&moved)?;
     let _copied = std::fs::copy(sealed_dir.join(IDENTITY), moved.join(IDENTITY))?;
     // Content corruption the inventory must not look for.
-    flip_last_byte(&sealed_dir.join(DOCS_SIDECAR))?;
+    flip_last_byte(&sealed_dir.join(TEXT_AUTHORITY_MANIFEST))?;
 
     let inventory = adapter.inventory_sealed_generations()?;
     if inventory.sealed != vec![identity(g1)] {

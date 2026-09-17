@@ -24,7 +24,8 @@ use serde::ser::{SerializeSeq, SerializeStruct};
 use serde::{Deserializer, Serializer};
 
 use crate::errors::{LimitDimension, PositionsError};
-use crate::index::{PositionsIndex, TermPostingsEntry};
+use crate::index::TermPostingsEntry;
+use crate::source::TermPostingSource;
 use crate::types::{DocId, MAX_PHRASE_LEN, Position};
 
 /// One contiguous phrase hit inside a single doc.
@@ -141,8 +142,8 @@ impl<'de> serde::Deserialize<'de> for PhraseMatches {
 /// Used by [`query_phrase`] and [`crate::adjacency_query::query_adjacency`]
 /// to materialize a doc-keyed view for join logic. Surfaces any decode
 /// failure as a typed [`PositionsError`].
-pub(crate) fn collect_term_postings(
-    idx: &PositionsIndex,
+pub(crate) fn collect_term_postings<S: TermPostingSource + ?Sized>(
+    idx: &S,
     term: &str,
 ) -> Result<BTreeMap<DocId, Vec<Position>>, PositionsError> {
     let mut out: BTreeMap<DocId, Vec<Position>> = BTreeMap::new();
@@ -158,10 +159,17 @@ pub(crate) fn collect_term_postings(
 
 /// Run a phrase query against `idx` for the ordered token sequence `terms`.
 ///
+/// `idx` is any [`TermPostingSource`]: one [`crate::PositionsIndex`] or a
+/// [`crate::ShardedPositionsIndex`] over a doc-id partition; the algorithm
+/// is the same and so is the answer, in the same doc-then-anchor order.
+///
 /// Empty `terms` is a valid input that yields an empty result set. A single
 /// term yields one match per posting. Multi-term phrases require a strict
 /// `position + 1` chain in the same doc across all terms.
-pub fn query_phrase(idx: &PositionsIndex, terms: &[&str]) -> Result<PhraseMatches, PositionsError> {
+pub fn query_phrase<S: TermPostingSource + ?Sized>(
+    idx: &S,
+    terms: &[&str],
+) -> Result<PhraseMatches, PositionsError> {
     // LEX-03 §4.2: phrase length cap. `terms.len()` is `usize`; when it
     // exceeds `u32`, it trivially exceeds `MAX_PHRASE_LEN` — surface that
     // as the same `PlanLimitExceeded { PhraseLen }` outcome rather than a

@@ -32,7 +32,9 @@ use e2e_harness::E2eRuntime;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-const LEXICAL_DOCS_SIDECAR: &str = "text-authority-docs.cbor";
+/// The lexical text-authority manifest inside a generation directory: one
+/// of the files the seal commits to.
+const LEXICAL_TEXT_AUTHORITY_MANIFEST: &str = "text-authority/manifest.cbor";
 const LEXICAL_IDENTITY: &str = "search-corpus-generation-identity.cbor";
 const SEMANTIC_MANIFEST: &str = "semantic-manifest.cbor";
 
@@ -158,7 +160,9 @@ fn damage_to_an_inactive_generation_does_not_stop_the_daemon() -> TestResult {
     let mut rt = rt.reopen();
 
     // Content damage the inventory does not look for.
-    flip_last_byte(&generation_dir(&rt, "indexes/lexical", inactive)?.join(LEXICAL_DOCS_SIDECAR))?;
+    flip_last_byte(
+        &generation_dir(&rt, "indexes/lexical", inactive)?.join(LEXICAL_TEXT_AUTHORITY_MANIFEST),
+    )?;
     tamper_semantic_row_count(
         &generation_dir(&rt, "indexes/semantic", inactive)?.join(SEMANTIC_MANIFEST),
     )?;
@@ -272,7 +276,9 @@ fn damage_to_the_active_generation_refuses_to_boot() -> TestResult {
     let mut rt = E2eRuntime::boot()?;
     let (_inactive, active) = seal_two_generations(&mut rt)?;
     let mut rt = rt.reopen();
-    flip_last_byte(&generation_dir(&rt, "indexes/lexical", active)?.join(LEXICAL_DOCS_SIDECAR))?;
+    flip_last_byte(
+        &generation_dir(&rt, "indexes/lexical", active)?.join(LEXICAL_TEXT_AUTHORITY_MANIFEST),
+    )?;
 
     match rt.start() {
         Ok(()) => Err("the daemon started on a damaged active generation".into()),

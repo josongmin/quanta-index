@@ -23,7 +23,7 @@
 use memchr::memmem;
 
 use crate::errors::{LimitDimension, TrigramError, TrigramErrorCode};
-use crate::index::TrigramIndex;
+use crate::source::TrigramPostingSource;
 use crate::types::{DocId, MAX_TRIGRAMS_PER_QUERY, TRIGRAM_LEN, Trigram, trigrams_of};
 
 /// Pluggable resolver from [`DocId`] to that document's raw bytes.
@@ -40,14 +40,18 @@ pub trait DocResolver {
 /// Run a raw-substring query against `idx`, verifying candidates via
 /// `corpus`.
 ///
+/// `idx` is any [`TrigramPostingSource`]: one [`crate::TrigramIndex`] or a
+/// [`crate::ShardedTrigramIndex`] over a doc-id partition; the algorithm
+/// is the same and so is the answer.
+///
 /// Empty needle → returns an empty `Vec` (typed, not error).
 /// Needle shorter than [`TRIGRAM_LEN`] → returns an empty `Vec` and signals
 /// the short-input fast path; callers must run their own verify pass over
 /// the corpus universe (this crate has no universe to enumerate).
 ///
 /// See [`crate`] module doc for byte-trigram rationale.
-pub fn query_raw_substring(
-    idx: &TrigramIndex,
+pub fn query_raw_substring<S: TrigramPostingSource + ?Sized>(
+    idx: &S,
     needle: &[u8],
     corpus: &dyn DocResolver,
 ) -> Result<Vec<DocId>, TrigramError> {

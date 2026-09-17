@@ -185,6 +185,7 @@ rust-test-integration:
     {{cargo}} --lane test-integration-lane test -p quanta-index-core --test semantic_policy --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test tantivy_smoke --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test generation_delta_base_carryforward --all-features --locked
+    {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test text_authority_shards --all-features --locked -- --nocapture
     {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test execution_budget --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test sealed_manifest --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test boot_inventory --all-features --locked

@@ -220,6 +220,12 @@ owner = "quanta-index-lexical"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "lexical-text-authority-shards"
+path = "crates/quanta-index-lexical/tests/text_authority_shards.rs"
+owner = "quanta-index-lexical"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "lexical-unicode-normalization-goldens"
 path = "crates/quanta-index-lexical/tests/unicode_normalization_goldens.rs"
 owner = "quanta-index-lexical"

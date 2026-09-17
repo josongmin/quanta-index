@@ -73,16 +73,7 @@ impl TrigramIndex {
         &self,
         query_trigrams: &[Trigram],
     ) -> Result<Vec<DocId>, TrigramError> {
-        if query_trigrams.len() > crate::types::MAX_TRIGRAMS_PER_QUERY {
-            return Err(TrigramError::plan_limit(
-                LimitDimension::Trigrams,
-                format!(
-                    "query trigram count {} exceeds cap {}",
-                    query_trigrams.len(),
-                    crate::types::MAX_TRIGRAMS_PER_QUERY
-                ),
-            ));
-        }
+        ensure_query_trigram_count(query_trigrams)?;
         if query_trigrams.is_empty() {
             return Ok(Vec::new());
         }
@@ -183,6 +174,22 @@ impl TrigramIndex {
             )
         })
     }
+}
+
+/// The per-query trigram cap, shared by every posting source so a sharded
+/// union refuses exactly the queries one index refuses.
+pub(crate) fn ensure_query_trigram_count(query_trigrams: &[Trigram]) -> Result<(), TrigramError> {
+    if query_trigrams.len() > crate::types::MAX_TRIGRAMS_PER_QUERY {
+        return Err(TrigramError::plan_limit(
+            LimitDimension::Trigrams,
+            format!(
+                "query trigram count {} exceeds cap {}",
+                query_trigrams.len(),
+                crate::types::MAX_TRIGRAMS_PER_QUERY
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// Linear two-pointer intersect on already-sorted, dedup'd posting lists.

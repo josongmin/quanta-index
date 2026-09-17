@@ -47,6 +47,14 @@
 //! See `docs/ssot/producer-handoff.md` §3 for the producer/search-plane
 //! delta-handling contract these patterns satisfy.
 //!
+//! ## Posting sources
+//!
+//! Both query shapes take any [`TrigramPostingSource`]: a single
+//! [`TrigramIndex`], or a [`ShardedTrigramIndex`] over indexes that
+//! partition the doc-id space in ascending ranges. One algorithm, one
+//! answer — the sharded union is byte-identical to the single index for
+//! every query the single index answers.
+//!
 //! ## Guarantees
 //!
 //! - Wire shapes use hand-rolled `impl serde::Serialize` / `Deserialize`
@@ -63,6 +71,7 @@ pub mod errors;
 pub mod index;
 pub mod query;
 pub mod regex_prefilter;
+pub mod source;
 pub mod types;
 
 pub use builder::TrigramIndexBuilder;
@@ -70,6 +79,7 @@ pub use errors::{LimitDimension, TrigramError, TrigramErrorCode};
 pub use index::TrigramIndex;
 pub use query::{DocResolver, query_raw_substring};
 pub use regex_prefilter::regex_prefilter_any_of;
+pub use source::{ShardedTrigramIndex, TrigramPostingSource};
 pub use types::{
     DocId, MAX_CANDIDATE_PRE_VERIFY, MAX_TRIGRAMS_PER_QUERY, TRIGRAM_LEN, Trigram, trigrams_of,
 };

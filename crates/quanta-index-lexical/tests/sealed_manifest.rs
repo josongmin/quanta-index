@@ -3,17 +3,18 @@
 //!
 //! Before this, the sealed identity proved only itself: the activation
 //! validator checked the identity and opened the Tantivy index, while the
-//! query open additionally decoded five text-authority sidecars it had never
+//! query open additionally decoded text-authority sidecars it had never
 //! verified. A sidecar lost, truncated or bit-flipped after the seal passed
 //! activation and failed the first query.
 //!
-//! Now the seal writes a manifest (Tantivy commit digest, every sidecar's
-//! length and SHA-256, the identity's digest) before the identity, and both
+//! Now the seal writes a manifest (Tantivy commit digest, every file of the
+//! `text-authority/` tree — its manifest and each shard — with length and
+//! SHA-256, the identity's digest) before the identity, and both
 //! `validate_generation_identity` (activation, restart) and `open` (query)
 //! verify it. The oracle here is fault injection on the real files: every
-//! sidecar in turn is removed, truncated, bit-flipped and replaced by a
-//! stale copy from another generation, and both doors must refuse under the
-//! typed code and admit again once the file is restored.
+//! text-authority file in turn is removed, truncated, bit-flipped and
+//! replaced by a stale copy from another generation, and both doors must
+//! refuse under the typed code and admit again once the file is restored.
 
 #![forbid(unsafe_code)]
 
@@ -35,13 +36,8 @@ use quanta_index_lexical::LexicalAdapter;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-const SIDECARS: [&str; 5] = [
-    "text-authority-docs.cbor",
-    "text-authority-trigram.cbor",
-    "text-authority-trigram-folded.cbor",
-    "text-authority-positions.cbor",
-    "text-authority-positions-folded.cbor",
-];
+const TEXT_AUTHORITY_DIR: &str = "text-authority";
+const TEXT_AUTHORITY_MANIFEST: &str = "manifest.cbor";
 const MANIFEST: &str = "search-corpus-generation-manifest.cbor";
 const IDENTITY: &str = "search-corpus-generation-identity.cbor";
 const TANTIVY_META: &str = "meta.json";
@@ -194,8 +190,45 @@ fn expect_refused(doors: &Doors, what: &str, code: &str) -> TestResult {
     Ok(())
 }
 
-/// Every sidecar, under every corruption, is refused by both doors and
-/// admitted again once restored.
+/// The files of a generation's `text-authority/` tree: its manifest and
+/// its shards, as the seal committed them.
+fn text_authority_files(generation_dir: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(generation_dir.join(TEXT_AUTHORITY_DIR))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<_, _>>()?;
+    files.sort();
+    if files.len() < 2 {
+        return Err(format!("expected a manifest and at least one shard, got {files:?}").into());
+    }
+    Ok(files)
+}
+
+/// The stale generation's counterpart of one text-authority file.
+///
+/// Its manifest for the manifest, its one shard for a shard. Shard files
+/// are named by content, so the counterpart is found by kind, not by name.
+fn stale_counterpart(stale_dir: &Path, path: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let is_manifest =
+        path.file_name().and_then(|name| name.to_str()) == Some(TEXT_AUTHORITY_MANIFEST);
+    let mut candidates: Vec<PathBuf> = text_authority_files(stale_dir)?
+        .into_iter()
+        .filter(|stale| {
+            (stale.file_name().and_then(|name| name.to_str()) == Some(TEXT_AUTHORITY_MANIFEST))
+                == is_manifest
+        })
+        .collect();
+    let [counterpart] = candidates.as_mut_slice() else {
+        return Err(format!(
+            "expected one stale counterpart for {}, got {candidates:?}",
+            path.display()
+        )
+        .into());
+    };
+    Ok(counterpart.clone())
+}
+
+/// Every text-authority file, under every corruption, is refused by both
+/// doors and admitted again once restored.
 #[test]
 fn both_doors_refuse_a_sidecar_that_does_not_match_the_manifest() -> TestResult {
     let temp = tempfile::tempdir()?;
@@ -212,8 +245,11 @@ fn both_doors_refuse_a_sidecar_that_does_not_match_the_manifest() -> TestResult 
 
     let dir = generation_dir(&root, generation);
     let stale_dir = generation_dir(&root, stale_generation);
-    for name in SIDECARS {
-        let path = dir.join(name);
+    for path in text_authority_files(&dir)? {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .ok_or("name")?;
         let original = std::fs::read(&path)?;
 
         std::fs::remove_file(&path)?;
@@ -246,7 +282,7 @@ fn both_doors_refuse_a_sidecar_that_does_not_match_the_manifest() -> TestResult 
             "GENERATION_SIDECAR_CORRUPT",
         )?;
 
-        let stale = std::fs::read(stale_dir.join(name))?;
+        let stale = std::fs::read(stale_counterpart(&stale_dir, &path)?)?;
         std::fs::write(&path, &stale)?;
         expect_refused(
             &knock(&adapter, generation),

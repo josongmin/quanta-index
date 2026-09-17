@@ -11,6 +11,15 @@
 //! Layout:
 //!   `{state_root}/generation-v1-{sha256(repo, revision)}/g{generation}/`
 //!
+//! Beside the Tantivy index, a generation carries its text authority under
+//! `text-authority/`: a bounded manifest plus immutable shard files, each
+//! shard a fixed doc-id range's slice of the doc table, the byte-trigram
+//! postings and the token positions (see the crate-private
+//! `text_authority` module). Every text document stores its text-authority
+//! doc id in the index, so a delta names exactly the documents it retires
+//! and rewrites only the shards it touches; every other shard is the base
+//! generation's file, hard-linked.
+//!
 //! The adapter caches one `IndexWriter` per generation to amortize the
 //! per-commit cost across many ops, and one `IndexReader` per opened
 //! generation.
@@ -18,10 +27,10 @@
 //! Text semantics — NFC, Unicode case folding, token boundaries, and the
 //! split between token surfaces (keyword, phrase) and byte surfaces (raw
 //! string, regex) — are defined once in the crate-private `normalize`
-//! module and consumed by the index analyzer, every text-authority sidecar,
+//! module and consumed by the index analyzer, every text-authority shard,
 //! and the `index:no` scan alike. A sealed generation records the normalizer
-//! version it was built under and is refused typed when it differs from the
-//! running one.
+//! version and the text-authority format it was built under and is refused
+//! typed when either differs from the running one.
 
 #![forbid(unsafe_code)]
 #![deny(unused_must_use)]
@@ -42,6 +51,7 @@ pub mod planner;
 mod predicate_registry;
 pub mod regex;
 pub mod symbol;
+mod text_authority;
 pub mod trigram_plan;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -72,6 +82,7 @@ use quanta_index_core::domains::generation::{
     GenerationQuarantineReasonV1, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
     IncompleteGenerationDiscardPort, QuarantinedGenerationV1, SealedArtifactCommitmentV1,
     SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
+    commit_tree_v1, verify_tree_commitment_v1,
 };
 use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
@@ -101,14 +112,11 @@ const TANTIVY_INDEX_META_FILE_NAME: &str = "meta.json";
 const TANTIVY_MANAGED_FILE_NAME: &str = ".managed.json";
 /// Prefix of Tantivy's lock files, which belong to one live writer only.
 const TANTIVY_LOCK_FILE_PREFIX: &str = ".tantivy";
-use quanta_index_lq_positions::{
-    DocId as PositionsDocId, NormalizerVersion, Position, PositionsBuilder, PositionsError,
-    PositionsErrorCode, PositionsIndex, query_phrase,
-};
+use quanta_index_lq_positions::{PositionsError, PositionsErrorCode, query_phrase};
 use quanta_index_lq_regex::RegexExecutor;
 use quanta_index_lq_trigram::{
-    DocId as TrigramDocId, DocResolver, TrigramError, TrigramErrorCode, TrigramIndex,
-    TrigramIndexBuilder, query_raw_substring, regex_prefilter_any_of,
+    DocId as TrigramDocId, TrigramError, TrigramErrorCode, query_raw_substring,
+    regex_prefilter_any_of,
 };
 
 use crate::analyzer::{NormalizingTokenizer, tokenizer_name};
@@ -127,6 +135,10 @@ use crate::predicate_registry::{
     parse_repo_meta_arg, parse_repo_topic_arg, parse_timeref_scalar_arg, unimplemented_predicate,
 };
 use crate::regex::RegexPolicy;
+use crate::text_authority::{
+    AddedTextDoc, ShardedTextAuthority, TEXT_AUTHORITY_DIR_NAME, TextAuthorityManifest,
+    TextAuthorityWriteReceipt, shard_index_of, text_authority_dir,
+};
 use tantivy::DocSet as _;
 use tantivy::collector::{Count, TopDocs};
 use tantivy::query::{
@@ -148,18 +160,6 @@ const REPO_TOPIC_FILE_NAME: &str = "repo-topic.cbor";
 const REPO_DESCRIPTION_FILE_NAME: &str = "repo-description.cbor";
 const FILE_OWNERSHIP_FILE_NAME: &str = "file-ownership.cbor";
 const FILE_CONTRIBUTOR_FILE_NAME: &str = "file-contributor.cbor";
-const TEXT_AUTHORITY_DOC_TABLE_FILE_NAME: &str = "text-authority-docs.cbor";
-const TEXT_AUTHORITY_TRIGRAM_FILE_NAME: &str = "text-authority-trigram.cbor";
-const TEXT_AUTHORITY_TRIGRAM_FOLDED_FILE_NAME: &str = "text-authority-trigram-folded.cbor";
-const TEXT_AUTHORITY_POSITIONS_FILE_NAME: &str = "text-authority-positions.cbor";
-const TEXT_AUTHORITY_POSITIONS_FOLDED_FILE_NAME: &str = "text-authority-positions-folded.cbor";
-/// The position sidecars' normalizer stamp.
-///
-/// It is the shared text normalizer's version, so a sidecar built under
-/// another contract is refused by the positions engine as well as by the
-/// sealed manifest.
-const POSITIONS_NORMALIZER_VERSION: NormalizerVersion =
-    NormalizerVersion::new(TEXT_NORMALIZER_VERSION.major, TEXT_NORMALIZER_VERSION.minor);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum QueryDocKind {
@@ -197,6 +197,11 @@ struct SchemaFields {
     chunk_text_case: Field,
     symbol_kind: Field,
     symbol_kind_family: Field,
+    /// The text-authority doc id of a text document (absent on symbols):
+    /// the shard-addressing key the sidecar and the index share, assigned
+    /// once when the document is written and never reused within the
+    /// generation's chain.
+    text_authority_doc_id: Field,
 }
 
 impl SchemaFields {
@@ -230,6 +235,7 @@ impl SchemaFields {
         );
         let symbol_kind = builder.add_text_field("symbol_kind", STRING | STORED);
         let symbol_kind_family = builder.add_text_field("symbol_kind_family", STRING | STORED);
+        let text_authority_doc_id = builder.add_u64_field("text_authority_doc_id", STORED);
         let schema = builder.build();
         Self {
             schema,
@@ -249,6 +255,7 @@ impl SchemaFields {
             chunk_text_case,
             symbol_kind,
             symbol_kind_family,
+            text_authority_doc_id,
         }
     }
 }
@@ -2647,8 +2654,16 @@ const LEXICAL_SEALED_MANIFEST_FILE_NAME: &str = "search-corpus-generation-manife
 /// Version 1 had no normalizer stamp and described generations built under
 /// the pre-QI-BB-011 analyzers (Tantivy default for the index, whitespace +
 /// ASCII folding for the sidecars); those answer differently under the
-/// current normalizer and are refused, never served.
-const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 2;
+/// current normalizer and are refused, never served. Version 2 committed
+/// the whole-corpus five-file text authority; version 3 commits the
+/// sharded `text-authority/` tree (manifest plus shard files, by `/`-joined
+/// path) and its index stores each text document's text-authority doc id.
+/// A version-2 generation is refused as an unsupported text-authority
+/// format; the migration is a rebuild.
+const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 3;
+/// The version-2 layout: whole-corpus text-authority sidecars beside the
+/// index, no doc ids in the index.
+const LEXICAL_SEALED_MANIFEST_WHOLE_CORPUS_TEXT_AUTHORITY_VERSION: u32 = 2;
 
 fn lexical_sealed_manifest_path(generation_dir: &Path) -> PathBuf {
     generation_dir.join(LEXICAL_SEALED_MANIFEST_FILE_NAME)
@@ -2658,13 +2673,14 @@ fn lexical_sealed_manifest_path(generation_dir: &Path) -> PathBuf {
 ///
 /// Written after every sidecar is durable and before the sealed identity, so
 /// the identity's presence implies the manifest's. It names the Tantivy
-/// commit (`meta.json` digest) and every text-authority sidecar with its
+/// commit (`meta.json` digest) and every file of the `text-authority/`
+/// tree — the manifest and each shard, by `/`-joined path — with its
 /// length and SHA-256, it carries the identity's `manifest_digest` so the
 /// two files bind each other, and it records the text normalizer the index
-/// and the sidecars were built under so a query never runs one contract
+/// and the shards were built under so a query never runs one contract
 /// over data built with another. `text_authority` is explicit: a generation
-/// built without sidecars says so, instead of "no files" meaning either
-/// "not required" or "lost".
+/// built without a text authority says so, instead of "no files" meaning
+/// either "not required" or "lost".
 ///
 /// Auxiliary snapshots (repo meta, ownership, ...) are not committed here:
 /// under the current authority they are still published into a sealed
@@ -2736,27 +2752,6 @@ impl LexicalSealedManifest {
     }
 }
 
-/// The format version at the head of a manifest row.
-///
-/// Read before the row's shape is assumed, so an older format is refused by
-/// name rather than as a decode failure.
-fn sealed_manifest_format_version(value: &CborValue, path: &Path) -> Result<u32, CoreError> {
-    let unreadable = |detail: &str| {
-        CoreError::Storage(format!(
-            "lexical: decode sealed generation manifest {}: {detail}",
-            path.display()
-        ))
-    };
-    let CborValue::Array(items) = value else {
-        return Err(unreadable("manifest is not an array"));
-    };
-    let Some(CborValue::Integer(format_version)) = items.first() else {
-        return Err(unreadable("manifest has no leading format version"));
-    };
-    u32::try_from(*format_version)
-        .map_err(|_overflow| unreadable("manifest format version is not a u32"))
-}
-
 fn normalizer_unsupported(path: &Path, built_with: TextNormalizerVersion) -> CoreError {
     CoreError::Typed {
         code: "GENERATION_NORMALIZER_UNSUPPORTED".to_string(),
@@ -2777,58 +2772,153 @@ fn sha256_of_file(path: &Path, label: &str) -> Result<(u64, [u8; 32]), CoreError
     })
 }
 
-/// The text-authority files a sealed generation commits to, in manifest
-/// order.
-fn text_authority_sidecar_names() -> [&'static str; 5] {
-    [
-        TEXT_AUTHORITY_DOC_TABLE_FILE_NAME,
-        TEXT_AUTHORITY_TRIGRAM_FILE_NAME,
-        TEXT_AUTHORITY_TRIGRAM_FOLDED_FILE_NAME,
-        TEXT_AUTHORITY_POSITIONS_FILE_NAME,
-        TEXT_AUTHORITY_POSITIONS_FOLDED_FILE_NAME,
-    ]
+/// Commit the `text-authority/` tree as the seal will verify it.
+///
+/// The tree is brought to its manifest's file set first, then every file
+/// is measured. The measured set must be exactly the manifest plus its
+/// listed shards, and each shard's measured digest must be the one its
+/// manifest lists, so the two manifests can never disagree about what a
+/// query will decode. Returns the text-authority manifest and the tree's
+/// commitment; `Ok(None)` is a generation without a text authority.
+fn commit_text_authority_tree(
+    generation_dir: &Path,
+) -> Result<Option<(TextAuthorityManifest, Vec<SealedArtifactCommitmentV1>)>, CoreError> {
+    let Some(manifest) = text_authority::finalize_for_seal(generation_dir)? else {
+        return Ok(None);
+    };
+    let artifacts = commit_tree_v1(&text_authority_dir(generation_dir), TEXT_AUTHORITY_DIR_NAME)
+        .map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: measure text authority under {} for commitment: {error}",
+                generation_dir.display()
+            ))
+        })?;
+    let measured: BTreeMap<&str, [u8; 32]> = artifacts
+        .iter()
+        .map(|artifact| (artifact.name.as_str(), artifact.sha256))
+        .collect();
+    let manifest_name = format!(
+        "{TEXT_AUTHORITY_DIR_NAME}/{}",
+        text_authority::TEXT_AUTHORITY_MANIFEST_FILE_NAME
+    );
+    if !measured.contains_key(manifest_name.as_str()) {
+        return Err(sidecar_corrupt(generation_dir, &manifest_name, "missing"));
+    }
+    let mut expected: BTreeSet<String> = BTreeSet::new();
+    let _inserted = expected.insert(manifest_name);
+    for shard in &manifest.shards {
+        let name = format!("{TEXT_AUTHORITY_DIR_NAME}/{}", shard.file_name());
+        match measured.get(name.as_str()) {
+            None => return Err(sidecar_corrupt(generation_dir, &name, "missing")),
+            Some(digest) if *digest != shard.sha256 => {
+                return Err(sidecar_corrupt(
+                    generation_dir,
+                    &name,
+                    "content digest differs from the digest the text-authority manifest lists",
+                ));
+            }
+            Some(_) => {}
+        }
+        let _inserted = expected.insert(name);
+    }
+    for artifact in &artifacts {
+        if !expected.contains(&artifact.name) {
+            return Err(sidecar_corrupt(
+                generation_dir,
+                &artifact.name,
+                "present although the text-authority manifest does not list it",
+            ));
+        }
+    }
+    Ok(Some((manifest, artifacts)))
+}
+
+/// How many live text documents the committed index holds.
+fn live_text_doc_count(generation_dir: &Path, fields: &SchemaFields) -> Result<u64, CoreError> {
+    let index = Index::open_in_dir(generation_dir).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: open generation {} to count its text documents: {error}",
+            generation_dir.display()
+        ))
+    })?;
+    register_index_tokenizers(&index);
+    let reader: IndexReader = index
+        .reader_builder()
+        .reload_policy(ReloadPolicy::Manual)
+        .try_into()
+        .map_err(|err| CoreError::Storage(format!("lexical: text doc count reader: {err}")))?;
+    reader.reload().map_err(|err| {
+        CoreError::Storage(format!("lexical: text doc count reader reload: {err}"))
+    })?;
+    let query = TermQuery::new(
+        Term::from_field_text(fields.doc_kind, TEXT_DOC_KIND),
+        IndexRecordOption::Basic,
+    );
+    let count = reader
+        .searcher()
+        .search(&query, &Count)
+        .map_err(|err| CoreError::Storage(format!("lexical: text doc count: {err}")))?;
+    u64::try_from(count)
+        .map_err(|err| CoreError::InvalidContract(format!("lexical: text doc count: {err}")))
+}
+
+/// The seal's coverage proof: the text authority lists exactly as many
+/// documents as the index holds live text documents.
+///
+/// The two are published separately (Tantivy commit, then the shards), so
+/// a publish that crashed in between leaves the index ahead of the
+/// authority; sealing that would serve keyword hits a regex or phrase can
+/// never see. The count is one term query, never a scan.
+fn ensure_text_authority_covers_index(
+    generation_dir: &Path,
+    fields: &SchemaFields,
+    manifest: Option<&TextAuthorityManifest>,
+) -> Result<(), CoreError> {
+    let live = live_text_doc_count(generation_dir, fields)?;
+    let listed = manifest.map_or(0, |manifest| {
+        manifest
+            .shards
+            .iter()
+            .fold(0_u64, |total, shard| total.saturating_add(shard.rows))
+    });
+    if live != listed {
+        return Err(sidecar_corrupt(
+            generation_dir,
+            TEXT_AUTHORITY_DIR_NAME,
+            &format!("lists {listed} documents but the index holds {live} live text documents"),
+        ));
+    }
+    Ok(())
 }
 
 /// Measure the generation directory as sealed and write its manifest.
 ///
-/// Runs after the Tantivy commit and the sidecar publish are durable and
-/// before the sealed identity is written, so a crash in between leaves an
-/// unsealed generation (no identity), never a sealed one without a manifest.
+/// Runs after the Tantivy commit and the text-authority publish are durable
+/// and before the sealed identity is written, so a crash in between leaves
+/// an unsealed generation (no identity), never a sealed one without a
+/// manifest.
 fn persist_lexical_sealed_manifest(
     generation_dir: &Path,
+    fields: &SchemaFields,
     identity: &GenerationSnapshot,
 ) -> Result<(), CoreError> {
     let (_meta_len, tantivy_meta_sha256) = sha256_of_file(
         &generation_dir.join(TANTIVY_INDEX_META_FILE_NAME),
         "tantivy meta",
     )?;
-    let sidecars = text_authority_sidecar_names();
-    let present: Vec<&str> = sidecars
-        .iter()
-        .copied()
-        .filter(|name| generation_dir.join(name).is_file())
-        .collect();
-    if !present.is_empty() && present.len() != sidecars.len() {
-        return Err(CoreError::Storage(format!(
-            "lexical: refusing to seal {} with a partial text-authority sidecar set: present={present:?}",
-            generation_dir.display()
-        )));
-    }
-    let mut artifacts = Vec::with_capacity(present.len());
-    for name in present {
-        let (bytes, sha256) = sha256_of_file(&generation_dir.join(name), name)?;
-        artifacts.push(SealedArtifactCommitmentV1 {
-            name: name.to_string(),
-            bytes,
-            sha256,
-        });
-    }
+    let committed = commit_text_authority_tree(generation_dir)?;
+    ensure_text_authority_covers_index(
+        generation_dir,
+        fields,
+        committed.as_ref().map(|(manifest, _)| manifest),
+    )?;
+    let artifacts = committed.map(|(_, artifacts)| artifacts);
     let manifest = LexicalSealedManifest {
         format_version: LEXICAL_SEALED_MANIFEST_FORMAT_VERSION,
         manifest_digest: identity.manifest_digest.clone(),
         tantivy_meta_sha256,
-        text_authority: !artifacts.is_empty(),
-        artifacts,
+        text_authority: artifacts.is_some(),
+        artifacts: artifacts.unwrap_or_default(),
         normalizer: TEXT_NORMALIZER_VERSION,
     };
     let bytes = encode_cbor(&manifest.to_row(), "sealed generation manifest")?;
@@ -2865,7 +2955,22 @@ fn read_lexical_sealed_manifest(generation_dir: &Path) -> Result<LexicalSealedMa
             path.display()
         ))
     })?;
-    let format_version = sealed_manifest_format_version(&value, &path)?;
+    let format_version =
+        text_authority::leading_format_version(&value, "sealed generation manifest", &path)?;
+    if format_version == LEXICAL_SEALED_MANIFEST_WHOLE_CORPUS_TEXT_AUTHORITY_VERSION {
+        // The one difference between formats 2 and 3 is the text-authority
+        // layout, so a format-2 generation is refused by that name: its
+        // whole-corpus sidecars and its index without doc ids cannot be
+        // reinterpreted, only rebuilt.
+        return Err(CoreError::Typed {
+            code: text_authority::TEXT_AUTHORITY_FORMAT_UNSUPPORTED_CODE.to_string(),
+            message: format!(
+                "lexical: sealed generation manifest {} has format {format_version}, the whole-corpus text-authority layout; this build serves format {} with the sharded text authority, and the generation must be rebuilt",
+                path.display(),
+                LEXICAL_SEALED_MANIFEST_FORMAT_VERSION
+            ),
+        });
+    }
     if format_version != LEXICAL_SEALED_MANIFEST_FORMAT_VERSION {
         return Err(CoreError::Typed {
             code: "GENERATION_MANIFEST_FORMAT_UNSUPPORTED".to_string(),
@@ -2893,7 +2998,7 @@ fn sidecar_corrupt(generation_dir: &Path, name: &str, reason: &str) -> CoreError
     CoreError::Typed {
         code: "GENERATION_SIDECAR_CORRUPT".to_string(),
         message: format!(
-            "lexical: sealed generation {} does not match its manifest: {name}: {reason}",
+            "lexical: generation {} does not match its manifest: {name}: {reason}",
             generation_dir.display()
         ),
     }
@@ -2934,50 +3039,55 @@ fn verify_lexical_sealed_manifest(
             "index commit differs from the sealed commit",
         ));
     }
-    let committed: BTreeSet<&str> = manifest
+    let tree = text_authority_dir(generation_dir);
+    let manifest_name = format!(
+        "{TEXT_AUTHORITY_DIR_NAME}/{}",
+        text_authority::TEXT_AUTHORITY_MANIFEST_FILE_NAME
+    );
+    let commits_manifest = manifest
         .artifacts
         .iter()
-        .map(|artifact| artifact.name.as_str())
-        .collect();
-    for name in text_authority_sidecar_names() {
-        let on_disk = generation_dir.join(name).is_file();
-        match (manifest.text_authority, committed.contains(name), on_disk) {
-            (true, true, true) | (false, false, false) => {}
-            (true, true, false) => return Err(sidecar_corrupt(generation_dir, name, "missing")),
-            (false, false, true) => {
-                return Err(sidecar_corrupt(
-                    generation_dir,
-                    name,
-                    "present although the seal committed to no text authority",
-                ));
-            }
-            (_, _, _) => {
-                return Err(sidecar_corrupt(
-                    generation_dir,
-                    name,
-                    "manifest text-authority capability and commitments disagree",
-                ));
-            }
-        }
-    }
-    for artifact in &manifest.artifacts {
-        let path = generation_dir.join(&artifact.name);
-        let (bytes, sha256) = sha256_of_file(&path, &artifact.name)?;
-        if bytes != artifact.bytes {
+        .any(|artifact| artifact.name == manifest_name);
+    match (manifest.text_authority, commits_manifest, tree.is_dir()) {
+        (true, true, true) => {}
+        (false, false, false) => return Ok(manifest),
+        (true, true, false) => {
             return Err(sidecar_corrupt(
                 generation_dir,
-                &artifact.name,
-                &format!("{bytes} bytes on disk, {} committed", artifact.bytes),
+                TEXT_AUTHORITY_DIR_NAME,
+                "missing",
             ));
         }
-        if sha256 != artifact.sha256 {
+        (false, false, true) => {
             return Err(sidecar_corrupt(
                 generation_dir,
-                &artifact.name,
-                "content digest differs from the committed digest",
+                TEXT_AUTHORITY_DIR_NAME,
+                "present although the seal committed to no text authority",
+            ));
+        }
+        (_, _, _) => {
+            return Err(sidecar_corrupt(
+                generation_dir,
+                TEXT_AUTHORITY_DIR_NAME,
+                "manifest text-authority capability and commitments disagree",
             ));
         }
     }
+    let _committed_bytes: u64 =
+        verify_tree_commitment_v1(&tree, TEXT_AUTHORITY_DIR_NAME, &manifest.artifacts)
+            .map_err(|error| {
+                CoreError::Storage(format!(
+                    "lexical: measure text authority under {} against its commitment: {error}",
+                    generation_dir.display()
+                ))
+            })?
+            .map_err(|mismatch| {
+                sidecar_corrupt(
+                    generation_dir,
+                    TEXT_AUTHORITY_DIR_NAME,
+                    &mismatch.to_string(),
+                )
+            })?;
     Ok(manifest)
 }
 
@@ -3025,15 +3135,6 @@ fn validate_lexical_sealed_identity(
     Ok(())
 }
 
-type TextAuthorityDocTableRow = (u64, String, String, String);
-
-#[derive(Clone)]
-struct TextAuthorityDoc {
-    candidate_id: String,
-    indexed_text: String,
-    folded_indexed_text: String,
-}
-
 #[derive(Clone, Debug, Default)]
 struct RepoCommitRecencyShard {
     latest_committer_time_ms_by_repo_id: BTreeMap<String, u64>,
@@ -3068,60 +3169,6 @@ struct FileOwnershipShard {
 struct FileContributorShard {
     contributors_by_repo_id:
         BTreeMap<String, BTreeMap<String, BTreeSet<FileContributorIdentityEntry>>>,
-}
-
-struct TextAuthorityShard {
-    docs_by_id: BTreeMap<u64, TextAuthorityDoc>,
-    trigram: TrigramIndex,
-    trigram_folded: TrigramIndex,
-    positions: PositionsIndex,
-    positions_folded: PositionsIndex,
-}
-
-impl TextAuthorityShard {
-    fn doc(&self, doc_id: u64) -> Option<&TextAuthorityDoc> {
-        self.docs_by_id.get(&doc_id)
-    }
-}
-
-struct TextAuthorityResolver<'a> {
-    shard: &'a TextAuthorityShard,
-    folded: bool,
-}
-
-impl DocResolver for TextAuthorityResolver<'_> {
-    fn resolve(&self, doc_id: TrigramDocId) -> Option<&[u8]> {
-        let doc = self.shard.doc(doc_id.0)?;
-        if self.folded {
-            Some(doc.folded_indexed_text.as_bytes())
-        } else {
-            Some(doc.indexed_text.as_bytes())
-        }
-    }
-}
-
-fn text_authority_doc_table_path(path: &Path) -> PathBuf {
-    path.join(TEXT_AUTHORITY_DOC_TABLE_FILE_NAME)
-}
-
-fn text_authority_trigram_path(path: &Path) -> PathBuf {
-    path.join(TEXT_AUTHORITY_TRIGRAM_FILE_NAME)
-}
-
-fn text_authority_trigram_folded_path(path: &Path) -> PathBuf {
-    path.join(TEXT_AUTHORITY_TRIGRAM_FOLDED_FILE_NAME)
-}
-
-fn text_authority_positions_path(path: &Path) -> PathBuf {
-    path.join(TEXT_AUTHORITY_POSITIONS_FILE_NAME)
-}
-
-fn text_authority_positions_folded_path(path: &Path) -> PathBuf {
-    path.join(TEXT_AUTHORITY_POSITIONS_FOLDED_FILE_NAME)
-}
-
-fn sidecar_generation_id(generation: ManifestGeneration) -> u64 {
-    generation.get().max(1)
 }
 
 fn map_trigram_error(context: &str, err: &TrigramError) -> CoreError {
@@ -3218,16 +3265,45 @@ fn map_positions_error(context: &str, err: &PositionsError) -> CoreError {
     }
 }
 
-/// Candidate ids of the text documents currently indexed under one path.
+/// One text document as the index stores it: candidate id and the
+/// text-authority doc id the sidecar shares with it.
+struct IndexedTextDoc {
+    candidate_id: String,
+    doc_id: u64,
+}
+
+/// The text-authority doc id stored on a text document.
+///
+/// Every text document this adapter writes carries one; a text document
+/// without it belongs to a generation built before doc ids were stored,
+/// which the sealed-manifest format refuses. It is an error here too, so
+/// an unsealed such generation cannot be continued into an authority
+/// that cannot name what it retires.
+fn stored_text_authority_doc_id(
+    doc: &TantivyDocument,
+    fields: &SchemaFields,
+    candidate_id: &str,
+) -> Result<u64, CoreError> {
+    doc.get_first(fields.text_authority_doc_id)
+        .and_then(|value| Value::as_u64(&value))
+        .ok_or_else(|| CoreError::Typed {
+            code: text_authority::TEXT_AUTHORITY_FORMAT_UNSUPPORTED_CODE.to_string(),
+            message: format!(
+                "lexical: text document {candidate_id} stores no text-authority doc id; the generation predates the sharded text authority and must be rebuilt"
+            ),
+        })
+}
+
+/// The text documents currently indexed under one path, with their doc ids.
 ///
 /// Read from the committed index before a scope mutation is applied, so an
-/// incremental sidecar update knows exactly which documents the mutation
-/// retires without a schema change to the sidecar itself.
+/// incremental text-authority update knows exactly which documents — and
+/// therefore which shards — the mutation retires.
 fn text_candidates_at_path(
     index: &Index,
     fields: &SchemaFields,
     repo_relative_path: &str,
-) -> Result<Vec<String>, CoreError> {
+) -> Result<Vec<IndexedTextDoc>, CoreError> {
     let reader: IndexReader = index
         .reader_builder()
         .reload_policy(ReloadPolicy::Manual)
@@ -3252,7 +3328,7 @@ fn text_candidates_at_path(
     let hits = searcher
         .search(&query, &TopDocs::with_limit(limit))
         .map_err(|err| CoreError::Storage(format!("lexical: scope candidate scan: {err}")))?;
-    let mut candidate_ids = Vec::with_capacity(hits.len());
+    let mut candidates = Vec::with_capacity(hits.len());
     for (_score, doc_address) in hits {
         let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
             CoreError::Storage(format!(
@@ -3267,90 +3343,21 @@ fn text_candidates_at_path(
                 "lexical: scope candidate doc missing candidate_id field".to_string(),
             )
         })?;
-        candidate_ids.push(candidate_id);
+        let doc_id = stored_text_authority_doc_id(&doc, fields, &candidate_id)?;
+        candidates.push(IndexedTextDoc {
+            candidate_id,
+            doc_id,
+        });
     }
-    Ok(candidate_ids)
+    Ok(candidates)
 }
 
-/// How a batch's text-authority impact is applied to the sidecars.
-enum TextAuthorityDelta {
-    /// Nothing in the batch touched indexed text.
-    None,
-    /// The batch retires whole surfaces or uses legacy per-chunk ops; the
-    /// sidecars are rebuilt from a full scan.
-    Rebuild,
-    /// The batch replaces or tombstones scopes only; the sidecars are updated
-    /// in place from the prior generation's copies.
-    Incremental {
-        retired_candidate_ids: BTreeSet<String>,
-        added_chunks: Vec<(String, String)>,
-    },
-}
-
-/// Classify a batch before it is applied, capturing the candidates each scope
-/// mutation will retire while the pre-mutation index can still name them.
-fn plan_text_authority_delta(
-    index: &Index,
-    fields: &SchemaFields,
-    ops: &[LexicalChannelOp],
-) -> Result<TextAuthorityDelta, CoreError> {
-    let mut retired_candidate_ids: BTreeSet<String> = BTreeSet::new();
-    let mut added_chunks: Vec<(String, String)> = Vec::new();
-    let mut touched = false;
-    for op in ops {
-        match op {
-            LexicalChannelOp::ReplaceLexicalScope(payload) => {
-                touched = true;
-                let (_mode, _base, scope) = decode_replace_scope_payload(&payload.payload)?;
-                let path = scope.scope.repo_relative_path.as_str();
-                retired_candidate_ids.extend(text_candidates_at_path(index, fields, path)?);
-                for chunk in &scope.chunks {
-                    added_chunks.push((
-                        chunk.chunk_id.as_str().to_string(),
-                        chunk.text.as_ref().to_string(),
-                    ));
-                }
-            }
-            LexicalChannelOp::TombstoneLexicalScope(payload) => {
-                touched = true;
-                let (_mode, _base, scope) = decode_tombstone_scope_payload(&payload.payload)?;
-                let path = scope.scope.repo_relative_path.as_str();
-                retired_candidate_ids.extend(text_candidates_at_path(index, fields, path)?);
-            }
-            LexicalChannelOp::ClearLexicalSurface(_)
-            | LexicalChannelOp::UpsertChunk(_)
-            | LexicalChannelOp::DeleteChunk(_) => return Ok(TextAuthorityDelta::Rebuild),
-            LexicalChannelOp::FullBundle(_)
-            | LexicalChannelOp::UpsertSymbol(_)
-            | LexicalChannelOp::DeleteSymbol(_)
-            | LexicalChannelOp::Seal(_)
-            | LexicalChannelOp::UpsertCommit(_)
-            | LexicalChannelOp::UpsertRef(_)
-            | LexicalChannelOp::UpsertTag(_)
-            | LexicalChannelOp::DeleteRef(_)
-            | LexicalChannelOp::DeleteTag(_)
-            | LexicalChannelOp::UpsertDirty(_)
-            | LexicalChannelOp::EvictDirty(_)
-            | LexicalChannelOp::UpsertParseTree(_)
-            | LexicalChannelOp::DeleteParseTree(_)
-            | LexicalChannelOp::ReplaceStructuralScope(_)
-            | LexicalChannelOp::TombstoneStructuralScope(_)
-            | LexicalChannelOp::UpsertDiffHunk(_) => {}
-        }
-    }
-    if !touched {
-        return Ok(TextAuthorityDelta::None);
-    }
-    Ok(TextAuthorityDelta::Incremental {
-        retired_candidate_ids,
-        added_chunks,
-    })
-}
-
+/// Every live text document with its doc id and stored text, in doc-id
+/// order: the input of a full text-authority rebuild.
 fn collect_text_authority_docs(
     index: &Index,
     fields: &SchemaFields,
-) -> Result<Vec<(String, String)>, CoreError> {
+) -> Result<Vec<AddedTextDoc>, CoreError> {
     let reader: IndexReader = index
         .reader_builder()
         .reload_policy(ReloadPolicy::Manual)
@@ -3371,7 +3378,7 @@ fn collect_text_authority_docs(
     let hits = searcher
         .search(&AllQuery, &TopDocs::with_limit(limit))
         .map_err(|err| CoreError::Storage(format!("lexical: text authority scan: {err}")))?;
-    let mut docs: Vec<(String, String)> = Vec::new();
+    let mut docs: Vec<AddedTextDoc> = Vec::new();
     for (_score, doc_address) in hits {
         let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
             CoreError::Storage(format!(
@@ -3384,442 +3391,266 @@ fn collect_text_authority_docs(
         let candidate_id = stored_text(&doc, fields.candidate_id).ok_or_else(|| {
             CoreError::Storage("lexical: text authority doc missing candidate_id field".to_string())
         })?;
-        let indexed_text = stored_text(&doc, fields.chunk_text).ok_or_else(|| {
+        let text = stored_text(&doc, fields.chunk_text).ok_or_else(|| {
             CoreError::Storage("lexical: text authority doc missing chunk_text field".to_string())
         })?;
-        docs.push((candidate_id, indexed_text));
+        let doc_id = stored_text_authority_doc_id(&doc, fields, &candidate_id)?;
+        docs.push(AddedTextDoc {
+            doc_id,
+            candidate_id,
+            text,
+        });
     }
-    docs.sort_by(|left, right| left.0.cmp(&right.0));
+    docs.sort_by_key(|doc| doc.doc_id);
     Ok(docs)
 }
 
-/// The `(term, position)` pairs of one document for a position sidecar.
+/// Hands out text-authority doc ids while a batch's ops are applied, and
+/// keeps what it handed out so the sidecar update can add exactly the
+/// documents the index received.
 ///
-/// The same tokenizer the inverted index runs: NFC text, `case` fold, shared
-/// boundaries, over-long runs skipped but still counted, so a phrase lookup
-/// over the sidecar and a keyword sequence over the index agree.
-fn phrase_term_positions(text: &str, case: CaseMode) -> Result<Vec<(String, Position)>, CoreError> {
-    normalize::tokenize(text, case)
-        .indexable()
-        .map(|token| {
-            let position = u32::try_from(token.position).map_err(|err| {
-                CoreError::InvalidContract(format!(
-                    "lexical: text authority token position {} overflows the position sidecar: {err}",
-                    token.position
-                ))
-            })?;
-            Ok((token.text.clone(), Position(position)))
-        })
-        .collect()
+/// Ids continue from the watermark the plan read — the prior manifest's
+/// `max_doc_id`, or the highest id the index stores when there is no prior
+/// authority — and are never reused within the generation's chain, so a
+/// batch's new documents share the last shard or open new ones.
+struct TextDocAllocator {
+    next_doc_id: u64,
+    added: Vec<AddedTextDoc>,
 }
 
-/// The four derived indexes plus the doc table, under construction.
-///
-/// One type owns "add this document everywhere" and "retire this document
-/// everywhere" so the full rebuild and the incremental update cannot drift on
-/// which structures a document lives in.
-struct TextAuthorityBuilders {
-    trigram: TrigramIndexBuilder,
-    trigram_folded: TrigramIndexBuilder,
-    positions: PositionsBuilder,
-    positions_folded: PositionsBuilder,
-    table: BTreeMap<u64, TextAuthorityDoc>,
-}
-
-impl TextAuthorityBuilders {
-    fn empty(generation: ManifestGeneration) -> Result<Self, CoreError> {
-        let sidecar_generation = sidecar_generation_id(generation);
+impl TextDocAllocator {
+    fn from_watermark(watermark: u64) -> Result<Self, CoreError> {
         Ok(Self {
-            trigram: TrigramIndexBuilder::new(sidecar_generation)
-                .map_err(|err| map_trigram_error("init trigram sidecar", &err))?,
-            trigram_folded: TrigramIndexBuilder::new(sidecar_generation)
-                .map_err(|err| map_trigram_error("init folded trigram sidecar", &err))?,
-            positions: PositionsBuilder::new(sidecar_generation, POSITIONS_NORMALIZER_VERSION),
-            positions_folded: PositionsBuilder::new(
-                sidecar_generation,
-                POSITIONS_NORMALIZER_VERSION,
-            ),
-            table: BTreeMap::new(),
-        })
-    }
-
-    /// Continue from a prior generation's sidecars instead of from nothing.
-    fn from_prior(
-        generation: ManifestGeneration,
-        prior: TextAuthorityShard,
-    ) -> Result<Self, CoreError> {
-        let sidecar_generation = sidecar_generation_id(generation);
-        Ok(Self {
-            trigram: TrigramIndexBuilder::from_prior(&prior.trigram, sidecar_generation)
-                .map_err(|err| map_trigram_error("inherit trigram sidecar", &err))?,
-            trigram_folded: TrigramIndexBuilder::from_prior(
-                &prior.trigram_folded,
-                sidecar_generation,
-            )
-            .map_err(|err| map_trigram_error("inherit folded trigram sidecar", &err))?,
-            positions: PositionsBuilder::from_prior(
-                &prior.positions,
-                sidecar_generation,
-                POSITIONS_NORMALIZER_VERSION,
-            )
-            .map_err(|err| map_positions_error("inherit positions sidecar", &err))?,
-            positions_folded: PositionsBuilder::from_prior(
-                &prior.positions_folded,
-                sidecar_generation,
-                POSITIONS_NORMALIZER_VERSION,
-            )
-            .map_err(|err| map_positions_error("inherit folded positions sidecar", &err))?,
-            table: prior.docs_by_id,
-        })
-    }
-
-    fn next_doc_id(&self) -> Result<u64, CoreError> {
-        self.table.keys().next_back().map_or(Ok(1), |max| {
-            max.checked_add(1).ok_or_else(|| {
+            next_doc_id: watermark.checked_add(1).ok_or_else(|| {
                 CoreError::InvalidContract("lexical: text authority doc id overflow".to_string())
-            })
+            })?,
+            added: Vec::new(),
         })
     }
 
-    /// Add one document to every sidecar.
-    ///
-    /// `indexed_text` is normalized to NFC here regardless of its source (a
-    /// stored Tantivy field or a chunk straight from the batch), and the
-    /// folded copy the `case:no` trigram and raw-substring paths read is the
-    /// shared [`normalize::fold`].
-    fn upsert(
-        &mut self,
-        doc_id: u64,
-        candidate_id: String,
-        indexed_text: &str,
-    ) -> Result<(), CoreError> {
-        let indexed_text = normalize::nfc(indexed_text).into_owned();
-        let folded_indexed_text = normalize::fold(&indexed_text);
-        self.trigram
-            .upsert_doc(TrigramDocId(doc_id), indexed_text.as_bytes())
-            .map_err(|err| map_trigram_error("build trigram sidecar", &err))?;
-        self.trigram_folded
-            .upsert_doc(TrigramDocId(doc_id), folded_indexed_text.as_bytes())
-            .map_err(|err| map_trigram_error("build folded trigram sidecar", &err))?;
-        let sensitive_pairs = phrase_term_positions(&indexed_text, CaseMode::Sensitive)?;
-        self.positions
-            .upsert_doc(
-                PositionsDocId(doc_id),
-                sensitive_pairs
-                    .iter()
-                    .map(|(term, pos)| (term.as_str(), *pos)),
-            )
-            .map_err(|err| map_positions_error("build positions sidecar", &err))?;
-        let folded_pairs = phrase_term_positions(&indexed_text, CaseMode::Folded)?;
-        self.positions_folded
-            .upsert_doc(
-                PositionsDocId(doc_id),
-                folded_pairs.iter().map(|(term, pos)| (term.as_str(), *pos)),
-            )
-            .map_err(|err| map_positions_error("build folded positions sidecar", &err))?;
-        let _prior = self.table.insert(
+    /// The id for one text document the batch writes.
+    fn allocate(&mut self, candidate_id: &str, text: &str) -> Result<u64, CoreError> {
+        let doc_id = self.next_doc_id;
+        if doc_id > text_authority::MAX_DOC_ID {
+            return Err(CoreError::InvalidContract(format!(
+                "lexical: text authority doc id {doc_id} exceeds the encodable range"
+            )));
+        }
+        self.next_doc_id = doc_id.checked_add(1).ok_or_else(|| {
+            CoreError::InvalidContract("lexical: text authority doc id overflow".to_string())
+        })?;
+        self.added.push(AddedTextDoc {
             doc_id,
-            TextAuthorityDoc {
-                candidate_id,
-                indexed_text,
-                folded_indexed_text,
-            },
-        );
-        Ok(())
+            candidate_id: candidate_id.to_string(),
+            text: text.to_string(),
+        });
+        Ok(doc_id)
     }
 
-    fn retire(&mut self, doc_id: u64) -> Result<(), CoreError> {
-        let _removed = self
-            .trigram
-            .remove_doc(TrigramDocId(doc_id))
-            .map_err(|err| map_trigram_error("retire trigram sidecar doc", &err))?;
-        let _removed = self
-            .trigram_folded
-            .remove_doc(TrigramDocId(doc_id))
-            .map_err(|err| map_trigram_error("retire folded trigram sidecar doc", &err))?;
-        let _removed = self
-            .positions
-            .remove_doc(PositionsDocId(doc_id))
-            .map_err(|err| map_positions_error("retire positions sidecar doc", &err))?;
-        let _removed = self
-            .positions_folded
-            .remove_doc(PositionsDocId(doc_id))
-            .map_err(|err| map_positions_error("retire folded positions sidecar doc", &err))?;
-        let _removed = self.table.remove(&doc_id);
-        Ok(())
-    }
-
-    /// Finalize and publish all five sidecars by atomic rename.
-    ///
-    /// `File::create` would truncate the existing file in place, which has two
-    /// consequences this path must not have: a crash mid-write leaves a
-    /// half-written sidecar that still looks present, and an inode shared with
-    /// another generation (delta materialization links unchanged files) would
-    /// be rewritten out from under the generation that still reads it.
-    fn publish(self, path: &Path) -> Result<(), CoreError> {
-        let trigram = self.trigram.finish();
-        let trigram_folded = self.trigram_folded.finish();
-        let positions = self
-            .positions
-            .finish()
-            .map_err(|err| map_positions_error("finalize positions sidecar", &err))?;
-        let positions_folded = self
-            .positions_folded
-            .finish()
-            .map_err(|err| map_positions_error("finalize folded positions sidecar", &err))?;
-        let table: Vec<TextAuthorityDocTableRow> = self
-            .table
-            .into_iter()
-            .map(|(doc_id, doc)| {
-                (
-                    doc_id,
-                    doc.candidate_id,
-                    doc.indexed_text,
-                    doc.folded_indexed_text,
-                )
-            })
-            .collect();
-
-        let mut trigram_bytes = Vec::new();
-        trigram
-            .serialize_cbor(&mut trigram_bytes)
-            .map_err(|err| map_trigram_error("encode trigram sidecar", &err))?;
-        write_atomic_durable(
-            &text_authority_trigram_path(path),
-            &trigram_bytes,
-            "trigram sidecar",
-        )?;
-
-        let mut trigram_folded_bytes = Vec::new();
-        trigram_folded
-            .serialize_cbor(&mut trigram_folded_bytes)
-            .map_err(|err| map_trigram_error("encode folded trigram sidecar", &err))?;
-        write_atomic_durable(
-            &text_authority_trigram_folded_path(path),
-            &trigram_folded_bytes,
-            "folded trigram sidecar",
-        )?;
-
-        let mut positions_bytes = Vec::new();
-        positions
-            .serialize_cbor(&mut positions_bytes)
-            .map_err(|err| map_positions_error("encode positions sidecar", &err))?;
-        write_atomic_durable(
-            &text_authority_positions_path(path),
-            &positions_bytes,
-            "positions sidecar",
-        )?;
-
-        let mut positions_folded_bytes = Vec::new();
-        positions_folded
-            .serialize_cbor(&mut positions_folded_bytes)
-            .map_err(|err| map_positions_error("encode folded positions sidecar", &err))?;
-        write_atomic_durable(
-            &text_authority_positions_folded_path(path),
-            &positions_folded_bytes,
-            "folded positions sidecar",
-        )?;
-
-        let mut table_bytes = Vec::new();
-        ciborium::into_writer(&table, &mut table_bytes).map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: encode text authority doc table {}: {err}",
-                text_authority_doc_table_path(path).display()
-            ))
-        })?;
-        write_atomic_durable(
-            &text_authority_doc_table_path(path),
-            &table_bytes,
-            "text authority doc table",
-        )
+    /// The watermark after every allocation so far.
+    fn max_doc_id(&self) -> u64 {
+        self.next_doc_id.saturating_sub(1)
     }
 }
 
-/// What one sidecar write derived and retired, in documents (QI-BB-006).
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct TextAuthorityWriteReceipt {
-    docs_derived: u64,
-    docs_retired: u64,
+/// How a batch's text-authority impact is written after the commit.
+enum TextAuthorityWrite {
+    /// Nothing in the batch touched indexed text.
+    None,
+    /// Every shard is derived from a full scan of the live index: the
+    /// generation has no prior authority yet, the batch clears the text
+    /// surface or uses the legacy per-chunk ops, or the index names a
+    /// retired document the prior authority never saw (a publish that
+    /// crashed after its commit).
+    Rebuild,
+    /// The batch replaces or tombstones scopes only: the retired documents
+    /// are removed from, and the added ones appended to, exactly the shards
+    /// `touched_shards` names; every other shard is listed unchanged.
+    Incremental {
+        /// Retired doc id → candidate id, read from the pre-mutation index.
+        retired: BTreeMap<u64, String>,
+        touched_shards: BTreeSet<u64>,
+    },
 }
 
-/// Rebuild every text-authority sidecar from a full scan of the live index;
-/// every live document is derived.
+/// What a batch does to the text authority, decided before any op runs.
+struct TextAuthorityPlan {
+    write: TextAuthorityWrite,
+    allocator: TextDocAllocator,
+    prior: Option<TextAuthorityManifest>,
+}
+
+/// The text ops of a batch, classified.
+struct TextOpSummary {
+    /// Some op adds, replaces or retires text documents.
+    touches_text: bool,
+    /// Some op retires the text surface wholesale or uses the legacy
+    /// per-chunk ops, whose retirements are not scope-addressed.
+    forces_rebuild: bool,
+    /// Paths whose text documents the batch retires.
+    retired_paths: Vec<String>,
+    /// Text documents the batch will write.
+    added_count: u64,
+}
+
+fn summarize_text_ops(ops: &[LexicalChannelOp]) -> Result<TextOpSummary, CoreError> {
+    let mut summary = TextOpSummary {
+        touches_text: false,
+        forces_rebuild: false,
+        retired_paths: Vec::new(),
+        added_count: 0,
+    };
+    for op in ops {
+        match op {
+            LexicalChannelOp::ReplaceLexicalScope(payload) => {
+                summary.touches_text = true;
+                let (_mode, _base, scope) = decode_replace_scope_payload(&payload.payload)?;
+                summary
+                    .retired_paths
+                    .push(scope.scope.repo_relative_path.as_str().to_string());
+                let chunks = u64::try_from(scope.chunks.len()).map_err(|err| {
+                    CoreError::InvalidContract(format!("lexical: scope chunk count: {err}"))
+                })?;
+                summary.added_count = summary.added_count.saturating_add(chunks);
+            }
+            LexicalChannelOp::TombstoneLexicalScope(payload) => {
+                summary.touches_text = true;
+                let (_mode, _base, scope) = decode_tombstone_scope_payload(&payload.payload)?;
+                summary
+                    .retired_paths
+                    .push(scope.scope.repo_relative_path.as_str().to_string());
+            }
+            LexicalChannelOp::ClearLexicalSurface(payload) => {
+                // Only the chunk surface holds text documents; clearing
+                // symbols leaves the text authority as it is.
+                if payload.surface == SearchScopeSurface::Chunk {
+                    summary.touches_text = true;
+                    summary.forces_rebuild = true;
+                }
+            }
+            LexicalChannelOp::UpsertChunk(_) => {
+                summary.touches_text = true;
+                summary.forces_rebuild = true;
+                summary.added_count = summary.added_count.saturating_add(1);
+            }
+            LexicalChannelOp::DeleteChunk(_) => {
+                summary.touches_text = true;
+                summary.forces_rebuild = true;
+            }
+            LexicalChannelOp::FullBundle(_)
+            | LexicalChannelOp::UpsertSymbol(_)
+            | LexicalChannelOp::DeleteSymbol(_)
+            | LexicalChannelOp::Seal(_)
+            | LexicalChannelOp::UpsertCommit(_)
+            | LexicalChannelOp::UpsertRef(_)
+            | LexicalChannelOp::UpsertTag(_)
+            | LexicalChannelOp::DeleteRef(_)
+            | LexicalChannelOp::DeleteTag(_)
+            | LexicalChannelOp::UpsertDirty(_)
+            | LexicalChannelOp::EvictDirty(_)
+            | LexicalChannelOp::UpsertParseTree(_)
+            | LexicalChannelOp::DeleteParseTree(_)
+            | LexicalChannelOp::ReplaceStructuralScope(_)
+            | LexicalChannelOp::TombstoneStructuralScope(_)
+            | LexicalChannelOp::UpsertDiffHunk(_) => {}
+        }
+    }
+    Ok(summary)
+}
+
+/// The highest text-authority doc id the index stores, or 0 when it holds
+/// no text document: the watermark when the authority cannot supply one.
 ///
-/// This is the path for a generation with no prior sidecars (a fresh
-/// `ReplaceGeneration`) and for batches whose ops retire whole surfaces. A
-/// delta that only replaces or tombstones scopes goes through
-/// [`update_text_authority_sidecars_incrementally`] instead.
-fn persist_text_authority_sidecars(
-    path: &Path,
-    fields: &SchemaFields,
-    index: &Index,
-    generation: ManifestGeneration,
-) -> Result<TextAuthorityWriteReceipt, CoreError> {
-    let docs = collect_text_authority_docs(index, fields)?;
-    let docs_derived = u64::try_from(docs.len()).map_err(|err| {
-        CoreError::InvalidContract(format!("lexical: text authority doc count overflow: {err}"))
-    })?;
-    let mut builders = TextAuthorityBuilders::empty(generation)?;
-    for (offset, (candidate_id, indexed_text)) in docs.into_iter().enumerate() {
-        let doc_id = u64::try_from(offset.saturating_add(1)).map_err(|err| {
-            CoreError::InvalidContract(format!("lexical: text authority doc id overflow: {err}"))
-        })?;
-        builders.upsert(doc_id, candidate_id, &indexed_text)?;
-    }
-    builders.publish(path)?;
-    Ok(TextAuthorityWriteReceipt {
-        docs_derived,
-        docs_retired: 0,
-    })
-}
-
-/// Apply a scope-level delta to inherited sidecars instead of rebuilding them.
-///
-/// The prior sidecars are the base generation's (hard-linked into this
-/// generation's directory). Retired candidates are removed from all four
-/// derived indexes and the doc table; new chunks are appended under fresh doc
-/// ids past the prior maximum. Cost is proportional to the changed scopes,
-/// not to the size of the base — the second half of QI-BB-006.
-fn update_text_authority_sidecars_incrementally(
-    path: &Path,
-    generation: ManifestGeneration,
-    prior: TextAuthorityShard,
-    retired_candidate_ids: &BTreeSet<String>,
-    added_chunks: &[(String, String)],
-) -> Result<TextAuthorityWriteReceipt, CoreError> {
-    let mut builders = TextAuthorityBuilders::from_prior(generation, prior)?;
-    let retired_doc_ids: Vec<u64> = builders
-        .table
+/// A full scan, taken only on the rebuild paths that scan anyway.
+fn stored_doc_id_watermark(index: &Index, fields: &SchemaFields) -> Result<u64, CoreError> {
+    Ok(collect_text_authority_docs(index, fields)?
         .iter()
-        .filter(|(_, doc)| retired_candidate_ids.contains(&doc.candidate_id))
-        .map(|(doc_id, _)| *doc_id)
-        .collect();
-    let docs_retired = u64::try_from(retired_doc_ids.len()).map_err(|err| {
-        CoreError::InvalidContract(format!(
-            "lexical: text authority retire count overflow: {err}"
-        ))
-    })?;
-    for doc_id in retired_doc_ids {
-        builders.retire(doc_id)?;
-    }
-    let docs_derived = u64::try_from(added_chunks.len()).map_err(|err| {
-        CoreError::InvalidContract(format!("lexical: text authority add count overflow: {err}"))
-    })?;
-    for (candidate_id, indexed_text) in added_chunks {
-        let doc_id = builders.next_doc_id()?;
-        builders.upsert(doc_id, candidate_id.clone(), indexed_text)?;
-    }
-    builders.publish(path)?;
-    Ok(TextAuthorityWriteReceipt {
-        docs_derived,
-        docs_retired,
-    })
+        .map(|doc| doc.doc_id)
+        .max()
+        .unwrap_or(0))
 }
 
-fn load_text_authority_sidecars(path: &Path) -> Result<Option<TextAuthorityShard>, CoreError> {
-    let doc_table_path = text_authority_doc_table_path(path);
-    let trigram_path = text_authority_trigram_path(path);
-    let trigram_folded_path = text_authority_trigram_folded_path(path);
-    let positions_path = text_authority_positions_path(path);
-    let positions_folded_path = text_authority_positions_folded_path(path);
-    let any_exists = [
-        doc_table_path.as_path(),
-        trigram_path.as_path(),
-        trigram_folded_path.as_path(),
-        positions_path.as_path(),
-        positions_folded_path.as_path(),
-    ]
-    .into_iter()
-    .any(Path::exists);
-    if !any_exists {
-        return Ok(None);
+/// Classify a batch before it is applied and fix the doc ids it will hand
+/// out, capturing the documents each scope mutation retires while the
+/// pre-mutation index can still name them.
+///
+/// A generation without a prior authority, or whose index is ahead of it,
+/// takes its watermark from the index itself (the highest stored doc id,
+/// from a full scan), so a publish that crashed after its commit never
+/// hands out an id twice.
+fn plan_text_authority_delta(
+    index: &Index,
+    fields: &SchemaFields,
+    ops: &[LexicalChannelOp],
+    generation_dir: &Path,
+) -> Result<TextAuthorityPlan, CoreError> {
+    let summary = summarize_text_ops(ops)?;
+    let prior = text_authority::read_manifest(generation_dir)?;
+    if !summary.touches_text {
+        let watermark = prior.as_ref().map_or(0, |manifest| manifest.max_doc_id);
+        return Ok(TextAuthorityPlan {
+            write: TextAuthorityWrite::None,
+            allocator: TextDocAllocator::from_watermark(watermark)?,
+            prior,
+        });
     }
-    for required in [
-        doc_table_path.as_path(),
-        trigram_path.as_path(),
-        trigram_folded_path.as_path(),
-        positions_path.as_path(),
-        positions_folded_path.as_path(),
-    ] {
-        if !required.exists() {
-            return Err(CoreError::Storage(format!(
-                "lexical: text authority sidecar incomplete under {} (missing {})",
-                path.display(),
-                required.display()
-            )));
+    let Some(manifest) = prior.as_ref() else {
+        let watermark = stored_doc_id_watermark(index, fields)?;
+        return Ok(TextAuthorityPlan {
+            write: TextAuthorityWrite::Rebuild,
+            allocator: TextDocAllocator::from_watermark(watermark)?,
+            prior,
+        });
+    };
+    let watermark = manifest.max_doc_id;
+    let allocator = TextDocAllocator::from_watermark(watermark)?;
+    if summary.forces_rebuild {
+        return Ok(TextAuthorityPlan {
+            write: TextAuthorityWrite::Rebuild,
+            allocator,
+            prior,
+        });
+    }
+    let mut retired: BTreeMap<u64, String> = BTreeMap::new();
+    for path in &summary.retired_paths {
+        for candidate in text_candidates_at_path(index, fields, path)? {
+            if candidate.doc_id > watermark {
+                // The index holds a document the prior authority never
+                // listed: a publish crashed between its commit and its
+                // sidecar write. Only a full derivation can catch up, and
+                // new ids must continue past what the index already
+                // stores, not past the stale manifest.
+                let watermark = stored_doc_id_watermark(index, fields)?.max(watermark);
+                return Ok(TextAuthorityPlan {
+                    write: TextAuthorityWrite::Rebuild,
+                    allocator: TextDocAllocator::from_watermark(watermark)?,
+                    prior,
+                });
+            }
+            let _prior = retired.insert(candidate.doc_id, candidate.candidate_id);
         }
     }
-    let rows: Vec<TextAuthorityDocTableRow> =
-        ciborium::from_reader(std::fs::File::open(&doc_table_path).map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: open text authority doc table {}: {err}",
-                doc_table_path.display()
-            ))
-        })?)
-        .map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: decode text authority doc table {}: {err}",
-                doc_table_path.display()
-            ))
-        })?;
-    let mut docs_by_id: BTreeMap<u64, TextAuthorityDoc> = BTreeMap::new();
-    for (doc_id, candidate_id, indexed_text, folded_indexed_text) in rows {
-        let prior = docs_by_id.insert(
-            doc_id,
-            TextAuthorityDoc {
-                candidate_id,
-                indexed_text,
-                folded_indexed_text,
-            },
-        );
-        if prior.is_some() {
-            return Err(CoreError::Storage(format!(
-                "lexical: duplicate text authority doc id {doc_id} in {}",
-                doc_table_path.display()
-            )));
+    let mut touched_shards: BTreeSet<u64> = retired
+        .keys()
+        .map(|doc_id| shard_index_of(*doc_id))
+        .collect();
+    let first_new = allocator.next_doc_id;
+    let last_new = watermark.checked_add(summary.added_count).ok_or_else(|| {
+        CoreError::InvalidContract("lexical: text authority doc id overflow".to_string())
+    })?;
+    if summary.added_count > 0 {
+        for shard in shard_index_of(first_new)..=shard_index_of(last_new) {
+            let _inserted = touched_shards.insert(shard);
         }
     }
-    let trigram =
-        TrigramIndex::deserialize_cbor(std::fs::File::open(&trigram_path).map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: open trigram sidecar {}: {err}",
-                trigram_path.display()
-            ))
-        })?)
-        .map_err(|err| map_trigram_error("load trigram sidecar", &err))?;
-    let trigram_folded = TrigramIndex::deserialize_cbor(
-        std::fs::File::open(&trigram_folded_path).map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: open folded trigram sidecar {}: {err}",
-                trigram_folded_path.display()
-            ))
-        })?,
-    )
-    .map_err(|err| map_trigram_error("load folded trigram sidecar", &err))?;
-    let positions =
-        PositionsIndex::deserialize_cbor(std::fs::File::open(&positions_path).map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: open positions sidecar {}: {err}",
-                positions_path.display()
-            ))
-        })?)
-        .map_err(|err| map_positions_error("load positions sidecar", &err))?;
-    let positions_folded = PositionsIndex::deserialize_cbor(
-        std::fs::File::open(&positions_folded_path).map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: open folded positions sidecar {}: {err}",
-                positions_folded_path.display()
-            ))
-        })?,
-    )
-    .map_err(|err| map_positions_error("load folded positions sidecar", &err))?;
-    Ok(Some(TextAuthorityShard {
-        docs_by_id,
-        trigram,
-        trigram_folded,
-        positions,
-        positions_folded,
-    }))
+    Ok(TextAuthorityPlan {
+        write: TextAuthorityWrite::Incremental {
+            retired,
+            touched_shards,
+        },
+        allocator,
+        prior,
+    })
 }
 
 fn lexical_delta_base_path(generation_dir: &Path) -> PathBuf {
@@ -3936,13 +3767,14 @@ fn inherit_generation_entry(source: &Path, target: &Path) -> Result<(), CoreErro
     })
 }
 
-/// Refuse a delta base sealed under another text normalizer.
+/// Refuse a delta base this build could not serve.
 ///
-/// A delta inherits the base's index and sidecars byte for byte, so a sealed
-/// base must have been built under the current normalizer; the typed
-/// manifest refusals propagate. An unsealed base has no manifest yet and is
-/// admitted — its own seal stamps the current version.
-fn ensure_base_generation_serves_current_normalizer(base_dir: &Path) -> Result<(), CoreError> {
+/// A delta inherits the base's index and text-authority shards byte for
+/// byte, so a sealed base must have been built under the current text
+/// normalizer and the current text-authority format; the typed manifest
+/// refusals propagate. An unsealed base has no manifest yet and is
+/// admitted — its own seal stamps the current versions.
+fn ensure_base_generation_is_servable(base_dir: &Path) -> Result<(), CoreError> {
     if lexical_sealed_manifest_path(base_dir).is_file() {
         let _manifest = read_lexical_sealed_manifest(base_dir)?;
     }
@@ -4022,8 +3854,9 @@ pub struct LexicalAdapter {
     writers: Arc<Mutex<WriterCache>>,
     repo_metadata: Arc<Mutex<BTreeMap<GenKey, LexicalRepoMetadataPayload>>>,
     regex_match_cache: Arc<Mutex<RegexMatchCache>>,
-    /// How much text-authority derivation the adapter has done (QI-BB-006):
-    /// rebuilds versus in-place updates, in documents.
+    /// How much text-authority work the adapter has done (QI-BB-006):
+    /// rebuilds versus in-place updates, in documents derived and retired
+    /// and in shards written and inherited.
     text_authority_updates: Arc<Mutex<TextAuthorityUpdateStats>>,
     /// Per-deployment regex policy injected at construction time.
     ///
@@ -4104,6 +3937,10 @@ impl LexicalAdapter {
         }
         stats.docs_derived = stats.docs_derived.saturating_add(receipt.docs_derived);
         stats.docs_retired = stats.docs_retired.saturating_add(receipt.docs_retired);
+        stats.shards_written = stats.shards_written.saturating_add(receipt.shards_written);
+        stats.shards_inherited = stats
+            .shards_inherited
+            .saturating_add(receipt.shards_inherited);
         drop(stats);
         Ok(())
     }
@@ -4266,7 +4103,7 @@ impl LexicalAdapter {
             generation: requested_base,
         };
         let base_path = self.index_path(&base_key);
-        ensure_base_generation_serves_current_normalizer(&base_path)?;
+        ensure_base_generation_is_servable(&base_path)?;
         clone_generation_directory_preserving_existing(&base_path, &target_path)?;
         persist_lexical_delta_base(&target_path, requested_base)
     }
@@ -4313,11 +4150,18 @@ impl LexicalAdapter {
         Ok(false)
     }
 
+    /// Apply one op to the writer; `true` when something must be committed.
+    ///
+    /// Every text document written here takes its text-authority doc id
+    /// from `allocator`, which also keeps the document for the sidecar
+    /// update, so the index and the text authority agree on the id by
+    /// construction.
     fn apply_op(
         &self,
         writer: &IndexWriter,
         key: &GenKey,
         op: &LexicalChannelOp,
+        allocator: &mut TextDocAllocator,
     ) -> Result<bool, CoreError> {
         match op {
             LexicalChannelOp::UpsertChunk(upsert) => {
@@ -4325,7 +4169,9 @@ impl LexicalAdapter {
                 let term = Term::from_field_text(self.fields.candidate_id, candidate_id);
                 let _opstamp = writer.delete_term(term);
                 let chunk = decode_chunk_payload(&upsert.payload)?;
+                let doc_id = allocator.allocate(candidate_id, chunk.text.as_ref())?;
                 let mut doc = TantivyDocument::new();
+                doc.add_u64(self.fields.text_authority_doc_id, doc_id);
                 doc.add_text(self.fields.candidate_id, candidate_id);
                 doc.add_text(
                     self.fields.repo_id,
@@ -4403,7 +4249,10 @@ impl LexicalAdapter {
                     decode_replace_scope_payload(&payload.payload)?;
                 self.delete_scope_docs(writer, &scope.scope.repo_relative_path);
                 for chunk in &scope.chunks {
+                    let doc_id =
+                        allocator.allocate(chunk.chunk_id.as_str(), chunk.text.as_ref())?;
                     let mut doc = TantivyDocument::new();
+                    doc.add_u64(self.fields.text_authority_doc_id, doc_id);
                     doc.add_text(self.fields.candidate_id, chunk.chunk_id.as_str());
                     doc.add_text(
                         self.fields.repo_id,
@@ -4636,6 +4485,14 @@ impl MetricSourcePort for LexicalAdapter {
                 "lexical_text_authority_docs_retired_total",
                 text_authority.docs_retired,
             ),
+            MetricPointV1::counter(
+                "lexical_text_authority_shards_written_total",
+                text_authority.shards_written,
+            ),
+            MetricPointV1::counter(
+                "lexical_text_authority_shards_inherited_total",
+                text_authority.shards_inherited,
+            ),
             MetricPointV1::gauge_count(
                 "lexical_writers_open",
                 count_from_usize(writers.open_writers),
@@ -4711,7 +4568,7 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                 revision_id: batch.revision_id.clone(),
                 generation: batch.generation,
             })?;
-            persist_lexical_sealed_manifest(&generation_dir, &candidate)?;
+            persist_lexical_sealed_manifest(&generation_dir, &self.fields, &candidate)?;
             persist_lexical_sealed_identity(&generation_dir, &candidate)?;
         }
         // Every batch is a chance to give an abandoned generation's heap back
@@ -4987,9 +4844,10 @@ impl LexicalIndexBuildPort for LexicalAdapter {
 }
 
 impl LexicalAdapter {
-    /// The writer guard spans op-apply, commit, and the sidecar update so
-    /// partial commits cannot interleave with sibling builds for the same
-    /// generation; the sidecar update reads `guarded.index` after commit.
+    /// The writer guard spans op-apply, commit, and the text-authority
+    /// write so partial commits cannot interleave with sibling builds for
+    /// the same generation; the text-authority write reads `guarded.index`
+    /// after commit.
     fn commit_ops_under_lock(
         &self,
         handle: &Arc<Mutex<GenerationWriter>>,
@@ -4999,12 +4857,15 @@ impl LexicalAdapter {
         let mut guarded = handle
             .lock()
             .map_err(|err| CoreError::Storage(format!("lexical writer poisoned: {err}")))?;
-        // Planned before any op runs: the retired candidates are only nameable
-        // while the pre-mutation index still holds them.
-        let delta = plan_text_authority_delta(&guarded.index, &self.fields, ops)?;
+        let generation_dir = self.index_path(key);
+        // Planned before any op runs: the retired documents are only
+        // nameable while the pre-mutation index still holds them, and the
+        // doc ids the ops store come from the plan's watermark.
+        let mut plan =
+            plan_text_authority_delta(&guarded.index, &self.fields, ops, &generation_dir)?;
         let mut needs_commit = false;
         for op in ops {
-            if self.apply_op(&guarded.writer, key, op)? {
+            if self.apply_op(&guarded.writer, key, op, &mut plan.allocator)? {
                 needs_commit = true;
             }
         }
@@ -5015,61 +4876,66 @@ impl LexicalAdapter {
             .writer
             .commit()
             .map_err(|err| CoreError::Storage(format!("lexical: commit: {err}")))?;
-        let generation_dir = self.index_path(key);
-        // The sidecar write happens under the writer lock (it reads the
-        // committed index); the accounting is folded in after the lock is
-        // released so the stats lock is never nested inside the writer's.
-        let written: Option<(bool, TextAuthorityWriteReceipt)> = match delta {
-            TextAuthorityDelta::None => None,
-            TextAuthorityDelta::Rebuild => {
-                self.invalidate_regex_match_cache_generation(key)?;
-                Some((
-                    true,
-                    persist_text_authority_sidecars(
-                        generation_dir.as_path(),
-                        &self.fields,
-                        &guarded.index,
-                        key.generation,
-                    )?,
-                ))
-            }
-            TextAuthorityDelta::Incremental {
-                retired_candidate_ids,
-                added_chunks,
-            } => {
-                self.invalidate_regex_match_cache_generation(key)?;
-                // A generation with no prior sidecars (a fresh replace) has
-                // nothing to update in place; a prior that fails to load is a
-                // storage fault and propagates rather than being rebuilt over.
-                if let Some(prior) = load_text_authority_sidecars(generation_dir.as_path())? {
-                    Some((
-                        false,
-                        update_text_authority_sidecars_incrementally(
-                            generation_dir.as_path(),
-                            key.generation,
-                            prior,
-                            &retired_candidate_ids,
-                            &added_chunks,
-                        )?,
-                    ))
-                } else {
-                    Some((
-                        true,
-                        persist_text_authority_sidecars(
-                            generation_dir.as_path(),
-                            &self.fields,
-                            &guarded.index,
-                            key.generation,
-                        )?,
-                    ))
-                }
-            }
-        };
+        // The text-authority write happens under the writer lock (it reads
+        // the committed index); the accounting is folded in after the lock
+        // is released so the stats lock is never nested inside the writer's.
+        let written = self.write_text_authority(&generation_dir, key, &guarded.index, plan)?;
         drop(guarded);
         if let Some((rebuilt, receipt)) = written {
             self.record_text_authority_write(rebuilt, receipt)?;
         }
         Ok(())
+    }
+
+    /// Publish the text authority the plan decided on, after the commit.
+    ///
+    /// Returns whether it was a rebuild and what it did, or `None` when the
+    /// batch touched no text.
+    fn write_text_authority(
+        &self,
+        generation_dir: &Path,
+        key: &GenKey,
+        index: &Index,
+        plan: TextAuthorityPlan,
+    ) -> Result<Option<(bool, TextAuthorityWriteReceipt)>, CoreError> {
+        let max_doc_id = plan.allocator.max_doc_id();
+        match plan.write {
+            TextAuthorityWrite::None => Ok(None),
+            TextAuthorityWrite::Rebuild => {
+                self.invalidate_regex_match_cache_generation(key)?;
+                let docs = collect_text_authority_docs(index, &self.fields)?;
+                let receipt = text_authority::rebuild(
+                    generation_dir,
+                    key.generation,
+                    docs,
+                    plan.prior.as_ref(),
+                    max_doc_id,
+                )?;
+                Ok(Some((true, receipt)))
+            }
+            TextAuthorityWrite::Incremental {
+                retired,
+                touched_shards,
+            } => {
+                self.invalidate_regex_match_cache_generation(key)?;
+                let Some(prior) = plan.prior.as_ref() else {
+                    return Err(CoreError::InvalidContract(
+                        "lexical: incremental text authority update planned without a prior manifest"
+                            .to_string(),
+                    ));
+                };
+                let receipt = text_authority::update(
+                    generation_dir,
+                    key.generation,
+                    prior,
+                    &retired,
+                    &plan.allocator.added,
+                    &touched_shards,
+                    max_doc_id,
+                )?;
+                Ok(Some((false, receipt)))
+            }
+        }
     }
 }
 
@@ -5128,11 +4994,11 @@ impl LexicalIndexOpenPort for LexicalAdapter {
         reader
             .reload()
             .map_err(|err| CoreError::Storage(format!("lexical: reader reload: {err}")))?;
-        let text_authority = load_text_authority_sidecars(&path)?;
+        let text_authority = ShardedTextAuthority::load(&path)?;
         if text_authority.is_some() != manifest.text_authority {
             return Err(sidecar_corrupt(
                 &path,
-                "text-authority",
+                TEXT_AUTHORITY_DIR_NAME,
                 "loaded capability disagrees with the sealed manifest",
             ));
         }
@@ -5143,7 +5009,7 @@ impl LexicalIndexOpenPort for LexicalAdapter {
         let repo_description = load_repo_description_snapshot(&self.repo_description_path(&key))?;
         let file_ownership = load_file_ownership_snapshot(&self.file_ownership_path(&key))?;
         let file_contributor = load_file_contributor_snapshot(&self.file_contributor_path(&key))?;
-        let resident_bytes_estimate = generation_directory_bytes(&path)?;
+        let resident_bytes_estimate = generation_tree_bytes(&path)?;
         Ok(Box::new(TantivySearcher {
             repo_id: repo.clone(),
             revision_id: revision.clone(),
@@ -5164,42 +5030,6 @@ impl LexicalIndexOpenPort for LexicalAdapter {
             resident_bytes_estimate,
         }))
     }
-}
-
-/// Sum of regular-file sizes directly under a generation directory.
-///
-/// Tantivy maps segment files on demand and the sidecars are decoded whole,
-/// so the directory's on-disk size is the honest bound on what one open
-/// handle can make resident. Writer lock files are transient and excluded.
-fn generation_directory_bytes(path: &Path) -> Result<u64, CoreError> {
-    let mut total = 0_u64;
-    let entries = std::fs::read_dir(path).map_err(|err| {
-        CoreError::Storage(format!(
-            "lexical: measure generation dir {}: {err}",
-            path.display()
-        ))
-    })?;
-    for entry in entries {
-        let entry = entry.map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: measure generation entry in {}: {err}",
-                path.display()
-            ))
-        })?;
-        if is_writer_lock_entry(&entry.file_name().to_string_lossy()) {
-            continue;
-        }
-        let metadata = entry.metadata().map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: measure generation entry {}: {err}",
-                entry.path().display()
-            ))
-        })?;
-        if metadata.is_file() {
-            total = total.saturating_add(metadata.len());
-        }
-    }
-    Ok(total)
 }
 
 impl GenerationIdentityValidatePort for LexicalAdapter {
@@ -5453,8 +5283,12 @@ impl SealedGenerationReclaimPort for LexicalAdapter {
     }
 }
 
-/// Sum of regular-file sizes under `root`, recursively: the bytes a reclaim
-/// gives back, measured before deletion.
+/// Sum of regular-file sizes under `root`, recursively.
+///
+/// Two readers: a reclaim measures the bytes it gives back before deleting,
+/// and an open takes the honest bound on what one handle can make resident
+/// — Tantivy maps segment files on demand and the text-authority shards
+/// are decoded whole. Writer lock files are transient and excluded.
 fn generation_tree_bytes(root: &Path) -> Result<u64, CoreError> {
     let mut total = 0_u64;
     let mut pending = vec![root.to_path_buf()];
@@ -5472,6 +5306,9 @@ fn generation_tree_bytes(root: &Path) -> Result<u64, CoreError> {
                     directory.display()
                 ))
             })?;
+            if is_writer_lock_entry(&entry.file_name().to_string_lossy()) {
+                continue;
+            }
             let metadata = entry.metadata().map_err(|err| {
                 CoreError::Storage(format!(
                     "lexical: measure generation entry {}: {err}",
@@ -5726,7 +5563,7 @@ struct TantivySearcher {
     regex_policy: RegexPolicy,
     /// Examined-candidate budget every exact-set execution runs under.
     execution_budget: LexicalExecutionBudgetV1,
-    text_authority: Option<TextAuthorityShard>,
+    text_authority: Option<ShardedTextAuthority>,
     repo_commit_recency: Option<RepoCommitRecencyShard>,
     repo_meta: Option<RepoMetaShard>,
     repo_topic: Option<RepoTopicShard>,
@@ -7146,7 +6983,7 @@ impl TantivySearcher {
         Ok(out)
     }
 
-    fn text_authority(&self, feature: &str) -> Result<&TextAuthorityShard, CoreError> {
+    fn text_authority(&self, feature: &str) -> Result<&ShardedTextAuthority, CoreError> {
         self.text_authority.as_ref().ok_or_else(|| CoreError::Typed {
             code: format!("{feature}_INDEX_MISSING"),
             message: format!(
@@ -7204,20 +7041,13 @@ impl TantivySearcher {
     ) -> Result<BTreeSet<String>, CoreError> {
         let authority = self.text_authority("LEX_RAW_SUBSTRING")?;
         let folded = !Self::is_case_sensitive(options);
-        let trigram_index = if folded {
-            &authority.trigram_folded
-        } else {
-            &authority.trigram
-        };
-        let resolver = TextAuthorityResolver {
-            shard: authority,
-            folded,
-        };
+        let trigram_index = authority.trigram_index(folded);
+        let resolver = authority.resolver(folded);
         let needle = normalize::nfc(needle);
         let query_bytes = normalize::apply_case(needle.as_ref(), Self::case_mode(options))
             .into_owned()
             .into_bytes();
-        let verified_doc_ids = query_raw_substring(trigram_index, &query_bytes, &resolver)
+        let verified_doc_ids = query_raw_substring(&trigram_index, &query_bytes, &resolver)
             .map_err(|err| match err.code {
                 TrigramErrorCode::RegexPrefilterUnusable => CoreError::Typed {
                     code: "LEX_RAW_SUBSTRING_TRIGRAM_INDEX_MISSING".to_string(),
@@ -7299,11 +7129,7 @@ impl TantivySearcher {
             ))
         })?;
         let folded = !Self::is_case_sensitive(options);
-        let trigram_index = if folded {
-            &authority.trigram_folded
-        } else {
-            &authority.trigram
-        };
+        let trigram_index = authority.trigram_index(folded);
         // The planner hands back an alternation, not a conjunction: a match
         // needs one of these literals. Case-insensitive patterns make that
         // concrete — `(?i)fresh` extracts `fresh` and `freſh` — so the prefilter
@@ -7320,21 +7146,15 @@ impl TantivySearcher {
         } else {
             plan.literal_alternation().to_vec()
         };
-        let prefiltered_doc_ids = match regex_prefilter_any_of(trigram_index, &literal_alternation)
+        let prefiltered_doc_ids = match regex_prefilter_any_of(&trigram_index, &literal_alternation)
         {
             Ok(doc_ids) => doc_ids,
-            Err(err) if err.code == TrigramErrorCode::RegexPrefilterUnusable => authority
-                .docs_by_id
-                .keys()
-                .copied()
-                .map(TrigramDocId)
-                .collect(),
+            Err(err) if err.code == TrigramErrorCode::RegexPrefilterUnusable => {
+                authority.doc_ids().map(TrigramDocId).collect()
+            }
             Err(err) => return Err(map_trigram_error("regex prefilter", &err)),
         };
-        let resolver = TextAuthorityResolver {
-            shard: authority,
-            folded: false,
-        };
+        let resolver = authority.resolver(false);
         let budget_ms = Self::regex_timeout_budget_ms(options).unwrap_or(0);
         if options.timeout_ms == Some(0) && !prefiltered_doc_ids.is_empty() {
             return Err(CoreError::Typed {
@@ -7409,13 +7229,9 @@ impl TantivySearcher {
             PhraseField::Content,
         )
         .map_err(map_phrase_plan_error)?;
-        let positions_index = if plan.case_sensitive {
-            &authority.positions
-        } else {
-            &authority.positions_folded
-        };
+        let positions_index = authority.positions_index(plan.case_sensitive);
         let terms = plan.tokens.iter().map(String::as_str).collect::<Vec<_>>();
-        let matches = query_phrase(positions_index, &terms)
+        let matches = query_phrase(&positions_index, &terms)
             .map_err(|err| map_positions_error("phrase query", &err))?;
         let mut out: BTreeSet<String> = BTreeSet::new();
         for phrase_match in matches.matches {
