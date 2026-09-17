@@ -28,7 +28,7 @@ use quanta_index_core::domains::structural::{
 use quanta_index_core::{
     AuxiliaryAuthorityCatalogPort, CoreError, FileContributorIngestPort, FileOwnershipIngestPort,
     GenerationIdentityValidatePort, IdempotencyCatalogPort, IncompleteGenerationDiscardPort,
-    L2UnitEmbeddingProvider, LexicalIndexOpenPort, RepoCommitRecencyIngestPort,
+    L2UnitEmbeddingProvider, LexicalIndexOpenPort, MetricSourcePort, RepoCommitRecencyIngestPort,
     RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
     RepoMapOpenReportV1, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
     SealedGenerationReclaimPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
@@ -39,7 +39,7 @@ use quanta_index_core::{
 use quanta_index_embed::{
     CachingEmbeddingProvider, EmbeddingCacheIdentityV1, FileEmbeddingCache, OpenAiEmbeddingProvider,
 };
-use quanta_index_ipc::{IpcDispatcher, ServerAdmissionPolicy};
+use quanta_index_ipc::{IpcDispatcher, IpcServerCounters, ServerAdmissionPolicy};
 use quanta_index_lq_structural::{
     StructuralAuthorityCandidate as LqStructuralAuthorityCandidate, StructuralAuthorityMatcher,
     StructuralAuthorityPatternError, StructuralAuthorityPatternRef, StructuralAuthorityView,
@@ -51,10 +51,10 @@ use quanta_index_search_plane::{
     AuxiliaryMaterializerParts, AuxiliaryMutationCoordinator, BoundedQueryObsStore,
     DirectHistoryMaterializer, DirectRuntimeMetadataMaterializer, DirectSearchCorpusMaterializer,
     DirectSemanticMaterializer, DirectStructuralMaterializer, HashingQueryTextEmbedder,
-    HistoryIngestPort, Ledger, QueryObsSink, QueryTextEmbedderPort, RuntimeMetadataIngestPort,
-    SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusLifecycleOwner, SearchCorpusMaterializerParts,
-    SearchPlaneControlDispatcher, SearchPlaneDispatcher, SearchPlaneIngestDispatcher,
-    SnapshotRegistries, StructuralIngestPort,
+    HistoryIngestPort, Ledger, ObservabilityScrape, QueryObsSink, QueryTextEmbedderPort,
+    RuntimeMetadataIngestPort, SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusLifecycleOwner,
+    SearchCorpusMaterializerParts, SearchPlaneControlDispatcher, SearchPlaneDispatcher,
+    SearchPlaneIngestDispatcher, SnapshotRegistries, StructuralIngestPort,
 };
 use regex::Regex;
 
@@ -102,6 +102,9 @@ pub struct SearchdRuntimeParts {
     pub idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
     /// Durable auxiliary authority rows (QI-BB-020).
     pub auxiliary_catalog: Arc<dyn AuxiliaryAuthorityCatalogPort + Send + Sync>,
+    /// Adapters that keep their own accounting, for the metrics scrape
+    /// (QI-BB-015); the composition root adds its own sources to these.
+    pub adapter_metric_sources: Vec<Arc<dyn MetricSourcePort>>,
 }
 
 /// Exclusive process-lifetime ownership of one daemon state root.
@@ -385,10 +388,13 @@ impl QueryTextEmbedderPort for QueryEmbedderAdapter {
 /// Both halves are backed by the same provider for `Hash`/`OpenAi` so model
 /// identity matches; for `Unavailable` the query embedder fails closed while
 /// the corpus still hash-derives (the deliberate degraded-config contract).
-type SemanticEmbedders = (
-    Arc<dyn QueryTextEmbedderPort + Send + Sync>,
-    Arc<dyn TextEmbeddingProvider + Send + Sync>,
-);
+/// `metric_sources` carries whatever the profile built that keeps its own
+/// accounting (the embedding cache), for the metrics scrape (QI-BB-015).
+struct SemanticEmbedders {
+    query: Arc<dyn QueryTextEmbedderPort + Send + Sync>,
+    corpus: Arc<dyn TextEmbeddingProvider + Send + Sync>,
+    metric_sources: Vec<Arc<dyn MetricSourcePort>>,
+}
 
 /// Resolve the (query embedder, corpus embedder) pair for a profile.
 ///
@@ -401,10 +407,11 @@ fn build_semantic_embedders(
         SemanticEmbedderProfile::Hash { dimension } => {
             let provider: Arc<dyn TextEmbeddingProvider + Send + Sync> =
                 Arc::new(HashingQueryTextEmbedder::new(*dimension));
-            Ok((
-                Arc::new(QueryEmbedderAdapter(Arc::clone(&provider))),
-                provider,
-            ))
+            Ok(SemanticEmbedders {
+                query: Arc::new(QueryEmbedderAdapter(Arc::clone(&provider))),
+                corpus: provider,
+                metric_sources: Vec::new(),
+            })
         }
         SemanticEmbedderProfile::OpenAi {
             model,
@@ -424,6 +431,7 @@ fn build_semantic_embedders(
             // Raw provider output is unit-normalized by the shared wrapper
             // before either the cache or a path sees it (QI-BB-031).
             let normalized = L2UnitEmbeddingProvider::new(openai)?;
+            let mut metric_sources: Vec<Arc<dyn MetricSourcePort>> = Vec::new();
             let provider: Arc<dyn TextEmbeddingProvider + Send + Sync> = if tuning.cache_enabled {
                 // Persistent content-hash cache under the identity's own
                 // namespace (model, revision, dimension, policy — QI-BB-028)
@@ -436,23 +444,31 @@ fn build_semantic_embedders(
                     &identity,
                     tuning.cache_retention,
                 )?;
-                Arc::new(CachingEmbeddingProvider::new(
+                let caching = Arc::new(CachingEmbeddingProvider::new(
                     Box::new(normalized),
                     Box::new(cache),
-                ))
+                ));
+                let cache_source: Arc<dyn MetricSourcePort> = caching.clone();
+                metric_sources.push(cache_source);
+                caching
             } else {
                 Arc::new(normalized)
             };
-            Ok((
-                Arc::new(QueryEmbedderAdapter(Arc::clone(&provider))),
-                provider,
-            ))
+            Ok(SemanticEmbedders {
+                query: Arc::new(QueryEmbedderAdapter(Arc::clone(&provider))),
+                corpus: provider,
+                metric_sources,
+            })
         }
         SemanticEmbedderProfile::Unavailable => {
             let corpus: Arc<dyn TextEmbeddingProvider + Send + Sync> = Arc::new(
                 HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION),
             );
-            Ok((Arc::new(ProviderUnavailableQueryTextEmbedder), corpus))
+            Ok(SemanticEmbedders {
+                query: Arc::new(ProviderUnavailableQueryTextEmbedder),
+                corpus,
+                metric_sources: Vec::new(),
+            })
         }
     }
 }
@@ -859,6 +875,7 @@ impl SearchdRuntime {
             legacy_semantic_journal_store,
             idempotency,
             auxiliary_catalog,
+            adapter_metric_sources,
         } = parts;
         state_root_lease
             .require_state_root_v1(config.state_root())
@@ -938,37 +955,41 @@ impl SearchdRuntime {
             coordinator: AuxiliaryMutationCoordinator::shared(),
             ledger: Arc::clone(&ledger),
         };
-        let (query_text_embedder, corpus_embedder) =
-            build_semantic_embedders(config.semantic_embedder_profile(), &leased_state_root)
-                .map_err(anyhow::Error::from)?;
+        let SemanticEmbedders {
+            query: query_text_embedder,
+            corpus: corpus_embedder,
+            metric_sources: embedder_metric_sources,
+        } = build_semantic_embedders(config.semantic_embedder_profile(), &leased_state_root)
+            .map_err(anyhow::Error::from)?;
         let direct_sem_ingest_port: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
             DirectSemanticMaterializer::new(Arc::clone(&sem_build_port), Arc::clone(&ledger)),
         );
         let snapshots = SnapshotRegistries::new(config.snapshot_registry_policy());
+        let search_corpus_materializer: Arc<DirectSearchCorpusMaterializer> = Arc::new(
+            DirectSearchCorpusMaterializer::new_with_search_owned_semantics_from_env(
+                SearchCorpusMaterializerParts {
+                    builder: Arc::clone(&search_corpus_build_port),
+                    ledger: Arc::clone(&ledger),
+                    semantic_ingest: Arc::clone(&direct_sem_ingest_port),
+                    semantic_embedder: corpus_embedder,
+                    authority: aux_authority_store,
+                    lexical_generation_validator: Arc::clone(&lexical_generation_validator),
+                    semantic_generation_validator: Arc::clone(&semantic_generation_validator),
+                    lexical_incomplete_discard: Arc::clone(&lexical_incomplete_discard),
+                    semantic_incomplete_discard: Arc::clone(&semantic_incomplete_discard),
+                    lexical_reclaim: lexical_sealed_reclaim,
+                    semantic_reclaim: semantic_sealed_reclaim,
+                    snapshots: snapshots.clone(),
+                    idempotency: Arc::clone(&idempotency),
+                    resource_policy: config.ingest_resource_policy(),
+                    auxiliary_catalog: Arc::clone(&auxiliary_parts.catalog),
+                    auxiliary_coordinator: Arc::clone(&auxiliary_parts.coordinator),
+                },
+            )
+            .map_err(anyhow::Error::from)?,
+        );
         let direct_search_corpus_ingest_port: Arc<dyn SearchCorpusIngestPort + Send + Sync> =
-            Arc::new(
-                DirectSearchCorpusMaterializer::new_with_search_owned_semantics_from_env(
-                    SearchCorpusMaterializerParts {
-                        builder: Arc::clone(&search_corpus_build_port),
-                        ledger: Arc::clone(&ledger),
-                        semantic_ingest: Arc::clone(&direct_sem_ingest_port),
-                        semantic_embedder: corpus_embedder,
-                        authority: aux_authority_store,
-                        lexical_generation_validator: Arc::clone(&lexical_generation_validator),
-                        semantic_generation_validator: Arc::clone(&semantic_generation_validator),
-                        lexical_incomplete_discard: Arc::clone(&lexical_incomplete_discard),
-                        semantic_incomplete_discard: Arc::clone(&semantic_incomplete_discard),
-                        lexical_reclaim: lexical_sealed_reclaim,
-                        semantic_reclaim: semantic_sealed_reclaim,
-                        snapshots: snapshots.clone(),
-                        idempotency: Arc::clone(&idempotency),
-                        resource_policy: config.ingest_resource_policy(),
-                        auxiliary_catalog: Arc::clone(&auxiliary_parts.catalog),
-                        auxiliary_coordinator: Arc::clone(&auxiliary_parts.coordinator),
-                    },
-                )
-                .map_err(anyhow::Error::from)?,
-            );
+            search_corpus_materializer.clone();
         let direct_history_ingest_port: Arc<dyn HistoryIngestPort + Send + Sync> =
             Arc::new(DirectHistoryMaterializer::new(auxiliary_parts.clone()));
         let direct_runtime_ingest_port: Arc<dyn RuntimeMetadataIngestPort + Send + Sync> = Arc::new(
@@ -984,6 +1005,29 @@ impl SearchdRuntime {
             } else {
                 query_obs_store.clone()
             };
+        // The metrics scrape (QI-BB-015): every source is registered here,
+        // before any socket exists, so a scrape never sees a partial set.
+        // The socket counters are created ahead of their servers for the
+        // same reason.
+        let query_counters = Arc::new(IpcServerCounters::for_plane("query"));
+        let control_counters = Arc::new(IpcServerCounters::for_plane("control"));
+        let ingest_counters = Arc::new(IpcServerCounters::for_plane("ingest"));
+        let mut metric_sources: Vec<Arc<dyn MetricSourcePort>> = adapter_metric_sources;
+        metric_sources.extend(embedder_metric_sources);
+        for counters in [&query_counters, &control_counters, &ingest_counters] {
+            let source: Arc<dyn MetricSourcePort> = counters.clone();
+            metric_sources.push(source);
+        }
+        let snapshot_source: Arc<dyn MetricSourcePort> = Arc::new(snapshots.clone());
+        metric_sources.push(snapshot_source);
+        let ingest_source: Arc<dyn MetricSourcePort> = search_corpus_materializer;
+        metric_sources.push(ingest_source);
+        let boot_source: Arc<dyn MetricSourcePort> = Arc::new(boot_inventory.clone());
+        metric_sources.push(boot_source);
+        let observability = Arc::new(ObservabilityScrape::new(
+            Arc::clone(&query_obs_store),
+            metric_sources,
+        ));
         let query_dispatcher = Arc::new(SearchPlaneDispatcher::new_with_obs(
             Arc::clone(&lex_open_port),
             Arc::clone(&sem_open_port),
@@ -1001,6 +1045,7 @@ impl SearchdRuntime {
             Arc::clone(&ledger),
             lexical_generation_validator,
             semantic_generation_validator,
+            observability,
         ));
         let ingest_dispatcher = Arc::new(SearchPlaneIngestDispatcher::new(
             direct_search_corpus_ingest_port,
@@ -1025,6 +1070,7 @@ impl SearchdRuntime {
             config.query_socket_path(),
             query_adapter,
             config.query_admission_policy(),
+            query_counters,
         )
         .map_err(anyhow::Error::from)?;
         let control_adapter: Arc<
@@ -1037,6 +1083,7 @@ impl SearchdRuntime {
             config.control_socket_path(),
             control_adapter,
             ServerAdmissionPolicy::SERIAL_DISPATCH,
+            control_counters,
         )
         .map_err(anyhow::Error::from)?;
         let ingest_adapter: Arc<
@@ -1047,6 +1094,7 @@ impl SearchdRuntime {
             config.ingest_socket_path(),
             ingest_adapter,
             ServerAdmissionPolicy::SERIAL_DISPATCH,
+            ingest_counters,
         )
         .map_err(anyhow::Error::from)?;
 
@@ -1191,9 +1239,12 @@ mod tests {
     fn build_semantic_embedders_couples_query_and_corpus_model_identity_for_real_provider()
     -> TestRes {
         let dir = tempfile::tempdir()?;
-        let (query_embedder, corpus_embedder) =
-            super::build_semantic_embedders(&openai_profile(false), dir.path())
-                .map_err(|err| format!("offline construction must succeed: {err:?}"))?;
+        let super::SemanticEmbedders {
+            query: query_embedder,
+            corpus: corpus_embedder,
+            ..
+        } = super::build_semantic_embedders(&openai_profile(false), dir.path())
+            .map_err(|err| format!("offline construction must succeed: {err:?}"))?;
 
         // Positive: matched identity across the two sides (id AND version).
         if query_embedder.model_id() != corpus_embedder.model_id() {
@@ -1251,7 +1302,11 @@ mod tests {
     #[test]
     fn unavailable_profile_decouples_query_identity_from_corpus_identity() -> TestRes {
         let dir = tempfile::tempdir()?;
-        let (query_embedder, corpus_embedder) = super::build_semantic_embedders(
+        let super::SemanticEmbedders {
+            query: query_embedder,
+            corpus: corpus_embedder,
+            ..
+        } = super::build_semantic_embedders(
             &super::SemanticEmbedderProfile::Unavailable,
             dir.path(),
         )
@@ -1323,10 +1378,12 @@ mod tests {
             dimension: SEARCH_OWNED_SEMANTIC_DIMENSION,
         };
         let dir = tempfile::tempdir()?;
-        let (query_embedder, corpus_embedder) =
-            super::build_semantic_embedders(&profile, dir.path()).map_err(|err| {
-                format!("hermetic hash embedder construction must succeed: {err:?}")
-            })?;
+        let super::SemanticEmbedders {
+            query: query_embedder,
+            corpus: corpus_embedder,
+            ..
+        } = super::build_semantic_embedders(&profile, dir.path())
+            .map_err(|err| format!("hermetic hash embedder construction must succeed: {err:?}"))?;
 
         // (1) Query + corpus share ONE model identity by construction (no drift
         // between the vector the query path embeds and the vectors the corpus

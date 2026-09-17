@@ -64,6 +64,10 @@ crate quanta_index_core
 │   │       ├── struct LexicalWriterPolicy: pub
 │   │       ├── struct RegexMatchCachePolicy: pub
 │   │       └── struct RegexMatchCacheStats: pub
+│   ├── mod observability: pub
+│   │   ├── struct MetricPointV1: pub
+│   │   ├── trait MetricSourcePort: pub
+│   │   └── enum MetricValueV1: pub
 │   ├── mod repomap: pub
 │   │   ├── mod inbound: pub(self)
 │   │   │   └── trait RepoMapQueryPort: pub

@@ -21,6 +21,12 @@ pub use quanta_index_sdk::HybridSeedQueryResponse
 pub use quanta_index_sdk::LanguageCode
 pub use quanta_index_sdk::LexicalCandidate
 pub use quanta_index_sdk::ManifestGeneration
+pub use quanta_index_sdk::MetricBucketV1
+pub use quanta_index_sdk::MetricCounterV1
+pub use quanta_index_sdk::MetricGaugeV1
+pub use quanta_index_sdk::MetricHistogramV1
+pub use quanta_index_sdk::MetricsDiagnosticsV1
+pub use quanta_index_sdk::MetricsSnapshotV1
 pub use quanta_index_sdk::OwnerDocKind
 pub use quanta_index_sdk::ParseNode
 pub use quanta_index_sdk::ParseRoleTag
@@ -190,6 +196,7 @@ pub struct quanta_index_sdk::ControlClient<'a>
 impl<'a> quanta_index_sdk::ControlClient<'a>
 pub fn quanta_index_sdk::ControlClient<'a>::activate_repomap(&self, request: quanta_index_contract::repomap::RepoMapActivateGenerationRequest) -> core::result::Result<quanta_index_contract::repomap::RepoMapMutationAck, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ControlClient<'a>::current(&self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, track: quanta_index_contract::ipc::control::SearchPlaneTrackKind) -> core::result::Result<quanta_index_contract::ipc::control::GenerationSnapshot, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::ControlClient<'a>::metrics_snapshot(&self) -> core::result::Result<quanta_index_contract::ipc::metrics::MetricsSnapshotV1, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ControlClient<'a>::rollback(&self, request: quanta_index_contract::ipc::control::SearchPlaneRollbackSearchCorpusGenerationCasRequest) -> core::result::Result<quanta_index_contract::ipc::control::SearchPlaneSearchCorpusRollbackCasAck, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ControlClient<'a>::status(&self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId) -> core::result::Result<quanta_index_contract::ipc::control::GenerationStatusReport, quanta_index_sdk::SdkError>
 impl<'a> core::clone::Clone for quanta_index_sdk::ControlClient<'a>
@@ -464,6 +471,16 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::UnsafeUnpin for quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
+pub struct quanta_index_sdk::ObservabilityNamespace<'a>
+impl<'a> quanta_index_sdk::ObservabilityNamespace<'a>
+pub fn quanta_index_sdk::ObservabilityNamespace<'a>::metrics_snapshot(&self) -> core::result::Result<quanta_index_contract::ipc::metrics::MetricsSnapshotV1, quanta_index_sdk::SdkError>
+impl<'a> core::marker::Freeze for quanta_index_sdk::ObservabilityNamespace<'a>
+impl<'a> core::marker::Send for quanta_index_sdk::ObservabilityNamespace<'a>
+impl<'a> core::marker::Sync for quanta_index_sdk::ObservabilityNamespace<'a>
+impl<'a> core::marker::Unpin for quanta_index_sdk::ObservabilityNamespace<'a>
+impl<'a> core::marker::UnsafeUnpin for quanta_index_sdk::ObservabilityNamespace<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::ObservabilityNamespace<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::ObservabilityNamespace<'a>
 pub struct quanta_index_sdk::ProducerClient<'a>
 impl<'a> quanta_index_sdk::ProducerClient<'a>
 pub fn quanta_index_sdk::ProducerClient<'a>::publish_dirty(&self, batch: &quanta_index_sdk::DirtyBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
@@ -489,6 +506,7 @@ pub fn quanta_index_sdk::QuantaIndex::control(&self) -> quanta_index_sdk::Contro
 pub fn quanta_index_sdk::QuantaIndex::generations(&self) -> quanta_index_sdk::GenerationNamespace<'_>
 pub fn quanta_index_sdk::QuantaIndex::history(&self) -> quanta_index_sdk::HistoryNamespace<'_>
 pub fn quanta_index_sdk::QuantaIndex::lexical(&self) -> quanta_index_sdk::LexicalNamespace<'_>
+pub fn quanta_index_sdk::QuantaIndex::observability(&self) -> quanta_index_sdk::ObservabilityNamespace<'_>
 pub fn quanta_index_sdk::QuantaIndex::producer(&self) -> quanta_index_sdk::ProducerClient<'_>
 pub fn quanta_index_sdk::QuantaIndex::reader(&self) -> quanta_index_sdk::ReaderClient<'_>
 pub fn quanta_index_sdk::QuantaIndex::repomap(&self) -> quanta_index_sdk::RepoMapNamespace<'_>

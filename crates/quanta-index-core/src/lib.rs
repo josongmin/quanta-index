@@ -51,6 +51,9 @@ pub use domains::lexical::{
     RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, SearchCorpusBatchBuildPort,
     SearchCorpusIngestPort,
 };
+pub use domains::observability::{
+    MetricPointV1, MetricSourcePort, MetricValueV1, count_as_f64, count_from_usize,
+};
 pub use domains::repomap::{
     QuarantinedRepoMapFileV1, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
     RepoMapOpenReportV1, RepoMapPolicy, RepoMapQueryPort, RepoMapService,

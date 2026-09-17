@@ -18,7 +18,7 @@ use quanta_index_catalog::SqliteCatalog;
 use quanta_index_core::{
     AuxiliaryAuthorityCatalogPort, FileContributorIngestPort, FileOwnershipIngestPort,
     GenerationIdentityValidatePort, IdempotencyCatalogPort, IncompleteGenerationDiscardPort,
-    LexicalIndexOpenPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
+    LexicalIndexOpenPort, MetricSourcePort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
     RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapQueryPort, RepoMetaIngestPort,
     RepoTopicIngestPort, SealedGenerationReclaimPort, SealedGenerationScanPort,
     SearchCorpusBatchBuildPort, SemanticBatchBuildPort, SemanticIndexOpenPort,
@@ -95,7 +95,10 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
         lex_adapter.clone();
     let file_contributor_ingest_port: Arc<dyn FileContributorIngestPort + Send + Sync> =
         lex_adapter.clone();
-    let repo_meta_ingest_port: Arc<dyn RepoMetaIngestPort + Send + Sync> = lex_adapter;
+    let repo_meta_ingest_port: Arc<dyn RepoMetaIngestPort + Send + Sync> = lex_adapter.clone();
+    // The lexical adapter keeps the writer envelope and regex cache tallies
+    // (QI-BB-015); nothing else built here keeps accounting of its own.
+    let lexical_metric_source: Arc<dyn MetricSourcePort> = lex_adapter;
     let sem_build_port: Arc<dyn SemanticBatchBuildPort + Send + Sync> = sem_adapter.clone();
     let semantic_generation_scanner: Arc<dyn SealedGenerationScanPort + Send + Sync> =
         sem_adapter.clone();
@@ -142,6 +145,7 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
             legacy_semantic_journal_store,
             idempotency,
             auxiliary_catalog,
+            adapter_metric_sources: vec![lexical_metric_source],
         },
     )
 }

@@ -1224,6 +1224,7 @@ pub enum quanta_index_contract::ipc::SearchPlaneControlIpcRequest
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::CurrentGeneration(quanta_index_contract::CurrentGenerationRequest)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::GenerationStatus(quanta_index_contract::GenerationStatusRequest)
+pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::MetricsSnapshot(quanta_index_contract::MetricsSnapshotRequest)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::RepoMapActivate(quanta_index_contract::RepoMapActivateGenerationRequest)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneControlIpcRequest
@@ -1248,6 +1249,7 @@ pub enum quanta_index_contract::ipc::SearchPlaneControlIpcResponse
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(quanta_index_contract::GenerationSnapshot)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::GenerationStatusReport(quanta_index_contract::GenerationStatusReport)
+pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::MetricsSnapshot(quanta_index_contract::MetricsSnapshotV1)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::RepoMapMutationAck(quanta_index_contract::RepoMapMutationAck)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(quanta_index_contract::SearchPlaneSearchCorpusRollbackCasAck)
@@ -1972,6 +1974,169 @@ impl core::marker::Unpin for quanta_index_contract::HistoryRefUpsert
 impl core::marker::UnsafeUnpin for quanta_index_contract::HistoryRefUpsert
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HistoryRefUpsert
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HistoryRefUpsert
+pub struct quanta_index_contract::ipc::MetricBucketV1
+pub quanta_index_contract::ipc::MetricBucketV1::count: u64
+pub quanta_index_contract::ipc::MetricBucketV1::le: f64
+impl core::clone::Clone for quanta_index_contract::MetricBucketV1
+pub fn quanta_index_contract::MetricBucketV1::clone(&self) -> quanta_index_contract::MetricBucketV1
+impl core::cmp::PartialEq for quanta_index_contract::MetricBucketV1
+pub fn quanta_index_contract::MetricBucketV1::eq(&self, other: &quanta_index_contract::MetricBucketV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::MetricBucketV1
+pub fn quanta_index_contract::MetricBucketV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::MetricBucketV1
+impl serde_core::ser::Serialize for quanta_index_contract::MetricBucketV1
+pub fn quanta_index_contract::MetricBucketV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::MetricBucketV1
+pub fn quanta_index_contract::MetricBucketV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::MetricBucketV1
+impl core::marker::Send for quanta_index_contract::MetricBucketV1
+impl core::marker::Sync for quanta_index_contract::MetricBucketV1
+impl core::marker::Unpin for quanta_index_contract::MetricBucketV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::MetricBucketV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::MetricBucketV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::MetricBucketV1
+pub struct quanta_index_contract::ipc::MetricCounterV1
+pub quanta_index_contract::ipc::MetricCounterV1::name: alloc::string::String
+pub quanta_index_contract::ipc::MetricCounterV1::value: u64
+impl core::clone::Clone for quanta_index_contract::MetricCounterV1
+pub fn quanta_index_contract::MetricCounterV1::clone(&self) -> quanta_index_contract::MetricCounterV1
+impl core::cmp::PartialEq for quanta_index_contract::MetricCounterV1
+pub fn quanta_index_contract::MetricCounterV1::eq(&self, other: &quanta_index_contract::MetricCounterV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::MetricCounterV1
+pub fn quanta_index_contract::MetricCounterV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::MetricCounterV1
+impl serde_core::ser::Serialize for quanta_index_contract::MetricCounterV1
+pub fn quanta_index_contract::MetricCounterV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::MetricCounterV1
+pub fn quanta_index_contract::MetricCounterV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::MetricCounterV1
+impl core::marker::Send for quanta_index_contract::MetricCounterV1
+impl core::marker::Sync for quanta_index_contract::MetricCounterV1
+impl core::marker::Unpin for quanta_index_contract::MetricCounterV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::MetricCounterV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::MetricCounterV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::MetricCounterV1
+pub struct quanta_index_contract::ipc::MetricGaugeV1
+pub quanta_index_contract::ipc::MetricGaugeV1::name: alloc::string::String
+pub quanta_index_contract::ipc::MetricGaugeV1::value: f64
+impl core::clone::Clone for quanta_index_contract::MetricGaugeV1
+pub fn quanta_index_contract::MetricGaugeV1::clone(&self) -> quanta_index_contract::MetricGaugeV1
+impl core::cmp::PartialEq for quanta_index_contract::MetricGaugeV1
+pub fn quanta_index_contract::MetricGaugeV1::eq(&self, other: &quanta_index_contract::MetricGaugeV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::MetricGaugeV1
+pub fn quanta_index_contract::MetricGaugeV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::MetricGaugeV1
+impl serde_core::ser::Serialize for quanta_index_contract::MetricGaugeV1
+pub fn quanta_index_contract::MetricGaugeV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::MetricGaugeV1
+pub fn quanta_index_contract::MetricGaugeV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::MetricGaugeV1
+impl core::marker::Send for quanta_index_contract::MetricGaugeV1
+impl core::marker::Sync for quanta_index_contract::MetricGaugeV1
+impl core::marker::Unpin for quanta_index_contract::MetricGaugeV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::MetricGaugeV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::MetricGaugeV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::MetricGaugeV1
+pub struct quanta_index_contract::ipc::MetricHistogramV1
+pub quanta_index_contract::ipc::MetricHistogramV1::buckets: alloc::vec::Vec<quanta_index_contract::MetricBucketV1>
+pub quanta_index_contract::ipc::MetricHistogramV1::count: u64
+pub quanta_index_contract::ipc::MetricHistogramV1::max: f64
+pub quanta_index_contract::ipc::MetricHistogramV1::min: f64
+pub quanta_index_contract::ipc::MetricHistogramV1::name: alloc::string::String
+pub quanta_index_contract::ipc::MetricHistogramV1::sum: f64
+impl core::clone::Clone for quanta_index_contract::MetricHistogramV1
+pub fn quanta_index_contract::MetricHistogramV1::clone(&self) -> quanta_index_contract::MetricHistogramV1
+impl core::cmp::PartialEq for quanta_index_contract::MetricHistogramV1
+pub fn quanta_index_contract::MetricHistogramV1::eq(&self, other: &quanta_index_contract::MetricHistogramV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::MetricHistogramV1
+pub fn quanta_index_contract::MetricHistogramV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::MetricHistogramV1
+impl serde_core::ser::Serialize for quanta_index_contract::MetricHistogramV1
+pub fn quanta_index_contract::MetricHistogramV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::MetricHistogramV1
+pub fn quanta_index_contract::MetricHistogramV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::MetricHistogramV1
+impl core::marker::Send for quanta_index_contract::MetricHistogramV1
+impl core::marker::Sync for quanta_index_contract::MetricHistogramV1
+impl core::marker::Unpin for quanta_index_contract::MetricHistogramV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::MetricHistogramV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::MetricHistogramV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::MetricHistogramV1
+pub struct quanta_index_contract::ipc::MetricsDiagnosticsV1
+pub quanta_index_contract::ipc::MetricsDiagnosticsV1::errors_dropped: u64
+pub quanta_index_contract::ipc::MetricsDiagnosticsV1::errors_recorded: u64
+pub quanta_index_contract::ipc::MetricsDiagnosticsV1::samples_dropped: u64
+pub quanta_index_contract::ipc::MetricsDiagnosticsV1::samples_recorded: u64
+impl core::clone::Clone for quanta_index_contract::MetricsDiagnosticsV1
+pub fn quanta_index_contract::MetricsDiagnosticsV1::clone(&self) -> quanta_index_contract::MetricsDiagnosticsV1
+impl core::cmp::Eq for quanta_index_contract::MetricsDiagnosticsV1
+impl core::cmp::PartialEq for quanta_index_contract::MetricsDiagnosticsV1
+pub fn quanta_index_contract::MetricsDiagnosticsV1::eq(&self, other: &quanta_index_contract::MetricsDiagnosticsV1) -> bool
+impl core::default::Default for quanta_index_contract::MetricsDiagnosticsV1
+pub fn quanta_index_contract::MetricsDiagnosticsV1::default() -> quanta_index_contract::MetricsDiagnosticsV1
+impl core::fmt::Debug for quanta_index_contract::MetricsDiagnosticsV1
+pub fn quanta_index_contract::MetricsDiagnosticsV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::MetricsDiagnosticsV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::MetricsDiagnosticsV1
+impl serde_core::ser::Serialize for quanta_index_contract::MetricsDiagnosticsV1
+pub fn quanta_index_contract::MetricsDiagnosticsV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::MetricsDiagnosticsV1
+pub fn quanta_index_contract::MetricsDiagnosticsV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::MetricsDiagnosticsV1
+impl core::marker::Send for quanta_index_contract::MetricsDiagnosticsV1
+impl core::marker::Sync for quanta_index_contract::MetricsDiagnosticsV1
+impl core::marker::Unpin for quanta_index_contract::MetricsDiagnosticsV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::MetricsDiagnosticsV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::MetricsDiagnosticsV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::MetricsDiagnosticsV1
+pub struct quanta_index_contract::ipc::MetricsSnapshotRequest
+impl core::clone::Clone for quanta_index_contract::MetricsSnapshotRequest
+pub fn quanta_index_contract::MetricsSnapshotRequest::clone(&self) -> quanta_index_contract::MetricsSnapshotRequest
+impl core::cmp::Eq for quanta_index_contract::MetricsSnapshotRequest
+impl core::cmp::PartialEq for quanta_index_contract::MetricsSnapshotRequest
+pub fn quanta_index_contract::MetricsSnapshotRequest::eq(&self, other: &quanta_index_contract::MetricsSnapshotRequest) -> bool
+impl core::default::Default for quanta_index_contract::MetricsSnapshotRequest
+pub fn quanta_index_contract::MetricsSnapshotRequest::default() -> quanta_index_contract::MetricsSnapshotRequest
+impl core::fmt::Debug for quanta_index_contract::MetricsSnapshotRequest
+pub fn quanta_index_contract::MetricsSnapshotRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::MetricsSnapshotRequest
+impl core::marker::StructuralPartialEq for quanta_index_contract::MetricsSnapshotRequest
+impl serde_core::ser::Serialize for quanta_index_contract::MetricsSnapshotRequest
+pub fn quanta_index_contract::MetricsSnapshotRequest::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::MetricsSnapshotRequest
+pub fn quanta_index_contract::MetricsSnapshotRequest::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::MetricsSnapshotRequest
+impl core::marker::Send for quanta_index_contract::MetricsSnapshotRequest
+impl core::marker::Sync for quanta_index_contract::MetricsSnapshotRequest
+impl core::marker::Unpin for quanta_index_contract::MetricsSnapshotRequest
+impl core::marker::UnsafeUnpin for quanta_index_contract::MetricsSnapshotRequest
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::MetricsSnapshotRequest
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::MetricsSnapshotRequest
+pub struct quanta_index_contract::ipc::MetricsSnapshotV1
+pub quanta_index_contract::ipc::MetricsSnapshotV1::counters: alloc::vec::Vec<quanta_index_contract::MetricCounterV1>
+pub quanta_index_contract::ipc::MetricsSnapshotV1::diagnostics: quanta_index_contract::MetricsDiagnosticsV1
+pub quanta_index_contract::ipc::MetricsSnapshotV1::gauges: alloc::vec::Vec<quanta_index_contract::MetricGaugeV1>
+pub quanta_index_contract::ipc::MetricsSnapshotV1::histograms: alloc::vec::Vec<quanta_index_contract::MetricHistogramV1>
+impl core::clone::Clone for quanta_index_contract::MetricsSnapshotV1
+pub fn quanta_index_contract::MetricsSnapshotV1::clone(&self) -> quanta_index_contract::MetricsSnapshotV1
+impl core::cmp::PartialEq for quanta_index_contract::MetricsSnapshotV1
+pub fn quanta_index_contract::MetricsSnapshotV1::eq(&self, other: &quanta_index_contract::MetricsSnapshotV1) -> bool
+impl core::default::Default for quanta_index_contract::MetricsSnapshotV1
+pub fn quanta_index_contract::MetricsSnapshotV1::default() -> quanta_index_contract::MetricsSnapshotV1
+impl core::fmt::Debug for quanta_index_contract::MetricsSnapshotV1
+pub fn quanta_index_contract::MetricsSnapshotV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::MetricsSnapshotV1
+impl serde_core::ser::Serialize for quanta_index_contract::MetricsSnapshotV1
+pub fn quanta_index_contract::MetricsSnapshotV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::MetricsSnapshotV1
+pub fn quanta_index_contract::MetricsSnapshotV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::MetricsSnapshotV1
+impl core::marker::Send for quanta_index_contract::MetricsSnapshotV1
+impl core::marker::Sync for quanta_index_contract::MetricsSnapshotV1
+impl core::marker::Unpin for quanta_index_contract::MetricsSnapshotV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::MetricsSnapshotV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::MetricsSnapshotV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::MetricsSnapshotV1
 pub struct quanta_index_contract::ipc::QueryErrorRepair
 pub quanta_index_contract::ipc::QueryErrorRepair::class: quanta_index_contract::RepairClass
 pub quanta_index_contract::ipc::QueryErrorRepair::docs_anchor: core::option::Option<alloc::string::String>
@@ -2970,6 +3135,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::TrackReadin
 pub const quanta_index_contract::ipc::ERR_RESULT_TOO_LARGE: &str
 pub const quanta_index_contract::ipc::ERR_SERVER_OVERLOADED: &str
 pub fn quanta_index_contract::ipc::cluster_membership_content_digest_v1(members: &[quanta_index_contract::SymbolId]) -> alloc::string::String
+pub fn quanta_index_contract::ipc::is_metric_name_v1(name: &str) -> bool
 pub fn quanta_index_contract::ipc::validate_semantic_source_record_v1(record: &quanta_index_contract::SemanticSourceRecordV1) -> core::result::Result<(), &'static str>
 pub type quanta_index_contract::ipc::HistoryTagDelete = quanta_index_contract::HistoryRefDelete
 pub type quanta_index_contract::ipc::HistoryTagMutation = quanta_index_contract::HistoryRefMutation
@@ -7215,6 +7381,7 @@ pub enum quanta_index_contract::SearchPlaneControlIpcRequest
 pub quanta_index_contract::SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest)
 pub quanta_index_contract::SearchPlaneControlIpcRequest::CurrentGeneration(quanta_index_contract::CurrentGenerationRequest)
 pub quanta_index_contract::SearchPlaneControlIpcRequest::GenerationStatus(quanta_index_contract::GenerationStatusRequest)
+pub quanta_index_contract::SearchPlaneControlIpcRequest::MetricsSnapshot(quanta_index_contract::MetricsSnapshotRequest)
 pub quanta_index_contract::SearchPlaneControlIpcRequest::RepoMapActivate(quanta_index_contract::RepoMapActivateGenerationRequest)
 pub quanta_index_contract::SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneControlIpcRequest
@@ -7239,6 +7406,7 @@ pub enum quanta_index_contract::SearchPlaneControlIpcResponse
 pub quanta_index_contract::SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(quanta_index_contract::GenerationSnapshot)
 pub quanta_index_contract::SearchPlaneControlIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError)
 pub quanta_index_contract::SearchPlaneControlIpcResponse::GenerationStatusReport(quanta_index_contract::GenerationStatusReport)
+pub quanta_index_contract::SearchPlaneControlIpcResponse::MetricsSnapshot(quanta_index_contract::MetricsSnapshotV1)
 pub quanta_index_contract::SearchPlaneControlIpcResponse::RepoMapMutationAck(quanta_index_contract::RepoMapMutationAck)
 pub quanta_index_contract::SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck)
 pub quanta_index_contract::SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(quanta_index_contract::SearchPlaneSearchCorpusRollbackCasAck)
@@ -8750,6 +8918,169 @@ impl core::marker::Unpin for quanta_index_contract::LexicalSeal
 impl core::marker::UnsafeUnpin for quanta_index_contract::LexicalSeal
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::LexicalSeal
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::LexicalSeal
+pub struct quanta_index_contract::MetricBucketV1
+pub quanta_index_contract::MetricBucketV1::count: u64
+pub quanta_index_contract::MetricBucketV1::le: f64
+impl core::clone::Clone for quanta_index_contract::MetricBucketV1
+pub fn quanta_index_contract::MetricBucketV1::clone(&self) -> quanta_index_contract::MetricBucketV1
+impl core::cmp::PartialEq for quanta_index_contract::MetricBucketV1
+pub fn quanta_index_contract::MetricBucketV1::eq(&self, other: &quanta_index_contract::MetricBucketV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::MetricBucketV1
+pub fn quanta_index_contract::MetricBucketV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::MetricBucketV1
+impl serde_core::ser::Serialize for quanta_index_contract::MetricBucketV1
+pub fn quanta_index_contract::MetricBucketV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::MetricBucketV1
+pub fn quanta_index_contract::MetricBucketV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::MetricBucketV1
+impl core::marker::Send for quanta_index_contract::MetricBucketV1
+impl core::marker::Sync for quanta_index_contract::MetricBucketV1
+impl core::marker::Unpin for quanta_index_contract::MetricBucketV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::MetricBucketV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::MetricBucketV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::MetricBucketV1
+pub struct quanta_index_contract::MetricCounterV1
+pub quanta_index_contract::MetricCounterV1::name: alloc::string::String
+pub quanta_index_contract::MetricCounterV1::value: u64
+impl core::clone::Clone for quanta_index_contract::MetricCounterV1
+pub fn quanta_index_contract::MetricCounterV1::clone(&self) -> quanta_index_contract::MetricCounterV1
+impl core::cmp::PartialEq for quanta_index_contract::MetricCounterV1
+pub fn quanta_index_contract::MetricCounterV1::eq(&self, other: &quanta_index_contract::MetricCounterV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::MetricCounterV1
+pub fn quanta_index_contract::MetricCounterV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::MetricCounterV1
+impl serde_core::ser::Serialize for quanta_index_contract::MetricCounterV1
+pub fn quanta_index_contract::MetricCounterV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::MetricCounterV1
+pub fn quanta_index_contract::MetricCounterV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::MetricCounterV1
+impl core::marker::Send for quanta_index_contract::MetricCounterV1
+impl core::marker::Sync for quanta_index_contract::MetricCounterV1
+impl core::marker::Unpin for quanta_index_contract::MetricCounterV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::MetricCounterV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::MetricCounterV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::MetricCounterV1
+pub struct quanta_index_contract::MetricGaugeV1
+pub quanta_index_contract::MetricGaugeV1::name: alloc::string::String
+pub quanta_index_contract::MetricGaugeV1::value: f64
+impl core::clone::Clone for quanta_index_contract::MetricGaugeV1
+pub fn quanta_index_contract::MetricGaugeV1::clone(&self) -> quanta_index_contract::MetricGaugeV1
+impl core::cmp::PartialEq for quanta_index_contract::MetricGaugeV1
+pub fn quanta_index_contract::MetricGaugeV1::eq(&self, other: &quanta_index_contract::MetricGaugeV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::MetricGaugeV1
+pub fn quanta_index_contract::MetricGaugeV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::MetricGaugeV1
+impl serde_core::ser::Serialize for quanta_index_contract::MetricGaugeV1
+pub fn quanta_index_contract::MetricGaugeV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::MetricGaugeV1
+pub fn quanta_index_contract::MetricGaugeV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::MetricGaugeV1
+impl core::marker::Send for quanta_index_contract::MetricGaugeV1
+impl core::marker::Sync for quanta_index_contract::MetricGaugeV1
+impl core::marker::Unpin for quanta_index_contract::MetricGaugeV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::MetricGaugeV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::MetricGaugeV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::MetricGaugeV1
+pub struct quanta_index_contract::MetricHistogramV1
+pub quanta_index_contract::MetricHistogramV1::buckets: alloc::vec::Vec<quanta_index_contract::MetricBucketV1>
+pub quanta_index_contract::MetricHistogramV1::count: u64
+pub quanta_index_contract::MetricHistogramV1::max: f64
+pub quanta_index_contract::MetricHistogramV1::min: f64
+pub quanta_index_contract::MetricHistogramV1::name: alloc::string::String
+pub quanta_index_contract::MetricHistogramV1::sum: f64
+impl core::clone::Clone for quanta_index_contract::MetricHistogramV1
+pub fn quanta_index_contract::MetricHistogramV1::clone(&self) -> quanta_index_contract::MetricHistogramV1
+impl core::cmp::PartialEq for quanta_index_contract::MetricHistogramV1
+pub fn quanta_index_contract::MetricHistogramV1::eq(&self, other: &quanta_index_contract::MetricHistogramV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::MetricHistogramV1
+pub fn quanta_index_contract::MetricHistogramV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::MetricHistogramV1
+impl serde_core::ser::Serialize for quanta_index_contract::MetricHistogramV1
+pub fn quanta_index_contract::MetricHistogramV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::MetricHistogramV1
+pub fn quanta_index_contract::MetricHistogramV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::MetricHistogramV1
+impl core::marker::Send for quanta_index_contract::MetricHistogramV1
+impl core::marker::Sync for quanta_index_contract::MetricHistogramV1
+impl core::marker::Unpin for quanta_index_contract::MetricHistogramV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::MetricHistogramV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::MetricHistogramV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::MetricHistogramV1
+pub struct quanta_index_contract::MetricsDiagnosticsV1
+pub quanta_index_contract::MetricsDiagnosticsV1::errors_dropped: u64
+pub quanta_index_contract::MetricsDiagnosticsV1::errors_recorded: u64
+pub quanta_index_contract::MetricsDiagnosticsV1::samples_dropped: u64
+pub quanta_index_contract::MetricsDiagnosticsV1::samples_recorded: u64
+impl core::clone::Clone for quanta_index_contract::MetricsDiagnosticsV1
+pub fn quanta_index_contract::MetricsDiagnosticsV1::clone(&self) -> quanta_index_contract::MetricsDiagnosticsV1
+impl core::cmp::Eq for quanta_index_contract::MetricsDiagnosticsV1
+impl core::cmp::PartialEq for quanta_index_contract::MetricsDiagnosticsV1
+pub fn quanta_index_contract::MetricsDiagnosticsV1::eq(&self, other: &quanta_index_contract::MetricsDiagnosticsV1) -> bool
+impl core::default::Default for quanta_index_contract::MetricsDiagnosticsV1
+pub fn quanta_index_contract::MetricsDiagnosticsV1::default() -> quanta_index_contract::MetricsDiagnosticsV1
+impl core::fmt::Debug for quanta_index_contract::MetricsDiagnosticsV1
+pub fn quanta_index_contract::MetricsDiagnosticsV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::MetricsDiagnosticsV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::MetricsDiagnosticsV1
+impl serde_core::ser::Serialize for quanta_index_contract::MetricsDiagnosticsV1
+pub fn quanta_index_contract::MetricsDiagnosticsV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::MetricsDiagnosticsV1
+pub fn quanta_index_contract::MetricsDiagnosticsV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::MetricsDiagnosticsV1
+impl core::marker::Send for quanta_index_contract::MetricsDiagnosticsV1
+impl core::marker::Sync for quanta_index_contract::MetricsDiagnosticsV1
+impl core::marker::Unpin for quanta_index_contract::MetricsDiagnosticsV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::MetricsDiagnosticsV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::MetricsDiagnosticsV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::MetricsDiagnosticsV1
+pub struct quanta_index_contract::MetricsSnapshotRequest
+impl core::clone::Clone for quanta_index_contract::MetricsSnapshotRequest
+pub fn quanta_index_contract::MetricsSnapshotRequest::clone(&self) -> quanta_index_contract::MetricsSnapshotRequest
+impl core::cmp::Eq for quanta_index_contract::MetricsSnapshotRequest
+impl core::cmp::PartialEq for quanta_index_contract::MetricsSnapshotRequest
+pub fn quanta_index_contract::MetricsSnapshotRequest::eq(&self, other: &quanta_index_contract::MetricsSnapshotRequest) -> bool
+impl core::default::Default for quanta_index_contract::MetricsSnapshotRequest
+pub fn quanta_index_contract::MetricsSnapshotRequest::default() -> quanta_index_contract::MetricsSnapshotRequest
+impl core::fmt::Debug for quanta_index_contract::MetricsSnapshotRequest
+pub fn quanta_index_contract::MetricsSnapshotRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::MetricsSnapshotRequest
+impl core::marker::StructuralPartialEq for quanta_index_contract::MetricsSnapshotRequest
+impl serde_core::ser::Serialize for quanta_index_contract::MetricsSnapshotRequest
+pub fn quanta_index_contract::MetricsSnapshotRequest::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::MetricsSnapshotRequest
+pub fn quanta_index_contract::MetricsSnapshotRequest::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::MetricsSnapshotRequest
+impl core::marker::Send for quanta_index_contract::MetricsSnapshotRequest
+impl core::marker::Sync for quanta_index_contract::MetricsSnapshotRequest
+impl core::marker::Unpin for quanta_index_contract::MetricsSnapshotRequest
+impl core::marker::UnsafeUnpin for quanta_index_contract::MetricsSnapshotRequest
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::MetricsSnapshotRequest
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::MetricsSnapshotRequest
+pub struct quanta_index_contract::MetricsSnapshotV1
+pub quanta_index_contract::MetricsSnapshotV1::counters: alloc::vec::Vec<quanta_index_contract::MetricCounterV1>
+pub quanta_index_contract::MetricsSnapshotV1::diagnostics: quanta_index_contract::MetricsDiagnosticsV1
+pub quanta_index_contract::MetricsSnapshotV1::gauges: alloc::vec::Vec<quanta_index_contract::MetricGaugeV1>
+pub quanta_index_contract::MetricsSnapshotV1::histograms: alloc::vec::Vec<quanta_index_contract::MetricHistogramV1>
+impl core::clone::Clone for quanta_index_contract::MetricsSnapshotV1
+pub fn quanta_index_contract::MetricsSnapshotV1::clone(&self) -> quanta_index_contract::MetricsSnapshotV1
+impl core::cmp::PartialEq for quanta_index_contract::MetricsSnapshotV1
+pub fn quanta_index_contract::MetricsSnapshotV1::eq(&self, other: &quanta_index_contract::MetricsSnapshotV1) -> bool
+impl core::default::Default for quanta_index_contract::MetricsSnapshotV1
+pub fn quanta_index_contract::MetricsSnapshotV1::default() -> quanta_index_contract::MetricsSnapshotV1
+impl core::fmt::Debug for quanta_index_contract::MetricsSnapshotV1
+pub fn quanta_index_contract::MetricsSnapshotV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::MetricsSnapshotV1
+impl serde_core::ser::Serialize for quanta_index_contract::MetricsSnapshotV1
+pub fn quanta_index_contract::MetricsSnapshotV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::MetricsSnapshotV1
+pub fn quanta_index_contract::MetricsSnapshotV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::MetricsSnapshotV1
+impl core::marker::Send for quanta_index_contract::MetricsSnapshotV1
+impl core::marker::Sync for quanta_index_contract::MetricsSnapshotV1
+impl core::marker::Unpin for quanta_index_contract::MetricsSnapshotV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::MetricsSnapshotV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::MetricsSnapshotV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::MetricsSnapshotV1
 pub struct quanta_index_contract::PlannerTraceEntry
 pub quanta_index_contract::PlannerTraceEntry::detail: alloc::string::String
 pub quanta_index_contract::PlannerTraceEntry::stage: quanta_index_contract::PlannerStage
@@ -11053,6 +11384,7 @@ pub const quanta_index_contract::ERR_SERVER_OVERLOADED: &str
 pub const quanta_index_contract::MAX_CLUSTER_MEMBERSHIP_BATCH_ITEMS_V1: usize
 pub const quanta_index_contract::MAX_CLUSTER_MEMBERSHIP_READ_V1: u32
 pub fn quanta_index_contract::cluster_membership_content_digest_v1(members: &[quanta_index_contract::SymbolId]) -> alloc::string::String
+pub fn quanta_index_contract::is_metric_name_v1(name: &str) -> bool
 pub fn quanta_index_contract::validate_semantic_source_record_v1(record: &quanta_index_contract::SemanticSourceRecordV1) -> core::result::Result<(), &'static str>
 pub type quanta_index_contract::HistoryTagDelete = quanta_index_contract::HistoryRefDelete
 pub type quanta_index_contract::HistoryTagMutation = quanta_index_contract::HistoryRefMutation

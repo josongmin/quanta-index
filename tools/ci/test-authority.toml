@@ -172,6 +172,12 @@ owner = "quanta-index-semantic"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "contract-ipc-control-metrics"
+path = "crates/quanta-index-contract/tests/ipc_control_metrics_contract.rs"
+owner = "quanta-index-contract"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "lexical-explain-candidate"
 path = "crates/quanta-index-lexical/tests/explain_candidate.rs"
 owner = "quanta-index-lexical"
@@ -523,6 +529,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "searchd-runtime-e2e-explain-score-trace"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_explain_score_trace.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-e2e-metrics-scrape"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_metrics_scrape.rs"
 owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 

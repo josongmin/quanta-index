@@ -41,11 +41,11 @@ use quanta_index_core::{
     AuxiliaryAuthorityCatalogPort, CoreError, FileContributorIngestPort, FileOwnershipIngestPort,
     GenerationIdentityValidatePort, IdempotencyBeginV1, IdempotencyCatalogPort, IdempotencyKeyV1,
     IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort, IngestBatchFootprint,
-    IngestOperationKindV1, IngestResourcePolicy, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMetaIngestPort, RepoTopicIngestPort,
-    RequestBudgetV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
-    SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticBatchBuildPort, SemanticIngestPort,
-    TextEmbeddingProvider,
+    IngestOperationKindV1, IngestResourcePolicy, MetricPointV1, MetricSourcePort,
+    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
+    RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1, SealedGenerationReclaimOutcomeV1,
+    SealedGenerationReclaimPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
+    SemanticBatchBuildPort, SemanticIngestPort, TextEmbeddingProvider, count_from_usize,
 };
 
 const ERR_INVALID: &str = "INVALID_REQUEST";
@@ -282,7 +282,26 @@ impl DirectSearchCorpusMaterializer {
                 ))
             })
     }
+}
 
+/// The resource envelope's tallies as scrape points, `ingest_…` (QI-BB-015).
+impl MetricSourcePort for DirectSearchCorpusMaterializer {
+    fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
+        let stats = self.resource_stats()?;
+        Ok(vec![
+            MetricPointV1::counter("ingest_batches_admitted_total", stats.admitted),
+            MetricPointV1::counter("ingest_batches_refused_total", stats.refused),
+            MetricPointV1::gauge_count(
+                "ingest_peak_embedded_records",
+                count_from_usize(stats.peak_embedded_records),
+            ),
+            MetricPointV1::gauge_count("ingest_peak_text_bytes", stats.peak_text_bytes),
+            MetricPointV1::gauge_count("ingest_peak_vector_bytes", stats.peak_vector_bytes),
+        ])
+    }
+}
+
+impl DirectSearchCorpusMaterializer {
     /// Measure `batch` against the envelope before anything is held
     /// (QI-BB-021); a batch that does not fit is refused typed here, with
     /// zero bytes changed.

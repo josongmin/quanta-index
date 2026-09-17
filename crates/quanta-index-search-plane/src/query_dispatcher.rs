@@ -1,8 +1,9 @@
 //! Search-plane query orchestration using the in-memory readiness ledger as the
 //! source of truth.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::{Arc, Mutex, RwLock};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
 use crate::{
     ActivationCatalog, ActiveGenerationRecord, Ledger, SEARCH_OWNED_SEMANTIC_DIMENSION,
@@ -50,10 +51,9 @@ use quanta_index_core::{
     timeref::{parse_rev_at_time_spec, parse_search_timeref_ms},
     validate_query_top_k,
 };
-use quanta_index_lq_obs::{
-    CardinalityGuard, Dimensions, MetricKind, MetricSample, OBS_OVERFLOW_LABEL, ObsError,
-    validate_dimensions,
-};
+use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
+
+use crate::observability::{NoopQueryObsSink, QueryObsSink};
 use quanta_index_lq_regex::RegexExecutor;
 
 const ERR_INVALID: &str = "INVALID_REQUEST";
@@ -239,90 +239,51 @@ fn fused_window_v1(
         .map_err(|err| CoreError::InvalidContract(format!("query result window: {err}")))
 }
 
-pub trait QueryObsSink {
-    fn emit(&self, sample: MetricSample);
+/// The closed set of query routes, for the per-route metric names
+/// (QI-BB-015).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QueryRoute {
+    Lexical,
+    Symbol,
+    Semantic,
+    Hybrid,
+    HybridSeed,
+    History,
+    Structural,
+    RepoMap,
+    Explain,
+    RuntimeMetadata,
+    ClusterMembershipRead,
 }
 
-struct NoopQueryObsSink;
-
-impl QueryObsSink for NoopQueryObsSink {
-    fn emit(&self, _sample: MetricSample) {}
-}
-
-const MAX_OBS_SAMPLES: usize = 4_096;
-
-#[derive(Default)]
-pub struct BoundedQueryObsStore {
-    guard: Mutex<CardinalityGuard>,
-    samples: Mutex<VecDeque<MetricSample>>,
-    errors: Mutex<Vec<ObsError>>,
-}
-
-impl BoundedQueryObsStore {
-    fn record_error(&self, err: ObsError) {
-        let mut guard = lock_or_recover(&self.errors);
-        guard.push(err);
-    }
-
-    #[must_use]
-    pub fn snapshot(&self) -> Vec<MetricSample> {
-        lock_or_recover(&self.samples).iter().cloned().collect()
-    }
-
-    #[must_use]
-    pub fn errors(&self) -> Vec<ObsError> {
-        lock_or_recover(&self.errors).clone()
-    }
-}
-
-impl QueryObsSink for BoundedQueryObsStore {
-    fn emit(&self, sample: MetricSample) {
-        if let Err(err) = validate_dimensions(&sample.dimensions) {
-            self.record_error(err);
-            return;
+impl QueryRoute {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Lexical => "lexical",
+            Self::Symbol => "symbol",
+            Self::Semantic => "semantic",
+            Self::Hybrid => "hybrid",
+            Self::HybridSeed => "hybrid_seed",
+            Self::History => "history",
+            Self::Structural => "structural",
+            Self::RepoMap => "repo_map",
+            Self::Explain => "explain",
+            Self::RuntimeMetadata => "runtime_metadata",
+            Self::ClusterMembershipRead => "cluster_membership_read",
         }
-        let sample = {
-            let mut guard = lock_or_recover(&self.guard);
-            match guard.observe(&sample.dimensions) {
-                Ok(()) => sample,
-                Err(err) => {
-                    self.record_error(err.clone());
-                    overflow_bucket_sample(sample, &err)
-                }
-            }
-        };
-        let mut samples = lock_or_recover(&self.samples);
-        if samples.len() == MAX_OBS_SAMPLES {
-            let _evicted = samples.pop_front();
-        }
-        samples.push_back(sample);
+    }
+
+    /// `lq_route_<route>_<suffix>`: eleven routes times three suffixes, and
+    /// nothing from a request.
+    fn metric_name(self, suffix: &str) -> String {
+        format!("lq_route_{}_{suffix}", self.name())
     }
 }
 
-fn overflow_bucket_sample(mut sample: MetricSample, err: &ObsError) -> MetricSample {
-    match err.dim_overflow.as_deref() {
-        Some("tenant_id") => {
-            sample.dimensions.tenant_id = OBS_OVERFLOW_LABEL.into();
-        }
-        Some("repo_id") => {
-            sample.dimensions.repo_id = OBS_OVERFLOW_LABEL.into();
-        }
-        Some("ticket_id") => {
-            sample.dimensions.ticket_id = OBS_OVERFLOW_LABEL.into();
-        }
-        Some("wave_id") => {
-            sample.dimensions.wave_id = OBS_OVERFLOW_LABEL.into();
-        }
-        Some(_) | None => {}
-    }
-    sample
-}
-
-fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    match mutex.lock() {
-        Ok(guard) => guard,
-        Err(err) => err.into_inner(),
-    }
+/// Milliseconds as a metric value, exact for any duration a request can
+/// take.
+fn elapsed_millis_metric(elapsed: std::time::Duration) -> f64 {
+    u32::try_from(elapsed.as_millis()).map_or(f64::MAX, f64::from)
 }
 
 fn classify_error_metric_name(err: &CoreError) -> &'static str {
@@ -1427,10 +1388,54 @@ impl SearchPlaneDispatcher {
         request: &ClusterMembershipBatchReadRequestV1,
         budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
-        match self.cluster_membership_batch_read(request, budget) {
-            Ok(outcome) => SearchPlaneQueryIpcResponse::ClusterMembershipRead(outcome),
-            Err(error) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(error)),
-        }
+        self.observed_route(
+            QueryRoute::ClusterMembershipRead,
+            Some(&request.generation),
+            || match self.cluster_membership_batch_read(request, budget) {
+                Ok(outcome) => SearchPlaneQueryIpcResponse::ClusterMembershipRead(outcome),
+                Err(error) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(error)),
+            },
+        )
+    }
+
+    /// Run one route under its intake, latency and outcome metrics
+    /// (QI-BB-015).
+    ///
+    /// `requested_pin` is the generation the request named, if any; it
+    /// labels these samples the way the intake and typed-error metrics
+    /// already are labelled. The route's own pipeline metrics come from
+    /// `run`; after it the wrapper adds one histogram
+    /// (`lq_route_<route>_latency_ms`) and one counter
+    /// (`lq_route_<route>_served_total`, or `_errors_total` when the answer
+    /// is a typed error).
+    fn observed_route(
+        &self,
+        route: QueryRoute,
+        requested_pin: Option<&GenerationPin>,
+        run: impl FnOnce() -> SearchPlaneQueryIpcResponse,
+    ) -> SearchPlaneQueryIpcResponse {
+        self.emit_intake_metric(requested_pin);
+        let started = Instant::now();
+        let response = run();
+        let latency = elapsed_millis_metric(started.elapsed());
+        self.emit_metric(
+            requested_pin,
+            &route.metric_name("latency_ms"),
+            MetricKind::Histogram,
+            latency,
+        );
+        let outcome = if matches!(response, SearchPlaneQueryIpcResponse::Error(_)) {
+            "errors_total"
+        } else {
+            "served_total"
+        };
+        self.emit_metric(
+            requested_pin,
+            &route.metric_name(outcome),
+            MetricKind::Counter,
+            1.0,
+        );
+        response
     }
 
     pub fn cluster_membership_batch_read(
@@ -1477,18 +1482,19 @@ impl SearchPlaneDispatcher {
         budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
         let requested_pin = request.generation.clone();
-        self.emit_intake_metric(requested_pin.as_ref());
-        match self.lexical_query(request, budget) {
-            Ok(response) => {
-                self.emit_planner_metric(&response.generation);
-                self.emit_engine_fanout_metric(&response.generation, 1);
-                SearchPlaneQueryIpcResponse::Text(response)
+        self.observed_route(QueryRoute::Lexical, requested_pin.as_ref(), || {
+            match self.lexical_query(request, budget) {
+                Ok(response) => {
+                    self.emit_planner_metric(&response.generation);
+                    self.emit_engine_fanout_metric(&response.generation, 1);
+                    SearchPlaneQueryIpcResponse::Text(response)
+                }
+                Err(err) => {
+                    self.emit_error_metric(requested_pin.as_ref(), &err);
+                    SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+                }
             }
-            Err(err) => {
-                self.emit_error_metric(requested_pin.as_ref(), &err);
-                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
-            }
-        }
+        })
     }
 
     fn dispatch_symbol(
@@ -1497,18 +1503,19 @@ impl SearchPlaneDispatcher {
         budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
         let requested_pin = request.generation.clone();
-        self.emit_intake_metric(requested_pin.as_ref());
-        match self.symbol(request, budget) {
-            Ok(response) => {
-                self.emit_planner_metric(&response.generation);
-                self.emit_engine_fanout_metric(&response.generation, 1);
-                SearchPlaneQueryIpcResponse::Symbol(response)
+        self.observed_route(QueryRoute::Symbol, requested_pin.as_ref(), || {
+            match self.symbol(request, budget) {
+                Ok(response) => {
+                    self.emit_planner_metric(&response.generation);
+                    self.emit_engine_fanout_metric(&response.generation, 1);
+                    SearchPlaneQueryIpcResponse::Symbol(response)
+                }
+                Err(err) => {
+                    self.emit_error_metric(requested_pin.as_ref(), &err);
+                    SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+                }
             }
-            Err(err) => {
-                self.emit_error_metric(requested_pin.as_ref(), &err);
-                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
-            }
-        }
+        })
     }
 
     fn dispatch_semantic(
@@ -1517,8 +1524,9 @@ impl SearchPlaneDispatcher {
         budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
         let requested_pin = request.generation.clone();
-        self.emit_intake_metric(requested_pin.as_ref());
-        match self.semantic_query(request, budget) {
+        self.observed_route(QueryRoute::Semantic, requested_pin.as_ref(), || match self
+            .semantic_query(request, budget)
+        {
             Ok(response) => {
                 self.emit_planner_metric(&response.generation);
                 self.emit_engine_fanout_metric(
@@ -1535,7 +1543,7 @@ impl SearchPlaneDispatcher {
                 self.emit_error_metric(requested_pin.as_ref(), &err);
                 SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
             }
-        }
+        })
     }
 
     fn dispatch_hybrid(
@@ -1544,26 +1552,27 @@ impl SearchPlaneDispatcher {
         budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
         let requested_pin = request.text_query.generation.clone();
-        self.emit_intake_metric(requested_pin.as_ref());
-        match self.hybrid_query(request, budget) {
-            Ok(response) => {
-                self.emit_planner_metric(&response.generation);
-                self.emit_engine_fanout_metric(
-                    &response.generation,
-                    response.explanation.engines_touched.len(),
-                );
-                self.emit_merge_count_metric(&response.generation, response.results.len());
-                self.emit_early_stop_metric(
-                    &response.generation,
-                    response.explanation.early_stop_reason,
-                );
-                SearchPlaneQueryIpcResponse::Hybrid(response)
+        self.observed_route(QueryRoute::Hybrid, requested_pin.as_ref(), || {
+            match self.hybrid_query(request, budget) {
+                Ok(response) => {
+                    self.emit_planner_metric(&response.generation);
+                    self.emit_engine_fanout_metric(
+                        &response.generation,
+                        response.explanation.engines_touched.len(),
+                    );
+                    self.emit_merge_count_metric(&response.generation, response.results.len());
+                    self.emit_early_stop_metric(
+                        &response.generation,
+                        response.explanation.early_stop_reason,
+                    );
+                    SearchPlaneQueryIpcResponse::Hybrid(response)
+                }
+                Err(err) => {
+                    self.emit_error_metric(requested_pin.as_ref(), &err);
+                    SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+                }
             }
-            Err(err) => {
-                self.emit_error_metric(requested_pin.as_ref(), &err);
-                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
-            }
-        }
+        })
     }
 
     fn dispatch_hybrid_seed(
@@ -1572,31 +1581,32 @@ impl SearchPlaneDispatcher {
         budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
         let requested_pin = request.text_query.generation.as_ref();
-        self.emit_intake_metric(requested_pin);
-        match self.hybrid_seed(request, budget) {
-            Ok(response) => {
-                self.emit_planner_metric(&response.generation);
-                self.emit_engine_fanout_metric(
-                    &response.generation,
-                    response.explanation.engines_touched.len(),
-                );
-                // The merge count is what the window says the page holds
-                // (QI-BB-019): the one canonical seed list.
-                self.emit_merge_count_metric(
-                    &response.generation,
-                    usize::try_from(response.window.returned()).map_or(usize::MAX, |n| n),
-                );
-                self.emit_early_stop_metric(
-                    &response.generation,
-                    response.explanation.early_stop_reason,
-                );
-                SearchPlaneQueryIpcResponse::HybridSeed(response)
+        self.observed_route(QueryRoute::HybridSeed, requested_pin, || {
+            match self.hybrid_seed(request, budget) {
+                Ok(response) => {
+                    self.emit_planner_metric(&response.generation);
+                    self.emit_engine_fanout_metric(
+                        &response.generation,
+                        response.explanation.engines_touched.len(),
+                    );
+                    // The merge count is what the window says the page holds
+                    // (QI-BB-019): the one canonical seed list.
+                    self.emit_merge_count_metric(
+                        &response.generation,
+                        usize::try_from(response.window.returned()).map_or(usize::MAX, |n| n),
+                    );
+                    self.emit_early_stop_metric(
+                        &response.generation,
+                        response.explanation.early_stop_reason,
+                    );
+                    SearchPlaneQueryIpcResponse::HybridSeed(response)
+                }
+                Err(err) => {
+                    self.emit_error_metric(requested_pin, &err);
+                    SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+                }
             }
-            Err(err) => {
-                self.emit_error_metric(requested_pin, &err);
-                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
-            }
-        }
+        })
     }
 
     fn dispatch_history(
@@ -1605,22 +1615,23 @@ impl SearchPlaneDispatcher {
         budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
         let requested_pin = request.text_query.generation.as_ref();
-        self.emit_intake_metric(requested_pin);
-        match self.history(request, budget) {
-            Ok(response) => {
-                self.emit_planner_metric(&response.generation);
-                self.emit_engine_fanout_metric(&response.generation, 1);
-                self.emit_merge_count_metric(
-                    &response.generation,
-                    response.commits.len().saturating_add(response.diffs.len()),
-                );
-                SearchPlaneQueryIpcResponse::History(response)
+        self.observed_route(QueryRoute::History, requested_pin, || {
+            match self.history(request, budget) {
+                Ok(response) => {
+                    self.emit_planner_metric(&response.generation);
+                    self.emit_engine_fanout_metric(&response.generation, 1);
+                    self.emit_merge_count_metric(
+                        &response.generation,
+                        response.commits.len().saturating_add(response.diffs.len()),
+                    );
+                    SearchPlaneQueryIpcResponse::History(response)
+                }
+                Err(err) => {
+                    self.emit_error_metric(requested_pin, &err);
+                    SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+                }
             }
-            Err(err) => {
-                self.emit_error_metric(requested_pin, &err);
-                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
-            }
-        }
+        })
     }
 
     fn dispatch_structural(
@@ -1629,19 +1640,20 @@ impl SearchPlaneDispatcher {
         budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
         let requested_pin = request.text_query.generation.as_ref();
-        self.emit_intake_metric(requested_pin);
-        match self.structural(request, budget) {
-            Ok(response) => {
-                self.emit_planner_metric(&response.generation);
-                self.emit_engine_fanout_metric(&response.generation, 1);
-                self.emit_merge_count_metric(&response.generation, response.results.len());
-                SearchPlaneQueryIpcResponse::Structural(response)
+        self.observed_route(QueryRoute::Structural, requested_pin, || {
+            match self.structural(request, budget) {
+                Ok(response) => {
+                    self.emit_planner_metric(&response.generation);
+                    self.emit_engine_fanout_metric(&response.generation, 1);
+                    self.emit_merge_count_metric(&response.generation, response.results.len());
+                    SearchPlaneQueryIpcResponse::Structural(response)
+                }
+                Err(err) => {
+                    self.emit_error_metric(requested_pin, &err);
+                    SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+                }
             }
-            Err(err) => {
-                self.emit_error_metric(requested_pin, &err);
-                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
-            }
-        }
+        })
     }
 
     fn dispatch_repo_map(
@@ -1654,24 +1666,25 @@ impl SearchPlaneDispatcher {
             request.revision_id.clone(),
             request.manifest_generation,
         );
-        self.emit_intake_metric(Some(&requested_pin));
-        match self.repo_map(request, budget) {
-            Ok(response) => {
-                let response_pin = GenerationPin::new(
-                    response.repo_id.clone(),
-                    response.revision_id.clone(),
-                    response.manifest_generation,
-                );
-                self.emit_planner_metric(&response_pin);
-                self.emit_engine_fanout_metric(&response_pin, 1);
-                self.emit_merge_count_metric(&response_pin, response.entries.len());
-                SearchPlaneQueryIpcResponse::RepoMapQuery(response)
+        self.observed_route(QueryRoute::RepoMap, Some(&requested_pin), || {
+            match self.repo_map(request, budget) {
+                Ok(response) => {
+                    let response_pin = GenerationPin::new(
+                        response.repo_id.clone(),
+                        response.revision_id.clone(),
+                        response.manifest_generation,
+                    );
+                    self.emit_planner_metric(&response_pin);
+                    self.emit_engine_fanout_metric(&response_pin, 1);
+                    self.emit_merge_count_metric(&response_pin, response.entries.len());
+                    SearchPlaneQueryIpcResponse::RepoMapQuery(response)
+                }
+                Err(err) => {
+                    self.emit_error_metric(Some(&requested_pin), &err);
+                    SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+                }
             }
-            Err(err) => {
-                self.emit_error_metric(Some(&requested_pin), &err);
-                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
-            }
-        }
+        })
     }
 
     fn dispatch_explain(
@@ -1680,25 +1693,26 @@ impl SearchPlaneDispatcher {
         budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
         let requested_pin = request.generation.clone();
-        self.emit_intake_metric(Some(&requested_pin));
-        match self.explain_query(request, budget) {
-            Ok(response) => {
-                self.emit_planner_metric(&response.generation);
-                self.emit_engine_fanout_metric(
-                    &response.generation,
-                    response.explanation.engines_touched.len(),
-                );
-                self.emit_early_stop_metric(
-                    &response.generation,
-                    response.explanation.early_stop_reason,
-                );
-                SearchPlaneQueryIpcResponse::Explain(response)
+        self.observed_route(QueryRoute::Explain, Some(&requested_pin), || {
+            match self.explain_query(request, budget) {
+                Ok(response) => {
+                    self.emit_planner_metric(&response.generation);
+                    self.emit_engine_fanout_metric(
+                        &response.generation,
+                        response.explanation.engines_touched.len(),
+                    );
+                    self.emit_early_stop_metric(
+                        &response.generation,
+                        response.explanation.early_stop_reason,
+                    );
+                    SearchPlaneQueryIpcResponse::Explain(response)
+                }
+                Err(err) => {
+                    self.emit_error_metric(Some(&requested_pin), &err);
+                    SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+                }
             }
-            Err(err) => {
-                self.emit_error_metric(Some(&requested_pin), &err);
-                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
-            }
-        }
+        })
     }
 
     // QI-RT-02 (in-flight): runtime-metadata query path is defined in the
@@ -1710,19 +1724,20 @@ impl SearchPlaneDispatcher {
         budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
         let requested_pin = request.text_query.generation.as_ref();
-        self.emit_intake_metric(requested_pin);
-        match self.runtime_metadata(request, budget) {
-            Ok(response) => {
-                self.emit_planner_metric(&response.generation);
-                self.emit_engine_fanout_metric(&response.generation, 1);
-                self.emit_merge_count_metric(&response.generation, response.results.len());
-                SearchPlaneQueryIpcResponse::RuntimeMetadata(response)
+        self.observed_route(QueryRoute::RuntimeMetadata, requested_pin, || {
+            match self.runtime_metadata(request, budget) {
+                Ok(response) => {
+                    self.emit_planner_metric(&response.generation);
+                    self.emit_engine_fanout_metric(&response.generation, 1);
+                    self.emit_merge_count_metric(&response.generation, response.results.len());
+                    SearchPlaneQueryIpcResponse::RuntimeMetadata(response)
+                }
+                Err(err) => {
+                    self.emit_error_metric(requested_pin, &err);
+                    SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+                }
             }
-            Err(err) => {
-                self.emit_error_metric(requested_pin, &err);
-                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
-            }
-        }
+        })
     }
 
     fn snapshot_lex_materialized(
@@ -1808,13 +1823,7 @@ impl SearchPlaneDispatcher {
             })
     }
 
-    fn emit_metric(
-        &self,
-        pin: Option<&GenerationPin>,
-        name: &'static str,
-        kind: MetricKind,
-        value: f64,
-    ) {
+    fn emit_metric(&self, pin: Option<&GenerationPin>, name: &str, kind: MetricKind, value: f64) {
         let (repo_id, generation_id) = pin.map_or(("unresolved", 0), |pin| {
             (pin.repo_id.as_str(), pin.manifest_generation.get())
         });
@@ -5371,16 +5380,16 @@ mod tests {
     use std::sync::{Arc, Mutex, RwLock};
 
     use super::{
-        BoundedQueryObsStore, ERR_HISTORY_GENERATION_NOT_READY, ERR_HISTORY_INVALID_TIMEREF,
+        ERR_HISTORY_GENERATION_NOT_READY, ERR_HISTORY_INVALID_TIMEREF,
         ERR_HISTORY_PRODUCER_UNAVAILABLE, ERR_HISTORY_SHARD_UNAVAILABLE, ERR_INVALID,
         ERR_NOT_IMPLEMENTED, ERR_NOT_READY, ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED,
-        FailClosedStructuralProducer, LexicalSearchPageV1, MAX_OBS_SAMPLES, QueryObsSink,
-        SearchPlaneDispatcher, build_hybrid_seed_candidates, build_probe_query,
-        classify_error_metric_name, finalize_probe_window_v1, fused_window_v1,
-        lexical_fetch_limit_v1, lexical_page_window_v1, make_pin, prepare_language_query_v1,
-        probe_top_k_v1, runtime_generation_is_stale, runtime_seed_ids, validate_history_query,
-        validate_runtime_metadata_query,
+        FailClosedStructuralProducer, LexicalSearchPageV1, SearchPlaneDispatcher,
+        build_hybrid_seed_candidates, build_probe_query, classify_error_metric_name,
+        finalize_probe_window_v1, fused_window_v1, lexical_fetch_limit_v1, lexical_page_window_v1,
+        make_pin, prepare_language_query_v1, probe_top_k_v1, runtime_generation_is_stale,
+        runtime_seed_ids, validate_history_query, validate_runtime_metadata_query,
     };
+    use crate::observability::{BoundedQueryObsStore, QueryObsSink};
     use crate::{
         ActivationCatalog, HashingQueryTextEmbedder, Ledger, PreparedSearchCorpusGenerationV1,
         QueryTextEmbedderPort, SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusGenerationV1,
@@ -5696,7 +5705,6 @@ mod tests {
         LexicalSearcher, RepoMapQueryPort, SemanticIndexOpenPort, SemanticSearcher,
     };
     use quanta_index_lq_bridge::BridgeErrorCode;
-    use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
     use tempfile::tempdir;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -8698,6 +8706,8 @@ mod tests {
             "lq_engine_fanout_count".to_string(),
             "lq_merge_result_count".to_string(),
             "lq_early_stop_total".to_string(),
+            "lq_route_hybrid_latency_ms".to_string(),
+            "lq_route_hybrid_served_total".to_string(),
         ];
         if names != expected {
             return Err(format!("unexpected obs metric names: {names:?}").into());
@@ -8719,48 +8729,6 @@ mod tests {
             if sample.name.contains("scope") || sample.name.contains("1.0 0.0") {
                 return Err(format!("metric name leaked query content: {}", sample.name).into());
             }
-        }
-        Ok(())
-    }
-
-    #[test]
-    #[expect(
-        clippy::as_conversions,
-        clippy::cast_precision_loss,
-        reason = "test seeds distinct metric sample values from a small loop counter; usize->f64 is exact at these magnitudes"
-    )]
-    fn bounded_obs_store_evicts_oldest_samples_at_capacity() -> TestResult {
-        let store = BoundedQueryObsStore::default();
-        for i in 0..(MAX_OBS_SAMPLES + 8) {
-            store.emit(MetricSample::new(
-                format!("metric-{i}"),
-                MetricKind::Counter,
-                i as f64,
-                Dimensions::new("LXE-10", "8", "local", "repo-map-ipc", 9),
-            ));
-        }
-        let snapshot = store.snapshot();
-        if snapshot.len() != MAX_OBS_SAMPLES {
-            return Err(format!(
-                "expected {} bounded samples, got {}",
-                MAX_OBS_SAMPLES,
-                snapshot.len()
-            )
-            .into());
-        }
-        if snapshot.first().map(|sample| sample.name.as_ref()) != Some("metric-8") {
-            return Err(format!(
-                "expected oldest retained sample to be metric-8, got {:?}",
-                snapshot.first().map(|sample| sample.name.as_ref())
-            )
-            .into());
-        }
-        if snapshot.last().map(|sample| sample.name.as_ref()) != Some("metric-4103") {
-            return Err(format!(
-                "expected newest retained sample to be metric-4103, got {:?}",
-                snapshot.last().map(|sample| sample.name.as_ref())
-            )
-            .into());
         }
         Ok(())
     }
@@ -8798,6 +8766,8 @@ mod tests {
         let expected = vec![
             "lq_query_intake_total".to_string(),
             "lq_typed_error_parse_total".to_string(),
+            "lq_route_lexical_latency_ms".to_string(),
+            "lq_route_lexical_errors_total".to_string(),
         ];
         if names != expected {
             return Err(format!("unexpected parse-error obs metric names: {names:?}").into());
@@ -8956,6 +8926,8 @@ mod tests {
             "lq_planner_total".to_string(),
             "lq_engine_fanout_count".to_string(),
             "lq_merge_result_count".to_string(),
+            "lq_route_repo_map_latency_ms".to_string(),
+            "lq_route_repo_map_served_total".to_string(),
         ];
         if names != expected {
             return Err(format!("unexpected repo-map obs metric names: {names:?}").into());
@@ -9017,6 +8989,8 @@ mod tests {
         let expected = vec![
             "lq_query_intake_total".to_string(),
             "lq_typed_error_not_ready_total".to_string(),
+            "lq_route_runtime_metadata_latency_ms".to_string(),
+            "lq_route_runtime_metadata_errors_total".to_string(),
         ];
         if names != expected {
             return Err(format!("unexpected runtime-metadata obs metric names: {names:?}").into());
@@ -9253,6 +9227,8 @@ mod tests {
                 "lq_planner_total",
                 "lq_engine_fanout_count",
                 "lq_merge_result_count",
+                "lq_route_history_latency_ms",
+                "lq_route_history_served_total",
             ],
         )
     }
@@ -9284,7 +9260,12 @@ mod tests {
 
         assert_closed_obs_metrics(
             &obs_sink,
-            &["lq_query_intake_total", "lq_typed_error_unavailable_total"],
+            &[
+                "lq_query_intake_total",
+                "lq_typed_error_unavailable_total",
+                "lq_route_history_latency_ms",
+                "lq_route_history_errors_total",
+            ],
         )
     }
 
@@ -9346,6 +9327,8 @@ mod tests {
                 "lq_planner_total",
                 "lq_engine_fanout_count",
                 "lq_merge_result_count",
+                "lq_route_structural_latency_ms",
+                "lq_route_structural_served_total",
             ],
         )
     }

@@ -12,7 +12,8 @@ use std::time::Duration;
 
 use quanta_index_contract::ipc::{
     CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
-    SearchPlaneControlIpcRequest, SearchPlaneControlIpcRequestEnvelope,
+    MetricBucketV1, MetricCounterV1, MetricGaugeV1, MetricHistogramV1, MetricsDiagnosticsV1,
+    MetricsSnapshotV1, SearchPlaneControlIpcRequest, SearchPlaneControlIpcRequestEnvelope,
     SearchPlaneControlIpcResponse, SearchPlaneControlIpcResponseEnvelope, SearchPlaneTrackKind,
     TrackReadinessRecord,
 };
@@ -522,6 +523,9 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
         match request {
             SearchPlaneControlIpcRequest::GenerationStatus(req) => self.generation_status(&req),
             SearchPlaneControlIpcRequest::CurrentGeneration(req) => self.current_generation(&req),
+            SearchPlaneControlIpcRequest::MetricsSnapshot(_) => {
+                SearchPlaneControlIpcResponse::MetricsSnapshot(metrics_fixture())
+            }
             other @ (SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RepoMapActivate(_)) => control_error_response(
@@ -530,6 +534,120 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
             ),
         }
     }
+}
+
+/// The snapshot the control mock scrapes as (QI-BB-015): one of each kind,
+/// so every rendering path is exercised end to end.
+fn metrics_fixture() -> MetricsSnapshotV1 {
+    MetricsSnapshotV1 {
+        counters: vec![MetricCounterV1 {
+            name: "lq_route_lexical_served_total".to_string(),
+            value: 12,
+        }],
+        gauges: vec![MetricGaugeV1 {
+            name: "ipc_query_connections_live".to_string(),
+            value: 1.0,
+        }],
+        histograms: vec![MetricHistogramV1 {
+            name: "lq_route_lexical_latency_ms".to_string(),
+            count: 2,
+            sum: 3.5,
+            min: 1.0,
+            max: 2.5,
+            buckets: vec![
+                MetricBucketV1 { le: 1.0, count: 1 },
+                MetricBucketV1 { le: 5.0, count: 2 },
+                MetricBucketV1 {
+                    le: f64::INFINITY,
+                    count: 2,
+                },
+            ],
+        }],
+        diagnostics: MetricsDiagnosticsV1 {
+            samples_recorded: 36,
+            samples_dropped: 0,
+            errors_recorded: 0,
+            errors_dropped: 0,
+        },
+    }
+}
+
+/// Run `metrics --output <mode>` against the control mock and return stdout.
+fn run_metrics(mode: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let dir = tempdir()?;
+    let query_socket = dir.path().join("query.sock");
+    let control_socket = dir.path().join("control.sock");
+    let shutdown = start_control_server(&control_socket, ControlScenario::EmptyTracks)?;
+    let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("metrics")
+        .arg("--socket")
+        .arg(&query_socket)
+        .arg("--output")
+        .arg(mode)
+        .output()?;
+    shutdown.trigger();
+    if !output.status.success() {
+        return Err(format!(
+            "metrics exited non-zero ({:?}): {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(String::from_utf8(output.stdout)?)
+}
+
+/// QI-BB-015: `metrics --output prometheus` over the real control UDS is the
+/// text exposition of exactly what the daemon answered.
+#[test]
+fn metrics_prometheus_exposition_roundtrip() {
+    let result = metrics_prometheus_exposition_roundtrip_impl();
+    assert!(result.is_ok(), "{result:?}");
+}
+
+fn metrics_prometheus_exposition_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
+    let stdout = run_metrics("prometheus")?;
+    let expected = "# TYPE lq_route_lexical_served_total counter\n\
+lq_route_lexical_served_total 12\n\
+# TYPE ipc_query_connections_live gauge\n\
+ipc_query_connections_live 1\n\
+# TYPE lq_route_lexical_latency_ms histogram\n\
+lq_route_lexical_latency_ms_bucket{le=\"1\"} 1\n\
+lq_route_lexical_latency_ms_bucket{le=\"5\"} 2\n\
+lq_route_lexical_latency_ms_bucket{le=\"+Inf\"} 2\n\
+lq_route_lexical_latency_ms_sum 3.5\n\
+lq_route_lexical_latency_ms_count 2\n\
+# TYPE searchd_obs_samples_recorded_total counter\n\
+searchd_obs_samples_recorded_total 36\n\
+# TYPE searchd_obs_samples_dropped_total counter\n\
+searchd_obs_samples_dropped_total 0\n\
+# TYPE searchd_obs_errors_recorded_total counter\n\
+searchd_obs_errors_recorded_total 0\n\
+# TYPE searchd_obs_errors_dropped_total counter\n\
+searchd_obs_errors_dropped_total 0\n";
+    if stdout != expected {
+        return Err(
+            format!("unexpected exposition:\n{stdout}\n--- expected ---\n{expected}").into(),
+        );
+    }
+    Ok(())
+}
+
+/// QI-BB-015: `metrics --output json` is the wire snapshot, decodable back
+/// into the typed contract.
+#[test]
+fn metrics_json_roundtrip() {
+    let result = metrics_json_roundtrip_impl();
+    assert!(result.is_ok(), "{result:?}");
+}
+
+fn metrics_json_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
+    let stdout = run_metrics("json")?;
+    let decoded: MetricsSnapshotV1 = serde_json::from_str(&stdout)?;
+    if decoded != metrics_fixture() {
+        return Err(format!("json output does not round-trip the snapshot: {stdout}").into());
+    }
+    Ok(())
 }
 
 fn control_error_response(code: &str, message: impl Into<String>) -> SearchPlaneControlIpcResponse {

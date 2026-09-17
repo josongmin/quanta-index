@@ -18,7 +18,7 @@ use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt}
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use quanta_index_core::RequestBudgetV1;
@@ -54,6 +54,7 @@ use crate::codec::{
     IpcError, IpcIoOperation, MAX_FRAME_BODY_BYTES, decode_request, decode_response,
     encode_request, encode_response,
 };
+use crate::counters::IpcServerCounters;
 
 /// Dispatch hook supplied by the composition root.
 ///
@@ -226,11 +227,10 @@ pub struct UdsServer {
     socket_path_identity: SocketPathIdentity,
     shutdown: Arc<AtomicBool>,
     policy: ServerAdmissionPolicy,
-    /// Connections whose threads are alive; the accept loop refuses past
-    /// the policy's cap instead of queueing without bound.
-    live_connections: Arc<AtomicUsize>,
-    /// Connections the accept loop closed because the cap was reached.
-    refused_connections: Arc<AtomicUsize>,
+    /// What this server has counted since bind (QI-BB-015): live
+    /// connections, which the accept loop refuses past the policy's cap
+    /// instead of queueing without bound, and every admission outcome.
+    counters: Arc<IpcServerCounters>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -406,6 +406,21 @@ impl UdsServer {
     /// probe, so a listener that binds in between keeps its path. The bound
     /// socket is then made `0600`.
     pub fn bind_with_policy(path: &Path, policy: ServerAdmissionPolicy) -> Result<Self, IpcError> {
+        Self::bind_observed(
+            path,
+            policy,
+            Arc::new(IpcServerCounters::for_plane("unnamed")),
+        )
+    }
+
+    /// [`Self::bind_with_policy`] with counters the caller keeps a handle to,
+    /// so they can be registered with a scrape before any connection exists
+    /// (QI-BB-015).
+    pub fn bind_observed(
+        path: &Path,
+        policy: ServerAdmissionPolicy,
+        counters: Arc<IpcServerCounters>,
+    ) -> Result<Self, IpcError> {
         let owner = rustix::process::geteuid().as_raw();
         if let Some(parent) = path
             .parent()
@@ -425,8 +440,7 @@ impl UdsServer {
             socket_path_identity,
             shutdown: Arc::new(AtomicBool::new(false)),
             policy,
-            live_connections: Arc::new(AtomicUsize::new(0)),
-            refused_connections: Arc::new(AtomicUsize::new(0)),
+            counters,
         })
     }
 
@@ -437,8 +451,14 @@ impl UdsServer {
 
     /// Connections the accept loop closed because the cap was reached.
     #[must_use]
-    pub fn refused_connections(&self) -> usize {
-        self.refused_connections.load(Ordering::Acquire)
+    pub fn refused_connections(&self) -> u64 {
+        self.counters.snapshot().connections_refused
+    }
+
+    /// Everything this server has counted since bind (QI-BB-015).
+    #[must_use]
+    pub fn counters(&self) -> Arc<IpcServerCounters> {
+        Arc::clone(&self.counters)
     }
 
     /// Trigger graceful shutdown. Safe to call from any thread / signal handler.
@@ -475,23 +495,23 @@ impl UdsServer {
         D: IpcDispatcher<Request, Response> + ?Sized + 'static,
     {
         let slots = Arc::new(DispatchSlots::new(self.policy.dispatch_slots()));
+        let max_connections =
+            u64::try_from(self.policy.max_connections()).map_or(u64::MAX, |cap| cap);
         let mut connection_threads: Vec<std::thread::JoinHandle<ConnectionCloseReason>> =
             Vec::new();
         while !self.shutdown.load(Ordering::Acquire) {
             connection_threads.retain(|handle| !handle.is_finished());
             match self.listener.accept() {
                 Ok((stream, _addr)) => {
-                    if self.live_connections.load(Ordering::Acquire)
-                        >= self.policy.max_connections()
-                    {
-                        let _refused = self.refused_connections.fetch_add(1, Ordering::AcqRel);
+                    if self.counters.connections_live() >= max_connections {
+                        self.counters.connection_refused();
                         drop(stream);
                         continue;
                     }
-                    let _live = self.live_connections.fetch_add(1, Ordering::AcqRel);
+                    self.counters.connection_accepted();
                     let dispatcher = Arc::clone(dispatcher);
                     let slots = Arc::clone(&slots);
-                    let live_connections = Arc::clone(&self.live_connections);
+                    let counters = Arc::clone(&self.counters);
                     let shutdown = Arc::clone(&self.shutdown);
                     let policy = self.policy;
                     let spawned = std::thread::Builder::new()
@@ -504,15 +524,20 @@ impl UdsServer {
                                 Response,
                                 D,
                             >(
-                                stream, dispatcher.as_ref(), &slots, policy, &shutdown
+                                stream,
+                                dispatcher.as_ref(),
+                                &slots,
+                                policy,
+                                &shutdown,
+                                &counters,
                             );
-                            let _live = live_connections.fetch_sub(1, Ordering::AcqRel);
+                            counters.connection_closed();
                             reason
                         });
                     match spawned {
                         Ok(handle) => connection_threads.push(handle),
                         Err(err) => {
-                            let _live = self.live_connections.fetch_sub(1, Ordering::AcqRel);
+                            self.counters.connection_closed();
                             return Err(IpcError::Io(err));
                         }
                     }
@@ -669,6 +694,7 @@ fn handle_connection<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
     slots: &DispatchSlots,
     policy: ServerAdmissionPolicy,
     shutdown: &AtomicBool,
+    counters: &IpcServerCounters,
 ) -> ConnectionCloseReason
 where
     RequestEnvelopeT: RequestEnvelope<Request>,
@@ -691,12 +717,16 @@ where
         let request = match decode_request::<RequestEnvelopeT, _>(&mut stream) {
             Ok(env) => env,
             Err(IpcError::Truncated) => return ConnectionCloseReason::PeerClosed,
-            Err(err) => return ConnectionCloseReason::RequestDecodeFailed(err),
+            Err(err) => {
+                counters.request_decode_failed();
+                return ConnectionCloseReason::RequestDecodeFailed(err);
+            }
         };
         let (request_id, request_payload) = request.into_parts();
         // A request that arrives during shutdown is not dispatched; the
         // connection closes so the peer retries against the next process.
         if shutdown.load(Ordering::Acquire) {
+            counters.request_refused_shutting_down();
             return ConnectionCloseReason::ShuttingDown;
         }
         // Admission: ingress happened above, now the dispatch slot. A full
@@ -704,6 +734,7 @@ where
         let permit = match slots.acquire(policy.queue_wait()) {
             Ok(permit) => permit,
             Err(SlotRefusal::QueueWaitExceeded { waited, slots }) => {
+                counters.request_overloaded();
                 let Some(refusal) = ResponseEnvelopeT::overloaded(request_id, waited, slots) else {
                     return ConnectionCloseReason::Overloaded { waited };
                 };
@@ -723,6 +754,7 @@ where
         let response_payload = dispatcher.dispatch(request_payload, &budget);
         let peer_hung_up = watch.disarm();
         drop(permit);
+        counters.request_dispatched(peer_hung_up);
         if peer_hung_up {
             // Nothing to write to; the dispatcher already saw the
             // cancellation at its next checkpoint (or ran to completion).
@@ -1136,10 +1168,11 @@ fn classify_client_io_error(
 #[cfg(test)]
 mod tests {
     use super::{
-        ClientIoPolicy, ConnectionCloseReason, IpcDispatcher, IpcError, PeerWatch, RequestEnvelope,
-        ResponseEnvelope, SOCKET_DIRECTORY_MODE, SOCKET_MODE, SocketPathIdentity, UdsServer,
-        connect_before_deadline, connect_requires_completion_wait, create_connect_socket,
-        decode_response, encode_request, handle_connection, send_request, wait_for_connect,
+        ClientIoPolicy, ConnectionCloseReason, IpcDispatcher, IpcError, IpcServerCounters,
+        PeerWatch, RequestEnvelope, ResponseEnvelope, SOCKET_DIRECTORY_MODE, SOCKET_MODE,
+        SocketPathIdentity, UdsServer, connect_before_deadline, connect_requires_completion_wait,
+        create_connect_socket, decode_response, encode_request, handle_connection, send_request,
+        wait_for_connect,
     };
     use rustix::fs::{OFlags, fcntl_getfl};
     use rustix::io::{Errno, FdFlags, fcntl_getfd};
@@ -1162,6 +1195,10 @@ mod tests {
     use crate::codec::MAX_FRAME_BODY_BYTES;
 
     type TestRes = Result<(), String>;
+
+    fn test_counters() -> IpcServerCounters {
+        IpcServerCounters::for_plane("test")
+    }
 
     fn test_slots() -> DispatchSlots {
         DispatchSlots::new(ServerAdmissionPolicy::DEFAULT.dispatch_slots())
@@ -1807,6 +1844,7 @@ mod tests {
                 &test_slots(),
                 test_policy(),
                 &AtomicBool::new(false),
+                &test_counters(),
             );
             if !matches!(reason, ConnectionCloseReason::PeerClosed) {
                 return Err(format!("unexpected close reason: {reason:?}"));
@@ -2029,6 +2067,7 @@ mod tests {
                     &test_slots(),
                     test_policy(),
                     &AtomicBool::new(false),
+                    &test_counters(),
                 )
             });
 
@@ -2063,6 +2102,7 @@ mod tests {
                 .shutdown(Shutdown::Write)
                 .map_err(|err| err.to_string())?;
 
+            let counters = test_counters();
             let reason = handle_connection::<
                 TestRequestEnvelope,
                 u64,
@@ -2075,12 +2115,18 @@ mod tests {
                 &test_slots(),
                 test_policy(),
                 &AtomicBool::new(false),
+                &counters,
             );
             if !matches!(
                 reason,
                 ConnectionCloseReason::RequestDecodeFailed(IpcError::EmptyFrame)
             ) {
                 return Err(format!("unexpected close reason: {reason:?}"));
+            }
+            // The failure is counted where a scrape will read it (QI-BB-015).
+            let snapshot = counters.snapshot();
+            if snapshot.request_decode_failures != 1 || snapshot.requests_dispatched != 0 {
+                return Err(format!("decode failure must be counted once: {snapshot:?}"));
             }
             Ok(())
         })();
@@ -2112,6 +2158,7 @@ mod tests {
                     &test_slots(),
                     test_policy(),
                     &AtomicBool::new(false),
+                    &test_counters(),
                 )
             });
             let response: TestResponseEnvelope =
@@ -2162,6 +2209,7 @@ mod tests {
                 &test_slots(),
                 test_policy(),
                 &AtomicBool::new(false),
+                &test_counters(),
             );
             if let ConnectionCloseReason::ResponseEncodeFailed(IpcError::Encode(message)) = &reason
                 && message.contains("simulated response encode failure")
@@ -2213,6 +2261,7 @@ mod tests {
                     &test_slots(),
                     test_policy(),
                     &AtomicBool::new(false),
+                    &test_counters(),
                 )
             });
             entered_rx
@@ -2274,6 +2323,7 @@ mod tests {
                     &test_slots(),
                     test_policy(),
                     &AtomicBool::new(false),
+                    &test_counters(),
                 )
             });
 

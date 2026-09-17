@@ -17,8 +17,8 @@ use quanta_index_contract::{
     SearchPlaneQueryIpcResponseEnvelope,
 };
 use quanta_index_ipc::{
-    IpcDispatcher, IpcError, RequestEnvelope, ResponseEnvelope, ServerAdmissionPolicy,
-    ShutdownHandle as IpcShutdownHandle, UdsServer,
+    IpcDispatcher, IpcError, IpcServerCounters, RequestEnvelope, ResponseEnvelope,
+    ServerAdmissionPolicy, ShutdownHandle as IpcShutdownHandle, UdsServer,
 };
 
 /// Composed query server. Holds the bound [`UdsServer`] and a handle to the
@@ -66,14 +66,16 @@ where
     ResponseEnvelopeT: ResponseEnvelope<Response>,
     D: IpcDispatcher<Request, Response> + ?Sized + 'static,
 {
-    /// Bind a server to `socket_path` under `policy` (QI-BB-002).
+    /// Bind a server to `socket_path` under `policy` (QI-BB-002), counting
+    /// into `counters` (QI-BB-015).
     pub fn bind(
         thread_name: impl Into<String>,
         socket_path: &Path,
         dispatcher: Arc<D>,
         policy: ServerAdmissionPolicy,
+        counters: Arc<IpcServerCounters>,
     ) -> Result<Self, IpcError> {
-        let server = UdsServer::bind_with_policy(socket_path, policy)?;
+        let server = UdsServer::bind_observed(socket_path, policy, counters)?;
         Ok(Self {
             server,
             dispatcher,

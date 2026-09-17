@@ -10,8 +10,9 @@ use crate::{
     ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
     CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
     HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest,
-    HybridSeedQueryResponse, RepoMapActivateGenerationRequest, RepoMapMutationAck,
-    RepoMapQueryRequest, RepoMapQueryResponse, RuntimeMetadataQueryRequest,
+    HybridSeedQueryResponse, MetricsSnapshotRequest, MetricsSnapshotV1,
+    RepoMapActivateGenerationRequest, RepoMapMutationAck, RepoMapQueryRequest,
+    RepoMapQueryResponse, RuntimeMetadataQueryRequest,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneExplainQueryRequest,
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneRuntimeMetadataQueryResponse,
@@ -56,6 +57,7 @@ const SEARCH_PLANE_CONTROL_IPC_REQUEST_VARIANTS: &[&str] = &[
     "RepoMapActivate",
     "CurrentGeneration",
     "GenerationStatus",
+    "MetricsSnapshot",
 ];
 const SEARCH_PLANE_CONTROL_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "SearchCorpusActivationCasAck",
@@ -64,6 +66,7 @@ const SEARCH_PLANE_CONTROL_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "Error",
     "CurrentGenerationSnapshot",
     "GenerationStatusReport",
+    "MetricsSnapshot",
 ];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -134,6 +137,8 @@ pub enum SearchPlaneControlIpcRequest {
     /// QI-ACT-01: read-only status query returning all activated tracks for
     /// one `(repo, revision)` pair.
     GenerationStatus(GenerationStatusRequest),
+    /// QI-BB-015: read-only scrape of every metric the daemon aggregates.
+    MetricsSnapshot(MetricsSnapshotRequest),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -152,6 +157,8 @@ pub enum SearchPlaneControlIpcResponse {
     CurrentGenerationSnapshot(GenerationSnapshot),
     /// QI-ACT-01: response to [`SearchPlaneControlIpcRequest::GenerationStatus`].
     GenerationStatusReport(GenerationStatusReport),
+    /// QI-BB-015: response to [`SearchPlaneControlIpcRequest::MetricsSnapshot`].
+    MetricsSnapshot(MetricsSnapshotV1),
 }
 
 fn serialize_envelope<S, Payload>(
@@ -741,6 +748,12 @@ impl Serialize for SearchPlaneControlIpcRequest {
                 payload,
                 serializer,
             ),
+            Self::MetricsSnapshot(payload) => serialize_adjacent_tagged(
+                "SearchPlaneControlIpcRequest",
+                "MetricsSnapshot",
+                payload,
+                serializer,
+            ),
         }
     }
 }
@@ -794,6 +807,9 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcRequestVisitor {
                         }
                         "GenerationStatus" => {
                             SearchPlaneControlIpcRequest::GenerationStatus(map.next_value()?)
+                        }
+                        "MetricsSnapshot" => {
+                            SearchPlaneControlIpcRequest::MetricsSnapshot(map.next_value()?)
                         }
                         other => {
                             return Err(de::Error::unknown_variant(
@@ -926,6 +942,12 @@ impl Serialize for SearchPlaneControlIpcResponse {
                 payload,
                 serializer,
             ),
+            Self::MetricsSnapshot(payload) => serialize_adjacent_tagged(
+                "SearchPlaneControlIpcResponse",
+                "MetricsSnapshot",
+                payload,
+                serializer,
+            ),
         }
     }
 }
@@ -982,6 +1004,9 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcResponseVisitor {
                         }
                         "GenerationStatusReport" => {
                             SearchPlaneControlIpcResponse::GenerationStatusReport(map.next_value()?)
+                        }
+                        "MetricsSnapshot" => {
+                            SearchPlaneControlIpcResponse::MetricsSnapshot(map.next_value()?)
                         }
                         other => {
                             return Err(de::Error::unknown_variant(

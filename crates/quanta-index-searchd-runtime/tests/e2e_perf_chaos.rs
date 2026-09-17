@@ -51,6 +51,72 @@ fn is_snapshot_metric(name: &str) -> bool {
     SNAPSHOT_METRIC_FAMILY.contains(&name)
 }
 
+/// The routes of the per-route metric family (QI-BB-015).
+///
+/// Every route ends its sample stream with `lq_route_<route>_latency_ms`
+/// and then one of `lq_route_<route>_served_total` /
+/// `lq_route_<route>_errors_total`; the family is closed by these names.
+const ROUTE_METRIC_ROUTES: [&str; 11] = [
+    "lexical",
+    "symbol",
+    "semantic",
+    "hybrid",
+    "hybrid_seed",
+    "history",
+    "structural",
+    "repo_map",
+    "explain",
+    "runtime_metadata",
+    "cluster_membership_read",
+];
+
+/// `Some((route, suffix))` when `name` is a route metric.
+fn route_metric(name: &str) -> Option<(&str, &str)> {
+    let rest = name.strip_prefix("lq_route_")?;
+    ROUTE_METRIC_ROUTES.iter().find_map(|route| {
+        let suffix = rest.strip_prefix(route)?.strip_prefix('_')?;
+        matches!(suffix, "latency_ms" | "served_total" | "errors_total").then_some((*route, suffix))
+    })
+}
+
+/// The stream must end with one route's latency and outcome, and the
+/// outcome must agree with the pipeline suffix: a typed-error tail is an
+/// `errors_total`, anything else a `served_total`.
+fn assert_route_tail(all_names: &[String], pipeline_suffix: &[&str]) -> AnyResult<()> {
+    let tail: Vec<&str> = all_names.iter().rev().take(2).map(String::as_str).collect();
+    let (Some(outcome), Some(latency)) = (tail.first(), tail.get(1)) else {
+        return Err(anyhow::anyhow!(
+            "route tail needs two samples: {all_names:?}"
+        ));
+    };
+    let (Some((latency_route, "latency_ms")), Some((outcome_route, outcome_suffix))) =
+        (route_metric(latency), route_metric(outcome))
+    else {
+        return Err(anyhow::anyhow!(
+            "the stream must end in a route latency then its outcome: {tail:?}"
+        ));
+    };
+    if latency_route != outcome_route {
+        return Err(anyhow::anyhow!(
+            "latency and outcome name different routes: {tail:?}"
+        ));
+    }
+    let expected_outcome = if pipeline_suffix
+        .last()
+        .is_some_and(|name| name.starts_with("lq_typed_error_"))
+    {
+        "errors_total"
+    } else {
+        "served_total"
+    };
+    if outcome_suffix != expected_outcome {
+        return Err(anyhow::anyhow!(
+            "route outcome `{outcome_suffix}` disagrees with the pipeline tail {pipeline_suffix:?}"
+        ));
+    }
+    Ok(())
+}
+
 fn assert_closed_metric_suffix(
     rt: &E2eRuntime,
     expected_suffix: &[&str],
@@ -68,17 +134,19 @@ fn assert_closed_metric_suffix(
         .iter()
         .map(|sample| sample.name.as_ref().to_string())
         .collect::<Vec<_>>();
-    if all_names
-        .iter()
-        .any(|name| !allowed.contains(&name.as_str()) && !is_snapshot_metric(name))
-    {
+    if all_names.iter().any(|name| {
+        !allowed.contains(&name.as_str())
+            && !is_snapshot_metric(name)
+            && route_metric(name).is_none()
+    }) {
         return Err(anyhow::anyhow!(
             "runtime metric names escaped closed set: {all_names:?}"
         ));
     }
+    assert_route_tail(&all_names, expected_suffix)?;
     let names = all_names
         .iter()
-        .filter(|name| !is_snapshot_metric(name))
+        .filter(|name| !is_snapshot_metric(name) && route_metric(name).is_none())
         .cloned()
         .collect::<Vec<_>>();
     let suffix = names
@@ -105,6 +173,12 @@ fn assert_closed_metric_suffix(
                 "unexpected runtime metric dimensions: {:?}",
                 sample.dimensions
             ));
+        }
+        // A route-family name is closed by construction (a known route and
+        // a known suffix), so it cannot carry query content even when a
+        // route is named after the term under test.
+        if route_metric(&sample.name).is_some() {
+            continue;
         }
         for leaked in leaked_terms {
             if sample.name.contains(leaked) {
@@ -760,75 +834,25 @@ fn hybrid_runtime_metrics_use_closed_labels_without_query_leakage() -> AnyResult
 
     let result = rt.query_hybrid(TextQuerySyntax::Native, "scope", "scope", 2);
     require_no_typed_error(result.typed_error, "hybrid runtime metrics query")?;
-
-    let errors = rt.query_metric_errors()?;
-    if !errors.is_empty() {
-        return Err(anyhow::anyhow!(
-            "unexpected runtime metric errors: {errors:?}"
-        ));
-    }
-    let samples = rt.query_metrics_snapshot()?;
-    let all_names = samples
-        .iter()
-        .map(|sample| sample.name.as_ref().to_string())
-        .collect::<Vec<_>>();
-    let expected_success_suffix = vec![
-        "lq_query_intake_total".to_string(),
-        "lq_planner_total".to_string(),
-        "lq_engine_fanout_count".to_string(),
-        "lq_merge_result_count".to_string(),
-        "lq_early_stop_total".to_string(),
-    ];
-    let allowed = [
-        "lq_query_intake_total",
-        "lq_typed_error_not_ready_total",
-        "lq_planner_total",
-        "lq_engine_fanout_count",
-        "lq_merge_result_count",
-        "lq_early_stop_total",
-    ];
-    if all_names
-        .iter()
-        .any(|name| !allowed.contains(&name.as_str()) && !is_snapshot_metric(name))
-    {
-        return Err(anyhow::anyhow!(
-            "runtime metric names escaped closed set: {all_names:?}"
-        ));
-    }
-    let names = all_names
-        .iter()
-        .filter(|name| !is_snapshot_metric(name))
-        .cloned()
-        .collect::<Vec<_>>();
-    let success_suffix = names
-        .get(names.len().saturating_sub(expected_success_suffix.len())..)
-        .unwrap_or_default()
-        .to_vec();
-    if success_suffix != expected_success_suffix {
-        return Err(anyhow::anyhow!(
-            "unexpected runtime metric names: {names:?}"
-        ));
-    }
-    for sample in &samples {
-        if sample.dimensions.ticket_id.as_ref() != "LXE-10"
-            || sample.dimensions.wave_id.as_ref() != "8"
-            || sample.dimensions.tenant_id.as_ref() != "local"
-            || sample.dimensions.repo_id.as_ref() != "repo-e2e"
-            || sample.dimensions.generation_id != 1
-        {
-            return Err(anyhow::anyhow!(
-                "unexpected runtime metric dimensions: {:?}",
-                sample.dimensions
-            ));
-        }
-        if sample.name.contains("scope") || sample.name.contains("1.0 0.0") {
-            return Err(anyhow::anyhow!(
-                "runtime metric leaked query content in name={}",
-                sample.name
-            ));
-        }
-    }
-    Ok(())
+    assert_closed_metric_suffix(
+        &rt,
+        &[
+            "lq_query_intake_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+            "lq_early_stop_total",
+        ],
+        &[
+            "lq_query_intake_total",
+            "lq_typed_error_not_ready_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+            "lq_early_stop_total",
+        ],
+        &["scope", "1.0 0.0"],
+    )
 }
 
 #[test]

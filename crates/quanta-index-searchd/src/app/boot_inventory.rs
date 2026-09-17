@@ -14,7 +14,10 @@ use std::sync::{Arc, RwLock};
 
 use anyhow::Result;
 use quanta_index_contract::{ManifestGeneration, SearchPlaneTrackKind};
-use quanta_index_core::{QuarantinedGenerationV1, RepoMapOpenReportV1, SealedGenerationScanPort};
+use quanta_index_core::{
+    CoreError, MetricPointV1, MetricSourcePort, QuarantinedGenerationV1, RepoMapOpenReportV1,
+    SealedGenerationScanPort, count_from_usize,
+};
 use quanta_index_search_plane::{Ledger, LegacyAuxiliaryMigrationReceipt};
 
 /// One track's inventory outcome.
@@ -51,6 +54,64 @@ pub struct BootInventoryReportV1 {
     /// What the `RepoMap` store found on disk: loaded, migrated, swept and
     /// quarantined files (QI-BB-008).
     pub repo_map: RepoMapOpenReportV1,
+}
+
+impl TrackInventoryReportV1 {
+    fn metric_points(&self, track: &str) -> [MetricPointV1; 2] {
+        [
+            MetricPointV1::gauge_count(
+                format!("boot_{track}_sealed_generations"),
+                count_from_usize(self.sealed_generations),
+            ),
+            MetricPointV1::gauge_count(
+                format!("boot_{track}_quarantined_generations"),
+                count_from_usize(self.quarantined.len()),
+            ),
+        ]
+    }
+}
+
+/// What boot found, as gauges fixed for the life of the process,
+/// `boot_…` (QI-BB-015).
+impl MetricSourcePort for BootInventoryReportV1 {
+    fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
+        let mut points = Vec::with_capacity(12);
+        points.extend(self.lexical.metric_points("lexical"));
+        points.extend(self.semantic.metric_points("semantic"));
+        points.push(MetricPointV1::gauge_count(
+            "boot_active_pairs_validated",
+            count_from_usize(self.active_pairs_validated),
+        ));
+        points.push(MetricPointV1::gauge_count(
+            "boot_auxiliary_rows_restored",
+            self.auxiliary_rows_restored,
+        ));
+        points.push(MetricPointV1::gauge_count(
+            "boot_repomap_snapshots_loaded",
+            self.repo_map.snapshots_loaded,
+        ));
+        points.push(MetricPointV1::gauge_count(
+            "boot_repomap_snapshots_migrated",
+            self.repo_map.snapshots_migrated,
+        ));
+        points.push(MetricPointV1::gauge_count(
+            "boot_repomap_activations_loaded",
+            self.repo_map.activations_loaded,
+        ));
+        points.push(MetricPointV1::gauge_count(
+            "boot_repomap_stale_temporaries_removed",
+            self.repo_map.stale_temporaries_removed,
+        ));
+        points.push(MetricPointV1::gauge_count(
+            "boot_repomap_quarantined_files",
+            count_from_usize(self.repo_map.quarantined.len()),
+        ));
+        points.push(MetricPointV1::gauge_count(
+            "boot_repomap_activations_without_snapshot",
+            count_from_usize(self.repo_map.activations_without_snapshot.len()),
+        ));
+        Ok(points)
+    }
 }
 
 /// Seed one track's readiness from its inventory.

@@ -13,6 +13,7 @@ mod auxiliary_authority;
 mod control_dispatcher;
 mod ingest_dispatcher;
 mod lowering;
+mod observability;
 mod query_dispatcher;
 mod query_embedder;
 pub mod readiness;
@@ -30,10 +31,14 @@ pub use ingest_dispatcher::{
     SearchPlaneIngestDispatcher, StructuralIngestPort,
 };
 pub use lowering::{lower_lexical_text_query, lower_sourcegraph_query_text};
+pub use observability::{
+    BoundedQueryObsStore, HISTOGRAM_BUCKET_BOUNDS, MAX_OBS_ERRORS, MAX_OBS_SAMPLES,
+    ObservabilityScrape, QueryObsSink,
+};
 pub use quanta_index_lq_obs::{MetricSample, ObsError};
 pub use query_dispatcher::{
-    BoundedQueryObsStore, QueryObsSink, SearchPlaneDispatcher, SearchPlaneQueryDispatcher,
-    SearchPlaneQueryService, make_pin, repair_for_code,
+    SearchPlaneDispatcher, SearchPlaneQueryDispatcher, SearchPlaneQueryService, make_pin,
+    repair_for_code,
 };
 pub use query_embedder::{
     HashingQueryTextEmbedder, QueryTextEmbedderPort, SEARCH_OWNED_SEMANTIC_DIMENSION,

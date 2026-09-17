@@ -3594,6 +3594,115 @@ fn generations_status_returns_empty_tracks_when_nothing_activated() {
     );
 }
 
+/// QI-BB-015: the metrics scrape rides the control socket and comes back
+/// as the typed snapshot, exactly as the daemon encoded it.
+#[test]
+fn observability_metrics_snapshot_returns_the_daemon_snapshot() {
+    use quanta_index_contract::{
+        MetricBucketV1, MetricCounterV1, MetricGaugeV1, MetricHistogramV1, MetricsDiagnosticsV1,
+        MetricsSnapshotV1, SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse,
+    };
+    let snapshot = MetricsSnapshotV1 {
+        counters: vec![MetricCounterV1 {
+            name: "lq_query_intake_total".to_string(),
+            value: 12,
+        }],
+        gauges: vec![MetricGaugeV1 {
+            name: "ipc_query_connections_live".to_string(),
+            value: 1.0,
+        }],
+        histograms: vec![MetricHistogramV1 {
+            name: "lq_route_lexical_latency_ms".to_string(),
+            count: 2,
+            sum: 7.0,
+            min: 3.0,
+            max: 4.0,
+            buckets: vec![
+                MetricBucketV1 { le: 5.0, count: 2 },
+                MetricBucketV1 {
+                    le: f64::INFINITY,
+                    count: 2,
+                },
+            ],
+        }],
+        diagnostics: MetricsDiagnosticsV1 {
+            samples_recorded: 14,
+            samples_dropped: 0,
+            errors_recorded: 0,
+            errors_dropped: 0,
+        },
+    };
+    let control = Arc::new(StubControlTransport::new(
+        SearchPlaneControlIpcResponse::MetricsSnapshot(snapshot.clone()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), control.clone(), unused_ingest());
+    let observed = ok_or_fail!(client.observability().metrics_snapshot());
+    assert_eq!(observed, snapshot);
+    let sent: Vec<SearchPlaneControlIpcRequestEnvelope> = ok_or_fail!(
+        control
+            .requests
+            .lock()
+            .map(|requests| requests.clone())
+            .map_err(|err| crate::SdkError::Protocol(err.to_string()))
+    );
+    assert_eq!(sent.len(), 1);
+    assert!(
+        matches!(
+            sent.first().map(|request| &request.payload),
+            Some(SearchPlaneControlIpcRequest::MetricsSnapshot(_))
+        ),
+        "the scrape request is what went over the wire: {sent:?}"
+    );
+    // The control client is the same call under its own name.
+    let control = Arc::new(StubControlTransport::new(
+        SearchPlaneControlIpcResponse::MetricsSnapshot(snapshot.clone()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), control, unused_ingest());
+    let via_control = ok_or_fail!(client.control().metrics_snapshot());
+    assert_eq!(via_control, snapshot);
+}
+
+/// QI-BB-015: a control answer of the wrong kind is a protocol error, and a
+/// typed daemon refusal surfaces as the remote error it is.
+#[test]
+fn observability_metrics_snapshot_refuses_wrong_kind_and_surfaces_remote_errors() {
+    use quanta_index_contract::{
+        GenerationStatusReport, SearchPlaneControlIpcResponse, SearchPlaneIpcError,
+    };
+    let wrong_kind = Arc::new(StubControlTransport::new(
+        SearchPlaneControlIpcResponse::GenerationStatusReport(GenerationStatusReport {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            tracks: vec![],
+        }),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), wrong_kind, unused_ingest());
+    match client.observability().metrics_snapshot() {
+        Err(crate::SdkError::Protocol(message)) => {
+            assert!(
+                message.contains("generation_status_report"),
+                "the protocol error names what arrived: {message}"
+            );
+        }
+        other => panic!("expected a protocol error, got {other:?}"),
+    }
+    let refused = Arc::new(StubControlTransport::new(
+        SearchPlaneControlIpcResponse::Error(SearchPlaneIpcError {
+            code: "METRICS_SOURCE_DEFECT".to_string(),
+            message: "metrics scrape: source point name `Bad` is not [a-z][a-z0-9_]*".to_string(),
+            repair: None,
+        }),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), refused, unused_ingest());
+    match client.observability().metrics_snapshot() {
+        Err(crate::SdkError::Remote { code, message, .. }) => {
+            assert_eq!(code, "METRICS_SOURCE_DEFECT");
+            assert!(message.contains("`Bad`"), "{message}");
+        }
+        other => panic!("expected the daemon's typed refusal, got {other:?}"),
+    }
+}
+
 #[test]
 fn search_corpus_public_surface_keeps_legacy_lexical_ingest_names_out_v1() {
     let sdk_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

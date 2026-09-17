@@ -15,7 +15,9 @@
 //!    a dispatcher that outlives it sees `REQUEST_DEADLINE_EXCEEDED` at its
 //!    next checkpoint, with the checkpoint named in the message.
 //!
-//! Every ordering claim is enforced with a channel or barrier handshake.
+//! Every ordering claim is enforced with a channel or barrier handshake, and
+//! every admission outcome is also read back from the server's counters,
+//! the way a metrics scrape reads them (QI-BB-015).
 
 #![forbid(unsafe_code)]
 
@@ -232,7 +234,8 @@ fn expect_snapshot(response: SearchPlaneControlIpcResponse, repo: &str) -> TestR
         | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
         | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
         | SearchPlaneControlIpcResponse::Error(_)
-        | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => {
+        | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+        | SearchPlaneControlIpcResponse::MetricsSnapshot(_)) => {
             Err(format!("expected a snapshot for {repo}, got {other:?}").into())
         }
     }
@@ -247,7 +250,8 @@ fn expect_error(
         | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
         | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
         | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
-        | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => {
+        | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+        | SearchPlaneControlIpcResponse::MetricsSnapshot(_)) => {
             Err(format!("expected a typed error, got {other:?}").into())
         }
     }
@@ -314,7 +318,22 @@ fn a_full_dispatch_queue_is_refused_with_a_typed_overload_then_serves_again() ->
             server.served()
         ),
     )?;
-    server.stop()
+    // The counters agree with the dispatcher's own tally: three requests
+    // arrived, one found no slot, two were answered (QI-BB-015).
+    let counters = server.uds.counters().snapshot();
+    ensure(
+        counters.requests_overloaded == 1 && counters.requests_dispatched == 2,
+        format!("overload and dispatch counts must match the proof: {counters:?}"),
+    )?;
+    ensure(
+        counters.connections_accepted == 3 && counters.connections_refused == 0,
+        format!("every connection was admitted under the cap of 8: {counters:?}"),
+    )?;
+    server.stop()?;
+    ensure(
+        server.uds.counters().snapshot().connections_live == 0,
+        "no connection is live once the server has joined its threads",
+    )
 }
 
 /// (2) `max_connections` is a cap, not a queue.
@@ -374,6 +393,15 @@ fn connections_past_the_cap_are_closed_at_accept_and_counted() -> TestResult {
         }
     };
     expect_snapshot(admitted, "third")?;
+    let counters = server.uds.counters().snapshot();
+    ensure(
+        counters.connections_refused == 1 && counters.requests_dispatched == 2,
+        format!("one refusal at accept, two answers: {counters:?}"),
+    )?;
+    ensure(
+        counters.connections_accepted >= 2,
+        format!("the holder and the admitted retry were accepted: {counters:?}"),
+    )?;
     server.stop()
 }
 
@@ -410,5 +438,14 @@ fn the_dispatch_budget_deadline_reaches_the_dispatcher_checkpoint() -> TestResul
     )?;
     // A request within budget on the same server is unaffected.
     expect_snapshot(send(&server.socket, "quick", HANDSHAKE_BOUND)?, "quick")?;
+    // Both requests were dispatched — the interrupted one was answered
+    // typed, which is a dispatch — and neither peer hung up.
+    let counters = server.uds.counters().snapshot();
+    ensure(
+        counters.requests_dispatched == 2
+            && counters.peer_hangups == 0
+            && counters.requests_overloaded == 0,
+        format!("dispatch counts for the deadline proof: {counters:?}"),
+    )?;
     server.stop()
 }

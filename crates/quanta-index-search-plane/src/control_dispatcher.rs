@@ -8,9 +8,9 @@ use std::sync::{Arc, RwLock};
 
 use quanta_index_contract::{
     CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
-    RepoMapActivateGenerationRequest, RepoMapMutationAck, SearchCorpusGenerationIdentityV1,
-    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
-    SearchPlaneControlIpcResponse, SearchPlaneIpcError,
+    MetricsSnapshotV1, RepoMapActivateGenerationRequest, RepoMapMutationAck,
+    SearchCorpusGenerationIdentityV1, SearchPlaneActivateSearchCorpusGenerationCasRequest,
+    SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIpcError,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneSearchCorpusActivationCasAck,
     SearchPlaneSearchCorpusRollbackCasAck, TrackReadinessRecord,
 };
@@ -18,6 +18,7 @@ use quanta_index_core::{
     CoreError, GenerationIdentityValidatePort, RepoMapGenerationActivatePort, RequestBudgetV1,
 };
 
+use crate::observability::ObservabilityScrape;
 use crate::search_corpus_lifecycle::SearchCorpusLifecycleService;
 use crate::{
     ActivationCatalog, Ledger, PreparedSearchCorpusGenerationV1, SearchCorpusGenerationActivationV1,
@@ -40,6 +41,9 @@ pub struct SearchPlaneControlDispatcher {
     repo_map_activate: Arc<dyn RepoMapGenerationActivatePort + Send + Sync>,
     activation_catalog: Arc<ActivationCatalog>,
     search_corpus_lifecycle: SearchCorpusLifecycleService,
+    /// The metrics scrape (QI-BB-015): the query plane's aggregates and
+    /// every source the composition root registered.
+    observability: Arc<ObservabilityScrape>,
 }
 
 impl SearchPlaneControlDispatcher {
@@ -50,6 +54,7 @@ impl SearchPlaneControlDispatcher {
         ledger: Arc<RwLock<Ledger>>,
         lexical_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
         semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
+        observability: Arc<ObservabilityScrape>,
     ) -> Self {
         let search_corpus_lifecycle = SearchCorpusLifecycleService::new(
             activation_catalog.lifecycle_coordinator(),
@@ -62,6 +67,7 @@ impl SearchPlaneControlDispatcher {
             repo_map_activate,
             activation_catalog,
             search_corpus_lifecycle,
+            observability,
         }
     }
 
@@ -172,6 +178,11 @@ impl SearchPlaneControlDispatcher {
         })
     }
 
+    /// QI-BB-015: every metric the daemon aggregates, in one snapshot.
+    fn metrics_snapshot(&self) -> Result<MetricsSnapshotV1, CoreError> {
+        self.observability.scrape()
+    }
+
     /// Serve one control request (QI-BB-002).
     ///
     /// The budget is checked once, at entry: a request whose peer left or
@@ -222,6 +233,12 @@ impl SearchPlaneControlDispatcher {
                     Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
+            SearchPlaneControlIpcRequest::MetricsSnapshot(_request) => {
+                match self.metrics_snapshot() {
+                    Ok(snapshot) => SearchPlaneControlIpcResponse::MetricsSnapshot(snapshot),
+                    Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
+                }
+            }
         }
     }
 }
@@ -269,22 +286,25 @@ mod tests {
 
     use super::SearchPlaneControlDispatcher;
     use quanta_index_contract::{
-        GenerationSnapshot, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest,
-        RepoMapMutationAck, RevisionId, SearchCorpusGenerationIdentityV1,
-        SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
-        SearchPlaneControlIpcResponse, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
-        SearchPlaneTrackKind,
+        GenerationSnapshot, ManifestGeneration, MetricsSnapshotRequest, MetricsSnapshotV1, RepoId,
+        RepoMapActivateGenerationRequest, RepoMapMutationAck, RevisionId,
+        SearchCorpusGenerationIdentityV1, SearchPlaneActivateSearchCorpusGenerationCasRequest,
+        SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIpcError,
+        SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneTrackKind,
     };
     use quanta_index_core::{
-        CoreError, GenerationIdentityValidatePort, RepoMapGenerationActivatePort, RequestBudgetV1,
+        CoreError, GenerationIdentityValidatePort, MetricPointV1, MetricSourcePort,
+        RepoMapGenerationActivatePort, RequestBudgetV1,
     };
+    use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
     use tempfile::tempdir;
 
+    use crate::observability::{BoundedQueryObsStore, ObservabilityScrape, QueryObsSink};
     use crate::{
         ActivationCatalog, Ledger, PreparedSearchCorpusGenerationV1, SearchCorpusGenerationV1,
     };
 
-    type TestResult = Result<(), Box<dyn std::error::Error>>;
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
     fn composite_generation(
         repo_id: &str,
@@ -340,6 +360,201 @@ mod tests {
         Arc::new(AlwaysValidGeneration)
     }
 
+    fn empty_scrape() -> Arc<ObservabilityScrape> {
+        Arc::new(ObservabilityScrape::new(
+            Arc::new(BoundedQueryObsStore::default()),
+            Vec::new(),
+        ))
+    }
+
+    /// A source that reports fixed points, or fails typed.
+    struct FixedSource(Result<Vec<MetricPointV1>, &'static str>);
+
+    impl MetricSourcePort for FixedSource {
+        fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
+            match &self.0 {
+                Ok(points) => Ok(points.clone()),
+                Err(message) => Err(CoreError::Storage((*message).to_string())),
+            }
+        }
+    }
+
+    fn scrape_dispatcher(
+        store: Arc<BoundedQueryObsStore>,
+        sources: Vec<Arc<dyn MetricSourcePort>>,
+    ) -> TestResult<SearchPlaneControlDispatcher> {
+        let dir = tempdir()?;
+        let activation_catalog = Arc::new(ActivationCatalog::open(dir.path())?);
+        Ok(SearchPlaneControlDispatcher::new(
+            Arc::new(StubRepoMapActivatePort),
+            activation_catalog,
+            Arc::new(RwLock::new(Ledger::new())),
+            always_valid_generation(),
+            always_valid_generation(),
+            Arc::new(ObservabilityScrape::new(store, sources)),
+        ))
+    }
+
+    fn scrape_via_control(
+        dispatcher: &SearchPlaneControlDispatcher,
+    ) -> Result<MetricsSnapshotV1, SearchPlaneIpcError> {
+        match dispatcher.dispatch(
+            SearchPlaneControlIpcRequest::MetricsSnapshot(MetricsSnapshotRequest),
+            &RequestBudgetV1::unbounded(),
+        ) {
+            SearchPlaneControlIpcResponse::MetricsSnapshot(snapshot) => Ok(snapshot),
+            SearchPlaneControlIpcResponse::Error(error) => Err(error),
+            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
+            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => {
+                Err(SearchPlaneIpcError {
+                    code: "TEST_UNEXPECTED_RESPONSE".to_string(),
+                    message: format!("{other:?}"),
+                    repair: None,
+                })
+            }
+        }
+    }
+
+    /// The control route answers the store's aggregates merged with every
+    /// source, sorted by name, and a scrape after more traffic sees the
+    /// larger totals (QI-BB-015).
+    #[test]
+    fn metrics_snapshot_route_merges_the_store_and_every_source() -> TestResult {
+        let store = Arc::new(BoundedQueryObsStore::default());
+        let dimensions = || Dimensions::new("LXE-10", "8", "local", "repo-control", 3);
+        for _ in 0..7 {
+            store.emit(MetricSample::new(
+                "lq_query_intake_total",
+                MetricKind::Counter,
+                1.0,
+                dimensions(),
+            ));
+        }
+        store.emit(MetricSample::new(
+            "lq_route_lexical_latency_ms",
+            MetricKind::Histogram,
+            4.0,
+            dimensions(),
+        ));
+        let sources: Vec<Arc<dyn MetricSourcePort>> = vec![
+            Arc::new(FixedSource(Ok(vec![
+                MetricPointV1::counter("ipc_query_requests_dispatched_total", 9),
+                MetricPointV1::gauge("ipc_query_connections_live", 2.0),
+            ]))),
+            Arc::new(FixedSource(Ok(vec![MetricPointV1::counter(
+                "boot_lexical_sealed_generations",
+                1,
+            )]))),
+        ];
+        let dispatcher = scrape_dispatcher(Arc::clone(&store), sources)?;
+
+        let first = scrape_via_control(&dispatcher).map_err(|error| error.code)?;
+        let counters: Vec<(&str, u64)> = first
+            .counters
+            .iter()
+            .map(|counter| (counter.name.as_str(), counter.value))
+            .collect();
+        assert_eq!(
+            counters,
+            vec![
+                ("boot_lexical_sealed_generations", 1),
+                ("ipc_query_requests_dispatched_total", 9),
+                ("lq_query_intake_total", 7),
+            ],
+            "counters come from the store and both sources, sorted by name"
+        );
+        assert_eq!(
+            first
+                .gauges
+                .iter()
+                .map(|gauge| (gauge.name.as_str(), gauge.value))
+                .collect::<Vec<_>>(),
+            vec![("ipc_query_connections_live", 2.0)]
+        );
+        let histogram = first
+            .histograms
+            .iter()
+            .find(|histogram| histogram.name == "lq_route_lexical_latency_ms")
+            .ok_or("the route histogram is in the snapshot")?;
+        assert_eq!((histogram.count, histogram.sum), (1, 4.0));
+        assert_eq!(first.diagnostics.samples_recorded, 8);
+
+        for _ in 0..5 {
+            store.emit(MetricSample::new(
+                "lq_query_intake_total",
+                MetricKind::Counter,
+                1.0,
+                dimensions(),
+            ));
+        }
+        let second = scrape_via_control(&dispatcher).map_err(|error| error.code)?;
+        let intake = second
+            .counters
+            .iter()
+            .find(|counter| counter.name == "lq_query_intake_total")
+            .ok_or("intake counter present")?;
+        assert_eq!(intake.value, 12, "a later scrape reads the larger total");
+        Ok(())
+    }
+
+    /// A source that cannot read itself, names an invalid metric, or
+    /// collides with another name fails the whole scrape typed; nothing is
+    /// served with a hole in it (QI-BB-015).
+    #[test]
+    fn metrics_snapshot_route_refuses_a_defective_source_typed() -> TestResult {
+        let failing: Vec<Arc<dyn MetricSourcePort>> =
+            vec![Arc::new(FixedSource(Err("writer cache poisoned")))];
+        let dispatcher = scrape_dispatcher(Arc::new(BoundedQueryObsStore::default()), failing)?;
+        let error = scrape_via_control(&dispatcher)
+            .err()
+            .ok_or("a failing source refuses")?;
+        assert_eq!(error.code, "INTERNAL");
+        assert!(
+            error.message.contains("writer cache poisoned"),
+            "the source's own failure is the answer: {}",
+            error.message
+        );
+
+        let bad_name: Vec<Arc<dyn MetricSourcePort>> =
+            vec![Arc::new(FixedSource(Ok(vec![MetricPointV1::counter(
+                "Ipc-Bad Name",
+                1,
+            )])))];
+        let dispatcher = scrape_dispatcher(Arc::new(BoundedQueryObsStore::default()), bad_name)?;
+        let error = scrape_via_control(&dispatcher)
+            .err()
+            .ok_or("a bad name refuses")?;
+        assert_eq!(error.code, "METRICS_SOURCE_DEFECT");
+        assert!(error.message.contains("Ipc-Bad Name"), "{}", error.message);
+
+        let store = Arc::new(BoundedQueryObsStore::default());
+        store.emit(MetricSample::new(
+            "lq_query_intake_total",
+            MetricKind::Counter,
+            1.0,
+            Dimensions::new("LXE-10", "8", "local", "repo-control", 3),
+        ));
+        let colliding: Vec<Arc<dyn MetricSourcePort>> =
+            vec![Arc::new(FixedSource(Ok(vec![MetricPointV1::counter(
+                "lq_query_intake_total",
+                1,
+            )])))];
+        let dispatcher = scrape_dispatcher(store, colliding)?;
+        let error = scrape_via_control(&dispatcher)
+            .err()
+            .ok_or("a collision refuses")?;
+        assert_eq!(error.code, "METRICS_SOURCE_DEFECT");
+        assert!(
+            error.message.contains("more than one source"),
+            "{}",
+            error.message
+        );
+        Ok(())
+    }
+
     impl RepoMapGenerationActivatePort for StubRepoMapActivatePort {
         fn activate_generation(
             &self,
@@ -363,7 +578,8 @@ mod tests {
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::Error(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
-            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => {
+            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)) => {
                 Err(format!("expected repo-map mutation ack, got {other:?}").into())
             }
         }
@@ -378,7 +594,8 @@ mod tests {
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
-            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => {
+            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)) => {
                 Err(format!("expected error response, got {other:?}").into())
             }
         }
@@ -433,6 +650,7 @@ mod tests {
             ledger,
             always_valid_generation(),
             always_valid_generation(),
+            empty_scrape(),
         );
 
         let activate = into_repo_map_mutation_ack(dispatcher.dispatch(
@@ -521,6 +739,7 @@ mod tests {
             Arc::new(RwLock::new(Ledger::new())),
             always_valid_generation(),
             always_valid_generation(),
+            empty_scrape(),
         );
         let code = into_error_code(dispatcher.dispatch(
             SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
@@ -613,6 +832,7 @@ mod tests {
             ledger,
             always_valid_generation(),
             always_valid_generation(),
+            empty_scrape(),
         );
 
         let response = dispatcher.dispatch(

@@ -35,7 +35,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use quanta_index_contract::EmbeddingNormalization;
-use quanta_index_core::{CoreError, SemanticPolicy, TextEmbeddingProvider};
+use quanta_index_core::{
+    CoreError, MetricPointV1, MetricSourcePort, SemanticPolicy, TextEmbeddingProvider,
+};
 use sha2::{Digest, Sha256};
 
 use crate::telemetry;
@@ -312,7 +314,30 @@ impl CachingEmbeddingProvider {
     pub fn cache_stats(&self) -> EmbeddingCacheStats {
         self.cache.stats()
     }
+}
 
+/// The wrapped store's residency and traffic as scrape points,
+/// `embedding_cache_…` (QI-BB-015).
+impl MetricSourcePort for CachingEmbeddingProvider {
+    fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
+        let stats = self.cache_stats();
+        Ok(vec![
+            MetricPointV1::gauge_count("embedding_cache_entries", stats.entries),
+            MetricPointV1::gauge_count("embedding_cache_resident_bytes", stats.resident_bytes),
+            MetricPointV1::counter("embedding_cache_hits_total", stats.hits),
+            MetricPointV1::counter("embedding_cache_misses_total", stats.misses),
+            MetricPointV1::counter("embedding_cache_corrupt_misses_total", stats.corrupt_misses),
+            MetricPointV1::counter("embedding_cache_puts_total", stats.puts),
+            MetricPointV1::counter("embedding_cache_evictions_total", stats.evictions),
+            MetricPointV1::counter(
+                "embedding_cache_refused_oversize_total",
+                stats.refused_oversize,
+            ),
+        ])
+    }
+}
+
+impl CachingEmbeddingProvider {
     /// A cached vector that is usable, or `None` after evicting one that is
     /// not.
     fn usable_hit(&self, key: &EmbeddingCacheKey) -> Option<Vec<f32>> {

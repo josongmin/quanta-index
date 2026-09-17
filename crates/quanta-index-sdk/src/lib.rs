@@ -11,6 +11,7 @@ mod generations;
 mod history;
 pub(crate) mod lexical;
 mod namespace;
+mod observability;
 mod repomap;
 mod runtime;
 mod search;
@@ -35,6 +36,7 @@ pub use lexical::{
     LexicalNamespace, LexicalQueryBuilder, SearchCorpusBatch, SearchCorpusNamespace,
 };
 pub(crate) use namespace::{NamespaceIngest, NamespaceQuery};
+pub use observability::ObservabilityNamespace;
 pub use repomap::RepoMapNamespace;
 pub use runtime::{DirtyBatch, DirtyBatchMutation, RuntimeNamespace, RuntimeQueryBuilder};
 pub use search::{HybridSeedQueryBuilder, SearchNamespace};
@@ -56,11 +58,12 @@ pub use quanta_index_contract::{
     EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, ExactRepoRelativePathV1,
     GenerationPin, GenerationSelector, GenerationSnapshot, GenerationStatusReport,
     HybridSeedQueryRequest, HybridSeedQueryResponse, LexicalCandidate, ManifestGeneration,
-    OwnerDocKind, RepoId, RepoMapActivateGenerationRequest, RepoMapCallEdge, RepoMapChunkNode,
-    RepoMapContainsEdge, RepoMapDependsOnEdge, RepoMapEdge, RepoMapFileNode, RepoMapGraphCoverage,
-    RepoMapImportEdge, RepoMapModuleId, RepoMapModuleNode, RepoMapMutationAck, RepoMapNode,
-    RepoMapNodeRef, RepoMapOwnsChunkEdge, RepoMapQueryRequest, RepoMapQueryResponse,
-    RepoMapSourceBundle, RepoMapSymbolNode, RepoRelativePath, RevisionId,
+    MetricBucketV1, MetricCounterV1, MetricGaugeV1, MetricHistogramV1, MetricsDiagnosticsV1,
+    MetricsSnapshotV1, OwnerDocKind, RepoId, RepoMapActivateGenerationRequest, RepoMapCallEdge,
+    RepoMapChunkNode, RepoMapContainsEdge, RepoMapDependsOnEdge, RepoMapEdge, RepoMapFileNode,
+    RepoMapGraphCoverage, RepoMapImportEdge, RepoMapModuleId, RepoMapModuleNode,
+    RepoMapMutationAck, RepoMapNode, RepoMapNodeRef, RepoMapOwnsChunkEdge, RepoMapQueryRequest,
+    RepoMapQueryResponse, RepoMapSourceBundle, RepoMapSymbolNode, RepoRelativePath, RevisionId,
     SearchCorpusGenerationIdentityV1, SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
     SearchExplanation, SearchPlaneActivateSearchCorpusGenerationCasRequest,
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse,

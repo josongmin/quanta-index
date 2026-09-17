@@ -29,14 +29,14 @@ use quanta_index_contract::{
     BatchIngestMode, BatchPublishReceipt, CapabilityStatusV1, ChunkId, ChunkRecord,
     CurrentGenerationRequest, EngineTouched, FileOwnerProjectionRow, GenerationPin,
     GenerationSnapshot, HistoryCursor, HistoryQueryRequest, HybridQueryRequest, LexicalCandidate,
-    ManifestGeneration, OwnerDocKind, QueryResultWindowV1, RawFallbackReasonV1, RepoId,
-    RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1,
-    SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
-    SearchExplanation, SearchPlaneActivateSearchCorpusGenerationCasRequest,
-    SearchPlaneControlIpcRequest, SearchPlaneControlIpcRequestEnvelope,
-    SearchPlaneControlIpcResponse, SearchPlaneControlIpcResponseEnvelope,
-    SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    ManifestGeneration, MetricsSnapshotRequest, MetricsSnapshotV1, OwnerDocKind,
+    QueryResultWindowV1, RawFallbackReasonV1, RepoId, RepoRelativePath, RevisionId,
+    RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch,
+    SearchCorpusReplaceScope, SearchCorpusTombstoneScope, SearchExplanation,
+    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
+    SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
+    SearchPlaneControlIpcResponseEnvelope, SearchPlaneExplainQueryRequest,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind, SemanticCorpusKindV1,
@@ -474,6 +474,20 @@ impl E2eRuntime {
         Ok(store.errors())
     }
 
+    /// The daemon's metrics snapshot, scraped over its public control UDS
+    /// exactly as `searchctl metrics` does (QI-BB-015).
+    pub fn metrics_snapshot(&mut self) -> AnyResult<MetricsSnapshotV1> {
+        let response = self.dispatch_control(SearchPlaneControlIpcRequest::MetricsSnapshot(
+            MetricsSnapshotRequest,
+        ))?;
+        let SearchPlaneControlIpcResponse::MetricsSnapshot(snapshot) = response else {
+            return Err(anyhow::anyhow!(
+                "e2e-harness: metrics scrape returned an unexpected control response: {response:?}"
+            ));
+        };
+        Ok(snapshot)
+    }
+
     /// Promote a sealed harness generation as one lexical plus semantic corpus.
     ///
     /// The candidate is reconstructed only from the validated sealed ingest
@@ -555,11 +569,10 @@ impl E2eRuntime {
                     other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
                     | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
                     | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
-                    | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => {
-                        Err(anyhow::anyhow!(
-                            "e2e-harness: current generation returned an unexpected control response: {other:?}"
-                        ))
-                    }
+                    | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+                    | SearchPlaneControlIpcResponse::MetricsSnapshot(_)) => Err(anyhow::anyhow!(
+                        "e2e-harness: current generation returned an unexpected control response: {other:?}"
+                    )),
                 }
             };
 

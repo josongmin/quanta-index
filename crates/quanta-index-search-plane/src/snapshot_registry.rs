@@ -35,9 +35,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
-use quanta_index_core::CoreError;
 use quanta_index_core::domains::lexical::LexicalSearcher;
 use quanta_index_core::domains::semantic::SemanticSearcher;
+use quanta_index_core::{CoreError, MetricPointV1, MetricSourcePort, count_from_usize};
 
 /// Identity of one opened sealed generation within a track's registry.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -481,6 +481,35 @@ impl SnapshotRegistries {
         let _lexical = self.lexical.invalidate(key)?;
         let _semantic = self.semantic.invalidate(key)?;
         Ok(())
+    }
+}
+
+/// One track's registry stats as scrape points, `snapshot_registry_<track>_…`
+/// (QI-BB-015).
+fn registry_metric_points(track: &str, stats: &SnapshotRegistryStats) -> Vec<MetricPointV1> {
+    let name = |suffix: &str| format!("snapshot_registry_{track}_{suffix}");
+    vec![
+        MetricPointV1::counter(name("hits_total"), stats.hits),
+        MetricPointV1::counter(name("misses_total"), stats.misses),
+        MetricPointV1::counter(name("coalesced_total"), stats.coalesced),
+        MetricPointV1::counter(name("evictions_total"), stats.evictions),
+        MetricPointV1::counter(name("oversize_uncached_total"), stats.oversize_uncached),
+        MetricPointV1::counter(name("invalidations_total"), stats.invalidations),
+        MetricPointV1::counter(name("open_failures_total"), stats.open_failures),
+        MetricPointV1::counter(
+            name("cold_open_nanos_total"),
+            u64::try_from(stats.cold_open_nanos).map_or(u64::MAX, |nanos| nanos),
+        ),
+        MetricPointV1::gauge_count(name("entries"), count_from_usize(stats.entries)),
+        MetricPointV1::gauge_count(name("resident_bytes"), stats.resident_bytes),
+    ]
+}
+
+impl MetricSourcePort for SnapshotRegistries {
+    fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
+        let mut points = registry_metric_points("lexical", &self.lexical.stats()?);
+        points.extend(registry_metric_points("semantic", &self.semantic.stats()?));
+        Ok(points)
     }
 }
 

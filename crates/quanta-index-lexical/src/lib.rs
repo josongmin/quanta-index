@@ -67,9 +67,9 @@ use quanta_index_core::{
     LEXICAL_WRITER_HEAP_BYTES_MIN, LexicalCandidateExplanationV1, LexicalExecutionBudgetV1,
     LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalScoreEngineV1, LexicalScoreTraceV1,
     LexicalSearchPageV1, LexicalSearcher, LexicalWriterCacheStats, LexicalWriterPolicy,
-    RegexMatchCachePolicy, RegexMatchCacheStats, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, SealedGenerationScanPort,
-    SearchCorpusBatchBuildPort,
+    MetricPointV1, MetricSourcePort, RegexMatchCachePolicy, RegexMatchCacheStats,
+    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMetaIngestPort,
+    RepoTopicIngestPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort, count_from_usize,
     domains::lexical::LexicalPolicy,
     timeref::{is_rev_at_time_spec, parse_search_timeref_ms},
 };
@@ -4351,6 +4351,48 @@ fn legacy_ops_for_batch(
         }));
     }
     Ok(ops)
+}
+
+/// The writer envelope and the regex match cache as scrape points,
+/// `lexical_…` (QI-BB-015).
+impl MetricSourcePort for LexicalAdapter {
+    fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
+        let writers = self.writer_cache_stats()?;
+        let regex = self.regex_match_cache_stats()?;
+        Ok(vec![
+            MetricPointV1::gauge_count(
+                "lexical_writers_open",
+                count_from_usize(writers.open_writers),
+            ),
+            MetricPointV1::gauge_count(
+                "lexical_writers_max",
+                count_from_usize(writers.max_writers),
+            ),
+            MetricPointV1::gauge_count(
+                "lexical_writers_allocated_heap_bytes",
+                writers.allocated_heap_bytes,
+            ),
+            MetricPointV1::counter("lexical_writer_lru_releases_total", writers.lru_releases),
+            MetricPointV1::counter("lexical_writer_idle_releases_total", writers.idle_releases),
+            MetricPointV1::counter("lexical_writer_seal_releases_total", writers.seal_releases),
+            MetricPointV1::counter("lexical_regex_cache_hits_total", regex.hits),
+            MetricPointV1::counter("lexical_regex_cache_misses_total", regex.misses),
+            MetricPointV1::gauge_count(
+                "lexical_regex_cache_entries",
+                count_from_usize(regex.entries),
+            ),
+            MetricPointV1::gauge_count("lexical_regex_cache_resident_bytes", regex.resident_bytes),
+            MetricPointV1::counter("lexical_regex_cache_evictions_total", regex.evictions),
+            MetricPointV1::counter(
+                "lexical_regex_cache_refused_cardinality_total",
+                regex.refused_cardinality,
+            ),
+            MetricPointV1::counter(
+                "lexical_regex_cache_refused_bytes_total",
+                regex.refused_bytes,
+            ),
+        ])
+    }
 }
 
 impl SearchCorpusBatchBuildPort for LexicalAdapter {

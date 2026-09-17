@@ -313,7 +313,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + QI-BB-032 idempotency catalog(§3.16) + **QI-BB-020 auxiliary authority rows(§3.19, catalog 확장: per-record row, validate→persist→apply, Arc snapshot read, retention prune, legacy 일회 migration)** 완료. 남은 것: quarantine control surface, aux read epoch/visibility interval(§3.19 한계) |
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + QI-BB-027 ANN sealed contract(§3.23) + **QI-BB-016 lexical writer envelope(§3.26)** 완료. 남은 것: sharded sidecar 포맷(O(delta) write), seal마다 ANN 전체 재구축(O(N), §3.23 한계), scope 단위 streamed embed→append(§3.18 한계) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), streaming projection collector |
-| W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. **QI-BB-014 UDS/state-root private hardening(§3.27)** 완료. 남은 것: cancel을 lexical collector 내부(candidate batch 사이)까지 내리기, overload/refusal 서버 metric, shared mode(group/ACL + peer credential) |
+| W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. QI-BB-014 UDS/state-root private hardening(§3.27) 완료. **QI-BB-015 metrics 집계 + scrape(§3.28)** 완료 — overload/refusal/hangup 서버 metric은 `IpcServerCounters`로 여기서 닫힘. 남은 것: cancel을 lexical collector 내부(candidate batch 사이)까지 내리기, shared mode(group/ACL + peer credential) |
 | W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + QI-BB-018 true hybrid(§3.22) + QI-BB-022 explain = exact presence + lexical score trace(§3.24) + **QI-BB-008 RepoMap bounded query + durable store(§3.25)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), history relevance order(Tantivy history index, §3.20 한계), judged corpus recall/NDCG gate(§3.22 한계), hybrid 후보의 per-lane contribution(§3.24 한계) |
 | W7 | planned | |
 | C1 | planned | |
@@ -1531,6 +1531,67 @@ pathname을 빼앗음). state root는 `create_dir`(umask)로 만들고 mode/owne
 않으므로 이론상 남는다(std `UnixListener::bind`는 bind+listen을 연속 호출). (d) 기존 socket이 `0666`처럼 느슨한 mode로
 남아 있어도 owner가 나면 회수 후 `0600`으로 다시 만든다 — 기존 파일의 mode는 검사 대상이 아니다(어차피 교체).
 
+## 3.28 QI-BB-015 — metric은 이름별로 집계되어 한 번의 scrape로 나오고, ring은 진단 tail일 뿐이다 (구현 완료)
+
+**진단 확정**: `BoundedQueryObsStore`가 4,096 sample ring + **무한** `Vec<ObsError>`뿐이었다 — 어떤 total도 ring이
+잘랐고(오래된 sample은 조용히 소실), error는 process 수명 동안 자랐고, 읽을 방법은 harness가 store를 직접 잡는 것뿐이라
+운영자는 daemon에서 어떤 수치도 꺼낼 수 없었다. socket 서버의 refused/live 수, cache/registry/writer 통계는 각자 가진 채
+아무 데도 모이지 않았다.
+
+**구현**:
+
+- **집계 store** (`search-plane::observability`, query_dispatcher에서 분리): sample은 emit 즉시 이름별 aggregate로 fold —
+  counter는 정확한 합(saturating), gauge는 마지막 값, histogram은 count/sum/min/max + 14-bound cumulative bucket
+  (`1,2,5,…,30000` + `+Inf`). 이름은 첫 sample의 kind에 묶이고(kind 충돌은 `OBS_INVALID_METRIC`), emit 시 이름
+  `[a-z][a-z0-9_]*`·finite value·counter 증분 non-negative integer를 검증해 wire에서 거짓말이 될 sample은 aggregate에도
+  tail에도 넣지 않고 error로만 기록. sample ring(4,096)과 error ring(**256**)은 `BoundedRing<T>` 하나로 — 둘 다 recorded/
+  dropped를 센다(`MetricsDiagnosticsV1`).
+- **route metric**: 11개 route 모두 `observed_route()` wrapper 아래로 — intake 뒤 route 본체, 그 뒤 `lq_route_<route>_latency_ms`
+  (histogram) + `lq_route_<route>_{served,errors}_total`. 이름은 `QueryRoute` enum(closed)에서만 나오고 request 내용은 없다.
+  `ClusterMembershipRead`도 이제 intake/route를 센다. `emit_metric(name: &str)`.
+- **`MetricSourcePort`** (core `domains/observability`): `scrape() -> Result<Vec<MetricPointV1>, CoreError>`(counter u64 /
+  gauge f64). 구현: `IpcServerCounters`(ipc; accepted/refused/live/decode_failures/overloaded/refused_shutting_down/dispatched/
+  peer_hangups — `UdsServer::bind_observed`로 composition root가 bind 전에 만들어 등록), `SnapshotRegistries`(track별 10개),
+  `DirectSearchCorpusMaterializer`(ingest envelope 5개), `LexicalAdapter`(writer envelope 6 + regex cache 7),
+  `CachingEmbeddingProvider`(8), `BootInventoryReportV1`(12 gauge). 이름 prefix로 서로 겹치지 않는다.
+- **`ObservabilityScrape`**: store aggregate + 모든 source를 이름순으로 합쳐 `MetricsSnapshotV1` 하나로. source 실패는 그
+  오류 그대로, 잘못된/중복 이름·NaN gauge는 `METRICS_SOURCE_DEFECT` — 구멍 난 snapshot은 절대 내지 않는다.
+  `SearchPlaneControlDispatcher::new`의 6번째 인자(composition root가 source 목록을 **socket bind 전에** 고정).
+- **wire** (`contract::ipc::metrics`): `MetricsSnapshotRequest`(빈 struct, field 있으면 거부) → `MetricsSnapshotV1`
+  {counters, gauges, histograms, diagnostics}. decode가 거부: 이름 규칙, NaN(gauge/sum/min/max/le), bucket 비-cumulative/
+  비-ascending, 마지막 bucket ≠ `+Inf`/count 불일치, kind 간 이름 중복, unknown/missing field. 이름 규칙은 Prometheus
+  metric name 문법과 같아 exposition이 escape 없이 나온다.
+- **surface**: SDK `client.observability().metrics_snapshot()` / `control().metrics_snapshot()`; harness `metrics_snapshot()`;
+  `searchctl metrics [--output pretty|json|prometheus]` — prometheus는 `# TYPE` + `_bucket{le="…"}`/`_sum`/`_count`,
+  diagnostics는 `searchd_obs_*_total` counter로; `--output prometheus`는 `metrics` 외 subcommand에서 usage error.
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| counter total은 ring 용량(4,096) 너머에서도 정확, ring은 4,096 유지 + dropped 계수 | `search-plane::observability::tests::counter_totals_survive_the_sample_ring_being_full` |
+| gauge 마지막 값, histogram cumulative bucket(0.5/1/1.5/30001 → [2,3,3,…,4]) + `+Inf` | `gauges_keep_the_last_value_and_histograms_bucket_cumulatively` |
+| bad name/NaN/∞/0.5/-1/kind 충돌 7건 전부 `OBS_INVALID_METRIC`, aggregate·tail 미반영 | `invalid_samples_are_refused_and_recorded_not_aggregated` |
+| error ring 256 bound + dropped 40, 가장 오래된 보존 = 41번째 | `the_error_ring_is_bounded_and_counts_its_drops` |
+| scrape merge 정렬 / 실패 source·bad name·NaN·중복 → typed | `scrape_merges_sources_into_one_sorted_snapshot`, `scrape_refuses_defective_sources_typed` |
+| control route가 store+source를 합치고 두 번째 scrape가 커진 total을 본다; 결함 source는 `INTERNAL`/`METRICS_SOURCE_DEFECT` | `control_dispatcher::tests::metrics_snapshot_route_{merges_the_store_and_every_source,refuses_a_defective_source_typed}` |
+| wire: round trip + envelope kind tag, 이름 규칙 9 negative, 11개 거짓 shape 각각 **지정된 사유**로 거부, NaN 5곳 거부, 음수 gauge 허용, 빈 request | `contract/tests/ipc_control_metrics_contract.rs` (5 tests) |
+| dispatcher 7개 route unit test의 sample 이름 목록이 route tail을 포함 | `query_dispatcher::tests::*_emits_closed_obs_metric*` (갱신) |
+| ipc: overload 1/dispatched 2/accepted 3, cap refusal 1, deadline proof dispatched 2·hangup 0, decode failure 1 | `ipc/tests/admission.rs` (3, 갱신) + `server::tests` empty-frame |
+| e2e(실 daemon, control UDS): 5 query 사이 scrape delta — served 5/errors 0/intake 5/latency count 5/`+Inf`==count/ipc query dispatched·accepted 5/control dispatched 1/registry hits 5 == `lq_snapshot_lexical_hit_total` delta/samples_recorded **30**(=5×6)/errors 0; timeout query → errors 1·plan_limit 1·latency +1·samples **+5** | `searchd-runtime/tests/e2e_metrics_scrape.rs::route_socket_registry_and_diagnostic_tallies_move_by_exactly_the_traffic_sent` |
+| e2e: boot gauge 12개 == `boot_inventory()` 값, seal release 1·open writers 0·heap 0, 세 plane refused/overloaded 0, control live 1(scrape 자신) | `…::boot_gauges_match_the_boot_inventory_and_the_writer_envelope_reflects_the_seal` |
+| perf-chaos 8 rail: route family는 closed set, stream 끝 2개가 같은 route의 latency+outcome이고 outcome은 pipeline tail(typed error 여부)과 일치 | `e2e_perf_chaos.rs::assert_route_tail` (hybrid rail은 공용 helper로 통합) |
+| CLI: control mock 위 `metrics --output prometheus` exposition 정확 일치, `--output json` round trip; renderer 3종 golden; parse/usage | `searchctl/tests/cli_smoke.rs::metrics_*`, `searchctl::tests::render_metrics_*`, `metrics_parses_alone_and_prometheus_output_is_refused_elsewhere` |
+| SDK: 스냅샷 그대로 반환·요청 kind, 잘못된 kind → `Protocol`, daemon typed 거부 → `Remote` | `sdk::tests::observability_metrics_snapshot_*` |
+
+**정직한 한계**: (a) aggregate는 **이름별**이다 — `Dimensions`(repo/generation)는 sample tail에만 남고 scrape에는 per-repo
+series가 없다(cardinality를 등록된 이름 수로 묶는 선택; per-repo는 별도 설계). (b) histogram bound는 고정 ladder 하나(ms와
+count 공용) — count 계열(`lq_engine_fanout_count`)은 상위 bucket이 비어 있다. (c) scrape는 control plane의 serial dispatch를
+탄다 — 긴 activation 뒤에 줄을 선다(admission policy의 queue wait 안). (d) `bind_with_policy`는 plane 이름 `unnamed`
+counters를 만든다 — scrape에 등록되지 않으므로 이름은 나가지 않지만, ipc 단독 사용자는 `bind_observed`로 plane을 줘야 한다.
+(e) Prometheus exposition에 `# HELP`는 없다(설명 문자열을 wire에 싣지 않음). (f) `IpcServerCountersSnapshot`은 field별
+atomic이지 set 전체가 원자적이지는 않다.
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -1571,3 +1632,6 @@ pathname을 빼앗음). state root는 `create_dir`(umask)로 만들고 mode/owne
 | 2026-09-17 | 96c4a48 | `just rust-profile verify-rust` | **INVALID** — 실행 중에 QI-BB-016 편집이 working tree에 겹쳐 doctest 단계가 중간 상태를 컴파일(자체 절차 위반: dirty tree에서 verify 금지). 결과 폐기, 다음 commit에서 96c4a48 포함 재검증 |
 | 2026-09-17 | f68e254 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,103 passed / 0 failed (QI-BB-008 RepoMap + QI-BB-016 writer envelope 포함; 96c4a48의 INVALID run 대체) |
 | 2026-09-17 | 0c6854d | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,110 passed / 0 failed (QI-BB-014 UDS private bind + state-root 0700 포함) |
+| 2026-09-17 | (QI-BB-015 tree) | `cargow --lane test-fast-lane test -p {contract,core,search-plane,ipc,sdk,searchctl,embed,lexical,searchd}` + `searchd-runtime --test e2e_perf_chaos --test e2e_metrics_scrape --test e2e_snapshot_registry --test end_to_end` + `searchd-harness` | 전부 green (perf_chaos 43/43, metrics_scrape 2/2, cli_smoke metrics 2종 포함). 첫 회차 RED 3건은 oracle 보정: 이름 있는 counter만 delta 계산(absent=0), timeout error sample 수 4→**5**(snapshot hit이 execution 전에 emit), dispatcher unit 7건에 route tail 추가 |
+| 2026-09-17 | (QI-BB-015 tree) | `just rust-fuzz-smoke` | 4 target 60s 각각 완주, crash 0 (control request/response decoder에 `MetricsSnapshot` variant 추가 후) |
+| 2026-09-17 | (QI-BB-015 tree) | `just rust-hexagonal` / `just semgrep` / module-discipline / error-shape / digest / derive-allowlist / cargo-toml-hygiene / `just rust-public-api-update` / `just rust-cargo-modules-update` / `just rust-test-authority` / `just fmt-check` / clippy-lane `--workspace --all-targets` | 전부 green; public-api baseline(contract, sdk)·cargo-modules baseline(contract, core) 갱신은 additive |

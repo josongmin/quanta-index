@@ -267,6 +267,28 @@ crate quanta_index_contract
 │   │   ├── struct StructuralTreeRecord: pub
 │   │   └── struct StructuralTreeRecordVisitor: pub(self)
 │   │       └── type Value: pub(self)
+│   ├── mod metrics: pub(self)
+│   │   ├── struct MetricBucketV1: pub
+│   │   ├── struct MetricBucketVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct MetricCounterV1: pub
+│   │   ├── struct MetricCounterVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct MetricGaugeV1: pub
+│   │   ├── struct MetricGaugeVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct MetricHistogramV1: pub
+│   │   ├── struct MetricHistogramVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct MetricsDiagnosticsV1: pub
+│   │   ├── struct MetricsDiagnosticsVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct MetricsSnapshotRequest: pub
+│   │   ├── struct MetricsSnapshotRequestVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct MetricsSnapshotV1: pub
+│   │   └── struct MetricsSnapshotVisitor: pub(self)
+│   │       └── type Value: pub(self)
 │   ├── mod semantic_source: pub(self)
 │   │   ├── enum CapabilityStatusV1: pub
 │   │   ├── struct CapabilityStatusV1Visitor: pub(self)

@@ -9,6 +9,7 @@ use quanta_index_core as _;
 
 mod admission;
 mod codec;
+mod counters;
 mod server;
 
 pub use admission::{DispatchPermit, DispatchSlots, ServerAdmissionPolicy, SlotRefusal};
@@ -16,6 +17,7 @@ pub use codec::{
     IpcError, IpcIoOperation, MAX_FRAME_BODY_BYTES, decode_cbor_payload, decode_request,
     decode_response, encode_cbor_payload, encode_request, encode_response,
 };
+pub use counters::{IpcServerCounters, IpcServerCountersSnapshot};
 pub use quanta_index_core::{
     BudgetInterruptionV1, CancelHandleV1, REQUEST_CANCELLED_CODE, REQUEST_DEADLINE_EXCEEDED_CODE,
     RequestBudgetV1,

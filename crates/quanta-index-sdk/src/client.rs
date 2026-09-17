@@ -11,10 +11,10 @@ use quanta_index_contract::{
 };
 
 use crate::{
-    ConnectOptions, GenerationNamespace, HistoryNamespace, LexicalNamespace, QueryTransport,
-    RepoMapNamespace, RuntimeNamespace, SdkError, SearchCorpusNamespace, SearchNamespace,
-    SemanticNamespace, StructuralNamespace, SymbolNamespace, UdsControlTransport,
-    UdsIngestTransport, UdsQueryTransport,
+    ConnectOptions, GenerationNamespace, HistoryNamespace, LexicalNamespace,
+    ObservabilityNamespace, QueryTransport, RepoMapNamespace, RuntimeNamespace, SdkError,
+    SearchCorpusNamespace, SearchNamespace, SemanticNamespace, StructuralNamespace,
+    SymbolNamespace, UdsControlTransport, UdsIngestTransport, UdsQueryTransport,
 };
 use crate::{ControlTransport, IngestTransport};
 
@@ -84,6 +84,11 @@ impl QuantaIndex {
     #[must_use]
     pub fn generations(&self) -> GenerationNamespace<'_> {
         GenerationNamespace::new(self)
+    }
+
+    #[must_use]
+    pub fn observability(&self) -> ObservabilityNamespace<'_> {
+        ObservabilityNamespace::new(self)
     }
 
     #[must_use]
@@ -174,7 +179,8 @@ impl QuantaIndex {
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
-            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => Ok(payload),
+            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)) => Ok(payload),
         }
     }
 
@@ -269,6 +275,7 @@ impl QuantaIndex {
                 "current_generation_snapshot"
             }
             SearchPlaneControlIpcResponse::GenerationStatusReport(_) => "generation_status_report",
+            SearchPlaneControlIpcResponse::MetricsSnapshot(_) => "metrics_snapshot",
             SearchPlaneControlIpcResponse::Error(_) => "error",
         }
     }
@@ -554,5 +561,10 @@ impl<'a> ControlClient<'a> {
         request: quanta_index_contract::RepoMapActivateGenerationRequest,
     ) -> Result<quanta_index_contract::RepoMapMutationAck, SdkError> {
         self.client.repomap().activate(request)
+    }
+
+    /// The daemon's metrics snapshot (QI-BB-015).
+    pub fn metrics_snapshot(&self) -> Result<quanta_index_contract::MetricsSnapshotV1, SdkError> {
+        self.client.observability().metrics_snapshot()
     }
 }

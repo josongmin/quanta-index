@@ -20,7 +20,7 @@ use quanta_index_contract::{
     SearchPlaneStructuralQueryResponse, SemanticQueryRequest, StructuralQueryRequest,
     SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse,
     TextQuerySyntax,
-    ipc::{GenerationStatusReport, SearchPlaneTrackKind},
+    ipc::{GenerationStatusReport, MetricHistogramV1, MetricsSnapshotV1, SearchPlaneTrackKind},
 };
 use quanta_index_sdk::{ConnectOptions, QuantaIndex, SdkError};
 
@@ -89,6 +89,14 @@ where
             write_stdout(stdout, &render_doctor(&report, output)?)?;
             Ok(ExitCode::SUCCESS)
         }
+        CliRequest::Metrics => {
+            let snapshot = client
+                .observability()
+                .metrics_snapshot()
+                .map_err(map_sdk_error)?;
+            write_stdout(stdout, &render_metrics(&snapshot, output)?)?;
+            Ok(ExitCode::SUCCESS)
+        }
         query_request @ (CliRequest::Lexical(_)
         | CliRequest::Symbol(_)
         | CliRequest::Semantic(_)
@@ -120,6 +128,8 @@ fn write_stdout(stdout: &mut dyn Write, rendered: &str) -> CliResult<()> {
 enum OutputMode {
     Pretty,
     Json,
+    /// Prometheus text exposition; only `metrics` renders it (QI-BB-015).
+    Prometheus,
 }
 
 impl OutputMode {
@@ -127,11 +137,23 @@ impl OutputMode {
         match value {
             "pretty" => Ok(Self::Pretty),
             "json" => Ok(Self::Json),
+            "prometheus" => Ok(Self::Prometheus),
             other => Err(CliError::usage(format!(
-                "unsupported output mode `{other}`; expected `pretty` or `json`"
+                "unsupported output mode `{other}`; expected `pretty`, `json` or `prometheus`"
             ))),
         }
     }
+}
+
+/// The typed refusal every non-metrics renderer gives `--output prometheus`.
+///
+/// `ParsedCommand::parse` refuses the combination before any socket is
+/// touched; the renderers keep the arm so the refusal is the same wherever
+/// the mode arrives.
+fn prometheus_is_metrics_only(command: &str) -> CliError {
+    CliError::usage(format!(
+        "`--output prometheus` renders only `metrics`, not `{command}`"
+    ))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -147,6 +169,7 @@ enum CommandKind {
     Structural,
     Readiness,
     Doctor,
+    Metrics,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -225,6 +248,8 @@ enum CliRequest {
         repo_id: RepoId,
         revision_id: RevisionId,
     },
+    /// QI-BB-015: the daemon's metrics snapshot; takes no arguments.
+    Metrics,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -290,9 +315,10 @@ impl ParsedCommand {
                 parse_readiness(&mut common, &mut rest)?,
             ),
             "doctor" => (CommandKind::Doctor, parse_doctor(&mut common, &mut rest)?),
+            "metrics" => (CommandKind::Metrics, parse_metrics(&mut common, &mut rest)?),
             other => {
                 return Err(CliError::usage(format!(
-                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid-seed|explain|repomap|runtime-metadata|history|structural|readiness|doctor"
+                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid-seed|explain|repomap|runtime-metadata|history|structural|readiness|doctor|metrics"
                 )));
             }
         };
@@ -301,6 +327,9 @@ impl ParsedCommand {
             return Err(CliError::usage(format!(
                 "unexpected trailing argument `{extra}`"
             )));
+        }
+        if common.output == OutputMode::Prometheus && kind != CommandKind::Metrics {
+            return Err(prometheus_is_metrics_only(&subcommand));
         }
         Ok(Self {
             kind,
@@ -606,6 +635,17 @@ fn parse_readiness(
         repo_id,
         revision_id,
     })
+}
+
+/// QI-BB-015: parse `metrics`, which takes only the global flags.
+fn parse_metrics(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
+    while let Some(current) = rest.pop_front() {
+        if common.parse_flag(&current, rest)? {
+            continue;
+        }
+        return Err(CliError::usage(format!("unknown metrics flag `{current}`")));
+    }
+    Ok(CliRequest::Metrics)
 }
 
 /// J7Q-05: parse `doctor --repo-id <ID> --revision-id <REV>`.
@@ -966,9 +1006,9 @@ fn dispatch_query_request(
         // them before reaching the query dispatcher. Reaching here is a routing
         // bug, so fail-closed with a typed protocol error rather than fabricate a
         // query.
-        CliRequest::Readiness { .. } | CliRequest::Doctor { .. } => {
+        CliRequest::Readiness { .. } | CliRequest::Doctor { .. } | CliRequest::Metrics => {
             return Err(CliError::protocol(
-                "readiness/doctor are control-plane commands and must not reach the query dispatcher"
+                "readiness/doctor/metrics are control-plane commands and must not reach the query dispatcher"
                     .to_string(),
             ));
         }
@@ -1114,6 +1154,7 @@ fn render_response(
                 .map_err(|err| CliError::transport(format!("failed writing stdout: {err}")))?;
             Ok(())
         }
+        OutputMode::Prometheus => Err(prometheus_is_metrics_only("a query command")),
     }
 }
 
@@ -1133,6 +1174,7 @@ fn render_readiness(report: &GenerationStatusReport, output: OutputMode) -> CliR
                 text
             })
             .map_err(|err| CliError::protocol(format!("failed to encode json output: {err}"))),
+        OutputMode::Prometheus => Err(prometheus_is_metrics_only("readiness")),
         OutputMode::Pretty => {
             let mut rendered = String::new();
             fmt_ok(writeln!(rendered, "kind: readiness"))?;
@@ -1162,6 +1204,142 @@ fn render_readiness(report: &GenerationStatusReport, output: OutputMode) -> CliR
             }
             Ok(rendered)
         }
+    }
+}
+
+/// QI-BB-015: render a [`MetricsSnapshotV1`].
+///
+/// `json` is the wire shape verbatim. `pretty` is line-oriented: one line
+/// per counter and gauge, a header plus one bucket line per histogram, and
+/// the diagnostic tallies last. `prometheus` is the text exposition format:
+/// a `# TYPE` line per metric, `_bucket{le="…"}` / `_sum` / `_count` series
+/// per histogram with the `+Inf` bucket spelled the way Prometheus reads it.
+fn render_metrics(snapshot: &MetricsSnapshotV1, output: OutputMode) -> CliResult<String> {
+    match output {
+        OutputMode::Json => serde_json::to_string_pretty(snapshot)
+            .map(|mut text| {
+                text.push('\n');
+                text
+            })
+            .map_err(|err| CliError::protocol(format!("failed to encode json output: {err}"))),
+        OutputMode::Pretty => render_metrics_pretty(snapshot),
+        OutputMode::Prometheus => render_metrics_prometheus(snapshot),
+    }
+}
+
+fn render_metrics_pretty(snapshot: &MetricsSnapshotV1) -> CliResult<String> {
+    let mut rendered = String::new();
+    fmt_ok(writeln!(rendered, "kind: metrics"))?;
+    fmt_ok(writeln!(rendered, "counters: {}", snapshot.counters.len()))?;
+    for counter in &snapshot.counters {
+        fmt_ok(writeln!(rendered, "  {} {}", counter.name, counter.value))?;
+    }
+    fmt_ok(writeln!(rendered, "gauges: {}", snapshot.gauges.len()))?;
+    for gauge in &snapshot.gauges {
+        fmt_ok(writeln!(rendered, "  {} {}", gauge.name, gauge.value))?;
+    }
+    fmt_ok(writeln!(
+        rendered,
+        "histograms: {}",
+        snapshot.histograms.len()
+    ))?;
+    for histogram in &snapshot.histograms {
+        fmt_ok(writeln!(
+            rendered,
+            "  {} count={} sum={} min={} max={}",
+            histogram.name, histogram.count, histogram.sum, histogram.min, histogram.max
+        ))?;
+        for bucket in &histogram.buckets {
+            fmt_ok(writeln!(
+                rendered,
+                "    le={} {}",
+                prometheus_bound(bucket.le),
+                bucket.count
+            ))?;
+        }
+    }
+    fmt_ok(writeln!(
+        rendered,
+        "diagnostics: samples_recorded={} samples_dropped={} errors_recorded={} errors_dropped={}",
+        snapshot.diagnostics.samples_recorded,
+        snapshot.diagnostics.samples_dropped,
+        snapshot.diagnostics.errors_recorded,
+        snapshot.diagnostics.errors_dropped
+    ))?;
+    Ok(rendered)
+}
+
+fn render_metrics_prometheus(snapshot: &MetricsSnapshotV1) -> CliResult<String> {
+    let mut rendered = String::new();
+    for counter in &snapshot.counters {
+        fmt_ok(writeln!(rendered, "# TYPE {} counter", counter.name))?;
+        fmt_ok(writeln!(rendered, "{} {}", counter.name, counter.value))?;
+    }
+    for gauge in &snapshot.gauges {
+        fmt_ok(writeln!(rendered, "# TYPE {} gauge", gauge.name))?;
+        fmt_ok(writeln!(rendered, "{} {}", gauge.name, gauge.value))?;
+    }
+    for histogram in &snapshot.histograms {
+        render_prometheus_histogram(&mut rendered, histogram)?;
+    }
+    for (name, value) in [
+        (
+            "searchd_obs_samples_recorded_total",
+            snapshot.diagnostics.samples_recorded,
+        ),
+        (
+            "searchd_obs_samples_dropped_total",
+            snapshot.diagnostics.samples_dropped,
+        ),
+        (
+            "searchd_obs_errors_recorded_total",
+            snapshot.diagnostics.errors_recorded,
+        ),
+        (
+            "searchd_obs_errors_dropped_total",
+            snapshot.diagnostics.errors_dropped,
+        ),
+    ] {
+        fmt_ok(writeln!(rendered, "# TYPE {name} counter"))?;
+        fmt_ok(writeln!(rendered, "{name} {value}"))?;
+    }
+    Ok(rendered)
+}
+
+fn render_prometheus_histogram(
+    rendered: &mut String,
+    histogram: &MetricHistogramV1,
+) -> CliResult<()> {
+    fmt_ok(writeln!(rendered, "# TYPE {} histogram", histogram.name))?;
+    for bucket in &histogram.buckets {
+        fmt_ok(writeln!(
+            rendered,
+            "{}_bucket{{le=\"{}\"}} {}",
+            histogram.name,
+            prometheus_bound(bucket.le),
+            bucket.count
+        ))?;
+    }
+    fmt_ok(writeln!(
+        rendered,
+        "{}_sum {}",
+        histogram.name, histogram.sum
+    ))?;
+    fmt_ok(writeln!(
+        rendered,
+        "{}_count {}",
+        histogram.name, histogram.count
+    ))?;
+    Ok(())
+}
+
+/// A bucket bound the way the exposition format spells it: `+Inf` for the
+/// last bucket, otherwise the shortest decimal that round-trips.
+fn prometheus_bound(bound: f64) -> String {
+    if bound == f64::INFINITY {
+        "+Inf".to_string()
+    } else {
+        bound.to_string()
     }
 }
 
@@ -1300,6 +1478,7 @@ fn render_doctor(report: &DoctorReport, output: OutputMode) -> CliResult<String>
                 text
             })
             .map_err(|err| CliError::protocol(format!("failed to encode json output: {err}"))),
+        OutputMode::Prometheus => Err(prometheus_is_metrics_only("doctor")),
         OutputMode::Pretty => {
             let mut rendered = String::new();
             fmt_ok(writeln!(rendered, "kind: doctor"))?;
@@ -1869,6 +2048,7 @@ fn command_kind_name(kind: CommandKind) -> &'static str {
         CommandKind::Structural => "structural",
         CommandKind::Readiness => "readiness",
         CommandKind::Doctor => "doctor",
+        CommandKind::Metrics => "metrics",
     }
 }
 
@@ -1964,7 +2144,7 @@ quanta-index-searchctl
 Global flags:
   --socket PATH
   --state-root PATH
-  --output pretty|json
+  --output pretty|json|prometheus   (prometheus: `metrics` only)
 
 Read-only subcommands:
   lexical          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
@@ -1978,6 +2158,7 @@ Read-only subcommands:
   structural       --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
   readiness        --repo-id ID --revision-id REV
   doctor           --repo-id ID --revision-id REV
+  metrics
 
 `doctor` is the composite read-only diagnosis: it fuses the activation-catalog
 listing with per-track serve-time resolution and reports a machine-readable
@@ -1985,6 +2166,11 @@ verdict (serve_ready, all_resolvable, per-track resolver_ok). It exits 0 when th
 diagnosis completes (read the JSON verdict fields for the health conclusion) and
 uses the standard transport/usage/remote/protocol exit codes only for failures
 to *reach* a verdict.
+
+`metrics` scrapes every counter, gauge and histogram the daemon has aggregated
+since it started (route latency and outcomes, socket admission, caches, boot
+inventory) over the control socket; `--output prometheus` emits the text
+exposition format for a scraper.
 "
 }
 
@@ -2726,6 +2912,173 @@ mod tests {
         };
         assert_eq!(error.exit_code, EXIT_USAGE);
         assert!(error.message.contains("--revision-id"));
+    }
+
+    fn metrics_fixture() -> MetricsSnapshotV1 {
+        use quanta_index_contract::{
+            MetricBucketV1, MetricCounterV1, MetricGaugeV1, MetricsDiagnosticsV1,
+        };
+        MetricsSnapshotV1 {
+            counters: vec![
+                MetricCounterV1 {
+                    name: "ipc_query_requests_dispatched_total".to_string(),
+                    value: 13,
+                },
+                MetricCounterV1 {
+                    name: "lq_route_lexical_served_total".to_string(),
+                    value: 12,
+                },
+            ],
+            gauges: vec![MetricGaugeV1 {
+                name: "ipc_query_connections_live".to_string(),
+                value: 1.0,
+            }],
+            histograms: vec![MetricHistogramV1 {
+                name: "lq_route_lexical_latency_ms".to_string(),
+                count: 3,
+                sum: 8.5,
+                min: 0.5,
+                max: 7.0,
+                buckets: vec![
+                    MetricBucketV1 { le: 1.0, count: 2 },
+                    MetricBucketV1 { le: 2.5, count: 2 },
+                    MetricBucketV1 { le: 10.0, count: 3 },
+                    MetricBucketV1 {
+                        le: f64::INFINITY,
+                        count: 3,
+                    },
+                ],
+            }],
+            diagnostics: MetricsDiagnosticsV1 {
+                samples_recorded: 40,
+                samples_dropped: 0,
+                errors_recorded: 2,
+                errors_dropped: 0,
+            },
+        }
+    }
+
+    /// QI-BB-015: the pretty rendering is line-oriented and complete.
+    #[test]
+    fn render_metrics_pretty_lists_every_series_and_the_diagnostics() {
+        let rendered = render_metrics(&metrics_fixture(), OutputMode::Pretty);
+        assert!(rendered.is_ok(), "{rendered:?}");
+        let Ok(text) = rendered else {
+            return;
+        };
+        assert_eq!(
+            text,
+            "kind: metrics\n\
+             counters: 2\n\
+             \x20 ipc_query_requests_dispatched_total 13\n\
+             \x20 lq_route_lexical_served_total 12\n\
+             gauges: 1\n\
+             \x20 ipc_query_connections_live 1\n\
+             histograms: 1\n\
+             \x20 lq_route_lexical_latency_ms count=3 sum=8.5 min=0.5 max=7\n\
+             \x20   le=1 2\n\
+             \x20   le=2.5 2\n\
+             \x20   le=10 3\n\
+             \x20   le=+Inf 3\n\
+             diagnostics: samples_recorded=40 samples_dropped=0 errors_recorded=2 errors_dropped=0\n"
+        );
+    }
+
+    /// QI-BB-015: the Prometheus exposition is exactly what a scraper reads:
+    /// typed families, cumulative `_bucket` series ending in `+Inf`, and the
+    /// diagnostics as their own counters.
+    #[test]
+    fn render_metrics_prometheus_emits_the_text_exposition_format() {
+        let rendered = render_metrics(&metrics_fixture(), OutputMode::Prometheus);
+        assert!(rendered.is_ok(), "{rendered:?}");
+        let Ok(text) = rendered else {
+            return;
+        };
+        assert_eq!(
+            text,
+            "# TYPE ipc_query_requests_dispatched_total counter\n\
+             ipc_query_requests_dispatched_total 13\n\
+             # TYPE lq_route_lexical_served_total counter\n\
+             lq_route_lexical_served_total 12\n\
+             # TYPE ipc_query_connections_live gauge\n\
+             ipc_query_connections_live 1\n\
+             # TYPE lq_route_lexical_latency_ms histogram\n\
+             lq_route_lexical_latency_ms_bucket{le=\"1\"} 2\n\
+             lq_route_lexical_latency_ms_bucket{le=\"2.5\"} 2\n\
+             lq_route_lexical_latency_ms_bucket{le=\"10\"} 3\n\
+             lq_route_lexical_latency_ms_bucket{le=\"+Inf\"} 3\n\
+             lq_route_lexical_latency_ms_sum 8.5\n\
+             lq_route_lexical_latency_ms_count 3\n\
+             # TYPE searchd_obs_samples_recorded_total counter\n\
+             searchd_obs_samples_recorded_total 40\n\
+             # TYPE searchd_obs_samples_dropped_total counter\n\
+             searchd_obs_samples_dropped_total 0\n\
+             # TYPE searchd_obs_errors_recorded_total counter\n\
+             searchd_obs_errors_recorded_total 2\n\
+             # TYPE searchd_obs_errors_dropped_total counter\n\
+             searchd_obs_errors_dropped_total 0\n"
+        );
+    }
+
+    /// QI-BB-015: `json` is the wire shape, decodable back into the snapshot.
+    #[test]
+    fn render_metrics_json_round_trips_the_snapshot() {
+        let fixture = metrics_fixture();
+        let rendered = render_metrics(&fixture, OutputMode::Json);
+        assert!(rendered.is_ok(), "{rendered:?}");
+        let Ok(text) = rendered else {
+            return;
+        };
+        let decoded: Result<MetricsSnapshotV1, _> = serde_json::from_str(&text);
+        assert!(decoded.is_ok(), "{decoded:?}");
+        let Ok(decoded) = decoded else {
+            return;
+        };
+        assert_eq!(decoded, fixture);
+    }
+
+    /// QI-BB-015: `metrics` takes only the global flags, and `prometheus`
+    /// output belongs to it alone.
+    #[test]
+    fn metrics_parses_alone_and_prometheus_output_is_refused_elsewhere() {
+        let parsed = ParsedCommand::parse(["metrics", "--output", "prometheus"]);
+        assert!(parsed.is_ok(), "{parsed:?}");
+        let Ok(parsed) = parsed else {
+            return;
+        };
+        assert_eq!(parsed.kind, CommandKind::Metrics);
+        assert_eq!(parsed.output, OutputMode::Prometheus);
+        assert_eq!(parsed.request, CliRequest::Metrics);
+
+        let with_flag = ParsedCommand::parse(["metrics", "--repo-id", "repo"]);
+        assert!(with_flag.is_err(), "{with_flag:?}");
+        let Err(error) = with_flag else {
+            return;
+        };
+        assert_eq!(error.exit_code, EXIT_USAGE);
+        assert!(error.message.contains("unknown metrics flag `--repo-id`"));
+
+        let readiness = ParsedCommand::parse([
+            "readiness",
+            "--repo-id",
+            "repo",
+            "--revision-id",
+            "rev",
+            "--output",
+            "prometheus",
+        ]);
+        assert!(readiness.is_err(), "{readiness:?}");
+        let Err(error) = readiness else {
+            return;
+        };
+        assert_eq!(error.exit_code, EXIT_USAGE);
+        assert!(
+            error
+                .message
+                .contains("renders only `metrics`, not `readiness`"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]
