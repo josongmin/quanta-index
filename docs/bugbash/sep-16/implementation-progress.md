@@ -1529,3 +1529,4 @@ byte budget(§3.7), semantic cache(§3.18)는 각자 bound가 있지만 하나�
 | 2026-09-17 | 1cf1b5b | `just rust-profile verify-rust` | RED — `searchd-harness::ui::tests::seeded_ui_rail_runs_and_anchors_every_probe`: UI rail이 옛 `presence_probe` strategy를 기대. rail을 scored explain 계약(row Σ == score)으로 갱신(→ 다음 commit) |
 | 2026-09-17 | 80b4fda | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,091 passed / 0 failed (QI-BB-022 explain score trace + UI rail 포함) |
 | 2026-09-17 | 96c4a48 | `just rust-profile verify-rust` | **INVALID** — 실행 중에 QI-BB-016 편집이 working tree에 겹쳐 doctest 단계가 중간 상태를 컴파일(자체 절차 위반: dirty tree에서 verify 금지). 결과 폐기, 다음 commit에서 96c4a48 포함 재검증 |
+| 2026-09-17 | f68e254 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,103 passed / 0 failed (QI-BB-008 RepoMap + QI-BB-016 writer envelope 포함; 96c4a48의 INVALID run 대체) |
