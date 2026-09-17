@@ -59,7 +59,7 @@
 | QI-BB-009 | P2 | embedding cache | disk cache와 provider request sample에 retention/cap이 없다 | 확정 |
 | QI-BB-010 | P2 | performance proof | 현행 scan experiment가 실행 불가하고 checked-in 수치가 현재 HEAD를 증명하지 않는다 | 확정 |
 | QI-BB-011 | P2 | text semantics | phrase/raw/regex 보조 경로가 whitespace/ASCII folding에 의존한다 | 확정 |
-| QI-BB-012 | P2 | documentation | README의 reader cache/async listener 설명이 실제 구현과 다르다 | 확정 |
+| QI-BB-012 | P2 | documentation | README의 reader cache/async listener 설명이 실제 구현과 다르다 | 부분 보완 (2026-09-16 README/SSOT sync) |
 | QI-BB-013 | P3 | maintainability | 핵심 dispatcher/adapter/authority 파일이 수천 줄 단위로 결합돼 있다 | 확정 |
 | QI-BB-014 | P2 | local IPC | UDS mode/peer identity를 강제하지 않고 기존 live socket도 stale로 간주해 unlink할 수 있다 | 확정, 영향은 배포 환경 의존 |
 | QI-BB-015 | P2 | observability | 진단 저장소는 process-local이며 일부 error/sample 벡터는 무제한이다 | 확정 |
@@ -406,7 +406,12 @@
 
 ### QI-BB-012 — README가 현재 구현과 다르다
 
-**증거**
+**2026-09-16 doc sync:** root `README.md`, `docs/ssot/*`, `may-28-lancedb-adoption`,
+`may-25-search-owned-semantic-derivation`, and broken plan links were refreshed
+to match current code. Remaining gap: no automated doc-truth checker yet; stale
+plan prose may still exist outside the touched files.
+
+**원래 증거 (4914156 기준)**
 
 - [README.md](../../../README.md):25는 lexical adapter에 reader caching이 있다고 쓰지만 QI-BB-001 경로에는 없다.
 - 동일 문서 31은 `tokio current-thread UDS listener`라고 쓰지만 실제 listener는 blocking std UDS + thread다.

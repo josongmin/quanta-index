@@ -1,6 +1,6 @@
 # May 28 LanceDB Adoption Plan
 
-Status: `in-progress` (real lancedb migration, 2026-05-30)
+Status: `closed` (lancedb rewrite + R1–R3 hardening landed, 2026-05-31)
 Date: `2026-05-28`
 Scope: replace the current semantic `journal.cbor` plus boot-time full replay
 path with a persisted Lance-family semantic backend while preserving
@@ -37,28 +37,26 @@ The target is not "add a vector DB somewhere". The target is:
 
 ## 2. Current live truth
 
-Current source-backed semantic posture:
+Current source-backed semantic posture on the tree after this packet closed:
 
-- `quanta-index-semantic` is an in-memory HNSW adapter; `SemanticAdapter::new()`
-  starts empty and `build_batch()` populates RAM state
-- accepted semantic batches are persisted by
-  `quanta-index-search-plane::SemanticAuthorityStore` to
-  `state_root/semantic/journal.cbor`
-- `quanta-index-searchd::app::runtime::assemble` calls
-  `bootstrap_persisted_semantic_state(...)`, which replays every persisted
-  `SemanticIngestBatch` into the semantic builder on boot
-- direct semantic ingest is effectively `append_batch -> build_batch ->
-  ledger update`, with rollback if the live build fails after persistence
+- `quanta-index-semantic` is a persisted LanceDB adapter (`lancedb` 0.30) with a
+  sync port surface bridged by an adapter-owned tokio runtime
+- sealed generations live under
+  `state_root/indexes/semantic/{repo_id}/{revision_id}/g{generation}/` and
+  open directly from durable state; there is no boot-time replay of accepted
+  batches into RAM
+- legacy `state_root/semantic/journal.cbor` is migration input only:
+  `LegacySemanticJournalStore` + one-shot `migrate_legacy_semantic_journal`
+  with an idempotent `MIGRATED` marker (`searchd::app::semantic_boot`)
 - lexical already uses durable generation directories under
-  `state_root/indexes/lexical/...`; semantic does not
+  `state_root/indexes/lexical/...`; semantic now matches that generation-scoped
+  shape
+- search-plane authority is inline in `quanta-index-search-plane`; the historical
+  standalone `quanta-index-control` crate is deleted
 
-Current drift that this packet must not ignore:
-
-- `README.md` still describes `quanta-index-control` and "Tantivy + Lance"
-  adapter ownership, but the live control plane is inline in
-  `quanta-index-search-plane` and the live semantic backend is not Lance-backed
-- older planning docs mark a Lance semantic adapter as done; current live code
-  does not match that claim
+Historical note: §2 below through the original "Current drift" bullets described
+the pre-lancedb RAM/HNSW + journal replay world. That world is no longer the
+live authority path; keep it only when reading ticket provenance.
 
 ## 3. Direction Lock
 

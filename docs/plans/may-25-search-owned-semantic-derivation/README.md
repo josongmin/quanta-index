@@ -10,16 +10,20 @@ target design for the later `SEM-OWN` wave.
 
 ---
 
-## 1. Current tree truth (2026-05-27)
+## 1. Current tree truth (2026-09-16)
 
-- the current tree has partial search-owned semantic derivation: lexical
-  ingest can derive semantic authority from `ChunkRecord.text`, but the full
-  `SEM-OWN` worker / manifest / seal-proof packet has not landed
+- the current tree has **partial** search-owned semantic derivation on the live
+  path: typed `SemanticSourceRecordV1` scopes, SCV2 wire validation, and three
+  derivation modes in `search-plane/src/semantic_derive.rs`
+- default derivation is `SemanticSourcesWithLegacyFallback`; legacy-only mode
+  remains available through `QUANTA_INDEX_SEMANTIC_DERIVE_MODE=legacy_all_chunk`
+- the full `SEM-OWN` worker / manifest / seal-proof packet has **not** landed;
+  this README still records the target-state design for that later wave
 - public semantic/hybrid query contracts are text-only; removed vector/handle
   wire fields fail closed
 - `searchctl` rejects the old vector/handle flags; the CLI surface is text-only
-- SDK public semantic publish is removed; `sdk_frontdoor` proof now exercises
-  lexical ingest plus search-owned semantic derivation
+- SDK public semantic publish is removed; runtime proof exercises lexical ingest
+  plus search-owned semantic derivation
 - query-time semantic text embedding is search-owned only; the old
   numeric-token-as-vector compatibility mode is removed from the runtime
 - the runtime hot path is de-channelized; search-owned semantic derivation is

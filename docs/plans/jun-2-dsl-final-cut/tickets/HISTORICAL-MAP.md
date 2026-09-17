@@ -6,7 +6,7 @@ Parent packet: [../README.md](../README.md)
 
 | historical source | prior role | successor tickets | note |
 | --- | --- | --- | --- |
-| [../../may-24-lexical-indexing-sourcegraph/README.md](../../may-24-lexical-indexing-sourcegraph/README.md) | original whole-surface scope packet for history, runtime metadata, and bridge semantics | `JFC-02`, `JFC-03`, `JFC-05` | still the provenance source for unresolved `since:` branching, runtime-catalog shapes, and bridge subset constraints |
+| [../../may-24-lexical-indexing-sourcegraph/SHIPPED.md](../../may-24-lexical-indexing-sourcegraph/SHIPPED.md) | original whole-surface scope packet for history, runtime metadata, and bridge semantics | `JFC-02`, `JFC-03`, `JFC-05` | still the provenance source for unresolved `since:` branching, runtime-catalog shapes, and bridge subset constraints |
 | [../../may-25-lexical-enhancement/README.md](../../may-25-lexical-enhancement/README.md) | runtime subset landing and executable proof ledger baseline | `JFC-00`, `JFC-01`, `JFC-06` | remains the base evidence packet for already-landed lexical/runtime rows |
 | [../../may-27-dsl-master-closeout/README.md](../../may-27-dsl-master-closeout/README.md) | first whole-DSL residue regrouping | `JFC-00` through `JFC-06` | superseded as the active owner packet |
 | [../../may-27-structural-dsl/README.md](../../may-27-structural-dsl/README.md) | structural boolean / typed-hole / bridge follow-on planning | `JFC-04`, `JFC-05`, `JFC-06` | native structural semantics remain authoritative input |

@@ -8,18 +8,16 @@ ticket's `Status:` line and parent [../README.md](../README.md) §3.2.
 
 Parent doc: [../README.md](../README.md)
 
-This ticket pack replaces the current semantic `journal.cbor` plus boot replay
-model with a persisted Lance-backed semantic generation store.
+This ticket pack replaced the pre-lancedb semantic `journal.cbor` plus boot
+replay model with a persisted Lance-backed semantic generation store.
 
-Current live truth before this pack starts:
+Historical pre-pack truth (no longer live authority):
 
-- semantic query state is rebuilt into RAM on every boot
-- `SemanticAuthorityStore` persists accepted semantic batches as
+- semantic query state was rebuilt into RAM on every boot
+- `SemanticAuthorityStore` persisted accepted semantic batches as
   `state_root/semantic/journal.cbor`
-- `SearchdRuntime::assemble` replays the entire semantic journal into the
-  builder before queries resume
-- generated docs and older planning status still overclaim a shipped Lance
-  backend
+- `SearchdRuntime::assemble` replayed the entire semantic journal into the
+  builder before queries resumed
 
 ---
 

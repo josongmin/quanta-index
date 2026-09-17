@@ -143,7 +143,9 @@ pub enum SemanticChannelOp {
 authors chunk/symbol/commit/parse-tree/structural/history/dirty handoff
 payloads and may also publish typed semantic-source replace/tombstone scopes.
 The search plane validates those sources and derives the live dense corpus from
-their rendered text. `LegacyAllChunkText` remains the current default migration
+their rendered text. Default derivation is
+`SemanticSourcesWithLegacyFallback`; `legacy_all_chunk` remains an explicit
+migration mode via `QUANTA_INDEX_SEMANTIC_DERIVE_MODE`.
 mode; it is an explicit compatibility path, not the target corpus authority.
 The `EmbeddingRecord` / `SemanticChannelOp::UpsertEmbedding` sketch in this
 section remains historical producer-authored-vector material and must not be

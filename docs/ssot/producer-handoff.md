@@ -16,8 +16,9 @@ Current-tree note (2026-05-27):
   carriers
 - semantic query/public SDK truth has also changed: public semantic publish is
   removed, semantic query/hybrid are live query surfaces, and semantic corpus
-  derivation happens inside `searchd` from typed semantic sources; legacy
-  chunk-text derivation remains the current migration default
+  derivation happens inside `searchd` from typed semantic sources; default
+  derivation is `SemanticSourcesWithLegacyFallback` with env override via
+  `QUANTA_INDEX_SEMANTIC_DERIVE_MODE`
 
 This is a historical archive of the old producer/search channel contract that
 was used to reason about [LEX-07](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-07.md), [RT-01](../plans/may-24-lexical-indexing-sourcegraph/tickets/RT-01.md), and [STR-01](../plans/may-24-lexical-indexing-sourcegraph/tickets/STR-01.md). It captures the prior 9-op channel framing and the 11 AMB-PROD-* ambiguity resolutions that predated the typed-batch UDS cutover.
@@ -52,7 +53,7 @@ PublishStructuralBatch}` plus the persisted authority stores in
 
 | Field | Value |
 |---|---|
-| Status | Proposed, pending producer agreement. Becomes authoritative when both teams sign off per §8. |
+| Status | Historical archive. Do not treat §1–§8 as pending producer sign-off on the current tree. |
 | Owners | Producer lead (`semantica-codegraph-v2` repo) + search-side lead (this repo). |
 | Parent SSOT | [channel-architecture.md](channel-architecture.md) — particularly [§0 Scope](channel-architecture.md), [§3.1 Op enums + Authorship rule lock](channel-architecture.md), [§5.2 Generation state authority](channel-architecture.md). |
 | Authoritativeness | This doc is the single source of truth for the wire shape, emission ordering, and error semantics of every op listed in §3. Downstream ticket specs ([LEX-05](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-05.md), [LEX-07](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-07.md), [STR-01](../plans/may-24-lexical-indexing-sourcegraph/tickets/STR-01.md), [RT-01](../plans/may-24-lexical-indexing-sourcegraph/tickets/RT-01.md)) reference this doc; conflicts resolve in favour of this doc. |
@@ -70,8 +71,9 @@ The following rule, locked in [channel-architecture.md §3.1](channel-architectu
 > authors chunk/symbol/commit/parse-tree/structural/history/dirty handoff
 > payloads and may publish typed semantic-source replace/tombstone scopes. The
 > search plane validates those sources and derives embeddings from their
-> rendered text via `semantic_derive`. `LegacyAllChunkText` remains the current
-> default migration mode. Producer-authored `EmbeddingRecord`/`UpsertEmbedding`
+> rendered text via `semantic_derive`. Default derivation is
+> `SemanticSourcesWithLegacyFallback`; `legacy_all_chunk` remains an explicit
+> migration mode via `QUANTA_INDEX_SEMANTIC_DERIVE_MODE`. Producer-authored `EmbeddingRecord`/`UpsertEmbedding`
 > language is historical archive material only; it is not the current serving
 > contract.
 

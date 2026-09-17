@@ -8,8 +8,9 @@ Status: `Canonical implementation plan for this repo (partially superseded — s
 > workspace** — generation/activation/readiness/delta-apply authority now lives
 > in the search plane's persisted authority stores
 > (`crates/quanta-index-search-plane/src/{ingest_dispatcher,readiness}.rs`);
-> (2) the producer no longer authors embeddings — `quanta-index` derives semantic
-> vectors from ingested chunk text and serves semantic/hybrid queries. Read the
+> (2) semantic derivation modes live in
+> `crates/quanta-index-search-plane/src/semantic_derive.rs`; default is
+> `SemanticSourcesWithLegacyFallback`, not legacy-only chunk text. Read the
 > `quanta-index-control` table rows below as historical plan context, not as
 > current live crates.
 

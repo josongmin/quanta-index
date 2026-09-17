@@ -7,12 +7,14 @@ External search-plane for Semantica/Quanta indexing and serving.
 > structural, dirty/runtime, and repo-map records — and may publish typed
 > semantic-source replace/tombstone scopes. `quanta-index` validates those
 > sources, derives semantic vectors, and owns generation/readiness, fusion, and
-> lexical/semantic/hybrid serving. `LegacyAllChunkText` remains the explicit
-> migration default. The cross-repo boundary is typed contract DTOs plus the
+> lexical/semantic/hybrid serving. Default semantic derivation is
+> `SemanticSourcesWithLegacyFallback`; override with
+> `QUANTA_INDEX_SEMANTIC_DERIVE_MODE=legacy_all_chunk|semantic_with_legacy_fallback|semantic_only`.
+> The cross-repo boundary is typed contract DTOs plus the
 > `quanta-index-sdk` ingress facade over UDS transport.
 
-Current status (lexical + semantic/hybrid serving live; live-network semantic
-proof remains a separate gated rail):
+Current status (lexical + semantic/hybrid serving live on the current tree;
+live-network semantic proof and production ops hardening remain separate gates):
 
 - shared contract crate with bundle/control/query DTOs (manual `Serialize` /
   `Deserialize` impls, no proc-macro derives per workspace rule D18)
@@ -22,42 +24,49 @@ proof remains a separate gated rail):
   dispatch, owned by the persisted authority stores in
   `crates/quanta-index-search-plane`; the historical standalone
   `quanta-index-control` crate has been deleted
-- `quanta-index-lexical` Tantivy 0.22 adapter with reader caching
+- `quanta-index-lexical` Tantivy 0.22 adapter: per-query open via
+  `LexicalIndexOpenPort` (no generation read cache on the lexical path today)
 - `quanta-index-semantic` persisted, generation-scoped semantic adapter:
-  durable LanceDB build + direct open from sealed generations, with no
-  boot-time replay. Logical corpus predicates are pushed into the storage
-  query instead of applied after an unfiltered ANN read.
+  durable LanceDB build + direct open from sealed generations, with a bounded
+  open cache (`OPEN_CACHE_CAPACITY=8`) and no boot-time journal replay.
+  Legacy `state_root/semantic/journal.cbor` is one-shot migration input only.
+  Logical corpus predicates are pushed into the storage query instead of
+  applied after an unfiltered ANN read.
 - `quanta-index-ipc` CBOR wire codec (16 MiB frame cap)
-- `searchd` binary that actually runs: tokio current-thread UDS listener,
-  owner query/control/ingest sockets, lexical + semantic + repomap serving,
-  SIGINT/SIGTERM draining shutdown
+- `searchd` binary that actually runs: blocking `std::thread` UDS accept loops
+  over `UnixListener` (query/control/ingest sockets), lexical + semantic +
+  repomap serving, SIGINT/SIGTERM draining shutdown. Tokio exists inside the
+  semantic LanceDB adapter seam, not as the UDS listener runtime.
 
-Semantic Corpus V2 current state (2026-07-15):
+Semantic Corpus V2 current state (code-truth snapshot, HEAD `526349b`, 2026-09-16):
 
 - typed semantic-source wire covers symbol/module/cluster/document/test/raw-fallback corpora;
 - semantic storage v4 preserves owner/corpus/provenance metadata and exact owner-scoped replacement;
 - HybridSeed accepts typed per-corpus budgets, runs storage-prefiltered dense
   lanes independently, collapses views to stable owner identity, and fuses
   stable IDs without manufacturing lexical candidates;
-- source-wire (7), IPC query contract (29), SDK (44), core hybrid (2),
-  search-plane (136), semantic library (13), and persisted SCV2 scenarios (4)
-  pass; public API/module/hexagonal, four 60-second fuzz targets, and the full
-  daemon E2E profile are green;
-- default derivation remains `LegacyAllChunkText`; semantic-source-only cutover and live searchd activation are not complete;
+- SCV2 source-wire and persisted scenario rails exist under
+  `crates/quanta-index-contract/tests/scv2_01_semantic_source_wire.rs` and
+  `crates/quanta-index-semantic/tests/scv2_persisted_scenarios.rs`;
+- owner-local unit coverage is broad across contract/core/SDK/search-plane/
+  semantic crates; exact counts drift — use `just rust-profile test-fast` rather
+  than frozen README numbers;
+- semantic-source-only cutover and live card-required activation are not complete;
 - Semantica remains responsible for graph facts, Stage3 graph expansion, and source hydration.
 
-Current verification snapshot (2026-07-15):
+Current verification posture (2026-09-16):
 
-- green on current live-source rerun:
-  - owner-local contract/core/SDK/search-plane/semantic/persisted rails listed above
+- substrate rails that remain the merge gate:
+  - `just rust-profile verify-rust`
   - `just rust-public-api`
   - `just rust-cargo-modules`
   - `just rust-hexagonal`
   - `just rust-fuzz-smoke`
   - `just rust-profile test-daemon`
-- this snapshot proves the q-index code substrate. Live card-required
-  activation, numeric quality comparison, and legacy deletion remain separate
-  product cutover gates.
+- these prove correctness of the current code substrate, not production ops readiness;
+- [`docs/bugbash/sep-16/findings.md`](docs/bugbash/sep-16/findings.md) records
+  open P1/P2 operational and contract gaps on HEAD `4914156` and later; treat
+  bugbash as the current production-readiness inventory until remediated.
 
 Build artifacts:
 
@@ -130,6 +139,7 @@ Repo layout:
 
 Implementation packet (search-plane SSOT for this repo):
 
+- [`docs/ssot/README.md`](docs/ssot/README.md)
 - [`docs/ssot/may-23-storage-architecture-endgame-implementation.md`](docs/ssot/may-23-storage-architecture-endgame-implementation.md)
 
 Producer integration points in `semantica-codegraph-v2`:
@@ -159,5 +169,7 @@ Non-goals in this Phase 1–3 cut:
   derivation retained as the current migration default
 - no `materialized` / `failed` catalog-state transitions yet (only `prepared`
   and `active` are written; SSOT lifecycle is a Phase 3.5 follow-up)
-- no production observability (tracing/metrics) — Phase 4
+- no production observability exporter (tracing/metrics shipping) — Phase 4;
+  process-local query/embedding diagnostic stores exist for harness and bounded
+  in-process sampling only
 - no TLS/authz on UDS — Phase 4; UDS access controlled by filesystem perms

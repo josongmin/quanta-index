@@ -146,7 +146,7 @@ python3 tools/ci/lint/check-public-api.py
 ## 7. Historical Evidence
 
 - [tickets/HISTORICAL-MAP.md](tickets/HISTORICAL-MAP.md)
-- [../may-24-lexical-indexing-sourcegraph/README.md](../may-24-lexical-indexing-sourcegraph/README.md)
+- [../may-24-lexical-indexing-sourcegraph/SHIPPED.md](../may-24-lexical-indexing-sourcegraph/SHIPPED.md)
 - [../may-27-dsl-master-closeout/README.md](../may-27-dsl-master-closeout/README.md)
 - [../may-27-structural-dsl/README.md](../may-27-structural-dsl/README.md)
 - [../may-25-lexical-enhancement/README.md](../may-25-lexical-enhancement/README.md)
