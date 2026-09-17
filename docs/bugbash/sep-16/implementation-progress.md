@@ -311,7 +311,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W0 | **passed** | G0-L/G0-S/G0-C passed, G0-R baseline pinned(cooperative-only). §3 참조. timing 재측정만 `blocked: contended-host` |
 | W1 | planned | |
 | W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + QI-BB-032 idempotency catalog(§3.16) + **QI-BB-020 auxiliary authority rows(§3.19, catalog 확장: per-record row, validate→persist→apply, Arc snapshot read, retention prune, legacy 일회 migration)** 완료. 남은 것: quarantine control surface, aux read epoch/visibility interval(§3.19 한계) |
-| W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + **QI-BB-027 ANN sealed contract(§3.23)** 완료. 남은 것: sharded sidecar 포맷(O(delta) write), seal마다 ANN 전체 재구축(O(N), §3.23 한계), scope 단위 streamed embed→append(§3.18 한계) |
+| W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + QI-BB-027 ANN sealed contract(§3.23) + **QI-BB-016 lexical writer envelope(§3.26)** 완료. 남은 것: sharded sidecar 포맷(O(delta) write), seal마다 ANN 전체 재구축(O(N), §3.23 한계), scope 단위 streamed embed→append(§3.18 한계) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), streaming projection collector |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. 남은 것: cancel을 lexical collector 내부(candidate batch 사이)까지 내리기, overload/refusal 서버 metric |
 | W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + QI-BB-018 true hybrid(§3.22) + QI-BB-022 explain = exact presence + lexical score trace(§3.24) + **QI-BB-008 RepoMap bounded query + durable store(§3.25)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), history relevance order(Tantivy history index, §3.20 한계), judged corpus recall/NDCG gate(§3.22 한계), hybrid 후보의 per-lane contribution(§3.24 한계) |
@@ -1456,6 +1456,41 @@ allocation/response). (b) 할당 상한은 구조로 보장하지만(heap O(k), 
 quarantine). (d) fsync 유실(전원 단절) 자체는 시뮬레이션하지 않았다 — protocol(temp sync → rename → dir sync)과 crash
 boundary 2곳의 subprocess kill이 증거다.
 
+## 3.26 QI-BB-016 — lexical writer는 하나의 heap envelope 아래 살고, 놀면 heap을 돌려준다 (구현 완료)
+
+**진단 확정**: `LEXICAL_WRITER_CACHE_MAX = 16`, `WRITER_MEMORY_BUDGET_BYTES = 15 MB`가 상수였고 config·관측 모두 없었다.
+insert 시에만 LRU evict — producer가 generation 중간에 멈추면 그 writer는 영원히 15 MB(+mmap)를 쥔다. writer 수와 writer
+heap이 따로 놀아 "process 예산"이라는 것이 존재하지 않았다.
+
+**구현**:
+
+- core `LexicalWriterPolicy { envelope_bytes, writer_heap_bytes, idle_after }` — **writer 수는 파생값** `envelope /
+  heap`(≥1). heap은 tantivy 최소 arena(15,000,000)…최대(2^32-1-1,000,000) 범위 검증, envelope ≥ heap, idle > 0.
+  DEFAULT = 16 × 15 MB / 15 MB / 60 s(이전 상수와 같은 bound). `LexicalWriterCacheStats { open_writers, max_writers,
+  allocated_heap_bytes, lru_releases, idle_releases, seal_releases }`.
+- adapter `WriterCache`: entry에 `last_used: Instant`; `get_or_open`은 idle sweep → LRU release(envelope 여유 확보) →
+  `writer_with_num_threads(threads, heap)` — thread 수도 명시(`min(heap/15MB, cpus, 8)`, tantivy가 내부적으로 하는 파생을
+  드러냄). `release(key, why)`가 commit+drop과 사유 계수를 한 곳에서. seal은 `WriterRelease::Seal`로 즉시 반환(기존 동작 유지,
+  계수 추가). `build_batch` 끝마다 `release_idle_writers()` sweep; composition root도 호출 가능(pub).
+- searchd config: `QUANTA_INDEX_LEXICAL_WRITER_ENVELOPE_BYTES / _HEAP_BYTES / _IDLE_SECS` → `lexical_writer_policy()` →
+  runtime이 adapter에 주입. `LEXICAL_WRITER_CACHE_MAX` 상수·`writer_cache_len` 삭제(breaking).
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| envelope 3×15MB → max 3; 5 generation build 동안 매 step `open_writers ≤ max_writers`, `allocated_heap_bytes ≤ envelope`; 끝에 open 3 / lru 2; release된 generation의 on-disk segment 유지; 재접촉 시 가장 오래된 resident(g2)만 release | `lexical/tests/writer_envelope.rs::the_envelope_bounds_open_writers_and_their_heap_and_releases_the_oldest_committed` |
+| idle 400ms 후 sweep → open 0, `idle_releases` 2, allocated 0, segment 유지; build-time sweep은 idle writer만 release(open 1) | `…::an_idle_writer_is_committed_and_released_on_the_next_sweep` |
+| seal 후 open 0, `seal_releases` 1, sealed generation은 port로 검색 가능 | `…::a_seal_releases_its_generations_writer_and_the_index_stays_readable` |
+| env binding: unset=DEFAULT(max 16); heap 60MB → max 4; idle 5s; heap<min / envelope<heap / idle 0 → typed 거부 | `searchd::config::tests::lexical_writer_env_binding_layers_over_the_default_and_refuses_bad_envelopes` |
+| 옛 `writer_cache_evicts_lru_after_threshold`(17 writer 생성)는 envelope test로 대체 | `tantivy_smoke.rs`에서 삭제 |
+
+**정직한 한계**: (a) envelope은 **writer heap**만 센다 — tantivy segment mmap, sidecar, regex cache(§3.17), SnapshotRegistry
+byte budget(§3.7), semantic cache(§3.18)는 각자 bound가 있지만 하나의 process RSS 예산으로 합산되지는 않는다(finding의
+"하나의 process memory envelope"에서 남은 것). (b) RSS pressure 관측·반응(evict on pressure)은 없다 — idle/LRU/seal의
+결정적 release만. (c) "commit on release"는 방어적이다: 현재 adapter는 모든 build를 즉시 commit하므로 pending doc이 생기지
+않고, test는 release가 committed segment를 잃지 않음을 증명한다.
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -1493,3 +1528,4 @@ boundary 2곳의 subprocess kill이 증거다.
 | 2026-09-17 | a9644a3 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,082 passed / 0 failed (QI-BB-027 ANN sealed contract 포함) |
 | 2026-09-17 | 1cf1b5b | `just rust-profile verify-rust` | RED — `searchd-harness::ui::tests::seeded_ui_rail_runs_and_anchors_every_probe`: UI rail이 옛 `presence_probe` strategy를 기대. rail을 scored explain 계약(row Σ == score)으로 갱신(→ 다음 commit) |
 | 2026-09-17 | 80b4fda | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,091 passed / 0 failed (QI-BB-022 explain score trace + UI rail 포함) |
+| 2026-09-17 | 96c4a48 | `just rust-profile verify-rust` | **INVALID** — 실행 중에 QI-BB-016 편집이 working tree에 겹쳐 doctest 단계가 중간 상태를 컴파일(자체 절차 위반: dirty tree에서 verify 금지). 결과 폐기, 다음 commit에서 96c4a48 포함 재검증 |

@@ -60,6 +60,8 @@ crate quanta_index_core
 │   │   └── mod service: pub(self)
 │   │       ├── struct LexicalExecutionBudgetV1: pub
 │   │       ├── struct LexicalPolicy: pub
+│   │       ├── struct LexicalWriterCacheStats: pub
+│   │       ├── struct LexicalWriterPolicy: pub
 │   │       ├── struct RegexMatchCachePolicy: pub
 │   │       └── struct RegexMatchCacheStats: pub
 │   ├── mod repomap: pub

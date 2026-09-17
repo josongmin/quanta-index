@@ -13,6 +13,7 @@ pub use outbound::{
     SearchCorpusIngestPort,
 };
 pub use service::{
-    LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE, LexicalExecutionBudgetV1, LexicalPolicy,
-    RegexMatchCachePolicy, RegexMatchCacheStats,
+    LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE, LEXICAL_WRITER_HEAP_BYTES_MAX,
+    LEXICAL_WRITER_HEAP_BYTES_MIN, LexicalExecutionBudgetV1, LexicalPolicy,
+    LexicalWriterCacheStats, LexicalWriterPolicy, RegexMatchCachePolicy, RegexMatchCacheStats,
 };

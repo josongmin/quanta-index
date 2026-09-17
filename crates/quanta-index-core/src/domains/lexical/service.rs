@@ -562,6 +562,112 @@ impl RegexMatchCachePolicy {
     }
 }
 
+/// The lexical writer envelope (QI-BB-016).
+///
+/// How much heap every open generation writer may hold together, how much
+/// one writer takes, and how long an idle writer is kept before it is
+/// committed and released.
+///
+/// The writer count is derived, never configured on its own: it is the
+/// envelope divided by one writer's heap, so raising the per-writer heap
+/// lowers the count and the process-wide bound holds either way. Fields are
+/// private so every policy in existence is valid.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LexicalWriterPolicy {
+    envelope_bytes: u64,
+    writer_heap_bytes: u64,
+    idle_after: core::time::Duration,
+}
+
+/// The smallest heap the inverted-index writer accepts per indexing thread.
+pub const LEXICAL_WRITER_HEAP_BYTES_MIN: u64 = 15_000_000;
+/// One below the largest heap the writer's arena can address.
+pub const LEXICAL_WRITER_HEAP_BYTES_MAX: u64 = 0xFFFF_FFFF - 1_000_000;
+
+impl LexicalWriterPolicy {
+    /// Sixteen writers of the minimum heap — the bound the adapter carried as
+    /// two constants before it was one envelope — released after a minute
+    /// idle.
+    pub const DEFAULT: Self = Self {
+        envelope_bytes: 16 * LEXICAL_WRITER_HEAP_BYTES_MIN,
+        writer_heap_bytes: LEXICAL_WRITER_HEAP_BYTES_MIN,
+        idle_after: core::time::Duration::from_secs(60),
+    };
+
+    pub fn new(
+        envelope_bytes: u64,
+        writer_heap_bytes: u64,
+        idle_after: core::time::Duration,
+    ) -> Result<Self, CoreError> {
+        if !(LEXICAL_WRITER_HEAP_BYTES_MIN..=LEXICAL_WRITER_HEAP_BYTES_MAX)
+            .contains(&writer_heap_bytes)
+        {
+            return Err(CoreError::InvalidContract(format!(
+                "lexical: writer heap {writer_heap_bytes} bytes is outside {LEXICAL_WRITER_HEAP_BYTES_MIN}..={LEXICAL_WRITER_HEAP_BYTES_MAX}"
+            )));
+        }
+        if envelope_bytes < writer_heap_bytes {
+            return Err(CoreError::InvalidContract(format!(
+                "lexical: writer envelope {envelope_bytes} bytes cannot hold one writer of {writer_heap_bytes} bytes"
+            )));
+        }
+        if idle_after.is_zero() {
+            return Err(CoreError::InvalidContract(
+                "lexical: writer idle release interval must be non-zero".to_string(),
+            ));
+        }
+        Ok(Self {
+            envelope_bytes,
+            writer_heap_bytes,
+            idle_after,
+        })
+    }
+
+    #[must_use]
+    pub const fn envelope_bytes(self) -> u64 {
+        self.envelope_bytes
+    }
+
+    #[must_use]
+    pub const fn writer_heap_bytes(self) -> u64 {
+        self.writer_heap_bytes
+    }
+
+    #[must_use]
+    pub const fn idle_after(self) -> core::time::Duration {
+        self.idle_after
+    }
+
+    /// How many writers the envelope holds at once; at least one by
+    /// construction.
+    #[must_use]
+    pub fn max_writers(self) -> usize {
+        let writers = self
+            .envelope_bytes
+            .checked_div(self.writer_heap_bytes)
+            .map_or(1, |writers| writers.max(1));
+        usize::try_from(writers).map_or(usize::MAX, |writers| writers)
+    }
+}
+
+/// What the lexical writer cache holds and has done, for operators and
+/// tests (QI-BB-016).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LexicalWriterCacheStats {
+    pub open_writers: usize,
+    pub max_writers: usize,
+    /// Heap the open writers may use together: `open_writers` times the
+    /// per-writer heap, never above the envelope.
+    pub allocated_heap_bytes: u64,
+    /// Writers committed and released to make room for another.
+    pub lru_releases: u64,
+    /// Writers committed and released because nothing touched them for the
+    /// policy's idle interval.
+    pub idle_releases: u64,
+    /// Writers committed and released because their generation sealed.
+    pub seal_releases: u64,
+}
+
 /// What the regex match cache did so far, for operators and tests.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RegexMatchCacheStats {

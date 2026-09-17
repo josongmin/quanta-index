@@ -26,7 +26,7 @@ use quanta_index_contract::{
     SearchCorpusIngestBatch, SearchScopeSurface, SymbolId, UpsertChunk, UpsertSymbol,
 };
 use quanta_index_core::{CoreError, LexicalIndexOpenPort, SearchCorpusBatchBuildPort};
-use quanta_index_lexical::{LEXICAL_WRITER_CACHE_MAX, LexicalAdapter};
+use quanta_index_lexical::LexicalAdapter;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -100,10 +100,6 @@ fn language_code(code: &str) -> Result<LanguageCode, Box<dyn Error>> {
     LanguageCode::new(code).map_err(|err| -> Box<dyn Error> {
         format!("invalid language code `{code}`: {err}").into()
     })
-}
-
-fn encode_chunk_payload(chunk_id: &str, text: &str) -> Result<Vec<u8>, Box<dyn Error>> {
-    encode_chunk_payload_with_metadata(chunk_id, "", "", 0, 0, text)
 }
 
 fn encode_chunk_payload_with_metadata(
@@ -3472,70 +3468,6 @@ fn tantivy_applies_query_boost_to_scores() -> TestResult {
             baseline_first.score, boosted_first.score
         )
         .into());
-    }
-
-    Ok(())
-}
-
-/// LRU eviction hellgate.
-///
-/// Drive `LEXICAL_WRITER_CACHE_MAX + 1` distinct generations through the
-/// adapter, then assert
-///   (a) the writer cache holds at most `LEXICAL_WRITER_CACHE_MAX` entries, and
-///   (b) the LRU victim (generation 0, the first inserted) was committed before
-///       eviction — verified by opening a searcher on it and finding the chunk.
-///
-/// (a) defends the memory bound described in the `WriterCache` doc-comment.
-/// (b) defends the commit-on-eviction guarantee.
-#[test]
-fn writer_cache_evicts_lru_after_threshold() -> TestResult {
-    let dir = tempfile::tempdir()?;
-    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
-
-    let total: u64 = u64::try_from(LEXICAL_WRITER_CACHE_MAX)? + 1;
-
-    for gen_index in 0..total {
-        let generation = ManifestGeneration::new(gen_index);
-        let chunk_id = format!("chunk-g{gen_index}");
-        let text = format!("eviction-marker generation-{gen_index}");
-        let op = LexicalChannelOp::UpsertChunk(UpsertChunk {
-            repo_id: repo(),
-            revision_id: revision(),
-            generation,
-            chunk_id: ChunkId::new(&chunk_id),
-            payload: encode_chunk_payload(&chunk_id, &text)?,
-        });
-        adapter.build(&repo(), &revision(), generation, &[op])?;
-    }
-
-    let cached = adapter.writer_cache_len()?;
-    if cached > LEXICAL_WRITER_CACHE_MAX {
-        return Err(format!(
-            "writer cache holds {cached} entries, expected <= {LEXICAL_WRITER_CACHE_MAX}"
-        )
-        .into());
-    }
-
-    // Generation 0 is the oldest insert and must have been the LRU victim once
-    // we crossed the cap on the 17th insert. Opening a fresh searcher on it
-    // exercises the on-disk index (the writer was committed on eviction, then
-    // dropped, so this read goes through `open_or_create_index`, not the cache).
-    let gen0 = ManifestGeneration::new(0);
-    let searcher = adapter.open(&repo(), &revision(), gen0)?;
-    let hits = searcher.search(
-        &make_query(LqExpr::Leaf(LqLeaf::Keyword("eviction-marker".to_string()))),
-        10,
-    )?;
-    if hits.len() != 1 {
-        return Err(format!(
-            "expected 1 hit on evicted generation 0 after commit-on-evict, got {}",
-            hits.len()
-        )
-        .into());
-    }
-    let first = hits.first().ok_or("hits empty after length check")?;
-    if first.candidate_id != "chunk-g0" {
-        return Err(format!("expected candidate_id chunk-g0, got {}", first.candidate_id).into());
     }
 
     Ok(())

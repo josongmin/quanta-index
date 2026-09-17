@@ -49,6 +49,7 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
         RegexPolicy::defaults(),
         config.lexical_execution_budget(),
         config.regex_match_cache_policy(),
+        config.lexical_writer_policy(),
     ));
     let sem_adapter: Arc<SemanticAdapter> = Arc::new(SemanticAdapter::with_state_root(
         quanta_index_semantic::semantic_state_root(&state_root),

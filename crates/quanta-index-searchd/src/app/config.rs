@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use quanta_index_core::{
-    IngestResourcePolicy, LexicalExecutionBudgetV1, MAX_EMBEDDING_DIMENSION, RegexMatchCachePolicy,
+    IngestResourcePolicy, LexicalExecutionBudgetV1, LexicalWriterPolicy, MAX_EMBEDDING_DIMENSION,
+    RegexMatchCachePolicy,
 };
 use quanta_index_embed::{
     DEFAULT_CONCURRENCY, DEFAULT_MAX_BATCH, DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST,
@@ -175,6 +176,9 @@ pub struct SearchdConfig {
     /// The resource envelope one search-corpus batch may ask the plane to
     /// hold (QI-BB-021): records, embedded text bytes and vector bytes.
     ingest_resource_policy: IngestResourcePolicy,
+    /// The heap every open lexical generation writer may hold together, the
+    /// heap one takes, and how long an idle one is kept (QI-BB-016).
+    lexical_writer_policy: LexicalWriterPolicy,
 }
 
 impl SearchdConfig {
@@ -193,6 +197,7 @@ impl SearchdConfig {
             query_admission_policy: ServerAdmissionPolicy::DEFAULT,
             regex_match_cache_policy: RegexMatchCachePolicy::DEFAULT,
             ingest_resource_policy: IngestResourcePolicy::DEFAULT,
+            lexical_writer_policy: LexicalWriterPolicy::DEFAULT,
         }
     }
 
@@ -205,7 +210,8 @@ impl SearchdConfig {
             .with_lexical_execution_budget(lexical_execution_budget_from_env()?)
             .with_query_admission_policy(query_admission_policy_from_env()?)
             .with_regex_match_cache_policy(regex_match_cache_policy_from_env()?)
-            .with_ingest_resource_policy(ingest_resource_policy_from_env()?);
+            .with_ingest_resource_policy(ingest_resource_policy_from_env()?)
+            .with_lexical_writer_policy(lexical_writer_policy_from_env()?);
         let _validated = base.search_corpus_history_retention_policy()?;
         Ok(base)
     }
@@ -294,6 +300,17 @@ impl SearchdConfig {
     #[must_use]
     pub const fn with_regex_match_cache_policy(mut self, policy: RegexMatchCachePolicy) -> Self {
         self.regex_match_cache_policy = policy;
+        self
+    }
+
+    #[must_use]
+    pub const fn lexical_writer_policy(&self) -> LexicalWriterPolicy {
+        self.lexical_writer_policy
+    }
+
+    #[must_use]
+    pub const fn with_lexical_writer_policy(mut self, policy: LexicalWriterPolicy) -> Self {
+        self.lexical_writer_policy = policy;
         self
     }
 
@@ -576,6 +593,44 @@ where
         Some(raw) => required_positive_raw_usize(MATCHES, Some(raw))?,
     };
     RegexMatchCachePolicy::new(max_entries, max_resident_bytes, max_matches_per_entry)
+        .map_err(anyhow::Error::from)
+}
+
+/// Resolve the lexical writer envelope from env (QI-BB-016).
+///
+/// Each knob is optional and, unset, takes the matching field of
+/// [`LexicalWriterPolicy::DEFAULT`]; the policy refuses a heap below the
+/// writer's minimum, an envelope smaller than one writer, and a zero idle
+/// interval.
+///
+/// - `QUANTA_INDEX_LEXICAL_WRITER_ENVELOPE_BYTES`
+/// - `QUANTA_INDEX_LEXICAL_WRITER_HEAP_BYTES`
+/// - `QUANTA_INDEX_LEXICAL_WRITER_IDLE_SECS`
+pub(crate) fn lexical_writer_policy_from_env() -> Result<LexicalWriterPolicy> {
+    lexical_writer_policy_from_lookup(optional_env)
+}
+
+fn lexical_writer_policy_from_lookup<F>(lookup: F) -> Result<LexicalWriterPolicy>
+where
+    F: Fn(&str) -> Result<Option<String>>,
+{
+    const ENVELOPE: &str = "QUANTA_INDEX_LEXICAL_WRITER_ENVELOPE_BYTES";
+    const HEAP: &str = "QUANTA_INDEX_LEXICAL_WRITER_HEAP_BYTES";
+    const IDLE_SECS: &str = "QUANTA_INDEX_LEXICAL_WRITER_IDLE_SECS";
+    let defaults = LexicalWriterPolicy::DEFAULT;
+    let envelope_bytes = match lookup(ENVELOPE)? {
+        None => defaults.envelope_bytes(),
+        Some(raw) => required_positive_raw_u64(ENVELOPE, Some(raw))?,
+    };
+    let writer_heap_bytes = match lookup(HEAP)? {
+        None => defaults.writer_heap_bytes(),
+        Some(raw) => required_positive_raw_u64(HEAP, Some(raw))?,
+    };
+    let idle_after = match lookup(IDLE_SECS)? {
+        None => defaults.idle_after(),
+        Some(raw) => Duration::from_secs(required_positive_raw_u64(IDLE_SECS, Some(raw))?),
+    };
+    LexicalWriterPolicy::new(envelope_bytes, writer_heap_bytes, idle_after)
         .map_err(anyhow::Error::from)
 }
 
@@ -1163,6 +1218,54 @@ mod tests {
         })
         .expect_err("zero must fail closed");
         assert!(zero.to_string().contains(BYTES));
+    }
+
+    #[test]
+    fn lexical_writer_env_binding_layers_over_the_default_and_refuses_bad_envelopes() {
+        const ENVELOPE: &str = "QUANTA_INDEX_LEXICAL_WRITER_ENVELOPE_BYTES";
+        const HEAP: &str = "QUANTA_INDEX_LEXICAL_WRITER_HEAP_BYTES";
+        const IDLE_SECS: &str = "QUANTA_INDEX_LEXICAL_WRITER_IDLE_SECS";
+        let unset =
+            lexical_writer_policy_from_lookup(|_name| Ok(None)).expect("unset selects default");
+        assert_eq!(unset, LexicalWriterPolicy::DEFAULT);
+        assert_eq!(unset.max_writers(), 16);
+        // A wider per-writer heap under the same envelope means fewer writers.
+        let wider = lexical_writer_policy_from_lookup(|name| {
+            Ok((name == HEAP).then(|| "60000000".to_string()))
+        })
+        .expect("one knob layers over the default");
+        assert_eq!(wider.max_writers(), 4);
+        assert_eq!(
+            wider.idle_after(),
+            LexicalWriterPolicy::DEFAULT.idle_after()
+        );
+        let idle = lexical_writer_policy_from_lookup(|name| {
+            Ok((name == IDLE_SECS).then(|| "5".to_string()))
+        })
+        .expect("idle layers over the default");
+        assert_eq!(idle.idle_after(), Duration::from_secs(5));
+        // A heap below the writer's minimum, an envelope smaller than one
+        // writer, and a zero idle interval all fail closed.
+        let small_heap =
+            lexical_writer_policy_from_lookup(
+                |name| Ok((name == HEAP).then(|| "1000".to_string())),
+            )
+            .expect_err("a heap below the minimum must fail closed");
+        assert!(small_heap.to_string().contains("outside"));
+        let small_envelope = lexical_writer_policy_from_lookup(|name| {
+            Ok((name == ENVELOPE).then(|| "1".to_string()))
+        })
+        .expect_err("an envelope smaller than one writer must fail closed");
+        assert!(
+            small_envelope
+                .to_string()
+                .contains("cannot hold one writer")
+        );
+        let zero_idle = lexical_writer_policy_from_lookup(|name| {
+            Ok((name == IDLE_SECS).then(|| "0".to_string()))
+        })
+        .expect_err("zero idle must fail closed");
+        assert!(zero_idle.to_string().contains(IDLE_SECS));
     }
 
     #[test]

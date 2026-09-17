@@ -39,6 +39,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use ciborium::Value as CborValue;
 use quanta_index_contract::channel::LexicalChannelOp;
@@ -63,9 +64,10 @@ use quanta_index_core::domains::generation::{
 };
 use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
-    LexicalCandidateExplanationV1, LexicalExecutionBudgetV1, LexicalIndexBuildPort,
-    LexicalIndexOpenPort, LexicalScoreEngineV1, LexicalScoreTraceV1, LexicalSearchPageV1,
-    LexicalSearcher, RegexMatchCachePolicy, RegexMatchCacheStats, RepoCommitRecencyIngestPort,
+    LEXICAL_WRITER_HEAP_BYTES_MIN, LexicalCandidateExplanationV1, LexicalExecutionBudgetV1,
+    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalScoreEngineV1, LexicalScoreTraceV1,
+    LexicalSearchPageV1, LexicalSearcher, LexicalWriterCacheStats, LexicalWriterPolicy,
+    RegexMatchCachePolicy, RegexMatchCacheStats, RepoCommitRecencyIngestPort,
     RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, SealedGenerationScanPort,
     SearchCorpusBatchBuildPort,
     domains::lexical::LexicalPolicy,
@@ -121,9 +123,6 @@ use tantivy::schema::{
 use tantivy::tokenizer::{RemoveLongFilter, SimpleTokenizer, TextAnalyzer};
 use tantivy::{DocAddress, Index, IndexReader, IndexWriter, ReloadPolicy, Term};
 
-/// Memory budget for a Tantivy `IndexWriter`. Pinned to the upstream-documented
-/// minimum so adapter setup is bounded and reproducible across test runs.
-const WRITER_MEMORY_BUDGET_BYTES: usize = 15_000_000;
 const TEXT_DOC_KIND: &str = "text";
 const SYMBOL_DOC_KIND: &str = "symbol";
 const REPO_METADATA_FILE_NAME: &str = "repo-metadata.cbor";
@@ -155,16 +154,6 @@ impl QueryDocKind {
         }
     }
 }
-
-/// Maximum number of open `GenerationWriter` entries cached in memory at once.
-///
-/// Each `GenerationWriter` holds a Tantivy `IndexWriter` (~15 MiB heap budget per
-/// `WRITER_MEMORY_BUDGET_BYTES`) plus an mmap-backed `Index` handle, so an
-/// unbounded cache would balloon to multi-GiB resident memory and exhaust the
-/// open-file table once the producer streams thousands of generations through
-/// the adapter. The bound here is a hard-coded const today; a future change can
-/// promote it to a configurable adapter parameter.
-pub const LEXICAL_WRITER_CACHE_MAX: usize = 16;
 
 /// Schema field handles for the lexical index. Cloned cheaply into every
 /// searcher; constructed once per adapter instance.
@@ -264,40 +253,69 @@ struct GenerationWriter {
     writer: IndexWriter,
 }
 
-/// Bounded LRU cache of per-generation Tantivy writers.
+/// One cached writer and when it was last touched.
+struct CachedWriter {
+    handle: Arc<Mutex<GenerationWriter>>,
+    last_used: Instant,
+}
+
+/// Why the cache committed and released a writer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WriterRelease {
+    /// Room was needed for another writer.
+    Lru,
+    /// Nothing touched it for the policy's idle interval.
+    Idle,
+    /// Its generation sealed; no build will touch it again.
+    Seal,
+}
+
+/// The largest number of indexing threads one writer runs.
+const WRITER_THREADS_MAX: usize = 8;
+
+/// Bounded cache of per-generation Tantivy writers under one heap envelope
+/// (QI-BB-016).
 ///
 /// # Capacity
 ///
-/// At most [`LEXICAL_WRITER_CACHE_MAX`] entries are retained. When inserting
-/// a new entry would exceed the cap, the least-recently-used entry is evicted.
+/// At most [`LexicalWriterPolicy::max_writers`] entries are retained — the
+/// envelope divided by one writer's heap — so the heap every open writer may
+/// use together never exceeds the envelope. Inserting past the cap releases
+/// the least-recently-used entry first.
 ///
-/// # Eviction order
+/// # Idle release
 ///
-/// Recency is tracked via `order`: the back of the deque is most-recently-used,
-/// the front is least-recently-used. Both `get_or_open` (on a hit) and the
-/// insert path on the miss touch the deque so the freshly accessed key floats
-/// to the back. Eviction pops from the front.
+/// A writer nothing has touched for the policy's idle interval is committed
+/// and released the next time the cache is entered, and whenever the adapter
+/// sweeps after a batch; a producer that stops mid-generation does not pin
+/// its heap forever.
 ///
-/// # Commit-on-eviction guarantee
+/// # Commit-on-release guarantee
 ///
-/// Evicting an entry calls `IndexWriter::commit` on the writer it owns. The
+/// Releasing an entry calls `IndexWriter::commit` on the writer it owns. The
 /// adapter's invariant is that any uncommitted ops belong to an in-flight
 /// `build` invocation that holds the entry's `Arc<Mutex<GenerationWriter>>`;
 /// the cache only drops its own `Arc`, so an in-flight build is unaffected.
-/// The commit on eviction ensures that *cached-but-idle* pending docs (the
-/// dispatcher submits ops one at a time today) are not lost when the cache
-/// drops its handle. A failing commit is surfaced as
-/// `CoreError::Storage("lexical: evict commit: ...")` and aborts the insert.
+/// A failing commit is surfaced as a typed storage error and aborts the
+/// operation that triggered the release.
 struct WriterCache {
-    entries: BTreeMap<GenKey, Arc<Mutex<GenerationWriter>>>,
+    entries: BTreeMap<GenKey, CachedWriter>,
     order: VecDeque<GenKey>,
+    policy: LexicalWriterPolicy,
+    lru_releases: u64,
+    idle_releases: u64,
+    seal_releases: u64,
 }
 
 impl WriterCache {
-    fn new() -> Self {
+    fn new(policy: LexicalWriterPolicy) -> Self {
         Self {
             entries: BTreeMap::new(),
             order: VecDeque::new(),
+            policy,
+            lru_releases: 0,
+            idle_releases: 0,
+            seal_releases: 0,
         }
     }
 
@@ -314,39 +332,64 @@ impl WriterCache {
 
     fn remove(&mut self, key: &GenKey) -> Option<Arc<Mutex<GenerationWriter>>> {
         self.order.retain(|candidate| candidate != key);
-        self.entries.remove(key)
+        self.entries.remove(key).map(|cached| cached.handle)
     }
 
-    /// Evict least-recently-used entries until `entries.len()` is strictly less
-    /// than [`LEXICAL_WRITER_CACHE_MAX`]. Called from the insert path before
-    /// pushing a new entry, so on return there is room for one more.
-    fn evict_until_capacity(&mut self) -> Result<(), CoreError> {
-        while self.entries.len() >= LEXICAL_WRITER_CACHE_MAX {
-            let Some(victim_key) = self.order.pop_front() else {
+    /// Commit and drop one writer, counting why.
+    fn release(&mut self, key: &GenKey, why: WriterRelease) -> Result<(), CoreError> {
+        let Some(victim) = self.remove(key) else {
+            return Err(CoreError::Storage(
+                "lexical writer cache: order references missing entry".to_string(),
+            ));
+        };
+        // If a concurrent build still holds the Arc this lock contends; that
+        // is acceptable because the cap is small and contention only happens
+        // on release, not on the hot path.
+        let mut guarded = victim
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("lexical: release lock poisoned: {err}")))?;
+        let _opstamp = guarded
+            .writer
+            .commit()
+            .map_err(|err| CoreError::Storage(format!("lexical: release commit: {err}")))?;
+        drop(guarded);
+        drop(victim);
+        match why {
+            WriterRelease::Lru => self.lru_releases = self.lru_releases.saturating_add(1),
+            WriterRelease::Idle => self.idle_releases = self.idle_releases.saturating_add(1),
+            WriterRelease::Seal => self.seal_releases = self.seal_releases.saturating_add(1),
+        }
+        Ok(())
+    }
+
+    /// Release the least-recently-used writers until there is room for one
+    /// more under the envelope.
+    fn release_until_room(&mut self) -> Result<(), CoreError> {
+        let max_writers = self.policy.max_writers();
+        while self.entries.len() >= max_writers {
+            let Some(victim_key) = self.order.front().cloned() else {
                 // entries and order are kept in lock-step; an empty order with
                 // non-empty entries would be a structural bug.
                 return Err(CoreError::Storage(
-                    "lexical writer cache: order/entries desync during eviction".to_string(),
+                    "lexical writer cache: order/entries desync during release".to_string(),
                 ));
             };
-            let Some(victim) = self.entries.remove(&victim_key) else {
-                return Err(CoreError::Storage(
-                    "lexical writer cache: order references missing entry".to_string(),
-                ));
-            };
-            // Commit any pending docs before dropping the writer. If a
-            // concurrent build still holds the Arc this lock contends; that is
-            // acceptable because the cap is small (16) and contention only
-            // happens during eviction, not on the hot path.
-            let mut guarded = victim.lock().map_err(|err| {
-                CoreError::Storage(format!("lexical: evict lock poisoned: {err}"))
-            })?;
-            let _opstamp = guarded
-                .writer
-                .commit()
-                .map_err(|err| CoreError::Storage(format!("lexical: evict commit: {err}")))?;
-            drop(guarded);
-            drop(victim);
+            self.release(&victim_key, WriterRelease::Lru)?;
+        }
+        Ok(())
+    }
+
+    /// Release every writer nothing has touched for the idle interval.
+    fn release_idle(&mut self, now: Instant) -> Result<(), CoreError> {
+        let idle_after = self.policy.idle_after();
+        let idle: Vec<GenKey> = self
+            .entries
+            .iter()
+            .filter(|(_, cached)| now.saturating_duration_since(cached.last_used) >= idle_after)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in idle {
+            self.release(&key, WriterRelease::Idle)?;
         }
         Ok(())
     }
@@ -359,28 +402,65 @@ impl WriterCache {
         key: &GenKey,
         fields: &SchemaFields,
         path: &Path,
+        now: Instant,
     ) -> Result<Arc<Mutex<GenerationWriter>>, CoreError> {
-        if let Some(existing) = self.entries.get(key) {
-            let cloned = Arc::clone(existing);
+        if let Some(existing) = self.entries.get_mut(key) {
+            existing.last_used = now;
+            let cloned = Arc::clone(&existing.handle);
             self.touch(key);
             return Ok(cloned);
         }
-        self.evict_until_capacity()?;
+        self.release_idle(now)?;
+        self.release_until_room()?;
         let index = open_or_create_index(fields, path)?;
+        let heap_bytes = usize::try_from(self.policy.writer_heap_bytes()).map_err(|err| {
+            CoreError::Storage(format!(
+                "lexical: writer heap does not fit this platform: {err}"
+            ))
+        })?;
         let writer: IndexWriter = index
-            .writer(WRITER_MEMORY_BUDGET_BYTES)
+            .writer_with_num_threads(writer_threads_for_heap(heap_bytes), heap_bytes)
             .map_err(|err| CoreError::Storage(format!("lexical: writer: {err}")))?;
         let handle = Arc::new(Mutex::new(GenerationWriter { index, writer }));
-        let _prior = self.entries.insert(key.clone(), Arc::clone(&handle));
+        let _prior = self.entries.insert(
+            key.clone(),
+            CachedWriter {
+                handle: Arc::clone(&handle),
+                last_used: now,
+            },
+        );
         self.order.push_back(key.clone());
         Ok(handle)
     }
 
-    /// Test/inspection hook: number of cached writers. Exposed `pub(crate)`
-    /// for the LRU eviction integration test.
-    fn len(&self) -> usize {
-        self.entries.len()
+    fn stats(&self) -> LexicalWriterCacheStats {
+        let open_writers = self.entries.len();
+        LexicalWriterCacheStats {
+            open_writers,
+            max_writers: self.policy.max_writers(),
+            allocated_heap_bytes: u64::try_from(open_writers).map_or(u64::MAX, |writers| {
+                writers.saturating_mul(self.policy.writer_heap_bytes())
+            }),
+            lru_releases: self.lru_releases,
+            idle_releases: self.idle_releases,
+            seal_releases: self.seal_releases,
+        }
     }
+}
+
+/// Indexing threads for one writer of `heap_bytes`.
+///
+/// As many as the heap gives the minimum arena to, capped by the machine
+/// and by the writer's own ceiling — the derivation the library applies,
+/// made explicit so the envelope's per-writer term is the whole story.
+fn writer_threads_for_heap(heap_bytes: usize) -> usize {
+    let by_heap = usize::try_from(LEXICAL_WRITER_HEAP_BYTES_MIN)
+        .map_or(1, |minimum| {
+            heap_bytes.checked_div(minimum).map_or(1, |threads| threads)
+        })
+        .max(1);
+    let by_machine = std::thread::available_parallelism().map_or(1, usize::from);
+    by_heap.min(by_machine).min(WRITER_THREADS_MAX)
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -3744,24 +3824,26 @@ impl LexicalAdapter {
             RegexPolicy::defaults(),
             LexicalExecutionBudgetV1::DEFAULT,
             RegexMatchCachePolicy::DEFAULT,
+            LexicalWriterPolicy::DEFAULT,
         )
     }
 
     /// Construct an adapter rooted at the given directory with explicit
     /// policies. Use this constructor when the deployment needs to tighten or
     /// relax the regex dialect / candidate cap / trigram-missing threshold
-    /// defaults, or the examined-candidate budget.
+    /// defaults, the examined-candidate budget, or the writer envelope.
     #[must_use]
     pub fn with_state_root_and_policies(
         state_root: PathBuf,
         regex_policy: RegexPolicy,
         execution_budget: LexicalExecutionBudgetV1,
         regex_match_cache_policy: RegexMatchCachePolicy,
+        writer_policy: LexicalWriterPolicy,
     ) -> Self {
         Self {
             state_root,
             fields: SchemaFields::build(),
-            writers: Arc::new(Mutex::new(WriterCache::new())),
+            writers: Arc::new(Mutex::new(WriterCache::new(writer_policy))),
             repo_metadata: Arc::new(Mutex::new(BTreeMap::new())),
             regex_match_cache: Arc::new(Mutex::new(RegexMatchCache::new(regex_match_cache_policy))),
             regex_policy,
@@ -3787,24 +3869,15 @@ impl LexicalAdapter {
     /// commit once so the sealed `meta.json` is the last one any writer
     /// produces, and drop the writer from the cache so nothing can commit to
     /// this generation again.
+    /// Commit and release the generation's writer: a sealed generation is
+    /// never built again, so its heap goes back to the envelope now.
     fn finalize_index_for_seal(&self, key: &GenKey) -> Result<(), CoreError> {
         let handle = self.writer_handle(key)?;
-        {
-            let mut guarded = handle
-                .lock()
-                .map_err(|err| CoreError::Storage(format!("lexical writer poisoned: {err}")))?;
-            let _opstamp = guarded
-                .writer
-                .commit()
-                .map_err(|err| CoreError::Storage(format!("lexical: seal commit: {err}")))?;
-        }
-        let _removed = self
-            .writers
+        drop(handle);
+        self.writers
             .lock()
             .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?
-            .remove(key);
-        drop(handle);
-        Ok(())
+            .release(key, WriterRelease::Seal)
     }
 
     fn writer_handle(&self, key: &GenKey) -> Result<Arc<Mutex<GenerationWriter>>, CoreError> {
@@ -3813,7 +3886,26 @@ impl LexicalAdapter {
             .writers
             .lock()
             .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?;
-        guard.get_or_open(key, &self.fields, &path)
+        guard.get_or_open(key, &self.fields, &path, Instant::now())
+    }
+
+    /// Commit and release every writer nothing has touched for the policy's
+    /// idle interval (QI-BB-016). The adapter sweeps after every batch; a
+    /// composition root may also sweep on its own schedule.
+    pub fn release_idle_writers(&self) -> Result<(), CoreError> {
+        self.writers
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?
+            .release_idle(Instant::now())
+    }
+
+    /// What the writer cache holds and has done (QI-BB-016).
+    pub fn writer_cache_stats(&self) -> Result<LexicalWriterCacheStats, CoreError> {
+        Ok(self
+            .writers
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?
+            .stats())
     }
 
     fn invalidate_regex_match_cache_generation(&self, key: &GenKey) -> Result<(), CoreError> {
@@ -3855,14 +3947,6 @@ impl LexicalAdapter {
     /// Returns the current number of cached writers. Exposed for the LRU
     /// eviction integration test; not part of the stable adapter surface.
     #[doc(hidden)]
-    pub fn writer_cache_len(&self) -> Result<usize, CoreError> {
-        let guard = self
-            .writers
-            .lock()
-            .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?;
-        Ok(guard.len())
-    }
-
     fn repo_metadata_for_key(
         &self,
         key: &GenKey,
@@ -4312,7 +4396,9 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
             persist_lexical_sealed_manifest(&generation_dir, &candidate)?;
             persist_lexical_sealed_identity(&generation_dir, &candidate)?;
         }
-        Ok(())
+        // Every batch is a chance to give an abandoned generation's heap back
+        // to the envelope (QI-BB-016).
+        self.release_idle_writers()
     }
 }
 

@@ -24,7 +24,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE, LexicalExecutionBudgetV1,
-    LexicalIndexOpenPort, RegexMatchCachePolicy, SearchCorpusBatchBuildPort,
+    LexicalIndexOpenPort, LexicalWriterPolicy, RegexMatchCachePolicy, SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_lexical::regex::RegexPolicy;
@@ -120,6 +120,7 @@ fn adapter_with_budget(
         RegexPolicy::defaults(),
         LexicalExecutionBudgetV1::new(budget)?,
         RegexMatchCachePolicy::DEFAULT,
+        LexicalWriterPolicy::DEFAULT,
     ))
 }
 

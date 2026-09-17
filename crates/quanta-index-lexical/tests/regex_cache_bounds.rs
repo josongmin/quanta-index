@@ -22,8 +22,8 @@ use quanta_index_contract::{
     SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchScopeKey, SearchScopeSurface,
 };
 use quanta_index_core::{
-    LexicalExecutionBudgetV1, LexicalIndexOpenPort, LexicalSearcher, RegexMatchCachePolicy,
-    RegexMatchCacheStats, SearchCorpusBatchBuildPort,
+    LexicalExecutionBudgetV1, LexicalIndexOpenPort, LexicalSearcher, LexicalWriterPolicy,
+    RegexMatchCachePolicy, RegexMatchCacheStats, SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_lexical::regex::RegexPolicy;
@@ -110,6 +110,7 @@ fn adapter(
         RegexPolicy::defaults(),
         LexicalExecutionBudgetV1::DEFAULT,
         policy,
+        LexicalWriterPolicy::DEFAULT,
     );
     adapter.build_batch(&sealed_batch()?)?;
     Ok(adapter)

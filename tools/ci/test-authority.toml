@@ -178,6 +178,12 @@ owner = "quanta-index-lexical"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "lexical-writer-envelope"
+path = "crates/quanta-index-lexical/tests/writer_envelope.rs"
+owner = "quanta-index-lexical"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "lexical-execution-budget"
 path = "crates/quanta-index-lexical/tests/execution_budget.rs"
 owner = "quanta-index-lexical"
