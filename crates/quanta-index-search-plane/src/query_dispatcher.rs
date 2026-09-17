@@ -695,10 +695,14 @@ impl SearchPlaneDispatcher {
         Ok(query_vector)
     }
 
-    /// Shared lexical+semantic RRF fusion for the hybrid and hybrid-seed paths.
-    /// Both resolve their selection differently and wrap the outcome in a
-    /// different response, but the middle — readiness gate, dual open, lexical
-    /// lower/search, semantic scoped re-rank, RRF, explanation — is identical.
+    /// The hybrid route: two independent, bounded lanes fused by RRF
+    /// (QI-BB-018).
+    ///
+    /// The lexical lane runs the lowered text query; the dense lane runs the
+    /// embedded semantic query over the whole generation under the same
+    /// pushed-down constraints. Their union is fused, so a document the
+    /// lexical lane never saw can enter the top-k on dense relevance alone —
+    /// this is hybrid recall, not a dense re-rank of lexical recall.
     fn execute_hybrid_fusion(
         &self,
         selection: &SemanticSelection,
@@ -734,20 +738,21 @@ impl SearchPlaneDispatcher {
                 .candidates
         };
         stabilize_ranked_candidates(&mut lex_results);
-        let lexical_ids = lex_results
-            .iter()
-            .map(|candidate| candidate.candidate_id.clone())
-            .collect::<BTreeSet<_>>();
         budget.checkpoint("hybrid:embed")?;
         let query_vector =
             self.embed_and_gate_query(semantic_query_text, sem_searcher.as_ref(), plane)?;
         budget.checkpoint("hybrid:semantic")?;
-        let mut sem_results = sem_searcher.search_scoped_constrained(
-            &query_vector,
-            &lexical_ids,
-            &prepared_language.constraints,
-            internal_top_k,
-        )?;
+        // Independent dense lane under the same constraints, never scoped to
+        // the lexical hits.
+        let mut sem_results = if prepared_language.force_empty {
+            Vec::new()
+        } else {
+            sem_searcher.search_constrained(
+                &query_vector,
+                &prepared_language.constraints,
+                internal_top_k,
+            )?
+        };
         budget.checkpoint("hybrid:fuse")?;
         stabilize_ranked_candidates(&mut sem_results);
         let internal_limit = usize::try_from(internal_top_k).map_err(|err| {
@@ -772,9 +777,9 @@ impl SearchPlaneDispatcher {
             None
         };
         let explanation = build_hybrid_response_explanation(
-            lexical_ids.len(),
             lex_results.len(),
             sem_results.len(),
+            fused_universe_size,
             fused.len(),
             internal_top_k,
             early_stop_reason,
@@ -5345,13 +5350,15 @@ mod tests {
         assert!(window.has_more());
     }
 
-    // CASE-COVERS: hybrid explanation honesty (semantic lane scoped to lexical).
+    // CASE-COVERS: hybrid explanation honesty over two independent lanes.
     #[test]
     fn build_hybrid_response_explanation_reports_honest_lane_contribution_v1() {
         use super::build_hybrid_response_explanation;
         use quanta_index_contract::EngineTouched;
-        // ORIGINAL HAPPY PATH: both lanes contributed -> genuine RRF over both engines.
-        let both = build_hybrid_response_explanation(2, 2, 2, 2, 100, None);
+        // args: (lexical_hits, semantic_hits, fused_universe, fused, top_k, stop)
+        // Both lanes contributed -> genuine RRF over both engines, and the
+        // trace says the lanes are independent (QI-BB-018).
+        let both = build_hybrid_response_explanation(2, 2, 3, 2, 100, None);
         assert_eq!(both.strategy, "rrf", "both-lane hybrid must stay rrf");
         assert_eq!(
             both.engines_touched,
@@ -5359,17 +5366,16 @@ mod tests {
             "both-lane hybrid must report symmetric rrf over both engines"
         );
         assert!(
+            both.planner_trace.iter().any(|e| e.detail
+                == "hybrid.lanes=independent; lexical_hits=2; semantic_hits=2; fused_universe=3"),
+            "hybrid trace must expose the independent lanes and the fused universe: {:?}",
             both.planner_trace
-                .iter()
-                .any(|e| e.detail.contains("semantic_scoped_to_lexical=true")),
-            "hybrid trace must expose that the semantic lane is scoped to lexical recall"
         );
 
-        // DEGRADED EDGE (the bug this fixes): lexical found candidates but the
-        // semantic re-rank lane (scoped to lexical) matched none -> must NOT claim
-        // a symmetric rrf fusion; it is lexical-only and the Semantic engine is
-        // not touched. Old hardcoded code returned "rrf" + [Lexical, Semantic] here.
-        let lex_only = build_hybrid_response_explanation(3, 3, 0, 3, 100, None);
+        // Lexical found candidates but the dense lane matched none -> must
+        // NOT claim a symmetric rrf fusion; it is lexical-only and the
+        // Semantic engine is not touched.
+        let lex_only = build_hybrid_response_explanation(3, 0, 3, 3, 100, None);
         assert_eq!(
             lex_only.strategy, "lexical_only",
             "semantic-empty hybrid must report lexical_only, not rrf"
@@ -5380,8 +5386,7 @@ mod tests {
             "semantic-empty hybrid must not over-claim the Semantic engine"
         );
 
-        // EMPTY CORNER: lexical empty -> semantic scoped to empty -> no engine
-        // contributed; honest "empty", no engines claimed.
+        // No lane found anything: honest "empty", no engines claimed.
         let empty = build_hybrid_response_explanation(0, 0, 0, 0, 100, None);
         assert_eq!(empty.strategy, "empty", "no-hit hybrid must report empty");
         assert!(
@@ -5390,12 +5395,9 @@ mod tests {
             empty.engines_touched
         );
 
-        // INVARIANT arm (production-unreachable: semantic is scoped to lexical, so
-        // semantic_hits>0 requires lexical_hits>0). The output must still be
-        // self-consistent — engines=[Semantic] AND strategy="semantic_only", never
-        // the nonsensical empty-strategy-with-Semantic-engine state.
-        // args: (lexical_universe, lexical_hits=0, semantic_hits=1, fused, top_k, stop)
-        let semantic_only = build_hybrid_response_explanation(0, 0, 1, 1, 100, None);
+        // Dense-only recall is a real outcome now: the lexical lane found
+        // nothing but the dense lane did.
+        let semantic_only = build_hybrid_response_explanation(0, 1, 1, 1, 100, None);
         assert_eq!(semantic_only.strategy, "semantic_only");
         assert_eq!(semantic_only.engines_touched, vec![EngineTouched::Semantic]);
     }
@@ -7244,26 +7246,32 @@ mod tests {
             }
         }
 
-        let (scoped_vectors, search_vectors, scoped_constraints) = {
+        let (scoped_vectors, search_vectors, search_constraints) = {
             let guard = semantic_state
                 .lock()
                 .map_err(|err| format!("semantic state poisoned: {err}"))?;
             (
                 guard.scoped_vectors.clone(),
                 guard.search_vectors.clone(),
-                guard.scoped_constraints.clone(),
+                guard.search_constraints.clone(),
             )
         };
         let expected = default_query_embedder().embed_query("scope alpha")?;
-        if scoped_vectors.as_slice() != [expected] {
-            return Err(format!("unexpected scoped vectors: {scoped_vectors:?}").into());
-        }
-        if !search_vectors.is_empty() {
-            return Err(format!("unexpected global vectors: {search_vectors:?}").into());
-        }
-        if scoped_constraints.as_slice() != [constraints.clone()] {
+        // QI-BB-018: the dense lane is independent of the lexical hits — one
+        // unscoped search over the query vector, under the request's
+        // constraints; never a search scoped to the lexical ids.
+        if !scoped_vectors.is_empty() {
             return Err(format!(
-                "hybrid semantic scope lost exact-path constraints: {scoped_constraints:?}"
+                "hybrid must not scope the dense lane to lexical hits: {scoped_vectors:?}"
+            )
+            .into());
+        }
+        if search_vectors.as_slice() != [expected] {
+            return Err(format!("unexpected dense lane vectors: {search_vectors:?}").into());
+        }
+        if search_constraints.as_slice() != [constraints.clone()] {
+            return Err(format!(
+                "hybrid dense lane lost exact-path constraints: {search_constraints:?}"
             )
             .into());
         }

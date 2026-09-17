@@ -2641,14 +2641,25 @@ fn hybrid_query_rejects_zero_top_k_with_typed_code() -> TestResult {
     }
 }
 
+/// QI-BB-018: hybrid is two independent lanes fused, not a dense re-rank
+/// of lexical recall.
+///
+/// `alpha` matches nothing the lexical lane looks for (`riddle`) but is
+/// what the dense lane looks for (`focus alpha`); it must reach the top-k
+/// on dense relevance alone, while `beta` — found by both lanes — stays
+/// first.
 #[test]
-fn hybrid_query_excludes_semantic_outsider_from_lexical_universe() -> TestResult {
+fn hybrid_query_admits_a_semantic_only_relevant_hit_beside_the_lexical_hits() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-hybrid-outsider-test")?;
+    // Lexical lane (`riddle`): beta only. Dense lane (`focus alpha`): alpha
+    // first, beta second, gamma last. Fused at top_k=2: beta (both lanes),
+    // then alpha on dense relevance alone; gamma, ranked last by the one
+    // lane that saw it, stays out.
     let alpha = chunk_record("alpha", "focus alpha")?;
-    let beta = chunk_record("beta", "scope focus")?;
+    let beta = chunk_record("beta", "riddle focus")?;
     let gamma = chunk_record("gamma", "scope gamma")?;
     publish_search_corpus_chunks(&ingest_socket, vec![alpha, beta, gamma], None)?;
     seal_lexical(&ingest_socket)?;
@@ -2659,7 +2670,7 @@ fn hybrid_query_excludes_semantic_outsider_from_lexical_universe() -> TestResult
         payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
             text_query: TextQueryRequest {
                 syntax: TextQuerySyntax::Sourcegraph,
-                query_text: "scope".to_string(),
+                query_text: "riddle".to_string(),
                 constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(pin.clone()),
                 generation_selector: None,
@@ -2700,10 +2711,21 @@ fn hybrid_query_excludes_semantic_outsider_from_lexical_universe() -> TestResult
         drop(join.join());
         return Err(format!("expected beta top, got {ids:?}").into());
     }
-    if ids.iter().any(|id| id == "alpha") {
+    if !ids.iter().any(|id| id == "alpha") {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
-        return Err(format!("unexpected lexical outsider in hybrid results: {ids:?}").into());
+        return Err(format!(
+            "the dense-only relevant hit must enter the hybrid top-k, got {ids:?}"
+        )
+        .into());
+    }
+    if ids.iter().any(|id| id == "gamma") {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "a hit one lane ranked last must not outrank the fused pair at top_k=2: {ids:?}"
+        )
+        .into());
     }
 
     stop_runtime(shutdown, join)

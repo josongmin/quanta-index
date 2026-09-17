@@ -314,7 +314,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + **QI-BB-021 ingest resource envelope(§3.18)** 완료. 남은 것: sharded sidecar 포맷(O(delta) write), ANN versioned artifact(QI-BB-027), scope 단위 streamed embed→append(§3.18 한계) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), streaming projection collector |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. 남은 것: cancel을 lexical collector 내부(candidate batch 사이)까지 내리기, overload/refusal 서버 metric |
-| W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + **QI-BB-019 hybrid seed 단일 canonical 응답(§3.21)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), QI-BB-018 true hybrid, history relevance order(Tantivy history index, §3.20 한계) |
+| W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + **QI-BB-018 true hybrid(§3.22)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), history relevance order(Tantivy history index, §3.20 한계), judged corpus recall/NDCG gate(§3.22 한계) |
 | W7 | planned | |
 | C1 | planned | |
 | C2 | planned | |
@@ -1243,6 +1243,34 @@ v2 길이를 window와 대조했고, `lq_merge_result_count` metric은 legacy �
 **정직한 한계**: (a) 보완 #4의 "compat 사용량/sunset gate"는 필요 없어짐 — compat 경로 자체를 제거했다. (b) 일반 `hybrid`
 route는 여전히 lexical-scoped rerank(QI-BB-018 별도). (c) `SeedContribution.raw_score`는 lane별 raw score이고 fused score는
 RRF rank뿐 — explain contribution(QI-BB-022)과 함께 다룬다.
+
+## 3.22 QI-BB-018 — hybrid는 독립 lexical lane + dense lane의 RRF union이다 (구현 완료)
+
+**진단 확정**: `execute_hybrid_fusion`이 lexical 결과 id 집합을 `search_scoped_constrained`에 넘겨 dense lane을 lexical
+universe에 가뒀다 — 결과 형식은 RRF지만 candidate universe는 BM25 recall 그대로(`BM25 recall + dense rerank`). explanation도
+`semantic_scoped_to_lexical=true`를 기록했고, e2e `hybrid_query_excludes_semantic_outsider_from_lexical_universe`가 이 동작을 고정.
+
+**구현**: dense lane을 `search_constrained(query_vector, constraints, internal_top_k)`(generation 전체, 같은 constraint
+push-down)로 독립 실행 → `HybridOrchestratorPolicy::fuse_rrf`가 두 lane의 **union**을 fuse(기존 core fuse가 union 의미였음).
+explanation trace는 `hybrid.lanes=independent; lexical_hits=…; semantic_hits=…; fused_universe=…`, strategy는 실제 기여
+lane(`rrf | lexical_only | semantic_only | empty`). scoped port(`search_scoped_constrained`)는 semantic route의 명시적
+`lexical_scope`(QI-BB-004)가 계속 쓰므로 유지. 보완 #1의 별도 `lexical_scoped_rerank` surface는 만들지 않음 — 이전 동작은
+이름이 틀린 결함이었고, 명시 scope가 필요한 caller는 semantic route의 `lexical_scope`를 쓴다.
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| mock semantic adapter: hybrid가 scoped search **0회**, unscoped `search_constrained` 정확히 1회(같은 vector, request constraints push-down) | `search_plane::query_dispatcher::tests::hybrid_dispatch_embeds_semantic_query_text` (scoped_vectors empty, search_vectors == [expected], search_constraints == [constraints]) |
+| explanation: 두 lane 기여 시 `rrf` + trace `hybrid.lanes=independent…fused_universe`, lexical-only/semantic-only/empty 각각 정직 | `…::build_hybrid_response_explanation_reports_honest_lane_contribution_v1` |
+| **e2e**: lexical `riddle`는 beta만, dense `focus alpha`는 alpha>beta>gamma → top_k=2 결과 `[beta, alpha]`: dense-only relevant hit(alpha)이 top-k에 들어오고 gamma는 제외 (이전 test는 alpha 제외를 고정했음 → 반전) | `searchd-runtime/tests/end_to_end.rs::hybrid_query_admits_a_semantic_only_relevant_hit_beside_the_lexical_hits` |
+| dsl planner trace 문자열 갱신 | `dsl_scenarios` |
+
+**정직한 한계**: (a) 보완 #4의 judged corpus(zero-overlap paraphrase/lexical-only/dense-only/tie) recall·NDCG·latency 측정은
+미실행 — harness `relevance` rail은 hash embedder라 dense lane의 실제 품질 판단은 QI-BB-007(M4) production profile 이후. (b)
+소규모 corpus에서는 `internal_top_k(100)`이 corpus보다 커 dense lane이 전 문서를 반환하므로 RRF가 "양 lane 존재"를 과대 보상한다
+(e2e fixture 설계에서 관측: gamma가 cosine≈0으로도 alpha를 이김). 실제 corpus에서는 lane당 100 bound가 의미를 가지지만, dense
+lane에 최소 similarity threshold 또는 score-aware fusion을 두는 것은 QI-BB-022(contribution)와 함께 다룰 후속.
 
 ## 4. Finding 상태 (QI-BB-001–032)
 

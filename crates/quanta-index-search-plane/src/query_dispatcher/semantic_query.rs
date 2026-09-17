@@ -820,19 +820,17 @@ pub(super) fn build_semantic_response_explanation(
 }
 
 pub(super) fn build_hybrid_response_explanation(
-    lexical_universe_size: usize,
     lexical_hits: usize,
     semantic_hits: usize,
+    fused_universe: usize,
     fused_hits: usize,
     internal_top_k: u32,
     early_stop_reason: Option<EarlyStopReason>,
 ) -> SearchExplanation {
-    // The hybrid semantic lane is scoped to the lexical candidate universe
-    // (`search_scoped` over `lexical_ids`), so it re-ranks lexical recall and can
-    // never surface a semantic-only hit. Report the honest lane contribution and
-    // strategy: a genuine two-lane RRF only when BOTH lanes contributed; otherwise
-    // the degraded single-lane reality (or empty), never a symmetric "rrf" over a
-    // starved lane.
+    // Two independent lanes (QI-BB-018): report which of them contributed
+    // and the strategy that actually ran — a genuine two-lane RRF only when
+    // BOTH lanes returned candidates, otherwise the single-lane reality (or
+    // empty), never a symmetric "rrf" over a starved lane.
     let mut engines_touched = Vec::new();
     if lexical_hits > 0 {
         engines_touched.push(EngineTouched::Lexical);
@@ -843,10 +841,6 @@ pub(super) fn build_hybrid_response_explanation(
     let strategy = match (lexical_hits > 0, semantic_hits > 0) {
         (true, true) => "rrf",
         (true, false) => "lexical_only",
-        // Production-unreachable: the semantic lane is scoped to lexical recall, so
-        // semantic_hits > 0 requires lexical_hits > 0. Kept self-consistent with
-        // engines_touched (= [Semantic]) rather than collapsing to the nonsensical
-        // "empty"-with-Semantic-touched state, so strategy and engines never disagree.
         (false, true) => "semantic_only",
         (false, false) => "empty",
     }
@@ -860,7 +854,7 @@ pub(super) fn build_hybrid_response_explanation(
             PlannerTraceEntry {
                 stage: PlannerStage::ExecFanout,
                 detail: format!(
-                    "hybrid.semantic_scoped_to_lexical=true; hybrid.lexical_universe={lexical_universe_size}; lexical_hits={lexical_hits}; semantic_hits={semantic_hits}"
+                    "hybrid.lanes=independent; lexical_hits={lexical_hits}; semantic_hits={semantic_hits}; fused_universe={fused_universe}"
                 ),
             },
             PlannerTraceEntry {

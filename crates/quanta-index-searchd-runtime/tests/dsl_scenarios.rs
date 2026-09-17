@@ -1017,7 +1017,7 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
     let has_exec = explanation.planner_trace.iter().any(|entry| {
         entry.stage == PlannerStage::ExecFanout
             && entry.detail
-                == "hybrid.semantic_scoped_to_lexical=true; hybrid.lexical_universe=2; lexical_hits=2; semantic_hits=2"
+                == "hybrid.lanes=independent; lexical_hits=2; semantic_hits=4; fused_universe=4"
     });
     let has_merge = explanation.planner_trace.iter().any(|entry| {
         entry.stage == PlannerStage::Merge && entry.detail == "hybrid.fused_results=2"
@@ -1031,7 +1031,7 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
         )
         .into());
     }
-    if explanation.summary != "hybrid fused 2 lexical and 2 semantic candidates into 2 results" {
+    if explanation.summary != "hybrid fused 2 lexical and 4 semantic candidates into 2 results" {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(format!(
