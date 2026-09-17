@@ -36,12 +36,12 @@ use quanta_index_contract::lex::{
 };
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, GenerationPin, HistoryIngestBatch, HistoryQueryRequest,
-    HybridQueryRequest, LqVisibility, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
-    RuntimeCatalogIngestBatch, RuntimeChangedRecord, RuntimeDocFacetRecord,
-    RuntimeEdgeAuthorityRecord, RuntimeMetadataQueryRequest, RuntimeSnapshotRecord,
-    SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
-    SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
+    HybridCandidateV1, HybridLaneV1, HybridQueryRequest, LqVisibility, ManifestGeneration, RepoId,
+    RepoRelativePath, RevisionId, RuntimeCatalogIngestBatch, RuntimeChangedRecord,
+    RuntimeDocFacetRecord, RuntimeEdgeAuthorityRecord, RuntimeMetadataQueryRequest,
+    RuntimeSnapshotRecord, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
+    SearchCorpusTombstoneScope, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope,
+    SearchPlaneIngestIpcResponse, SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchScopeKey, SearchScopeSurface, SemanticQueryRequest,
     StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope,
@@ -1535,7 +1535,7 @@ fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
     }
     let top_id = candidates
         .first()
-        .map(|c| c.candidate_id.clone())
+        .map(|row| row.candidate.candidate_id.clone())
         .unwrap_or_default();
     if top_id != "alpha" {
         shutdown.store(true, Ordering::Release);
@@ -1757,7 +1757,7 @@ fn hybrid_query_visibility_filter_executes_against_repo_metadata_surface() -> Te
     }
     if results
         .first()
-        .map(|candidate| candidate.candidate_id.as_str())
+        .map(|row| row.candidate.candidate_id.as_str())
         != Some("alpha")
     {
         shutdown.store(true, Ordering::Release);
@@ -2704,7 +2704,7 @@ fn hybrid_query_admits_a_semantic_only_relevant_hit_beside_the_lexical_hits() ->
     };
     let ids: Vec<String> = results
         .iter()
-        .map(|candidate| candidate.candidate_id.clone())
+        .map(|row| row.candidate.candidate_id.clone())
         .collect();
     if ids.first().map(String::as_str) != Some("beta") {
         shutdown.store(true, Ordering::Release);
@@ -2727,8 +2727,73 @@ fn hybrid_query_admits_a_semantic_only_relevant_hit_beside_the_lexical_hits() ->
         )
         .into());
     }
+    // QI-BB-022: each row says which lanes put it there. beta was seen by
+    // both lanes (lexical rank 1, dense rank 2); alpha only by the dense
+    // lane, at its rank 1. The fused score is the RRF of exactly those
+    // ranks, recomputed here under the plane's k = 60.
+    if let Err(err) = check_hybrid_lane_provenance(&results) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(err);
+    }
 
     stop_runtime(shutdown, join)
+}
+
+/// The lanes that placed `id` in a fused list, with the rank each gave it.
+fn lanes_of(
+    results: &[HybridCandidateV1],
+    id: &str,
+) -> Result<Vec<(HybridLaneV1, u32)>, Box<dyn Error>> {
+    results
+        .iter()
+        .find(|row| row.candidate.candidate_id == id)
+        .map(|row| {
+            row.contributions
+                .iter()
+                .map(|contribution| (contribution.lane, contribution.rank))
+                .collect()
+        })
+        .ok_or_else(|| format!("{id} is in the fused list").into())
+}
+
+/// The provenance the admission fixture must carry.
+///
+/// beta is seen by both lanes, alpha by the dense lane only, every fused
+/// score is the RRF of its own ranks, and every row's score is its
+/// preferred lane's raw score.
+fn check_hybrid_lane_provenance(results: &[HybridCandidateV1]) -> Result<(), Box<dyn Error>> {
+    if lanes_of(results, "beta")? != [(HybridLaneV1::Lexical, 1), (HybridLaneV1::Dense, 2)] {
+        return Err(format!("beta carries both lanes: {results:?}").into());
+    }
+    if lanes_of(results, "alpha")? != [(HybridLaneV1::Dense, 1)] {
+        return Err(format!("alpha carries the dense lane only: {results:?}").into());
+    }
+    for row in results {
+        let recomputed: f64 = row
+            .contributions
+            .iter()
+            .map(|contribution| 1.0 / (60.0 + f64::from(contribution.rank)))
+            .sum();
+        if row.fused_score.to_bits() != recomputed.to_bits() {
+            return Err(format!(
+                "{} carries fused_score {} but its ranks sum to {recomputed}",
+                row.candidate.candidate_id, row.fused_score
+            )
+            .into());
+        }
+        let Some(preferred) = row.contributions.first() else {
+            return Err(format!("{} carries a lane", row.candidate.candidate_id).into());
+        };
+        if row.candidate.score.to_bits() != preferred.raw_score.to_bits() {
+            return Err(format!(
+                "{} carries its preferred lane's raw score: {row:?}",
+                row.candidate.candidate_id
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 #[test]
@@ -2777,7 +2842,7 @@ fn hybrid_query_repeated_tied_scope_query_keeps_stable_order() -> TestResult {
                 SearchPlaneQueryIpcResponse::Hybrid(hybrid) => Ok(hybrid
                     .results
                     .into_iter()
-                    .map(|candidate| candidate.candidate_id)
+                    .map(|row| row.candidate.candidate_id)
                     .collect()),
                 other => Err(format!("expected Hybrid, got {other:?}").into()),
             }

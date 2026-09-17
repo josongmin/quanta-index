@@ -5,4 +5,4 @@ mod inbound;
 mod service;
 
 pub use inbound::{ExplainQueryPort, HybridQueryPort};
-pub use service::HybridOrchestratorPolicy;
+pub use service::{FusedKeyV1, FusedLaneRankV1, HybridOrchestratorPolicy};

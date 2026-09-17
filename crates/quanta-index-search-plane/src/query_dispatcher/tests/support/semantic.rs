@@ -83,6 +83,9 @@ pub(crate) fn available_cluster_membership_batch_response_v1(
 
 #[derive(Default)]
 pub(crate) struct RecordingSemanticState {
+    /// What `search_constrained` answers; `None` answers the one inline
+    /// `semantic-inline` hit.
+    pub(crate) constrained_search_results: Option<Vec<LexicalCandidate>>,
     pub(crate) search_vectors: Vec<Vec<f32>>,
     pub(crate) search_hit_vectors: Vec<Vec<f32>>,
     pub(crate) corpus_searches: Vec<(SemanticCorpusKindV1, u32)>,
@@ -159,13 +162,17 @@ impl SemanticSearcher for RecordingSemanticSearcher {
         constraints: &QueryConstraintSetV1,
         _top_k: u32,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
-        {
+        let configured = {
             let mut state = self
                 .state
                 .lock()
                 .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?;
             state.search_vectors.push(query_vector.to_vec());
             state.search_constraints.push(constraints.clone());
+            state.constrained_search_results.clone()
+        };
+        if let Some(rows) = configured {
+            return Ok(rows);
         }
         Ok(vec![candidate("semantic-inline", 1.0)])
     }

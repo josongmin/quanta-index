@@ -64,6 +64,12 @@ job = "rust-fuzz-smoke"
 step = "Smoke-run lq_parse_pipeline (60s)"
 
 [[integration_targets]]
+id = "contract-hybrid-candidate"
+path = "crates/quanta-index-contract/tests/hybrid_candidate_contract.rs"
+owner = "quanta-index-contract"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "contract-ipc-query-result-v2"
 path = "crates/quanta-index-contract/tests/ipc_query_result_v2_contract.rs"
 owner = "quanta-index-contract"

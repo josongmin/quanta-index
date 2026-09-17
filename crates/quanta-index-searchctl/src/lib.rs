@@ -11,11 +11,12 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use quanta_index_contract::{
-    EarlyStopReason, EngineTouched, GenerationPin, HistoryQueryRequest, HybridSeedQueryRequest,
-    HybridSeedQueryResponse, LexicalCandidate, ManifestGeneration, PlannerTraceEntry,
-    QueryConstraintSetV1, QueryErrorRepair, QueryResultWindowV1, RepoId, RepoMapDocType,
-    RepoMapFocusSubjectDto, RepoMapQueryRequest, RevisionId, RuntimeMetadataQueryRequest,
-    SearchExplanation, SearchPlaneHistoryQueryResponse, SearchPlaneQueryIpcResponse,
+    EarlyStopReason, EngineTouched, ExplainCandidateV1, GenerationPin, HistoryQueryRequest,
+    HybridCandidateV1, HybridQueryResponse, HybridSeedQueryRequest, HybridSeedQueryResponse,
+    LexicalCandidate, ManifestGeneration, PlannerTraceEntry, QueryConstraintSetV1,
+    QueryErrorRepair, QueryResultWindowV1, RepoId, RepoMapDocType, RepoMapFocusSubjectDto,
+    RepoMapQueryRequest, RevisionId, RuntimeMetadataQueryRequest, SearchExplanation,
+    SearchPlaneHistoryQueryResponse, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRuntimeMetadataQueryResponse,
     SearchPlaneStructuralQueryResponse, SemanticQueryRequest, StructuralQueryRequest,
     SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse,
@@ -251,7 +252,7 @@ enum CliRequest {
     HybridSeed(HybridSeedQueryRequest),
     Explain {
         generation: GenerationPin,
-        candidate: LexicalCandidate,
+        candidate: ExplainCandidateV1,
         text_query: Option<TextQueryRequest>,
     },
     RepoMap(RepoMapQueryRequest),
@@ -942,6 +943,7 @@ fn parse_hybrid_seed(
 fn parse_explain(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
     let mut generation_args = PinnedGenerationArgs::default();
     let mut candidate_json: Option<String> = None;
+    let mut hybrid_candidate_json: Option<String> = None;
     let mut syntax: Option<TextQuerySyntax> = None;
     let mut query_text: Option<String> = None;
     parse_query_command_flags(
@@ -952,6 +954,10 @@ fn parse_explain(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
         |current, rest| match current {
             "--candidate-json" => {
                 candidate_json = Some(take_value(rest, "--candidate-json")?);
+                Ok(true)
+            }
+            "--hybrid-candidate-json" => {
+                hybrid_candidate_json = Some(take_value(rest, "--hybrid-candidate-json")?);
                 Ok(true)
             }
             "--syntax" => {
@@ -966,8 +972,22 @@ fn parse_explain(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
         },
     )?;
     let generation = generation_args.into_generation_pin()?;
-    let candidate_path =
-        candidate_json.ok_or_else(|| CliError::usage("missing --candidate-json".to_string()))?;
+    // The candidate is the row as the route that ranked it carried it: a
+    // lexical/semantic page row, or a hybrid row with its lane provenance.
+    let candidate = match (candidate_json, hybrid_candidate_json) {
+        (Some(path), None) => ExplainCandidateV1::Lexical(read_candidate_json(&path)?),
+        (None, Some(path)) => ExplainCandidateV1::Hybrid(read_hybrid_candidate_json(&path)?),
+        (None, None) => {
+            return Err(CliError::usage(
+                "missing --candidate-json or --hybrid-candidate-json".to_string(),
+            ));
+        }
+        (Some(_), Some(_)) => {
+            return Err(CliError::usage(
+                "--candidate-json and --hybrid-candidate-json are mutually exclusive".to_string(),
+            ));
+        }
+    };
     // `--syntax` and `--query-text` name the query the candidate came from;
     // both or neither, since a query without its syntax cannot be lowered.
     let text_query = match (syntax, query_text) {
@@ -991,9 +1011,15 @@ fn parse_explain(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
             ));
         }
     };
+    if matches!(candidate, ExplainCandidateV1::Hybrid(_)) && text_query.is_none() {
+        return Err(CliError::usage(
+            "--hybrid-candidate-json explains under the query it was fused for; pass --syntax and --query-text"
+                .to_string(),
+        ));
+    }
     Ok(CliRequest::Explain {
         generation,
-        candidate: read_candidate_json(&candidate_path)?,
+        candidate,
         text_query,
     })
 }
@@ -1117,11 +1143,19 @@ fn dispatch_query_request(
             candidate,
             text_query,
         } => SearchPlaneQueryIpcResponse::Explain(
-            match text_query {
-                Some(text_query) => client
+            match (candidate, text_query) {
+                (candidate, Some(text_query)) => client
                     .search()
                     .explain_under_query(generation, candidate, text_query),
-                None => client.search().explain(generation, candidate),
+                (ExplainCandidateV1::Lexical(candidate), None) => {
+                    client.search().explain(generation, candidate)
+                }
+                (ExplainCandidateV1::Hybrid(_), None) => {
+                    return Err(CliError::usage(
+                        "a hybrid candidate explains under its query; pass --syntax and --query-text"
+                            .to_string(),
+                    ));
+                }
             }
             .map_err(map_sdk_error)?,
         ),
@@ -1224,23 +1258,35 @@ fn parse_focus_subject(value: &str) -> CliResult<RepoMapFocusSubjectDto> {
 }
 
 fn read_candidate_json(candidate_path: &str) -> CliResult<LexicalCandidate> {
-    let raw = if candidate_path == "-" {
-        let mut input = String::new();
-        let _bytes_read = std::io::stdin().read_to_string(&mut input).map_err(|err| {
-            CliError::transport(format!("failed reading candidate json from stdin: {err}"))
-        })?;
-        input
-    } else {
-        fs::read_to_string(candidate_path).map_err(|err| {
-            CliError::transport(format!(
-                "failed reading candidate json from {candidate_path}: {err}"
-            ))
-        })?
-    };
+    let raw = read_json_text(candidate_path, "candidate")?;
     serde_json::from_str::<LexicalCandidate>(&raw).map_err(|err| {
         CliError::usage(format!(
             "failed to decode candidate json from {candidate_path}: {err}"
         ))
+    })
+}
+
+fn read_hybrid_candidate_json(candidate_path: &str) -> CliResult<HybridCandidateV1> {
+    let raw = read_json_text(candidate_path, "hybrid candidate")?;
+    serde_json::from_str::<HybridCandidateV1>(&raw).map_err(|err| {
+        CliError::usage(format!(
+            "failed to decode hybrid candidate json from {candidate_path}: {err}"
+        ))
+    })
+}
+
+/// Read one JSON document's text from a path, or from stdin for `-`;
+/// `what` names the document in errors.
+fn read_json_text(path: &str, what: &str) -> CliResult<String> {
+    if path == "-" {
+        let mut input = String::new();
+        let _bytes_read = std::io::stdin().read_to_string(&mut input).map_err(|err| {
+            CliError::transport(format!("failed reading {what} json from stdin: {err}"))
+        })?;
+        return Ok(input);
+    }
+    fs::read_to_string(path).map_err(|err| {
+        CliError::transport(format!("failed reading {what} json from {path}: {err}"))
     })
 }
 
@@ -1780,17 +1826,7 @@ fn render_pretty(
             Some(&payload.explanation),
             rendered,
         ),
-        SearchPlaneQueryIpcResponse::Hybrid(payload) => render_lexical_payload(
-            "hybrid-internal",
-            &TextQueryResponse {
-                generation: payload.generation.clone(),
-                results: payload.results.clone(),
-                window: payload.window,
-                file_owner_rows: None,
-            },
-            Some(&payload.explanation),
-            rendered,
-        ),
+        SearchPlaneQueryIpcResponse::Hybrid(payload) => render_hybrid_payload(payload, rendered),
         SearchPlaneQueryIpcResponse::HybridSeed(payload) => {
             render_hybrid_seed_payload(payload, rendered)
         }
@@ -1879,6 +1915,52 @@ fn render_pretty(
                 .to_string(),
         )),
     }
+}
+
+/// Render a hybrid response (QI-BB-022).
+///
+/// One line per fused row: the lane row as a lexical hit, then the RRF
+/// score and each lane's rank and raw score.
+fn render_hybrid_payload(payload: &HybridQueryResponse, rendered: &mut String) -> CliResult<()> {
+    fmt_ok(writeln!(rendered, "kind: hybrid"))?;
+    render_generation(&payload.generation, rendered)?;
+    fmt_ok(writeln!(rendered, "results: {}", payload.results.len()))?;
+    render_window_line(payload.window, rendered)?;
+    for (index, row) in payload.results.iter().enumerate() {
+        let display_index = index
+            .checked_add(1)
+            .ok_or_else(|| CliError::protocol("candidate index overflow".to_string()))?;
+        let lanes = row
+            .contributions
+            .iter()
+            .map(|contribution| {
+                format!(
+                    "{}#{}({})",
+                    contribution.lane.as_code_str(),
+                    contribution.rank,
+                    contribution.raw_score
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        fmt_ok(writeln!(
+            rendered,
+            "{}. candidate_id={} path={} lines={}-{} score={} fused={} lanes={}",
+            display_index,
+            row.candidate.candidate_id,
+            row.candidate.repo_relative_path.as_str(),
+            row.candidate.start_line,
+            row.candidate.end_line,
+            row.candidate.score,
+            row.fused_score,
+            lanes
+        ))?;
+        for line in row.candidate.snippet.lines() {
+            fmt_ok(writeln!(rendered, "   {line}"))?;
+        }
+    }
+    render_explanation(&payload.explanation, rendered)?;
+    Ok(())
 }
 
 /// Render the one canonical seed list (QI-BB-019): each seed with its
@@ -2378,7 +2460,7 @@ Read-only subcommands:
   symbol           --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
   semantic         --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N [--scope-query TEXT --scope-syntax native|sourcegraph --scope-top-k N]
   hybrid-seed      --repo-id ID --revision-id REV --manifest-generation N --lexical-query TEXT --lexical-syntax native|sourcegraph --semantic-query TEXT --top-k N
-  explain          --repo-id ID --revision-id REV --manifest-generation N --candidate-json PATH|-
+  explain          --repo-id ID --revision-id REV --manifest-generation N (--candidate-json PATH|- | --hybrid-candidate-json PATH|-) [--syntax native|sourcegraph --query-text TEXT]
   repomap          --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N --token-budget N [--focus-subject subject_identity:subject_doc_type]
   runtime-metadata --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
   history          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
@@ -3704,6 +3786,208 @@ mod tests {
             assert!(
                 text.contains("matched: 1 has_more: false"),
                 "the exact window is rendered: {text}"
+            );
+        }
+    }
+
+    fn sample_candidate(id: &str, score: f32) -> LexicalCandidate {
+        LexicalCandidate {
+            candidate_id: id.to_string(),
+            repo_id: RepoId::new("repo"),
+            revision_id: RevisionId::new("rev"),
+            manifest_generation: ManifestGeneration::new(7),
+            repo_relative_path: quanta_index_contract::RepoRelativePath::new("src/lib.rs"),
+            start_line: 1,
+            end_line: 3,
+            score,
+            snippet: "fn sample() {}".to_string(),
+            snippet_hit_offset: None,
+            highlights: Vec::new(),
+        }
+    }
+
+    /// A hybrid row both lanes saw: the lexical lane's row at lexical rank
+    /// 1 and dense rank 2, with the RRF score of those ranks.
+    fn sample_hybrid_candidate() -> HybridCandidateV1 {
+        HybridCandidateV1 {
+            candidate: sample_candidate("cand-1", 2.5),
+            fused_score: 1.0 / 61.0 + 1.0 / 62.0,
+            contributions: vec![
+                quanta_index_contract::HybridLaneContributionV1 {
+                    lane: quanta_index_contract::HybridLaneV1::Lexical,
+                    rank: 1,
+                    raw_score: 2.5,
+                },
+                quanta_index_contract::HybridLaneContributionV1 {
+                    lane: quanta_index_contract::HybridLaneV1::Dense,
+                    rank: 2,
+                    raw_score: 0.75,
+                },
+            ],
+        }
+    }
+
+    // QI-BB-022: one line per fused row names the RRF score and each lane's
+    // rank and raw score; the JSON path is the wire DTO itself.
+    #[test]
+    fn pretty_renderer_supports_hybrid_response_with_lane_provenance() {
+        let response = SearchPlaneQueryIpcResponseEnvelope {
+            request_id: 1,
+            payload: SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
+                generation: GenerationPin::new(
+                    RepoId::new("repo"),
+                    RevisionId::new("rev"),
+                    ManifestGeneration::new(7),
+                ),
+                results: vec![
+                    sample_hybrid_candidate(),
+                    HybridCandidateV1 {
+                        candidate: sample_candidate("cand-2", 0.5),
+                        fused_score: 1.0 / 61.0,
+                        contributions: vec![quanta_index_contract::HybridLaneContributionV1 {
+                            lane: quanta_index_contract::HybridLaneV1::Dense,
+                            rank: 1,
+                            raw_score: 0.5,
+                        }],
+                    },
+                ],
+                window: quanta_index_contract::QueryResultWindowV1::exact(2),
+                explanation: SearchExplanation {
+                    planner_trace: Vec::new(),
+                    engines_touched: vec![EngineTouched::Lexical, EngineTouched::Semantic],
+                    early_stop_reason: None,
+                    contributions: Vec::new(),
+                    ranker_weights_hash: [0u8; 32],
+                    strategy: "rrf".to_string(),
+                    summary: "two lanes".to_string(),
+                },
+            }),
+        };
+        let mut stdout = Vec::new();
+        let rendered = render_response(OutputMode::Pretty, &response, &mut stdout);
+        assert!(rendered.is_ok());
+        let text = String::from_utf8(stdout);
+        assert!(text.is_ok());
+        if let Ok(text) = text {
+            assert!(text.contains("kind: hybrid"), "{text}");
+            assert!(text.contains("results: 2"), "{text}");
+            assert!(
+                text.contains(&format!(
+                    "1. candidate_id=cand-1 path=src/lib.rs lines=1-3 score=2.5 fused={} lanes=lexical#1(2.5) dense#2(0.75)",
+                    1.0_f64 / 61.0 + 1.0 / 62.0
+                )),
+                "{text}"
+            );
+            assert!(
+                text.contains(&format!(
+                    "2. candidate_id=cand-2 path=src/lib.rs lines=1-3 score=0.5 fused={} lanes=dense#1(0.5)",
+                    1.0_f64 / 61.0
+                )),
+                "{text}"
+            );
+            assert!(text.contains("strategy: rrf"), "{text}");
+        }
+        let mut json = Vec::new();
+        let rendered = render_response(OutputMode::Json, &response, &mut json);
+        assert!(rendered.is_ok());
+        let decoded: Result<SearchPlaneQueryIpcResponseEnvelope, _> = serde_json::from_slice(&json);
+        assert!(
+            decoded.is_ok(),
+            "the JSON output is the wire DTO: {decoded:?}"
+        );
+        if let Ok(decoded) = decoded {
+            assert_eq!(decoded, response);
+        }
+    }
+
+    // A hybrid row is explained from the JSON the hybrid route emitted for
+    // it, and only under its query.
+    #[test]
+    fn parses_explain_with_a_hybrid_candidate_json_under_its_query() {
+        let dir = tempfile::tempdir();
+        assert!(dir.is_ok());
+        let Ok(dir) = dir else {
+            return;
+        };
+        let path = dir.path().join("hybrid-candidate.json");
+        let written = serde_json::to_vec_pretty(&sample_hybrid_candidate())
+            .map_err(|err| err.to_string())
+            .and_then(|bytes| fs::write(&path, bytes).map_err(|err| err.to_string()));
+        assert!(written.is_ok(), "{written:?}");
+        let path = path.to_string_lossy().into_owned();
+        let parsed = ParsedCommand::parse([
+            "explain",
+            "--repo-id",
+            "repo",
+            "--revision-id",
+            "rev",
+            "--manifest-generation",
+            "7",
+            "--hybrid-candidate-json",
+            path.as_str(),
+            "--syntax",
+            "native",
+            "--query-text",
+            "needle",
+        ]);
+        assert!(parsed.is_ok(), "{parsed:?}");
+        let Ok(parsed) = parsed else {
+            return;
+        };
+        let CliRequest::Explain {
+            candidate,
+            text_query,
+            ..
+        } = parsed.request
+        else {
+            panic!("expected explain payload");
+        };
+        assert_eq!(
+            candidate,
+            ExplainCandidateV1::Hybrid(sample_hybrid_candidate())
+        );
+        assert_eq!(
+            text_query.map(|query| query.query_text),
+            Some("needle".to_string())
+        );
+
+        let unqueried = ParsedCommand::parse([
+            "explain",
+            "--repo-id",
+            "repo",
+            "--revision-id",
+            "rev",
+            "--manifest-generation",
+            "7",
+            "--hybrid-candidate-json",
+            path.as_str(),
+        ]);
+        assert!(unqueried.is_err());
+        if let Err(error) = unqueried {
+            assert_eq!(error.exit_code, EXIT_USAGE);
+            assert!(error.message.contains("--query-text"), "{}", error.message);
+        }
+
+        let both = ParsedCommand::parse([
+            "explain",
+            "--repo-id",
+            "repo",
+            "--revision-id",
+            "rev",
+            "--manifest-generation",
+            "7",
+            "--candidate-json",
+            path.as_str(),
+            "--hybrid-candidate-json",
+            path.as_str(),
+        ]);
+        assert!(both.is_err());
+        if let Err(error) = both {
+            assert_eq!(error.exit_code, EXIT_USAGE);
+            assert!(
+                error.message.contains("mutually exclusive"),
+                "{}",
+                error.message
             );
         }
     }

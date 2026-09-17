@@ -6,8 +6,8 @@ use serde::{
     ser::SerializeStruct,
 };
 
-use crate::LexicalCandidate;
 use crate::SemanticCorpusKindV1;
+use crate::{HybridCandidateV1, LexicalCandidate};
 
 use super::{
     GenerationPin, GenerationSelector, HistoryCursor, QueryConstraintSetV1, TextQueryRequest,
@@ -840,29 +840,203 @@ impl_text_query_wrapper_serde!(
     StructuralQueryRequestVisitor
 );
 
+/// The candidate an explain names: the row as the route that ranked it
+/// carried it (QI-BB-022).
+///
+/// A lexical, semantic or symbol-projected row is a [`LexicalCandidate`]
+/// whose carried `score` is the score one plan emitted. A hybrid row is a
+/// [`HybridCandidateV1`], whose provenance — the RRF score and the per-lane
+/// ranks and raw scores — the explain reconciles lane by lane; it explains
+/// only under the query it was fused for, so it requires `text_query`.
+///
+/// Encoded adjacently tagged, `kind` before `payload`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExplainCandidateV1 {
+    Lexical(LexicalCandidate),
+    Hybrid(HybridCandidateV1),
+}
+
+impl ExplainCandidateV1 {
+    /// The lane row the explain traces: the candidate itself, or the row
+    /// the hybrid fusion carried for it.
+    #[must_use]
+    pub const fn lexical_row(&self) -> &LexicalCandidate {
+        match self {
+            Self::Lexical(candidate) => candidate,
+            Self::Hybrid(hybrid) => &hybrid.candidate,
+        }
+    }
+}
+
+impl From<LexicalCandidate> for ExplainCandidateV1 {
+    fn from(candidate: LexicalCandidate) -> Self {
+        Self::Lexical(candidate)
+    }
+}
+
+impl From<HybridCandidateV1> for ExplainCandidateV1 {
+    fn from(candidate: HybridCandidateV1) -> Self {
+        Self::Hybrid(candidate)
+    }
+}
+
+const EXPLAIN_CANDIDATE_V1_VARIANTS: &[&str] = &["Lexical", "Hybrid"];
+const EXPLAIN_CANDIDATE_V1_FIELDS: &[&str] = &["kind", "payload"];
+
+impl Serialize for ExplainCandidateV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("ExplainCandidateV1", 2)?;
+        match self {
+            Self::Lexical(candidate) => {
+                state.serialize_field("kind", "Lexical")?;
+                state.serialize_field("payload", candidate)?;
+            }
+            Self::Hybrid(candidate) => {
+                state.serialize_field("kind", "Hybrid")?;
+                state.serialize_field("payload", candidate)?;
+            }
+        }
+        state.end()
+    }
+}
+
+struct ExplainCandidateV1Visitor;
+
+impl<'de> Visitor<'de> for ExplainCandidateV1Visitor {
+    type Value = ExplainCandidateV1;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an ExplainCandidateV1 map with kind before payload")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut kind: Option<String> = None;
+        let mut payload: Option<ExplainCandidateV1> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "kind" => {
+                    if kind.is_some() {
+                        return Err(de::Error::duplicate_field("kind"));
+                    }
+                    kind = Some(map.next_value()?);
+                }
+                "payload" => {
+                    if payload.is_some() {
+                        return Err(de::Error::duplicate_field("payload"));
+                    }
+                    let decoded = match kind.as_deref() {
+                        Some("Lexical") => ExplainCandidateV1::Lexical(map.next_value()?),
+                        Some("Hybrid") => ExplainCandidateV1::Hybrid(map.next_value()?),
+                        Some(other) => {
+                            return Err(de::Error::unknown_variant(
+                                other,
+                                EXPLAIN_CANDIDATE_V1_VARIANTS,
+                            ));
+                        }
+                        None => {
+                            return Err(de::Error::custom(
+                                "ExplainCandidateV1 payload arrived before kind; canonical adjacent-tag order is required",
+                            ));
+                        }
+                    };
+                    payload = Some(decoded);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(other, EXPLAIN_CANDIDATE_V1_FIELDS));
+                }
+            }
+        }
+        let kind = kind.ok_or_else(|| de::Error::missing_field("kind"))?;
+        match payload {
+            Some(candidate) => Ok(candidate),
+            None if EXPLAIN_CANDIDATE_V1_VARIANTS.contains(&kind.as_str()) => {
+                Err(de::Error::missing_field("payload"))
+            }
+            None => Err(de::Error::unknown_variant(
+                kind.as_str(),
+                EXPLAIN_CANDIDATE_V1_VARIANTS,
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ExplainCandidateV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "ExplainCandidateV1",
+            EXPLAIN_CANDIDATE_V1_FIELDS,
+            ExplainCandidateV1Visitor,
+        )
+    }
+}
+
 /// Explain one candidate at one generation (QI-BB-022).
 ///
 /// Without `text_query` the answer is presence only: an exact lookup of the
 /// candidate id. With it, the plane lowers the same plan the search ran and
 /// traces the score the lexical engine emits for exactly this candidate
-/// under it. The query's own `generation` must be absent or equal to
-/// `generation`, and it must carry no selector: the explain names its
-/// generation once.
+/// under it; for a hybrid candidate it also reconciles the carried lane
+/// provenance and the RRF score. The query's own `generation` must be
+/// absent or equal to `generation`, and it must carry no selector: the
+/// explain names its generation once. A hybrid candidate requires
+/// `text_query` (checked on encode and decode).
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchPlaneExplainQueryRequest {
     pub generation: GenerationPin,
-    pub candidate: LexicalCandidate,
+    pub candidate: ExplainCandidateV1,
     pub text_query: Option<TextQueryRequest>,
 }
 
 const SEARCH_PLANE_EXPLAIN_QUERY_REQUEST_FIELDS: &[&str] =
     &["generation", "candidate", "text_query"];
 
+/// Why an explain request is not one the plane can answer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExplainRequestPolicyErrorV1 {
+    HybridCandidateWithoutQuery,
+}
+
+impl fmt::Display for ExplainRequestPolicyErrorV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::HybridCandidateWithoutQuery => formatter.write_str(
+                "a hybrid candidate is explained under the query it was fused for; text_query is required",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ExplainRequestPolicyErrorV1 {}
+
+impl SearchPlaneExplainQueryRequest {
+    /// Check the request invariants documented on the type.
+    pub const fn validate_v1(&self) -> Result<(), ExplainRequestPolicyErrorV1> {
+        match (&self.candidate, &self.text_query) {
+            (ExplainCandidateV1::Hybrid(_), None) => {
+                Err(ExplainRequestPolicyErrorV1::HybridCandidateWithoutQuery)
+            }
+            (ExplainCandidateV1::Lexical(_), _) | (ExplainCandidateV1::Hybrid(_), Some(_)) => {
+                Ok(())
+            }
+        }
+    }
+}
+
 impl Serialize for SearchPlaneExplainQueryRequest {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
+        self.validate_v1().map_err(serde::ser::Error::custom)?;
         let field_count = if self.text_query.is_some() { 3 } else { 2 };
         let mut state =
             serializer.serialize_struct("SearchPlaneExplainQueryRequest", field_count)?;
@@ -889,7 +1063,7 @@ impl<'de> Visitor<'de> for SearchPlaneExplainQueryRequestVisitor {
         A: MapAccess<'de>,
     {
         let mut generation: Option<GenerationPin> = None;
-        let mut candidate: Option<LexicalCandidate> = None;
+        let mut candidate: Option<ExplainCandidateV1> = None;
         let mut text_query: Option<TextQueryRequest> = None;
         let mut text_query_seen = false;
         while let Some(key) = map.next_key::<String>()? {
@@ -921,11 +1095,13 @@ impl<'de> Visitor<'de> for SearchPlaneExplainQueryRequestVisitor {
                 }
             }
         }
-        Ok(SearchPlaneExplainQueryRequest {
+        let request = SearchPlaneExplainQueryRequest {
             generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
             candidate: candidate.ok_or_else(|| de::Error::missing_field("candidate"))?,
             text_query,
-        })
+        };
+        request.validate_v1().map_err(de::Error::custom)?;
+        Ok(request)
     }
 }
 

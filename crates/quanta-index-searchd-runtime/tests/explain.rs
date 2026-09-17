@@ -26,9 +26,9 @@ use std::time::{Duration, Instant};
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, GenerationPin, LexicalCandidate, ManifestGeneration,
-    RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
-    SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
+    BatchIngestMode, ChunkId, ChunkRecord, ExplainCandidateV1, GenerationPin, LexicalCandidate,
+    ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch,
+    SearchCorpusReplaceScope, SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
@@ -162,7 +162,7 @@ fn explain_request(
         request_id: 2,
         payload: SearchPlaneQueryIpcRequest::Explain(SearchPlaneExplainQueryRequest {
             generation: pin,
-            candidate,
+            candidate: ExplainCandidateV1::Lexical(candidate),
             text_query: None,
         }),
     }

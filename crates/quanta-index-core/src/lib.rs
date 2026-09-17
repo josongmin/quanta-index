@@ -38,7 +38,9 @@ pub use domains::generation::{
     SealedGenerationScanPort, TreeCommitmentMismatchV1, commit_tree_v1, sha256_of_file,
     verify_tree_commitment_v1,
 };
-pub use domains::hybrid::{ExplainQueryPort, HybridOrchestratorPolicy, HybridQueryPort};
+pub use domains::hybrid::{
+    ExplainQueryPort, FusedKeyV1, FusedLaneRankV1, HybridOrchestratorPolicy, HybridQueryPort,
+};
 pub use domains::idempotency::{
     BATCH_DIGEST_CONFLICT_CODE, CATALOG_BUSY_CODE, CATALOG_ROW_CORRUPT_CODE, IdempotencyBeginV1,
     IdempotencyCatalogPort, IdempotencyKeyV1, IngestOperationKindV1,

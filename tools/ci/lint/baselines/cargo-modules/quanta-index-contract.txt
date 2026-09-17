@@ -437,6 +437,10 @@ crate quanta_index_contract
 │   │       └── type Value: pub(self)
 │   ├── mod options: pub(self)
 │   └── mod requests: pub(self)
+│       ├── enum ExplainCandidateV1: pub
+│       ├── struct ExplainCandidateV1Visitor: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── enum ExplainRequestPolicyErrorV1: pub
 │       ├── struct HistoryQueryRequest: pub
 │       ├── struct HistoryQueryRequestVisitor: pub(self)
 │       │   └── type Value: pub(self)
@@ -590,6 +594,14 @@ crate quanta_index_contract
         ├── struct FileOwnerProjectionRow: pub
         ├── struct FileOwnerProjectionRowVisitor: pub(self)
         │   └── type Value: pub(self)
+        ├── enum HybridCandidatePolicyErrorV1: pub
+        ├── struct HybridCandidateV1: pub
+        ├── struct HybridCandidateV1Visitor: pub(self)
+        │   └── type Value: pub(self)
+        ├── struct HybridLaneContributionV1: pub
+        ├── struct HybridLaneContributionV1Visitor: pub(self)
+        │   └── type Value: pub(self)
+        ├── enum HybridLaneV1: pub
         ├── struct HybridQueryResponse: pub
         ├── struct HybridQueryResponseVisitor: pub(self)
         │   └── type Value: pub(self)

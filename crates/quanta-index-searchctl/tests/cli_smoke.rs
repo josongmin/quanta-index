@@ -21,8 +21,9 @@ use quanta_index_contract::ipc::{
 };
 use quanta_index_contract::lex::ExplanationRow;
 use quanta_index_contract::{
-    EngineTouched, GenerationPin, HybridSeedQueryResponse, LexicalCandidate, ManifestGeneration,
-    PlannerStage, PlannerTraceEntry, QueryResultWindowV1, RepoId, RepoMapDocType, RepoMapEntryDto,
+    EngineTouched, ExplainCandidateV1, GenerationPin, HybridCandidateV1, HybridLaneContributionV1,
+    HybridLaneV1, HybridSeedQueryResponse, LexicalCandidate, ManifestGeneration, PlannerStage,
+    PlannerTraceEntry, QueryResultWindowV1, RepoId, RepoMapDocType, RepoMapEntryDto,
     RepoMapExactnessSummary, RepoMapFocusSubjectDto, RepoMapGraphCoverageClass,
     RepoMapItemIndexAvailability, RepoMapQueryResponse, RepoMapRedactionState, RepoMapSnapshotMeta,
     RepoRelativePath, RevisionId, SearchExplanation, SearchPlaneExplainQueryResponse,
@@ -37,6 +38,7 @@ use tempfile::tempdir;
 enum SmokeScenario {
     LexicalJson,
     ExplainPretty,
+    ExplainHybridPretty,
     SemanticJson,
     HybridSeedPretty,
     RepoMapPretty,
@@ -57,6 +59,7 @@ impl IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse> for 
         match self.scenario {
             SmokeScenario::LexicalJson => dispatch_lexical_request(request),
             SmokeScenario::ExplainPretty => dispatch_explain_request(request),
+            SmokeScenario::ExplainHybridPretty => dispatch_explain_hybrid_request(request),
             SmokeScenario::SemanticJson => dispatch_semantic_request(request),
             SmokeScenario::HybridSeedPretty => dispatch_hybrid_seed_request(request),
             SmokeScenario::RepoMapPretty => dispatch_repomap_request(request),
@@ -73,6 +76,12 @@ fn lexical_json_roundtrip() {
 #[test]
 fn explain_pretty_roundtrip() {
     let result = explain_pretty_roundtrip_impl();
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn explain_hybrid_candidate_pretty_roundtrip() {
+    let result = explain_hybrid_candidate_pretty_roundtrip_impl();
     assert!(result.is_ok(), "{result:?}");
 }
 
@@ -190,6 +199,52 @@ fn explain_pretty_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
     }
     if !stdout.contains("planner_trace:") {
         return Err(format!("missing planner trace in stdout: {stdout}").into());
+    }
+    Ok(())
+}
+
+// QI-BB-022: the hybrid row's JSON, as the hybrid route emitted it, is the
+// explain's input; the CLI sends it as a hybrid candidate under its query.
+fn explain_hybrid_candidate_pretty_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
+    let tempdir = tempdir()?;
+    let socket_path = unique_socket_path();
+    let candidate_path = tempdir.path().join("hybrid-candidate.json");
+    fs::write(
+        &candidate_path,
+        serde_json::to_vec_pretty(&stub_hybrid_candidate(stub_generation()))?,
+    )?;
+    let shutdown = start_server(&socket_path, SmokeScenario::ExplainHybridPretty)?;
+    let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("explain")
+        .arg("--socket")
+        .arg(&socket_path)
+        .arg("--repo-id")
+        .arg("repo-1")
+        .arg("--revision-id")
+        .arg("rev-1")
+        .arg("--manifest-generation")
+        .arg("11")
+        .arg("--hybrid-candidate-json")
+        .arg(&candidate_path)
+        .arg("--syntax")
+        .arg("native")
+        .arg("--query-text")
+        .arg("fn main")
+        .output()?;
+    shutdown.trigger();
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    for expected in [
+        "kind: explain",
+        "presence: indexed",
+        "summary: hybrid lane trace",
+        "strategy: hybrid_score_trace",
+    ] {
+        if !stdout.contains(expected) {
+            return Err(format!("missing `{expected}` in stdout: {stdout}").into());
+        }
     }
     Ok(())
 }
@@ -1185,6 +1240,43 @@ fn dispatch_explain_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQ
     })
 }
 
+fn dispatch_explain_hybrid_request(
+    request: SearchPlaneQueryIpcRequest,
+) -> SearchPlaneQueryIpcResponse {
+    let SearchPlaneQueryIpcRequest::Explain(payload) = request else {
+        return error_response(
+            "TEST_UNEXPECTED_REQUEST",
+            format!("expected explain request, got {request:?}"),
+        );
+    };
+    let expected = ExplainCandidateV1::Hybrid(stub_hybrid_candidate(stub_generation()));
+    if payload.candidate != expected {
+        return error_response(
+            "TEST_BAD_CANDIDATE",
+            format!("unexpected explain candidate: {:?}", payload.candidate),
+        );
+    }
+    let Some(text_query) = payload.text_query.as_ref() else {
+        return error_response(
+            "TEST_MISSING_QUERY",
+            "a hybrid candidate explains under its query",
+        );
+    };
+    if text_query.syntax != TextQuerySyntax::Native || text_query.query_text != "fn main" {
+        return error_response(
+            "TEST_BAD_QUERY",
+            format!("unexpected explain query: {text_query:?}"),
+        );
+    }
+    let mut explanation = stub_explanation("hybrid lane trace", vec![EngineTouched::Lexical]);
+    explanation.strategy = "hybrid_score_trace".to_string();
+    SearchPlaneQueryIpcResponse::Explain(SearchPlaneExplainQueryResponse {
+        generation: payload.generation,
+        presence: quanta_index_contract::CandidatePresenceV1::Indexed,
+        explanation,
+    })
+}
+
 fn dispatch_semantic_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQueryIpcResponse {
     let SearchPlaneQueryIpcRequest::Semantic(payload) = request else {
         return error_response(
@@ -1364,6 +1456,28 @@ fn stub_candidate(generation: GenerationPin) -> LexicalCandidate {
         snippet: "fn main() {\n    println!(\"hi\");\n}".to_string(),
         snippet_hit_offset: None,
         highlights: Vec::new(),
+    }
+}
+
+/// The hybrid row the stub candidate would be if both lanes saw it, at
+/// lexical rank 1 and dense rank 3.
+fn stub_hybrid_candidate(generation: GenerationPin) -> HybridCandidateV1 {
+    let candidate = stub_candidate(generation);
+    HybridCandidateV1 {
+        fused_score: 1.0 / 61.0 + 1.0 / 63.0,
+        contributions: vec![
+            HybridLaneContributionV1 {
+                lane: HybridLaneV1::Lexical,
+                rank: 1,
+                raw_score: candidate.score,
+            },
+            HybridLaneContributionV1 {
+                lane: HybridLaneV1::Dense,
+                rank: 3,
+                raw_score: 0.42,
+            },
+        ],
+        candidate,
     }
 }
 

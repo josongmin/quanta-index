@@ -317,3 +317,187 @@ fn rrf_ties_prefer_first_lane_then_identity() {
         strings(&["a", "b"])
     );
 }
+
+// QI-BB-022: the provenance-carrying fusion reports each winner's lane
+// positions as given and a fused score equal to an independently recomputed
+// RRF sum, in exactly the order the key-only fusion returns.
+#[test]
+fn rrf_provenance_reports_input_positions_and_the_recomputed_score() -> TestResult {
+    use quanta_index_core::FusedLaneRankV1;
+    let lexical = strings(&["lex-only", "shared", "lex-tail"]);
+    let semantic_a = strings(&["semantic-a", "shared", "semantic-tail"]);
+    let semantic_b = strings(&["semantic-b", "shared", "semantic-tail", "lex-tail"]);
+    let lanes = [&lexical[..], &semantic_a[..], &semantic_b[..]];
+
+    let fused = HybridOrchestratorPolicy::fuse_rrf_key_lanes_with_provenance(&lanes, u32::MAX);
+    let keys = fused
+        .iter()
+        .map(|entry| entry.key.clone())
+        .collect::<Vec<_>>();
+    if keys != HybridOrchestratorPolicy::fuse_rrf_key_lanes(&lanes, u32::MAX) {
+        return Err(format!("provenance must not move the ranking: {keys:?}").into());
+    }
+    for entry in &fused {
+        // Every lane that lists the key is reported once, in lane order, at
+        // the key's 1-based position in that lane; no other lane is.
+        let mut expected_lanes = Vec::new();
+        for (lane, rows) in lanes.iter().enumerate() {
+            if let Some(index) = rows.iter().position(|row| *row == entry.key) {
+                let rank = u32::try_from(index.saturating_add(1))?;
+                expected_lanes.push(FusedLaneRankV1 { lane, rank });
+            }
+        }
+        if entry.lanes != expected_lanes {
+            return Err(format!(
+                "{} placed at {:?}, expected {expected_lanes:?}",
+                entry.key, entry.lanes
+            )
+            .into());
+        }
+        let recomputed: f64 = entry
+            .lanes
+            .iter()
+            .map(|placement| 1.0 / (60.0 + f64::from(placement.rank)))
+            .sum();
+        if entry.fused_score.to_bits() != recomputed.to_bits() {
+            return Err(format!(
+                "{} scored {} but its ranks sum to {recomputed}",
+                entry.key, entry.fused_score
+            )
+            .into());
+        }
+        if HybridOrchestratorPolicy::rrf_score(entry.lanes.iter().map(|placement| placement.rank))
+            .to_bits()
+            != entry.fused_score.to_bits()
+        {
+            return Err(format!("rrf_score must reproduce {}'s fused score", entry.key).into());
+        }
+    }
+    let shared = fused
+        .iter()
+        .find(|entry| entry.key == "shared")
+        .ok_or("shared fused")?;
+    if shared.lanes.len() != 3 || shared.fused_score.to_bits() != (3.0_f64 / 62.0).to_bits() {
+        return Err(format!("shared is rank 2 in all three lanes: {shared:?}").into());
+    }
+    Ok(())
+}
+
+// The provenance is over the de-duplicated lane, like the score.
+#[test]
+fn rrf_provenance_ranks_the_deduplicated_lane() -> TestResult {
+    let lexical = strings(&["B", "A", "A", "A", "C"]);
+    let lanes = [&lexical[..]];
+    let fused = HybridOrchestratorPolicy::fuse_rrf_key_lanes_with_provenance(&lanes, u32::MAX);
+    let placements = fused
+        .iter()
+        .map(|entry| {
+            (
+                entry.key.as_str(),
+                entry
+                    .lanes
+                    .iter()
+                    .map(|placement| placement.rank)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<Vec<_>>();
+    if placements != [("B", vec![1]), ("A", vec![2]), ("C", vec![3])] {
+        return Err(format!("duplicates must not consume ranks: {placements:?}").into());
+    }
+    Ok(())
+}
+
+// The candidate-level fusion is the lane-DTO fusion plus provenance: the
+// same rows in the same order, each with the lanes that saw it.
+#[test]
+fn rrf_candidates_carry_the_lane_rows_and_provenance_in_the_lane_dto_order() -> TestResult {
+    use quanta_index_contract::{HybridLaneContributionV1, HybridLaneV1};
+    let mut lex_shared = candidate("shared");
+    lex_shared.score = 2.5;
+    let mut lex_only = candidate("lex-only");
+    lex_only.score = 1.5;
+    let mut sem_shared = candidate("shared");
+    sem_shared.score = 0.75;
+    sem_shared.snippet = "dense payload".to_string();
+    let mut sem_only = candidate("sem-only");
+    sem_only.score = -0.25;
+    let lexical = [lex_shared, lex_only];
+    let semantic = [sem_only, sem_shared];
+
+    let rows = HybridOrchestratorPolicy::fuse_rrf_candidates(&lexical, &semantic, 10)?;
+    let lane_rows = rows
+        .iter()
+        .map(|row| row.candidate.clone())
+        .collect::<Vec<_>>();
+    if lane_rows != HybridOrchestratorPolicy::fuse_rrf(&lexical, &semantic, 10) {
+        return Err(format!("candidate fusion must carry fuse_rrf's rows: {rows:?}").into());
+    }
+    let contributions = rows
+        .iter()
+        .map(|row| {
+            (
+                row.candidate.candidate_id.as_str(),
+                row.contributions.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let expected = [
+        (
+            "shared",
+            vec![
+                HybridLaneContributionV1 {
+                    lane: HybridLaneV1::Lexical,
+                    rank: 1,
+                    raw_score: 2.5,
+                },
+                HybridLaneContributionV1 {
+                    lane: HybridLaneV1::Dense,
+                    rank: 2,
+                    raw_score: 0.75,
+                },
+            ],
+        ),
+        // The dense lane's rank-1 row outscores the lexical lane's rank-2 row.
+        (
+            "sem-only",
+            vec![HybridLaneContributionV1 {
+                lane: HybridLaneV1::Dense,
+                rank: 1,
+                raw_score: -0.25,
+            }],
+        ),
+        (
+            "lex-only",
+            vec![HybridLaneContributionV1 {
+                lane: HybridLaneV1::Lexical,
+                rank: 2,
+                raw_score: 1.5,
+            }],
+        ),
+    ];
+    if contributions != expected {
+        return Err(format!("provenance: {contributions:?}").into());
+    }
+    // The carried row is the preferred lane's, so its score is that lane's
+    // raw score and the contract's row invariant holds for every row.
+    for row in &rows {
+        row.validate_v1()?;
+    }
+    if rows.first().map(|row| row.candidate.snippet.as_str()) != Some("") {
+        return Err("the lexical lane's row is carried when it saw the identity".into());
+    }
+    Ok(())
+}
+
+// A lane row the contract cannot carry is a typed refusal, not a row.
+#[test]
+fn rrf_candidates_refuse_a_non_finite_lane_score() {
+    let mut poisoned = candidate("poisoned");
+    poisoned.score = f32::NAN;
+    let result = HybridOrchestratorPolicy::fuse_rrf_candidates(&[poisoned], &[], 10);
+    assert!(
+        matches!(result, Err(CoreError::Storage(ref message)) if message.contains("non-finite")),
+        "{result:?}"
+    );
+}

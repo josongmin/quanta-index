@@ -12,8 +12,8 @@ use crate::observability::BoundedQueryObsStore;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::selection::make_pin;
 use crate::query_dispatcher::tests::support::common::{
-    TestResult, candidate, default_query_embedder, dispatcher_with_obs, ipc_error_from,
-    ready_ledger, ready_pin, test_activation_catalog,
+    TestResult, candidate, default_query_embedder, dispatcher_with_obs, encode_cbor,
+    ipc_error_from, ready_ledger, ready_pin, test_activation_catalog,
 };
 use crate::query_dispatcher::tests::support::lexical::{
     RecordingLexicalOpener, RecordingLexicalState, RejectLexicalOpener, StubLexicalOpener,
@@ -332,6 +332,154 @@ fn hybrid_dispatch_emits_closed_obs_metrics() -> TestResult {
         if sample.name.contains("scope") || sample.name.contains("1.0 0.0") {
             return Err(format!("metric name leaked query content: {}", sample.name).into());
         }
+    }
+    Ok(())
+}
+
+// CASE-COVERS: QI-BB-022 — every fused row carries the lanes that saw it,
+// with the rank and raw score each lane emitted, and the RRF score that
+// ranked it; the fused order is exactly the id-level fusion's order.
+#[test]
+fn hybrid_rows_carry_per_lane_provenance_and_the_fused_score() -> TestResult {
+    use quanta_index_contract::{HybridLaneContributionV1, HybridLaneV1};
+    use quanta_index_core::HybridOrchestratorPolicy;
+    // Lexical: alpha, beta, gamma. Dense: beta, delta, alpha. Distinct
+    // scores per lane so lane stabilization keeps these orders.
+    let lexical = vec![
+        candidate("alpha", 3.0),
+        candidate("beta", 2.0),
+        candidate("gamma", 1.0),
+    ];
+    let dense = vec![
+        candidate("beta", 0.9),
+        candidate("delta", 0.8),
+        candidate("alpha", 0.7),
+    ];
+    let semantic_state = Arc::new(Mutex::new(RecordingSemanticState {
+        constrained_search_results: Some(dense.clone()),
+        ..RecordingSemanticState::default()
+    }));
+    let dispatcher = SearchPlaneDispatcher::new(
+        Arc::new(StubLexicalOpener {
+            results: lexical.clone(),
+        }),
+        Arc::new(RecordingSemanticOpener {
+            state: Arc::clone(&semantic_state),
+        }),
+        Arc::new(StubRepoMapQueryPort),
+        Arc::new(FailClosedStructuralProducer),
+        ready_ledger(),
+        test_activation_catalog()?,
+    );
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "scope".to_string(),
+                constraints: QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 10,
+            },
+            semantic_query_text: "scope alpha".to_string(),
+            generation: Some(ready_pin()),
+            generation_selector: None,
+            top_k: 10,
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+    let SearchPlaneQueryIpcResponse::Hybrid(hybrid) = response else {
+        return Err(format!("expected Hybrid response, got {response:?}").into());
+    };
+    // The fused order is the id-level fusion's order, unchanged by the
+    // provenance.
+    let ids = hybrid
+        .results
+        .iter()
+        .map(|row| row.candidate.candidate_id.clone())
+        .collect::<Vec<_>>();
+    let lexical_ids = lexical
+        .iter()
+        .map(|row| row.candidate_id.clone())
+        .collect::<Vec<_>>();
+    let dense_ids = dense
+        .iter()
+        .map(|row| row.candidate_id.clone())
+        .collect::<Vec<_>>();
+    let expected = HybridOrchestratorPolicy::fuse_rrf_ids(&lexical_ids, &dense_ids, 10);
+    if ids != expected {
+        return Err(format!("fused order {ids:?} != id fusion {expected:?}").into());
+    }
+    if ids != ["beta", "alpha", "delta", "gamma"] {
+        return Err(format!("unexpected fused order {ids:?}").into());
+    }
+    // An independent RRF oracle over the mocks' lane positions.
+    let rrf = |ranks: &[u32]| -> f64 {
+        ranks
+            .iter()
+            .map(|rank| 1.0 / (60.0 + f64::from(*rank)))
+            .sum()
+    };
+    let row = |id: &str| {
+        hybrid
+            .results
+            .iter()
+            .find(|row| row.candidate.candidate_id == id)
+            .ok_or_else(|| format!("{id} fused"))
+    };
+    // beta: both lanes saw it — the lexical row (score 2.0) is carried, the
+    // contributions are the lanes' own ranks and raw scores, in lane order.
+    let beta = row("beta")?;
+    if beta.contributions
+        != [
+            HybridLaneContributionV1 {
+                lane: HybridLaneV1::Lexical,
+                rank: 2,
+                raw_score: 2.0,
+            },
+            HybridLaneContributionV1 {
+                lane: HybridLaneV1::Dense,
+                rank: 1,
+                raw_score: 0.9,
+            },
+        ]
+        || beta.candidate.score.to_bits() != 2.0_f32.to_bits()
+        || beta.fused_score.to_bits() != rrf(&[2, 1]).to_bits()
+    {
+        return Err(format!("beta provenance: {beta:?}").into());
+    }
+    // delta: dense-only — exactly the dense contribution, the dense row.
+    let delta = row("delta")?;
+    if delta.contributions
+        != [HybridLaneContributionV1 {
+            lane: HybridLaneV1::Dense,
+            rank: 2,
+            raw_score: 0.8,
+        }]
+        || delta.candidate.score.to_bits() != 0.8_f32.to_bits()
+        || delta.fused_score.to_bits() != rrf(&[2]).to_bits()
+    {
+        return Err(format!("delta provenance: {delta:?}").into());
+    }
+    // gamma: lexical-only.
+    let gamma = row("gamma")?;
+    if gamma.contributions
+        != [HybridLaneContributionV1 {
+            lane: HybridLaneV1::Lexical,
+            rank: 3,
+            raw_score: 1.0,
+        }]
+        || gamma.fused_score.to_bits() != rrf(&[3]).to_bits()
+    {
+        return Err(format!("gamma provenance: {gamma:?}").into());
+    }
+    // The wire holds the same rows: the response encodes, and decodes back
+    // to itself, under the contract's ranking-order check.
+    let bytes = encode_cbor(&hybrid)?;
+    let decoded: quanta_index_contract::HybridQueryResponse =
+        quanta_index_ipc::decode_cbor_payload(&bytes)?;
+    if decoded != hybrid {
+        return Err("the hybrid response must round-trip through the wire".into());
     }
     Ok(())
 }

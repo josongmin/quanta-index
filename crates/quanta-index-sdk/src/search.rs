@@ -1,9 +1,9 @@
 use quanta_index_contract::{
     ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
-    ClusterMembershipReadOutcomeV1, ClusterMembershipReadRequestV1, GenerationPin,
-    GenerationSelector, HybridSeedQueryRequest, HybridSeedQueryResponse, LexicalCandidate, RepoId,
-    RevisionId, SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
-    SemanticCorpusKindV1, TextQueryRequest,
+    ClusterMembershipReadOutcomeV1, ClusterMembershipReadRequestV1, ExplainCandidateV1,
+    GenerationPin, GenerationSelector, HybridSeedQueryRequest, HybridSeedQueryResponse,
+    LexicalCandidate, RepoId, RevisionId, SearchPlaneExplainQueryRequest,
+    SearchPlaneExplainQueryResponse, SemanticCorpusKindV1, TextQueryRequest,
 };
 
 use crate::{QuantaIndex, SdkError, text_query_builder::VectorQueryBuilderState};
@@ -96,7 +96,8 @@ impl<'a> SearchNamespace<'a> {
     }
 
     /// Is `candidate` in the generation's lexical index? An exact lookup;
-    /// no score is traced because no query is named.
+    /// no score is traced because no query is named. A hybrid row's
+    /// presence is that of its `candidate`.
     pub fn explain(
         &self,
         generation: GenerationPin,
@@ -104,23 +105,27 @@ impl<'a> SearchNamespace<'a> {
     ) -> Result<SearchPlaneExplainQueryResponse, SdkError> {
         self.explain_request(SearchPlaneExplainQueryRequest {
             generation,
-            candidate,
+            candidate: ExplainCandidateV1::Lexical(candidate),
             text_query: None,
         })
     }
 
     /// Why does `candidate` score what it scores under `text_query`
     /// (QI-BB-022)? The plane lowers the same plan the search ran and
-    /// traces the lexical engine's score for exactly this candidate.
+    /// traces the lexical engine's score for exactly this candidate. Pass a
+    /// [`LexicalCandidate`] as a lexical or semantic page carried it, or a
+    /// [`quanta_index_contract::HybridCandidateV1`] as the hybrid route
+    /// carried it: the plane then also reconciles the row's lane provenance
+    /// and RRF score.
     pub fn explain_under_query(
         &self,
         generation: GenerationPin,
-        candidate: LexicalCandidate,
+        candidate: impl Into<ExplainCandidateV1>,
         text_query: TextQueryRequest,
     ) -> Result<SearchPlaneExplainQueryResponse, SdkError> {
         self.explain_request(SearchPlaneExplainQueryRequest {
             generation,
-            candidate,
+            candidate: candidate.into(),
             text_query: Some(text_query),
         })
     }

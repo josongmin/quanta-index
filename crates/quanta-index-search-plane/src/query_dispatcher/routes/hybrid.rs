@@ -27,7 +27,10 @@ impl SearchPlaneDispatcher {
     /// embedded semantic query over the whole generation under the same
     /// pushed-down constraints. Their union is fused, so a document the
     /// lexical lane never saw can enter the top-k on dense relevance alone —
-    /// this is hybrid recall, not a dense re-rank of lexical recall.
+    /// this is hybrid recall, not a dense re-rank of lexical recall. Every
+    /// fused row carries its RRF score and the rank and raw score each lane
+    /// gave it (QI-BB-022), so a caller can see which lane put it there and
+    /// an explain can reconcile it lane by lane.
     fn execute_hybrid_fusion(
         &self,
         selection: &SemanticSelection,
@@ -96,7 +99,8 @@ impl SearchPlaneDispatcher {
             )
             .collect::<BTreeSet<_>>()
             .len();
-        let fused = HybridOrchestratorPolicy::fuse_rrf(&lex_results, &sem_results, top_k);
+        let fused =
+            HybridOrchestratorPolicy::fuse_rrf_candidates(&lex_results, &sem_results, top_k)?;
         let early_stop_reason = if fused_universe_size > fused.len() {
             Some(EarlyStopReason::CountReached)
         } else {

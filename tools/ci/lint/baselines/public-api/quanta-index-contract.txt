@@ -4707,6 +4707,53 @@ impl core::marker::Unpin for quanta_index_contract::ClusterMembershipReadPolicyE
 impl core::marker::UnsafeUnpin for quanta_index_contract::ClusterMembershipReadPolicyErrorV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ClusterMembershipReadPolicyErrorV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ClusterMembershipReadPolicyErrorV1
+pub enum quanta_index_contract::query::ExplainCandidateV1
+pub quanta_index_contract::query::ExplainCandidateV1::Hybrid(quanta_index_contract::HybridCandidateV1)
+pub quanta_index_contract::query::ExplainCandidateV1::Lexical(quanta_index_contract_base::results::candidates::LexicalCandidate)
+impl quanta_index_contract::ExplainCandidateV1
+pub const fn quanta_index_contract::ExplainCandidateV1::lexical_row(&self) -> &quanta_index_contract_base::results::candidates::LexicalCandidate
+impl core::clone::Clone for quanta_index_contract::ExplainCandidateV1
+pub fn quanta_index_contract::ExplainCandidateV1::clone(&self) -> quanta_index_contract::ExplainCandidateV1
+impl core::cmp::PartialEq for quanta_index_contract::ExplainCandidateV1
+pub fn quanta_index_contract::ExplainCandidateV1::eq(&self, other: &quanta_index_contract::ExplainCandidateV1) -> bool
+impl core::convert::From<quanta_index_contract::HybridCandidateV1> for quanta_index_contract::ExplainCandidateV1
+pub fn quanta_index_contract::ExplainCandidateV1::from(candidate: quanta_index_contract::HybridCandidateV1) -> Self
+impl core::convert::From<quanta_index_contract_base::results::candidates::LexicalCandidate> for quanta_index_contract::ExplainCandidateV1
+pub fn quanta_index_contract::ExplainCandidateV1::from(candidate: quanta_index_contract_base::results::candidates::LexicalCandidate) -> Self
+impl core::fmt::Debug for quanta_index_contract::ExplainCandidateV1
+pub fn quanta_index_contract::ExplainCandidateV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::ExplainCandidateV1
+impl serde_core::ser::Serialize for quanta_index_contract::ExplainCandidateV1
+pub fn quanta_index_contract::ExplainCandidateV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ExplainCandidateV1
+pub fn quanta_index_contract::ExplainCandidateV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ExplainCandidateV1
+impl core::marker::Send for quanta_index_contract::ExplainCandidateV1
+impl core::marker::Sync for quanta_index_contract::ExplainCandidateV1
+impl core::marker::Unpin for quanta_index_contract::ExplainCandidateV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ExplainCandidateV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ExplainCandidateV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ExplainCandidateV1
+pub enum quanta_index_contract::query::ExplainRequestPolicyErrorV1
+pub quanta_index_contract::query::ExplainRequestPolicyErrorV1::HybridCandidateWithoutQuery
+impl core::clone::Clone for quanta_index_contract::ExplainRequestPolicyErrorV1
+pub fn quanta_index_contract::ExplainRequestPolicyErrorV1::clone(&self) -> quanta_index_contract::ExplainRequestPolicyErrorV1
+impl core::cmp::Eq for quanta_index_contract::ExplainRequestPolicyErrorV1
+impl core::cmp::PartialEq for quanta_index_contract::ExplainRequestPolicyErrorV1
+pub fn quanta_index_contract::ExplainRequestPolicyErrorV1::eq(&self, other: &quanta_index_contract::ExplainRequestPolicyErrorV1) -> bool
+impl core::error::Error for quanta_index_contract::ExplainRequestPolicyErrorV1
+impl core::fmt::Debug for quanta_index_contract::ExplainRequestPolicyErrorV1
+pub fn quanta_index_contract::ExplainRequestPolicyErrorV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::ExplainRequestPolicyErrorV1
+pub fn quanta_index_contract::ExplainRequestPolicyErrorV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::ExplainRequestPolicyErrorV1
+impl core::marker::Freeze for quanta_index_contract::ExplainRequestPolicyErrorV1
+impl core::marker::Send for quanta_index_contract::ExplainRequestPolicyErrorV1
+impl core::marker::Sync for quanta_index_contract::ExplainRequestPolicyErrorV1
+impl core::marker::Unpin for quanta_index_contract::ExplainRequestPolicyErrorV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ExplainRequestPolicyErrorV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ExplainRequestPolicyErrorV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ExplainRequestPolicyErrorV1
 pub struct quanta_index_contract::query::ClusterMembershipBatchReadItemV1
 pub quanta_index_contract::query::ClusterMembershipBatchReadItemV1::cluster_record_id: alloc::string::String
 pub quanta_index_contract::query::ClusterMembershipBatchReadItemV1::expected_authority_digest: alloc::string::String
@@ -4899,9 +4946,11 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::RuntimeMetadataQueryRe
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RuntimeMetadataQueryRequest
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RuntimeMetadataQueryRequest
 pub struct quanta_index_contract::query::SearchPlaneExplainQueryRequest
-pub quanta_index_contract::query::SearchPlaneExplainQueryRequest::candidate: quanta_index_contract_base::results::candidates::LexicalCandidate
+pub quanta_index_contract::query::SearchPlaneExplainQueryRequest::candidate: quanta_index_contract::ExplainCandidateV1
 pub quanta_index_contract::query::SearchPlaneExplainQueryRequest::generation: quanta_index_contract_base::query::pin::GenerationPin
 pub quanta_index_contract::query::SearchPlaneExplainQueryRequest::text_query: core::option::Option<quanta_index_contract_base::query::requests::TextQueryRequest>
+impl quanta_index_contract::SearchPlaneExplainQueryRequest
+pub const fn quanta_index_contract::SearchPlaneExplainQueryRequest::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::ExplainRequestPolicyErrorV1>
 impl core::clone::Clone for quanta_index_contract::SearchPlaneExplainQueryRequest
 pub fn quanta_index_contract::SearchPlaneExplainQueryRequest::clone(&self) -> quanta_index_contract::SearchPlaneExplainQueryRequest
 impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneExplainQueryRequest
@@ -5986,6 +6035,66 @@ impl core::marker::Unpin for quanta_index_contract::EngineTouched
 impl core::marker::UnsafeUnpin for quanta_index_contract::EngineTouched
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::EngineTouched
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::EngineTouched
+pub enum quanta_index_contract::results::HybridCandidatePolicyErrorV1
+pub quanta_index_contract::results::HybridCandidatePolicyErrorV1::CandidateScoreIsNotPreferredLaneScore
+pub quanta_index_contract::results::HybridCandidatePolicyErrorV1::CandidateScoreIsNotPreferredLaneScore::raw_score: f32
+pub quanta_index_contract::results::HybridCandidatePolicyErrorV1::CandidateScoreIsNotPreferredLaneScore::score: f32
+pub quanta_index_contract::results::HybridCandidatePolicyErrorV1::ContributionCountOutOfRange
+pub quanta_index_contract::results::HybridCandidatePolicyErrorV1::ContributionCountOutOfRange::count: usize
+pub quanta_index_contract::results::HybridCandidatePolicyErrorV1::ContributionsNotInLaneOrder
+pub quanta_index_contract::results::HybridCandidatePolicyErrorV1::DuplicateCandidateId
+pub quanta_index_contract::results::HybridCandidatePolicyErrorV1::DuplicateCandidateId::candidate_id: alloc::string::String
+pub quanta_index_contract::results::HybridCandidatePolicyErrorV1::FusedScoreNotPositiveFinite
+pub quanta_index_contract::results::HybridCandidatePolicyErrorV1::FusedScoreNotPositiveFinite::fused_score: f64
+pub quanta_index_contract::results::HybridCandidatePolicyErrorV1::RankIsZero
+pub quanta_index_contract::results::HybridCandidatePolicyErrorV1::RankIsZero::lane: quanta_index_contract::HybridLaneV1
+pub quanta_index_contract::results::HybridCandidatePolicyErrorV1::RawScoreNotFinite
+pub quanta_index_contract::results::HybridCandidatePolicyErrorV1::RawScoreNotFinite::lane: quanta_index_contract::HybridLaneV1
+pub quanta_index_contract::results::HybridCandidatePolicyErrorV1::RawScoreNotFinite::raw_score: f32
+pub quanta_index_contract::results::HybridCandidatePolicyErrorV1::ResultsNotInRankingOrder
+pub quanta_index_contract::results::HybridCandidatePolicyErrorV1::ResultsNotInRankingOrder::position: usize
+impl core::clone::Clone for quanta_index_contract::HybridCandidatePolicyErrorV1
+pub fn quanta_index_contract::HybridCandidatePolicyErrorV1::clone(&self) -> quanta_index_contract::HybridCandidatePolicyErrorV1
+impl core::cmp::PartialEq for quanta_index_contract::HybridCandidatePolicyErrorV1
+pub fn quanta_index_contract::HybridCandidatePolicyErrorV1::eq(&self, other: &quanta_index_contract::HybridCandidatePolicyErrorV1) -> bool
+impl core::error::Error for quanta_index_contract::HybridCandidatePolicyErrorV1
+impl core::fmt::Debug for quanta_index_contract::HybridCandidatePolicyErrorV1
+pub fn quanta_index_contract::HybridCandidatePolicyErrorV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::HybridCandidatePolicyErrorV1
+pub fn quanta_index_contract::HybridCandidatePolicyErrorV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::HybridCandidatePolicyErrorV1
+impl core::marker::Freeze for quanta_index_contract::HybridCandidatePolicyErrorV1
+impl core::marker::Send for quanta_index_contract::HybridCandidatePolicyErrorV1
+impl core::marker::Sync for quanta_index_contract::HybridCandidatePolicyErrorV1
+impl core::marker::Unpin for quanta_index_contract::HybridCandidatePolicyErrorV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::HybridCandidatePolicyErrorV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HybridCandidatePolicyErrorV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HybridCandidatePolicyErrorV1
+pub enum quanta_index_contract::results::HybridLaneV1
+pub quanta_index_contract::results::HybridLaneV1::Dense
+pub quanta_index_contract::results::HybridLaneV1::Lexical
+impl quanta_index_contract::HybridLaneV1
+pub const fn quanta_index_contract::HybridLaneV1::as_code_str(self) -> &'static str
+impl core::clone::Clone for quanta_index_contract::HybridLaneV1
+pub fn quanta_index_contract::HybridLaneV1::clone(&self) -> quanta_index_contract::HybridLaneV1
+impl core::cmp::Eq for quanta_index_contract::HybridLaneV1
+impl core::cmp::PartialEq for quanta_index_contract::HybridLaneV1
+pub fn quanta_index_contract::HybridLaneV1::eq(&self, other: &quanta_index_contract::HybridLaneV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::HybridLaneV1
+pub fn quanta_index_contract::HybridLaneV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::HybridLaneV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::HybridLaneV1
+impl serde_core::ser::Serialize for quanta_index_contract::HybridLaneV1
+pub fn quanta_index_contract::HybridLaneV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::HybridLaneV1
+pub fn quanta_index_contract::HybridLaneV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::HybridLaneV1
+impl core::marker::Send for quanta_index_contract::HybridLaneV1
+impl core::marker::Sync for quanta_index_contract::HybridLaneV1
+impl core::marker::Unpin for quanta_index_contract::HybridLaneV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::HybridLaneV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HybridLaneV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HybridLaneV1
 pub enum quanta_index_contract::results::PlannerStage
 pub quanta_index_contract::results::PlannerStage::Bridge
 pub quanta_index_contract::results::PlannerStage::ExecFanout
@@ -6221,10 +6330,60 @@ impl core::marker::Unpin for quanta_index_contract::FileOwnerProjectionRow
 impl core::marker::UnsafeUnpin for quanta_index_contract::FileOwnerProjectionRow
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::FileOwnerProjectionRow
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::FileOwnerProjectionRow
+pub struct quanta_index_contract::results::HybridCandidateV1
+pub quanta_index_contract::results::HybridCandidateV1::candidate: quanta_index_contract_base::results::candidates::LexicalCandidate
+pub quanta_index_contract::results::HybridCandidateV1::contributions: alloc::vec::Vec<quanta_index_contract::HybridLaneContributionV1>
+pub quanta_index_contract::results::HybridCandidateV1::fused_score: f64
+impl quanta_index_contract::HybridCandidateV1
+pub fn quanta_index_contract::HybridCandidateV1::contribution(&self, lane: quanta_index_contract::HybridLaneV1) -> core::option::Option<&quanta_index_contract::HybridLaneContributionV1>
+pub fn quanta_index_contract::HybridCandidateV1::seen_by_lexical_lane(&self) -> bool
+pub fn quanta_index_contract::HybridCandidateV1::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::HybridCandidatePolicyErrorV1>
+impl core::clone::Clone for quanta_index_contract::HybridCandidateV1
+pub fn quanta_index_contract::HybridCandidateV1::clone(&self) -> quanta_index_contract::HybridCandidateV1
+impl core::cmp::PartialEq for quanta_index_contract::HybridCandidateV1
+pub fn quanta_index_contract::HybridCandidateV1::eq(&self, other: &quanta_index_contract::HybridCandidateV1) -> bool
+impl core::convert::From<quanta_index_contract::HybridCandidateV1> for quanta_index_contract::ExplainCandidateV1
+pub fn quanta_index_contract::ExplainCandidateV1::from(candidate: quanta_index_contract::HybridCandidateV1) -> Self
+impl core::fmt::Debug for quanta_index_contract::HybridCandidateV1
+pub fn quanta_index_contract::HybridCandidateV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::HybridCandidateV1
+impl serde_core::ser::Serialize for quanta_index_contract::HybridCandidateV1
+pub fn quanta_index_contract::HybridCandidateV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::HybridCandidateV1
+pub fn quanta_index_contract::HybridCandidateV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::HybridCandidateV1
+impl core::marker::Send for quanta_index_contract::HybridCandidateV1
+impl core::marker::Sync for quanta_index_contract::HybridCandidateV1
+impl core::marker::Unpin for quanta_index_contract::HybridCandidateV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::HybridCandidateV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HybridCandidateV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HybridCandidateV1
+pub struct quanta_index_contract::results::HybridLaneContributionV1
+pub quanta_index_contract::results::HybridLaneContributionV1::lane: quanta_index_contract::HybridLaneV1
+pub quanta_index_contract::results::HybridLaneContributionV1::rank: u32
+pub quanta_index_contract::results::HybridLaneContributionV1::raw_score: f32
+impl core::clone::Clone for quanta_index_contract::HybridLaneContributionV1
+pub fn quanta_index_contract::HybridLaneContributionV1::clone(&self) -> quanta_index_contract::HybridLaneContributionV1
+impl core::cmp::PartialEq for quanta_index_contract::HybridLaneContributionV1
+pub fn quanta_index_contract::HybridLaneContributionV1::eq(&self, other: &quanta_index_contract::HybridLaneContributionV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::HybridLaneContributionV1
+pub fn quanta_index_contract::HybridLaneContributionV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::HybridLaneContributionV1
+impl serde_core::ser::Serialize for quanta_index_contract::HybridLaneContributionV1
+pub fn quanta_index_contract::HybridLaneContributionV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::HybridLaneContributionV1
+pub fn quanta_index_contract::HybridLaneContributionV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::HybridLaneContributionV1
+impl core::marker::Send for quanta_index_contract::HybridLaneContributionV1
+impl core::marker::Sync for quanta_index_contract::HybridLaneContributionV1
+impl core::marker::Unpin for quanta_index_contract::HybridLaneContributionV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::HybridLaneContributionV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HybridLaneContributionV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HybridLaneContributionV1
 pub struct quanta_index_contract::results::HybridQueryResponse
 pub quanta_index_contract::results::HybridQueryResponse::explanation: quanta_index_contract::SearchExplanation
 pub quanta_index_contract::results::HybridQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
-pub quanta_index_contract::results::HybridQueryResponse::results: alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>
+pub quanta_index_contract::results::HybridQueryResponse::results: alloc::vec::Vec<quanta_index_contract::HybridCandidateV1>
 pub quanta_index_contract::results::HybridQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV1
 impl core::clone::Clone for quanta_index_contract::HybridQueryResponse
 pub fn quanta_index_contract::HybridQueryResponse::clone(&self) -> quanta_index_contract::HybridQueryResponse
@@ -6639,6 +6798,7 @@ impl core::marker::Unpin for quanta_index_contract::WeightsHashError
 impl core::marker::UnsafeUnpin for quanta_index_contract::WeightsHashError
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::WeightsHashError
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::WeightsHashError
+pub fn quanta_index_contract::results::validate_hybrid_results_v1(results: &[quanta_index_contract::HybridCandidateV1]) -> core::result::Result<(), quanta_index_contract::HybridCandidatePolicyErrorV1>
 pub enum quanta_index_contract::BatchIngestMode
 pub quanta_index_contract::BatchIngestMode::Delta
 pub quanta_index_contract::BatchIngestMode::ReplaceGeneration
@@ -6963,6 +7123,53 @@ impl core::marker::Unpin for quanta_index_contract::EngineTouched
 impl core::marker::UnsafeUnpin for quanta_index_contract::EngineTouched
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::EngineTouched
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::EngineTouched
+pub enum quanta_index_contract::ExplainCandidateV1
+pub quanta_index_contract::ExplainCandidateV1::Hybrid(quanta_index_contract::HybridCandidateV1)
+pub quanta_index_contract::ExplainCandidateV1::Lexical(quanta_index_contract_base::results::candidates::LexicalCandidate)
+impl quanta_index_contract::ExplainCandidateV1
+pub const fn quanta_index_contract::ExplainCandidateV1::lexical_row(&self) -> &quanta_index_contract_base::results::candidates::LexicalCandidate
+impl core::clone::Clone for quanta_index_contract::ExplainCandidateV1
+pub fn quanta_index_contract::ExplainCandidateV1::clone(&self) -> quanta_index_contract::ExplainCandidateV1
+impl core::cmp::PartialEq for quanta_index_contract::ExplainCandidateV1
+pub fn quanta_index_contract::ExplainCandidateV1::eq(&self, other: &quanta_index_contract::ExplainCandidateV1) -> bool
+impl core::convert::From<quanta_index_contract::HybridCandidateV1> for quanta_index_contract::ExplainCandidateV1
+pub fn quanta_index_contract::ExplainCandidateV1::from(candidate: quanta_index_contract::HybridCandidateV1) -> Self
+impl core::convert::From<quanta_index_contract_base::results::candidates::LexicalCandidate> for quanta_index_contract::ExplainCandidateV1
+pub fn quanta_index_contract::ExplainCandidateV1::from(candidate: quanta_index_contract_base::results::candidates::LexicalCandidate) -> Self
+impl core::fmt::Debug for quanta_index_contract::ExplainCandidateV1
+pub fn quanta_index_contract::ExplainCandidateV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::ExplainCandidateV1
+impl serde_core::ser::Serialize for quanta_index_contract::ExplainCandidateV1
+pub fn quanta_index_contract::ExplainCandidateV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ExplainCandidateV1
+pub fn quanta_index_contract::ExplainCandidateV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ExplainCandidateV1
+impl core::marker::Send for quanta_index_contract::ExplainCandidateV1
+impl core::marker::Sync for quanta_index_contract::ExplainCandidateV1
+impl core::marker::Unpin for quanta_index_contract::ExplainCandidateV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ExplainCandidateV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ExplainCandidateV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ExplainCandidateV1
+pub enum quanta_index_contract::ExplainRequestPolicyErrorV1
+pub quanta_index_contract::ExplainRequestPolicyErrorV1::HybridCandidateWithoutQuery
+impl core::clone::Clone for quanta_index_contract::ExplainRequestPolicyErrorV1
+pub fn quanta_index_contract::ExplainRequestPolicyErrorV1::clone(&self) -> quanta_index_contract::ExplainRequestPolicyErrorV1
+impl core::cmp::Eq for quanta_index_contract::ExplainRequestPolicyErrorV1
+impl core::cmp::PartialEq for quanta_index_contract::ExplainRequestPolicyErrorV1
+pub fn quanta_index_contract::ExplainRequestPolicyErrorV1::eq(&self, other: &quanta_index_contract::ExplainRequestPolicyErrorV1) -> bool
+impl core::error::Error for quanta_index_contract::ExplainRequestPolicyErrorV1
+impl core::fmt::Debug for quanta_index_contract::ExplainRequestPolicyErrorV1
+pub fn quanta_index_contract::ExplainRequestPolicyErrorV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::ExplainRequestPolicyErrorV1
+pub fn quanta_index_contract::ExplainRequestPolicyErrorV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::ExplainRequestPolicyErrorV1
+impl core::marker::Freeze for quanta_index_contract::ExplainRequestPolicyErrorV1
+impl core::marker::Send for quanta_index_contract::ExplainRequestPolicyErrorV1
+impl core::marker::Sync for quanta_index_contract::ExplainRequestPolicyErrorV1
+impl core::marker::Unpin for quanta_index_contract::ExplainRequestPolicyErrorV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ExplainRequestPolicyErrorV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ExplainRequestPolicyErrorV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ExplainRequestPolicyErrorV1
 pub enum quanta_index_contract::HistoryRefMutation
 pub quanta_index_contract::HistoryRefMutation::Delete(quanta_index_contract::HistoryRefDelete)
 pub quanta_index_contract::HistoryRefMutation::Upsert(quanta_index_contract::HistoryRefUpsert)
@@ -6985,6 +7192,66 @@ impl core::marker::Unpin for quanta_index_contract::HistoryRefMutation
 impl core::marker::UnsafeUnpin for quanta_index_contract::HistoryRefMutation
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HistoryRefMutation
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HistoryRefMutation
+pub enum quanta_index_contract::HybridCandidatePolicyErrorV1
+pub quanta_index_contract::HybridCandidatePolicyErrorV1::CandidateScoreIsNotPreferredLaneScore
+pub quanta_index_contract::HybridCandidatePolicyErrorV1::CandidateScoreIsNotPreferredLaneScore::raw_score: f32
+pub quanta_index_contract::HybridCandidatePolicyErrorV1::CandidateScoreIsNotPreferredLaneScore::score: f32
+pub quanta_index_contract::HybridCandidatePolicyErrorV1::ContributionCountOutOfRange
+pub quanta_index_contract::HybridCandidatePolicyErrorV1::ContributionCountOutOfRange::count: usize
+pub quanta_index_contract::HybridCandidatePolicyErrorV1::ContributionsNotInLaneOrder
+pub quanta_index_contract::HybridCandidatePolicyErrorV1::DuplicateCandidateId
+pub quanta_index_contract::HybridCandidatePolicyErrorV1::DuplicateCandidateId::candidate_id: alloc::string::String
+pub quanta_index_contract::HybridCandidatePolicyErrorV1::FusedScoreNotPositiveFinite
+pub quanta_index_contract::HybridCandidatePolicyErrorV1::FusedScoreNotPositiveFinite::fused_score: f64
+pub quanta_index_contract::HybridCandidatePolicyErrorV1::RankIsZero
+pub quanta_index_contract::HybridCandidatePolicyErrorV1::RankIsZero::lane: quanta_index_contract::HybridLaneV1
+pub quanta_index_contract::HybridCandidatePolicyErrorV1::RawScoreNotFinite
+pub quanta_index_contract::HybridCandidatePolicyErrorV1::RawScoreNotFinite::lane: quanta_index_contract::HybridLaneV1
+pub quanta_index_contract::HybridCandidatePolicyErrorV1::RawScoreNotFinite::raw_score: f32
+pub quanta_index_contract::HybridCandidatePolicyErrorV1::ResultsNotInRankingOrder
+pub quanta_index_contract::HybridCandidatePolicyErrorV1::ResultsNotInRankingOrder::position: usize
+impl core::clone::Clone for quanta_index_contract::HybridCandidatePolicyErrorV1
+pub fn quanta_index_contract::HybridCandidatePolicyErrorV1::clone(&self) -> quanta_index_contract::HybridCandidatePolicyErrorV1
+impl core::cmp::PartialEq for quanta_index_contract::HybridCandidatePolicyErrorV1
+pub fn quanta_index_contract::HybridCandidatePolicyErrorV1::eq(&self, other: &quanta_index_contract::HybridCandidatePolicyErrorV1) -> bool
+impl core::error::Error for quanta_index_contract::HybridCandidatePolicyErrorV1
+impl core::fmt::Debug for quanta_index_contract::HybridCandidatePolicyErrorV1
+pub fn quanta_index_contract::HybridCandidatePolicyErrorV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::HybridCandidatePolicyErrorV1
+pub fn quanta_index_contract::HybridCandidatePolicyErrorV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::HybridCandidatePolicyErrorV1
+impl core::marker::Freeze for quanta_index_contract::HybridCandidatePolicyErrorV1
+impl core::marker::Send for quanta_index_contract::HybridCandidatePolicyErrorV1
+impl core::marker::Sync for quanta_index_contract::HybridCandidatePolicyErrorV1
+impl core::marker::Unpin for quanta_index_contract::HybridCandidatePolicyErrorV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::HybridCandidatePolicyErrorV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HybridCandidatePolicyErrorV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HybridCandidatePolicyErrorV1
+pub enum quanta_index_contract::HybridLaneV1
+pub quanta_index_contract::HybridLaneV1::Dense
+pub quanta_index_contract::HybridLaneV1::Lexical
+impl quanta_index_contract::HybridLaneV1
+pub const fn quanta_index_contract::HybridLaneV1::as_code_str(self) -> &'static str
+impl core::clone::Clone for quanta_index_contract::HybridLaneV1
+pub fn quanta_index_contract::HybridLaneV1::clone(&self) -> quanta_index_contract::HybridLaneV1
+impl core::cmp::Eq for quanta_index_contract::HybridLaneV1
+impl core::cmp::PartialEq for quanta_index_contract::HybridLaneV1
+pub fn quanta_index_contract::HybridLaneV1::eq(&self, other: &quanta_index_contract::HybridLaneV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::HybridLaneV1
+pub fn quanta_index_contract::HybridLaneV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::HybridLaneV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::HybridLaneV1
+impl serde_core::ser::Serialize for quanta_index_contract::HybridLaneV1
+pub fn quanta_index_contract::HybridLaneV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::HybridLaneV1
+pub fn quanta_index_contract::HybridLaneV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::HybridLaneV1
+impl core::marker::Send for quanta_index_contract::HybridLaneV1
+impl core::marker::Sync for quanta_index_contract::HybridLaneV1
+impl core::marker::Unpin for quanta_index_contract::HybridLaneV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::HybridLaneV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HybridLaneV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HybridLaneV1
 pub enum quanta_index_contract::OwnerDocKind
 pub quanta_index_contract::OwnerDocKind::Callsite
 pub quanta_index_contract::OwnerDocKind::Chunk
@@ -9022,6 +9289,56 @@ impl core::marker::Unpin for quanta_index_contract::HistoryRefUpsert
 impl core::marker::UnsafeUnpin for quanta_index_contract::HistoryRefUpsert
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HistoryRefUpsert
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HistoryRefUpsert
+pub struct quanta_index_contract::HybridCandidateV1
+pub quanta_index_contract::HybridCandidateV1::candidate: quanta_index_contract_base::results::candidates::LexicalCandidate
+pub quanta_index_contract::HybridCandidateV1::contributions: alloc::vec::Vec<quanta_index_contract::HybridLaneContributionV1>
+pub quanta_index_contract::HybridCandidateV1::fused_score: f64
+impl quanta_index_contract::HybridCandidateV1
+pub fn quanta_index_contract::HybridCandidateV1::contribution(&self, lane: quanta_index_contract::HybridLaneV1) -> core::option::Option<&quanta_index_contract::HybridLaneContributionV1>
+pub fn quanta_index_contract::HybridCandidateV1::seen_by_lexical_lane(&self) -> bool
+pub fn quanta_index_contract::HybridCandidateV1::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::HybridCandidatePolicyErrorV1>
+impl core::clone::Clone for quanta_index_contract::HybridCandidateV1
+pub fn quanta_index_contract::HybridCandidateV1::clone(&self) -> quanta_index_contract::HybridCandidateV1
+impl core::cmp::PartialEq for quanta_index_contract::HybridCandidateV1
+pub fn quanta_index_contract::HybridCandidateV1::eq(&self, other: &quanta_index_contract::HybridCandidateV1) -> bool
+impl core::convert::From<quanta_index_contract::HybridCandidateV1> for quanta_index_contract::ExplainCandidateV1
+pub fn quanta_index_contract::ExplainCandidateV1::from(candidate: quanta_index_contract::HybridCandidateV1) -> Self
+impl core::fmt::Debug for quanta_index_contract::HybridCandidateV1
+pub fn quanta_index_contract::HybridCandidateV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::HybridCandidateV1
+impl serde_core::ser::Serialize for quanta_index_contract::HybridCandidateV1
+pub fn quanta_index_contract::HybridCandidateV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::HybridCandidateV1
+pub fn quanta_index_contract::HybridCandidateV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::HybridCandidateV1
+impl core::marker::Send for quanta_index_contract::HybridCandidateV1
+impl core::marker::Sync for quanta_index_contract::HybridCandidateV1
+impl core::marker::Unpin for quanta_index_contract::HybridCandidateV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::HybridCandidateV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HybridCandidateV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HybridCandidateV1
+pub struct quanta_index_contract::HybridLaneContributionV1
+pub quanta_index_contract::HybridLaneContributionV1::lane: quanta_index_contract::HybridLaneV1
+pub quanta_index_contract::HybridLaneContributionV1::rank: u32
+pub quanta_index_contract::HybridLaneContributionV1::raw_score: f32
+impl core::clone::Clone for quanta_index_contract::HybridLaneContributionV1
+pub fn quanta_index_contract::HybridLaneContributionV1::clone(&self) -> quanta_index_contract::HybridLaneContributionV1
+impl core::cmp::PartialEq for quanta_index_contract::HybridLaneContributionV1
+pub fn quanta_index_contract::HybridLaneContributionV1::eq(&self, other: &quanta_index_contract::HybridLaneContributionV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::HybridLaneContributionV1
+pub fn quanta_index_contract::HybridLaneContributionV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::HybridLaneContributionV1
+impl serde_core::ser::Serialize for quanta_index_contract::HybridLaneContributionV1
+pub fn quanta_index_contract::HybridLaneContributionV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::HybridLaneContributionV1
+pub fn quanta_index_contract::HybridLaneContributionV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::HybridLaneContributionV1
+impl core::marker::Send for quanta_index_contract::HybridLaneContributionV1
+impl core::marker::Sync for quanta_index_contract::HybridLaneContributionV1
+impl core::marker::Unpin for quanta_index_contract::HybridLaneContributionV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::HybridLaneContributionV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HybridLaneContributionV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HybridLaneContributionV1
 pub struct quanta_index_contract::HybridQueryRequest
 pub quanta_index_contract::HybridQueryRequest::generation: core::option::Option<quanta_index_contract_base::query::pin::GenerationPin>
 pub quanta_index_contract::HybridQueryRequest::generation_selector: core::option::Option<quanta_index_contract_base::query::pin::GenerationSelector>
@@ -9049,7 +9366,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HybridQuery
 pub struct quanta_index_contract::HybridQueryResponse
 pub quanta_index_contract::HybridQueryResponse::explanation: quanta_index_contract::SearchExplanation
 pub quanta_index_contract::HybridQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
-pub quanta_index_contract::HybridQueryResponse::results: alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>
+pub quanta_index_contract::HybridQueryResponse::results: alloc::vec::Vec<quanta_index_contract::HybridCandidateV1>
 pub quanta_index_contract::HybridQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV1
 impl core::clone::Clone for quanta_index_contract::HybridQueryResponse
 pub fn quanta_index_contract::HybridQueryResponse::clone(&self) -> quanta_index_contract::HybridQueryResponse
@@ -10596,9 +10913,11 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneControlIpcR
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneControlIpcResponseEnvelope
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneControlIpcResponseEnvelope
 pub struct quanta_index_contract::SearchPlaneExplainQueryRequest
-pub quanta_index_contract::SearchPlaneExplainQueryRequest::candidate: quanta_index_contract_base::results::candidates::LexicalCandidate
+pub quanta_index_contract::SearchPlaneExplainQueryRequest::candidate: quanta_index_contract::ExplainCandidateV1
 pub quanta_index_contract::SearchPlaneExplainQueryRequest::generation: quanta_index_contract_base::query::pin::GenerationPin
 pub quanta_index_contract::SearchPlaneExplainQueryRequest::text_query: core::option::Option<quanta_index_contract_base::query::requests::TextQueryRequest>
+impl quanta_index_contract::SearchPlaneExplainQueryRequest
+pub const fn quanta_index_contract::SearchPlaneExplainQueryRequest::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::ExplainRequestPolicyErrorV1>
 impl core::clone::Clone for quanta_index_contract::SearchPlaneExplainQueryRequest
 pub fn quanta_index_contract::SearchPlaneExplainQueryRequest::clone(&self) -> quanta_index_contract::SearchPlaneExplainQueryRequest
 impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneExplainQueryRequest
@@ -11763,6 +12082,7 @@ pub const quanta_index_contract::MAX_CLUSTER_MEMBERSHIP_BATCH_ITEMS_V1: usize
 pub const quanta_index_contract::MAX_CLUSTER_MEMBERSHIP_READ_V1: u32
 pub fn quanta_index_contract::cluster_membership_content_digest_v1(members: &[quanta_index_contract::SymbolId]) -> alloc::string::String
 pub fn quanta_index_contract::is_metric_name_v1(name: &str) -> bool
+pub fn quanta_index_contract::validate_hybrid_results_v1(results: &[quanta_index_contract::HybridCandidateV1]) -> core::result::Result<(), quanta_index_contract::HybridCandidatePolicyErrorV1>
 pub fn quanta_index_contract::validate_semantic_source_record_v1(record: &quanta_index_contract::SemanticSourceRecordV1) -> core::result::Result<(), &'static str>
 pub type quanta_index_contract::HistoryTagDelete = quanta_index_contract::HistoryRefDelete
 pub type quanta_index_contract::HistoryTagMutation = quanta_index_contract::HistoryRefMutation

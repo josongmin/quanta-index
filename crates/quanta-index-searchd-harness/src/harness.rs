@@ -27,18 +27,18 @@ use quanta_index_contract::lex::{
 };
 use quanta_index_contract::{
     BatchIngestMode, BatchPublishReceipt, CapabilityStatusV1, ChunkId, ChunkRecord,
-    CurrentGenerationRequest, EngineTouched, FileOwnerProjectionRow, GenerationPin,
-    GenerationSnapshot, HistoryCursor, HistoryQueryRequest, HybridQueryRequest, LexicalCandidate,
-    ManifestGeneration, MetricsSnapshotRequest, MetricsSnapshotV1, OwnerDocKind,
-    QuarantineDiscardAck, QuarantineDiscardRequest, QuarantineInventoryRequest,
-    QuarantineInventoryV1, QuarantineTargetV1, QueryResultWindowV1, RawFallbackReasonV1, RepoId,
-    RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1,
-    SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
-    SearchExplanation, SearchPlaneActivateSearchCorpusGenerationCasRequest,
-    SearchPlaneControlIpcRequest, SearchPlaneControlIpcRequestEnvelope,
-    SearchPlaneControlIpcResponse, SearchPlaneControlIpcResponseEnvelope,
-    SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    CurrentGenerationRequest, EngineTouched, ExplainCandidateV1, FileOwnerProjectionRow,
+    GenerationPin, GenerationSnapshot, HistoryCursor, HistoryQueryRequest, HybridCandidateV1,
+    HybridQueryRequest, LexicalCandidate, ManifestGeneration, MetricsSnapshotRequest,
+    MetricsSnapshotV1, OwnerDocKind, QuarantineDiscardAck, QuarantineDiscardRequest,
+    QuarantineInventoryRequest, QuarantineInventoryV1, QuarantineTargetV1, QueryResultWindowV1,
+    RawFallbackReasonV1, RepoId, RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest,
+    SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
+    SearchCorpusTombstoneScope, SearchExplanation,
+    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
+    SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
+    SearchPlaneControlIpcResponseEnvelope, SearchPlaneExplainQueryRequest,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind, SemanticCorpusKindV1,
@@ -182,12 +182,15 @@ struct DriverState {
 /// Carries either the candidate list or a typed error code.
 /// `engines_touched` is best-effort; the `Text` response variant has no
 /// explanation today so this stays empty for plain text queries. Semantic and
-/// hybrid rows populate it in later E2E tickets.
+/// hybrid rows populate it in later E2E tickets. A hybrid query fills
+/// `hybrid_candidates` with the fused rows as the wire carried them, and
+/// `candidates` with each row's lane candidate, in the same order.
 pub struct E2eQueryResult {
     pub candidates: Vec<LexicalCandidate>,
     pub candidate_ids: Vec<String>,
     pub file_owner_rows: Vec<FileOwnerProjectionRow>,
     pub structural_results: Vec<StructuralCandidate>,
+    pub hybrid_candidates: Vec<HybridCandidateV1>,
     pub engines_touched: Vec<EngineTouched>,
     pub explanation: Option<SearchExplanation>,
     pub typed_error: Option<E2eTypedError>,
@@ -1713,6 +1716,7 @@ impl E2eRuntime {
                     candidate_ids: Vec::new(),
                     file_owner_rows: Vec::new(),
                     structural_results: Vec::new(),
+                    hybrid_candidates: Vec::new(),
                     engines_touched: Vec::new(),
                     explanation: None,
                     typed_error: Some(E2eTypedError {
@@ -1738,6 +1742,7 @@ impl E2eRuntime {
                 candidates: runtime.results,
                 file_owner_rows: Vec::new(),
                 structural_results: Vec::new(),
+                hybrid_candidates: Vec::new(),
                 engines_touched: Vec::new(),
                 explanation: None,
                 typed_error: None,
@@ -1747,6 +1752,7 @@ impl E2eRuntime {
                 candidate_ids: Vec::new(),
                 file_owner_rows: Vec::new(),
                 structural_results: Vec::new(),
+                hybrid_candidates: Vec::new(),
                 engines_touched: Vec::new(),
                 explanation: None,
                 typed_error: Some(E2eTypedError {
@@ -1798,6 +1804,7 @@ impl E2eRuntime {
                     candidate_ids: Vec::new(),
                     file_owner_rows: Vec::new(),
                     structural_results: Vec::new(),
+                    hybrid_candidates: Vec::new(),
                     engines_touched: Vec::new(),
                     explanation: None,
                     typed_error: Some(E2eTypedError {
@@ -1831,6 +1838,7 @@ impl E2eRuntime {
                 file_owner_rows: text.file_owner_rows.unwrap_or_default(),
                 candidates: text.results,
                 structural_results: Vec::new(),
+                hybrid_candidates: Vec::new(),
                 engines_touched: Vec::new(),
                 explanation: None,
                 typed_error: None,
@@ -1840,6 +1848,7 @@ impl E2eRuntime {
                 candidate_ids: Vec::new(),
                 file_owner_rows: Vec::new(),
                 structural_results: Vec::new(),
+                hybrid_candidates: Vec::new(),
                 engines_touched: Vec::new(),
                 explanation: None,
                 typed_error: Some(E2eTypedError {
@@ -1893,6 +1902,7 @@ impl E2eRuntime {
                     candidate_ids: Vec::new(),
                     file_owner_rows: Vec::new(),
                     structural_results: Vec::new(),
+                    hybrid_candidates: Vec::new(),
                     engines_touched: Vec::new(),
                     explanation: None,
                     typed_error: Some(E2eTypedError {
@@ -1922,6 +1932,7 @@ impl E2eRuntime {
                     candidates: Vec::new(),
                     file_owner_rows: Vec::new(),
                     structural_results: results,
+                    hybrid_candidates: Vec::new(),
                     engines_touched: Vec::new(),
                     explanation: None,
                     typed_error: None,
@@ -1932,6 +1943,7 @@ impl E2eRuntime {
                 candidate_ids: Vec::new(),
                 file_owner_rows: Vec::new(),
                 structural_results: Vec::new(),
+                hybrid_candidates: Vec::new(),
                 engines_touched: Vec::new(),
                 explanation: None,
                 typed_error: Some(E2eTypedError {
@@ -1991,6 +2003,7 @@ impl E2eRuntime {
                     candidate_ids: Vec::new(),
                     file_owner_rows: Vec::new(),
                     structural_results: Vec::new(),
+                    hybrid_candidates: Vec::new(),
                     engines_touched: Vec::new(),
                     explanation: None,
                     typed_error: Some(E2eTypedError {
@@ -2016,6 +2029,7 @@ impl E2eRuntime {
                 candidates: semantic.results,
                 file_owner_rows: Vec::new(),
                 structural_results: Vec::new(),
+                hybrid_candidates: Vec::new(),
                 engines_touched: semantic.explanation.engines_touched.clone(),
                 explanation: Some(semantic.explanation),
                 typed_error: None,
@@ -2025,6 +2039,7 @@ impl E2eRuntime {
                 candidate_ids: Vec::new(),
                 file_owner_rows: Vec::new(),
                 structural_results: Vec::new(),
+                hybrid_candidates: Vec::new(),
                 engines_touched: Vec::new(),
                 explanation: None,
                 typed_error: Some(E2eTypedError {
@@ -2083,6 +2098,7 @@ impl E2eRuntime {
                     candidate_ids: Vec::new(),
                     file_owner_rows: Vec::new(),
                     structural_results: Vec::new(),
+                    hybrid_candidates: Vec::new(),
                     engines_touched: Vec::new(),
                     explanation: None,
                     typed_error: Some(E2eTypedError {
@@ -2103,11 +2119,16 @@ impl E2eRuntime {
                 candidate_ids: hybrid
                     .results
                     .iter()
-                    .map(|c| c.candidate_id.clone())
+                    .map(|row| row.candidate.candidate_id.clone())
                     .collect(),
-                candidates: hybrid.results,
+                candidates: hybrid
+                    .results
+                    .iter()
+                    .map(|row| row.candidate.clone())
+                    .collect(),
                 file_owner_rows: Vec::new(),
                 structural_results: Vec::new(),
+                hybrid_candidates: hybrid.results,
                 engines_touched: hybrid.explanation.engines_touched.clone(),
                 explanation: Some(hybrid.explanation),
                 typed_error: None,
@@ -2117,6 +2138,7 @@ impl E2eRuntime {
                 candidate_ids: Vec::new(),
                 file_owner_rows: Vec::new(),
                 structural_results: Vec::new(),
+                hybrid_candidates: Vec::new(),
                 engines_touched: Vec::new(),
                 explanation: None,
                 typed_error: Some(E2eTypedError {
@@ -2239,6 +2261,7 @@ impl E2eRuntime {
             candidate_ids: Vec::new(),
             file_owner_rows: Vec::new(),
             structural_results: Vec::new(),
+            hybrid_candidates: Vec::new(),
             engines_touched: Vec::new(),
             explanation: None,
             typed_error: Some(E2eTypedError {
@@ -2250,14 +2273,15 @@ impl E2eRuntime {
 
     /// Presence-only explain: is the candidate in its generation's index?
     pub fn explain_candidate(&mut self, candidate: LexicalCandidate) -> E2eExplainResult {
-        self.explain_candidate_request(candidate, None)
+        self.explain_candidate_request(ExplainCandidateV1::Lexical(candidate), None)
     }
 
     /// Scored explain (QI-BB-022): the candidate's score under the named
-    /// query, traced through the plan that ranked it.
+    /// query, traced through the plan that ranked it. A hybrid row
+    /// (`HybridCandidateV1`) is reconciled against its lane provenance too.
     pub fn explain_candidate_under_query(
         &mut self,
-        candidate: LexicalCandidate,
+        candidate: impl Into<ExplainCandidateV1>,
         syntax: TextQuerySyntax,
         query_text: &str,
     ) -> E2eExplainResult {
@@ -2269,19 +2293,20 @@ impl E2eRuntime {
             generation_selector: None,
             top_k: 1,
         };
-        self.explain_candidate_request(candidate, Some(text_query))
+        self.explain_candidate_request(candidate.into(), Some(text_query))
     }
 
     fn explain_candidate_request(
         &mut self,
-        candidate: LexicalCandidate,
+        candidate: ExplainCandidateV1,
         text_query: Option<TextQueryRequest>,
     ) -> E2eExplainResult {
         let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
+        let row = candidate.lexical_row();
         let pin = GenerationPin::new(
-            candidate.repo_id.clone(),
-            candidate.revision_id.clone(),
-            candidate.manifest_generation,
+            row.repo_id.clone(),
+            row.revision_id.clone(),
+            row.manifest_generation,
         );
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
             request_id,
@@ -2801,6 +2826,7 @@ fn unexpected_response(kind: &str) -> E2eQueryResult {
         candidate_ids: Vec::new(),
         file_owner_rows: Vec::new(),
         structural_results: Vec::new(),
+        hybrid_candidates: Vec::new(),
         engines_touched: Vec::new(),
         explanation: None,
         typed_error: Some(E2eTypedError {

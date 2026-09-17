@@ -13,7 +13,8 @@
 use std::error::Error;
 
 use quanta_index_contract::{
-    CandidatePresenceV1, LexicalCandidate, PlannerStage, SearchExplanation, TextQuerySyntax,
+    CandidatePresenceV1, HybridLaneV1, LexicalCandidate, PlannerStage, SearchExplanation,
+    TextQuerySyntax,
 };
 use quanta_index_searchd_harness as e2e_harness;
 
@@ -244,6 +245,132 @@ fn presence_is_a_typed_exact_lookup_and_a_non_match_is_not_absence() -> TestResu
         || !explanation.contributions.is_empty()
     {
         return Err(format!("an indexed non-match: {explanation:?}").into());
+    }
+    Ok(())
+}
+
+/// QI-BB-022: a hybrid row explains under its query lane by lane.
+///
+/// The lexical lane traced under the plan is the carried lexical raw score
+/// (`score_reconciled`), the dense lane is reported as carried, and the RRF
+/// of the carried ranks — recomputed here under k = 60 as the independent
+/// oracle — is the carried `fused_score` (`fused_reconciled`).
+#[test]
+fn a_hybrid_both_lane_candidate_explains_to_reconciled_lane_provenance() -> TestResult {
+    let mut rt = E2eRuntime::boot()?;
+    ingest_fixture(&mut rt)?;
+    // The same text drives both lanes, so the needle documents are seen by
+    // both: the lexical lane by term, the dense lane by the hashed vector.
+    let hybrid = rt.query_hybrid(TextQuerySyntax::Sourcegraph, PLAIN_QUERY, PLAIN_QUERY, 10);
+    if let Some(error) = hybrid.typed_error {
+        return Err(format!("hybrid query refused: {error}").into());
+    }
+    let Some(row) = hybrid
+        .hybrid_candidates
+        .iter()
+        .find(|row| {
+            row.contribution(HybridLaneV1::Lexical).is_some()
+                && row.contribution(HybridLaneV1::Dense).is_some()
+        })
+        .cloned()
+    else {
+        return Err(format!("a row both lanes saw: {:?}", hybrid.hybrid_candidates).into());
+    };
+    let Some(lexical) = row.contribution(HybridLaneV1::Lexical).cloned() else {
+        return Err("the lexical contribution".into());
+    };
+    let Some(dense) = row.contribution(HybridLaneV1::Dense).cloned() else {
+        return Err("the dense contribution".into());
+    };
+    let expected_fused: f64 = row
+        .contributions
+        .iter()
+        .map(|contribution| 1.0 / (60.0 + f64::from(contribution.rank)))
+        .sum();
+    if row.fused_score.to_bits() != expected_fused.to_bits()
+        || row.candidate.score.to_bits() != lexical.raw_score.to_bits()
+    {
+        return Err(format!("the row carries its own provenance: {row:?}").into());
+    }
+    // The lexical page under the same query scores the row exactly as the
+    // lexical lane did — the raw score is a real lane score.
+    let page = page(&mut rt, PLAIN_QUERY)?;
+    let Some(page_row) = page
+        .iter()
+        .find(|candidate| candidate.candidate_id == row.candidate.candidate_id)
+    else {
+        return Err("the lexical page carries the row".into());
+    };
+    if (page_row.score - lexical.raw_score).abs() > SCORE_TOLERANCE {
+        return Err(format!(
+            "the lexical raw score {} is the page score {}",
+            lexical.raw_score, page_row.score
+        )
+        .into());
+    }
+    let explain =
+        rt.explain_candidate_under_query(row.clone(), TextQuerySyntax::Sourcegraph, PLAIN_QUERY);
+    if let Some(error) = explain.typed_error {
+        return Err(format!("hybrid explain refused: {error}").into());
+    }
+    let (Some(presence), Some(explanation)) = (explain.presence, explain.explanation) else {
+        return Err("a served explain carries presence and an explanation".into());
+    };
+    if presence != CandidatePresenceV1::Indexed
+        || explanation.strategy != "hybrid_score_trace"
+        || !trace_says(&explanation, "explain.candidate_matched=true")
+        || !trace_says(&explanation, "explain.score_reconciled=true")
+        || !trace_says(&explanation, "explain.fused_reconciled=true")
+        || !trace_says(
+            &explanation,
+            &format!(
+                "explain.rrf_k=60; ranks=lexical#{},dense#{}",
+                lexical.rank, dense.rank
+            ),
+        )
+    {
+        return Err(format!("hybrid explain must reconcile both axes: {explanation:?}").into());
+    }
+    let names = explanation
+        .contributions
+        .iter()
+        .map(|entry| entry.signal_name.as_ref())
+        .collect::<Vec<_>>();
+    if names != ["lexical.bm25", "dense.cosine", "hybrid.rrf"] {
+        return Err(format!("one row per lane plus the fused row: {names:?}").into());
+    }
+    let [lexical_row, dense_row, fused_row] = explanation.contributions.as_slice() else {
+        return Err("three rows".into());
+    };
+    if (lexical_row.contribution - lexical.raw_score).abs() > SCORE_TOLERANCE
+        || dense_row.contribution.to_bits() != dense.raw_score.to_bits()
+        || (f64::from(fused_row.contribution) - expected_fused).abs() > 1e-8
+    {
+        return Err(format!(
+            "the rows carry the lane scores: {:?}",
+            explanation.contributions
+        )
+        .into());
+    }
+    // The explain is honest about a row whose provenance was not this
+    // plan's: the same row carried with a stale lexical raw score is not
+    // reconciled on the lexical axis, while its RRF arithmetic still is.
+    let mut stale = row;
+    stale.candidate.score += 1.0;
+    for contribution in &mut stale.contributions {
+        if contribution.lane == HybridLaneV1::Lexical {
+            contribution.raw_score += 1.0;
+        }
+    }
+    let explain =
+        rt.explain_candidate_under_query(stale, TextQuerySyntax::Sourcegraph, PLAIN_QUERY);
+    let Some(explanation) = explain.explanation else {
+        return Err(format!("stale explain: {:?}", explain.typed_error).into());
+    };
+    if !trace_says(&explanation, "explain.score_reconciled=false")
+        || !trace_says(&explanation, "explain.fused_reconciled=true")
+    {
+        return Err(format!("a stale lexical lane must say so: {explanation:?}").into());
     }
     Ok(())
 }

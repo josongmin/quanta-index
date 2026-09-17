@@ -32,8 +32,11 @@ crate quanta_index_core
 │   │   │   ├── trait ExplainQueryPort: pub
 │   │   │   └── trait HybridQueryPort: pub
 │   │   └── mod service: pub(self)
+│   │       ├── struct FusedKeyV1: pub
+│   │       ├── struct FusedLaneRankV1: pub
 │   │       ├── struct HybridOrchestratorPolicy: pub
-│   │       └── struct KeyFuseAccumulator: pub(self)
+│   │       ├── struct KeyFuseAccumulator: pub(self)
+│   │       └── struct LaneRows: pub(self)
 │   ├── mod idempotency: pub
 │   │   ├── enum IdempotencyBeginV1: pub
 │   │   ├── trait IdempotencyCatalogPort: pub

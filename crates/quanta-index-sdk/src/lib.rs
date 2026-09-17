@@ -58,7 +58,8 @@ pub use quanta_index_contract::lex::{
 pub use quanta_index_contract::{
     ChunkId, ChunkRecord, ChunkStructuralMetadata, EmbeddingDistanceMetric, EmbeddingId,
     EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, ExactRepoRelativePathV1,
-    GenerationPin, GenerationSelector, GenerationSnapshot, GenerationStatusReport,
+    ExplainCandidateV1, GenerationPin, GenerationSelector, GenerationSnapshot,
+    GenerationStatusReport, HybridCandidateV1, HybridLaneContributionV1, HybridLaneV1,
     HybridSeedQueryRequest, HybridSeedQueryResponse, LexicalCandidate, ManifestGeneration,
     MetricBucketV1, MetricCounterV1, MetricGaugeV1, MetricHistogramV1, MetricsDiagnosticsV1,
     MetricsSnapshotV1, OwnerDocKind, QuarantineDiscardAck, QuarantineDiscardOutcomeDtoV1,

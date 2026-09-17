@@ -244,15 +244,256 @@ pub struct SemanticQueryResponse {
 
 const SEMANTIC_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "window", "explanation"];
 
+/// The hybrid response: the RRF fusion of the two independent lanes, one
+/// [`HybridCandidateV1`] per fused identity (QI-BB-018, QI-BB-022).
+///
+/// `results` is in ranking order — `fused_score` descending, then a row the
+/// lexical lane saw before one it did not, then `candidate_id` ascending —
+/// and no identity appears twice. Both are checked on encode and decode.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HybridQueryResponse {
     pub generation: GenerationPin,
-    pub results: Vec<LexicalCandidate>,
+    pub results: Vec<HybridCandidateV1>,
     pub window: QueryResultWindowV1,
     pub explanation: SearchExplanation,
 }
 
 const HYBRID_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "window", "explanation"];
+
+/// One of the two lanes the hybrid route fuses (QI-BB-018).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HybridLaneV1 {
+    /// The lowered text query over the lexical index.
+    Lexical,
+    /// The embedded semantic query over the generation's vectors.
+    Dense,
+}
+
+impl HybridLaneV1 {
+    /// The lane's lower-case code, as traces and renderers name it.
+    #[must_use]
+    pub const fn as_code_str(self) -> &'static str {
+        match self {
+            Self::Lexical => "lexical",
+            Self::Dense => "dense",
+        }
+    }
+}
+
+const HYBRID_LANE_V1_VARIANTS: &[&str] = &["Lexical", "Dense"];
+
+/// Where one lane placed a hybrid candidate and what it scored it there.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HybridLaneContributionV1 {
+    pub lane: HybridLaneV1,
+    /// 1-based rank in the lane's own ranked list.
+    pub rank: u32,
+    /// The score the lane's engine emitted for the candidate: BM25 for the
+    /// lexical lane, cosine similarity for the dense lane. Finite.
+    pub raw_score: f32,
+}
+
+const HYBRID_LANE_CONTRIBUTION_V1_FIELDS: &[&str] = &["lane", "rank", "raw_score"];
+
+/// One hybrid result row: a lane's row for the identity, the RRF score
+/// that ranked it, and the per-lane provenance the score was fused from
+/// (QI-BB-022).
+///
+/// `fused_score` is the ranking key: the sum over `contributions` of
+/// `1 / (k + rank)` under the plane's RRF constant, exactly as the plane
+/// sorted it — which is why it is `f64` on the wire (narrowing would create
+/// ties the sort never had). `candidate` is the row the *preferred* lane
+/// emitted — the lexical lane's row when it saw the identity, else the
+/// dense lane's — so `candidate.score` is that lane's raw score, not the
+/// fused one; it equals the first contribution's `raw_score`.
+///
+/// Invariants, checked on encode and decode: `fused_score` finite and
+/// positive; one or two contributions in lane order (lexical before dense),
+/// each lane at most once, each rank at least 1, each `raw_score` finite;
+/// `candidate.score` equal to the first contribution's `raw_score`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HybridCandidateV1 {
+    pub candidate: LexicalCandidate,
+    pub fused_score: f64,
+    pub contributions: Vec<HybridLaneContributionV1>,
+}
+
+const HYBRID_CANDIDATE_V1_FIELDS: &[&str] = &["candidate", "fused_score", "contributions"];
+
+/// Why a [`HybridCandidateV1`], or a list of them, is not a hybrid result.
+#[derive(Clone, Debug, PartialEq)]
+pub enum HybridCandidatePolicyErrorV1 {
+    FusedScoreNotPositiveFinite { fused_score: f64 },
+    ContributionCountOutOfRange { count: usize },
+    ContributionsNotInLaneOrder,
+    RankIsZero { lane: HybridLaneV1 },
+    RawScoreNotFinite { lane: HybridLaneV1, raw_score: f32 },
+    CandidateScoreIsNotPreferredLaneScore { score: f32, raw_score: f32 },
+    ResultsNotInRankingOrder { position: usize },
+    DuplicateCandidateId { candidate_id: String },
+}
+
+impl fmt::Display for HybridCandidatePolicyErrorV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::FusedScoreNotPositiveFinite { fused_score } => write!(
+                formatter,
+                "hybrid candidate fused_score must be finite and positive; got {fused_score}"
+            ),
+            Self::ContributionCountOutOfRange { count } => write!(
+                formatter,
+                "hybrid candidate must carry one or two lane contributions; got {count}"
+            ),
+            Self::ContributionsNotInLaneOrder => formatter.write_str(
+                "hybrid candidate contributions must be in lane order (lexical, then dense) with each lane at most once",
+            ),
+            Self::RankIsZero { lane } => write!(
+                formatter,
+                "hybrid candidate {} contribution rank must be at least 1",
+                lane.as_code_str()
+            ),
+            Self::RawScoreNotFinite { lane, raw_score } => write!(
+                formatter,
+                "hybrid candidate {} contribution raw_score must be finite; got {raw_score}",
+                lane.as_code_str()
+            ),
+            Self::CandidateScoreIsNotPreferredLaneScore { score, raw_score } => write!(
+                formatter,
+                "hybrid candidate score {score} is not its preferred lane's raw_score {raw_score}"
+            ),
+            Self::ResultsNotInRankingOrder { position } => write!(
+                formatter,
+                "hybrid results are not in ranking order (fused_score desc, lexical-seen first, candidate_id asc) at position {position}"
+            ),
+            Self::DuplicateCandidateId { candidate_id } => write!(
+                formatter,
+                "hybrid results carry candidate {candidate_id} more than once"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for HybridCandidatePolicyErrorV1 {}
+
+impl HybridCandidateV1 {
+    /// Check the row invariants documented on the type.
+    pub fn validate_v1(&self) -> Result<(), HybridCandidatePolicyErrorV1> {
+        if !(self.fused_score.is_finite() && self.fused_score > 0.0) {
+            return Err(HybridCandidatePolicyErrorV1::FusedScoreNotPositiveFinite {
+                fused_score: self.fused_score,
+            });
+        }
+        if !(1..=2).contains(&self.contributions.len()) {
+            return Err(HybridCandidatePolicyErrorV1::ContributionCountOutOfRange {
+                count: self.contributions.len(),
+            });
+        }
+        for contribution in &self.contributions {
+            if contribution.rank == 0 {
+                return Err(HybridCandidatePolicyErrorV1::RankIsZero {
+                    lane: contribution.lane,
+                });
+            }
+            if !contribution.raw_score.is_finite() {
+                return Err(HybridCandidatePolicyErrorV1::RawScoreNotFinite {
+                    lane: contribution.lane,
+                    raw_score: contribution.raw_score,
+                });
+            }
+        }
+        for pair in self.contributions.windows(2) {
+            let in_lane_order = matches!(
+                pair,
+                [
+                    HybridLaneContributionV1 {
+                        lane: HybridLaneV1::Lexical,
+                        ..
+                    },
+                    HybridLaneContributionV1 {
+                        lane: HybridLaneV1::Dense,
+                        ..
+                    }
+                ]
+            );
+            if !in_lane_order {
+                return Err(HybridCandidatePolicyErrorV1::ContributionsNotInLaneOrder);
+            }
+        }
+        let Some(preferred) = self.contributions.first() else {
+            return Err(HybridCandidatePolicyErrorV1::ContributionCountOutOfRange { count: 0 });
+        };
+        // The row is a copy of the preferred lane's row, so its score is
+        // bit-identical to that lane's raw score; both are finite here.
+        if self.candidate.score.to_bits() != preferred.raw_score.to_bits() {
+            return Err(
+                HybridCandidatePolicyErrorV1::CandidateScoreIsNotPreferredLaneScore {
+                    score: self.candidate.score,
+                    raw_score: preferred.raw_score,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    /// Whether the lexical lane saw this identity — the second ranking key
+    /// after `fused_score`.
+    #[must_use]
+    pub fn seen_by_lexical_lane(&self) -> bool {
+        self.contributions
+            .iter()
+            .any(|contribution| contribution.lane == HybridLaneV1::Lexical)
+    }
+
+    /// The contribution of `lane`, when that lane saw the identity.
+    #[must_use]
+    pub fn contribution(&self, lane: HybridLaneV1) -> Option<&HybridLaneContributionV1> {
+        self.contributions
+            .iter()
+            .find(|contribution| contribution.lane == lane)
+    }
+}
+
+/// Check that `results` is a hybrid ranking: every row valid, ordered by
+/// `fused_score` descending, then lexical-seen rows first, then
+/// `candidate_id` ascending, with no identity repeated.
+pub fn validate_hybrid_results_v1(
+    results: &[HybridCandidateV1],
+) -> Result<(), HybridCandidatePolicyErrorV1> {
+    let mut seen = std::collections::BTreeSet::<&str>::new();
+    for row in results {
+        row.validate_v1()?;
+        if !seen.insert(row.candidate.candidate_id.as_str()) {
+            return Err(HybridCandidatePolicyErrorV1::DuplicateCandidateId {
+                candidate_id: row.candidate.candidate_id.clone(),
+            });
+        }
+    }
+    for (position, pair) in results.windows(2).enumerate() {
+        let [left, right] = pair else {
+            return Err(HybridCandidatePolicyErrorV1::ResultsNotInRankingOrder { position });
+        };
+        let ordering = right
+            .fused_score
+            .total_cmp(&left.fused_score)
+            .then(
+                right
+                    .seen_by_lexical_lane()
+                    .cmp(&left.seen_by_lexical_lane()),
+            )
+            .then_with(|| {
+                left.candidate
+                    .candidate_id
+                    .as_str()
+                    .cmp(right.candidate.candidate_id.as_str())
+            });
+        if ordering != core::cmp::Ordering::Less {
+            return Err(HybridCandidatePolicyErrorV1::ResultsNotInRankingOrder {
+                position: position.saturating_add(1),
+            });
+        }
+    }
+    Ok(())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SeedLane {
@@ -691,13 +932,34 @@ macro_rules! impl_generation_results_response_serde {
     };
 }
 
+/// Serde for a `{ generation, results, window, explanation }` response.
+///
+/// `validate_results` is the cross-row invariant the list must satisfy,
+/// checked on encode and decode; the four-argument form has none, so any
+/// list of well-formed rows is accepted.
 macro_rules! impl_generation_results_explanation_response_serde {
     ($ty:ident, $fields:ident, $visitor:ident, $result_ty:ty) => {
+        impl_generation_results_explanation_response_serde!(
+            $ty,
+            $fields,
+            $visitor,
+            $result_ty,
+            validate_results = |_results: &[$result_ty]| Ok::<(), core::convert::Infallible>(())
+        );
+    };
+    (
+        $ty:ident,
+        $fields:ident,
+        $visitor:ident,
+        $result_ty:ty,
+        validate_results = $validate_results:expr
+    ) => {
         impl Serialize for $ty {
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
                 S: Serializer,
             {
+                ($validate_results)(&self.results).map_err(serde::ser::Error::custom)?;
                 let mut state = serializer.serialize_struct(stringify!($ty), 4)?;
                 state.serialize_field("generation", &self.generation)?;
                 state.serialize_field("results", &self.results)?;
@@ -767,6 +1029,7 @@ macro_rules! impl_generation_results_explanation_response_serde {
                         "query result window returned count does not match results length",
                     ));
                 }
+                ($validate_results)(&results).map_err(de::Error::custom)?;
                 Ok($ty {
                     generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
                     results,
@@ -1017,8 +1280,208 @@ impl_generation_results_explanation_response_serde!(
     HybridQueryResponse,
     HYBRID_QUERY_RESPONSE_FIELDS,
     HybridQueryResponseVisitor,
-    LexicalCandidate
+    HybridCandidateV1,
+    validate_results = validate_hybrid_results_v1
 );
+
+impl Serialize for HybridLaneV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(match self {
+            Self::Lexical => "Lexical",
+            Self::Dense => "Dense",
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for HybridLaneV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct HybridLaneVisitor;
+
+        impl Visitor<'_> for HybridLaneVisitor {
+            type Value = HybridLaneV1;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("string enum HybridLaneV1")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                match value {
+                    "Lexical" => Ok(HybridLaneV1::Lexical),
+                    "Dense" => Ok(HybridLaneV1::Dense),
+                    other => Err(de::Error::unknown_variant(other, HYBRID_LANE_V1_VARIANTS)),
+                }
+            }
+        }
+
+        deserializer.deserialize_str(HybridLaneVisitor)
+    }
+}
+
+impl Serialize for HybridLaneContributionV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("HybridLaneContributionV1", 3)?;
+        state.serialize_field("lane", &self.lane)?;
+        state.serialize_field("rank", &self.rank)?;
+        state.serialize_field("raw_score", &self.raw_score)?;
+        state.end()
+    }
+}
+
+struct HybridLaneContributionV1Visitor;
+
+impl<'de> Visitor<'de> for HybridLaneContributionV1Visitor {
+    type Value = HybridLaneContributionV1;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a HybridLaneContributionV1 map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut lane: Option<HybridLaneV1> = None;
+        let mut rank: Option<u32> = None;
+        let mut raw_score: Option<f32> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "lane" => {
+                    if lane.is_some() {
+                        return Err(de::Error::duplicate_field("lane"));
+                    }
+                    lane = Some(map.next_value()?);
+                }
+                "rank" => {
+                    if rank.is_some() {
+                        return Err(de::Error::duplicate_field("rank"));
+                    }
+                    rank = Some(map.next_value()?);
+                }
+                "raw_score" => {
+                    if raw_score.is_some() {
+                        return Err(de::Error::duplicate_field("raw_score"));
+                    }
+                    raw_score = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        HYBRID_LANE_CONTRIBUTION_V1_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(HybridLaneContributionV1 {
+            lane: lane.ok_or_else(|| de::Error::missing_field("lane"))?,
+            rank: rank.ok_or_else(|| de::Error::missing_field("rank"))?,
+            raw_score: raw_score.ok_or_else(|| de::Error::missing_field("raw_score"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for HybridLaneContributionV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "HybridLaneContributionV1",
+            HYBRID_LANE_CONTRIBUTION_V1_FIELDS,
+            HybridLaneContributionV1Visitor,
+        )
+    }
+}
+
+impl Serialize for HybridCandidateV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.validate_v1().map_err(serde::ser::Error::custom)?;
+        let mut state = serializer.serialize_struct("HybridCandidateV1", 3)?;
+        state.serialize_field("candidate", &self.candidate)?;
+        state.serialize_field("fused_score", &self.fused_score)?;
+        state.serialize_field("contributions", &self.contributions)?;
+        state.end()
+    }
+}
+
+struct HybridCandidateV1Visitor;
+
+impl<'de> Visitor<'de> for HybridCandidateV1Visitor {
+    type Value = HybridCandidateV1;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a HybridCandidateV1 map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut candidate: Option<LexicalCandidate> = None;
+        let mut fused_score: Option<f64> = None;
+        let mut contributions: Option<Vec<HybridLaneContributionV1>> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "candidate" => {
+                    if candidate.is_some() {
+                        return Err(de::Error::duplicate_field("candidate"));
+                    }
+                    candidate = Some(map.next_value()?);
+                }
+                "fused_score" => {
+                    if fused_score.is_some() {
+                        return Err(de::Error::duplicate_field("fused_score"));
+                    }
+                    fused_score = Some(map.next_value()?);
+                }
+                "contributions" => {
+                    if contributions.is_some() {
+                        return Err(de::Error::duplicate_field("contributions"));
+                    }
+                    contributions = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(other, HYBRID_CANDIDATE_V1_FIELDS));
+                }
+            }
+        }
+        let row = HybridCandidateV1 {
+            candidate: candidate.ok_or_else(|| de::Error::missing_field("candidate"))?,
+            fused_score: fused_score.ok_or_else(|| de::Error::missing_field("fused_score"))?,
+            contributions: contributions
+                .ok_or_else(|| de::Error::missing_field("contributions"))?,
+        };
+        row.validate_v1().map_err(de::Error::custom)?;
+        Ok(row)
+    }
+}
+
+impl<'de> Deserialize<'de> for HybridCandidateV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "HybridCandidateV1",
+            HYBRID_CANDIDATE_V1_FIELDS,
+            HybridCandidateV1Visitor,
+        )
+    }
+}
 
 impl Serialize for SeedLane {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>

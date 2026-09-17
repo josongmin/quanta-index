@@ -2,6 +2,7 @@ mod support;
 
 mod budget;
 mod cluster_membership;
+mod explain;
 mod history;
 mod hybrid;
 mod hybrid_seed;

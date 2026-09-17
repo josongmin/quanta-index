@@ -975,9 +975,14 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
 
     let response = send_query_request(&socket, &request)?;
     let (ids, explanation) = match response.payload {
-        SearchPlaneQueryIpcResponse::Hybrid(hybrid) => {
-            (lexical_ids(&hybrid.results), hybrid.explanation)
-        }
+        SearchPlaneQueryIpcResponse::Hybrid(hybrid) => (
+            hybrid
+                .results
+                .iter()
+                .map(|row| row.candidate.candidate_id.clone())
+                .collect::<Vec<_>>(),
+            hybrid.explanation,
+        ),
         other @ (SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)

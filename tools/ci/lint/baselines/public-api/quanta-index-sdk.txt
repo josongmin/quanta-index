@@ -12,10 +12,14 @@ pub use quanta_index_sdk::EmbeddingModelContract
 pub use quanta_index_sdk::EmbeddingNormalization
 pub use quanta_index_sdk::EmbeddingRecord
 pub use quanta_index_sdk::ExactRepoRelativePathV1
+pub use quanta_index_sdk::ExplainCandidateV1
 pub use quanta_index_sdk::GenerationPin
 pub use quanta_index_sdk::GenerationSelector
 pub use quanta_index_sdk::GenerationSnapshot
 pub use quanta_index_sdk::GenerationStatusReport
+pub use quanta_index_sdk::HybridCandidateV1
+pub use quanta_index_sdk::HybridLaneContributionV1
+pub use quanta_index_sdk::HybridLaneV1
 pub use quanta_index_sdk::HybridSeedQueryRequest
 pub use quanta_index_sdk::HybridSeedQueryResponse
 pub use quanta_index_sdk::LanguageCode
@@ -838,7 +842,7 @@ impl<'a> quanta_index_sdk::SearchNamespace<'a>
 pub fn quanta_index_sdk::SearchNamespace<'a>::cluster_membership_batch_read_v1(&self, request: quanta_index_contract::query::cluster_membership::ClusterMembershipBatchReadRequestV1) -> core::result::Result<quanta_index_contract::results::cluster_membership::ClusterMembershipBatchReadResponseV1, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::SearchNamespace<'a>::cluster_membership_read_v1(&self, request: quanta_index_contract::query::cluster_membership::ClusterMembershipReadRequestV1) -> core::result::Result<quanta_index_contract::results::cluster_membership::ClusterMembershipReadOutcomeV1, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::SearchNamespace<'a>::explain(&self, generation: quanta_index_contract_base::query::pin::GenerationPin, candidate: quanta_index_contract_base::results::candidates::LexicalCandidate) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneExplainQueryResponse, quanta_index_sdk::SdkError>
-pub fn quanta_index_sdk::SearchNamespace<'a>::explain_under_query(&self, generation: quanta_index_contract_base::query::pin::GenerationPin, candidate: quanta_index_contract_base::results::candidates::LexicalCandidate, text_query: quanta_index_contract_base::query::requests::TextQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneExplainQueryResponse, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::SearchNamespace<'a>::explain_under_query(&self, generation: quanta_index_contract_base::query::pin::GenerationPin, candidate: impl core::convert::Into<quanta_index_contract::query::requests::ExplainCandidateV1>, text_query: quanta_index_contract_base::query::requests::TextQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneExplainQueryResponse, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::SearchNamespace<'a>::hybrid_seed(&self) -> quanta_index_sdk::HybridSeedQueryBuilder<'a>
 pub fn quanta_index_sdk::SearchNamespace<'a>::hybrid_seed_request(&self, request: quanta_index_contract::query::requests::HybridSeedQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::HybridSeedQueryResponse, quanta_index_sdk::SdkError>
 impl<'a> core::marker::Freeze for quanta_index_sdk::SearchNamespace<'a>

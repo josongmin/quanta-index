@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use quanta_index_contract::{LexicalCandidate, ManifestGeneration};
+use quanta_index_contract::{
+    HybridCandidateV1, HybridLaneContributionV1, HybridLaneV1, LexicalCandidate, ManifestGeneration,
+};
 
 use crate::{
     domains::semantic::SemanticPolicy,
@@ -11,6 +13,26 @@ use crate::{
 /// produce identical fused rankings.
 const RRF_K: f64 = 60.0;
 const MIN_INTERNAL_FETCH_K: u32 = 100;
+
+/// Where one lane placed a fused identity: the lane's index in the fusion
+/// input and the identity's 1-based rank in that lane (after the lane's
+/// duplicates are dropped).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FusedLaneRankV1 {
+    pub lane: usize,
+    pub rank: u32,
+}
+
+/// A fused identity with the provenance that ranked it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FusedKeyV1<T> {
+    pub key: T,
+    /// The ranking key: the sum over `lanes` of `1 / (k + rank)` under
+    /// [`HybridOrchestratorPolicy::rrf_k`], exactly as the fusion sorted it.
+    pub fused_score: f64,
+    /// Ascending lane index; each lane at most once.
+    pub lanes: Vec<FusedLaneRankV1>,
+}
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct HybridOrchestratorPolicy;
@@ -57,12 +79,70 @@ impl HybridOrchestratorPolicy {
         Ok(())
     }
 
+    /// The RRF constant every fusion and every explain of one uses.
+    #[must_use]
+    pub const fn rrf_k() -> f64 {
+        RRF_K
+    }
+
+    /// The RRF score of an identity placed at `ranks` (1-based, one per
+    /// lane that saw it): the sum of `1 / (k + rank)`, accumulated in the
+    /// given order from zero — the arithmetic [`Self::fuse_rrf_key_lanes_with_provenance`]
+    /// sorts by, so a recompute over a fused row's lane ranks in lane order
+    /// reproduces its `fused_score` exactly.
+    #[must_use]
+    pub fn rrf_score(ranks: impl IntoIterator<Item = u32>) -> f64 {
+        ranks
+            .into_iter()
+            .fold(0.0_f64, |score, rank| score + rrf_term(rank))
+    }
+
+    /// Fuse the two hybrid lanes by RRF into result rows that carry their
+    /// provenance (QI-BB-022).
+    ///
+    /// Lane 0 is the lexical lane and lane 1 the dense lane, both in their
+    /// engines' ranked order. Each row's `candidate` is the preferred lane's
+    /// row for the identity (lexical when that lane saw it, else dense), and
+    /// its contributions are the lanes that saw it, in lane order, with the
+    /// rank and the raw score each lane emitted. Ranking and tie-break are
+    /// those of [`Self::fuse_rrf`], which is the same fusion without the
+    /// provenance.
+    ///
+    /// A lane row whose score is not finite is a typed error: the contract
+    /// refuses to carry it, so this refuses to fuse it.
+    pub fn fuse_rrf_candidates(
+        lexical: &[LexicalCandidate],
+        semantic: &[LexicalCandidate],
+        top_k: u32,
+    ) -> Result<Vec<HybridCandidateV1>, CoreError> {
+        let lexical_ids = lexical
+            .iter()
+            .map(|candidate| candidate.candidate_id.as_str())
+            .collect::<Vec<_>>();
+        let semantic_ids = semantic
+            .iter()
+            .map(|candidate| candidate.candidate_id.as_str())
+            .collect::<Vec<_>>();
+        // The first row per identity is the one whose rank the fusion
+        // counted, since a lane's repeated identities are dropped there.
+        let lanes = [
+            LaneRows::new(HybridLaneV1::Lexical, lexical),
+            LaneRows::new(HybridLaneV1::Dense, semantic),
+        ];
+        Self::fuse_rrf_key_lanes_with_provenance(&[&lexical_ids, &semantic_ids], top_k)
+            .into_iter()
+            .map(|fused| hybrid_candidate_from_fused(&fused, &lanes))
+            .collect()
+    }
+
     /// Fuse two ranked candidate lists by RRF.
     ///
     /// Tie-break order: higher fused score, then "present in lexical list",
     /// then `candidate_id` lexicographic. Each identity contributes at most
     /// once per lane. When both lanes contain the same identity, the lexical
-    /// candidate owns the returned payload.
+    /// candidate owns the returned payload. This is
+    /// [`Self::fuse_rrf_candidates`] without the provenance and without the
+    /// finite-score gate: the rows it returns are the lane rows as given.
     #[must_use]
     pub fn fuse_rrf(
         lexical: &[LexicalCandidate],
@@ -111,18 +191,40 @@ impl HybridOrchestratorPolicy {
 
     /// Fuse any number of independently ranked, typed stable-identity lanes.
     ///
-    /// This is the canonical entity-fusion primitive. String-only callers use
-    /// [`Self::fuse_rrf_id_lanes`]; callers whose identity includes a kind or
-    /// another typed discriminator must use this method so unrelated values
-    /// with identical display text cannot collapse into one RRF candidate.
+    /// String-only callers use [`Self::fuse_rrf_id_lanes`]; callers whose
+    /// identity includes a kind or another typed discriminator must use this
+    /// method so unrelated values with identical display text cannot
+    /// collapse into one RRF candidate. This is
+    /// [`Self::fuse_rrf_key_lanes_with_provenance`] keeping only the keys.
     #[must_use]
     pub fn fuse_rrf_key_lanes<T>(lanes: &[&[T]], top_k: u32) -> Vec<T>
     where
         T: Clone + Ord,
     {
+        Self::fuse_rrf_key_lanes_with_provenance(lanes, top_k)
+            .into_iter()
+            .map(|fused| fused.key)
+            .collect()
+    }
+
+    /// Fuse any number of independently ranked, typed stable-identity lanes,
+    /// keeping each winner's provenance.
+    ///
+    /// This is the one RRF algorithm every other fusion entry point wraps.
+    /// Each lane is an ordering of identities: a repeated identity is
+    /// dropped before ranks are assigned, so it can neither amplify itself
+    /// nor displace the identities after it. Every identity scores the sum
+    /// of `1 / (k + rank)` over the lanes that saw it; the order is that
+    /// score descending, then identities the first lane saw before those it
+    /// did not, then the identity's own order; the first `top_k` win.
+    #[must_use]
+    pub fn fuse_rrf_key_lanes_with_provenance<T>(lanes: &[&[T]], top_k: u32) -> Vec<FusedKeyV1<T>>
+    where
+        T: Clone + Ord,
+    {
         let mut accs: BTreeMap<T, KeyFuseAccumulator> = BTreeMap::new();
         for (lane_index, lane) in lanes.iter().enumerate() {
-            accumulate_keys(&mut accs, lane, lane_index == 0);
+            accumulate_keys(&mut accs, lane, lane_index);
         }
 
         let mut fused: Vec<(T, KeyFuseAccumulator)> = accs.into_iter().collect();
@@ -140,17 +242,27 @@ impl HybridOrchestratorPolicy {
         fused
             .into_iter()
             .take(limit)
-            .map(|(key, _acc)| key)
+            .map(|(key, acc)| FusedKeyV1 {
+                key,
+                fused_score: acc.score,
+                lanes: acc.lanes,
+            })
             .collect()
     }
+}
+
+/// One RRF term: `1 / (k + rank)`.
+fn rrf_term(rank: u32) -> f64 {
+    1.0 / (RRF_K + f64::from(rank))
 }
 
 struct KeyFuseAccumulator {
     score: f64,
     in_lex: bool,
+    lanes: Vec<FusedLaneRankV1>,
 }
 
-fn accumulate_keys<T>(accs: &mut BTreeMap<T, KeyFuseAccumulator>, ranked: &[T], is_lex: bool)
+fn accumulate_keys<T>(accs: &mut BTreeMap<T, KeyFuseAccumulator>, ranked: &[T], lane_index: usize)
 where
     T: Clone + Ord,
 {
@@ -165,19 +277,90 @@ where
         let rank_plus_one = seen.len();
         // Saturating: rank index past u32::MAX collapses to the same RRF
         // tail score. `map_or` keeps the clippy + workspace lints happy.
-        let rank_u32 = u32::try_from(rank_plus_one).map_or(u32::MAX, |n| n);
-        let rank_f = f64::from(rank_u32);
+        let rank = u32::try_from(rank_plus_one).map_or(u32::MAX, |n| n);
         let entry = accs
             .entry(key.clone())
             .or_insert_with(|| KeyFuseAccumulator {
                 score: 0.0,
                 in_lex: false,
+                lanes: Vec::new(),
             });
-        entry.score += 1.0 / (RRF_K + rank_f);
-        if is_lex {
+        entry.score += rrf_term(rank);
+        if lane_index == 0 {
             entry.in_lex = true;
         }
+        entry.lanes.push(FusedLaneRankV1 {
+            lane: lane_index,
+            rank,
+        });
     }
+}
+
+/// One hybrid lane's rows, addressable by identity.
+struct LaneRows<'a> {
+    lane: HybridLaneV1,
+    by_id: BTreeMap<&'a str, &'a LexicalCandidate>,
+}
+
+impl<'a> LaneRows<'a> {
+    fn new(lane: HybridLaneV1, rows: &'a [LexicalCandidate]) -> Self {
+        let mut by_id = BTreeMap::new();
+        for row in rows {
+            // First occurrence wins: it is the one the fusion ranked.
+            let _first_occurrence = by_id.entry(row.candidate_id.as_str()).or_insert(row);
+        }
+        Self { lane, by_id }
+    }
+}
+
+/// Assemble one fused identity's result row from the lanes that saw it.
+fn hybrid_candidate_from_fused(
+    fused: &FusedKeyV1<&str>,
+    lanes: &[LaneRows<'_>; 2],
+) -> Result<HybridCandidateV1, CoreError> {
+    let mut contributions = Vec::with_capacity(fused.lanes.len());
+    let mut preferred: Option<&LexicalCandidate> = None;
+    for placement in &fused.lanes {
+        let Some(lane_rows) = lanes.get(placement.lane) else {
+            return Err(CoreError::Storage(format!(
+                "hybrid: fusion placed {} in lane {}, which is not a hybrid lane",
+                fused.key, placement.lane
+            )));
+        };
+        let Some(row) = lane_rows.by_id.get(fused.key) else {
+            return Err(CoreError::Storage(format!(
+                "hybrid: fusion ranked {} in the {} lane but that lane has no such row",
+                fused.key,
+                lane_rows.lane.as_code_str()
+            )));
+        };
+        if !row.score.is_finite() {
+            return Err(CoreError::Storage(format!(
+                "hybrid: the {} lane emitted a non-finite score for {}",
+                lane_rows.lane.as_code_str(),
+                fused.key
+            )));
+        }
+        contributions.push(HybridLaneContributionV1 {
+            lane: lane_rows.lane,
+            rank: placement.rank,
+            raw_score: row.score,
+        });
+        if preferred.is_none() {
+            preferred = Some(row);
+        }
+    }
+    let Some(preferred) = preferred else {
+        return Err(CoreError::Storage(format!(
+            "hybrid: fusion returned {} without a lane that saw it",
+            fused.key
+        )));
+    };
+    Ok(HybridCandidateV1 {
+        candidate: preferred.clone(),
+        fused_score: fused.fused_score,
+        contributions,
+    })
 }
 
 #[cfg(test)]

@@ -2087,6 +2087,7 @@ fn execute_text_or_structural(
                 candidate_ids: Vec::new(),
                 file_owner_rows: Vec::new(),
                 structural_results: Vec::new(),
+                hybrid_candidates: Vec::new(),
                 engines_touched: Vec::new(),
                 explanation: None,
                 typed_error: Some(crate::e2e_harness::E2eTypedError {

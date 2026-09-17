@@ -10,10 +10,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
-    EarlyStopReason, EngineTouched, GenerationPin, HybridQueryRequest, HybridSeedQueryRequest,
-    LexicalCandidate, OwnerDocKind, PlannerStage, PlannerTraceEntry, QueryResultWindowV1,
-    SearchExplanation, SearchPlaneTrackKind, SeedCandidate, SeedContribution, SeedFusionIdentity,
-    SeedLane, SemanticCorpusKindV1, SemanticQueryRequest, SemanticSeedCorpusBudgetV1,
+    EarlyStopReason, EngineTouched, GenerationPin, HybridCandidateV1, HybridQueryRequest,
+    HybridSeedQueryRequest, LexicalCandidate, OwnerDocKind, PlannerStage, PlannerTraceEntry,
+    QueryResultWindowV1, SearchExplanation, SearchPlaneTrackKind, SeedCandidate, SeedContribution,
+    SeedFusionIdentity, SeedLane, SemanticCorpusKindV1, SemanticQueryRequest,
+    SemanticSeedCorpusBudgetV1,
 };
 use quanta_index_core::{
     CoreError, DenseLaneContractV1, HybridOrchestratorPolicy, SemanticPolicy, SemanticSearchHitV1,
@@ -38,7 +39,7 @@ fn dense_lane_trace_entry_v1(dense_lane: &DenseLaneContractV1) -> PlannerTraceEn
 /// wraps it in its path-specific response (plain hybrid vs. hybrid-seed).
 pub(super) struct HybridFusion {
     pub(super) pin: GenerationPin,
-    pub(super) fused: Vec<LexicalCandidate>,
+    pub(super) fused: Vec<HybridCandidateV1>,
     pub(super) window: QueryResultWindowV1,
     pub(super) explanation: SearchExplanation,
 }

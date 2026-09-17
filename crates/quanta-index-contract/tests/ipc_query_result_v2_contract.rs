@@ -7,7 +7,8 @@ use quanta_index_contract::results::{
     EngineTouched, PlannerStage, PlannerTraceEntry, SearchExplanation,
 };
 use quanta_index_contract::{
-    DiffCandidate, DiffHunkSide, GenerationPin, HighlightSpan, HybridQueryRequest,
+    DiffCandidate, DiffHunkSide, ExplainCandidateV1, GenerationPin, HighlightSpan,
+    HybridCandidateV1, HybridLaneContributionV1, HybridLaneV1, HybridQueryRequest,
     HybridQueryResponse, HybridSeedQueryRequest, LexicalCandidate, LqQuery, LqSpan,
     ManifestGeneration, QueryConstraintSetV1, QueryResultWindowV1, RepoId, RepoRelativePath,
     RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
@@ -210,6 +211,28 @@ fn lexical_candidate() -> LexicalCandidate {
         // new UI highlight-anchor fields survive serialize -> deserialize.
         snippet_hit_offset: Some(3),
         highlights: vec![HighlightSpan { start: 3, len: 4 }],
+    }
+}
+
+/// A hybrid row both lanes saw: the lexical lane's row (so its score is the
+/// BM25 score) at lexical rank 1 and dense rank 2.
+fn hybrid_candidate() -> HybridCandidateV1 {
+    let candidate = lexical_candidate();
+    HybridCandidateV1 {
+        fused_score: 1.0 / 61.0 + 1.0 / 62.0,
+        contributions: vec![
+            HybridLaneContributionV1 {
+                lane: HybridLaneV1::Lexical,
+                rank: 1,
+                raw_score: candidate.score,
+            },
+            HybridLaneContributionV1 {
+                lane: HybridLaneV1::Dense,
+                rank: 2,
+                raw_score: 0.5,
+            },
+        ],
+        candidate,
     }
 }
 
@@ -754,7 +777,7 @@ fn search_plane_ipc_response_v2_semantic_roundtrips_explanation() -> TestRes {
 fn search_plane_ipc_response_v2_hybrid_roundtrips_explanation() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
         generation: generation_pin(),
-        results: vec![lexical_candidate()],
+        results: vec![hybrid_candidate()],
         window: QueryResultWindowV1::exact(1),
         explanation: explanation_v2(),
     });
@@ -1146,7 +1169,7 @@ fn search_plane_ipc_response_v2_semantic_rejects_duplicate_generation() -> TestR
 fn search_plane_ipc_response_v2_hybrid_rejects_duplicate_explanation() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
         generation: generation_pin(),
-        results: vec![lexical_candidate()],
+        results: vec![hybrid_candidate()],
         window: QueryResultWindowV1::exact(1),
         explanation: explanation_v2(),
     });
@@ -1241,16 +1264,79 @@ fn explain_request_round_trips_with_and_without_its_query() -> TestRes {
     use quanta_index_contract::SearchPlaneExplainQueryRequest;
     let presence_only = SearchPlaneExplainQueryRequest {
         generation: generation_pin(),
-        candidate: lexical_candidate(),
+        candidate: ExplainCandidateV1::Lexical(lexical_candidate()),
         text_query: None,
     };
     roundtrip_eq(&SearchPlaneQueryIpcRequest::Explain(presence_only))?;
     let scored = SearchPlaneExplainQueryRequest {
         generation: generation_pin(),
-        candidate: lexical_candidate(),
+        candidate: ExplainCandidateV1::Lexical(lexical_candidate()),
         text_query: Some(sourcegraph_text_request()),
     };
-    roundtrip_eq(&SearchPlaneQueryIpcRequest::Explain(scored))
+    roundtrip_eq(&SearchPlaneQueryIpcRequest::Explain(scored))?;
+    // QI-BB-022: a hybrid row explains with its lane provenance, and only
+    // under the query it was fused for.
+    let hybrid = SearchPlaneExplainQueryRequest {
+        generation: generation_pin(),
+        candidate: ExplainCandidateV1::Hybrid(hybrid_candidate()),
+        text_query: Some(sourcegraph_text_request()),
+    };
+    roundtrip_eq(&SearchPlaneQueryIpcRequest::Explain(hybrid.clone()))?;
+    let bytes = mutate_ipc_request_wire(&SearchPlaneQueryIpcRequest::Explain(hybrid), |wire| {
+        let request_fields = map_fields_mut(wire)?;
+        let payload = field_value_mut(request_fields, "payload")?;
+        let payload_fields = map_fields_mut(payload)?;
+        payload_fields
+            .retain(|(key, _)| !matches!(key, ciborium::Value::Text(name) if name == "text_query"));
+        Ok(())
+    })?;
+    expect_decode_error_contains::<SearchPlaneQueryIpcRequest>(&bytes, "text_query is required")?;
+    let unqueried = SearchPlaneExplainQueryRequest {
+        generation: generation_pin(),
+        candidate: ExplainCandidateV1::Hybrid(hybrid_candidate()),
+        text_query: None,
+    };
+    if encode(&SearchPlaneQueryIpcRequest::Explain(unqueried)).is_ok() {
+        return Err("a hybrid candidate without its query must not encode".into());
+    }
+    Ok(())
+}
+
+// The explain candidate is adjacently tagged, kind before payload, and the
+// kind is closed.
+#[test]
+fn explain_candidate_refuses_payload_before_kind_and_unknown_kinds() -> TestRes {
+    let tagged: serde_json::Value =
+        serde_json::to_value(ExplainCandidateV1::Lexical(lexical_candidate()))?;
+    let serde_json::Value::Object(fields) = &tagged else {
+        return Err("an explain candidate encodes as a map".into());
+    };
+    if fields.keys().collect::<Vec<_>>() != ["kind", "payload"] {
+        return Err(format!("kind must precede payload: {tagged}").into());
+    }
+    let payload = fields.get("payload").ok_or("payload present")?;
+    let payload_first = format!("{{\"payload\":{payload},\"kind\":\"Lexical\"}}");
+    expect_json_refusal::<ExplainCandidateV1>(&payload_first, "payload arrived before kind")?;
+    let unknown_kind = format!("{{\"kind\":\"Symbol\",\"payload\":{payload}}}");
+    expect_json_refusal::<ExplainCandidateV1>(&unknown_kind, "unknown variant")?;
+    let kind_only = "{\"kind\":\"Symbol\"}";
+    expect_json_refusal::<ExplainCandidateV1>(kind_only, "unknown variant")?;
+    let payload_only = format!("{{\"payload\":{payload}}}");
+    expect_json_refusal::<ExplainCandidateV1>(&payload_only, "payload arrived before kind")
+}
+
+/// Decode `json` as `T` and require a refusal naming `expected_fragment`.
+fn expect_json_refusal<T>(json: &str, expected_fragment: &str) -> TestRes
+where
+    T: serde::de::DeserializeOwned + core::fmt::Debug,
+{
+    match serde_json::from_str::<T>(json) {
+        Ok(decoded) => Err(format!("decode unexpectedly succeeded: {decoded:?}").into()),
+        Err(err) if err.to_string().contains(expected_fragment) => Ok(()),
+        Err(err) => {
+            Err(format!("decode error did not mention `{expected_fragment}`: {err}").into())
+        }
+    }
 }
 
 #[test]
