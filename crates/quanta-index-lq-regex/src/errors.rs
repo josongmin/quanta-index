@@ -33,6 +33,9 @@ pub enum RegexErrorCode {
     RegexPrefilterUnusable,
     /// Cooperative-cancel budget elapsed during candidate verification.
     QueryTimeout,
+    /// The caller's interruption check answered `true` between two
+    /// candidates; verification stopped there and the caller names why.
+    Interrupted,
     /// Internal failure during compilation or verification that doesn't
     /// fit any of the above buckets (e.g. `regex::Regex::new` blew the
     /// crate-internal size limit despite the planner-time estimator).
@@ -49,6 +52,7 @@ impl RegexErrorCode {
             Self::PlanLimitExceeded => "PLAN_LIMIT_EXCEEDED",
             Self::RegexPrefilterUnusable => "REGEX_PREFILTER_UNUSABLE",
             Self::QueryTimeout => "QUERY_TIMEOUT",
+            Self::Interrupted => "INTERRUPTED",
             Self::ExecutionInternal => "EXECUTION_INTERNAL",
         }
     }
@@ -62,6 +66,7 @@ impl RegexErrorCode {
             "PLAN_LIMIT_EXCEEDED" => Self::PlanLimitExceeded,
             "REGEX_PREFILTER_UNUSABLE" => Self::RegexPrefilterUnusable,
             "QUERY_TIMEOUT" => Self::QueryTimeout,
+            "INTERRUPTED" => Self::Interrupted,
             "EXECUTION_INTERNAL" => Self::ExecutionInternal,
             _ => return None,
         };
@@ -332,6 +337,7 @@ mod tests {
         RegexErrorCode::PlanLimitExceeded,
         RegexErrorCode::RegexPrefilterUnusable,
         RegexErrorCode::QueryTimeout,
+        RegexErrorCode::Interrupted,
         RegexErrorCode::ExecutionInternal,
     ];
 

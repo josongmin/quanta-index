@@ -24,7 +24,8 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE, LexicalExecutionBudgetV1,
-    LexicalIndexOpenPort, LexicalWriterPolicy, RegexMatchCachePolicy, SearchCorpusBatchBuildPort,
+    LexicalIndexOpenPort, LexicalWriterPolicy, RegexMatchCachePolicy, RequestBudgetV1,
+    SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_lexical::regex::RegexPolicy;
@@ -144,7 +145,12 @@ fn exact_set_executions_over_the_budget_are_refused_but_pages_serve() -> TestRes
     let unconstrained = QueryConstraintSetV1::unconstrained();
 
     // A page over five matches: two rows, no materialization beyond the probe.
-    let page = searcher.search_constrained(&query(needle(), Vec::new()), &unconstrained, 2)?;
+    let page = searcher.search_constrained(
+        &query(needle(), Vec::new()),
+        &unconstrained,
+        2,
+        &RequestBudgetV1::unbounded(),
+    )?;
     if page.candidates.len() != 2 || page.exact_total.is_some() {
         return Err(format!(
             "page drifted: rows={} exact_total={:?}",
@@ -157,7 +163,8 @@ fn exact_set_executions_over_the_budget_are_refused_but_pages_serve() -> TestRes
     // `count:all` needs the count collector, not the documents: still serves.
     let mut counted = query(needle(), Vec::new());
     counted.options.count = Some(LqCountBound::All);
-    let counted_page = searcher.search_constrained(&counted, &unconstrained, 2)?;
+    let counted_page =
+        searcher.search_constrained(&counted, &unconstrained, 2, &RequestBudgetV1::unbounded())?;
     if counted_page.candidates.len() != 2 || counted_page.exact_total != Some(u64::from(DOCS)) {
         return Err(format!(
             "count:all drifted: rows={} exact_total={:?}",
@@ -174,7 +181,8 @@ fn exact_set_executions_over_the_budget_are_refused_but_pages_serve() -> TestRes
             dim: LqSelect::Path,
         }],
     );
-    match searcher.search_constrained(&projected, &unconstrained, 2) {
+    match searcher.search_constrained(&projected, &unconstrained, 2, &RequestBudgetV1::unbounded())
+    {
         Err(err) if is_budget_refusal(&err) => {}
         Err(other) => {
             return Err(format!("projection refused under the wrong error: {other}").into());
@@ -191,7 +199,7 @@ fn exact_set_executions_over_the_budget_are_refused_but_pages_serve() -> TestRes
     // A bounded count orders the whole set before cutting: same refusal.
     let mut bounded = query(needle(), Vec::new());
     bounded.options.count = Some(LqCountBound::Bounded(2));
-    match searcher.search_constrained(&bounded, &unconstrained, 2) {
+    match searcher.search_constrained(&bounded, &unconstrained, 2, &RequestBudgetV1::unbounded()) {
         Err(err) if is_budget_refusal(&err) => {}
         Err(other) => {
             return Err(format!("bounded count refused under the wrong error: {other}").into());
@@ -221,7 +229,12 @@ fn exact_set_executions_within_the_budget_serve_with_exact_totals() -> TestResul
             dim: LqSelect::Path,
         }],
     );
-    let page = searcher.search_constrained(&projected, &unconstrained, 2)?;
+    let page = searcher.search_constrained(
+        &projected,
+        &unconstrained,
+        2,
+        &RequestBudgetV1::unbounded(),
+    )?;
     if page.candidates.len() != 2 || page.exact_total != Some(u64::from(DOCS)) {
         return Err(format!(
             "projection within budget drifted: rows={} exact_total={:?}",
@@ -233,7 +246,8 @@ fn exact_set_executions_within_the_budget_serve_with_exact_totals() -> TestResul
 
     let mut bounded = query(needle(), Vec::new());
     bounded.options.count = Some(LqCountBound::Bounded(3));
-    let page = searcher.search_constrained(&bounded, &unconstrained, 10)?;
+    let page =
+        searcher.search_constrained(&bounded, &unconstrained, 10, &RequestBudgetV1::unbounded())?;
     if page.candidates.len() != 3 || page.exact_total != Some(u64::from(DOCS)) {
         return Err(format!(
             "count:3 within budget drifted: rows={} exact_total={:?}",
@@ -253,7 +267,12 @@ fn unindexed_scans_over_the_budget_are_refused_before_scanning() -> TestResult {
     let searcher = adapter.open(&repo(), &revision(), generation())?;
     let mut scan = query(needle(), Vec::new());
     scan.options.index_mode = Some(LqYesNoOnly::No);
-    match searcher.search_constrained(&scan, &QueryConstraintSetV1::unconstrained(), 2) {
+    match searcher.search_constrained(
+        &scan,
+        &QueryConstraintSetV1::unconstrained(),
+        2,
+        &RequestBudgetV1::unbounded(),
+    ) {
         Err(err) if is_budget_refusal(&err) => {}
         Err(other) => return Err(format!("scan refused under the wrong error: {other}").into()),
         Ok(page) => {
@@ -277,6 +296,7 @@ fn unindexed_scans_over_the_budget_are_refused_before_scanning() -> TestResult {
         &symbol_scan,
         &QueryConstraintSetV1::unconstrained(),
         2,
+        &RequestBudgetV1::unbounded(),
     ) {
         Err(err) if is_budget_refusal(&err) => Ok(()),
         Err(other) => Err(format!("symbol scan refused under the wrong error: {other}").into()),

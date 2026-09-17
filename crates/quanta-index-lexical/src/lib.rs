@@ -24,6 +24,7 @@
     reason = "tantivy 0.22 pulls multiple transitive versions (rustix, linux-raw-sys, windows-sys) we cannot collapse; scoped allowance in deny.toml [bans] skip-tree."
 )]
 
+mod budgeted_search;
 pub mod filters;
 pub mod phrase;
 pub mod plan;
@@ -69,7 +70,8 @@ use quanta_index_core::{
     LexicalSearchPageV1, LexicalSearcher, LexicalWriterCacheStats, LexicalWriterPolicy,
     MetricPointV1, MetricSourcePort, RegexMatchCachePolicy, RegexMatchCacheStats,
     RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMetaIngestPort,
-    RepoTopicIngestPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort, count_from_usize,
+    RepoTopicIngestPort, RequestBudgetV1, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
+    count_from_usize,
     domains::lexical::LexicalPolicy,
     timeref::{is_rev_at_time_spec, parse_search_timeref_ms},
 };
@@ -98,6 +100,7 @@ use quanta_index_lq_trigram::{
     TrigramIndexBuilder, query_raw_substring, regex_prefilter_any_of,
 };
 
+use crate::budgeted_search::{BudgetProbe, budgeted_search};
 use crate::phrase::{PhraseField, PhrasePolicy, plan_phrase, tokenize_phrase_terms};
 use crate::predicate_registry::{
     ContentPathScope, ContentPredicateArgError, ContentPredicateConstraint, ContentScalarArg,
@@ -5510,16 +5513,17 @@ impl TantivySearcher {
         page_limit: usize,
         whole_set: bool,
         surface: &str,
+        budget: &RequestBudgetV1,
     ) -> Result<CollectedHits, CoreError> {
-        let budget = self.execution_budget.max_examined_candidates();
+        let examined_budget = self.execution_budget.max_examined_candidates();
         let num_docs = Self::corpus_docs(searcher, surface)?;
         let collect_limit = if whole_set {
-            num_docs.min(budget.saturating_add(1))
+            num_docs.min(examined_budget.saturating_add(1))
         } else {
             page_limit
                 .saturating_add(1)
                 .min(num_docs)
-                .min(budget.saturating_add(1))
+                .min(examined_budget.saturating_add(1))
         };
         if collect_limit == 0 {
             return Ok(CollectedHits {
@@ -5527,18 +5531,29 @@ impl TantivySearcher {
                 exact_total: Self::wants_exact_total(query).then_some(0),
             });
         }
+        // The request budget is observed inside the collect (W5 phase 2):
+        // an interruption unwinds the native walk and answers typed at
+        // `lexical:collect`.
         let (count, hits) = if Self::wants_exact_total(query) {
-            let (count, hits) = searcher
-                .search(compiled, &(Count, TopDocs::with_limit(collect_limit)))
-                .map_err(|err| CoreError::Storage(format!("lexical: {surface} collect: {err}")))?;
+            let (count, hits) = budgeted_search(
+                searcher,
+                compiled,
+                &(Count, TopDocs::with_limit(collect_limit)),
+                budget,
+                "lexical:collect",
+            )?;
             (Some(count), hits)
         } else {
-            let hits = searcher
-                .search(compiled, &TopDocs::with_limit(collect_limit))
-                .map_err(|err| CoreError::Storage(format!("lexical: {surface} collect: {err}")))?;
+            let hits = budgeted_search(
+                searcher,
+                compiled,
+                &TopDocs::with_limit(collect_limit),
+                budget,
+                "lexical:collect",
+            )?;
             (None, hits)
         };
-        if whole_set && hits.len() > budget {
+        if whole_set && hits.len() > examined_budget {
             return Err(self.execution_budget.exceeded(surface));
         }
         let exact_total = match count {
@@ -5838,6 +5853,7 @@ impl TantivySearcher {
         source_repo_id: &str,
         repo_relative_path: &str,
         content: &str,
+        budget: &RequestBudgetV1,
     ) -> Result<bool, CoreError> {
         if let Some(ContentPathScope { pattern, scope }) = constraint.path_scope.as_ref()
             && !self.manual_file_filter_matches(pattern, *scope, repo_relative_path)?
@@ -5867,6 +5883,7 @@ impl TantivySearcher {
             repo_relative_path,
             content,
             false,
+            budget,
         )
     }
 
@@ -5878,6 +5895,7 @@ impl TantivySearcher {
         source_repo_id: &str,
         repo_relative_path: &str,
         content: &str,
+        budget: &RequestBudgetV1,
     ) -> Result<bool, CoreError> {
         let Some((canonical_name, canonical_args)) =
             self.canonicalize_predicate_call(name, args)?
@@ -5890,14 +5908,14 @@ impl TantivySearcher {
             Some(PredicateKind::RepoFileGate) => {
                 let constraint = self.repo_has_file_constraint(&canonical_name, &canonical_args)?;
                 Ok(self.manual_repo_gate_matches(
-                    &self.collect_repo_ids_for_repo_has_file(&constraint, options)?,
+                    &self.collect_repo_ids_for_repo_has_file(&constraint, options, budget)?,
                     source_repo_id,
                 ))
             }
             Some(PredicateKind::RepoContentGate) => {
                 let leaf = self.repo_content_constraint(&canonical_name, &canonical_args)?;
                 Ok(self.manual_repo_gate_matches(
-                    &self.collect_repo_ids_for_repo_has_content(&leaf, options)?,
+                    &self.collect_repo_ids_for_repo_has_content(&leaf, options, budget)?,
                     source_repo_id,
                 ))
             }
@@ -5947,6 +5965,7 @@ impl TantivySearcher {
                     source_repo_id,
                     repo_relative_path,
                     content,
+                    budget,
                 )
             }
             None => Err(unimplemented_predicate(format!(
@@ -5963,6 +5982,7 @@ impl TantivySearcher {
         repo_relative_path: &str,
         content: &str,
         include_path_terms: bool,
+        budget: &RequestBudgetV1,
     ) -> Result<bool, CoreError> {
         let case_sensitive = Self::is_case_sensitive(options);
         match leaf {
@@ -5994,6 +6014,7 @@ impl TantivySearcher {
                 source_repo_id,
                 repo_relative_path,
                 content,
+                budget,
             ),
         }
     }
@@ -6006,6 +6027,7 @@ impl TantivySearcher {
         repo_relative_path: &str,
         content: &str,
         include_path_terms: bool,
+        budget: &RequestBudgetV1,
     ) -> Result<bool, CoreError> {
         match expr {
             LqExpr::Empty => Ok(true),
@@ -6016,6 +6038,7 @@ impl TantivySearcher {
                 repo_relative_path,
                 content,
                 include_path_terms,
+                budget,
             ),
             LqExpr::All(children) => {
                 for child in children {
@@ -6026,6 +6049,7 @@ impl TantivySearcher {
                         repo_relative_path,
                         content,
                         false,
+                        budget,
                     )? {
                         return Ok(false);
                     }
@@ -6041,6 +6065,7 @@ impl TantivySearcher {
                         repo_relative_path,
                         content,
                         false,
+                        budget,
                     )? {
                         return Ok(true);
                     }
@@ -6054,6 +6079,7 @@ impl TantivySearcher {
                 repo_relative_path,
                 content,
                 false,
+                budget,
             )?),
         }
     }
@@ -6065,6 +6091,7 @@ impl TantivySearcher {
         source_repo_id: &str,
         repo_relative_path: &str,
         content: &str,
+        budget: &RequestBudgetV1,
     ) -> Result<bool, CoreError> {
         match filter {
             LqFilter::Repo { pattern, revs } => {
@@ -6088,6 +6115,7 @@ impl TantivySearcher {
                 repo_relative_path,
                 content,
                 false,
+                budget,
             ),
             LqFilter::Lang { id } => {
                 let Some(language) = normalize_language(id.as_str()) else {
@@ -6176,6 +6204,7 @@ impl TantivySearcher {
         constraints: &QueryConstraintSetV1,
         limit: usize,
         apply_select_projection: bool,
+        budget: &RequestBudgetV1,
     ) -> Result<LexicalSearchPageV1, CoreError> {
         let searcher = self.reader.searcher();
         let doc_limit = Self::corpus_docs(&searcher, "unindexed text scan")?;
@@ -6190,17 +6219,29 @@ impl TantivySearcher {
                 exact_total: Self::wants_exact_total(query).then_some(0),
             });
         }
-        let hits = searcher
-            .search(&AllQuery, &TopDocs::with_limit(doc_limit))
-            .map_err(|err| CoreError::Storage(format!("lexical: unindexed scan: {err}")))?;
+        let hits = budgeted_search(
+            &searcher,
+            &AllQuery,
+            &TopDocs::with_limit(doc_limit),
+            budget,
+            "lexical:scan",
+        )?;
         let boosted_score = Self::apply_query_boost_score(1.0, &query.options);
         let center_terms = snippet_center_terms(query);
         let mut out: Vec<LexicalCandidate> = Vec::new();
+        // The scan matches every document against the plan itself; the
+        // budget is observed between documents (W5 phase 2).
+        let probe = BudgetProbe::new(budget);
         for (_score, doc_address) in hits {
+            if probe.tick()
+                && let Some(interruption) = probe.interruption_error("lexical:scan")
+            {
+                return Err(interruption);
+            }
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
-            if !self.manual_doc_matches(&doc, query, prepared, constraints)? {
+            if !self.manual_doc_matches(&doc, query, prepared, constraints, budget)? {
                 continue;
             }
             out.push(self.document_to_candidate(&doc, boosted_score, &center_terms)?);
@@ -6230,6 +6271,7 @@ impl TantivySearcher {
         query: &LqQuery,
         prepared: &PreparedExecutableQuery,
         constraints: &QueryConstraintSetV1,
+        budget: &RequestBudgetV1,
     ) -> Result<bool, CoreError> {
         if stored_text(doc, self.fields.doc_kind).as_deref() != Some(prepared.doc_kind.as_str()) {
             return Ok(false);
@@ -6264,6 +6306,7 @@ impl TantivySearcher {
             &repo_relative_path,
             &content,
             include_path_terms,
+            budget,
         )? {
             return Ok(false);
         }
@@ -6274,6 +6317,7 @@ impl TantivySearcher {
                 &source_repo_id,
                 &repo_relative_path,
                 &content,
+                budget,
             )? {
                 return Ok(false);
             }
@@ -6356,6 +6400,7 @@ impl TantivySearcher {
         prepared: &PreparedExecutableQuery,
         constraints: &QueryConstraintSetV1,
         limit: usize,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<SymbolCandidate>, CoreError> {
         let searcher = self.reader.searcher();
         let doc_limit = Self::corpus_docs(&searcher, "unindexed symbol scan")?;
@@ -6367,15 +6412,25 @@ impl TantivySearcher {
         if doc_limit == 0 {
             return Ok(Vec::new());
         }
-        let hits = searcher
-            .search(&AllQuery, &TopDocs::with_limit(doc_limit))
-            .map_err(|err| CoreError::Storage(format!("lexical: symbol unindexed scan: {err}")))?;
+        let hits = budgeted_search(
+            &searcher,
+            &AllQuery,
+            &TopDocs::with_limit(doc_limit),
+            budget,
+            "lexical:scan",
+        )?;
         let include_path_terms =
             Self::enables_path_term_surface(&prepared.predicate_plan.expr, &query.options);
         let boosted_score = Self::apply_query_boost_score(1.0, &query.options);
         let center_terms = snippet_center_terms(query);
         let mut out: Vec<SymbolCandidate> = Vec::new();
+        let probe = BudgetProbe::new(budget);
         for (_score, doc_address) in hits {
+            if probe.tick()
+                && let Some(interruption) = probe.interruption_error("lexical:scan")
+            {
+                return Err(interruption);
+            }
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
@@ -6412,6 +6467,7 @@ impl TantivySearcher {
                 &repo_relative_path,
                 &content,
                 include_path_terms,
+                budget,
             )? {
                 continue;
             }
@@ -6423,6 +6479,7 @@ impl TantivySearcher {
                     &source_repo_id,
                     &repo_relative_path,
                     &content,
+                    budget,
                 )? {
                     allowed = false;
                     break;
@@ -6628,6 +6685,7 @@ impl TantivySearcher {
     fn collect_matching_paths_for_leaf(
         &self,
         leaf: &LqLeaf,
+        budget: &RequestBudgetV1,
     ) -> Result<BTreeSet<String>, CoreError> {
         // Predicate scope collection (`file.contains` / `file.has.content`)
         // intentionally compiles with `LqPatternType::Standard` regardless of
@@ -6636,7 +6694,7 @@ impl TantivySearcher {
         // to the user-facing executor pass downstream.
         let scope_options = standard_pattern_options();
         let compiled = self.with_doc_kind(
-            self.compile_leaf(leaf, &scope_options, false)?,
+            self.compile_leaf(leaf, &scope_options, false, budget)?,
             TEXT_DOC_KIND,
         );
         let searcher = self.reader.searcher();
@@ -6648,9 +6706,13 @@ impl TantivySearcher {
         if limit == 0 {
             return Ok(BTreeSet::new());
         }
-        let hits = searcher
-            .search(&*compiled, &TopDocs::with_limit(limit))
-            .map_err(|err| CoreError::Storage(format!("lexical: predicate scope search: {err}")))?;
+        let hits = budgeted_search(
+            &searcher,
+            &*compiled,
+            &TopDocs::with_limit(limit),
+            budget,
+            "lexical:predicate-scope",
+        )?;
         let mut out: BTreeSet<String> = BTreeSet::new();
         for (_, doc_address) in hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
@@ -6787,6 +6849,7 @@ impl TantivySearcher {
         &self,
         source: &str,
         options: &LqOptions,
+        budget: &RequestBudgetV1,
     ) -> Result<Arc<BTreeSet<String>>, CoreError> {
         let normalized_source = Self::regex_source_for_options(source, options);
         let cache_key = options
@@ -6852,13 +6915,26 @@ impl TantivySearcher {
                         .to_string(),
             });
         }
+        // The request budget is observed between candidates (W5 phase 2);
+        // the probe looks every interval so a large candidate set costs
+        // nothing extra per document.
+        let probe = BudgetProbe::new(budget);
         let verified_doc_ids = executor
-            .execute_with_budget(&prefiltered_doc_ids, &resolver, budget_ms)
+            .execute_interruptible(&prefiltered_doc_ids, &resolver, budget_ms, &|| {
+                probe.tick()
+            })
             .map_err(|err| match err.code {
                 quanta_index_lq_regex::RegexErrorCode::QueryTimeout => CoreError::Typed {
                     code: LexicalErrorCode::QueryTimeout.as_code_str().to_string(),
                     message: format!("lexical: regex verify timed out: {err}"),
                 },
+                quanta_index_lq_regex::RegexErrorCode::Interrupted => probe
+                    .interruption_error("lexical:regex-verify")
+                    .unwrap_or_else(|| {
+                        CoreError::Storage(format!(
+                            "lexical: regex verify reported an interruption the budget probe did not observe: {err}"
+                        ))
+                    }),
                 quanta_index_lq_regex::RegexErrorCode::ParseFail
                 | quanta_index_lq_regex::RegexErrorCode::ForbiddenSyntax
                 | quanta_index_lq_regex::RegexErrorCode::PlanLimitExceeded
@@ -6929,6 +7005,7 @@ impl TantivySearcher {
         &self,
         constraint: &RepoFileConstraint,
         options: &LqOptions,
+        budget: &RequestBudgetV1,
     ) -> Result<Box<dyn Query>, CoreError> {
         let mut clauses: Vec<(Occur, Box<dyn Query>)> =
             Vec::with_capacity(constraint.matchers.len());
@@ -6947,7 +7024,7 @@ impl TantivySearcher {
                     // Lower through content_leaf_from_scalar so `/regex/` content
                     // stays a regex; compile_leaf builds the chunk_text query.
                     let leaf = content_leaf_from_scalar(&ContentScalarArg::Keyword(value.clone()));
-                    self.compile_leaf(&leaf, options, false)?
+                    self.compile_leaf(&leaf, options, false, budget)?
                 }
                 RepoFileMatcher::Language(value) => {
                     // normalize_language case-folds the value for the exact
@@ -6974,8 +7051,9 @@ impl TantivySearcher {
         &self,
         constraint: &RepoFileConstraint,
         options: &LqOptions,
+        budget: &RequestBudgetV1,
     ) -> Result<BTreeSet<String>, CoreError> {
-        let compiled = self.repo_has_file_path_query(constraint, options)?;
+        let compiled = self.repo_has_file_path_query(constraint, options, budget)?;
         let searcher = self.reader.searcher();
         let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
             CoreError::InvalidContract(format!(
@@ -6985,11 +7063,13 @@ impl TantivySearcher {
         if limit == 0 {
             return Ok(BTreeSet::new());
         }
-        let hits = searcher
-            .search(&*compiled, &TopDocs::with_limit(limit))
-            .map_err(|err| {
-                CoreError::Storage(format!("lexical: repo.has.file repo scope search: {err}"))
-            })?;
+        let hits = budgeted_search(
+            &searcher,
+            &*compiled,
+            &TopDocs::with_limit(limit),
+            budget,
+            "lexical:repo-scope",
+        )?;
         let mut out: BTreeSet<String> = BTreeSet::new();
         for (_, doc_address) in hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
@@ -7086,16 +7166,21 @@ impl TantivySearcher {
         &self,
         leaf: &LqLeaf,
         options: &LqOptions,
+        budget: &RequestBudgetV1,
     ) -> Result<Box<dyn Query>, CoreError> {
-        Ok(self.with_doc_kind(self.compile_leaf(leaf, options, false)?, TEXT_DOC_KIND))
+        Ok(self.with_doc_kind(
+            self.compile_leaf(leaf, options, false, budget)?,
+            TEXT_DOC_KIND,
+        ))
     }
 
     fn collect_repo_ids_for_repo_has_content(
         &self,
         leaf: &LqLeaf,
         options: &LqOptions,
+        budget: &RequestBudgetV1,
     ) -> Result<BTreeSet<String>, CoreError> {
-        let compiled = self.repo_has_content_query(leaf, options)?;
+        let compiled = self.repo_has_content_query(leaf, options, budget)?;
         let searcher = self.reader.searcher();
         let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
             CoreError::InvalidContract(format!(
@@ -7105,13 +7190,13 @@ impl TantivySearcher {
         if limit == 0 {
             return Ok(BTreeSet::new());
         }
-        let hits = searcher
-            .search(&*compiled, &TopDocs::with_limit(limit))
-            .map_err(|err| {
-                CoreError::Storage(format!(
-                    "lexical: repo.has.content repo scope search: {err}"
-                ))
-            })?;
+        let hits = budgeted_search(
+            &searcher,
+            &*compiled,
+            &TopDocs::with_limit(limit),
+            budget,
+            "lexical:repo-scope",
+        )?;
         let mut out: BTreeSet<String> = BTreeSet::new();
         for (_, doc_address) in hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
@@ -7349,6 +7434,7 @@ impl TantivySearcher {
     fn collect_candidate_ids_for_file_has_owner(
         &self,
         arg: &FileOwnerArg,
+        budget: &RequestBudgetV1,
     ) -> Result<BTreeSet<String>, CoreError> {
         let authority = self.file_ownership_authority()?;
         let searcher = self.reader.searcher();
@@ -7360,11 +7446,13 @@ impl TantivySearcher {
         if limit == 0 {
             return Ok(BTreeSet::new());
         }
-        let hits = searcher
-            .search(&AllQuery, &TopDocs::with_limit(limit))
-            .map_err(|err| {
-                CoreError::Storage(format!("lexical: file ownership authority scan: {err}"))
-            })?;
+        let hits = budgeted_search(
+            &searcher,
+            &AllQuery,
+            &TopDocs::with_limit(limit),
+            budget,
+            "lexical:authority-scan",
+        )?;
         let mut out: BTreeSet<String> = BTreeSet::new();
         for (_score, doc_address) in hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
@@ -7435,6 +7523,7 @@ impl TantivySearcher {
     fn collect_candidate_ids_for_file_has_contributor(
         &self,
         arg: &FileContributorArg,
+        budget: &RequestBudgetV1,
     ) -> Result<BTreeSet<String>, CoreError> {
         let authority = self.file_contributor_authority()?;
         let searcher = self.reader.searcher();
@@ -7457,11 +7546,13 @@ impl TantivySearcher {
             )?),
             ContributorPattern::Exact(_) => None,
         };
-        let hits = searcher
-            .search(&AllQuery, &TopDocs::with_limit(limit))
-            .map_err(|err| {
-                CoreError::Storage(format!("lexical: file contributor authority scan: {err}"))
-            })?;
+        let hits = budgeted_search(
+            &searcher,
+            &AllQuery,
+            &TopDocs::with_limit(limit),
+            budget,
+            "lexical:authority-scan",
+        )?;
         let mut out: BTreeSet<String> = BTreeSet::new();
         for (_score, doc_address) in hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
@@ -7526,6 +7617,7 @@ impl TantivySearcher {
     fn collect_matching_paths_for_content_scope(
         &self,
         constraint: &ContentPredicateConstraint,
+        budget: &RequestBudgetV1,
     ) -> Result<Option<BTreeSet<String>>, CoreError> {
         let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
         if let Some(ContentPathScope { pattern, scope }) = constraint.path_scope.as_ref() {
@@ -7556,11 +7648,13 @@ impl TantivySearcher {
         if limit == 0 {
             return Ok(Some(BTreeSet::new()));
         }
-        let hits = searcher
-            .search(&*compiled, &TopDocs::with_limit(limit))
-            .map_err(|err| {
-                CoreError::Storage(format!("lexical: scoped content path search: {err}"))
-            })?;
+        let hits = budgeted_search(
+            &searcher,
+            &*compiled,
+            &TopDocs::with_limit(limit),
+            budget,
+            "lexical:content-scope",
+        )?;
         let mut out: BTreeSet<String> = BTreeSet::new();
         for (_, doc_address) in hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
@@ -7576,6 +7670,7 @@ impl TantivySearcher {
     fn collect_candidate_ids_for_paths(
         &self,
         paths: &BTreeSet<String>,
+        budget: &RequestBudgetV1,
     ) -> Result<BTreeSet<String>, CoreError> {
         if paths.is_empty() {
             return Ok(BTreeSet::new());
@@ -7590,11 +7685,13 @@ impl TantivySearcher {
         if limit == 0 {
             return Ok(BTreeSet::new());
         }
-        let hits = searcher
-            .search(&*compiled, &TopDocs::with_limit(limit))
-            .map_err(|err| {
-                CoreError::Storage(format!("lexical: scoped content candidate search: {err}"))
-            })?;
+        let hits = budgeted_search(
+            &searcher,
+            &*compiled,
+            &TopDocs::with_limit(limit),
+            budget,
+            "lexical:content-scope",
+        )?;
         let mut out: BTreeSet<String> = BTreeSet::new();
         for (_, doc_address) in hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
@@ -7610,10 +7707,13 @@ impl TantivySearcher {
     fn allowed_paths_for_content_predicate(
         &self,
         constraint: &ContentPredicateConstraint,
+        budget: &RequestBudgetV1,
     ) -> Result<BTreeSet<String>, CoreError> {
         let content_leaf = self.predicate_content_leaf_from_constraint(constraint);
-        let content_paths = self.collect_matching_paths_for_leaf(&content_leaf)?;
-        let Some(scope_paths) = self.collect_matching_paths_for_content_scope(constraint)? else {
+        let content_paths = self.collect_matching_paths_for_leaf(&content_leaf, budget)?;
+        let Some(scope_paths) =
+            self.collect_matching_paths_for_content_scope(constraint, budget)?
+        else {
             return Ok(content_paths);
         };
         Ok(content_paths.intersection(&scope_paths).cloned().collect())
@@ -7622,9 +7722,10 @@ impl TantivySearcher {
     fn allowed_candidate_ids_for_content_predicate(
         &self,
         constraint: &ContentPredicateConstraint,
+        budget: &RequestBudgetV1,
     ) -> Result<BTreeSet<String>, CoreError> {
-        let allowed_paths = self.allowed_paths_for_content_predicate(constraint)?;
-        self.collect_candidate_ids_for_paths(&allowed_paths)
+        let allowed_paths = self.allowed_paths_for_content_predicate(constraint, budget)?;
+        self.collect_candidate_ids_for_paths(&allowed_paths, budget)
     }
 
     fn repo_has_file_constraint(
@@ -7652,6 +7753,7 @@ impl TantivySearcher {
         &self,
         name: &str,
         args: &[LqPredicateArg],
+        budget: &RequestBudgetV1,
     ) -> Result<LqExpr, CoreError> {
         let Some((canonical_name, canonical_args)) =
             self.canonicalize_predicate_call(name, args)?
@@ -7722,7 +7824,7 @@ impl TantivySearcher {
             Some(PredicateKind::ContentLeaf) => {
                 let constraint =
                     self.content_predicate_constraint(&canonical_name, &canonical_args)?;
-                drop(self.allowed_candidate_ids_for_content_predicate(&constraint)?);
+                drop(self.allowed_candidate_ids_for_content_predicate(&constraint, budget)?);
                 Ok(LqExpr::Leaf(LqLeaf::Predicate {
                     name: canonical_name,
                     args: canonical_args,
@@ -7734,28 +7836,32 @@ impl TantivySearcher {
         }
     }
 
-    fn lower_predicates_for_boolean_scope(&self, expr: &LqExpr) -> Result<LqExpr, CoreError> {
+    fn lower_predicates_for_boolean_scope(
+        &self,
+        expr: &LqExpr,
+        budget: &RequestBudgetV1,
+    ) -> Result<LqExpr, CoreError> {
         match expr {
             LqExpr::Leaf(LqLeaf::Predicate { name, args }) => {
-                self.lower_predicate_for_boolean_scope(name, args)
+                self.lower_predicate_for_boolean_scope(name, args, budget)
             }
             LqExpr::Empty | LqExpr::Leaf(_) => Ok(expr.clone()),
             LqExpr::All(parts) => {
                 let mut out: Vec<LqExpr> = Vec::with_capacity(parts.len());
                 for part in parts {
-                    out.push(self.lower_predicates_for_boolean_scope(part)?);
+                    out.push(self.lower_predicates_for_boolean_scope(part, budget)?);
                 }
                 Ok(collapse_exprs(out, true))
             }
             LqExpr::Any(parts) => {
                 let mut out: Vec<LqExpr> = Vec::with_capacity(parts.len());
                 for part in parts {
-                    out.push(self.lower_predicates_for_boolean_scope(part)?);
+                    out.push(self.lower_predicates_for_boolean_scope(part, budget)?);
                 }
                 Ok(collapse_exprs(out, false))
             }
             LqExpr::Not(inner) => Ok(LqExpr::Not(Box::new(
-                self.lower_predicates_for_boolean_scope(inner)?,
+                self.lower_predicates_for_boolean_scope(inner, budget)?,
             ))),
         }
     }
@@ -7763,6 +7869,7 @@ impl TantivySearcher {
     fn extract_predicate_plan(
         &self,
         expr: &LqExpr,
+        budget: &RequestBudgetV1,
     ) -> Result<
         (
             LqExpr,
@@ -7864,7 +7971,8 @@ impl TantivySearcher {
                 let mut repo_predicates: Vec<RepoScopeConstraint> = Vec::new();
                 let mut file_predicates: Vec<ContentPredicateConstraint> = Vec::new();
                 for part in parts {
-                    let (lowered, repo_parts, file_parts) = self.extract_predicate_plan(part)?;
+                    let (lowered, repo_parts, file_parts) =
+                        self.extract_predicate_plan(part, budget)?;
                     if !matches!(lowered, LqExpr::Empty) {
                         exprs.push(lowered);
                     }
@@ -7878,14 +7986,18 @@ impl TantivySearcher {
                 ))
             }
             LqExpr::Any(_) | LqExpr::Not(_) => Ok((
-                self.lower_predicates_for_boolean_scope(expr)?,
+                self.lower_predicates_for_boolean_scope(expr, budget)?,
                 Vec::new(),
                 Vec::new(),
             )),
         }
     }
 
-    fn prepare_predicate_plan(&self, query: &LqQuery) -> Result<PreparedPredicatePlan, CoreError> {
+    fn prepare_predicate_plan(
+        &self,
+        query: &LqQuery,
+        budget: &RequestBudgetV1,
+    ) -> Result<PreparedPredicatePlan, CoreError> {
         if let LqExpr::Leaf(LqLeaf::Predicate { name, args }) = &query.expr {
             let Some((canonical_name, canonical_args)) =
                 self.canonicalize_predicate_call(name, args)?
@@ -7897,7 +8009,8 @@ impl TantivySearcher {
             if matches!(kind_of(&canonical_name), Some(PredicateKind::ContentLeaf)) {
                 let constraint =
                     self.content_predicate_constraint(&canonical_name, &canonical_args)?;
-                let allowed_paths = self.collect_matching_paths_for_content_scope(&constraint)?;
+                let allowed_paths =
+                    self.collect_matching_paths_for_content_scope(&constraint, budget)?;
                 if allowed_paths.as_ref().is_some_and(BTreeSet::is_empty) {
                     return Ok(PreparedPredicatePlan {
                         expr: LqExpr::Empty,
@@ -7917,15 +8030,16 @@ impl TantivySearcher {
                 });
             }
         }
-        let (expr, repo_constraints, file_predicates) = self.extract_predicate_plan(&query.expr)?;
+        let (expr, repo_constraints, file_predicates) =
+            self.extract_predicate_plan(&query.expr, budget)?;
         let mut allowed_repo_ids: Option<BTreeSet<String>> = None;
         for constraint in &repo_constraints {
             let repo_ids = match constraint {
                 RepoScopeConstraint::File(file) => {
-                    self.collect_repo_ids_for_repo_has_file(file, &query.options)?
+                    self.collect_repo_ids_for_repo_has_file(file, &query.options, budget)?
                 }
                 RepoScopeConstraint::Content(leaf) => {
-                    self.collect_repo_ids_for_repo_has_content(leaf, &query.options)?
+                    self.collect_repo_ids_for_repo_has_content(leaf, &query.options, budget)?
                 }
                 RepoScopeConstraint::CommitAfter(timeref) => {
                     self.collect_repo_ids_for_repo_has_commit_after(timeref)?
@@ -7961,7 +8075,7 @@ impl TantivySearcher {
         }
         let mut allowed_paths: Option<BTreeSet<String>> = None;
         for predicate in &file_predicates {
-            let paths = self.allowed_paths_for_content_predicate(predicate)?;
+            let paths = self.allowed_paths_for_content_predicate(predicate, budget)?;
             if paths.is_empty() {
                 return Ok(PreparedPredicatePlan {
                     expr: LqExpr::Empty,
@@ -8427,26 +8541,33 @@ impl TantivySearcher {
         expr: &LqExpr,
         options: &LqOptions,
         include_path_terms: bool,
+        budget: &RequestBudgetV1,
     ) -> Result<Box<dyn Query>, CoreError> {
         match expr {
             LqExpr::Empty => Ok(Box::new(AllQuery)),
-            LqExpr::Leaf(leaf) => self.compile_leaf(leaf, options, include_path_terms),
+            LqExpr::Leaf(leaf) => self.compile_leaf(leaf, options, include_path_terms, budget),
             LqExpr::All(parts) => {
                 let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(parts.len());
                 for part in parts {
-                    clauses.push((Occur::Must, self.compile_expr(part, options, false)?));
+                    clauses.push((
+                        Occur::Must,
+                        self.compile_expr(part, options, false, budget)?,
+                    ));
                 }
                 Ok(Box::new(BooleanQuery::new(clauses)))
             }
             LqExpr::Any(parts) => {
                 let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(parts.len());
                 for part in parts {
-                    clauses.push((Occur::Should, self.compile_expr(part, options, false)?));
+                    clauses.push((
+                        Occur::Should,
+                        self.compile_expr(part, options, false, budget)?,
+                    ));
                 }
                 Ok(Box::new(BooleanQuery::new(clauses)))
             }
             LqExpr::Not(inner) => {
-                let inner_q = self.compile_expr(inner, options, false)?;
+                let inner_q = self.compile_expr(inner, options, false, budget)?;
                 let clauses: Vec<(Occur, Box<dyn Query>)> =
                     vec![(Occur::Must, Box::new(AllQuery)), (Occur::MustNot, inner_q)];
                 Ok(Box::new(BooleanQuery::new(clauses)))
@@ -8482,8 +8603,10 @@ impl TantivySearcher {
         &self,
         source: &str,
         options: &LqOptions,
+        budget: &RequestBudgetV1,
     ) -> Result<Box<dyn Query>, CoreError> {
-        let candidate_ids = self.collect_matching_candidate_ids_for_regex(source, options)?;
+        let candidate_ids =
+            self.collect_matching_candidate_ids_for_regex(source, options, budget)?;
         if candidate_ids.is_empty() {
             return Ok(self.match_none_query());
         }
@@ -8495,6 +8618,7 @@ impl TantivySearcher {
         leaf: &LqLeaf,
         options: &LqOptions,
         include_path_terms: bool,
+        budget: &RequestBudgetV1,
     ) -> Result<Box<dyn Query>, CoreError> {
         let parser = self.query_parser(options, include_path_terms);
         let query_text = match leaf {
@@ -8505,7 +8629,7 @@ impl TantivySearcher {
                 // dialect filter, the trigram-missing threshold, and the
                 // typed `LEX_REGEX_*` error codes.
                 if options.pattern_type == LqPatternType::Regexp {
-                    return self.compile_regex_content_leaf(text, options);
+                    return self.compile_regex_content_leaf(text, options, budget);
                 }
                 if matches!(leaf, LqLeaf::RawString(_)) {
                     let candidate_ids =
@@ -8526,7 +8650,7 @@ impl TantivySearcher {
                 return Ok(self.candidate_restriction_query(&candidate_ids));
             }
             LqLeaf::Regex(text) => {
-                return self.compile_regex_content_leaf(text, options);
+                return self.compile_regex_content_leaf(text, options, budget);
             }
             LqLeaf::StructuralBlock(_) => {
                 return Err(CoreError::Typed {
@@ -8547,7 +8671,8 @@ impl TantivySearcher {
                     };
                     let constraint =
                         self.repo_has_file_constraint(&canonical_name, &canonical_args)?;
-                    let repo_ids = self.collect_repo_ids_for_repo_has_file(&constraint, options)?;
+                    let repo_ids =
+                        self.collect_repo_ids_for_repo_has_file(&constraint, options, budget)?;
                     if repo_ids.is_empty() {
                         return Ok(self.match_none_query());
                     }
@@ -8562,7 +8687,8 @@ impl TantivySearcher {
                         )));
                     };
                     let leaf = self.repo_content_constraint(&canonical_name, &canonical_args)?;
-                    let repo_ids = self.collect_repo_ids_for_repo_has_content(&leaf, options)?;
+                    let repo_ids =
+                        self.collect_repo_ids_for_repo_has_content(&leaf, options, budget)?;
                     if repo_ids.is_empty() {
                         return Ok(self.match_none_query());
                     }
@@ -8608,7 +8734,8 @@ impl TantivySearcher {
                         )));
                     };
                     let arg = self.file_owner_constraint(&canonical_name, &canonical_args)?;
-                    let candidate_ids = self.collect_candidate_ids_for_file_has_owner(&arg)?;
+                    let candidate_ids =
+                        self.collect_candidate_ids_for_file_has_owner(&arg, budget)?;
                     if candidate_ids.is_empty() {
                         return Ok(self.match_none_query());
                     }
@@ -8624,7 +8751,7 @@ impl TantivySearcher {
                     };
                     let arg = self.file_contributor_constraint(&canonical_name, &canonical_args)?;
                     let candidate_ids =
-                        self.collect_candidate_ids_for_file_has_contributor(&arg)?;
+                        self.collect_candidate_ids_for_file_has_contributor(&arg, budget)?;
                     if candidate_ids.is_empty() {
                         return Ok(self.match_none_query());
                     }
@@ -8672,14 +8799,14 @@ impl TantivySearcher {
                         self.content_predicate_constraint(&canonical_name, &canonical_args)?;
                     if constraint.has_scopes() {
                         let candidate_ids =
-                            self.allowed_candidate_ids_for_content_predicate(&constraint)?;
+                            self.allowed_candidate_ids_for_content_predicate(&constraint, budget)?;
                         if candidate_ids.is_empty() {
                             return Ok(self.match_none_query());
                         }
                         return Ok(self.candidate_restriction_query(&candidate_ids));
                     }
                     let lowered = self.predicate_content_leaf_from_constraint(&constraint);
-                    return self.compile_leaf(&lowered, options, false);
+                    return self.compile_leaf(&lowered, options, false, budget);
                 }
                 None => {
                     return Err(unimplemented_predicate(format!(
@@ -8697,6 +8824,7 @@ impl TantivySearcher {
         &self,
         filter: &LqFilter,
         options: &LqOptions,
+        budget: &RequestBudgetV1,
     ) -> Result<Option<Box<dyn Query>>, CoreError> {
         match filter {
             LqFilter::Repo { pattern, revs } => {
@@ -8718,7 +8846,9 @@ impl TantivySearcher {
             LqFilter::File { pattern, scope } => {
                 Ok(Some(self.compile_file_filter(pattern.as_str(), *scope)?))
             }
-            LqFilter::Content { leaf } => Ok(Some(self.compile_leaf(leaf, options, false)?)),
+            LqFilter::Content { leaf } => {
+                Ok(Some(self.compile_leaf(leaf, options, false, budget)?))
+            }
             LqFilter::Lang { id } => {
                 let Some(language) = normalize_language(id.as_str()) else {
                     return Err(CoreError::InvalidContract(
@@ -8801,6 +8931,7 @@ impl TantivySearcher {
         &self,
         query: &LqQuery,
         prepared: &PreparedPredicatePlan,
+        budget: &RequestBudgetV1,
     ) -> Result<Option<Box<dyn Query>>, CoreError> {
         if prepared.force_empty {
             return Ok(None);
@@ -8810,11 +8941,11 @@ impl TantivySearcher {
         if !matches!(prepared.expr, LqExpr::Empty) {
             clauses.push((
                 Occur::Must,
-                self.compile_expr(&prepared.expr, &query.options, include_path_terms)?,
+                self.compile_expr(&prepared.expr, &query.options, include_path_terms, budget)?,
             ));
         }
         for filter in &query.filters {
-            if let Some(compiled_filter) = self.compile_filter(filter, &query.options)? {
+            if let Some(compiled_filter) = self.compile_filter(filter, &query.options, budget)? {
                 clauses.push((Occur::Must, compiled_filter));
             }
         }
@@ -8846,22 +8977,24 @@ impl TantivySearcher {
         query: &LqQuery,
         prepared: &PreparedPredicatePlan,
         constraints: &QueryConstraintSetV1,
+        budget: &RequestBudgetV1,
     ) -> Result<Option<Box<dyn Query>>, CoreError> {
         if matches!(prepared.expr, LqExpr::Empty) && constraints.repo_relative_path_exact.is_some()
         {
             return Ok(Some(Box::new(AllQuery)));
         }
-        self.compile_query_from_prepared(query, prepared)
+        self.compile_query_from_prepared(query, prepared, budget)
     }
 
     fn prepare_executable_query(
         &self,
         query: &LqQuery,
         default_doc_kind: QueryDocKind,
+        budget: &RequestBudgetV1,
     ) -> Result<Option<PreparedExecutableQuery>, CoreError> {
         let (prepared_query, doc_kind) =
             self.prepare_query_for_doc_kind(query, default_doc_kind)?;
-        let predicate_plan = self.prepare_predicate_plan(&prepared_query)?;
+        let predicate_plan = self.prepare_predicate_plan(&prepared_query, budget)?;
         if predicate_plan.force_empty {
             return Ok(None);
         }
@@ -9288,6 +9421,7 @@ impl LexicalSearcher for TantivySearcher {
         query: &LqQuery,
         constraints: &QueryConstraintSetV1,
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<LexicalSearchPageV1, CoreError> {
         // This is the single text-query execution path. The unconstrained
         // port method delegates here so constraint support cannot drift into
@@ -9300,7 +9434,7 @@ impl LexicalSearcher for TantivySearcher {
             exact_total: Self::wants_exact_total(&effective_query).then_some(0),
         };
         let Some(prepared_query) =
-            self.prepare_executable_query(&effective_query, QueryDocKind::Text)?
+            self.prepare_executable_query(&effective_query, QueryDocKind::Text, budget)?
         else {
             return Ok(empty_page());
         };
@@ -9326,12 +9460,14 @@ impl LexicalSearcher for TantivySearcher {
                 constraints,
                 limit,
                 true,
+                budget,
             );
         }
         let Some(base) = self.compile_query_with_constraints(
             &prepared_query.query,
             &prepared_query.predicate_plan,
             constraints,
+            budget,
         )?
         else {
             return Ok(empty_page());
@@ -9352,6 +9488,7 @@ impl LexicalSearcher for TantivySearcher {
             } else {
                 "text search"
             },
+            budget,
         )?;
         let center_terms = snippet_center_terms(&effective_query);
         let mut out = Vec::with_capacity(collected.hits.len());
@@ -9452,8 +9589,14 @@ impl LexicalSearcher for TantivySearcher {
         &self,
         query: &LqQuery,
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<SymbolCandidate>, CoreError> {
-        self.search_symbols_constrained(query, &QueryConstraintSetV1::unconstrained(), top_k)
+        self.search_symbols_constrained(
+            query,
+            &QueryConstraintSetV1::unconstrained(),
+            top_k,
+            budget,
+        )
     }
 
     fn search_symbols_constrained(
@@ -9461,6 +9604,7 @@ impl LexicalSearcher for TantivySearcher {
         query: &LqQuery,
         constraints: &QueryConstraintSetV1,
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<SymbolCandidate>, CoreError> {
         // Single symbol-query execution path; the unconstrained entrypoint
         // delegates here to prevent planner and scoring drift.
@@ -9468,7 +9612,7 @@ impl LexicalSearcher for TantivySearcher {
             rewrite_symbol_name_predicate_query(query)?.unwrap_or_else(|| query.clone());
         LexicalPolicy::validate_query_with_constraints(&effective_query, constraints)?;
         let Some(prepared_query) =
-            self.prepare_executable_query(&effective_query, QueryDocKind::Symbol)?
+            self.prepare_executable_query(&effective_query, QueryDocKind::Symbol, budget)?
         else {
             return Ok(Vec::new());
         };
@@ -9493,12 +9637,14 @@ impl LexicalSearcher for TantivySearcher {
                 &prepared_query,
                 constraints,
                 limit,
+                budget,
             );
         }
         let Some(base) = self.compile_query_with_constraints(
             &prepared_query.query,
             &prepared_query.predicate_plan,
             constraints,
+            budget,
         )?
         else {
             return Ok(Vec::new());
@@ -9519,6 +9665,7 @@ impl LexicalSearcher for TantivySearcher {
             } else {
                 "symbol search"
             },
+            budget,
         )?;
         let center_terms = snippet_center_terms(&effective_query);
         let mut out = Vec::with_capacity(collected.hits.len());
@@ -9535,12 +9682,16 @@ impl LexicalSearcher for TantivySearcher {
         Ok(Self::stabilize_and_cap_symbol_hits(out, limit))
     }
 
-    fn search_symbols_all(&self, query: &LqQuery) -> Result<Vec<SymbolCandidate>, CoreError> {
+    fn search_symbols_all(
+        &self,
+        query: &LqQuery,
+        budget: &RequestBudgetV1,
+    ) -> Result<Vec<SymbolCandidate>, CoreError> {
         let effective_query =
             rewrite_symbol_name_predicate_query(query)?.unwrap_or_else(|| query.clone());
         LexicalPolicy::validate_query(&effective_query)?;
         let Some(prepared_query) =
-            self.prepare_executable_query(&effective_query, QueryDocKind::Symbol)?
+            self.prepare_executable_query(&effective_query, QueryDocKind::Symbol, budget)?
         else {
             return Ok(Vec::new());
         };
@@ -9564,10 +9715,14 @@ impl LexicalSearcher for TantivySearcher {
                 &prepared_query,
                 &QueryConstraintSetV1::unconstrained(),
                 limit,
+                budget,
             );
         }
-        let Some(base) = self
-            .compile_query_from_prepared(&prepared_query.query, &prepared_query.predicate_plan)?
+        let Some(base) = self.compile_query_from_prepared(
+            &prepared_query.query,
+            &prepared_query.predicate_plan,
+            budget,
+        )?
         else {
             return Ok(Vec::new());
         };
@@ -9579,6 +9734,7 @@ impl LexicalSearcher for TantivySearcher {
             limit,
             true,
             "symbol scope materialization",
+            budget,
         )?;
         let center_terms = snippet_center_terms(&effective_query);
         let mut out = Vec::with_capacity(collected.hits.len());
@@ -9595,10 +9751,16 @@ impl LexicalSearcher for TantivySearcher {
         Ok(Self::stabilize_and_cap_symbol_hits(out, limit))
     }
 
-    fn search_all(&self, query: &LqQuery) -> Result<Vec<LexicalCandidate>, CoreError> {
+    fn search_all(
+        &self,
+        query: &LqQuery,
+        budget: &RequestBudgetV1,
+    ) -> Result<Vec<LexicalCandidate>, CoreError> {
         let constraints = &QueryConstraintSetV1::unconstrained();
         LexicalPolicy::validate_query_with_constraints(query, constraints)?;
-        let Some(prepared_query) = self.prepare_executable_query(query, QueryDocKind::Text)? else {
+        let Some(prepared_query) =
+            self.prepare_executable_query(query, QueryDocKind::Text, budget)?
+        else {
             return Ok(Vec::new());
         };
         planner_preflight_expr(
@@ -9618,13 +9780,14 @@ impl LexicalSearcher for TantivySearcher {
         if Self::uses_unindexed_scan(&query.options) {
             Self::ensure_manual_scan_supports_constraints(constraints, "lexical")?;
             let page =
-                self.manual_text_search(query, &prepared_query, constraints, limit, false)?;
+                self.manual_text_search(query, &prepared_query, constraints, limit, false, budget)?;
             return Ok(Self::collapse_repo_projection(query, page.candidates));
         }
         let Some(base) = self.compile_query_with_constraints(
             &prepared_query.query,
             &prepared_query.predicate_plan,
             constraints,
+            budget,
         )?
         else {
             return Ok(Vec::new());
@@ -9638,6 +9801,7 @@ impl LexicalSearcher for TantivySearcher {
             limit,
             true,
             "structural scope materialization",
+            budget,
         )?;
         let center_terms = snippet_center_terms(query);
         let mut out = Vec::with_capacity(collected.hits.len());
@@ -9672,6 +9836,7 @@ impl LexicalSearcher for TantivySearcher {
         query: &LqQuery,
         constraints: &QueryConstraintSetV1,
         candidate_id: &str,
+        budget: &RequestBudgetV1,
     ) -> Result<LexicalCandidateExplanationV1, CoreError> {
         // The same preparation as `search_constrained`, step for step, so
         // the plan that scores this one document is the plan that ranked it.
@@ -9685,7 +9850,7 @@ impl LexicalSearcher for TantivySearcher {
             })
         };
         let Some(prepared_query) =
-            self.prepare_executable_query(&effective_query, QueryDocKind::Text)?
+            self.prepare_executable_query(&effective_query, QueryDocKind::Text, budget)?
         else {
             return match self.locate_candidate(&searcher, candidate_id, TEXT_DOC_KIND)? {
                 Some(_) => not_matched("the plan matches no document"),
@@ -9708,7 +9873,13 @@ impl LexicalSearcher for TantivySearcher {
         let boost_factor = Self::boost_factor(&effective_query.options);
         if Self::uses_unindexed_scan(&effective_query.options) {
             Self::ensure_manual_scan_supports_constraints(constraints, "lexical")?;
-            if !self.manual_doc_matches(&doc, &effective_query, &prepared_query, constraints)? {
+            if !self.manual_doc_matches(
+                &doc,
+                &effective_query,
+                &prepared_query,
+                constraints,
+                budget,
+            )? {
                 return not_matched("the unindexed scan does not match the document");
             }
             return Ok(LexicalCandidateExplanationV1::Matched(
@@ -9724,6 +9895,7 @@ impl LexicalSearcher for TantivySearcher {
             &prepared_query.query,
             &prepared_query.predicate_plan,
             constraints,
+            budget,
         )?
         else {
             return not_matched("the plan compiles to nothing");

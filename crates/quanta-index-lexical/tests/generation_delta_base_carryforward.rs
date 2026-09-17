@@ -36,7 +36,7 @@ use quanta_index_contract::{
     SearchScopeKey, SearchScopeSurface,
 };
 use quanta_index_core::{
-    LexicalIndexOpenPort, RepoCommitRecencyIngestPort, SearchCorpusBatchBuildPort,
+    LexicalIndexOpenPort, RepoCommitRecencyIngestPort, RequestBudgetV1, SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 
@@ -197,7 +197,7 @@ fn hit_ids(
 ) -> Result<Vec<String>, Box<dyn Error>> {
     let searcher = adapter.open(&repo(), &revision(), generation)?;
     let mut ids: Vec<String> = searcher
-        .search(&keyword_query(term), 16)?
+        .search(&keyword_query(term), 16, &RequestBudgetV1::unbounded())?
         .iter()
         .map(|candidate| candidate.candidate_id.clone())
         .collect();
@@ -571,7 +571,7 @@ fn leaf_hit_ids(
 ) -> Result<Vec<String>, Box<dyn Error>> {
     let searcher = adapter.open(&repo(), &revision(), generation)?;
     let mut ids: Vec<String> = searcher
-        .search(&leaf_query(leaf), 64)?
+        .search(&leaf_query(leaf), 64, &RequestBudgetV1::unbounded())?
         .iter()
         .map(|candidate| candidate.candidate_id.clone())
         .collect();

@@ -2,11 +2,15 @@
 //!
 //! A request carries one absolute deadline and one cancellation flag from
 //! the transport down to the last collector. Native work cannot be
-//! interrupted (G0-R pinned that), so the budget is cooperative: execution
-//! calls [`RequestBudgetV1::checkpoint`] at its own boundaries — before a
-//! native search, between lanes, before encoding — and stops there with a
-//! typed interruption naming the checkpoint that observed it. A request that
-//! "was cancelled" always names where, never merely that the client left.
+//! interrupted from outside (G0-R pinned that), so the budget is
+//! cooperative: execution calls [`RequestBudgetV1::checkpoint`] at its own
+//! boundaries — before a native search, between lanes, before encoding —
+//! and, since W5 phase 2, the lexical adapter observes the budget inside
+//! its native scans and candidate loops through a probe and reports what
+//! it saw with [`RequestBudgetV1::interrupted_at`]. Either way execution
+//! stops with a typed interruption naming the checkpoint that observed it.
+//! A request that "was cancelled" always names where, never merely that
+//! the client left.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -116,17 +120,26 @@ impl RequestBudgetV1 {
 
     /// Stop here if the request is over budget, naming the checkpoint.
     ///
-    /// Execution places these at every boundary it owns; whatever native
-    /// call sits between two checkpoints runs to completion regardless,
-    /// which is the honest limit of cooperative cancellation.
+    /// Execution places these at every boundary it owns; a native call
+    /// between two checkpoints observes the budget through its own probe
+    /// where it can (W5 phase 2) and runs to completion where it cannot.
     pub fn checkpoint(&self, stage: &'static str) -> Result<(), CoreError> {
-        match self.interruption() {
-            None => Ok(()),
-            Some(BudgetInterruptionV1::Cancelled) => Err(CoreError::Typed {
+        self.interrupted_at(stage).map_or(Ok(()), Err)
+    }
+
+    /// The typed interruption a checkpoint at `stage` would raise now, if
+    /// any.
+    ///
+    /// For code that observed the budget elsewhere (inside a native scan)
+    /// and reports the interruption after the scan unwound.
+    #[must_use]
+    pub fn interrupted_at(&self, stage: &'static str) -> Option<CoreError> {
+        match self.interruption()? {
+            BudgetInterruptionV1::Cancelled => Some(CoreError::Typed {
                 code: REQUEST_CANCELLED_CODE.to_string(),
                 message: format!("request cancelled by its peer; observed at checkpoint `{stage}`"),
             }),
-            Some(BudgetInterruptionV1::DeadlineExceeded { over_by }) => Err(CoreError::Typed {
+            BudgetInterruptionV1::DeadlineExceeded { over_by } => Some(CoreError::Typed {
                 code: REQUEST_DEADLINE_EXCEEDED_CODE.to_string(),
                 message: format!(
                     "request deadline exceeded by {}ms; observed at checkpoint `{stage}`",

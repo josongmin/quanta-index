@@ -313,7 +313,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + QI-BB-032 idempotency catalog(§3.16) + **QI-BB-020 auxiliary authority rows(§3.19, catalog 확장: per-record row, validate→persist→apply, Arc snapshot read, retention prune, legacy 일회 migration)** 완료. 남은 것: quarantine control surface, aux read epoch/visibility interval(§3.19 한계) |
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + QI-BB-027 ANN sealed contract(§3.23) + **QI-BB-016 lexical writer envelope(§3.26)** 완료. 남은 것: sharded sidecar 포맷(O(delta) write), seal마다 ANN 전체 재구축(O(N), §3.23 한계), scope 단위 streamed embed→append(§3.18 한계) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), streaming projection collector |
-| W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. QI-BB-014 UDS/state-root private hardening(§3.27) 완료. **QI-BB-015 metrics 집계 + scrape(§3.28)** 완료 — overload/refusal/hangup 서버 metric은 `IpcServerCounters`로 여기서 닫힘. 남은 것: cancel을 lexical collector 내부(candidate batch 사이)까지 내리기, shared mode(group/ACL + peer credential) |
+| W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. QI-BB-014 UDS/state-root private hardening(§3.27) 완료. QI-BB-015 metrics 집계 + scrape(§3.28) 완료. **phase 2(§3.29): budget이 lexical native collect/scan/regex verify/predicate scope 안에서 관측** 완료. 남은 것: shared mode(group/ACL + peer credential), semantic lane 내부 관측 |
 | W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + QI-BB-018 true hybrid(§3.22) + QI-BB-022 explain = exact presence + lexical score trace(§3.24) + **QI-BB-008 RepoMap bounded query + durable store(§3.25)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), history relevance order(Tantivy history index, §3.20 한계), judged corpus recall/NDCG gate(§3.22 한계), hybrid 후보의 per-lane contribution(§3.24 한계) |
 | W7 | planned | |
 | C1 | planned | |
@@ -1594,6 +1594,57 @@ counters를 만든다 — scrape에 등록되지 않으므로 이름은 나가�
 (e) Prometheus exposition에 `# HELP`는 없다(설명 문자열을 wire에 싣지 않음). (f) `IpcServerCountersSnapshot`은 field별
 atomic이지 set 전체가 원자적이지는 않다.
 
+## 3.29 W5 phase 2 — request budget는 lexical native scan과 candidate loop **안에서** 관측된다 (구현 완료)
+
+**진단 확정**: QI-BB-002 phase 1의 cooperative budget은 dispatcher의 checkpoint(`lexical:entry`/`lexical:search`/
+`lexical:project`)에서만 보였다 — tantivy collect, `index:no` 전량 scan, regex 후보 검증, predicate scope 전량 scan은 한번
+시작하면 corpus 끝까지 돌았고, 떠난 peer나 지난 deadline은 그 다음 checkpoint에서야 관측됐다. `LexicalSearcher` port는
+budget을 받지도 않았다.
+
+**구현**:
+
+- **port**: `LexicalSearcher::{search, search_constrained, search_symbols, search_symbols_constrained, search_symbols_all,
+  search_all, explain_candidate}`가 `budget: &RequestBudgetV1`을 받는다. dispatcher는 모든 call site에서 request의 budget을
+  그대로 넘긴다(구조적 lane의 `search_all`/`search_symbols_all` 포함). `RequestBudgetV1::interrupted_at(stage)`(checkpoint의
+  Option 형) 추가.
+- **adapter 내부 threading**: budget이 `prepare_executable_query → prepare_predicate_plan → 8종 predicate scan`, `compile_query_
+  with_constraints → compile_query_from_prepared → compile_expr/compile_leaf/compile_filter → compile_regex_content_leaf → regex
+  verify`, `manual_text/symbol_search → manual_doc_matches → manual_predicate/expr/leaf/filter_matches`까지 **명시적 인자**로
+  간다(thread-local 등 암묵 context 없음 — 새 scan을 추가하면 signature가 budget을 요구한다).
+- **`budgeted_search`** (`lexical::budgeted_search`, crate-private): `Searcher::search`를 재현하되 weight를 `BudgetedWeight`로
+  감싼다. `scorer()`는 `BudgetedScorer`(advance/seek마다 tick, 관측 시 `TERMINATED`로 조기 소진 — `Count`, `for_each`,
+  `count()` 경로), `for_each_pruning`은 **inner에 위임하고 callback만 가로챈다** — block-WAND 유지, 관측 후엔 threshold
+  `Score::MAX`를 돌려 남은 block을 전부 prune. segment 사이에서는 budget을 직접 본다. `BudgetProbe`: 첫 tick과 이후
+  1,024 tick마다 `Instant::now()` 1회 + atomic load(sticky). query path의 native search 11곳 전부 이 함수로(collect_bounded 4
+  caller, manual scan 2, predicate/repo/content scope 5, authority scan 2).
+- **regex verify**: `lq-regex::RegexExecutor::execute_interruptible(candidates, corpus, budget_ms, &dyn Fn() -> bool)` +
+  `RegexErrorCode::Interrupted`("INTERRUPTED", 멈춘 후보 index 명시). 기존 `execute_with_budget`은 `&|| false`로 위임. adapter는
+  Interrupted를 `probe.interruption_error("lexical:regex-verify")`로 typed 변환.
+- **manual scan loop**: doc마다 probe tick, 관측 시 `lexical:scan` typed.
+- checkpoint 이름: `lexical:collect`, `lexical:scan`, `lexical:regex-verify`, `lexical:predicate-scope`, `lexical:repo-scope`,
+  `lexical:content-scope`, `lexical:authority-scan`.
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| unbounded budget은 Count/TopDocs 결과 그대로 | `budgeted_search::tests::an_unbounded_budget_collects_everything` |
+| probe는 첫 tick + 1,025번째 tick에서 본다, sticky, 메시지에 stage | `the_probe_looks_on_the_first_tick_and_every_interval` |
+| cancel된 budget: 50,000 doc counting scorer가 **≤ 1,024 advance**에서 멈추고 `REQUEST_CANCELLED … checkpoint \`lexical:collect\``; 같은 query가 live budget이면 50,000 advance·count 50,000 | `a_cancelled_budget_stops_a_count_walk_within_one_interval` (scorer advance 수 oracle) |
+| 지난 deadline: 실제 term union(block-WAND) top-k에서 `REQUEST_DEADLINE_EXCEEDED` at `lexical:collect`, live면 10 hit | `a_passed_deadline_interrupts_a_top_k_term_union` |
+| 실 generation 3,000 doc: keyword query cancel/deadline → `lexical:collect`; regex(`token_[0-9]+`, 전 doc prefilter) cancel → `lexical:regex-verify`, 그 후 control이 serve하고 **cache된 뒤엔** `lexical:collect`에서 관측(QI-BB-024 cache와의 상호작용을 명시); `index:no` → `lexical:scan`; 각 control은 10 row(scan은 exact_total 3,000) | `lexical/tests/cancellation_inside_search.rs` (3 tests) |
+| dispatcher가 넘기는 budget은 request의 것: stub searcher가 받은 budget을 cancel하고 `stub:collect` checkpoint로 답하면 응답이 그 code/message이고 테스트가 쥔 budget 자체가 cancelled | `query_dispatcher::tests::the_request_budget_reaches_the_lexical_searcher` |
+| lq-regex: 3번째 check에서 true → 후보 2 앞에서 `INTERRUPTED`(index 명시), check 호출 3회; false면 결과 동일 | `executor::tests::execute_interruptible_stops_at_the_first_true_check` |
+| 기존 rail: lexical 79 + search-plane 246 + core 43 + lq-regex 74 unit/integration, perf-chaos 43, text-route hellgate 8, explain trace 3, metrics scrape 2 | 전부 green |
+
+**정직한 한계**: (a) `for_each_pruning`에서 block-WAND가 아닌 scorer(phrase, term-set/candidate restriction, range)는 관측 후
+callback 호출은 멈추지만 inner loop가 남은 doc의 score 계산은 계속한다 — collector 작업만 절약(`Count`/`for_each`/segment 경계는
+완전 조기 종료). (b) semantic(lancedb) 검색과 sidecar phrase/trigram lookup은 이 phase 밖 — dispatcher checkpoint만. (c) probe
+간격 1,024는 상수(측정 근거 없이 "Instant::now 1회 ≪ 1,024 posting" 추정). (d) e2e(실 daemon에서 mid-collect 시점에 peer
+disconnect)는 timing 의존이라 만들지 않았다 — adapter 단위(cancel된 budget으로 결정적)와 dispatcher 단위(budget 동일성)로 분해
+증명. (e) `RegexErrorCode::Interrupted`는 lq-regex wire code 집합에 추가된 새 코드(`INTERRUPTED`) — lexical adapter가 core
+code로 번역하므로 IPC에는 나가지 않는다.
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -1639,3 +1690,4 @@ atomic이지 set 전체가 원자적이지는 않다.
 | 2026-09-17 | (QI-BB-015 tree) | `just rust-hexagonal` / `just semgrep` / module-discipline / error-shape / digest / derive-allowlist / cargo-toml-hygiene / `just rust-public-api-update` / `just rust-cargo-modules-update` / `just rust-test-authority` / `just fmt-check` / clippy-lane `--workspace --all-targets` | 전부 green; public-api baseline(contract, sdk)·cargo-modules baseline(contract, core) 갱신은 additive |
 | 2026-09-17 | c6b5515 | `just rust-profile verify-rust` | RED — `searchctl::tests::render_metrics_json_round_trips_the_snapshot`: serde_json이 `+Inf` bucket bound를 `null`로 써서 `--output json`이 되읽히지 않음(fail-closed decode가 잡음). wire에서 `+Inf` bucket 제거, `count`가 대신(→ 다음 commit) |
 | 2026-09-17 | eabe133 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,132 passed / 0 failed (QI-BB-015 metrics 집계 + scrape, finite wire 포함) |
+| 2026-09-17 | (W5 phase 2 tree) | `cargow --lane test-fast-lane test -p {lexical,search-plane,lq-regex,core}` (643/643) + `searchd-runtime --test {e2e_perf_chaos,e2e_text_route_hellgate,e2e_explain_score_trace,e2e_metrics_scrape}` (56/56) + workspace clippy + hexagonal/semgrep/module-discipline/error-shape/public-api/cargo-modules | 전부 green. 첫 회차: regex cancel test가 `lexical:collect`에서 관측 → 원인은 control run이 먼저 regex match cache를 데운 것(정당한 동작) → cancel run을 먼저 돌리고 cache 뒤 동작을 두 번째 단언으로 추가 |

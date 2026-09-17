@@ -23,7 +23,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     LexicalExecutionBudgetV1, LexicalIndexOpenPort, LexicalSearcher, LexicalWriterPolicy,
-    RegexMatchCachePolicy, RegexMatchCacheStats, SearchCorpusBatchBuildPort,
+    RegexMatchCachePolicy, RegexMatchCacheStats, RequestBudgetV1, SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_lexical::regex::RegexPolicy;
@@ -118,7 +118,7 @@ fn adapter(
 
 fn ids(searcher: &dyn LexicalSearcher, source: &str) -> Result<Vec<String>, Box<dyn Error>> {
     let mut ids: Vec<String> = searcher
-        .search(&regex_query(source), 32)?
+        .search(&regex_query(source), 32, &RequestBudgetV1::unbounded())?
         .iter()
         .map(|candidate| candidate.candidate_id.clone())
         .collect();

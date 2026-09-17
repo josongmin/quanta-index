@@ -20,7 +20,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, LexicalCandidateExplanationV1, LexicalIndexOpenPort, LexicalScoreEngineV1,
-    LexicalScoreTraceV1, SearchCorpusBatchBuildPort,
+    LexicalScoreTraceV1, RequestBudgetV1, SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 
@@ -152,14 +152,19 @@ fn every_ranked_candidate_explains_to_exactly_its_emitted_score_in_rank_order() 
     let searcher = adapter.open(&repo(), &revision(), generation())?;
     let constraints = QueryConstraintSetV1::unconstrained();
     let query = keyword_query(&["needle"]);
-    let page = searcher.search_constrained(&query, &constraints, 10)?;
+    let page =
+        searcher.search_constrained(&query, &constraints, 10, &RequestBudgetV1::unbounded())?;
     if page.candidates.len() != 3 {
         return Err(format!("three documents contain the needle: {:?}", page.candidates).into());
     }
     let mut previous: Option<f32> = None;
     for candidate in &page.candidates {
-        let trace =
-            matched(searcher.explain_candidate(&query, &constraints, &candidate.candidate_id)?)?;
+        let trace = matched(searcher.explain_candidate(
+            &query,
+            &constraints,
+            &candidate.candidate_id,
+            &RequestBudgetV1::unbounded(),
+        )?)?;
         if trace.engine != LexicalScoreEngineV1::Bm25
             || (trace.emitted_score - candidate.score).abs() > SCORE_TOLERANCE
             || trace
@@ -197,7 +202,12 @@ fn every_ranked_candidate_explains_to_exactly_its_emitted_score_in_rank_order() 
         (&nothing, "first-other"),
         (&nothing, "dense"),
     ] {
-        match searcher.explain_candidate(plan, &constraints, unmatched)? {
+        match searcher.explain_candidate(
+            plan,
+            &constraints,
+            unmatched,
+            &RequestBudgetV1::unbounded(),
+        )? {
             LexicalCandidateExplanationV1::NotMatched { .. } => {}
             other @ (LexicalCandidateExplanationV1::NotIndexed
             | LexicalCandidateExplanationV1::Matched(_)) => {
@@ -224,8 +234,18 @@ fn a_boost_in_the_plan_is_the_weight_and_scales_the_emitted_score() -> TestResul
     let plain = keyword_query(&["needle"]);
     let mut boosted = plain.clone();
     boosted.options.boost_millis = Some(2_500);
-    let plain_trace = matched(searcher.explain_candidate(&plain, &constraints, "b")?)?;
-    let boosted_trace = matched(searcher.explain_candidate(&boosted, &constraints, "b")?)?;
+    let plain_trace = matched(searcher.explain_candidate(
+        &plain,
+        &constraints,
+        "b",
+        &RequestBudgetV1::unbounded(),
+    )?)?;
+    let boosted_trace = matched(searcher.explain_candidate(
+        &boosted,
+        &constraints,
+        "b",
+        &RequestBudgetV1::unbounded(),
+    )?)?;
     if (boosted_trace.boost_factor - 2.5).abs() > SCORE_TOLERANCE
         || (boosted_trace.engine_score - plain_trace.engine_score).abs() > SCORE_TOLERANCE
         || plain_trace
@@ -238,7 +258,8 @@ fn a_boost_in_the_plan_is_the_weight_and_scales_the_emitted_score() -> TestResul
     }
     // And the page agrees: the emitted score under the boosted plan is what
     // the boosted search returns.
-    let page = searcher.search_constrained(&boosted, &constraints, 10)?;
+    let page =
+        searcher.search_constrained(&boosted, &constraints, 10, &RequestBudgetV1::unbounded())?;
     let Some(top) = page
         .candidates
         .iter()
@@ -272,7 +293,8 @@ fn presence_is_an_exact_lookup_independent_of_the_corpus_around_the_candidate() 
     let searcher = adapter.open(&repo(), &revision(), generation())?;
     let constraints = QueryConstraintSetV1::unconstrained();
     let query = keyword_query(&["needle"]);
-    let page = searcher.search_constrained(&query, &constraints, 50)?;
+    let page =
+        searcher.search_constrained(&query, &constraints, 50, &RequestBudgetV1::unbounded())?;
     if page
         .candidates
         .iter()
@@ -280,7 +302,12 @@ fn presence_is_an_exact_lookup_independent_of_the_corpus_around_the_candidate() 
     {
         return Err("the fixture must bury the candidate below the page".into());
     }
-    let trace = matched(searcher.explain_candidate(&query, &constraints, "buried")?)?;
+    let trace = matched(searcher.explain_candidate(
+        &query,
+        &constraints,
+        "buried",
+        &RequestBudgetV1::unbounded(),
+    )?)?;
     if trace.emitted_score <= 0.0 {
         return Err(format!("the buried candidate is matched with a real score: {trace:?}").into());
     }
@@ -290,7 +317,12 @@ fn presence_is_an_exact_lookup_independent_of_the_corpus_around_the_candidate() 
     if searcher.candidate_presence("never-ingested")? != CandidatePresenceV1::NotIndexed {
         return Err("an unknown id is not indexed".into());
     }
-    match searcher.explain_candidate(&query, &constraints, "never-ingested")? {
+    match searcher.explain_candidate(
+        &query,
+        &constraints,
+        "never-ingested",
+        &RequestBudgetV1::unbounded(),
+    )? {
         LexicalCandidateExplanationV1::NotIndexed => Ok(()),
         other @ (LexicalCandidateExplanationV1::NotMatched { .. }
         | LexicalCandidateExplanationV1::Matched(_)) => {
@@ -315,7 +347,8 @@ fn an_unindexed_scan_explains_through_the_same_per_document_matcher() -> TestRes
     let mut query = keyword_query(&["needle"]);
     query.options.index_mode = Some(LqYesNoOnly::No);
     query.options.boost_millis = Some(3_000);
-    let page = searcher.search_constrained(&query, &constraints, 10)?;
+    let page =
+        searcher.search_constrained(&query, &constraints, 10, &RequestBudgetV1::unbounded())?;
     let Some(hit) = page
         .candidates
         .iter()
@@ -323,7 +356,12 @@ fn an_unindexed_scan_explains_through_the_same_per_document_matcher() -> TestRes
     else {
         return Err(format!("the scan returns the hit: {:?}", page.candidates).into());
     };
-    let trace = matched(searcher.explain_candidate(&query, &constraints, "hit")?)?;
+    let trace = matched(searcher.explain_candidate(
+        &query,
+        &constraints,
+        "hit",
+        &RequestBudgetV1::unbounded(),
+    )?)?;
     if trace.engine != LexicalScoreEngineV1::UnindexedScan
         || (trace.engine_score - 1.0).abs() > SCORE_TOLERANCE
         || (trace.emitted_score - hit.score).abs() > SCORE_TOLERANCE
@@ -335,7 +373,7 @@ fn an_unindexed_scan_explains_through_the_same_per_document_matcher() -> TestRes
         )
         .into());
     }
-    match searcher.explain_candidate(&query, &constraints, "miss")? {
+    match searcher.explain_candidate(&query, &constraints, "miss", &RequestBudgetV1::unbounded())? {
         LexicalCandidateExplanationV1::NotMatched { .. } => Ok(()),
         other @ (LexicalCandidateExplanationV1::NotIndexed
         | LexicalCandidateExplanationV1::Matched(_)) => {

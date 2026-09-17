@@ -27,7 +27,9 @@ use quanta_index_contract::{
     LqSpan, ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch,
     SearchCorpusReplaceScope, SearchScopeKey, SearchScopeSurface,
 };
-use quanta_index_core::{LexicalIndexOpenPort, LexicalSearcher, SearchCorpusBatchBuildPort};
+use quanta_index_core::{
+    LexicalIndexOpenPort, LexicalSearcher, RequestBudgetV1, SearchCorpusBatchBuildPort,
+};
 use quanta_index_lexical::LexicalAdapter;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -113,7 +115,7 @@ fn query(leaf: LqLeaf) -> LqQuery {
 
 fn hit_ids(searcher: &dyn LexicalSearcher, leaf: LqLeaf) -> Result<Vec<String>, Box<dyn Error>> {
     let mut ids: Vec<String> = searcher
-        .search(&query(leaf), 32)?
+        .search(&query(leaf), 32, &RequestBudgetV1::unbounded())?
         .iter()
         .map(|candidate| candidate.candidate_id.clone())
         .collect();

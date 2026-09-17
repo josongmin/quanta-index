@@ -267,6 +267,16 @@ fn map_compile_error(
                 detail: err.detail.to_string(),
             }
         }
+        // Only candidate verification can be interrupted; a compile that
+        // reports it is an executor defect, surfaced rather than mapped
+        // onto a construct the pattern does not have.
+        RegexErrorCode::Interrupted => RegexPlannerError::ParseError {
+            source: source.to_owned(),
+            detail: format!(
+                "compile reported an interruption, which only verification raises: {}",
+                err.detail
+            ),
+        },
         RegexErrorCode::ForbiddenSyntax => RegexPlannerError::UnsupportedFeature {
             feature: err.forbidden.map_or("forbidden_construct", forbidden_label),
         },

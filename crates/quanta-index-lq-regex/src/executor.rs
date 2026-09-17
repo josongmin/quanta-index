@@ -25,6 +25,9 @@
 //! Cooperative cancel: [`RegexExecutor::execute_with_budget`] iterates
 //! a candidate list, polling elapsed wall time after each candidate;
 //! exceed the budget → [`RegexErrorCode::QueryTimeout`].
+//! [`RegexExecutor::execute_interruptible`] additionally asks the caller's
+//! interruption check between candidates and stops with
+//! [`RegexErrorCode::Interrupted`] when it answers `true`.
 
 use core::time::Duration;
 use std::time::Instant;
@@ -124,6 +127,23 @@ impl RegexExecutor {
         corpus: &dyn DocResolver,
         budget_ms: u64,
     ) -> Result<Vec<DocId>, RegexError> {
+        self.execute_interruptible(candidates, corpus, budget_ms, &|| false)
+    }
+
+    /// [`RegexExecutor::execute_with_budget`] that also asks `interrupted`
+    /// before every candidate and stops with
+    /// [`RegexErrorCode::Interrupted`] once it answers `true`.
+    ///
+    /// The check is the caller's request budget (a peer that left, a
+    /// deadline that passed); the executor knows nothing of why and says
+    /// only where it stopped, so the caller can name the checkpoint.
+    pub fn execute_interruptible(
+        &self,
+        candidates: &[DocId],
+        corpus: &dyn DocResolver,
+        budget_ms: u64,
+        interrupted: &dyn Fn() -> bool,
+    ) -> Result<Vec<DocId>, RegexError> {
         let started = Instant::now();
         let budget = if budget_ms == 0 {
             None
@@ -131,7 +151,16 @@ impl RegexExecutor {
             Some(Duration::from_millis(budget_ms))
         };
         let mut out: Vec<DocId> = Vec::with_capacity(candidates.len());
-        for cand in candidates {
+        for (index, cand) in candidates.iter().enumerate() {
+            if interrupted() {
+                return Err(RegexError::new(
+                    RegexErrorCode::Interrupted,
+                    format!(
+                        "regex verify interrupted by the caller before candidate {index} of {}",
+                        candidates.len()
+                    ),
+                ));
+            }
             let bytes = corpus.resolve(*cand).ok_or_else(|| {
                 RegexError::new(
                     RegexErrorCode::ExecutionInternal,
@@ -411,6 +440,48 @@ mod tests {
         let m = fixture();
         let cands = vec![DocId(1), DocId(2), DocId(3), DocId(4)];
         match exec.execute_with_budget(&cands, &m, 0) {
+            Ok(v) => assert_eq!(v, vec![DocId(1), DocId(2)]),
+            Err(e) => assert!(false, "{e}"),
+        }
+    }
+
+    /// The interruption check is asked before every candidate, so a check
+    /// that turns true after `n` answers stops the verify at candidate `n`
+    /// with the verified prefix discarded and the stop named.
+    #[test]
+    fn execute_interruptible_stops_at_the_first_true_check() {
+        let exec = match RegexExecutor::compile(r"fn\s+handle_\w+") {
+            Ok(x) => x,
+            Err(e) => {
+                assert!(false, "{e}");
+                return;
+            }
+        };
+        let m = fixture();
+        let cands = vec![DocId(1), DocId(2), DocId(3), DocId(4)];
+        let asked = std::cell::Cell::new(0_usize);
+        let interrupted = || {
+            asked.set(asked.get().saturating_add(1));
+            asked.get() > 2
+        };
+        match exec.execute_interruptible(&cands, &m, 0, &interrupted) {
+            Ok(v) => assert!(false, "expected INTERRUPTED, got {v:?}"),
+            Err(e) => {
+                assert_eq!(e.code, RegexErrorCode::Interrupted);
+                assert!(
+                    e.detail.contains("before candidate 2 of 4"),
+                    "the stop is named: {}",
+                    e.detail
+                );
+            }
+        }
+        assert_eq!(
+            asked.get(),
+            3,
+            "the check is asked once per candidate until it answers true"
+        );
+        // A check that never answers true changes nothing.
+        match exec.execute_interruptible(&cands, &m, 0, &|| false) {
             Ok(v) => assert_eq!(v, vec![DocId(1), DocId(2)]),
             Err(e) => assert!(false, "{e}"),
         }

@@ -39,7 +39,7 @@ use quanta_index_contract::{
     LqSpan, ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch,
     SearchCorpusReplaceScope, SearchScopeKey, SearchScopeSurface,
 };
-use quanta_index_core::{LexicalIndexOpenPort, SearchCorpusBatchBuildPort};
+use quanta_index_core::{LexicalIndexOpenPort, RequestBudgetV1, SearchCorpusBatchBuildPort};
 use quanta_index_lexical::LexicalAdapter;
 use sha2::{Digest as _, Sha256};
 
@@ -421,7 +421,7 @@ fn measure_query(
     let mut hits = 0_usize;
     for _ in 0..samples {
         let started = Instant::now();
-        let result = searcher.search(&query, 64)?;
+        let result = searcher.search(&query, 64, &RequestBudgetV1::unbounded())?;
         collected.push(elapsed_ms(started));
         hits = result.len();
     }

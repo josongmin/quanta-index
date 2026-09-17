@@ -22,7 +22,7 @@ use quanta_index_contract::{
     RepoRelativePath, RevisionId, SearchCorpusIngestBatch, UpsertChunk,
 };
 use quanta_index_core::{
-    CoreError, LexicalIndexOpenPort, LexicalSearcher, SearchCorpusBatchBuildPort,
+    CoreError, LexicalIndexOpenPort, LexicalSearcher, RequestBudgetV1, SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 
@@ -206,7 +206,7 @@ fn fork_only_without_metadata_returns_typed_fork_unavailable() -> TestResult {
             mode: LqYesNoOnly::Only,
         }],
     );
-    let outcome = searcher.search(&q, 10);
+    let outcome = searcher.search(&q, 10, &RequestBudgetV1::unbounded());
     assert_typed_error(outcome, "LEX_FILTER_FORK_UNAVAILABLE")?;
     Ok(())
 }
@@ -226,7 +226,7 @@ fn archived_only_without_metadata_returns_typed_archived_unavailable() -> TestRe
             mode: LqYesNoOnly::Only,
         }],
     );
-    let outcome = searcher.search(&q, 10);
+    let outcome = searcher.search(&q, 10, &RequestBudgetV1::unbounded());
     assert_typed_error(outcome, "LEX_FILTER_ARCHIVED_UNAVAILABLE")?;
     Ok(())
 }
@@ -247,7 +247,7 @@ fn rev_filter_returns_not_implemented() -> TestResult {
             spec: "abc123".to_string(),
         }],
     );
-    let outcome = searcher.search(&q, 10);
+    let outcome = searcher.search(&q, 10, &RequestBudgetV1::unbounded());
     assert_not_implemented(outcome, "lexical: rev filter")?;
     Ok(())
 }
@@ -267,7 +267,7 @@ fn type_commit_returns_not_implemented() -> TestResult {
             kind: LqType::Commit,
         }],
     );
-    let outcome = searcher.search(&q, 10);
+    let outcome = searcher.search(&q, 10, &RequestBudgetV1::unbounded());
     assert_not_implemented(outcome, "lexical: type filter `commit`")?;
     Ok(())
 }
@@ -279,7 +279,7 @@ fn count_zero_returns_typed_invalid_count() -> TestResult {
     let mut opts = LqOptions::defaults();
     opts.count = Some(LqCountBound::Bounded(0));
     let q = make_query_with_options(LqExpr::Leaf(LqLeaf::Keyword("fox".to_string())), opts);
-    let outcome = searcher.search(&q, 10);
+    let outcome = searcher.search(&q, 10, &RequestBudgetV1::unbounded());
     assert_typed_error(outcome, "LEX_FILTER_INVALID_COUNT")?;
     Ok(())
 }
@@ -312,7 +312,7 @@ fn regex_leaf_small_corpus_returns_hits_via_planner() -> TestResult {
         LqExpr::Leaf(LqLeaf::Regex("foo.*r".to_string())),
         Vec::new(),
     );
-    let hits = searcher.search(&q, 10)?;
+    let hits = searcher.search(&q, 10, &RequestBudgetV1::unbounded())?;
     // Only `foobar` (in c2) matches the per-token regex `foo.*r`. c1 has
     // `fox` which does not match (no `r` after `foo`); c3 has no matching
     // token at all.
@@ -346,7 +346,7 @@ fn keyword_with_regexp_pattern_type_routes_through_planner_dialect_filter() -> T
     let mut opts = LqOptions::defaults();
     opts.pattern_type = LqPatternType::Regexp;
     let q = make_query_with_options(LqExpr::Leaf(LqLeaf::Keyword("(?<=x)y".to_string())), opts);
-    let outcome = searcher.search(&q, 10);
+    let outcome = searcher.search(&q, 10, &RequestBudgetV1::unbounded());
     assert_typed_error(outcome, "LEX_REGEX_DIALECT_UNSUPPORTED")?;
     Ok(())
 }

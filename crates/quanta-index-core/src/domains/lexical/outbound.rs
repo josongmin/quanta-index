@@ -7,6 +7,7 @@ use quanta_index_contract::{
 };
 
 use crate::error::CoreError;
+use crate::request_budget::RequestBudgetV1;
 
 /// Lexical readiness for a given generation. Reported by the lexical module to
 /// the hybrid orchestrator.
@@ -210,6 +211,12 @@ impl LexicalScoreEngineV1 {
 /// long, under what budget) is the search plane's snapshot registry's job,
 /// so a handle must be shareable across concurrent queries and must report
 /// what it keeps resident.
+///
+/// Every execution takes the request's [`RequestBudgetV1`] (W5 phase 2):
+/// an implementation observes it inside its native scans and candidate
+/// loops and answers the typed interruption naming where it looked, so a
+/// peer that left or a deadline that passed stops the work there rather
+/// than at the next checkpoint outside the adapter.
 pub trait LexicalSearcher: Send + Sync {
     /// Bytes this handle keeps resident while open: mapped index files plus
     /// decoded sidecars and metadata snapshots. An estimate taken at open
@@ -220,8 +227,13 @@ pub trait LexicalSearcher: Send + Sync {
 
     /// Unconstrained page of results; the constrained form is the one
     /// execution path.
-    fn search(&self, query: &LqQuery, top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError> {
-        self.search_constrained(query, &QueryConstraintSetV1::unconstrained(), top_k)
+    fn search(
+        &self,
+        query: &LqQuery,
+        top_k: u32,
+        budget: &RequestBudgetV1,
+    ) -> Result<Vec<LexicalCandidate>, CoreError> {
+        self.search_constrained(query, &QueryConstraintSetV1::unconstrained(), top_k, budget)
             .map(|page| page.candidates)
     }
 
@@ -233,6 +245,7 @@ pub trait LexicalSearcher: Send + Sync {
         query: &LqQuery,
         constraints: &QueryConstraintSetV1,
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<LexicalSearchPageV1, CoreError>;
 
     /// Project owner rows for the supplied lexical candidates.
@@ -251,6 +264,7 @@ pub trait LexicalSearcher: Send + Sync {
         &self,
         query: &LqQuery,
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<SymbolCandidate>, CoreError>;
 
     fn search_symbols_constrained(
@@ -258,9 +272,10 @@ pub trait LexicalSearcher: Send + Sync {
         query: &LqQuery,
         constraints: &QueryConstraintSetV1,
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<SymbolCandidate>, CoreError> {
         if constraints.is_unconstrained() {
-            self.search_symbols(query, top_k)
+            self.search_symbols(query, top_k, budget)
         } else {
             Err(CoreError::NotImplemented(
                 "symbol searcher does not provide native query-constraint pushdown".to_string(),
@@ -271,8 +286,12 @@ pub trait LexicalSearcher: Send + Sync {
     /// Return every symbol-domain match for the query within the opened
     /// generation. Callers use this when chunk-domain structural routing needs
     /// exact symbol-hit projection without top-k truncation.
-    fn search_symbols_all(&self, query: &LqQuery) -> Result<Vec<SymbolCandidate>, CoreError> {
-        self.search_symbols(query, u32::MAX)
+    fn search_symbols_all(
+        &self,
+        query: &LqQuery,
+        budget: &RequestBudgetV1,
+    ) -> Result<Vec<SymbolCandidate>, CoreError> {
+        self.search_symbols(query, u32::MAX, budget)
     }
 
     /// Return every lexical match for the query within the opened generation.
@@ -282,7 +301,11 @@ pub trait LexicalSearcher: Send + Sync {
     /// full-recall collect that QI-BB-005's execution budget must cap (W4).
     /// Semantic scope narrowing does not use it: a lexical scope is a ranked,
     /// capped `search_constrained` (QI-BB-004).
-    fn search_all(&self, query: &LqQuery) -> Result<Vec<LexicalCandidate>, CoreError>;
+    fn search_all(
+        &self,
+        query: &LqQuery,
+        budget: &RequestBudgetV1,
+    ) -> Result<Vec<LexicalCandidate>, CoreError>;
 
     /// Whether a candidate id is in this generation's index, by exact
     /// lookup (QI-BB-022). Never a ranked re-search, so the answer does not
@@ -300,5 +323,6 @@ pub trait LexicalSearcher: Send + Sync {
         query: &LqQuery,
         constraints: &QueryConstraintSetV1,
         candidate_id: &str,
+        budget: &RequestBudgetV1,
     ) -> Result<LexicalCandidateExplanationV1, CoreError>;
 }

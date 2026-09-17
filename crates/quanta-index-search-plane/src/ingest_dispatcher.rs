@@ -2227,6 +2227,7 @@ mod tests {
             _query: &quanta_index_contract::LqQuery,
             _constraints: &quanta_index_contract::QueryConstraintSetV1,
             _top_k: u32,
+            _budget: &RequestBudgetV1,
         ) -> Result<quanta_index_core::LexicalSearchPageV1, CoreError> {
             Err(CoreError::NotImplemented("pin-only handle".to_string()))
         }
@@ -2242,6 +2243,7 @@ mod tests {
             &self,
             _query: &quanta_index_contract::LqQuery,
             _top_k: u32,
+            _budget: &RequestBudgetV1,
         ) -> Result<Vec<quanta_index_contract::SymbolCandidate>, CoreError> {
             Err(CoreError::NotImplemented("pin-only handle".to_string()))
         }
@@ -2249,6 +2251,7 @@ mod tests {
         fn search_all(
             &self,
             _query: &quanta_index_contract::LqQuery,
+            _budget: &RequestBudgetV1,
         ) -> Result<Vec<quanta_index_contract::LexicalCandidate>, CoreError> {
             Err(CoreError::NotImplemented("pin-only handle".to_string()))
         }
@@ -2265,6 +2268,7 @@ mod tests {
             _query: &quanta_index_contract::LqQuery,
             _constraints: &quanta_index_contract::QueryConstraintSetV1,
             _candidate_id: &str,
+            _budget: &RequestBudgetV1,
         ) -> Result<quanta_index_core::LexicalCandidateExplanationV1, CoreError> {
             Err(CoreError::NotImplemented("pin-only handle".to_string()))
         }

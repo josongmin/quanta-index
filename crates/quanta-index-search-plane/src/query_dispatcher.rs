@@ -572,8 +572,12 @@ impl SearchPlaneDispatcher {
             self.acquire_lexical(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let fetch_top_k = lexical_fetch_limit_v1(&planned.query, request.top_k)?;
         budget.checkpoint("lexical:search")?;
-        let mut page =
-            searcher.search_constrained(&planned.query, &planned.constraints, fetch_top_k)?;
+        let mut page = searcher.search_constrained(
+            &planned.query,
+            &planned.constraints,
+            fetch_top_k,
+            budget,
+        )?;
         budget.checkpoint("lexical:project")?;
         stabilize_ranked_candidates(&mut page.candidates);
         let window = lexical_page_window_v1(&mut page, request.top_k, fetch_top_k)?;
@@ -640,6 +644,7 @@ impl SearchPlaneDispatcher {
             &prepared_language.query,
             &prepared_language.constraints,
             probe_top_k_v1(request.top_k)?,
+            budget,
         )?;
         let window = finalize_probe_window_v1(&mut results, request.top_k)?;
         Ok(SymbolQueryResponse {
@@ -713,6 +718,7 @@ impl SearchPlaneDispatcher {
                     &prepared_language.query,
                     &prepared_language.constraints,
                     internal_top_k,
+                    budget,
                 )?
                 .candidates
         };
@@ -819,6 +825,7 @@ impl SearchPlaneDispatcher {
                         &prepared_language.query,
                         &prepared_language.constraints,
                         scope_cap,
+                        budget,
                     )?
                     .candidates
             };
@@ -937,6 +944,7 @@ impl SearchPlaneDispatcher {
                     &prepared_language.query,
                     &prepared_language.constraints,
                     internal_top_k,
+                    budget,
                 )?
                 .candidates
         };
@@ -1249,7 +1257,12 @@ impl SearchPlaneDispatcher {
                 CandidatePresenceV1::NotIndexed => LexicalCandidateExplanationV1::NotIndexed,
             }
         } else {
-            searcher.explain_candidate(&planned.query, &planned.constraints, candidate_id)?
+            searcher.explain_candidate(
+                &planned.query,
+                &planned.constraints,
+                candidate_id,
+                budget,
+            )?
         };
         let presence = match explained {
             LexicalCandidateExplanationV1::NotIndexed => CandidatePresenceV1::NotIndexed,
@@ -2695,14 +2708,14 @@ impl LexicalSubexprEvaluator<'_> {
         // search; a boolean tree can hold many, so each one is a checkpoint.
         self.budget.checkpoint("structural:lexical-leaf")?;
         if symbol_name_predicate_leaf(expr) {
-            let results = searcher.search_symbols_all(&subquery)?;
+            let results = searcher.search_symbols_all(&subquery, self.budget)?;
             let structural_state = self.dispatcher.snapshot_structural_state(self.pin)?;
             return Ok(symbol_hits_to_structural_buckets(
                 results,
                 &structural_state,
             ));
         }
-        let results = searcher.search_all(&subquery)?;
+        let results = searcher.search_all(&subquery, self.budget)?;
         Ok(lexical_hits_to_structural_buckets(results))
     }
 }
@@ -6626,6 +6639,7 @@ mod tests {
             _query: &quanta_index_contract::LqQuery,
             _constraints: &QueryConstraintSetV1,
             _top_k: u32,
+            _budget: &RequestBudgetV1,
         ) -> Result<LexicalSearchPageV1, CoreError> {
             Ok(LexicalSearchPageV1 {
                 candidates: self.results.clone(),
@@ -6654,6 +6668,7 @@ mod tests {
             &self,
             _query: &quanta_index_contract::LqQuery,
             _top_k: u32,
+            _budget: &RequestBudgetV1,
         ) -> Result<Vec<SymbolCandidate>, CoreError> {
             Ok(self
                 .results
@@ -6665,6 +6680,7 @@ mod tests {
         fn search_all(
             &self,
             _query: &quanta_index_contract::LqQuery,
+            _budget: &RequestBudgetV1,
         ) -> Result<Vec<LexicalCandidate>, CoreError> {
             Ok(self.results.clone())
         }
@@ -6688,6 +6704,7 @@ mod tests {
             _query: &quanta_index_contract::LqQuery,
             _constraints: &QueryConstraintSetV1,
             candidate_id: &str,
+            _budget: &RequestBudgetV1,
         ) -> Result<LexicalCandidateExplanationV1, CoreError> {
             // The double scores every stub result at its carried score under
             // a unit boost; the boost arithmetic is the real adapter's to
@@ -6732,6 +6749,10 @@ mod tests {
         searched_queries: Vec<LqQuery>,
         searched_constraints: Vec<QueryConstraintSetV1>,
         symbol_constraints: Vec<QueryConstraintSetV1>,
+        /// When set, a text search cancels the budget it was handed and
+        /// answers as a native collect that observed the cancellation
+        /// would (W5 phase 2).
+        cancel_inside_search: bool,
     }
 
     struct RecordingLexicalSearcher {
@@ -6749,6 +6770,7 @@ mod tests {
             query: &quanta_index_contract::LqQuery,
             constraints: &QueryConstraintSetV1,
             top_k: u32,
+            budget: &RequestBudgetV1,
         ) -> Result<LexicalSearchPageV1, CoreError> {
             let mut guard = self
                 .state
@@ -6757,7 +6779,12 @@ mod tests {
             guard.search_top_ks.push(top_k);
             guard.searched_queries.push(query.clone());
             guard.searched_constraints.push(constraints.clone());
+            let cancel_inside_search = guard.cancel_inside_search;
             drop(guard);
+            if cancel_inside_search {
+                budget.cancel_handle().cancel();
+                budget.checkpoint("stub:collect")?;
+            }
             Ok(LexicalSearchPageV1 {
                 candidates: self.results.clone(),
                 exact_total: None,
@@ -6785,6 +6812,7 @@ mod tests {
             &self,
             _query: &quanta_index_contract::LqQuery,
             top_k: u32,
+            _budget: &RequestBudgetV1,
         ) -> Result<Vec<SymbolCandidate>, CoreError> {
             self.state
                 .lock()
@@ -6803,6 +6831,7 @@ mod tests {
             _query: &quanta_index_contract::LqQuery,
             constraints: &QueryConstraintSetV1,
             top_k: u32,
+            _budget: &RequestBudgetV1,
         ) -> Result<Vec<SymbolCandidate>, CoreError> {
             let mut guard = self
                 .state
@@ -6821,6 +6850,7 @@ mod tests {
         fn search_all(
             &self,
             _query: &quanta_index_contract::LqQuery,
+            _budget: &RequestBudgetV1,
         ) -> Result<Vec<LexicalCandidate>, CoreError> {
             Ok(self.results.clone())
         }
@@ -6844,6 +6874,7 @@ mod tests {
             _query: &quanta_index_contract::LqQuery,
             _constraints: &QueryConstraintSetV1,
             candidate_id: &str,
+            _budget: &RequestBudgetV1,
         ) -> Result<LexicalCandidateExplanationV1, CoreError> {
             // The double scores every stub result at its carried score under
             // a unit boost; the boost arithmetic is the real adapter's to
@@ -6984,6 +7015,59 @@ mod tests {
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected Error response, got {other:?}").into());
             }
+        }
+        Ok(())
+    }
+
+    /// The budget a route hands its searcher is the request's own (W5
+    /// phase 2).
+    ///
+    /// A cancellation the searcher observes mid-search comes back as the
+    /// typed interruption naming the searcher's checkpoint, and the
+    /// request's budget is the one that was cancelled.
+    #[test]
+    fn the_request_budget_reaches_the_lexical_searcher() -> TestResult {
+        let state = Arc::new(Mutex::new(RecordingLexicalState {
+            cancel_inside_search: true,
+            ..RecordingLexicalState::default()
+        }));
+        let dispatcher = SearchPlaneDispatcher::new(
+            Arc::new(RecordingLexicalOpener {
+                state: Arc::clone(&state),
+                results: vec![candidate("alpha", 1.0)],
+            }),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            ready_ledger(),
+            test_activation_catalog()?,
+        );
+        let pin = make_pin(
+            RepoId::new("repo-map-ipc"),
+            RevisionId::new("rev-map-ipc"),
+            ManifestGeneration::new(9),
+        );
+        let budget = RequestBudgetV1::unbounded();
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "alpha".into(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(pin),
+                generation_selector: None,
+                top_k: 2,
+            }),
+            &budget,
+        );
+        let (code, message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != REQUEST_CANCELLED_CODE || !message.contains("checkpoint `stub:collect`") {
+            return Err(
+                format!("the searcher's own observation is the answer: {code} {message}").into(),
+            );
+        }
+        if !budget.is_cancelled() {
+            return Err("the searcher cancelled the request's budget, not a copy".into());
         }
         Ok(())
     }

@@ -23,7 +23,7 @@ use quanta_index_contract::{
 use quanta_index_core::{
     GenerationStorageKeyV1, LEXICAL_WRITER_HEAP_BYTES_MIN, LexicalExecutionBudgetV1,
     LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalWriterPolicy, RegexMatchCachePolicy,
-    SearchCorpusBatchBuildPort,
+    RequestBudgetV1, SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_lexical::regex::RegexPolicy;
@@ -104,7 +104,9 @@ fn marker_query() -> LqQuery {
 
 fn hits(adapter: &LexicalAdapter, generation: u64) -> Result<usize, Box<dyn Error>> {
     let searcher = adapter.open(&repo(), &revision(), ManifestGeneration::new(generation))?;
-    Ok(searcher.search(&marker_query(), 10)?.len())
+    Ok(searcher
+        .search(&marker_query(), 10, &RequestBudgetV1::unbounded())?
+        .len())
 }
 
 /// Whether the generation's on-disk index carries a committed segment: an

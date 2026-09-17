@@ -29,7 +29,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, GenerationIdentityValidatePort, GenerationStorageKeyV1, LexicalIndexOpenPort,
-    SearchCorpusBatchBuildPort,
+    RequestBudgetV1, SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 
@@ -142,7 +142,9 @@ fn knock(adapter: &LexicalAdapter, generation: ManifestGeneration) -> Doors {
     let validate = adapter.validate_generation_identity(&identity(generation));
     let open = adapter
         .open(&repo(), &revision(), generation)
-        .and_then(|searcher| searcher.search(&query("sealed_needle"), 5))
+        .and_then(|searcher| {
+            searcher.search(&query("sealed_needle"), 5, &RequestBudgetV1::unbounded())
+        })
         .map(|hits| hits.len());
     Doors { validate, open }
 }

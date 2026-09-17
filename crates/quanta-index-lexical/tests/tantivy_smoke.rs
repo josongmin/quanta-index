@@ -25,7 +25,9 @@ use quanta_index_contract::{
     LqYesNoOnly, ManifestGeneration, QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId,
     SearchCorpusIngestBatch, SearchScopeSurface, SymbolId, UpsertChunk, UpsertSymbol,
 };
-use quanta_index_core::{CoreError, LexicalIndexOpenPort, SearchCorpusBatchBuildPort};
+use quanta_index_core::{
+    CoreError, LexicalIndexOpenPort, RequestBudgetV1, SearchCorpusBatchBuildPort,
+};
 use quanta_index_lexical::LexicalAdapter;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -388,6 +390,7 @@ fn tantivy_index_round_trip() -> TestResult {
     let fox_hits = searcher.search(
         &make_query(LqExpr::Leaf(LqLeaf::Keyword("fox".to_string()))),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if fox_hits.len() != 2 {
         return Err(format!(
@@ -407,6 +410,7 @@ fn tantivy_index_round_trip() -> TestResult {
     let lazy_hits = searcher.search(
         &make_query(LqExpr::Leaf(LqLeaf::Keyword("lazy".to_string()))),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if lazy_hits.len() != 1 {
         return Err(format!("expected 1 candidate for `lazy`, got {}", lazy_hits.len()).into());
@@ -423,7 +427,7 @@ fn tantivy_index_round_trip() -> TestResult {
         LqExpr::Leaf(LqLeaf::Keyword("fox".to_string())),
         LqExpr::Leaf(LqLeaf::Keyword("quick".to_string())),
     ]);
-    let all_hits = searcher.search(&make_query(all_expr), 10)?;
+    let all_hits = searcher.search(&make_query(all_expr), 10, &RequestBudgetV1::unbounded())?;
     if all_hits.len() != 1 {
         return Err(format!(
             "expected 1 candidate for All([fox, quick]), got {}",
@@ -446,6 +450,7 @@ fn tantivy_index_round_trip() -> TestResult {
     let regex_hits = searcher.search(
         &make_query(LqExpr::Leaf(LqLeaf::Regex("qu.*k".to_string()))),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if regex_hits.len() != 1 {
         return Err(format!(
@@ -467,7 +472,8 @@ fn tantivy_index_round_trip() -> TestResult {
 
     let mut regexp_option_query = make_query(LqExpr::Leaf(LqLeaf::Keyword("qu.*k".to_string())));
     regexp_option_query.options.pattern_type = LqPatternType::Regexp;
-    let regexp_option_hits = searcher.search(&regexp_option_query, 10)?;
+    let regexp_option_hits =
+        searcher.search(&regexp_option_query, 10, &RequestBudgetV1::unbounded())?;
     if regexp_option_hits.len() != 1 {
         return Err(format!(
             "expected 1 candidate for patterntype:regexp `qu.*k`, got {}",
@@ -489,6 +495,7 @@ fn tantivy_index_round_trip() -> TestResult {
     let raw_hits = searcher.search(
         &make_query(LqExpr::Leaf(LqLeaf::RawString("x ju".to_string()))),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if raw_hits.len() != 1 {
         return Err(format!(
@@ -540,7 +547,7 @@ fn language_constraint_is_pushed_into_one_pre_limit_candidate_query_v1() -> Test
 
     let rust_only = QueryConstraintSetV1::from_languages([language_code("rust")?]);
     let hits = searcher
-        .search_constrained(&query, &rust_only, 1)?
+        .search_constrained(&query, &rust_only, 1, &RequestBudgetV1::unbounded())?
         .candidates;
     assert_eq!(
         hits.iter()
@@ -555,7 +562,9 @@ fn language_constraint_is_pushed_into_one_pre_limit_candidate_query_v1() -> Test
         language_code("python")?,
         language_code("rust")?,
     ]);
-    let hits = searcher.search_constrained(&query, &either, 10)?.candidates;
+    let hits = searcher
+        .search_constrained(&query, &either, 10, &RequestBudgetV1::unbounded())?
+        .candidates;
     assert_eq!(
         hits.len(),
         3,
@@ -590,7 +599,7 @@ fn exact_path_constraint_is_applied_before_limit_and_on_index_no_scan_v1() -> Te
     let query = make_query(LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())));
 
     let indexed = searcher
-        .search_constrained(&query, &constraints, 1)?
+        .search_constrained(&query, &constraints, 1, &RequestBudgetV1::unbounded())?
         .candidates;
     assert_eq!(
         indexed
@@ -601,7 +610,12 @@ fn exact_path_constraint_is_applied_before_limit_and_on_index_no_scan_v1() -> Te
         "post-limit filtering would lose the lower-scoring exact-path candidate"
     );
 
-    let symbols = searcher.search_symbols_constrained(&query, &constraints, 1)?;
+    let symbols = searcher.search_symbols_constrained(
+        &query,
+        &constraints,
+        1,
+        &RequestBudgetV1::unbounded(),
+    )?;
     assert_eq!(
         symbols
             .iter()
@@ -612,7 +626,7 @@ fn exact_path_constraint_is_applied_before_limit_and_on_index_no_scan_v1() -> Te
     );
 
     let capped = searcher
-        .search_constrained(&query, &constraints, 16)?
+        .search_constrained(&query, &constraints, 16, &RequestBudgetV1::unbounded())?
         .candidates;
     assert_eq!(
         capped
@@ -626,7 +640,7 @@ fn exact_path_constraint_is_applied_before_limit_and_on_index_no_scan_v1() -> Te
     let mut unindexed = query;
     unindexed.options.index_mode = Some(LqYesNoOnly::No);
     let scanned = searcher
-        .search_constrained(&unindexed, &constraints, 10)?
+        .search_constrained(&unindexed, &constraints, 10, &RequestBudgetV1::unbounded())?
         .candidates;
     assert_eq!(
         scanned
@@ -642,6 +656,7 @@ fn exact_path_constraint_is_applied_before_limit_and_on_index_no_scan_v1() -> Te
             &unindexed,
             &QueryConstraintSetV1::from_languages([language_code("rust")?]),
             10,
+            &RequestBudgetV1::unbounded(),
         )
         .expect_err("index:no must not infer typed language authority from a path extension");
     assert!(
@@ -669,7 +684,12 @@ fn exact_path_constraint_only_query_treats_dsl_metacharacters_as_literal_v1() ->
     );
     let constraint_only = make_query(LqExpr::Empty);
 
-    let symbols = searcher.search_symbols_constrained(&constraint_only, &constraints, 10)?;
+    let symbols = searcher.search_symbols_constrained(
+        &constraint_only,
+        &constraints,
+        10,
+        &RequestBudgetV1::unbounded(),
+    )?;
     assert_eq!(
         symbols
             .iter()
@@ -679,7 +699,12 @@ fn exact_path_constraint_only_query_treats_dsl_metacharacters_as_literal_v1() ->
         "typed path characters must be an exact term, never parsed as Sourcegraph syntax"
     );
     let chunks = searcher
-        .search_constrained(&constraint_only, &constraints, 10)?
+        .search_constrained(
+            &constraint_only,
+            &constraints,
+            10,
+            &RequestBudgetV1::unbounded(),
+        )?
         .candidates;
     assert_eq!(
         chunks
@@ -695,10 +720,16 @@ fn exact_path_constraint_only_query_treats_dsl_metacharacters_as_literal_v1() ->
                 &constraint_only,
                 &QueryConstraintSetV1::unconstrained(),
                 10,
+                &RequestBudgetV1::unbounded(),
             )
             .expect_err("empty unconstrained symbol query must remain rejected"),
         searcher
-            .search_constrained(&constraint_only, &QueryConstraintSetV1::unconstrained(), 10)
+            .search_constrained(
+                &constraint_only,
+                &QueryConstraintSetV1::unconstrained(),
+                10,
+                &RequestBudgetV1::unbounded(),
+            )
             .expect_err("empty unconstrained text query must remain rejected"),
     ] {
         assert!(
@@ -741,6 +772,7 @@ fn tantivy_executes_repo_file_path_and_lang_filters() -> TestResult {
             ],
         ),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if exact_path_hits.len() != 1 {
         return Err(format!(
@@ -769,6 +801,7 @@ fn tantivy_executes_repo_file_path_and_lang_filters() -> TestResult {
             }],
         ),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if file_hits.len() != 1 {
         return Err(format!("expected 1 file-scope hit, got {}", file_hits.len()).into());
@@ -793,6 +826,7 @@ fn tantivy_executes_repo_file_path_and_lang_filters() -> TestResult {
             }],
         ),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if !repo_miss.is_empty() {
         return Err(format!("expected repo mismatch to return 0 hits, got {repo_miss:?}").into());
@@ -819,6 +853,7 @@ fn tantivy_executes_phrase_adjacency_without_unordered_match() -> TestResult {
             "lemon yellow banana".to_string(),
         ))),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if exact_phrase_hits.len() != 1 {
         return Err(format!(
@@ -841,6 +876,7 @@ fn tantivy_executes_phrase_adjacency_without_unordered_match() -> TestResult {
     let reversed_phrase_hits = searcher.search(
         &make_query(LqExpr::Leaf(LqLeaf::Phrase("banana lemon".to_string()))),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if !reversed_phrase_hits.is_empty() {
         return Err(
@@ -885,6 +921,7 @@ fn tantivy_phrase_sidecar_uses_text_authority_and_case_rules() -> TestResult {
             "lemon yellow banana".to_string(),
         ))),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     let Some(exact_hit) = exact_hits.first() else {
         return Err("expected text-backed phrase hit [alpha], got []".into());
@@ -904,7 +941,8 @@ fn tantivy_phrase_sidecar_uses_text_authority_and_case_rules() -> TestResult {
         "lemon yellow banana".to_string(),
     )));
     sensitive_miss.options.case = Some(LqCase::Sensitive);
-    let sensitive_miss_hits = searcher.search(&sensitive_miss, 10)?;
+    let sensitive_miss_hits =
+        searcher.search(&sensitive_miss, 10, &RequestBudgetV1::unbounded())?;
     if !sensitive_miss_hits.is_empty() {
         return Err(format!(
             "expected case:yes lowercase phrase to miss mixed-case text authority, got {sensitive_miss_hits:?}"
@@ -916,7 +954,7 @@ fn tantivy_phrase_sidecar_uses_text_authority_and_case_rules() -> TestResult {
         "Lemon Yellow Banana".to_string(),
     )));
     sensitive_hit.options.case = Some(LqCase::Sensitive);
-    let sensitive_hit_hits = searcher.search(&sensitive_hit, 10)?;
+    let sensitive_hit_hits = searcher.search(&sensitive_hit, 10, &RequestBudgetV1::unbounded())?;
     let Some(sensitive_hit) = sensitive_hit_hits.first() else {
         return Err("expected case:yes exact-case phrase hit [alpha], got []".into());
     };
@@ -948,6 +986,7 @@ fn tantivy_executes_whole_document_regex_and_rejects_false_positive() -> TestRes
             "v\\d+\\.\\d+\\.\\d+".to_string(),
         ))),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if regex_hits.len() != 1 {
         return Err(format!(
@@ -971,7 +1010,8 @@ fn tantivy_executes_whole_document_regex_and_rejects_false_positive() -> TestRes
         "v\\d+\\.\\d+\\.\\d+".to_string(),
     )));
     regexp_option_query.options.pattern_type = LqPatternType::Regexp;
-    let regexp_option_hits = searcher.search(&regexp_option_query, 10)?;
+    let regexp_option_hits =
+        searcher.search(&regexp_option_query, 10, &RequestBudgetV1::unbounded())?;
     if regexp_option_hits.len() != 1 {
         return Err(format!(
             "expected 1 patterntype:regexp hit, got {}",
@@ -993,6 +1033,7 @@ fn tantivy_executes_whole_document_regex_and_rejects_false_positive() -> TestRes
     let false_positive_hits = searcher.search(
         &make_query(LqExpr::Leaf(LqLeaf::Regex("needle_x[0-9]".to_string()))),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if !false_positive_hits.is_empty() {
         return Err(format!(
@@ -1038,6 +1079,7 @@ fn tantivy_regex_sidecar_verifies_authoritative_text() -> TestResult {
             "v\\d+\\.\\d+\\.\\d+".to_string(),
         ))),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     let Some(regex_hit) = regex_hits.first() else {
         return Err("expected authoritative text regex hit [alpha], got []".into());
@@ -1058,6 +1100,7 @@ fn tantivy_regex_sidecar_verifies_authoritative_text() -> TestResult {
     let false_positive_hits = searcher.search(
         &make_query(LqExpr::Leaf(LqLeaf::Regex("needle_x[0-9]".to_string()))),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if !false_positive_hits.is_empty() {
         return Err(format!(
@@ -1105,6 +1148,7 @@ fn tantivy_executes_supported_type_and_select_filters() -> TestResult {
             }],
         ),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if type_symbol_hits.len() != 1 {
         return Err(format!("expected 1 type:symbol hit, got {}", type_symbol_hits.len()).into());
@@ -1128,6 +1172,7 @@ fn tantivy_executes_supported_type_and_select_filters() -> TestResult {
             }],
         ),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if select_symbol_hits.len() != 1 {
         return Err(format!(
@@ -1153,6 +1198,7 @@ fn tantivy_executes_supported_type_and_select_filters() -> TestResult {
             args: vec![LqPredicateArg::Keyword("needle_symbol".to_string())],
         })),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if symbol_predicate_hits.len() != 1 {
         return Err(format!(
@@ -1178,6 +1224,7 @@ fn tantivy_executes_supported_type_and_select_filters() -> TestResult {
             vec![LqFilter::Type { kind: LqType::File }],
         ),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     let first_text_hit = text_hits
         .first()
@@ -1194,6 +1241,7 @@ fn tantivy_executes_supported_type_and_select_filters() -> TestResult {
             }],
         ),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if select_repo_hits.len() != 1 {
         return Err(format!(
@@ -1236,6 +1284,7 @@ fn tantivy_select_repo_uses_canonical_representative_when_scores_tie() -> TestRe
             }],
         ),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if hits.len() != 1 {
         return Err(format!(
@@ -1283,6 +1332,7 @@ fn tantivy_executes_simple_path_term_surface_without_boolean_path_leakage() -> T
             "path_only_needle".to_string(),
         ))),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if path_hits.len() != 1 {
         return Err(format!("expected 1 simple path-term hit, got {}", path_hits.len()).into());
@@ -1304,6 +1354,7 @@ fn tantivy_executes_simple_path_term_surface_without_boolean_path_leakage() -> T
             LqExpr::Not(Box::new(LqExpr::Leaf(LqLeaf::Keyword("lib".to_string())))),
         ])),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if boolean_hits.len() != 1 {
         return Err(format!(
@@ -1348,6 +1399,7 @@ fn tantivy_honors_case_sensitive_keyword_queries() -> TestResult {
             "ALPHA_CONTENT_NEEDLE".to_string(),
         ))),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if default_hits.len() != 1 {
         return Err(format!(
@@ -1361,7 +1413,7 @@ fn tantivy_honors_case_sensitive_keyword_queries() -> TestResult {
         "ALPHA_CONTENT_NEEDLE".to_string(),
     )));
     sensitive_query.options.case = Some(LqCase::Sensitive);
-    let sensitive_hits = searcher.search(&sensitive_query, 10)?;
+    let sensitive_hits = searcher.search(&sensitive_query, 10, &RequestBudgetV1::unbounded())?;
     if !sensitive_hits.is_empty() {
         return Err(format!(
             "expected case:yes uppercase query to miss lowercase content, got {sensitive_hits:?}"
@@ -1373,7 +1425,7 @@ fn tantivy_honors_case_sensitive_keyword_queries() -> TestResult {
         "alpha_content_needle".to_string(),
     )));
     exact_case_query.options.case = Some(LqCase::Sensitive);
-    let exact_case_hits = searcher.search(&exact_case_query, 10)?;
+    let exact_case_hits = searcher.search(&exact_case_query, 10, &RequestBudgetV1::unbounded())?;
     if exact_case_hits.len() != 1 {
         return Err(format!(
             "expected case:yes exact-case query to hit once, got {}",
@@ -1440,7 +1492,7 @@ fn tantivy_top_k_stabilizes_keyword_path_surface_without_losing_content_hits() -
     let searcher = adapter.open(&repo(), &revision(), generation())?;
     let mut query = make_query(LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())));
     query.options.count = Some(LqCountBound::Bounded(2));
-    let hits = searcher.search(&query, 10)?;
+    let hits = searcher.search(&query, 10, &RequestBudgetV1::unbounded())?;
     let ids = hits
         .iter()
         .map(|hit| hit.candidate_id.as_str())
@@ -1473,7 +1525,12 @@ fn tantivy_count_all_keeps_the_page_and_reports_the_exact_total() -> TestResult 
         "count_all_needle".to_string(),
     )));
     query.options.count = Some(LqCountBound::All);
-    let page = searcher.search_constrained(&query, &QueryConstraintSetV1::unconstrained(), 1)?;
+    let page = searcher.search_constrained(
+        &query,
+        &QueryConstraintSetV1::unconstrained(),
+        1,
+        &RequestBudgetV1::unbounded(),
+    )?;
     let ids = page
         .candidates
         .iter()
@@ -1493,7 +1550,12 @@ fn tantivy_count_all_keeps_the_page_and_reports_the_exact_total() -> TestResult 
     // Without a count option the total is not proven and the page is
     // exactly the requested rows.
     query.options.count = None;
-    let plain = searcher.search_constrained(&query, &QueryConstraintSetV1::unconstrained(), 2)?;
+    let plain = searcher.search_constrained(
+        &query,
+        &QueryConstraintSetV1::unconstrained(),
+        2,
+        &RequestBudgetV1::unbounded(),
+    )?;
     if plain.candidates.len() != 2 || plain.exact_total.is_some() {
         return Err(format!(
             "plain page drifted: rows={} exact_total={:?}",
@@ -1505,7 +1567,12 @@ fn tantivy_count_all_keeps_the_page_and_reports_the_exact_total() -> TestResult 
 
     // A bounded count caps the page at min(top_k, N) and still proves the total.
     query.options.count = Some(LqCountBound::Bounded(2));
-    let bounded = searcher.search_constrained(&query, &QueryConstraintSetV1::unconstrained(), 5)?;
+    let bounded = searcher.search_constrained(
+        &query,
+        &QueryConstraintSetV1::unconstrained(),
+        5,
+        &RequestBudgetV1::unbounded(),
+    )?;
     if bounded.candidates.len() != 2 || bounded.exact_total != Some(3) {
         return Err(format!(
             "count:2 drifted: rows={} exact_total={:?}",
@@ -1559,6 +1626,7 @@ fn tantivy_select_file_collapses_multiple_chunks_per_path() -> TestResult {
             }],
         ),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     let hit_ids: Vec<&str> = hits.iter().map(|hit| hit.candidate_id.as_str()).collect();
     if hit_ids != vec!["alpha", "gamma"] {
@@ -1613,6 +1681,7 @@ fn tantivy_select_path_collapses_multiple_chunks_per_path() -> TestResult {
             }],
         ),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     let hit_ids: Vec<&str> = hits.iter().map(|hit| hit.candidate_id.as_str()).collect();
     if hit_ids != vec!["alpha", "gamma"] {
@@ -1665,6 +1734,7 @@ fn tantivy_type_path_collapses_multiple_chunks_per_path() -> TestResult {
             vec![LqFilter::Type { kind: LqType::Path }],
         ),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     let hit_ids: Vec<&str> = hits.iter().map(|hit| hit.candidate_id.as_str()).collect();
     if hit_ids != vec!["alpha", "gamma"] {
@@ -1695,6 +1765,7 @@ fn tantivy_type_repo_collapses_to_repo_representative() -> TestResult {
             vec![LqFilter::Type { kind: LqType::Repo }],
         ),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if hits.len() != 1 {
         return Err(format!(
@@ -1759,6 +1830,7 @@ fn tantivy_executes_repo_metadata_filters_when_bundle_payload_is_typed() -> Test
             ],
         ),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if matching_hits.len() != 2 {
         return Err(format!(
@@ -1778,6 +1850,7 @@ fn tantivy_executes_repo_metadata_filters_when_bundle_payload_is_typed() -> Test
             }],
         ),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if reopened_hits.len() != 2 {
         return Err(format!(
@@ -1795,6 +1868,7 @@ fn tantivy_executes_repo_metadata_filters_when_bundle_payload_is_typed() -> Test
             }],
         ),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if !mismatched_hits.is_empty() {
         return Err(
@@ -1874,6 +1948,7 @@ fn tantivy_executes_repo_allow_list_across_indexed_source_repo_ids() -> TestResu
             }],
         ),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     let mut corp_a_ids: Vec<String> = corp_a_hits
         .into_iter()
@@ -1893,6 +1968,7 @@ fn tantivy_executes_repo_allow_list_across_indexed_source_repo_ids() -> TestResu
             }],
         ),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     let mut corp_b_ids: Vec<String> = corp_b_hits
         .into_iter()
@@ -1914,6 +1990,7 @@ fn tantivy_executes_repo_allow_list_across_indexed_source_repo_ids() -> TestResu
             "shared_oracle_needle".to_string(),
         ))),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     if universe_hits.len() != 5 {
         return Err(format!(
@@ -1974,7 +2051,7 @@ fn tantivy_repo_has_file_true_gate_narrows_by_indexed_source_repo_id() -> TestRe
         LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
     ]));
     let mut gate_ids: Vec<String> = searcher
-        .search(&gate_query, 10)?
+        .search(&gate_query, 10, &RequestBudgetV1::unbounded())?
         .into_iter()
         .map(|hit| hit.candidate_id)
         .collect();
@@ -1993,7 +2070,7 @@ fn tantivy_repo_has_file_true_gate_narrows_by_indexed_source_repo_id() -> TestRe
         LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
     ]));
     let mut scalar_gate_ids: Vec<String> = searcher
-        .search(&scalar_gate_query, 10)?
+        .search(&scalar_gate_query, 10, &RequestBudgetV1::unbounded())?
         .into_iter()
         .map(|hit| hit.candidate_id)
         .collect();
@@ -2016,7 +2093,7 @@ fn tantivy_repo_has_file_true_gate_narrows_by_indexed_source_repo_id() -> TestRe
         LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
     ]));
     let mut name_gate_ids: Vec<String> = searcher
-        .search(&name_gate_query, 10)?
+        .search(&name_gate_query, 10, &RequestBudgetV1::unbounded())?
         .into_iter()
         .map(|hit| hit.candidate_id)
         .collect();
@@ -2038,7 +2115,7 @@ fn tantivy_repo_has_file_true_gate_narrows_by_indexed_source_repo_id() -> TestRe
         }),
         LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
     ]));
-    let name_miss_hits = searcher.search(&name_miss_query, 10)?;
+    let name_miss_hits = searcher.search(&name_miss_query, 10, &RequestBudgetV1::unbounded())?;
     if !name_miss_hits.is_empty() {
         return Err(format!(
             "expected repo.has.file(name:) miss to return zero hits, got {name_miss_hits:?}"
@@ -2053,7 +2130,8 @@ fn tantivy_repo_has_file_true_gate_narrows_by_indexed_source_repo_id() -> TestRe
         }),
         LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
     ]));
-    let scalar_miss_hits = searcher.search(&scalar_miss_query, 10)?;
+    let scalar_miss_hits =
+        searcher.search(&scalar_miss_query, 10, &RequestBudgetV1::unbounded())?;
     if !scalar_miss_hits.is_empty() {
         return Err(format!(
             "expected repo.has.file(<scalar-path>) miss to return zero hits, got {scalar_miss_hits:?}"
@@ -2132,7 +2210,7 @@ fn tantivy_repo_has_file_true_gate_narrows_by_indexed_source_repo_id() -> TestRe
             LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
         ]));
         let mut combo_ids: Vec<String> = searcher
-            .search(&combo_query, 10)?
+            .search(&combo_query, 10, &RequestBudgetV1::unbounded())?
             .into_iter()
             .map(|hit| hit.candidate_id)
             .collect();
@@ -2211,7 +2289,7 @@ fn tantivy_repo_has_file_true_gate_narrows_by_indexed_source_repo_id() -> TestRe
             }),
             LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
         ]));
-        let combo_hits = searcher.search(&combo_query, 10)?;
+        let combo_hits = searcher.search(&combo_query, 10, &RequestBudgetV1::unbounded())?;
         if !combo_hits.is_empty() {
             return Err(
                 format!("expected repo.has.file({label}) to miss, got {combo_hits:?}").into(),
@@ -2267,7 +2345,7 @@ fn tantivy_repo_has_content_true_gate_narrows_by_indexed_source_repo_id() -> Tes
         LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
     ]));
     let mut gate_ids: Vec<String> = searcher
-        .search(&gate_query, 10)?
+        .search(&gate_query, 10, &RequestBudgetV1::unbounded())?
         .into_iter()
         .map(|hit| hit.candidate_id)
         .collect();
@@ -2285,7 +2363,7 @@ fn tantivy_repo_has_content_true_gate_narrows_by_indexed_source_repo_id() -> Tes
         }),
         LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
     ]));
-    let miss_hits = searcher.search(&miss_query, 10)?;
+    let miss_hits = searcher.search(&miss_query, 10, &RequestBudgetV1::unbounded())?;
     if !miss_hits.is_empty() {
         return Err(format!(
             "expected repo.has.content miss to return zero hits, got {miss_hits:?}"
@@ -2347,7 +2425,7 @@ fn tantivy_repo_has_content_phrase_and_raw_string_true_gate_narrows_by_indexed_s
             LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
         ]));
         let mut gate_ids: Vec<String> = searcher
-            .search(&gate_query, 10)?
+            .search(&gate_query, 10, &RequestBudgetV1::unbounded())?
             .into_iter()
             .map(|hit| hit.candidate_id)
             .collect();
@@ -2416,7 +2494,7 @@ fn tantivy_executes_native_predicate_aliases() -> TestResult {
         LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
     ]));
     let mut repo_path_alias_ids: Vec<String> = searcher
-        .search(&repo_path_alias, 10)?
+        .search(&repo_path_alias, 10, &RequestBudgetV1::unbounded())?
         .into_iter()
         .map(|hit| hit.candidate_id)
         .collect();
@@ -2436,7 +2514,7 @@ fn tantivy_executes_native_predicate_aliases() -> TestResult {
         LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
     ]));
     let mut repo_content_alias_ids: Vec<String> = searcher
-        .search(&repo_content_alias, 10)?
+        .search(&repo_content_alias, 10, &RequestBudgetV1::unbounded())?
         .into_iter()
         .map(|hit| hit.candidate_id)
         .collect();
@@ -2453,7 +2531,7 @@ fn tantivy_executes_native_predicate_aliases() -> TestResult {
         args: vec![LqPredicateArg::Phrase("lemon yellow banana".to_string())],
     }));
     let file_contains_alias_ids: Vec<String> = searcher
-        .search(&file_contains_alias, 10)?
+        .search(&file_contains_alias, 10, &RequestBudgetV1::unbounded())?
         .into_iter()
         .map(|hit| hit.candidate_id)
         .collect();
@@ -2518,7 +2596,7 @@ fn tantivy_executes_numeric_content_predicates() -> TestResult {
             args: vec![LqPredicateArg::Number(1)],
         }));
         let ids: Vec<String> = searcher
-            .search(&query, 10)?
+            .search(&query, 10, &RequestBudgetV1::unbounded())?
             .into_iter()
             .map(|hit| hit.candidate_id)
             .collect();
@@ -2531,7 +2609,8 @@ fn tantivy_executes_numeric_content_predicates() -> TestResult {
         name: "file.has.content".to_string(),
         args: vec![LqPredicateArg::Number(404)],
     }));
-    let file_has_content_miss_hits = searcher.search(&file_has_content_miss, 10)?;
+    let file_has_content_miss_hits =
+        searcher.search(&file_has_content_miss, 10, &RequestBudgetV1::unbounded())?;
     if !file_has_content_miss_hits.is_empty() {
         return Err(format!(
             "expected file.has.content(404) to miss, got {file_has_content_miss_hits:?}"
@@ -2547,7 +2626,7 @@ fn tantivy_executes_numeric_content_predicates() -> TestResult {
         LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
     ]));
     let mut repo_number_ids: Vec<String> = searcher
-        .search(&repo_number_gate, 10)?
+        .search(&repo_number_gate, 10, &RequestBudgetV1::unbounded())?
         .into_iter()
         .map(|hit| hit.candidate_id)
         .collect();
@@ -2585,7 +2664,7 @@ fn tantivy_executes_repo_has_file_predicate_as_repo_gate() -> TestResult {
         }),
         LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
     ]));
-    let gate_hits = searcher.search(&gate_query, 10)?;
+    let gate_hits = searcher.search(&gate_query, 10, &RequestBudgetV1::unbounded())?;
     if gate_hits.len() != 2 {
         return Err(format!("expected 2 repo-gated hits, got {}", gate_hits.len()).into());
     }
@@ -2600,7 +2679,7 @@ fn tantivy_executes_repo_has_file_predicate_as_repo_gate() -> TestResult {
         }),
         LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
     ]));
-    let miss_hits = searcher.search(&miss_query, 10)?;
+    let miss_hits = searcher.search(&miss_query, 10, &RequestBudgetV1::unbounded())?;
     if !miss_hits.is_empty() {
         return Err(format!("expected 0 repo-gated hits, got {miss_hits:?}").into());
     }
@@ -2654,7 +2733,7 @@ fn tantivy_executes_repo_has_content_predicate_under_or_and_not() -> TestResult 
         LqExpr::Leaf(LqLeaf::Keyword("missing-corpus-token".to_string())),
     ]));
     let mut or_ids: Vec<String> = searcher
-        .search(&or_query, 10)?
+        .search(&or_query, 10, &RequestBudgetV1::unbounded())?
         .into_iter()
         .map(|candidate| candidate.candidate_id)
         .collect();
@@ -2674,7 +2753,7 @@ fn tantivy_executes_repo_has_content_predicate_under_or_and_not() -> TestResult 
         LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
     ]));
     let mut not_true_ids: Vec<String> = searcher
-        .search(&not_true_query, 10)?
+        .search(&not_true_query, 10, &RequestBudgetV1::unbounded())?
         .into_iter()
         .map(|candidate| candidate.candidate_id)
         .collect();
@@ -2694,7 +2773,7 @@ fn tantivy_executes_repo_has_content_predicate_under_or_and_not() -> TestResult 
         LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
     ]));
     let mut not_false_ids: Vec<String> = searcher
-        .search(&not_false_query, 10)?
+        .search(&not_false_query, 10, &RequestBudgetV1::unbounded())?
         .into_iter()
         .map(|candidate| candidate.candidate_id)
         .collect();
@@ -2742,7 +2821,7 @@ fn tantivy_executes_repo_has_file_predicate_with_lang_matcher() -> TestResult {
         }),
         LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
     ]));
-    let hits = searcher.search(&hit_query, 10)?;
+    let hits = searcher.search(&hit_query, 10, &RequestBudgetV1::unbounded())?;
     if hits.len() != 2 {
         return Err(format!(
             "expected 2 lang-gated hits (repo has a python file), got {}",
@@ -2762,7 +2841,7 @@ fn tantivy_executes_repo_has_file_predicate_with_lang_matcher() -> TestResult {
         }),
         LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
     ]));
-    let miss = searcher.search(&miss_query, 10)?;
+    let miss = searcher.search(&miss_query, 10, &RequestBudgetV1::unbounded())?;
     if !miss.is_empty() {
         return Err(format!("expected 0 hits (no go file in repo), got {miss:?}").into());
     }
@@ -2818,7 +2897,7 @@ fn tantivy_executes_repo_has_file_predicate_under_or_and_not() -> TestResult {
         LqExpr::Leaf(LqLeaf::Keyword("missing-corpus-token".to_string())),
     ]));
     let mut or_ids: Vec<String> = searcher
-        .search(&or_query, 10)?
+        .search(&or_query, 10, &RequestBudgetV1::unbounded())?
         .into_iter()
         .map(|candidate| candidate.candidate_id)
         .collect();
@@ -2841,7 +2920,7 @@ fn tantivy_executes_repo_has_file_predicate_under_or_and_not() -> TestResult {
         LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
     ]));
     let mut not_true_ids: Vec<String> = searcher
-        .search(&not_true_query, 10)?
+        .search(&not_true_query, 10, &RequestBudgetV1::unbounded())?
         .into_iter()
         .map(|candidate| candidate.candidate_id)
         .collect();
@@ -2864,7 +2943,7 @@ fn tantivy_executes_repo_has_file_predicate_under_or_and_not() -> TestResult {
         LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
     ]));
     let mut not_false_ids: Vec<String> = searcher
-        .search(&not_false_query, 10)?
+        .search(&not_false_query, 10, &RequestBudgetV1::unbounded())?
         .into_iter()
         .map(|candidate| candidate.candidate_id)
         .collect();
@@ -2941,7 +3020,7 @@ fn tantivy_executes_file_has_content_predicate_phrase_and_regex() -> TestResult 
         args: vec![LqPredicateArg::Phrase("lemon yellow banana".to_string())],
     }));
     let phrase_hit_ids: Vec<String> = searcher
-        .search(&phrase_hit_query, 10)?
+        .search(&phrase_hit_query, 10, &RequestBudgetV1::unbounded())?
         .into_iter()
         .map(|candidate| candidate.candidate_id)
         .collect();
@@ -2956,7 +3035,8 @@ fn tantivy_executes_file_has_content_predicate_phrase_and_regex() -> TestResult 
         name: "file.has.content".to_string(),
         args: vec![LqPredicateArg::Phrase("banana lemon".to_string())],
     }));
-    let phrase_miss_hits = searcher.search(&phrase_miss_query, 10)?;
+    let phrase_miss_hits =
+        searcher.search(&phrase_miss_query, 10, &RequestBudgetV1::unbounded())?;
     if !phrase_miss_hits.is_empty() {
         return Err(format!(
             "expected file.has.content reversed phrase predicate to miss, got {phrase_miss_hits:?}"
@@ -2969,7 +3049,7 @@ fn tantivy_executes_file_has_content_predicate_phrase_and_regex() -> TestResult 
         args: vec![LqPredicateArg::Keyword("/v\\d+\\.\\d+\\.\\d+/".to_string())],
     }));
     let regex_hit_ids: Vec<String> = searcher
-        .search(&regex_hit_query, 10)?
+        .search(&regex_hit_query, 10, &RequestBudgetV1::unbounded())?
         .into_iter()
         .map(|candidate| candidate.candidate_id)
         .collect();
@@ -2985,7 +3065,7 @@ fn tantivy_executes_file_has_content_predicate_phrase_and_regex() -> TestResult 
         args: vec![LqPredicateArg::RawString("oo_ba".to_string())],
     }));
     let contains_hit_ids: Vec<String> = searcher
-        .search(&contains_hit_query, 10)?
+        .search(&contains_hit_query, 10, &RequestBudgetV1::unbounded())?
         .into_iter()
         .map(|candidate| candidate.candidate_id)
         .collect();
@@ -3001,7 +3081,11 @@ fn tantivy_executes_file_has_content_predicate_phrase_and_regex() -> TestResult 
         args: vec![LqPredicateArg::Phrase("lemon yellow banana".to_string())],
     }));
     let contains_phrase_hit_ids: Vec<String> = searcher
-        .search(&contains_phrase_hit_query, 10)?
+        .search(
+            &contains_phrase_hit_query,
+            10,
+            &RequestBudgetV1::unbounded(),
+        )?
         .into_iter()
         .map(|candidate| candidate.candidate_id)
         .collect();
@@ -3018,7 +3102,8 @@ fn tantivy_executes_file_has_content_predicate_phrase_and_regex() -> TestResult 
         name: "file.contains".to_string(),
         args: vec![LqPredicateArg::Phrase("banana lemon".to_string())],
     }));
-    let contains_miss_hits = searcher.search(&contains_miss_query, 10)?;
+    let contains_miss_hits =
+        searcher.search(&contains_miss_query, 10, &RequestBudgetV1::unbounded())?;
     if !contains_miss_hits.is_empty() {
         return Err(format!(
             "expected file.contains reversed phrase predicate to miss, got {contains_miss_hits:?}"
@@ -3108,7 +3193,7 @@ fn tantivy_executes_scoped_file_content_predicates_across_boolean_contexts() -> 
             args: args.clone(),
         }));
         let ids: Vec<String> = searcher
-            .search(&query, 10)?
+            .search(&query, 10, &RequestBudgetV1::unbounded())?
             .into_iter()
             .map(|hit| hit.candidate_id)
             .collect();
@@ -3129,7 +3214,7 @@ fn tantivy_executes_scoped_file_content_predicates_across_boolean_contexts() -> 
             LqPredicateArg::Phrase("lemon yellow banana".to_string()),
         ],
     }));
-    let file_miss_hits = searcher.search(&file_miss_query, 10)?;
+    let file_miss_hits = searcher.search(&file_miss_query, 10, &RequestBudgetV1::unbounded())?;
     if !file_miss_hits.is_empty() {
         return Err(format!(
             "expected scoped file.contains(file:missing.md, ...) to miss, got {file_miss_hits:?}"
@@ -3147,7 +3232,7 @@ fn tantivy_executes_scoped_file_content_predicates_across_boolean_contexts() -> 
             LqPredicateArg::Keyword("/v\\d+\\.\\d+\\.\\d+/".to_string()),
         ],
     }));
-    let lang_miss_hits = searcher.search(&lang_miss_query, 10)?;
+    let lang_miss_hits = searcher.search(&lang_miss_query, 10, &RequestBudgetV1::unbounded())?;
     if !lang_miss_hits.is_empty() {
         return Err(format!(
             "expected scoped file.has.content(lang:markdown, /v.../) to miss, got {lang_miss_hits:?}"
@@ -3169,7 +3254,7 @@ fn tantivy_executes_scoped_file_content_predicates_across_boolean_contexts() -> 
         LqExpr::Leaf(LqLeaf::Keyword("ripens".to_string())),
     ]));
     let and_ids: Vec<String> = searcher
-        .search(&and_query, 10)?
+        .search(&and_query, 10, &RequestBudgetV1::unbounded())?
         .into_iter()
         .map(|hit| hit.candidate_id)
         .collect();
@@ -3194,7 +3279,7 @@ fn tantivy_executes_scoped_file_content_predicates_across_boolean_contexts() -> 
         LqExpr::Leaf(LqLeaf::Keyword("ripens".to_string())),
     ]));
     let and_miss_ids: Vec<String> = searcher
-        .search(&and_miss_query, 10)?
+        .search(&and_miss_query, 10, &RequestBudgetV1::unbounded())?
         .into_iter()
         .map(|hit| hit.candidate_id)
         .collect();
@@ -3219,7 +3304,7 @@ fn tantivy_executes_scoped_file_content_predicates_across_boolean_contexts() -> 
         LqExpr::Leaf(LqLeaf::Keyword("alpha_content_needle".to_string())),
     ]));
     let mut or_ids: Vec<String> = searcher
-        .search(&or_query, 10)?
+        .search(&or_query, 10, &RequestBudgetV1::unbounded())?
         .into_iter()
         .map(|hit| hit.candidate_id)
         .collect();
@@ -3242,7 +3327,7 @@ fn tantivy_executes_scoped_file_content_predicates_across_boolean_contexts() -> 
         ],
     }))));
     let mut not_ids: Vec<String> = searcher
-        .search(&not_query, 10)?
+        .search(&not_query, 10, &RequestBudgetV1::unbounded())?
         .into_iter()
         .map(|hit| hit.candidate_id)
         .collect();
@@ -3271,7 +3356,7 @@ fn tantivy_executes_scoped_file_content_predicates_across_boolean_contexts() -> 
         ],
     }));
     let matcher_ids: Vec<String> = searcher
-        .search(&bad_matcher_query, 10)?
+        .search(&bad_matcher_query, 10, &RequestBudgetV1::unbounded())?
         .into_iter()
         .map(|hit| hit.candidate_id)
         .collect();
@@ -3289,7 +3374,7 @@ fn tantivy_executes_scoped_file_content_predicates_across_boolean_contexts() -> 
             LqPredicateArg::Phrase("banana".to_string()),
         ],
     }));
-    match searcher.search(&multiple_scalars_query, 10) {
+    match searcher.search(&multiple_scalars_query, 10, &RequestBudgetV1::unbounded()) {
         Err(CoreError::Typed { code, .. }) if code == "LEX_PREDICATE_UNIMPLEMENTED" => {}
         other => {
             return Err(format!(
@@ -3309,7 +3394,7 @@ fn tantivy_executes_scoped_file_content_predicates_across_boolean_contexts() -> 
             LqPredicateArg::Number(7),
         ],
     }));
-    match searcher.search(&repo_scoped_query, 10) {
+    match searcher.search(&repo_scoped_query, 10, &RequestBudgetV1::unbounded()) {
         Err(CoreError::Typed { code, .. }) if code == "LEX_PREDICATE_UNIMPLEMENTED" => {}
         other => {
             return Err(format!(
@@ -3335,9 +3420,10 @@ fn tantivy_search_all_materializes_full_scope() -> TestResult {
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
     let searcher = adapter.open(&repo(), &revision(), generation())?;
-    let hits = searcher.search_all(&make_query(LqExpr::Leaf(LqLeaf::Keyword(
-        "scope".to_string(),
-    ))))?;
+    let hits = searcher.search_all(
+        &make_query(LqExpr::Leaf(LqLeaf::Keyword("scope".to_string()))),
+        &RequestBudgetV1::unbounded(),
+    )?;
     let mut ids: Vec<String> = hits.into_iter().map(|c| c.candidate_id).collect();
     ids.sort();
     if ids != vec!["c1".to_string(), "c2".to_string(), "c3".to_string()] {
@@ -3375,10 +3461,12 @@ fn clear_only_delta_clones_base_and_removes_only_requested_surface_v1() -> TestR
     let chunk_hits = searcher.search(
         &make_query(LqExpr::Leaf(LqLeaf::Keyword("needle".to_string()))),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     let symbol_hits = searcher.search_symbols(
         &make_query(LqExpr::Leaf(LqLeaf::Keyword("KeptSymbol".to_string()))),
         10,
+        &RequestBudgetV1::unbounded(),
     )?;
     assert!(chunk_hits.is_empty());
     assert_eq!(symbol_hits.len(), 1);
@@ -3414,7 +3502,7 @@ fn tantivy_executes_index_no_full_scan_with_scoped_content_predicate() -> TestRe
     }));
     query.options.index_mode = Some(LqYesNoOnly::No);
 
-    let hits = searcher.search(&query, 10)?;
+    let hits = searcher.search(&query, 10, &RequestBudgetV1::unbounded())?;
     let ids: Vec<String> = hits.into_iter().map(|hit| hit.candidate_id).collect();
     if ids != ["alpha".to_string()] {
         return Err(format!(
@@ -3439,14 +3527,14 @@ fn tantivy_applies_query_boost_to_scores() -> TestResult {
 
     let searcher = adapter.open(&repo(), &revision(), generation())?;
     let baseline_query = make_query(LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())));
-    let baseline_hits = searcher.search(&baseline_query, 10)?;
+    let baseline_hits = searcher.search(&baseline_query, 10, &RequestBudgetV1::unbounded())?;
     let baseline_first = baseline_hits
         .first()
         .ok_or("baseline boost test returned no hits")?;
 
     let mut boosted_query = baseline_query;
     boosted_query.options.boost_millis = Some(5_000);
-    let boosted_hits = searcher.search(&boosted_query, 10)?;
+    let boosted_hits = searcher.search(&boosted_query, 10, &RequestBudgetV1::unbounded())?;
     let boosted_first = boosted_hits
         .first()
         .ok_or("boosted query returned no hits")?;
