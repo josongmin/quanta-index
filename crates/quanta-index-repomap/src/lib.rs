@@ -13,7 +13,7 @@ pub mod store;
 
 pub use delta::RepoMapDeltaApplier;
 pub use materializer::RepoMapMaterializer;
-pub use model::{RepoMapEntry, RepoMapSnapshot};
+pub use model::{RepoMapEntry, RepoMapIndexedSnapshot, RepoMapSnapshot, RepoMapSnapshotIndex};
 pub use query::RepoMapQueryEngine;
 pub use reader::RepoMapPinnedReader;
-pub use store::RepoMapGenerationStore;
+pub use store::{OpenedRepoMapStore, RepoMapGenerationStore};

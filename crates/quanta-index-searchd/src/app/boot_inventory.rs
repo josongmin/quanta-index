@@ -14,7 +14,7 @@ use std::sync::{Arc, RwLock};
 
 use anyhow::Result;
 use quanta_index_contract::{ManifestGeneration, SearchPlaneTrackKind};
-use quanta_index_core::{QuarantinedGenerationV1, SealedGenerationScanPort};
+use quanta_index_core::{QuarantinedGenerationV1, RepoMapOpenReportV1, SealedGenerationScanPort};
 use quanta_index_search_plane::{Ledger, LegacyAuxiliaryMigrationReceipt};
 
 /// One track's inventory outcome.
@@ -48,6 +48,9 @@ pub struct BootInventoryReportV1 {
     pub auxiliary_migration: Option<LegacyAuxiliaryMigrationReceipt>,
     /// Auxiliary authority rows restored from the catalog at boot.
     pub auxiliary_rows_restored: u64,
+    /// What the `RepoMap` store found on disk: loaded, migrated, swept and
+    /// quarantined files (QI-BB-008).
+    pub repo_map: RepoMapOpenReportV1,
 }
 
 /// Seed one track's readiness from its inventory.

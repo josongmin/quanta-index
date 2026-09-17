@@ -1404,13 +1404,8 @@ fn assert_repo_map_happy_path(
     {
         return Err(format!("unexpected repo-map entry: {entry:?}").into());
     }
-    if response
-        .entries
-        .iter()
-        .filter(|entry| entry.included)
-        .count()
-        != 1
-    {
+    // Only included rows come back (QI-BB-008); the rest is a count.
+    if response.entries.len() != 1 || response.dropped_entries_count == 0 {
         return Err(format!("unexpected repo-map inclusion set: {response:?}").into());
     }
     if !response

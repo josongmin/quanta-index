@@ -66,8 +66,10 @@ crate quanta_index_core
 │   │   ├── mod inbound: pub(self)
 │   │   │   └── trait RepoMapQueryPort: pub
 │   │   ├── mod outbound: pub(self)
+│   │   │   ├── struct QuarantinedRepoMapFileV1: pub
 │   │   │   ├── trait RepoMapBundleIngestPort: pub
-│   │   │   └── trait RepoMapGenerationActivatePort: pub
+│   │   │   ├── trait RepoMapGenerationActivatePort: pub
+│   │   │   └── struct RepoMapOpenReportV1: pub
 │   │   ├── mod policy: pub(self)
 │   │   │   └── struct RepoMapPolicy: pub
 │   │   └── mod service: pub(self)

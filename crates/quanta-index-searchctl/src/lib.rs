@@ -1445,14 +1445,13 @@ fn render_pretty(
                 })?;
                 fmt_ok(writeln!(
                     rendered,
-                    "{}. subject_identity={} doc_type={} kind={} owner_path={} rank={} included={} score={} final_score_millis={}",
+                    "{}. subject_identity={} doc_type={} kind={} owner_path={} rank={} score={} final_score_millis={}",
                     display_index,
                     entry.subject_identity,
                     entry.subject_doc_type.as_code_str(),
                     entry.subject_kind,
                     entry.owner_path,
                     entry.rank,
-                    entry.included,
                     entry.score,
                     entry.final_score_millis
                 ))?;

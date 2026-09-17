@@ -4,6 +4,9 @@ mod policy;
 mod service;
 
 pub use inbound::RepoMapQueryPort;
-pub use outbound::{RepoMapBundleIngestPort, RepoMapGenerationActivatePort};
+pub use outbound::{
+    QuarantinedRepoMapFileV1, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
+    RepoMapOpenReportV1,
+};
 pub use policy::RepoMapPolicy;
 pub use service::RepoMapService;

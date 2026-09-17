@@ -19,8 +19,6 @@ pub struct RepoMapEntry {
     pub owner_path: String,
     pub score: f32,
     pub final_score_millis: u32,
-    pub included: bool,
-    pub rank: u32,
     pub importance_score_millis: u32,
     pub utility_score_millis: u32,
     pub freshness_score_millis: u32,
@@ -48,8 +46,6 @@ const REPOMAP_ENTRY_FIELDS: &[&str] = &[
     "owner_path",
     "score",
     "final_score_millis",
-    "included",
-    "rank",
     "importance_score_millis",
     "utility_score_millis",
     "freshness_score_millis",
@@ -75,15 +71,13 @@ impl Serialize for RepoMapEntry {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("RepoMapEntry", 26)?;
+        let mut state = serializer.serialize_struct("RepoMapEntry", 24)?;
         state.serialize_field("subject_identity", &self.subject_identity)?;
         state.serialize_field("subject_doc_type", &self.subject_doc_type)?;
         state.serialize_field("subject_kind", &self.subject_kind)?;
         state.serialize_field("owner_path", &self.owner_path)?;
         state.serialize_field("score", &self.score)?;
         state.serialize_field("final_score_millis", &self.final_score_millis)?;
-        state.serialize_field("included", &self.included)?;
-        state.serialize_field("rank", &self.rank)?;
         state.serialize_field("importance_score_millis", &self.importance_score_millis)?;
         state.serialize_field("utility_score_millis", &self.utility_score_millis)?;
         state.serialize_field("freshness_score_millis", &self.freshness_score_millis)?;
@@ -143,8 +137,6 @@ impl<'de> Visitor<'de> for RepoMapEntryVisitor {
         let mut owner_path: Option<String> = None;
         let mut score: Option<f32> = None;
         let mut final_score_millis: Option<u32> = None;
-        let mut included: Option<bool> = None;
-        let mut rank: Option<u32> = None;
         let mut importance_score_millis: Option<u32> = None;
         let mut utility_score_millis: Option<u32> = None;
         let mut freshness_score_millis: Option<u32> = None;
@@ -207,18 +199,6 @@ impl<'de> Visitor<'de> for RepoMapEntryVisitor {
                         return Err(de::Error::duplicate_field("final_score_millis"));
                     }
                     final_score_millis = Some(map.next_value()?);
-                }
-                "included" => {
-                    if included.is_some() {
-                        return Err(de::Error::duplicate_field("included"));
-                    }
-                    included = Some(map.next_value()?);
-                }
-                "rank" => {
-                    if rank.is_some() {
-                        return Err(de::Error::duplicate_field("rank"));
-                    }
-                    rank = Some(map.next_value()?);
                 }
                 "importance_score_millis" => {
                     if importance_score_millis.is_some() {
@@ -352,8 +332,6 @@ impl<'de> Visitor<'de> for RepoMapEntryVisitor {
             score: score.ok_or_else(|| de::Error::missing_field("score"))?,
             final_score_millis: final_score_millis
                 .ok_or_else(|| de::Error::missing_field("final_score_millis"))?,
-            included: included.ok_or_else(|| de::Error::missing_field("included"))?,
-            rank: rank.ok_or_else(|| de::Error::missing_field("rank"))?,
             importance_score_millis: importance_score_millis
                 .ok_or_else(|| de::Error::missing_field("importance_score_millis"))?,
             utility_score_millis: utility_score_millis
@@ -398,7 +376,8 @@ impl<'de> Deserialize<'de> for RepoMapEntry {
 
 impl RepoMapEntry {
     #[must_use]
-    pub fn to_dto(&self) -> RepoMapEntryDto {
+    /// The wire row for this entry at query-time `rank`.
+    pub fn to_dto(&self, rank: u32) -> RepoMapEntryDto {
         RepoMapEntryDto {
             subject_identity: self.subject_identity.clone(),
             subject_doc_type: self.subject_doc_type,
@@ -406,8 +385,7 @@ impl RepoMapEntry {
             owner_path: self.owner_path.clone(),
             score: self.score,
             final_score_millis: self.final_score_millis,
-            included: self.included,
-            rank: self.rank,
+            rank,
             importance_score_millis: self.importance_score_millis,
             utility_score_millis: self.utility_score_millis,
             freshness_score_millis: self.freshness_score_millis,
@@ -430,6 +408,62 @@ pub struct RepoMapSnapshot {
     pub manifest_generation: ManifestGeneration,
     pub snapshot_meta: RepoMapSnapshotMeta,
     pub entries: Vec<RepoMapEntry>,
+}
+
+/// A snapshot with what a query needs precomputed once (QI-BB-008): the
+/// folded search text of every entry, the position of every subject and the
+/// positions under every owner path.
+#[derive(Debug)]
+pub struct RepoMapIndexedSnapshot {
+    pub snapshot: RepoMapSnapshot,
+    pub index: RepoMapSnapshotIndex,
+}
+
+/// Query-time lookups over a snapshot's entries, by position.
+#[derive(Debug, Default)]
+pub struct RepoMapSnapshotIndex {
+    /// `search_text` lower-cased, one per entry, so a query matches terms
+    /// without allocating per entry.
+    pub folded_search_text: Vec<String>,
+    /// Entry position by subject identity, then document type, so a lookup
+    /// borrows the request's strings instead of allocating a key.
+    pub by_subject: BTreeMap<String, BTreeMap<RepoMapDocType, usize>>,
+    pub by_owner_path: BTreeMap<String, Vec<usize>>,
+}
+
+impl RepoMapIndexedSnapshot {
+    #[must_use]
+    pub fn new(snapshot: RepoMapSnapshot) -> Self {
+        let index = RepoMapSnapshotIndex::build(&snapshot.entries);
+        Self { snapshot, index }
+    }
+}
+
+impl RepoMapSnapshotIndex {
+    #[must_use]
+    pub fn build(entries: &[RepoMapEntry]) -> Self {
+        let mut index = Self {
+            folded_search_text: Vec::with_capacity(entries.len()),
+            by_subject: BTreeMap::new(),
+            by_owner_path: BTreeMap::new(),
+        };
+        for (position, entry) in entries.iter().enumerate() {
+            index
+                .folded_search_text
+                .push(entry.search_text.to_ascii_lowercase());
+            let _prior = index
+                .by_subject
+                .entry(entry.subject_identity.clone())
+                .or_default()
+                .insert(entry.subject_doc_type, position);
+            index
+                .by_owner_path
+                .entry(entry.owner_path.clone())
+                .or_default()
+                .push(position);
+        }
+        index
+    }
 }
 
 const REPOMAP_SNAPSHOT_FIELDS: &[&str] = &[
@@ -550,8 +584,6 @@ mod tests {
             owner_path: "src/main.rs".to_string(),
             score: 0.75,
             final_score_millis: 750,
-            included: true,
-            rank: 1,
             importance_score_millis: 800,
             utility_score_millis: 700,
             freshness_score_millis: 650,
@@ -610,6 +642,8 @@ mod tests {
         assert_eq!(decoded, entry);
     }
 
+    // A pre-QI-BB-008 file carried the query-time `included`/`rank` on
+    // every entry; they are ignored, not refused, so those files still load.
     #[test]
     fn repomap_entry_defaults_missing_search_and_source_fields() {
         let value = json!({

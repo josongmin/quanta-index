@@ -112,10 +112,6 @@ impl RepoMapMaterializer {
                 .cmp(&lhs.final_score_millis)
                 .then(lhs.subject_identity.cmp(&rhs.subject_identity))
         });
-        for (index, entry) in entries.iter_mut().enumerate() {
-            entry.rank = saturating_u32_from_usize(index.saturating_add(1));
-            entry.included = true;
-        }
 
         RepoMapSnapshot {
             repo_id: bundle.repo_id.clone(),
@@ -269,8 +265,6 @@ fn build_file_entry(
         owner_path: file.owner_path.clone(),
         score: score_from_millis(final_score_millis),
         final_score_millis,
-        included: true,
-        rank: 0,
         importance_score_millis: importance,
         utility_score_millis: utility,
         freshness_score_millis: freshness,
@@ -381,8 +375,6 @@ fn build_symbol_entry(
         owner_path: symbol.owner_path.clone(),
         score: score_from_millis(final_score_millis),
         final_score_millis,
-        included: true,
-        rank: 0,
         importance_score_millis: importance,
         utility_score_millis: utility,
         freshness_score_millis: freshness,

@@ -4351,10 +4351,12 @@ dependencies = [
 name = "quanta-index-repomap"
 version = "0.1.0"
 dependencies = [
+ "ciborium",
  "quanta-index-contract",
  "quanta-index-core",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
 ]
 

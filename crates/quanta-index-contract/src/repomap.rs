@@ -2451,7 +2451,8 @@ pub struct RepoMapEntryDto {
     pub owner_path: String,
     pub score: f32,
     pub final_score_millis: u32,
-    pub included: bool,
+    /// The entry's 1-based position on the returned page. Every returned
+    /// entry is included; the response counts the rest (QI-BB-008).
     pub rank: u32,
     pub importance_score_millis: u32,
     pub utility_score_millis: u32,
@@ -2473,7 +2474,6 @@ const REPOMAP_ENTRY_DTO_V1_FIELDS: &[&str] = &[
     "owner_path",
     "score",
     "final_score_millis",
-    "included",
     "rank",
     "importance_score_millis",
     "utility_score_millis",
@@ -2509,14 +2509,13 @@ impl Serialize for RepoMapEntryDto {
             self.projection_authority_digest.as_str(),
         )?;
         reject_empty_string::<S::Error>("projection_status", self.projection_status.as_str())?;
-        let mut state = serializer.serialize_struct("RepoMapEntryDto", 19)?;
+        let mut state = serializer.serialize_struct("RepoMapEntryDto", 18)?;
         state.serialize_field("subject_identity", &self.subject_identity)?;
         state.serialize_field("subject_doc_type", &self.subject_doc_type)?;
         state.serialize_field("subject_kind", &self.subject_kind)?;
         state.serialize_field("owner_path", &self.owner_path)?;
         state.serialize_field("score", &self.score)?;
         state.serialize_field("final_score_millis", &self.final_score_millis)?;
-        state.serialize_field("included", &self.included)?;
         state.serialize_field("rank", &self.rank)?;
         state.serialize_field("importance_score_millis", &self.importance_score_millis)?;
         state.serialize_field("utility_score_millis", &self.utility_score_millis)?;
@@ -2558,7 +2557,6 @@ impl<'de> Visitor<'de> for RepoMapEntryDtoV1Visitor {
         let mut owner_path: Option<String> = None;
         let mut score: Option<f32> = None;
         let mut final_score_millis: Option<u32> = None;
-        let mut included: Option<bool> = None;
         let mut rank: Option<u32> = None;
         let mut importance_score_millis: Option<u32> = None;
         let mut utility_score_millis: Option<u32> = None;
@@ -2608,12 +2606,6 @@ impl<'de> Visitor<'de> for RepoMapEntryDtoV1Visitor {
                         return Err(de::Error::duplicate_field("final_score_millis"));
                     }
                     final_score_millis = Some(map.next_value()?);
-                }
-                "included" => {
-                    if included.is_some() {
-                        return Err(de::Error::duplicate_field("included"));
-                    }
-                    included = Some(map.next_value()?);
                 }
                 "rank" => {
                     if rank.is_some() {
@@ -2710,7 +2702,6 @@ impl<'de> Visitor<'de> for RepoMapEntryDtoV1Visitor {
         let score = score.ok_or_else(|| de::Error::missing_field("score"))?;
         let final_score_millis =
             final_score_millis.ok_or_else(|| de::Error::missing_field("final_score_millis"))?;
-        let included = included.ok_or_else(|| de::Error::missing_field("included"))?;
         let rank = rank.ok_or_else(|| de::Error::missing_field("rank"))?;
         let importance_score_millis = importance_score_millis
             .ok_or_else(|| de::Error::missing_field("importance_score_millis"))?;
@@ -2752,7 +2743,6 @@ impl<'de> Visitor<'de> for RepoMapEntryDtoV1Visitor {
             owner_path,
             score,
             final_score_millis,
-            included,
             rank,
             importance_score_millis,
             utility_score_millis,
@@ -3306,7 +3296,6 @@ mod tests {
             owner_path: "src/lib.rs".into(),
             score: 0.875_f32,
             final_score_millis: 875,
-            included: true,
             rank: 1,
             importance_score_millis: 500,
             utility_score_millis: 400,

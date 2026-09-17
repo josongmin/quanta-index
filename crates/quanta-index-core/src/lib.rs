@@ -50,8 +50,8 @@ pub use domains::lexical::{
     RepoMetaIngestPort, RepoTopicIngestPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
 };
 pub use domains::repomap::{
-    RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapPolicy, RepoMapQueryPort,
-    RepoMapService,
+    QuarantinedRepoMapFileV1, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
+    RepoMapOpenReportV1, RepoMapPolicy, RepoMapQueryPort, RepoMapService,
 };
 pub use domains::semantic::{
     DenseIndexEffortV1, DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1,

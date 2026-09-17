@@ -370,6 +370,19 @@ owner = "quanta-index-repomap"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "repomap-bounded-query"
+path = "crates/quanta-index-repomap/tests/bounded_query.rs"
+owner = "quanta-index-repomap"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "repomap-store-durability"
+path = "crates/quanta-index-repomap/tests/store_durability.rs"
+owner = "quanta-index-repomap"
+rail = "pr-workspace-nextest"
+
+
+[[integration_targets]]
 id = "repomap-owner-surface"
 path = "crates/quanta-index-repomap/tests/owner_surface.rs"
 owner = "quanta-index-repomap"

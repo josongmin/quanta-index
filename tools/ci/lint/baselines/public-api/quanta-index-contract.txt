@@ -5098,7 +5098,6 @@ pub quanta_index_contract::repomap::RepoMapEntryDto::evidence_priority_millis: u
 pub quanta_index_contract::repomap::RepoMapEntryDto::final_score_millis: u32
 pub quanta_index_contract::repomap::RepoMapEntryDto::freshness_score_millis: u32
 pub quanta_index_contract::repomap::RepoMapEntryDto::importance_score_millis: u32
-pub quanta_index_contract::repomap::RepoMapEntryDto::included: bool
 pub quanta_index_contract::repomap::RepoMapEntryDto::owner_path: alloc::string::String
 pub quanta_index_contract::repomap::RepoMapEntryDto::projection_authority_artifact_id: alloc::string::String
 pub quanta_index_contract::repomap::RepoMapEntryDto::projection_authority_digest: alloc::string::String
@@ -9056,7 +9055,6 @@ pub quanta_index_contract::RepoMapEntryDto::evidence_priority_millis: u32
 pub quanta_index_contract::RepoMapEntryDto::final_score_millis: u32
 pub quanta_index_contract::RepoMapEntryDto::freshness_score_millis: u32
 pub quanta_index_contract::RepoMapEntryDto::importance_score_millis: u32
-pub quanta_index_contract::RepoMapEntryDto::included: bool
 pub quanta_index_contract::RepoMapEntryDto::owner_path: alloc::string::String
 pub quanta_index_contract::RepoMapEntryDto::projection_authority_artifact_id: alloc::string::String
 pub quanta_index_contract::RepoMapEntryDto::projection_authority_digest: alloc::string::String

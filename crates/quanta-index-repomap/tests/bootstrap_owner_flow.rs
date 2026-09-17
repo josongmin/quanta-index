@@ -234,31 +234,6 @@ fn assert_invalid_contract_contains(error: CoreError, needle: &str) {
     }
 }
 
-fn assert_storage_contains(error: CoreError, needles: &[&str]) {
-    match error {
-        CoreError::Storage(message) => {
-            for needle in needles {
-                assert!(message.contains(needle));
-            }
-        }
-        CoreError::InvalidContract(message) => {
-            assert!(false, "expected Storage, got InvalidContract({message})");
-        }
-        CoreError::Typed { code, message } => {
-            assert!(false, "expected Storage, got Typed({code}, {message})");
-        }
-        CoreError::NotReady(message) => {
-            assert!(false, "expected Storage, got NotReady({message})");
-        }
-        CoreError::NotImplemented(message) => {
-            assert!(false, "expected Storage, got NotImplemented({message})");
-        }
-        CoreError::NotFound(message) => {
-            assert!(false, "expected Storage, got NotFound({message})");
-        }
-    }
-}
-
 #[test]
 fn ingest_and_query_returns_ranked_entries() {
     let store = RepoMapGenerationStore::default();
@@ -297,7 +272,9 @@ fn ingest_and_query_returns_ranked_entries() {
     assert_eq!(response.revision_id, bundle.revision_id);
     assert_eq!(response.manifest_generation, bundle.manifest_generation);
     assert_eq!(response.snapshot_meta.snapshot_id, "snap-7");
-    assert_eq!(response.entries.len(), 5);
+    // `top_k=2` returns two rows; the other three are a count, not rows
+    // (QI-BB-008).
+    assert_eq!(response.entries.len(), 2);
     assert_eq!(
         response
             .entries
@@ -305,15 +282,13 @@ fn ingest_and_query_returns_ranked_entries() {
             .map(|entry| entry.subject_identity.as_str()),
         Some("src/lib.rs::OwnerAlpha")
     );
-    assert_eq!(response.entries.first().map(|entry| entry.rank), Some(1));
-    assert!(response.entries.get(1).is_some_and(|entry| entry.included));
     assert_eq!(
         response
             .entries
             .iter()
-            .filter(|entry| entry.included)
-            .count(),
-        2
+            .map(|entry| entry.rank)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
     );
     assert_eq!(response.dropped_entries_count, 3);
     assert!(
@@ -511,14 +486,15 @@ fn persistent_store_reloads_snapshot_and_activation() {
     };
 
     let bundle = sample_bundle();
-    let store_result = RepoMapGenerationStore::with_persistence_root(dir.path());
+    let store_result = RepoMapGenerationStore::open(dir.path());
     assert!(
         store_result.is_ok(),
         "persistent store open should succeed: {store_result:?}"
     );
-    let Ok(store) = store_result else {
+    let Ok(opened) = store_result else {
         return;
     };
+    let store = opened.store;
 
     let ingest_result = store.ingest_bundle(&bundle);
     assert!(
@@ -532,14 +508,18 @@ fn persistent_store_reloads_snapshot_and_activation() {
     );
     drop(store);
 
-    let reload_result = RepoMapGenerationStore::with_persistence_root(dir.path());
+    let reload_result = RepoMapGenerationStore::open(dir.path());
     assert!(
         reload_result.is_ok(),
         "reloaded store open should succeed: {reload_result:?}"
     );
-    let Ok(reloaded) = reload_result else {
+    let Ok(reopened) = reload_result else {
         return;
     };
+    assert_eq!(reopened.report.snapshots_loaded, 1);
+    assert_eq!(reopened.report.activations_loaded, 1);
+    assert!(reopened.report.quarantined.is_empty());
+    let reloaded = reopened.store;
 
     let response_result = reloaded.read_query_snapshot(&RepoMapQueryRequest {
         repo_id: bundle.repo_id.clone(),
@@ -559,7 +539,7 @@ fn persistent_store_reloads_snapshot_and_activation() {
     };
 
     assert_eq!(response.snapshot_meta.snapshot_id, "snap-7");
-    assert_eq!(response.entries.len(), 5);
+    assert_eq!(response.entries.len(), 2);
     let activated = reloaded.activated_generation_for(&bundle.repo_id, &bundle.revision_id);
     assert!(
         activated.is_ok(),
@@ -571,8 +551,10 @@ fn persistent_store_reloads_snapshot_and_activation() {
     assert_eq!(activated, Some(7));
 }
 
+/// An activation whose snapshot is gone is reported and answers `NOT_FOUND`
+/// for its repo; it no longer fails the whole store open (QI-BB-008).
 #[test]
-fn persistent_store_rejects_orphaned_activation_file() {
+fn persistent_store_reports_an_orphaned_activation_and_fails_closed_for_its_repo() {
     let dir_result = tempfile::tempdir();
     assert!(dir_result.is_ok(), "tempdir should succeed: {dir_result:?}");
     let Ok(dir) = dir_result else {
@@ -599,22 +581,33 @@ fn persistent_store_rejects_orphaned_activation_file() {
         "orphan activation write should succeed: {write_result:?}"
     );
 
-    let store_result = RepoMapGenerationStore::with_persistence_root(dir.path());
+    let store_result = RepoMapGenerationStore::open(dir.path());
     assert!(
-        store_result.is_err(),
-        "orphaned activation should fail closed: {store_result:?}"
+        store_result.is_ok(),
+        "an orphaned activation must not fail the open: {store_result:?}"
     );
-    let Err(error) = store_result else {
+    let Ok(opened) = store_result else {
         return;
     };
-
-    assert_storage_contains(
-        error,
-        &[
-            "activation persisted without snapshot",
-            "repo=repo-missing",
-            "revision=rev-missing",
-            "generation=99",
-        ],
+    assert_eq!(
+        opened.report.activations_without_snapshot,
+        vec!["repo=repo-missing revision=rev-missing generation=99".to_string()]
     );
+    let query_result = opened.store.read_query_snapshot(&RepoMapQueryRequest {
+        repo_id: RepoId::new("repo-missing"),
+        revision_id: RevisionId::new("rev-missing"),
+        manifest_generation: ManifestGeneration::new(99),
+        query_text: "anything".to_string(),
+        top_k: 1,
+        token_budget: 16,
+        focus_subjects: Vec::new(),
+    });
+    assert!(
+        query_result.is_err(),
+        "the orphaned repo answers fail-closed: {query_result:?}"
+    );
+    let Err(error) = query_result else {
+        return;
+    };
+    assert_not_found_contains(error, "no activated generation");
 }

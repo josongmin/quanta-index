@@ -5764,7 +5764,6 @@ mod tests {
                     owner_path: "src/lib.rs".to_string(),
                     score: 1.0,
                     final_score_millis: 1000,
-                    included: true,
                     rank: 1,
                     importance_score_millis: 900,
                     utility_score_millis: 700,

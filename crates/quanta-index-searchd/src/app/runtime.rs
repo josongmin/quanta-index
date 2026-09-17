@@ -30,10 +30,11 @@ use quanta_index_core::{
     GenerationIdentityValidatePort, IdempotencyCatalogPort, IncompleteGenerationDiscardPort,
     L2UnitEmbeddingProvider, LexicalIndexOpenPort, RepoCommitRecencyIngestPort,
     RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
-    RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort, SealedGenerationReclaimPort,
-    SealedGenerationScanPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
-    SemanticBatchBuildPort, SemanticIndexOpenPort, SemanticIngestPort, StructuralError,
-    StructuralMatchBinding, StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider,
+    RepoMapOpenReportV1, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
+    SealedGenerationReclaimPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
+    SearchCorpusIngestPort, SemanticBatchBuildPort, SemanticIndexOpenPort, SemanticIngestPort,
+    StructuralError, StructuralMatchBinding, StructuralMatchCandidate, StructuralReadiness,
+    TextEmbeddingProvider,
 };
 use quanta_index_embed::{
     CachingEmbeddingProvider, EmbeddingCacheIdentityV1, FileEmbeddingCache, OpenAiEmbeddingProvider,
@@ -92,6 +93,9 @@ pub struct SearchdRuntimeParts {
     pub repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync>,
     pub repo_map_bundle_ingest_port: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
     pub repo_map_generation_activate_port: Arc<dyn RepoMapGenerationActivatePort + Send + Sync>,
+    /// What the `RepoMap` store found on disk when the composition root
+    /// opened it (QI-BB-008); surfaced through the boot inventory.
+    pub repo_map_open_report: RepoMapOpenReportV1,
     pub search_corpus_lifecycle: Arc<SearchCorpusLifecycleOwner>,
     pub legacy_semantic_journal_store: Arc<LegacySemanticJournalStore>,
     /// Durable ingest idempotency records (QI-BB-032).
@@ -796,6 +800,7 @@ impl SearchdRuntime {
             repo_map_query_port,
             repo_map_bundle_ingest_port,
             repo_map_generation_activate_port,
+            repo_map_open_report,
             search_corpus_lifecycle,
             legacy_semantic_journal_store,
             idempotency,
@@ -872,6 +877,7 @@ impl SearchdRuntime {
             active_pairs_validated,
             auxiliary_migration,
             auxiliary_rows_restored,
+            repo_map: repo_map_open_report,
         };
         let auxiliary_parts = AuxiliaryMaterializerParts {
             catalog: Arc::clone(&auxiliary_catalog),

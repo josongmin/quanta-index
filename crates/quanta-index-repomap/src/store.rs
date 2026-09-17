@@ -1,22 +1,35 @@
-use std::{collections::BTreeMap, path::Path, sync::RwLock};
+//! The `RepoMap` generation store: indexed snapshots shared by reference,
+//! durable activations, and retention of superseded generations (QI-BB-008).
 
-use quanta_index_contract::{RepoId, RepoMapQueryRequest, RepoMapQueryResponse, RevisionId};
+use std::{collections::BTreeMap, path::Path, sync::Arc, sync::RwLock};
+
+use quanta_index_contract::{
+    ManifestGeneration, RepoId, RepoMapQueryRequest, RepoMapQueryResponse, RevisionId,
+};
 use quanta_index_contract::{RepoMapActivateGenerationRequest, RepoMapSourceBundle};
 use quanta_index_core::{
-    CoreError, RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapQueryPort,
+    CoreError, RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapOpenReportV1,
+    RepoMapQueryPort,
 };
 
 use crate::{
     RepoMapMaterializer, RepoMapQueryEngine,
-    model::RepoMapSnapshot,
+    model::{RepoMapIndexedSnapshot, RepoMapSnapshot},
     persistence::{RepoMapActivationRecordV1, RepoMapSnapshotPersistence},
 };
 
 #[derive(Debug)]
 pub struct RepoMapGenerationStore {
-    snapshots: RwLock<BTreeMap<RepoMapStoreKeyV1, RepoMapSnapshot>>,
+    snapshots: RwLock<BTreeMap<RepoMapStoreKeyV1, Arc<RepoMapIndexedSnapshot>>>,
     activated: RwLock<BTreeMap<(String, String), u64>>,
     persistence: Option<RepoMapSnapshotPersistence>,
+}
+
+/// A store opened from disk, with what the open found.
+#[derive(Debug)]
+pub struct OpenedRepoMapStore {
+    pub store: RepoMapGenerationStore,
+    pub report: RepoMapOpenReportV1,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -30,7 +43,7 @@ impl RepoMapStoreKeyV1 {
     fn new(
         repo_id: &RepoId,
         revision_id: &RevisionId,
-        manifest_generation: quanta_index_contract::ManifestGeneration,
+        manifest_generation: ManifestGeneration,
     ) -> Self {
         Self {
             repo_id: repo_id.as_str().to_string(),
@@ -51,40 +64,52 @@ impl Default for RepoMapGenerationStore {
 }
 
 impl RepoMapGenerationStore {
-    pub fn with_persistence_root(root: impl AsRef<Path>) -> Result<Self, CoreError> {
+    /// Open the store under `root`, loading every trusted snapshot and
+    /// activation and reporting what could not be trusted.
+    ///
+    /// An activation whose snapshot is missing is dropped with a reason
+    /// rather than failing the open: the repo answers `NOT_FOUND` until it
+    /// is re-activated, which is the fail-closed answer a lost file earns.
+    pub fn open(root: impl AsRef<Path>) -> Result<OpenedRepoMapStore, CoreError> {
         let persistence = RepoMapSnapshotPersistence::open(root)?;
+        let loaded = persistence.load()?;
+        let mut report = loaded.report;
         let mut snapshots = BTreeMap::new();
-        for snapshot in persistence.load_snapshots()? {
+        for snapshot in loaded.snapshots {
             let key = RepoMapStoreKeyV1::new(
                 &snapshot.repo_id,
                 &snapshot.revision_id,
                 snapshot.manifest_generation,
             );
-            let _prior = snapshots.insert(key, snapshot);
+            let _prior = snapshots.insert(key, Arc::new(RepoMapIndexedSnapshot::new(snapshot)));
         }
         let mut activated = BTreeMap::new();
         for RepoMapActivationRecordV1 {
             repo_id,
             revision_id,
             manifest_generation,
-        } in persistence.load_activations()?
+        } in loaded.activations
         {
             let key = RepoMapStoreKeyV1::new(
                 &RepoId::new(&repo_id),
                 &RevisionId::new(&revision_id),
-                quanta_index_contract::ManifestGeneration::new(manifest_generation),
+                ManifestGeneration::new(manifest_generation),
             );
             if !snapshots.contains_key(&key) {
-                return Err(CoreError::Storage(format!(
-                    "repomap activation persisted without snapshot for repo={repo_id} revision={revision_id} generation={manifest_generation}"
-                )));
+                report.activations_without_snapshot.push(format!(
+                    "repo={repo_id} revision={revision_id} generation={manifest_generation}"
+                ));
+                continue;
             }
             let _prior = activated.insert((repo_id, revision_id), manifest_generation);
         }
-        Ok(Self {
-            snapshots: RwLock::new(snapshots),
-            activated: RwLock::new(activated),
-            persistence: Some(persistence),
+        Ok(OpenedRepoMapStore {
+            store: Self {
+                snapshots: RwLock::new(snapshots),
+                activated: RwLock::new(activated),
+                persistence: Some(persistence),
+            },
+            report,
         })
     }
 
@@ -117,16 +142,23 @@ impl RepoMapGenerationStore {
             &snapshot.revision_id,
             snapshot.manifest_generation,
         );
+        let indexed = Arc::new(RepoMapIndexedSnapshot::new(snapshot));
         {
             let mut guard = self
                 .snapshots
                 .write()
                 .map_err(|err| CoreError::Storage(format!("repomap store poisoned: {err}")))?;
-            let _prior = guard.insert(key, snapshot);
+            let _prior = guard.insert(key, indexed);
         }
         Ok(())
     }
 
+    /// Activate one generation for its repo and revision.
+    ///
+    /// Once the activation is durable, every older generation of the same
+    /// repo and revision is retired from disk and memory: only the
+    /// activated generation answers queries, so older ones are dead weight.
+    /// Newer, not-yet-activated generations are kept.
     pub fn activate_generation(
         &self,
         request: &RepoMapActivateGenerationRequest,
@@ -173,6 +205,53 @@ impl RepoMapGenerationStore {
                 request.manifest_generation.get(),
             );
         }
+        self.retire_generations_before(
+            &request.repo_id,
+            &request.revision_id,
+            request.manifest_generation,
+        )
+    }
+
+    /// Retire every generation of `repo`/`revision` older than `keep_from`.
+    ///
+    /// The file goes first, then the resident snapshot, so a crash between
+    /// the two leaves a resident snapshot the next open simply does not
+    /// find — never a file the store forgot.
+    fn retire_generations_before(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        keep_from: ManifestGeneration,
+    ) -> Result<(), CoreError> {
+        let older: Vec<RepoMapStoreKeyV1> = {
+            let guard = self
+                .snapshots
+                .read()
+                .map_err(|err| CoreError::Storage(format!("repomap store poisoned: {err}")))?;
+            guard
+                .keys()
+                .filter(|key| {
+                    key.repo_id == repo_id.as_str()
+                        && key.revision_id == revision_id.as_str()
+                        && key.manifest_generation < keep_from.get()
+                })
+                .cloned()
+                .collect()
+        };
+        for key in older {
+            if let Some(persistence) = &self.persistence {
+                persistence.remove_snapshot(
+                    repo_id,
+                    revision_id,
+                    ManifestGeneration::new(key.manifest_generation),
+                )?;
+            }
+            let mut guard = self
+                .snapshots
+                .write()
+                .map_err(|err| CoreError::Storage(format!("repomap store poisoned: {err}")))?;
+            let _retired = guard.remove(&key);
+        }
         Ok(())
     }
 
@@ -186,12 +265,14 @@ impl RepoMapGenerationStore {
             &request.revision_id,
             request.manifest_generation,
         );
+        // The snapshot is shared, not copied: a query holds one reference
+        // for its duration and never clones an entry it will not return.
         let snapshot = {
             let guard = self
                 .snapshots
                 .read()
                 .map_err(|err| CoreError::Storage(format!("repomap store poisoned: {err}")))?;
-            guard.get(&key).cloned().ok_or_else(|| {
+            guard.get(&key).map(Arc::clone).ok_or_else(|| {
                 CoreError::NotFound(format!(
                     "repomap snapshot missing for repo={} revision={} generation={}",
                     request.repo_id.as_str(),
@@ -217,6 +298,25 @@ impl RepoMapGenerationStore {
             .read()
             .map_err(|err| CoreError::Storage(format!("repomap activation map poisoned: {err}")))?;
         Ok(guard.get(&key).copied())
+    }
+
+    /// The generations the store holds for `repo`/`revision`, ascending.
+    pub fn resident_generations_for(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) -> Result<Vec<u64>, CoreError> {
+        let guard = self
+            .snapshots
+            .read()
+            .map_err(|err| CoreError::Storage(format!("repomap store poisoned: {err}")))?;
+        Ok(guard
+            .keys()
+            .filter(|key| {
+                key.repo_id == repo_id.as_str() && key.revision_id == revision_id.as_str()
+            })
+            .map(|key| key.manifest_generation)
+            .collect())
     }
 
     fn ensure_generation_activated(&self, request: &RepoMapQueryRequest) -> Result<(), CoreError> {

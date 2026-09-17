@@ -265,36 +265,21 @@ fn query_without_focus_returns_rank_sorted_entries_with_budget_cap() {
         return;
     };
 
-    assert_eq!(response.entries.len(), 3);
+    // `top_k=2` admits two rows; the third is dropped and counted, never
+    // returned (QI-BB-008).
     assert_eq!(
         response
             .entries
-            .first()
-            .map(|entry| entry.subject_identity.as_str()),
-        Some("src/lib.rs")
+            .iter()
+            .map(|entry| (entry.subject_identity.as_str(), entry.rank))
+            .collect::<Vec<_>>(),
+        vec![("src/lib.rs", 1), ("src/main.rs", 2)]
     );
-    assert_eq!(response.entries.first().map(|entry| entry.rank), Some(1));
-    assert_eq!(
-        response
-            .entries
-            .get(1)
-            .map(|entry| entry.subject_identity.as_str()),
-        Some("src/main.rs")
-    );
-    assert_eq!(response.entries.get(1).map(|entry| entry.rank), Some(2));
-    assert_eq!(
-        response
-            .entries
-            .get(2)
-            .map(|entry| entry.subject_identity.as_str()),
-        Some("src/http.rs")
-    );
-    assert_eq!(
-        response.entries.get(2).map(|entry| entry.included),
-        Some(false)
-    );
-    assert_eq!(response.entries.get(2).map(|entry| entry.rank), Some(0));
     assert_eq!(response.dropped_entries_count, 1);
+    assert_eq!(
+        response.drop_reason_codes,
+        vec!["top_k_exhausted".to_string()]
+    );
 }
 
 #[test]

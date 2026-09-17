@@ -314,7 +314,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + **QI-BB-027 ANN sealed contract(§3.23)** 완료. 남은 것: sharded sidecar 포맷(O(delta) write), seal마다 ANN 전체 재구축(O(N), §3.23 한계), scope 단위 streamed embed→append(§3.18 한계) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), streaming projection collector |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. 남은 것: cancel을 lexical collector 내부(candidate batch 사이)까지 내리기, overload/refusal 서버 metric |
-| W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + QI-BB-018 true hybrid(§3.22) + **QI-BB-022 explain = exact presence + lexical score trace(§3.24)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), history relevance order(Tantivy history index, §3.20 한계), judged corpus recall/NDCG gate(§3.22 한계), hybrid 후보의 per-lane contribution(§3.24 한계) |
+| W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + QI-BB-018 true hybrid(§3.22) + QI-BB-022 explain = exact presence + lexical score trace(§3.24) + **QI-BB-008 RepoMap bounded query + durable store(§3.25)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), history relevance order(Tantivy history index, §3.20 한계), judged corpus recall/NDCG gate(§3.22 한계), hybrid 후보의 per-lane contribution(§3.24 한계) |
 | W7 | planned | |
 | C1 | planned | |
 | C2 | planned | |
@@ -1406,6 +1406,55 @@ provenance store(immutable execution record ID, retention/privacy budget)는 만
 질의로 같은 plan을 재유도한다(plan은 (query, generation)의 순수 함수라 결정적). (c) 엔진 내부 세부(BM25 term별 idf/tf)는
 row로 펼치지 않는다 — 1 row가 정확히 emitted score와 일치하는 것이 계약이고, tantivy Explanation tree는 vendor 형식이라
 노출하지 않는다. (d) symbol route candidate(`SymbolCandidate`)는 explain surface에 없다(request가 `LexicalCandidate`).
+
+## 3.25 QI-BB-008 — RepoMap query는 bounded selection, store는 atomic·checksum·quarantine·retention (구현 완료)
+
+**진단 확정**: (a) `read_query_snapshot`이 read lock 아래 snapshot 전체를 clone하고 query engine이 entries를 **다시** clone
+→ 전체 scan/score/sort → `included=false` row까지 전부 응답(`top_k=2`에 5 row가 test로 고정). (b) `query_match_score`가
+entry마다 `search_text.to_ascii_lowercase()` **할당**. (c) persistence는 `fs::write`(temp/fsync/rename 없음), checksum 없음,
+JSON 하나만 깨져도 전체 open 실패, orphan activation 하나가 전체 open 실패, retention 없음. (d) 모델 `RepoMapEntry`가
+query-time 출력(`included`, `rank`)을 persisted field로 들고 있었다.
+
+**구현** (`quanta-index-repomap`):
+
+- **Shared + indexed snapshot**: store는 `Arc<RepoMapIndexedSnapshot { snapshot, index }>`를 보관, query는 Arc clone 하나.
+  `RepoMapSnapshotIndex`는 materialize/load 시 한 번: entry별 folded `search_text`, `by_subject: identity → doc_type →
+  position`, `by_owner_path: path → positions`. focus 해석은 index lookup(O(log N)), term 매칭은 folded text substring
+  (per-entry 할당 0), exact-focus 판정은 `(&str, DocType)` 차용 키.
+- **Bounded selection**: 후보 universe(전체 또는 focus 종속) 위에서 rank key
+  `(exact_focus, owner_path_focus, query_match_score, final_score_millis, Reverse(identity))`를 크기 `prefix = top_k`의
+  min-heap으로 유지(O(N log k), 할당 O(k)) → 정렬 후 budget walk. token budget이 entry를 건너뛰어 page가 덜 찼을 때만
+  prefix를 2배로 넓혀 재scan(greedy walk의 결정은 앞선 entry에만 의존하므로 full-sort 결과와 동일). 응답은 **포함된 row만**
+  (`rank` 1..k), 나머지는 `dropped_entries_count` + reason 집계(`token_budget_exhausted`, `top_k_exhausted`).
+- **Model/Contract**: `RepoMapEntry`에서 `included`/`rank` 제거(query-time 값; legacy 파일의 해당 field는 decoder가 무시).
+  `RepoMapEntryDto.included` 제거(모든 row가 included) — public-api baseline 갱신, CLI 렌더/SDK/e2e 갱신.
+- **Persistence**: `write_atomic` = 같은 dir의 `.tmp-*` → `sync_all` → rename → dir `sync_all`; snapshot 파일은
+  `{format_version: 2, sha256(canonical compact JSON), snapshot}` envelope; open 시 `.tmp-*` sweep, envelope 없는 legacy
+  파일은 1회 읽고 envelope로 재기록(`snapshots_migrated`), decode 실패/digest 불일치/파일명-identity 불일치/format 불일치는
+  **해당 파일만** `quarantine/`로 이동(사유 기록), orphan activation은 `activations_without_snapshot`에 기록하고 그 repo만
+  `NOT_FOUND`(전체 open은 성공). 결과는 `RepoMapOpenReportV1`(core)로 `BootInventoryReportV1.repo_map`에 노출.
+- **Retention**: activation이 durable해진 뒤 같은 (repo, revision)의 **더 오래된** generation을 파일 → 메모리 순으로 retire
+  (query는 activated generation만 답하므로 dead weight); 더 새로운 미활성 generation은 유지.
+
+**검증**:
+
+| 완료 기준 | 검증 |
+| --- | --- |
+| **bounded engine ≡ full sort**: 이전 engine을 reference로 test 안에 그대로 재구현, 랜덤 snapshot(≤400 entries)×request(focus 0–2, 미해결 focus 포함, term 0–2, top_k 1–12, budget 1–600) **720 case**에서 row/rank/dropped/drop reasons/degraded reasons 완전 일치 | `repomap/tests/bounded_query.rs::the_bounded_engine_agrees_with_the_full_sort_on_every_randomized_request` |
+| **snapshot 10×에도 응답 고정**: 같은 1,000 entry 위에 9,000 filler(page 밖) 추가 → page 동일, CBOR 응답 byte **동일** | `…::a_fixed_top_k_response_does_not_grow_with_the_snapshot` |
+| `top_k=2` → row 2개 + dropped 3(옛 test는 5 row 반환을 고정했음 → 반전) | `bootstrap_owner_flow.rs::ingest_and_query_returns_ranked_entries`, `owner_surface.rs::query_without_focus_…` |
+| **crash matrix**: 자식 프로세스가 temp sync 직후 / rename 직후 `process::exit`(semantic 크레이트와 같은 subprocess 패턴) → 부모가 open: 각각 이전 snapshot(+temp 1개 sweep) / 새 snapshot, quarantine 0, 두 번째 open에 temp 0 | `persistence::tests::a_crash_at_every_write_step_leaves_the_previous_or_the_new_snapshot` |
+| digest 불일치(body 1byte 변조) / 잘린 파일 / 엉뚱한 activation 파일 → 각각 사유와 함께 quarantine, 나머지는 load, 다음 open은 clean | `…::a_damaged_file_is_quarantined_with_its_reason_and_the_rest_opens` |
+| 파일명 ≠ identity → quarantine; legacy bare JSON → 1회 migration 후 envelope 검증 | `…::a_file_under_the_wrong_name_is_quarantined`, `…::a_legacy_bare_snapshot_is_migrated_once_and_verified_after` |
+| activation 시 g1,g2 retire(파일+메모리), g4 유지, reopen 일치; activated 파일 유실 → report + 그 repo `NOT_FOUND`(더 새로운 미활성 generation도 서비스 안 함), 재활성화로 복구 | `repomap/tests/store_durability.rs` 2 test; `bootstrap_owner_flow.rs::persistent_store_reports_an_orphaned_activation_…`(옛 "전체 open 실패" 기대 → 반전) |
+| 보완 #5 corrupt 격리가 boot inventory에 보임 | `BootInventoryReportV1.repo_map` (runtime 조립) |
+
+**정직한 한계**: (a) query CPU는 여전히 O(N)(entry당 substring 매칭)이며 O(k)인 것은 **할당과 응답**이다 — substring
+semantics를 유지하면서 inverted index를 두려면 token 매칭으로 의미가 바뀌므로 하지 않았다(이 finding의 완료 기준은
+allocation/response). (b) 할당 상한은 구조로 보장하지만(heap O(k), response O(k)) 계측용 counting allocator는 `unsafe`가
+필요해 두지 않았다 — 측정은 응답 byte로. (c) activation record는 digest 없이 atomic write만(3 field JSON; decode 실패는
+quarantine). (d) fsync 유실(전원 단절) 자체는 시뮬레이션하지 않았다 — protocol(temp sync → rename → dir sync)과 crash
+boundary 2곳의 subprocess kill이 증거다.
 
 ## 4. Finding 상태 (QI-BB-001–032)
 

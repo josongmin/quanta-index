@@ -1042,7 +1042,6 @@ fn stub_repomap_entry() -> RepoMapEntryDto {
         owner_path: "src/lib.rs".to_string(),
         score: 0.875,
         final_score_millis: 875,
-        included: true,
         rank: 1,
         importance_score_millis: 500,
         utility_score_millis: 400,

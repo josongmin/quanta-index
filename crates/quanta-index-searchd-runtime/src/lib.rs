@@ -53,10 +53,10 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     let sem_adapter: Arc<SemanticAdapter> = Arc::new(SemanticAdapter::with_state_root(
         quanta_index_semantic::semantic_state_root(&state_root),
     )?);
-    let repo_map_store = Arc::new(
-        RepoMapGenerationStore::with_persistence_root(state_root.join("repo-map"))
-            .map_err(anyhow::Error::from)?,
-    );
+    let opened_repo_map =
+        RepoMapGenerationStore::open(state_root.join("repo-map")).map_err(anyhow::Error::from)?;
+    let repo_map_store = Arc::new(opened_repo_map.store);
+    let repo_map_open_report = opened_repo_map.report;
     let search_corpus_lifecycle = Arc::new(SearchCorpusLifecycleOwner::open(
         &state_root,
         search_corpus_history_retention,
@@ -136,6 +136,7 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
             repo_map_query_port,
             repo_map_bundle_ingest_port,
             repo_map_generation_activate_port,
+            repo_map_open_report,
             search_corpus_lifecycle,
             legacy_semantic_journal_store,
             idempotency,
