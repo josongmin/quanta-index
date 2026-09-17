@@ -51,7 +51,7 @@ pub use domains::lexical::{
     LexicalSearchPageV1, LexicalSearcher, LexicalWriterCacheStats, LexicalWriterPolicy,
     RegexMatchCachePolicy, RegexMatchCacheStats, RepoCommitRecencyIngestPort,
     RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, SearchCorpusBatchBuildPort,
-    SearchCorpusIngestPort,
+    SearchCorpusIngestPort, TextAuthorityUpdateStats,
 };
 pub use domains::observability::{
     MetricPointV1, MetricSourcePort, MetricValueV1, count_as_f64, count_from_usize,

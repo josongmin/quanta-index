@@ -369,6 +369,29 @@ fn boot_gauges_match_the_boot_inventory_and_the_writer_envelope_reflects_the_sea
         &1,
     )?;
     expect_eq("open writers", &scrape.gauge("lexical_writers_open")?, &0.0)?;
+    // Two chunks were ingested into one generation: the first batch found
+    // no sidecars and rebuilt from its one document, the second updated
+    // them in place with its one chunk; nothing was retired (QI-BB-006).
+    expect_eq(
+        "text-authority rebuilds",
+        &scrape.counter("lexical_text_authority_rebuilds_total")?,
+        &1,
+    )?;
+    expect_eq(
+        "text-authority incremental updates",
+        &scrape.counter("lexical_text_authority_incremental_updates_total")?,
+        &1,
+    )?;
+    expect_eq(
+        "text-authority docs derived",
+        &scrape.counter("lexical_text_authority_docs_derived_total")?,
+        &2,
+    )?;
+    expect_eq(
+        "text-authority docs retired",
+        &scrape.counter("lexical_text_authority_docs_retired_total")?,
+        &0,
+    )?;
     if scrape.gauge("lexical_writers_max")? < 1.0 {
         return Err("the writer ceiling is at least one".into());
     }

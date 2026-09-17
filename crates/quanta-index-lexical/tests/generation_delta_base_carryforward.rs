@@ -37,6 +37,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     LexicalIndexOpenPort, RepoCommitRecencyIngestPort, RequestBudgetV1, SearchCorpusBatchBuildPort,
+    TextAuthorityUpdateStats,
 };
 use quanta_index_lexical::LexicalAdapter;
 
@@ -721,12 +722,14 @@ fn delta_generation_text_authority_matches_independent_full_rebuild() -> TestRes
 ///
 /// The sidecar files are monolithic, so a delta still rewrites every byte of
 /// them; what the in-place path removes is the re-derivation (scan every live
-/// document, re-tokenize, rebuild every posting). This test reports the wall
-/// time of a one-scope delta against a fresh build of the identical final
-/// corpus so the ledger can state what was and was not gained. Numbers are a
-/// shape on a shared host; the assertion is only that the delta is not slower.
+/// document, re-tokenize, rebuild every posting). The oracle is the
+/// adapter's own work count, not a clock: a one-scope delta derives exactly
+/// the one chunk the scope carries and retires exactly the one it replaced,
+/// while a fresh build of the identical final corpus derives every document.
+/// Wall times are printed for the ledger only; on a shared host they are a
+/// shape, not an assertion.
 #[test]
-fn delta_text_authority_update_is_not_slower_than_a_full_rebuild() -> TestResult {
+fn delta_text_authority_update_derives_only_the_changed_scope() -> TestResult {
     const FILLERS: usize = 1_500;
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
@@ -735,10 +738,44 @@ fn delta_text_authority_update_is_not_slower_than_a_full_rebuild() -> TestResult
     let g9 = ManifestGeneration::new(9);
 
     adapter.build_batch(&base_batch_with_filler(g1, FILLERS)?)?;
+    let after_base = adapter.text_authority_update_stats()?;
+    let total_docs = u64::try_from(FILLERS.saturating_add(2))?;
+    if after_base.rebuilds != 1 || after_base.docs_derived != total_docs {
+        return Err(format!(
+            "a fresh generation rebuilds its sidecars from every document: {after_base:?}"
+        )
+        .into());
+    }
 
     let delta_started = std::time::Instant::now();
     adapter.build_batch(&delta_batch(g2, g1)?)?;
     let delta_wall = delta_started.elapsed();
+    let after_delta = adapter.text_authority_update_stats()?;
+    let delta_work = TextAuthorityUpdateStats {
+        rebuilds: after_delta.rebuilds.saturating_sub(after_base.rebuilds),
+        incremental_updates: after_delta
+            .incremental_updates
+            .saturating_sub(after_base.incremental_updates),
+        docs_derived: after_delta
+            .docs_derived
+            .saturating_sub(after_base.docs_derived),
+        docs_retired: after_delta
+            .docs_retired
+            .saturating_sub(after_base.docs_retired),
+    };
+    if delta_work
+        != (TextAuthorityUpdateStats {
+            rebuilds: 0,
+            incremental_updates: 1,
+            docs_derived: 1,
+            docs_retired: 1,
+        })
+    {
+        return Err(format!(
+            "a one-scope delta derives one chunk and retires one, never the corpus: {delta_work:?}"
+        )
+        .into());
+    }
 
     let mut full = base_batch_with_filler(g9, FILLERS)?;
     full.replace_scopes
@@ -757,20 +794,26 @@ fn delta_text_authority_update_is_not_slower_than_a_full_rebuild() -> TestResult
     let full_started = std::time::Instant::now();
     adapter.build_batch(&full)?;
     let full_wall = full_started.elapsed();
+    let after_full = adapter.text_authority_update_stats()?;
+    let full_work = after_full
+        .docs_derived
+        .saturating_sub(after_delta.docs_derived);
+    if after_full.rebuilds.saturating_sub(after_delta.rebuilds) != 1 || full_work != total_docs {
+        return Err(format!(
+            "the independent build derives every one of the {total_docs} documents: {after_full:?}"
+        )
+        .into());
+    }
 
     let base_dir = generation_dir(dir.path(), g1)?;
     let sidecar_bytes = text_authority_bytes(&base_dir)?;
     emit_evidence(&[
         ("scopes", FILLERS.saturating_add(2).to_string()),
         ("text_authority_bytes", sidecar_bytes.to_string()),
+        ("delta_docs_derived", delta_work.docs_derived.to_string()),
+        ("full_docs_derived", full_work.to_string()),
         ("delta_one_scope_ms", delta_wall.as_millis().to_string()),
         ("full_rebuild_ms", full_wall.as_millis().to_string()),
     ]);
-    if delta_wall > full_wall {
-        return Err(format!(
-            "one-scope delta ({delta_wall:?}) was slower than a full rebuild ({full_wall:?})"
-        )
-        .into());
-    }
     Ok(())
 }

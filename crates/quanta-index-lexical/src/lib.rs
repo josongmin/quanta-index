@@ -72,7 +72,7 @@ use quanta_index_core::{
     QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort, RegexMatchCachePolicy,
     RegexMatchCacheStats, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
     RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1, SealedGenerationScanPort,
-    SearchCorpusBatchBuildPort, count_from_usize,
+    SearchCorpusBatchBuildPort, TextAuthorityUpdateStats, count_from_usize,
     domains::lexical::LexicalPolicy,
     timeref::{is_rev_at_time_spec, parse_search_timeref_ms},
 };
@@ -3456,7 +3456,15 @@ impl TextAuthorityBuilders {
     }
 }
 
-/// Rebuild every text-authority sidecar from a full scan of the live index.
+/// What one sidecar write derived and retired, in documents (QI-BB-006).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct TextAuthorityWriteReceipt {
+    docs_derived: u64,
+    docs_retired: u64,
+}
+
+/// Rebuild every text-authority sidecar from a full scan of the live index;
+/// every live document is derived.
 ///
 /// This is the path for a generation with no prior sidecars (a fresh
 /// `ReplaceGeneration`) and for batches whose ops retire whole surfaces. A
@@ -3467,8 +3475,11 @@ fn persist_text_authority_sidecars(
     fields: &SchemaFields,
     index: &Index,
     generation: ManifestGeneration,
-) -> Result<(), CoreError> {
+) -> Result<TextAuthorityWriteReceipt, CoreError> {
     let docs = collect_text_authority_docs(index, fields)?;
+    let docs_derived = u64::try_from(docs.len()).map_err(|err| {
+        CoreError::InvalidContract(format!("lexical: text authority doc count overflow: {err}"))
+    })?;
     let mut builders = TextAuthorityBuilders::empty(generation)?;
     for (offset, (candidate_id, indexed_text, _folded_indexed_text)) in docs.into_iter().enumerate()
     {
@@ -3477,7 +3488,11 @@ fn persist_text_authority_sidecars(
         })?;
         builders.upsert(doc_id, candidate_id, indexed_text)?;
     }
-    builders.publish(path)
+    builders.publish(path)?;
+    Ok(TextAuthorityWriteReceipt {
+        docs_derived,
+        docs_retired: 0,
+    })
 }
 
 /// Apply a scope-level delta to inherited sidecars instead of rebuilding them.
@@ -3493,7 +3508,7 @@ fn update_text_authority_sidecars_incrementally(
     prior: TextAuthorityShard,
     retired_candidate_ids: &BTreeSet<String>,
     added_chunks: &[(String, String)],
-) -> Result<(), CoreError> {
+) -> Result<TextAuthorityWriteReceipt, CoreError> {
     let mut builders = TextAuthorityBuilders::from_prior(generation, prior)?;
     let retired_doc_ids: Vec<u64> = builders
         .table
@@ -3501,14 +3516,26 @@ fn update_text_authority_sidecars_incrementally(
         .filter(|(_, doc)| retired_candidate_ids.contains(&doc.candidate_id))
         .map(|(doc_id, _)| *doc_id)
         .collect();
+    let docs_retired = u64::try_from(retired_doc_ids.len()).map_err(|err| {
+        CoreError::InvalidContract(format!(
+            "lexical: text authority retire count overflow: {err}"
+        ))
+    })?;
     for doc_id in retired_doc_ids {
         builders.retire(doc_id)?;
     }
+    let docs_derived = u64::try_from(added_chunks.len()).map_err(|err| {
+        CoreError::InvalidContract(format!("lexical: text authority add count overflow: {err}"))
+    })?;
     for (candidate_id, indexed_text) in added_chunks {
         let doc_id = builders.next_doc_id()?;
         builders.upsert(doc_id, candidate_id.clone(), indexed_text.clone())?;
     }
-    builders.publish(path)
+    builders.publish(path)?;
+    Ok(TextAuthorityWriteReceipt {
+        docs_derived,
+        docs_retired,
+    })
 }
 
 fn load_text_authority_sidecars(path: &Path) -> Result<Option<TextAuthorityShard>, CoreError> {
@@ -3804,6 +3831,9 @@ pub struct LexicalAdapter {
     writers: Arc<Mutex<WriterCache>>,
     repo_metadata: Arc<Mutex<BTreeMap<GenKey, LexicalRepoMetadataPayload>>>,
     regex_match_cache: Arc<Mutex<RegexMatchCache>>,
+    /// How much text-authority derivation the adapter has done (QI-BB-006):
+    /// rebuilds versus in-place updates, in documents.
+    text_authority_updates: Arc<Mutex<TextAuthorityUpdateStats>>,
     /// Per-deployment regex policy injected at construction time.
     ///
     /// Owned by the adapter (not fabricated at the leaf call site) so all
@@ -3850,9 +3880,41 @@ impl LexicalAdapter {
             writers: Arc::new(Mutex::new(WriterCache::new(writer_policy))),
             repo_metadata: Arc::new(Mutex::new(BTreeMap::new())),
             regex_match_cache: Arc::new(Mutex::new(RegexMatchCache::new(regex_match_cache_policy))),
+            text_authority_updates: Arc::new(Mutex::new(TextAuthorityUpdateStats::default())),
             regex_policy,
             execution_budget,
         }
+    }
+
+    /// How much text-authority derivation the adapter has done so far
+    /// (QI-BB-006).
+    pub fn text_authority_update_stats(&self) -> Result<TextAuthorityUpdateStats, CoreError> {
+        self.text_authority_updates
+            .lock()
+            .map(|stats| *stats)
+            .map_err(|err| {
+                CoreError::Storage(format!("lexical text authority stats poisoned: {err}"))
+            })
+    }
+
+    /// Fold one sidecar write into the adapter's running totals.
+    fn record_text_authority_write(
+        &self,
+        rebuilt: bool,
+        receipt: TextAuthorityWriteReceipt,
+    ) -> Result<(), CoreError> {
+        let mut stats = self.text_authority_updates.lock().map_err(|err| {
+            CoreError::Storage(format!("lexical text authority stats poisoned: {err}"))
+        })?;
+        if rebuilt {
+            stats.rebuilds = stats.rebuilds.saturating_add(1);
+        } else {
+            stats.incremental_updates = stats.incremental_updates.saturating_add(1);
+        }
+        stats.docs_derived = stats.docs_derived.saturating_add(receipt.docs_derived);
+        stats.docs_retired = stats.docs_retired.saturating_add(receipt.docs_retired);
+        drop(stats);
+        Ok(())
     }
 
     /// What the regex match cache has done so far (QI-BB-024).
@@ -4363,7 +4425,24 @@ impl MetricSourcePort for LexicalAdapter {
     fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
         let writers = self.writer_cache_stats()?;
         let regex = self.regex_match_cache_stats()?;
+        let text_authority = self.text_authority_update_stats()?;
         Ok(vec![
+            MetricPointV1::counter(
+                "lexical_text_authority_rebuilds_total",
+                text_authority.rebuilds,
+            ),
+            MetricPointV1::counter(
+                "lexical_text_authority_incremental_updates_total",
+                text_authority.incremental_updates,
+            ),
+            MetricPointV1::counter(
+                "lexical_text_authority_docs_derived_total",
+                text_authority.docs_derived,
+            ),
+            MetricPointV1::counter(
+                "lexical_text_authority_docs_retired_total",
+                text_authority.docs_retired,
+            ),
             MetricPointV1::gauge_count(
                 "lexical_writers_open",
                 count_from_usize(writers.open_writers),
@@ -4744,16 +4823,22 @@ impl LexicalAdapter {
             .commit()
             .map_err(|err| CoreError::Storage(format!("lexical: commit: {err}")))?;
         let generation_dir = self.index_path(key);
-        match delta {
-            TextAuthorityDelta::None => {}
+        // The sidecar write happens under the writer lock (it reads the
+        // committed index); the accounting is folded in after the lock is
+        // released so the stats lock is never nested inside the writer's.
+        let written: Option<(bool, TextAuthorityWriteReceipt)> = match delta {
+            TextAuthorityDelta::None => None,
             TextAuthorityDelta::Rebuild => {
                 self.invalidate_regex_match_cache_generation(key)?;
-                persist_text_authority_sidecars(
-                    generation_dir.as_path(),
-                    &self.fields,
-                    &guarded.index,
-                    key.generation,
-                )?;
+                Some((
+                    true,
+                    persist_text_authority_sidecars(
+                        generation_dir.as_path(),
+                        &self.fields,
+                        &guarded.index,
+                        key.generation,
+                    )?,
+                ))
             }
             TextAuthorityDelta::Incremental {
                 retired_candidate_ids,
@@ -4763,22 +4848,33 @@ impl LexicalAdapter {
                 // A generation with no prior sidecars (a fresh replace) has
                 // nothing to update in place; a prior that fails to load is a
                 // storage fault and propagates rather than being rebuilt over.
-                match load_text_authority_sidecars(generation_dir.as_path())? {
-                    Some(prior) => update_text_authority_sidecars_incrementally(
-                        generation_dir.as_path(),
-                        key.generation,
-                        prior,
-                        &retired_candidate_ids,
-                        &added_chunks,
-                    )?,
-                    None => persist_text_authority_sidecars(
-                        generation_dir.as_path(),
-                        &self.fields,
-                        &guarded.index,
-                        key.generation,
-                    )?,
+                if let Some(prior) = load_text_authority_sidecars(generation_dir.as_path())? {
+                    Some((
+                        false,
+                        update_text_authority_sidecars_incrementally(
+                            generation_dir.as_path(),
+                            key.generation,
+                            prior,
+                            &retired_candidate_ids,
+                            &added_chunks,
+                        )?,
+                    ))
+                } else {
+                    Some((
+                        true,
+                        persist_text_authority_sidecars(
+                            generation_dir.as_path(),
+                            &self.fields,
+                            &guarded.index,
+                            key.generation,
+                        )?,
+                    ))
                 }
             }
+        };
+        drop(guarded);
+        if let Some((rebuilt, receipt)) = written {
+            self.record_text_authority_write(rebuilt, receipt)?;
         }
         Ok(())
     }

@@ -668,6 +668,25 @@ pub struct LexicalWriterCacheStats {
     pub seal_releases: u64,
 }
 
+/// How much text-authority derivation the adapter has done so far
+/// (QI-BB-006), for operators and tests.
+///
+/// A rebuild scans every live document; an incremental update derives
+/// only the chunks a batch added and retires only those it replaced or
+/// tombstoned. `docs_derived` is the tokenize-and-post work in documents,
+/// whichever path ran, so a test can assert the cost shape without a clock.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TextAuthorityUpdateStats {
+    /// Sidecar rebuilds from a full scan of the live index.
+    pub rebuilds: u64,
+    /// In-place updates from the prior generation's sidecars.
+    pub incremental_updates: u64,
+    /// Documents tokenized and posted, over both paths.
+    pub docs_derived: u64,
+    /// Documents removed from inherited sidecars by incremental updates.
+    pub docs_retired: u64,
+}
+
 /// What the regex match cache did so far, for operators and tests.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RegexMatchCacheStats {
