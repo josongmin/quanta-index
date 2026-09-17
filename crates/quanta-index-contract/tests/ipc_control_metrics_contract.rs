@@ -1,11 +1,11 @@
 //! QI-BB-015 — the metrics snapshot and its request on the control wire.
 //!
-//! The snapshot round-trips through CBOR byte-for-byte as a value, rides the
+//! The snapshot round-trips through CBOR and JSON as a value, rides the
 //! adjacent-tagged control envelope under its own kind, and every shape that
 //! would make a scrape lie is refused at decode: a name Prometheus cannot
-//! take, a NaN, buckets that are not cumulative or do not end in `+Inf`, a
-//! name used twice, an unknown or missing field, and a request that carries
-//! anything at all.
+//! take, a non-finite number anywhere, buckets that are not cumulative or
+//! hold more than the count, a name used twice, an unknown or missing
+//! field, and a request that carries anything at all.
 
 #![forbid(unsafe_code)]
 
@@ -58,10 +58,6 @@ fn snapshot() -> MetricsSnapshotV1 {
                 MetricBucketV1 { le: 1.0, count: 2 },
                 MetricBucketV1 { le: 2.5, count: 2 },
                 MetricBucketV1 { le: 10.0, count: 3 },
-                MetricBucketV1 {
-                    le: f64::INFINITY,
-                    count: 3,
-                },
             ],
         }],
         diagnostics: MetricsDiagnosticsV1 {
@@ -127,6 +123,13 @@ fn snapshot_round_trips_and_rides_the_control_envelope() -> TestRes {
     let decoded: MetricsSnapshotV1 = decode(&encode(&value)?)?;
     if decoded != value {
         return Err(format!("snapshot round trip drifted: {decoded:?}").into());
+    }
+    // JSON has no infinities; the wire carries none, so `searchctl
+    // --output json` round-trips too.
+    let json = serde_json::to_string(&value)?;
+    let decoded: MetricsSnapshotV1 = serde_json::from_str(&json)?;
+    if decoded != value {
+        return Err(format!("snapshot JSON round trip drifted: {decoded:?}").into());
     }
     let response = SearchPlaneControlIpcResponseEnvelope {
         request_id: 77,
@@ -257,26 +260,31 @@ fn every_lying_shape_is_refused_at_decode() -> TestRes {
             )),
         ),
         (
-            "last bucket not +Inf",
-            "must end in a +Inf bucket",
-            forged(|value| {
-                let buckets = at(value, &[Field("histograms"), Item(0), Field("buckets")])?;
-                let _last = buckets.as_array_mut()?.pop()?;
-                Some(())
-            }),
-        ),
-        (
-            "+Inf bucket not the count",
-            "not cumulative in ascending bound order",
+            "bucket bound infinite",
+            "not finite",
             forged(set(
                 &[
                     Field("histograms"),
                     Item(0),
                     Field("buckets"),
-                    Item(3),
+                    Item(2),
+                    Field("le"),
+                ],
+                Value::Float(f64::INFINITY),
+            )),
+        ),
+        (
+            "bucket holds more than the count",
+            "holding more than its count",
+            forged(set(
+                &[
+                    Field("histograms"),
+                    Item(0),
+                    Field("buckets"),
+                    Item(2),
                     Field("count"),
                 ],
-                Value::Integer(2.into()),
+                Value::Integer(4.into()),
             )),
         ),
         (
@@ -333,11 +341,11 @@ fn every_lying_shape_is_refused_at_decode() -> TestRes {
     Ok(())
 }
 
-/// CBOR carries NaN as a float, so a NaN that an encoder let through is
-/// refused by the decoder wherever it sits; a negative gauge is not a lie
-/// and decodes.
+/// CBOR carries NaN and infinities as floats, so one that an encoder let
+/// through is refused by the decoder wherever it sits; a negative gauge is
+/// not a lie and decodes.
 #[test]
-fn nan_anywhere_is_refused_but_a_negative_gauge_is_not() -> TestRes {
+fn non_finite_anywhere_is_refused_but_a_negative_gauge_is_not() -> TestRes {
     let mut nan_gauge = snapshot();
     if let Some(gauge) = nan_gauge.gauges.first_mut() {
         gauge.value = f64::NAN;
@@ -366,16 +374,26 @@ fn nan_anywhere_is_refused_but_a_negative_gauge_is_not() -> TestRes {
             }
         }
     }
+    let mut infinite_gauge = snapshot();
+    if let Some(gauge) = infinite_gauge.gauges.first_mut() {
+        gauge.value = f64::NEG_INFINITY;
+    }
+    let mut infinite_sum = snapshot();
+    if let Some(histogram) = infinite_sum.histograms.first_mut() {
+        histogram.sum = f64::INFINITY;
+    }
     for (case, forged) in [
-        ("gauge", nan_gauge),
-        ("histogram sum", nan_sum),
-        ("histogram min", nan_min),
-        ("histogram max", nan_max),
-        ("bucket bound", nan_bound),
+        ("NaN gauge", nan_gauge),
+        ("NaN histogram sum", nan_sum),
+        ("NaN histogram min", nan_min),
+        ("NaN histogram max", nan_max),
+        ("NaN bucket bound", nan_bound),
+        ("-Inf gauge", infinite_gauge),
+        ("+Inf histogram sum", infinite_sum),
     ] {
         let bytes = encode(&forged)?;
         if decode::<MetricsSnapshotV1>(&bytes).is_ok() {
-            return Err(format!("a NaN {case} must be refused at decode").into());
+            return Err(format!("a {case} must be refused at decode").into());
         }
     }
     let negative = forged(|value| {

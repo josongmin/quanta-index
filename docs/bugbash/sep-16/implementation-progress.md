@@ -1558,9 +1558,11 @@ pathname을 빼앗음). state root는 `create_dir`(umask)로 만들고 mode/owne
   오류 그대로, 잘못된/중복 이름·NaN gauge는 `METRICS_SOURCE_DEFECT` — 구멍 난 snapshot은 절대 내지 않는다.
   `SearchPlaneControlDispatcher::new`의 6번째 인자(composition root가 source 목록을 **socket bind 전에** 고정).
 - **wire** (`contract::ipc::metrics`): `MetricsSnapshotRequest`(빈 struct, field 있으면 거부) → `MetricsSnapshotV1`
-  {counters, gauges, histograms, diagnostics}. decode가 거부: 이름 규칙, NaN(gauge/sum/min/max/le), bucket 비-cumulative/
-  비-ascending, 마지막 bucket ≠ `+Inf`/count 불일치, kind 간 이름 중복, unknown/missing field. 이름 규칙은 Prometheus
-  metric name 문법과 같아 exposition이 escape 없이 나온다.
+  {counters, gauges, histograms, diagnostics}. **wire의 모든 수는 finite** — histogram은 finite bound bucket만 싣고 `+Inf`
+  bucket은 `count`가 대신한다(첫 verify에서 `--output json`이 `+Inf`를 `null`로 써서 되읽지 못함 → bucket 설계 변경; JSON/CBOR
+  모두 round trip). decode가 거부: 이름 규칙, 비-finite(gauge/sum/min/max/le: NaN·±Inf), bucket 비-cumulative/비-ascending,
+  bucket count > `count`, kind 간 이름 중복, unknown/missing field. 이름 규칙은 Prometheus metric name 문법과 같아
+  exposition이 escape 없이 나온다. store의 histogram sum은 `f64::MAX`에서 saturate.
 - **surface**: SDK `client.observability().metrics_snapshot()` / `control().metrics_snapshot()`; harness `metrics_snapshot()`;
   `searchctl metrics [--output pretty|json|prometheus]` — prometheus는 `# TYPE` + `_bucket{le="…"}`/`_sum`/`_count`,
   diagnostics는 `searchd_obs_*_total` counter로; `--output prometheus`는 `metrics` 외 subcommand에서 usage error.
@@ -1575,7 +1577,7 @@ pathname을 빼앗음). state root는 `create_dir`(umask)로 만들고 mode/owne
 | error ring 256 bound + dropped 40, 가장 오래된 보존 = 41번째 | `the_error_ring_is_bounded_and_counts_its_drops` |
 | scrape merge 정렬 / 실패 source·bad name·NaN·중복 → typed | `scrape_merges_sources_into_one_sorted_snapshot`, `scrape_refuses_defective_sources_typed` |
 | control route가 store+source를 합치고 두 번째 scrape가 커진 total을 본다; 결함 source는 `INTERNAL`/`METRICS_SOURCE_DEFECT` | `control_dispatcher::tests::metrics_snapshot_route_{merges_the_store_and_every_source,refuses_a_defective_source_typed}` |
-| wire: round trip + envelope kind tag, 이름 규칙 9 negative, 11개 거짓 shape 각각 **지정된 사유**로 거부, NaN 5곳 거부, 음수 gauge 허용, 빈 request | `contract/tests/ipc_control_metrics_contract.rs` (5 tests) |
+| wire: CBOR + **JSON** round trip + envelope kind tag, 이름 규칙 9 negative, 11개 거짓 shape 각각 **지정된 사유**로 거부, NaN 5곳 + ±Inf 2곳 거부, 음수 gauge 허용, 빈 request | `contract/tests/ipc_control_metrics_contract.rs` (5 tests) |
 | dispatcher 7개 route unit test의 sample 이름 목록이 route tail을 포함 | `query_dispatcher::tests::*_emits_closed_obs_metric*` (갱신) |
 | ipc: overload 1/dispatched 2/accepted 3, cap refusal 1, deadline proof dispatched 2·hangup 0, decode failure 1 | `ipc/tests/admission.rs` (3, 갱신) + `server::tests` empty-frame |
 | e2e(실 daemon, control UDS): 5 query 사이 scrape delta — served 5/errors 0/intake 5/latency count 5/`+Inf`==count/ipc query dispatched·accepted 5/control dispatched 1/registry hits 5 == `lq_snapshot_lexical_hit_total` delta/samples_recorded **30**(=5×6)/errors 0; timeout query → errors 1·plan_limit 1·latency +1·samples **+5** | `searchd-runtime/tests/e2e_metrics_scrape.rs::route_socket_registry_and_diagnostic_tallies_move_by_exactly_the_traffic_sent` |
@@ -1635,3 +1637,4 @@ atomic이지 set 전체가 원자적이지는 않다.
 | 2026-09-17 | (QI-BB-015 tree) | `cargow --lane test-fast-lane test -p {contract,core,search-plane,ipc,sdk,searchctl,embed,lexical,searchd}` + `searchd-runtime --test e2e_perf_chaos --test e2e_metrics_scrape --test e2e_snapshot_registry --test end_to_end` + `searchd-harness` | 전부 green (perf_chaos 43/43, metrics_scrape 2/2, cli_smoke metrics 2종 포함). 첫 회차 RED 3건은 oracle 보정: 이름 있는 counter만 delta 계산(absent=0), timeout error sample 수 4→**5**(snapshot hit이 execution 전에 emit), dispatcher unit 7건에 route tail 추가 |
 | 2026-09-17 | (QI-BB-015 tree) | `just rust-fuzz-smoke` | 4 target 60s 각각 완주, crash 0 (control request/response decoder에 `MetricsSnapshot` variant 추가 후) |
 | 2026-09-17 | (QI-BB-015 tree) | `just rust-hexagonal` / `just semgrep` / module-discipline / error-shape / digest / derive-allowlist / cargo-toml-hygiene / `just rust-public-api-update` / `just rust-cargo-modules-update` / `just rust-test-authority` / `just fmt-check` / clippy-lane `--workspace --all-targets` | 전부 green; public-api baseline(contract, sdk)·cargo-modules baseline(contract, core) 갱신은 additive |
+| 2026-09-17 | c6b5515 | `just rust-profile verify-rust` | RED — `searchctl::tests::render_metrics_json_round_trips_the_snapshot`: serde_json이 `+Inf` bucket bound를 `null`로 써서 `--output json`이 되읽히지 않음(fail-closed decode가 잡음). wire에서 `+Inf` bucket 제거, `count`가 대신(→ 다음 commit) |

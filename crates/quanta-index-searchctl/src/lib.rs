@@ -1213,7 +1213,8 @@ fn render_readiness(report: &GenerationStatusReport, output: OutputMode) -> CliR
 /// per counter and gauge, a header plus one bucket line per histogram, and
 /// the diagnostic tallies last. `prometheus` is the text exposition format:
 /// a `# TYPE` line per metric, `_bucket{le="…"}` / `_sum` / `_count` series
-/// per histogram with the `+Inf` bucket spelled the way Prometheus reads it.
+/// per histogram. The wire carries only finite bounds, so both renderers
+/// spell the `+Inf` bucket from the histogram's `count`.
 fn render_metrics(snapshot: &MetricsSnapshotV1, output: OutputMode) -> CliResult<String> {
     match output {
         OutputMode::Json => serde_json::to_string_pretty(snapshot)
@@ -1250,13 +1251,9 @@ fn render_metrics_pretty(snapshot: &MetricsSnapshotV1) -> CliResult<String> {
             histogram.name, histogram.count, histogram.sum, histogram.min, histogram.max
         ))?;
         for bucket in &histogram.buckets {
-            fmt_ok(writeln!(
-                rendered,
-                "    le={} {}",
-                prometheus_bound(bucket.le),
-                bucket.count
-            ))?;
+            fmt_ok(writeln!(rendered, "    le={} {}", bucket.le, bucket.count))?;
         }
+        fmt_ok(writeln!(rendered, "    le=+Inf {}", histogram.count))?;
     }
     fmt_ok(writeln!(
         rendered,
@@ -1315,11 +1312,14 @@ fn render_prometheus_histogram(
         fmt_ok(writeln!(
             rendered,
             "{}_bucket{{le=\"{}\"}} {}",
-            histogram.name,
-            prometheus_bound(bucket.le),
-            bucket.count
+            histogram.name, bucket.le, bucket.count
         ))?;
     }
+    fmt_ok(writeln!(
+        rendered,
+        "{}_bucket{{le=\"+Inf\"}} {}",
+        histogram.name, histogram.count
+    ))?;
     fmt_ok(writeln!(
         rendered,
         "{}_sum {}",
@@ -1331,16 +1331,6 @@ fn render_prometheus_histogram(
         histogram.name, histogram.count
     ))?;
     Ok(())
-}
-
-/// A bucket bound the way the exposition format spells it: `+Inf` for the
-/// last bucket, otherwise the shortest decimal that round-trips.
-fn prometheus_bound(bound: f64) -> String {
-    if bound == f64::INFINITY {
-        "+Inf".to_string()
-    } else {
-        bound.to_string()
-    }
 }
 
 /// J7Q-05: one activated track's slot in the composite [`DoctorReport`].
@@ -2943,10 +2933,6 @@ mod tests {
                     MetricBucketV1 { le: 1.0, count: 2 },
                     MetricBucketV1 { le: 2.5, count: 2 },
                     MetricBucketV1 { le: 10.0, count: 3 },
-                    MetricBucketV1 {
-                        le: f64::INFINITY,
-                        count: 3,
-                    },
                 ],
             }],
             diagnostics: MetricsDiagnosticsV1 {
@@ -2984,9 +2970,10 @@ mod tests {
         );
     }
 
-    /// QI-BB-015: the Prometheus exposition is exactly what a scraper reads:
-    /// typed families, cumulative `_bucket` series ending in `+Inf`, and the
-    /// diagnostics as their own counters.
+    /// QI-BB-015: the Prometheus exposition is exactly what a scraper reads.
+    ///
+    /// Typed families, cumulative `_bucket` series ending in a `+Inf` bucket
+    /// spelled from `count`, and the diagnostics as their own counters.
     #[test]
     fn render_metrics_prometheus_emits_the_text_exposition_format() {
         let rendered = render_metrics(&metrics_fixture(), OutputMode::Prometheus);

@@ -44,8 +44,9 @@ pub const MAX_OBS_ERRORS: usize = 256;
 
 /// Upper bounds of the histogram buckets every distribution shares.
 ///
-/// A log-ish ladder that resolves milliseconds and small counts alike; the
-/// wire histogram adds the `+Inf` bucket after these.
+/// A log-ish ladder that resolves milliseconds and small counts alike;
+/// what lies past the last bound is the histogram's `count` minus the last
+/// bucket, which is how a renderer spells the `+Inf` bucket.
 pub const HISTOGRAM_BUCKET_BOUNDS: [f64; 14] = [
     1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1_000.0, 2_500.0, 5_000.0, 10_000.0,
     30_000.0,
@@ -94,7 +95,7 @@ struct HistogramAggregate {
     max: f64,
     /// Observations in each bucket of [`HISTOGRAM_BUCKET_BOUNDS`]
     /// (at or below that bound and above the previous), non-cumulative;
-    /// what none of them holds is the `+Inf` remainder.
+    /// what none of them holds is past the last bound.
     below: [u64; HISTOGRAM_BUCKET_BOUNDS.len()],
 }
 
@@ -111,7 +112,9 @@ impl HistogramAggregate {
 
     fn observe(&mut self, value: f64) {
         self.count = self.count.saturating_add(1);
-        self.sum += value;
+        // Every observed value is finite; the sum saturates rather than
+        // reaching infinity, which the wire refuses.
+        self.sum = (self.sum + value).min(f64::MAX);
         self.min = self.min.min(value);
         self.max = self.max.max(value);
         if let Some(slot) = HISTOGRAM_BUCKET_BOUNDS
@@ -125,7 +128,7 @@ impl HistogramAggregate {
 
     fn to_wire(&self, name: &str) -> MetricHistogramV1 {
         let mut cumulative = 0_u64;
-        let mut buckets = Vec::with_capacity(HISTOGRAM_BUCKET_BOUNDS.len().saturating_add(1));
+        let mut buckets = Vec::with_capacity(HISTOGRAM_BUCKET_BOUNDS.len());
         for (bound, below) in HISTOGRAM_BUCKET_BOUNDS.iter().zip(self.below.iter()) {
             cumulative = cumulative.saturating_add(*below);
             buckets.push(MetricBucketV1 {
@@ -133,10 +136,6 @@ impl HistogramAggregate {
                 count: cumulative,
             });
         }
-        buckets.push(MetricBucketV1 {
-            le: f64::INFINITY,
-            count: self.count,
-        });
         MetricHistogramV1 {
             name: name.to_string(),
             count: self.count,
@@ -556,7 +555,7 @@ mod tests {
     }
 
     /// A gauge keeps its last value; a histogram keeps count, sum,
-    /// extremes and cumulative buckets that end in `+Inf`.
+    /// extremes and cumulative finite buckets, with `count` past them.
     #[test]
     fn gauges_keep_the_last_value_and_histograms_bucket_cumulatively() -> TestResult {
         let store = BoundedQueryObsStore::default();
@@ -592,24 +591,22 @@ mod tests {
             return Err(format!("histogram summary: {histogram:?}").into());
         }
         let bounds: Vec<f64> = histogram.buckets.iter().map(|bucket| bucket.le).collect();
-        let mut expected_bounds = HISTOGRAM_BUCKET_BOUNDS.to_vec();
-        expected_bounds.push(f64::INFINITY);
-        if bounds != expected_bounds {
-            return Err(format!("every bucket bound, then +Inf: {bounds:?}").into());
+        if bounds != HISTOGRAM_BUCKET_BOUNDS.to_vec() {
+            return Err(format!("every finite bucket bound, in order: {bounds:?}").into());
         }
         let counts: Vec<u64> = histogram
             .buckets
             .iter()
             .map(|bucket| bucket.count)
             .collect();
-        // le=1 holds 0.5 and 1.0; le=2 adds 1.5; every later finite bound
-        // stays at 3; +Inf holds all four.
+        // le=1 holds 0.5 and 1.0; le=2 adds 1.5; every later bound stays
+        // at 3; the fourth observation lies past the last bound, so only
+        // `count` holds it.
         let mut expected_counts = vec![2_u64, 3];
         expected_counts.extend(std::iter::repeat_n(
             3_u64,
             HISTOGRAM_BUCKET_BOUNDS.len() - 2,
         ));
-        expected_counts.push(4);
         if counts != expected_counts {
             return Err(format!("cumulative counts: {counts:?} != {expected_counts:?}").into());
         }

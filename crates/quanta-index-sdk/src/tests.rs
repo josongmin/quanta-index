@@ -3617,13 +3617,7 @@ fn observability_metrics_snapshot_returns_the_daemon_snapshot() {
             sum: 7.0,
             min: 3.0,
             max: 4.0,
-            buckets: vec![
-                MetricBucketV1 { le: 5.0, count: 2 },
-                MetricBucketV1 {
-                    le: f64::INFINITY,
-                    count: 2,
-                },
-            ],
+            buckets: vec![MetricBucketV1 { le: 5.0, count: 2 }],
         }],
         diagnostics: MetricsDiagnosticsV1 {
             samples_recorded: 14,

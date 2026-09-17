@@ -7,6 +7,10 @@
 //! names the search plane registers; there are no free-text labels and no
 //! per-repo or per-query series, so the snapshot's size is bounded by the
 //! number of registered metrics, never by traffic.
+//!
+//! Every number on the wire is finite: a histogram carries its finite
+//! bucket bounds and its total `count`, which is what the `+Inf` bucket
+//! would hold, so the snapshot round-trips through JSON as well as CBOR.
 
 use core::fmt;
 
@@ -33,12 +37,16 @@ pub struct MetricGaugeV1 {
 /// One cumulative histogram bucket: observations at or below `le`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MetricBucketV1 {
-    /// Upper bound of the bucket; `f64::INFINITY` for the last one.
+    /// Finite upper bound of the bucket.
     pub le: f64,
     pub count: u64,
 }
 
-/// A distribution: count, sum, extremes and cumulative buckets.
+/// A distribution: count, sum, extremes and cumulative finite buckets.
+///
+/// `count` is every observation, which is what a `+Inf` bucket would
+/// hold; renderers that need one derive it from `count` rather than
+/// carrying an infinity on the wire.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MetricHistogramV1 {
     pub name: String,
@@ -261,8 +269,8 @@ impl MetricCounterV1 {
 impl MetricGaugeV1 {
     fn validate_wire<E: de::Error>(&self) -> Result<(), E> {
         reject_bad_name(&self.name)?;
-        if self.value.is_nan() {
-            return Err(E::custom(format!("gauge `{}` is NaN", self.name)));
+        if !self.value.is_finite() {
+            return Err(E::custom(format!("gauge `{}` is not finite", self.name)));
         }
         Ok(())
     }
@@ -270,8 +278,8 @@ impl MetricGaugeV1 {
 
 impl MetricBucketV1 {
     fn validate_wire<E: de::Error>(&self) -> Result<(), E> {
-        if self.le.is_nan() {
-            return Err(E::custom("histogram bucket bound is NaN"));
+        if !self.le.is_finite() {
+            return Err(E::custom("histogram bucket bound is not finite"));
         }
         Ok(())
     }
@@ -280,26 +288,27 @@ impl MetricBucketV1 {
 impl MetricHistogramV1 {
     fn validate_wire<E: de::Error>(&self) -> Result<(), E> {
         reject_bad_name(&self.name)?;
-        if self.sum.is_nan() || self.min.is_nan() || self.max.is_nan() {
-            return Err(E::custom(format!("histogram `{}` carries NaN", self.name)));
+        if !self.sum.is_finite() || !self.min.is_finite() || !self.max.is_finite() {
+            return Err(E::custom(format!(
+                "histogram `{}` carries a non-finite summary",
+                self.name
+            )));
         }
-        let mut previous_le = f64::NEG_INFINITY;
-        let mut previous_count = 0_u64;
+        let mut previous: Option<&MetricBucketV1> = None;
         for bucket in &self.buckets {
-            if bucket.le <= previous_le || bucket.count < previous_count {
+            if previous
+                .is_some_and(|earlier| bucket.le <= earlier.le || bucket.count < earlier.count)
+            {
                 return Err(E::custom(format!(
                     "histogram `{}` buckets are not cumulative in ascending bound order",
                     self.name
                 )));
             }
-            previous_le = bucket.le;
-            previous_count = bucket.count;
+            previous = Some(bucket);
         }
-        if let Some(last) = self.buckets.last()
-            && (last.le != f64::INFINITY || last.count != self.count)
-        {
+        if previous.is_some_and(|last| last.count > self.count) {
             return Err(E::custom(format!(
-                "histogram `{}` must end in a +Inf bucket holding every observation",
+                "histogram `{}` has a bucket holding more than its count",
                 self.name
             )));
         }

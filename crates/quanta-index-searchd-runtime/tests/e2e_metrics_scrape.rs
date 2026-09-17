@@ -163,15 +163,17 @@ fn route_socket_registry_and_diagnostic_tallies_move_by_exactly_the_traffic_sent
         &latency_after.count.checked_sub(latency_before.count),
         &Some(SERVED_QUERIES),
     )?;
-    let inf_bucket = latency_after
+    let last_bucket = latency_after
         .buckets
         .last()
         .ok_or("the histogram has buckets")?;
-    expect_eq(
-        "the +Inf bucket holds every observation",
-        &(inf_bucket.le, inf_bucket.count),
-        &(f64::INFINITY, latency_after.count),
-    )?;
+    if !last_bucket.le.is_finite() || last_bucket.count > latency_after.count {
+        return Err(format!(
+            "buckets are finite and never exceed the count: {last_bucket:?} vs {}",
+            latency_after.count
+        )
+        .into());
+    }
     if latency_after.sum < latency_before.sum || latency_after.max < latency_before.max {
         return Err(format!(
             "latency sum and max never shrink: {latency_before:?} -> {latency_after:?}"

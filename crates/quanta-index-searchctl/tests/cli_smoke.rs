@@ -557,10 +557,6 @@ fn metrics_fixture() -> MetricsSnapshotV1 {
             buckets: vec![
                 MetricBucketV1 { le: 1.0, count: 1 },
                 MetricBucketV1 { le: 5.0, count: 2 },
-                MetricBucketV1 {
-                    le: f64::INFINITY,
-                    count: 2,
-                },
             ],
         }],
         diagnostics: MetricsDiagnosticsV1 {
