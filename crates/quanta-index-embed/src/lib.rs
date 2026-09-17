@@ -11,15 +11,16 @@ mod openai;
 mod telemetry;
 
 pub use cache::{
-    CachingEmbeddingProvider, EmbeddingCache, EmbeddingCacheIdentityV1, FileEmbeddingCache,
-    InMemoryEmbeddingCache,
+    CachingEmbeddingProvider, EmbeddingCache, EmbeddingCacheIdentityV1, EmbeddingCacheKey,
+    EmbeddingCacheOpenReport, EmbeddingCacheRetentionPolicy, EmbeddingCacheStats,
+    FileEmbeddingCache, InMemoryEmbeddingCache,
 };
 pub use openai::{
     DEFAULT_CONCURRENCY, DEFAULT_MAX_BATCH, DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST,
-    DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT, EmbeddingTransport, HttpResponse,
+    DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT, EmbeddingTransport, HttpResponse, MAX_CONCURRENCY,
     OpenAiEmbeddingProvider, OpenAiProviderConfig, ReqwestBlockingTransport,
 };
 pub use telemetry::{
-    OpenAiEmbedStatsSnapshot, OpenAiRequestSample, reset_openai_embed_stats,
-    snapshot_openai_embed_stats,
+    OpenAiEmbedStatsSnapshot, OpenAiRequestSample, REQUEST_SAMPLE_CAPACITY,
+    reset_openai_embed_stats, snapshot_openai_embed_stats,
 };

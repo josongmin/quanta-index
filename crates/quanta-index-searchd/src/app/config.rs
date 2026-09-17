@@ -2,10 +2,13 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
-use quanta_index_core::{LexicalExecutionBudgetV1, RegexMatchCachePolicy};
+use quanta_index_core::{
+    IngestResourcePolicy, LexicalExecutionBudgetV1, MAX_EMBEDDING_DIMENSION, RegexMatchCachePolicy,
+};
 use quanta_index_embed::{
     DEFAULT_CONCURRENCY, DEFAULT_MAX_BATCH, DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST,
-    DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT, OpenAiProviderConfig,
+    DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT, EmbeddingCacheRetentionPolicy, MAX_CONCURRENCY,
+    OpenAiProviderConfig,
 };
 use quanta_index_ipc::ServerAdmissionPolicy;
 use quanta_index_search_plane::readiness::SearchCorpusHistoryRetentionPolicyV1;
@@ -34,8 +37,13 @@ pub struct OpenAiEmbedderTuning {
     pub timeout: Duration,
     /// Whether the on-disk embedding cache is used (`QUANTA_INDEX_EMBED_CACHE`).
     pub cache_enabled: bool,
+    /// How much the on-disk embedding cache may hold (QI-BB-009):
+    /// `QUANTA_INDEX_EMBED_CACHE_MAX_ENTRIES`, `QUANTA_INDEX_EMBED_CACHE_MAX_BYTES`
+    /// and `QUANTA_INDEX_EMBED_CACHE_MAX_NAMESPACES`.
+    pub cache_retention: EmbeddingCacheRetentionPolicy,
     /// Embedding requests dispatched concurrently per batch
-    /// (`QUANTA_INDEX_EMBED_CONCURRENCY`; 1 = sequential).
+    /// (`QUANTA_INDEX_EMBED_CONCURRENCY`; 1 = sequential, at most
+    /// [`MAX_CONCURRENCY`]).
     pub concurrency: usize,
 }
 
@@ -47,6 +55,7 @@ impl Default for OpenAiEmbedderTuning {
             max_retries: DEFAULT_MAX_RETRIES,
             timeout: DEFAULT_TIMEOUT,
             cache_enabled: true,
+            cache_retention: EmbeddingCacheRetentionPolicy::DEFAULT,
             concurrency: DEFAULT_CONCURRENCY,
         }
     }
@@ -163,6 +172,9 @@ pub struct SearchdConfig {
     /// Bounds for the lexical regex match cache (QI-BB-024): entries,
     /// resident bytes, and the widest match set one entry may hold.
     regex_match_cache_policy: RegexMatchCachePolicy,
+    /// The resource envelope one search-corpus batch may ask the plane to
+    /// hold (QI-BB-021): records, embedded text bytes and vector bytes.
+    ingest_resource_policy: IngestResourcePolicy,
 }
 
 impl SearchdConfig {
@@ -180,6 +192,7 @@ impl SearchdConfig {
             lexical_execution_budget: LexicalExecutionBudgetV1::DEFAULT,
             query_admission_policy: ServerAdmissionPolicy::DEFAULT,
             regex_match_cache_policy: RegexMatchCachePolicy::DEFAULT,
+            ingest_resource_policy: IngestResourcePolicy::DEFAULT,
         }
     }
 
@@ -191,7 +204,8 @@ impl SearchdConfig {
             .with_snapshot_registry_policy(snapshot_registry_policy_from_env()?)
             .with_lexical_execution_budget(lexical_execution_budget_from_env()?)
             .with_query_admission_policy(query_admission_policy_from_env()?)
-            .with_regex_match_cache_policy(regex_match_cache_policy_from_env()?);
+            .with_regex_match_cache_policy(regex_match_cache_policy_from_env()?)
+            .with_ingest_resource_policy(ingest_resource_policy_from_env()?);
         let _validated = base.search_corpus_history_retention_policy()?;
         Ok(base)
     }
@@ -280,6 +294,17 @@ impl SearchdConfig {
     #[must_use]
     pub const fn with_regex_match_cache_policy(mut self, policy: RegexMatchCachePolicy) -> Self {
         self.regex_match_cache_policy = policy;
+        self
+    }
+
+    #[must_use]
+    pub const fn ingest_resource_policy(&self) -> IngestResourcePolicy {
+        self.ingest_resource_policy
+    }
+
+    #[must_use]
+    pub const fn with_ingest_resource_policy(mut self, policy: IngestResourcePolicy) -> Self {
+        self.ingest_resource_policy = policy;
         self
     }
 
@@ -554,6 +579,77 @@ where
         .map_err(anyhow::Error::from)
 }
 
+/// Resolve the ingest resource envelope from env (QI-BB-021).
+///
+/// Each knob is optional and, unset, takes the matching field of
+/// [`IngestResourcePolicy::DEFAULT`]; zero is refused.
+///
+/// - `QUANTA_INDEX_INGEST_MAX_RECORDS`
+/// - `QUANTA_INDEX_INGEST_MAX_TEXT_BYTES`
+/// - `QUANTA_INDEX_INGEST_MAX_VECTOR_BYTES`
+pub(crate) fn ingest_resource_policy_from_env() -> Result<IngestResourcePolicy> {
+    ingest_resource_policy_from_lookup(optional_env)
+}
+
+fn ingest_resource_policy_from_lookup<F>(lookup: F) -> Result<IngestResourcePolicy>
+where
+    F: Fn(&str) -> Result<Option<String>>,
+{
+    const RECORDS: &str = "QUANTA_INDEX_INGEST_MAX_RECORDS";
+    const TEXT_BYTES: &str = "QUANTA_INDEX_INGEST_MAX_TEXT_BYTES";
+    const VECTOR_BYTES: &str = "QUANTA_INDEX_INGEST_MAX_VECTOR_BYTES";
+    let defaults = IngestResourcePolicy::DEFAULT;
+    let max_records = match lookup(RECORDS)? {
+        None => defaults.max_records(),
+        Some(raw) => required_positive_raw_usize(RECORDS, Some(raw))?,
+    };
+    let max_text_bytes = match lookup(TEXT_BYTES)? {
+        None => defaults.max_text_bytes(),
+        Some(raw) => required_positive_raw_u64(TEXT_BYTES, Some(raw))?,
+    };
+    let max_vector_bytes = match lookup(VECTOR_BYTES)? {
+        None => defaults.max_vector_bytes(),
+        Some(raw) => required_positive_raw_u64(VECTOR_BYTES, Some(raw))?,
+    };
+    IngestResourcePolicy::new(max_records, max_text_bytes, max_vector_bytes)
+        .map_err(anyhow::Error::from)
+}
+
+/// Resolve the embedding cache retention from an injected lookup
+/// (QI-BB-009).
+///
+/// Each knob is optional and, unset, takes the matching field of
+/// [`EmbeddingCacheRetentionPolicy::DEFAULT`]; zero is refused.
+///
+/// - `QUANTA_INDEX_EMBED_CACHE_MAX_ENTRIES`
+/// - `QUANTA_INDEX_EMBED_CACHE_MAX_BYTES`
+/// - `QUANTA_INDEX_EMBED_CACHE_MAX_NAMESPACES`
+fn embedding_cache_retention_policy_from_lookup<F>(
+    lookup: F,
+) -> Result<EmbeddingCacheRetentionPolicy>
+where
+    F: Fn(&str) -> Result<Option<String>>,
+{
+    const ENTRIES: &str = "QUANTA_INDEX_EMBED_CACHE_MAX_ENTRIES";
+    const BYTES: &str = "QUANTA_INDEX_EMBED_CACHE_MAX_BYTES";
+    const NAMESPACES: &str = "QUANTA_INDEX_EMBED_CACHE_MAX_NAMESPACES";
+    let defaults = EmbeddingCacheRetentionPolicy::DEFAULT;
+    let max_entries = match lookup(ENTRIES)? {
+        None => defaults.max_entries(),
+        Some(raw) => required_positive_raw_u64(ENTRIES, Some(raw))?,
+    };
+    let max_resident_bytes = match lookup(BYTES)? {
+        None => defaults.max_resident_bytes(),
+        Some(raw) => required_positive_raw_u64(BYTES, Some(raw))?,
+    };
+    let max_namespaces = match lookup(NAMESPACES)? {
+        None => defaults.max_namespaces(),
+        Some(raw) => required_positive_raw_usize(NAMESPACES, Some(raw))?,
+    };
+    EmbeddingCacheRetentionPolicy::new(max_entries, max_resident_bytes, max_namespaces)
+        .map_err(anyhow::Error::from)
+}
+
 fn raw_u64(name: &str, raw: &str) -> Result<u64> {
     raw.trim()
         .parse::<u64>()
@@ -669,17 +765,20 @@ fn openai_tuning_from_env_with<F>(lookup: F) -> Result<OpenAiEmbedderTuning>
 where
     F: Fn(&str) -> Result<Option<String>>,
 {
-    openai_tuning_from_raw(
+    let mut tuning = openai_tuning_from_raw(
         lookup("QUANTA_INDEX_EMBED_BATCH")?.as_deref(),
         lookup("QUANTA_INDEX_EMBED_MAX_EST_TOKENS")?.as_deref(),
         lookup("QUANTA_INDEX_EMBED_MAX_RETRIES")?.as_deref(),
         lookup("QUANTA_INDEX_EMBED_TIMEOUT_SECS")?.as_deref(),
         lookup("QUANTA_INDEX_EMBED_CACHE")?.as_deref(),
         lookup("QUANTA_INDEX_EMBED_CONCURRENCY")?.as_deref(),
-    )
+    )?;
+    tuning.cache_retention = embedding_cache_retention_policy_from_lookup(lookup)?;
+    Ok(tuning)
 }
 
-/// Pure assembler: maps the raw knob strings onto their tuning fields.
+/// Pure assembler: maps the raw provider knob strings onto their tuning
+/// fields; the cache retention policy is resolved separately.
 ///
 /// Any unset knob falls back to the provider default. Extracted from
 /// [`openai_tuning_from_env`] so the env-var-name -> field mapping (not just
@@ -704,6 +803,7 @@ fn openai_tuning_from_raw(
         max_retries: parse_embed_max_retries(max_retries, defaults.max_retries)?,
         timeout: parse_embed_timeout(timeout_secs, defaults.timeout)?,
         cache_enabled: parse_embed_cache_enabled(cache, defaults.cache_enabled)?,
+        cache_retention: defaults.cache_retention,
         concurrency: parse_embed_concurrency(concurrency, defaults.concurrency)?,
     })
 }
@@ -715,9 +815,9 @@ fn parse_embed_concurrency(raw: Option<&str>, default: usize) -> Result<usize> {
             let parsed = value.trim().parse::<usize>().map_err(|err| {
                 anyhow::anyhow!("invalid QUANTA_INDEX_EMBED_CONCURRENCY '{value}': {err}")
             })?;
-            if parsed == 0 {
+            if parsed == 0 || parsed > MAX_CONCURRENCY {
                 return Err(anyhow::anyhow!(
-                    "QUANTA_INDEX_EMBED_CONCURRENCY must be >= 1, got 0"
+                    "QUANTA_INDEX_EMBED_CONCURRENCY must be within 1..={MAX_CONCURRENCY}, got {parsed}"
                 ));
             }
             Ok(parsed)
@@ -725,13 +825,24 @@ fn parse_embed_concurrency(raw: Option<&str>, default: usize) -> Result<usize> {
     }
 }
 
+/// The embedding dimension knob, bounded (QI-BB-021).
+///
+/// Refused outside `1..=MAX_EMBEDDING_DIMENSION`: the dimension multiplies
+/// every batch's vector residency and every cache entry, so a stray value
+/// is a boot-time defect.
 fn parse_embed_dim(raw: Option<&str>, default: usize) -> Result<usize> {
-    raw.map_or(Ok(default), |value| {
+    let dimension = raw.map_or(Ok(default), |value| {
         value
             .trim()
             .parse::<usize>()
             .map_err(|err| anyhow::anyhow!("invalid QUANTA_INDEX_EMBED_DIM '{value}': {err}"))
-    })
+    })?;
+    if dimension == 0 || dimension > MAX_EMBEDDING_DIMENSION {
+        return Err(anyhow::anyhow!(
+            "QUANTA_INDEX_EMBED_DIM must be within 1..={MAX_EMBEDDING_DIMENSION}, got {dimension}"
+        ));
+    }
+    Ok(dimension)
 }
 
 fn parse_embed_batch(raw: Option<&str>, default: usize) -> Result<usize> {
@@ -1170,6 +1281,15 @@ mod tests {
         assert_eq!(parse_embed_dim(Some("1536"), 64).expect("ok"), 1536);
         assert_eq!(parse_embed_dim(None, 64).expect("default"), 64);
         assert!(parse_embed_dim(Some("big"), 64).is_err());
+        assert!(parse_embed_dim(Some("0"), 64).is_err(), "zero is refused");
+        assert!(
+            parse_embed_dim(Some(&(MAX_EMBEDDING_DIMENSION + 1).to_string()), 64).is_err(),
+            "past the ceiling is refused"
+        );
+        assert_eq!(
+            parse_embed_dim(Some(&MAX_EMBEDDING_DIMENSION.to_string()), 64).expect("at ceiling"),
+            MAX_EMBEDDING_DIMENSION
+        );
     }
 
     #[test]
@@ -1211,8 +1331,76 @@ mod tests {
         // A single garbage knob fails closed (no silent default substitution).
         assert!(openai_tuning_from_raw(Some("nope"), None, None, None, None, None).is_err());
         assert!(openai_tuning_from_raw(None, Some("0"), None, None, None, None).is_err());
-        // concurrency=0 is rejected (would mean "no dispatch").
+        // concurrency=0 is rejected (would mean "no dispatch"), and so is a
+        // pool wider than the provider's ceiling.
         assert!(openai_tuning_from_raw(None, None, None, None, None, Some("0")).is_err());
+        let over = (MAX_CONCURRENCY + 1).to_string();
+        assert!(openai_tuning_from_raw(None, None, None, None, None, Some(&over)).is_err());
+        let at = MAX_CONCURRENCY.to_string();
+        assert_eq!(
+            openai_tuning_from_raw(None, None, None, None, None, Some(&at))
+                .expect("at the ceiling")
+                .concurrency,
+            MAX_CONCURRENCY
+        );
+    }
+
+    #[test]
+    fn cache_retention_env_binds_each_knob_and_refuses_zero() {
+        let lookup = |name: &str| -> Result<Option<String>> {
+            Ok(match name {
+                "QUANTA_INDEX_EMBED_CACHE_MAX_ENTRIES" => Some("77".to_string()),
+                "QUANTA_INDEX_EMBED_CACHE_MAX_BYTES" => Some("4096".to_string()),
+                "QUANTA_INDEX_EMBED_CACHE_MAX_NAMESPACES" => Some("2".to_string()),
+                _ => None,
+            })
+        };
+        let tuning = openai_tuning_from_env_with(lookup).expect("assembles");
+        assert_eq!(tuning.cache_retention.max_entries(), 77);
+        assert_eq!(tuning.cache_retention.max_resident_bytes(), 4096);
+        assert_eq!(tuning.cache_retention.max_namespaces(), 2);
+        let unset = |_name: &str| -> Result<Option<String>> { Ok(None) };
+        assert_eq!(
+            openai_tuning_from_env_with(unset)
+                .expect("defaults")
+                .cache_retention,
+            EmbeddingCacheRetentionPolicy::DEFAULT
+        );
+        let zero = |name: &str| -> Result<Option<String>> {
+            Ok((name == "QUANTA_INDEX_EMBED_CACHE_MAX_BYTES").then(|| "0".to_string()))
+        };
+        assert!(
+            openai_tuning_from_env_with(zero).is_err(),
+            "zero is refused"
+        );
+    }
+
+    #[test]
+    fn ingest_resource_env_binds_each_knob_and_refuses_zero() {
+        let lookup = |name: &str| -> Result<Option<String>> {
+            Ok(match name {
+                "QUANTA_INDEX_INGEST_MAX_RECORDS" => Some("12".to_string()),
+                "QUANTA_INDEX_INGEST_MAX_TEXT_BYTES" => Some("3456".to_string()),
+                "QUANTA_INDEX_INGEST_MAX_VECTOR_BYTES" => Some("789".to_string()),
+                _ => None,
+            })
+        };
+        let policy = ingest_resource_policy_from_lookup(lookup).expect("assembles");
+        assert_eq!(policy.max_records(), 12);
+        assert_eq!(policy.max_text_bytes(), 3456);
+        assert_eq!(policy.max_vector_bytes(), 789);
+        let unset = |_name: &str| -> Result<Option<String>> { Ok(None) };
+        assert_eq!(
+            ingest_resource_policy_from_lookup(unset).expect("defaults"),
+            IngestResourcePolicy::DEFAULT
+        );
+        let zero = |name: &str| -> Result<Option<String>> {
+            Ok((name == "QUANTA_INDEX_INGEST_MAX_RECORDS").then(|| "0".to_string()))
+        };
+        assert!(
+            ingest_resource_policy_from_lookup(zero).is_err(),
+            "zero is refused"
+        );
     }
 
     #[test]
@@ -1269,6 +1457,7 @@ mod tests {
             max_retries: 4,
             timeout: Duration::from_secs(9),
             cache_enabled: false,
+            cache_retention: EmbeddingCacheRetentionPolicy::DEFAULT,
             concurrency: 6,
         };
         let config = tuning.provider_config(

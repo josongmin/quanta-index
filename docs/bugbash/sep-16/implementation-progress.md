@@ -289,10 +289,10 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W0 | **passed** | G0-L/G0-S/G0-C passed, G0-R baseline pinned(cooperative-only). §3 참조. timing 재측정만 `blocked: contended-host` |
 | W1 | planned | |
 | W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + **QI-BB-032 idempotency catalog(§3.16, `quanta-index-catalog` SQLite adapter 신설, probe crate 삭제)** 완료. 남은 것: QI-BB-020 auxiliary authority shard/persistence(catalog 확장), quarantine control surface |
-| W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) 완료. 남은 것: sharded sidecar 포맷(O(delta) write), ANN versioned artifact(QI-BB-027) |
+| W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + **QI-BB-021 ingest resource envelope(§3.18)** 완료. 남은 것: sharded sidecar 포맷(O(delta) write), ANN versioned artifact(QI-BB-027), scope 단위 streamed embed→append(§3.18 한계) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), streaming projection collector |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. 남은 것: cancel을 lexical collector 내부(candidate batch 사이)까지 내리기, overload/refusal 서버 metric |
-| W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), QI-BB-018/019 hybrid |
+| W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + **QI-BB-009 embedding cache retention/telemetry bound(§3.18)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), QI-BB-018/019 hybrid |
 | W7 | planned | |
 | C1 | planned | |
 | C2 | planned | |
@@ -949,7 +949,7 @@ cache entry는 raw f32 배열(길이 4의 배수만 검사, checksum/dimension/f
 | norm 0 / NaN / Inf / 0.5 / 2.0 / dimension: validator가 typed 거부, wrapper가 batch 실패 또는 정규화 — corpus/query 양쪽이 같은 wrapper | `core/tests/semantic_policy.rs::vector_contract` 4 tests(1536-dim 결정성 + tolerance 포함) |
 | ingest row가 `L2Unit` 계약을 어기면 typed `SEM_INVALID_VECTOR`(embedding id 명시) | `persisted_semantic` dimension mismatch 2 test 기대 갱신; 비단위 fixture(`[0.9,0.1,0]`) 1건 교정 |
 
-**남은 것**: finding 보완 #4(activation receipt에 semantic row root/ANN contract attestation)는 QI-BB-027과 함께. 기존 `embed-cache/<shard>/` v1 entry는 읽히지 않고 남는다 — 회수는 QI-BB-009(cache retention) 항목.
+**남은 것**: finding 보완 #4(activation receipt에 semantic row root/ANN contract attestation)는 QI-BB-027과 함께. 기존 `embed-cache/<shard>/` v1 entry는 §3.18(QI-BB-009)에서 open 시 회수한다.
 
 ## 3.16 QI-BB-032 — `batch_digest`는 하나의 immutable body를 이름하고, 한 번만 적용된다 (W2 catalog 착수, 구현 완료)
 
@@ -1010,6 +1010,73 @@ deep clone, insert도 clone 보관 → broad regex 128개 × N doc.
 **정직한 한계**: (a) 후보 restriction은 여전히 `candidate_restriction_query`가 id마다 term query를 만드는 O(matches) —
 compact doc-id bitmap(보완 #2)과 streaming collector는 W4 잔여. (b) stats는 adapter accessor뿐, lq-obs metric export는
 QI-BB-015와 함께. (c) 100만 doc 규모 RSS 측정은 미실행(contended host) — bound는 정책적으로 증명, 수치는 W7.
+
+## 3.18 QI-BB-009 + QI-BB-021 — embedding resource envelope: batch가 확장될 bytes는 적용 전에 재고, cache와 telemetry는 bounded다 (구현 완료)
+
+**진단 확정**:
+- (021) IPC 16 MiB frame cap은 wire bytes만 제한한다. 짧은 record N개는 `N × dim × 4` bytes vector로 확장되고,
+  `QUANTA_INDEX_EMBED_DIM`/`_CONCURRENCY`에는 상한이 없었다. 반면 `OpenAiProviderConfig`는 zero 값을 `max(1)`로 **조용히
+  치환**했다(default substitution). Lance record batch는 metadata column 20개를 `Vec<String>`으로 한 번 복사한 뒤
+  Arrow buffer로 다시 복사했다.
+- (009) file cache는 entry/byte/namespace cap이 없고, in-memory cache는 unbounded `BTreeMap`, telemetry request sample은
+  process-lifetime `Vec`. v1 shard dir(`embed-cache/<2hex>/`)은 §3.15 이후 읽히지 않는 dead bytes였다.
+
+**구현**:
+- core `ingest_resource.rs`: `IngestResourcePolicy { records, text_bytes, vector_bytes }`(zero 거부; `DEFAULT` 100,000 /
+  64 MiB / 256 MiB), `MAX_EMBEDDING_DIMENSION = 8_192`, `INGEST_RESOURCE_BUDGET_EXCEEDED`,
+  `admit_search_corpus_batch(batch, dimension) -> IngestBatchFootprint { carried_records, embedded_records, text_bytes,
+  vector_bytes }`. footprint는 derivation과 같은 규칙: typed semantic source가 있으면 그것이 embedded set, 없으면 legacy
+  chunk text. records ceiling은 둘 다(플레인이 쥐는 row 전부) 센다. dimension이 `1..=MAX` 밖이면 batch 거부가 아니라
+  composition defect(`InvalidContract`).
+- search-plane `DirectSearchCorpusMaterializer`: `validate_surface_mutations_v1` 직후, operation lock·preflight·어떤 track
+  mutation보다 앞에서 `admit_resource_envelope` — 거부는 typed, zero bytes. `IngestResourceStats { admitted, refused,
+  peak_embedded_records, peak_text_bytes, peak_vector_bytes }` + `resource_stats()`. parts에 `resource_policy` 추가.
+- searchd config: `QUANTA_INDEX_INGEST_MAX_{RECORDS,TEXT_BYTES,VECTOR_BYTES}`; `QUANTA_INDEX_EMBED_DIM`은 `1..=8192`,
+  `QUANTA_INDEX_EMBED_CONCURRENCY`는 `1..=MAX_CONCURRENCY(64)` 밖이면 boot 거부. embed `OpenAiEmbeddingProvider::new`는
+  zero batch/token budget/concurrency와 범위 밖 dimension·concurrency를 typed로 거부 — `max(1)` 치환 제거.
+- semantic `build_record_batch`: metadata 20 column을 `StringArray::from_iter_values`/`collect::<StringArray>`로 borrowed
+  값에서 직접 build — scope당 `Vec<String>` 중간 복사 20개 제거. vector column만 flat copy.
+- embed cache (QI-BB-009): typed `EmbeddingCacheKey([u8; 32])`(hex 64자, lowercase만 parse), `EmbeddingCacheRetentionPolicy
+  { entries, resident_bytes, namespaces }`(zero 거부; `DEFAULT` 500,000 / 2 GiB / 4), 공용 `RetentionLedger<V>`(BTreeMap
+  key→slot + BTreeMap tick→key, O(log n) LRU, byte·entry 이중 bound, oversize refuse). `FileEmbeddingCache::new(root,
+  identity, policy)`는 open 시 (a) v1 legacy shard dir 회수, (b) `.opened` marker mtime 기준 최근 `namespaces-1`개 외 namespace
+  retire(marker 없는 namespace는 epoch=가장 오래된 것으로 취급 — dir mtime fallback 없음), (c) namespace scan으로 ledger 재구성
+  (recency = write mtime), (d) `.tmp-` staging 잔재 제거, (e) 좁아진 policy면 open 시 evict. `get`은 ledger가 authoritative
+  (absent → disk probe 없이 miss), 읽기는 lock 밖, decode 실패는 lock 안에서 slot·file 제거 + `corrupt_misses`. `put`은
+  rename 후 lock 안에서 실제 on-disk len으로 계정하고 같은 lock에서 evict. `evict`도 slot→file 순서로 lock 안. `stats()`가
+  trait에 추가(`EmbeddingCacheStats` 8 field), `open_report()`가 open 시 사실 5개. `InMemoryEmbeddingCache::bounded(policy)`.
+  env `QUANTA_INDEX_EMBED_CACHE_MAX_{ENTRIES,BYTES,NAMESPACES}` → `OpenAiEmbedderTuning::cache_retention`.
+- telemetry: request sample은 `VecDeque` ring(`REQUEST_SAMPLE_CAPACITY = 256`) + `request_samples_dropped`,
+  `max_request_texts`/`max_estimated_tokens`는 atomic `fetch_max`로 정확. harness A/B report는 sample에서 max를 유도하지
+  않고 snapshot 값을 쓴다(`schema_version: 2`).
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| footprint 규칙(chunk-only / typed source 우선 / carried=둘 다), 3 ceiling이 bound에서 admit·+1에서 typed 거부, dimension이 vector bytes를 곱함, 범위 밖 dimension은 InvalidContract, 빈 batch는 최소 policy에도 fit | `core/tests/ingest_resource_policy.rs` 7건 |
+| materializer: vector bound −1에서 typed 거부 + lexical/semantic builder·authority 0 touch + `refused=1`; 정확히 맞는 policy에서 admit + peak 3종 == 직접 계산값. **mutation**: admit을 `Ok(())`로 바꾸면 FAIL(receipt applied) → revert | `search_plane::ingest_dispatcher::tests::a_batch_outside_the_resource_envelope_changes_zero_bytes` |
+| e2e: 1-record 폭 envelope에서 2-record batch → `INGEST_RESOURCE_BUDGET_EXCEEDED`, `indexes/{lexical,semantic}/<pair>/` 미생성; 같은 daemon에서 1-record batch는 applied → seal → query 1건. records=1 envelope에서 harness batch(chunk+source=2 row) 거부 | `searchd-runtime/tests/e2e_ingest_resource_envelope.rs` 2건 |
+| provider: zero batch/token/concurrency, `MAX_CONCURRENCY+1`, dim 0/`MAX+1` 거부, bound 값은 ok | `embed::openai::tests::out_of_range_tuning_is_refused_at_construction` |
+| config: `EMBED_DIM` 0/`MAX+1` 거부·`MAX` ok; `EMBED_CONCURRENCY` `MAX+1` 거부·`MAX` ok; cache retention·ingest policy env 3-knob 각각 binding + unset=DEFAULT + zero 거부 | `searchd::config::tests::{dim_knob_parses_and_rejects_garbage, tuning_assembler_propagates_a_bad_knob_as_error, cache_retention_env_binds_each_knob_and_refuses_zero, ingest_resource_env_binds_each_knob_and_refuses_zero}` |
+| file cache: entry 3개분 byte bound에서 8 put → 매 put 후 `resident_bytes ≤ policy`이고 ledger == on-disk(entries·bytes), 최종 entries 3/evictions 5/puts 8, 오래된 5개 miss·최근 3개 hit; entry-count bound 단독 | `embed::cache::tests::resident_bytes_and_entries_never_exceed_the_policy` |
+| hit이 recency를 갱신(read된 first가 살아남고 second가 evict) | `…::a_hit_makes_an_entry_the_newest` |
+| oversize entry는 쓰지 않고 `refused_oversize=1`, 같은 key의 이전 entry도 drop | `…::an_oversize_entry_is_refused_and_never_written` |
+| restart: reopen이 ledger를 디렉터리에서 재구성(6 entries, bytes 일치), 좁힌 policy(2)로 reopen 시 mtime 오래된 4개 evict(파일로 확인) | `…::reopening_rebuilds_the_ledger_and_a_tighter_policy_evicts_the_oldest_writes` |
+| open: legacy shard 회수 1, namespace 3+current에 policy 3 → 가장 오래 전 open된 1개 retire, staging 2개 제거, foreign dir 보존 | `…::opening_removes_stale_staging_legacy_shards_and_surplus_namespaces` |
+| concurrency: policy 4 entries, writer 4×40 put vs reader 4 loop — served vector는 항상 key의 기대값, 종료 후 entries==4, 4개 모두 정확히 serve, ledger == disk | `…::concurrent_eviction_never_serves_a_wrong_or_torn_vector` (+ 기존 `concurrent_writers_leave_a_whole_entry`에 ledger==disk 추가) |
+| damaged entry 6종 → miss + 파일 제거 + `corrupt_misses=6` + ledger==disk | `…::file_cache_refuses_and_removes_damaged_entries` |
+| key hex round-trip, uppercase/짧은/긴/non-hex 거부 | `…::a_key_round_trips_through_its_hex_and_only_lowercase_parses` |
+| in-memory bounded(entries/bytes/oversize) | `…::in_memory_cache_is_bounded_by_entries_and_bytes` |
+| telemetry ring: CAPACITY+50 record 후 `len == 256`, dropped Δ ≥ 50, max 정확 | `embed::telemetry::tests::request_samples_are_a_bounded_window_with_exact_maxima` |
+| semantic metadata column 재작성 회귀 | 기존 `scv2_02_v4_round_trip_preserves_metadata_fields` 등 semantic 91건 green |
+
+**정직한 한계**: (a) 021 보완 #2(scope 단위 embed→validate→Lance append streaming으로 `all_vectors` 미보유)는 미구현 —
+resident peak는 **정책으로 bounded**(`max_vector_bytes` + provider in-flight `concurrency × max_batch`)이지 streaming으로
+줄인 것이 아니다. `SemanticIngestBatch`가 wire DTO라 lazy scope iterator를 실을 수 없어 in-process port 분리가 필요, W3
+잔여로 명시. (b) peak RSS 실측(완료 기준 1)은 contended host라 미실행 — W7. (c) cache stats/ingest stats는 accessor뿐,
+lq-obs export는 QI-BB-015와 함께. (d) file cache recency는 restart를 건너면 write order로 근사(hit 시 mtime touch 안 함 —
+hit당 write를 피하기 위한 선택). (e) namespace retire는 open 시점에만 — 실행 중 다른 identity를 여는 일은 없다.
 
 ## 4. Finding 상태 (QI-BB-001–032)
 

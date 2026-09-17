@@ -35,11 +35,12 @@ use quanta_index_contract::{
 use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
     IdempotencyBeginV1, IdempotencyCatalogPort, IdempotencyKeyV1,
-    IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort, IngestOperationKindV1,
-    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
-    RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1, SealedGenerationReclaimOutcomeV1,
-    SealedGenerationReclaimPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
-    SemanticBatchBuildPort, SemanticIngestPort, TextEmbeddingProvider,
+    IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort, IngestBatchFootprint,
+    IngestOperationKindV1, IngestResourcePolicy, RepoCommitRecencyIngestPort,
+    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMetaIngestPort, RepoTopicIngestPort,
+    RequestBudgetV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
+    SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticBatchBuildPort, SemanticIngestPort,
+    TextEmbeddingProvider,
 };
 
 const ERR_INVALID: &str = "INVALID_REQUEST";
@@ -93,8 +94,41 @@ pub struct DirectSearchCorpusMaterializer {
     semantic_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
     snapshots: SnapshotRegistries,
     idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
+    /// The envelope every batch is measured against before anything is
+    /// held (QI-BB-021), and what the measured batches added up to.
+    resource_policy: IngestResourcePolicy,
+    resource_stats: Mutex<IngestResourceStats>,
     operation_locks: [Mutex<()>; SEARCH_CORPUS_LOCK_STRIPES_V1],
     semantic_derivation_mode: SemanticDerivationModeV1,
+}
+
+/// What the resource envelope admitted and refused, and the widest batch
+/// it admitted (QI-BB-021).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct IngestResourceStats {
+    /// Batches that fit the envelope.
+    pub admitted: u64,
+    /// Batches refused typed for exceeding it.
+    pub refused: u64,
+    /// Most embedded records one admitted batch carried.
+    pub peak_embedded_records: usize,
+    /// Most bytes of text one admitted batch asked to embed.
+    pub peak_text_bytes: u64,
+    /// Most bytes of vectors one admitted batch expanded into.
+    pub peak_vector_bytes: u64,
+}
+
+impl IngestResourceStats {
+    fn record_admitted(&mut self, footprint: &IngestBatchFootprint) {
+        self.admitted = self.admitted.saturating_add(1);
+        self.peak_embedded_records = self.peak_embedded_records.max(footprint.embedded_records);
+        self.peak_text_bytes = self.peak_text_bytes.max(footprint.text_bytes);
+        self.peak_vector_bytes = self.peak_vector_bytes.max(footprint.vector_bytes);
+    }
+
+    fn record_refused(&mut self) {
+        self.refused = self.refused.saturating_add(1);
+    }
 }
 
 /// Composition-owned ports required to materialize one search-corpus generation.
@@ -114,6 +148,8 @@ pub struct SearchCorpusMaterializerParts {
     /// Idempotency records are forgotten with the generation they describe
     /// (QI-BB-032 retention).
     pub idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
+    /// The resource envelope one batch may ask the plane to hold (QI-BB-021).
+    pub resource_policy: IngestResourcePolicy,
 }
 
 /// Durable owner for complete lexical+semantic rollback history.
@@ -196,6 +232,7 @@ impl DirectSearchCorpusMaterializer {
             semantic_reclaim,
             snapshots,
             idempotency,
+            resource_policy,
         } = parts;
         Self {
             builder,
@@ -211,9 +248,44 @@ impl DirectSearchCorpusMaterializer {
             semantic_reclaim,
             snapshots,
             idempotency,
+            resource_policy,
+            resource_stats: Mutex::new(IngestResourceStats::default()),
             operation_locks: std::array::from_fn(|_index| Mutex::new(())),
             semantic_derivation_mode,
         }
+    }
+
+    /// What the resource envelope has admitted and refused so far.
+    pub fn resource_stats(&self) -> Result<IngestResourceStats, CoreError> {
+        self.resource_stats
+            .lock()
+            .map(|stats| *stats)
+            .map_err(|err| {
+                CoreError::Storage(format!(
+                    "direct search-corpus materialize: resource stats poisoned: {err}"
+                ))
+            })
+    }
+
+    /// Measure `batch` against the envelope before anything is held
+    /// (QI-BB-021); a batch that does not fit is refused typed here, with
+    /// zero bytes changed.
+    fn admit_resource_envelope(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
+        let outcome = self
+            .resource_policy
+            .admit_search_corpus_batch(batch, self.semantic_embedder.dimension());
+        {
+            let mut stats = self.resource_stats.lock().map_err(|err| {
+                CoreError::Storage(format!(
+                    "direct search-corpus materialize: resource stats poisoned: {err}"
+                ))
+            })?;
+            match &outcome {
+                Ok(footprint) => stats.record_admitted(footprint),
+                Err(_refused) => stats.record_refused(),
+            }
+        }
+        outcome.map(|_footprint| ())
     }
 }
 
@@ -229,6 +301,7 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
         batch.validate_surface_mutations_v1().map_err(|err| {
             CoreError::InvalidContract(format!("direct search-corpus materialize: {err}"))
         })?;
+        self.admit_resource_envelope(batch)?;
         let stripe = search_corpus_lock_stripe_v1(&batch.repo_id, &batch.revision_id);
         let operation_lock = self.operation_locks.get(stripe).ok_or_else(|| {
             CoreError::Storage(format!(
@@ -1694,6 +1767,7 @@ mod tests {
                     semantic_reclaim: no_storage_sealed_reclaim(),
                     snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
                     idempotency: memory_catalog(),
+                    resource_policy: IngestResourcePolicy::DEFAULT,
                 },
             )
         };
@@ -2038,6 +2112,13 @@ mod tests {
 
     impl ZeroMutationProbe {
         fn new(validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>) -> Self {
+            Self::with_resource_policy(validator, IngestResourcePolicy::DEFAULT)
+        }
+
+        fn with_resource_policy(
+            validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
+            resource_policy: IngestResourcePolicy,
+        ) -> Self {
             let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
             let semantic_builder = Arc::new(FakeSemanticBuilder::default());
             let authority = Arc::new(RecordingSearchCorpusAuthority::default());
@@ -2064,6 +2145,7 @@ mod tests {
                     semantic_reclaim: no_storage_sealed_reclaim(),
                     snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
                     idempotency: memory_catalog(),
+                    resource_policy,
                 },
             );
             Self {
@@ -2174,6 +2256,60 @@ mod tests {
         mismatched.assert_nothing_touched("base identity mismatch")
     }
 
+    /// QI-BB-021: a batch outside the resource envelope is refused typed
+    /// before any track is touched, and the same batch under an envelope it
+    /// fits is admitted and measured.
+    #[test]
+    fn a_batch_outside_the_resource_envelope_changes_zero_bytes() -> TestRes {
+        let batch = multi_scope_corpus_batch()?;
+        let embedded_records: usize = batch.replace_scopes.iter().map(|s| s.chunks.len()).sum();
+        let text_bytes: u64 = batch
+            .replace_scopes
+            .iter()
+            .flat_map(|scope| scope.chunks.iter().map(|chunk| chunk.text.len()))
+            .map(u64::try_from)
+            .sum::<Result<u64, _>>()?;
+        let vector_bytes = u64::try_from(embedded_records * SEARCH_OWNED_SEMANTIC_DIMENSION * 4)?;
+
+        let tight = ZeroMutationProbe::with_resource_policy(
+            always_valid_generation(),
+            IngestResourcePolicy::new(usize::MAX, u64::MAX, vector_bytes - 1)?,
+        );
+        match tight.materializer.publish_batch(&batch) {
+            Err(CoreError::Typed { code, .. })
+                if code == quanta_index_core::INGEST_RESOURCE_BUDGET_EXCEEDED_CODE => {}
+            other => return Err(format!("oversized batch answered {other:?}").into()),
+        }
+        tight.assert_nothing_touched("resource envelope")?;
+        let stats = tight.materializer.resource_stats()?;
+        if stats
+            != (IngestResourceStats {
+                refused: 1,
+                ..IngestResourceStats::default()
+            })
+        {
+            return Err(format!("refusal must be counted and nothing admitted: {stats:?}").into());
+        }
+
+        let fits = ZeroMutationProbe::with_resource_policy(
+            always_valid_generation(),
+            IngestResourcePolicy::new(embedded_records, text_bytes, vector_bytes)?,
+        );
+        let _receipt = fits.materializer.publish_batch(&batch)?;
+        let stats = fits.materializer.resource_stats()?;
+        let expected = IngestResourceStats {
+            admitted: 1,
+            refused: 0,
+            peak_embedded_records: embedded_records,
+            peak_text_bytes: text_bytes,
+            peak_vector_bytes: vector_bytes,
+        };
+        if stats != expected {
+            return Err(format!("admitted footprint drifted: {stats:?} != {expected:?}").into());
+        }
+        Ok(())
+    }
+
     /// The physical reclaim protocol under pins and orphans.
     ///
     /// Every sealed directory the receipt does not retain is reclaimed —
@@ -2211,6 +2347,7 @@ mod tests {
                 semantic_reclaim: semantic_reclaim.clone(),
                 snapshots: snapshots.clone(),
                 idempotency: memory_catalog(),
+                resource_policy: IngestResourcePolicy::DEFAULT,
             },
         );
         let mut batch = fixture_search_corpus_batch()?;

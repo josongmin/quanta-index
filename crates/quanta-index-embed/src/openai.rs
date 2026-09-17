@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use quanta_index_contract::EmbeddingNormalization;
 use quanta_index_contract::lex::LexicalErrorCode;
-use quanta_index_core::{CoreError, TextEmbeddingProvider};
+use quanta_index_core::{CoreError, MAX_EMBEDDING_DIMENSION, TextEmbeddingProvider};
 use serde::{Deserialize, Serialize};
 
 use crate::telemetry;
@@ -28,6 +28,13 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 /// A small pool overlaps network round-trips while staying under typical provider
 /// rate limits. Set to 1 to force fully sequential dispatch.
 pub const DEFAULT_CONCURRENCY: usize = 4;
+/// Most `/v1/embeddings` requests one `embed_batch` call may hold in flight
+/// (QI-BB-021).
+///
+/// Every in-flight request holds its serialized inputs and, on return, its
+/// decoded vectors; the ceiling keeps that transient bounded by a number an
+/// operator can reason about instead of by whatever the env var said.
+pub const MAX_CONCURRENCY: usize = 64;
 const ERROR_BODY_PREVIEW_CHARS: usize = 200;
 
 mod batching;
@@ -113,20 +120,22 @@ impl OpenAiProviderConfig {
         self
     }
 
-    /// Max inputs per `/v1/embeddings` request (clamped to >= 1).
+    /// Max inputs per `/v1/embeddings` request; zero is refused at
+    /// construction.
     #[must_use]
-    pub fn with_max_batch(mut self, max_batch: usize) -> Self {
-        self.max_batch = max_batch.max(1);
+    pub const fn with_max_batch(mut self, max_batch: usize) -> Self {
+        self.max_batch = max_batch;
         self
     }
 
-    /// Conservative estimated-token budget per `/v1/embeddings` request.
+    /// Conservative estimated-token budget per `/v1/embeddings` request;
+    /// zero is refused at construction.
     #[must_use]
-    pub fn with_max_estimated_tokens_per_request(
+    pub const fn with_max_estimated_tokens_per_request(
         mut self,
         max_estimated_tokens_per_request: usize,
     ) -> Self {
-        self.max_estimated_tokens_per_request = max_estimated_tokens_per_request.max(1);
+        self.max_estimated_tokens_per_request = max_estimated_tokens_per_request;
         self
     }
 
@@ -144,11 +153,12 @@ impl OpenAiProviderConfig {
         self
     }
 
-    /// Number of embedding requests dispatched concurrently per `embed_batch`
-    /// (clamped to >= 1; 1 = fully sequential).
+    /// Number of embedding requests dispatched concurrently per
+    /// `embed_batch` (1 = fully sequential); zero and anything past
+    /// [`MAX_CONCURRENCY`] are refused at construction.
     #[must_use]
-    pub fn with_concurrency(mut self, concurrency: usize) -> Self {
-        self.concurrency = concurrency.max(1);
+    pub const fn with_concurrency(mut self, concurrency: usize) -> Self {
+        self.concurrency = concurrency;
         self
     }
 }
@@ -197,8 +207,25 @@ impl OpenAiEmbeddingProvider {
                 "openai: model revision must be a non-empty printable ASCII token (QI-BB-028)",
             ));
         }
-        if config.dimension == 0 {
-            return Err(invalid("openai: dimension must be non-zero"));
+        if config.dimension == 0 || config.dimension > MAX_EMBEDDING_DIMENSION {
+            return Err(invalid(&format!(
+                "openai: dimension {} is outside 1..={MAX_EMBEDDING_DIMENSION}",
+                config.dimension
+            )));
+        }
+        if config.max_batch == 0 {
+            return Err(invalid("openai: max_batch must be at least 1"));
+        }
+        if config.max_estimated_tokens_per_request == 0 {
+            return Err(invalid(
+                "openai: max_estimated_tokens_per_request must be at least 1",
+            ));
+        }
+        if config.concurrency == 0 || config.concurrency > MAX_CONCURRENCY {
+            return Err(invalid(&format!(
+                "openai: concurrency {} is outside 1..={MAX_CONCURRENCY}",
+                config.concurrency
+            )));
         }
         let model_id = format!("openai:{}", config.model);
         Ok(Self {
@@ -209,10 +236,10 @@ impl OpenAiEmbeddingProvider {
             model_revision: config.model_revision,
             dimension: config.dimension,
             base_url: config.base_url,
-            max_batch: config.max_batch.max(1),
-            max_estimated_tokens_per_request: config.max_estimated_tokens_per_request.max(1),
+            max_batch: config.max_batch,
+            max_estimated_tokens_per_request: config.max_estimated_tokens_per_request,
             max_retries: config.max_retries,
-            concurrency: config.concurrency.max(1),
+            concurrency: config.concurrency,
         })
     }
 
@@ -1179,7 +1206,7 @@ mod tests {
     #[test]
     fn config_defaults_and_overrides_thread_into_provider() {
         // Defaults from OpenAiProviderConfig::new are what the provider uses, and
-        // builder overrides replace them (clamped where applicable).
+        // builder overrides replace them.
         let defaults = cfg(8);
         assert_eq!(defaults.max_batch, DEFAULT_MAX_BATCH);
         assert_eq!(
@@ -1189,14 +1216,40 @@ mod tests {
         assert_eq!(defaults.max_retries, DEFAULT_MAX_RETRIES);
         assert_eq!(defaults.timeout, DEFAULT_TIMEOUT);
         let tuned = cfg(8)
-            .with_max_batch(0) // clamped to >= 1
-            .with_max_estimated_tokens_per_request(0)
+            .with_max_batch(3)
+            .with_max_estimated_tokens_per_request(9)
             .with_max_retries(7)
             .with_timeout(Duration::from_secs(5));
-        assert_eq!(tuned.max_batch, 1);
-        assert_eq!(tuned.max_estimated_tokens_per_request, 1);
+        assert_eq!(tuned.max_batch, 3);
+        assert_eq!(tuned.max_estimated_tokens_per_request, 9);
         assert_eq!(tuned.max_retries, 7);
         assert_eq!(tuned.timeout, Duration::from_secs(5));
+    }
+
+    /// A zero batch, token budget or concurrency, or a concurrency or
+    /// dimension past the ceiling, is a configuration defect refused at
+    /// construction — never silently clamped into a working value.
+    #[test]
+    fn out_of_range_tuning_is_refused_at_construction() {
+        fn stub() -> Box<dyn EmbeddingTransport> {
+            Box::new(ScriptedTransport::new(Vec::new()))
+        }
+        assert!(OpenAiEmbeddingProvider::new(cfg(8).with_max_batch(0), stub()).is_err());
+        assert!(
+            OpenAiEmbeddingProvider::new(cfg(8).with_max_estimated_tokens_per_request(0), stub())
+                .is_err()
+        );
+        assert!(OpenAiEmbeddingProvider::new(cfg(8).with_concurrency(0), stub()).is_err());
+        assert!(
+            OpenAiEmbeddingProvider::new(cfg(8).with_concurrency(MAX_CONCURRENCY + 1), stub())
+                .is_err()
+        );
+        assert!(
+            OpenAiEmbeddingProvider::new(cfg(8).with_concurrency(MAX_CONCURRENCY), stub()).is_ok()
+        );
+        assert!(OpenAiEmbeddingProvider::new(cfg(0), stub()).is_err());
+        assert!(OpenAiEmbeddingProvider::new(cfg(MAX_EMBEDDING_DIMENSION + 1), stub()).is_err());
+        assert!(OpenAiEmbeddingProvider::new(cfg(MAX_EMBEDDING_DIMENSION), stub()).is_ok());
     }
 
     #[test]

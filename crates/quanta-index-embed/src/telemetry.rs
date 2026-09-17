@@ -1,5 +1,18 @@
+//! Process-local embedding telemetry: monotonic counters, exact maxima and
+//! a bounded window of recent request samples (QI-BB-009).
+//!
+//! Counters and maxima accumulate for the process lifetime and cost a
+//! fixed number of words. Request samples are kept in a ring of
+//! [`REQUEST_SAMPLE_CAPACITY`] so a long-lived process observing millions
+//! of outbound requests holds the most recent few hundred, and reports how
+//! many older ones the ring let go.
+
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
+
+/// Most recent request samples the snapshot carries.
+pub const REQUEST_SAMPLE_CAPACITY: usize = 256;
 
 /// One observed outbound embeddings request attempt.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -22,6 +35,15 @@ pub struct OpenAiEmbedStatsSnapshot {
     pub retry_count: u64,
     pub retryable_status_count: u64,
     pub transport_error_count: u64,
+    /// Most texts one request carried, over every request observed.
+    pub max_request_texts: u64,
+    /// Highest estimated token count one request carried, over every
+    /// request observed.
+    pub max_estimated_tokens: u64,
+    /// Request samples the bounded window let go, oldest first.
+    pub request_samples_dropped: u64,
+    /// The most recent request samples, oldest first, at most
+    /// [`REQUEST_SAMPLE_CAPACITY`].
     pub request_samples: Vec<OpenAiRequestSample>,
 }
 
@@ -34,7 +56,10 @@ struct OpenAiEmbedStats {
     retry_count: AtomicU64,
     retryable_status_count: AtomicU64,
     transport_error_count: AtomicU64,
-    request_samples: Mutex<Vec<OpenAiRequestSample>>,
+    max_request_texts: AtomicU64,
+    max_estimated_tokens: AtomicU64,
+    request_samples_dropped: AtomicU64,
+    request_samples: Mutex<VecDeque<OpenAiRequestSample>>,
 }
 
 fn stats() -> &'static OpenAiEmbedStats {
@@ -68,11 +93,25 @@ pub(crate) fn record_cache_observation(
 
 pub(crate) fn record_http_request(texts_submitted: usize, estimated_tokens: usize) {
     let stats = stats();
+    let texts_submitted = usize_to_u64(texts_submitted);
+    let estimated_tokens = usize_to_u64(estimated_tokens);
     let _previous: u64 = stats.http_request_count.fetch_add(1, Ordering::Relaxed);
+    let _previous: u64 = stats
+        .max_request_texts
+        .fetch_max(texts_submitted, Ordering::Relaxed);
+    let _previous: u64 = stats
+        .max_estimated_tokens
+        .fetch_max(estimated_tokens, Ordering::Relaxed);
     if let Ok(mut guard) = stats.request_samples.lock() {
-        guard.push(OpenAiRequestSample {
-            texts_submitted: usize_to_u64(texts_submitted),
-            estimated_tokens: usize_to_u64(estimated_tokens),
+        if guard.len() >= REQUEST_SAMPLE_CAPACITY {
+            let _oldest: Option<OpenAiRequestSample> = guard.pop_front();
+            let _previous: u64 = stats
+                .request_samples_dropped
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        guard.push_back(OpenAiRequestSample {
+            texts_submitted,
+            estimated_tokens,
         });
     }
 }
@@ -97,7 +136,7 @@ pub(crate) fn record_transport_error() {
 pub fn snapshot_openai_embed_stats() -> OpenAiEmbedStatsSnapshot {
     let stats = stats();
     let request_samples = match stats.request_samples.lock() {
-        Ok(guard) => guard.clone(),
+        Ok(guard) => guard.iter().cloned().collect(),
         // A poisoned diagnostics lock cannot invalidate the atomic counters.
         // Return an explicitly empty sample list instead of propagating stale data.
         Err(_poisoned) => Vec::new(),
@@ -110,6 +149,9 @@ pub fn snapshot_openai_embed_stats() -> OpenAiEmbedStatsSnapshot {
         retry_count: stats.retry_count.load(Ordering::Relaxed),
         retryable_status_count: stats.retryable_status_count.load(Ordering::Relaxed),
         transport_error_count: stats.transport_error_count.load(Ordering::Relaxed),
+        max_request_texts: stats.max_request_texts.load(Ordering::Relaxed),
+        max_estimated_tokens: stats.max_estimated_tokens.load(Ordering::Relaxed),
+        request_samples_dropped: stats.request_samples_dropped.load(Ordering::Relaxed),
         request_samples,
     }
 }
@@ -123,7 +165,51 @@ pub fn reset_openai_embed_stats() {
     stats.retry_count.store(0, Ordering::Relaxed);
     stats.retryable_status_count.store(0, Ordering::Relaxed);
     stats.transport_error_count.store(0, Ordering::Relaxed);
+    stats.max_request_texts.store(0, Ordering::Relaxed);
+    stats.max_estimated_tokens.store(0, Ordering::Relaxed);
+    stats.request_samples_dropped.store(0, Ordering::Relaxed);
     if let Ok(mut guard) = stats.request_samples.lock() {
         guard.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The sample window never grows past its capacity, the maxima stay
+    /// exact past it, and the snapshot says how many samples it let go.
+    ///
+    /// The counters are process-global and other tests record into them
+    /// concurrently, so the assertions are differences and bounds, not
+    /// absolute values.
+    #[test]
+    fn request_samples_are_a_bounded_window_with_exact_maxima() {
+        let before = snapshot_openai_embed_stats();
+        let extra = 50_usize;
+        let sentinel_tokens = 7_000_003_usize;
+        for round in 0..REQUEST_SAMPLE_CAPACITY + extra {
+            record_http_request(round % 9 + 1, sentinel_tokens);
+        }
+        let after = snapshot_openai_embed_stats();
+        assert_eq!(after.request_samples.len(), REQUEST_SAMPLE_CAPACITY);
+        assert!(
+            after.request_samples_dropped - before.request_samples_dropped
+                >= u64::try_from(extra).expect("fits"),
+            "at least the overflow must be reported as dropped"
+        );
+        assert!(
+            after.http_request_count - before.http_request_count
+                >= u64::try_from(REQUEST_SAMPLE_CAPACITY + extra).expect("fits")
+        );
+        assert!(after.max_estimated_tokens >= u64::try_from(sentinel_tokens).expect("fits"));
+        assert!(after.max_request_texts >= 9);
+        assert!(
+            after
+                .request_samples
+                .iter()
+                .all(|sample| sample.texts_submitted >= 1),
+            "every retained sample is a recorded request"
+        );
     }
 }

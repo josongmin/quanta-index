@@ -370,7 +370,11 @@ fn build_semantic_embedders(
                 // unchanged chunks and a revision rotation never reuses the
                 // previous revision's vectors.
                 let identity = EmbeddingCacheIdentityV1::of(&normalized);
-                let cache = FileEmbeddingCache::new(&state_root.join("embed-cache"), &identity)?;
+                let cache = FileEmbeddingCache::new(
+                    &state_root.join("embed-cache"),
+                    &identity,
+                    tuning.cache_retention,
+                )?;
                 Arc::new(CachingEmbeddingProvider::new(
                     Box::new(normalized),
                     Box::new(cache),
@@ -877,6 +881,7 @@ impl SearchdRuntime {
                         semantic_reclaim: semantic_sealed_reclaim,
                         snapshots: snapshots.clone(),
                         idempotency: Arc::clone(&idempotency),
+                        resource_policy: config.ingest_resource_policy(),
                     },
                 )
                 .map_err(anyhow::Error::from)?,

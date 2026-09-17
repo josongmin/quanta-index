@@ -866,20 +866,11 @@ fn openai_ab_cases_json(report: &OpenAiSemanticAbReport) -> Value {
 }
 
 fn openai_provider_stats_json(stats: &OpenAiEmbedStatsSnapshot) -> Value {
-    let max_request_texts = stats
-        .request_samples
-        .iter()
-        .map(|sample| sample.texts_submitted)
-        .max()
-        .unwrap_or(0);
-    let max_estimated_tokens = stats
-        .request_samples
-        .iter()
-        .map(|sample| sample.estimated_tokens)
-        .max()
-        .unwrap_or(0);
+    // The maxima are exact over every request observed; the samples are
+    // the bounded recent window (QI-BB-009), so a reader must not derive
+    // the maxima from them.
     json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "total_texts_observed": stats.total_texts_observed,
         "cache_hits": stats.cache_hits,
         "distinct_miss_texts": stats.distinct_miss_texts,
@@ -887,8 +878,9 @@ fn openai_provider_stats_json(stats: &OpenAiEmbedStatsSnapshot) -> Value {
         "retry_count": stats.retry_count,
         "retryable_status_count": stats.retryable_status_count,
         "transport_error_count": stats.transport_error_count,
-        "max_request_texts": max_request_texts,
-        "max_estimated_tokens": max_estimated_tokens,
+        "max_request_texts": stats.max_request_texts,
+        "max_estimated_tokens": stats.max_estimated_tokens,
+        "request_samples_dropped": stats.request_samples_dropped,
         "request_samples": stats.request_samples.iter().map(|sample| {
             json!({
                 "texts_submitted": sample.texts_submitted,

@@ -10,10 +10,15 @@
 
 pub mod domains;
 pub mod error;
+pub mod ingest_resource;
 pub mod request_budget;
 pub mod timeref;
 
 pub use error::{CoreError, validate_internal_fetch_size, validate_query_top_k};
+pub use ingest_resource::{
+    INGEST_RESOURCE_BUDGET_EXCEEDED_CODE, IngestBatchFootprint, IngestResourcePolicy,
+    MAX_EMBEDDING_DIMENSION,
+};
 pub use request_budget::{
     BudgetInterruptionV1, CancelHandleV1, REQUEST_CANCELLED_CODE, REQUEST_DEADLINE_EXCEEDED_CODE,
     RequestBudgetV1,

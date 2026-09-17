@@ -35,9 +35,10 @@ use lancedb::index::Index;
 use lancedb::index::vector::IvfHnswSqIndexBuilder;
 use lancedb::query::{ExecutableQuery as _, QueryBase as _};
 use quanta_index_contract::{
-    EmbeddingDistanceMetric, EmbeddingNormalization, OwnerDocKind, SearchScopeSurface,
-    SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope, SemanticTombstoneScope,
-    canonical_order::first_canonical_order_break_v1, cluster_membership_content_digest_v1,
+    EmbeddingDistanceMetric, EmbeddingNormalization, EmbeddingRecord, OwnerDocKind,
+    SearchScopeSurface, SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
+    SemanticTombstoneScope, canonical_order::first_canonical_order_break_v1,
+    cluster_membership_content_digest_v1,
 };
 use quanta_index_core::CoreError;
 use quanta_index_core::domains::semantic::SemanticPolicy;
@@ -894,90 +895,51 @@ async fn collect_cluster_membership_commitment_v1(
         .map_err(|error| CoreError::Storage(format!("semantic: {error}")))
 }
 
+/// One string column built straight from the embeddings, without an
+/// intermediate `Vec<String>` copy of every value (QI-BB-021).
+fn string_column<'a>(
+    scope: &'a SemanticReplaceScope,
+    value: impl Fn(&'a EmbeddingRecord) -> &'a str,
+) -> Arc<dyn Array> {
+    Arc::new(StringArray::from_iter_values(
+        scope.embeddings.iter().map(value),
+    ))
+}
+
+/// One nullable string column built straight from the embeddings.
+fn optional_string_column<'a>(
+    scope: &'a SemanticReplaceScope,
+    value: impl Fn(&'a EmbeddingRecord) -> Option<&'a str>,
+) -> Arc<dyn Array> {
+    Arc::new(scope.embeddings.iter().map(value).collect::<StringArray>())
+}
+
+/// One `u32` column built straight from the embeddings.
+fn u32_column<'a>(
+    scope: &'a SemanticReplaceScope,
+    value: impl Fn(&'a EmbeddingRecord) -> u32,
+) -> Arc<dyn Array> {
+    Arc::new(UInt32Array::from_iter_values(
+        scope.embeddings.iter().map(value),
+    ))
+}
+
 fn build_record_batch(
     scope: &SemanticReplaceScope,
     dimension: usize,
 ) -> Result<RecordBatch, CoreError> {
     let row_count = scope.embeddings.len();
-    let mut ids: Vec<String> = Vec::with_capacity(row_count);
-    let mut record_ids: Vec<String> = Vec::with_capacity(row_count);
-    let mut paths: Vec<String> = Vec::with_capacity(row_count);
-    let mut owner_ids: Vec<String> = Vec::with_capacity(row_count);
-    let mut owner_kinds: Vec<String> = Vec::with_capacity(row_count);
-    let mut corpus_kinds: Vec<String> = Vec::with_capacity(row_count);
-    let mut parent_owner_ids: Vec<Option<String>> = Vec::with_capacity(row_count);
-    let mut source_doc_ids: Vec<String> = Vec::with_capacity(row_count);
-    let mut languages: Vec<String> = Vec::with_capacity(row_count);
-    let mut packages: Vec<Option<String>> = Vec::with_capacity(row_count);
-    let mut symbol_kinds: Vec<Option<String>> = Vec::with_capacity(row_count);
-    let mut visibilities: Vec<Option<String>> = Vec::with_capacity(row_count);
-    let mut source_roles: Vec<String> = Vec::with_capacity(row_count);
-    let mut generateds: Vec<bool> = Vec::with_capacity(row_count);
-    let mut capability_statuses: Vec<String> = Vec::with_capacity(row_count);
-    let mut authority_digests: Vec<String> = Vec::with_capacity(row_count);
-    let mut render_policy_digests: Vec<String> = Vec::with_capacity(row_count);
-    let mut card_schema_versions: Vec<u32> = Vec::with_capacity(row_count);
-    let mut embedding_input_digests: Vec<String> = Vec::with_capacity(row_count);
-    let mut vector_digests: Vec<String> = Vec::with_capacity(row_count);
-    let mut starts: Vec<u32> = Vec::with_capacity(row_count);
-    let mut ends: Vec<u32> = Vec::with_capacity(row_count);
-    let mut snippets: Vec<String> = Vec::with_capacity(row_count);
+    // The vectors are the one column that must be copied: Arrow wants them
+    // contiguous. Every metadata column is built from borrowed values.
     let mut flat_vectors: Vec<f32> = Vec::with_capacity(row_count.saturating_mul(dimension));
     for embedding in &scope.embeddings {
-        ids.push(embedding.embedding_id.as_str().to_owned());
-        record_ids.push(embedding.record_id.as_ref().to_owned());
-        paths.push(embedding.repo_relative_path.as_str().to_owned());
-        owner_ids.push(embedding.owner_id.as_ref().to_owned());
-        owner_kinds.push(embedding.owner_kind.as_code_str().to_owned());
-        corpus_kinds.push(embedding.corpus_kind.as_code_str().to_owned());
-        parent_owner_ids.push(embedding.parent_owner_id.as_deref().map(str::to_owned));
-        source_doc_ids.push(embedding.source_doc_id.as_ref().to_owned());
-        languages.push(embedding.language.as_str().to_owned());
-        packages.push(embedding.package.as_deref().map(str::to_owned));
-        symbol_kinds.push(
-            embedding
-                .symbol_kind
-                .as_ref()
-                .map(|symbol_kind| symbol_kind.as_str().to_owned()),
-        );
-        visibilities.push(embedding.visibility.as_deref().map(str::to_owned));
-        source_roles.push(embedding.source_role.as_code_str().to_owned());
-        generateds.push(embedding.generated);
-        capability_statuses.push(embedding.capability_status.as_code_str().to_owned());
-        authority_digests.push(embedding.authority_digest.as_ref().to_owned());
-        render_policy_digests.push(embedding.render_policy_digest.as_ref().to_owned());
-        card_schema_versions.push(embedding.card_schema_version);
-        embedding_input_digests.push(embedding.embedding_input_digest.as_ref().to_owned());
-        vector_digests.push(embedding.vector_digest.as_ref().to_owned());
-        starts.push(embedding.start_line);
-        ends.push(embedding.end_line);
-        snippets.push(embedding.snippet.as_ref().to_owned());
         flat_vectors.extend_from_slice(&embedding.vector);
     }
-
-    let id_array = StringArray::from(ids);
-    let record_id_array = StringArray::from(record_ids);
-    let path_array = StringArray::from(paths);
-    let owner_id_array = StringArray::from(owner_ids);
-    let owner_kind_array = StringArray::from(owner_kinds);
-    let corpus_kind_array = StringArray::from(corpus_kinds);
-    let parent_owner_id_array = StringArray::from(parent_owner_ids);
-    let source_doc_id_array = StringArray::from(source_doc_ids);
-    let language_array = StringArray::from(languages);
-    let package_array = StringArray::from(packages);
-    let symbol_kind_array = StringArray::from(symbol_kinds);
-    let visibility_array = StringArray::from(visibilities);
-    let source_role_array = StringArray::from(source_roles);
-    let generated_array = BooleanArray::from(generateds);
-    let capability_status_array = StringArray::from(capability_statuses);
-    let authority_digest_array = StringArray::from(authority_digests);
-    let render_policy_digest_array = StringArray::from(render_policy_digests);
-    let card_schema_version_array = UInt32Array::from(card_schema_versions);
-    let embedding_input_digest_array = StringArray::from(embedding_input_digests);
-    let vector_digest_array = StringArray::from(vector_digests);
-    let start_array = UInt32Array::from(starts);
-    let end_array = UInt32Array::from(ends);
-    let snippet_array = StringArray::from(snippets);
+    let generated_array = scope
+        .embeddings
+        .iter()
+        .map(|embedding| Some(embedding.generated))
+        .collect::<BooleanArray>();
     let flat_value_array = Float32Array::from(flat_vectors);
     let dim_i32 = dimension_to_i32(dimension)?;
     let vector_field = Arc::new(Field::new("item", DataType::Float32, true));
@@ -989,29 +951,34 @@ fn build_record_batch(
     RecordBatch::try_new(
         schema,
         vec![
-            Arc::new(id_array),
-            Arc::new(record_id_array),
-            Arc::new(path_array),
-            Arc::new(owner_id_array),
-            Arc::new(owner_kind_array),
-            Arc::new(corpus_kind_array),
-            Arc::new(parent_owner_id_array),
-            Arc::new(source_doc_id_array),
-            Arc::new(language_array),
-            Arc::new(package_array),
-            Arc::new(symbol_kind_array),
-            Arc::new(visibility_array),
-            Arc::new(source_role_array),
+            string_column(scope, |embedding| embedding.embedding_id.as_str()),
+            string_column(scope, |embedding| embedding.record_id.as_ref()),
+            string_column(scope, |embedding| embedding.repo_relative_path.as_str()),
+            string_column(scope, |embedding| embedding.owner_id.as_ref()),
+            string_column(scope, |embedding| embedding.owner_kind.as_code_str()),
+            string_column(scope, |embedding| embedding.corpus_kind.as_code_str()),
+            optional_string_column(scope, |embedding| embedding.parent_owner_id.as_deref()),
+            string_column(scope, |embedding| embedding.source_doc_id.as_ref()),
+            string_column(scope, |embedding| embedding.language.as_str()),
+            optional_string_column(scope, |embedding| embedding.package.as_deref()),
+            optional_string_column(scope, |embedding| {
+                embedding
+                    .symbol_kind
+                    .as_ref()
+                    .map(quanta_index_contract::lex::SymbolKindCode::as_str)
+            }),
+            optional_string_column(scope, |embedding| embedding.visibility.as_deref()),
+            string_column(scope, |embedding| embedding.source_role.as_code_str()),
             Arc::new(generated_array),
-            Arc::new(capability_status_array),
-            Arc::new(authority_digest_array),
-            Arc::new(render_policy_digest_array),
-            Arc::new(card_schema_version_array),
-            Arc::new(embedding_input_digest_array),
-            Arc::new(vector_digest_array),
-            Arc::new(start_array),
-            Arc::new(end_array),
-            Arc::new(snippet_array),
+            string_column(scope, |embedding| embedding.capability_status.as_code_str()),
+            string_column(scope, |embedding| embedding.authority_digest.as_ref()),
+            string_column(scope, |embedding| embedding.render_policy_digest.as_ref()),
+            u32_column(scope, |embedding| embedding.card_schema_version),
+            string_column(scope, |embedding| embedding.embedding_input_digest.as_ref()),
+            string_column(scope, |embedding| embedding.vector_digest.as_ref()),
+            u32_column(scope, |embedding| embedding.start_line),
+            u32_column(scope, |embedding| embedding.end_line),
+            string_column(scope, |embedding| embedding.snippet.as_ref()),
             Arc::new(vector_array),
         ],
     )

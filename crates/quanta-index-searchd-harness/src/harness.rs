@@ -45,6 +45,7 @@ use quanta_index_contract::{
     StructuralQueryRequest, StructuralReplaceScope, StructuralTreeRecord, SymbolId,
     TextQueryRequest, TextQuerySyntax,
 };
+use quanta_index_core::IngestResourcePolicy;
 use quanta_index_ipc::{ClientIoPolicy, IpcError, send_request};
 use quanta_index_search_plane::{BoundedQueryObsStore, MetricSample, ObsError};
 use quanta_index_searchd::app::searchd::drive;
@@ -149,6 +150,11 @@ pub struct E2eRuntime {
     /// harness default (8) is wide enough that ordinary tests never reap;
     /// GC tests narrow it through [`Self::boot_with_history_max_generations`].
     history_max_generations: usize,
+    /// The resource envelope one search-corpus batch may ask the daemon to
+    /// hold (QI-BB-021). The production default is far wider than any
+    /// fixture; envelope tests tighten it through
+    /// [`Self::boot_with_ingest_resource_policy`].
+    ingest_resource_policy: IngestResourcePolicy,
     driver: Option<DriverState>,
     query_obs_store: Option<Arc<BoundedQueryObsStore>>,
     chunk_ids_by_path: BTreeMap<String, ChunkId>,
@@ -272,6 +278,15 @@ impl E2eRuntime {
         Self::boot_with_profile_and_history(SemanticEmbedderProfile::default(), max_generations)
     }
 
+    /// Like [`Self::boot`] but runs the daemon under `policy` as its ingest
+    /// resource envelope, so an envelope refusal can be provoked with a
+    /// small batch instead of a hundred-thousand-record one.
+    pub fn boot_with_ingest_resource_policy(policy: IngestResourcePolicy) -> AnyResult<Self> {
+        let mut runtime = Self::boot()?;
+        runtime.ingest_resource_policy = policy;
+        Ok(runtime)
+    }
+
     fn boot_with_profile_and_history(
         profile: SemanticEmbedderProfile,
         history_max_generations: usize,
@@ -283,6 +298,7 @@ impl E2eRuntime {
             state_root,
             embedder_profile: profile,
             history_max_generations,
+            ingest_resource_policy: IngestResourcePolicy::DEFAULT,
             driver: None,
             query_obs_store: None,
             chunk_ids_by_path: BTreeMap::new(),
@@ -370,6 +386,7 @@ impl E2eRuntime {
                 &self.state_root,
                 &self.embedder_profile,
                 self.history_max_generations,
+                self.ingest_resource_policy,
             )?;
             self.query_obs_store = Some(Arc::clone(&query_obs_store));
             self.driver = Some(DriverState {
@@ -2530,8 +2547,14 @@ fn start_driver(
     state_root: &Path,
     embedder_profile: &SemanticEmbedderProfile,
     history_max_generations: usize,
+    ingest_resource_policy: IngestResourcePolicy,
 ) -> AnyResult<DriverHandles> {
-    let config = build_config(state_root, embedder_profile, history_max_generations)?;
+    let config = build_config(
+        state_root,
+        embedder_profile,
+        history_max_generations,
+        ingest_resource_policy,
+    )?;
     let runtime = build_runtime(config)?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
     let control_socket = runtime.control_server.socket_path().to_path_buf();
@@ -2580,6 +2603,7 @@ fn build_config(
     state_root: &Path,
     embedder_profile: &SemanticEmbedderProfile,
     history_max_generations: usize,
+    ingest_resource_policy: IngestResourcePolicy,
 ) -> AnyResult<SearchdConfig> {
     let mut cfg = SearchdConfig::from_state_root(state_root.to_path_buf())
         .try_with_search_corpus_history_retention_limits(
@@ -2591,7 +2615,9 @@ fn build_config(
     let (query_socket, control_socket, ingest_socket) = unique_socket_paths();
     cfg = SearchdConfig::with_socket_overrides(cfg, query_socket, control_socket);
     cfg = SearchdConfig::with_ingest_socket_override(cfg, ingest_socket);
-    Ok(cfg.with_semantic_embedder_profile(embedder_profile.clone()))
+    Ok(cfg
+        .with_semantic_embedder_profile(embedder_profile.clone())
+        .with_ingest_resource_policy(ingest_resource_policy))
 }
 
 /// Reduce one query response to its bounded-result shape. Routes that do

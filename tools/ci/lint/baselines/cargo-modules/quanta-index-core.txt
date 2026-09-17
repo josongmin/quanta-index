@@ -90,6 +90,9 @@ crate quanta_index_core
 │           └── struct StructuralMatchCandidate: pub
 ├── mod error: pub
 │   └── enum CoreError: pub
+├── mod ingest_resource: pub
+│   ├── struct IngestBatchFootprint: pub
+│   └── struct IngestResourcePolicy: pub
 ├── mod request_budget: pub
 │   ├── enum BudgetInterruptionV1: pub
 │   ├── struct CancelHandleV1: pub

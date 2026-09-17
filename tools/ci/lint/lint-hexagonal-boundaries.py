@@ -116,6 +116,7 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     "quanta-index-searchd-harness": frozenset(
         {
             "quanta-index-contract",
+            "quanta-index-core",
             "quanta-index-embed",
             "quanta-index-ipc",
             "quanta-index-search-plane",
