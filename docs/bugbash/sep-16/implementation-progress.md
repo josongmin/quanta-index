@@ -1377,3 +1377,4 @@ trace까지. (d) dependency-upgrade A/B(보완 #4)는 process이며 code gate가
 | 2026-09-17 | 46a2159 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,064 passed / 0 failed (QI-BB-023 history order/cursor + IMPL-J 포함) |
 | 2026-09-17 | 46d6675 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,066 passed / 0 failed (QI-BB-019 canonical hybrid seed 포함) |
 | 2026-09-17 | 75899ef | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,066 passed / 0 failed (QI-BB-018 true hybrid 포함) |
+| 2026-09-17 | a9644a3 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,082 passed / 0 failed (QI-BB-027 ANN sealed contract 포함) |
