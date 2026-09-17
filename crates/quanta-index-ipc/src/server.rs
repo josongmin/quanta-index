@@ -44,7 +44,8 @@ use rustix::net::socket;
 ))]
 use rustix::net::sockopt::set_socket_nosigpipe;
 use rustix::net::{
-    AddressFamily, RecvFlags, SocketAddrUnix, SocketType, connect, recv, sockopt::socket_error,
+    AddressFamily, RecvFlags, SendFlags, SocketAddrUnix, SocketType, connect, recv, send,
+    sockopt::socket_error,
 };
 #[cfg(target_os = "linux")]
 use rustix::net::{SocketFlags, socket_with};
@@ -645,10 +646,16 @@ fn write_response<ResponseEnvelopeT: serde::Serialize>(
 /// Watches a connection for a hang-up while its request is dispatching.
 ///
 /// The dispatch runs synchronously on the connection thread, so a second
-/// thread polls the socket: `POLLHUP`, or readable with zero bytes, means the
-/// peer is gone and the request's cancellation is armed. Readable with data
-/// means the peer pipelined its next request; that is not a hang-up and the
-/// watch simply stops looking. The watch ends when the dispatch returns.
+/// thread polls the socket. Readable with data means the peer pipelined
+/// its next request; that is not a hang-up and the watch simply stops
+/// looking. `POLLHUP`, `POLLERR` or an end-of-file mean the peer at least
+/// shut its write side — which is *not* yet a hang-up: a peer that sent
+/// its request and half-closed is still waiting for the response. The
+/// watch confirms a hang-up by asking whether the peer can still receive
+/// (a zero-byte send, which fails with `EPIPE` only once the peer's read
+/// side is gone), and after a half-close it keeps asking at the poll
+/// interval instead of polling, since the end-of-file stays readable. The
+/// watch ends when the dispatch returns.
 struct PeerWatch {
     stop: Arc<AtomicBool>,
     hung_up: Arc<AtomicBool>,
@@ -671,9 +678,21 @@ impl PeerWatch {
             std::thread::Builder::new()
                 .name("uds-peer-watch".to_string())
                 .spawn(move || {
+                    let mut half_closed = false;
                     while !stop.load(Ordering::Acquire) {
-                        match peer_state(&watched) {
+                        let state = if half_closed {
+                            std::thread::sleep(Self::POLL_INTERVAL);
+                            if peer_can_receive(&watched) {
+                                PeerState::HalfClosed
+                            } else {
+                                PeerState::HungUp
+                            }
+                        } else {
+                            peer_state(&watched)
+                        };
+                        match state {
                             PeerState::Alive => {}
+                            PeerState::HalfClosed => half_closed = true,
                             PeerState::Pipelined => return,
                             PeerState::HungUp => {
                                 hung_up.store(true, Ordering::Release);
@@ -703,11 +722,41 @@ impl PeerWatch {
 
 enum PeerState {
     Alive,
+    /// The peer shut its write side and is waiting for the response.
+    HalfClosed,
     Pipelined,
     HungUp,
 }
 
-/// One bounded poll of the watched socket.
+/// Whether the peer can still receive: a zero-byte send succeeds while
+/// the peer's read side is open and fails with `EPIPE` once it is gone.
+///
+/// A half-close (`shutdown(Write)` on the peer) leaves its read side open,
+/// so this is what tells a waiting peer from a departed one; `poll` alone
+/// cannot, because Darwin reports `POLLHUP` for both. `SIGPIPE` is not a
+/// concern: the Rust runtime ignores it, and the socket carries
+/// `SO_NOSIGPIPE` where the platform has it.
+fn peer_can_receive(stream: &UnixStream) -> bool {
+    let fd = std::os::fd::AsFd::as_fd(stream);
+    match send(fd, &[], peer_probe_send_flags()) {
+        Ok(_sent) => true,
+        Err(Errno::AGAIN | Errno::INTR) => true,
+        Err(_gone) => false,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn peer_probe_send_flags() -> SendFlags {
+    SendFlags::DONTWAIT | SendFlags::NOSIGNAL
+}
+
+#[cfg(not(target_os = "linux"))]
+fn peer_probe_send_flags() -> SendFlags {
+    SendFlags::DONTWAIT
+}
+
+/// One bounded poll of the watched socket, for a peer not yet seen to
+/// half-close.
 fn peer_state(stream: &UnixStream) -> PeerState {
     let fd = std::os::fd::AsFd::as_fd(stream);
     let mut fds = [PollFd::new(&fd, PollFlags::IN | PollFlags::HUP)];
@@ -716,28 +765,35 @@ fn peer_state(stream: &UnixStream) -> PeerState {
         tv_nsec: i64::try_from(PeerWatch::POLL_INTERVAL.as_nanos())
             .map_or(50_000_000, |nanos| nanos),
     };
+    let closed_or_gone = |stream: &UnixStream| {
+        if peer_can_receive(stream) {
+            PeerState::HalfClosed
+        } else {
+            PeerState::HungUp
+        }
+    };
     match poll(&mut fds, Some(&timeout)) {
         Ok(0) | Err(Errno::INTR) => PeerState::Alive,
         Ok(_) => {
             let revents = fds.first().map_or(PollFlags::empty(), PollFd::revents);
-            if revents.contains(PollFlags::HUP) || revents.contains(PollFlags::ERR) {
-                return PeerState::HungUp;
-            }
             if revents.contains(PollFlags::IN) {
-                // Readable: either pipelined data or an orderly close (EOF).
+                // Readable: either pipelined data or the peer's end-of-file.
                 // A peek leaves the bytes for the connection thread's next
                 // request read.
                 let mut probe = [0_u8; 1];
                 return match recv(fd, &mut probe, RecvFlags::PEEK) {
-                    Ok((0, _)) => PeerState::HungUp,
+                    Ok((0, _)) => closed_or_gone(stream),
                     Ok(_) => PeerState::Pipelined,
                     Err(Errno::AGAIN | Errno::INTR) => PeerState::Alive,
-                    Err(_) => PeerState::HungUp,
+                    Err(_) => closed_or_gone(stream),
                 };
+            }
+            if revents.contains(PollFlags::HUP) || revents.contains(PollFlags::ERR) {
+                return closed_or_gone(stream);
             }
             PeerState::Alive
         }
-        Err(_) => PeerState::HungUp,
+        Err(_) => closed_or_gone(stream),
     }
 }
 
@@ -953,7 +1009,7 @@ fn classify_client_io_error(
 #[cfg(test)]
 mod tests {
     use super::{
-        ClientIoPolicy, ConnectionCloseReason, IpcDispatcher, IpcError, RequestEnvelope,
+        ClientIoPolicy, ConnectionCloseReason, IpcDispatcher, IpcError, PeerWatch, RequestEnvelope,
         ResponseEnvelope, UdsServer, connect_before_deadline, connect_requires_completion_wait,
         create_connect_socket, decode_response, encode_request, handle_connection, send_request,
         wait_for_connect,
@@ -1617,6 +1673,29 @@ mod tests {
         }
     }
 
+    /// Signals entry, waits at the gate, then answers; records whether the
+    /// budget was cancelled by the time it was released.
+    struct HalfCloseDispatcher {
+        entered: mpsc::Sender<()>,
+        gate: Arc<Barrier>,
+        observed_cancel: Arc<AtomicBool>,
+    }
+
+    impl IpcDispatcher<u64, u64> for HalfCloseDispatcher {
+        fn dispatch(&self, request: u64, budget: &RequestBudgetV1) -> u64 {
+            let send_result = self.entered.send(());
+            assert!(
+                send_result.is_ok(),
+                "test must observe dispatcher entry: {send_result:?}"
+            );
+            let _wait = self.gate.wait();
+            if budget.is_cancelled() {
+                self.observed_cancel.store(true, Ordering::Release);
+            }
+            request.saturating_add(1)
+        }
+    }
+
     fn test_request(request_id: u64, payload: u64) -> TestRequestEnvelope {
         TestRequestEnvelope {
             request_id,
@@ -1805,6 +1884,74 @@ mod tests {
     /// The peer watch notices the hang-up, the dispatcher sees the
     /// cancellation at its next checkpoint, and the connection closes as a
     /// hang-up instead of a failed write.
+    /// A peer that sent its request and shut its write side is waiting for
+    /// the response, not gone: the watch must not cancel it, and the
+    /// response must still cross the wire. The dispatch is held long enough
+    /// that the watch certainly polls after the half-close.
+    #[test]
+    fn a_half_closed_peer_is_not_a_hang_up_and_still_gets_its_response() {
+        let result = (|| -> TestRes {
+            let (mut client, server) = UnixStream::pair().map_err(|err| err.to_string())?;
+            let frame = encode_test_frame(7, 3)?;
+            client.write_all(&frame).map_err(|err| err.to_string())?;
+            client
+                .shutdown(Shutdown::Write)
+                .map_err(|err| err.to_string())?;
+
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let gate = Arc::new(Barrier::new(2));
+            let observed_cancel = Arc::new(AtomicBool::new(false));
+            let dispatcher = HalfCloseDispatcher {
+                entered: entered_tx,
+                gate: Arc::clone(&gate),
+                observed_cancel: Arc::clone(&observed_cancel),
+            };
+            let handle = thread::spawn(move || {
+                handle_connection::<
+                    TestRequestEnvelope,
+                    u64,
+                    TestResponseEnvelope,
+                    u64,
+                    HalfCloseDispatcher,
+                >(
+                    server,
+                    &dispatcher,
+                    &test_slots(),
+                    test_policy(),
+                    &AtomicBool::new(false),
+                )
+            });
+            entered_rx
+                .recv()
+                .map_err(|err| format!("test must observe dispatcher entry: {err}"))?;
+            // Several poll intervals pass with the half-close visible.
+            thread::sleep(PeerWatch::POLL_INTERVAL.saturating_mul(4));
+            let _wait = gate.wait();
+
+            let response = decode_response::<TestResponseEnvelope, _>(&mut client)
+                .map_err(|err| format!("a half-closed peer must still get its response: {err}"))?;
+            if response
+                != (TestResponseEnvelope {
+                    request_id: 7,
+                    payload: 4,
+                })
+            {
+                return Err(format!("unexpected response: {response:?}"));
+            }
+            if observed_cancel.load(Ordering::Acquire) {
+                return Err("a half-close must not cancel the budget".to_string());
+            }
+            let reason = handle
+                .join()
+                .map_err(|join_err| format!("server thread panicked: {join_err:?}"))?;
+            if !matches!(reason, ConnectionCloseReason::PeerClosed) {
+                return Err(format!("unexpected close reason: {reason:?}"));
+            }
+            Ok(())
+        })();
+        assert_test_ok(&result);
+    }
+
     #[test]
     fn a_peer_that_hangs_up_mid_dispatch_cancels_the_budget() {
         let result = (|| -> TestRes {

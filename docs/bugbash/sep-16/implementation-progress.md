@@ -53,6 +53,7 @@
 | IMPL-I | **P1 (sealed corpus mutated after seal, 확정)** | writer cache eviction commit이 sealed generation의 `meta.json`을 재기록. sealed manifest 도입 즉시 검출 | **fixed** — seal 시 writer retire, sealed에 index mutation 거부. §3.10 |
 | IMPL-H | P3 (flaky merge gate) | `quanta-index-embed` `max_batch_knob_controls_request_splitting`이 concurrency race로 간헐 실패 | **fixed** — §3.8 IMPL-H |
 | IMPL-D | **P1 (retrieval correctness, 확정)** | regex prefilter가 리터럴 *교대(alternation)* 집합을 *논리곱(AND)*으로 처리해 조용히 결과를 떨어뜨린다 | **fixed + regression green** |
+| IMPL-J | P2 (W5 phase 1 회귀, 확정) | `PeerWatch`가 peer의 **half-close**(`shutdown(Write)` 후 응답 대기)를 hang-up으로 분류해 응답을 쓰지 않고 연결을 닫음. Darwin은 half-close에도 `POLLHUP`을 보고하므로 poll만으로는 구분 불가 | **fixed** — §0.2 IMPL-J |
 
 ### IMPL-C 상세
 
@@ -143,6 +144,27 @@ Error: "regex alternation: expected [\"c-both\", \"c-left\", \"c-right\"], got [
 **연관**: QI-BB-011(text semantics)의 실증 사례다. 단, findings가 기술한 "whitespace/
 ASCII folding 의존"보다 심각하다 — 보조 경로의 근사 문제가 아니라 primary regex
 route의 **무증상 false negative**다.
+
+### IMPL-J 상세 — peer watch의 half-close 오분류
+
+`just rust-profile verify-rust`(dd2246b)에서 `quanta-index-ipc`
+`handle_connection_returns_peer_closed_after_successful_round_trip`이 `ipc frame truncated`로 간헐 실패.
+테스트의 client는 요청을 쓴 뒤 `shutdown(Write)`하고 응답을 기다린다(정당한 one-shot 프로토콜). W5 phase 1의
+`PeerWatch`는 `POLLHUP` 또는 EOF(peek 0 byte)를 hang-up으로 취급해 budget을 cancel하고 **응답을 쓰지 않은 채**
+연결을 닫았다. dispatch가 watch의 첫 poll(50ms)보다 먼저 끝나면 통과, contended host에서 순서가 뒤집히면 실패 —
+즉 flaky가 아니라 race로 드러난 실제 결함.
+
+probe(`scratchpad/pollprobe`)로 Darwin 의미를 확정: peer `SHUT_WR` → 우리 쪽 `POLLIN|POLLHUP`, peer 완전 close →
+`POLLHUP`. **poll로는 구분 불가.** 반면 0-byte `send`는 half-close에서 `Ok(0)`, 완전 close에서 `EPIPE` —
+peer의 read side 생존 여부를 정확히 가른다(Linux도 동일).
+
+**수정**: `peer_state`는 HUP/ERR/EOF를 보면 `peer_can_receive`(0-byte send, Linux `MSG_NOSIGNAL`, Darwin은
+`SO_NOSIGPIPE` + Rust runtime의 SIGPIPE ignore)로 확인 — 받을 수 있으면 `HalfClosed`, 아니면 `HungUp`. half-close
+이후에는 EOF가 계속 readable이라 poll 대신 50ms sleep + probe로 완전 close를 기다린다.
+
+**회귀**: `server::tests::a_half_closed_peer_is_not_a_hang_up_and_still_gets_its_response` — dispatch를 gate로
+잡아 watch가 half-close를 여러 번 보게 한 뒤 응답 수신·budget 미취소·`PeerClosed`를 확인(수정 전 결정적 FAIL).
+기존 `a_peer_that_hangs_up_mid_dispatch_cancels_the_budget`과 G0-R probe 3/3은 그대로 green. 15회 반복 green.
 
 ### IMPL-A 상세
 
@@ -1217,3 +1239,4 @@ row catalog 위의 후속. (c) `DiffCandidate`에는 여전히 sha가 없다(cur
 | 2026-09-17 | 1346134 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,020 passed / 0 failed (QI-BB-024 regex cache bounds 포함) |
 | 2026-09-17 | c21c2f8 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,043 passed / 0 failed (QI-BB-009 + QI-BB-021 resource envelope 포함) |
 | 2026-09-17 | 0d3a760 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,057 passed / 0 failed (QI-BB-020 auxiliary catalog rows 포함) |
+| 2026-09-17 | dd2246b | `just rust-profile verify-rust` | RED — `quanta-index-ipc::handle_connection_returns_peer_closed_after_successful_round_trip` frame truncated: W5 peer watch의 half-close 오분류(IMPL-J, → 다음 commit) |
