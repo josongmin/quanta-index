@@ -15,7 +15,7 @@ use std::sync::{Arc, RwLock};
 use anyhow::Result;
 use quanta_index_contract::{ManifestGeneration, SearchPlaneTrackKind};
 use quanta_index_core::{QuarantinedGenerationV1, SealedGenerationScanPort};
-use quanta_index_search_plane::Ledger;
+use quanta_index_search_plane::{Ledger, LegacyAuxiliaryMigrationReceipt};
 
 /// One track's inventory outcome.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -43,6 +43,11 @@ pub struct BootInventoryReportV1 {
     /// Active `(lexical, semantic)` pairs the lifecycle proved physically at
     /// boot; each was proven exactly once.
     pub active_pairs_validated: usize,
+    /// The one-shot move of pre-catalog auxiliary snapshot files into the
+    /// catalog, if this boot performed it (QI-BB-020).
+    pub auxiliary_migration: Option<LegacyAuxiliaryMigrationReceipt>,
+    /// Auxiliary authority rows restored from the catalog at boot.
+    pub auxiliary_rows_restored: u64,
 }
 
 /// Seed one track's readiness from its inventory.

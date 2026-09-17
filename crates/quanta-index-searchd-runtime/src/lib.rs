@@ -14,14 +14,14 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use anyhow::Result;
-use quanta_index_catalog::SqliteIdempotencyCatalog;
+use quanta_index_catalog::SqliteCatalog;
 use quanta_index_core::{
-    FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
-    IdempotencyCatalogPort, IncompleteGenerationDiscardPort, LexicalIndexOpenPort,
-    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
-    RepoMapGenerationActivatePort, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
-    SealedGenerationReclaimPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
-    SemanticBatchBuildPort, SemanticIndexOpenPort,
+    AuxiliaryAuthorityCatalogPort, FileContributorIngestPort, FileOwnershipIngestPort,
+    GenerationIdentityValidatePort, IdempotencyCatalogPort, IncompleteGenerationDiscardPort,
+    LexicalIndexOpenPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
+    RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapQueryPort, RepoMetaIngestPort,
+    RepoTopicIngestPort, SealedGenerationReclaimPort, SealedGenerationScanPort,
+    SearchCorpusBatchBuildPort, SemanticBatchBuildPort, SemanticIndexOpenPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_lexical::regex::RegexPolicy;
@@ -67,10 +67,12 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     // The durable idempotency catalog (QI-BB-032). Its busy budget only
     // matters against a foreign writer, which the state-root lease excludes;
     // it is bounded so a held lock is still a typed answer, never a hang.
-    let idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync> = Arc::new(
-        SqliteIdempotencyCatalog::open(&state_root, CATALOG_BUSY_BUDGET)
-            .map_err(anyhow::Error::from)?,
+    let catalog = Arc::new(
+        SqliteCatalog::open(&state_root, CATALOG_BUSY_BUDGET).map_err(anyhow::Error::from)?,
     );
+    let shared_catalog = Arc::clone(&catalog);
+    let idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync> = shared_catalog;
+    let auxiliary_catalog: Arc<dyn AuxiliaryAuthorityCatalogPort + Send + Sync> = catalog;
 
     let search_corpus_build_port: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync> =
         lex_adapter.clone();
@@ -137,6 +139,7 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
             search_corpus_lifecycle,
             legacy_semantic_journal_store,
             idempotency,
+            auxiliary_catalog,
         },
     )
 }

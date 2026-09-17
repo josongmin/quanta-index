@@ -5,6 +5,7 @@
 //! `hybrid` may consume the public surfaces of `lexical` and `semantic` for
 //! orchestration purposes (RRF, generation-coherence checks).
 
+pub mod auxiliary;
 pub mod generation;
 pub mod hybrid;
 pub mod idempotency;

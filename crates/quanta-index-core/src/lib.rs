@@ -24,6 +24,11 @@ pub use request_budget::{
     RequestBudgetV1,
 };
 
+pub use domains::auxiliary::{
+    AuxiliaryAuthorityCatalogPort, AuxiliaryDomainV1, AuxiliaryGenerationKeyV1,
+    AuxiliaryMutationBatchV1, AuxiliaryMutationReceiptV1, AuxiliaryRowFamilyV1, AuxiliaryRowKeyV1,
+    AuxiliaryRowMutationV1, AuxiliaryRowV1, AuxiliaryTrackRowV1,
+};
 pub use domains::generation::{
     GenerationIdentityValidatePort, GenerationQuarantineReasonV1, GenerationStorageKeyV1,
     IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort, QuarantinedGenerationV1,

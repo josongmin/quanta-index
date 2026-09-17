@@ -26,14 +26,14 @@ use quanta_index_core::domains::structural::{
     StructuralQueryRequest as DomainStructuralQueryRequest,
 };
 use quanta_index_core::{
-    CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
-    IdempotencyCatalogPort, IncompleteGenerationDiscardPort, L2UnitEmbeddingProvider,
-    LexicalIndexOpenPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
-    RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapQueryPort, RepoMetaIngestPort,
-    RepoTopicIngestPort, SealedGenerationReclaimPort, SealedGenerationScanPort,
-    SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticBatchBuildPort,
-    SemanticIndexOpenPort, SemanticIngestPort, StructuralError, StructuralMatchBinding,
-    StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider,
+    AuxiliaryAuthorityCatalogPort, CoreError, FileContributorIngestPort, FileOwnershipIngestPort,
+    GenerationIdentityValidatePort, IdempotencyCatalogPort, IncompleteGenerationDiscardPort,
+    L2UnitEmbeddingProvider, LexicalIndexOpenPort, RepoCommitRecencyIngestPort,
+    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
+    RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort, SealedGenerationReclaimPort,
+    SealedGenerationScanPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
+    SemanticBatchBuildPort, SemanticIndexOpenPort, SemanticIngestPort, StructuralError,
+    StructuralMatchBinding, StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider,
 };
 use quanta_index_embed::{
     CachingEmbeddingProvider, EmbeddingCacheIdentityV1, FileEmbeddingCache, OpenAiEmbeddingProvider,
@@ -47,12 +47,13 @@ use quanta_index_lq_structural::{
     compile_authoritative_pattern,
 };
 use quanta_index_search_plane::{
-    BoundedQueryObsStore, DirectHistoryMaterializer, DirectRuntimeMetadataMaterializer,
-    DirectSearchCorpusMaterializer, DirectSemanticMaterializer, DirectStructuralMaterializer,
-    HashingQueryTextEmbedder, HistoryIngestPort, Ledger, QueryObsSink, QueryTextEmbedderPort,
-    RuntimeMetadataIngestPort, SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusLifecycleOwner,
-    SearchCorpusMaterializerParts, SearchPlaneControlDispatcher, SearchPlaneDispatcher,
-    SearchPlaneIngestDispatcher, SnapshotRegistries, StructuralIngestPort,
+    AuxiliaryMaterializerParts, AuxiliaryMutationCoordinator, BoundedQueryObsStore,
+    DirectHistoryMaterializer, DirectRuntimeMetadataMaterializer, DirectSearchCorpusMaterializer,
+    DirectSemanticMaterializer, DirectStructuralMaterializer, HashingQueryTextEmbedder,
+    HistoryIngestPort, Ledger, QueryObsSink, QueryTextEmbedderPort, RuntimeMetadataIngestPort,
+    SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusLifecycleOwner, SearchCorpusMaterializerParts,
+    SearchPlaneControlDispatcher, SearchPlaneDispatcher, SearchPlaneIngestDispatcher,
+    SnapshotRegistries, StructuralIngestPort,
 };
 use regex::Regex;
 
@@ -95,6 +96,8 @@ pub struct SearchdRuntimeParts {
     pub legacy_semantic_journal_store: Arc<LegacySemanticJournalStore>,
     /// Durable ingest idempotency records (QI-BB-032).
     pub idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
+    /// Durable auxiliary authority rows (QI-BB-020).
+    pub auxiliary_catalog: Arc<dyn AuxiliaryAuthorityCatalogPort + Send + Sync>,
 }
 
 /// Exclusive process-lifetime ownership of one daemon state root.
@@ -467,8 +470,7 @@ impl StructuralProducerPort for LedgerStructuralProducer {
             .map_err(|err| {
                 StructuralError::ProducerExecution(format!("structural ledger poisoned: {err}"))
             })?
-            .structural_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
-            .cloned()
+            .structural_snapshot(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
             .ok_or(StructuralError::GenerationNotReady)?;
         let requested_pattern = requested_lang
             .map(|lang| compile_live_structural_pattern(&request.pattern, lang))
@@ -797,6 +799,7 @@ impl SearchdRuntime {
             search_corpus_lifecycle,
             legacy_semantic_journal_store,
             idempotency,
+            auxiliary_catalog,
         } = parts;
         state_root_lease
             .require_state_root_v1(config.state_root())
@@ -844,19 +847,37 @@ impl SearchdRuntime {
                 semantic_generation_validator.as_ref(),
             )
             .map_err(anyhow::Error::from)?;
-        let boot_inventory = BootInventoryReportV1 {
-            lexical: lexical_inventory,
-            semantic: semantic_inventory,
-            active_pairs_validated,
-        };
-        {
+        // The pre-catalog snapshot files, if this state root still has
+        // them, move into the catalog once; then the auxiliary authorities
+        // are rebuilt from the catalog's rows (QI-BB-020).
+        let auxiliary_migration = aux_authority_store
+            .migrate_legacy_auxiliary_snapshots(auxiliary_catalog.as_ref())
+            .map_err(anyhow::Error::from)?;
+        let auxiliary_rows_restored = {
             let mut guard = ledger.write().map_err(|err| {
                 anyhow::anyhow!("ledger poisoned during auxiliary authority bootstrap: {err}")
             })?;
             aux_authority_store
                 .restore_into(&mut guard)
                 .map_err(anyhow::Error::from)?;
-        }
+            quanta_index_search_plane::readiness::restore_auxiliary_rows_into(
+                &mut guard,
+                auxiliary_catalog.as_ref(),
+            )
+            .map_err(anyhow::Error::from)?
+        };
+        let boot_inventory = BootInventoryReportV1 {
+            lexical: lexical_inventory,
+            semantic: semantic_inventory,
+            active_pairs_validated,
+            auxiliary_migration,
+            auxiliary_rows_restored,
+        };
+        let auxiliary_parts = AuxiliaryMaterializerParts {
+            catalog: Arc::clone(&auxiliary_catalog),
+            coordinator: AuxiliaryMutationCoordinator::shared(),
+            ledger: Arc::clone(&ledger),
+        };
         let (query_text_embedder, corpus_embedder) =
             build_semantic_embedders(config.semantic_embedder_profile(), &leased_state_root)
                 .map_err(anyhow::Error::from)?;
@@ -872,7 +893,7 @@ impl SearchdRuntime {
                         ledger: Arc::clone(&ledger),
                         semantic_ingest: Arc::clone(&direct_sem_ingest_port),
                         semantic_embedder: corpus_embedder,
-                        authority: aux_authority_store.clone(),
+                        authority: aux_authority_store,
                         lexical_generation_validator: Arc::clone(&lexical_generation_validator),
                         semantic_generation_validator: Arc::clone(&semantic_generation_validator),
                         lexical_incomplete_discard: Arc::clone(&lexical_incomplete_discard),
@@ -882,21 +903,19 @@ impl SearchdRuntime {
                         snapshots: snapshots.clone(),
                         idempotency: Arc::clone(&idempotency),
                         resource_policy: config.ingest_resource_policy(),
+                        auxiliary_catalog: Arc::clone(&auxiliary_parts.catalog),
+                        auxiliary_coordinator: Arc::clone(&auxiliary_parts.coordinator),
                     },
                 )
                 .map_err(anyhow::Error::from)?,
             );
-        let direct_history_ingest_port: Arc<dyn HistoryIngestPort + Send + Sync> = Arc::new(
-            DirectHistoryMaterializer::new(aux_authority_store.clone(), Arc::clone(&ledger)),
+        let direct_history_ingest_port: Arc<dyn HistoryIngestPort + Send + Sync> =
+            Arc::new(DirectHistoryMaterializer::new(auxiliary_parts.clone()));
+        let direct_runtime_ingest_port: Arc<dyn RuntimeMetadataIngestPort + Send + Sync> = Arc::new(
+            DirectRuntimeMetadataMaterializer::new(auxiliary_parts.clone()),
         );
-        let direct_runtime_ingest_port: Arc<dyn RuntimeMetadataIngestPort + Send + Sync> =
-            Arc::new(DirectRuntimeMetadataMaterializer::new(
-                aux_authority_store.clone(),
-                Arc::clone(&ledger),
-            ));
-        let direct_structural_ingest_port: Arc<dyn StructuralIngestPort + Send + Sync> = Arc::new(
-            DirectStructuralMaterializer::new(aux_authority_store, Arc::clone(&ledger)),
-        );
+        let direct_structural_ingest_port: Arc<dyn StructuralIngestPort + Send + Sync> =
+            Arc::new(DirectStructuralMaterializer::new(auxiliary_parts));
 
         let query_obs_store = Arc::new(BoundedQueryObsStore::default());
         let query_obs_sink: Arc<dyn QueryObsSink + Send + Sync> =

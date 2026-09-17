@@ -202,6 +202,12 @@ owner = "quanta-index-catalog"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "catalog-auxiliary"
+path = "crates/quanta-index-catalog/tests/auxiliary.rs"
+owner = "quanta-index-catalog"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "lexical-regex-literal-alternation"
 path = "crates/quanta-index-lexical/tests/regex_literal_alternation.rs"
 owner = "quanta-index-lexical"
@@ -474,6 +480,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "searchd-runtime-e2e-ingest-resource-envelope"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_ingest_resource_envelope.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-e2e-auxiliary-catalog"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_auxiliary_catalog.rs"
 owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 

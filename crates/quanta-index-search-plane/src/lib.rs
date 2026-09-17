@@ -9,6 +9,7 @@
 //! lexical lowering, and the cross-domain query orchestration that sits
 //! between transport and the core domain ports.
 
+mod auxiliary_authority;
 mod control_dispatcher;
 mod ingest_dispatcher;
 mod lowering;
@@ -22,8 +23,9 @@ mod snapshot_registry;
 
 pub use control_dispatcher::SearchPlaneControlDispatcher;
 pub use ingest_dispatcher::{
-    DirectHistoryMaterializer, DirectRuntimeMetadataMaterializer, DirectSearchCorpusMaterializer,
-    DirectSemanticMaterializer, DirectStructuralMaterializer, HistoryIngestPort,
+    AuxiliaryMaterializerParts, AuxiliaryMutationCoordinator, DirectHistoryMaterializer,
+    DirectRuntimeMetadataMaterializer, DirectSearchCorpusMaterializer, DirectSemanticMaterializer,
+    DirectStructuralMaterializer, HistoryIngestPort, IngestResourceStats,
     RuntimeMetadataIngestPort, SearchCorpusAuthorityWritePort, SearchCorpusMaterializerParts,
     SearchPlaneIngestDispatcher, StructuralIngestPort,
 };
@@ -39,8 +41,9 @@ pub use query_embedder::{
 };
 pub use readiness::{
     ActivationCatalog, ActiveGenerationRecord, AuxiliaryAuthorityStore, Ledger,
-    PreparedSearchCorpusGenerationV1, SealedSearchCorpusAuthorityStateV1,
-    SearchCorpusGenerationActivationV1, SearchCorpusGenerationV1, TrackLedger,
+    LegacyAuxiliaryMigrationReceipt, PreparedSearchCorpusGenerationV1,
+    SealedSearchCorpusAuthorityStateV1, SearchCorpusGenerationActivationV1,
+    SearchCorpusGenerationV1, TrackLedger,
 };
 pub use search_corpus_lifecycle::SearchCorpusLifecycleOwner;
 pub use semantic_derive::SemanticDerivationModeV1;

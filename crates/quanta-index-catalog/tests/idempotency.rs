@@ -16,7 +16,7 @@
 use std::error::Error;
 use std::time::Duration;
 
-use quanta_index_catalog::{IDEMPOTENCY_CATALOG_FILE_NAME, SqliteIdempotencyCatalog, catalog_dir};
+use quanta_index_catalog::{CATALOG_FILE_NAME, SqliteCatalog, catalog_dir};
 use quanta_index_contract::{BatchPublishReceipt, ManifestGeneration, RepoId, RevisionId};
 use quanta_index_core::{
     BATCH_DIGEST_CONFLICT_CODE, CATALOG_BUSY_CODE, CATALOG_ROW_CORRUPT_CODE, CoreError,
@@ -61,7 +61,7 @@ fn typed_code(error: &CoreError) -> Option<&str> {
 #[test]
 fn a_finalized_record_replays_and_a_different_body_conflicts() -> TestResult {
     let temp = tempfile::tempdir()?;
-    let catalog = SqliteIdempotencyCatalog::open(temp.path(), Duration::from_millis(100))?;
+    let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
     let key = key(IngestOperationKindV1::SearchCorpus, 3, "digest-a");
     let body = [1_u8; 32];
 
@@ -118,13 +118,13 @@ fn a_crash_before_finalize_resumes_and_then_finalizes() -> TestResult {
     let key = key(IngestOperationKindV1::History, 5, "digest-h");
     let body = [9_u8; 32];
     {
-        let catalog = SqliteIdempotencyCatalog::open(temp.path(), Duration::from_millis(100))?;
+        let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
         if catalog.begin(&key, &body)? != IdempotencyBeginV1::Fresh {
             return Err("fresh".into());
         }
         // The process dies here: the record is in progress on disk.
     }
-    let catalog = SqliteIdempotencyCatalog::open(temp.path(), Duration::from_millis(100))?;
+    let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
     if catalog.begin(&key, &body)? != IdempotencyBeginV1::Resume {
         return Err("an in-progress record must resume".into());
     }
@@ -147,7 +147,7 @@ fn a_crash_before_finalize_resumes_and_then_finalizes() -> TestResult {
 #[test]
 fn a_row_that_does_not_match_its_digest_is_refused_typed() -> TestResult {
     let temp = tempfile::tempdir()?;
-    let catalog = SqliteIdempotencyCatalog::open(temp.path(), Duration::from_millis(100))?;
+    let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
     let key = key(IngestOperationKindV1::Dirty, 7, "digest-d");
     let body = [4_u8; 32];
     let _fresh = catalog.begin(&key, &body)?;
@@ -156,7 +156,7 @@ fn a_row_that_does_not_match_its_digest_is_refused_typed() -> TestResult {
 
     // Flip one byte of the stored body hash behind the catalog's back, as
     // bit-rot would; the engine's own integrity check does not notice.
-    let path = catalog_dir(temp.path()).join(IDEMPOTENCY_CATALOG_FILE_NAME);
+    let path = catalog_dir(temp.path()).join(CATALOG_FILE_NAME);
     let connection = rusqlite::Connection::open(&path)?;
     let changed = connection.execute(
         "UPDATE idempotency_v1
@@ -169,7 +169,7 @@ fn a_row_that_does_not_match_its_digest_is_refused_typed() -> TestResult {
     }
     drop(connection);
 
-    let catalog = SqliteIdempotencyCatalog::open(temp.path(), Duration::from_millis(100))?;
+    let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
     let refused = catalog
         .begin(&key, &body)
         .expect_err("a corrupt row must not be served as replay or conflict");
@@ -184,7 +184,7 @@ fn sequences_are_unique_and_monotonic_across_keys_and_reopens() -> TestResult {
     let temp = tempfile::tempdir()?;
     let mut sequences = Vec::new();
     {
-        let catalog = SqliteIdempotencyCatalog::open(temp.path(), Duration::from_millis(100))?;
+        let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
         for (index, kind) in [
             IngestOperationKindV1::SearchCorpus,
             IngestOperationKindV1::RepoTopic,
@@ -200,7 +200,7 @@ fn sequences_are_unique_and_monotonic_across_keys_and_reopens() -> TestResult {
             sequences.push(catalog.finalize(&key, &body, &receipt(generation, "digest", 0))?);
         }
     }
-    let catalog = SqliteIdempotencyCatalog::open(temp.path(), Duration::from_millis(100))?;
+    let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
     let key = key(IngestOperationKindV1::RepoMeta, 9, "digest-late");
     let body = [8_u8; 32];
     let _fresh = catalog.begin(&key, &body)?;
@@ -214,8 +214,8 @@ fn sequences_are_unique_and_monotonic_across_keys_and_reopens() -> TestResult {
 #[test]
 fn a_held_write_lock_past_the_busy_budget_is_typed_busy() -> TestResult {
     let temp = tempfile::tempdir()?;
-    let catalog = SqliteIdempotencyCatalog::open(temp.path(), Duration::from_millis(60))?;
-    let path = catalog_dir(temp.path()).join(IDEMPOTENCY_CATALOG_FILE_NAME);
+    let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(60))?;
+    let path = catalog_dir(temp.path()).join(CATALOG_FILE_NAME);
     // A foreign writer holds the database.
     let holder = rusqlite::Connection::open(&path)?;
     holder.execute_batch("BEGIN IMMEDIATE;")?;
@@ -242,7 +242,7 @@ fn a_held_write_lock_past_the_busy_budget_is_typed_busy() -> TestResult {
 #[test]
 fn forgetting_a_generation_drops_exactly_its_records() -> TestResult {
     let temp = tempfile::tempdir()?;
-    let catalog = SqliteIdempotencyCatalog::open(temp.path(), Duration::from_millis(100))?;
+    let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
     for (generation, digest) in [(1, "a"), (1, "b"), (2, "c")] {
         let key = key(IngestOperationKindV1::SearchCorpus, generation, digest);
         let body = [u8::try_from(generation)?; 32];

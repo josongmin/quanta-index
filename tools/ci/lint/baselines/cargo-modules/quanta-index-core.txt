@@ -1,6 +1,17 @@
 
 crate quanta_index_core
 ├── mod domains: pub
+│   ├── mod auxiliary: pub
+│   │   ├── trait AuxiliaryAuthorityCatalogPort: pub
+│   │   ├── enum AuxiliaryDomainV1: pub
+│   │   ├── struct AuxiliaryGenerationKeyV1: pub
+│   │   ├── struct AuxiliaryMutationBatchV1: pub
+│   │   ├── struct AuxiliaryMutationReceiptV1: pub
+│   │   ├── enum AuxiliaryRowFamilyV1: pub
+│   │   ├── struct AuxiliaryRowKeyV1: pub
+│   │   ├── enum AuxiliaryRowMutationV1: pub
+│   │   ├── struct AuxiliaryRowV1: pub
+│   │   └── struct AuxiliaryTrackRowV1: pub
 │   ├── mod generation: pub
 │   │   ├── trait GenerationIdentityValidatePort: pub
 │   │   ├── enum GenerationQuarantineReasonV1: pub

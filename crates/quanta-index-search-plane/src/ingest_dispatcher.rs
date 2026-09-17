@@ -13,6 +13,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, RwLock};
 
+use crate::auxiliary_authority::{
+    history_delta_rows, history_transition, runtime_catalog_delta_rows, runtime_catalog_transition,
+    runtime_dirty_delta_rows, runtime_dirty_transition, structural_chunks_delta_rows,
+    structural_chunks_transition, structural_delta_rows, structural_transition,
+};
 use crate::readiness::{
     SEARCH_CORPUS_LOCK_STRIPES_V1, SearchCorpusHistoryRetentionReceiptV1,
     search_corpus_lock_stripe_v1,
@@ -33,8 +38,8 @@ use quanta_index_contract::{
     StructuralIngestBatch,
 };
 use quanta_index_core::{
-    CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
-    IdempotencyBeginV1, IdempotencyCatalogPort, IdempotencyKeyV1,
+    AuxiliaryAuthorityCatalogPort, CoreError, FileContributorIngestPort, FileOwnershipIngestPort,
+    GenerationIdentityValidatePort, IdempotencyBeginV1, IdempotencyCatalogPort, IdempotencyKeyV1,
     IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort, IngestBatchFootprint,
     IngestOperationKindV1, IngestResourcePolicy, RepoCommitRecencyIngestPort,
     RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMetaIngestPort, RepoTopicIngestPort,
@@ -98,6 +103,8 @@ pub struct DirectSearchCorpusMaterializer {
     /// held (QI-BB-021), and what the measured batches added up to.
     resource_policy: IngestResourcePolicy,
     resource_stats: Mutex<IngestResourceStats>,
+    auxiliary_catalog: Arc<dyn AuxiliaryAuthorityCatalogPort + Send + Sync>,
+    auxiliary_coordinator: Arc<AuxiliaryMutationCoordinator>,
     operation_locks: [Mutex<()>; SEARCH_CORPUS_LOCK_STRIPES_V1],
     semantic_derivation_mode: SemanticDerivationModeV1,
 }
@@ -150,6 +157,11 @@ pub struct SearchCorpusMaterializerParts {
     pub idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
     /// The resource envelope one batch may ask the plane to hold (QI-BB-021).
     pub resource_policy: IngestResourcePolicy,
+    /// The structural chunk universe of every generation is durable in the
+    /// auxiliary catalog before the generation is finalized, and auxiliary
+    /// generations are forgotten with retention (QI-BB-020).
+    pub auxiliary_catalog: Arc<dyn AuxiliaryAuthorityCatalogPort + Send + Sync>,
+    pub auxiliary_coordinator: Arc<AuxiliaryMutationCoordinator>,
 }
 
 /// Durable owner for complete lexical+semantic rollback history.
@@ -233,6 +245,8 @@ impl DirectSearchCorpusMaterializer {
             snapshots,
             idempotency,
             resource_policy,
+            auxiliary_catalog,
+            auxiliary_coordinator,
         } = parts;
         Self {
             builder,
@@ -250,6 +264,8 @@ impl DirectSearchCorpusMaterializer {
             idempotency,
             resource_policy,
             resource_stats: Mutex::new(IngestResourceStats::default()),
+            auxiliary_catalog,
+            auxiliary_coordinator,
             operation_locks: std::array::from_fn(|_index| Mutex::new(())),
             semantic_derivation_mode,
         }
@@ -570,10 +586,29 @@ impl DirectSearchCorpusMaterializer {
         batch: &SearchCorpusIngestBatch,
         retention: Option<&SearchCorpusHistoryRetentionReceiptV1>,
     ) -> Result<(), CoreError> {
-        {
+        const WHAT: &str = "direct search-corpus materialize";
+        // The chunk universe is durable before the generation is visible
+        // (QI-BB-020): validated against the ledger, written to the catalog,
+        // then applied under the write lock with the track bookkeeping.
+        let _serial = self.auxiliary_coordinator.lock()?;
+        let chunks = {
+            let guard = self.ledger.read().map_err(|err| {
+                CoreError::Storage(format!(
+                    "{WHAT}: ledger poisoned while finalizing generation: {err}"
+                ))
+            })?;
+            structural_chunks_transition(
+                guard.structural_state(&batch.repo_id, &batch.revision_id, batch.generation),
+                batch,
+            )
+        };
+        let _durable = self
+            .auxiliary_catalog
+            .apply(&structural_chunks_delta_rows(&chunks)?)?;
+        let reaped_auxiliary = {
             let mut guard = self.ledger.write().map_err(|err| {
                 CoreError::Storage(format!(
-                    "direct search-corpus materialize: ledger poisoned while finalizing generation: {err}"
+                    "{WHAT}: ledger poisoned while finalizing generation: {err}"
                 ))
             })?;
             if let Some(retention) = retention {
@@ -589,7 +624,7 @@ impl DirectSearchCorpusMaterializer {
                         .to_string(),
                 ));
             }
-            guard.apply_search_corpus_batch(batch);
+            guard.apply_structural_chunks_delta(&chunks);
             guard.materialize_track(
                 &batch.repo_id,
                 &batch.revision_id,
@@ -612,6 +647,31 @@ impl DirectSearchCorpusMaterializer {
                     batch.manifest_digest.as_str(),
                 );
             }
+            // Auxiliary generations older than the one just sealed that the
+            // retention receipt does not retain go with it; a newer
+            // generation still being staged is never touched.
+            let reaped: Vec<ManifestGeneration> = retention.map_or_else(Vec::new, |retention| {
+                guard
+                    .auxiliary_generations_older_than(
+                        &batch.repo_id,
+                        &batch.revision_id,
+                        batch.generation,
+                    )
+                    .into_iter()
+                    .filter(|generation| !retention.retains(*generation))
+                    .collect()
+            });
+            for generation in &reaped {
+                guard.forget_auxiliary_generation(&batch.repo_id, &batch.revision_id, *generation);
+            }
+            reaped
+        };
+        for generation in reaped_auxiliary {
+            let _removed = self.auxiliary_catalog.forget_generation(
+                &batch.repo_id,
+                &batch.revision_id,
+                generation,
+            )?;
         }
         if let Some(retention) = retention {
             let _receipt = self.reclaim_retired_generations_v1(batch, retention)?;
@@ -983,47 +1043,100 @@ impl SemanticIngestPort for DirectSemanticMaterializer {
     }
 }
 
+/// Serializes the validate → persist → apply protocol of every auxiliary
+/// mutation (QI-BB-020).
+///
+/// A transition is validated against the ledger under its read lock,
+/// made durable in the catalog, then applied under the write lock. Two
+/// mutations interleaving between those steps could validate against a
+/// state the other is about to change, so every auxiliary materializer —
+/// and the search-corpus path that owns the chunk universe — takes this
+/// lock for the whole protocol. Queries never take it: they clone a
+/// snapshot under the ledger's read lock and scan outside it.
+#[derive(Debug, Default)]
+pub struct AuxiliaryMutationCoordinator {
+    serial: Mutex<()>,
+}
+
+impl AuxiliaryMutationCoordinator {
+    #[must_use]
+    pub fn shared() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, ()>, CoreError> {
+        self.serial.lock().map_err(|err| {
+            CoreError::Storage(format!(
+                "auxiliary materialize: mutation coordinator poisoned: {err}"
+            ))
+        })
+    }
+}
+
+/// The catalog and the ledger every auxiliary materializer writes through.
+#[derive(Clone)]
+pub struct AuxiliaryMaterializerParts {
+    pub catalog: Arc<dyn AuxiliaryAuthorityCatalogPort + Send + Sync>,
+    pub coordinator: Arc<AuxiliaryMutationCoordinator>,
+    pub ledger: Arc<RwLock<Ledger>>,
+}
+
+impl AuxiliaryMaterializerParts {
+    fn read_ledger(&self, what: &str) -> Result<std::sync::RwLockReadGuard<'_, Ledger>, CoreError> {
+        self.ledger
+            .read()
+            .map_err(|err| CoreError::Storage(format!("{what}: ledger poisoned: {err}")))
+    }
+
+    fn write_ledger(
+        &self,
+        what: &str,
+    ) -> Result<std::sync::RwLockWriteGuard<'_, Ledger>, CoreError> {
+        self.ledger
+            .write()
+            .map_err(|err| CoreError::Storage(format!("{what}: ledger poisoned: {err}")))
+    }
+}
+
 /// Direct history materializer. History is auxiliary and non-activation
-/// blocking, but direct ledger updates keep query truth aligned with accepted
-/// ingest batches.
+/// blocking; its rows are durable before its receipt and visible only
+/// after (QI-BB-020).
 pub struct DirectHistoryMaterializer {
-    authority_store: Arc<AuxiliaryAuthorityStore>,
-    ledger: Arc<RwLock<Ledger>>,
+    parts: AuxiliaryMaterializerParts,
 }
 
 impl DirectHistoryMaterializer {
     #[must_use]
-    pub fn new(authority_store: Arc<AuxiliaryAuthorityStore>, ledger: Arc<RwLock<Ledger>>) -> Self {
-        Self {
-            authority_store,
-            ledger,
-        }
+    pub const fn new(parts: AuxiliaryMaterializerParts) -> Self {
+        Self { parts }
     }
 }
 
 impl HistoryIngestPort for DirectHistoryMaterializer {
     fn publish_batch(&self, batch: &HistoryIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
+        const WHAT: &str = "direct history materialize";
+        let _serial = self.parts.coordinator.lock()?;
+        let delta = {
+            let guard = self.parts.read_ledger(WHAT)?;
+            history_transition(
+                guard.history_state(&batch.repo_id, &batch.revision_id, batch.generation),
+                batch,
+            )?
+        };
+        let _durable = self.parts.catalog.apply(&history_delta_rows(&delta)?)?;
+        {
+            let mut guard = self.parts.write_ledger(WHAT)?;
+            guard.apply_history_delta(&delta);
+        }
         let mut receipt = BatchPublishReceipt::empty_for(
             batch.generation,
             batch.manifest_digest.clone(),
             batch.batch_digest.clone(),
         );
-        let mut guard = self.ledger.write().map_err(|err| {
-            CoreError::Storage(format!(
-                "direct history materialize: ledger poisoned: {err}"
-            ))
-        })?;
-        guard.apply_history_batch(batch)?;
         for _record in &batch.commits {
             receipt.accept_replace_scope();
         }
-        for mutation in &batch.refs {
-            match mutation {
-                HistoryRefMutation::Upsert(_) => receipt.accept_replace_scope(),
-                HistoryRefMutation::Delete(_) => receipt.accept_tombstone_scope(),
-            }
-        }
-        for mutation in &batch.tags {
+        for mutation in batch.refs.iter().chain(batch.tags.iter()) {
             match mutation {
                 HistoryRefMutation::Upsert(_) => receipt.accept_replace_scope(),
                 HistoryRefMutation::Delete(_) => receipt.accept_tombstone_scope(),
@@ -1032,26 +1145,21 @@ impl HistoryIngestPort for DirectHistoryMaterializer {
         for _record in &batch.diff_hunks {
             receipt.accept_replace_scope();
         }
-        self.authority_store.persist_from_ledger(&guard)?;
-        drop(guard);
         Ok(receipt)
     }
 }
 
-/// Direct dirty-overlay materializer. Dirty state remains auxiliary and
-/// non-activation-blocking.
+/// Direct dirty-overlay and runtime catalog materializer. Runtime state
+/// remains auxiliary and non-activation-blocking; its rows are durable
+/// before its receipt and visible only after (QI-BB-020).
 pub struct DirectRuntimeMetadataMaterializer {
-    authority_store: Arc<AuxiliaryAuthorityStore>,
-    ledger: Arc<RwLock<Ledger>>,
+    parts: AuxiliaryMaterializerParts,
 }
 
 impl DirectRuntimeMetadataMaterializer {
     #[must_use]
-    pub fn new(authority_store: Arc<AuxiliaryAuthorityStore>, ledger: Arc<RwLock<Ledger>>) -> Self {
-        Self {
-            authority_store,
-            ledger,
-        }
+    pub const fn new(parts: AuxiliaryMaterializerParts) -> Self {
+        Self { parts }
     }
 }
 
@@ -1069,12 +1177,23 @@ fn dirty_publish_receipt_v1(batch: &DirtyIngestBatch) -> BatchPublishReceipt {
 
 impl RuntimeMetadataIngestPort for DirectRuntimeMetadataMaterializer {
     fn publish_batch(&self, batch: &DirtyIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
-        let mut guard = self.ledger.write().map_err(|err| {
-            CoreError::Storage(format!("direct dirty materialize: ledger poisoned: {err}"))
-        })?;
-        guard.apply_runtime_batch(batch);
-        self.authority_store.persist_from_ledger(&guard)?;
-        drop(guard);
+        const WHAT: &str = "direct dirty materialize";
+        let _serial = self.parts.coordinator.lock()?;
+        let delta = {
+            let guard = self.parts.read_ledger(WHAT)?;
+            runtime_dirty_transition(
+                guard.runtime_state(&batch.repo_id, &batch.revision_id, batch.generation),
+                batch,
+            )
+        };
+        let _durable = self
+            .parts
+            .catalog
+            .apply(&runtime_dirty_delta_rows(&delta)?)?;
+        {
+            let mut guard = self.parts.write_ledger(WHAT)?;
+            guard.apply_runtime_dirty_delta(&delta);
+        }
         Ok(dirty_publish_receipt_v1(batch))
     }
 
@@ -1082,50 +1201,53 @@ impl RuntimeMetadataIngestPort for DirectRuntimeMetadataMaterializer {
         &self,
         batch: &RuntimeCatalogIngestBatch,
     ) -> Result<BatchPublishReceipt, CoreError> {
+        const WHAT: &str = "direct runtime catalog materialize";
+        let _serial = self.parts.coordinator.lock()?;
+        let delta = {
+            let guard = self.parts.read_ledger(WHAT)?;
+            runtime_catalog_transition(
+                guard.structural_state(&batch.repo_id, &batch.revision_id, batch.generation),
+                guard.runtime_state(&batch.repo_id, &batch.revision_id, batch.generation),
+                batch,
+            )?
+        };
+        let _durable = self
+            .parts
+            .catalog
+            .apply(&runtime_catalog_delta_rows(&delta)?)?;
+        {
+            let mut guard = self.parts.write_ledger(WHAT)?;
+            guard.apply_runtime_catalog_delta(&delta);
+        }
         let mut receipt =
             BatchPublishReceipt::empty_for(batch.generation, None, batch.batch_digest.clone());
-        let mut guard = self.ledger.write().map_err(|err| {
-            CoreError::Storage(format!(
-                "direct runtime catalog materialize: ledger poisoned: {err}"
-            ))
-        })?;
-        guard.apply_runtime_catalog_batch(batch)?;
-        for _record in &batch.changed_entries {
+        let accepted = [
+            batch.changed_entries.len(),
+            batch.facet_entries.len(),
+            batch.snapshot_entries.len(),
+            batch.affected_entries.len(),
+            batch.invalidated_by_entries.len(),
+        ]
+        .into_iter()
+        .fold(0_usize, usize::saturating_add);
+        for _record in 0..accepted {
             receipt.accept_replace_scope();
         }
-        for _record in &batch.facet_entries {
-            receipt.accept_replace_scope();
-        }
-        for _record in &batch.snapshot_entries {
-            receipt.accept_replace_scope();
-        }
-        for _record in &batch.affected_entries {
-            receipt.accept_replace_scope();
-        }
-        for _record in &batch.invalidated_by_entries {
-            receipt.accept_replace_scope();
-        }
-        self.authority_store.persist_from_ledger(&guard)?;
-        drop(guard);
         Ok(receipt)
     }
 }
 
-/// Direct structural materializer. Structural readiness is first-class and no
-/// longer inferred from lexical seal replay; the mirrored lexical channel path
-/// is kept only for restart-time authority rebuild.
+/// Direct structural materializer. Structural readiness is first-class;
+/// parse trees and the structural track's state are durable before the
+/// receipt and visible only after (QI-BB-020).
 pub struct DirectStructuralMaterializer {
-    authority_store: Arc<AuxiliaryAuthorityStore>,
-    ledger: Arc<RwLock<Ledger>>,
+    parts: AuxiliaryMaterializerParts,
 }
 
 impl DirectStructuralMaterializer {
     #[must_use]
-    pub fn new(authority_store: Arc<AuxiliaryAuthorityStore>, ledger: Arc<RwLock<Ledger>>) -> Self {
-        Self {
-            authority_store,
-            ledger,
-        }
+    pub const fn new(parts: AuxiliaryMaterializerParts) -> Self {
+        Self { parts }
     }
 }
 
@@ -1134,34 +1256,25 @@ impl StructuralIngestPort for DirectStructuralMaterializer {
         &self,
         batch: &StructuralIngestBatch,
     ) -> Result<BatchPublishReceipt, CoreError> {
-        let mut guard = self.ledger.write().map_err(|err| {
-            CoreError::Storage(format!(
-                "direct structural materialize: ledger poisoned: {err}"
-            ))
-        })?;
-        guard.apply_structural_batch(batch)?;
-        guard.record_track_materialized(
-            &batch.repo_id,
-            &batch.revision_id,
-            SearchPlaneTrackKind::Structural,
-            batch.generation,
-            Some(batch.manifest_digest.as_str()),
-        );
-        let has_parse_trees = guard
-            .structural_state(&batch.repo_id, &batch.revision_id, batch.generation)
-            .is_some_and(|state| !state.parse_trees().is_empty());
-        if batch.seal && has_parse_trees {
-            guard.request_structural_seal(&batch.repo_id, &batch.revision_id, batch.generation);
-            guard.record_track_seal_with_digest(
-                &batch.repo_id,
-                &batch.revision_id,
-                SearchPlaneTrackKind::Structural,
-                batch.generation,
-                batch.manifest_digest.as_str(),
-            );
+        const WHAT: &str = "direct structural materialize";
+        let _serial = self.parts.coordinator.lock()?;
+        let delta = {
+            let guard = self.parts.read_ledger(WHAT)?;
+            structural_transition(
+                guard.structural_state(&batch.repo_id, &batch.revision_id, batch.generation),
+                guard.track_state(
+                    &batch.repo_id,
+                    &batch.revision_id,
+                    SearchPlaneTrackKind::Structural,
+                ),
+                batch,
+            )?
+        };
+        let _durable = self.parts.catalog.apply(&structural_delta_rows(&delta)?)?;
+        {
+            let mut guard = self.parts.write_ledger(WHAT)?;
+            guard.apply_structural_trees_delta(&delta);
         }
-        self.authority_store.persist_from_ledger(&guard)?;
-        drop(guard);
         let mut receipt = BatchPublishReceipt::empty_for(
             batch.generation,
             Some(batch.manifest_digest.clone()),
@@ -1721,6 +1834,26 @@ mod tests {
         Arc::new(MemoryIdempotencyCatalog::default())
     }
 
+    use crate::auxiliary_authority::testing::MemoryAuxiliaryCatalog;
+
+    fn memory_aux_catalog() -> Arc<MemoryAuxiliaryCatalog> {
+        Arc::new(MemoryAuxiliaryCatalog::default())
+    }
+
+    fn aux_parts(
+        ledger: Arc<RwLock<Ledger>>,
+    ) -> (AuxiliaryMaterializerParts, Arc<MemoryAuxiliaryCatalog>) {
+        let catalog = memory_aux_catalog();
+        (
+            AuxiliaryMaterializerParts {
+                catalog: catalog.clone(),
+                coordinator: AuxiliaryMutationCoordinator::shared(),
+                ledger,
+            },
+            catalog,
+        )
+    }
+
     #[test]
     fn dirty_publish_receipt_binds_exact_auxiliary_batch_without_sealing_v1() {
         let batch = DirtyIngestBatch {
@@ -1768,6 +1901,8 @@ mod tests {
                     snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
                     idempotency: memory_catalog(),
                     resource_policy: IngestResourcePolicy::DEFAULT,
+                    auxiliary_catalog: memory_aux_catalog(),
+                    auxiliary_coordinator: AuxiliaryMutationCoordinator::shared(),
                 },
             )
         };
@@ -2146,6 +2281,8 @@ mod tests {
                     snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
                     idempotency: memory_catalog(),
                     resource_policy,
+                    auxiliary_catalog: memory_aux_catalog(),
+                    auxiliary_coordinator: AuxiliaryMutationCoordinator::shared(),
                 },
             );
             Self {
@@ -2348,6 +2485,8 @@ mod tests {
                 snapshots: snapshots.clone(),
                 idempotency: memory_catalog(),
                 resource_policy: IngestResourcePolicy::DEFAULT,
+                auxiliary_catalog: memory_aux_catalog(),
+                auxiliary_coordinator: AuxiliaryMutationCoordinator::shared(),
             },
         );
         let mut batch = fixture_search_corpus_batch()?;
@@ -2675,23 +2814,321 @@ mod tests {
         Ok(())
     }
 
+    fn fixture_commit(sha_byte: u8, parents: &[u8]) -> quanta_index_contract::lex::CommitRecord {
+        quanta_index_contract::lex::CommitRecord {
+            wire_version: 1,
+            sha: quanta_index_contract::lex::CommitSha::from_bytes([sha_byte; 20]),
+            parents: parents
+                .iter()
+                .map(|parent| quanta_index_contract::lex::CommitSha::from_bytes([*parent; 20]))
+                .collect(),
+            author_time_ms: 1,
+            committer_time_ms: 2,
+            applied_at_ms: 3,
+            author: "a".into(),
+            author_name: None,
+            author_email: None,
+            committer: "c".into(),
+            committer_name: None,
+            committer_email: None,
+            message: format!("commit {sha_byte}").into_boxed_str(),
+            is_merge: false,
+            tags: Vec::new(),
+        }
+    }
+
+    fn fixture_history_batch(
+        generation: u64,
+        commits: Vec<quanta_index_contract::lex::CommitRecord>,
+    ) -> HistoryIngestBatch {
+        HistoryIngestBatch {
+            repo_id: RepoId::new("r"),
+            revision_id: RevisionId::new("rev"),
+            generation: ManifestGeneration::new(generation),
+            manifest_digest: None,
+            batch_digest: format!("batch:history:{generation}"),
+            commits,
+            refs: Vec::new(),
+            tags: Vec::new(),
+            diff_hunks: Vec::new(),
+        }
+    }
+
+    /// QI-BB-020: a batch whose rows never became durable is never
+    /// visible, and its receipt never issued; the next attempt applies.
+    #[test]
+    fn a_mutation_whose_rows_never_became_durable_is_never_visible() -> TestRes {
+        let ledger = Arc::new(RwLock::new(Ledger::new()));
+        let (parts, catalog) = aux_parts(Arc::clone(&ledger));
+        let materializer = DirectHistoryMaterializer::new(parts);
+        let batch = fixture_history_batch(9, vec![fixture_commit(1, &[])]);
+
+        catalog.fail_next_apply();
+        let refused = materializer
+            .publish_batch(&batch)
+            .expect_err("a catalog that cannot commit refuses the publish");
+        if !matches!(refused, CoreError::Storage(_)) {
+            return Err(format!("expected the catalog's failure, got {refused:?}").into());
+        }
+        {
+            let guard = ledger
+                .read()
+                .map_err(|err| format!("ledger poisoned: {err}"))?;
+            if guard
+                .history_state(&batch.repo_id, &batch.revision_id, batch.generation)
+                .is_some()
+            {
+                return Err("rows that never became durable must not be visible".into());
+            }
+        }
+        if catalog.applies() != 0 {
+            return Err("nothing was applied".into());
+        }
+
+        let receipt = materializer.publish_batch(&batch)?;
+        if receipt.accepted_replace_scopes != 1 || catalog.applies() != 1 {
+            return Err(format!("the retry must apply once: {receipt:?}").into());
+        }
+        let guard = ledger
+            .read()
+            .map_err(|err| format!("ledger poisoned: {err}"))?;
+        let commits = guard
+            .history_state(&batch.repo_id, &batch.revision_id, batch.generation)
+            .map(|state| state.commits().len());
+        drop(guard);
+        if commits != Some(1) {
+            return Err(format!("the durable batch must be visible, saw {commits:?}").into());
+        }
+        Ok(())
+    }
+
+    /// QI-BB-020: a batch that fails validation writes nothing and touches
+    /// nothing — the catalog is never asked.
+    #[test]
+    fn a_batch_that_fails_validation_never_reaches_the_catalog() -> TestRes {
+        let ledger = Arc::new(RwLock::new(Ledger::new()));
+        let (parts, catalog) = aux_parts(Arc::clone(&ledger));
+        let materializer = DirectHistoryMaterializer::new(parts);
+        // A child whose parent is neither in the state nor earlier in the batch.
+        let orphan = fixture_history_batch(9, vec![fixture_commit(2, &[1])]);
+        match materializer.publish_batch(&orphan) {
+            Err(CoreError::Typed { code, .. }) if code == "HISTORY_COMMIT_PARENT_UNKNOWN" => {}
+            other => return Err(format!("orphan commit answered {other:?}").into()),
+        }
+        if catalog.applies() != 0 || catalog.row_count() != 0 {
+            return Err("a refused batch must not reach the catalog".into());
+        }
+        // The parent earlier in the same batch is enough.
+        let ordered =
+            fixture_history_batch(9, vec![fixture_commit(1, &[]), fixture_commit(2, &[1])]);
+        let _receipt = materializer.publish_batch(&ordered)?;
+        if catalog.applies() != 1 {
+            return Err("an ordered batch applies once".into());
+        }
+        Ok(())
+    }
+
+    /// QI-BB-020: a one-row mutation over a generation holding a thousand
+    /// rows writes one row.
+    #[test]
+    fn a_one_row_dirty_mutation_writes_one_row() -> TestRes {
+        let ledger = Arc::new(RwLock::new(Ledger::new()));
+        let (parts, catalog) = aux_parts(Arc::clone(&ledger));
+        let materializer = DirectRuntimeMetadataMaterializer::new(parts);
+        let mut seed = fixture_dirty_batch();
+        seed.entries = (0..1_000_u32)
+            .map(|index| {
+                DirtyMutation::Upsert(quanta_index_contract::lex::DirtyRecord {
+                    wire_version: 1,
+                    doc_id: ChunkId::new(format!("doc-{index}")),
+                    applied_at_ms: 1,
+                    payload_hash: [0; 32],
+                })
+            })
+            .collect();
+        let _seeded = materializer.publish_batch(&seed)?;
+        let before = catalog.rows_written();
+        // 1,000 doc rows and the generation's one meta row.
+        if before != 1_001 {
+            return Err(format!("seeding wrote {before} rows, expected 1001").into());
+        }
+        let mut one = fixture_dirty_batch();
+        one.batch_digest = "batch:dirty:one".to_string();
+        one.entries = vec![DirtyMutation::Upsert(
+            quanta_index_contract::lex::DirtyRecord {
+                wire_version: 1,
+                doc_id: ChunkId::new("doc-500"),
+                applied_at_ms: 2,
+                payload_hash: [1; 32],
+            },
+        )];
+        let _receipt = materializer.publish_batch(&one)?;
+        // The one doc row plus the generation's meta row: two rows, not a
+        // thousand.
+        let written = catalog.rows_written().saturating_sub(before);
+        if written != 2 {
+            return Err(format!("a one-row mutation wrote {written} rows").into());
+        }
+        let guard = ledger
+            .read()
+            .map_err(|err| format!("ledger poisoned: {err}"))?;
+        let applied = guard
+            .runtime_state(&one.repo_id, &one.revision_id, one.generation)
+            .and_then(|state| state.dirty_docs().get(&ChunkId::new("doc-500")))
+            .map(crate::readiness::DirtyDocState::applied_at_ms);
+        let resident = guard
+            .runtime_state(&one.repo_id, &one.revision_id, one.generation)
+            .map(|state| state.dirty_docs().len());
+        drop(guard);
+        if applied != Some(2) || resident != Some(1_000) {
+            return Err(format!(
+                "the row changed in place: applied={applied:?} resident={resident:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// QI-BB-020: a reader holding a snapshot neither blocks a mutation nor
+    /// sees it; the ledger holds the new state while the snapshot holds
+    /// the old one.
+    #[test]
+    fn a_reader_holding_a_snapshot_neither_blocks_nor_sees_a_mutation() -> TestRes {
+        let ledger = Arc::new(RwLock::new(Ledger::new()));
+        let (parts, _catalog) = aux_parts(Arc::clone(&ledger));
+        let materializer = Arc::new(DirectHistoryMaterializer::new(parts));
+        let first = fixture_history_batch(9, vec![fixture_commit(1, &[])]);
+        let _receipt = materializer.publish_batch(&first)?;
+        let snapshot = ledger
+            .read()
+            .map_err(|err| format!("ledger poisoned: {err}"))?
+            .history_snapshot(&first.repo_id, &first.revision_id, first.generation)
+            .ok_or("the first batch is visible")?;
+        // The reader has released the lock but still holds the snapshot;
+        // a mutation on another thread must complete.
+        let second = fixture_history_batch(9, vec![fixture_commit(2, &[1])]);
+        let writer = {
+            let materializer = Arc::clone(&materializer);
+            std::thread::spawn(move || materializer.publish_batch(&second))
+        };
+        let _receipt = writer
+            .join()
+            .map_err(|panic| format!("writer panicked: {panic:?}"))??;
+        if snapshot.commits().len() != 1 {
+            return Err("the held snapshot must not change under the reader".into());
+        }
+        let after = ledger
+            .read()
+            .map_err(|err| format!("ledger poisoned: {err}"))?
+            .history_snapshot(&first.repo_id, &first.revision_id, first.generation)
+            .map(|state| state.commits().len());
+        if after != Some(2) {
+            return Err(format!("the ledger must hold the mutation, saw {after:?}").into());
+        }
+        Ok(())
+    }
+
+    /// QI-BB-020: retention forgets unretained auxiliary generations.
+    ///
+    /// Sealing a generation under a retention receipt forgets the
+    /// auxiliary generations older than it that the receipt does not
+    /// retain — in memory and in the catalog — and leaves the retained and
+    /// the just-sealed ones.
+    #[test]
+    fn retention_forgets_auxiliary_generations_the_receipt_does_not_retain() -> TestRes {
+        let ledger = Arc::new(RwLock::new(Ledger::new()));
+        let (aux, catalog) = aux_parts(Arc::clone(&ledger));
+        let history = DirectHistoryMaterializer::new(aux.clone());
+        for generation in [3, 4] {
+            let _receipt = history.publish_batch(&fixture_history_batch(
+                generation,
+                vec![fixture_commit(1, &[])],
+            ))?;
+        }
+        let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
+            Arc::new(DirectSemanticMaterializer::new(
+                Arc::new(FakeSemanticBuilder::default()),
+                Arc::new(RwLock::new(Ledger::new())),
+            ));
+        let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
+            SearchCorpusMaterializerParts {
+                builder: Arc::new(FakeSearchCorpusBuilder::default()),
+                ledger: Arc::clone(&ledger),
+                semantic_ingest: semantic_materializer,
+                semantic_embedder: Arc::new(crate::HashingQueryTextEmbedder::new(
+                    SEARCH_OWNED_SEMANTIC_DIMENSION,
+                )),
+                authority: recording_search_corpus_authority(),
+                lexical_generation_validator: always_valid_generation(),
+                semantic_generation_validator: always_valid_generation(),
+                lexical_incomplete_discard: test_incomplete_generation_discard(),
+                semantic_incomplete_discard: test_incomplete_generation_discard(),
+                lexical_reclaim: no_storage_sealed_reclaim(),
+                semantic_reclaim: no_storage_sealed_reclaim(),
+                snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+                idempotency: memory_catalog(),
+                resource_policy: IngestResourcePolicy::DEFAULT,
+                auxiliary_catalog: catalog.clone(),
+                auxiliary_coordinator: aux.coordinator,
+            },
+        );
+        let mut batch = fixture_search_corpus_batch()?;
+        batch.generation = ManifestGeneration::new(5);
+        let receipt = SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
+            &batch.repo_id,
+            &batch.revision_id,
+            [ManifestGeneration::new(4), ManifestGeneration::new(5)],
+        );
+        materializer.finalize_generation_v1(&batch, Some(&receipt))?;
+
+        let guard = ledger
+            .read()
+            .map_err(|err| format!("ledger poisoned: {err}"))?;
+        let forgotten = guard
+            .history_state(
+                &batch.repo_id,
+                &batch.revision_id,
+                ManifestGeneration::new(3),
+            )
+            .is_none();
+        let retained = guard
+            .history_state(
+                &batch.repo_id,
+                &batch.revision_id,
+                ManifestGeneration::new(4),
+            )
+            .is_some();
+        let sealed_chunks = guard
+            .structural_state(
+                &batch.repo_id,
+                &batch.revision_id,
+                ManifestGeneration::new(5),
+            )
+            .map(|state| state.chunks().len());
+        drop(guard);
+        if !forgotten || !retained || sealed_chunks != Some(1) {
+            return Err(format!(
+                "ledger drifted: forgotten={forgotten} retained={retained} sealed_chunks={sealed_chunks:?}"
+            )
+            .into());
+        }
+        let generations = catalog.generations();
+        if generations != BTreeSet::from([4, 5]) {
+            return Err(format!(
+                "catalog must hold exactly the retained generations, holds {generations:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
     /// An auxiliary receipt names its batch digest and no manifest
     /// (QI-BB-032): the two identities are distinct fields.
     #[test]
     fn direct_dirty_materializer_names_the_batch_digest_and_no_manifest() -> TestRes {
-        let dir = tempfile::tempdir()?;
-        let authority_store = Arc::new(AuxiliaryAuthorityStore::open(
-            dir.path(),
-            crate::search_corpus_retention::SearchCorpusHistoryRetentionPolicyV1::new(
-                2,
-                1024 * 1024,
-                2,
-                4 * 1024 * 1024,
-            )?,
-        )?);
         let ledger = Arc::new(RwLock::new(Ledger::new()));
-        let materializer =
-            DirectRuntimeMetadataMaterializer::new(authority_store, Arc::clone(&ledger));
+        let (parts, _catalog) = aux_parts(Arc::clone(&ledger));
+        let materializer = DirectRuntimeMetadataMaterializer::new(parts);
         let batch = fixture_dirty_batch();
         let receipt = materializer.publish_batch(&batch)?;
         if receipt.manifest_digest.is_some()

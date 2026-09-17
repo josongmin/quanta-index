@@ -17,15 +17,17 @@ use quanta_index_contract::lex::{
     CommitRecord, CommitSha, DiffHunkRecord, ParseTreeRecord, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    ChunkId, DirtyIngestBatch, DirtyMutation, GenerationPin, GenerationSnapshot,
-    HistoryIngestBatch, HistoryRefMutation, ManifestGeneration, RepoId, RevisionId,
-    RuntimeCatalogIngestBatch, SearchCorpusIngestBatch,
+    ChunkId, DirtyIngestBatch, GenerationPin, GenerationSnapshot, HistoryIngestBatch,
+    ManifestGeneration, RepoId, RevisionId, RuntimeCatalogIngestBatch, SearchCorpusIngestBatch,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneSearchCorpusRollbackCasAck,
     SearchPlaneTrackKind, SearchScopeSurface, StructuralIngestBatch,
 };
-use quanta_index_core::CoreError;
+use quanta_index_core::{
+    AuxiliaryAuthorityCatalogPort, AuxiliaryGenerationKeyV1, AuxiliaryMutationBatchV1, CoreError,
+};
 use quanta_index_ipc::{decode_cbor_payload, encode_cbor_payload};
 
+use crate::auxiliary_authority;
 use crate::search_corpus_lifecycle::{
     ActiveSearchCorpusPinReadPort, SearchCorpusPairMutationCoordinator,
     SearchCorpusPairMutationGuard,
@@ -177,14 +179,14 @@ impl TrackLedger {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-struct TrackAuthorityState {
+pub(crate) struct TrackAuthorityState {
     materialized: Option<ManifestGeneration>,
     sealed: Option<ManifestGeneration>,
     manifest_digest: Option<String>,
 }
 
 impl TrackAuthorityState {
-    fn record_materialized(
+    pub(crate) fn record_materialized(
         &mut self,
         generation: ManifestGeneration,
         manifest_digest: Option<&str>,
@@ -203,7 +205,11 @@ impl TrackAuthorityState {
         }
     }
 
-    fn record_seal(&mut self, generation: ManifestGeneration, manifest_digest: Option<&str>) {
+    pub(crate) fn record_seal(
+        &mut self,
+        generation: ManifestGeneration,
+        manifest_digest: Option<&str>,
+    ) {
         self.record_materialized(generation, manifest_digest);
         let next = match self.sealed {
             Some(current) if current.get() >= generation.get() => current,
@@ -263,9 +269,13 @@ pub struct Ledger {
     // closed instead of consulting stale same-process history.
     search_corpus_history_fenced_pairs: BTreeSet<(RepoId, RevisionId)>,
     semantic_generations: BTreeMap<AuthorityKey, SemanticGenerationState>,
-    history: BTreeMap<AuthorityKey, HistoryAuthorityState>,
-    runtime_metadata: BTreeMap<AuthorityKey, RuntimeMetadataState>,
-    structural: BTreeMap<AuthorityKey, StructuralAuthorityState>,
+    // The auxiliary authorities are held as immutable snapshots per
+    // generation (QI-BB-020): a query clones the `Arc` under the read lock
+    // and scans outside it, and a mutation copies the one generation it
+    // changes only while a reader still holds the previous snapshot.
+    history: BTreeMap<AuthorityKey, Arc<HistoryAuthorityState>>,
+    runtime_metadata: BTreeMap<AuthorityKey, Arc<RuntimeMetadataState>>,
+    structural: BTreeMap<AuthorityKey, Arc<StructuralAuthorityState>>,
 }
 
 impl Ledger {
@@ -377,7 +387,7 @@ impl Ledger {
             && !self
                 .structural
                 .get(&Self::authority_key(repo_id, revision_id, generation))
-                .is_some_and(StructuralAuthorityState::seal_requested)
+                .is_some_and(|state| state.seal_requested())
         {
             return;
         }
@@ -790,34 +800,34 @@ impl Ledger {
         }
     }
 
-    fn history_state_mut(
+    pub(crate) fn history_state_mut(
         &mut self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
         generation: ManifestGeneration,
     ) -> &mut HistoryAuthorityState {
         let key = Self::authority_key(repo_id, revision_id, generation);
-        self.history.entry(key).or_default()
+        Arc::make_mut(self.history.entry(key).or_default())
     }
 
-    fn runtime_state_mut(
+    pub(crate) fn runtime_state_mut(
         &mut self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
         generation: ManifestGeneration,
     ) -> &mut RuntimeMetadataState {
         let key = Self::authority_key(repo_id, revision_id, generation);
-        self.runtime_metadata.entry(key).or_default()
+        Arc::make_mut(self.runtime_metadata.entry(key).or_default())
     }
 
-    fn structural_state_mut(
+    pub(crate) fn structural_state_mut(
         &mut self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
         generation: ManifestGeneration,
     ) -> &mut StructuralAuthorityState {
         let key = Self::authority_key(repo_id, revision_id, generation);
-        self.structural.entry(key).or_default()
+        Arc::make_mut(self.structural.entry(key).or_default())
     }
 
     #[must_use]
@@ -828,7 +838,7 @@ impl Ledger {
         generation: ManifestGeneration,
     ) -> Option<&HistoryAuthorityState> {
         let key = Self::authority_key(repo_id, revision_id, generation);
-        self.history.get(&key)
+        self.history.get(&key).map(Arc::as_ref)
     }
 
     #[must_use]
@@ -839,7 +849,7 @@ impl Ledger {
         generation: ManifestGeneration,
     ) -> Option<&RuntimeMetadataState> {
         let key = Self::authority_key(repo_id, revision_id, generation);
-        self.runtime_metadata.get(&key)
+        self.runtime_metadata.get(&key).map(Arc::as_ref)
     }
 
     #[must_use]
@@ -850,7 +860,113 @@ impl Ledger {
         generation: ManifestGeneration,
     ) -> Option<&StructuralAuthorityState> {
         let key = Self::authority_key(repo_id, revision_id, generation);
-        self.structural.get(&key)
+        self.structural.get(&key).map(Arc::as_ref)
+    }
+
+    /// The history authority of one generation as an immutable snapshot a
+    /// caller may scan after releasing the ledger lock.
+    #[must_use]
+    pub fn history_snapshot(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> Option<Arc<HistoryAuthorityState>> {
+        let key = Self::authority_key(repo_id, revision_id, generation);
+        self.history.get(&key).map(Arc::clone)
+    }
+
+    /// The runtime-metadata authority of one generation as an immutable
+    /// snapshot a caller may scan after releasing the ledger lock.
+    #[must_use]
+    pub fn runtime_snapshot(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> Option<Arc<RuntimeMetadataState>> {
+        let key = Self::authority_key(repo_id, revision_id, generation);
+        self.runtime_metadata.get(&key).map(Arc::clone)
+    }
+
+    /// The structural authority of one generation as an immutable snapshot
+    /// a caller may scan after releasing the ledger lock.
+    #[must_use]
+    pub fn structural_snapshot(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> Option<Arc<StructuralAuthorityState>> {
+        let key = Self::authority_key(repo_id, revision_id, generation);
+        self.structural.get(&key).map(Arc::clone)
+    }
+
+    /// The structural track's authority state for one pair, if any.
+    #[must_use]
+    pub(crate) fn track_state(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        track: SearchPlaneTrackKind,
+    ) -> Option<&TrackAuthorityState> {
+        self.search_tracks.get(&TrackAuthorityKey {
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            track,
+        })
+    }
+
+    /// Install a track's authority state as restored from the catalog.
+    pub(crate) fn restore_track_state(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        track: SearchPlaneTrackKind,
+        state: TrackAuthorityState,
+    ) {
+        let _previous = self.search_tracks.insert(
+            TrackAuthorityKey {
+                repo_id: repo_id.clone(),
+                revision_id: revision_id.clone(),
+                track,
+            },
+            state,
+        );
+    }
+
+    /// Forget every auxiliary authority of one generation (retention).
+    pub(crate) fn forget_auxiliary_generation(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) {
+        let key = Self::authority_key(repo_id, revision_id, generation);
+        drop(self.history.remove(&key));
+        drop(self.runtime_metadata.remove(&key));
+        drop(self.structural.remove(&key));
+    }
+
+    /// Every auxiliary generation of one pair older than `newer_than`.
+    #[must_use]
+    pub(crate) fn auxiliary_generations_older_than(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        newer_than: ManifestGeneration,
+    ) -> BTreeSet<ManifestGeneration> {
+        self.history
+            .keys()
+            .chain(self.runtime_metadata.keys())
+            .chain(self.structural.keys())
+            .filter(|key| {
+                key.repo_id == *repo_id
+                    && key.revision_id == *revision_id
+                    && key.generation.get() < newer_than.get()
+            })
+            .map(|key| key.generation)
+            .collect()
     }
 
     pub fn request_structural_seal(
@@ -863,269 +979,187 @@ impl Ledger {
             .request_seal();
     }
 
+    /// Apply a search-corpus batch's chunk universe in memory, without
+    /// the durable step (tests and in-memory fixtures; production goes
+    /// through the transition, the catalog and then the delta).
     pub fn apply_search_corpus_batch(&mut self, batch: &SearchCorpusIngestBatch) {
-        let state = self.structural_state_mut(&batch.repo_id, &batch.revision_id, batch.generation);
-        if batch.clear_surfaces.contains(&SearchScopeSurface::Chunk) {
-            state.chunks.clear();
-        }
-        for scope in &batch.replace_scopes {
-            state.chunks.retain(|_chunk_id, chunk| {
-                chunk.repo_relative_path != scope.scope.repo_relative_path
-            });
-            for chunk in &scope.chunks {
-                let _previous = state.chunks.insert(chunk.chunk_id.clone(), chunk.clone());
-            }
-        }
-        for scope in &batch.tombstone_scopes {
-            state.chunks.retain(|_chunk_id, chunk| {
-                chunk.repo_relative_path != scope.scope.repo_relative_path
-            });
-        }
+        let delta = auxiliary_authority::structural_chunks_transition(
+            self.structural_state(&batch.repo_id, &batch.revision_id, batch.generation),
+            batch,
+        );
+        self.apply_structural_chunks_delta(&delta);
     }
 
+    /// Validate and apply a history batch in memory, without the durable
+    /// step.
     pub fn apply_history_batch(&mut self, batch: &HistoryIngestBatch) -> Result<(), CoreError> {
-        let state = self.history_state_mut(&batch.repo_id, &batch.revision_id, batch.generation);
-        for record in &batch.commits {
-            state.note_commits_materialized();
-            for parent in &record.parents {
-                if !state.commits.contains_key(parent) {
-                    return Err(CoreError::Typed {
-                        code: "HISTORY_COMMIT_PARENT_UNKNOWN".to_string(),
-                        message: format!(
-                            "history ingest: parent {} missing before child {}",
-                            parent, record.sha
-                        ),
-                    });
-                }
-            }
-            let _previous = state.commits.insert(record.sha, record.clone());
-        }
-        for mutation in &batch.refs {
-            state.note_refs_materialized();
-            match mutation {
-                HistoryRefMutation::Upsert(payload) => {
-                    if !state.commits.contains_key(&payload.sha) {
-                        return Err(CoreError::Typed {
-                            code: "HISTORY_REF_NOT_FOUND".to_string(),
-                            message: format!(
-                                "history ingest: ref `{}` points to unknown commit {}",
-                                payload.name, payload.sha
-                            ),
-                        });
-                    }
-                    let _previous = state.refs.insert(payload.name.clone(), payload.sha);
-                }
-                HistoryRefMutation::Delete(payload) => {
-                    let _removed = state.refs.remove(payload.name.as_ref());
-                }
-            }
-        }
-        for mutation in &batch.tags {
-            state.note_tags_materialized();
-            match mutation {
-                HistoryRefMutation::Upsert(payload) => {
-                    if !state.commits.contains_key(&payload.sha) {
-                        return Err(CoreError::Typed {
-                            code: "HISTORY_REF_NOT_FOUND".to_string(),
-                            message: format!(
-                                "history ingest: tag `{}` points to unknown commit {}",
-                                payload.name, payload.sha
-                            ),
-                        });
-                    }
-                    let _previous = state.tags.insert(payload.name.clone(), payload.sha);
-                }
-                HistoryRefMutation::Delete(payload) => {
-                    let _removed = state.tags.remove(payload.name.as_ref());
-                }
-            }
-        }
-        for hunk in &batch.diff_hunks {
-            state.note_diff_hunks_materialized();
-            if !state.commits.contains_key(&hunk.commit_sha) {
-                return Err(CoreError::Typed {
-                    code: "HISTORY_REF_NOT_FOUND".to_string(),
-                    message: format!(
-                        "history ingest: diff hunk for unknown commit {}",
-                        hunk.commit_sha
-                    ),
-                });
-            }
-            let _previous = state.diff_hunks.insert(
-                HistoryDiffKey {
-                    commit_sha: hunk.commit_sha,
-                    file_path: hunk.file_path.clone(),
-                },
-                hunk.record.clone(),
-            );
-        }
+        let delta = auxiliary_authority::history_transition(
+            self.history_state(&batch.repo_id, &batch.revision_id, batch.generation),
+            batch,
+        )?;
+        self.apply_history_delta(&delta);
         Ok(())
     }
 
+    /// Apply a dirty-overlay batch in memory, without the durable step.
     pub fn apply_runtime_batch(&mut self, batch: &DirtyIngestBatch) {
-        let state = self.runtime_state_mut(&batch.repo_id, &batch.revision_id, batch.generation);
-        for entry in &batch.entries {
-            match entry {
-                DirtyMutation::Upsert(record) => {
-                    let _previous = state.dirty_docs.insert(
-                        record.doc_id.clone(),
-                        DirtyDocState {
-                            applied_at_ms: record.applied_at_ms,
-                            payload_hash: record.payload_hash,
-                        },
-                    );
-                }
-                DirtyMutation::Delete(payload) => {
-                    let _removed = state.dirty_docs.remove(&payload.doc_id);
-                }
-            }
-        }
+        let delta = auxiliary_authority::runtime_dirty_transition(
+            self.runtime_state(&batch.repo_id, &batch.revision_id, batch.generation),
+            batch,
+        );
+        self.apply_runtime_dirty_delta(&delta);
     }
 
+    /// Validate and apply a runtime catalog batch in memory, without the
+    /// durable step.
     pub fn apply_runtime_catalog_batch(
         &mut self,
         batch: &RuntimeCatalogIngestBatch,
     ) -> Result<(), CoreError> {
-        let chunk_universe = self
-            .structural_state(&batch.repo_id, &batch.revision_id, batch.generation)
-            .map(|state| state.chunks.keys().cloned().collect::<BTreeSet<_>>())
-            .ok_or_else(|| {
-                runtime_catalog_typed(
-                    ERR_RUNTIME_CATALOG_CHUNK_UNIVERSE_UNAVAILABLE,
-                    "runtime catalog ingest: lexical chunk authority is not materialized for the pinned generation",
-                )
-            })?;
-        validate_runtime_catalog_doc_ids(batch, &chunk_universe)?;
-
-        let state = self.runtime_state_mut(&batch.repo_id, &batch.revision_id, batch.generation);
-        enforce_runtime_catalog_batch_order(state, batch)?;
-        state.catalog_overlay_epoch_ms = Some(batch.overlay_epoch_ms);
-        state.catalog_batch_digest = Some(batch.batch_digest.clone().into_boxed_str());
-        state.producer_head_applied_at_ms = Some(batch.producer_head_applied_at_ms);
-        state.generation_materialized_at_ms = Some(batch.generation_materialized_at_ms);
-        state.catalog_materialized = true;
-        state.changed_docs = batch
-            .changed_entries
-            .iter()
-            .map(|record| {
-                (
-                    record.doc_id.clone(),
-                    ChangedDocState {
-                        applied_at_ms: record.applied_at_ms,
-                        payload_hash: record.payload_hash,
-                    },
-                )
-            })
-            .collect();
-        state.doc_facets = batch
-            .facet_entries
-            .iter()
-            .map(|record| {
-                (
-                    record.doc_id.clone(),
-                    DocFacetState {
-                        owner: record
-                            .owner
-                            .as_deref()
-                            .map(str::to_owned)
-                            .map(String::into_boxed_str),
-                        service: record
-                            .service
-                            .as_deref()
-                            .map(str::to_owned)
-                            .map(String::into_boxed_str),
-                        layer: record
-                            .layer
-                            .as_deref()
-                            .map(str::to_owned)
-                            .map(String::into_boxed_str),
-                        surface: record
-                            .surface
-                            .as_deref()
-                            .map(str::to_owned)
-                            .map(String::into_boxed_str),
-                    },
-                )
-            })
-            .collect();
-        state.snapshots = batch
-            .snapshot_entries
-            .iter()
-            .map(|record| {
-                (
-                    record.name.clone().into_boxed_str(),
-                    record.doc_ids.iter().cloned().collect(),
-                )
-            })
-            .collect();
-        state.affected_docs = batch
-            .affected_entries
-            .iter()
-            .map(|record| {
-                (
-                    record.key.clone().into_boxed_str(),
-                    record.doc_ids.iter().cloned().collect(),
-                )
-            })
-            .collect();
-        state.invalidated_by_docs = batch
-            .invalidated_by_entries
-            .iter()
-            .map(|record| {
-                (
-                    record.key.clone().into_boxed_str(),
-                    record.doc_ids.iter().cloned().collect(),
-                )
-            })
-            .collect();
+        let delta = auxiliary_authority::runtime_catalog_transition(
+            self.structural_state(&batch.repo_id, &batch.revision_id, batch.generation),
+            self.runtime_state(&batch.repo_id, &batch.revision_id, batch.generation),
+            batch,
+        )?;
+        self.apply_runtime_catalog_delta(&delta);
         Ok(())
     }
 
+    /// Validate and apply a structural batch's parse trees in memory,
+    /// without the durable step and without the track bookkeeping.
     pub fn apply_structural_batch(
         &mut self,
         batch: &StructuralIngestBatch,
     ) -> Result<(), CoreError> {
-        let state = self.structural_state_mut(&batch.repo_id, &batch.revision_id, batch.generation);
-        for scope in &batch.replace_scopes {
-            let allowed_chunk_ids: std::collections::BTreeSet<ChunkId> = state
-                .chunks
-                .iter()
-                .filter(|(_chunk_id, chunk)| {
-                    chunk.repo_relative_path == scope.scope.repo_relative_path
-                })
-                .map(|(chunk_id, _chunk)| chunk_id.clone())
-                .collect();
-            for tree in &scope.trees {
-                verify_parse_tree_against_chunk(
-                    state,
-                    &tree.chunk_id,
-                    &tree.record,
-                    Some(scope.scope.repo_relative_path.as_str()),
-                )?;
-            }
-            state
-                .parse_trees
-                .retain(|chunk_id, _tree| !allowed_chunk_ids.contains(chunk_id));
-            for tree in &scope.trees {
-                let _previous = state
-                    .parse_trees
-                    .insert(tree.chunk_id.clone(), tree.record.clone());
-            }
-        }
-        for scope in &batch.tombstone_scopes {
-            let allowed_chunk_ids: std::collections::BTreeSet<ChunkId> = state
-                .chunks
-                .iter()
-                .filter(|(_chunk_id, chunk)| {
-                    chunk.repo_relative_path == scope.scope.repo_relative_path
-                })
-                .map(|(chunk_id, _chunk)| chunk_id.clone())
-                .collect();
-            state
-                .parse_trees
-                .retain(|chunk_id, _tree| !allowed_chunk_ids.contains(chunk_id));
-        }
+        let delta = auxiliary_authority::structural_transition(
+            self.structural_state(&batch.repo_id, &batch.revision_id, batch.generation),
+            self.track_state(
+                &batch.repo_id,
+                &batch.revision_id,
+                SearchPlaneTrackKind::Structural,
+            ),
+            batch,
+        )?;
+        self.apply_structural_trees_delta(&delta);
         Ok(())
+    }
+
+    /// Apply a validated history delta: the durable rows it was encoded
+    /// from are already committed.
+    pub(crate) fn apply_history_delta(&mut self, delta: &auxiliary_authority::HistoryDelta) {
+        let state = self.history_state_mut(
+            &delta.generation.repo_id,
+            &delta.generation.revision_id,
+            delta.generation.generation,
+        );
+        for record in &delta.commits {
+            let _previous = state.commits.insert(record.sha, record.clone());
+        }
+        for (changes, map) in [
+            (&delta.refs, &mut state.refs),
+            (&delta.tags, &mut state.tags),
+        ] {
+            for change in changes {
+                match change {
+                    auxiliary_authority::RefChange::Upsert(name, sha) => {
+                        let _previous = map.insert(name.clone(), *sha);
+                    }
+                    auxiliary_authority::RefChange::Delete(name) => {
+                        let _removed = map.remove(name.as_ref());
+                    }
+                }
+            }
+        }
+        for (key, record) in &delta.diff_hunks {
+            let _previous = state.diff_hunks.insert(key.clone(), record.clone());
+        }
+        state.restore_meta(delta.meta);
+    }
+
+    /// Apply a dirty-overlay delta.
+    pub(crate) fn apply_runtime_dirty_delta(
+        &mut self,
+        delta: &auxiliary_authority::RuntimeDirtyDelta,
+    ) {
+        let state = self.runtime_state_mut(
+            &delta.generation.repo_id,
+            &delta.generation.revision_id,
+            delta.generation.generation,
+        );
+        for (chunk_id, doc) in &delta.upserts {
+            let _previous = state.dirty_docs.insert(chunk_id.clone(), doc.clone());
+        }
+        for chunk_id in &delta.deletes {
+            let _removed = state.dirty_docs.remove(chunk_id);
+        }
+    }
+
+    /// Apply a validated runtime catalog delta: the generation's catalog is
+    /// replaced whole.
+    pub(crate) fn apply_runtime_catalog_delta(
+        &mut self,
+        delta: &auxiliary_authority::RuntimeCatalogDelta,
+    ) {
+        let state = self.runtime_state_mut(
+            &delta.generation.repo_id,
+            &delta.generation.revision_id,
+            delta.generation.generation,
+        );
+        state.restore_meta(delta.meta.clone());
+        state.changed_docs.clone_from(&delta.changed_docs);
+        state.doc_facets.clone_from(&delta.doc_facets);
+        state.snapshots.clone_from(&delta.snapshots);
+        state.affected_docs.clone_from(&delta.affected_docs);
+        state
+            .invalidated_by_docs
+            .clone_from(&delta.invalidated_by_docs);
+    }
+
+    /// Apply a validated structural delta: parse trees, the seal request
+    /// and the structural track's state.
+    pub(crate) fn apply_structural_trees_delta(
+        &mut self,
+        delta: &auxiliary_authority::StructuralTreesDelta,
+    ) {
+        let state = self.structural_state_mut(
+            &delta.generation.repo_id,
+            &delta.generation.revision_id,
+            delta.generation.generation,
+        );
+        state
+            .parse_trees
+            .retain(|chunk_id, _tree| !delta.removed.contains(chunk_id));
+        for (chunk_id, record) in &delta.upserts {
+            let _previous = state.parse_trees.insert(chunk_id.clone(), record.clone());
+        }
+        state.seal_requested = delta.seal_requested;
+        self.restore_track_state(
+            &delta.generation.repo_id,
+            &delta.generation.revision_id,
+            SearchPlaneTrackKind::Structural,
+            delta.track.clone(),
+        );
+    }
+
+    /// Apply a chunk-universe delta.
+    pub(crate) fn apply_structural_chunks_delta(
+        &mut self,
+        delta: &auxiliary_authority::StructuralChunksDelta,
+    ) {
+        let state = self.structural_state_mut(
+            &delta.generation.repo_id,
+            &delta.generation.revision_id,
+            delta.generation.generation,
+        );
+        if delta.clear {
+            state.chunks.clear();
+        }
+        state
+            .chunks
+            .retain(|chunk_id, _chunk| !delta.removed.contains(chunk_id));
+        for chunk in &delta.upserts {
+            let _previous = state.chunks.insert(chunk.chunk_id.clone(), chunk.clone());
+        }
     }
 
     pub fn apply_lexical_authority_op(&mut self, op: &LexicalChannelOp) -> Result<(), CoreError> {
@@ -1468,7 +1502,16 @@ fn verify_parse_tree_against_chunk(
     record: &ParseTreeRecord,
     expected_scope_path: Option<&str>,
 ) -> Result<(), CoreError> {
-    let chunk = state.chunks.get(chunk_id).ok_or_else(|| {
+    verify_parse_tree_against_chunk_map(&state.chunks, chunk_id, record, expected_scope_path)
+}
+
+pub(crate) fn verify_parse_tree_against_chunk_map(
+    chunks: &BTreeMap<ChunkId, ChunkRecord>,
+    chunk_id: &ChunkId,
+    record: &ParseTreeRecord,
+    expected_scope_path: Option<&str>,
+) -> Result<(), CoreError> {
+    let chunk = chunks.get(chunk_id).ok_or_else(|| {
         structural_parse_tree_decode_fail(format!(
             "STR_PARSE_TREE_DECODE_FAIL{{reason=source_chunk_missing, chunk_id=\"{}\"}}",
             chunk_id.as_str()
@@ -1532,6 +1575,20 @@ pub struct HistoryAuthorityState {
     diff_hunks_materialized: bool,
 }
 
+/// The part of a history generation's state that is not a record: which
+/// shard families it has materialized.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one flag per independently materialized shard family, mirrored from the state"
+)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct HistoryStateMeta {
+    pub(crate) commits_materialized: bool,
+    pub(crate) refs_materialized: bool,
+    pub(crate) tags_materialized: bool,
+    pub(crate) diff_hunks_materialized: bool,
+}
+
 impl HistoryAuthorityState {
     fn note_commits_materialized(&mut self) {
         self.commits_materialized = true;
@@ -1547,6 +1604,40 @@ impl HistoryAuthorityState {
 
     fn note_diff_hunks_materialized(&mut self) {
         self.diff_hunks_materialized = true;
+    }
+
+    /// The materialization flags.
+    #[must_use]
+    pub(crate) const fn meta(&self) -> HistoryStateMeta {
+        HistoryStateMeta {
+            commits_materialized: self.commits_materialized,
+            refs_materialized: self.refs_materialized,
+            tags_materialized: self.tags_materialized,
+            diff_hunks_materialized: self.diff_hunks_materialized,
+        }
+    }
+
+    pub(crate) const fn restore_meta(&mut self, meta: HistoryStateMeta) {
+        self.commits_materialized = meta.commits_materialized;
+        self.refs_materialized = meta.refs_materialized;
+        self.tags_materialized = meta.tags_materialized;
+        self.diff_hunks_materialized = meta.diff_hunks_materialized;
+    }
+
+    pub(crate) fn restore_commit(&mut self, sha: CommitSha, record: CommitRecord) {
+        let _previous = self.commits.insert(sha, record);
+    }
+
+    pub(crate) fn restore_ref(&mut self, name: &str, sha: CommitSha) {
+        let _previous = self.refs.insert(name.into(), sha);
+    }
+
+    pub(crate) fn restore_tag(&mut self, name: &str, sha: CommitSha) {
+        let _previous = self.tags.insert(name.into(), sha);
+    }
+
+    pub(crate) fn restore_diff_hunk(&mut self, key: HistoryDiffKey, record: DiffHunkRecord) {
+        let _previous = self.diff_hunks.insert(key, record);
     }
 
     #[must_use]
@@ -1598,6 +1689,14 @@ pub struct HistoryDiffKey {
 
 impl HistoryDiffKey {
     #[must_use]
+    pub(crate) fn new(commit_sha: CommitSha, file_path: &str) -> Self {
+        Self {
+            commit_sha,
+            file_path: file_path.into(),
+        }
+    }
+
+    #[must_use]
     pub fn commit_sha(&self) -> CommitSha {
         self.commit_sha
     }
@@ -1616,6 +1715,14 @@ pub struct DirtyDocState {
 
 impl DirtyDocState {
     #[must_use]
+    pub(crate) const fn new(applied_at_ms: u64, payload_hash: [u8; 32]) -> Self {
+        Self {
+            applied_at_ms,
+            payload_hash,
+        }
+    }
+
+    #[must_use]
     pub const fn applied_at_ms(&self) -> u64 {
         self.applied_at_ms
     }
@@ -1633,6 +1740,14 @@ pub struct ChangedDocState {
 }
 
 impl ChangedDocState {
+    #[must_use]
+    pub(crate) const fn new(applied_at_ms: u64, payload_hash: [u8; 32]) -> Self {
+        Self {
+            applied_at_ms,
+            payload_hash,
+        }
+    }
+
     #[must_use]
     pub const fn applied_at_ms(&self) -> u64 {
         self.applied_at_ms
@@ -1653,6 +1768,21 @@ pub struct DocFacetState {
 }
 
 impl DocFacetState {
+    #[must_use]
+    pub(crate) const fn new(
+        owner: Option<Box<str>>,
+        service: Option<Box<str>>,
+        layer: Option<Box<str>>,
+        surface: Option<Box<str>>,
+    ) -> Self {
+        Self {
+            owner,
+            service,
+            layer,
+            surface,
+        }
+    }
+
     #[must_use]
     pub fn owner(&self) -> Option<&str> {
         self.owner.as_deref()
@@ -1689,7 +1819,62 @@ pub struct RuntimeMetadataState {
     catalog_materialized: bool,
 }
 
+/// The part of a runtime generation's state that is not a record: the
+/// catalog's epoch, digest, timestamps and materialization.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct RuntimeStateMeta {
+    pub(crate) catalog_overlay_epoch_ms: Option<u64>,
+    pub(crate) catalog_batch_digest: Option<Box<str>>,
+    pub(crate) producer_head_applied_at_ms: Option<u64>,
+    pub(crate) generation_materialized_at_ms: Option<u64>,
+    pub(crate) catalog_materialized: bool,
+}
+
 impl RuntimeMetadataState {
+    /// The catalog meta.
+    #[must_use]
+    pub(crate) fn meta(&self) -> RuntimeStateMeta {
+        RuntimeStateMeta {
+            catalog_overlay_epoch_ms: self.catalog_overlay_epoch_ms,
+            catalog_batch_digest: self.catalog_batch_digest.clone(),
+            producer_head_applied_at_ms: self.producer_head_applied_at_ms,
+            generation_materialized_at_ms: self.generation_materialized_at_ms,
+            catalog_materialized: self.catalog_materialized,
+        }
+    }
+
+    pub(crate) fn restore_meta(&mut self, meta: RuntimeStateMeta) {
+        self.catalog_overlay_epoch_ms = meta.catalog_overlay_epoch_ms;
+        self.catalog_batch_digest = meta.catalog_batch_digest;
+        self.producer_head_applied_at_ms = meta.producer_head_applied_at_ms;
+        self.generation_materialized_at_ms = meta.generation_materialized_at_ms;
+        self.catalog_materialized = meta.catalog_materialized;
+    }
+
+    pub(crate) fn restore_dirty_doc(&mut self, chunk_id: ChunkId, doc: DirtyDocState) {
+        let _previous = self.dirty_docs.insert(chunk_id, doc);
+    }
+
+    pub(crate) fn restore_changed_doc(&mut self, chunk_id: ChunkId, doc: ChangedDocState) {
+        let _previous = self.changed_docs.insert(chunk_id, doc);
+    }
+
+    pub(crate) fn restore_doc_facet(&mut self, chunk_id: ChunkId, facet: DocFacetState) {
+        let _previous = self.doc_facets.insert(chunk_id, facet);
+    }
+
+    pub(crate) fn restore_snapshot(&mut self, name: &str, chunk_ids: BTreeSet<ChunkId>) {
+        let _previous = self.snapshots.insert(name.into(), chunk_ids);
+    }
+
+    pub(crate) fn restore_affected_docs(&mut self, name: &str, chunk_ids: BTreeSet<ChunkId>) {
+        let _previous = self.affected_docs.insert(name.into(), chunk_ids);
+    }
+
+    pub(crate) fn restore_invalidated_by_docs(&mut self, name: &str, chunk_ids: BTreeSet<ChunkId>) {
+        let _previous = self.invalidated_by_docs.insert(name.into(), chunk_ids);
+    }
+
     #[must_use]
     pub fn dirty_docs(&self) -> &BTreeMap<ChunkId, DirtyDocState> {
         &self.dirty_docs
@@ -1753,7 +1938,7 @@ fn runtime_catalog_typed(code: &str, message: impl Into<String>) -> CoreError {
     }
 }
 
-fn enforce_runtime_catalog_batch_order(
+pub(crate) fn enforce_runtime_catalog_batch_order(
     state: &RuntimeMetadataState,
     batch: &RuntimeCatalogIngestBatch,
 ) -> Result<(), CoreError> {
@@ -1783,7 +1968,7 @@ fn enforce_runtime_catalog_batch_order(
     Ok(())
 }
 
-fn validate_runtime_catalog_doc_ids(
+pub(crate) fn validate_runtime_catalog_doc_ids(
     batch: &RuntimeCatalogIngestBatch,
     chunk_universe: &BTreeSet<ChunkId>,
 ) -> Result<(), CoreError> {
@@ -1831,7 +2016,25 @@ pub struct StructuralAuthorityState {
     seal_requested: bool,
 }
 
+/// The part of a structural generation's state that is not a record.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct StructuralStateMeta {
+    pub(crate) seal_requested: bool,
+}
+
 impl StructuralAuthorityState {
+    pub(crate) const fn restore_meta(&mut self, meta: StructuralStateMeta) {
+        self.seal_requested = meta.seal_requested;
+    }
+
+    pub(crate) fn restore_chunk(&mut self, chunk_id: ChunkId, chunk: ChunkRecord) {
+        let _previous = self.chunks.insert(chunk_id, chunk);
+    }
+
+    pub(crate) fn restore_parse_tree(&mut self, chunk_id: ChunkId, tree: ParseTreeRecord) {
+        let _previous = self.parse_trees.insert(chunk_id, tree);
+    }
+
     #[must_use]
     pub fn chunks(&self) -> &BTreeMap<ChunkId, ChunkRecord> {
         &self.chunks
@@ -1994,6 +2197,42 @@ impl SearchCorpusAuthorityRecordV1 {
     }
 }
 
+/// What the one-shot migration of the pre-catalog snapshot files moved.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LegacyAuxiliaryMigrationReceipt {
+    /// Distinct `(repo, revision, generation)` keys the snapshots held.
+    pub generations: usize,
+    /// Rows the catalog wrote for them.
+    pub rows_written: u64,
+}
+
+/// Rebuild the ledger's auxiliary authorities from the catalog's rows.
+pub fn restore_auxiliary_rows_into(
+    ledger: &mut Ledger,
+    catalog: &dyn AuxiliaryAuthorityCatalogPort,
+) -> Result<u64, CoreError> {
+    let mut restored = 0_u64;
+    catalog.for_each_row(&mut |row| {
+        auxiliary_authority::restore_row_into(ledger, &row)?;
+        restored = restored.saturating_add(1);
+        Ok(())
+    })?;
+    for track in catalog.track_rows()? {
+        auxiliary_authority::restore_track_row_into(ledger, &track)?;
+    }
+    Ok(restored)
+}
+
+/// The file-backed part of the search-plane authority.
+///
+/// It holds the durable search-corpus rollback history under
+/// `authorities/search-corpus/` (one record per sealed generation,
+/// retention-bounded) and performs the one-shot migration of the
+/// pre-catalog auxiliary snapshot files.
+///
+/// The auxiliary authorities themselves — history, runtime metadata,
+/// structural — live in the catalog as rows since QI-BB-020; the three
+/// paths kept here name only where their legacy snapshots were.
 #[derive(Debug)]
 pub struct AuxiliaryAuthorityStore {
     history: PathBuf,
@@ -2063,6 +2302,22 @@ impl_struct_serde!(TrackAuthorityKey {
     track: SearchPlaneTrackKind,
 });
 
+impl_struct_serde!(HistoryStateMeta {
+    commits_materialized: bool,
+    refs_materialized: bool,
+    tags_materialized: bool,
+    diff_hunks_materialized: bool,
+});
+impl_struct_serde!(RuntimeStateMeta {
+    catalog_overlay_epoch_ms: Option<u64>,
+    catalog_batch_digest: Option<Box<str>>,
+    producer_head_applied_at_ms: Option<u64>,
+    generation_materialized_at_ms: Option<u64>,
+    catalog_materialized: bool,
+});
+impl_struct_serde!(StructuralStateMeta {
+    seal_requested: bool,
+});
 impl_struct_serde!(HistoryAuthorityState {
     commits: BTreeMap<CommitSha, CommitRecord>,
     refs: BTreeMap<Box<str>, CommitSha>,
@@ -2948,50 +3203,94 @@ impl AuxiliaryAuthorityStore {
         })
     }
 
-    pub fn persist_from_ledger(&self, ledger: &Ledger) -> Result<(), CoreError> {
-        let history = HistoryAuthoritySnapshot {
-            entries: ledger.history.clone(),
+    /// Move the pre-catalog whole-map snapshot files, if any exist, into
+    /// the auxiliary row catalog as one transaction, then remove them
+    /// (QI-BB-020, one-shot).
+    ///
+    /// A crash after the transaction and before the removal re-runs the
+    /// migration on the next open; every row is an upsert of the same
+    /// content, so the second run converges on the same catalog.
+    pub fn migrate_legacy_auxiliary_snapshots(
+        &self,
+        catalog: &dyn AuxiliaryAuthorityCatalogPort,
+    ) -> Result<Option<LegacyAuxiliaryMigrationReceipt>, CoreError> {
+        let history = self.read_cbor::<HistoryAuthoritySnapshot>(&self.history, "history")?;
+        let runtime =
+            self.read_cbor::<RuntimeAuthoritySnapshot>(&self.runtime, "runtime metadata")?;
+        let structural =
+            self.read_cbor::<StructuralAuthoritySnapshot>(&self.structural, "structural")?;
+        if history.is_none() && runtime.is_none() && structural.is_none() {
+            return Ok(None);
+        }
+        let mut batch = AuxiliaryMutationBatchV1::default();
+        let mut generations: BTreeSet<AuthorityKey> = BTreeSet::new();
+        let generation_key = |key: &AuthorityKey| AuxiliaryGenerationKeyV1 {
+            repo_id: key.repo_id.clone(),
+            revision_id: key.revision_id.clone(),
+            generation: key.generation,
         };
-        self.write_cbor(&self.history, &history, "history")?;
-
-        let runtime = RuntimeAuthoritySnapshot {
-            entries: ledger.runtime_metadata.clone(),
-        };
-        self.write_cbor(&self.runtime, &runtime, "runtime metadata")?;
-
-        let structural = StructuralAuthoritySnapshot {
-            entries: ledger.structural.clone(),
-            tracks: ledger
-                .search_tracks
-                .iter()
-                .filter(|(key, _state)| key.track == SearchPlaneTrackKind::Structural)
-                .map(|(key, state)| (key.clone(), state.clone()))
-                .collect(),
-        };
-        self.write_cbor(&self.structural, &structural, "structural")?;
-        Ok(())
+        if let Some(history) = history {
+            for (key, state) in &history.entries {
+                let _new = generations.insert(key.clone());
+                batch.rows.extend(auxiliary_authority::history_state_rows(
+                    &generation_key(key),
+                    state,
+                )?);
+            }
+        }
+        if let Some(runtime) = runtime {
+            for (key, state) in &runtime.entries {
+                let _new = generations.insert(key.clone());
+                batch.rows.extend(auxiliary_authority::runtime_state_rows(
+                    &generation_key(key),
+                    state,
+                )?);
+            }
+        }
+        if let Some(structural) = structural {
+            for (key, state) in &structural.entries {
+                let _new = generations.insert(key.clone());
+                batch
+                    .rows
+                    .extend(auxiliary_authority::structural_state_rows(
+                        &generation_key(key),
+                        state,
+                    )?);
+            }
+            for (key, state) in &structural.tracks {
+                if key.track != SearchPlaneTrackKind::Structural {
+                    continue;
+                }
+                batch.tracks.push(auxiliary_authority::structural_track_row(
+                    &key.repo_id,
+                    &key.revision_id,
+                    state,
+                )?);
+            }
+        }
+        let receipt = catalog.apply(&batch)?;
+        for path in [&self.history, &self.runtime, &self.structural] {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(CoreError::Storage(format!(
+                        "search-plane authority store: remove migrated snapshot {}: {err}",
+                        path.display()
+                    )));
+                }
+            }
+        }
+        Ok(Some(LegacyAuxiliaryMigrationReceipt {
+            generations: generations.len(),
+            rows_written: receipt.rows_written,
+        }))
     }
 
+    /// Restore the search-corpus rollback history into the ledger; the
+    /// auxiliary authorities are restored from the catalog by
+    /// [`restore_auxiliary_rows_into`].
     pub fn restore_into(&self, ledger: &mut Ledger) -> Result<(), CoreError> {
-        if let Some(history) =
-            self.read_cbor::<HistoryAuthoritySnapshot>(&self.history, "history")?
-        {
-            ledger.history = history.entries;
-        }
-        if let Some(runtime) =
-            self.read_cbor::<RuntimeAuthoritySnapshot>(&self.runtime, "runtime metadata")?
-        {
-            ledger.runtime_metadata = runtime.entries;
-        }
-        if let Some(structural) =
-            self.read_cbor::<StructuralAuthoritySnapshot>(&self.structural, "structural")?
-        {
-            ledger.structural = structural.entries;
-            ledger
-                .search_tracks
-                .retain(|key, _state| key.track != SearchPlaneTrackKind::Structural);
-            ledger.search_tracks.extend(structural.tracks);
-        }
         self.restore_search_corpus_history_into(ledger)?;
         Ok(())
     }
@@ -3107,29 +3406,6 @@ impl AuxiliaryAuthorityStore {
     ) -> PathBuf {
         self.search_corpus_pair_dir(repo_id, revision_id)
             .join(format!("g{}.cbor", generation.get()))
-    }
-
-    fn write_cbor<T: Serialize>(
-        &self,
-        path: &Path,
-        value: &T,
-        label: &str,
-    ) -> Result<(), CoreError> {
-        let bytes = encode_cbor_payload(value).map_err(|err| {
-            CoreError::Storage(format!(
-                "search-plane authority store: encode {label} {}: {err}",
-                path.display()
-            ))
-        })?;
-        match atomic_replace_file_v1(
-            path,
-            &bytes,
-            &format!("search-plane authority store {label}"),
-            self.parent_sync.as_ref(),
-        )? {
-            AtomicFileWriteOutcomeV1::Durable => Ok(()),
-            AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(error) => Err(error),
-        }
     }
 
     fn read_cbor<T: for<'de> Deserialize<'de>>(
@@ -4187,81 +4463,6 @@ enum AtomicFileWriteOutcomeV1 {
     RenamedButParentSyncFailed(CoreError),
 }
 
-fn atomic_replace_file_v1(
-    path: &Path,
-    bytes: &[u8],
-    owner: &str,
-    parent_sync: &dyn ParentDirectorySyncPort,
-) -> Result<AtomicFileWriteOutcomeV1, CoreError> {
-    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-    let parent = path.parent().ok_or_else(|| {
-        CoreError::Storage(format!(
-            "{owner}: durable file has no parent: {}",
-            path.display()
-        ))
-    })?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            CoreError::Storage(format!(
-                "{owner}: durable file has no UTF-8 file name: {}",
-                path.display()
-            ))
-        })?;
-    let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let temporary = parent.join(format!(
-        ".{file_name}.tmp-{}-{sequence}",
-        std::process::id()
-    ));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)
-        .map_err(|err| {
-            CoreError::Storage(format!(
-                "{owner}: create temporary {}: {err}",
-                temporary.display()
-            ))
-        })?;
-    if let Err(err) = file.write_all(bytes) {
-        return Err(cleanup_activation_temporary_v1(
-            &temporary,
-            CoreError::Storage(format!(
-                "{owner}: write temporary {}: {err}",
-                temporary.display()
-            )),
-        ));
-    }
-    if let Err(err) = file.sync_all() {
-        return Err(cleanup_activation_temporary_v1(
-            &temporary,
-            CoreError::Storage(format!(
-                "{owner}: fsync temporary {}: {err}",
-                temporary.display()
-            )),
-        ));
-    }
-    drop(file);
-    if let Err(err) = fs::rename(&temporary, path) {
-        return Err(cleanup_activation_temporary_v1(
-            &temporary,
-            CoreError::Storage(format!(
-                "{owner}: rename temporary {} to {}: {err}",
-                temporary.display(),
-                path.display()
-            )),
-        ));
-    }
-    match parent_sync.sync_parent(parent) {
-        Ok(()) => Ok(AtomicFileWriteOutcomeV1::Durable),
-        Err(err) => Ok(AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(
-            CoreError::Storage(format!("{owner}: fsync parent {}: {err}", parent.display())),
-        )),
-    }
-}
-
 fn atomic_replace_file_from_staging_v1(
     path: &Path,
     bytes: &[u8],
@@ -4535,17 +4736,6 @@ fn is_legacy_atomic_temporary_name_v1(name: &str, target_suffix: &str) -> bool {
         && suffix.next().is_none()
 }
 
-fn cleanup_activation_temporary_v1(temporary: &Path, primary: CoreError) -> CoreError {
-    match fs::remove_file(temporary) {
-        Ok(()) => primary,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => primary,
-        Err(cleanup) => CoreError::Storage(format!(
-            "search-plane activation catalog: {primary:?}; additionally failed to remove temporary {}: {cleanup}",
-            temporary.display()
-        )),
-    }
-}
-
 fn search_corpus_pair_digest(repo_id: &RepoId, revision_id: &RevisionId) -> String {
     let mut hasher = Sha256::new();
     for value in [repo_id.as_str(), revision_id.as_str()] {
@@ -4602,14 +4792,22 @@ mod tests {
         SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface, StructuralReplaceScope,
         StructuralTreeRecord, UpsertParseTree,
     };
-    use quanta_index_core::CoreError;
+    use quanta_index_core::{
+        AuxiliaryAuthorityCatalogPort, AuxiliaryGenerationKeyV1, AuxiliaryMutationBatchV1,
+        CoreError,
+    };
 
     use super::{
-        ActivationCatalog, AuxiliaryAuthorityStore, Ledger, PreparedSearchCorpusGenerationV1,
-        SearchCorpusGenerationV1, SearchCorpusHistoryRetentionPolicyV1,
+        ActivationCatalog, AuthorityKey, AuxiliaryAuthorityStore, HistoryAuthoritySnapshot, Ledger,
+        PreparedSearchCorpusGenerationV1, RuntimeAuthoritySnapshot, SearchCorpusGenerationV1,
+        SearchCorpusHistoryRetentionPolicyV1, StructuralAuthoritySnapshot,
+        restore_auxiliary_rows_into,
     };
     use crate::SearchCorpusLifecycleOwner;
+    use crate::auxiliary_authority;
     use crate::search_corpus_lifecycle::SearchCorpusPairMutationCoordinator;
+    use quanta_index_ipc::encode_cbor_payload;
+    use std::fs;
 
     fn search_corpus_retention(
         max_generations: usize,
@@ -6551,10 +6749,57 @@ mod tests {
         Ok(())
     }
 
+    /// Encode every auxiliary authority of `ledger` as rows — the whole-state
+    /// encoding the legacy migration uses — into `catalog`.
+    fn persist_whole_ledger(
+        catalog: &dyn AuxiliaryAuthorityCatalogPort,
+        ledger: &Ledger,
+    ) -> Result<(), CoreError> {
+        let generation_key = |key: &AuthorityKey| AuxiliaryGenerationKeyV1 {
+            repo_id: key.repo_id.clone(),
+            revision_id: key.revision_id.clone(),
+            generation: key.generation,
+        };
+        let mut batch = AuxiliaryMutationBatchV1::default();
+        for (key, state) in &ledger.history {
+            batch.rows.extend(auxiliary_authority::history_state_rows(
+                &generation_key(key),
+                state,
+            )?);
+        }
+        for (key, state) in &ledger.runtime_metadata {
+            batch.rows.extend(auxiliary_authority::runtime_state_rows(
+                &generation_key(key),
+                state,
+            )?);
+        }
+        for (key, state) in &ledger.structural {
+            batch
+                .rows
+                .extend(auxiliary_authority::structural_state_rows(
+                    &generation_key(key),
+                    state,
+                )?);
+        }
+        for (key, state) in &ledger.search_tracks {
+            if key.track == SearchPlaneTrackKind::Structural {
+                batch.tracks.push(auxiliary_authority::structural_track_row(
+                    &key.repo_id,
+                    &key.revision_id,
+                    state,
+                )?);
+            }
+        }
+        let _receipt = catalog.apply(&batch)?;
+        Ok(())
+    }
+
+    /// Every auxiliary family and the structural track round-trip through
+    /// the catalog rows: what the whole-state encoding writes, the boot
+    /// restore reads back equal (QI-BB-020).
     #[test]
-    fn auxiliary_authority_store_roundtrips_history_runtime_and_structural_state() -> TestResult {
-        let dir = tempdir()?;
-        let store = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(2)?)?;
+    fn auxiliary_authorities_roundtrip_through_catalog_rows() -> TestResult {
+        let store = auxiliary_authority::testing::MemoryAuxiliaryCatalog::default();
         let mut ledger = Ledger::default();
 
         ledger
@@ -6587,10 +6832,10 @@ mod tests {
             "digest-17",
         );
 
-        store.persist_from_ledger(&ledger)?;
+        persist_whole_ledger(&store, &ledger)?;
 
         let mut restored = Ledger::default();
-        store.restore_into(&mut restored)?;
+        let _rows = restore_auxiliary_rows_into(&mut restored, &store)?;
 
         if !restored
             .history_state(&repo_id(), &revision_id(), generation())
@@ -6659,9 +6904,9 @@ mod tests {
                 doc_ids: vec![ChunkId::new("invalidated-1")],
             }],
         })?;
-        store.persist_from_ledger(&ledger)?;
+        persist_whole_ledger(&store, &ledger)?;
         let mut restored_catalog = Ledger::default();
-        store.restore_into(&mut restored_catalog)?;
+        let _rows = restore_auxiliary_rows_into(&mut restored_catalog, &store)?;
         let runtime = restored_catalog
             .runtime_state(&repo_id(), &revision_id(), generation())
             .ok_or("runtime catalog state missing after restore")?;
@@ -6725,6 +6970,122 @@ mod tests {
             != Some(generation())
         {
             return Err("structural track seal did not restore".into());
+        }
+        Ok(())
+    }
+
+    /// The pre-catalog snapshot files move into the catalog once: every
+    /// record is restored from rows afterwards, the files are gone, and a
+    /// second open finds nothing to migrate.
+    #[test]
+    fn legacy_auxiliary_snapshots_migrate_into_the_catalog_once() -> TestResult {
+        let dir = tempdir()?;
+        let store = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(2)?)?;
+        let mut ledger = Ledger::default();
+        ledger
+            .history_state_mut(&repo_id(), &revision_id(), generation())
+            .note_commits_materialized();
+        let _previous = ledger
+            .runtime_state_mut(&repo_id(), &revision_id(), generation())
+            .dirty_docs
+            .insert(
+                ChunkId::new("dirty-legacy"),
+                super::DirtyDocState {
+                    applied_at_ms: 7,
+                    payload_hash: [3_u8; 32],
+                },
+            );
+        install_chunk(&mut ledger, "src/legacy.rs", "fn legacy() {}")?;
+        ledger.request_structural_seal(&repo_id(), &revision_id(), generation());
+        ledger.record_track_seal_with_digest(
+            &repo_id(),
+            &revision_id(),
+            SearchPlaneTrackKind::Structural,
+            generation(),
+            "digest-legacy",
+        );
+        // Write the three snapshot files exactly as the pre-catalog store did.
+        let legacy = |path: &Path, bytes: Vec<u8>| -> TestResult {
+            fs::write(path, bytes)?;
+            Ok(())
+        };
+        legacy(
+            &store.history,
+            encode_cbor_payload(&HistoryAuthoritySnapshot {
+                entries: ledger
+                    .history
+                    .iter()
+                    .map(|(key, state)| (key.clone(), (**state).clone()))
+                    .collect(),
+            })?,
+        )?;
+        legacy(
+            &store.runtime,
+            encode_cbor_payload(&RuntimeAuthoritySnapshot {
+                entries: ledger
+                    .runtime_metadata
+                    .iter()
+                    .map(|(key, state)| (key.clone(), (**state).clone()))
+                    .collect(),
+            })?,
+        )?;
+        legacy(
+            &store.structural,
+            encode_cbor_payload(&StructuralAuthoritySnapshot {
+                entries: ledger
+                    .structural
+                    .iter()
+                    .map(|(key, state)| (key.clone(), (**state).clone()))
+                    .collect(),
+                tracks: ledger.search_tracks.clone(),
+            })?,
+        )?;
+
+        let catalog = auxiliary_authority::testing::MemoryAuxiliaryCatalog::default();
+        let receipt = store
+            .migrate_legacy_auxiliary_snapshots(&catalog)?
+            .ok_or("legacy files present, migration must run")?;
+        if receipt.generations != 1 || receipt.rows_written == 0 {
+            return Err(format!("migration receipt drifted: {receipt:?}").into());
+        }
+        for path in [&store.history, &store.runtime, &store.structural] {
+            if path.exists() {
+                return Err(format!("migrated snapshot {} must be removed", path.display()).into());
+            }
+        }
+        if store
+            .migrate_legacy_auxiliary_snapshots(&catalog)?
+            .is_some()
+        {
+            return Err("a second open must find nothing to migrate".into());
+        }
+        let mut restored = Ledger::default();
+        let _rows = restore_auxiliary_rows_into(&mut restored, &catalog)?;
+        if !restored
+            .history_state(&repo_id(), &revision_id(), generation())
+            .is_some_and(super::HistoryAuthorityState::commits_materialized)
+        {
+            return Err("migrated history flags did not restore".into());
+        }
+        if restored
+            .runtime_state(&repo_id(), &revision_id(), generation())
+            .and_then(|state| state.dirty_docs().get(&ChunkId::new("dirty-legacy")))
+            .map(super::DirtyDocState::applied_at_ms)
+            != Some(7)
+        {
+            return Err("migrated dirty doc did not restore".into());
+        }
+        if restored
+            .structural_state(&repo_id(), &revision_id(), generation())
+            .map(|state| state.chunks().len())
+            != Some(1)
+        {
+            return Err("migrated chunk universe did not restore".into());
+        }
+        if restored.track_sealed(&repo_id(), &revision_id(), SearchPlaneTrackKind::Structural)
+            != Some(generation())
+        {
+            return Err("migrated structural track seal did not restore".into());
         }
         Ok(())
     }

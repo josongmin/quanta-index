@@ -288,7 +288,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | --- | --- | --- |
 | W0 | **passed** | G0-L/G0-S/G0-C passed, G0-R baseline pinned(cooperative-only). §3 참조. timing 재측정만 `blocked: contended-host` |
 | W1 | planned | |
-| W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + **QI-BB-032 idempotency catalog(§3.16, `quanta-index-catalog` SQLite adapter 신설, probe crate 삭제)** 완료. 남은 것: QI-BB-020 auxiliary authority shard/persistence(catalog 확장), quarantine control surface |
+| W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + QI-BB-032 idempotency catalog(§3.16) + **QI-BB-020 auxiliary authority rows(§3.19, catalog 확장: per-record row, validate→persist→apply, Arc snapshot read, retention prune, legacy 일회 migration)** 완료. 남은 것: quarantine control surface, aux read epoch/visibility interval(§3.19 한계) |
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + **QI-BB-021 ingest resource envelope(§3.18)** 완료. 남은 것: sharded sidecar 포맷(O(delta) write), ANN versioned artifact(QI-BB-027), scope 단위 streamed embed→append(§3.18 한계) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), streaming projection collector |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. 남은 것: cancel을 lexical collector 내부(candidate batch 사이)까지 내리기, overload/refusal 서버 metric |
@@ -1077,6 +1077,74 @@ resident peak는 **정책으로 bounded**(`max_vector_bytes` + provider in-fligh
 잔여로 명시. (b) peak RSS 실측(완료 기준 1)은 contended host라 미실행 — W7. (c) cache stats/ingest stats는 accessor뿐,
 lq-obs export는 QI-BB-015와 함께. (d) file cache recency는 restart를 건너면 write order로 근사(hit 시 mtime touch 안 함 —
 hit당 write를 피하기 위한 선택). (e) namespace retire는 open 시점에만 — 실행 중 다른 identity를 여는 일은 없다.
+
+## 3.19 QI-BB-020 — auxiliary authority는 row로 durable하고, 읽기는 snapshot, 쓰기는 변경량에 비례한다 (구현 완료)
+
+**진단 확정**: history/runtime/structural authority가 하나의 `Arc<RwLock<Ledger>>` 안 `BTreeMap`이었고 (a) 1-row
+mutation마다 세 domain 전체 map을 clone→CBOR→3 file rewrite(`persist_from_ledger`), (b) memory에 먼저 적용된 뒤 persist가
+실패하면 memory≠disk, 세 file은 하나의 transaction이 아님, (c) history/runtime query는 global read guard를 쥔 채 scan, structural
+`execute`는 매 query마다 state 전체 `.cloned()`, (d) aux generation은 retention에서 영원히 제거되지 않음, (e) search-corpus batch가
+넣는 structural chunk universe는 다음 aux ingest가 우연히 `persist_from_ledger`를 호출하기 전까지 durable하지 않았음(restart 후
+runtime metadata query가 chunk universe 부재로 not-ready — 잠재 결함, 이번에 함께 닫힘).
+
+**구현**:
+- core `domains/auxiliary.rs`: `AuxiliaryAuthorityCatalogPort { apply(batch)→receipt, for_each_row, track_rows,
+  forget_generation }`, `AuxiliaryDomainV1 {History,Runtime,Structural}`, `AuxiliaryRowFamilyV1` 13종(commit/ref/tag/diff-hunk/
+  dirty-doc/changed-doc/doc-facet/snapshot/affected-docs/invalidated-by-docs/chunk/parse-tree/state-meta), row key = `(domain,
+  repo, revision, generation, family, row_key bytes)`, value는 opaque bytes(search-plane가 encoding 소유), `AuxiliaryRowMutationV1
+  { Upsert | Delete | ClearFamily }`, track row `(repo, revision, track)`.
+- catalog crate 재구성: `SqliteCatalog`(단일 connection/파일, `connection.rs`)가 `IdempotencyCatalogPort`와
+  `AuxiliaryAuthorityCatalogPort`를 모두 구현. `auxiliary_rows_v1`/`auxiliary_tracks_v1`(WITHOUT ROWID, row_sha256 = 주소+길이 prefix
+  key+value 위 digest, 읽을 때마다 검증), batch는 `IMMEDIATE` transaction 하나(전부 아니면 무), `synchronous=FULL`. receipt는 engine이
+  실제 쓴/지운 row 수.
+- search-plane `auxiliary_authority.rs`: batch → **delta**(validate + 변경 record 명명) → rows. `history_transition`(parent unknown /
+  ref→unknown commit 검사, batch 내 앞선 commit도 known), `runtime_dirty_transition`, `runtime_catalog_transition`(chunk universe·epoch
+  order 검사, 전 family replace = ClearFamily+upserts), `structural_transition`(parse tree vs chunk 검증, seal_requested·structural
+  track state를 delta에 계산), `structural_chunks_transition`(search-corpus batch의 chunk 변경). 각 delta의 `*_delta_rows`, 전체
+  state의 `*_state_rows`(migration), `restore_row_into`/`restore_track_row_into`(boot). dirty/chunk delta도 generation의
+  `state-meta` row를 항상 동반한다 — net-zero batch(upsert 후 evict, chunk 없는 seal)로 **비어 있지만 published된** generation이 restart
+  후에도 materialized로 남아야 하기 때문(`e2e_restart_replay_determinism::reopen_preserves_runtime_dirty_evict_empty_state`가 잡아냄).
+- `Ledger`: aux map 값이 `Arc<State>` — `*_snapshot()`은 read lock 아래 `Arc::clone`만, mutation은 `Arc::make_mut`(reader가 이전
+  snapshot을 쥔 동안에만 그 generation 하나를 copy). `apply_*_delta` 5종, `forget_auxiliary_generation`,
+  `auxiliary_generations_older_than`, `track_state`/`restore_track_state`. 기존 `apply_*_batch`는 transition+apply(in-memory 전용,
+  tests).
+- materializer 프로토콜(`AuxiliaryMaterializerParts { catalog, coordinator, ledger }`, `AuxiliaryMutationCoordinator` mutex로 aux
+  mutation 직렬화): coordinator lock → read lock에서 transition(validate) → `catalog.apply`(durable) → write lock에서 apply_delta →
+  receipt. **validation 실패는 catalog에 닿지 않고, catalog 실패는 memory에 닿지 않는다.** search-corpus `finalize_generation_v1`도
+  같은 순서로 chunk rows를 durable하게 한 뒤 track/seal 처리, retention receipt가 retain하지 않는 **더 오래된** aux generation을
+  memory·catalog에서 forget(staging 중인 더 새로운 generation은 건드리지 않음).
+- query: history/runtime-metadata/structural(pure-negative universe, symbol bucket)/`LedgerStructuralProducer::execute`가 snapshot을
+  clone하고 guard를 놓은 뒤 scan. `snapshot_structural_state`의 state 전체 clone 제거.
+- boot: `migrate_legacy_auxiliary_snapshots`(세 legacy `state.cbor`가 있으면 whole-state rows로 한 transaction apply 후 파일 삭제 —
+  crash 시 재실행은 같은 upsert라 수렴) → `restore_auxiliary_rows_into`. `BootInventoryReportV1`에 `auxiliary_migration`,
+  `auxiliary_rows_restored`. `AuxiliaryAuthorityStore`는 search-corpus rollback history + legacy migration만 남음(doc 갱신).
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| upsert/delete/clear가 순서대로 적용되고 key order로 검증돼 읽힘, receipt가 쓴/지운 수와 일치 | `catalog/tests/auxiliary.rs::a_batch_applies_in_order_and_reads_back_verified_in_key_order` |
+| transaction: 쓸 수 없는 row가 있으면 같은 batch의 앞선 upsert도 남지 않음, 다음 batch는 정상 | `…::a_batch_that_cannot_be_written_writes_nothing` |
+| 1,000 row generation 위 1-row upsert → receipt `rows_written=1`, 나머지 999 row byte 동일 | `…::a_one_row_mutation_over_a_large_generation_writes_one_row` |
+| row/track value 1 byte 변조 → scan/track_rows가 `CATALOG_ROW_CORRUPT` | `…::a_row_that_does_not_match_its_digest_is_refused_typed` |
+| forget_generation이 3 domain의 해당 generation row만 제거, track row 보존; track row replace/round-trip | `…::forgetting_a_generation_drops_exactly_its_rows_across_domains`, `…::track_rows_replace_by_key_and_round_trip` |
+| catalog apply 실패 → typed 전파, ledger에 state 없음, `applies=0`; 재시도는 1회 apply 후 visible | `search_plane::ingest_dispatcher::tests::a_mutation_whose_rows_never_became_durable_is_never_visible` |
+| parent unknown → `HISTORY_COMMIT_PARENT_UNKNOWN`, catalog에 닿지 않음(`applies=0, rows=0`); 같은 batch 앞의 parent는 known | `…::a_batch_that_fails_validation_never_reaches_the_catalog` |
+| 1,000 dirty row 위 1-row dirty batch → catalog `rows_written` Δ=2(doc row + generation meta row), in-place 갱신·1,000 resident | `…::a_one_row_dirty_mutation_writes_one_row` |
+| reader가 snapshot Arc를 쥔 채 lock 해제 → 다른 thread의 mutation이 완료(무차단), snapshot은 1 commit 그대로, ledger는 2 | `…::a_reader_holding_a_snapshot_neither_blocks_nor_sees_a_mutation` |
+| g3/g4 history 존재, g5 seal(receipt retains {4,5}) → ledger g3 forget·g4 유지·g5 chunk 1, catalog generations == {4,5} | `…::retention_forgets_auxiliary_generations_the_receipt_does_not_retain` |
+| 13 family + structural track이 whole-state rows → restore로 round-trip(기존 CBOR round-trip test 대체) | `readiness::tests::auxiliary_authorities_roundtrip_through_catalog_rows` |
+| legacy 3 file → migration receipt(1 generation, rows>0), 파일 삭제, 2번째 open은 `None`, restore 후 history flag·dirty·chunk·track seal 복원 | `readiness::tests::legacy_auxiliary_snapshots_migrate_into_the_catalog_once` |
+| e2e: history+dirty+structural ingest → seal → restart. daemon 정지 상태에서 catalog 파일을 직접 열어 3 domain row가 sealed generation에 존재, restart 후 history commit ids 동일·structural tree 1 serve | `searchd-runtime/tests/e2e_auxiliary_catalog.rs::auxiliary_rows_survive_a_restart_from_the_catalog` |
+| e2e: KEEP=2로 4 generation seal(각각 history/dirty 포함) → catalog에 남은 generation 집합 == 최신 2, 각 domain row 존재 | `…::retention_forgets_the_reaped_generations_auxiliary_rows` |
+| 기존 restart replay / dsl / structural / runtime e2e 전부 green(row 경로로 복원) | daemon lane 전체 |
+
+**정직한 한계**: (a) aux query의 visible row를 "immutable version/visibility interval"(plan §5.6)로 선택하는 epoch 모델은 미구현 —
+현재는 durable 즉시 다음 snapshot부터 보이며 한 query는 시작 시점 snapshot을 끝까지 본다(query 중간에 overlay가 섞이지 않음은 보장).
+(b) `Arc::make_mut`는 reader가 이전 snapshot을 쥔 **동안에만** 그 generation을 copy — 완료 기준 "cloned bytes ∝ 변경량"은 mutation
+자체엔 성립하고 동시 reader 존재 시 generation 1개 copy가 추가된다. (c) 100만-row history query 중 다른 repo ingest latency(완료 기준
+1)는 contended host라 미측정 — W7. (d) history top-k order(QI-BB-023)와 text relevance는 별도 항목. (e) idempotency finalize와 aux
+rows는 같은 파일이지만 별 transaction — crash 시 Resume이 같은 rows를 upsert해 수렴(§3.16 프로토콜).
 
 ## 4. Finding 상태 (QI-BB-001–032)
 

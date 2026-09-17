@@ -1088,40 +1088,45 @@ impl SearchPlaneDispatcher {
         .ok_or_else(|| {
             CoreError::InvalidContract("runtime metadata: generation selector required".to_string())
         })?;
-        let guard = self
-            .ledger
-            .read()
-            .map_err(|_poisoned| CoreError::Storage("search-plane ledger poisoned".to_string()))?;
-        let runtime_state = guard
-            .runtime_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
-            .ok_or_else(|| {
-                CoreError::NotReady(format!(
-                    "runtime metadata: generation {} is not materialized",
-                    pin.manifest_generation.get()
-                ))
+        // Snapshots are cloned under the read lock and scanned outside it
+        // (QI-BB-020): a long scan never holds up an ingest, and an ingest
+        // never holds up a query.
+        let (runtime_state, structural_state) = {
+            let guard = self.ledger.read().map_err(|_poisoned| {
+                CoreError::Storage("search-plane ledger poisoned".to_string())
             })?;
+            let snapshots = (
+                guard.runtime_snapshot(&pin.repo_id, &pin.revision_id, pin.manifest_generation),
+                guard.structural_snapshot(&pin.repo_id, &pin.revision_id, pin.manifest_generation),
+            );
+            drop(guard);
+            snapshots
+        };
+        let runtime_state = runtime_state.ok_or_else(|| {
+            CoreError::NotReady(format!(
+                "runtime metadata: generation {} is not materialized",
+                pin.manifest_generation.get()
+            ))
+        })?;
+        let structural_state = structural_state.ok_or_else(|| {
+            CoreError::NotReady(format!(
+                "runtime metadata: lexical chunk authority for generation {} is not materialized",
+                pin.manifest_generation.get()
+            ))
+        })?;
         if runtime_query_requires_catalog(&lowered) {
-            ensure_runtime_catalog_ready(runtime_state)?;
-            ensure_runtime_snapshot_names_known(&lowered, runtime_state)?;
+            ensure_runtime_catalog_ready(&runtime_state)?;
+            ensure_runtime_snapshot_names_known(&lowered, &runtime_state)?;
         }
-        let structural_state = guard
-            .structural_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
-            .ok_or_else(|| {
-                CoreError::NotReady(format!(
-                    "runtime metadata: lexical chunk authority for generation {} is not materialized",
-                    pin.manifest_generation.get()
-                ))
-            })?;
         budget.checkpoint("runtime-metadata:execute")?;
         let mut results = execute_runtime_metadata_query(
             &pin,
             &lowered,
-            runtime_state,
-            structural_state,
+            &runtime_state,
+            &structural_state,
             request.text_query.top_k,
         )?;
         stabilize_ranked_candidates(&mut results);
-        drop(guard);
         Ok(SearchPlaneRuntimeMetadataQueryResponse {
             generation: pin,
             results,
@@ -1147,15 +1152,15 @@ impl SearchPlaneDispatcher {
         .ok_or_else(|| {
             CoreError::InvalidContract("history: generation selector required".to_string())
         })?;
-        let guard = self
-            .ledger
-            .read()
-            .map_err(|_poisoned| CoreError::Storage("search-plane ledger poisoned".to_string()))?;
-        let history_state = resolve_history_state(&guard, &pin, &lowered)?;
+        let history_state = {
+            let guard = self.ledger.read().map_err(|_poisoned| {
+                CoreError::Storage("search-plane ledger poisoned".to_string())
+            })?;
+            resolve_history_state(&guard, &pin, &lowered)?
+        };
         budget.checkpoint("history:execute")?;
         let (commits, diffs) =
-            execute_history_query(&pin, &lowered, history_state, request.text_query.top_k)?;
-        drop(guard);
+            execute_history_query(&pin, &lowered, &history_state, request.text_query.top_k)?;
         Ok(SearchPlaneHistoryQueryResponse {
             generation: pin,
             commits,
@@ -1282,13 +1287,14 @@ impl SearchPlaneDispatcher {
         let requested_lang = extract_structural_requested_lang(&lowered.expr, has_lexical)?;
         let (requested_lang, executable_filters) =
             extract_structural_filters(lowered, requested_lang.as_deref())?;
-        let guard = self
-            .ledger
-            .read()
-            .map_err(|_poisoned| CoreError::Storage("search-plane ledger poisoned".to_string()))?;
         let seed = if structural_expr_is_pure_negative_root(&lowered.expr) {
-            let structural_state = guard
-                .structural_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
+            let structural_state = self
+                .ledger
+                .read()
+                .map_err(|_poisoned| {
+                    CoreError::Storage("search-plane ledger poisoned".to_string())
+                })?
+                .structural_snapshot(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
                 .ok_or_else(|| {
                     CoreError::NotReady(format!(
                         "structural: generation {} chunk authority is not materialized",
@@ -1297,14 +1303,13 @@ impl SearchPlaneDispatcher {
                 })?;
             Some(build_pinned_structural_universe(
                 pin,
-                structural_state,
+                &structural_state,
                 requested_lang.as_deref(),
                 &executable_filters,
             )?)
         } else {
             None
         };
-        drop(guard);
         let service = StructuralService::new(Arc::clone(&self.structural_producer));
         let mut ctx = StructuralEvalContext::default();
         let lexical_eval = if has_lexical {
@@ -1680,17 +1685,18 @@ impl SearchPlaneDispatcher {
         Ok(guard.track_materialized(repo_id, revision_id, SearchPlaneTrackKind::Lexical))
     }
 
+    /// The structural snapshot of the pinned generation, shared rather
+    /// than copied (QI-BB-020).
     fn snapshot_structural_state(
         &self,
         pin: &GenerationPin,
-    ) -> Result<StructuralAuthorityState, CoreError> {
+    ) -> Result<Arc<StructuralAuthorityState>, CoreError> {
         let guard = self
             .ledger
             .read()
             .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
         guard
-            .structural_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
-            .cloned()
+            .structural_snapshot(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
             .ok_or_else(|| {
                 CoreError::NotReady(format!(
                     "structural: generation {} chunk authority is not materialized",
@@ -2237,13 +2243,15 @@ struct HistoryShardRequirements {
     diff_hunks: bool,
 }
 
-fn resolve_history_state<'a>(
-    ledger: &'a Ledger,
+/// The history snapshot a query scans, taken under the ledger lock and
+/// scanned after it is released.
+fn resolve_history_state(
+    ledger: &Ledger,
     pin: &GenerationPin,
     query: &LqQuery,
-) -> Result<&'a HistoryAuthorityState, CoreError> {
+) -> Result<Arc<HistoryAuthorityState>, CoreError> {
     let Some(history_state) =
-        ledger.history_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
+        ledger.history_snapshot(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
     else {
         let lexical_materialized = ledger.track_materialized(
             &pin.repo_id,
@@ -2252,7 +2260,7 @@ fn resolve_history_state<'a>(
         );
         return Err(history_absent_error(pin, lexical_materialized));
     };
-    ensure_history_shards_ready(history_state, query)?;
+    ensure_history_shards_ready(&history_state, query)?;
     Ok(history_state)
 }
 

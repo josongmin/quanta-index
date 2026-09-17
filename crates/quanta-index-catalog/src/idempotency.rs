@@ -14,119 +14,24 @@
 //! inside the finalizing transaction, so it is unique and monotonic across
 //! every key in the catalog.
 
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::time::Duration;
+use std::path::Path;
 
 use quanta_index_contract::{BatchPublishReceipt, ManifestGeneration, RepoId, RevisionId};
 use quanta_index_core::{
-    BATCH_DIGEST_CONFLICT_CODE, CATALOG_BUSY_CODE, CATALOG_ROW_CORRUPT_CODE, CoreError,
-    IdempotencyBeginV1, IdempotencyCatalogPort, IdempotencyKeyV1,
+    BATCH_DIGEST_CONFLICT_CODE, CATALOG_ROW_CORRUPT_CODE, CoreError, IdempotencyBeginV1,
+    IdempotencyCatalogPort, IdempotencyKeyV1,
 };
 use quanta_index_ipc::{decode_cbor_payload, encode_cbor_payload};
-use rusqlite::{Connection, OpenFlags, OptionalExtension as _, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
-/// The catalog database file, under `state_root/catalog/`.
-pub const IDEMPOTENCY_CATALOG_FILE_NAME: &str = "catalog-v1.sqlite";
+use crate::connection::{SqliteCatalog, blob32, engine_error, generation_i64};
+
 const ROW_DIGEST_DOMAIN: &[u8] = b"quanta-index:catalog:idempotency-row:v1\0";
 const FIELD_SEPARATOR: &[u8] = b"\x1f";
 
-/// The catalog directory under a state root.
-#[must_use]
-pub fn catalog_dir(state_root: &Path) -> PathBuf {
-    state_root.join("catalog")
-}
-
-/// The idempotency catalog over one `SQLite` file.
-///
-/// One connection, serialized by a mutex: the ingest socket dispatches
-/// serially, so a second connection would only add lock contention.
-pub struct SqliteIdempotencyCatalog {
-    connection: Mutex<Connection>,
-    path: PathBuf,
-}
-
-impl std::fmt::Debug for SqliteIdempotencyCatalog {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("SqliteIdempotencyCatalog")
-            .field("path", &self.path)
-            .finish_non_exhaustive()
-    }
-}
-
-fn storage(action: &str, path: &Path, error: &dyn std::fmt::Display) -> CoreError {
-    CoreError::Storage(format!("catalog: {action} {}: {error}", path.display()))
-}
-
-/// Map an engine error to the typed codes the port promises.
-fn engine_error(action: &str, path: &Path, error: &rusqlite::Error) -> CoreError {
-    if let rusqlite::Error::SqliteFailure(failure, _) = error
-        && matches!(
-            failure.code,
-            rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
-        )
-    {
-        return CoreError::Typed {
-            code: CATALOG_BUSY_CODE.to_string(),
-            message: format!(
-                "catalog: {action} {} met a held lock past the busy budget: {error}",
-                path.display()
-            ),
-        };
-    }
-    storage(action, path, error)
-}
-
-impl SqliteIdempotencyCatalog {
-    /// Open (creating if needed) the catalog under `state_root/catalog/`.
-    ///
-    /// `busy_timeout` is how long a write waits on a held lock before it is
-    /// answered typed; the caller maps it from its own deadline.
-    pub fn open(state_root: &Path, busy_timeout: Duration) -> Result<Self, CoreError> {
-        let directory = catalog_dir(state_root);
-        std::fs::create_dir_all(&directory)
-            .map_err(|error| storage("create directory", &directory, &error))?;
-        let path = directory.join(IDEMPOTENCY_CATALOG_FILE_NAME);
-        let connection = Connection::open_with_flags(
-            &path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
-        )
-        .map_err(|error| engine_error("open", &path, &error))?;
-        // Each pragma is read back rather than assumed: `journal_mode` is a
-        // request the engine may decline, and a catalog that silently ran
-        // under `NORMAL` would ack work the engine can forget (G0-C).
-        connection
-            .pragma_update(None, "journal_mode", "WAL")
-            .map_err(|error| engine_error("set journal_mode", &path, &error))?;
-        connection
-            .pragma_update(None, "synchronous", "FULL")
-            .map_err(|error| engine_error("set synchronous", &path, &error))?;
-        connection
-            .pragma_update(None, "fullfsync", "ON")
-            .map_err(|error| engine_error("set fullfsync", &path, &error))?;
-        connection
-            .pragma_update(None, "foreign_keys", "ON")
-            .map_err(|error| engine_error("set foreign_keys", &path, &error))?;
-        connection
-            .busy_timeout(busy_timeout)
-            .map_err(|error| engine_error("set busy_timeout", &path, &error))?;
-        let journal_mode: String = connection
-            .pragma_query_value(None, "journal_mode", |row| row.get(0))
-            .map_err(|error| engine_error("read journal_mode", &path, &error))?;
-        let synchronous: i64 = connection
-            .pragma_query_value(None, "synchronous", |row| row.get(0))
-            .map_err(|error| engine_error("read synchronous", &path, &error))?;
-        if !journal_mode.eq_ignore_ascii_case("wal") || synchronous != 2 {
-            return Err(CoreError::Storage(format!(
-                "catalog: {} runs journal_mode={journal_mode} synchronous={synchronous}; the catalog requires wal/FULL",
-                path.display()
-            )));
-        }
-        connection
-            .execute_batch(
-                "CREATE TABLE IF NOT EXISTS idempotency_v1 (
+/// The table and sequence, created at open.
+pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS idempotency_v1 (
                      kind TEXT NOT NULL,
                      repo_id TEXT NOT NULL,
                      revision_id TEXT NOT NULL,
@@ -145,30 +50,7 @@ impl SqliteIdempotencyCatalog {
                      id INTEGER PRIMARY KEY CHECK (id = 1),
                      next INTEGER NOT NULL
                  );
-                 INSERT OR IGNORE INTO catalog_sequence_v1 (id, next) VALUES (1, 1);",
-            )
-            .map_err(|error| engine_error("create schema", &path, &error))?;
-        Ok(Self {
-            connection: Mutex::new(connection),
-            path,
-        })
-    }
-
-    /// The database file.
-    #[must_use]
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, CoreError> {
-        self.connection.lock().map_err(|error| {
-            CoreError::Storage(format!(
-                "catalog: connection to {} poisoned: {error}",
-                self.path.display()
-            ))
-        })
-    }
-}
+                 INSERT OR IGNORE INTO catalog_sequence_v1 (id, next) VALUES (1, 1);";
 
 /// One stored row, as read back and verified.
 struct StoredRow {
@@ -176,15 +58,6 @@ struct StoredRow {
     applied: bool,
     receipt_cbor: Option<Vec<u8>>,
     durable_sequence: Option<u64>,
-}
-
-fn generation_i64(generation: ManifestGeneration) -> Result<i64, CoreError> {
-    i64::try_from(generation.get()).map_err(|error| {
-        CoreError::InvalidContract(format!(
-            "catalog: generation {} does not fit the catalog's integer column: {error}",
-            generation.get()
-        ))
-    })
 }
 
 fn sequence_u64(sequence: i64) -> Result<u64, CoreError> {
@@ -236,13 +109,6 @@ fn row_digest(
         None => hasher.update([0_u8]),
     }
     hasher.finalize().into()
-}
-
-fn blob32(label: &str, bytes: &[u8]) -> Result<[u8; 32], CoreError> {
-    <[u8; 32]>::try_from(bytes).map_err(|_wrong_length| CoreError::Typed {
-        code: CATALOG_ROW_CORRUPT_CODE.to_string(),
-        message: format!("catalog: {label} is {} bytes, expected 32", bytes.len()),
-    })
 }
 
 /// Read one row inside `connection`'s current transaction and verify its
@@ -336,7 +202,7 @@ fn conflict(key: &IdempotencyKeyV1) -> CoreError {
     }
 }
 
-impl IdempotencyCatalogPort for SqliteIdempotencyCatalog {
+impl IdempotencyCatalogPort for SqliteCatalog {
     fn begin(
         &self,
         key: &IdempotencyKeyV1,
