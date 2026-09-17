@@ -384,6 +384,10 @@ crate quanta_index_contract
 │   │   ├── type LqQuery: pub
 │   │   └── type TextQueryAst: pub
 │   ├── mod filters: pub(self)
+│   ├── mod history_cursor: pub(self)
+│   │   ├── struct HistoryCursor: pub
+│   │   └── struct HistoryCursorVisitor: pub(self)
+│   │       └── type Value: pub(self)
 │   ├── mod options: pub(self)
 │   └── mod requests: pub(self)
 │       ├── struct HistoryQueryRequest: pub

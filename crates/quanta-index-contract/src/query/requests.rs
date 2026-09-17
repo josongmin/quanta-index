@@ -10,7 +10,8 @@ use crate::LexicalCandidate;
 use crate::SemanticCorpusKindV1;
 
 use super::{
-    GenerationPin, GenerationSelector, QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax,
+    GenerationPin, GenerationSelector, HistoryCursor, QueryConstraintSetV1, TextQueryRequest,
+    TextQuerySyntax,
 };
 
 /// Semantic query request (LXE-01 §3: lexical scope unified on
@@ -671,12 +672,92 @@ macro_rules! impl_symbol_query_request_serde {
 
 impl_symbol_query_request_serde!(SYMBOL_QUERY_REQUEST_FIELDS, SymbolQueryRequestVisitor);
 
+/// A history query: the text query and, for every page after the first,
+/// the cursor the previous page returned (QI-BB-023).
+///
+/// Results are ordered by recency under the total order documented on
+/// [`HistoryCursor`]; `top_k` bounds one page.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HistoryQueryRequest {
     pub text_query: TextQueryRequest,
+    pub cursor: Option<HistoryCursor>,
 }
 
-const HISTORY_QUERY_REQUEST_FIELDS: &[&str] = &["text_query"];
+const HISTORY_QUERY_REQUEST_FIELDS: &[&str] = &["text_query", "cursor"];
+
+impl Serialize for HistoryQueryRequest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let field_count = if self.cursor.is_some() { 2 } else { 1 };
+        let mut state = serializer.serialize_struct("HistoryQueryRequest", field_count)?;
+        state.serialize_field("text_query", &self.text_query)?;
+        if let Some(cursor) = &self.cursor {
+            state.serialize_field("cursor", cursor)?;
+        }
+        state.end()
+    }
+}
+
+struct HistoryQueryRequestVisitor;
+
+impl<'de> Visitor<'de> for HistoryQueryRequestVisitor {
+    type Value = HistoryQueryRequest;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a HistoryQueryRequest map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut text_query: Option<TextQueryRequest> = None;
+        let mut cursor: Option<HistoryCursor> = None;
+        let mut cursor_seen = false;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "text_query" => {
+                    if text_query.is_some() {
+                        return Err(de::Error::duplicate_field("text_query"));
+                    }
+                    text_query = Some(map.next_value()?);
+                }
+                "cursor" => {
+                    if cursor_seen {
+                        return Err(de::Error::duplicate_field("cursor"));
+                    }
+                    cursor_seen = true;
+                    cursor = map.next_value()?;
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        HISTORY_QUERY_REQUEST_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(HistoryQueryRequest {
+            text_query: text_query.ok_or_else(|| de::Error::missing_field("text_query"))?,
+            cursor,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for HistoryQueryRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "HistoryQueryRequest",
+            HISTORY_QUERY_REQUEST_FIELDS,
+            HistoryQueryRequestVisitor,
+        )
+    }
+}
 
 macro_rules! impl_text_query_wrapper_serde {
     ($ty:ident, $fields:ident, $visitor:ident) => {
@@ -806,11 +887,6 @@ macro_rules! impl_two_required_field_serde {
         }
     };
 }
-impl_text_query_wrapper_serde!(
-    HistoryQueryRequest,
-    HISTORY_QUERY_REQUEST_FIELDS,
-    HistoryQueryRequestVisitor
-);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeMetadataQueryRequest {

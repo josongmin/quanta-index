@@ -28,7 +28,7 @@ use quanta_index_contract::lex::{
 use quanta_index_contract::{
     BatchIngestMode, BatchPublishReceipt, CapabilityStatusV1, ChunkId, ChunkRecord,
     CurrentGenerationRequest, EngineTouched, FileOwnerProjectionRow, GenerationPin,
-    GenerationSnapshot, HistoryQueryRequest, HybridQueryRequest, LexicalCandidate,
+    GenerationSnapshot, HistoryCursor, HistoryQueryRequest, HybridQueryRequest, LexicalCandidate,
     ManifestGeneration, OwnerDocKind, QueryResultWindowV1, RawFallbackReasonV1, RepoId,
     RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1,
     SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
@@ -194,6 +194,10 @@ pub struct E2eQueryResult {
 pub struct E2eHistoryResult {
     pub commit_ids: Vec<String>,
     pub diff_paths: Vec<String>,
+    /// The page's window and continuation, when the daemon answered.
+    pub window: Option<QueryResultWindowV1>,
+    pub examined: u64,
+    pub next_cursor: Option<HistoryCursor>,
     pub typed_error: Option<E2eTypedError>,
 }
 
@@ -1517,6 +1521,17 @@ impl E2eRuntime {
         query_text: &str,
         top_k: u32,
     ) -> E2eHistoryResult {
+        self.query_history_page(syntax, query_text, top_k, None)
+    }
+
+    /// One history page after `cursor` (QI-BB-023).
+    pub fn query_history_page(
+        &mut self,
+        syntax: TextQuerySyntax,
+        query_text: &str,
+        top_k: u32,
+        cursor: Option<HistoryCursor>,
+    ) -> E2eHistoryResult {
         let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
             request_id,
@@ -1529,6 +1544,7 @@ impl E2eRuntime {
                     generation_selector: None,
                     top_k,
                 },
+                cursor,
             }),
         };
         let socket = match self.ensure_driver() {
@@ -1537,6 +1553,9 @@ impl E2eRuntime {
                 return E2eHistoryResult {
                     commit_ids: Vec::new(),
                     diff_paths: Vec::new(),
+                    window: None,
+                    examined: 0,
+                    next_cursor: None,
                     typed_error: Some(E2eTypedError {
                         code: "HARNESS_START".to_string(),
                         message: err.to_string(),
@@ -1553,6 +1572,9 @@ impl E2eRuntime {
                 return E2eHistoryResult {
                     commit_ids: Vec::new(),
                     diff_paths: Vec::new(),
+                    window: None,
+                    examined: 0,
+                    next_cursor: None,
                     typed_error: query_result.typed_error,
                 };
             }
@@ -1569,11 +1591,17 @@ impl E2eRuntime {
                     .into_iter()
                     .map(|candidate| candidate.repo_relative_path.as_str().to_string())
                     .collect(),
+                window: Some(history.window),
+                examined: history.examined,
+                next_cursor: history.next_cursor,
                 typed_error: None,
             },
             SearchPlaneQueryIpcResponse::Error(err) => E2eHistoryResult {
                 commit_ids: Vec::new(),
                 diff_paths: Vec::new(),
+                window: None,
+                examined: 0,
+                next_cursor: None,
                 typed_error: Some(E2eTypedError {
                     code: err.code,
                     message: err.message,
@@ -2426,6 +2454,9 @@ fn unexpected_history_response(kind: &str) -> E2eHistoryResult {
     E2eHistoryResult {
         commit_ids: Vec::new(),
         diff_paths: Vec::new(),
+        window: None,
+        examined: 0,
+        next_cursor: None,
         typed_error: Some(E2eTypedError {
             code: "UNEXPECTED_RESPONSE".to_string(),
             message: format!("expected History, got {kind}"),

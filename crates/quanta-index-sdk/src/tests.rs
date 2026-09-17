@@ -2915,6 +2915,9 @@ fn history_query_routes_through_typed_query_variant() {
             generation: sample_generation_pin(),
             commits: vec![],
             diffs: vec![],
+            window: quanta_index_contract::QueryResultWindowV1::exact(0),
+            examined: 0,
+            next_cursor: None,
         }),
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -2950,6 +2953,9 @@ fn history_sourcegraph_query_preserves_rev_filter_and_syntax() {
             generation: sample_generation_pin(),
             commits: vec![],
             diffs: vec![],
+            window: quanta_index_contract::QueryResultWindowV1::exact(0),
+            examined: 0,
+            next_cursor: None,
         }),
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -2988,6 +2994,9 @@ fn history_query_request_forwards_contract_dto_unchanged() {
             generation: sample_generation_pin(),
             commits: vec![],
             diffs: vec![],
+            window: quanta_index_contract::QueryResultWindowV1::exact(0),
+            examined: 0,
+            next_cursor: None,
         }),
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -3003,6 +3012,7 @@ fn history_query_request_forwards_contract_dto_unchanged() {
             }),
             top_k: 5,
         },
+        cursor: None,
     };
     let _response = ok_or_fail!(client.history().query_request(request.clone()));
     let captured = ok_or_fail!(only_query_request(query.as_ref()));

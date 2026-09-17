@@ -7,9 +7,9 @@ use serde::{
 };
 
 use crate::{
-    CommitCandidate, DiffCandidate, GenerationPin, LexicalCandidate, ManifestGeneration,
-    OwnerDocKind, QueryResultWindowV1, RepoId, RepoRelativePath, RevisionId, SemanticCorpusKindV1,
-    StructuralCandidate,
+    CommitCandidate, DiffCandidate, GenerationPin, HistoryCursor, LexicalCandidate,
+    ManifestGeneration, OwnerDocKind, QueryResultWindowV1, RepoId, RepoRelativePath, RevisionId,
+    SemanticCorpusKindV1, StructuralCandidate,
     lex::{SymbolKindCode, SymbolKindFamily},
 };
 
@@ -466,13 +466,167 @@ const SEED_CANDIDATE_V2_FIELDS: &[&str] = &[
 ];
 
 #[derive(Clone, Debug, PartialEq)]
+/// One page of history results (QI-BB-023).
+///
+/// Exactly one of `commits` / `diffs` is populated, by the query's
+/// `type:`. Both are in recency order — the total order documented on
+/// [`HistoryCursor`] — and `window` counts that page: `returned` is the
+/// rows on it, `candidate_count` the exact number of matches after the
+/// request's cursor, `has_more` whether a next page exists, in which case
+/// `next_cursor` positions it. `examined` is how many records the plane
+/// evaluated to answer.
 pub struct SearchPlaneHistoryQueryResponse {
     pub generation: GenerationPin,
     pub commits: Vec<CommitCandidate>,
     pub diffs: Vec<DiffCandidate>,
+    pub window: QueryResultWindowV1,
+    pub examined: u64,
+    pub next_cursor: Option<HistoryCursor>,
 }
 
-const SEARCH_PLANE_HISTORY_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "commits", "diffs"];
+const SEARCH_PLANE_HISTORY_QUERY_RESPONSE_FIELDS: &[&str] = &[
+    "generation",
+    "commits",
+    "diffs",
+    "window",
+    "examined",
+    "next_cursor",
+];
+
+impl Serialize for SearchPlaneHistoryQueryResponse {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let field_count = if self.next_cursor.is_some() { 6 } else { 5 };
+        let mut state =
+            serializer.serialize_struct("SearchPlaneHistoryQueryResponse", field_count)?;
+        state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("commits", &self.commits)?;
+        state.serialize_field("diffs", &self.diffs)?;
+        state.serialize_field("window", &self.window)?;
+        state.serialize_field("examined", &self.examined)?;
+        if let Some(next_cursor) = &self.next_cursor {
+            state.serialize_field("next_cursor", next_cursor)?;
+        }
+        state.end()
+    }
+}
+
+struct SearchPlaneHistoryQueryResponseVisitor;
+
+impl<'de> Visitor<'de> for SearchPlaneHistoryQueryResponseVisitor {
+    type Value = SearchPlaneHistoryQueryResponse;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a SearchPlaneHistoryQueryResponse map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut generation: Option<GenerationPin> = None;
+        let mut commits: Option<Vec<CommitCandidate>> = None;
+        let mut diffs: Option<Vec<DiffCandidate>> = None;
+        let mut window: Option<QueryResultWindowV1> = None;
+        let mut examined: Option<u64> = None;
+        let mut next_cursor: Option<HistoryCursor> = None;
+        let mut next_cursor_seen = false;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "generation" => {
+                    if generation.is_some() {
+                        return Err(de::Error::duplicate_field("generation"));
+                    }
+                    generation = Some(map.next_value()?);
+                }
+                "commits" => {
+                    if commits.is_some() {
+                        return Err(de::Error::duplicate_field("commits"));
+                    }
+                    commits = Some(map.next_value()?);
+                }
+                "diffs" => {
+                    if diffs.is_some() {
+                        return Err(de::Error::duplicate_field("diffs"));
+                    }
+                    diffs = Some(map.next_value()?);
+                }
+                "window" => {
+                    if window.is_some() {
+                        return Err(de::Error::duplicate_field("window"));
+                    }
+                    window = Some(map.next_value()?);
+                }
+                "examined" => {
+                    if examined.is_some() {
+                        return Err(de::Error::duplicate_field("examined"));
+                    }
+                    examined = Some(map.next_value()?);
+                }
+                "next_cursor" => {
+                    if next_cursor_seen {
+                        return Err(de::Error::duplicate_field("next_cursor"));
+                    }
+                    next_cursor_seen = true;
+                    next_cursor = map.next_value()?;
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        SEARCH_PLANE_HISTORY_QUERY_RESPONSE_FIELDS,
+                    ));
+                }
+            }
+        }
+        let commits = commits.ok_or_else(|| de::Error::missing_field("commits"))?;
+        let diffs = diffs.ok_or_else(|| de::Error::missing_field("diffs"))?;
+        let window = window.ok_or_else(|| de::Error::missing_field("window"))?;
+        // A page carries one kind of row; the window counts exactly those.
+        if !commits.is_empty() && !diffs.is_empty() {
+            return Err(de::Error::custom(
+                "history page carries both commits and diffs",
+            ));
+        }
+        let returned = usize::try_from(window.returned()).map_err(|error| {
+            de::Error::custom(format!(
+                "query result window returned count cannot fit usize: {error}"
+            ))
+        })?;
+        if returned != commits.len().saturating_add(diffs.len()) {
+            return Err(de::Error::custom(
+                "query result window returned count does not match history rows",
+            ));
+        }
+        if window.has_more() != next_cursor.is_some() {
+            return Err(de::Error::custom(
+                "history page has_more and next_cursor disagree",
+            ));
+        }
+        Ok(SearchPlaneHistoryQueryResponse {
+            generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            commits,
+            diffs,
+            window,
+            examined: examined.ok_or_else(|| de::Error::missing_field("examined"))?,
+            next_cursor,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for SearchPlaneHistoryQueryResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "SearchPlaneHistoryQueryResponse",
+            SEARCH_PLANE_HISTORY_QUERY_RESPONSE_FIELDS,
+            SearchPlaneHistoryQueryResponseVisitor,
+        )
+    }
+}
 
 macro_rules! impl_generation_results_response_serde {
     ($ty:ident, $fields:ident, $visitor:ident, $result_ty:ty) => {
@@ -779,89 +933,6 @@ macro_rules! impl_generation_payload_response_serde {
                     generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
                     $payload_field: $payload_field
                         .ok_or_else(|| de::Error::missing_field($payload_name))?,
-                })
-            }
-        }
-
-        impl<'de> Deserialize<'de> for $ty {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: Deserializer<'de>,
-            {
-                deserializer.deserialize_struct(stringify!($ty), $fields, $visitor)
-            }
-        }
-    };
-}
-
-macro_rules! impl_generation_two_payload_response_serde {
-    (
-        $ty:ident,
-        $fields:ident,
-        $visitor:ident,
-        $first_field:ident : $first_ty:ty => $first_name:literal,
-        $second_field:ident : $second_ty:ty => $second_name:literal
-    ) => {
-        impl Serialize for $ty {
-            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: Serializer,
-            {
-                let mut state = serializer.serialize_struct(stringify!($ty), 3)?;
-                state.serialize_field("generation", &self.generation)?;
-                state.serialize_field($first_name, &self.$first_field)?;
-                state.serialize_field($second_name, &self.$second_field)?;
-                state.end()
-            }
-        }
-
-        struct $visitor;
-
-        impl<'de> Visitor<'de> for $visitor {
-            type Value = $ty;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str(concat!("a ", stringify!($ty), " map"))
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: MapAccess<'de>,
-            {
-                let mut generation: Option<GenerationPin> = None;
-                let mut $first_field: Option<$first_ty> = None;
-                let mut $second_field: Option<$second_ty> = None;
-                while let Some(key) = map.next_key::<String>()? {
-                    match key.as_str() {
-                        "generation" => {
-                            if generation.is_some() {
-                                return Err(de::Error::duplicate_field("generation"));
-                            }
-                            generation = Some(map.next_value()?);
-                        }
-                        $first_name => {
-                            if $first_field.is_some() {
-                                return Err(de::Error::duplicate_field($first_name));
-                            }
-                            $first_field = Some(map.next_value()?);
-                        }
-                        $second_name => {
-                            if $second_field.is_some() {
-                                return Err(de::Error::duplicate_field($second_name));
-                            }
-                            $second_field = Some(map.next_value()?);
-                        }
-                        other => {
-                            return Err(de::Error::unknown_field(other, $fields));
-                        }
-                    }
-                }
-                Ok($ty {
-                    generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
-                    $first_field: $first_field
-                        .ok_or_else(|| de::Error::missing_field($first_name))?,
-                    $second_field: $second_field
-                        .ok_or_else(|| de::Error::missing_field($second_name))?,
                 })
             }
         }
@@ -1714,14 +1785,6 @@ impl<'de> Deserialize<'de> for HybridSeedQueryResponse {
         )
     }
 }
-
-impl_generation_two_payload_response_serde!(
-    SearchPlaneHistoryQueryResponse,
-    SEARCH_PLANE_HISTORY_QUERY_RESPONSE_FIELDS,
-    SearchPlaneHistoryQueryResponseVisitor,
-    commits: Vec<CommitCandidate> => "commits",
-    diffs: Vec<DiffCandidate> => "diffs"
-);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchPlaneRuntimeMetadataQueryResponse {

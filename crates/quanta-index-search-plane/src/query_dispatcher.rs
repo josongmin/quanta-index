@@ -18,22 +18,22 @@ use quanta_index_contract::lex::{CommitSha, LexicalErrorCode};
 use quanta_index_contract::{
     CandidateCountV1, ChunkId, ChunkRecord, ClusterMembershipBatchReadRequestV1,
     ClusterMembershipBatchReadResponseV1, CommitCandidate, DiffCandidate, EarlyStopReason,
-    EngineTouched, GenerationPin, GenerationSelector, HistoryQueryRequest, HybridQueryRequest,
-    HybridQueryResponse, HybridSeedCandidate, HybridSeedLane, HybridSeedQueryRequest,
-    HybridSeedQueryResponse, LQ_VERSION_TAG, LexicalCandidate, LqCase, LqExpr, LqFileScope,
-    LqFilter, LqLeaf, LqOptions, LqPatternType, LqQuery, LqSpan, LqStructuralBlock,
-    LqStructuralConstraint, LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleRef,
-    LqStructuralNode, LqType, LqYesNoOnly, ManifestGeneration, OwnerDocKind, PlannerStage,
-    PlannerTraceEntry, QueryConstraintIntersectionV1, QueryConstraintSetV1, QueryErrorRepair,
-    QueryResultWindowV1, RepairClass, RepoId, RepoMapQueryRequest, RepoMapQueryResponse,
-    RevisionId, RuntimeMetadataQueryRequest, SearchExplanation, SearchPlaneExplainQueryRequest,
-    SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
-    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
-    SearchPlaneTrackKind, SeedCandidateV2, SeedContributionV2, SeedLaneV2, SemanticQueryRequest,
-    SemanticQueryResponse, StructuralQueryRequest, SymbolCandidate, SymbolQueryRequest,
-    SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
-    continuation_fetch_size,
+    EngineTouched, GenerationPin, GenerationSelector, HistoryCursor, HistoryQueryRequest,
+    HybridQueryRequest, HybridQueryResponse, HybridSeedCandidate, HybridSeedLane,
+    HybridSeedQueryRequest, HybridSeedQueryResponse, LQ_VERSION_TAG, LexicalCandidate, LqCase,
+    LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqQuery, LqSpan,
+    LqStructuralBlock, LqStructuralConstraint, LqStructuralConstraintOperand, LqStructuralExpr,
+    LqStructuralHoleRef, LqStructuralNode, LqType, LqYesNoOnly, ManifestGeneration, OwnerDocKind,
+    PlannerStage, PlannerTraceEntry, QueryConstraintIntersectionV1, QueryConstraintSetV1,
+    QueryErrorRepair, QueryResultWindowV1, RepairClass, RepoId, RepoMapQueryRequest,
+    RepoMapQueryResponse, RevisionId, RuntimeMetadataQueryRequest, SearchExplanation,
+    SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
+    SearchPlaneHistoryQueryResponse, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcResponse, SearchPlaneRuntimeMetadataQueryResponse,
+    SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind, SeedCandidateV2, SeedContributionV2,
+    SeedLaneV2, SemanticQueryRequest, SemanticQueryResponse, StructuralQueryRequest,
+    SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse,
+    TextQuerySyntax, continuation_fetch_size,
 };
 use quanta_index_core::domains::structural::{
     StructuralExecutableFilter, StructuralProducerPort,
@@ -1159,12 +1159,19 @@ impl SearchPlaneDispatcher {
             resolve_history_state(&guard, &pin, &lowered)?
         };
         budget.checkpoint("history:execute")?;
-        let (commits, diffs) =
-            execute_history_query(&pin, &lowered, &history_state, request.text_query.top_k)?;
+        let page = execute_history_query(
+            &lowered,
+            &history_state,
+            request.text_query.top_k,
+            request.cursor.as_ref(),
+        )?;
         Ok(SearchPlaneHistoryQueryResponse {
             generation: pin,
-            commits,
-            diffs,
+            commits: page.commits,
+            diffs: page.diffs,
+            window: page.window,
+            examined: page.examined,
+            next_cursor: page.next_cursor,
         })
     }
 
@@ -3537,44 +3544,227 @@ fn validate_leaf_surface(
     }
 }
 
+/// One history element's position under the recency order (QI-BB-023).
+///
+/// Newest committer time first, then sha, then — for diffs — path. The
+/// derived `Ord` is the wire contract's order, so a cursor is a rank and
+/// "after the cursor" is `>`.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct HistoryRank {
+    newest_first: std::cmp::Reverse<u64>,
+    sha: CommitSha,
+    file_path: Option<Box<str>>,
+}
+
+impl HistoryRank {
+    fn for_commit(record: &quanta_index_contract::lex::CommitRecord) -> Self {
+        Self {
+            newest_first: std::cmp::Reverse(record.committer_time_ms),
+            sha: record.sha,
+            file_path: None,
+        }
+    }
+
+    fn for_diff(
+        commit: &quanta_index_contract::lex::CommitRecord,
+        key: &crate::readiness::HistoryDiffKey,
+    ) -> Self {
+        Self {
+            newest_first: std::cmp::Reverse(commit.committer_time_ms),
+            sha: commit.sha,
+            file_path: Some(key.file_path().into()),
+        }
+    }
+
+    fn from_cursor(cursor: &HistoryCursor) -> Self {
+        Self {
+            newest_first: std::cmp::Reverse(cursor.committer_time_ms),
+            sha: cursor.sha,
+            file_path: cursor.file_path.as_deref().map(Into::into),
+        }
+    }
+
+    fn into_cursor(self) -> HistoryCursor {
+        HistoryCursor {
+            committer_time_ms: self.newest_first.0,
+            sha: self.sha,
+            file_path: self.file_path.map(Into::into),
+        }
+    }
+}
+
+/// Keeps the `limit` smallest ranks (the newest elements) of everything
+/// pushed, in `O(log limit)` per push, and counts what it saw.
+struct HistoryPageSelector {
+    limit: usize,
+    kept: std::collections::BinaryHeap<HistoryRank>,
+    matched: u64,
+    examined: u64,
+    after: Option<HistoryRank>,
+}
+
+impl HistoryPageSelector {
+    fn new(limit: usize, cursor: Option<&HistoryCursor>) -> Self {
+        Self {
+            limit,
+            kept: std::collections::BinaryHeap::new(),
+            matched: 0,
+            examined: 0,
+            after: cursor.map(HistoryRank::from_cursor),
+        }
+    }
+
+    fn examined_one(&mut self) {
+        self.examined = self.examined.saturating_add(1);
+    }
+
+    /// Offer a matching element; elements at or before the cursor are
+    /// already on an earlier page.
+    fn offer(&mut self, rank: HistoryRank) {
+        if self.after.as_ref().is_some_and(|after| rank <= *after) {
+            return;
+        }
+        self.matched = self.matched.saturating_add(1);
+        self.kept.push(rank);
+        if self.kept.len() > self.limit {
+            // The heap's max is the oldest kept element; it leaves.
+            drop(self.kept.pop());
+        }
+    }
+
+    /// The page in order, its window and its continuation.
+    fn finish(
+        self,
+    ) -> Result<(Vec<HistoryRank>, QueryResultWindowV1, Option<HistoryCursor>), CoreError> {
+        let ranks = self.kept.into_sorted_vec();
+        let returned = u32::try_from(ranks.len()).map_err(|error| {
+            CoreError::Storage(format!("history: page row count overflows u32: {error}"))
+        })?;
+        let has_more = self.matched > u64::from(returned);
+        let window = QueryResultWindowV1::new(
+            returned,
+            quanta_index_contract::CandidateCountV1::Exact(self.matched),
+            has_more,
+        )
+        .map_err(|error| CoreError::Storage(format!("history: result window: {error}")))?;
+        let next_cursor = if has_more {
+            ranks.last().cloned().map(HistoryRank::into_cursor)
+        } else {
+            None
+        };
+        Ok((ranks, window, next_cursor))
+    }
+}
+
+/// One page of history results in recency order.
+#[derive(Debug)]
+struct HistoryPage {
+    commits: Vec<CommitCandidate>,
+    diffs: Vec<DiffCandidate>,
+    window: QueryResultWindowV1,
+    examined: u64,
+    next_cursor: Option<HistoryCursor>,
+}
+
+/// Evaluate every record of the queried kind, keep the `top_k` newest
+/// matches after `cursor`, and return them in recency order with an exact
+/// match count (QI-BB-023).
+///
+/// The scan is complete on purpose: the authority is keyed by sha, so the
+/// newest matches can be anywhere in it, and the count the window
+/// reports is exact rather than a bound.
 fn execute_history_query(
-    _pin: &GenerationPin,
     query: &LqQuery,
     state: &HistoryAuthorityState,
     top_k: u32,
-) -> Result<(Vec<CommitCandidate>, Vec<DiffCandidate>), CoreError> {
+    cursor: Option<&HistoryCursor>,
+) -> Result<HistoryPage, CoreError> {
     let kind = resolve_history_query_kind(query)?;
-    let include_commits = matches!(kind, HistoryQueryKind::Commit);
-    let include_diffs = matches!(kind, HistoryQueryKind::Diff);
     let limit = top_k_limit(top_k);
-    let mut commits = Vec::new();
-    let mut diffs = Vec::new();
-
-    if include_commits {
-        for record in state.commits().values() {
-            if history_commit_matches(query, state, record)? {
-                commits.push(commit_candidate_from_record(record));
-                if commits.len() >= limit {
-                    break;
+    let mut selector = HistoryPageSelector::new(limit, cursor);
+    match kind {
+        HistoryQueryKind::Commit => {
+            if cursor.is_some_and(|cursor| cursor.file_path.is_some()) {
+                return Err(history_invalid_request(
+                    "history: a commit page cannot continue from a diff cursor",
+                ));
+            }
+            for record in state.commits().values() {
+                selector.examined_one();
+                if history_commit_matches(query, state, record)? {
+                    selector.offer(HistoryRank::for_commit(record));
                 }
             }
+            let examined = selector.examined;
+            let (ranks, window, next_cursor) = selector.finish()?;
+            let commits = ranks
+                .iter()
+                .map(|rank| {
+                    state
+                        .commits()
+                        .get(&rank.sha)
+                        .map(commit_candidate_from_record)
+                        .ok_or_else(|| {
+                            CoreError::Storage(format!(
+                                "history: selected commit {} vanished from the snapshot",
+                                rank.sha
+                            ))
+                        })
+                })
+                .collect::<Result<Vec<_>, CoreError>>()?;
+            Ok(HistoryPage {
+                commits,
+                diffs: Vec::new(),
+                window,
+                examined,
+                next_cursor,
+            })
         }
-    }
-
-    if include_diffs {
-        for (key, record) in state.diff_hunks() {
-            let Some(commit) = state.commits().get(&key.commit_sha()) else {
-                continue;
-            };
-            if history_diff_matches(query, state, key, record, commit)? {
-                diffs.push(diff_candidate_from_record(key, record));
-                if diffs.len() >= limit {
-                    break;
+        HistoryQueryKind::Diff => {
+            if cursor.is_some_and(|cursor| cursor.file_path.is_none()) {
+                return Err(history_invalid_request(
+                    "history: a diff page cannot continue from a commit cursor",
+                ));
+            }
+            for (key, record) in state.diff_hunks() {
+                selector.examined_one();
+                let Some(commit) = state.commits().get(&key.commit_sha()) else {
+                    continue;
+                };
+                if history_diff_matches(query, state, key, record, commit)? {
+                    selector.offer(HistoryRank::for_diff(commit, key));
                 }
             }
+            let examined = selector.examined;
+            let (ranks, window, next_cursor) = selector.finish()?;
+            let diffs = ranks
+                .iter()
+                .map(|rank| {
+                    let path = rank.file_path.as_deref().ok_or_else(|| {
+                        CoreError::Storage("history: a diff rank carries no path".to_string())
+                    })?;
+                    let key = crate::readiness::HistoryDiffKey::new(rank.sha, path);
+                    state
+                        .diff_hunks()
+                        .get(&key)
+                        .map(|record| diff_candidate_from_record(&key, record))
+                        .ok_or_else(|| {
+                            CoreError::Storage(format!(
+                                "history: selected diff {}:{path} vanished from the snapshot",
+                                rank.sha
+                            ))
+                        })
+                })
+                .collect::<Result<Vec<_>, CoreError>>()?;
+            Ok(HistoryPage {
+                commits: Vec::new(),
+                diffs,
+                window,
+                examined,
+                next_cursor,
+            })
         }
     }
-    Ok((commits, diffs))
 }
 
 fn execute_runtime_metadata_query(
@@ -5601,6 +5791,7 @@ mod tests {
                 generation_selector: None,
                 top_k: 5,
             },
+            cursor: None,
         })
     }
 
@@ -10370,6 +10561,279 @@ mod tests {
         }
         if producer.execute_calls.load(Ordering::SeqCst) != 1 {
             return Err("pure-negative root should execute inner structural leaf once".into());
+        }
+        Ok(())
+    }
+}
+
+/// QI-BB-023 — history pages are in recency order, exact, and keyset-paged.
+#[cfg(test)]
+mod history_page_tests {
+    use std::collections::BTreeSet;
+
+    use quanta_index_contract::DiffHunkSide;
+    use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord};
+    use quanta_index_contract::{
+        HistoryCursor, HistoryDiffHunkUpsert, HistoryIngestBatch, LQ_VERSION_TAG, LqExpr, LqFilter,
+        LqLeaf, LqOptions, LqQuery, LqSpan, LqType, ManifestGeneration, RepoId, RevisionId,
+    };
+    use quanta_index_core::CoreError;
+
+    use super::{HistoryPage, execute_history_query};
+    use crate::readiness::{HistoryAuthorityState, Ledger};
+
+    type TestRes = Result<(), Box<dyn std::error::Error>>;
+
+    fn sha(byte: u8) -> CommitSha {
+        CommitSha::from_bytes([byte; 20])
+    }
+
+    fn commit(sha_byte: u8, committer_time_ms: u64, message: &str) -> CommitRecord {
+        CommitRecord {
+            wire_version: 1,
+            sha: sha(sha_byte),
+            parents: Vec::new(),
+            author_time_ms: committer_time_ms,
+            committer_time_ms,
+            applied_at_ms: committer_time_ms,
+            author: "alice".into(),
+            author_name: None,
+            author_email: None,
+            committer: "alice".into(),
+            committer_name: None,
+            committer_email: None,
+            message: message.into(),
+            is_merge: false,
+            tags: Vec::new(),
+        }
+    }
+
+    fn hunk(sha_byte: u8, path: &str) -> HistoryDiffHunkUpsert {
+        HistoryDiffHunkUpsert {
+            commit_sha: sha(sha_byte),
+            file_path: path.into(),
+            record: DiffHunkRecord {
+                wire_version: 1,
+                hunk_header: "@@ -1 +1 @@".into(),
+                side: DiffHunkSide::After,
+                added_text: "fix line".into(),
+                removed_text: "".into(),
+                touched_text: "fix line".into(),
+                byte_start: 0,
+                byte_end: 8,
+            },
+        }
+    }
+
+    /// Five matching commits whose sha order is the reverse of their time
+    /// order, plus one that does not match.
+    fn state(
+        commits: Vec<CommitRecord>,
+        hunks: Vec<HistoryDiffHunkUpsert>,
+    ) -> Result<HistoryAuthorityState, CoreError> {
+        let mut ledger = Ledger::new();
+        ledger.apply_history_batch(&HistoryIngestBatch {
+            repo_id: RepoId::new("r"),
+            revision_id: RevisionId::new("rev"),
+            generation: ManifestGeneration::new(1),
+            manifest_digest: None,
+            batch_digest: "history-order".to_string(),
+            commits,
+            refs: Vec::new(),
+            tags: Vec::new(),
+            diff_hunks: hunks,
+        })?;
+        ledger
+            .history_state(
+                &RepoId::new("r"),
+                &RevisionId::new("rev"),
+                ManifestGeneration::new(1),
+            )
+            .cloned()
+            .ok_or_else(|| CoreError::Storage("history state missing".to_string()))
+    }
+
+    fn reversed_state() -> Result<HistoryAuthorityState, CoreError> {
+        state(
+            vec![
+                commit(5, 100, "fix one"),
+                commit(4, 200, "fix two"),
+                commit(3, 300, "fix three"),
+                commit(2, 400, "fix four"),
+                commit(1, 500, "fix five"),
+                commit(9, 600, "unrelated"),
+            ],
+            Vec::new(),
+        )
+    }
+
+    fn query(kind: LqType) -> LqQuery {
+        LqQuery {
+            lq_version: LQ_VERSION_TAG,
+            expr: LqExpr::Leaf(LqLeaf::Keyword("fix".to_string())),
+            filters: vec![LqFilter::Type { kind }],
+            options: LqOptions::defaults(),
+            directives: Vec::new(),
+            source_span: LqSpan::eof(0),
+        }
+    }
+
+    fn page(
+        state: &HistoryAuthorityState,
+        kind: LqType,
+        top_k: u32,
+        cursor: Option<&HistoryCursor>,
+    ) -> Result<HistoryPage, CoreError> {
+        execute_history_query(&query(kind), state, top_k, cursor)
+    }
+
+    #[test]
+    fn top_k_returns_the_newest_matches_not_the_smallest_shas() -> TestRes {
+        let state = reversed_state()?;
+        let page = page(&state, LqType::Commit, 2, None)?;
+        let shas: Vec<CommitSha> = page.commits.iter().map(|commit| commit.sha).collect();
+        if shas != vec![sha(1), sha(2)] {
+            return Err(format!("top-2 must be the two newest matches, got {shas:?}").into());
+        }
+        if page.window.returned() != 2
+            || page.window.candidate_count() != quanta_index_contract::CandidateCountV1::Exact(5)
+            || !page.window.has_more()
+        {
+            return Err(format!("window drifted: {:?}", page.window).into());
+        }
+        if page.examined != 6 {
+            return Err(format!("every record is examined once, saw {}", page.examined).into());
+        }
+        let cursor = page
+            .next_cursor
+            .ok_or("a page with more must carry a cursor")?;
+        if cursor.sha != sha(2) || cursor.committer_time_ms != 400 || cursor.file_path.is_some() {
+            return Err(format!("the cursor names the last row, got {cursor:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pages_partition_the_matches_in_order_without_gaps_or_overlap() -> TestRes {
+        let state = reversed_state()?;
+        let mut cursor: Option<HistoryCursor> = None;
+        let mut seen: Vec<CommitSha> = Vec::new();
+        let mut pages = 0_u32;
+        loop {
+            let page = page(&state, LqType::Commit, 2, cursor.as_ref())?;
+            pages = pages.saturating_add(1);
+            seen.extend(page.commits.iter().map(|commit| commit.sha));
+            if page.window.candidate_count()
+                != quanta_index_contract::CandidateCountV1::Exact(
+                    5_u64
+                        .saturating_sub(u64::try_from(seen.len())?)
+                        .saturating_add(u64::try_from(page.commits.len())?),
+                )
+            {
+                return Err(format!(
+                    "each page counts exactly the matches after its cursor: {:?}",
+                    page.window
+                )
+                .into());
+            }
+            match page.next_cursor {
+                Some(next) if page.window.has_more() => cursor = Some(next),
+                None if !page.window.has_more() => break,
+                other => return Err(format!("has_more and cursor disagree: {other:?}").into()),
+            }
+            if pages > 10 {
+                return Err("pagination did not terminate".into());
+            }
+        }
+        if seen != vec![sha(1), sha(2), sha(3), sha(4), sha(5)] {
+            return Err(
+                format!("pages must partition the matches in recency order, got {seen:?}").into(),
+            );
+        }
+        if pages != 3 {
+            return Err(
+                format!("five matches at two per page is three pages, took {pages}").into(),
+            );
+        }
+        let distinct: BTreeSet<CommitSha> = seen.iter().copied().collect();
+        if distinct.len() != seen.len() {
+            return Err("a commit appeared on two pages".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn equal_times_break_ties_by_sha_ascending() -> TestRes {
+        let state = state(
+            vec![
+                commit(7, 100, "fix c"),
+                commit(3, 100, "fix a"),
+                commit(5, 100, "fix b"),
+                commit(1, 50, "fix older"),
+            ],
+            Vec::new(),
+        )?;
+        let page = page(&state, LqType::Commit, 10, None)?;
+        let shas: Vec<CommitSha> = page.commits.iter().map(|commit| commit.sha).collect();
+        if shas != vec![sha(3), sha(5), sha(7), sha(1)] {
+            return Err(format!("ties break by sha ascending, older last: {shas:?}").into());
+        }
+        if page.window.has_more() || page.next_cursor.is_some() {
+            return Err("a complete page carries no continuation".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn diff_pages_order_by_commit_recency_then_path_and_refuse_a_commit_cursor() -> TestRes {
+        let state = state(
+            vec![commit(2, 100, "fix old"), commit(1, 200, "fix new")],
+            vec![
+                hunk(2, "b.rs"),
+                hunk(2, "a.rs"),
+                hunk(1, "z.rs"),
+                hunk(1, "m.rs"),
+            ],
+        )?;
+        let first = page(&state, LqType::Diff, 3, None)?;
+        let paths: Vec<&str> = first
+            .diffs
+            .iter()
+            .map(|diff| diff.repo_relative_path.as_str())
+            .collect();
+        if paths != vec!["m.rs", "z.rs", "a.rs"] {
+            return Err(format!("diffs order by commit recency then path, got {paths:?}").into());
+        }
+        let cursor = first.next_cursor.ok_or("more diffs remain")?;
+        if cursor.file_path.as_deref() != Some("a.rs") || cursor.sha != sha(2) {
+            return Err(format!("the diff cursor names the last hunk, got {cursor:?}").into());
+        }
+        let second = page(&state, LqType::Diff, 3, Some(&cursor))?;
+        let paths: Vec<&str> = second
+            .diffs
+            .iter()
+            .map(|diff| diff.repo_relative_path.as_str())
+            .collect();
+        if paths != vec!["b.rs"] || second.window.has_more() {
+            return Err(format!("the second page holds the rest: {paths:?}").into());
+        }
+        // A commit cursor cannot position a diff page, nor the reverse.
+        let commit_cursor = HistoryCursor {
+            committer_time_ms: 200,
+            sha: sha(1),
+            file_path: None,
+        };
+        match page(&state, LqType::Diff, 3, Some(&commit_cursor)) {
+            Err(CoreError::InvalidContract(_)) => {}
+            other => {
+                return Err(format!("a commit cursor on a diff page answered {other:?}").into());
+            }
+        }
+        match page(&state, LqType::Commit, 3, Some(&cursor)) {
+            Err(CoreError::InvalidContract(_)) => {}
+            other => {
+                return Err(format!("a diff cursor on a commit page answered {other:?}").into());
+            }
         }
         Ok(())
     }

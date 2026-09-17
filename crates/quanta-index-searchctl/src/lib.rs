@@ -540,7 +540,10 @@ fn parse_text_query_wrapper(
 
 fn parse_history(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
     let text_query = parse_text_query_wrapper(common, rest, "history")?;
-    Ok(CliRequest::History(HistoryQueryRequest { text_query }))
+    Ok(CliRequest::History(HistoryQueryRequest {
+        text_query,
+        cursor: None,
+    }))
 }
 
 fn parse_structural(
@@ -1469,6 +1472,29 @@ fn render_history_payload(
         payload.commits.len(),
         payload.diffs.len()
     ))?;
+    let matched = match payload.window.candidate_count() {
+        quanta_index_contract::CandidateCountV1::Exact(count) => format!("{count}"),
+        quanta_index_contract::CandidateCountV1::AtLeast(count) => format!(">={count}"),
+    };
+    fmt_ok(writeln!(
+        rendered,
+        "order: recency matched: {matched} examined: {} has_more: {}",
+        payload.examined,
+        payload.window.has_more()
+    ))?;
+    if let Some(cursor) = &payload.next_cursor {
+        fmt_ok(writeln!(
+            rendered,
+            "next_cursor: committer_time_ms={} sha={}{}",
+            cursor.committer_time_ms,
+            cursor.sha.to_hex(),
+            cursor
+                .file_path
+                .as_deref()
+                .map(|path| format!(" file_path={path}"))
+                .unwrap_or_default()
+        ))?;
+    }
     for (index, commit) in payload.commits.iter().enumerate() {
         let display_index = index
             .checked_add(1)
@@ -2542,28 +2568,36 @@ mod tests {
                     is_merge: false,
                     tags: vec!["v1.0".to_string()],
                 }],
-                diffs: vec![quanta_index_contract::DiffCandidate {
-                    repo_relative_path: "src/lib.rs".to_string(),
-                    hunk_header: "@@ -1,3 +1,4 @@".to_string(),
-                    side: quanta_index_contract::DiffHunkSide::After,
-                    line_start: 1,
-                    line_end: 4,
-                    snippet: "fn sample() {}".to_string(),
-                }],
+                diffs: Vec::new(),
+                window: quanta_index_contract::QueryResultWindowV1::new(
+                    1,
+                    quanta_index_contract::CandidateCountV1::Exact(3),
+                    true,
+                )
+                .expect("a page of one out of three"),
+                examined: 9,
+                next_cursor: Some(quanta_index_contract::HistoryCursor {
+                    committer_time_ms: 1_700_000_000_000,
+                    sha: quanta_index_contract::lex::CommitSha::ZERO,
+                    file_path: None,
+                }),
             }),
         };
         let mut stdout = Vec::new();
         let rendered = render_response(OutputMode::Pretty, &response, &mut stdout);
         assert!(rendered.is_ok());
-        let text = String::from_utf8(stdout);
-        assert!(text.is_ok());
-        if let Ok(text) = text {
-            assert!(text.contains("kind: history"));
-            assert!(text.contains("commits: 1 diffs: 1"));
-            assert!(text.contains("author=alice"));
-            assert!(text.contains("path=src/lib.rs"));
-            assert!(text.contains("side=after"));
-        }
+        let text = String::from_utf8(stdout).expect("utf-8");
+        assert!(
+            text.contains("order: recency matched: 3 examined: 9 has_more: true"),
+            "{text}"
+        );
+        assert!(
+            text.contains("next_cursor: committer_time_ms=1700000000000 sha="),
+            "{text}"
+        );
+        assert!(text.contains("kind: history"));
+        assert!(text.contains("commits: 1 diffs: 0"));
+        assert!(text.contains("author=alice"));
     }
 
     #[test]

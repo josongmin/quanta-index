@@ -3466,9 +3466,11 @@ syntax = "sourcegraph"
 classification = "runtime"
 runtime_route = "history"
 fixture = "docs-main.toml"
+# Recency order (QI-BB-023): bob's commit (committer_time_ms 22) before
+# alice's (12), regardless of sha order.
 expected_ids = [
-  "0123456789abcdef0123456789abcdef01234567",
   "89abcdef0123456789abcdef0123456789abcdef",
+  "0123456789abcdef0123456789abcdef01234567",
 ]
 top_k = 10
 

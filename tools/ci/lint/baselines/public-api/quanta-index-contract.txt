@@ -4430,7 +4430,31 @@ impl core::marker::Unpin for quanta_index_contract::ClusterMembershipReadRequest
 impl core::marker::UnsafeUnpin for quanta_index_contract::ClusterMembershipReadRequestV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ClusterMembershipReadRequestV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ClusterMembershipReadRequestV1
+pub struct quanta_index_contract::query::HistoryCursor
+pub quanta_index_contract::query::HistoryCursor::committer_time_ms: u64
+pub quanta_index_contract::query::HistoryCursor::file_path: core::option::Option<alloc::string::String>
+pub quanta_index_contract::query::HistoryCursor::sha: quanta_index_contract::lex::history::CommitSha
+impl core::clone::Clone for quanta_index_contract::HistoryCursor
+pub fn quanta_index_contract::HistoryCursor::clone(&self) -> quanta_index_contract::HistoryCursor
+impl core::cmp::Eq for quanta_index_contract::HistoryCursor
+impl core::cmp::PartialEq for quanta_index_contract::HistoryCursor
+pub fn quanta_index_contract::HistoryCursor::eq(&self, other: &quanta_index_contract::HistoryCursor) -> bool
+impl core::fmt::Debug for quanta_index_contract::HistoryCursor
+pub fn quanta_index_contract::HistoryCursor::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::HistoryCursor
+impl serde_core::ser::Serialize for quanta_index_contract::HistoryCursor
+pub fn quanta_index_contract::HistoryCursor::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::HistoryCursor
+pub fn quanta_index_contract::HistoryCursor::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::HistoryCursor
+impl core::marker::Send for quanta_index_contract::HistoryCursor
+impl core::marker::Sync for quanta_index_contract::HistoryCursor
+impl core::marker::Unpin for quanta_index_contract::HistoryCursor
+impl core::marker::UnsafeUnpin for quanta_index_contract::HistoryCursor
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HistoryCursor
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HistoryCursor
 pub struct quanta_index_contract::query::HistoryQueryRequest
+pub quanta_index_contract::query::HistoryQueryRequest::cursor: core::option::Option<quanta_index_contract::HistoryCursor>
 pub quanta_index_contract::query::HistoryQueryRequest::text_query: quanta_index_contract_base::query::requests::TextQueryRequest
 impl core::clone::Clone for quanta_index_contract::HistoryQueryRequest
 pub fn quanta_index_contract::HistoryQueryRequest::clone(&self) -> quanta_index_contract::HistoryQueryRequest
@@ -6016,7 +6040,10 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlane
 pub struct quanta_index_contract::results::SearchPlaneHistoryQueryResponse
 pub quanta_index_contract::results::SearchPlaneHistoryQueryResponse::commits: alloc::vec::Vec<quanta_index_contract::CommitCandidate>
 pub quanta_index_contract::results::SearchPlaneHistoryQueryResponse::diffs: alloc::vec::Vec<quanta_index_contract_base::results::diff_candidate::DiffCandidate>
+pub quanta_index_contract::results::SearchPlaneHistoryQueryResponse::examined: u64
 pub quanta_index_contract::results::SearchPlaneHistoryQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
+pub quanta_index_contract::results::SearchPlaneHistoryQueryResponse::next_cursor: core::option::Option<quanta_index_contract::HistoryCursor>
+pub quanta_index_contract::results::SearchPlaneHistoryQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV1
 impl core::clone::Clone for quanta_index_contract::SearchPlaneHistoryQueryResponse
 pub fn quanta_index_contract::SearchPlaneHistoryQueryResponse::clone(&self) -> quanta_index_contract::SearchPlaneHistoryQueryResponse
 impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneHistoryQueryResponse
@@ -8470,6 +8497,29 @@ impl core::marker::Unpin for quanta_index_contract::GenerationStatusRequest
 impl core::marker::UnsafeUnpin for quanta_index_contract::GenerationStatusRequest
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::GenerationStatusRequest
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::GenerationStatusRequest
+pub struct quanta_index_contract::HistoryCursor
+pub quanta_index_contract::HistoryCursor::committer_time_ms: u64
+pub quanta_index_contract::HistoryCursor::file_path: core::option::Option<alloc::string::String>
+pub quanta_index_contract::HistoryCursor::sha: quanta_index_contract::lex::history::CommitSha
+impl core::clone::Clone for quanta_index_contract::HistoryCursor
+pub fn quanta_index_contract::HistoryCursor::clone(&self) -> quanta_index_contract::HistoryCursor
+impl core::cmp::Eq for quanta_index_contract::HistoryCursor
+impl core::cmp::PartialEq for quanta_index_contract::HistoryCursor
+pub fn quanta_index_contract::HistoryCursor::eq(&self, other: &quanta_index_contract::HistoryCursor) -> bool
+impl core::fmt::Debug for quanta_index_contract::HistoryCursor
+pub fn quanta_index_contract::HistoryCursor::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::HistoryCursor
+impl serde_core::ser::Serialize for quanta_index_contract::HistoryCursor
+pub fn quanta_index_contract::HistoryCursor::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::HistoryCursor
+pub fn quanta_index_contract::HistoryCursor::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::HistoryCursor
+impl core::marker::Send for quanta_index_contract::HistoryCursor
+impl core::marker::Sync for quanta_index_contract::HistoryCursor
+impl core::marker::Unpin for quanta_index_contract::HistoryCursor
+impl core::marker::UnsafeUnpin for quanta_index_contract::HistoryCursor
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HistoryCursor
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HistoryCursor
 pub struct quanta_index_contract::HistoryDiffHunkUpsert
 pub quanta_index_contract::HistoryDiffHunkUpsert::commit_sha: quanta_index_contract::lex::history::CommitSha
 pub quanta_index_contract::HistoryDiffHunkUpsert::file_path: alloc::boxed::Box<str>
@@ -8523,6 +8573,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::HistoryIngestBatch
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HistoryIngestBatch
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HistoryIngestBatch
 pub struct quanta_index_contract::HistoryQueryRequest
+pub quanta_index_contract::HistoryQueryRequest::cursor: core::option::Option<quanta_index_contract::HistoryCursor>
 pub quanta_index_contract::HistoryQueryRequest::text_query: quanta_index_contract_base::query::requests::TextQueryRequest
 impl core::clone::Clone for quanta_index_contract::HistoryQueryRequest
 pub fn quanta_index_contract::HistoryQueryRequest::clone(&self) -> quanta_index_contract::HistoryQueryRequest
@@ -9932,7 +9983,10 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlane
 pub struct quanta_index_contract::SearchPlaneHistoryQueryResponse
 pub quanta_index_contract::SearchPlaneHistoryQueryResponse::commits: alloc::vec::Vec<quanta_index_contract::CommitCandidate>
 pub quanta_index_contract::SearchPlaneHistoryQueryResponse::diffs: alloc::vec::Vec<quanta_index_contract_base::results::diff_candidate::DiffCandidate>
+pub quanta_index_contract::SearchPlaneHistoryQueryResponse::examined: u64
 pub quanta_index_contract::SearchPlaneHistoryQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
+pub quanta_index_contract::SearchPlaneHistoryQueryResponse::next_cursor: core::option::Option<quanta_index_contract::HistoryCursor>
+pub quanta_index_contract::SearchPlaneHistoryQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV1
 impl core::clone::Clone for quanta_index_contract::SearchPlaneHistoryQueryResponse
 pub fn quanta_index_contract::SearchPlaneHistoryQueryResponse::clone(&self) -> quanta_index_contract::SearchPlaneHistoryQueryResponse
 impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneHistoryQueryResponse

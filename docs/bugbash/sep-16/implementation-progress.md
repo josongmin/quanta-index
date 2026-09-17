@@ -292,7 +292,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + **QI-BB-021 ingest resource envelope(§3.18)** 완료. 남은 것: sharded sidecar 포맷(O(delta) write), ANN versioned artifact(QI-BB-027), scope 단위 streamed embed→append(§3.18 한계) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), streaming projection collector |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. 남은 것: cancel을 lexical collector 내부(candidate batch 사이)까지 내리기, overload/refusal 서버 metric |
-| W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + **QI-BB-009 embedding cache retention/telemetry bound(§3.18)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), QI-BB-018/019 hybrid |
+| W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + **QI-BB-023 history recency order + keyset cursor(§3.20)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), QI-BB-018/019 hybrid, history relevance order(Tantivy history index, §3.20 한계) |
 | W7 | planned | |
 | C1 | planned | |
 | C2 | planned | |
@@ -1145,6 +1145,47 @@ runtime metadata query가 chunk universe 부재로 not-ready — 잠재 결함, 
 자체엔 성립하고 동시 reader 존재 시 generation 1개 copy가 추가된다. (c) 100만-row history query 중 다른 repo ingest latency(완료 기준
 1)는 contended host라 미측정 — W7. (d) history top-k order(QI-BB-023)와 text relevance는 별도 항목. (e) idempotency finalize와 aux
 rows는 같은 파일이지만 별 transaction — crash 시 Resume이 같은 rows를 upsert해 수렴(§3.16 프로토콜).
+
+## 3.20 QI-BB-023 — history top-k는 recency total order를 따르고, cursor로 빠짐없이 걷는다 (구현 완료)
+
+**진단 확정**: commit authority가 `BTreeMap<CommitSha, _>`라 `type:commit fix top_k=N`은 **SHA byte가 작은 N개**를 반환하고
+scan은 `top_k`가 차면 즉시 멈췄다(가장 최신 commit이 SHA 순서상 뒤면 영구히 안 보임). diff는 `(sha, path)` 순서로 같은 결함.
+페이지네이션·examined/matched count 없음.
+
+**구현**:
+- contract: `HistoryCursor { committer_time_ms, sha, file_path: Option }`(query/history_cursor.rs, manual serde). 순서 계약 문서화:
+  commit `(committer_time_ms DESC, sha ASC)`, diff `(commit time DESC, sha ASC, path ASC)`. `HistoryQueryRequest { text_query,
+  cursor: Option<HistoryCursor> }`(cursor 없으면 wire에 부재). `SearchPlaneHistoryQueryResponse { generation, commits, diffs,
+  window: QueryResultWindowV1, examined: u64, next_cursor: Option }` — decoder가 fail-closed: `window.returned == rows`, commits와
+  diffs 동시 비어있지 않음 거부, `has_more == next_cursor.is_some()`. 이전 두-payload macro 삭제.
+- search-plane `execute_history_query`: `HistoryRank { Reverse(time), sha, path }`의 derived `Ord`가 wire 순서 그 자체 —
+  cursor는 rank이고 "after"는 `>`. 전체 scan(authority가 sha 키라 최신 match가 어디든 있을 수 있음) + `BinaryHeap` bounded
+  selection(`O(log k)`/match, 상주 k+1)로 cursor 이후의 최신 k개, `matched`는 **exact** count(`CandidateCountV1::Exact`),
+  `examined`는 방문 record 수, `has_more = matched > returned`, `next_cursor`는 마지막 row의 rank. commit page에 diff cursor(또는
+  반대)는 typed invalid request. query/runtime 경로처럼 snapshot을 lock 밖에서 scan.
+- SDK `HistoryQueryBuilder::after(cursor)`, `query_request`는 DTO 그대로. searchctl은 `cursor: None`으로 요청, pretty renderer가
+  `order: recency matched: N examined: M has_more: B` + `next_cursor:` 줄 출력. harness `query_history_page(syntax, text, top_k,
+  cursor)`와 `E2eHistoryResult { window, examined, next_cursor }`. public-api baseline(contract/sdk), cargo-modules baseline 갱신,
+  `just rust-fuzz-smoke 30` 4 target crash 0(wire DTO 변경).
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| commit page + continuation / diff page(final) round-trip; has_more↔cursor 불일치·양쪽 row·row 수≠window 4 case decode 거부 | `contract/tests/ipc_query_result_v2_contract.rs::search_plane_ipc_response_v2_history_variant_roundtrips`, `…_history_page_rejects_inconsistent_shapes` |
+| sha 순서가 시간 순서의 역인 5 match + 비match 1: top-2 == 최신 2(sha 1,2), window `Exact(5)`/has_more, examined 6, cursor는 2번째 row | `search_plane::query_dispatcher::history_page_tests::top_k_returns_the_newest_matches_not_the_smallest_shas` |
+| page size 2로 3 page → 순서 그대로 5개 partition, 중복 0, 각 page의 matched == cursor 이후 남은 수 | `…::pages_partition_the_matches_in_order_without_gaps_or_overlap` |
+| 동일 시간 3 commit은 sha 오름차순, 더 오래된 것은 뒤; 완료 page는 cursor 없음 | `…::equal_times_break_ties_by_sha_ascending` |
+| diff: commit recency → path 순, cursor가 (sha, path), 2번째 page가 나머지; commit cursor로 diff page / diff cursor로 commit page는 InvalidContract | `…::diff_pages_order_by_commit_recency_then_path_and_refuse_a_commit_cursor` |
+| e2e: sha·시간이 함께 오르는 5 commit(= sha 순서와 recency 순서가 정반대) → top-2가 최신 2(sha 5,4), examined ≥ 5, page 2로 걷기 == 전체 역순, 중복 0, restart 후 동일 page | `searchd-runtime/tests/e2e_history_order.rs::top_k_returns_the_newest_commits_and_pages_walk_every_match_once` |
+| CLI pretty renderer가 order/matched/examined/has_more/next_cursor를 출력 | `searchctl::tests::pretty_renderer_supports_history_response` |
+| full-corpus runtime rail의 `runtime_sourcegraph_history_commit` expected truth를 recency 순(bob 22ms → alice 12ms)으로 갱신 — 이전 truth가 sha 순서였음이 이 항목의 결함 재현 | `e2e_full_corpus::full_corpus_runtime_fixture_executes_real_rows_only` green |
+
+**정직한 한계**: (a) 보완 #1의 **relevance** order(commit message/diff text의 실제 indexed retrieval + score)는 미구현 — 현재
+계약은 recency 단일 order이고 text match는 filter다. plan §8.3대로 Tantivy history index가 W6 후속. score 없는 "relevance"를
+heuristic으로 흉내 내지 않았다. (b) 매 query가 generation의 history를 전부 scan한다(O(n), lock 밖) — time-indexed 보조 구조는
+row catalog 위의 후속. (c) `DiffCandidate`에는 여전히 sha가 없다(cursor가 sha를 나름). (d) large non-match latency/RSS budget(완료
+기준 3)은 contended host라 미측정 — W7.
 
 ## 4. Finding 상태 (QI-BB-001–032)
 

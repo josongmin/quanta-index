@@ -1,7 +1,7 @@
 use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord};
 use quanta_index_contract::{
     FileContributorEntry, FileContributorIdentityEntry, FileContributorIngestBatch,
-    FileOwnershipEntry, FileOwnershipIngestBatch, GenerationPin, GenerationSelector,
+    FileOwnershipEntry, FileOwnershipIngestBatch, GenerationPin, GenerationSelector, HistoryCursor,
     HistoryDiffHunkUpsert, HistoryIngestBatch, HistoryQueryRequest, HistoryRefDelete,
     HistoryRefMutation, HistoryRefUpsert, HistoryTagMutation, ManifestGeneration,
     RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoDescriptionEntry,
@@ -766,6 +766,7 @@ pub struct HistoryQueryBuilder<
 > {
     client: &'a QuantaIndex,
     state: TextQueryBuilderState,
+    cursor: Option<HistoryCursor>,
 }
 
 impl<'a> HistoryQueryBuilder<'a> {
@@ -773,6 +774,7 @@ impl<'a> HistoryQueryBuilder<'a> {
         Self {
             client,
             state: TextQueryBuilderState::new(),
+            cursor: None,
         }
     }
 }
@@ -788,7 +790,16 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
         HistoryQueryBuilder {
             client: self.client,
             state: self.state,
+            cursor: self.cursor,
         }
+    }
+
+    /// Continue from the cursor a previous page returned (QI-BB-023): the
+    /// page holds the next `top_k` results in recency order after it.
+    #[must_use]
+    pub fn after(mut self, cursor: HistoryCursor) -> Self {
+        self.cursor = Some(cursor);
+        self
     }
 
     #[must_use]
@@ -845,7 +856,13 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 impl HistoryQueryBuilder<'_, true, true, true> {
     pub fn execute(self) -> Result<SearchPlaneHistoryQueryResponse, SdkError> {
         let text_query = self.state.build_request("history")?;
-        dispatch_history_query_request_v1(self.client, HistoryQueryRequest { text_query })
+        dispatch_history_query_request_v1(
+            self.client,
+            HistoryQueryRequest {
+                text_query,
+                cursor: self.cursor,
+            },
+        )
     }
 }
 

@@ -3604,6 +3604,7 @@ fn history_query_with_syntax(
                 generation_selector: None,
                 top_k: 50,
             },
+            cursor: None,
         }),
     }
 }

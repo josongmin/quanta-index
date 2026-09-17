@@ -3577,6 +3577,7 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
             generation_selector: Some(pinned_selector(pin())),
             top_k: 5,
         },
+        cursor: None,
     };
     let history = wait_for_sdk_observation(
         SOCKET_TIMEOUT,

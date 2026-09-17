@@ -862,33 +862,135 @@ fn results_search_explanation_v2_roundtrips_trace_engines_and_summary() -> TestR
     Ok(())
 }
 
+fn history_commit_candidate() -> quanta_index_contract::CommitCandidate {
+    quanta_index_contract::CommitCandidate {
+        sha: CommitSha::from_bytes([1u8; 20]),
+        parent_ids: vec![CommitSha::from_bytes([2u8; 20])],
+        committed_at_unix_s: 1_717_171_717,
+        author: "alice@example.com".to_owned(),
+        committer: "bob@example.com".to_owned(),
+        message: "bridge request landed".to_owned(),
+        is_merge: false,
+        tags: vec!["v2".to_owned()],
+    }
+}
+
+fn history_diff_candidate() -> DiffCandidate {
+    DiffCandidate {
+        repo_relative_path: "src/search.rs".to_owned(),
+        hunk_header: "@@ -10,4 +10,7 @@".to_owned(),
+        side: DiffHunkSide::After,
+        line_start: 10,
+        line_end: 16,
+        snippet: "+ bridge_search(query);".to_owned(),
+    }
+}
+
+/// A commit page with a continuation and a final diff page both round-trip
+/// (QI-BB-023): the window counts the page's rows, `has_more` and
+/// `next_cursor` agree, and a diff cursor carries its path.
 #[test]
 fn search_plane_ipc_response_v2_history_variant_roundtrips() -> TestRes {
-    let response = SearchPlaneQueryIpcResponse::History(
+    let commit_page = SearchPlaneQueryIpcResponse::History(
         quanta_index_contract::SearchPlaneHistoryQueryResponse {
             generation: generation_pin(),
-            commits: vec![quanta_index_contract::CommitCandidate {
+            commits: vec![history_commit_candidate()],
+            diffs: Vec::new(),
+            window: QueryResultWindowV1::new(
+                1,
+                quanta_index_contract::CandidateCountV1::Exact(3),
+                true,
+            )?,
+            examined: 7,
+            next_cursor: Some(quanta_index_contract::HistoryCursor {
+                committer_time_ms: 1_717_171_717_000,
                 sha: CommitSha::from_bytes([1u8; 20]),
-                parent_ids: vec![CommitSha::from_bytes([2u8; 20])],
-                committed_at_unix_s: 1_717_171_717,
-                author: "alice@example.com".to_owned(),
-                committer: "bob@example.com".to_owned(),
-                message: "bridge request landed".to_owned(),
-                is_merge: false,
-                tags: vec!["v2".to_owned()],
-            }],
-            diffs: vec![DiffCandidate {
-                repo_relative_path: "src/search.rs".to_owned(),
-                hunk_header: "@@ -10,4 +10,7 @@".to_owned(),
-                side: DiffHunkSide::After,
-                line_start: 10,
-                line_end: 16,
-                snippet: "+ bridge_search(query);".to_owned(),
-            }],
+                file_path: None,
+            }),
         },
     );
+    roundtrip_eq(&commit_page)?;
+    let diff_page = SearchPlaneQueryIpcResponse::History(
+        quanta_index_contract::SearchPlaneHistoryQueryResponse {
+            generation: generation_pin(),
+            commits: Vec::new(),
+            diffs: vec![history_diff_candidate()],
+            window: QueryResultWindowV1::exact(1),
+            examined: 1,
+            next_cursor: None,
+        },
+    );
+    roundtrip_eq(&diff_page)
+}
 
-    roundtrip_eq(&response)
+/// A history page whose window, rows and cursor disagree fails to decode
+/// (QI-BB-023): a page cannot claim a continuation it does not position,
+/// carry both row kinds, or count rows it does not hold.
+#[test]
+fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> TestRes {
+    let generation = generation_pin();
+    let cursor = quanta_index_contract::HistoryCursor {
+        committer_time_ms: 5,
+        sha: CommitSha::from_bytes([1u8; 20]),
+        file_path: None,
+    };
+    let cases: Vec<(&str, quanta_index_contract::SearchPlaneHistoryQueryResponse)> = vec![
+        (
+            "has_more without a cursor",
+            quanta_index_contract::SearchPlaneHistoryQueryResponse {
+                generation: generation.clone(),
+                commits: vec![history_commit_candidate()],
+                diffs: Vec::new(),
+                window: QueryResultWindowV1::new(
+                    1,
+                    quanta_index_contract::CandidateCountV1::Exact(3),
+                    true,
+                )?,
+                examined: 3,
+                next_cursor: None,
+            },
+        ),
+        (
+            "a cursor without has_more",
+            quanta_index_contract::SearchPlaneHistoryQueryResponse {
+                generation: generation.clone(),
+                commits: vec![history_commit_candidate()],
+                diffs: Vec::new(),
+                window: QueryResultWindowV1::exact(1),
+                examined: 1,
+                next_cursor: Some(cursor),
+            },
+        ),
+        (
+            "both row kinds",
+            quanta_index_contract::SearchPlaneHistoryQueryResponse {
+                generation: generation.clone(),
+                commits: vec![history_commit_candidate()],
+                diffs: vec![history_diff_candidate()],
+                window: QueryResultWindowV1::exact(2),
+                examined: 2,
+                next_cursor: None,
+            },
+        ),
+        (
+            "a window that does not count the rows",
+            quanta_index_contract::SearchPlaneHistoryQueryResponse {
+                generation,
+                commits: vec![history_commit_candidate()],
+                diffs: Vec::new(),
+                window: QueryResultWindowV1::exact(2),
+                examined: 2,
+                next_cursor: None,
+            },
+        ),
+    ];
+    for (label, page) in cases {
+        let bytes = encode(&SearchPlaneQueryIpcResponse::History(page))?;
+        if decode::<SearchPlaneQueryIpcResponse>(&bytes).is_ok() {
+            return Err(format!("{label}: an inconsistent history page must not decode").into());
+        }
+    }
+    Ok(())
 }
 
 #[test]

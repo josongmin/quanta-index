@@ -127,6 +127,7 @@ fn hybrid_seed(pin: Option<GenerationPin>, top_k: u32) -> SearchPlaneQueryIpcReq
 fn history(pin: Option<GenerationPin>, top_k: u32) -> SearchPlaneQueryIpcRequest {
     SearchPlaneQueryIpcRequest::History(HistoryQueryRequest {
         text_query: text_request(TextQuerySyntax::Sourcegraph, HISTORY_QUERY, pin, top_k),
+        cursor: None,
     })
 }
 
