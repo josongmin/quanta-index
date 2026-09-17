@@ -1175,3 +1175,4 @@ rows는 같은 파일이지만 별 transaction — crash 시 Resume이 같은 ro
 | 2026-09-17 | cb7bbd9 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,016 passed / 0 failed (QI-BB-032 catalog 포함) |
 | 2026-09-17 | 1346134 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,020 passed / 0 failed (QI-BB-024 regex cache bounds 포함) |
 | 2026-09-17 | c21c2f8 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,043 passed / 0 failed (QI-BB-009 + QI-BB-021 resource envelope 포함) |
+| 2026-09-17 | 0d3a760 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,057 passed / 0 failed (QI-BB-020 auxiliary catalog rows 포함) |
