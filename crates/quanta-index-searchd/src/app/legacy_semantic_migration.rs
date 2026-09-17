@@ -8,7 +8,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use fs2::FileExt as _;
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SemanticIngestBatch};
-use quanta_index_core::{CoreError, SemanticBatchBuildPort};
+use quanta_index_core::{
+    CoreError, SemanticScopeStreamBuildPort, SemanticStreamWindowPolicy,
+    build_resident_semantic_batch_v1,
+};
 use quanta_index_ipc::{decode_cbor_payload, encode_cbor_payload};
 use quanta_index_semantic::{
     ValidatedPersistedSemanticGenerationV2, inventory_persisted_generations,
@@ -262,8 +265,9 @@ type Key = (RepoId, RevisionId, ManifestGeneration);
 
 pub(super) fn migrate(
     store: &LegacySemanticJournalStore,
-    builder: &(dyn SemanticBatchBuildPort + Send + Sync),
+    builder: &(dyn SemanticScopeStreamBuildPort + Send + Sync),
     semantic_root: &Path,
+    window_policy: SemanticStreamWindowPolicy,
 ) -> Result<SemanticMigrationOutcome, CoreError> {
     let Some(journal_digest) = store.journal_digest.as_deref() else {
         if store.receipt_path.exists() {
@@ -333,7 +337,11 @@ pub(super) fn migrate(
             batch.generation,
         );
         if !preexisting.contains(&key) {
-            builder.build_batch(batch)?;
+            // The journal's batches arrive decoded, so they stream through
+            // the same build entry as a live batch, windowed by the policy
+            // the builder admits against; see `ResidentScopeSource` for what
+            // that does and does not bound.
+            let _tally = build_resident_semantic_batch_v1(builder, batch, window_policy)?;
             imported = imported
                 .checked_add(1)
                 .ok_or_else(|| CoreError::Storage("migration count overflow".to_string()))?;

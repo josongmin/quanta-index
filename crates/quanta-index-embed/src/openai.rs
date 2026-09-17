@@ -33,7 +33,12 @@ pub const DEFAULT_CONCURRENCY: usize = 4;
 ///
 /// Every in-flight request holds its serialized inputs and, on return, its
 /// decoded vectors; the ceiling keeps that transient bounded by a number an
-/// operator can reason about instead of by whatever the env var said.
+/// operator can reason about instead of by whatever the env var said. The
+/// texts of one `embed_batch` call are one stream window's (the search
+/// plane embeds a batch window by window), so the vectors resident in this
+/// crate at once are one window plus one round of in-flight requests; the
+/// default window is sized to exactly one round at the default tuning
+/// (`DEFAULT_CONCURRENCY × DEFAULT_MAX_BATCH` texts), which the tests pin.
 pub const MAX_CONCURRENCY: usize = 64;
 const ERROR_BODY_PREVIEW_CHARS: usize = 200;
 
@@ -837,12 +842,15 @@ mod tests {
         assert_eq!(provider.dimension(), 2);
     }
 
-    /// Records peak concurrency and answers each request from its OWN body.
+    /// Records peak concurrency and the inputs of every request, and
+    /// answers each request from its OWN body.
     ///
     /// Each input text `"t<N>"` produces a deterministic, order-checkable vector.
     struct ConcurrencyProbeTransport {
         in_flight: Arc<AtomicUsize>,
         peak_in_flight: Arc<AtomicUsize>,
+        /// Inputs each request carried, in completion order.
+        request_sizes: Arc<Mutex<Vec<usize>>>,
         delay: Duration,
     }
 
@@ -865,6 +873,10 @@ mod tests {
                 .get("input")
                 .and_then(serde_json::Value::as_array)
                 .expect("probe: body has an input array");
+            self.request_sizes
+                .lock()
+                .expect("probe: request sizes mutex")
+                .push(inputs.len());
             let items: Vec<(usize, Vec<f32>)> = inputs
                 .iter()
                 .enumerate()
@@ -911,6 +923,7 @@ mod tests {
         let transport = ConcurrencyProbeTransport {
             in_flight: Arc::clone(&in_flight),
             peak_in_flight: Arc::clone(&peak),
+            request_sizes: Arc::new(Mutex::new(Vec::new())),
             delay: Duration::from_millis(25),
         };
         let provider = OpenAiEmbeddingProvider::new(
@@ -936,6 +949,86 @@ mod tests {
         assert!(
             observed_peak <= 4,
             "concurrency must stay bounded by the knob; peak was {observed_peak}"
+        );
+    }
+
+    // CASE-COVERS (QI-BB-021 follow-up #2): the search plane embeds a batch
+    // one stream window at a time, so one `embed_batch` call carries at most
+    // one window of texts. The default window is exactly one round of
+    // in-flight requests at the default tuning, and the window byte bound is
+    // that round at the widest admitted dimension, so no window under-fills
+    // a round and no round exceeds a window; a window of texts is dispatched
+    // as `window / max_batch` requests of at most `max_batch` inputs with at
+    // most `concurrency` in flight, and the vectors come back in input order.
+    #[test]
+    fn a_stream_window_of_texts_is_one_round_of_bounded_requests() {
+        use quanta_index_core::{
+            SEMANTIC_STREAM_WINDOW_SCOPES, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES,
+        };
+        let round_texts = DEFAULT_CONCURRENCY
+            .checked_mul(DEFAULT_MAX_BATCH)
+            .expect("round texts fit usize");
+        assert_eq!(
+            round_texts, SEMANTIC_STREAM_WINDOW_SCOPES,
+            "the default window of one-record owner scopes is one round of requests"
+        );
+        let round_bytes = u64::try_from(round_texts)
+            .expect("round texts fit u64")
+            .checked_mul(u64::try_from(MAX_EMBEDDING_DIMENSION).expect("dimension fits u64"))
+            .and_then(|components| components.checked_mul(4))
+            .expect("round bytes fit u64");
+        assert_eq!(
+            round_bytes, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES,
+            "the default window byte bound is one round at the widest dimension"
+        );
+
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let request_sizes = Arc::new(Mutex::new(Vec::new()));
+        let transport = ConcurrencyProbeTransport {
+            in_flight: Arc::clone(&in_flight),
+            peak_in_flight: Arc::clone(&peak),
+            request_sizes: Arc::clone(&request_sizes),
+            delay: Duration::ZERO,
+        };
+        let provider =
+            OpenAiEmbeddingProvider::new(cfg(1), Box::new(transport)).expect("provider builds");
+        let texts: Vec<String> = (0..SEMANTIC_STREAM_WINDOW_SCOPES)
+            .map(|n| format!("t{n}"))
+            .collect();
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let out = provider.embed_batch(&refs).expect("a window embeds");
+        let expected: Vec<Vec<f32>> = (0..SEMANTIC_STREAM_WINDOW_SCOPES)
+            .map(|n| {
+                vec![
+                    u16::try_from(n)
+                        .map(f32::from)
+                        .expect("window index fits f32 exactly"),
+                ]
+            })
+            .collect();
+        assert_eq!(out, expected, "a window's vectors keep input order");
+        let sizes = request_sizes
+            .lock()
+            .expect("probe: request sizes mutex")
+            .clone();
+        assert_eq!(
+            sizes.len(),
+            DEFAULT_CONCURRENCY,
+            "a window is window / max_batch requests"
+        );
+        assert!(
+            sizes.iter().all(|size| *size == DEFAULT_MAX_BATCH),
+            "every request of a window carries max_batch inputs: {sizes:?}"
+        );
+        assert!(
+            peak.load(Ordering::SeqCst) <= DEFAULT_CONCURRENCY,
+            "in-flight requests never exceed the concurrency knob"
+        );
+        assert_eq!(
+            in_flight.load(Ordering::SeqCst),
+            0,
+            "nothing is left in flight"
         );
     }
 

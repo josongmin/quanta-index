@@ -18,11 +18,11 @@ use quanta_index_contract::{
     SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope, SourceRoleV1,
     lex::LanguageCode,
 };
-use quanta_index_core::{GenerationStorageKeyV1, SemanticBatchBuildPort as _};
+use quanta_index_core::GenerationStorageKeyV1;
 use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::semantic_boot::SemanticMigrationOutcome;
 use quanta_index_searchd_runtime::build_runtime;
-use quanta_index_semantic::SemanticAdapter;
+use quanta_index_semantic::{SemanticAdapter, build_resident_batch_v1};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -165,7 +165,7 @@ fn runtime_boot_inventories_a_corrupted_inactive_semantic_generation() -> TestRe
     let semantic_root = state_root.join("indexes").join("semantic");
     let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
     let generation = ManifestGeneration::new(9);
-    adapter.build_batch(&fixture_batch(generation)?)?;
+    build_resident_batch_v1(&adapter, &fixture_batch(generation)?)?;
 
     let manifest_path = GenerationStorageKeyV1::for_repo_revision(
         &RepoId::new("repo-bootrep"),

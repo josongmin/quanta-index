@@ -15,10 +15,10 @@ use quanta_index_contract::{
     BatchIngestMode, ManifestGeneration, OwnerDocKind, RepoId, RevisionId, SemanticCorpusKindV1,
     SemanticIngestBatch, SemanticReplaceScope,
 };
-use quanta_index_core::{CoreError, SemanticBatchBuildPort, SemanticIndexOpenPort};
+use quanta_index_core::{CoreError, SemanticIndexOpenPort};
 use quanta_index_semantic::{
-    SemanticAdapter, embedding_record_v1, ingest_batch_v1, model_contract_v1, search_scope_v1,
-    tombstone_scope_with_semantic_owner_v1,
+    SemanticAdapter, build_resident_batch_v1, embedding_record_v1, ingest_batch_v1,
+    model_contract_v1, search_scope_v1, tombstone_scope_with_semantic_owner_v1,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -106,47 +106,56 @@ fn scv2_s01_exact_owner_replace_does_not_erase_sibling_on_same_path() -> TestRes
     let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     let generation = ManifestGeneration::new(101);
 
-    adapter.build_batch(&scenario_batch(
-        generation,
-        None,
-        "batch:s01:initial",
-        vec![symbol_scope(vec![
-            symbol_embedding(
-                "commit-v1",
+    build_resident_batch_v1(
+        &adapter,
+        &scenario_batch(
+            generation,
+            None,
+            "batch:s01:initial",
+            vec![symbol_scope(vec![
+                symbol_embedding(
+                    "commit-v1",
+                    "symbol:RuntimeSession::commit",
+                    vec![1.0, 0.0, 0.0],
+                )?,
+                symbol_embedding(
+                    "prepare-v1",
+                    "symbol:RuntimeSession::prepare",
+                    vec![0.0, 1.0, 0.0],
+                )?,
+            ])],
+            Vec::new(),
+            false,
+        ),
+    )?;
+
+    build_resident_batch_v1(
+        &adapter,
+        &scenario_batch(
+            generation,
+            None,
+            "batch:s01:replace-one-owner",
+            vec![symbol_scope(vec![symbol_embedding(
+                "commit-v2",
                 "symbol:RuntimeSession::commit",
-                vec![1.0, 0.0, 0.0],
-            )?,
-            symbol_embedding(
-                "prepare-v1",
-                "symbol:RuntimeSession::prepare",
-                vec![0.0, 1.0, 0.0],
-            )?,
-        ])],
-        Vec::new(),
-        false,
-    ))?;
+                vec![0.9, 0.1, 0.0],
+            )?])],
+            Vec::new(),
+            false,
+        ),
+    )?;
 
-    adapter.build_batch(&scenario_batch(
-        generation,
-        None,
-        "batch:s01:replace-one-owner",
-        vec![symbol_scope(vec![symbol_embedding(
-            "commit-v2",
-            "symbol:RuntimeSession::commit",
-            vec![0.9, 0.1, 0.0],
-        )?])],
-        Vec::new(),
-        false,
-    ))?;
-
-    adapter.build_batch(&scenario_batch(
-        generation,
-        None,
-        "batch:s01:seal",
-        Vec::new(),
-        Vec::new(),
-        true,
-    ))?;
+    build_resident_batch_v1(
+        &adapter,
+        &scenario_batch(
+            generation,
+            None,
+            "batch:s01:seal",
+            Vec::new(),
+            Vec::new(),
+            true,
+        ),
+    )?;
 
     let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
     let hits = searcher.search_hits(&[1.0, 1.0, 0.0], 10)?;
@@ -177,39 +186,45 @@ fn scv2_s02_owner_tombstone_removes_only_target_owner() -> TestResult {
     let base = ManifestGeneration::new(102);
     let next = ManifestGeneration::new(103);
 
-    adapter.build_batch(&scenario_batch(
-        base,
-        None,
-        "batch:s02:base",
-        vec![symbol_scope(vec![
-            symbol_embedding(
-                "commit",
-                "symbol:RuntimeSession::commit",
-                vec![1.0, 0.0, 0.0],
-            )?,
-            symbol_embedding(
-                "prepare",
-                "symbol:RuntimeSession::prepare",
-                vec![0.0, 1.0, 0.0],
-            )?,
-        ])],
-        Vec::new(),
-        true,
-    ))?;
+    build_resident_batch_v1(
+        &adapter,
+        &scenario_batch(
+            base,
+            None,
+            "batch:s02:base",
+            vec![symbol_scope(vec![
+                symbol_embedding(
+                    "commit",
+                    "symbol:RuntimeSession::commit",
+                    vec![1.0, 0.0, 0.0],
+                )?,
+                symbol_embedding(
+                    "prepare",
+                    "symbol:RuntimeSession::prepare",
+                    vec![0.0, 1.0, 0.0],
+                )?,
+            ])],
+            Vec::new(),
+            true,
+        ),
+    )?;
 
-    adapter.build_batch(&scenario_batch(
-        next,
-        Some(base),
-        "batch:s02:tombstone-commit",
-        Vec::new(),
-        vec![tombstone_scope_with_semantic_owner_v1(
-            "src/session.rs",
-            SemanticCorpusKindV1::SymbolCard,
-            OwnerDocKind::Symbol,
-            "symbol:RuntimeSession::commit",
-        )],
-        true,
-    ))?;
+    build_resident_batch_v1(
+        &adapter,
+        &scenario_batch(
+            next,
+            Some(base),
+            "batch:s02:tombstone-commit",
+            Vec::new(),
+            vec![tombstone_scope_with_semantic_owner_v1(
+                "src/session.rs",
+                SemanticCorpusKindV1::SymbolCard,
+                OwnerDocKind::Symbol,
+                "symbol:RuntimeSession::commit",
+            )],
+            true,
+        ),
+    )?;
 
     let searcher = adapter.open(&repo_id(), &revision_id(), next)?;
     let hits = searcher.search_hits(&[1.0, 1.0, 0.0], 10)?;
@@ -233,18 +248,21 @@ fn scv2_s03_restart_preserves_owner_and_corpus_identity() -> TestResult {
     let generation = ManifestGeneration::new(104);
     {
         let writer = SemanticAdapter::with_state_root(root.clone())?;
-        writer.build_batch(&scenario_batch(
-            generation,
-            None,
-            "batch:s03:sealed",
-            vec![symbol_scope(vec![symbol_embedding(
-                "commit",
-                "symbol:RuntimeSession::commit",
-                vec![1.0, 0.0, 0.0],
-            )?])],
-            Vec::new(),
-            true,
-        ))?;
+        build_resident_batch_v1(
+            &writer,
+            &scenario_batch(
+                generation,
+                None,
+                "batch:s03:sealed",
+                vec![symbol_scope(vec![symbol_embedding(
+                    "commit",
+                    "symbol:RuntimeSession::commit",
+                    vec![1.0, 0.0, 0.0],
+                )?])],
+                Vec::new(),
+                true,
+            ),
+        )?;
     }
 
     let restarted = SemanticAdapter::with_state_root(root)?;
@@ -281,8 +299,7 @@ fn scv2_s04_seal_rejects_missing_required_corpus() -> TestResult {
         .required_corpora
         .push(SemanticCorpusKindV1::ModuleCard);
 
-    let error = adapter
-        .build_batch(&batch)
+    let error = build_resident_batch_v1(&adapter, &batch)
         .expect_err("generation missing ModuleCard must not seal");
     match error {
         CoreError::Storage(message) => assert!(

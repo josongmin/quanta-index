@@ -130,6 +130,12 @@ owner = "quanta-index-core"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "core-semantic-stream"
+path = "crates/quanta-index-core/tests/semantic_stream.rs"
+owner = "quanta-index-core"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "corpus-smoke-cli"
 path = "crates/quanta-index-corpus-smoke/tests/cli_smoke.rs"
 owner = "quanta-index-corpus-smoke"
@@ -619,6 +625,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "searchd-runtime-e2e-ann-incremental-seal"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_ann_incremental_seal.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-e2e-semantic-stream-window"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_semantic_stream_window.rs"
 owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 

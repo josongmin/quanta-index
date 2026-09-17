@@ -20,10 +20,11 @@ use quanta_index_contract::{
     BatchIngestMode, ManifestGeneration, OwnerDocKind, RepoId, RevisionId, SemanticCorpusKindV1,
     SemanticReplaceScope,
 };
-use quanta_index_core::{CoreError, SemanticBatchBuildPort, SemanticIndexOpenPort};
+use quanta_index_core::{CoreError, SemanticIndexOpenPort};
 use quanta_index_semantic::{
-    SemanticAdapter, embedding_record_v1, ingest_batch_v1, inventory_persisted_generations,
-    model_contract_v1, search_scope_v1, tombstone_scope_with_semantic_owner_v1,
+    SemanticAdapter, build_resident_batch_v1, embedding_record_v1, ingest_batch_v1,
+    inventory_persisted_generations, model_contract_v1, search_scope_v1,
+    tombstone_scope_with_semantic_owner_v1,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -239,7 +240,7 @@ impl LifecycleModel {
                     tombstone_scopes,
                     seal,
                 );
-                adapter.build_batch(&batch)?;
+                build_resident_batch_v1(adapter, &batch)?;
                 self.apply_build(
                     generation,
                     base_generation,

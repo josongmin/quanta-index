@@ -34,8 +34,8 @@ use quanta_index_core::{
     RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
     RepoMapGenerationActivatePort, RepoMapOpenReportV1, RepoMapQuarantinePort, RepoMapQueryPort,
     RepoMetaIngestPort, RepoTopicIngestPort, SealedGenerationReclaimPort, SealedGenerationScanPort,
-    SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticBatchBuildPort,
-    SemanticIndexOpenPort, SemanticIngestPort, StructuralError, StructuralMatchBinding,
+    SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticIndexOpenPort, SemanticIngestPort,
+    SemanticScopeStreamBuildPort, StructuralError, StructuralMatchBinding,
     StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider,
 };
 use quanta_index_embed::{
@@ -88,7 +88,7 @@ pub struct SearchdRuntimeParts {
     pub file_ownership_ingest_port: Arc<dyn FileOwnershipIngestPort + Send + Sync>,
     pub file_contributor_ingest_port: Arc<dyn FileContributorIngestPort + Send + Sync>,
     pub repo_meta_ingest_port: Arc<dyn RepoMetaIngestPort + Send + Sync>,
-    pub sem_build_port: Arc<dyn SemanticBatchBuildPort + Send + Sync>,
+    pub sem_build_port: Arc<dyn SemanticScopeStreamBuildPort + Send + Sync>,
     pub semantic_generation_scanner: Arc<dyn SealedGenerationScanPort + Send + Sync>,
     pub semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
     pub semantic_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>,
@@ -952,6 +952,7 @@ impl SearchdRuntime {
             legacy_semantic_journal_store.as_ref(),
             sem_build_port.as_ref(),
             &semantic_root,
+            config.semantic_stream_window_policy(),
         )
         .map_err(anyhow::Error::from)?;
         let migration_micros = migration_start.elapsed().as_micros();
@@ -1014,9 +1015,12 @@ impl SearchdRuntime {
             metric_sources: embedder_metric_sources,
         } = build_semantic_embedders(config.semantic_embedder_profile(), &leased_state_root)
             .map_err(anyhow::Error::from)?;
-        let direct_sem_ingest_port: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
-            DirectSemanticMaterializer::new(Arc::clone(&sem_build_port), Arc::clone(&ledger)),
-        );
+        let semantic_materializer = Arc::new(DirectSemanticMaterializer::new(
+            Arc::clone(&sem_build_port),
+            Arc::clone(&ledger),
+        ));
+        let direct_sem_ingest_port: Arc<dyn SemanticIngestPort + Send + Sync> =
+            semantic_materializer.clone();
         let snapshots = SnapshotRegistries::new(config.snapshot_registry_policy());
         let search_corpus_materializer: Arc<DirectSearchCorpusMaterializer> = Arc::new(
             DirectSearchCorpusMaterializer::new_with_search_owned_semantics_from_env(
@@ -1035,6 +1039,7 @@ impl SearchdRuntime {
                     snapshots: snapshots.clone(),
                     idempotency: Arc::clone(&idempotency),
                     resource_policy: config.ingest_resource_policy(),
+                    semantic_stream_policy: config.semantic_stream_window_policy(),
                     auxiliary_catalog: Arc::clone(&auxiliary_parts.catalog),
                     auxiliary_coordinator: Arc::clone(&auxiliary_parts.coordinator),
                 },
@@ -1075,6 +1080,8 @@ impl SearchdRuntime {
         metric_sources.push(snapshot_source);
         let ingest_source: Arc<dyn MetricSourcePort> = search_corpus_materializer;
         metric_sources.push(ingest_source);
+        let semantic_ingest_source: Arc<dyn MetricSourcePort> = semantic_materializer;
+        metric_sources.push(semantic_ingest_source);
         let boot_source: Arc<dyn MetricSourcePort> = Arc::new(boot_inventory.clone());
         metric_sources.push(boot_source);
         let observability = Arc::new(ObservabilityScrape::new(

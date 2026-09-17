@@ -11,6 +11,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, IngestResourcePolicy, SearchCorpusIngestPort, SemanticIngestPort,
+    SemanticStreamWindowPolicy,
 };
 
 use crate::ingest_dispatcher::auxiliary::AuxiliaryMutationCoordinator;
@@ -181,6 +182,7 @@ fn reclaim_sweeps_orphans_and_defers_pinned_generations() -> TestRes {
             snapshots: snapshots.clone(),
             idempotency: memory_catalog(),
             resource_policy: IngestResourcePolicy::DEFAULT,
+            semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
             auxiliary_catalog: memory_aux_catalog(),
             auxiliary_coordinator: AuxiliaryMutationCoordinator::shared(),
         },

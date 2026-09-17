@@ -97,16 +97,32 @@ crate quanta_index_core
 │   │   │   ├── enum DenseIndexV1: pub
 │   │   │   ├── enum DenseLaneAttestationV1: pub
 │   │   │   ├── struct DenseLaneContractV1: pub
-│   │   │   ├── trait SemanticBatchBuildPort: pub
 │   │   │   ├── trait SemanticIndexOpenPort: pub
 │   │   │   ├── trait SemanticIngestPort: pub
 │   │   │   ├── struct SemanticReadiness: pub
 │   │   │   ├── struct SemanticSearchHitV1: pub
 │   │   │   ├── trait SemanticSearcher: pub
 │   │   │   └── trait TextEmbeddingProvider: pub
-│   │   └── mod service: pub(self)
-│   │       ├── struct L2UnitEmbeddingProvider: pub
-│   │       └── struct SemanticPolicy: pub
+│   │   ├── mod service: pub(self)
+│   │   │   ├── struct L2UnitEmbeddingProvider: pub
+│   │   │   └── struct SemanticPolicy: pub
+│   │   └── mod stream: pub(self)
+│   │       ├── struct ResidentOwnerGroup: pub(self)
+│   │       ├── struct ResidentScopeSource: pub
+│   │       ├── struct SemanticBatchIdentityV1: pub
+│   │       ├── struct SemanticBatchMutationsV1: pub
+│   │       ├── struct SemanticGenerationContractV1: pub
+│   │       ├── struct SemanticIngestHeaderV1: pub
+│   │       ├── trait SemanticScopeSource: pub
+│   │       ├── trait SemanticScopeStreamBuildPort: pub
+│   │       ├── struct SemanticScopeWindowV1: pub
+│   │       ├── struct SemanticStreamTallyV1: pub
+│   │       ├── struct SemanticStreamWindowPolicy: pub
+│   │       ├── struct SemanticWindowFillV1: pub
+│   │       ├── struct SemanticWindowIssuerV1: pub
+│   │       ├── struct SemanticWindowLeaseV1: pub
+│   │       ├── enum SemanticWindowPlacementV1: pub
+│   │       └── struct SemanticWindowResidencyV1: pub
 │   └── mod structural: pub
 │       ├── mod inbound: pub(self)
 │       │   ├── struct StructuralQueryRequest: pub

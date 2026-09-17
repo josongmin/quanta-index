@@ -12,11 +12,9 @@ use quanta_index_contract::{
     ExactRepoRelativePathV1, ManifestGeneration, OwnerDocKind, QueryConstraintSetV1, RepoId,
     RevisionId, SearchScopeKey, SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
 };
-use quanta_index_core::{
-    CoreError, GenerationStorageKeyV1, SemanticBatchBuildPort, SemanticIndexOpenPort,
-};
+use quanta_index_core::{CoreError, GenerationStorageKeyV1, SemanticIndexOpenPort};
 use quanta_index_semantic::{
-    SemanticAdapter, embedding_record_v1, inventory_persisted_generations,
+    SemanticAdapter, build_resident_batch_v1, embedding_record_v1, inventory_persisted_generations,
     legacy_chunk_embedding_record_v1, model_contract_v1, sealed_replace_batch_v1, search_scope_v1,
     test_support, tombstone_scope_v1, validate_persisted_generation_v2,
 };
@@ -190,7 +188,7 @@ fn build_open_roundtrip_serves_from_durable_state() -> TestResult {
         3,
     );
 
-    adapter.build_batch(&batch)?;
+    build_resident_batch_v1(&adapter, &batch)?;
 
     // Durable layout exists: manifest + both markers + a non-empty lancedb
     // dataset dir (lancedb manages its own files under `dataset/`; we assert
@@ -245,12 +243,10 @@ fn language_constraint_is_applied_before_vector_limit_and_composes_with_scope_v1
         SemanticCorpusKindV1::RawCodeFallback,
         vec![0.8, 0.2, 0.0],
     )?;
-    adapter.build_batch(&sealed_batch(
-        generation,
-        "src/shared.rs",
-        vec![python, rust],
-        3,
-    ))?;
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(generation, "src/shared.rs", vec![python, rust], 3),
+    )?;
 
     let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
     let rust_only =
@@ -281,43 +277,46 @@ fn exact_path_constraint_is_applied_before_vector_limit_v1() -> TestResult {
     let temp = tempfile::tempdir()?;
     let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     let generation = ManifestGeneration::new(82);
-    adapter.build_batch(&SemanticIngestBatch {
-        repo_id: repo_id(),
-        revision_id: revision_id(),
-        generation,
-        base_generation: None,
-        manifest_digest: "manifest:82".to_string(),
-        batch_digest: "batch:82".to_string(),
-        mode: BatchIngestMode::ReplaceGeneration,
-        model_contract: model_contract(3),
-        required_corpora: Vec::new(),
-        corpus_policy_digest: None,
-        clear_surfaces: Vec::new(),
-        replace_scopes: vec![
-            SemanticReplaceScope {
-                scope: scope("other/lib.rs"),
-                scope_digest: "scope:other-lib".to_string(),
-                embeddings: vec![embedding_record(
-                    "wrong-best",
-                    "other/lib.rs",
-                    vec![1.0, 0.0, 0.0],
-                )?],
-                cluster_memberships: Vec::new(),
-            },
-            SemanticReplaceScope {
-                scope: scope("src/lib.rs"),
-                scope_digest: "scope:src-lib".to_string(),
-                embeddings: vec![embedding_record(
-                    "requested",
-                    "src/lib.rs",
-                    vec![0.8, 0.2, 0.0],
-                )?],
-                cluster_memberships: Vec::new(),
-            },
-        ],
-        tombstone_scopes: Vec::new(),
-        seal: true,
-    })?;
+    build_resident_batch_v1(
+        &adapter,
+        &SemanticIngestBatch {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation,
+            base_generation: None,
+            manifest_digest: "manifest:82".to_string(),
+            batch_digest: "batch:82".to_string(),
+            mode: BatchIngestMode::ReplaceGeneration,
+            model_contract: model_contract(3),
+            required_corpora: Vec::new(),
+            corpus_policy_digest: None,
+            clear_surfaces: Vec::new(),
+            replace_scopes: vec![
+                SemanticReplaceScope {
+                    scope: scope("other/lib.rs"),
+                    scope_digest: "scope:other-lib".to_string(),
+                    embeddings: vec![embedding_record(
+                        "wrong-best",
+                        "other/lib.rs",
+                        vec![1.0, 0.0, 0.0],
+                    )?],
+                    cluster_memberships: Vec::new(),
+                },
+                SemanticReplaceScope {
+                    scope: scope("src/lib.rs"),
+                    scope_digest: "scope:src-lib".to_string(),
+                    embeddings: vec![embedding_record(
+                        "requested",
+                        "src/lib.rs",
+                        vec![0.8, 0.2, 0.0],
+                    )?],
+                    cluster_memberships: Vec::new(),
+                },
+            ],
+            tombstone_scopes: Vec::new(),
+            seal: true,
+        },
+    )?;
 
     let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
     let constraints = QueryConstraintSetV1::from_exact_repo_relative_path(
@@ -391,12 +390,10 @@ fn constrained_vector_search_matches_exhaustive_oracle_and_top_k_prefix_v1() -> 
             vec![0.0, 1.0, 0.0],
         )?,
     ];
-    adapter.build_batch(&sealed_batch(
-        generation,
-        "src/oracle.rs",
-        records.clone(),
-        3,
-    ))?;
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(generation, "src/oracle.rs", records.clone(), 3),
+    )?;
 
     let constraints =
         QueryConstraintSetV1::from_languages([LanguageCode::new("rust").map_err(str::to_string)?]);
@@ -460,16 +457,19 @@ fn restart_opens_prior_generation_without_replay() -> TestResult {
     let generation = ManifestGeneration::new(4);
     {
         let writer = SemanticAdapter::with_state_root(root.clone())?;
-        writer.build_batch(&sealed_batch(
-            generation,
-            "src/lib.rs",
-            vec![embedding_record(
-                "emb-a",
+        build_resident_batch_v1(
+            &writer,
+            &sealed_batch(
+                generation,
                 "src/lib.rs",
-                vec![0.0, 1.0, 0.0],
-            )?],
-            3,
-        ))?;
+                vec![embedding_record(
+                    "emb-a",
+                    "src/lib.rs",
+                    vec![0.0, 1.0, 0.0],
+                )?],
+                3,
+            ),
+        )?;
     }
 
     // Brand new adapter instance: no in-memory carryover, no journal replay.
@@ -492,7 +492,7 @@ fn replace_scope_overwrites_same_path_entries() -> TestResult {
     let temp = tempfile::tempdir()?;
     let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     let generation = ManifestGeneration::new(2);
-    adapter.build_batch(&{
+    build_resident_batch_v1(&adapter, &{
         let mut batch = sealed_batch(
             generation,
             "src/main.rs",
@@ -507,17 +507,20 @@ fn replace_scope_overwrites_same_path_entries() -> TestResult {
         batch.seal = false;
         batch
     })?;
-    adapter.build_batch(&sealed_batch(
-        generation,
-        "src/main.rs",
-        vec![embedding_record_same_owner(
-            "emb-2",
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            generation,
             "src/main.rs",
-            "owner-main",
-            vec![0.0, 1.0, 0.0],
-        )?],
-        3,
-    ))?;
+            vec![embedding_record_same_owner(
+                "emb-2",
+                "src/main.rs",
+                "owner-main",
+                vec![0.0, 1.0, 0.0],
+            )?],
+            3,
+        ),
+    )?;
 
     let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
     let hits = searcher.search(&[0.0, 1.0, 0.0], 5)?;
@@ -539,33 +542,39 @@ fn tombstone_scope_removes_existing_entries() -> TestResult {
     let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     let base = ManifestGeneration::new(1);
     let next = ManifestGeneration::new(2);
-    adapter.build_batch(&sealed_batch(
-        base,
-        "src/main.rs",
-        vec![embedding_record(
-            "emb-1",
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            base,
             "src/main.rs",
-            vec![1.0, 0.0, 0.0],
-        )?],
-        3,
-    ))?;
+            vec![embedding_record(
+                "emb-1",
+                "src/main.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+            3,
+        ),
+    )?;
     // Delta to a NEW generation cloning the sealed base, then tombstone the path.
-    adapter.build_batch(&SemanticIngestBatch {
-        repo_id: repo_id(),
-        revision_id: revision_id(),
-        generation: next,
-        base_generation: Some(base),
-        manifest_digest: "manifest:2".to_string(),
-        batch_digest: "batch:tombstone".to_string(),
-        mode: BatchIngestMode::Delta,
-        model_contract: model_contract(3),
-        required_corpora: Vec::new(),
-        corpus_policy_digest: None,
-        clear_surfaces: Vec::new(),
-        replace_scopes: Vec::new(),
-        tombstone_scopes: vec![tombstone_scope_v1("src/main.rs")],
-        seal: true,
-    })?;
+    build_resident_batch_v1(
+        &adapter,
+        &SemanticIngestBatch {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation: next,
+            base_generation: Some(base),
+            manifest_digest: "manifest:2".to_string(),
+            batch_digest: "batch:tombstone".to_string(),
+            mode: BatchIngestMode::Delta,
+            model_contract: model_contract(3),
+            required_corpora: Vec::new(),
+            corpus_policy_digest: None,
+            clear_surfaces: Vec::new(),
+            replace_scopes: Vec::new(),
+            tombstone_scopes: vec![tombstone_scope_v1("src/main.rs")],
+            seal: true,
+        },
+    )?;
 
     let searcher = adapter.open(&repo_id(), &revision_id(), next)?;
     let hits = searcher.search(&[1.0, 0.0, 0.0], 5)?;
@@ -583,18 +592,24 @@ fn generation_pin_isolates_results() -> TestResult {
     let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     let g1 = ManifestGeneration::new(1);
     let g2 = ManifestGeneration::new(2);
-    adapter.build_batch(&sealed_batch(
-        g1,
-        "a.rs",
-        vec![embedding_record("emb-a", "a.rs", vec![1.0, 0.0, 0.0])?],
-        3,
-    ))?;
-    adapter.build_batch(&sealed_batch(
-        g2,
-        "b.rs",
-        vec![embedding_record("emb-b", "b.rs", vec![0.0, 0.0, 1.0])?],
-        3,
-    ))?;
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            g1,
+            "a.rs",
+            vec![embedding_record("emb-a", "a.rs", vec![1.0, 0.0, 0.0])?],
+            3,
+        ),
+    )?;
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            g2,
+            "b.rs",
+            vec![embedding_record("emb-b", "b.rs", vec![0.0, 0.0, 1.0])?],
+            3,
+        ),
+    )?;
 
     let s1 = adapter.open(&repo_id(), &revision_id(), g1)?;
     let h1 = s1.search(&[1.0, 0.0, 0.0], 5)?;
@@ -617,22 +632,25 @@ fn sealed_empty_generation_serves_empty_hits() -> TestResult {
     let temp = tempfile::tempdir()?;
     let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     let generation = ManifestGeneration::new(5);
-    adapter.build_batch(&SemanticIngestBatch {
-        repo_id: repo_id(),
-        revision_id: revision_id(),
-        generation,
-        base_generation: None,
-        manifest_digest: "manifest:empty".to_string(),
-        batch_digest: "batch:empty".to_string(),
-        mode: BatchIngestMode::ReplaceGeneration,
-        model_contract: model_contract(3),
-        required_corpora: Vec::new(),
-        corpus_policy_digest: None,
-        clear_surfaces: Vec::new(),
-        replace_scopes: Vec::new(),
-        tombstone_scopes: Vec::new(),
-        seal: true,
-    })?;
+    build_resident_batch_v1(
+        &adapter,
+        &SemanticIngestBatch {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation,
+            base_generation: None,
+            manifest_digest: "manifest:empty".to_string(),
+            batch_digest: "batch:empty".to_string(),
+            mode: BatchIngestMode::ReplaceGeneration,
+            model_contract: model_contract(3),
+            required_corpora: Vec::new(),
+            corpus_policy_digest: None,
+            clear_surfaces: Vec::new(),
+            replace_scopes: Vec::new(),
+            tombstone_scopes: Vec::new(),
+            seal: true,
+        },
+    )?;
 
     let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
     let hits = searcher.search(&[1.0, 0.0, 0.0], 1)?;
@@ -660,7 +678,7 @@ fn unsealed_generation_open_fails_closed() -> TestResult {
         3,
     );
     batch.seal = false;
-    adapter.build_batch(&batch)?;
+    build_resident_batch_v1(&adapter, &batch)?;
 
     let Err(err) = adapter.open(&repo_id(), &revision_id(), generation) else {
         return Err("unsealed generation must not open".into());
@@ -699,7 +717,7 @@ fn build_rejects_contract_dimension_mismatch() -> TestResult {
         2,
     );
 
-    let Err(err) = adapter.build_batch(&batch) else {
+    let Err(err) = build_resident_batch_v1(&adapter, &batch) else {
         return Err("contract dimension mismatch must fail closed".into());
     };
     // The vector contract is enforced by the shared validator (QI-BB-031),
@@ -733,16 +751,19 @@ fn query_dimension_mismatch_fails_closed() -> TestResult {
     let temp = tempfile::tempdir()?;
     let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     let generation = ManifestGeneration::new(1);
-    adapter.build_batch(&sealed_batch(
-        generation,
-        "src/main.rs",
-        vec![embedding_record(
-            "emb-1",
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            generation,
             "src/main.rs",
-            vec![1.0, 0.0, 0.0],
-        )?],
-        3,
-    ))?;
+            vec![embedding_record(
+                "emb-1",
+                "src/main.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+            3,
+        ),
+    )?;
 
     let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
     let Err(err) = searcher.search(&[1.0, 0.0], 1) else {
@@ -769,16 +790,19 @@ fn corrupt_manifest_open_fails_closed() -> TestResult {
     let root = temp.path().to_path_buf();
     let adapter = SemanticAdapter::with_state_root(root.clone())?;
     let generation = ManifestGeneration::new(3);
-    adapter.build_batch(&sealed_batch(
-        generation,
-        "src/main.rs",
-        vec![embedding_record(
-            "emb-1",
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            generation,
             "src/main.rs",
-            vec![1.0, 0.0, 0.0],
-        )?],
-        3,
-    ))?;
+            vec![embedding_record(
+                "emb-1",
+                "src/main.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+            3,
+        ),
+    )?;
 
     let manifest_path = generation_dir(&root, generation).join("semantic-manifest.cbor");
     std::fs::write(&manifest_path, b"not-a-valid-cbor-manifest")?;
@@ -804,16 +828,19 @@ fn missing_lancedb_dataset_open_fails_closed() -> TestResult {
     let root = temp.path().to_path_buf();
     let adapter = SemanticAdapter::with_state_root(root.clone())?;
     let generation = ManifestGeneration::new(6);
-    adapter.build_batch(&sealed_batch(
-        generation,
-        "src/main.rs",
-        vec![embedding_record(
-            "emb-1",
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            generation,
             "src/main.rs",
-            vec![1.0, 0.0, 0.0],
-        )?],
-        3,
-    ))?;
+            vec![embedding_record(
+                "emb-1",
+                "src/main.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+            3,
+        ),
+    )?;
 
     let dataset_dir = generation_dir(&root, generation).join("dataset");
     std::fs::remove_dir_all(&dataset_dir)?;
@@ -837,12 +864,15 @@ fn scan_reports_sealed_generations_only() -> TestResult {
     let semantic_root = root.join("indexes").join("semantic");
     let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
 
-    adapter.build_batch(&sealed_batch(
-        ManifestGeneration::new(1),
-        "a.rs",
-        vec![embedding_record("emb-a", "a.rs", vec![1.0, 0.0, 0.0])?],
-        3,
-    ))?;
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            ManifestGeneration::new(1),
+            "a.rs",
+            vec![embedding_record("emb-a", "a.rs", vec![1.0, 0.0, 0.0])?],
+            3,
+        ),
+    )?;
     // Materialized-but-unsealed generation must NOT be reported.
     let mut unsealed = sealed_batch(
         ManifestGeneration::new(2),
@@ -851,7 +881,7 @@ fn scan_reports_sealed_generations_only() -> TestResult {
         3,
     );
     unsealed.seal = false;
-    adapter.build_batch(&unsealed)?;
+    build_resident_batch_v1(&adapter, &unsealed)?;
 
     let inventory = inventory_persisted_generations(&semantic_root)?;
     assert!(
@@ -886,16 +916,19 @@ fn inventory_lists_a_content_corrupted_generation_and_the_deep_witness_refuses_i
     let semantic_root = root.join("indexes").join("semantic");
     let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
     let generation = ManifestGeneration::new(20);
-    adapter.build_batch(&sealed_batch(
-        generation,
-        "scan.rs",
-        vec![embedding_record(
-            "emb-scan",
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            generation,
             "scan.rs",
-            vec![1.0, 0.0, 0.0],
-        )?],
-        3,
-    ))?;
+            vec![embedding_record(
+                "emb-scan",
+                "scan.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+            3,
+        ),
+    )?;
 
     let manifest_path = generation_dir(&semantic_root, generation).join("semantic-manifest.cbor");
     let manifest_bytes = std::fs::read(&manifest_path)?;
@@ -947,30 +980,33 @@ fn search_scoped_restricts_to_allowlist() -> TestResult {
     let temp = tempfile::tempdir()?;
     let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     let generation = ManifestGeneration::new(1);
-    adapter.build_batch(&SemanticIngestBatch {
-        repo_id: repo_id(),
-        revision_id: revision_id(),
-        generation,
-        base_generation: None,
-        manifest_digest: "manifest:1".to_string(),
-        batch_digest: "batch:1".to_string(),
-        mode: BatchIngestMode::ReplaceGeneration,
-        model_contract: model_contract(3),
-        required_corpora: Vec::new(),
-        corpus_policy_digest: None,
-        clear_surfaces: Vec::new(),
-        replace_scopes: vec![SemanticReplaceScope {
-            scope: scope("x.rs"),
-            scope_digest: "scope:x".to_string(),
-            embeddings: vec![
-                embedding_record("emb-1", "x.rs", vec![1.0, 0.0, 0.0])?,
-                embedding_record("emb-2", "x.rs", vec![0.9, 0.1, 0.0])?,
-            ],
-            cluster_memberships: Vec::new(),
-        }],
-        tombstone_scopes: Vec::new(),
-        seal: true,
-    })?;
+    build_resident_batch_v1(
+        &adapter,
+        &SemanticIngestBatch {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation,
+            base_generation: None,
+            manifest_digest: "manifest:1".to_string(),
+            batch_digest: "batch:1".to_string(),
+            mode: BatchIngestMode::ReplaceGeneration,
+            model_contract: model_contract(3),
+            required_corpora: Vec::new(),
+            corpus_policy_digest: None,
+            clear_surfaces: Vec::new(),
+            replace_scopes: vec![SemanticReplaceScope {
+                scope: scope("x.rs"),
+                scope_digest: "scope:x".to_string(),
+                embeddings: vec![
+                    embedding_record("emb-1", "x.rs", vec![1.0, 0.0, 0.0])?,
+                    embedding_record("emb-2", "x.rs", vec![0.9, 0.1, 0.0])?,
+                ],
+                cluster_memberships: Vec::new(),
+            }],
+            tombstone_scopes: Vec::new(),
+            seal: true,
+        },
+    )?;
 
     let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
     let mut allow: BTreeSet<String> = BTreeSet::new();
@@ -993,16 +1029,19 @@ fn manifest_row_count_mismatch_fails_closed() -> TestResult {
     let root = temp.path().to_path_buf();
     let adapter = SemanticAdapter::with_state_root(root.clone())?;
     let generation = ManifestGeneration::new(8);
-    adapter.build_batch(&sealed_batch(
-        generation,
-        "src/main.rs",
-        vec![embedding_record(
-            "emb-1",
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            generation,
             "src/main.rs",
-            vec![1.0, 0.0, 0.0],
-        )?],
-        3,
-    ))?;
+            vec![embedding_record(
+                "emb-1",
+                "src/main.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+            3,
+        ),
+    )?;
 
     let manifest_path = generation_dir(&root, generation).join("semantic-manifest.cbor");
     let manifest_bytes = std::fs::read(&manifest_path)?;
@@ -1063,7 +1102,7 @@ fn delta_with_missing_base_fails_closed() -> TestResult {
         seal: true,
     };
 
-    let Err(err) = adapter.build_batch(&batch) else {
+    let Err(err) = build_resident_batch_v1(&adapter, &batch) else {
         return Err("delta with absent base must fail closed".into());
     };
     match err {
@@ -1097,7 +1136,7 @@ fn replace_generation_with_base_fails_closed() -> TestResult {
     );
     batch.base_generation = Some(ManifestGeneration::new(1));
 
-    let Err(err) = adapter.build_batch(&batch) else {
+    let Err(err) = build_resident_batch_v1(&adapter, &batch) else {
         return Err("replace-generation batch with base_generation must fail closed".into());
     };
     match err {
@@ -1135,7 +1174,7 @@ fn delta_without_base_fails_closed() -> TestResult {
     batch.mode = BatchIngestMode::Delta;
     batch.base_generation = None;
 
-    let Err(err) = adapter.build_batch(&batch) else {
+    let Err(err) = build_resident_batch_v1(&adapter, &batch) else {
         return Err("delta batch without base_generation must fail closed".into());
     };
     match err {
@@ -1167,18 +1206,24 @@ fn reused_unsealed_generation_with_different_base_fails_closed() -> TestResult {
     let base_a = ManifestGeneration::new(1);
     let base_b = ManifestGeneration::new(2);
     let target = ManifestGeneration::new(16);
-    adapter.build_batch(&sealed_batch(
-        base_a,
-        "base-a.rs",
-        vec![embedding_record("emb-a", "base-a.rs", vec![1.0, 0.0, 0.0])?],
-        3,
-    ))?;
-    adapter.build_batch(&sealed_batch(
-        base_b,
-        "base-b.rs",
-        vec![embedding_record("emb-b", "base-b.rs", vec![0.0, 1.0, 0.0])?],
-        3,
-    ))?;
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            base_a,
+            "base-a.rs",
+            vec![embedding_record("emb-a", "base-a.rs", vec![1.0, 0.0, 0.0])?],
+            3,
+        ),
+    )?;
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            base_b,
+            "base-b.rs",
+            vec![embedding_record("emb-b", "base-b.rs", vec![0.0, 1.0, 0.0])?],
+            3,
+        ),
+    )?;
 
     let first = SemanticIngestBatch {
         repo_id: repo_id(),
@@ -1205,7 +1250,7 @@ fn reused_unsealed_generation_with_different_base_fails_closed() -> TestResult {
         tombstone_scopes: Vec::new(),
         seal: false,
     };
-    adapter.build_batch(&first)?;
+    build_resident_batch_v1(&adapter, &first)?;
 
     let second = SemanticIngestBatch {
         repo_id: repo_id(),
@@ -1233,7 +1278,7 @@ fn reused_unsealed_generation_with_different_base_fails_closed() -> TestResult {
         seal: false,
     };
 
-    let Err(err) = adapter.build_batch(&second) else {
+    let Err(err) = build_resident_batch_v1(&adapter, &second) else {
         return Err("reused unsealed generation with a different base must fail closed".into());
     };
     match err {
@@ -1270,7 +1315,7 @@ fn build_rejects_unsupported_distance_metric() -> TestResult {
     );
     batch.model_contract.distance_metric = EmbeddingDistanceMetric::Euclidean;
 
-    let Err(err) = adapter.build_batch(&batch) else {
+    let Err(err) = build_resident_batch_v1(&adapter, &batch) else {
         return Err("unsupported distance metric must be rejected".into());
     };
     match err {
@@ -1299,16 +1344,19 @@ fn open_cache_survives_eviction_beyond_capacity() -> TestResult {
     // Build more sealed generations than the open-cache capacity (8) and open
     // each so the early ones are evicted.
     for generation in 1..=12_u64 {
-        adapter.build_batch(&sealed_batch(
-            ManifestGeneration::new(generation),
-            "x.rs",
-            vec![embedding_record(
-                &format!("emb-{generation}"),
+        build_resident_batch_v1(
+            &adapter,
+            &sealed_batch(
+                ManifestGeneration::new(generation),
                 "x.rs",
-                vec![1.0, 0.0, 0.0],
-            )?],
-            3,
-        ))?;
+                vec![embedding_record(
+                    &format!("emb-{generation}"),
+                    "x.rs",
+                    vec![1.0, 0.0, 0.0],
+                )?],
+                3,
+            ),
+        )?;
         let warm = adapter.open(
             &repo_id(),
             &revision_id(),
@@ -1340,12 +1388,15 @@ fn concurrent_open_of_same_generation_is_consistent() -> TestResult {
     let temp = tempfile::tempdir()?;
     let adapter = Arc::new(SemanticAdapter::with_state_root(temp.path().to_path_buf())?);
     let generation = ManifestGeneration::new(1);
-    adapter.build_batch(&sealed_batch(
-        generation,
-        "x.rs",
-        vec![embedding_record("emb-1", "x.rs", vec![1.0, 0.0, 0.0])?],
-        3,
-    ))?;
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            generation,
+            "x.rs",
+            vec![embedding_record("emb-1", "x.rs", vec![1.0, 0.0, 0.0])?],
+            3,
+        ),
+    )?;
 
     let mut handles = Vec::new();
     for _worker in 0..8 {
@@ -1392,7 +1443,7 @@ fn delta_with_unsealed_base_fails_closed() -> TestResult {
         3,
     );
     base_batch.seal = false;
-    adapter.build_batch(&base_batch)?;
+    build_resident_batch_v1(&adapter, &base_batch)?;
 
     let next = ManifestGeneration::new(2);
     let delta = SemanticIngestBatch {
@@ -1416,7 +1467,7 @@ fn delta_with_unsealed_base_fails_closed() -> TestResult {
         tombstone_scopes: Vec::new(),
         seal: true,
     };
-    let Err(err) = adapter.build_batch(&delta) else {
+    let Err(err) = build_resident_batch_v1(&adapter, &delta) else {
         return Err("delta against unsealed base must fail closed".into());
     };
     match err {
@@ -1460,7 +1511,7 @@ fn validate_before_delete_preserves_prior_unsealed_rows() -> TestResult {
         3,
     );
     batch1.seal = false;
-    adapter.build_batch(&batch1)?;
+    build_resident_batch_v1(&adapter, &batch1)?;
 
     // Batch 2: try a multi-scope batch where the second scope's embedding
     // dimension does NOT match the contract. The first scope (valid) replaces
@@ -1495,7 +1546,7 @@ fn validate_before_delete_preserves_prior_unsealed_rows() -> TestResult {
         cluster_memberships: Vec::new(),
     });
 
-    let Err(err) = adapter.build_batch(&batch2) else {
+    let Err(err) = build_resident_batch_v1(&adapter, &batch2) else {
         return Err("invalid-dim scope must reject batch".into());
     };
     assert!(
@@ -1521,7 +1572,7 @@ fn validate_before_delete_preserves_prior_unsealed_rows() -> TestResult {
         tombstone_scopes: Vec::new(),
         seal: true,
     };
-    adapter.build_batch(&batch3)?;
+    build_resident_batch_v1(&adapter, &batch3)?;
 
     let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
     let hits = searcher.search(&[1.0, 0.0, 0.0], 5)?;
@@ -1555,7 +1606,7 @@ fn append_failure_preserves_prior_unsealed_rows() -> TestResult {
         3,
     );
     first.seal = false;
-    adapter.build_batch(&first)?;
+    build_resident_batch_v1(&adapter, &first)?;
 
     let mut second = sealed_batch(
         generation,
@@ -1569,7 +1620,7 @@ fn append_failure_preserves_prior_unsealed_rows() -> TestResult {
     );
     second.seal = false;
     test_support::set_append_fail_path(Some("src/main.rs"));
-    let Err(err) = adapter.build_batch(&second) else {
+    let Err(err) = build_resident_batch_v1(&adapter, &second) else {
         return Err("injected append failure must surface".into());
     };
     test_support::set_append_fail_path(None);
@@ -1578,22 +1629,25 @@ fn append_failure_preserves_prior_unsealed_rows() -> TestResult {
         "expected injected append failure storage error, got: {err:?}"
     );
 
-    adapter.build_batch(&SemanticIngestBatch {
-        repo_id: repo_id(),
-        revision_id: revision_id(),
-        generation,
-        base_generation: None,
-        manifest_digest: "manifest:15".to_string(),
-        batch_digest: "batch:15:seal".to_string(),
-        mode: BatchIngestMode::ReplaceGeneration,
-        model_contract: model_contract(3),
-        required_corpora: Vec::new(),
-        corpus_policy_digest: None,
-        clear_surfaces: Vec::new(),
-        replace_scopes: Vec::new(),
-        tombstone_scopes: Vec::new(),
-        seal: true,
-    })?;
+    build_resident_batch_v1(
+        &adapter,
+        &SemanticIngestBatch {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation,
+            base_generation: None,
+            manifest_digest: "manifest:15".to_string(),
+            batch_digest: "batch:15:seal".to_string(),
+            mode: BatchIngestMode::ReplaceGeneration,
+            model_contract: model_contract(3),
+            required_corpora: Vec::new(),
+            corpus_policy_digest: None,
+            clear_surfaces: Vec::new(),
+            replace_scopes: Vec::new(),
+            tombstone_scopes: Vec::new(),
+            seal: true,
+        },
+    )?;
 
     let searcher =
         SemanticAdapter::with_state_root(root)?.open(&repo_id(), &revision_id(), generation)?;
@@ -1731,16 +1785,19 @@ fn open_with_forged_manifest_scope_fails_closed() -> TestResult {
     let root = temp.path().to_path_buf();
     let adapter = SemanticAdapter::with_state_root(root.clone())?;
     let generation = ManifestGeneration::new(11);
-    adapter.build_batch(&sealed_batch(
-        generation,
-        "src/main.rs",
-        vec![embedding_record(
-            "emb-1",
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            generation,
             "src/main.rs",
-            vec![1.0, 0.0, 0.0],
-        )?],
-        3,
-    ))?;
+            vec![embedding_record(
+                "emb-1",
+                "src/main.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+            3,
+        ),
+    )?;
 
     let manifest_path = generation_dir(&root, generation).join("semantic-manifest.cbor");
     forge_manifest_text_field(&manifest_path, "repo_id", "repo-DIFFERENT")?;
@@ -1776,7 +1833,7 @@ fn cross_batch_dimension_mismatch_on_unsealed_generation_fails_closed() -> TestR
         3,
     );
     batch1.seal = false;
-    adapter.build_batch(&batch1)?;
+    build_resident_batch_v1(&adapter, &batch1)?;
 
     // Batch 2: same unsealed gen, contract dim=4, with a dim-4 vector so the
     // batch's own per-embedding validation passes. `ensure_table` opens the
@@ -1789,7 +1846,7 @@ fn cross_batch_dimension_mismatch_on_unsealed_generation_fails_closed() -> TestR
     );
     batch2.seal = false;
 
-    let Err(err) = adapter.build_batch(&batch2) else {
+    let Err(err) = build_resident_batch_v1(&adapter, &batch2) else {
         return Err("cross-batch dim mismatch must fail closed".into());
     };
     match err {
@@ -1823,16 +1880,19 @@ fn open_with_forged_non_cosine_distance_metric_fails_closed() -> TestResult {
     let root = temp.path().to_path_buf();
     let adapter = SemanticAdapter::with_state_root(root.clone())?;
     let generation = ManifestGeneration::new(13);
-    adapter.build_batch(&sealed_batch(
-        generation,
-        "src/main.rs",
-        vec![embedding_record(
-            "emb-1",
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            generation,
             "src/main.rs",
-            vec![1.0, 0.0, 0.0],
-        )?],
-        3,
-    ))?;
+            vec![embedding_record(
+                "emb-1",
+                "src/main.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+            3,
+        ),
+    )?;
 
     let manifest_path = generation_dir(&root, generation).join("semantic-manifest.cbor");
     forge_manifest_text_field(&manifest_path, "distance_metric", "euclidean")?;
@@ -1850,16 +1910,19 @@ fn open_with_missing_generation_contract_on_v3_manifest_fails_closed() -> TestRe
     let root = temp.path().to_path_buf();
     let adapter = SemanticAdapter::with_state_root(root.clone())?;
     let generation = ManifestGeneration::new(16);
-    adapter.build_batch(&sealed_batch(
-        generation,
-        "src/main.rs",
-        vec![embedding_record(
-            "emb-1",
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            generation,
             "src/main.rs",
-            vec![1.0, 0.0, 0.0],
-        )?],
-        3,
-    ))?;
+            vec![embedding_record(
+                "emb-1",
+                "src/main.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+            3,
+        ),
+    )?;
 
     let contract_path = generation_dir(&root, generation).join("semantic-build-contract.cbor");
     std::fs::remove_file(&contract_path)?;
@@ -1881,16 +1944,19 @@ fn legacy_v2_manifest_without_generation_contract_opens_for_compatibility() -> T
     let root = temp.path().to_path_buf();
     let adapter = SemanticAdapter::with_state_root(root.clone())?;
     let generation = ManifestGeneration::new(21);
-    adapter.build_batch(&sealed_batch(
-        generation,
-        "src/main.rs",
-        vec![embedding_record(
-            "emb-legacy",
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            generation,
             "src/main.rs",
-            vec![1.0, 0.0, 0.0],
-        )?],
-        3,
-    ))?;
+            vec![embedding_record(
+                "emb-legacy",
+                "src/main.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+            3,
+        ),
+    )?;
 
     let generation_dir = generation_dir(&root, generation);
     forge_legacy_v2_manifest(&generation_dir.join("semantic-manifest.cbor"))?;
@@ -1927,16 +1993,19 @@ fn scan_reports_legacy_v2_generation_without_generation_contract() -> TestResult
     let semantic_root = root.join("indexes").join("semantic");
     let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
     let generation = ManifestGeneration::new(22);
-    adapter.build_batch(&sealed_batch(
-        generation,
-        "scan-legacy.rs",
-        vec![embedding_record(
-            "emb-scan-legacy",
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            generation,
             "scan-legacy.rs",
-            vec![1.0, 0.0, 0.0],
-        )?],
-        3,
-    ))?;
+            vec![embedding_record(
+                "emb-scan-legacy",
+                "scan-legacy.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+            3,
+        ),
+    )?;
 
     let generation_dir = generation_dir(&semantic_root, generation);
     forge_legacy_v2_manifest(&generation_dir.join("semantic-manifest.cbor"))?;
@@ -1959,16 +2028,19 @@ fn open_with_forged_model_id_fails_closed() -> TestResult {
     let root = temp.path().to_path_buf();
     let adapter = SemanticAdapter::with_state_root(root.clone())?;
     let generation = ManifestGeneration::new(17);
-    adapter.build_batch(&sealed_batch(
-        generation,
-        "src/main.rs",
-        vec![embedding_record(
-            "emb-1",
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            generation,
             "src/main.rs",
-            vec![1.0, 0.0, 0.0],
-        )?],
-        3,
-    ))?;
+            vec![embedding_record(
+                "emb-1",
+                "src/main.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+            3,
+        ),
+    )?;
 
     let manifest_path = generation_dir(&root, generation).join("semantic-manifest.cbor");
     forge_manifest_text_field(&manifest_path, "model_id", "DIFFERENT-MODEL")?;
@@ -1986,16 +2058,19 @@ fn open_with_forged_model_version_fails_closed() -> TestResult {
     let root = temp.path().to_path_buf();
     let adapter = SemanticAdapter::with_state_root(root.clone())?;
     let generation = ManifestGeneration::new(18);
-    adapter.build_batch(&sealed_batch(
-        generation,
-        "src/main.rs",
-        vec![embedding_record(
-            "emb-1",
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            generation,
             "src/main.rs",
-            vec![1.0, 0.0, 0.0],
-        )?],
-        3,
-    ))?;
+            vec![embedding_record(
+                "emb-1",
+                "src/main.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+            3,
+        ),
+    )?;
 
     let manifest_path = generation_dir(&root, generation).join("semantic-manifest.cbor");
     forge_manifest_text_field(&manifest_path, "model_version", "2")?;
@@ -2013,16 +2088,19 @@ fn open_with_forged_normalization_fails_closed() -> TestResult {
     let root = temp.path().to_path_buf();
     let adapter = SemanticAdapter::with_state_root(root.clone())?;
     let generation = ManifestGeneration::new(19);
-    adapter.build_batch(&sealed_batch(
-        generation,
-        "src/main.rs",
-        vec![embedding_record(
-            "emb-1",
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            generation,
             "src/main.rs",
-            vec![1.0, 0.0, 0.0],
-        )?],
-        3,
-    ))?;
+            vec![embedding_record(
+                "emb-1",
+                "src/main.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+            3,
+        ),
+    )?;
 
     let manifest_path = generation_dir(&root, generation).join("semantic-manifest.cbor");
     forge_manifest_text_field(&manifest_path, "normalization", "none")?;

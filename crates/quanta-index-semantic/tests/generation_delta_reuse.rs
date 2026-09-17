@@ -24,9 +24,10 @@ use quanta_index_contract::{
     BatchIngestMode, EmbeddingRecord, ExactRepoRelativePathV1, ManifestGeneration,
     QueryConstraintSetV1, RepoId, RevisionId, SemanticIngestBatch,
 };
-use quanta_index_core::{GenerationStorageKeyV1, SemanticBatchBuildPort, SemanticIndexOpenPort};
+use quanta_index_core::{GenerationStorageKeyV1, SemanticIndexOpenPort};
 use quanta_index_semantic::{
-    SemanticAdapter, legacy_chunk_embedding_record_v1, model_contract_v1, sealed_replace_batch_v1,
+    SemanticAdapter, build_resident_batch_v1, legacy_chunk_embedding_record_v1, model_contract_v1,
+    sealed_replace_batch_v1,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -151,14 +152,17 @@ fn build_base(adapter: &SemanticAdapter, base: ManifestGeneration) -> TestResult
     let embeddings = (0..BASE_RECORDS)
         .map(|step| record(&format!("base-{step}"), BASE_PATH, step))
         .collect::<Result<Vec<_>, _>>()?;
-    adapter.build_batch(&sealed_replace_batch_v1(
-        repo_id(),
-        revision_id(),
-        base,
-        BASE_PATH,
-        embeddings,
-        DIMENSION,
-    ))?;
+    build_resident_batch_v1(
+        adapter,
+        &sealed_replace_batch_v1(
+            repo_id(),
+            revision_id(),
+            base,
+            BASE_PATH,
+            embeddings,
+            DIMENSION,
+        ),
+    )?;
     Ok(())
 }
 
@@ -179,7 +183,7 @@ fn build_delta(
     batch.mode = BatchIngestMode::Delta;
     batch.manifest_digest = "manifest:delta".to_string();
     batch.batch_digest = "batch:delta".to_string();
-    adapter.build_batch(&batch)?;
+    build_resident_batch_v1(adapter, &batch)?;
     Ok(())
 }
 
@@ -351,7 +355,7 @@ fn same_generation_second_batch_reuses_its_own_objects() -> TestResult {
         batch.seal = false;
         batch
     };
-    adapter.build_batch(&first)?;
+    build_resident_batch_v1(&adapter, &first)?;
     let after_first = inventory(&dataset_dir(&root, generation))?;
     let inodes_after_first: std::collections::BTreeSet<u64> =
         after_first.values().map(|facts| facts.inode).collect();
@@ -380,7 +384,7 @@ fn same_generation_second_batch_reuses_its_own_objects() -> TestResult {
         tombstone_scopes: Vec::new(),
         seal: true,
     };
-    adapter.build_batch(&second)?;
+    build_resident_batch_v1(&adapter, &second)?;
     let after_second = inventory(&dataset_dir(&root, generation))?;
 
     let retained = after_second

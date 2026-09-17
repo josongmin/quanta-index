@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::Result;
 use quanta_index_core::{
     IngestResourcePolicy, LexicalExecutionBudgetV1, LexicalWriterPolicy, MAX_EMBEDDING_DIMENSION,
-    RegexMatchCachePolicy,
+    RegexMatchCachePolicy, SemanticStreamWindowPolicy,
 };
 use quanta_index_embed::{
     DEFAULT_CONCURRENCY, DEFAULT_MAX_BATCH, DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST,
@@ -178,6 +178,9 @@ pub struct SearchdConfig {
     /// The resource envelope one search-corpus batch may ask the plane to
     /// hold (QI-BB-021): records, embedded text bytes and vector bytes.
     ingest_resource_policy: IngestResourcePolicy,
+    /// The window the semantic track embeds and appends a batch in
+    /// (QI-BB-021): owner scopes and vector bytes resident at once.
+    semantic_stream_window_policy: SemanticStreamWindowPolicy,
     /// The heap every open lexical generation writer may hold together, the
     /// heap one takes, and how long an idle one is kept (QI-BB-016).
     lexical_writer_policy: LexicalWriterPolicy,
@@ -203,6 +206,7 @@ impl SearchdConfig {
             query_admission_policy: ServerAdmissionPolicy::DEFAULT,
             regex_match_cache_policy: RegexMatchCachePolicy::DEFAULT,
             ingest_resource_policy: IngestResourcePolicy::DEFAULT,
+            semantic_stream_window_policy: SemanticStreamWindowPolicy::DEFAULT,
             lexical_writer_policy: LexicalWriterPolicy::DEFAULT,
             socket_access_policies: SocketAccessPolicies::PRIVATE,
         }
@@ -218,6 +222,7 @@ impl SearchdConfig {
             .with_query_admission_policy(query_admission_policy_from_env()?)
             .with_regex_match_cache_policy(regex_match_cache_policy_from_env()?)
             .with_ingest_resource_policy(ingest_resource_policy_from_env()?)
+            .with_semantic_stream_window_policy(semantic_stream_window_policy_from_env()?)
             .with_lexical_writer_policy(lexical_writer_policy_from_env()?)
             .with_socket_access_policies(socket_access_policies_from_env()?);
         let _validated = base.search_corpus_history_retention_policy()?;
@@ -341,6 +346,20 @@ impl SearchdConfig {
     #[must_use]
     pub const fn with_ingest_resource_policy(mut self, policy: IngestResourcePolicy) -> Self {
         self.ingest_resource_policy = policy;
+        self
+    }
+
+    #[must_use]
+    pub const fn semantic_stream_window_policy(&self) -> SemanticStreamWindowPolicy {
+        self.semantic_stream_window_policy
+    }
+
+    #[must_use]
+    pub const fn with_semantic_stream_window_policy(
+        mut self,
+        policy: SemanticStreamWindowPolicy,
+    ) -> Self {
+        self.semantic_stream_window_policy = policy;
         self
     }
 
@@ -687,6 +706,35 @@ where
     };
     IngestResourcePolicy::new(max_records, max_text_bytes, max_vector_bytes)
         .map_err(anyhow::Error::from)
+}
+
+/// Resolve the semantic stream window from env (QI-BB-021).
+///
+/// Each knob is optional and, unset, takes the matching field of
+/// [`SemanticStreamWindowPolicy::DEFAULT`]; zero is refused.
+///
+/// - `QUANTA_INDEX_SEMANTIC_STREAM_WINDOW_SCOPES`
+/// - `QUANTA_INDEX_SEMANTIC_STREAM_WINDOW_VECTOR_BYTES`
+pub(crate) fn semantic_stream_window_policy_from_env() -> Result<SemanticStreamWindowPolicy> {
+    semantic_stream_window_policy_from_lookup(optional_env)
+}
+
+fn semantic_stream_window_policy_from_lookup<F>(lookup: F) -> Result<SemanticStreamWindowPolicy>
+where
+    F: Fn(&str) -> Result<Option<String>>,
+{
+    const SCOPES: &str = "QUANTA_INDEX_SEMANTIC_STREAM_WINDOW_SCOPES";
+    const VECTOR_BYTES: &str = "QUANTA_INDEX_SEMANTIC_STREAM_WINDOW_VECTOR_BYTES";
+    let defaults = SemanticStreamWindowPolicy::DEFAULT;
+    let max_owner_scopes = match lookup(SCOPES)? {
+        None => defaults.max_owner_scopes(),
+        Some(raw) => required_positive_raw_usize(SCOPES, Some(raw))?,
+    };
+    let max_vector_bytes = match lookup(VECTOR_BYTES)? {
+        None => defaults.max_vector_bytes(),
+        Some(raw) => required_positive_raw_u64(VECTOR_BYTES, Some(raw))?,
+    };
+    SemanticStreamWindowPolicy::new(max_owner_scopes, max_vector_bytes).map_err(anyhow::Error::from)
 }
 
 /// Resolve the embedding cache retention from an injected lookup
@@ -1543,6 +1591,40 @@ mod tests {
         assert!(
             ingest_resource_policy_from_lookup(zero).is_err(),
             "zero is refused"
+        );
+    }
+
+    #[test]
+    fn semantic_stream_window_env_binds_each_knob_and_refuses_zero() {
+        let lookup = |name: &str| -> Result<Option<String>> {
+            Ok(match name {
+                "QUANTA_INDEX_SEMANTIC_STREAM_WINDOW_SCOPES" => Some("8".to_string()),
+                "QUANTA_INDEX_SEMANTIC_STREAM_WINDOW_VECTOR_BYTES" => Some("2048".to_string()),
+                _ => None,
+            })
+        };
+        let policy = semantic_stream_window_policy_from_lookup(lookup).expect("assembles");
+        assert_eq!(policy.max_owner_scopes(), 8);
+        assert_eq!(policy.max_vector_bytes(), 2048);
+        let unset = |_name: &str| -> Result<Option<String>> { Ok(None) };
+        assert_eq!(
+            semantic_stream_window_policy_from_lookup(unset).expect("defaults"),
+            SemanticStreamWindowPolicy::DEFAULT
+        );
+        let zero = |name: &str| -> Result<Option<String>> {
+            Ok((name == "QUANTA_INDEX_SEMANTIC_STREAM_WINDOW_VECTOR_BYTES")
+                .then(|| "0".to_string()))
+        };
+        assert!(
+            semantic_stream_window_policy_from_lookup(zero).is_err(),
+            "zero is refused"
+        );
+        let garbage = |name: &str| -> Result<Option<String>> {
+            Ok((name == "QUANTA_INDEX_SEMANTIC_STREAM_WINDOW_SCOPES").then(|| "many".to_string()))
+        };
+        assert!(
+            semantic_stream_window_policy_from_lookup(garbage).is_err(),
+            "a non-numeric knob is refused"
         );
     }
 

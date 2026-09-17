@@ -5,11 +5,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use quanta_index_contract::{
     BatchPublishReceipt, GenerationSnapshot, ManifestGeneration, SearchCorpusIngestBatch,
-    SearchPlaneTrackKind, SemanticIngestBatch,
+    SearchPlaneTrackKind,
 };
 use quanta_index_core::{
     CoreError, GenerationIdentityValidatePort, IncompleteGenerationDiscardOutcomeV1,
-    IncompleteGenerationDiscardPort,
+    IncompleteGenerationDiscardPort, SemanticIngestHeaderV1, SemanticStreamTallyV1,
 };
 
 use crate::ingest_dispatcher::errors::ERR_SEARCH_CORPUS_GENERATION_CONFLICT;
@@ -198,32 +198,39 @@ pub(super) fn batch_publish_receipt_v1(batch: &SearchCorpusIngestBatch) -> Batch
     receipt
 }
 
+/// The semantic receipt must acknowledge exactly the derived batch.
+///
+/// Its identity comes from the header, and it must count as many replace
+/// scopes as the source issued across every window (`issued`, counted on
+/// the source's side).
 pub(super) fn validate_semantic_publish_receipt_v1(
-    batch: &SemanticIngestBatch,
+    header: &SemanticIngestHeaderV1,
+    issued: SemanticStreamTallyV1,
     receipt: &BatchPublishReceipt,
 ) -> Result<(), CoreError> {
-    let expected_replace = u32::try_from(batch.replace_scopes.len()).map_err(|err| {
+    let expected_replace = u32::try_from(issued.replace_scopes).map_err(|err| {
         CoreError::InvalidContract(format!(
             "direct search-corpus materialize: semantic replace scope count overflow: {err}"
         ))
     })?;
-    let expected_tombstone = u32::try_from(batch.tombstone_scopes.len()).map_err(|err| {
-        CoreError::InvalidContract(format!(
-            "direct search-corpus materialize: semantic tombstone scope count overflow: {err}"
-        ))
-    })?;
-    let expected_clear = u32::try_from(batch.clear_surfaces.len()).map_err(|err| {
+    let expected_tombstone =
+        u32::try_from(header.mutations.tombstone_scopes.len()).map_err(|err| {
+            CoreError::InvalidContract(format!(
+                "direct search-corpus materialize: semantic tombstone scope count overflow: {err}"
+            ))
+        })?;
+    let expected_clear = u32::try_from(header.mutations.clear_surfaces.len()).map_err(|err| {
         CoreError::InvalidContract(format!(
             "direct search-corpus materialize: semantic clear surface count overflow: {err}"
         ))
     })?;
-    if receipt.generation != batch.generation
-        || receipt.manifest_digest.as_deref() != Some(batch.manifest_digest.as_str())
-        || receipt.batch_digest != batch.batch_digest
+    if receipt.generation != header.pin.manifest_generation
+        || receipt.manifest_digest.as_deref() != Some(header.batch.manifest_digest.as_str())
+        || receipt.batch_digest != header.batch.batch_digest
         || receipt.accepted_replace_scopes != expected_replace
         || receipt.accepted_tombstone_scopes != expected_tombstone
         || receipt.accepted_clear_surfaces != expected_clear
-        || receipt.sealed != batch.seal
+        || receipt.sealed != header.batch.seal
     {
         return Err(CoreError::InvalidContract(format!(
             "direct search-corpus materialize: semantic receipt does not exactly acknowledge the derived batch: receipt={receipt:?}"

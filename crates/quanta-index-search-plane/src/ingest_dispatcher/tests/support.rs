@@ -18,7 +18,9 @@ use quanta_index_core::{
     CoreError, GenerationIdentityValidatePort, IdempotencyBeginV1, IdempotencyCatalogPort,
     IdempotencyKeyV1, IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort,
     IngestResourcePolicy, RequestBudgetV1, SealedGenerationReclaimOutcomeV1,
-    SealedGenerationReclaimPort, SemanticBatchBuildPort, SemanticIngestPort, TextEmbeddingProvider,
+    SealedGenerationReclaimPort, SemanticIngestHeaderV1, SemanticIngestPort, SemanticScopeSource,
+    SemanticScopeStreamBuildPort, SemanticStreamTallyV1, SemanticStreamWindowPolicy,
+    TextEmbeddingProvider,
 };
 
 use crate::auxiliary_authority::testing::MemoryAuxiliaryCatalog;
@@ -31,6 +33,7 @@ use crate::ingest_dispatcher::search_corpus::{
 };
 use crate::ingest_dispatcher::semantic::DirectSemanticMaterializer;
 use crate::readiness::SearchCorpusHistoryRetentionReceiptV1;
+use crate::semantic_derive::assemble_semantic_batch_v1;
 use crate::{
     Ledger, SEARCH_OWNED_SEMANTIC_DIMENSION, SealedSearchCorpusAuthorityStateV1, SnapshotRegistries,
 };
@@ -189,6 +192,7 @@ macro_rules! search_corpus_materializer {
                 snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
                 idempotency: memory_catalog(),
                 resource_policy: IngestResourcePolicy::DEFAULT,
+                semantic_stream_policy: quanta_index_core::SemanticStreamWindowPolicy::DEFAULT,
                 auxiliary_catalog: memory_aux_catalog(),
                 auxiliary_coordinator: AuxiliaryMutationCoordinator::shared(),
             },
@@ -591,6 +595,7 @@ impl ZeroMutationProbe {
                 snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
                 idempotency: memory_catalog(),
                 resource_policy,
+                semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
                 auxiliary_catalog: memory_aux_catalog(),
                 auxiliary_coordinator: AuxiliaryMutationCoordinator::shared(),
             },
@@ -665,22 +670,32 @@ impl IncompleteGenerationDiscardPort for RecordingIncompleteGenerationDiscard {
 pub(super) struct MismatchedSemanticIngest;
 
 impl SemanticIngestPort for MismatchedSemanticIngest {
-    fn publish_batch(&self, batch: &SemanticIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
+    fn publish_stream(
+        &self,
+        header: &SemanticIngestHeaderV1,
+        scopes: &mut dyn SemanticScopeSource,
+    ) -> Result<BatchPublishReceipt, CoreError> {
+        while let Some(window) = scopes.next_window()? {
+            drop(window);
+        }
         let mut receipt = BatchPublishReceipt::empty_for(
-            batch.generation,
+            header.pin.manifest_generation,
             Some("mismatched-semantic-digest".to_string()),
-            batch.batch_digest.clone(),
+            header.batch.batch_digest.clone(),
         );
-        if batch.seal {
+        if header.batch.seal {
             receipt.mark_sealed();
         }
         Ok(receipt)
     }
 }
 
+/// A build port double that drains every window and keeps the batch it
+/// adds up to, plus how many windows carried it, for assertions.
 #[derive(Default)]
 pub(super) struct FakeSemanticBuilder {
     pub(super) batches: Mutex<Vec<SemanticIngestBatch>>,
+    pub(super) windows: Mutex<Vec<u64>>,
 }
 
 impl FakeSemanticBuilder {
@@ -691,15 +706,39 @@ impl FakeSemanticBuilder {
             .map_err(|err| format!("fake semantic builder poisoned: {err}"))?;
         Ok(std::mem::take(&mut *guard))
     }
+
+    /// Windows each recorded build consumed, in build order.
+    pub(super) fn windows_per_build(&self) -> Result<Vec<u64>, Box<dyn std::error::Error>> {
+        Ok(self
+            .windows
+            .lock()
+            .map_err(|err| format!("fake semantic builder poisoned: {err}"))?
+            .clone())
+    }
 }
 
-impl SemanticBatchBuildPort for FakeSemanticBuilder {
-    fn build_batch(&self, batch: &SemanticIngestBatch) -> Result<(), CoreError> {
+impl SemanticScopeStreamBuildPort for FakeSemanticBuilder {
+    fn build_stream(
+        &self,
+        header: &SemanticIngestHeaderV1,
+        scopes: &mut dyn SemanticScopeSource,
+    ) -> Result<SemanticStreamTallyV1, CoreError> {
+        let mut tally = SemanticStreamTallyV1::default();
+        let mut replace_scopes = Vec::new();
+        while let Some(window) = scopes.next_window()? {
+            tally.count_window(window.scopes().len(), window.rows()?, window.vector_bytes())?;
+            replace_scopes.extend(window.scopes().iter().cloned());
+            drop(window);
+        }
         self.batches
             .lock()
             .map_err(|err| CoreError::Storage(format!("fake semantic builder poisoned: {err}")))?
-            .push(batch.clone());
-        Ok(())
+            .push(assemble_semantic_batch_v1(header, replace_scopes));
+        self.windows
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("fake semantic builder poisoned: {err}")))?
+            .push(tally.windows);
+        Ok(tally)
     }
 }
 

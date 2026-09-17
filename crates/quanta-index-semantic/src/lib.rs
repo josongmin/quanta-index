@@ -6,7 +6,7 @@
 //! Semantic adapter — persisted, generation-scoped vector index backed by the
 //! `lancedb` crate (LDB-00 §3.2 revised decision).
 //!
-//! Implements the batch-native semantic build/open ports from
+//! Implements the scope-streamed semantic build port and the open port from
 //! `quanta-index-core::domains::semantic` against a real lancedb dataset under
 //! `{state_root}/indexes/semantic/generation-v1-{sha256(repo, revision)}/g{generation}/`. The
 //! adapter owns a `tokio::runtime::Runtime` and bridges async lancedb calls to
@@ -14,7 +14,10 @@
 //! deliberate async↔sync seam (the `disallowed_methods` rule against
 //! `block_on` is honored by a single, narrowly-scoped `#[expect]` on the
 //! crate-private `run_blocking` helper — the only `block_on` call site in
-//! the crate; both the build and query paths funnel through it).
+//! the crate; both the build and query paths funnel through it). The build
+//! drives its scope source on the calling thread, outside the runtime, and
+//! enters the seam once per storage step, so a source that embeds over a
+//! blocking transport never runs inside the async context.
 //!
 //! A sealed generation is built once (lancedb table + ANN index + scope
 //! manifest + READY/SEALED markers) and opened directly from durable state at
@@ -42,9 +45,9 @@ mod sql;
 mod vector_index;
 
 pub use semantic_ingest_fixtures_v1::{
-    embedding_record_v1, ingest_batch_v1, legacy_chunk_embedding_record_v1, model_contract_v1,
-    sealed_replace_batch_v1, search_scope_v1, tombstone_scope_v1,
-    tombstone_scope_with_semantic_owner_v1,
+    build_resident_batch_v1, embedding_record_v1, ingest_batch_v1,
+    legacy_chunk_embedding_record_v1, model_contract_v1, sealed_replace_batch_v1, search_scope_v1,
+    tombstone_scope_v1, tombstone_scope_with_semantic_owner_v1,
 };
 
 use std::fs::File;
@@ -55,8 +58,9 @@ use quanta_index_contract::{
     GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
 };
 use quanta_index_core::{
-    CoreError, GenerationIdentityValidatePort, SealedGenerationScanPort, SemanticBatchBuildPort,
-    SemanticIndexOpenPort,
+    CoreError, GenerationIdentityValidatePort, SealedGenerationScanPort, SemanticIndexOpenPort,
+    SemanticIngestHeaderV1, SemanticScopeSource, SemanticScopeStreamBuildPort,
+    SemanticStreamTallyV1, SemanticStreamWindowPolicy,
     domains::generation::{
         GenerationQuarantineReasonV1, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
         IncompleteGenerationDiscardPort, QUARANTINE_TARGET_NOT_QUARANTINED_CODE,
@@ -81,15 +85,17 @@ pub mod test_support {
 ///
 /// The state directory is typically `{state_root}/indexes/semantic` at the
 /// composition root. Owns a tokio runtime used to drive lancedb's async API
-/// behind the sync port surface.
+/// behind the sync port surface, and the window policy every streamed build
+/// admits its windows against (QI-BB-021).
 pub struct SemanticAdapter {
     state_root: PathBuf,
     runtime: Arc<tokio::runtime::Runtime>,
+    window_policy: SemanticStreamWindowPolicy,
 }
 
 /// Single crate-wide async↔sync seam funnel.
 ///
-/// Every entry from a sync port (`SemanticBatchBuildPort` /
+/// Every entry from a sync port (`SemanticScopeStreamBuildPort` /
 /// `SemanticIndexOpenPort` / `SemanticSearcher`) into the async lancedb crate
 /// routes through this one helper. Both the build path (held by
 /// `SemanticAdapter`) and the query path (held by `PersistedSemanticSearcher`)
@@ -108,10 +114,21 @@ pub(crate) fn run_blocking<F: core::future::Future>(
 }
 
 impl SemanticAdapter {
+    /// An adapter under the production window policy
+    /// ([`SemanticStreamWindowPolicy::DEFAULT`]).
+    ///
     /// Returns `Err` if the tokio runtime cannot be constructed (a rare system-
     /// resource failure). The construction would otherwise have to panic, which
     /// the workspace lint regime forbids.
     pub fn with_state_root(state_root: PathBuf) -> Result<Self, CoreError> {
+        Self::with_state_root_and_window_policy(state_root, SemanticStreamWindowPolicy::DEFAULT)
+    }
+
+    /// An adapter whose streamed builds admit windows against `window_policy`.
+    pub fn with_state_root_and_window_policy(
+        state_root: PathBuf,
+        window_policy: SemanticStreamWindowPolicy,
+    ) -> Result<Self, CoreError> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -125,16 +142,30 @@ impl SemanticAdapter {
         Ok(Self {
             state_root,
             runtime: Arc::new(runtime),
+            window_policy,
         })
+    }
+
+    /// The window policy this adapter admits streamed windows against.
+    #[must_use]
+    pub const fn window_policy(&self) -> SemanticStreamWindowPolicy {
+        self.window_policy
     }
 }
 
-impl SemanticBatchBuildPort for SemanticAdapter {
-    fn build_batch(
+impl SemanticScopeStreamBuildPort for SemanticAdapter {
+    fn build_stream(
         &self,
-        batch: &quanta_index_contract::SemanticIngestBatch,
-    ) -> Result<(), CoreError> {
-        run_blocking(&self.runtime, build::build_batch(&self.state_root, batch))
+        header: &SemanticIngestHeaderV1,
+        scopes: &mut dyn SemanticScopeSource,
+    ) -> Result<SemanticStreamTallyV1, CoreError> {
+        build::build_stream(
+            &self.runtime,
+            &self.state_root,
+            self.window_policy,
+            header,
+            scopes,
+        )
     }
 }
 

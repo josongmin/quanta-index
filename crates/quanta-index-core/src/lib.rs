@@ -66,9 +66,16 @@ pub use domains::repomap::{
 pub use domains::semantic::{
     DenseIndexEffortV1, DenseIndexLineageV1, DenseIndexTrainingV1, DenseIndexV1,
     DenseLaneAttestationV1, DenseLaneContractV1, L2_UNIT_NORM_TOLERANCE, L2UnitEmbeddingProvider,
-    SemanticBatchBuildPort, SemanticIndexOpenPort, SemanticIngestPort, SemanticPolicy,
-    SemanticQueryPort, SemanticReadiness, SemanticSearchHitV1, SemanticSearcher,
-    TextEmbeddingProvider,
+    ResidentScopeSource, SEMANTIC_STREAM_OWNER_SCOPE_OVER_WINDOW_CODE,
+    SEMANTIC_STREAM_WINDOW_EXCEEDED_CODE, SEMANTIC_STREAM_WINDOW_SCOPES,
+    SEMANTIC_STREAM_WINDOW_STILL_RESIDENT_CODE, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES,
+    SemanticBatchIdentityV1, SemanticBatchMutationsV1, SemanticGenerationContractV1,
+    SemanticIndexOpenPort, SemanticIngestHeaderV1, SemanticIngestPort, SemanticPolicy,
+    SemanticQueryPort, SemanticReadiness, SemanticScopeSource, SemanticScopeStreamBuildPort,
+    SemanticScopeWindowV1, SemanticSearchHitV1, SemanticSearcher, SemanticStreamTallyV1,
+    SemanticStreamWindowPolicy, SemanticWindowFillV1, SemanticWindowIssuerV1,
+    SemanticWindowLeaseV1, SemanticWindowPlacementV1, SemanticWindowResidencyV1,
+    TextEmbeddingProvider, build_resident_semantic_batch_v1, owner_key_v1,
 };
 pub use domains::structural::{
     StructuralError, StructuralMatchBinding, StructuralMatchCandidate, StructuralPolicy,

@@ -48,7 +48,7 @@ use quanta_index_contract::{
     StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope, StructuralTreeRecord,
     SymbolId, TextQueryRequest, TextQuerySyntax,
 };
-use quanta_index_core::IngestResourcePolicy;
+use quanta_index_core::{IngestResourcePolicy, SemanticStreamWindowPolicy};
 use quanta_index_ipc::{ClientIoPolicy, IpcError, send_request};
 use quanta_index_search_plane::{BoundedQueryObsStore, MetricSample, ObsError};
 use quanta_index_searchd::app::searchd::drive;
@@ -119,6 +119,8 @@ struct DriverSpec<'a> {
     embedder_profile: &'a SemanticEmbedderProfile,
     history_max_generations: usize,
     ingest_resource_policy: IngestResourcePolicy,
+    /// The semantic track's stream window (QI-BB-021).
+    semantic_stream_window_policy: SemanticStreamWindowPolicy,
     socket_access: &'a SocketAccessPolicies,
     /// Where the three sockets go: a fresh, unique directory the daemon
     /// creates under `/tmp` when any socket is shared (so the peers the
@@ -183,6 +185,11 @@ pub struct E2eRuntime {
     /// mode and group, and that the harness removes on stop. `None` keeps
     /// the sockets loose in the process temp dir.
     socket_directory: Option<PathBuf>,
+    /// The window the daemon's semantic track embeds and appends a batch in
+    /// (QI-BB-021). The production default holds any fixture in one window;
+    /// streaming tests narrow it through
+    /// [`Self::boot_with_semantic_stream_window_policy`].
+    semantic_stream_window_policy: SemanticStreamWindowPolicy,
     driver: Option<DriverState>,
     query_obs_store: Option<Arc<BoundedQueryObsStore>>,
     chunk_ids_by_path: BTreeMap<String, ChunkId>,
@@ -401,6 +408,17 @@ impl E2eRuntime {
         })
     }
 
+    /// Like [`Self::boot`] but runs the daemon's semantic track under
+    /// `policy` as its stream window, so a small batch streams through
+    /// several windows instead of one.
+    pub fn boot_with_semantic_stream_window_policy(
+        policy: SemanticStreamWindowPolicy,
+    ) -> AnyResult<Self> {
+        let mut runtime = Self::boot()?;
+        runtime.semantic_stream_window_policy = policy;
+        Ok(runtime)
+    }
+
     fn boot_with_profile_and_history(
         profile: SemanticEmbedderProfile,
         history_max_generations: usize,
@@ -415,6 +433,7 @@ impl E2eRuntime {
             ingest_resource_policy: IngestResourcePolicy::DEFAULT,
             socket_access: SocketAccessPolicies::PRIVATE,
             socket_directory: None,
+            semantic_stream_window_policy: SemanticStreamWindowPolicy::DEFAULT,
             driver: None,
             query_obs_store: None,
             chunk_ids_by_path: BTreeMap::new(),
@@ -522,6 +541,7 @@ impl E2eRuntime {
                 embedder_profile: &self.embedder_profile,
                 history_max_generations: self.history_max_generations,
                 ingest_resource_policy: self.ingest_resource_policy,
+                semantic_stream_window_policy: self.semantic_stream_window_policy,
                 socket_access: &self.socket_access,
                 socket_directory: self.socket_directory.as_deref(),
             })?;
@@ -2956,6 +2976,7 @@ fn build_config(spec: &DriverSpec<'_>) -> AnyResult<SearchdConfig> {
     Ok(cfg
         .with_semantic_embedder_profile(spec.embedder_profile.clone())
         .with_ingest_resource_policy(spec.ingest_resource_policy)
+        .with_semantic_stream_window_policy(spec.semantic_stream_window_policy)
         .with_socket_access_policies(spec.socket_access.clone()))
 }
 

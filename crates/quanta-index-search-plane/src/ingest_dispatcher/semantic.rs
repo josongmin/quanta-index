@@ -1,74 +1,177 @@
 //! `DirectSemanticMaterializer`: semantic-only ingest into a staged generation.
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
-use quanta_index_contract::{BatchPublishReceipt, SearchPlaneTrackKind, SemanticIngestBatch};
-use quanta_index_core::{CoreError, SemanticBatchBuildPort, SemanticIngestPort};
+use quanta_index_contract::{BatchPublishReceipt, GenerationPin, SearchPlaneTrackKind};
+use quanta_index_core::{
+    CoreError, MetricPointV1, MetricSourcePort, SemanticIngestHeaderV1, SemanticIngestPort,
+    SemanticScopeSource, SemanticScopeStreamBuildPort, SemanticStreamTallyV1,
+};
 
 use crate::Ledger;
 
 /// Direct semantic batch materializer.
 ///
-/// Writes the durable, generation-scoped semantic adapter first (rows on every
-/// batch; graph + manifest + seal on `seal`), then updates the readiness
-/// ledger. Durability lives entirely in the adapter's generation directories;
-/// there is no journal write here. A failed durable write leaves no SEALED
-/// marker and does not touch the ledger, so readiness cannot go falsely ready.
+/// Drives the durable, generation-scoped semantic adapter through its
+/// streamed build port (rows window by window on every batch; graph +
+/// manifest + seal on `seal`), then updates the readiness ledger. Durability
+/// lives entirely in the adapter's generation directories; there is no
+/// journal write here. A failed durable write leaves no SEALED marker and
+/// does not touch the ledger, so readiness cannot go falsely ready.
+///
+/// The tally the build returns is compared with the source's own: the two
+/// are counted on opposite sides of the stream, so a window the build did
+/// not append, or appended twice, is refused typed and never acknowledged.
 pub struct DirectSemanticMaterializer {
-    builder: Arc<dyn SemanticBatchBuildPort + Send + Sync>,
+    builder: Arc<dyn SemanticScopeStreamBuildPort + Send + Sync>,
     ledger: Arc<RwLock<Ledger>>,
+    stream_stats: Mutex<SemanticIngestStreamStats>,
+}
+
+/// What the streamed builds added up to (QI-BB-021).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SemanticIngestStreamStats {
+    /// Windows every build appended, over the process lifetime.
+    pub windows_total: u64,
+    /// The generation most recently built into and the most bytes of
+    /// vectors one of its windows held resident; a batch for another
+    /// generation starts the peak over.
+    pub resident_vector_bytes_peak: Option<(GenerationPin, u64)>,
+}
+
+impl SemanticIngestStreamStats {
+    fn record(&mut self, pin: &GenerationPin, tally: SemanticStreamTallyV1) {
+        self.windows_total = self.windows_total.saturating_add(tally.windows);
+        let same_generation = self
+            .resident_vector_bytes_peak
+            .as_ref()
+            .is_some_and(|(current, _peak)| current == pin);
+        self.resident_vector_bytes_peak = match self.resident_vector_bytes_peak.take() {
+            Some((current, peak)) if same_generation => {
+                Some((current, peak.max(tally.peak_vector_bytes)))
+            }
+            _other_generation_or_first => Some((pin.clone(), tally.peak_vector_bytes)),
+        };
+    }
+
+    /// The peak the gauge reports: zero before the first build.
+    #[must_use]
+    pub fn resident_vector_bytes_peak_gauge(&self) -> u64 {
+        self.resident_vector_bytes_peak
+            .as_ref()
+            .map_or(0, |(_pin, peak)| *peak)
+    }
 }
 
 impl DirectSemanticMaterializer {
     #[must_use]
     pub fn new(
-        builder: Arc<dyn SemanticBatchBuildPort + Send + Sync>,
+        builder: Arc<dyn SemanticScopeStreamBuildPort + Send + Sync>,
         ledger: Arc<RwLock<Ledger>>,
     ) -> Self {
-        Self { builder, ledger }
+        Self {
+            builder,
+            ledger,
+            stream_stats: Mutex::new(SemanticIngestStreamStats::default()),
+        }
+    }
+
+    /// What the streamed builds have added up to so far.
+    pub fn stream_stats(&self) -> Result<SemanticIngestStreamStats, CoreError> {
+        self.stream_stats
+            .lock()
+            .map(|stats| stats.clone())
+            .map_err(|err| {
+                CoreError::Storage(format!(
+                    "direct semantic materialize: stream stats poisoned: {err}"
+                ))
+            })
+    }
+
+    fn record_stream(
+        &self,
+        pin: &GenerationPin,
+        tally: SemanticStreamTallyV1,
+    ) -> Result<(), CoreError> {
+        self.stream_stats
+            .lock()
+            .map_err(|err| {
+                CoreError::Storage(format!(
+                    "direct semantic materialize: stream stats poisoned: {err}"
+                ))
+            })?
+            .record(pin, tally);
+        Ok(())
+    }
+}
+
+/// The streamed builds' tallies as scrape points, `semantic_ingest_…`
+/// (QI-BB-015): the windows appended and the observed peak of resident
+/// vector bytes for the generation most recently built into.
+impl MetricSourcePort for DirectSemanticMaterializer {
+    fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
+        let stats = self.stream_stats()?;
+        Ok(vec![
+            MetricPointV1::counter("semantic_ingest_windows_total", stats.windows_total),
+            MetricPointV1::gauge_count(
+                "semantic_ingest_resident_vector_bytes_peak",
+                stats.resident_vector_bytes_peak_gauge(),
+            ),
+        ])
     }
 }
 
 impl SemanticIngestPort for DirectSemanticMaterializer {
-    fn publish_batch(&self, batch: &SemanticIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
-        self.builder.build_batch(batch)?;
+    fn publish_stream(
+        &self,
+        header: &SemanticIngestHeaderV1,
+        scopes: &mut dyn SemanticScopeSource,
+    ) -> Result<BatchPublishReceipt, CoreError> {
+        let appended = self.builder.build_stream(header, scopes)?;
+        let issued = scopes.tally();
+        if appended != issued {
+            return Err(CoreError::InvalidContract(format!(
+                "direct semantic materialize: the build appended {appended:?} but the source issued {issued:?}"
+            )));
+        }
+        self.record_stream(&header.pin, appended)?;
         let mut guard = self.ledger.write().map_err(|err| {
             CoreError::Storage(format!(
                 "direct semantic materialize: ledger poisoned: {err}"
             ))
         })?;
         guard.materialize_track(
-            &batch.repo_id,
-            &batch.revision_id,
+            &header.pin.repo_id,
+            &header.pin.revision_id,
             SearchPlaneTrackKind::Semantic,
-            batch.generation,
-            Some(batch.manifest_digest.as_str()),
+            header.pin.manifest_generation,
+            Some(header.batch.manifest_digest.as_str()),
         );
-        if batch.seal {
+        if header.batch.seal {
             guard.seal_track_with_digest(
-                &batch.repo_id,
-                &batch.revision_id,
+                &header.pin.repo_id,
+                &header.pin.revision_id,
                 SearchPlaneTrackKind::Semantic,
-                batch.generation,
-                batch.manifest_digest.as_str(),
+                header.pin.manifest_generation,
+                header.batch.manifest_digest.as_str(),
             );
         }
         drop(guard);
         let mut receipt = BatchPublishReceipt::empty_for(
-            batch.generation,
-            Some(batch.manifest_digest.clone()),
-            batch.batch_digest.clone(),
+            header.pin.manifest_generation,
+            Some(header.batch.manifest_digest.clone()),
+            header.batch.batch_digest.clone(),
         );
-        for _scope in &batch.replace_scopes {
+        for _scope in 0..appended.replace_scopes {
             receipt.accept_replace_scope();
         }
-        for _scope in &batch.tombstone_scopes {
+        for _scope in &header.mutations.tombstone_scopes {
             receipt.accept_tombstone_scope();
         }
-        for _surface in &batch.clear_surfaces {
+        for _surface in &header.mutations.clear_surfaces {
             receipt.accept_clear_surface();
         }
-        if batch.seal {
+        if header.batch.seal {
             receipt.mark_sealed();
         }
         Ok(receipt)

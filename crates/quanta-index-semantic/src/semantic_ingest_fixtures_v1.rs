@@ -10,7 +10,23 @@ use quanta_index_contract::{
     SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope, SemanticSourceScopeKeyV1,
     SemanticTombstoneScope, SourceRoleV1, lex::LanguageCode,
 };
-use quanta_index_core::SemanticPolicy;
+use quanta_index_core::{CoreError, SemanticPolicy, build_resident_semantic_batch_v1};
+
+use crate::SemanticAdapter;
+
+/// Build an already-resident fixture batch through `adapter`'s streamed
+/// port under the adapter's own window policy, discarding the tally.
+///
+/// Fixtures hold their batches resident by construction; this is the one
+/// place they enter the production build entry, so a fixture test proves
+/// the same path a streamed batch takes.
+pub fn build_resident_batch_v1(
+    adapter: &SemanticAdapter,
+    batch: &SemanticIngestBatch,
+) -> Result<(), CoreError> {
+    let _tally = build_resident_semantic_batch_v1(adapter, batch, adapter.window_policy())?;
+    Ok(())
+}
 
 /// Build a legacy raw-chunk style embedding row with all v4 metadata fields populated.
 pub fn legacy_chunk_embedding_record_v1(

@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use quanta_index_core::{
     CoreError, IngestResourcePolicy, SearchCorpusIngestPort, SemanticIngestPort,
+    SemanticStreamWindowPolicy,
 };
 
 use crate::ingest_dispatcher::auxiliary::AuxiliaryMutationCoordinator;
@@ -171,6 +172,134 @@ fn semantic_digests_change_when_input_or_vector_changes() -> TestRes {
     }
     if !vec_a.starts_with("search-owned-vec:sha256:") {
         return Err(format!("unexpected vector digest format: {vec_a}").into());
+    }
+    Ok(())
+}
+
+// CASE-COVERS (QI-BB-021 follow-up #2): under a narrow window the same
+// 3-scope / 5-chunk batch costs one provider call PER WINDOW, the fake
+// build consumes exactly that many windows, and what it adds up to is row
+// for row what the production window derives: windowing changes residency,
+// never content. The lexical builder is only reached after the semantic
+// stream succeeded.
+#[test]
+fn corpus_derivation_embeds_one_window_per_provider_call_under_a_narrow_window() -> TestRes {
+    fn materializer_under(
+        policy: SemanticStreamWindowPolicy,
+        embedder: Arc<CountingEmbedder>,
+        semantic_builder: Arc<FakeSemanticBuilder>,
+        lexical_builder: Arc<FakeSearchCorpusBuilder>,
+    ) -> DirectSearchCorpusMaterializer {
+        let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
+            DirectSemanticMaterializer::new(semantic_builder, Arc::new(RwLock::new(Ledger::new()))),
+        );
+        DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
+            SearchCorpusMaterializerParts {
+                builder: lexical_builder,
+                ledger: Arc::new(RwLock::new(Ledger::new())),
+                semantic_ingest: semantic_materializer,
+                semantic_embedder: embedder,
+                authority: recording_search_corpus_authority(),
+                lexical_generation_validator: build_then_valid_generation(),
+                semantic_generation_validator: build_then_valid_generation(),
+                lexical_incomplete_discard: test_incomplete_generation_discard(),
+                semantic_incomplete_discard: test_incomplete_generation_discard(),
+                lexical_reclaim: no_storage_sealed_reclaim(),
+                semantic_reclaim: no_storage_sealed_reclaim(),
+                snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+                idempotency: memory_catalog(),
+                resource_policy: IngestResourcePolicy::DEFAULT,
+                semantic_stream_policy: policy,
+                auxiliary_catalog: memory_aux_catalog(),
+                auxiliary_coordinator: AuxiliaryMutationCoordinator::shared(),
+            },
+        )
+    }
+
+    let batch = multi_scope_corpus_batch()?;
+    let mut derived_under = Vec::new();
+    for (policy, expected_calls, expected_windows) in [
+        (SemanticStreamWindowPolicy::DEFAULT, 1_usize, 1_u64),
+        (
+            SemanticStreamWindowPolicy::new(
+                2,
+                SemanticStreamWindowPolicy::DEFAULT.max_vector_bytes(),
+            )?,
+            3,
+            3,
+        ),
+    ] {
+        let embedder = Arc::new(CountingEmbedder {
+            dimension: SEARCH_OWNED_SEMANTIC_DIMENSION,
+            calls: Mutex::new(0),
+        });
+        let semantic_builder = Arc::new(FakeSemanticBuilder::default());
+        let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
+        let materializer = materializer_under(
+            policy,
+            embedder.clone(),
+            semantic_builder.clone(),
+            lexical_builder.clone(),
+        );
+        let _receipt = materializer.publish_batch(&batch)?;
+        let calls = *embedder
+            .calls
+            .lock()
+            .map_err(|err| format!("counting embedder lock poisoned: {err}"))?;
+        if calls != expected_calls {
+            return Err(format!(
+                "expected {expected_calls} provider call(s) under {policy:?}, got {calls}"
+            )
+            .into());
+        }
+        if semantic_builder.windows_per_build()? != vec![expected_windows] {
+            return Err(format!(
+                "expected {expected_windows} window(s) under {policy:?}, got {:?}",
+                semantic_builder.windows_per_build()?
+            )
+            .into());
+        }
+        if lexical_builder
+            .batches
+            .lock()
+            .map_err(|err| format!("fake lexical builder poisoned: {err}"))?
+            .len()
+            != 1
+        {
+            return Err("the lexical track builds once the semantic stream succeeded".into());
+        }
+        let mut derived = semantic_builder.take()?;
+        derived_under.push(derived.pop().ok_or("one derived batch per publish")?);
+    }
+    let rows = |batch: &quanta_index_contract::SemanticIngestBatch| {
+        batch
+            .replace_scopes
+            .iter()
+            .flat_map(|scope| scope.embeddings.iter().cloned())
+            .collect::<Vec<_>>()
+    };
+    let whole = derived_under.first().ok_or("default-window derivation")?;
+    let windowed = derived_under.get(1).ok_or("narrow-window derivation")?;
+    if rows(whole) != rows(windowed) || rows(whole).len() != 5 {
+        return Err("windowing must not change the derived rows".into());
+    }
+    if windowed.replace_scopes.len() != 4
+        || windowed
+            .replace_scopes
+            .iter()
+            .map(|scope| scope.embeddings.len())
+            .collect::<Vec<_>>()
+            != vec![2, 1, 1, 1]
+    {
+        return Err(format!(
+            "a path spanning windows is one fragment per window: {:?}",
+            windowed
+                .replace_scopes
+                .iter()
+                .map(|scope| scope.embeddings.len())
+                .collect::<Vec<_>>()
+        )
+        .into());
     }
     Ok(())
 }

@@ -14,7 +14,8 @@ use quanta_index_core::{
     IdempotencyCatalogPort, IncompleteGenerationDiscardPort, IngestBatchFootprint,
     IngestResourcePolicy, MetricPointV1, MetricSourcePort, SealedGenerationReclaimOutcomeV1,
     SealedGenerationReclaimPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
-    SemanticIngestPort, TextEmbeddingProvider, count_from_usize,
+    SemanticIngestPort, SemanticScopeSource as _, SemanticStreamWindowPolicy,
+    TextEmbeddingProvider, count_from_usize,
 };
 
 use crate::auxiliary_authority::{structural_chunks_delta_rows, structural_chunks_transition};
@@ -36,7 +37,7 @@ use crate::readiness::{
 };
 use crate::semantic_derive::{
     DEFAULT_SEMANTIC_DERIVATION_MODE_V1, SemanticDerivationModeV1,
-    derive_semantic_batch_with_mode_v1, semantic_derivation_mode_from_env_v1,
+    derive_semantic_stream_with_mode_v1, semantic_derivation_mode_from_env_v1,
 };
 use crate::{
     Ledger, SealedSearchCorpusAuthorityStateV1, SnapshotKey, SnapshotRegistries,
@@ -67,6 +68,9 @@ pub struct DirectSearchCorpusMaterializer {
     /// held (QI-BB-021), and what the measured batches added up to.
     resource_policy: IngestResourcePolicy,
     resource_stats: Mutex<IngestResourceStats>,
+    /// The window the derived semantic source embeds and issues in, so at
+    /// most one window of vectors is resident during a build (QI-BB-021).
+    semantic_stream_policy: SemanticStreamWindowPolicy,
     auxiliary_catalog: Arc<dyn AuxiliaryAuthorityCatalogPort + Send + Sync>,
     auxiliary_coordinator: Arc<AuxiliaryMutationCoordinator>,
     operation_locks: [Mutex<()>; SEARCH_CORPUS_LOCK_STRIPES_V1],
@@ -121,6 +125,9 @@ pub struct SearchCorpusMaterializerParts {
     pub idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
     /// The resource envelope one batch may ask the plane to hold (QI-BB-021).
     pub resource_policy: IngestResourcePolicy,
+    /// The window the semantic source embeds and issues in (QI-BB-021); the
+    /// semantic build admits every window against the same policy.
+    pub semantic_stream_policy: SemanticStreamWindowPolicy,
     /// The structural chunk universe of every generation is durable in the
     /// auxiliary catalog before the generation is finalized, and auxiliary
     /// generations are forgotten with retention (QI-BB-020).
@@ -160,6 +167,7 @@ impl DirectSearchCorpusMaterializer {
             snapshots,
             idempotency,
             resource_policy,
+            semantic_stream_policy,
             auxiliary_catalog,
             auxiliary_coordinator,
         } = parts;
@@ -179,6 +187,7 @@ impl DirectSearchCorpusMaterializer {
             idempotency,
             resource_policy,
             resource_stats: Mutex::new(IngestResourceStats::default()),
+            semantic_stream_policy,
             auxiliary_catalog,
             auxiliary_coordinator,
             operation_locks: std::array::from_fn(|_index| Mutex::new(())),
@@ -307,26 +316,32 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
         let build_semantic = sealed_plan
             .as_ref()
             .is_none_or(SealedGenerationBuildPlanV1::build_semantic);
-        let derived_semantic_batch = if build_semantic {
-            Some(derive_semantic_batch_with_mode_v1(
+        // Search-owned semantic derivation is mandatory work for every
+        // accepted search-corpus batch; there is no lexical-only downgrade
+        // path. The semantic track builds first: its records are embedded
+        // window by window as the build asks for them (QI-BB-021), and the
+        // embedding provider is the one network dependency of a batch, so a
+        // provider failure refuses the batch before the lexical track has
+        // mutated, as the all-at-once derivation did. Every source record is
+        // validated before the first window is embedded.
+        if build_semantic {
+            let mut derived = derive_semantic_stream_with_mode_v1(
                 batch,
                 self.semantic_embedder.as_ref(),
                 self.semantic_derivation_mode,
-            )?)
-        } else {
-            None
-        };
-        if build_lexical {
-            self.builder.build_batch(batch)?;
-        }
-        // Search-owned semantic derivation is mandatory follow-on work from
-        // every accepted search-corpus batch. Failure is surfaced to the caller;
-        // there is no lexical-only downgrade path.
-        if let Some(derived_semantic_batch) = derived_semantic_batch {
+                self.semantic_stream_policy,
+            )?;
             let semantic_receipt = self
                 .semantic_ingest
-                .publish_batch(&derived_semantic_batch)?;
-            validate_semantic_publish_receipt_v1(&derived_semantic_batch, &semantic_receipt)?;
+                .publish_stream(&derived.header, &mut derived.source)?;
+            validate_semantic_publish_receipt_v1(
+                &derived.header,
+                derived.source.tally(),
+                &semantic_receipt,
+            )?;
+        }
+        if build_lexical {
+            self.builder.build_batch(batch)?;
         }
         if batch.seal {
             let (lexical, semantic) = generation_pair_from_batch_v1(batch);

@@ -10,8 +10,8 @@
     reason = "module is intentionally crate-internal; pub(crate) is the deliberate visibility — clippy normalizes to redundant but workspace `unreachable_pub = deny` blocks the alternate `pub` form"
 )]
 
-use quanta_index_contract::{BatchIngestMode, ManifestGeneration, SemanticIngestBatch};
-use quanta_index_core::CoreError;
+use quanta_index_contract::{BatchIngestMode, ManifestGeneration};
+use quanta_index_core::{CoreError, SemanticGenerationContractV1};
 
 use crate::codec::{self, cbor_serde};
 use crate::manifest::{SemanticManifest, distance_metric_token, normalization_token};
@@ -82,7 +82,7 @@ cbor_serde!(LegacyGenerationContractV1 {
 });
 
 impl GenerationContract {
-    pub(crate) fn from_batch(batch: &SemanticIngestBatch) -> Self {
+    pub(crate) fn from_batch(batch: &SemanticGenerationContractV1) -> Self {
         Self {
             format_version: GENERATION_CONTRACT_VERSION,
             mode: batch.mode,
@@ -138,7 +138,9 @@ impl GenerationContract {
         }
     }
 
-    pub(crate) fn validate_batch_shape(batch: &SemanticIngestBatch) -> Result<(), CoreError> {
+    pub(crate) fn validate_batch_shape(
+        batch: &SemanticGenerationContractV1,
+    ) -> Result<(), CoreError> {
         match (batch.mode, batch.base_generation) {
             (BatchIngestMode::ReplaceGeneration, Some(_)) => Err(CoreError::InvalidContract(
                 "semantic: ReplaceGeneration batches must not carry base_generation".to_string(),
@@ -152,7 +154,10 @@ impl GenerationContract {
         }
     }
 
-    pub(crate) fn merge_batch(&self, batch: &SemanticIngestBatch) -> Result<Self, CoreError> {
+    pub(crate) fn merge_batch(
+        &self,
+        batch: &SemanticGenerationContractV1,
+    ) -> Result<Self, CoreError> {
         Self::validate_batch_shape(batch)?;
         self.validate_format()?;
         let observed = Self::from_batch(batch);

@@ -16,7 +16,9 @@ use std::sync::{Arc, RwLock};
 use quanta_index_contract::{
     OwnerDocKind, SearchPlaneTrackKind, SemanticCorpusKindV1, SemanticIngestBatch,
 };
-use quanta_index_core::{CoreError, SealedGenerationScanPort, SemanticBatchBuildPort};
+use quanta_index_core::{
+    CoreError, SealedGenerationScanPort, SemanticScopeStreamBuildPort, SemanticStreamWindowPolicy,
+};
 use quanta_index_search_plane::Ledger;
 
 use super::boot_inventory::{TrackInventoryReportV1, seed_track_readiness};
@@ -101,12 +103,17 @@ pub(super) fn normalize_legacy_semantic_batch_v1(
 /// run or a partial crash) are skipped, so a re-run never tries to mutate a
 /// sealed generation. The legacy journal is retained after success; only a
 /// completion marker is written.
+///
+/// `window_policy` is the window the builder admits streamed batches
+/// against; the journal's decoded batches are windowed by it before they
+/// enter the same build entry a live batch takes.
 pub fn migrate_legacy_semantic_journal(
     store: &LegacySemanticJournalStore,
-    builder: &(dyn SemanticBatchBuildPort + Send + Sync),
+    builder: &(dyn SemanticScopeStreamBuildPort + Send + Sync),
     semantic_root: &Path,
+    window_policy: SemanticStreamWindowPolicy,
 ) -> Result<SemanticMigrationOutcome, CoreError> {
-    super::legacy_semantic_migration::migrate(store, builder, semantic_root)
+    super::legacy_semantic_migration::migrate(store, builder, semantic_root, window_policy)
 }
 
 /// Seed semantic readiness directly from the sealed-generation inventory.
@@ -213,8 +220,7 @@ mod tests {
     }
 
     fn build_durable(adapter: &SemanticAdapter, batch: &SemanticIngestBatch) -> TestResult {
-        use quanta_index_core::SemanticBatchBuildPort as _;
-        adapter.build_batch(batch)?;
+        quanta_index_semantic::build_resident_batch_v1(adapter, batch)?;
         Ok(())
     }
 
@@ -423,8 +429,73 @@ mod tests {
         let semantic_root: PathBuf = temp.path().join("indexes").join("semantic");
         let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
         let store = LegacySemanticJournalStore::open(temp.path().join("semantic"))?;
-        let outcome = migrate_legacy_semantic_journal(&store, &adapter, &semantic_root)?;
+        let outcome = migrate_legacy_semantic_journal(
+            &store,
+            &adapter,
+            &semantic_root,
+            adapter.window_policy(),
+        )?;
         assert_eq!(outcome, SemanticMigrationOutcome::NoLegacyJournal);
+        Ok(())
+    }
+
+    // CASE-COVERS (QI-BB-021 follow-up #2): the journal's decoded batches
+    // are windowed by the policy the adapter admits against. Under a
+    // one-owner window a sealing batch of two owners must stream as two
+    // windows and migrate; windowing it by any other policy would hand the
+    // adapter a window it refuses.
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test asserts the migration outcome and the served rows via assert macros"
+    )]
+    fn migration_streams_journal_batches_under_the_adapter_window() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let legacy_root = temp.path().join("semantic");
+        let semantic_root: PathBuf = temp.path().join("indexes").join("semantic");
+        let mut sealing = batch(
+            ManifestGeneration::new(8),
+            "emb-1",
+            "x.rs",
+            vec![1.0, 0.0, 0.0],
+            true,
+        )?;
+        sealing.replace_scopes.push(SemanticReplaceScope {
+            scope: SearchScopeKey {
+                doc_surface: SearchScopeSurface::Chunk,
+                repo_relative_path: RepoRelativePath::new("y.rs"),
+            },
+            scope_digest: "scope:y.rs".to_string(),
+            embeddings: vec![embedding("emb-2", "y.rs", vec![0.0, 1.0, 0.0])?],
+            cluster_memberships: Vec::new(),
+        });
+        LegacySemanticJournalStore::stage_for_test(&legacy_root, &[sealing])?;
+
+        let one_owner = quanta_index_core::SemanticStreamWindowPolicy::new(
+            1,
+            quanta_index_core::SEMANTIC_STREAM_WINDOW_VECTOR_BYTES,
+        )?;
+        let adapter =
+            SemanticAdapter::with_state_root_and_window_policy(semantic_root.clone(), one_owner)?;
+        let store = LegacySemanticJournalStore::open(&legacy_root)?;
+        let outcome = migrate_legacy_semantic_journal(
+            &store,
+            &adapter,
+            &semantic_root,
+            adapter.window_policy(),
+        )?;
+        assert_eq!(outcome, SemanticMigrationOutcome::Migrated { imported: 1 });
+        let searcher = adapter.open(&repo_id(), &revision_id(), ManifestGeneration::new(8))?;
+        let served: BTreeSet<String> = searcher
+            .search(&[1.0, 0.0, 0.0], 5)?
+            .iter()
+            .map(|candidate| candidate.candidate_id.clone())
+            .collect();
+        assert_eq!(
+            served,
+            BTreeSet::from(["emb-1".to_string(), "emb-2".to_string()]),
+            "both owners of the journal batch are served"
+        );
         Ok(())
     }
 
@@ -459,7 +530,12 @@ mod tests {
 
         let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
         let store = LegacySemanticJournalStore::open(&legacy_root)?;
-        let outcome = migrate_legacy_semantic_journal(&store, &adapter, &semantic_root)?;
+        let outcome = migrate_legacy_semantic_journal(
+            &store,
+            &adapter,
+            &semantic_root,
+            adapter.window_policy(),
+        )?;
         assert_eq!(outcome, SemanticMigrationOutcome::Migrated { imported: 2 });
 
         // The durable generation now exists and serves both surviving embeddings.
@@ -481,8 +557,12 @@ mod tests {
         // Re-running migration is idempotent (marker present -> AlreadyMigrated).
         drop(store);
         let store_again = LegacySemanticJournalStore::open(&legacy_root)?;
-        let outcome_again =
-            migrate_legacy_semantic_journal(&store_again, &adapter, &semantic_root)?;
+        let outcome_again = migrate_legacy_semantic_journal(
+            &store_again,
+            &adapter,
+            &semantic_root,
+            adapter.window_policy(),
+        )?;
         assert_eq!(outcome_again, SemanticMigrationOutcome::AlreadyMigrated);
 
         // Equivalence: a clean durable build of the same batches yields the same
@@ -561,7 +641,12 @@ mod tests {
         LegacySemanticJournalStore::stage_for_test(&legacy_root, &[g1, g2])?;
 
         let store = LegacySemanticJournalStore::open(&legacy_root)?;
-        let outcome = migrate_legacy_semantic_journal(&store, &adapter, &semantic_root)?;
+        let outcome = migrate_legacy_semantic_journal(
+            &store,
+            &adapter,
+            &semantic_root,
+            adapter.window_policy(),
+        )?;
         // gen 1 already sealed -> skipped; only gen 2 re-applied.
         assert_eq!(outcome, SemanticMigrationOutcome::Migrated { imported: 1 });
 
@@ -608,8 +693,12 @@ mod tests {
             &[a.clone(), b.clone(), c.clone()],
         )
         .and_then(|()| LegacySemanticJournalStore::open(resumed.path().join("semantic")))?;
-        let _outcome =
-            migrate_legacy_semantic_journal(&store, &resumed_adapter, &resumed_semantic)?;
+        let _outcome = migrate_legacy_semantic_journal(
+            &store,
+            &resumed_adapter,
+            &resumed_semantic,
+            resumed_adapter.window_policy(),
+        )?;
         let resumed_searcher =
             resumed_adapter.open(&repo_id(), &revision_id(), ManifestGeneration::new(7))?;
 

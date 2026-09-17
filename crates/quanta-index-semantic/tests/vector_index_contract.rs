@@ -23,11 +23,11 @@ use quanta_index_contract::{
 use quanta_index_core::{
     CoreError, DenseIndexEffortV1, DenseIndexLineageV1, DenseIndexTrainingV1, DenseIndexV1,
     DenseLaneAttestationV1, DenseLaneContractV1, GenerationIdentityValidatePort,
-    GenerationStorageKeyV1, SemanticBatchBuildPort, SemanticIndexOpenPort,
+    GenerationStorageKeyV1, SemanticIndexOpenPort,
 };
 use quanta_index_semantic::{
-    SemanticAdapter, legacy_chunk_embedding_record_v1, sealed_replace_batch_v1, search_scope_v1,
-    tombstone_scope_v1,
+    SemanticAdapter, build_resident_batch_v1, legacy_chunk_embedding_record_v1,
+    sealed_replace_batch_v1, search_scope_v1, tombstone_scope_v1,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -117,7 +117,7 @@ fn seal_with_scopes(
         batch.base_generation = Some(base);
         batch.mode = BatchIngestMode::Delta;
     }
-    adapter.build_batch(&batch)?;
+    build_resident_batch_v1(adapter, &batch)?;
     Ok(())
 }
 
@@ -884,7 +884,7 @@ fn the_sealed_effort_keeps_recall_against_an_exact_oracle_and_returns_exact_scor
     );
     batch.manifest_digest = format!("manifest:{}", generation.get());
     let build_started = Instant::now();
-    adapter.build_batch(&batch)?;
+    build_resident_batch_v1(&adapter, &batch)?;
     let build_millis = build_started.elapsed().as_millis();
     let index_bytes: u64 = index_files(&generation_dir(temp.path(), generation))?
         .iter()

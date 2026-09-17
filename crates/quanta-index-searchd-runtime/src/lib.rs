@@ -22,7 +22,7 @@ use quanta_index_core::{
     RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
     RepoMapGenerationActivatePort, RepoMapQuarantinePort, RepoMapQueryPort, RepoMetaIngestPort,
     RepoTopicIngestPort, SealedGenerationReclaimPort, SealedGenerationScanPort,
-    SearchCorpusBatchBuildPort, SemanticBatchBuildPort, SemanticIndexOpenPort,
+    SearchCorpusBatchBuildPort, SemanticIndexOpenPort, SemanticScopeStreamBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_lexical::regex::RegexPolicy;
@@ -52,9 +52,13 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
         config.regex_match_cache_policy(),
         config.lexical_writer_policy(),
     ));
-    let sem_adapter: Arc<SemanticAdapter> = Arc::new(SemanticAdapter::with_state_root(
-        quanta_index_semantic::semantic_state_root(&state_root),
-    )?);
+    // The semantic adapter admits every streamed window against the same
+    // policy the search plane's derived source cuts them by (QI-BB-021).
+    let sem_adapter: Arc<SemanticAdapter> =
+        Arc::new(SemanticAdapter::with_state_root_and_window_policy(
+            quanta_index_semantic::semantic_state_root(&state_root),
+            config.semantic_stream_window_policy(),
+        )?);
     let opened_repo_map =
         RepoMapGenerationStore::open(state_root.join("repo-map")).map_err(anyhow::Error::from)?;
     let repo_map_store = Arc::new(opened_repo_map.store);
@@ -102,7 +106,7 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     // The lexical adapter keeps the writer envelope and regex cache tallies
     // (QI-BB-015); nothing else built here keeps accounting of its own.
     let lexical_metric_source: Arc<dyn MetricSourcePort> = lex_adapter;
-    let sem_build_port: Arc<dyn SemanticBatchBuildPort + Send + Sync> = sem_adapter.clone();
+    let sem_build_port: Arc<dyn SemanticScopeStreamBuildPort + Send + Sync> = sem_adapter.clone();
     let semantic_generation_scanner: Arc<dyn SealedGenerationScanPort + Send + Sync> =
         sem_adapter.clone();
     let semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync> =

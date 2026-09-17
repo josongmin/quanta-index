@@ -4,7 +4,9 @@ use std::sync::{Arc, RwLock};
 use quanta_index_contract::{
     ChunkId, DirtyIngestBatch, DirtyMutation, ManifestGeneration, RepoId, RevisionId,
 };
-use quanta_index_core::{CoreError, IngestResourcePolicy, SemanticIngestPort};
+use quanta_index_core::{
+    CoreError, IngestResourcePolicy, SemanticIngestPort, SemanticStreamWindowPolicy,
+};
 
 use crate::ingest_dispatcher::auxiliary::{
     DirectHistoryMaterializer, DirectRuntimeMetadataMaterializer, dirty_publish_receipt_v1,
@@ -262,6 +264,7 @@ fn retention_forgets_auxiliary_generations_the_receipt_does_not_retain() -> Test
             snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
             idempotency: memory_catalog(),
             resource_policy: IngestResourcePolicy::DEFAULT,
+            semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
             auxiliary_catalog: catalog.clone(),
             auxiliary_coordinator: aux.coordinator,
         },

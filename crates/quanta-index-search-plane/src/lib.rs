@@ -29,7 +29,7 @@ pub use ingest_dispatcher::{
     DirectRuntimeMetadataMaterializer, DirectSearchCorpusMaterializer, DirectSemanticMaterializer,
     DirectStructuralMaterializer, HistoryIngestPort, IngestResourceStats,
     RuntimeMetadataIngestPort, SearchCorpusAuthorityWritePort, SearchCorpusMaterializerParts,
-    SearchPlaneIngestDispatcher, StructuralIngestPort,
+    SearchPlaneIngestDispatcher, SemanticIngestStreamStats, StructuralIngestPort,
 };
 pub use lowering::{lower_lexical_text_query, lower_sourcegraph_query_text};
 pub use observability::{

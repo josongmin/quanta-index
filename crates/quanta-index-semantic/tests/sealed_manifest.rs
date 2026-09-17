@@ -24,11 +24,11 @@ use quanta_index_contract::{
     SearchPlaneTrackKind,
 };
 use quanta_index_core::{
-    CoreError, GenerationIdentityValidatePort, GenerationStorageKeyV1, SemanticBatchBuildPort,
-    SemanticIndexOpenPort,
+    CoreError, GenerationIdentityValidatePort, GenerationStorageKeyV1, SemanticIndexOpenPort,
 };
 use quanta_index_semantic::{
-    SemanticAdapter, legacy_chunk_embedding_record_v1, sealed_replace_batch_v1,
+    SemanticAdapter, build_resident_batch_v1, legacy_chunk_embedding_record_v1,
+    sealed_replace_batch_v1,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -52,17 +52,20 @@ fn embedding(id: &str, path: &str, vector: Vec<f32>) -> Result<EmbeddingRecord, 
 }
 
 fn seal(adapter: &SemanticAdapter, generation: ManifestGeneration) -> TestResult {
-    adapter.build_batch(&sealed_replace_batch_v1(
-        repo(),
-        revision(),
-        generation,
-        "src/lib.rs",
-        vec![
-            embedding("emb-a", "src/lib.rs", vec![1.0, 0.0, 0.0])?,
-            embedding("emb-b", "src/lib.rs", vec![0.0, 1.0, 0.0])?,
-        ],
-        3,
-    ))?;
+    build_resident_batch_v1(
+        adapter,
+        &sealed_replace_batch_v1(
+            repo(),
+            revision(),
+            generation,
+            "src/lib.rs",
+            vec![
+                embedding("emb-a", "src/lib.rs", vec![1.0, 0.0, 0.0])?,
+                embedding("emb-b", "src/lib.rs", vec![0.0, 1.0, 0.0])?,
+            ],
+            3,
+        ),
+    )?;
     Ok(())
 }
 

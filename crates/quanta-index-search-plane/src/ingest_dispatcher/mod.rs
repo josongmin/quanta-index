@@ -44,7 +44,7 @@ pub use ports::{
 pub use search_corpus::{
     DirectSearchCorpusMaterializer, IngestResourceStats, SearchCorpusMaterializerParts,
 };
-pub use semantic::DirectSemanticMaterializer;
+pub use semantic::{DirectSemanticMaterializer, SemanticIngestStreamStats};
 
 #[cfg(test)]
 mod tests;

@@ -1,27 +1,42 @@
 //! Search-owned semantic batch derivation.
 //!
-//! Turns an accepted `SearchCorpusIngestBatch` into a `SemanticIngestBatch`.
-//! The derivation can stay on the legacy chunk-text path or migrate to typed
-//! semantic sources, but the embedder identity is always pinned into the batch's
-//! `EmbeddingModelContract`. This is the ingest counterpart to the query-time
-//! model-identity gate: both sides read the same embedder identity so a corpus
-//! vector and a query vector can never be silently produced by different models.
+//! Turns an accepted `SearchCorpusIngestBatch` into a streamed semantic
+//! batch: a [`SemanticIngestHeaderV1`] the build knows up front, and a
+//! [`DerivedSemanticScopeSource`] that embeds the batch's records one
+//! bounded window at a time as the build asks for them (QI-BB-021). The
+//! derivation can stay on the legacy chunk-text path or migrate to typed
+//! semantic sources, but the embedder identity is always pinned into the
+//! header's `EmbeddingModelContract`. This is the ingest counterpart to the
+//! query-time model-identity gate: both sides read the same embedder
+//! identity so a corpus vector and a query vector can never be silently
+//! produced by different models.
+//!
+//! Every record of the batch is validated before the first window is
+//! embedded, so a malformed batch is refused with zero bytes changed and
+//! zero provider calls; the provider is called once per window, with the
+//! window's texts together, so a window of many small scopes still packs
+//! into the fewest token-budget-bounded requests.
 //!
 //! Extracted from `ingest_dispatcher` so the routing dispatcher no longer owns
 //! embedding/redistribution/digest mechanics — it just calls
-//! [`derive_semantic_batch_from_search_corpus_batch`].
+//! [`derive_semantic_stream_with_mode_v1`].
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 
 use quanta_index_contract::{
-    CapabilityStatusV1, EmbeddingDistanceMetric, EmbeddingId, EmbeddingModelContract,
-    EmbeddingNormalization, EmbeddingRecord, OwnerDocKind, SearchCorpusIngestBatch, SearchScopeKey,
-    SearchScopeSurface, SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
+    CapabilityStatusV1, ChunkRecord, EmbeddingDistanceMetric, EmbeddingId, EmbeddingModelContract,
+    EmbeddingNormalization, EmbeddingRecord, GenerationPin, OwnerDocKind, SearchCorpusIngestBatch,
+    SearchScopeKey, SearchScopeSurface, SemanticCorpusKindV1, SemanticReplaceScope,
     SemanticSourceRecordV1, SemanticSourceScopeKeyV1, SemanticTombstoneScope, SourceRoleV1,
     canonical_order::first_canonical_order_break_v1, lex::LanguageCode, lex::SymbolKindCode,
     validate_semantic_source_record_v1,
 };
-use quanta_index_core::{CoreError, TextEmbeddingProvider};
+use quanta_index_core::{
+    CoreError, SemanticBatchIdentityV1, SemanticBatchMutationsV1, SemanticGenerationContractV1,
+    SemanticIngestHeaderV1, SemanticScopeSource, SemanticScopeWindowV1, SemanticStreamTallyV1,
+    SemanticStreamWindowPolicy, SemanticWindowFillV1, SemanticWindowIssuerV1,
+    SemanticWindowPlacementV1, TextEmbeddingProvider,
+};
 use sha2::{Digest, Sha256};
 
 const QUANTA_INDEX_SEMANTIC_DERIVE_MODE_ENV: &str = "QUANTA_INDEX_SEMANTIC_DERIVE_MODE";
@@ -110,26 +125,305 @@ fn embedding_model_contract_for(
     })
 }
 
-pub(crate) fn derive_semantic_batch_with_mode_v1(
-    batch: &SearchCorpusIngestBatch,
-    embedder: &dyn TextEmbeddingProvider,
-    mode: SemanticDerivationModeV1,
-) -> Result<SemanticIngestBatch, CoreError> {
-    match mode {
-        SemanticDerivationModeV1::LegacyAllChunkText => {
-            derive_semantic_batch_from_search_corpus_batch(batch, embedder)
+/// One accepted batch, derived: the header the build knows up front and
+/// the source that embeds its replace scopes window by window.
+pub(crate) struct DerivedSemanticStreamV1<'a> {
+    pub(crate) header: SemanticIngestHeaderV1,
+    pub(crate) source: DerivedSemanticScopeSource<'a>,
+}
+
+/// One owner scope of the producer's batch, waiting to be embedded.
+enum PendingOwnerScope<'a> {
+    /// One chunk of a legacy replace scope: each chunk is its own owner.
+    LegacyChunk {
+        scope_index: usize,
+        scope: &'a quanta_index_contract::SearchCorpusReplaceScope,
+        chunk: &'a ChunkRecord,
+    },
+    /// One validated semantic source scope: one owner and its records.
+    SemanticSource(ValidatedSemanticSourceScope<'a>),
+}
+
+impl PendingOwnerScope<'_> {
+    fn records(&self) -> usize {
+        match self {
+            Self::LegacyChunk { .. } => 1,
+            Self::SemanticSource(scope) => scope.records.len(),
         }
-        SemanticDerivationModeV1::SemanticSourcesWithLegacyFallback
-        | SemanticDerivationModeV1::SemanticSourcesOnly => {
-            derive_semantic_batch_from_semantic_sources_v1(batch, embedder, mode)
+    }
+
+    fn texts<'s>(&'s self) -> Box<dyn Iterator<Item = &'s str> + 's> {
+        match self {
+            Self::LegacyChunk { chunk, .. } => {
+                Box::new(std::iter::once(semantic_embedding_input_text(chunk)))
+            }
+            Self::SemanticSource(scope) => {
+                Box::new(scope.records.iter().map(|record| record.text.as_str()))
+            }
         }
     }
 }
 
-pub(crate) fn derive_semantic_batch_from_search_corpus_batch(
+/// The scope-at-a-time source of one derived batch.
+///
+/// Holds the producer's records borrowed and un-embedded, planned into
+/// owner scopes in canonical order; each `next_window` takes as many owner
+/// scopes as the window policy admits, embeds their texts in one provider
+/// call, and issues the embedded replace scopes as one leased window. A
+/// legacy path scope whose chunks span windows is issued as one replace
+/// scope per window; a semantic source scope is one owner and never splits.
+pub(crate) struct DerivedSemanticScopeSource<'a> {
+    embedder: &'a dyn TextEmbeddingProvider,
+    model_contract: EmbeddingModelContract,
+    policy: SemanticStreamWindowPolicy,
+    dimension: usize,
+    pending: VecDeque<PendingOwnerScope<'a>>,
+    issuer: SemanticWindowIssuerV1,
+}
+
+impl<'a> DerivedSemanticScopeSource<'a> {
+    fn new(
+        embedder: &'a dyn TextEmbeddingProvider,
+        model_contract: EmbeddingModelContract,
+        policy: SemanticStreamWindowPolicy,
+        pending: VecDeque<PendingOwnerScope<'a>>,
+    ) -> Result<Self, CoreError> {
+        let dimension = usize::try_from(model_contract.dimension).map_err(|err| {
+            CoreError::InvalidContract(format!(
+                "semantic derivation: model contract dimension overflow: {err}"
+            ))
+        })?;
+        Ok(Self {
+            embedder,
+            model_contract,
+            policy,
+            dimension,
+            pending,
+            issuer: SemanticWindowIssuerV1::new(),
+        })
+    }
+
+    /// Owner scopes still waiting to be embedded.
+    #[cfg(test)]
+    pub(crate) fn pending_owner_scopes(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// The residency every window of this source is accounted in.
+    #[cfg(test)]
+    pub(crate) const fn residency_for_tests(
+        &self,
+    ) -> &std::sync::Arc<quanta_index_core::SemanticWindowResidencyV1> {
+        self.issuer.residency()
+    }
+
+    /// Take the owner scopes of the next window off the plan.
+    fn take_next_window(&mut self) -> Result<Vec<PendingOwnerScope<'a>>, CoreError> {
+        let mut fill = SemanticWindowFillV1::default();
+        let mut taken = Vec::new();
+        while let Some(next) = self.pending.front() {
+            let bytes = SemanticStreamWindowPolicy::vector_bytes(next.records(), self.dimension)?;
+            match self.policy.place(fill, bytes)? {
+                SemanticWindowPlacementV1::Joins => {}
+                SemanticWindowPlacementV1::OpensNext => break,
+            }
+            fill.owner_scopes = fill.owner_scopes.checked_add(1).ok_or_else(|| {
+                CoreError::InvalidContract(
+                    "semantic derivation: window owner count overflow".to_string(),
+                )
+            })?;
+            fill.vector_bytes = fill.vector_bytes.checked_add(bytes).ok_or_else(|| {
+                CoreError::InvalidContract(
+                    "semantic derivation: window vector bytes overflow".to_string(),
+                )
+            })?;
+            let owner = self.pending.pop_front().ok_or_else(|| {
+                CoreError::InvalidContract(
+                    "semantic derivation: plan emptied under its own cursor".to_string(),
+                )
+            })?;
+            taken.push(owner);
+        }
+        Ok(taken)
+    }
+
+    /// Embed one window's owner scopes in ONE provider call and redistribute
+    /// the vectors back to their records in order.
+    ///
+    /// A draining iterator preserves record<->vector alignment without index
+    /// arithmetic; an underflow (fewer vectors than records) and a leftover
+    /// (more than records) both fail closed rather than silently misalign a
+    /// vector with a record.
+    fn embed_window(
+        &self,
+        owners: Vec<PendingOwnerScope<'a>>,
+    ) -> Result<Vec<SemanticReplaceScope>, CoreError> {
+        let texts: Vec<&str> = owners.iter().flat_map(PendingOwnerScope::texts).collect();
+        let all_vectors = self.embedder.embed_batch(&texts)?;
+        if all_vectors.len() != texts.len() {
+            return Err(CoreError::InvalidContract(format!(
+                "semantic derivation: embedder returned {} vectors for {} window texts",
+                all_vectors.len(),
+                texts.len()
+            )));
+        }
+        let mut vectors = all_vectors.into_iter();
+        let mut scopes: Vec<SemanticReplaceScope> = Vec::new();
+        let mut open_legacy_scope: Option<usize> = None;
+        for owner in owners {
+            match owner {
+                PendingOwnerScope::LegacyChunk {
+                    scope_index,
+                    scope,
+                    chunk,
+                } => {
+                    let vector = vectors.next().ok_or_else(|| {
+                        CoreError::InvalidContract(
+                            "semantic derivation: ran out of embedding vectors while \
+                             redistributing the window's embed result across scopes"
+                                .to_string(),
+                        )
+                    })?;
+                    let record = embedding_record_for(
+                        chunk,
+                        semantic_embedding_input_text(chunk),
+                        vector,
+                        &self.model_contract,
+                    )?;
+                    if open_legacy_scope != Some(scope_index) {
+                        scopes.push(SemanticReplaceScope {
+                            scope: scope.scope.clone(),
+                            scope_digest: scope.scope_digest.clone(),
+                            embeddings: Vec::new(),
+                            cluster_memberships: Vec::new(),
+                        });
+                        open_legacy_scope = Some(scope_index);
+                    }
+                    let fragment = scopes.last_mut().ok_or_else(|| {
+                        CoreError::InvalidContract(
+                            "semantic derivation: legacy window fragment vanished".to_string(),
+                        )
+                    })?;
+                    fragment.embeddings.push(record);
+                }
+                PendingOwnerScope::SemanticSource(validated) => {
+                    open_legacy_scope = None;
+                    let embeddings = validated
+                        .records
+                        .into_iter()
+                        .map(|record| {
+                            let vector = vectors.next().ok_or_else(|| {
+                                CoreError::InvalidContract(
+                                    "semantic derivation: ran out of embedding vectors while \
+                                     redistributing semantic source embeddings"
+                                        .to_string(),
+                                )
+                            })?;
+                            embedding_record_for_semantic_source(
+                                record,
+                                vector,
+                                &self.model_contract,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, CoreError>>()?;
+                    scopes.push(SemanticReplaceScope {
+                        scope: validated.scope,
+                        scope_digest: validated.scope_digest,
+                        embeddings,
+                        cluster_memberships: validated.cluster_memberships,
+                    });
+                }
+            }
+        }
+        if vectors.next().is_some() {
+            return Err(CoreError::InvalidContract(
+                "semantic derivation: window embed produced more vectors than the window had records"
+                    .to_string(),
+            ));
+        }
+        Ok(scopes)
+    }
+}
+
+impl SemanticScopeSource for DerivedSemanticScopeSource<'_> {
+    fn next_window(&mut self) -> Result<Option<SemanticScopeWindowV1>, CoreError> {
+        self.issuer.require_no_window_resident()?;
+        if self.pending.is_empty() {
+            return Ok(None);
+        }
+        let owners = self.take_next_window()?;
+        let scopes = self.embed_window(owners)?;
+        self.issuer.issue(scopes).map(Some)
+    }
+
+    fn tally(&self) -> SemanticStreamTallyV1 {
+        self.issuer.tally()
+    }
+}
+
+fn semantic_header_v1(
     batch: &SearchCorpusIngestBatch,
-    embedder: &dyn TextEmbeddingProvider,
-) -> Result<SemanticIngestBatch, CoreError> {
+    batch_digest: String,
+    model_contract: EmbeddingModelContract,
+    required_corpora: Vec<SemanticCorpusKindV1>,
+    corpus_policy_digest: Option<String>,
+) -> SemanticIngestHeaderV1 {
+    SemanticIngestHeaderV1 {
+        pin: GenerationPin::new(
+            batch.repo_id.clone(),
+            batch.revision_id.clone(),
+            batch.generation,
+        ),
+        contract: SemanticGenerationContractV1 {
+            mode: batch.mode,
+            base_generation: batch.base_generation,
+            model_contract,
+            required_corpora,
+            corpus_policy_digest,
+        },
+        batch: SemanticBatchIdentityV1 {
+            manifest_digest: batch.manifest_digest.clone(),
+            batch_digest,
+            seal: batch.seal,
+        },
+        mutations: SemanticBatchMutationsV1 {
+            clear_surfaces: batch.clear_surfaces.clone(),
+            tombstone_scopes: semantic_tombstone_scopes_v1(batch),
+        },
+    }
+}
+
+pub(crate) fn derive_semantic_stream_with_mode_v1<'a>(
+    batch: &'a SearchCorpusIngestBatch,
+    embedder: &'a dyn TextEmbeddingProvider,
+    mode: SemanticDerivationModeV1,
+    policy: SemanticStreamWindowPolicy,
+) -> Result<DerivedSemanticStreamV1<'a>, CoreError> {
+    match mode {
+        SemanticDerivationModeV1::LegacyAllChunkText => {
+            derive_semantic_stream_from_search_corpus_batch(batch, embedder, policy)
+        }
+        SemanticDerivationModeV1::SemanticSourcesWithLegacyFallback
+        | SemanticDerivationModeV1::SemanticSourcesOnly => {
+            derive_semantic_stream_from_semantic_sources_v1(batch, embedder, mode, policy)
+        }
+    }
+}
+
+fn require_embedder_dimension(embedder: &dyn TextEmbeddingProvider) -> Result<(), CoreError> {
+    if embedder.dimension() == 0 {
+        return Err(CoreError::InvalidContract(
+            "semantic derivation: embedding dimension must be non-zero".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn derive_semantic_stream_from_search_corpus_batch<'a>(
+    batch: &'a SearchCorpusIngestBatch,
+    embedder: &'a dyn TextEmbeddingProvider,
+    policy: SemanticStreamWindowPolicy,
+) -> Result<DerivedSemanticStreamV1<'a>, CoreError> {
     batch
         .validate_surface_mutations_v1()
         .map_err(|err| CoreError::InvalidContract(format!("semantic derivation: {err}")))?;
@@ -139,125 +433,53 @@ pub(crate) fn derive_semantic_batch_from_search_corpus_batch(
                 .to_string(),
         ));
     }
-    let dimension = embedder.dimension();
-    if dimension == 0 {
-        return Err(CoreError::InvalidContract(
-            "semantic derivation: embedding dimension must be non-zero".to_string(),
-        ));
-    }
+    require_embedder_dimension(embedder)?;
     let model_contract = embedding_model_contract_for(embedder, LEGACY_CHUNK_POLICY_DIGEST, None)?;
-    // Embed the WHOLE batch in one call: gather every chunk text across ALL
-    // scopes and hand them to the embedder together, so a real provider packs
-    // them into the fewest token-budget-bounded requests (one network round trip
-    // can carry many scopes/files). Embedding per scope instead forces at least
-    // one request per scope — in practice one per file — which provider telemetry
-    // confirmed dominates ingest cost. The deterministic hash embedder is
-    // unaffected: its per-text vectors are identical regardless of batching.
-    let all_texts: Vec<&str> = batch
+    let header = semantic_header_v1(
+        batch,
+        format!("{}:semantic-derive", batch.batch_digest),
+        model_contract,
+        vec![SemanticCorpusKindV1::RawCodeFallback],
+        None,
+    );
+    // Every chunk is its own owner scope, in producer order: a path whose
+    // chunks do not fit one window is issued as one replace scope per
+    // window, which the build handles exactly as one, because it deletes
+    // and appends by owner.
+    let pending = batch
         .replace_scopes
         .iter()
-        .flat_map(|scope| scope.chunks.iter().map(|chunk| chunk.text.as_ref()))
-        .collect();
-    let all_vectors = embedder.embed_batch(&all_texts)?;
-    if all_vectors.len() != all_texts.len() {
-        return Err(CoreError::InvalidContract(format!(
-            "semantic derivation: embedder returned {} vectors for {} batched chunk texts",
-            all_vectors.len(),
-            all_texts.len()
-        )));
-    }
-
-    // Redistribute the flat vectors back to their scopes IN ORDER. A draining
-    // iterator preserves chunk<->vector alignment without index arithmetic; an
-    // underflow (fewer vectors than chunks) and a leftover (more than chunks)
-    // both fail closed rather than silently misalign a vector with a chunk.
-    let mut vectors = all_vectors.into_iter();
-    let replace_scopes = batch
-        .replace_scopes
-        .iter()
-        .map(|scope| {
-            let embeddings = scope
+        .enumerate()
+        .flat_map(|(scope_index, scope)| {
+            scope
                 .chunks
                 .iter()
-                .map(|chunk| {
-                    let vector = vectors.next().ok_or_else(|| {
-                        CoreError::InvalidContract(
-                            "semantic derivation: ran out of embedding vectors while \
-                             redistributing the batched embed result across scopes"
-                                .to_string(),
-                        )
-                    })?;
-                    embedding_record_for(
-                        chunk,
-                        semantic_embedding_input_text(chunk),
-                        vector,
-                        &model_contract,
-                    )
+                .map(move |chunk| PendingOwnerScope::LegacyChunk {
+                    scope_index,
+                    scope,
+                    chunk,
                 })
-                .collect::<Result<Vec<_>, CoreError>>()?;
-            Ok(SemanticReplaceScope {
-                scope: scope.scope.clone(),
-                scope_digest: scope.scope_digest.clone(),
-                embeddings,
-                cluster_memberships: Vec::new(),
-            })
         })
-        .collect::<Result<Vec<_>, CoreError>>()?;
-    if vectors.next().is_some() {
-        return Err(CoreError::InvalidContract(
-            "semantic derivation: batched embed produced more vectors than the batch had chunks"
-                .to_string(),
-        ));
-    }
-    Ok(SemanticIngestBatch {
-        repo_id: batch.repo_id.clone(),
-        revision_id: batch.revision_id.clone(),
-        generation: batch.generation,
-        base_generation: batch.base_generation,
-        manifest_digest: batch.manifest_digest.clone(),
-        batch_digest: format!("{}:semantic-derive", batch.batch_digest),
-        mode: batch.mode,
-        model_contract,
-        required_corpora: vec![SemanticCorpusKindV1::RawCodeFallback],
-        corpus_policy_digest: None,
-        clear_surfaces: batch.clear_surfaces.clone(),
-        replace_scopes,
-        tombstone_scopes: batch
-            .tombstone_scopes
-            .iter()
-            .map(|scope| quanta_index_contract::SemanticTombstoneScope {
-                scope: Some(scope.scope.clone()),
-                semantic_scope: None,
-            })
-            .chain(
-                batch
-                    .semantic_tombstone_scopes
-                    .iter()
-                    .cloned()
-                    .map(|scope| SemanticTombstoneScope {
-                        scope: None,
-                        semantic_scope: Some(scope),
-                    }),
-            )
-            .collect(),
-        seal: batch.seal,
-    })
+        .collect();
+    let source = DerivedSemanticScopeSource::new(
+        embedder,
+        header.contract.model_contract.clone(),
+        policy,
+        pending,
+    )?;
+    Ok(DerivedSemanticStreamV1 { header, source })
 }
 
-pub(crate) fn derive_semantic_batch_from_semantic_sources_v1(
-    batch: &SearchCorpusIngestBatch,
-    embedder: &dyn TextEmbeddingProvider,
+pub(crate) fn derive_semantic_stream_from_semantic_sources_v1<'a>(
+    batch: &'a SearchCorpusIngestBatch,
+    embedder: &'a dyn TextEmbeddingProvider,
     mode: SemanticDerivationModeV1,
-) -> Result<SemanticIngestBatch, CoreError> {
+    policy: SemanticStreamWindowPolicy,
+) -> Result<DerivedSemanticStreamV1<'a>, CoreError> {
     batch
         .validate_surface_mutations_v1()
         .map_err(|err| CoreError::InvalidContract(format!("semantic derivation: {err}")))?;
-    let dimension = embedder.dimension();
-    if dimension == 0 {
-        return Err(CoreError::InvalidContract(
-            "semantic derivation: embedding dimension must be non-zero".to_string(),
-        ));
-    }
+    require_embedder_dimension(embedder)?;
     let has_semantic_lifecycle_operation = !batch.semantic_tombstone_scopes.is_empty()
         || !batch.tombstone_scopes.is_empty()
         || !batch.clear_surfaces.is_empty()
@@ -273,28 +495,35 @@ pub(crate) fn derive_semantic_batch_from_semantic_sources_v1(
                             .to_string(),
                     ));
                 }
-                let mut legacy = derive_semantic_batch_from_search_corpus_batch(batch, embedder)?;
-                legacy.batch_digest = format!(
-                    "{}:semantic-derive:legacy-fallback-empty-semantic-sources",
-                    batch.batch_digest
-                );
-                legacy.model_contract = embedding_model_contract_for(
+                // The fallback marker describes how these embeddings were
+                // rendered, not a different generation-wide corpus policy.
+                // Keeping the corpus policy stable lets a later mutation-free
+                // seal merge with the generation contract created by this
+                // replacement batch. The digests every record carries bind
+                // the model identity and dimension, which both contracts
+                // share, so the rendered rows are the same under either.
+                let model_contract = embedding_model_contract_for(
                     embedder,
                     SEMANTIC_SOURCE_POLICY_DIGEST,
                     Some(SEMANTIC_SOURCE_FALLBACK_VIEW_POLICY_DIGEST),
                 )?;
-                // The fallback marker describes how these embeddings were rendered,
-                // not a different generation-wide corpus policy. Keeping the corpus
-                // policy stable lets a later mutation-free seal merge with the
-                // generation contract created by this replacement batch.
-                legacy.corpus_policy_digest = Some(SEMANTIC_SOURCE_POLICY_DIGEST.to_string());
+                let mut legacy =
+                    derive_semantic_stream_from_search_corpus_batch(batch, embedder, policy)?;
+                legacy.header.batch.batch_digest = format!(
+                    "{}:semantic-derive:legacy-fallback-empty-semantic-sources",
+                    batch.batch_digest
+                );
+                legacy.header.contract.model_contract = model_contract.clone();
+                legacy.header.contract.corpus_policy_digest =
+                    Some(SEMANTIC_SOURCE_POLICY_DIGEST.to_string());
+                legacy.source.model_contract = model_contract;
                 Ok(legacy)
             }
             SemanticDerivationModeV1::SemanticSourcesOnly => Err(CoreError::InvalidContract(
                 "semantic derivation: semantic sources required in semantic_only mode".to_string(),
             )),
             SemanticDerivationModeV1::LegacyAllChunkText => {
-                derive_semantic_batch_from_search_corpus_batch(batch, embedder)
+                derive_semantic_stream_from_search_corpus_batch(batch, embedder, policy)
             }
         };
     }
@@ -305,66 +534,24 @@ pub(crate) fn derive_semantic_batch_from_semantic_sources_v1(
         Some(SEMANTIC_SOURCE_VIEW_POLICY_DIGEST),
     )?;
     let required_corpora = required_corpora_for_semantic_sources_v1(&validated_scopes);
-    let all_texts: Vec<&str> = validated_scopes
-        .iter()
-        .flat_map(|scope| scope.records.iter().map(|record| record.text.as_str()))
-        .collect();
-    let all_vectors = embedder.embed_batch(&all_texts)?;
-    if all_vectors.len() != all_texts.len() {
-        return Err(CoreError::InvalidContract(format!(
-            "semantic derivation: embedder returned {} vectors for {} semantic source texts",
-            all_vectors.len(),
-            all_texts.len()
-        )));
-    }
-    let mut vectors = all_vectors.into_iter();
-    let replace_scopes = validated_scopes
-        .into_iter()
-        .map(|scope| {
-            let embeddings = scope
-                .records
-                .into_iter()
-                .map(|record| {
-                    let vector = vectors.next().ok_or_else(|| {
-                        CoreError::InvalidContract(
-                            "semantic derivation: ran out of embedding vectors while \
-                             redistributing semantic source embeddings"
-                                .to_string(),
-                        )
-                    })?;
-                    embedding_record_for_semantic_source(record, vector, &model_contract)
-                })
-                .collect::<Result<Vec<_>, CoreError>>()?;
-            Ok(SemanticReplaceScope {
-                scope: scope.scope,
-                scope_digest: scope.scope_digest,
-                embeddings,
-                cluster_memberships: scope.cluster_memberships,
-            })
-        })
-        .collect::<Result<Vec<_>, CoreError>>()?;
-    if vectors.next().is_some() {
-        return Err(CoreError::InvalidContract(
-            "semantic derivation: semantic source embed produced more vectors than the batch had sources"
-                .to_string(),
-        ));
-    }
-    Ok(SemanticIngestBatch {
-        repo_id: batch.repo_id.clone(),
-        revision_id: batch.revision_id.clone(),
-        generation: batch.generation,
-        base_generation: batch.base_generation,
-        manifest_digest: batch.manifest_digest.clone(),
-        batch_digest: format!("{}:semantic-derive:semantic-source-v1", batch.batch_digest),
-        mode: batch.mode,
+    let header = semantic_header_v1(
+        batch,
+        format!("{}:semantic-derive:semantic-source-v1", batch.batch_digest),
         model_contract,
         required_corpora,
-        corpus_policy_digest: Some(SEMANTIC_SOURCE_POLICY_DIGEST.to_string()),
-        clear_surfaces: batch.clear_surfaces.clone(),
-        replace_scopes,
-        tombstone_scopes: semantic_tombstone_scopes_v1(batch),
-        seal: batch.seal,
-    })
+        Some(SEMANTIC_SOURCE_POLICY_DIGEST.to_string()),
+    );
+    let pending = validated_scopes
+        .into_iter()
+        .map(PendingOwnerScope::SemanticSource)
+        .collect();
+    let source = DerivedSemanticScopeSource::new(
+        embedder,
+        header.contract.model_contract.clone(),
+        policy,
+        pending,
+    )?;
+    Ok(DerivedSemanticStreamV1 { header, source })
 }
 
 fn embedding_record_for(
@@ -862,10 +1049,80 @@ fn sha256_hex(parts: &[&[u8]]) -> String {
     hex
 }
 
+/// Reassemble one resident `SemanticIngestBatch` from a header and the
+/// replace scopes a stream issued, for tests that compare derived batches.
+#[cfg(test)]
+pub(crate) fn assemble_semantic_batch_v1(
+    header: &SemanticIngestHeaderV1,
+    replace_scopes: Vec<SemanticReplaceScope>,
+) -> quanta_index_contract::SemanticIngestBatch {
+    quanta_index_contract::SemanticIngestBatch {
+        repo_id: header.pin.repo_id.clone(),
+        revision_id: header.pin.revision_id.clone(),
+        generation: header.pin.manifest_generation,
+        base_generation: header.contract.base_generation,
+        manifest_digest: header.batch.manifest_digest.clone(),
+        batch_digest: header.batch.batch_digest.clone(),
+        mode: header.contract.mode,
+        model_contract: header.contract.model_contract.clone(),
+        required_corpora: header.contract.required_corpora.clone(),
+        corpus_policy_digest: header.contract.corpus_policy_digest.clone(),
+        clear_surfaces: header.mutations.clear_surfaces.clone(),
+        replace_scopes,
+        tombstone_scopes: header.mutations.tombstone_scopes.clone(),
+        seal: header.batch.seal,
+    }
+}
+
+/// Drain a derived stream window by window into one resident batch.
+#[cfg(test)]
+pub(crate) fn drain_semantic_stream_v1(
+    mut derived: DerivedSemanticStreamV1<'_>,
+) -> Result<quanta_index_contract::SemanticIngestBatch, CoreError> {
+    let mut replace_scopes = Vec::new();
+    while let Some(window) = derived.source.next_window()? {
+        replace_scopes.extend(window.scopes().iter().cloned());
+        drop(window);
+    }
+    Ok(assemble_semantic_batch_v1(&derived.header, replace_scopes))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{HashingQueryTextEmbedder, SEARCH_OWNED_SEMANTIC_DIMENSION};
+    use quanta_index_core::{
+        SEMANTIC_STREAM_OWNER_SCOPE_OVER_WINDOW_CODE, SEMANTIC_STREAM_WINDOW_SCOPES,
+        SEMANTIC_STREAM_WINDOW_STILL_RESIDENT_CODE, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES,
+    };
+
+    /// Derive under the production window and drain the stream into one
+    /// batch, as the all-at-once derivation used to return.
+    fn derive_semantic_batch_from_semantic_sources_v1(
+        batch: &SearchCorpusIngestBatch,
+        embedder: &dyn TextEmbeddingProvider,
+        mode: SemanticDerivationModeV1,
+    ) -> Result<quanta_index_contract::SemanticIngestBatch, CoreError> {
+        drain_semantic_stream_v1(derive_semantic_stream_from_semantic_sources_v1(
+            batch,
+            embedder,
+            mode,
+            SemanticStreamWindowPolicy::DEFAULT,
+        )?)
+    }
+
+    fn derive_semantic_batch_with_mode_v1(
+        batch: &SearchCorpusIngestBatch,
+        embedder: &dyn TextEmbeddingProvider,
+        mode: SemanticDerivationModeV1,
+    ) -> Result<quanta_index_contract::SemanticIngestBatch, CoreError> {
+        drain_semantic_stream_v1(derive_semantic_stream_with_mode_v1(
+            batch,
+            embedder,
+            mode,
+            SemanticStreamWindowPolicy::DEFAULT,
+        )?)
+    }
     use quanta_index_contract::{
         BatchIngestMode, ChunkId, ChunkRecord, ClusterMembershipReplaceV1, ManifestGeneration,
         RepoId, RepoRelativePath, RevisionId, SearchCorpusReplaceScope, SearchScopeSurface,
@@ -1491,6 +1748,395 @@ mod tests {
     fn semantic_derivation_unknown_mode_value_fails_closed() -> TestRes {
         if SemanticDerivationModeV1::from_env_value_v1("unknown-mode").is_some() {
             return Err("unknown derive mode must not parse".into());
+        }
+        Ok(())
+    }
+    // ---- QI-BB-021 follow-up #2: scope-streamed derivation ----
+
+    /// A hashing embedder that records the texts of every provider call.
+    struct RecordingEmbedder {
+        inner: HashingQueryTextEmbedder,
+        calls: std::sync::Mutex<Vec<Vec<String>>>,
+    }
+
+    impl RecordingEmbedder {
+        fn new() -> Self {
+            Self {
+                inner: HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION),
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn calls(&self) -> Result<Vec<Vec<String>>, Box<dyn std::error::Error>> {
+            Ok(self
+                .calls
+                .lock()
+                .map_err(|err| format!("recording embedder poisoned: {err}"))?
+                .clone())
+        }
+    }
+
+    impl TextEmbeddingProvider for RecordingEmbedder {
+        fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+            self.calls
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("recording embedder poisoned: {err}")))?
+                .push(texts.iter().map(|text| (*text).to_string()).collect());
+            self.inner.embed_batch(texts)
+        }
+        fn model_id(&self) -> &str {
+            self.inner.model_id()
+        }
+        fn model_revision(&self) -> &str {
+            self.inner.model_revision()
+        }
+        fn dimension(&self) -> usize {
+            self.inner.dimension()
+        }
+        fn normalization(&self) -> EmbeddingNormalization {
+            self.inner.normalization()
+        }
+    }
+
+    fn legacy_chunk(
+        id: &str,
+        path: &str,
+        text: &str,
+    ) -> Result<ChunkRecord, Box<dyn std::error::Error>> {
+        let mut chunk = fixture_chunk()?;
+        chunk.chunk_id = quanta_index_contract::ChunkId::new(id);
+        chunk.repo_relative_path = RepoRelativePath::new(path);
+        chunk.text = text.to_string().into_boxed_str();
+        Ok(chunk)
+    }
+
+    fn legacy_scope(path: &str, chunks: Vec<ChunkRecord>) -> SearchCorpusReplaceScope {
+        SearchCorpusReplaceScope {
+            scope: SearchScopeKey {
+                doc_surface: SearchScopeSurface::Chunk,
+                repo_relative_path: RepoRelativePath::new(path),
+            },
+            scope_digest: format!("scope:{path}"),
+            chunks,
+            symbols: Vec::new(),
+        }
+    }
+
+    /// Three legacy files with 2, 1 and 2 chunks: five owner scopes.
+    fn legacy_batch_a2_b1_c2() -> Result<SearchCorpusIngestBatch, Box<dyn std::error::Error>> {
+        let mut batch = fixture_search_batch()?;
+        batch.semantic_replace_scopes.clear();
+        batch.replace_scopes = vec![
+            legacy_scope(
+                "a.rs",
+                vec![
+                    legacy_chunk("a-1", "a.rs", "alpha one")?,
+                    legacy_chunk("a-2", "a.rs", "alpha two")?,
+                ],
+            ),
+            legacy_scope("b.rs", vec![legacy_chunk("b-1", "b.rs", "beta one")?]),
+            legacy_scope(
+                "c.rs",
+                vec![
+                    legacy_chunk("c-1", "c.rs", "gamma one")?,
+                    legacy_chunk("c-2", "c.rs", "gamma two")?,
+                ],
+            ),
+        ];
+        Ok(batch)
+    }
+
+    fn ids_of(scopes: &[SemanticReplaceScope]) -> Vec<String> {
+        scopes
+            .iter()
+            .flat_map(|scope| {
+                scope
+                    .embeddings
+                    .iter()
+                    .map(|record| record.embedding_id.as_str().to_string())
+            })
+            .collect()
+    }
+
+    // CASE-COVERS: under a two-owner window, five legacy chunks stream as
+    // three windows, each embedded in ONE provider call carrying exactly the
+    // window's texts; a path whose chunks span windows is issued as one
+    // replace scope per window; the vectors keep producer order; the source
+    // never had more than one window out.
+    #[test]
+    fn legacy_chunks_stream_in_policy_windows_and_a_path_spans_windows() -> TestRes {
+        let embedder = RecordingEmbedder::new();
+        let batch = legacy_batch_a2_b1_c2()?;
+        let policy = SemanticStreamWindowPolicy::new(2, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES)?;
+        let mut derived = derive_semantic_stream_with_mode_v1(
+            &batch,
+            &embedder,
+            SemanticDerivationModeV1::LegacyAllChunkText,
+            policy,
+        )?;
+        if derived.source.pending_owner_scopes() != 5 {
+            return Err("five chunks are five owner scopes".into());
+        }
+        let mut windows: Vec<Vec<(String, Vec<String>)>> = Vec::new();
+        let residency = std::sync::Arc::clone(derived.source.residency_for_tests());
+        while let Some(window) = derived.source.next_window()? {
+            if residency.outstanding_windows() != 1 {
+                return Err(format!(
+                    "exactly one window is out while it is held, saw {}",
+                    residency.outstanding_windows()
+                )
+                .into());
+            }
+            windows.push(
+                window
+                    .scopes()
+                    .iter()
+                    .map(|scope| {
+                        (
+                            scope.scope.repo_relative_path.as_str().to_string(),
+                            ids_of(std::slice::from_ref(scope)),
+                        )
+                    })
+                    .collect(),
+            );
+            drop(window);
+            if residency.outstanding_windows() != 0 {
+                return Err("a dropped window releases its lease".into());
+            }
+        }
+        let expected: Vec<Vec<(String, Vec<String>)>> = vec![
+            vec![("a.rs".into(), vec!["a-1".into(), "a-2".into()])],
+            vec![
+                ("b.rs".into(), vec!["b-1".into()]),
+                ("c.rs".into(), vec!["c-1".into()]),
+            ],
+            vec![("c.rs".into(), vec!["c-2".into()])],
+        ];
+        if windows != expected {
+            return Err(format!("windows cut wrong: {windows:?}").into());
+        }
+        let calls = embedder.calls()?;
+        let expected_calls: Vec<Vec<String>> = vec![
+            vec!["alpha one".into(), "alpha two".into()],
+            vec!["beta one".into(), "gamma one".into()],
+            vec!["gamma two".into()],
+        ];
+        if calls != expected_calls {
+            return Err(format!("one provider call per window with its texts: {calls:?}").into());
+        }
+        let tally = derived.source.tally();
+        if tally.windows != 3 || tally.replace_scopes != 4 || tally.rows != 5 {
+            return Err(format!("tally counts windows, fragments and rows: {tally:?}").into());
+        }
+        if residency.peak_windows() != 1 {
+            return Err(format!("peak windows out at once: {}", residency.peak_windows()).into());
+        }
+        let vector_bytes =
+            SemanticStreamWindowPolicy::vector_bytes(2, SEARCH_OWNED_SEMANTIC_DIMENSION)?;
+        if tally.peak_vector_bytes != vector_bytes || residency.peak_vector_bytes() != vector_bytes
+        {
+            return Err(format!(
+                "peak resident bytes is one two-row window: tally={} residency={} expected={vector_bytes}",
+                tally.peak_vector_bytes,
+                residency.peak_vector_bytes()
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    // CASE-COVERS: the byte ceiling cuts windows too, and an owner scope
+    // whose vectors alone exceed it is refused typed before any provider
+    // call, because no window can carry it and it must not be split.
+    #[test]
+    fn a_window_is_cut_by_vector_bytes_and_an_owner_over_the_bound_is_refused() -> TestRes {
+        let embedder = RecordingEmbedder::new();
+        let batch = legacy_batch_a2_b1_c2()?;
+        let two_rows =
+            SemanticStreamWindowPolicy::vector_bytes(2, SEARCH_OWNED_SEMANTIC_DIMENSION)?;
+        let policy = SemanticStreamWindowPolicy::new(SEMANTIC_STREAM_WINDOW_SCOPES, two_rows)?;
+        let mut derived = derive_semantic_stream_with_mode_v1(
+            &batch,
+            &embedder,
+            SemanticDerivationModeV1::LegacyAllChunkText,
+            policy,
+        )?;
+        let mut rows_per_window = Vec::new();
+        while let Some(window) = derived.source.next_window()? {
+            rows_per_window.push(window.rows()?);
+            if window.vector_bytes() > two_rows {
+                return Err("no window exceeds the byte ceiling".into());
+            }
+            drop(window);
+        }
+        if rows_per_window != [2, 2, 1] {
+            return Err(format!("byte ceiling cuts at two rows: {rows_per_window:?}").into());
+        }
+
+        // One semantic owner with two records under a one-row ceiling.
+        let mut two_record_owner = fixture_search_batch()?;
+        let scope = two_record_owner
+            .semantic_replace_scopes
+            .first_mut()
+            .ok_or("fixture carries one semantic scope")?;
+        let mut second = fixture_semantic_source();
+        second.record_id = "source-record-2".to_string();
+        scope.sources.push(second);
+        let one_row = SemanticStreamWindowPolicy::vector_bytes(1, SEARCH_OWNED_SEMANTIC_DIMENSION)?;
+        let policy = SemanticStreamWindowPolicy::new(SEMANTIC_STREAM_WINDOW_SCOPES, one_row)?;
+        let embedder = RecordingEmbedder::new();
+        let mut derived = derive_semantic_stream_with_mode_v1(
+            &two_record_owner,
+            &embedder,
+            SemanticDerivationModeV1::SemanticSourcesOnly,
+            policy,
+        )?;
+        match derived.source.next_window() {
+            Err(CoreError::Typed { code, .. })
+                if code == SEMANTIC_STREAM_OWNER_SCOPE_OVER_WINDOW_CODE => {}
+            other => {
+                return Err(format!(
+                    "an owner over the byte ceiling is refused typed, got {other:?}"
+                )
+                .into());
+            }
+        }
+        if !embedder.calls()?.is_empty() {
+            return Err("a refused owner costs no provider call".into());
+        }
+        Ok(())
+    }
+
+    // CASE-COVERS: a source refuses to issue a second window while the
+    // first is still resident, and issues it once the first is dropped.
+    #[test]
+    fn a_second_window_is_refused_while_the_first_is_resident() -> TestRes {
+        let embedder = RecordingEmbedder::new();
+        let batch = legacy_batch_a2_b1_c2()?;
+        let policy = SemanticStreamWindowPolicy::new(1, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES)?;
+        let mut derived = derive_semantic_stream_with_mode_v1(
+            &batch,
+            &embedder,
+            SemanticDerivationModeV1::LegacyAllChunkText,
+            policy,
+        )?;
+        let first = derived
+            .source
+            .next_window()?
+            .ok_or("five owners issue a first window")?;
+        match derived.source.next_window() {
+            Err(CoreError::Typed { code, .. })
+                if code == SEMANTIC_STREAM_WINDOW_STILL_RESIDENT_CODE => {}
+            other => {
+                return Err(format!(
+                    "a second window while one is resident is refused typed, got {other:?}"
+                )
+                .into());
+            }
+        }
+        drop(first);
+        let second = derived.source.next_window()?;
+        if second.is_none() {
+            return Err("the next window is issued once the first is dropped".into());
+        }
+        if embedder.calls()?.len() != 2 {
+            return Err("the refused request cost no provider call".into());
+        }
+        Ok(())
+    }
+
+    // CASE-COVERS: the window policy is invisible in what a batch derives
+    // to. The same batch streamed one owner at a time and under the
+    // production window drains to identical replace scopes, embeddings and
+    // digests, for legacy chunks and for typed semantic sources.
+    #[test]
+    fn windowing_leaves_no_trace_in_the_derived_batch() -> TestRes {
+        let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
+        let one_owner = SemanticStreamWindowPolicy::new(1, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES)?;
+        let legacy = legacy_batch_a2_b1_c2()?;
+        let mut typed = fixture_search_batch()?;
+        let mut second_scope = typed
+            .semantic_replace_scopes
+            .first()
+            .cloned()
+            .ok_or("fixture carries one semantic scope")?;
+        second_scope.scope.owner_id = "symbol-2".to_string();
+        second_scope.scope_digest = "scope:semantic:2".to_string();
+        let record = second_scope
+            .sources
+            .first_mut()
+            .ok_or("fixture scope carries one source")?;
+        record.owner_id = "symbol-2".to_string();
+        record.record_id = "source-record-2".to_string();
+        typed.semantic_replace_scopes.push(second_scope);
+        for (batch, mode) in [
+            (&legacy, SemanticDerivationModeV1::LegacyAllChunkText),
+            (&typed, SemanticDerivationModeV1::SemanticSourcesOnly),
+        ] {
+            let streamed = drain_semantic_stream_v1(derive_semantic_stream_with_mode_v1(
+                batch, &embedder, mode, one_owner,
+            )?)?;
+            let whole = drain_semantic_stream_v1(derive_semantic_stream_with_mode_v1(
+                batch,
+                &embedder,
+                mode,
+                SemanticStreamWindowPolicy::DEFAULT,
+            )?)?;
+            // Fragments of one legacy path merge back into the path's rows;
+            // compare rows, not fragment boundaries.
+            if ids_of(&streamed.replace_scopes) != ids_of(&whole.replace_scopes)
+                || streamed
+                    .replace_scopes
+                    .iter()
+                    .flat_map(|scope| scope.embeddings.iter())
+                    .ne(whole
+                        .replace_scopes
+                        .iter()
+                        .flat_map(|scope| scope.embeddings.iter()))
+            {
+                return Err(format!("windowing changed the derived rows in {mode:?}").into());
+            }
+            let mut streamed_header = streamed;
+            streamed_header.replace_scopes.clear();
+            let mut whole_header = whole;
+            whole_header.replace_scopes.clear();
+            if streamed_header != whole_header {
+                return Err(format!("windowing changed the derived header in {mode:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    // CASE-COVERS: a malformed source record is refused before the first
+    // window, so the provider is never called for it.
+    #[test]
+    fn an_invalid_source_costs_no_provider_call() -> TestRes {
+        let embedder = RecordingEmbedder::new();
+        let mut batch = fixture_search_batch()?;
+        let source = batch
+            .semantic_replace_scopes
+            .first_mut()
+            .and_then(|scope| scope.sources.first_mut())
+            .ok_or_else(|| "semantic fixture must contain one source".to_string())?;
+        source.source_role = SourceRoleV1::DocumentText;
+        match derive_semantic_stream_with_mode_v1(
+            &batch,
+            &embedder,
+            SemanticDerivationModeV1::SemanticSourcesOnly,
+            SemanticStreamWindowPolicy::DEFAULT,
+        ) {
+            Err(CoreError::InvalidContract(message)) if message.contains("CardText") => {}
+            Err(other) => {
+                return Err(
+                    format!("invalid semantic source must fail closed, got {other:?}").into(),
+                );
+            }
+            Ok(_derived) => {
+                return Err("invalid semantic source must fail closed, got a stream".into());
+            }
+        }
+        if !embedder.calls()?.is_empty() {
+            return Err("a refused batch costs no provider call".into());
         }
         Ok(())
     }

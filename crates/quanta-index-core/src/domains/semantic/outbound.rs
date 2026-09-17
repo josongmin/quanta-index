@@ -3,15 +3,25 @@ use std::collections::BTreeSet;
 use quanta_index_contract::{
     BatchPublishReceipt, ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
     EmbeddingNormalization, LexicalCandidate, ManifestGeneration, OwnerDocKind,
-    QueryConstraintSetV1, RepoId, RevisionId, SemanticCorpusKindV1, SemanticIngestBatch,
+    QueryConstraintSetV1, RepoId, RevisionId, SemanticCorpusKindV1,
 };
 
+use crate::domains::semantic::stream::{SemanticIngestHeaderV1, SemanticScopeSource};
 use crate::error::CoreError;
 
-/// Ingest a typed semantic batch into the direct authority path. QI-RT-01
-/// counterpart to [`crate::SearchCorpusIngestPort`].
+/// Ingest one semantic batch into the direct authority path, streamed one
+/// window of scopes at a time (QI-BB-021). QI-RT-01 counterpart to
+/// [`crate::SearchCorpusIngestPort`].
+///
+/// `header` is everything of the batch but its replace scopes; `scopes`
+/// issues those, embedded, in windows the port's build policy bounds. The
+/// receipt acknowledges what the build appended.
 pub trait SemanticIngestPort: Send + Sync {
-    fn publish_batch(&self, batch: &SemanticIngestBatch) -> Result<BatchPublishReceipt, CoreError>;
+    fn publish_stream(
+        &self,
+        header: &SemanticIngestHeaderV1,
+        scopes: &mut dyn SemanticScopeSource,
+    ) -> Result<BatchPublishReceipt, CoreError>;
 }
 
 /// Produces embedding vectors for text.
@@ -54,16 +64,6 @@ pub trait TextEmbeddingProvider: Send + Sync {
 pub struct SemanticReadiness {
     pub manifest_generation: ManifestGeneration,
     pub materialized: bool,
-}
-
-/// Build / replay a typed semantic ingest batch into a semantic index for a
-/// given generation.
-///
-/// This is the batch-native authority surface used by the direct ingest path.
-/// Implementations may internally lower into legacy op handlers, but callers
-/// do not construct or route channel ops on the hot path.
-pub trait SemanticBatchBuildPort: Send + Sync {
-    fn build_batch(&self, batch: &SemanticIngestBatch) -> Result<(), CoreError>;
 }
 
 pub trait SemanticIndexOpenPort: Send + Sync {
