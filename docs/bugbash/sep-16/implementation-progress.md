@@ -1392,6 +1392,7 @@ membership 확인이 한 이름에 섞여 있었다.
 | presence-only explain: typed Indexed, strategy `presence_lookup`, contributions 없음; generation mismatch는 INVALID_REQUEST | `searchd-runtime/tests/explain.rs` 2 test(갱신) |
 | wire: request(text_query 유/무) round-trip, response presence round-trip, presence 누락/`"maybe"` 거부 | `contract/tests/ipc_query_result_v2_contract.rs::explain_*` |
 | 기존 소비자(sdk_frontdoor summary `present`, restart determinism explanation 동일성, full-corpus `engines_touched=["lexical"]`, CLI smoke `presence: indexed`) | 해당 suite 전부 green |
+| **UI rail**(harness `ui.rs`)이 finding이 지적한 "contribution 0이어도 `presence_probe` tag로 통과"를 더 이상 허용하지 않음: scored explain을 돌려 strategy `lexical_score_trace`, presence Indexed, row ≥1, Σ row == carried score(1e-5)를 gate | `searchd-harness::ui::tests::seeded_ui_rail_runs_and_anchors_every_probe` (첫 verify-rust에서 `presence_probe` 기대로 RED → rail을 새 계약으로 갱신) |
 
 **구현 중 잡은 결함**: 첫 구현은 `scorer.seek(doc)`로 한 document에 위치시켰는데 tantivy `DocSet::seek`는 현재 doc ≤ target을
 `debug_assert`한다 — 후보 doc이 plan의 첫 match보다 앞이거나 segment에 match가 없으면(초기 doc = TERMINATED) debug build에서
@@ -1441,3 +1442,4 @@ row로 펼치지 않는다 — 1 row가 정확히 emitted score와 일치하는 
 | 2026-09-17 | 46d6675 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,066 passed / 0 failed (QI-BB-019 canonical hybrid seed 포함) |
 | 2026-09-17 | 75899ef | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,066 passed / 0 failed (QI-BB-018 true hybrid 포함) |
 | 2026-09-17 | a9644a3 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,082 passed / 0 failed (QI-BB-027 ANN sealed contract 포함) |
+| 2026-09-17 | 1cf1b5b | `just rust-profile verify-rust` | RED — `searchd-harness::ui::tests::seeded_ui_rail_runs_and_anchors_every_probe`: UI rail이 옛 `presence_probe` strategy를 기대. rail을 scored explain 계약(row Σ == score)으로 갱신(→ 다음 commit) |

@@ -13,12 +13,14 @@
 //!    guesswork, no re-derivation from raw text).
 //!
 //! It also proves the **explanation sections** are consumer-renderable: a served
-//! candidate is run back through the `explain` route and the returned
-//! `SearchExplanation` is graded for TYPED, route-specific sectioned provenance —
-//! the planner-trace stages (`plan`, `merge`, …), the engines touched, and the
-//! strategy tag — so a UI can render the explanation section by section without
+//! candidate is run back through the `explain` route under the query that
+//! ranked it, and the returned `SearchExplanation` is graded for TYPED,
+//! route-specific sectioned provenance — the planner-trace stages (`plan`,
+//! `merge`, …), the engines touched, the strategy tag, a typed presence, and
+//! the contribution rows whose sum is the candidate's carried score
+//! (QI-BB-022) — so a UI can render the explanation section by section without
 //! regex-parsing the free-form `summary`. The assertion is route-specific (the
-//! exact stages / engine / strategy the explain route emits), not merely
+//! exact stages / engine / strategy / rows the explain route emits), not merely
 //! "non-empty".
 //!
 //! Fail-closed posture: a missing anchor, an out-of-range offset, an offset that
@@ -31,7 +33,7 @@
 use std::path::Path;
 
 use anyhow::Result as AnyResult;
-use quanta_index_contract::{EarlyStopReason, HighlightSpan, TextQuerySyntax};
+use quanta_index_contract::{CandidatePresenceV1, EarlyStopReason, HighlightSpan, TextQuerySyntax};
 use serde_json::{Value, json};
 
 use crate::harness::E2eRuntime;
@@ -127,10 +129,9 @@ impl UiScore {
 ///
 /// These are the consumer-facing "sections" of a `SearchExplanation`: a UI maps
 /// each typed field to a rendered section (planner stages → "Planning", engines →
-/// "Engines", strategy → "Strategy") with no regex parsing of the free-form
-/// summary. `contributions_count` is recorded as-is — this search-plane's native
-/// routes leave ranking contributions to the Semantica rerank surface, so it is
-/// informational here, not a gating signal.
+/// "Engines", strategy → "Strategy", contributions → "Score") with no regex
+/// parsing of the free-form summary. `contributions_count` gates: a scored
+/// explain carries one lexical row whose sum is the carried score (QI-BB-022).
 #[derive(Clone, Debug)]
 pub struct ExplanationSectionsCapture {
     pub probe_path: &'static str,
@@ -300,11 +301,13 @@ fn score_probe(rt: &mut E2eRuntime, probe: &UiProbe) -> UiScore {
 
 /// Capture and grade the typed explanation sections for one probe's candidate.
 ///
-/// Runs the served candidate back through the `explain` route and grades the
-/// returned explanation for route-specific TYPED sections (not just non-empty):
-/// the explain route must surface the `plan` and `merge` planner stages, touch
-/// exactly the lexical engine, carry the `presence_probe` strategy tag, and emit
-/// a non-empty summary. Anything missing is a fail-closed rail failure.
+/// Runs the served candidate back through the `explain` route under the query
+/// that ranked it and grades the returned explanation for route-specific TYPED
+/// sections (not just non-empty): the explain route must surface the `plan`
+/// and `merge` planner stages, touch exactly the lexical engine, carry the
+/// `lexical_score_trace` strategy tag, report the candidate as indexed, emit
+/// contribution rows summing to the candidate's carried score, and emit a
+/// non-empty summary. Anything missing is a fail-closed rail failure.
 fn capture_explanation_sections(
     rt: &mut E2eRuntime,
     probe: &UiProbe,
@@ -324,7 +327,8 @@ fn capture_explanation_sections(
             )],
         );
     };
-    let explain = rt.explain_candidate(candidate);
+    let carried_score = candidate.score;
+    let explain = rt.explain_candidate_under_query(candidate, TextQuerySyntax::Native, probe.query);
     if let Some(error) = explain.typed_error {
         return ExplanationSectionsCapture::failed(
             probe.path,
@@ -353,6 +357,11 @@ fn capture_explanation_sections(
     let early_stop_reason = explanation.early_stop_reason.map(EarlyStopReason::as_str);
     let strategy = explanation.strategy;
     let contributions_count = explanation.contributions.len();
+    let contribution_sum: f32 = explanation
+        .contributions
+        .iter()
+        .map(|row| row.contribution)
+        .sum();
     let has_summary = !explanation.summary.is_empty();
     // Route-specific section assertions — a consumer renders these typed sections
     // without parsing the summary string, so each must be present and correct.
@@ -372,9 +381,22 @@ fn capture_explanation_sections(
             "explanation: explain route must touch exactly the lexical engine (got {engines_touched:?})"
         ));
     }
-    if strategy != "presence_probe" {
+    if strategy != "lexical_score_trace" {
         failures.push(format!(
-            "explanation: explain route strategy section must be `presence_probe` (got `{strategy}`)"
+            "explanation: explain route strategy section must be `lexical_score_trace` (got `{strategy}`)"
+        ));
+    }
+    if explain.presence != Some(CandidatePresenceV1::Indexed) {
+        failures.push(format!(
+            "explanation: a served candidate must explain as indexed (got {:?})",
+            explain.presence
+        ));
+    }
+    if contributions_count == 0 {
+        failures.push("explanation: a scored explain carries no contribution rows".to_string());
+    } else if (contribution_sum - carried_score).abs() > 1e-5 * carried_score.abs().max(1.0) {
+        failures.push(format!(
+            "explanation: contribution rows sum to {contribution_sum} but the candidate carried {carried_score}"
         ));
     }
     if !has_summary {
@@ -530,8 +552,8 @@ mod tests {
                 probe_path: "src/x.rs",
                 planner_stages: vec!["plan", "merge"],
                 engines_touched: vec!["lexical"],
-                strategy: "presence_probe".to_string(),
-                contributions_count: 0,
+                strategy: "lexical_score_trace".to_string(),
+                contributions_count: 1,
                 has_summary: true,
                 early_stop_reason: None,
                 failures: Vec::new(),
@@ -545,7 +567,10 @@ mod tests {
         assert_eq!(value["scores"][0]["highlights"][0]["start"], 2);
         assert_eq!(value["scores"][0]["highlights"][0]["len"], 6);
         assert_eq!(value["explanation_sections"]["planner_stages"][0], "plan");
-        assert_eq!(value["explanation_sections"]["strategy"], "presence_probe");
+        assert_eq!(
+            value["explanation_sections"]["strategy"],
+            "lexical_score_trace"
+        );
         let snaps = contract_snapshots_json(&report);
         assert_eq!(snaps["fields_under_test"][1], "snippet_hit_offset");
         assert_eq!(snaps["fields_under_test"][2], "highlights");
@@ -632,6 +657,7 @@ mod tests {
             vec!["lexical"],
             "explain route must touch exactly the lexical engine"
         );
-        assert_eq!(explanation.strategy, "presence_probe");
+        assert_eq!(explanation.strategy, "lexical_score_trace");
+        assert_eq!(explanation.contributions_count, 1);
     }
 }
