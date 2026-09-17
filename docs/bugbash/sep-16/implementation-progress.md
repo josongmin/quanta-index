@@ -314,7 +314,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + QI-BB-027 ANN sealed contract(§3.23) + **QI-BB-016 lexical writer envelope(§3.26)** 완료. + **QI-BB-027 보완 ANN append per delta seal(§3.35)** 완료. 남은 것: sharded sidecar 포맷(O(delta) write, 진행 중), scope 단위 streamed embed→append(§3.18 한계) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) + **QI-BB-025 보완 #4 runtime/structural window(§3.30)** 완료. 남은 것: runtime/structural keyset cursor, streaming projection collector |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. QI-BB-014 UDS/state-root private hardening(§3.27) 완료. QI-BB-015 metrics 집계 + scrape(§3.28) 완료. **phase 2(§3.29): budget이 lexical native collect/scan/regex verify/predicate scope 안에서 관측** 완료. 남은 것: shared mode(group/ACL + peer credential), semantic lane 내부 관측 |
-| W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + QI-BB-018 true hybrid(§3.22) + QI-BB-022 explain = exact presence + lexical score trace(§3.24) + **QI-BB-008 RepoMap bounded query + durable store(§3.25)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), history relevance order(Tantivy history index, §3.20 한계), judged corpus recall/NDCG gate(§3.22 한계), hybrid 후보의 per-lane contribution(§3.24 한계) |
+| W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + QI-BB-018 true hybrid(§3.22) + QI-BB-022 explain = exact presence + lexical score trace(§3.24) + **QI-BB-008 RepoMap bounded query + durable store(§3.25)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), history relevance order(Tantivy history index, §3.20 한계), judged corpus recall/NDCG gate(§3.22 한계), **hybrid per-lane contribution(§3.36)** 완료 |
 | W7 | planned | |
 | C1 | planned | |
 | C2 | planned | |
@@ -1837,6 +1837,49 @@ dataset은 hard link로 상속(§3.4.2)하면서 index만 O(N)이었다(plan §6
 append 예산, in-test recall oracle로 완화하고 doc-comment에 기록. (b) multi-partition(≥2·2^20 row) append는 fixture 밖 — partition 수가
 바뀌면 retrain을 강제. (c) 정책 값은 doc-comment의 공학적 판단이지 production corpus tier에서 측정한 값이 아님(M4 이후).
 
+## 3.36 QI-BB-022/018 보완 — hybrid 후보는 lane별 기여를 싣고, explain이 그것을 재계산으로 대조한다 (구현 완료)
+
+**진단 확정**: `HybridQueryResponse.results: Vec<LexicalCandidate>` — `fuse_rrf`가 승자의 *lane DTO*를 그대로 돌려줘 `score`가 어떤
+행은 BM25, 어떤 행은 cosine이었고 RRF 점수는 wire에 없었다. explain은 그래서 hybrid 후보를 `score_reconciled=false`로 표시할 수밖에
+없었다(§3.24 한계 a). hybrid-seed는 이미 `SeedContribution`을 lane별로 실었다.
+
+**구현** (31 files, +2,730/−201):
+
+- **contract**: `HybridLaneV1 {Lexical, Dense}`, `HybridLaneContributionV1 {lane, rank(1-based), raw_score(finite)}`, `HybridCandidateV1
+  {candidate: LexicalCandidate, fused_score: f64, contributions: 1..=2 (lane 순서, lane당 1회)}`; `HybridQueryResponse.results`가 이 type.
+  encode·decode 양쪽에서 invariant 검증: fused finite·>0, rank ≥ 1, `candidate.score == 선호 lane(lexical 있으면 lexical, 아니면 dense)
+  raw_score`(bit-equal), results 정렬(fused desc → lexical-seen 우선 → id asc), id 중복 없음. `fused_score`는 **f64** — decoder의 정렬
+  검사가 core가 정렬한 key 그대로여야 하고(PUBLIC_TOP_K_MAX+1 rank까지의 RRF 합이 f32에서 수천 개 충돌), explain이 `rrf(k, ranks)`를
+  **정확히** 재계산할 수 있어야 함. explain 요청은 breaking: `SearchPlaneExplainQueryRequest.candidate: ExplainCandidateV1
+  {Lexical(LexicalCandidate) | Hybrid(HybridCandidateV1)}` (adjacent-tag, kind→payload 순서), hybrid는 `text_query` 필수.
+- **core**: RRF 알고리즘 하나 — `fuse_rrf_key_lanes_with_provenance<T>` → `FusedKeyV1 {key, fused_score, lanes: [FusedLaneRankV1]}`;
+  `fuse_rrf_key_lanes`/`fuse_rrf_id_lanes`/`fuse_rrf_ids`/`fuse_rrf`는 얇은 wrapper(RRF_K·tie-break byte-identical, 기존 test 무변경 green);
+  `fuse_rrf_candidates`가 행을 조립(선호 lane row + lane 순서 contributions, non-finite lane score는 typed 거부); `rrf_k()`·`rrf_score(ranks)`.
+- **search-plane**: hybrid route는 한 줄 변경(`HybridFusion.fused: Vec<HybridCandidateV1>`); explain은 hybrid 행에 strategy
+  `hybrid_score_trace`, row `lexical.<engine>`(plan 재유도)·`dense.cosine`(carried, trace `explain.dense_lane=carried`)·`hybrid.rrf`(재계산),
+  trace `explain.score_reconciled=`(lexical trace Σ vs carried lexical raw, 1e-5)·`explain.fused_reconciled=`(rrf(k, ranks) == carried
+  fused, exact)·`explain.rrf_k=60; ranks=lexical#1,dense#2`; ranker weights hash가 `fusion=rrf, rrf_k`를 pin.
+- **sdk/searchctl/harness**: SDK가 새 type re-export, `explain_under_query(pin, impl Into<ExplainCandidateV1>, tq)`; searchctl `kind: hybrid` +
+  행마다 `score=<raw> fused=<f> lanes=lexical#<rank>(<raw>) dense#<rank>(<raw>)`, `explain --hybrid-candidate-json PATH|-`(query 필수);
+  harness `E2eQueryResult.hybrid_candidates`. public-api(contract −4/+324, sdk +5)·cargo-modules(contract/core)·fuzz dictionary 갱신.
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| wire: both-lane/dense-only/lexical-only CBOR+JSON round-trip; 모든 거부(wire와 encode 양쪽), 정렬/tie-break/중복 id 거부; hybrid explain 요청 round-trip, query 없는 hybrid 거부, payload-before-kind/unknown-kind 거부 | `contract/tests/hybrid_candidate_contract.rs` 4 (test-authority 등록), `ipc_query_result_v2_contract.rs` +4 |
+| core: provenance rank == 입력 위치, fused == in-test 독립 재계산 Σ1/(60+rank) bit-exact, dedup, `fuse_rrf_candidates` 행 == `fuse_rrf` 순서 + 정확한 contributions, NaN 거부 | `core/tests/hybrid_policy.rs` +4 |
+| search-plane(mock lane): beta [Lexical#2(2.0), Dense#1(0.9)], delta [Dense#2(0.8)], gamma [Lexical#3(1.0)], 순서 == `fuse_rrf_ids`; explain 5 case(양 축 reconciled, stale lexical/stale fusion이 맞는 축에서 false, dense-only, query 없음 → INVALID_REQUEST, lexical trace 불변) | `query_dispatcher/tests/{hybrid,explain}.rs` |
+| e2e: `hybrid_query_admits_…`가 alpha=dense-only·beta=both, 모든 fused가 rank의 RRF와 bit-equal, score == 선호 raw; hybrid both-lane 후보 explain `score_reconciled=true`+`fused_reconciled=true`, row `[lexical.bm25, dense.cosine, hybrid.rrf]`, stale copy → false | `end_to_end.rs`, `e2e_explain_score_trace.rs` +1 |
+| CLI unit +2, cli_smoke +1 (`explain_hybrid_candidate_pretty_roundtrip`) | searchctl |
+| 회귀·rail | contract 238, core 89, search-plane 256+38, sdk 78, harness 77, searchctl 37+21; e2e hybrid/explain/dsl/restart/perf-chaos/sdk_frontdoor/top_k slice 24; workspace clippy 0(`#[expect(as_conversions…)]` 1곳); fmt/semgrep/hexagonal/module/error-shape/derive/digest/cargo-toml/test-authority; fuzz smoke 4 target crash 0. main rebase(026+split+normalizer+ANN 위) 후 check + 834 unit + e2e 43 green, public-api/cargo-modules 불변 |
+
+**정직한 한계**: (a) dense lane은 explain 시점에 재유도하지 않는다(요청이 text query만 실음) — `dense.cosine`은 carried raw이며 trace가
+그렇게 말한다. (b) SDK에는 hybrid *query* builder가 없다(352f2e9에서 searchctl `hybrid` subcommand와 함께 retire) — hybrid 행은 raw
+IPC/harness로만 얻고, searchctl hybrid renderer는 `render_response`로만 도달. (c) 외부 raw-IPC consumer는 `HybridQueryResponse`/explain
+요청 변경에 맞춰야 한다(breaking, compat 없음). (d) §3.22 한계 b(dense lane similarity floor / score-aware fusion)는 judged corpus(M4)
+없이 튜닝할 수 없어 그대로 남김.
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -1891,4 +1934,5 @@ append 예산, in-test recall oracle로 완화하고 doc-comment에 기록. (b) 
 | 2026-09-18 | 68468e3 | `just rust-profile verify-rust` (nohup) | RED — `lexical::generation_delta_base_carryforward::delta_text_authority_update_is_not_slower_than_a_full_rebuild`: wall-clock 비교(delta 10,491ms vs full 8,632ms)가 load 130 host에서 뒤집힘. 026 변경과 무관한 timing assertion → §3.34에서 작업량 oracle로 교체(48759d8) |
 | 2026-09-18 | worktree 013 (ab864a5→68468e3 rebase) | agent: workspace clippy(0) + search-plane 247+38 (rebase 후 250+38) + `end_to_end` 35·`e2e_perf_chaos` 43·`e2e_top_k_truth_table` 4 + hexagonal/semgrep/module-discipline/error-shape/public-api/cargo-modules | 전부 green, 동작 변화 0 (§3.32) |
 | 2026-09-18 | worktree D (68468e3→960be81 rebase) | agent: semantic 117 + core semantic_policy 11 + `e2e_ann_incremental_seal` 1 + `just rust-clippy`(0) + fmt/semgrep/hexagonal/module/error-shape/derive/cargo-toml/test-authority + cargo-modules-update; rebase 후 workspace check + semantic lib 56 + vector_index_contract 8 | 전부 green (§3.35) |
+| 2026-09-18 | worktree C (2f41a00→6fa50eb rebase) | agent: contract 238·core 89·search-plane 294·sdk 78·harness 77·searchctl 58 + e2e slice 24 + workspace clippy(0) + fmt/semgrep/hexagonal/module/error-shape/derive/digest/cargo-toml/test-authority + public-api/cargo-modules update + fuzz smoke; rebase 후 check + 834 + e2e 43, baselines 불변 | 전부 green (§3.36) |
 | 2026-09-18 | worktree 011 (7a5ce5e→034c4fd rebase) | agent: workspace clippy(0) + lexical 15 target·lq-norm 88·search-plane 285 + e2e text_route_hellgate 8·perf_chaos 43·dsl_scenarios 8·lexical_full_fidelity 1·dual_syntax_parity 4·full_corpus 4 + harness 77 + hexagonal/semgrep/module/error-shape/cargo-toml/derive/test-authority/deny; rebase 후 lexical carryforward 6 + goldens 8 | 전부 green (§3.33) |
