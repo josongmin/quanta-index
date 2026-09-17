@@ -61,10 +61,11 @@ pub use domains::repomap::{
     RepoMapOpenReportV1, RepoMapPolicy, RepoMapQuarantinePort, RepoMapQueryPort, RepoMapService,
 };
 pub use domains::semantic::{
-    DenseIndexEffortV1, DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1,
-    L2_UNIT_NORM_TOLERANCE, L2UnitEmbeddingProvider, SemanticBatchBuildPort, SemanticIndexOpenPort,
-    SemanticIngestPort, SemanticPolicy, SemanticQueryPort, SemanticReadiness, SemanticSearchHitV1,
-    SemanticSearcher, TextEmbeddingProvider,
+    DenseIndexEffortV1, DenseIndexLineageV1, DenseIndexTrainingV1, DenseIndexV1,
+    DenseLaneAttestationV1, DenseLaneContractV1, L2_UNIT_NORM_TOLERANCE, L2UnitEmbeddingProvider,
+    SemanticBatchBuildPort, SemanticIndexOpenPort, SemanticIngestPort, SemanticPolicy,
+    SemanticQueryPort, SemanticReadiness, SemanticSearchHitV1, SemanticSearcher,
+    TextEmbeddingProvider,
 };
 pub use domains::structural::{
     StructuralError, StructuralMatchBinding, StructuralMatchCandidate, StructuralPolicy,

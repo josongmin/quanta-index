@@ -94,8 +94,48 @@ pub struct DenseLaneContractV1 {
 pub enum DenseIndexV1 {
     /// Every row is scored; the result is exact.
     Exact,
-    /// An approximate index, with the bounded effort one query spends in it.
-    Approximate(DenseIndexEffortV1),
+    /// An approximate index: the bounded effort one query spends in it, and
+    /// where its centroids came from.
+    Approximate {
+        effort: DenseIndexEffortV1,
+        lineage: DenseIndexLineageV1,
+    },
+}
+
+/// Where an approximate index's centroids came from, as the seal recorded
+/// it and the open verified it (QI-BB-027 W3).
+///
+/// A delta seal may append its rows to the inherited index instead of
+/// retraining it; the centroids then date from an earlier generation and a
+/// growing share of the served rows was never part of their training set.
+/// The trace names that share so a recall question can be answered from
+/// the explanation alone.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DenseIndexLineageV1 {
+    /// The seal recorded the training generation and every row assigned to
+    /// or removed from those centroids since.
+    Recorded(DenseIndexTrainingV1),
+    /// The seal predates the lineage record, or there was no seal: nothing
+    /// is known about how the index was trained.
+    Unrecorded,
+}
+
+/// The training record of an approximate index.
+///
+/// The live coverage is `trained_rows + appended_rows - deleted_rows`; the
+/// adapter refuses a seal whose record does not add up to what the index
+/// covers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DenseIndexTrainingV1 {
+    /// The generation whose seal trained the centroids.
+    pub trained_at_generation: u64,
+    /// The rows the centroids were trained on: every row that seal covered.
+    pub trained_rows: u64,
+    /// Rows later seals assigned to those centroids without retraining,
+    /// cumulative.
+    pub appended_rows: u64,
+    /// Rows removed from the index since training, cumulative.
+    pub deleted_rows: u64,
 }
 
 /// The bounded effort one query spends in an approximate index.
@@ -142,15 +182,35 @@ impl DenseLaneContractV1 {
         };
         match &self.index {
             DenseIndexV1::Exact => format!("dense.index=exact; dense.attestation={attestation}"),
-            DenseIndexV1::Approximate(effort) => format!(
-                "dense.index={}; dense.attestation={attestation}; dense.partitions={}; dense.nprobes={}; dense.ef=max({},{}*candidates); dense.refine_factor={}",
+            DenseIndexV1::Approximate { effort, lineage } => format!(
+                "dense.index={}; dense.attestation={attestation}; dense.partitions={}; dense.nprobes={}; dense.ef=max({},{}*candidates); dense.refine_factor={}; {}",
                 effort.index_kind,
                 effort.partitions,
                 effort.nprobes,
                 effort.ef_floor,
                 effort.ef_per_candidate,
-                effort.refine_factor
+                effort.refine_factor,
+                lineage.trace_detail()
             ),
+        }
+    }
+}
+
+impl DenseIndexLineageV1 {
+    /// The `ann.*` keys of the planner trace: the training generation and
+    /// the rows appended to and deleted from it since, or that no record
+    /// exists.
+    #[must_use]
+    pub fn trace_detail(&self) -> String {
+        match self {
+            Self::Recorded(training) => format!(
+                "ann.trained_at=g{}; ann.appended={}/{}; ann.deleted={}",
+                training.trained_at_generation,
+                training.appended_rows,
+                training.trained_rows,
+                training.deleted_rows
+            ),
+            Self::Unrecorded => "ann.lineage=unrecorded".to_string(),
         }
     }
 }

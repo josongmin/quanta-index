@@ -10,7 +10,9 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
 use std::error::Error;
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -19,9 +21,9 @@ use quanta_index_contract::{
     SearchPlaneTrackKind, SemanticReplaceScope,
 };
 use quanta_index_core::{
-    CoreError, DenseIndexEffortV1, DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1,
-    GenerationIdentityValidatePort, GenerationStorageKeyV1, SemanticBatchBuildPort,
-    SemanticIndexOpenPort,
+    CoreError, DenseIndexEffortV1, DenseIndexLineageV1, DenseIndexTrainingV1, DenseIndexV1,
+    DenseLaneAttestationV1, DenseLaneContractV1, GenerationIdentityValidatePort,
+    GenerationStorageKeyV1, SemanticBatchBuildPort, SemanticIndexOpenPort,
 };
 use quanta_index_semantic::{
     SemanticAdapter, legacy_chunk_embedding_record_v1, sealed_replace_batch_v1, search_scope_v1,
@@ -151,18 +153,33 @@ fn typed_code<T>(result: &Result<T, CoreError>) -> Option<String> {
     }
 }
 
-fn sealed_ann_lane() -> DenseLaneContractV1 {
+/// The policy's sealed approximate lane with `lineage` behind it.
+fn sealed_ann_lane(lineage: DenseIndexLineageV1) -> DenseLaneContractV1 {
     DenseLaneContractV1 {
-        index: DenseIndexV1::Approximate(DenseIndexEffortV1 {
-            index_kind: "ivf_hnsw_sq".to_string(),
-            partitions: 1,
-            nprobes: 1,
-            ef_floor: 64,
-            ef_per_candidate: 2,
-            refine_factor: 2,
-        }),
+        index: DenseIndexV1::Approximate {
+            effort: DenseIndexEffortV1 {
+                index_kind: "ivf_hnsw_sq".to_string(),
+                partitions: 1,
+                nprobes: 1,
+                ef_floor: 64,
+                ef_per_candidate: 2,
+                refine_factor: 2,
+            },
+            lineage,
+        },
         attestation: DenseLaneAttestationV1::Sealed,
     }
+}
+
+/// The lineage a seal that trained at `generation` over `rows` rows
+/// records.
+fn trained_at(generation: u64, rows: u64) -> DenseIndexLineageV1 {
+    DenseIndexLineageV1::Recorded(DenseIndexTrainingV1 {
+        trained_at_generation: generation,
+        trained_rows: rows,
+        appended_rows: 0,
+        deleted_rows: 0,
+    })
 }
 
 fn sealed_exact_lane() -> DenseLaneContractV1 {
@@ -174,6 +191,7 @@ fn sealed_exact_lane() -> DenseLaneContractV1 {
 
 /// What the library itself says about the sealed dataset's vector indices.
 struct LibraryView {
+    /// Distinct index names; the library lists one entry per segment.
     names: Vec<String>,
     stats: Option<(usize, usize, Option<u32>)>,
 }
@@ -206,17 +224,20 @@ fn library_view(generation_dir: &Path) -> Result<LibraryView, Box<dyn Error>> {
             .list_indices()
             .await
             .map_err(|err| format!("list_indices: {err}"))?;
-        let names: Vec<String> = configs
+        let mut names: Vec<String> = Vec::new();
+        for config in configs
             .iter()
             .filter(|config| config.columns.iter().any(|column| column == "vector"))
-            .map(|config| {
-                if config.index_type == lancedb::index::IndexType::IvfHnswSq {
-                    config.name.clone()
-                } else {
-                    format!("{}:{}", config.name, config.index_type)
-                }
-            })
-            .collect();
+        {
+            let name = if config.index_type == lancedb::index::IndexType::IvfHnswSq {
+                config.name.clone()
+            } else {
+                format!("{}:{}", config.name, config.index_type)
+            };
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
         let stats = match table
             .index_stats(INDEX_NAME)
             .await
@@ -281,7 +302,7 @@ fn the_seal_and_the_dataset_agree_at_the_255_256_boundary() -> TestResult {
 
     let at_searcher = adapter.open(&repo(), &revision(), at)?;
     let at_lane = at_searcher.dense_lane();
-    if at_lane != sealed_ann_lane() {
+    if at_lane != sealed_ann_lane(trained_at(2, 256)) {
         return Err(format!("256 rows must seal the policy index, got {at_lane:?}").into());
     }
     let at_view = library_view(&generation_dir(temp.path(), at))?;
@@ -348,7 +369,7 @@ fn a_delta_that_shrinks_below_the_floor_drops_the_inherited_index() -> TestResul
     }
     // The base is untouched: it still serves through its own index.
     let base_lane = adapter.open(&repo(), &revision(), base)?.dense_lane();
-    if base_lane != sealed_ann_lane() {
+    if base_lane != sealed_ann_lane(trained_at(1, 300)) {
         return Err(format!("the base must keep its sealed index, got {base_lane:?}").into());
     }
     let base_view = library_view(&generation_dir(temp.path(), base))?;
@@ -358,8 +379,11 @@ fn a_delta_that_shrinks_below_the_floor_drops_the_inherited_index() -> TestResul
     Ok(())
 }
 
+/// A delta whose new rows exceed the append budget (100 of 300 is a third,
+/// the budget is a quarter) retrains: one index, one segment, trained by
+/// this seal over every row.
 #[test]
-fn a_delta_that_grows_seals_one_index_covering_every_row() -> TestResult {
+fn a_delta_beyond_the_append_budget_retrains_one_index_covering_every_row() -> TestResult {
     let temp = tempfile::tempdir()?;
     let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     let base = ManifestGeneration::new(1);
@@ -386,9 +410,9 @@ fn a_delta_that_grows_seals_one_index_covering_every_row() -> TestResult {
     )?;
 
     let searcher = adapter.open(&repo(), &revision(), delta)?;
-    if searcher.dense_lane() != sealed_ann_lane() {
+    if searcher.dense_lane() != sealed_ann_lane(trained_at(2, 400)) {
         return Err(format!(
-            "400 rows must seal the policy index, got {:?}",
+            "400 rows past the budget must retrain the policy index, got {:?}",
             searcher.dense_lane()
         )
         .into());
@@ -413,6 +437,257 @@ fn a_delta_that_grows_seals_one_index_covering_every_row() -> TestResult {
         return Err(
             format!("a delta-only row must be served through the rebuilt index: {hits:?}").into(),
         );
+    }
+    Ok(())
+}
+
+/// Bytes of every file under a dataset's `_indices/` tree, keyed by inode,
+/// so a hard-linked file inherited from the base counts once and only on
+/// the base.
+fn index_bytes_by_inode(generation_dir: &Path) -> Result<BTreeMap<u64, u64>, Box<dyn Error>> {
+    let mut bytes = BTreeMap::new();
+    for file in index_files(generation_dir)? {
+        let metadata = std::fs::metadata(&file)?;
+        let _prior = bytes.insert(metadata.ino(), metadata.len());
+    }
+    Ok(bytes)
+}
+
+/// A delta inside the append budget appends to the inherited index.
+///
+/// 60 of 300 is a fifth, inside the quarter. The lane reports the base's
+/// train with the new rows counted, the library covers every row in one
+/// more segment, the new rows are served, the base is untouched, and the
+/// bytes the delta wrote under `_indices/` are a fraction of the base's.
+#[test]
+#[expect(
+    clippy::print_stdout,
+    reason = "the QI-BB-027-APPEND-EVIDENCE line is the measurement the ledger cites; it must land in the run log"
+)]
+fn a_delta_inside_the_append_budget_appends_to_the_inherited_index() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let base = ManifestGeneration::new(1);
+    let delta = ManifestGeneration::new(2);
+    seal_with_scopes(
+        &adapter,
+        base,
+        None,
+        vec![scope(
+            "src/base.rs",
+            records("base", "src/base.rs", 0..300)?,
+        )],
+        &[],
+    )?;
+    let base_index_bytes = index_bytes_by_inode(&generation_dir(temp.path(), base))?;
+    seal_with_scopes(
+        &adapter,
+        delta,
+        Some(base),
+        vec![scope(
+            "src/new.rs",
+            records("new", "src/new.rs", 1_000..1_060)?,
+        )],
+        &[],
+    )?;
+
+    let searcher = adapter.open(&repo(), &revision(), delta)?;
+    let expected = sealed_ann_lane(DenseIndexLineageV1::Recorded(DenseIndexTrainingV1 {
+        trained_at_generation: 1,
+        trained_rows: 300,
+        appended_rows: 60,
+        deleted_rows: 0,
+    }));
+    if searcher.dense_lane() != expected {
+        return Err(format!(
+            "360 rows inside the budget must append to the base's index, got {:?}",
+            searcher.dense_lane()
+        )
+        .into());
+    }
+    let view = library_view(&generation_dir(temp.path(), delta))?;
+    if view.names != vec![INDEX_NAME.to_string()] {
+        return Err(format!(
+            "the delta must carry exactly one vector index by name: {:?}",
+            view.names
+        )
+        .into());
+    }
+    if view.stats != Some((360, 0, Some(2))) {
+        return Err(format!(
+            "the appended index must cover every row in two segments, stats {:?}",
+            view.stats
+        )
+        .into());
+    }
+    // Both segments serve their own rows at the top with exact cosine
+    // scores: the refine step re-ranks candidates from every segment on
+    // the original vectors, not on one segment's quantized codes.
+    for (query_seed, expected) in [(1_042_u64, "new-1042"), (7_u64, "base-7")] {
+        let hits = searcher.search(&unit_vector(query_seed, DIMENSION), 3)?;
+        let Some(top) = hits.first() else {
+            return Err(format!("the appended index must serve hits for {expected}").into());
+        };
+        if top.candidate_id != expected || (top.score - 1.0).abs() > 1e-5 {
+            return Err(format!(
+                "{expected} must rank first at cosine 1 through the appended index, got {hits:?}"
+            )
+            .into());
+        }
+    }
+
+    // The base is untouched and still its own train.
+    let base_lane = adapter.open(&repo(), &revision(), base)?.dense_lane();
+    if base_lane != sealed_ann_lane(trained_at(1, 300)) {
+        return Err(format!("the base must keep its sealed index, got {base_lane:?}").into());
+    }
+    if library_view(&generation_dir(temp.path(), base))?.stats != Some((300, 0, Some(1))) {
+        return Err("the base index must be intact".into());
+    }
+
+    // Cost oracle: the delta shares the base's index files by inode and
+    // wrote only its own segment, a fraction of the base's index bytes.
+    let delta_index_bytes = index_bytes_by_inode(&generation_dir(temp.path(), delta))?;
+    let base_bytes: u64 = base_index_bytes.values().sum();
+    let shared_inodes = delta_index_bytes
+        .keys()
+        .filter(|inode| base_index_bytes.contains_key(*inode))
+        .count();
+    let delta_new_bytes: u64 = delta_index_bytes
+        .iter()
+        .filter(|(inode, _)| !base_index_bytes.contains_key(*inode))
+        .map(|(_, len)| *len)
+        .sum();
+    println!(
+        "QI-BB-027-APPEND-EVIDENCE base_index_bytes={base_bytes} delta_new_index_bytes={delta_new_bytes} appended_rows=60 shared_index_inodes={shared_inodes}"
+    );
+    if shared_inodes != base_index_bytes.len() {
+        return Err(format!(
+            "the delta must inherit every base index file by hard link, shares {shared_inodes} of {}",
+            base_index_bytes.len()
+        )
+        .into());
+    }
+    if delta_new_bytes == 0 {
+        return Err("the append must write its own segment".into());
+    }
+    if delta_new_bytes.saturating_mul(2) >= base_bytes {
+        return Err(format!(
+            "an append of 60 rows wrote {delta_new_bytes} new index bytes against a {base_bytes}-byte base index; it rewrote the base"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Rewrite a current manifest as a format-8 manifest (the index contract
+/// without its lineage record) and re-commit it in the sealed manifest, so
+/// the generation is exactly what a pre-W3 seal left behind.
+fn downgrade_to_v8(generation_dir: &Path) -> TestResult {
+    let manifest_path = generation_dir.join(SCOPE_MANIFEST);
+    let bytes = std::fs::read(&manifest_path)?;
+    let mut value: ciborium::value::Value = ciborium::from_reader(&bytes[..])?;
+    let ciborium::value::Value::Map(entries) = &mut value else {
+        return Err("scope manifest is not a map".into());
+    };
+    let mut version_seen = false;
+    let mut lineage_seen = false;
+    for (key, field) in entries.iter_mut() {
+        match key.as_text() {
+            Some("format_version") => {
+                *field = ciborium::value::Value::Integer(8.into());
+                version_seen = true;
+            }
+            Some("vector_index") => {
+                let ciborium::value::Value::Map(seal) = field else {
+                    return Err("vector_index is not a map".into());
+                };
+                let Some((_, ann)) = seal
+                    .iter_mut()
+                    .find(|(key, _)| key.as_text() == Some("ann"))
+                else {
+                    return Err("vector_index has no ann record".into());
+                };
+                let ciborium::value::Value::Map(ann) = ann else {
+                    return Err("ann is not a map".into());
+                };
+                let before = ann.len();
+                ann.retain(|(key, _)| key.as_text() != Some("lineage"));
+                lineage_seen = ann.len() != before;
+            }
+            _ => {}
+        }
+    }
+    if !version_seen || !lineage_seen {
+        return Err("manifest carried no format_version or no lineage to strip".into());
+    }
+    let mut legacy = Vec::new();
+    ciborium::into_writer(&value, &mut legacy)?;
+    std::fs::write(&manifest_path, &legacy)?;
+    recommit_scope_manifest(generation_dir, &legacy)
+}
+
+/// Re-commit `manifest_bytes` in the sealed manifest's scope commitment.
+fn recommit_scope_manifest(generation_dir: &Path, manifest_bytes: &[u8]) -> TestResult {
+    let sealed_path = generation_dir.join(SEALED_MANIFEST);
+    let sealed_bytes = std::fs::read(&sealed_path)?;
+    let mut sealed: ciborium::value::Value = ciborium::from_reader(&sealed_bytes[..])?;
+    let ciborium::value::Value::Array(row) = &mut sealed else {
+        return Err("sealed manifest is not an array".into());
+    };
+    let Some(commitment) = row.get_mut(2) else {
+        return Err("sealed manifest has no scope commitment".into());
+    };
+    let digest: [u8; 32] = Sha256::digest(manifest_bytes).into();
+    *commitment = ciborium::value::Value::Array(vec![
+        ciborium::value::Value::Integer(u64::try_from(manifest_bytes.len())?.into()),
+        ciborium::value::Value::Bytes(digest.to_vec()),
+    ]);
+    let mut resealed = Vec::new();
+    ciborium::into_writer(&sealed, &mut resealed)?;
+    std::fs::write(&sealed_path, &resealed)?;
+    Ok(())
+}
+
+/// A base sealed before the lineage record serves as sealed with an
+/// unrecorded lineage, and a delta over it retrains even inside the budget:
+/// there is no record to append against.
+#[test]
+fn a_base_sealed_before_the_lineage_record_is_retrained_not_appended() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let base = ManifestGeneration::new(1);
+    let delta = ManifestGeneration::new(2);
+    seal_rows(&adapter, base, 300)?;
+    downgrade_to_v8(&generation_dir(&root, base))?;
+
+    let reopened = SemanticAdapter::with_state_root(root.clone())?;
+    reopened.validate_generation_identity(&identity(base))?;
+    let base_lane = reopened.open(&repo(), &revision(), base)?.dense_lane();
+    if base_lane != sealed_ann_lane(DenseIndexLineageV1::Unrecorded) {
+        return Err(format!(
+            "a v8 generation is sealed and verified but its lineage is unrecorded: {base_lane:?}"
+        )
+        .into());
+    }
+
+    seal_with_scopes(
+        &reopened,
+        delta,
+        Some(base),
+        vec![scope(
+            "src/new.rs",
+            records("new", "src/new.rs", 1_000..1_030)?,
+        )],
+        &[],
+    )?;
+    let delta_lane = reopened.open(&repo(), &revision(), delta)?.dense_lane();
+    if delta_lane != sealed_ann_lane(trained_at(2, 330)) {
+        return Err(format!("a delta over a v8 base must retrain, got {delta_lane:?}").into());
+    }
+    if library_view(&generation_dir(&root, delta))?.stats != Some((330, 0, Some(1))) {
+        return Err("the retrained index must cover every row in one segment".into());
     }
     Ok(())
 }
@@ -502,25 +777,7 @@ fn downgrade_to_v7(generation_dir: &Path) -> TestResult {
     let mut legacy = Vec::new();
     ciborium::into_writer(&value, &mut legacy)?;
     std::fs::write(&manifest_path, &legacy)?;
-
-    let sealed_path = generation_dir.join(SEALED_MANIFEST);
-    let sealed_bytes = std::fs::read(&sealed_path)?;
-    let mut sealed: ciborium::value::Value = ciborium::from_reader(&sealed_bytes[..])?;
-    let ciborium::value::Value::Array(row) = &mut sealed else {
-        return Err("sealed manifest is not an array".into());
-    };
-    let Some(commitment) = row.get_mut(2) else {
-        return Err("sealed manifest has no scope commitment".into());
-    };
-    let digest: [u8; 32] = Sha256::digest(&legacy).into();
-    *commitment = ciborium::value::Value::Array(vec![
-        ciborium::value::Value::Integer(u64::try_from(legacy.len())?.into()),
-        ciborium::value::Value::Bytes(digest.to_vec()),
-    ]);
-    let mut resealed = Vec::new();
-    ciborium::into_writer(&sealed, &mut resealed)?;
-    std::fs::write(&sealed_path, &resealed)?;
-    Ok(())
+    recommit_scope_manifest(generation_dir, &legacy)
 }
 
 #[test]
@@ -539,11 +796,12 @@ fn a_generation_sealed_before_the_contract_serves_unverified_on_what_it_carries(
     reopened.validate_generation_identity(&identity(indexed))?;
     let indexed_searcher = reopened.open(&repo(), &revision(), indexed)?;
     let lane = indexed_searcher.dense_lane();
-    let DenseIndexV1::Approximate(effort) = &lane.index else {
+    let DenseIndexV1::Approximate { effort, lineage } = &lane.index else {
         return Err(format!("a v7 generation with an index reports it: {lane:?}").into());
     };
     if lane.attestation != DenseLaneAttestationV1::LegacyUnverified
         || effort.index_kind != "ivf_hnsw_sq"
+        || *lineage != DenseIndexLineageV1::Unrecorded
     {
         return Err(format!("a v7 index is served unverified: {lane:?}").into());
     }
@@ -636,7 +894,7 @@ fn the_sealed_effort_keeps_recall_against_an_exact_oracle_and_returns_exact_scor
         .sum();
 
     let searcher = adapter.open(&repo(), &revision(), generation)?;
-    if searcher.dense_lane() != sealed_ann_lane() {
+    if searcher.dense_lane() != sealed_ann_lane(trained_at(1, ROWS)) {
         return Err(format!(
             "the corpus must be served through the sealed index: {:?}",
             searcher.dense_lane()

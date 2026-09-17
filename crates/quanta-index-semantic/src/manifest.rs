@@ -39,8 +39,15 @@ fn is_canonical_sha256_v1(value: &str) -> bool {
 
 /// Current manifest format version. Bumped on any durable shape change.
 ///
-/// `8` = v7 plus the dense lane's index contract (QI-BB-027).
-pub(crate) const FORMAT_VERSION: u32 = 8;
+/// `9` = v8 plus the approximate index's training lineage (QI-BB-027 W3):
+/// which generation trained the centroids, the rows appended to and
+/// deleted from them since, and the append budget the seal was under.
+pub(crate) const FORMAT_VERSION: u32 = 9;
+
+/// Legacy manifest with the dense lane's index contract (QI-BB-027) but no
+/// training lineage: every index it sealed was trained by that seal, and
+/// nothing records it, so a delta cannot append to it.
+pub(crate) const LEGACY_UNRECORDED_ANN_LINEAGE_FORMAT_VERSION: u32 = 8;
 
 /// Legacy manifest with the semantic-row root but no vector index seal.
 pub(crate) const LEGACY_UNSEALED_VECTOR_INDEX_FORMAT_VERSION: u32 = 7;
@@ -107,6 +114,12 @@ impl FormatCapabilitiesV1 {
 
     /// The manifest records the dense lane's index contract.
     pub(crate) const fn vector_index_seal(self) -> bool {
+        self.format_version >= LEGACY_UNRECORDED_ANN_LINEAGE_FORMAT_VERSION
+    }
+
+    /// The index contract records the approximate index's training lineage,
+    /// so a later delta can prove an append against it.
+    pub(crate) const fn ann_lineage(self) -> bool {
         self.format_version >= FORMAT_VERSION
     }
 }
@@ -152,7 +165,8 @@ cbor_serde!(VectorIndexSealV1 {
 });
 
 /// The approximate index a seal built: its full recipe, what the library
-/// reported about it, and the query effort the lane spends in it.
+/// reported about it, the query effort the lane spends in it, and where
+/// its centroids came from.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AnnIndexSealV1 {
     pub(crate) index_name: String,
@@ -168,6 +182,9 @@ pub(crate) struct AnnIndexSealV1 {
     pub(crate) ef_floor: u32,
     pub(crate) ef_per_candidate: u32,
     pub(crate) refine_factor: u32,
+    /// `None` only for format `8`, which trained every index it sealed and
+    /// recorded nothing about it.
+    pub(crate) lineage: Option<AnnIndexLineageV1>,
 }
 
 cbor_serde!(AnnIndexSealV1 {
@@ -184,14 +201,136 @@ cbor_serde!(AnnIndexSealV1 {
     ef_floor: u32,
     ef_per_candidate: u32,
     refine_factor: u32,
+    lineage: Option<AnnIndexLineageV1>,
 });
+
+/// Where the sealed index's centroids came from and how far the served
+/// rows have drifted from them (QI-BB-027 W3).
+///
+/// A delta seal appends its rows to the inherited index when the record
+/// stays inside the append budget, and retrains otherwise; the budget the
+/// seal was under is recorded beside the counters so the record validates
+/// on its own, and a policy change cannot enter under an old seal's
+/// identity. The counters satisfy
+/// `trained_rows + appended_rows - deleted_rows == indexed_rows`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AnnIndexLineageV1 {
+    /// The generation whose seal trained the centroids.
+    pub(crate) trained_at_generation: u64,
+    /// The rows the centroids were trained on: every row that seal covered.
+    pub(crate) trained_rows: u64,
+    /// Rows later seals assigned to those centroids without retraining,
+    /// cumulative.
+    pub(crate) appended_rows: u64,
+    /// Rows removed from the index since training, cumulative.
+    pub(crate) deleted_rows: u64,
+    /// The append budget as rows per thousand trained rows.
+    pub(crate) append_ratio_max_per_mille: u32,
+    /// The append budget as an absolute row count.
+    pub(crate) append_rows_max: u64,
+    /// The most segments appends may add beside the trained one.
+    pub(crate) append_segments_max: u32,
+}
+
+cbor_serde!(AnnIndexLineageV1 {
+    trained_at_generation: u64,
+    trained_rows: u64,
+    appended_rows: u64,
+    deleted_rows: u64,
+    append_ratio_max_per_mille: u32,
+    append_rows_max: u64,
+    append_segments_max: u32,
+});
+
+impl AnnIndexLineageV1 {
+    /// Live rows the record accounts for: `trained + appended - deleted`,
+    /// or `None` when the counters do not add up.
+    #[must_use]
+    pub(crate) fn accounted_rows(&self) -> Option<u64> {
+        self.trained_rows
+            .checked_add(self.appended_rows)?
+            .checked_sub(self.deleted_rows)
+    }
+
+    /// Whether `appended_rows` stays inside both recorded budgets; `None`
+    /// when the ratio product overflows.
+    #[must_use]
+    pub(crate) fn within_append_budget(&self) -> Option<bool> {
+        let scaled_appended = self.appended_rows.checked_mul(1_000)?;
+        let scaled_budget = self
+            .trained_rows
+            .checked_mul(u64::from(self.append_ratio_max_per_mille))?;
+        Some(scaled_appended <= scaled_budget && self.appended_rows <= self.append_rows_max)
+    }
+
+    /// Refuse a record that contradicts itself, its generation, or the
+    /// index it describes.
+    fn validate(&self, generation: u64, ann: &AnnIndexSealV1) -> Result<(), CoreError> {
+        let invalid = |detail: &str| {
+            CoreError::Storage(format!(
+                "semantic: manifest vector index lineage is inconsistent: {detail}"
+            ))
+        };
+        if self.trained_rows == 0 {
+            return Err(invalid("trained on zero rows"));
+        }
+        if self.trained_at_generation > generation {
+            return Err(invalid(&format!(
+                "trained at generation {} after the sealing generation {generation}",
+                self.trained_at_generation
+            )));
+        }
+        if self.trained_at_generation == generation
+            && (self.appended_rows != 0 || self.deleted_rows != 0)
+        {
+            return Err(invalid(&format!(
+                "trained by this seal yet {} rows appended and {} deleted",
+                self.appended_rows, self.deleted_rows
+            )));
+        }
+        match self.within_append_budget() {
+            Some(true) => {}
+            Some(false) => {
+                return Err(invalid(&format!(
+                    "{} appended rows exceed the budget of {} per mille of {} trained rows or {} rows",
+                    self.appended_rows,
+                    self.append_ratio_max_per_mille,
+                    self.trained_rows,
+                    self.append_rows_max
+                )));
+            }
+            None => return Err(invalid("append budget arithmetic overflows")),
+        }
+        let segments_max = self.append_segments_max.saturating_add(1);
+        if ann.index_segments > segments_max {
+            return Err(invalid(&format!(
+                "{} segments exceed one trained plus {} appended",
+                ann.index_segments, self.append_segments_max
+            )));
+        }
+        match self.accounted_rows() {
+            Some(accounted) if accounted == ann.indexed_rows => Ok(()),
+            Some(accounted) => Err(invalid(&format!(
+                "{} trained + {} appended - {} deleted = {accounted} rows, but the index covers {}",
+                self.trained_rows, self.appended_rows, self.deleted_rows, ann.indexed_rows
+            ))),
+            None => Err(invalid("row accounting overflows")),
+        }
+    }
+}
 
 pub(crate) const VECTOR_INDEX_MODE_EXACT: &str = "exact";
 pub(crate) const VECTOR_INDEX_MODE_IVF_HNSW_SQ: &str = "ivf_hnsw_sq";
 
 impl VectorIndexSealV1 {
-    /// Refuse a seal whose fields contradict each other or the row count.
-    pub(crate) fn validate(&self, row_count: u64) -> Result<(), CoreError> {
+    /// Refuse a seal whose fields contradict each other, the row count, the
+    /// sealing generation, or what its manifest format can carry.
+    pub(crate) fn validate(
+        &self,
+        row_count: u64,
+        generation: u64,
+        capabilities: FormatCapabilitiesV1,
+    ) -> Result<(), CoreError> {
         let invalid = |detail: &str| {
             CoreError::Storage(format!(
                 "semantic: manifest vector index seal is inconsistent: {detail}"
@@ -251,6 +390,18 @@ impl VectorIndexSealV1 {
                 }
                 if ann.ef_floor == 0 || ann.ef_per_candidate == 0 || ann.refine_factor == 0 {
                     return Err(invalid("a query effort parameter is zero"));
+                }
+                match (capabilities.ann_lineage(), ann.lineage.as_ref()) {
+                    (true, Some(lineage)) => lineage.validate(generation, ann)?,
+                    (true, None) => {
+                        return Err(invalid("the format requires an index lineage record"));
+                    }
+                    (false, Some(_)) => {
+                        return Err(invalid(
+                            "the format predates the index lineage record it carries",
+                        ));
+                    }
+                    (false, None) => {}
                 }
             }
             (other, _) => {
@@ -314,6 +465,138 @@ cbor_serde!(SemanticManifest {
     cluster_membership_member_row_count: u64,
     vector_index: Option<VectorIndexSealV1>,
 });
+
+/// The format-8 manifest, decode only.
+///
+/// The current shape with the index contract as it was sealed before the
+/// lineage record. A format-8 seal maps to the current record with
+/// `lineage: None`, which is what its capability set says it carries.
+struct SemanticManifestV8 {
+    format_version: u32,
+    repo_id: String,
+    revision_id: String,
+    generation: u64,
+    manifest_digest: String,
+    model_id: String,
+    model_version: Option<String>,
+    dimension: u32,
+    distance_metric: String,
+    normalization: String,
+    row_count: u64,
+    semantic_row_root_digest: String,
+    built_at_unix_nanos: u64,
+    present_corpora: Vec<String>,
+    required_corpora: Vec<String>,
+    card_schema_versions: Vec<u32>,
+    render_policy_digests: Vec<String>,
+    corpus_policy_digest: Option<String>,
+    cluster_membership_root_digest: String,
+    cluster_membership_cluster_count: u64,
+    cluster_membership_member_row_count: u64,
+    vector_index: Option<VectorIndexSealV8>,
+}
+
+cbor_serde!(SemanticManifestV8 {
+    format_version: u32,
+    repo_id: String,
+    revision_id: String,
+    generation: u64,
+    manifest_digest: String,
+    model_id: String,
+    model_version: Option<String>,
+    dimension: u32,
+    distance_metric: String,
+    normalization: String,
+    row_count: u64,
+    semantic_row_root_digest: String,
+    built_at_unix_nanos: u64,
+    present_corpora: Vec<String>,
+    required_corpora: Vec<String>,
+    card_schema_versions: Vec<u32>,
+    render_policy_digests: Vec<String>,
+    corpus_policy_digest: Option<String>,
+    cluster_membership_root_digest: String,
+    cluster_membership_cluster_count: u64,
+    cluster_membership_member_row_count: u64,
+    vector_index: Option<VectorIndexSealV8>,
+});
+
+/// The format-8 index contract: [`VectorIndexSealV1`] without the lineage
+/// record inside its `ann`.
+struct VectorIndexSealV8 {
+    mode: String,
+    library: String,
+    library_version: String,
+    index_min_rows: u64,
+    ann: Option<AnnIndexSealV8>,
+}
+
+cbor_serde!(VectorIndexSealV8 {
+    mode: String,
+    library: String,
+    library_version: String,
+    index_min_rows: u64,
+    ann: Option<AnnIndexSealV8>,
+});
+
+struct AnnIndexSealV8 {
+    index_name: String,
+    distance: String,
+    num_partitions: u32,
+    sample_rate: u32,
+    max_iterations: u32,
+    hnsw_m: u32,
+    hnsw_ef_construction: u32,
+    indexed_rows: u64,
+    index_segments: u32,
+    nprobes: u32,
+    ef_floor: u32,
+    ef_per_candidate: u32,
+    refine_factor: u32,
+}
+
+cbor_serde!(AnnIndexSealV8 {
+    index_name: String,
+    distance: String,
+    num_partitions: u32,
+    sample_rate: u32,
+    max_iterations: u32,
+    hnsw_m: u32,
+    hnsw_ef_construction: u32,
+    indexed_rows: u64,
+    index_segments: u32,
+    nprobes: u32,
+    ef_floor: u32,
+    ef_per_candidate: u32,
+    refine_factor: u32,
+});
+
+impl From<VectorIndexSealV8> for VectorIndexSealV1 {
+    fn from(legacy: VectorIndexSealV8) -> Self {
+        Self {
+            mode: legacy.mode,
+            library: legacy.library,
+            library_version: legacy.library_version,
+            index_min_rows: legacy.index_min_rows,
+            ann: legacy.ann.map(|ann| AnnIndexSealV1 {
+                index_name: ann.index_name,
+                distance: ann.distance,
+                num_partitions: ann.num_partitions,
+                sample_rate: ann.sample_rate,
+                max_iterations: ann.max_iterations,
+                hnsw_m: ann.hnsw_m,
+                hnsw_ef_construction: ann.hnsw_ef_construction,
+                indexed_rows: ann.indexed_rows,
+                index_segments: ann.index_segments,
+                nprobes: ann.nprobes,
+                ef_floor: ann.ef_floor,
+                ef_per_candidate: ann.ef_per_candidate,
+                refine_factor: ann.refine_factor,
+                lineage: None,
+            }),
+        }
+    }
+}
 
 struct SemanticManifestV7 {
     format_version: u32,
@@ -570,6 +853,34 @@ impl SemanticManifest {
         match codec::decode(bytes, "semantic manifest") {
             Ok(current) => Ok(current),
             Err(current_err) => {
+                if let Ok(legacy) = codec::decode::<SemanticManifestV8>(bytes, "semantic manifest")
+                {
+                    return Ok(Self {
+                        format_version: legacy.format_version,
+                        repo_id: legacy.repo_id,
+                        revision_id: legacy.revision_id,
+                        generation: legacy.generation,
+                        manifest_digest: legacy.manifest_digest,
+                        model_id: legacy.model_id,
+                        model_version: legacy.model_version,
+                        dimension: legacy.dimension,
+                        distance_metric: legacy.distance_metric,
+                        normalization: legacy.normalization,
+                        row_count: legacy.row_count,
+                        semantic_row_root_digest: legacy.semantic_row_root_digest,
+                        built_at_unix_nanos: legacy.built_at_unix_nanos,
+                        present_corpora: legacy.present_corpora,
+                        required_corpora: legacy.required_corpora,
+                        card_schema_versions: legacy.card_schema_versions,
+                        render_policy_digests: legacy.render_policy_digests,
+                        corpus_policy_digest: legacy.corpus_policy_digest,
+                        cluster_membership_root_digest: legacy.cluster_membership_root_digest,
+                        cluster_membership_cluster_count: legacy.cluster_membership_cluster_count,
+                        cluster_membership_member_row_count: legacy
+                            .cluster_membership_member_row_count,
+                        vector_index: legacy.vector_index.map(VectorIndexSealV1::from),
+                    });
+                }
                 if let Ok(legacy) = codec::decode::<SemanticManifestV7>(bytes, "semantic manifest")
                 {
                     return Ok(Self {
@@ -771,7 +1082,7 @@ impl SemanticManifest {
             ));
         }
         if let Some(seal) = self.vector_index_seal()? {
-            seal.validate(self.row_count)?;
+            seal.validate(self.row_count, self.generation, capabilities)?;
         }
         if self.repo_id != repo.as_str() {
             return Err(CoreError::Storage(format!(
@@ -940,28 +1251,93 @@ mod tests {
         }
     }
 
+    /// The generation the fixtures seal; lineage records name it.
+    const GENERATION: u64 = 7;
+
+    fn current_capabilities() -> FormatCapabilitiesV1 {
+        format_capabilities_v1(FORMAT_VERSION).expect("current format is supported")
+    }
+
+    /// A lineage as a fresh train at [`GENERATION`] records it.
+    fn trained_lineage(rows: u64) -> AnnIndexLineageV1 {
+        AnnIndexLineageV1 {
+            trained_at_generation: GENERATION,
+            trained_rows: rows,
+            appended_rows: 0,
+            deleted_rows: 0,
+            append_ratio_max_per_mille: 250,
+            append_rows_max: 1 << 18,
+            append_segments_max: 8,
+        }
+    }
+
+    fn ann_record(indexed_rows: u64, lineage: Option<AnnIndexLineageV1>) -> AnnIndexSealV1 {
+        AnnIndexSealV1 {
+            index_name: "vector_ivf_hnsw_sq".to_string(),
+            distance: "cosine".to_string(),
+            num_partitions: 1,
+            sample_rate: 256,
+            max_iterations: 50,
+            hnsw_m: 20,
+            hnsw_ef_construction: 300,
+            indexed_rows,
+            index_segments: 1,
+            nprobes: 1,
+            ef_floor: 64,
+            ef_per_candidate: 2,
+            refine_factor: 2,
+            lineage,
+        }
+    }
+
     fn ann_seal(indexed_rows: u64) -> VectorIndexSealV1 {
         VectorIndexSealV1 {
             mode: VECTOR_INDEX_MODE_IVF_HNSW_SQ.to_string(),
             library: "lancedb".to_string(),
             library_version: "0.30.0".to_string(),
             index_min_rows: 256,
-            ann: Some(AnnIndexSealV1 {
-                index_name: "vector_ivf_hnsw_sq".to_string(),
-                distance: "cosine".to_string(),
-                num_partitions: 1,
-                sample_rate: 256,
-                max_iterations: 50,
-                hnsw_m: 20,
-                hnsw_ef_construction: 300,
+            ann: Some(ann_record(
                 indexed_rows,
-                index_segments: 1,
-                nprobes: 1,
-                ef_floor: 64,
-                ef_per_candidate: 2,
-                refine_factor: 2,
-            }),
+                Some(trained_lineage(indexed_rows)),
+            )),
         }
+    }
+
+    /// An appended seal: trained on `trained` rows at generation 1,
+    /// `appended` rows assigned and `deleted` removed since, in `segments`
+    /// segments.
+    fn appended_seal(
+        trained: u64,
+        appended: u64,
+        deleted: u64,
+        segments: u32,
+    ) -> VectorIndexSealV1 {
+        let mut ann = ann_record(
+            trained.saturating_add(appended).saturating_sub(deleted),
+            Some(AnnIndexLineageV1 {
+                trained_at_generation: 1,
+                trained_rows: trained,
+                appended_rows: appended,
+                deleted_rows: deleted,
+                ..trained_lineage(trained)
+            }),
+        );
+        ann.index_segments = segments;
+        VectorIndexSealV1 {
+            ann: Some(ann),
+            ..ann_seal(trained)
+        }
+    }
+
+    fn with_lineage(
+        seal: &VectorIndexSealV1,
+        edit: impl FnOnce(&mut AnnIndexLineageV1),
+    ) -> VectorIndexSealV1 {
+        let mut edited = seal.clone();
+        if let Some(lineage) = edited.ann.as_mut().and_then(|ann| ann.lineage.as_mut()) {
+            edit(lineage);
+        }
+        edited
     }
 
     fn exact_seal() -> VectorIndexSealV1 {
@@ -1006,7 +1382,8 @@ mod tests {
             SemanticManifest::decode(&codec::encode(&v7_manifest(300), "fixture").expect("encode"))
                 .expect("decode");
         manifest.format_version = FORMAT_VERSION;
-        manifest.vector_index = Some(ann_seal(300));
+        manifest.row_count = 357;
+        manifest.vector_index = Some(appended_seal(300, 60, 3, 2));
         let bytes = manifest.encode().expect("encode current");
         let decoded = SemanticManifest::decode(&bytes).expect("decode current");
         assert_eq!(decoded.format_version, FORMAT_VERSION);
@@ -1017,15 +1394,180 @@ mod tests {
         assert_eq!(seal.mode, VECTOR_INDEX_MODE_IVF_HNSW_SQ);
         let ann = seal.ann.as_ref().expect("ann record");
         assert_eq!(ann.index_name, "vector_ivf_hnsw_sq");
-        assert_eq!(ann.indexed_rows, 300);
+        assert_eq!(ann.indexed_rows, 357);
         assert_eq!((ann.hnsw_m, ann.hnsw_ef_construction), (20, 300));
+        assert_eq!(
+            ann.lineage,
+            Some(AnnIndexLineageV1 {
+                trained_at_generation: 1,
+                trained_rows: 300,
+                appended_rows: 60,
+                deleted_rows: 3,
+                append_ratio_max_per_mille: 250,
+                append_rows_max: 1 << 18,
+                append_segments_max: 8,
+            })
+        );
         decoded
             .validate_scope(
                 &RepoId::new("repo"),
                 &RevisionId::new("rev"),
-                ManifestGeneration::new(7),
+                ManifestGeneration::new(GENERATION),
             )
             .expect("consistent seal");
+    }
+
+    /// The format-8 manifest as its own seal wrote it: an index contract
+    /// with no lineage inside.
+    fn v8_manifest(seal: Option<VectorIndexSealV8>) -> SemanticManifestV8 {
+        let base = v7_manifest(300);
+        SemanticManifestV8 {
+            format_version: LEGACY_UNRECORDED_ANN_LINEAGE_FORMAT_VERSION,
+            repo_id: base.repo_id,
+            revision_id: base.revision_id,
+            generation: base.generation,
+            manifest_digest: base.manifest_digest,
+            model_id: base.model_id,
+            model_version: base.model_version,
+            dimension: base.dimension,
+            distance_metric: base.distance_metric,
+            normalization: base.normalization,
+            row_count: base.row_count,
+            semantic_row_root_digest: base.semantic_row_root_digest,
+            built_at_unix_nanos: base.built_at_unix_nanos,
+            present_corpora: base.present_corpora,
+            required_corpora: base.required_corpora,
+            card_schema_versions: base.card_schema_versions,
+            render_policy_digests: base.render_policy_digests,
+            corpus_policy_digest: base.corpus_policy_digest,
+            cluster_membership_root_digest: base.cluster_membership_root_digest,
+            cluster_membership_cluster_count: base.cluster_membership_cluster_count,
+            cluster_membership_member_row_count: base.cluster_membership_member_row_count,
+            vector_index: seal,
+        }
+    }
+
+    fn v8_ann_seal(indexed_rows: u64) -> VectorIndexSealV8 {
+        VectorIndexSealV8 {
+            mode: VECTOR_INDEX_MODE_IVF_HNSW_SQ.to_string(),
+            library: "lancedb".to_string(),
+            library_version: "0.30.0".to_string(),
+            index_min_rows: 256,
+            ann: Some(AnnIndexSealV8 {
+                index_name: "vector_ivf_hnsw_sq".to_string(),
+                distance: "cosine".to_string(),
+                num_partitions: 1,
+                sample_rate: 256,
+                max_iterations: 50,
+                hnsw_m: 20,
+                hnsw_ef_construction: 300,
+                indexed_rows,
+                index_segments: 1,
+                nprobes: 1,
+                ef_floor: 64,
+                ef_per_candidate: 2,
+                refine_factor: 2,
+            }),
+        }
+    }
+
+    #[test]
+    fn format_v8_decodes_without_fabricating_an_index_lineage() {
+        let bytes = codec::encode(
+            &v8_manifest(Some(v8_ann_seal(300))),
+            "legacy semantic manifest",
+        )
+        .expect("encode");
+        let decoded = SemanticManifest::decode(&bytes).expect("decode legacy");
+        assert_eq!(
+            decoded.format_version,
+            LEGACY_UNRECORDED_ANN_LINEAGE_FORMAT_VERSION
+        );
+        let seal = decoded
+            .vector_index_seal()
+            .expect("a v8 manifest is supported")
+            .expect("v8 carries a seal");
+        let ann = seal.ann.as_ref().expect("v8 seal carries its index record");
+        assert_eq!(ann.indexed_rows, 300);
+        assert_eq!(
+            ann.lineage, None,
+            "v8 recorded no lineage; none is invented"
+        );
+        decoded
+            .validate_scope(
+                &RepoId::new("repo"),
+                &RevisionId::new("rev"),
+                ManifestGeneration::new(GENERATION),
+            )
+            .expect("a v8 seal without lineage is what its format carries");
+
+        // A v8 manifest with an exact seal has no index record to widen and
+        // decodes through the current shape directly.
+        let exact = v8_manifest(Some(VectorIndexSealV8 {
+            mode: VECTOR_INDEX_MODE_EXACT.to_string(),
+            library: "lancedb".to_string(),
+            library_version: "0.30.0".to_string(),
+            index_min_rows: 256,
+            ann: None,
+        }));
+        let mut exact = SemanticManifest::decode(
+            &codec::encode(&exact, "legacy semantic manifest").expect("encode"),
+        )
+        .expect("decode legacy exact");
+        exact.row_count = 12;
+        assert_eq!(exact.vector_index, Some(exact_seal()));
+        exact
+            .validate_scope(
+                &RepoId::new("repo"),
+                &RevisionId::new("rev"),
+                ManifestGeneration::new(GENERATION),
+            )
+            .expect("a v8 exact seal validates");
+    }
+
+    #[test]
+    fn a_lineage_record_must_match_its_format() {
+        let base = || {
+            SemanticManifest::decode(&codec::encode(&v7_manifest(300), "fixture").expect("encode"))
+                .expect("decode")
+        };
+        // Current format without a lineage record.
+        let mut unrecorded = base();
+        unrecorded.format_version = FORMAT_VERSION;
+        unrecorded.vector_index = Some(VectorIndexSealV1 {
+            ann: Some(ann_record(300, None)),
+            ..ann_seal(300)
+        });
+        let error = unrecorded
+            .validate_scope(
+                &RepoId::new("repo"),
+                &RevisionId::new("rev"),
+                ManifestGeneration::new(GENERATION),
+            )
+            .expect_err("format 9 without a lineage record");
+        assert!(
+            error
+                .to_string()
+                .contains("requires an index lineage record"),
+            "{error}"
+        );
+        // Format 8 carrying a lineage record it could not have written.
+        let mut predated = base();
+        predated.format_version = LEGACY_UNRECORDED_ANN_LINEAGE_FORMAT_VERSION;
+        predated.vector_index = Some(ann_seal(300));
+        let error = predated
+            .validate_scope(
+                &RepoId::new("repo"),
+                &RevisionId::new("rev"),
+                ManifestGeneration::new(GENERATION),
+            )
+            .expect_err("format 8 with a lineage record");
+        assert!(
+            error
+                .to_string()
+                .contains("predates the index lineage record it carries"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1038,16 +1580,16 @@ mod tests {
             .validate_scope(
                 &RepoId::new("repo"),
                 &RevisionId::new("rev"),
-                ManifestGeneration::new(7),
+                ManifestGeneration::new(GENERATION),
             )
-            .expect_err("format 8 without a seal");
+            .expect_err("format 9 without a seal");
         assert!(
             error.to_string().contains("requires a vector index seal"),
             "{error}"
         );
     }
 
-    fn capability_bits(capabilities: FormatCapabilitiesV1) -> [bool; 6] {
+    fn capability_bits(capabilities: FormatCapabilitiesV1) -> [bool; 7] {
         [
             capabilities.build_contract(),
             capabilities.corpus_metadata(),
@@ -1055,6 +1597,7 @@ mod tests {
             capabilities.semantic_row_root(),
             capabilities.file_commitment(),
             capabilities.vector_index_seal(),
+            capabilities.ann_lineage(),
         ]
     }
 
@@ -1063,11 +1606,19 @@ mod tests {
         assert!(format_capabilities_v1(1).is_none());
         assert!(format_capabilities_v1(FORMAT_VERSION.saturating_add(1)).is_none());
         let v2 = format_capabilities_v1(2).expect("v2");
-        assert_eq!(capability_bits(v2), [false; 6]);
+        assert_eq!(capability_bits(v2), [false; 7]);
         let v7 = format_capabilities_v1(7).expect("v7");
-        assert_eq!(capability_bits(v7), [true, true, true, true, true, false]);
+        assert_eq!(
+            capability_bits(v7),
+            [true, true, true, true, true, false, false]
+        );
         let v8 = format_capabilities_v1(8).expect("v8");
-        assert_eq!(capability_bits(v8), [true; 6]);
+        assert_eq!(
+            capability_bits(v8),
+            [true, true, true, true, true, true, false]
+        );
+        let v9 = format_capabilities_v1(9).expect("v9");
+        assert_eq!(capability_bits(v9), [true; 7]);
         // Each capability, once gained, is never lost by a later format.
         let mut previous = capability_bits(v2);
         for version in 3..=FORMAT_VERSION {
@@ -1085,8 +1636,11 @@ mod tests {
 
     #[test]
     fn the_vector_index_seal_refuses_every_contradiction() {
-        exact_seal().validate(255).expect("exact below the floor");
-        ann_seal(256).validate(256).expect("ann at the floor");
+        let validate = |seal: &VectorIndexSealV1, rows: u64| {
+            seal.validate(rows, GENERATION, current_capabilities())
+        };
+        validate(&exact_seal(), 255).expect("exact below the floor");
+        validate(&ann_seal(256), 256).expect("ann at the floor");
         let cases: Vec<(&str, VectorIndexSealV1, u64)> = vec![
             ("exact at the floor", exact_seal(), 256),
             ("ann below the floor", ann_seal(255), 255),
@@ -1125,25 +1679,111 @@ mod tests {
             ),
         ];
         for (label, seal, rows) in cases {
-            assert!(seal.validate(rows).is_err(), "{label} must be refused");
+            assert!(validate(&seal, rows).is_err(), "{label} must be refused");
         }
         let mut wrong_distance = ann_seal(300);
         if let Some(ann) = wrong_distance.ann.as_mut() {
             ann.distance = "dot".to_string();
         }
-        assert!(wrong_distance.validate(300).is_err(), "dot distance");
+        assert!(validate(&wrong_distance, 300).is_err(), "dot distance");
         let mut too_many_probes = ann_seal(300);
         if let Some(ann) = too_many_probes.ann.as_mut() {
             ann.nprobes = 2;
         }
         assert!(
-            too_many_probes.validate(300).is_err(),
+            validate(&too_many_probes, 300).is_err(),
             "nprobes beyond partitions"
         );
         let mut zero_refine = ann_seal(300);
         if let Some(ann) = zero_refine.ann.as_mut() {
             ann.refine_factor = 0;
         }
-        assert!(zero_refine.validate(300).is_err(), "zero refine factor");
+        assert!(validate(&zero_refine, 300).is_err(), "zero refine factor");
+    }
+
+    /// The lineage record validates on its own arithmetic and against the
+    /// index and generation it describes; each contradiction names its
+    /// cause.
+    #[test]
+    fn the_index_lineage_refuses_every_contradiction() {
+        let validate = |seal: &VectorIndexSealV1| {
+            let rows = seal.ann.as_ref().map_or(0, |ann| ann.indexed_rows);
+            seal.validate(rows, GENERATION, current_capabilities())
+        };
+        // Within budget: 60 of 300 is 200 per mille, two segments.
+        validate(&appended_seal(300, 60, 3, 2)).expect("an append inside the budget");
+        // Exactly at the ratio and the segment cap.
+        validate(&appended_seal(400, 100, 0, 9)).expect("an append at the budget");
+        // A deletion-only delta appended nothing but is not a train.
+        validate(&appended_seal(300, 0, 20, 1)).expect("deletions alone are inside the budget");
+
+        let refused: Vec<(&str, VectorIndexSealV1, &str)> = vec![
+            (
+                "above the ratio",
+                appended_seal(400, 101, 0, 2),
+                "exceed the budget",
+            ),
+            (
+                "above the absolute cap",
+                with_lineage(&appended_seal(4_000_000, 300_000, 0, 2), |lineage| {
+                    lineage.append_ratio_max_per_mille = 1_000;
+                }),
+                "exceed the budget",
+            ),
+            (
+                "more segments than the cap admits",
+                appended_seal(400, 100, 0, 10),
+                "segments exceed",
+            ),
+            (
+                "counters that do not add up to the coverage",
+                with_lineage(&appended_seal(300, 60, 0, 2), |lineage| {
+                    lineage.appended_rows = 59;
+                }),
+                "but the index covers",
+            ),
+            (
+                "more deleted than ever indexed",
+                with_lineage(&appended_seal(300, 0, 0, 1), |lineage| {
+                    lineage.deleted_rows = 301;
+                }),
+                "row accounting overflows",
+            ),
+            (
+                "trained after the sealing generation",
+                with_lineage(&ann_seal(300), |lineage| {
+                    lineage.trained_at_generation = GENERATION.saturating_add(1);
+                }),
+                "after the sealing generation",
+            ),
+            (
+                "trained by this seal yet appended to",
+                with_lineage(&appended_seal(300, 60, 0, 2), |lineage| {
+                    lineage.trained_at_generation = GENERATION;
+                }),
+                "trained by this seal yet",
+            ),
+            (
+                "trained on nothing",
+                with_lineage(&ann_seal(300), |lineage| {
+                    lineage.trained_rows = 0;
+                }),
+                "trained on zero rows",
+            ),
+            (
+                "ratio arithmetic overflow",
+                with_lineage(&appended_seal(300, 60, 0, 2), |lineage| {
+                    lineage.trained_rows = u64::MAX;
+                }),
+                "arithmetic overflows",
+            ),
+        ];
+        for (label, seal, expected) in refused {
+            let error = validate(&seal).expect_err(label);
+            assert!(
+                error.to_string().contains(expected),
+                "{label}: expected `{expected}` in `{error}`"
+            );
+        }
     }
 }

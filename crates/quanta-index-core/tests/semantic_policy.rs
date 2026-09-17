@@ -262,11 +262,21 @@ mod vector_contract {
 }
 
 // The dense lane contract renders one trace line a reader can act on
-// (QI-BB-027): the index, whether the seal proved it, and the effort.
+// (QI-BB-027): the index, whether the seal proved it, the effort, and
+// where the index's centroids came from.
 #[test]
-fn dense_lane_trace_names_index_attestation_and_effort() {
+fn dense_lane_trace_names_index_attestation_effort_and_lineage() {
     use quanta_index_core::{
-        DenseIndexEffortV1, DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1,
+        DenseIndexEffortV1, DenseIndexLineageV1, DenseIndexTrainingV1, DenseIndexV1,
+        DenseLaneAttestationV1, DenseLaneContractV1,
+    };
+    let effort = || DenseIndexEffortV1 {
+        index_kind: "ivf_hnsw_sq".to_string(),
+        partitions: 3,
+        nprobes: 3,
+        ef_floor: 64,
+        ef_per_candidate: 2,
+        refine_factor: 2,
     };
     let exact = DenseLaneContractV1 {
         index: DenseIndexV1::Exact,
@@ -276,20 +286,32 @@ fn dense_lane_trace_names_index_attestation_and_effort() {
         exact.trace_detail(),
         "dense.index=exact; dense.attestation=sealed"
     );
-    let approximate = DenseLaneContractV1 {
-        index: DenseIndexV1::Approximate(DenseIndexEffortV1 {
-            index_kind: "ivf_hnsw_sq".to_string(),
-            partitions: 3,
-            nprobes: 3,
-            ef_floor: 64,
-            ef_per_candidate: 2,
-            refine_factor: 2,
-        }),
+    let appended = DenseLaneContractV1 {
+        index: DenseIndexV1::Approximate {
+            effort: effort(),
+            lineage: DenseIndexLineageV1::Recorded(DenseIndexTrainingV1 {
+                trained_at_generation: 3,
+                trained_rows: 1_200,
+                appended_rows: 120,
+                deleted_rows: 4,
+            }),
+        },
         attestation: DenseLaneAttestationV1::SealedByAnotherLibraryVersion,
     };
     assert_eq!(
-        approximate.trace_detail(),
-        "dense.index=ivf_hnsw_sq; dense.attestation=sealed_by_another_library_version; dense.partitions=3; dense.nprobes=3; dense.ef=max(64,2*candidates); dense.refine_factor=2"
+        appended.trace_detail(),
+        "dense.index=ivf_hnsw_sq; dense.attestation=sealed_by_another_library_version; dense.partitions=3; dense.nprobes=3; dense.ef=max(64,2*candidates); dense.refine_factor=2; ann.trained_at=g3; ann.appended=120/1200; ann.deleted=4"
+    );
+    let unrecorded = DenseLaneContractV1 {
+        index: DenseIndexV1::Approximate {
+            effort: effort(),
+            lineage: DenseIndexLineageV1::Unrecorded,
+        },
+        attestation: DenseLaneAttestationV1::LegacyUnverified,
+    };
+    assert_eq!(
+        unrecorded.trace_detail(),
+        "dense.index=ivf_hnsw_sq; dense.attestation=legacy_unverified; dense.partitions=3; dense.nprobes=3; dense.ef=max(64,2*candidates); dense.refine_factor=2; ann.lineage=unrecorded"
     );
     let legacy = DenseLaneContractV1 {
         index: DenseIndexV1::Exact,

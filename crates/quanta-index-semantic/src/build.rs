@@ -53,13 +53,14 @@ use crate::layout::{
 };
 use crate::manifest::{
     ClusterMembershipSealV1, SemanticCorpusCoverageV1, SemanticManifest, SemanticRowSealV1,
+    VectorIndexSealV1,
 };
 use crate::membership_integrity::{
     ClusterMembershipCommitmentV1, ClusterMembershipStoredRowV1, cluster_membership_commitment_v1,
 };
 use crate::sealed_manifest::{build_sealed_manifest_bytes, sealed_manifest_path};
 use crate::semantic_row_integrity_v1::semantic_row_commitment_v1;
-use crate::vector_index::seal_vector_index_v1;
+use crate::vector_index::{VectorIndexSealInputV1, seal_vector_index_v1};
 
 /// Sibling-of-`dataset/` staging dir used to make delta-base cloning
 /// crash-atomic — see `prepare_generation_dir`.
@@ -1496,7 +1497,42 @@ fn rollback_promoted_dataset(generation_dir: &Path) -> Result<(), CoreError> {
     Ok(())
 }
 
+/// The sealed index contract of the base generation a delta inherited its
+/// dataset from (QI-BB-027 W3).
+///
+/// Read from the base's scope manifest and validated against the base's
+/// own scope. `None` when the generation has no base or the base's
+/// manifest predates the contract.
+///
+/// The base's manifest is a required input of a delta seal: without it the
+/// seal cannot tell whether the index the dataset carries is the policy's
+/// own, or what lineage it has. A base that has vanished or become
+/// unreadable since the delta's first batch therefore refuses the seal
+/// rather than retraining as if nothing had been inherited.
+fn inherited_vector_index_seal_v1(
+    semantic_root: &Path,
+    batch: &SemanticIngestBatch,
+    generation_contract: &GenerationContract,
+) -> Result<Option<VectorIndexSealV1>, CoreError> {
+    let Some(base_generation) = generation_contract.base_generation else {
+        return Ok(None);
+    };
+    let base_dir = layout::generation_dir(
+        semantic_root,
+        &batch.repo_id,
+        &batch.revision_id,
+        base_generation,
+    );
+    let manifest_path = layout::manifest_path(&base_dir);
+    let bytes = fs::read(&manifest_path)
+        .map_err(|err| fs_err("read delta base scope manifest", &manifest_path, &err))?;
+    let manifest = SemanticManifest::decode(&bytes)?;
+    manifest.validate_scope(&batch.repo_id, &batch.revision_id, base_generation)?;
+    Ok(manifest.vector_index_seal()?.cloned())
+}
+
 async fn build_manifest_bytes(
+    semantic_root: &Path,
     table: &lancedb::Table,
     membership_table: &lancedb::Table,
     batch: &SemanticIngestBatch,
@@ -1520,10 +1556,21 @@ async fn build_manifest_bytes(
 
     // The dense lane's index contract (QI-BB-027): built with every
     // parameter explicit, read back from the library, and recorded in the
-    // manifest so the open can verify the dataset against the seal. The
-    // index is approximate; what the seal makes deterministic is its
-    // recipe and effort, not its top-k.
-    let vector_index = seal_vector_index_v1(table, row_count_u64).await?;
+    // manifest so the open can verify the dataset against the seal. A
+    // delta appends to the index it inherited when the base's contract
+    // admits it and trains otherwise. The index is approximate; what the
+    // seal makes deterministic is its recipe, effort and lineage, not its
+    // top-k.
+    let inherited = inherited_vector_index_seal_v1(semantic_root, batch, generation_contract)?;
+    let vector_index = seal_vector_index_v1(
+        table,
+        VectorIndexSealInputV1 {
+            generation: batch.generation.get(),
+            row_count: row_count_u64,
+            inherited: inherited.as_ref(),
+        },
+    )
+    .await?;
 
     let built_at = built_at_unix_nanos()?;
     let manifest = SemanticManifest::from_generation_contract(
@@ -1636,8 +1683,14 @@ pub(crate) async fn build_batch(
         if batch.seal {
             validate_cluster_membership_coverage_v1(&table, &membership_table).await?;
             Some(
-                build_manifest_bytes(&table, &membership_table, batch, &generation_contract)
-                    .await?,
+                build_manifest_bytes(
+                    semantic_root,
+                    &table,
+                    &membership_table,
+                    batch,
+                    &generation_contract,
+                )
+                .await?,
             )
         } else {
             None

@@ -89,6 +89,8 @@ crate quanta_index_core
 │   │   │   └── trait SemanticQueryPort: pub
 │   │   ├── mod outbound: pub(self)
 │   │   │   ├── struct DenseIndexEffortV1: pub
+│   │   │   ├── enum DenseIndexLineageV1: pub
+│   │   │   ├── struct DenseIndexTrainingV1: pub
 │   │   │   ├── enum DenseIndexV1: pub
 │   │   │   ├── enum DenseLaneAttestationV1: pub
 │   │   │   ├── struct DenseLaneContractV1: pub

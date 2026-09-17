@@ -581,6 +581,12 @@ owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "searchd-runtime-e2e-ann-incremental-seal"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_ann_incremental_seal.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "searchd-runtime-e2e-top-k-truth-table"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_top_k_truth_table.rs"
 owner = "quanta-index-searchd-runtime"
