@@ -1,5 +1,7 @@
-//! Explain query path: validates that explain reports presence-in-index for a
-//! candidate previously returned by a lexical query.
+//! Explain query path: a presence-only explain reports whether a candidate
+//! previously returned by a lexical query is in the index, as a typed field
+//! decided by exact lookup (QI-BB-022); the scored explain is covered by
+//! `e2e_explain_score_trace.rs`.
 
 #![forbid(unsafe_code)]
 #![expect(
@@ -161,6 +163,7 @@ fn explain_request(
         payload: SearchPlaneQueryIpcRequest::Explain(SearchPlaneExplainQueryRequest {
             generation: pin,
             candidate,
+            text_query: None,
         }),
     }
 }
@@ -310,14 +313,25 @@ fn explain_reports_present_candidate() -> TestResult {
     }
 
     let explain_resp = send_query_request(&socket, &explain_request(pin, candidate))?;
-    let explanation = match explain_resp.payload {
-        SearchPlaneQueryIpcResponse::Explain(exp) => exp.explanation,
+    let (presence, explanation) = match explain_resp.payload {
+        SearchPlaneQueryIpcResponse::Explain(exp) => (exp.presence, exp.explanation),
         other => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
             return Err(format!("expected Explain, got {other:?}").into());
         }
     };
+    if presence != quanta_index_contract::CandidatePresenceV1::Indexed
+        || explanation.strategy != "presence_lookup"
+    {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "expected a typed indexed presence from an exact lookup, got {presence:?} / {}",
+            explanation.strategy
+        )
+        .into());
+    }
     if !explanation.summary.contains("present") {
         shutdown.store(true, Ordering::Release);
         drop(join.join());

@@ -1,6 +1,6 @@
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::{
-    BatchPublishReceipt, FileContributorIngestBatch, FileOwnerProjectionRow,
+    BatchPublishReceipt, CandidatePresenceV1, FileContributorIngestBatch, FileOwnerProjectionRow,
     FileOwnershipIngestBatch, LexicalCandidate, LqQuery, ManifestGeneration, QueryConstraintSetV1,
     RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId, RepoMetaIngestBatch,
     RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch, SymbolCandidate,
@@ -159,6 +159,50 @@ pub struct LexicalSearchPageV1 {
     pub exact_total: Option<u64>,
 }
 
+/// What the lexical engine emits for one candidate under one plan
+/// (QI-BB-022).
+#[derive(Clone, Debug, PartialEq)]
+pub enum LexicalCandidateExplanationV1 {
+    /// No document with this id in the generation's index.
+    NotIndexed,
+    /// The document is indexed but the plan does not match it.
+    NotMatched { reason: String },
+    /// The document is indexed and matched; this is its emitted score.
+    Matched(LexicalScoreTraceV1),
+}
+
+/// The score the lexical engine emits for one matched candidate, factored
+/// into the engine's own score and the plan's boost.
+///
+/// `emitted_score == engine_score * boost_factor`; the search page carries
+/// exactly `emitted_score` for the candidate.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LexicalScoreTraceV1 {
+    pub engine: LexicalScoreEngineV1,
+    pub engine_score: f32,
+    pub boost_factor: f32,
+    pub emitted_score: f32,
+}
+
+/// Which scoring path produced a lexical engine score.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LexicalScoreEngineV1 {
+    /// The inverted index's BM25 over the compiled plan.
+    Bm25,
+    /// An unindexed scan, where every match scores 1.
+    UnindexedScan,
+}
+
+impl LexicalScoreEngineV1 {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Bm25 => "bm25",
+            Self::UnindexedScan => "unindexed_scan",
+        }
+    }
+}
+
 /// Searcher handle returned by [`LexicalIndexOpenPort::open`].
 ///
 /// One per opened sealed generation. The adapter performs a cold open and
@@ -239,4 +283,22 @@ pub trait LexicalSearcher: Send + Sync {
     /// Semantic scope narrowing does not use it: a lexical scope is a ranked,
     /// capped `search_constrained` (QI-BB-004).
     fn search_all(&self, query: &LqQuery) -> Result<Vec<LexicalCandidate>, CoreError>;
+
+    /// Whether a candidate id is in this generation's index, by exact
+    /// lookup (QI-BB-022). Never a ranked re-search, so the answer does not
+    /// depend on the corpus around the candidate.
+    fn candidate_presence(&self, candidate_id: &str) -> Result<CandidatePresenceV1, CoreError>;
+
+    /// The score the engine emits for exactly one candidate under `query`
+    /// and `constraints` (QI-BB-022), or why it emits none.
+    ///
+    /// Implementations must score the one document through the same
+    /// compiled plan the ranked search uses, so a matched candidate's
+    /// `emitted_score` is the score a page would carry for it.
+    fn explain_candidate(
+        &self,
+        query: &LqQuery,
+        constraints: &QueryConstraintSetV1,
+        candidate_id: &str,
+    ) -> Result<LexicalCandidateExplanationV1, CoreError>;
 }

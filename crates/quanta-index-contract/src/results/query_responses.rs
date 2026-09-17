@@ -13,7 +13,7 @@ use crate::{
     lex::{SymbolKindCode, SymbolKindFamily},
 };
 
-use super::SearchExplanation;
+use super::{CandidatePresenceV1, SearchExplanation};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextQueryResponse {
@@ -852,78 +852,6 @@ macro_rules! impl_generation_results_unwindowed_response_serde {
     };
 }
 
-macro_rules! impl_generation_payload_response_serde {
-    (
-        $ty:ident,
-        $fields:ident,
-        $visitor:ident,
-        $payload_field:ident : $payload_ty:ty => $payload_name:literal
-    ) => {
-        impl Serialize for $ty {
-            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: Serializer,
-            {
-                let mut state = serializer.serialize_struct(stringify!($ty), 2)?;
-                state.serialize_field("generation", &self.generation)?;
-                state.serialize_field($payload_name, &self.$payload_field)?;
-                state.end()
-            }
-        }
-
-        struct $visitor;
-
-        impl<'de> Visitor<'de> for $visitor {
-            type Value = $ty;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str(concat!("a ", stringify!($ty), " map"))
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: MapAccess<'de>,
-            {
-                let mut generation: Option<GenerationPin> = None;
-                let mut $payload_field: Option<$payload_ty> = None;
-                while let Some(key) = map.next_key::<String>()? {
-                    match key.as_str() {
-                        "generation" => {
-                            if generation.is_some() {
-                                return Err(de::Error::duplicate_field("generation"));
-                            }
-                            generation = Some(map.next_value()?);
-                        }
-                        $payload_name => {
-                            if $payload_field.is_some() {
-                                return Err(de::Error::duplicate_field($payload_name));
-                            }
-                            $payload_field = Some(map.next_value()?);
-                        }
-                        other => {
-                            return Err(de::Error::unknown_field(other, $fields));
-                        }
-                    }
-                }
-                Ok($ty {
-                    generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
-                    $payload_field: $payload_field
-                        .ok_or_else(|| de::Error::missing_field($payload_name))?,
-                })
-            }
-        }
-
-        impl<'de> Deserialize<'de> for $ty {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: Deserializer<'de>,
-            {
-                deserializer.deserialize_struct(stringify!($ty), $fields, $visitor)
-            }
-        }
-    };
-}
-
 impl Serialize for FileOwnerProjectionRow {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -1585,19 +1513,100 @@ impl_generation_results_unwindowed_response_serde!(
     StructuralCandidate
 );
 
+/// What the search plane says about one candidate (QI-BB-022).
+///
+/// `presence` is an exact lookup of the candidate id in the generation's
+/// lexical index. `explanation` carries the lexical score trace when the
+/// request named the query the candidate came from: one contribution row
+/// per signal, whose sum is the score the engine emits for the candidate
+/// under that plan, and a weights hash that pins the plan's ranker inputs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchPlaneExplainQueryResponse {
     pub generation: GenerationPin,
+    pub presence: CandidatePresenceV1,
     pub explanation: SearchExplanation,
 }
 
-const SEARCH_PLANE_EXPLAIN_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "explanation"];
-impl_generation_payload_response_serde!(
-    SearchPlaneExplainQueryResponse,
-    SEARCH_PLANE_EXPLAIN_QUERY_RESPONSE_FIELDS,
-    SearchPlaneExplainQueryResponseVisitor,
-    explanation: SearchExplanation => "explanation"
-);
+const SEARCH_PLANE_EXPLAIN_QUERY_RESPONSE_FIELDS: &[&str] =
+    &["generation", "presence", "explanation"];
+
+impl Serialize for SearchPlaneExplainQueryResponse {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("SearchPlaneExplainQueryResponse", 3)?;
+        state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("presence", &self.presence)?;
+        state.serialize_field("explanation", &self.explanation)?;
+        state.end()
+    }
+}
+
+struct SearchPlaneExplainQueryResponseVisitor;
+
+impl<'de> Visitor<'de> for SearchPlaneExplainQueryResponseVisitor {
+    type Value = SearchPlaneExplainQueryResponse;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a SearchPlaneExplainQueryResponse map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut generation: Option<GenerationPin> = None;
+        let mut presence: Option<CandidatePresenceV1> = None;
+        let mut explanation: Option<SearchExplanation> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "generation" => {
+                    if generation.is_some() {
+                        return Err(de::Error::duplicate_field("generation"));
+                    }
+                    generation = Some(map.next_value()?);
+                }
+                "presence" => {
+                    if presence.is_some() {
+                        return Err(de::Error::duplicate_field("presence"));
+                    }
+                    presence = Some(map.next_value()?);
+                }
+                "explanation" => {
+                    if explanation.is_some() {
+                        return Err(de::Error::duplicate_field("explanation"));
+                    }
+                    explanation = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        SEARCH_PLANE_EXPLAIN_QUERY_RESPONSE_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(SearchPlaneExplainQueryResponse {
+            generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            presence: presence.ok_or_else(|| de::Error::missing_field("presence"))?,
+            explanation: explanation.ok_or_else(|| de::Error::missing_field("explanation"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for SearchPlaneExplainQueryResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "SearchPlaneExplainQueryResponse",
+            SEARCH_PLANE_EXPLAIN_QUERY_RESPONSE_FIELDS,
+            SearchPlaneExplainQueryResponseVisitor,
+        )
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -46,15 +46,15 @@ use quanta_index_contract::lex::{
     LexicalErrorCode, SymbolKindCode, SymbolKindFamily, SymbolRecord,
 };
 use quanta_index_contract::{
-    BatchIngestMode, ChunkRecord, ClearLexicalSurface, FileContributorIdentityEntry,
-    FileContributorIngestBatch, FileOwnerProjectionRow, FileOwnershipIngestBatch,
-    GenerationSnapshot, HighlightSpan, LexicalCandidate, LexicalFullBundle, LexicalSeal, LqExpr,
-    LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqPredicateArg, LqQuery, LqSelect,
-    LqType, LqVisibility, LqYesNoOnly, ManifestGeneration, QueryConstraintSetV1,
-    ReplaceLexicalScope, RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId,
-    RepoMetaIngestBatch, RepoRelativePath, RepoTopicIngestBatch, RevisionId,
-    SearchCorpusIngestBatch, SearchPlaneTrackKind, SearchScopeSurface, SymbolCandidate,
-    TombstoneLexicalScope,
+    BatchIngestMode, CandidatePresenceV1, ChunkRecord, ClearLexicalSurface,
+    FileContributorIdentityEntry, FileContributorIngestBatch, FileOwnerProjectionRow,
+    FileOwnershipIngestBatch, GenerationSnapshot, HighlightSpan, LexicalCandidate,
+    LexicalFullBundle, LexicalSeal, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions,
+    LqPatternType, LqPredicateArg, LqQuery, LqSelect, LqType, LqVisibility, LqYesNoOnly,
+    ManifestGeneration, QueryConstraintSetV1, ReplaceLexicalScope, RepoCommitRecencyIngestBatch,
+    RepoDescriptionIngestBatch, RepoId, RepoMetaIngestBatch, RepoRelativePath,
+    RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch, SearchPlaneTrackKind,
+    SearchScopeSurface, SymbolCandidate, TombstoneLexicalScope,
 };
 use quanta_index_core::domains::generation::{
     GenerationQuarantineReasonV1, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
@@ -63,7 +63,8 @@ use quanta_index_core::domains::generation::{
 };
 use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
-    LexicalExecutionBudgetV1, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalSearchPageV1,
+    LexicalCandidateExplanationV1, LexicalExecutionBudgetV1, LexicalIndexBuildPort,
+    LexicalIndexOpenPort, LexicalScoreEngineV1, LexicalScoreTraceV1, LexicalSearchPageV1,
     LexicalSearcher, RegexMatchCachePolicy, RegexMatchCacheStats, RepoCommitRecencyIngestPort,
     RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, SealedGenerationScanPort,
     SearchCorpusBatchBuildPort,
@@ -108,8 +109,11 @@ use crate::predicate_registry::{
     parse_repo_meta_arg, parse_repo_topic_arg, parse_timeref_scalar_arg, unimplemented_predicate,
 };
 use crate::regex::RegexPolicy;
+use tantivy::DocSet as _;
 use tantivy::collector::{Count, TopDocs};
-use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, QueryParser, RegexQuery, TermQuery};
+use tantivy::query::{
+    AllQuery, BooleanQuery, EnableScoring, Occur, Query, QueryParser, RegexQuery, TermQuery,
+};
 use tantivy::schema::{
     Field, IndexRecordOption, OwnedValue, STORED, STRING, Schema, TEXT, TantivyDocument,
     TextFieldIndexing, TextOptions, Value,
@@ -6061,8 +6065,6 @@ impl TantivySearcher {
         let hits = searcher
             .search(&AllQuery, &TopDocs::with_limit(doc_limit))
             .map_err(|err| CoreError::Storage(format!("lexical: unindexed scan: {err}")))?;
-        let include_path_terms =
-            Self::enables_path_term_surface(&prepared.predicate_plan.expr, &query.options);
         let boosted_score = Self::apply_query_boost_score(1.0, &query.options);
         let center_terms = snippet_center_terms(query);
         let mut out: Vec<LexicalCandidate> = Vec::new();
@@ -6070,56 +6072,7 @@ impl TantivySearcher {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
-            if stored_text(&doc, self.fields.doc_kind).as_deref()
-                != Some(prepared.doc_kind.as_str())
-            {
-                continue;
-            }
-            let Some(candidate_id) = stored_text(&doc, self.fields.candidate_id) else {
-                continue;
-            };
-            let Some(source_repo_id) = stored_text(&doc, self.fields.repo_id) else {
-                continue;
-            };
-            let Some(repo_relative_path) = stored_text(&doc, self.fields.repo_relative_path) else {
-                continue;
-            };
-            if !Self::manual_exact_path_allows(&repo_relative_path, constraints) {
-                continue;
-            }
-            if !self.manual_doc_restrictions_allow(
-                &prepared.predicate_plan,
-                &candidate_id,
-                &source_repo_id,
-                &repo_relative_path,
-            ) {
-                continue;
-            }
-            let content = self.doc_content_text(&doc);
-            if !self.manual_expr_matches(
-                &prepared.predicate_plan.expr,
-                &query.options,
-                &source_repo_id,
-                &repo_relative_path,
-                &content,
-                include_path_terms,
-            )? {
-                continue;
-            }
-            let mut allowed = true;
-            for filter in &prepared.query.filters {
-                if !self.manual_filter_matches(
-                    filter,
-                    &query.options,
-                    &source_repo_id,
-                    &repo_relative_path,
-                    &content,
-                )? {
-                    allowed = false;
-                    break;
-                }
-            }
-            if !allowed {
+            if !self.manual_doc_matches(&doc, query, prepared, constraints)? {
                 continue;
             }
             out.push(self.document_to_candidate(&doc, boosted_score, &center_terms)?);
@@ -6137,6 +6090,136 @@ impl TantivySearcher {
             candidates: Self::stabilize_and_cap_hits(out, limit),
             exact_total,
         })
+    }
+
+    /// Whether one stored document matches the unindexed-scan plan.
+    ///
+    /// The scan and the per-candidate explanation (QI-BB-022) share this so
+    /// a candidate explains through exactly the matcher that ranked it.
+    fn manual_doc_matches(
+        &self,
+        doc: &TantivyDocument,
+        query: &LqQuery,
+        prepared: &PreparedExecutableQuery,
+        constraints: &QueryConstraintSetV1,
+    ) -> Result<bool, CoreError> {
+        if stored_text(doc, self.fields.doc_kind).as_deref() != Some(prepared.doc_kind.as_str()) {
+            return Ok(false);
+        }
+        let Some(candidate_id) = stored_text(doc, self.fields.candidate_id) else {
+            return Ok(false);
+        };
+        let Some(source_repo_id) = stored_text(doc, self.fields.repo_id) else {
+            return Ok(false);
+        };
+        let Some(repo_relative_path) = stored_text(doc, self.fields.repo_relative_path) else {
+            return Ok(false);
+        };
+        if !Self::manual_exact_path_allows(&repo_relative_path, constraints) {
+            return Ok(false);
+        }
+        if !self.manual_doc_restrictions_allow(
+            &prepared.predicate_plan,
+            &candidate_id,
+            &source_repo_id,
+            &repo_relative_path,
+        ) {
+            return Ok(false);
+        }
+        let include_path_terms =
+            Self::enables_path_term_surface(&prepared.predicate_plan.expr, &query.options);
+        let content = self.doc_content_text(doc);
+        if !self.manual_expr_matches(
+            &prepared.predicate_plan.expr,
+            &query.options,
+            &source_repo_id,
+            &repo_relative_path,
+            &content,
+            include_path_terms,
+        )? {
+            return Ok(false);
+        }
+        for filter in &prepared.query.filters {
+            if !self.manual_filter_matches(
+                filter,
+                &query.options,
+                &source_repo_id,
+                &repo_relative_path,
+                &content,
+            )? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// The one live document with `candidate_id` of `doc_kind`, by exact
+    /// term lookup (QI-BB-022).
+    ///
+    /// Two live documents under one id would mean the writer's
+    /// delete-then-add upsert did not hold; that is a corrupt index, not a
+    /// choice to make here.
+    fn locate_candidate(
+        &self,
+        searcher: &tantivy::Searcher,
+        candidate_id: &str,
+        doc_kind: &str,
+    ) -> Result<Option<(DocAddress, TantivyDocument)>, CoreError> {
+        let id_clause: Box<dyn Query> = Box::new(TermQuery::new(
+            Term::from_field_text(self.fields.candidate_id, candidate_id),
+            IndexRecordOption::Basic,
+        ));
+        let kind_clause: Box<dyn Query> = Box::new(TermQuery::new(
+            Term::from_field_text(self.fields.doc_kind, doc_kind),
+            IndexRecordOption::Basic,
+        ));
+        let lookup = BooleanQuery::new(vec![(Occur::Must, id_clause), (Occur::Must, kind_clause)]);
+        let hits = searcher
+            .search(&lookup, &TopDocs::with_limit(2))
+            .map_err(|err| CoreError::Storage(format!("lexical: candidate lookup: {err}")))?;
+        if hits.len() > 1 {
+            return Err(CoreError::Storage(format!(
+                "lexical: candidate id `{candidate_id}` names {} live documents",
+                hits.len()
+            )));
+        }
+        let Some((_score, doc_address)) = hits.into_iter().next() else {
+            return Ok(None);
+        };
+        let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
+            CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
+        })?;
+        Ok(Some((doc_address, doc)))
+    }
+
+    /// Score one live document through the compiled plan, exactly as the
+    /// ranked collector would: the plan's scorer positioned on the document.
+    fn score_one_document(
+        searcher: &tantivy::Searcher,
+        compiled: &dyn Query,
+        doc_address: DocAddress,
+    ) -> Result<Option<f32>, CoreError> {
+        let weight = compiled
+            .weight(EnableScoring::enabled_from_searcher(searcher))
+            .map_err(|err| CoreError::Storage(format!("lexical: explain weight: {err}")))?;
+        let reader = searcher.segment_reader(doc_address.segment_ord);
+        let mut scorer = weight
+            .scorer(reader, 1.0)
+            .map_err(|err| CoreError::Storage(format!("lexical: explain scorer: {err}")))?;
+        // A fresh scorer sits on its first matching document; `seek` only
+        // moves forward, so a document before that first match is simply not
+        // matched.
+        let target = doc_address.doc_id;
+        let first = scorer.doc();
+        let landed = if first >= target {
+            first
+        } else {
+            scorer.seek(target)
+        };
+        if landed != target {
+            return Ok(None);
+        }
+        Ok(Some(scorer.score()))
     }
 
     fn manual_symbol_search(
@@ -9443,6 +9526,95 @@ impl LexicalSearcher for TantivySearcher {
         Ok(Self::collapse_repo_projection(
             query,
             Self::stabilize_and_cap_hits(out, limit),
+        ))
+    }
+
+    fn candidate_presence(&self, candidate_id: &str) -> Result<CandidatePresenceV1, CoreError> {
+        let searcher = self.reader.searcher();
+        Ok(
+            match self.locate_candidate(&searcher, candidate_id, TEXT_DOC_KIND)? {
+                Some(_) => CandidatePresenceV1::Indexed,
+                None => CandidatePresenceV1::NotIndexed,
+            },
+        )
+    }
+
+    fn explain_candidate(
+        &self,
+        query: &LqQuery,
+        constraints: &QueryConstraintSetV1,
+        candidate_id: &str,
+    ) -> Result<LexicalCandidateExplanationV1, CoreError> {
+        // The same preparation as `search_constrained`, step for step, so
+        // the plan that scores this one document is the plan that ranked it.
+        let effective_query =
+            rewrite_symbol_name_predicate_query(query)?.unwrap_or_else(|| query.clone());
+        LexicalPolicy::validate_query_with_constraints(&effective_query, constraints)?;
+        let searcher = self.reader.searcher();
+        let not_matched = |reason: &str| {
+            Ok(LexicalCandidateExplanationV1::NotMatched {
+                reason: reason.to_string(),
+            })
+        };
+        let Some(prepared_query) =
+            self.prepare_executable_query(&effective_query, QueryDocKind::Text)?
+        else {
+            return match self.locate_candidate(&searcher, candidate_id, TEXT_DOC_KIND)? {
+                Some(_) => not_matched("the plan matches no document"),
+                None => Ok(LexicalCandidateExplanationV1::NotIndexed),
+            };
+        };
+        let doc_kind = prepared_query.doc_kind.as_str();
+        let Some((doc_address, doc)) = self.locate_candidate(&searcher, candidate_id, doc_kind)?
+        else {
+            return Ok(LexicalCandidateExplanationV1::NotIndexed);
+        };
+        planner_preflight_expr(
+            &prepared_query.query,
+            &prepared_query.predicate_plan.expr,
+            self.repo_metadata.is_some(),
+        )?;
+        if !self.repo_filters_allow(&effective_query)? {
+            return not_matched("a repo filter excludes this generation");
+        }
+        let boost_factor = Self::boost_factor(&effective_query.options);
+        if Self::uses_unindexed_scan(&effective_query.options) {
+            Self::ensure_manual_scan_supports_constraints(constraints, "lexical")?;
+            if !self.manual_doc_matches(&doc, &effective_query, &prepared_query, constraints)? {
+                return not_matched("the unindexed scan does not match the document");
+            }
+            return Ok(LexicalCandidateExplanationV1::Matched(
+                LexicalScoreTraceV1 {
+                    engine: LexicalScoreEngineV1::UnindexedScan,
+                    engine_score: 1.0,
+                    boost_factor,
+                    emitted_score: Self::apply_query_boost_score(1.0, &effective_query.options),
+                },
+            ));
+        }
+        let Some(base) = self.compile_query_with_constraints(
+            &prepared_query.query,
+            &prepared_query.predicate_plan,
+            constraints,
+        )?
+        else {
+            return not_matched("the plan compiles to nothing");
+        };
+        let compiled = self.with_doc_kind_and_constraints(base, doc_kind, constraints);
+        let Some(engine_score) = Self::score_one_document(&searcher, &*compiled, doc_address)?
+        else {
+            return not_matched("the plan does not match the document");
+        };
+        Ok(LexicalCandidateExplanationV1::Matched(
+            LexicalScoreTraceV1 {
+                engine: LexicalScoreEngineV1::Bm25,
+                engine_score,
+                boost_factor,
+                emitted_score: Self::apply_query_boost_score(
+                    engine_score,
+                    &effective_query.options,
+                ),
+            },
         ))
     }
 }

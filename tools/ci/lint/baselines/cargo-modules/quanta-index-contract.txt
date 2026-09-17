@@ -516,6 +516,9 @@ crate quanta_index_contract
     │   └── struct CommitCandidateVisitor: pub(self)
     │       └── type Value: pub(self)
     ├── mod explanation: pub(self)
+    │   ├── enum CandidatePresenceV1: pub
+    │   ├── struct CandidatePresenceVisitor: pub(self)
+    │   │   └── type Value: pub(self)
     │   ├── enum EarlyStopReason: pub
     │   ├── struct EarlyStopReasonVisitor: pub(self)
     │   │   └── type Value: pub(self)

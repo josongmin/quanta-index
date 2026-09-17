@@ -1233,3 +1233,72 @@ fn search_plane_ipc_response_v2_lexical_rejects_missing_highlights() -> TestRes 
 
     expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&bytes, "highlights")
 }
+
+// QI-BB-022: the explain request carries the query it explains under (or
+// none), and the response carries a typed presence beside the explanation.
+#[test]
+fn explain_request_round_trips_with_and_without_its_query() -> TestRes {
+    use quanta_index_contract::SearchPlaneExplainQueryRequest;
+    let presence_only = SearchPlaneExplainQueryRequest {
+        generation: generation_pin(),
+        candidate: lexical_candidate(),
+        text_query: None,
+    };
+    roundtrip_eq(&SearchPlaneQueryIpcRequest::Explain(presence_only))?;
+    let scored = SearchPlaneExplainQueryRequest {
+        generation: generation_pin(),
+        candidate: lexical_candidate(),
+        text_query: Some(sourcegraph_text_request()),
+    };
+    roundtrip_eq(&SearchPlaneQueryIpcRequest::Explain(scored))
+}
+
+#[test]
+fn explain_response_round_trips_its_presence_and_rejects_a_missing_one() -> TestRes {
+    use quanta_index_contract::{CandidatePresenceV1, SearchPlaneExplainQueryResponse};
+    for presence in [
+        CandidatePresenceV1::Indexed,
+        CandidatePresenceV1::NotIndexed,
+    ] {
+        roundtrip_eq(&SearchPlaneQueryIpcResponse::Explain(
+            SearchPlaneExplainQueryResponse {
+                generation: generation_pin(),
+                presence,
+                explanation: explanation_v2(),
+            },
+        ))?;
+    }
+    let bytes = mutate_ipc_response_wire(
+        &SearchPlaneQueryIpcResponse::Explain(SearchPlaneExplainQueryResponse {
+            generation: generation_pin(),
+            presence: CandidatePresenceV1::Indexed,
+            explanation: explanation_v2(),
+        }),
+        |wire| {
+            let response_fields = map_fields_mut(wire)?;
+            let payload = field_value_mut(response_fields, "payload")?;
+            let payload_fields = map_fields_mut(payload)?;
+            payload_fields.retain(
+                |(key, _)| !matches!(key, ciborium::Value::Text(name) if name == "presence"),
+            );
+            Ok(())
+        },
+    )?;
+    expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&bytes, "presence")?;
+    let bytes = mutate_ipc_response_wire(
+        &SearchPlaneQueryIpcResponse::Explain(SearchPlaneExplainQueryResponse {
+            generation: generation_pin(),
+            presence: CandidatePresenceV1::Indexed,
+            explanation: explanation_v2(),
+        }),
+        |wire| {
+            let response_fields = map_fields_mut(wire)?;
+            let payload = field_value_mut(response_fields, "payload")?;
+            let payload_fields = map_fields_mut(payload)?;
+            *field_value_mut(payload_fields, "presence")? =
+                ciborium::Value::Text("maybe".to_owned());
+            Ok(())
+        },
+    )?;
+    expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&bytes, "maybe")
+}

@@ -43,11 +43,11 @@ pub use domains::idempotency::{
 };
 pub use domains::lexical::{
     FileContributorIngestPort, FileOwnershipIngestPort, LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE,
-    LexicalExecutionBudgetV1, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPolicy,
-    LexicalQueryPort, LexicalReadiness, LexicalSearchPageV1, LexicalSearcher,
-    RegexMatchCachePolicy, RegexMatchCacheStats, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, SearchCorpusBatchBuildPort,
-    SearchCorpusIngestPort,
+    LexicalCandidateExplanationV1, LexicalExecutionBudgetV1, LexicalIndexBuildPort,
+    LexicalIndexOpenPort, LexicalPolicy, LexicalQueryPort, LexicalReadiness, LexicalScoreEngineV1,
+    LexicalScoreTraceV1, LexicalSearchPageV1, LexicalSearcher, RegexMatchCachePolicy,
+    RegexMatchCacheStats, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
+    RepoMetaIngestPort, RepoTopicIngestPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
 };
 pub use domains::repomap::{
     RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapPolicy, RepoMapQueryPort,

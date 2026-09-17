@@ -182,6 +182,9 @@ fn explain_pretty_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
     if !stdout.contains("summary: fused lexical explanation") {
         return Err(format!("missing explain summary in stdout: {stdout}").into());
     }
+    if !stdout.contains("presence: indexed") {
+        return Err(format!("missing presence line in stdout: {stdout}").into());
+    }
     if !stdout.contains("planner_trace:") {
         return Err(format!("missing planner trace in stdout: {stdout}").into());
     }
@@ -803,6 +806,7 @@ fn dispatch_explain_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQ
     };
     SearchPlaneQueryIpcResponse::Explain(SearchPlaneExplainQueryResponse {
         generation: payload.generation,
+        presence: quanta_index_contract::CandidatePresenceV1::Indexed,
         explanation: stub_explanation(
             "fused lexical explanation",
             vec![EngineTouched::Lexical, EngineTouched::Semantic],

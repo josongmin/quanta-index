@@ -423,6 +423,70 @@ impl<'de> Deserialize<'de> for EarlyStopReason {
 
 /// Error returned by ranker-weights digest producers.
 ///
+/// Whether an explained candidate exists in the generation's lexical index
+/// (QI-BB-022).
+///
+/// Decided by an exact lookup of the candidate id, never by re-running a
+/// ranked query, so the answer does not depend on how many other documents
+/// outrank the candidate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CandidatePresenceV1 {
+    Indexed,
+    NotIndexed,
+}
+
+impl CandidatePresenceV1 {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Indexed => "indexed",
+            Self::NotIndexed => "not_indexed",
+        }
+    }
+}
+
+impl Serialize for CandidatePresenceV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+struct CandidatePresenceVisitor;
+
+impl Visitor<'_> for CandidatePresenceVisitor {
+    type Value = CandidatePresenceV1;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a CandidatePresenceV1 string")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        match value {
+            "indexed" => Ok(CandidatePresenceV1::Indexed),
+            "not_indexed" => Ok(CandidatePresenceV1::NotIndexed),
+            other => Err(de::Error::unknown_variant(
+                other,
+                &["indexed", "not_indexed"],
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CandidatePresenceV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_str(CandidatePresenceVisitor)
+    }
+}
+
 /// Digest production is fallible.
 ///
 /// Callers must pass a `Result<[u8; 32], WeightsHashError>` into

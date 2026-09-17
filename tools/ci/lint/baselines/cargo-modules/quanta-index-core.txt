@@ -43,9 +43,12 @@ crate quanta_index_core
 │   │   ├── mod outbound: pub(self)
 │   │   │   ├── trait FileContributorIngestPort: pub
 │   │   │   ├── trait FileOwnershipIngestPort: pub
+│   │   │   ├── enum LexicalCandidateExplanationV1: pub
 │   │   │   ├── trait LexicalIndexBuildPort: pub
 │   │   │   ├── trait LexicalIndexOpenPort: pub
 │   │   │   ├── struct LexicalReadiness: pub
+│   │   │   ├── enum LexicalScoreEngineV1: pub
+│   │   │   ├── struct LexicalScoreTraceV1: pub
 │   │   │   ├── struct LexicalSearchPageV1: pub
 │   │   │   ├── trait LexicalSearcher: pub
 │   │   │   ├── trait RepoCommitRecencyIngestPort: pub

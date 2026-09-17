@@ -4548,6 +4548,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RuntimeMeta
 pub struct quanta_index_contract::query::SearchPlaneExplainQueryRequest
 pub quanta_index_contract::query::SearchPlaneExplainQueryRequest::candidate: quanta_index_contract_base::results::candidates::LexicalCandidate
 pub quanta_index_contract::query::SearchPlaneExplainQueryRequest::generation: quanta_index_contract_base::query::pin::GenerationPin
+pub quanta_index_contract::query::SearchPlaneExplainQueryRequest::text_query: core::option::Option<quanta_index_contract_base::query::requests::TextQueryRequest>
 impl core::clone::Clone for quanta_index_contract::SearchPlaneExplainQueryRequest
 pub fn quanta_index_contract::SearchPlaneExplainQueryRequest::clone(&self) -> quanta_index_contract::SearchPlaneExplainQueryRequest
 impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneExplainQueryRequest
@@ -5472,6 +5473,31 @@ pub use quanta_index_contract::results::HighlightSpan
 pub use quanta_index_contract::results::LexicalCandidate
 pub use quanta_index_contract::results::StructuralBinding
 pub use quanta_index_contract::results::StructuralCandidate
+pub enum quanta_index_contract::results::CandidatePresenceV1
+pub quanta_index_contract::results::CandidatePresenceV1::Indexed
+pub quanta_index_contract::results::CandidatePresenceV1::NotIndexed
+impl quanta_index_contract::CandidatePresenceV1
+pub const fn quanta_index_contract::CandidatePresenceV1::as_str(self) -> &'static str
+impl core::clone::Clone for quanta_index_contract::CandidatePresenceV1
+pub fn quanta_index_contract::CandidatePresenceV1::clone(&self) -> quanta_index_contract::CandidatePresenceV1
+impl core::cmp::Eq for quanta_index_contract::CandidatePresenceV1
+impl core::cmp::PartialEq for quanta_index_contract::CandidatePresenceV1
+pub fn quanta_index_contract::CandidatePresenceV1::eq(&self, other: &quanta_index_contract::CandidatePresenceV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::CandidatePresenceV1
+pub fn quanta_index_contract::CandidatePresenceV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::CandidatePresenceV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::CandidatePresenceV1
+impl serde_core::ser::Serialize for quanta_index_contract::CandidatePresenceV1
+pub fn quanta_index_contract::CandidatePresenceV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::CandidatePresenceV1
+pub fn quanta_index_contract::CandidatePresenceV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::CandidatePresenceV1
+impl core::marker::Send for quanta_index_contract::CandidatePresenceV1
+impl core::marker::Sync for quanta_index_contract::CandidatePresenceV1
+impl core::marker::Unpin for quanta_index_contract::CandidatePresenceV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::CandidatePresenceV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::CandidatePresenceV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::CandidatePresenceV1
 pub enum quanta_index_contract::results::ClusterMembershipCompletenessV1
 pub quanta_index_contract::results::ClusterMembershipCompletenessV1::Complete
 pub quanta_index_contract::results::ClusterMembershipCompletenessV1::Truncated
@@ -5969,6 +5995,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchExpla
 pub struct quanta_index_contract::results::SearchPlaneExplainQueryResponse
 pub quanta_index_contract::results::SearchPlaneExplainQueryResponse::explanation: quanta_index_contract::SearchExplanation
 pub quanta_index_contract::results::SearchPlaneExplainQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
+pub quanta_index_contract::results::SearchPlaneExplainQueryResponse::presence: quanta_index_contract::CandidatePresenceV1
 impl core::clone::Clone for quanta_index_contract::SearchPlaneExplainQueryResponse
 pub fn quanta_index_contract::SearchPlaneExplainQueryResponse::clone(&self) -> quanta_index_contract::SearchPlaneExplainQueryResponse
 impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneExplainQueryResponse
@@ -6283,6 +6310,31 @@ impl core::marker::Unpin for quanta_index_contract::BatchIngestMode
 impl core::marker::UnsafeUnpin for quanta_index_contract::BatchIngestMode
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::BatchIngestMode
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::BatchIngestMode
+pub enum quanta_index_contract::CandidatePresenceV1
+pub quanta_index_contract::CandidatePresenceV1::Indexed
+pub quanta_index_contract::CandidatePresenceV1::NotIndexed
+impl quanta_index_contract::CandidatePresenceV1
+pub const fn quanta_index_contract::CandidatePresenceV1::as_str(self) -> &'static str
+impl core::clone::Clone for quanta_index_contract::CandidatePresenceV1
+pub fn quanta_index_contract::CandidatePresenceV1::clone(&self) -> quanta_index_contract::CandidatePresenceV1
+impl core::cmp::Eq for quanta_index_contract::CandidatePresenceV1
+impl core::cmp::PartialEq for quanta_index_contract::CandidatePresenceV1
+pub fn quanta_index_contract::CandidatePresenceV1::eq(&self, other: &quanta_index_contract::CandidatePresenceV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::CandidatePresenceV1
+pub fn quanta_index_contract::CandidatePresenceV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::CandidatePresenceV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::CandidatePresenceV1
+impl serde_core::ser::Serialize for quanta_index_contract::CandidatePresenceV1
+pub fn quanta_index_contract::CandidatePresenceV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::CandidatePresenceV1
+pub fn quanta_index_contract::CandidatePresenceV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::CandidatePresenceV1
+impl core::marker::Send for quanta_index_contract::CandidatePresenceV1
+impl core::marker::Sync for quanta_index_contract::CandidatePresenceV1
+impl core::marker::Unpin for quanta_index_contract::CandidatePresenceV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::CandidatePresenceV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::CandidatePresenceV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::CandidatePresenceV1
 pub enum quanta_index_contract::CapabilityStatusV1
 pub quanta_index_contract::CapabilityStatusV1::Degraded
 pub quanta_index_contract::CapabilityStatusV1::Full
@@ -9841,6 +9893,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlane
 pub struct quanta_index_contract::SearchPlaneExplainQueryRequest
 pub quanta_index_contract::SearchPlaneExplainQueryRequest::candidate: quanta_index_contract_base::results::candidates::LexicalCandidate
 pub quanta_index_contract::SearchPlaneExplainQueryRequest::generation: quanta_index_contract_base::query::pin::GenerationPin
+pub quanta_index_contract::SearchPlaneExplainQueryRequest::text_query: core::option::Option<quanta_index_contract_base::query::requests::TextQueryRequest>
 impl core::clone::Clone for quanta_index_contract::SearchPlaneExplainQueryRequest
 pub fn quanta_index_contract::SearchPlaneExplainQueryRequest::clone(&self) -> quanta_index_contract::SearchPlaneExplainQueryRequest
 impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneExplainQueryRequest
@@ -9862,6 +9915,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlane
 pub struct quanta_index_contract::SearchPlaneExplainQueryResponse
 pub quanta_index_contract::SearchPlaneExplainQueryResponse::explanation: quanta_index_contract::SearchExplanation
 pub quanta_index_contract::SearchPlaneExplainQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
+pub quanta_index_contract::SearchPlaneExplainQueryResponse::presence: quanta_index_contract::CandidatePresenceV1
 impl core::clone::Clone for quanta_index_contract::SearchPlaneExplainQueryResponse
 pub fn quanta_index_contract::SearchPlaneExplainQueryResponse::clone(&self) -> quanta_index_contract::SearchPlaneExplainQueryResponse
 impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneExplainQueryResponse

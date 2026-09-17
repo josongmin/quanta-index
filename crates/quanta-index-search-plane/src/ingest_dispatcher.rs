@@ -2233,6 +2233,22 @@ mod tests {
         ) -> Result<Vec<quanta_index_contract::LexicalCandidate>, CoreError> {
             Err(CoreError::NotImplemented("pin-only handle".to_string()))
         }
+
+        fn candidate_presence(
+            &self,
+            _candidate_id: &str,
+        ) -> Result<quanta_index_contract::CandidatePresenceV1, CoreError> {
+            Err(CoreError::NotImplemented("pin-only handle".to_string()))
+        }
+
+        fn explain_candidate(
+            &self,
+            _query: &quanta_index_contract::LqQuery,
+            _constraints: &quanta_index_contract::QueryConstraintSetV1,
+            _candidate_id: &str,
+        ) -> Result<quanta_index_core::LexicalCandidateExplanationV1, CoreError> {
+            Err(CoreError::NotImplemented("pin-only handle".to_string()))
+        }
     }
 
     /// One materializer over recording fakes, plus the fakes, so a test can

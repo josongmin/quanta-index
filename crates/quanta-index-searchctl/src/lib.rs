@@ -211,6 +211,7 @@ enum CliRequest {
     Explain {
         generation: GenerationPin,
         candidate: LexicalCandidate,
+        text_query: Option<TextQueryRequest>,
     },
     RepoMap(RepoMapQueryRequest),
     RuntimeMetadata(RuntimeMetadataQueryRequest),
@@ -766,6 +767,8 @@ fn parse_hybrid_seed(
 fn parse_explain(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
     let mut generation_args = PinnedGenerationArgs::default();
     let mut candidate_json: Option<String> = None;
+    let mut syntax: Option<TextQuerySyntax> = None;
+    let mut query_text: Option<String> = None;
     parse_query_command_flags(
         common,
         &mut generation_args,
@@ -776,15 +779,47 @@ fn parse_explain(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
                 candidate_json = Some(take_value(rest, "--candidate-json")?);
                 Ok(true)
             }
+            "--syntax" => {
+                syntax = Some(parse_syntax(&take_value(rest, "--syntax")?)?);
+                Ok(true)
+            }
+            "--query-text" => {
+                query_text = Some(take_value(rest, "--query-text")?);
+                Ok(true)
+            }
             _ => Ok(false),
         },
     )?;
     let generation = generation_args.into_generation_pin()?;
     let candidate_path =
         candidate_json.ok_or_else(|| CliError::usage("missing --candidate-json".to_string()))?;
+    // `--syntax` and `--query-text` name the query the candidate came from;
+    // both or neither, since a query without its syntax cannot be lowered.
+    let text_query = match (syntax, query_text) {
+        (Some(syntax), Some(query_text)) => Some(TextQueryRequest {
+            syntax,
+            query_text,
+            constraints: QueryConstraintSetV1::unconstrained(),
+            generation: Some(generation.clone()),
+            generation_selector: None,
+            top_k: 1,
+        }),
+        (None, None) => None,
+        (Some(_), None) => {
+            return Err(CliError::usage(
+                "--syntax requires --query-text".to_string(),
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(CliError::usage(
+                "--query-text requires --syntax".to_string(),
+            ));
+        }
+    };
     Ok(CliRequest::Explain {
         generation,
         candidate: read_candidate_json(&candidate_path)?,
+        text_query,
     })
 }
 
@@ -905,11 +940,15 @@ fn dispatch_query_request(
         CliRequest::Explain {
             generation,
             candidate,
+            text_query,
         } => SearchPlaneQueryIpcResponse::Explain(
-            client
-                .search()
-                .explain(generation, candidate)
-                .map_err(map_sdk_error)?,
+            match text_query {
+                Some(text_query) => client
+                    .search()
+                    .explain_under_query(generation, candidate, text_query),
+                None => client.search().explain(generation, candidate),
+            }
+            .map_err(map_sdk_error)?,
         ),
         CliRequest::History(history) => SearchPlaneQueryIpcResponse::History(
             client
@@ -1369,6 +1408,11 @@ fn render_pretty(
         SearchPlaneQueryIpcResponse::Explain(payload) => {
             fmt_ok(writeln!(rendered, "kind: explain"))?;
             render_generation(&payload.generation, rendered)?;
+            fmt_ok(writeln!(
+                rendered,
+                "presence: {}",
+                payload.presence.as_str()
+            ))?;
             render_explanation(&payload.explanation, rendered)?;
             Ok(())
         }

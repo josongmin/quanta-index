@@ -314,7 +314,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + **QI-BB-027 ANN sealed contract(§3.23)** 완료. 남은 것: sharded sidecar 포맷(O(delta) write), seal마다 ANN 전체 재구축(O(N), §3.23 한계), scope 단위 streamed embed→append(§3.18 한계) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), streaming projection collector |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. 남은 것: cancel을 lexical collector 내부(candidate batch 사이)까지 내리기, overload/refusal 서버 metric |
-| W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + **QI-BB-018 true hybrid(§3.22)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), history relevance order(Tantivy history index, §3.20 한계), judged corpus recall/NDCG gate(§3.22 한계) |
+| W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + QI-BB-018 true hybrid(§3.22) + **QI-BB-022 explain = exact presence + lexical score trace(§3.24)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), history relevance order(Tantivy history index, §3.20 한계), judged corpus recall/NDCG gate(§3.22 한계), hybrid 후보의 per-lane contribution(§3.24 한계) |
 | W7 | planned | |
 | C1 | planned | |
 | C2 | planned | |
@@ -1342,6 +1342,69 @@ floor이지 corpus tier별 recall/latency gate(보완 #3)가 아니다 — 실 c
 trace까지. (d) dependency-upgrade A/B(보완 #4)는 process이며 code gate가 아니다; attestation과 recorded recipe가 그 A/B의
 입력을 제공한다. (e) prefilter(allowlist/language/path)가 index row의 10% 이상을 남기면 lance는 bitset을 든 HNSW walk를
 하므로 filtered recall은 unfiltered gate와 같지 않다 — scoped route의 recall은 별도 측정 항목.
+
+## 3.24 QI-BB-022 — explain은 exact presence lookup + 원 질의 하의 lexical score trace다 (구현 완료)
+
+**진단 확정**: explain request가 원 질의를 받지 않아 candidate snippet(또는 id)로 **새** phrase probe를 만들어 top-50에
+있는지만 봤다. (a) presence가 corpus 크기에 종속 — 실제 index에 있어도 probe top-50 밖이면 "NOT present"; (b)
+`contributions` 항상 비어 있고 `ranker_weights_hash` 항상 0, strategy `presence_probe`; (c) ranking explanation과 stale
+membership 확인이 한 이름에 섞여 있었다.
+
+**구현**:
+
+- **Contract**: `SearchPlaneExplainQueryRequest { generation, candidate, text_query: Option<TextQueryRequest> }` —
+  `text_query`가 없으면 presence만, 있으면 그 질의 하의 score trace. `text_query.generation`은 없거나 explain pin과 같아야
+  하고 selector는 금지(generation은 한 번만 명명). `SearchPlaneExplainQueryResponse { generation, presence:
+  CandidatePresenceV1 { Indexed | NotIndexed }, explanation }` — presence는 typed field, summary 문자열이 아니다.
+  IPC decoder fail-closed(presence 누락/미지 token 거부) + fuzz smoke 30s×4 crash 0.
+- **Core port**: `LexicalSearcher::candidate_presence(id)` (exact lookup), `LexicalSearcher::explain_candidate(query,
+  constraints, id) -> NotIndexed | NotMatched { reason } | Matched(LexicalScoreTraceV1 { engine: Bm25 | UnindexedScan,
+  engine_score, boost_factor, emitted_score })`.
+- **Lexical adapter**: presence = `candidate_id` term × `doc_kind` term 정확 조회(live doc 2개면 corrupt index 오류);
+  score = ranked search와 **동일 준비 경로**(symbol-name rewrite → validate → prepare_executable_query → preflight →
+  repo filter gate → compile+constraints+doc_kind) 후 compiled plan의 **scorer를 그 한 document에 위치**시켜
+  `score()` — TopDocs collector가 쓰는 것과 같은 scorer이므로 page score와 동일. unindexed scan(`index:no`)은
+  `manual_text_search` loop body를 `manual_doc_matches(doc, …)`로 떼어내 scan과 explain이 같은 matcher를 쓴다(1.0 × boost).
+  tantivy `Query::explain`의 문자열 오류 매칭(`"does not match"`)에 의존하지 않는다.
+- **Dispatcher**: `lexical()`의 plan 준비를 `plan_lexical_text_query(request) -> PlannedLexicalTextQuery { pin, query,
+  constraints, force_empty }`로 올려 search와 explain이 **같은 plan**을 lower한다(rev-at-time rebinding이 다른 generation을
+  고르면 InvalidContract). explanation: `contributions = [ExplanationRow { signal_name: "lexical.bm25"|"lexical.unindexed_scan",
+  signal_value: engine_score, weight: boost_factor, contribution: emitted }]` — **합성 규칙: Σ contribution = emitted score**;
+  `ranker_weights_hash = sha256("quanta-index lexical ranker weights v1\nengine=…\nboost_millis=…\n")`(plan의 ranker
+  입력 pin, 0이 아님); trace `explain.mode=…`, `explain.candidate_indexed=…`, `explain.candidate_matched=…`,
+  `explain.score_reconciled=…`(carried score와 이 plan의 emitted score가 1e-5 상대 오차 내 일치 여부 — 다른 plan에서 온
+  candidate는 정직하게 false). strategy `presence_lookup | lexical_score_trace`. 옛 `presence_probe`/`default_top_k`
+  삭제.
+- **SDK/CLI/harness**: `search().explain(pin, candidate)`(presence) + `explain_under_query(pin, candidate, text_query)`;
+  CLI `explain --candidate-json … [--syntax … --query-text …]`(둘 다 또는 둘 다 없음), `presence:` 줄 렌더링; harness
+  `explain_candidate_under_query`.
+
+**검증**:
+
+| 완료 기준 | 검증 |
+| --- | --- |
+| **golden**: ranked page의 모든 candidate가 같은 query 하에서 정확히 carried score로 설명되고(1 row, Σ=score, weight 1.0), page 순서가 explained score 순서 | `lexical/tests/explain_candidate.rs::every_ranked_candidate_explains_to_exactly_its_emitted_score_in_rank_order`; e2e `e2e_explain_score_trace.rs::every_page_candidate_explains_to_its_carried_score_in_page_order` |
+| **input 변경 → contribution·rank 동시 변화**: `boost:2.5` → weight 2.5, engine_score 불변, emitted ×2.5, page score도 ×2.5, weights hash 변화; boosted candidate를 plain query로 explain하면 `score_reconciled=false` + plain contribution | `lexical::…::a_boost_in_the_plan_is_the_weight_and_scales_the_emitted_score`; e2e `…::a_boost_is_the_weight_and_moves_the_page_the_trace_and_the_weights_hash_together` |
+| **합성 규칙 = emitted score**(오차 1e-5): 위 두 test의 `Σ contribution == page score` 단언 | 동일 |
+| **presence는 corpus 크기 무관**: 300 short doc이 같은 term으로 1 long doc을 page(50) 밖으로 밀어도 explain은 Indexed + Matched(real score); 미ingest id는 NotIndexed | `lexical::…::presence_is_an_exact_lookup_independent_of_the_corpus_around_the_candidate` |
+| indexed-but-unmatched는 NotMatched(절대 "absent" 아님) — 비매칭 doc이 match set 앞/사이/뒤, 그리고 **segment에 match가 0개**인 plan에서도 | `lexical::…::every_ranked_…`(5 case; 이 fixture가 scorer 위치 결함을 잡음, 아래) + e2e `…::presence_is_a_typed_exact_lookup_and_a_non_match_is_not_absence` |
+| unindexed scan(`index:no`)도 같은 per-doc matcher로 1.0×boost = page score | `lexical::…::an_unindexed_scan_explains_through_the_same_per_document_matcher` |
+| presence-only explain: typed Indexed, strategy `presence_lookup`, contributions 없음; generation mismatch는 INVALID_REQUEST | `searchd-runtime/tests/explain.rs` 2 test(갱신) |
+| wire: request(text_query 유/무) round-trip, response presence round-trip, presence 누락/`"maybe"` 거부 | `contract/tests/ipc_query_result_v2_contract.rs::explain_*` |
+| 기존 소비자(sdk_frontdoor summary `present`, restart determinism explanation 동일성, full-corpus `engines_touched=["lexical"]`, CLI smoke `presence: indexed`) | 해당 suite 전부 green |
+
+**구현 중 잡은 결함**: 첫 구현은 `scorer.seek(doc)`로 한 document에 위치시켰는데 tantivy `DocSet::seek`는 현재 doc ≤ target을
+`debug_assert`한다 — 후보 doc이 plan의 첫 match보다 앞이거나 segment에 match가 없으면(초기 doc = TERMINATED) debug build에서
+panic(e2e에서 connection thread panic으로 관측). `scorer.doc()`을 먼저 보고 `first >= target`이면 seek하지 않도록 수정;
+lexical test fixture를 비매칭 doc 위치 5-case로 확장해 fix를 되돌리면 panic하는 것을 확인했다.
+
+**정직한 한계**: (a) hybrid/hybrid-seed/semantic route 후보의 explain은 **lexical lane만** trace한다 — RRF-fused carried
+score는 `score_reconciled=false`로 정직하게 표시되지만 dense lane·RRF rank contribution은 제공하지 않는다(per-candidate
+lane provenance를 hybrid 응답에 싣는 후속; hybrid seed는 이미 `SeedContribution`을 lane별로 실음). (b) 보완 #1/#4의
+provenance store(immutable execution record ID, retention/privacy budget)는 만들지 않았다 — explain은 caller가 넘긴 원
+질의로 같은 plan을 재유도한다(plan은 (query, generation)의 순수 함수라 결정적). (c) 엔진 내부 세부(BM25 term별 idf/tf)는
+row로 펼치지 않는다 — 1 row가 정확히 emitted score와 일치하는 것이 계약이고, tantivy Explanation tree는 vendor 형식이라
+노출하지 않는다. (d) symbol route candidate(`SymbolCandidate`)는 explain surface에 없다(request가 `LexicalCandidate`).
 
 ## 4. Finding 상태 (QI-BB-001–032)
 

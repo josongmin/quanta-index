@@ -3,7 +3,7 @@ use quanta_index_contract::{
     ClusterMembershipReadOutcomeV1, ClusterMembershipReadRequestV1, GenerationPin,
     GenerationSelector, HybridSeedQueryRequest, HybridSeedQueryResponse, LexicalCandidate, RepoId,
     RevisionId, SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
-    SemanticCorpusKindV1,
+    SemanticCorpusKindV1, TextQueryRequest,
 };
 
 use crate::{QuantaIndex, SdkError, text_query_builder::VectorQueryBuilderState};
@@ -95,18 +95,42 @@ impl<'a> SearchNamespace<'a> {
         }
     }
 
+    /// Is `candidate` in the generation's lexical index? An exact lookup;
+    /// no score is traced because no query is named.
     pub fn explain(
         &self,
         generation: GenerationPin,
         candidate: LexicalCandidate,
     ) -> Result<SearchPlaneExplainQueryResponse, SdkError> {
+        self.explain_request(SearchPlaneExplainQueryRequest {
+            generation,
+            candidate,
+            text_query: None,
+        })
+    }
+
+    /// Why does `candidate` score what it scores under `text_query`
+    /// (QI-BB-022)? The plane lowers the same plan the search ran and
+    /// traces the lexical engine's score for exactly this candidate.
+    pub fn explain_under_query(
+        &self,
+        generation: GenerationPin,
+        candidate: LexicalCandidate,
+        text_query: TextQueryRequest,
+    ) -> Result<SearchPlaneExplainQueryResponse, SdkError> {
+        self.explain_request(SearchPlaneExplainQueryRequest {
+            generation,
+            candidate,
+            text_query: Some(text_query),
+        })
+    }
+
+    fn explain_request(
+        &self,
+        request: SearchPlaneExplainQueryRequest,
+    ) -> Result<SearchPlaneExplainQueryResponse, SdkError> {
         let response = self.client.dispatch_query(
-            quanta_index_contract::SearchPlaneQueryIpcRequest::Explain(
-                SearchPlaneExplainQueryRequest {
-                    generation,
-                    candidate,
-                },
-            ),
+            quanta_index_contract::SearchPlaneQueryIpcRequest::Explain(request),
         )?;
         match response {
             quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(results) => Ok(results),

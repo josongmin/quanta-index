@@ -228,6 +228,7 @@ pub struct E2eRouteWindowProbe {
 }
 
 pub struct E2eExplainResult {
+    pub presence: Option<quanta_index_contract::CandidatePresenceV1>,
     pub explanation: Option<SearchExplanation>,
     pub typed_error: Option<E2eTypedError>,
 }
@@ -2189,7 +2190,35 @@ impl E2eRuntime {
         }
     }
 
+    /// Presence-only explain: is the candidate in its generation's index?
     pub fn explain_candidate(&mut self, candidate: LexicalCandidate) -> E2eExplainResult {
+        self.explain_candidate_request(candidate, None)
+    }
+
+    /// Scored explain (QI-BB-022): the candidate's score under the named
+    /// query, traced through the plan that ranked it.
+    pub fn explain_candidate_under_query(
+        &mut self,
+        candidate: LexicalCandidate,
+        syntax: TextQuerySyntax,
+        query_text: &str,
+    ) -> E2eExplainResult {
+        let text_query = TextQueryRequest {
+            syntax,
+            query_text: query_text.to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+            generation: None,
+            generation_selector: None,
+            top_k: 1,
+        };
+        self.explain_candidate_request(candidate, Some(text_query))
+    }
+
+    fn explain_candidate_request(
+        &mut self,
+        candidate: LexicalCandidate,
+        text_query: Option<TextQueryRequest>,
+    ) -> E2eExplainResult {
         let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
         let pin = GenerationPin::new(
             candidate.repo_id.clone(),
@@ -2201,12 +2230,14 @@ impl E2eRuntime {
             payload: SearchPlaneQueryIpcRequest::Explain(SearchPlaneExplainQueryRequest {
                 generation: pin,
                 candidate,
+                text_query,
             }),
         };
         let socket = match self.ensure_driver() {
             Ok(socket) => socket,
             Err(err) => {
                 return E2eExplainResult {
+                    presence: None,
                     explanation: None,
                     typed_error: Some(E2eTypedError {
                         code: "HARNESS_START".to_string(),
@@ -2223,10 +2254,12 @@ impl E2eRuntime {
         };
         match response.payload {
             SearchPlaneQueryIpcResponse::Explain(explain) => E2eExplainResult {
+                presence: Some(explain.presence),
                 explanation: Some(explain.explanation),
                 typed_error: None,
             },
             SearchPlaneQueryIpcResponse::Error(err) => E2eExplainResult {
+                presence: None,
                 explanation: None,
                 typed_error: Some(E2eTypedError {
                     code: err.code,
@@ -2442,6 +2475,7 @@ impl E2eRuntime {
 
 fn unexpected_explain_response(kind: &str) -> E2eExplainResult {
     E2eExplainResult {
+        presence: None,
         explanation: None,
         typed_error: Some(E2eTypedError {
             code: "UNEXPECTED_RESPONSE".to_string(),
@@ -2566,6 +2600,7 @@ fn explain_transport_error(
         format!("readiness timeout before IPC response: {err}")
     };
     E2eExplainResult {
+        presence: None,
         explanation: None,
         typed_error: Some(E2eTypedError {
             code: "IPC_TRANSPORT".to_string(),
