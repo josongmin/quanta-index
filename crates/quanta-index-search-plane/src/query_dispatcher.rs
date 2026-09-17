@@ -1104,17 +1104,22 @@ impl SearchPlaneDispatcher {
             ensure_runtime_snapshot_names_known(&lowered, &runtime_state)?;
         }
         budget.checkpoint("runtime-metadata:execute")?;
+        // One row past the page is the continuation probe (QI-BB-025): the
+        // page keeps the first `top_k` matches in seed order, and the
+        // window says whether a further match exists.
         let mut results = execute_runtime_metadata_query(
             &pin,
             &lowered,
             &runtime_state,
             &structural_state,
-            request.text_query.top_k,
+            probe_top_k_v1(request.text_query.top_k)?,
         )?;
+        let window = finalize_probe_window_v1(&mut results, request.text_query.top_k)?;
         stabilize_ranked_candidates(&mut results);
         Ok(SearchPlaneRuntimeMetadataQueryResponse {
             generation: pin,
             results,
+            window,
         })
     }
 
@@ -1169,11 +1174,12 @@ impl SearchPlaneDispatcher {
         let _accepted_top_k = validate_query_top_k(request.text_query.top_k)?;
         let (pin, lowered) =
             lower_structural_query_request(self.activation_catalog.as_ref(), request)?;
-        let results =
+        let (results, window) =
             self.execute_structural_results(&pin, &lowered, request.text_query.top_k, budget)?;
         Ok(SearchPlaneStructuralQueryResponse {
             generation: pin,
             results,
+            window,
         })
     }
 
@@ -1292,13 +1298,23 @@ impl SearchPlaneDispatcher {
         self.repo_map_query.query(request)
     }
 
+    /// Evaluate the structural expression and cut the page.
+    ///
+    /// Evaluation materializes the whole match set, so the window carries
+    /// its exact size (QI-BB-025) and `has_more` says the page cut it.
     fn execute_structural_results(
         &self,
         pin: &GenerationPin,
         lowered: &LqQuery,
         top_k: u32,
         budget: &RequestBudgetV1,
-    ) -> Result<Vec<quanta_index_contract::StructuralCandidate>, CoreError> {
+    ) -> Result<
+        (
+            Vec<quanta_index_contract::StructuralCandidate>,
+            QueryResultWindowV1,
+        ),
+        CoreError,
+    > {
         if !structural_expr_has_structural_leaf(&lowered.expr) {
             return Err(structural_invalid_request(
                 "query must include at least one structural `match { ... }` leaf",
@@ -1356,8 +1372,12 @@ impl SearchPlaneDispatcher {
             lexical_eval.as_ref(),
         )?;
         let mut results = project_structural_query_results(candidates);
+        let total = u64::try_from(results.len()).map_err(|err| {
+            CoreError::InvalidContract(format!("structural match set overflow: {err}"))
+        })?;
         results.truncate(top_k_limit(top_k));
-        Ok(results)
+        let window = exact_total_window_v1(results.len(), total)?;
+        Ok((results, window))
     }
 
     /// Serve one query under its request budget (QI-BB-002).

@@ -13,9 +13,9 @@ use std::process::ExitCode;
 use quanta_index_contract::{
     EarlyStopReason, EngineTouched, GenerationPin, HistoryQueryRequest, HybridSeedQueryRequest,
     HybridSeedQueryResponse, LexicalCandidate, ManifestGeneration, PlannerTraceEntry,
-    QueryConstraintSetV1, QueryErrorRepair, RepoId, RepoMapDocType, RepoMapFocusSubjectDto,
-    RepoMapQueryRequest, RevisionId, RuntimeMetadataQueryRequest, SearchExplanation,
-    SearchPlaneHistoryQueryResponse, SearchPlaneQueryIpcResponse,
+    QueryConstraintSetV1, QueryErrorRepair, QueryResultWindowV1, RepoId, RepoMapDocType,
+    RepoMapFocusSubjectDto, RepoMapQueryRequest, RevisionId, RuntimeMetadataQueryRequest,
+    SearchExplanation, SearchPlaneHistoryQueryResponse, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRuntimeMetadataQueryResponse,
     SearchPlaneStructuralQueryResponse, SemanticQueryRequest, StructuralQueryRequest,
     SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse,
@@ -1790,6 +1790,20 @@ fn render_history_payload(
     Ok(())
 }
 
+/// One line for a page's window: how many candidates matched (exactly, or
+/// at least) and whether the page cut them (QI-BB-025).
+fn render_window_line(window: QueryResultWindowV1, rendered: &mut String) -> CliResult<()> {
+    let matched = match window.candidate_count() {
+        quanta_index_contract::CandidateCountV1::Exact(count) => format!("{count}"),
+        quanta_index_contract::CandidateCountV1::AtLeast(count) => format!(">={count}"),
+    };
+    fmt_ok(writeln!(
+        rendered,
+        "matched: {matched} has_more: {}",
+        window.has_more()
+    ))
+}
+
 fn render_structural_payload(
     payload: &SearchPlaneStructuralQueryResponse,
     rendered: &mut String,
@@ -1797,6 +1811,7 @@ fn render_structural_payload(
     fmt_ok(writeln!(rendered, "kind: structural"))?;
     render_generation(&payload.generation, rendered)?;
     fmt_ok(writeln!(rendered, "results: {}", payload.results.len()))?;
+    render_window_line(payload.window, rendered)?;
     for (index, candidate) in payload.results.iter().enumerate() {
         let display_index = index
             .checked_add(1)
@@ -1928,6 +1943,7 @@ fn render_runtime_metadata_payload(
     fmt_ok(writeln!(rendered, "kind: runtime-metadata"))?;
     render_generation(&payload.generation, rendered)?;
     fmt_ok(writeln!(rendered, "results: {}", payload.results.len()))?;
+    render_window_line(payload.window, rendered)?;
     for (index, candidate) in payload.results.iter().enumerate() {
         let display_index = index.checked_add(1).ok_or_else(|| {
             CliError::protocol("runtime-metadata candidate index overflow".to_string())
@@ -2613,6 +2629,13 @@ mod tests {
     #[test]
     fn pretty_renderer_supports_runtime_metadata_response() {
         use quanta_index_contract::RepoRelativePath;
+        // One row returned of at least two: the continuation probe saw a
+        // second match past the page.
+        let probe_window = quanta_index_contract::QueryResultWindowV1::from_probe(1, 2);
+        assert!(probe_window.is_ok(), "{probe_window:?}");
+        let Ok(probe_window) = probe_window else {
+            return;
+        };
         let response = SearchPlaneQueryIpcResponseEnvelope {
             request_id: 1,
             payload: SearchPlaneQueryIpcResponse::RuntimeMetadata(
@@ -2635,6 +2658,7 @@ mod tests {
                         snippet_hit_offset: None,
                         highlights: Vec::new(),
                     }],
+                    window: probe_window,
                 },
             ),
         };
@@ -2646,6 +2670,10 @@ mod tests {
         if let Ok(text) = text {
             assert!(text.contains("kind: runtime-metadata"));
             assert!(text.contains("results: 1"));
+            assert!(
+                text.contains("matched: >=2 has_more: true"),
+                "the probe window is rendered: {text}"
+            );
         }
     }
 
@@ -3164,6 +3192,7 @@ mod tests {
                         end_line: 2,
                     }],
                 }],
+                window: quanta_index_contract::QueryResultWindowV1::exact(1),
             }),
         };
         let mut stdout = Vec::new();
@@ -3176,6 +3205,10 @@ mod tests {
             assert!(text.contains("results: 1"));
             assert!(text.contains("candidate_id=struct-1"));
             assert!(text.contains("$NAME: bytes=10-14"));
+            assert!(
+                text.contains("matched: 1 has_more: false"),
+                "the exact window is rendered: {text}"
+            );
         }
     }
 }

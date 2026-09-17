@@ -312,7 +312,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W1 | planned | |
 | W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + QI-BB-032 idempotency catalog(§3.16) + **QI-BB-020 auxiliary authority rows(§3.19, catalog 확장: per-record row, validate→persist→apply, Arc snapshot read, retention prune, legacy 일회 migration)** 완료. 남은 것: quarantine control surface, aux read epoch/visibility interval(§3.19 한계) |
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + QI-BB-027 ANN sealed contract(§3.23) + **QI-BB-016 lexical writer envelope(§3.26)** 완료. 남은 것: sharded sidecar 포맷(O(delta) write), seal마다 ANN 전체 재구축(O(N), §3.23 한계), scope 단위 streamed embed→append(§3.18 한계) |
-| W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), streaming projection collector |
+| W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) + **QI-BB-025 보완 #4 runtime/structural window(§3.30)** 완료. 남은 것: runtime/structural keyset cursor, streaming projection collector |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. QI-BB-014 UDS/state-root private hardening(§3.27) 완료. QI-BB-015 metrics 집계 + scrape(§3.28) 완료. **phase 2(§3.29): budget이 lexical native collect/scan/regex verify/predicate scope 안에서 관측** 완료. 남은 것: shared mode(group/ACL + peer credential), semantic lane 내부 관측 |
 | W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + QI-BB-018 true hybrid(§3.22) + QI-BB-022 explain = exact presence + lexical score trace(§3.24) + **QI-BB-008 RepoMap bounded query + durable store(§3.25)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), history relevance order(Tantivy history index, §3.20 한계), judged corpus recall/NDCG gate(§3.22 한계), hybrid 후보의 per-lane contribution(§3.24 한계) |
 | W7 | planned | |
@@ -1645,6 +1645,39 @@ disconnect)는 timing 의존이라 만들지 않았다 — adapter 단위(cancel
 증명. (e) `RegexErrorCode::Interrupted`는 lq-regex wire code 집합에 추가된 새 코드(`INTERRUPTED`) — lexical adapter가 core
 code로 번역하므로 IPC에는 나가지 않는다.
 
+## 3.30 QI-BB-025 보완 #4 — runtime-metadata / structural 응답도 bounded window 계약을 싣는다 (구현 완료)
+
+**진단 확정**: 8개 route 중 runtime-metadata와 structural만 `top_k` 절단은 하면서 wire window가 없었다 — client는
+"`top_k`개가 돌아왔으니 더 있을 수 있다"를 추측할 뿐, 잘린 건지 전부인지 알 수 없었다(§3.5 남은 항목).
+
+**구현**:
+
+- **wire**: `SearchPlaneRuntimeMetadataQueryResponse`·`SearchPlaneStructuralQueryResponse`에 `window: QueryResultWindowV1`
+  (기존 `impl_generation_results_response_serde!` — decode 시 `window.returned == results.len()` 강제). `impl_generation_
+  results_unwindowed_response_serde!` 매크로 삭제(사용처 0).
+- **runtime-metadata**: `execute_runtime_metadata_query`가 `probe_top_k_v1(top_k)`(= top_k+1) 개까지 seed 순서로 모으고
+  `finalize_probe_window_v1`로 page를 자른다 — 다른 probe route와 같은 계약(`AtLeast(observed)` + `has_more`, 전부면 `Exact`).
+  page 멤버십(seed 순서 첫 top_k)은 그대로, 그 뒤 `stabilize_ranked_candidates`.
+- **structural**: 평가가 전체 match set을 materialize하므로 잘라내기 전 크기로 `exact_total_window_v1`(기존 helper, 메시지의
+  `lexical` 접두를 route-중립으로) → `Exact(total)` + `has_more = total > returned`.
+- **surface**: harness `route_window_probe_from_response`가 두 route의 window를 돌려줌(truth table이 자동으로 검사); searchctl
+  pretty에 `matched: N|>=N has_more: bool` 한 줄(`render_window_line`, history와 같은 표기).
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| 두 route 모두 2-hit fixture에서 `top_k=1` → returned 1, `has_more`, runtime `AtLeast(2)` / structural `Exact(2)`; `top_k=10` → 2 rows, `Exact(2)`, `has_more=false` | `e2e_top_k_truth_table::runtime_and_structural_windows_report_the_continuation` (새 fixture `two_hit_runtime`: dirty overlay 2 + structural tree 2) |
+| 기존 truth table 3 test(refusal/acceptance/fixture)가 이제 8 route 전부에서 window 일관성(`window_contradiction`)까지 검사 | 같은 파일 4/4 |
+| CLI pretty: runtime probe window(`matched: >=2 has_more: true`), structural exact(`matched: 1 has_more: false`) | `searchctl::tests::pretty_renderer_supports_{runtime_metadata,structural}_response` |
+| wire DTO 변경 fuzz: 4 target 60s 완주, crash 0 | `just rust-fuzz-smoke` |
+| 회귀: contract/sdk/searchctl/search-plane/harness 717 unit·integration, perf-chaos 43, structural hellgate 4 | 전부 green |
+
+**정직한 한계**: (a) runtime-metadata의 `candidate_count`는 probe 기반 lower bound다(전량 count 없음) — `count:` option은 이
+route에 없다. (b) history처럼 keyset cursor는 두 route에 아직 없다 — `has_more`만 알려주고 다음 page를 요청하는 방법은
+`top_k`를 키우는 것뿐(finding 보완 #4의 "cursor" 절반은 미구현, 정직하게 남김). (c) SDK는 응답을 그대로 노출하므로 별도
+builder 변경은 없다.
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -1693,3 +1726,4 @@ code로 번역하므로 IPC에는 나가지 않는다.
 | 2026-09-17 | (W5 phase 2 tree) | `cargow --lane test-fast-lane test -p {lexical,search-plane,lq-regex,core}` (643/643) + `searchd-runtime --test {e2e_perf_chaos,e2e_text_route_hellgate,e2e_explain_score_trace,e2e_metrics_scrape}` (56/56) + workspace clippy + hexagonal/semgrep/module-discipline/error-shape/public-api/cargo-modules | 전부 green. 첫 회차: regex cancel test가 `lexical:collect`에서 관측 → 원인은 control run이 먼저 regex match cache를 데운 것(정당한 동작) → cancel run을 먼저 돌리고 cache 뒤 동작을 두 번째 단언으로 추가 |
 | 2026-09-17 | 33a5b25 | `just rust-profile verify-rust` ×2 | **INVALID** ×2 — 세션 종료(signal 15)로 각각 1,795 / 1,974 passed, 0 failed 지점에서 중단. 테스트 실패 아님, 결과는 폐기 |
 | 2026-09-17 | 33a5b25 | `just rust-profile verify-rust` (nohup, 세션 분리) | **GREEN** — exit 0, 2,141 passed / 0 failed (W5 phase 2 lexical 내부 budget 관측 포함) |
+| 2026-09-18 | (QI-BB-025 #4 tree) | `cargow --lane test-fast-lane test -p {contract,sdk,searchctl,search-plane,searchd-harness}` (717/717) + `searchd-runtime --test {e2e_top_k_truth_table,e2e_perf_chaos,e2e_structural_hellgate}` (51/51) + workspace clippy + `just rust-fuzz-smoke` + hexagonal/semgrep/module-discipline/error-shape/cargo-modules + `just rust-public-api-update`(contract: 두 response의 `window` field 추가, additive) | 전부 green |

@@ -788,70 +788,6 @@ macro_rules! impl_generation_results_explanation_response_serde {
     };
 }
 
-macro_rules! impl_generation_results_unwindowed_response_serde {
-    ($ty:ident, $fields:ident, $visitor:ident, $result_ty:ty) => {
-        impl Serialize for $ty {
-            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: Serializer,
-            {
-                let mut state = serializer.serialize_struct(stringify!($ty), 2)?;
-                state.serialize_field("generation", &self.generation)?;
-                state.serialize_field("results", &self.results)?;
-                state.end()
-            }
-        }
-
-        struct $visitor;
-
-        impl<'de> Visitor<'de> for $visitor {
-            type Value = $ty;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str(concat!("a ", stringify!($ty), " map"))
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: MapAccess<'de>,
-            {
-                let mut generation: Option<GenerationPin> = None;
-                let mut results: Option<Vec<$result_ty>> = None;
-                while let Some(key) = map.next_key::<String>()? {
-                    match key.as_str() {
-                        "generation" => {
-                            if generation.is_some() {
-                                return Err(de::Error::duplicate_field("generation"));
-                            }
-                            generation = Some(map.next_value()?);
-                        }
-                        "results" => {
-                            if results.is_some() {
-                                return Err(de::Error::duplicate_field("results"));
-                            }
-                            results = Some(map.next_value()?);
-                        }
-                        other => return Err(de::Error::unknown_field(other, $fields)),
-                    }
-                }
-                Ok($ty {
-                    generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
-                    results: results.ok_or_else(|| de::Error::missing_field("results"))?,
-                })
-            }
-        }
-
-        impl<'de> Deserialize<'de> for $ty {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: Deserializer<'de>,
-            {
-                deserializer.deserialize_struct(stringify!($ty), $fields, $visitor)
-            }
-        }
-    };
-}
-
 impl Serialize for FileOwnerProjectionRow {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -1489,10 +1425,15 @@ impl<'de> Deserialize<'de> for HybridSeedQueryResponse {
 pub struct SearchPlaneRuntimeMetadataQueryResponse {
     pub generation: GenerationPin,
     pub results: Vec<LexicalCandidate>,
+    /// The page's bounds (QI-BB-025): `returned` rows of at least
+    /// `candidate_count`, with `has_more` when the route's continuation
+    /// probe found a row past the page.
+    pub window: QueryResultWindowV1,
 }
 
-const SEARCH_PLANE_RUNTIME_METADATA_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results"];
-impl_generation_results_unwindowed_response_serde!(
+const SEARCH_PLANE_RUNTIME_METADATA_QUERY_RESPONSE_FIELDS: &[&str] =
+    &["generation", "results", "window"];
+impl_generation_results_response_serde!(
     SearchPlaneRuntimeMetadataQueryResponse,
     SEARCH_PLANE_RUNTIME_METADATA_QUERY_RESPONSE_FIELDS,
     SearchPlaneRuntimeMetadataQueryResponseVisitor,
@@ -1503,10 +1444,14 @@ impl_generation_results_unwindowed_response_serde!(
 pub struct SearchPlaneStructuralQueryResponse {
     pub generation: GenerationPin,
     pub results: Vec<StructuralCandidate>,
+    /// The page's bounds (QI-BB-025). Structural evaluation materializes
+    /// the whole match set before the page is cut, so `candidate_count`
+    /// is exact.
+    pub window: QueryResultWindowV1,
 }
 
-const SEARCH_PLANE_STRUCTURAL_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results"];
-impl_generation_results_unwindowed_response_serde!(
+const SEARCH_PLANE_STRUCTURAL_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "window"];
+impl_generation_results_response_serde!(
     SearchPlaneStructuralQueryResponse,
     SEARCH_PLANE_STRUCTURAL_QUERY_RESPONSE_FIELDS,
     SearchPlaneStructuralQueryResponseVisitor,

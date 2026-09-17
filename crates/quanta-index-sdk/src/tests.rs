@@ -3039,6 +3039,7 @@ fn runtime_query_routes_through_typed_query_variant() {
         SearchPlaneQueryIpcResponse::RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
+            window: QueryResultWindowV1::exact(1),
         }),
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -3077,6 +3078,7 @@ fn runtime_query_request_forwards_contract_dto_unchanged() {
         SearchPlaneQueryIpcResponse::RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
+            window: QueryResultWindowV1::exact(1),
         }),
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -3104,6 +3106,7 @@ fn structural_query_routes_through_typed_query_variant() {
         SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
             generation: sample_generation_pin(),
             results: vec![],
+            window: QueryResultWindowV1::exact(0),
         }),
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -3139,6 +3142,7 @@ fn structural_query_request_forwards_contract_dto_unchanged() {
         SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
             generation: sample_generation_pin(),
             results: vec![],
+            window: QueryResultWindowV1::exact(0),
         }),
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -3169,6 +3173,7 @@ fn structural_native_query_preserves_syntax() {
         SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
             generation: sample_generation_pin(),
             results: vec![],
+            window: QueryResultWindowV1::exact(0),
         }),
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -3211,6 +3216,7 @@ fn structural_sourcegraph_query_preserves_syntax() {
         SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
             generation: sample_generation_pin(),
             results: vec![],
+            window: QueryResultWindowV1::exact(0),
         }),
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());

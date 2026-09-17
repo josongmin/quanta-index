@@ -206,6 +206,85 @@ fn probe(rt: &mut E2eRuntime, route: &Route, top_k: u32) -> Result<E2eRouteWindo
         .map_err(|err| format!("{}: top_k={top_k} harness failure: {err}", route.name))
 }
 
+/// A generation with two runtime-metadata hits and two structural hits, so
+/// a page of one must report the continuation on both routes.
+fn two_hit_runtime() -> Result<E2eRuntime, Box<dyn Error>> {
+    const NEEDLE_CONTENT: &str = "fn needle() { let needle = 1; }";
+    const OTHER_CONTENT: &str = "fn other() { let needle = 2; }";
+    let mut rt = E2eRuntime::boot()?;
+    rt.ingest_text("repo", "src/needle.rs", NEEDLE_CONTENT)?;
+    rt.ingest_text("repo", "src/other.rs", OTHER_CONTENT)?;
+    rt.ingest_structural_function_tree("src/needle.rs", NEEDLE_CONTENT, "needle")?;
+    rt.ingest_structural_function_tree("src/other.rs", OTHER_CONTENT, "other")?;
+    rt.ingest_dirty_for_path("src/needle.rs", 5)?;
+    rt.ingest_dirty_for_path("src/other.rs", 7)?;
+    let _generation = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    Ok(rt)
+}
+
+fn route_named(name: &str) -> Result<&'static Route, Box<dyn Error>> {
+    ROUTES
+        .iter()
+        .find(|route| route.name == name)
+        .ok_or_else(|| format!("truth table has no `{name}` route").into())
+}
+
+/// The runtime-metadata and structural routes answer with a window
+/// (QI-BB-025 #4).
+///
+/// At `top_k = 1` over two hits both report `has_more`, structural with the
+/// exact count it materialized and runtime with the lower bound its probe
+/// saw; at `top_k = 10` both return the two rows with an exact count and no
+/// continuation.
+#[test]
+fn runtime_and_structural_windows_report_the_continuation() -> TestResult {
+    let mut rt = two_hit_runtime()?;
+    let mut failures: Vec<String> = Vec::new();
+    for (name, expected_at_one) in [
+        ("runtime_metadata", CandidateCountV1::AtLeast(2)),
+        ("structural", CandidateCountV1::Exact(2)),
+    ] {
+        let route = route_named(name)?;
+        let page_of_one = probe(&mut rt, route, 1)?;
+        if let Some(error) = page_of_one.typed_error {
+            failures.push(format!("{name}: top_k=1 did not serve: {error}"));
+            continue;
+        }
+        match page_of_one.window {
+            Some(window)
+                if page_of_one.returned_rows == 1
+                    && window.returned() == 1
+                    && window.has_more()
+                    && window.candidate_count() == expected_at_one => {}
+            other => failures.push(format!(
+                "{name}: top_k=1 over two hits must report one row and has_more with {expected_at_one:?}, got rows={} window={other:?}",
+                page_of_one.returned_rows
+            )),
+        }
+        let whole = probe(&mut rt, route, 10)?;
+        if let Some(error) = whole.typed_error {
+            failures.push(format!("{name}: top_k=10 did not serve: {error}"));
+            continue;
+        }
+        match whole.window {
+            Some(window)
+                if whole.returned_rows == 2
+                    && window.returned() == 2
+                    && !window.has_more()
+                    && window.candidate_count() == CandidateCountV1::Exact(2) => {}
+            other => failures.push(format!(
+                "{name}: top_k=10 over two hits must return both with an exact count, got rows={} window={other:?}",
+                whole.returned_rows
+            )),
+        }
+    }
+    if !failures.is_empty() {
+        return Err(format!("route windows drifted:\\n  {}", failures.join("\\n  ")).into());
+    }
+    Ok(())
+}
+
 /// The wire window must agree with the rows actually returned.
 ///
 /// It must not claim a continuation that the row count contradicts. This is

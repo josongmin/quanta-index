@@ -2729,8 +2729,12 @@ fn route_window_probe_from_response(
             history.commits.len().saturating_add(history.diffs.len()),
             Some(history.window),
         ),
-        SearchPlaneQueryIpcResponse::RuntimeMetadata(runtime) => (runtime.results.len(), None),
-        SearchPlaneQueryIpcResponse::Structural(structural) => (structural.results.len(), None),
+        SearchPlaneQueryIpcResponse::RuntimeMetadata(runtime) => {
+            (runtime.results.len(), Some(runtime.window))
+        }
+        SearchPlaneQueryIpcResponse::Structural(structural) => {
+            (structural.results.len(), Some(structural.window))
+        }
         SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
