@@ -309,7 +309,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | ID | 상태 | 근거 |
 | --- | --- | --- |
 | W0 | **passed** | G0-L/G0-S/G0-C passed, G0-R baseline pinned(cooperative-only). §3 참조. timing 재측정만 `blocked: contended-host` |
-| W1 | planned | |
+| W1 | in_progress | **QI-BB-011 Unicode normalizer(§3.33)** + **QI-BB-013 search-plane 3 monolith 분할(§3.32)** 완료. 남은 것: snake/camel sub-token 확장(LEX-00, 제품 결정), route×predicate `RequiredDomains`(plan §5.6) |
 | W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + **quarantine control surface(§3.31: live inventory + as-listed discard, control IPC/SDK/CLI)** + QI-BB-032 idempotency catalog(§3.16) + QI-BB-020 auxiliary authority rows(§3.19) 완료. 남은 것: aux read epoch/visibility interval(§3.19 한계) |
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + QI-BB-027 ANN sealed contract(§3.23) + **QI-BB-016 lexical writer envelope(§3.26)** 완료. 남은 것: sharded sidecar 포맷(O(delta) write), seal마다 ANN 전체 재구축(O(N), §3.23 한계), scope 단위 streamed embed→append(§3.18 한계) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) + **QI-BB-025 보완 #4 runtime/structural window(§3.30)** 완료. 남은 것: runtime/structural keyset cursor, streaming projection collector |
@@ -1717,6 +1717,89 @@ sealed generation을 이름해도 `symlink_metadata` 존재 + 목록 부재 = �
 adapter는 path+reason으로 맞춘다(CLI `--detail` optional). (d) "재검증(re-validate)"은 넣지 않았다: inventory가 identity만 보므로
 재검증 = 다음 boot inventory와 같고, 별도 route는 같은 답을 두 번 주는 셈이라 정직하게 제외.
 
+## 3.32 QI-BB-013 — search-plane의 세 monolith를 책임 단위 module로 나눴다 (구현 완료, 동작 변화 0)
+
+**진단 확정**: `query_dispatcher.rs` 11,212줄, `readiness.rs` 7,509줄, `ingest_dispatcher.rs` 4,201줄 — route·planning·
+readiness gate·error taxonomy·durable fs·ledger apply·test fixture가 한 파일에 있어 rename이 cascade하고 test가 한 `mod tests`에
+몰려 있었다.
+
+**구현** (`crates/quanta-index-search-plane/src/`, 3 commit, 98 files, +24,270/−22,943, 다른 crate·`lib.rs`·re-export 이름 불변):
+
+| 트리 | 구성 |
+| --- | --- |
+| `query_dispatcher/` | `dispatcher`(type·ctor·`dispatch`·`observed_route`) → `routes/{lexical,semantic,hybrid,hybrid_seed,history,runtime_metadata,explain,repo_map,cluster_membership}` + `routes/structural/{route,lowering,universe,eval,lexical_leaves,projection,buckets}`; 지원 module `snapshots`·`readiness_gate`·`planning`·`semantic_query`·`selection`·`window`·`ranking`·`rev_at_time`·`text_plane`·`timeref`·`metrics`·`errors`; `tests/`는 주제별 23 file + `tests/support/` |
+| `readiness/` | `activation_catalog`·`search_corpus_history`·`auxiliary_store`·`ledger_apply`·`ledger`·`{history,runtime,structural}_state`·leaf(`keys`,`track_state`,`retention_receipt`,`pair_digest`,`durable_fs`,`serde_support`,`errors`); `mod.rs`는 facade만 |
+| `ingest_dispatcher/` | `dispatcher`·`search_corpus`·`auxiliary`·`semantic`·`generation_plan`·`ports`·`errors` |
+
+`use` graph는 세 트리 모두 script로 acyclic 확인; route 간 edge는 `hybrid`/`hybrid_seed` → `semantic`(`embed_and_gate_query` 공유)뿐.
+가시성은 family 안에서만 넓힘(`pub(super)`, dispatcher가 부르는 route entry만 `pub(crate)`).
+
+**동작 불변 증명**: test 이름 집합 285개가 분할 전후 byte-identical(query_dispatcher 86/readiness 48/ingest 24/기타 127);
+원본 item 837개(374+300+163)가 whitespace·visibility·경로 rewrite 정규화 후 새 트리에 verbatim 존재(잔차 4개는 rustfmt closure reflow);
+error code·metric 이름·checkpoint 이름·side-effect 순서 변경 없음. rail: workspace clippy 0, hexagonal/semgrep(0 findings)/
+module-discipline(33 facade)/error-shape/public-api(불변)/cargo-modules(불변) green; search-plane 247+38, e2e `end_to_end` 35·
+`e2e_perf_chaos` 43·`e2e_top_k_truth_table` 4 green. main rebase 후(§3.31 quarantine 포함) 250+38 green.
+
+**남긴 것(agent가 발견, 의도적으로 미변경)**: (a) `dispatcher.rs::dispatch_runtime_metadata`의 "QI-RT-02 in-flight … not wired"
+주석이 구현과 모순 — doc 정정 대상. (b) `ledger_apply`가 state struct의 map에 직접 쓴다(`pub(super)` field) — delta 적용을 state
+type의 method로 옮기면 field가 다시 private. (c) `text_plane::ExecutableTextPlanePolicy` 2-plane enum, `Ledger::lexical_seal`/
+`semantic_seal` mirror, `SearchPlaneDispatcher` 9 collaborator — 기존 smell. (d) `search_corpus_history.rs` 833줄·`routes/history.rs`
+1,084줄은 2차 분할 후보.
+
+## 3.33 QI-BB-011 — index·sidecar·query가 하나의 Unicode normalizer를 쓴다 (구현 완료)
+
+**진단 확정**: Tantivy analyzer(`SimpleTokenizer`+`RemoveLongFilter(40)`+`LowerCaser`), trigram/positions sidecar의 ASCII fold,
+`index:no` 경로의 `is_ascii_alphanumeric` split, keyword literal의 Tantivy `QueryParser` 재해석(`-`·`:`·`AND` 등)이 각각 다른
+규칙이었다. 같은 질의가 route마다 다른 집합을 돌려줬고(NFD `café`는 keyword에서 miss, `index:no`에서 모든 non-ASCII keyword가 `{}`,
+40자 sha1은 색인에서 조용히 탈락), token 없는 literal은 빈 page로 성공했다.
+
+**구현** (`crates/quanta-index-lexical/src/{normalize.rs, analyzer.rs}` 신설, `lib.rs`·`phrase.rs` 배선):
+
+- **계약**(`normalize.rs` module doc이 spec): NFC(문서·질의 literal 모두, NFKC/width fold 없음) → `case:no`는 per-char
+  `char::to_lowercase`(locale-free; final-sigma/Turkic/ß→ss 없음, 한계로 pin) → token은 `is_alphanumeric() || '_' || combining mark`의
+  maximal run(`foo_bar`·`fooBar` 한 token, `foo.bar`→`[foo,bar]`, CJK run 한 token, emoji는 boundary) → 256B 초과 run은 position은
+  갖되 term으로 emit하지 않음(옛 40B 필터 대체) → keyword/phrase는 token 의미, raw `'…'`/regex는 NFC 문서 substring 의미(regex
+  prefilter는 추출 literal을 같은 fold로) → token 없는 literal `LEX_TEXT_QUERY_NO_TOKENS`, 초과 run `LEX_TEXT_QUERY_TOKEN_TOO_LONG`
+  (indexed·`index:no`·planner pre-flight 동일 code).
+- Tantivy field 4개가 `NormalizingTokenizer`(normalizer 위의 얇은 `Tokenizer` impl)를 쓰고, keyword literal은 `QueryParser` 없이
+  normalizer token → `TermQuery`/`PhraseQuery`로 직접 lowering(두 번째 문법 제거).
+- **버전 결속**: `TEXT_NORMALIZER_VERSION = 2.0`을 sealed manifest(`LEXICAL_SEALED_MANIFEST_FORMAT_VERSION` 1→2, row에 stamp)와 positions
+  sidecar에 기록. v1 manifest는 `GENERATION_MANIFEST_FORMAT_UNSUPPORTED`, 다른 stamp는 `GENERATION_NORMALIZER_UNSUPPORTED`로 open·activation
+  두 문에서 typed 거부; 옛 base 위 delta도 거부(`ensure_base_generation_serves_current_normalizer`). 재해석 없음, rebuild가 migration.
+- `unicode-normalization`(workspace dep 기존, MIT/Apache) 추가; `just rust-deny` green.
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| **golden 80행**(18-doc corpus: dot/dash/snake/space/camel, NFC/NFD/대문자 `café`, CJK, emoji, `Straße_Данные_测试`, Kelvin sign, 전각, `İstanbul`, Devanagari) × keyword/phrase/raw/regex × case:no/yes, 각 행을 indexed route와 `index:no` 양쪽에서 정확히 같은 집합으로 | `lexical/tests/unicode_normalization_goldens.rs::golden_table` (test-authority 등록). **변경 전 코드에 같은 golden을 돌리면 160 check 중 67 실패**(indexed 30, `index:no` 37) — log 보존 |
+| NFC/NFD/Kelvin 철자가 keyword(index)와 phrase(sidecar)에서 같은 집합; corpus 27 단어 × 2 case mode에서 keyword 집합 == phrase 집합 | `composed_and_decomposed_spellings_agree_…`, `keyword_index_and_phrase_sidecar_agree_on_every_corpus_token` |
+| token 없는/초과 literal은 양 route에서 typed; raw는 여전히 찾음 | `token_less_text_query_is_refused_typed_on_both_routes`, `over_long_token_is_refused_on_token_surfaces_and_found_by_raw` |
+| v1 manifest·다른 stamp·옛 base 위 delta 전부 두 문에서 typed 거부, 원복하면 다시 serve | `a_generation_sealed_under_the_previous_format_is_refused_typed`, `a_generation_stamped_with_another_normalizer_is_refused_typed`, `a_delta_over_a_previous_format_base_is_refused_typed` |
+| 회귀 | lexical 15 target·lq-norm·search-plane·e2e(text_route_hellgate 8, perf_chaos 43, dsl_scenarios 8, lexical_full_fidelity, dual_syntax_parity 4, full_corpus 4/241 rows)·harness 75 green; workspace clippy 0; hexagonal/semgrep/module/error-shape/derive/cargo-toml/test-authority/deny green |
+
+**제품 의미 변화(정직하게 기록)**: identifier가 한 token이 되어 keyword `needle`은 더 이상 `needle_xx` 안을 맞추지 않는다(raw
+`'needle'`은 맞춤). 그에 따라 기대값 4곳 갱신(`tantivy_smoke` 3 test의 needle 단어, `runtime_rows.toml` 2 row의 count/BM25 순서,
+`e2e_dual_syntax_lowering_parity::boolean_or_parity` 순서, harness `lexical.repo_has_file.sourcegraph` count 3→1). 각 위치에 이유
+주석. `tools/benchmark/baselines/*-matrix.json`의 `result_count: 3`은 옛 rev의 bench snapshot(compare가 count를 검사하지 않음)이라
+bench 재실행 시 갱신. snake/camel sub-token 확장(LEX-00)은 이 module 위의 명시적 후속.
+
+**한계**: 진짜 Unicode case folding 아님(위), width/diacritic/CJK segmentation 없음, NFC·combining 표(`unicode-normalization` 0.1.25 =
+Unicode 17)와 std `to_lowercase`/`is_alphanumeric`(Rust 1.92) 두 출처 — 어느 쪽 upgrade든 `TEXT_NORMALIZER_VERSION` bump가 필요하고
+manifest stamp가 drift를 거부 가능하게 한다. snippet/highlight span과 metadata identity normalizer(ASCII lowercase)는 별도 계약으로 남김.
+
+## 3.34 QI-BB-006 보완 — text-authority delta의 비용은 시계가 아니라 작업량으로 단언한다
+
+§3.4.1의 `delta_text_authority_update_is_not_slower_than_a_full_rebuild`는 wall-clock 두 구간을 비교했고, load 130의 host에서
+delta 10.5s vs full 8.6s로 verify-rust(68468e3)를 RED로 만들었다 — delta는 문서 1개, full은 1,502개를 derive했는데도. repo 규칙이
+금지하는 timing assertion이었다.
+
+**구현**: adapter가 `TextAuthorityUpdateStats { rebuilds, incremental_updates, docs_derived, docs_retired }`를 유지(sidecar write가
+`TextAuthorityWriteReceipt`를 돌려주고 writer lock 해제 후 fold), scrape에 `lexical_text_authority_{rebuilds,incremental_updates,
+docs_derived,docs_retired}_total`. test는 `…_derives_only_the_changed_scope`로 개명: fresh build = rebuild 1·derived 1,502, 1-scope
+delta = incremental 1·derived 1·retired 1, 독립 full build = rebuild 1·derived 1,502를 **count로** 단언하고 timing은 evidence line에만.
+`e2e_metrics_scrape`가 daemon scrape에서 counter 4개(2 chunk 적재: rebuild 1 + incremental 1, derived 2, retired 0)를 단언.
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -1767,3 +1850,7 @@ adapter는 path+reason으로 맞춘다(CLI `--detail` optional). (d) "재검증(
 | 2026-09-17 | 33a5b25 | `just rust-profile verify-rust` (nohup, 세션 분리) | **GREEN** — exit 0, 2,141 passed / 0 failed (W5 phase 2 lexical 내부 budget 관측 포함) |
 | 2026-09-18 | (QI-BB-025 #4 tree) | `cargow --lane test-fast-lane test -p {contract,sdk,searchctl,search-plane,searchd-harness}` (717/717) + `searchd-runtime --test {e2e_top_k_truth_table,e2e_perf_chaos,e2e_structural_hellgate}` (51/51) + workspace clippy + `just rust-fuzz-smoke` + hexagonal/semgrep/module-discipline/error-shape/cargo-modules + `just rust-public-api-update`(contract: 두 response의 `window` field 추가, additive) | 전부 green |
 | 2026-09-18 | ed2e447 | `just rust-profile verify-rust` (nohup) | **GREEN** — exit 0, 2,142 passed / 0 failed (QI-BB-025 #4 runtime/structural window 포함) |
+| 2026-09-18 | (QI-BB-026 #4 tree) | `cargow --lane test-fast-lane test -p {contract,sdk,searchctl,search-plane,repomap,core,searchd-harness,searchd}` (896/896) + lexical boot_inventory 2 + semantic lib 47 + `searchd-runtime --test {e2e_boot_quarantine 3,e2e_metrics_scrape 2,e2e_perf_chaos 43}` + cli_smoke 20 + ipc admission 3 + workspace clippy + hexagonal/semgrep/module-discipline/error-shape/digest/derive/cargo-toml/test-authority/fmt + `just rust-fuzz-smoke`(4 target 완주) + `just rust-public-api-update`·`rust-cargo-modules-update`(additive) | 전부 green |
+| 2026-09-18 | 68468e3 | `just rust-profile verify-rust` (nohup) | RED — `lexical::generation_delta_base_carryforward::delta_text_authority_update_is_not_slower_than_a_full_rebuild`: wall-clock 비교(delta 10,491ms vs full 8,632ms)가 load 130 host에서 뒤집힘. 026 변경과 무관한 timing assertion → §3.34에서 작업량 oracle로 교체(48759d8) |
+| 2026-09-18 | worktree 013 (ab864a5→68468e3 rebase) | agent: workspace clippy(0) + search-plane 247+38 (rebase 후 250+38) + `end_to_end` 35·`e2e_perf_chaos` 43·`e2e_top_k_truth_table` 4 + hexagonal/semgrep/module-discipline/error-shape/public-api/cargo-modules | 전부 green, 동작 변화 0 (§3.32) |
+| 2026-09-18 | worktree 011 (7a5ce5e→034c4fd rebase) | agent: workspace clippy(0) + lexical 15 target·lq-norm 88·search-plane 285 + e2e text_route_hellgate 8·perf_chaos 43·dsl_scenarios 8·lexical_full_fidelity 1·dual_syntax_parity 4·full_corpus 4 + harness 77 + hexagonal/semgrep/module/error-shape/cargo-toml/derive/test-authority/deny; rebase 후 lexical carryforward 6 + goldens 8 | 전부 green (§3.33) |
