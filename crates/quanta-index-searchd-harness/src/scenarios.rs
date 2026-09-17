@@ -276,6 +276,10 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         ResultShape::Candidates,
         1,
     ),
+    // QI-BB-011: a keyword matches whole tokens of the shared normalizer, in
+    // which `_` never splits an identifier, so `needle` finds only the file
+    // holding the standalone word (`src/lib.rs`), not the two whose
+    // `parity_needle_alpha` the old analyzer split.
     ok_scenario(
         "lexical.repo_has_file.sourcegraph",
         RouteFamily::Lexical,
@@ -283,7 +287,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         QuerySpec::Literal("repo:has.file(path:src/lib.rs) needle"),
         FixtureKind::LexicalCorpus,
         ResultShape::Candidates,
-        3,
+        1,
     ),
     // --- HISTORY (HistoryLedger / Commits, diff.* -> DiffPaths) ---
     // query_history requires the `type:commit` / `type:diff` route discriminator.

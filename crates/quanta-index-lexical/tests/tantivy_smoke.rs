@@ -1459,13 +1459,18 @@ fn tantivy_top_k_stabilizes_keyword_path_surface_without_losing_content_hits() -
             1,
             "value = 1",
         )?,
+        // QI-BB-011: `path_only_needle` is one token of the shared normalizer
+        // on the path surface (beta) and in content (eta, gamma); the bare
+        // word `needle` no longer matches inside snake_case identifiers, so
+        // the shared whole token is the keyword. Gamma's long line ranks
+        // below eta's short one, which keeps the count bound truncating.
         upsert_with_metadata(
             "gamma",
             "scripts/helper.py",
             "python",
             1,
             1,
-            "def alpha_content_needle(): pass",
+            "def alpha_content_needle(): pass  # the config path_only_needle key is read here",
         )?,
         upsert_with_metadata(
             "delta",
@@ -1484,13 +1489,22 @@ fn tantivy_top_k_stabilizes_keyword_path_surface_without_losing_content_hits() -
             "const VERSION: &str = \"v1.2.3-rc.4\";",
         )?,
         upsert_with_metadata("zeta", "src/raw.rs", "rust", 1, 1, "let foo_bar_baz = 0;")?,
-        upsert_with_metadata("eta", "src/bait.rs", "rust", 1, 1, "let needle_xx = 1;")?,
+        upsert_with_metadata(
+            "eta",
+            "src/bait.rs",
+            "rust",
+            1,
+            1,
+            "let needle_xx = 1; // path_only_needle",
+        )?,
         upsert_symbol("theta", "src/sym.rs", "rust", "MyTypeSymbol", 1, 1)?,
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
     let searcher = adapter.open(&repo(), &revision(), generation())?;
-    let mut query = make_query(LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())));
+    let mut query = make_query(LqExpr::Leaf(LqLeaf::Keyword(
+        "path_only_needle".to_string(),
+    )));
     query.options.count = Some(LqCountBound::Bounded(2));
     let hits = searcher.search(&query, 10, &RequestBudgetV1::unbounded())?;
     let ids = hits
@@ -2765,12 +2779,15 @@ fn tantivy_executes_repo_has_content_predicate_under_or_and_not() -> TestResult 
         .into());
     }
 
+    // QI-BB-011: a keyword matches whole tokens of the shared normalizer, and
+    // `shared_oracle_needle` is one token (`_` never splits), so the corpus
+    // word itself is the keyword here; `needle` alone would match nothing.
     let not_false_query = make_query(LqExpr::All(vec![
         LqExpr::Not(Box::new(LqExpr::Leaf(LqLeaf::Predicate {
             name: "repo.has.content".to_string(),
             args: vec![LqPredicateArg::Keyword("missing-corpus-token".to_string())],
         }))),
-        LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
+        LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
     ]));
     let mut not_false_ids: Vec<String> = searcher
         .search(&not_false_query, 10, &RequestBudgetV1::unbounded())?
@@ -2932,6 +2949,9 @@ fn tantivy_executes_repo_has_file_predicate_under_or_and_not() -> TestResult {
         .into());
     }
 
+    // QI-BB-011: a keyword matches whole tokens of the shared normalizer, and
+    // `shared_oracle_needle` is one token (`_` never splits), so the corpus
+    // word itself is the keyword here; `needle` alone would match nothing.
     let not_false_query = make_query(LqExpr::All(vec![
         LqExpr::Not(Box::new(LqExpr::Leaf(LqLeaf::Predicate {
             name: "repo.has.file".to_string(),
@@ -2940,7 +2960,7 @@ fn tantivy_executes_repo_has_file_predicate_under_or_and_not() -> TestResult {
                 value: "missing.rs".to_string(),
             }],
         }))),
-        LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
+        LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
     ]));
     let mut not_false_ids: Vec<String> = searcher
         .search(&not_false_query, 10, &RequestBudgetV1::unbounded())?

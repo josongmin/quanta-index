@@ -567,6 +567,10 @@ const SCENARIOS: &[ParityScenario] = &[
             ids: &["epsilon_regex"],
         },
     },
+    // QI-BB-011: `parity_needle_alpha` is one term of the shared normalizer,
+    // not the three-term phrase the old analyzer scored with three summed
+    // IDFs, so under BM25 the rarer `documentation` (one document) now ranks
+    // first; the identifier's documents follow, shortest first, then by path.
     ParityScenario {
         route: QueryRoute::Text,
         id: "boolean_or_parity",
@@ -574,7 +578,7 @@ const SCENARIOS: &[ParityScenario] = &[
         lq_query: "parity_needle_alpha OR documentation",
         top_k: 10,
         expected: ExpectedOutcome::Candidates {
-            ids: &["alpha_rust", "delta_other_path", "beta_py", "gamma_md"],
+            ids: &["gamma_md", "alpha_rust", "delta_other_path", "beta_py"],
         },
     },
     ParityScenario {

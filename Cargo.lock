@@ -4272,6 +4272,7 @@ dependencies = [
  "sha2",
  "tantivy",
  "tempfile",
+ "unicode-normalization",
 ]
 
 [[package]]

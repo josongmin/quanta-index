@@ -2247,6 +2247,11 @@ expected_engines_touched = ["lexical"]
 [row.expected]
 kind = "single"
 
+# QI-BB-011: `alpha_content_needle` is one term of the shared normalizer, not
+# the three-term phrase [alpha, content, needle] the old analyzer scored with
+# three summed IDFs. Under BM25 the rarer `ripens` (one document) now outranks
+# the second `alpha_content_needle` document; `alpha_content` keeps first place
+# as the shortest document holding its term.
 [[row]]
 id = "runtime_native_boolean_or"
 query = "alpha_content_needle OR ripens"
@@ -2257,7 +2262,7 @@ syntax = "native"
 classification = "runtime"
 runtime_route = "text"
 fixture = "docs-main.toml"
-expected_ids = ["alpha_content", "gamma_py_same", "delta_phrase"]
+expected_ids = ["alpha_content", "delta_phrase", "gamma_py_same"]
 top_k = 10
 expected_engines_touched = ["lexical"]
 
@@ -2285,9 +2290,14 @@ kind = "multi"
 min = 2
 max = 2
 
+# QI-BB-011: a keyword matches whole tokens of the shared normalizer, in which
+# `_` never splits an identifier, so `needle` no longer reaches into
+# `path_only_needle` / `needle_xx` / `alpha_content_needle`. `scope` is a whole
+# token in three documents with identical scores; the count bound keeps the
+# first two by total order (path, then lines).
 [[row]]
 id = "runtime_native_count_bound"
-query = "count:2 needle"
+query = "count:2 scope"
 gate = "active"
 engines = ["lexical_content"]
 filters = ["count"]
@@ -2295,7 +2305,7 @@ syntax = "native"
 classification = "runtime"
 runtime_route = "text"
 fixture = "docs-main.toml"
-expected_ids = ["beta_pathonly", "eta_trigram_bait"]
+expected_ids = ["lambda_clean", "kappa_dirty_other"]
 top_k = 10
 expected_engines_touched = ["lexical"]
 

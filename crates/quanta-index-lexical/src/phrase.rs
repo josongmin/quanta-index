@@ -5,11 +5,15 @@
 //! [`LqOptions`], and typed rejection of phrase extensions the position
 //! engine does not yet model (slop, symbol-field phrase).
 //!
-//! Execution against the live position index is now wired through
-//! `quanta-index-lq-positions` sidecars from the lexical adapter. The
-//! tokenization called here remains a deliberate whitespace split so query
-//! planning and sidecar construction share one analyzer until the wider
-//! normalizer wave lands.
+//! Execution against the live position index is wired through
+//! `quanta-index-lq-positions` sidecars from the lexical adapter. Phrase
+//! text is tokenized by [`crate::normalize`] — the same NFC, fold and
+//! boundary contract the inverted index and the sidecar builders use — so a
+//! phrase is an exact contiguous run in the token stream a keyword would
+//! see: `"foo bar"` and the keyword `foo.bar` are the same token sequence,
+//! and `"CAFÉ au"` matches `café au` under `case:no`. A phrase whose text
+//! carries no token, or a token longer than the term cap, is refused typed
+//! here rather than answered with an empty result.
 //!
 //! Display / `std::error::Error` impls are hand-rolled per the workspace
 //! no-proc-macro-derive build-hygiene rule (`thiserror` may not be added
@@ -18,6 +22,8 @@
 use core::fmt;
 
 use quanta_index_contract::{LqCase, LqOptions};
+
+use crate::normalize::{CaseMode, TextQueryError, query_tokens};
 
 /// Field the position engine should resolve the phrase against.
 ///
@@ -72,7 +78,8 @@ pub struct PhrasePolicy {
     /// Default candidate cap surfaced into [`PhrasePlan::candidate_cap`].
     pub default_candidate_cap: u32,
     /// Minimum number of tokens after normalization. Single-token phrase is
-    /// degenerate but accepted (the call site owns the policy decision).
+    /// degenerate but accepted (the call site owns the policy decision); a
+    /// phrase with no token at all is always `EmptyPhrase`.
     pub min_tokens: usize,
     /// Whether non-zero slop is accepted by the DSL/planner. Today the LQ
     /// DSL has no slop syntax, so this is `false` and any slop > 0 is a
@@ -101,8 +108,11 @@ impl PhrasePolicy {
 /// diagnostics without re-parsing the `Display` string.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PhrasePlannerError {
-    /// Input text was empty (or only whitespace) after tokenization.
+    /// Input text holds no token under the shared normalizer.
     EmptyPhrase,
+    /// One run in the input is longer than the normalizer's term cap, so it
+    /// can never be a position-sidecar term.
+    TokenTooLong { bytes: usize, max: usize },
     /// Tokenization produced fewer terms than the policy minimum.
     TooFewTokens { count: usize, min_required: usize },
     /// Slop was requested but the policy / DSL does not yet allow it.
@@ -118,6 +128,10 @@ impl fmt::Display for PhrasePlannerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyPhrase => f.write_str("phrase planner: empty phrase"),
+            Self::TokenTooLong { bytes, max } => write!(
+                f,
+                "phrase planner: token of {bytes} bytes exceeds the {max}-byte term cap",
+            ),
             Self::TooFewTokens {
                 count,
                 min_required,
@@ -208,20 +222,22 @@ pub struct PhrasePlan {
 
 /// Tokenize the phrase text for the position-engine lookup.
 ///
-/// TODO[LXE-05-normalizer]: replace whitespace tokenization with the shared
-/// text normalizer pipeline once the lexical crate is allowed to depend on
-/// it directly. Until then, both sidecar build and query planning call this
-/// helper so the live phrase authority stays self-consistent.
-pub(crate) fn tokenize_phrase_terms(text: &str, case_sensitive: bool) -> Vec<String> {
-    text.split_whitespace()
-        .map(|t| {
-            if case_sensitive {
-                t.to_string()
-            } else {
-                t.to_ascii_lowercase()
+/// Delegates to [`query_tokens`]: NFC, the case mode's fold, and the shared
+/// boundary rule, with every run an index term. The position sidecars are
+/// built from the same tokenizer, so the returned terms are exactly the
+/// consecutive keys the lookup must find.
+fn tokenize_phrase_terms(
+    text: &str,
+    case_sensitive: bool,
+) -> Result<Vec<String>, PhrasePlannerError> {
+    query_tokens(text, CaseMode::from_case_sensitive(case_sensitive))
+        .map(|tokens| tokens.into_iter().map(|token| token.text).collect())
+        .map_err(|err| match err {
+            TextQueryError::NoTokens => PhrasePlannerError::EmptyPhrase,
+            TextQueryError::TokenTooLong { bytes, max } => {
+                PhrasePlannerError::TokenTooLong { bytes, max }
             }
         })
-        .collect()
 }
 
 /// Plan a phrase leaf onto the position engine.
@@ -231,8 +247,9 @@ pub(crate) fn tokenize_phrase_terms(text: &str, case_sensitive: bool) -> Vec<Str
 /// 1. Slop request validated against policy (DSL has no slop today, so
 ///    only slop = 0 passes when `allow_slop` is false).
 /// 2. Field validated: `Symbol` rejected, `Content` / `Path` accepted.
-/// 3. Tokenize using the shared sidecar/query analyzer.
-/// 4. Empty → `EmptyPhrase`; below `min_tokens` → `TooFewTokens`.
+/// 3. Tokenize with the shared normalizer.
+/// 4. No token → `EmptyPhrase`; an over-long run → `TokenTooLong`; below
+///    `min_tokens` → `TooFewTokens`.
 pub fn plan_phrase(
     text: &str,
     options: &LqOptions,
@@ -265,11 +282,8 @@ pub fn plan_phrase(
     }
 
     let case_sensitive = matches!(options.case, Some(LqCase::Sensitive));
-    let tokens = tokenize_phrase_terms(text, case_sensitive);
+    let tokens = tokenize_phrase_terms(text, case_sensitive)?;
 
-    if tokens.is_empty() {
-        return Err(PhrasePlannerError::EmptyPhrase);
-    }
     if tokens.len() < policy.min_tokens {
         return Err(PhrasePlannerError::TooFewTokens {
             count: tokens.len(),
@@ -387,9 +401,54 @@ mod tests {
         assert!(outcome.is_ok(), "expected Ok, got {outcome:?}");
         if let Ok(plan) = outcome {
             assert!(plan.case_sensitive);
-            // tokens preserved exactly; no ASCII lowercase fold under Sensitive.
+            // tokens preserved exactly; no fold under Sensitive.
             assert_eq!(plan.tokens, vec!["Foo".to_string(), "Bar".to_string()]);
         }
+    }
+
+    #[test]
+    fn phrase_tokens_follow_the_shared_normalizer() {
+        let opts = LqOptions::defaults();
+        let outcome = plan_phrase(
+            "Foo.Bar CAFE\u{301}",
+            &opts,
+            &PhrasePolicy::defaults(),
+            PhraseField::Content,
+        );
+        assert!(outcome.is_ok(), "expected Ok, got {outcome:?}");
+        if let Ok(plan) = outcome {
+            // punctuation is a boundary, the fold is Unicode, the text is NFC.
+            assert_eq!(
+                plan.tokens,
+                vec!["foo".to_string(), "bar".to_string(), "café".to_string()]
+            );
+        }
+    }
+
+    #[test]
+    fn token_less_and_over_long_phrases_are_typed_errors() {
+        let opts = LqOptions::defaults();
+        let outcome = plan_phrase(
+            "👍 ...",
+            &opts,
+            &PhrasePolicy::defaults(),
+            PhraseField::Content,
+        );
+        assert_eq!(outcome, Err(PhrasePlannerError::EmptyPhrase));
+        let long = "a".repeat(crate::normalize::MAX_TOKEN_BYTES.saturating_add(1));
+        let outcome = plan_phrase(
+            &format!("ok {long}"),
+            &opts,
+            &PhrasePolicy::defaults(),
+            PhraseField::Content,
+        );
+        assert_eq!(
+            outcome,
+            Err(PhrasePlannerError::TokenTooLong {
+                bytes: crate::normalize::MAX_TOKEN_BYTES.saturating_add(1),
+                max: crate::normalize::MAX_TOKEN_BYTES,
+            })
+        );
     }
 
     #[test]

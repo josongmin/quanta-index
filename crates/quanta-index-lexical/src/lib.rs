@@ -14,6 +14,14 @@
 //! The adapter caches one `IndexWriter` per generation to amortize the
 //! per-commit cost across many ops, and one `IndexReader` per opened
 //! generation.
+//!
+//! Text semantics — NFC, Unicode case folding, token boundaries, and the
+//! split between token surfaces (keyword, phrase) and byte surfaces (raw
+//! string, regex) — are defined once in the crate-private `normalize`
+//! module and consumed by the index analyzer, every text-authority sidecar,
+//! and the `index:no` scan alike. A sealed generation records the normalizer
+//! version it was built under and is refused typed when it differs from the
+//! running one.
 
 #![forbid(unsafe_code)]
 #![deny(unused_must_use)]
@@ -24,8 +32,10 @@
     reason = "tantivy 0.22 pulls multiple transitive versions (rustix, linux-raw-sys, windows-sys) we cannot collapse; scoped allowance in deny.toml [bans] skip-tree."
 )]
 
+mod analyzer;
 mod budgeted_search;
 pub mod filters;
+mod normalize;
 pub mod phrase;
 pub mod plan;
 pub mod planner;
@@ -101,8 +111,10 @@ use quanta_index_lq_trigram::{
     TrigramIndexBuilder, query_raw_substring, regex_prefilter_any_of,
 };
 
+use crate::analyzer::{NormalizingTokenizer, tokenizer_name};
 use crate::budgeted_search::{BudgetProbe, budgeted_search};
-use crate::phrase::{PhraseField, PhrasePolicy, plan_phrase, tokenize_phrase_terms};
+use crate::normalize::{CaseMode, TEXT_NORMALIZER_VERSION, TextNormalizerVersion, TextQueryError};
+use crate::phrase::{PhraseField, PhrasePlannerError, PhrasePolicy, plan_phrase};
 use crate::predicate_registry::{
     ContentPathScope, ContentPredicateArgError, ContentPredicateConstraint, ContentScalarArg,
     ContentScalarArgError, ContributorPattern, FileContributorArg, FileContributorArgError,
@@ -118,13 +130,13 @@ use crate::regex::RegexPolicy;
 use tantivy::DocSet as _;
 use tantivy::collector::{Count, TopDocs};
 use tantivy::query::{
-    AllQuery, BooleanQuery, EnableScoring, Occur, Query, QueryParser, RegexQuery, TermQuery,
+    AllQuery, BooleanQuery, EnableScoring, Occur, PhraseQuery, Query, RegexQuery, TermQuery,
 };
 use tantivy::schema::{
-    Field, IndexRecordOption, OwnedValue, STORED, STRING, Schema, TEXT, TantivyDocument,
+    Field, IndexRecordOption, OwnedValue, STORED, STRING, Schema, TantivyDocument,
     TextFieldIndexing, TextOptions, Value,
 };
-use tantivy::tokenizer::{RemoveLongFilter, SimpleTokenizer, TextAnalyzer};
+use tantivy::tokenizer::TextAnalyzer;
 use tantivy::{DocAddress, Index, IndexReader, IndexWriter, ReloadPolicy, Term};
 
 const TEXT_DOC_KIND: &str = "text";
@@ -136,13 +148,18 @@ const REPO_TOPIC_FILE_NAME: &str = "repo-topic.cbor";
 const REPO_DESCRIPTION_FILE_NAME: &str = "repo-description.cbor";
 const FILE_OWNERSHIP_FILE_NAME: &str = "file-ownership.cbor";
 const FILE_CONTRIBUTOR_FILE_NAME: &str = "file-contributor.cbor";
-const CASE_SENSITIVE_TOKENIZER_NAME: &str = "qi_case_sensitive";
 const TEXT_AUTHORITY_DOC_TABLE_FILE_NAME: &str = "text-authority-docs.cbor";
 const TEXT_AUTHORITY_TRIGRAM_FILE_NAME: &str = "text-authority-trigram.cbor";
 const TEXT_AUTHORITY_TRIGRAM_FOLDED_FILE_NAME: &str = "text-authority-trigram-folded.cbor";
 const TEXT_AUTHORITY_POSITIONS_FILE_NAME: &str = "text-authority-positions.cbor";
 const TEXT_AUTHORITY_POSITIONS_FOLDED_FILE_NAME: &str = "text-authority-positions-folded.cbor";
-const POSITIONS_NORMALIZER_VERSION: NormalizerVersion = NormalizerVersion::new(1, 0);
+/// The position sidecars' normalizer stamp.
+///
+/// It is the shared text normalizer's version, so a sidecar built under
+/// another contract is refused by the positions engine as well as by the
+/// sealed manifest.
+const POSITIONS_NORMALIZER_VERSION: NormalizerVersion =
+    NormalizerVersion::new(TEXT_NORMALIZER_VERSION.major, TEXT_NORMALIZER_VERSION.minor);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum QueryDocKind {
@@ -190,17 +207,27 @@ impl SchemaFields {
         let revision_id = builder.add_text_field("revision_id", STRING | STORED);
         let doc_kind = builder.add_text_field("doc_kind", STRING | STORED);
         let repo_relative_path = builder.add_text_field("repo_relative_path", STRING | STORED);
-        let repo_relative_path_query = builder.add_text_field("repo_relative_path_query", TEXT);
-        let repo_relative_path_case =
-            builder.add_text_field("repo_relative_path_case", case_sensitive_text_options());
+        let repo_relative_path_query = builder.add_text_field(
+            "repo_relative_path_query",
+            tokenized_text_options(CaseMode::Folded),
+        );
+        let repo_relative_path_case = builder.add_text_field(
+            "repo_relative_path_case",
+            tokenized_text_options(CaseMode::Sensitive),
+        );
         let file_name = builder.add_text_field("file_name", STRING);
         let language = builder.add_text_field("language", STRING);
         let start_line = builder.add_u64_field("start_line", STORED);
         let end_line = builder.add_u64_field("end_line", STORED);
         let snippet = builder.add_text_field("snippet", STORED);
-        let chunk_text = builder.add_text_field("chunk_text", TEXT | STORED);
-        let chunk_text_case =
-            builder.add_text_field("chunk_text_case", case_sensitive_text_options());
+        let chunk_text = builder.add_text_field(
+            "chunk_text",
+            tokenized_text_options(CaseMode::Folded) | STORED,
+        );
+        let chunk_text_case = builder.add_text_field(
+            "chunk_text_case",
+            tokenized_text_options(CaseMode::Sensitive),
+        );
         let symbol_kind = builder.add_text_field("symbol_kind", STRING | STORED);
         let symbol_kind_family = builder.add_text_field("symbol_kind_family", STRING | STORED);
         let schema = builder.build();
@@ -2420,10 +2447,12 @@ fn language_from_path_hint(path: &str) -> Option<&'static str> {
     }
 }
 
-fn case_sensitive_text_options() -> TextOptions {
+/// Indexing options for a text field analyzed by the shared normalizer
+/// under `case`, with positions so keyword sequences can be phrase-matched.
+fn tokenized_text_options(case: CaseMode) -> TextOptions {
     TextOptions::default().set_indexing_options(
         TextFieldIndexing::default()
-            .set_tokenizer(CASE_SENSITIVE_TOKENIZER_NAME)
+            .set_tokenizer(tokenizer_name(case))
             .set_index_option(IndexRecordOption::WithFreqsAndPositions),
     )
 }
@@ -2463,9 +2492,15 @@ fn add_snippet_field(fields: &SchemaFields, doc: &mut TantivyDocument, snippet: 
     doc.add_text(fields.snippet, snippet);
 }
 
+/// Store and index a chunk's text in its NFC form.
+///
+/// The stored copy is what the text-authority sidecars and the `index:no`
+/// scan read back, so normalizing here (and idempotently again inside the
+/// analyzer) keeps every surface over the same bytes.
 fn add_content_fields(fields: &SchemaFields, doc: &mut TantivyDocument, indexed_text: &str) {
-    doc.add_text(fields.chunk_text, indexed_text);
-    doc.add_text(fields.chunk_text_case, indexed_text);
+    let indexed_text = normalize::nfc(indexed_text);
+    doc.add_text(fields.chunk_text, indexed_text.as_ref());
+    doc.add_text(fields.chunk_text_case, indexed_text.as_ref());
 }
 
 fn add_symbol_fields(fields: &SchemaFields, doc: &mut TantivyDocument, symbol: &SymbolRecord) {
@@ -2475,13 +2510,18 @@ fn add_symbol_fields(fields: &SchemaFields, doc: &mut TantivyDocument, symbol: &
     }
 }
 
+/// Register the two analyzers every text field names.
+///
+/// Both are the shared normalizer; they differ only in case mode. No
+/// filter is chained after it: the normalizer already owns boundaries,
+/// folding, and the term-length cap.
 fn register_index_tokenizers(index: &Index) {
-    index.tokenizers().register(
-        CASE_SENSITIVE_TOKENIZER_NAME,
-        TextAnalyzer::builder(SimpleTokenizer::default())
-            .filter(RemoveLongFilter::limit(40))
-            .build(),
-    );
+    for case in [CaseMode::Folded, CaseMode::Sensitive] {
+        index.tokenizers().register(
+            tokenizer_name(case),
+            TextAnalyzer::from(NormalizingTokenizer::new(case)),
+        );
+    }
 }
 
 /// Open or create the Tantivy index at `path` under the adapter's schema.
@@ -2602,7 +2642,13 @@ fn persist_lexical_sealed_identity(
 /// File name of the sealed manifest: the content commitment every query
 /// open and every activation validator checks (QI-BB-030).
 const LEXICAL_SEALED_MANIFEST_FILE_NAME: &str = "search-corpus-generation-manifest.cbor";
-const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 1;
+/// Manifest format.
+///
+/// Version 1 had no normalizer stamp and described generations built under
+/// the pre-QI-BB-011 analyzers (Tantivy default for the index, whitespace +
+/// ASCII folding for the sidecars); those answer differently under the
+/// current normalizer and are refused, never served.
+const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 2;
 
 fn lexical_sealed_manifest_path(generation_dir: &Path) -> PathBuf {
     generation_dir.join(LEXICAL_SEALED_MANIFEST_FILE_NAME)
@@ -2613,8 +2659,10 @@ fn lexical_sealed_manifest_path(generation_dir: &Path) -> PathBuf {
 /// Written after every sidecar is durable and before the sealed identity, so
 /// the identity's presence implies the manifest's. It names the Tantivy
 /// commit (`meta.json` digest) and every text-authority sidecar with its
-/// length and SHA-256, and it carries the identity's `manifest_digest` so the
-/// two files bind each other. `text_authority` is explicit: a generation
+/// length and SHA-256, it carries the identity's `manifest_digest` so the
+/// two files bind each other, and it records the text normalizer the index
+/// and the sidecars were built under so a query never runs one contract
+/// over data built with another. `text_authority` is explicit: a generation
 /// built without sidecars says so, instead of "no files" meaning either
 /// "not required" or "lost".
 ///
@@ -2622,20 +2670,29 @@ fn lexical_sealed_manifest_path(generation_dir: &Path) -> PathBuf {
 /// under the current authority they are still published into a sealed
 /// generation after the seal, which is the mutable overlay W2 moves out.
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct LexicalSealedManifestV1 {
+struct LexicalSealedManifest {
     format_version: u32,
     manifest_digest: String,
     tantivy_meta_sha256: [u8; 32],
     text_authority: bool,
     artifacts: Vec<SealedArtifactCommitmentV1>,
+    normalizer: TextNormalizerVersion,
 }
 
 /// Wire shape of the manifest: a fixed-order CBOR array so the encoding is
-/// auditable without a derive.
-type SealedManifestRowV1 = (u32, String, [u8; 32], bool, Vec<(String, u64, [u8; 32])>);
+/// auditable without a derive. Element 0 is the format version, which is
+/// read on its own before the rest of the row is decoded.
+type SealedManifestRow = (
+    u32,
+    String,
+    [u8; 32],
+    bool,
+    Vec<(String, u64, [u8; 32])>,
+    (u16, u16),
+);
 
-impl LexicalSealedManifestV1 {
-    fn to_row(&self) -> SealedManifestRowV1 {
+impl LexicalSealedManifest {
+    fn to_row(&self) -> SealedManifestRow {
         (
             self.format_version,
             self.manifest_digest.clone(),
@@ -2645,11 +2702,19 @@ impl LexicalSealedManifestV1 {
                 .iter()
                 .map(|artifact| (artifact.name.clone(), artifact.bytes, artifact.sha256))
                 .collect(),
+            (self.normalizer.major, self.normalizer.minor),
         )
     }
 
-    fn from_row(row: SealedManifestRowV1) -> Self {
-        let (format_version, manifest_digest, tantivy_meta_sha256, text_authority, artifacts) = row;
+    fn from_row(row: SealedManifestRow) -> Self {
+        let (
+            format_version,
+            manifest_digest,
+            tantivy_meta_sha256,
+            text_authority,
+            artifacts,
+            (normalizer_major, normalizer_minor),
+        ) = row;
         Self {
             format_version,
             manifest_digest,
@@ -2663,7 +2728,42 @@ impl LexicalSealedManifestV1 {
                     sha256,
                 })
                 .collect(),
+            normalizer: TextNormalizerVersion {
+                major: normalizer_major,
+                minor: normalizer_minor,
+            },
         }
+    }
+}
+
+/// The format version at the head of a manifest row.
+///
+/// Read before the row's shape is assumed, so an older format is refused by
+/// name rather than as a decode failure.
+fn sealed_manifest_format_version(value: &CborValue, path: &Path) -> Result<u32, CoreError> {
+    let unreadable = |detail: &str| {
+        CoreError::Storage(format!(
+            "lexical: decode sealed generation manifest {}: {detail}",
+            path.display()
+        ))
+    };
+    let CborValue::Array(items) = value else {
+        return Err(unreadable("manifest is not an array"));
+    };
+    let Some(CborValue::Integer(format_version)) = items.first() else {
+        return Err(unreadable("manifest has no leading format version"));
+    };
+    u32::try_from(*format_version)
+        .map_err(|_overflow| unreadable("manifest format version is not a u32"))
+}
+
+fn normalizer_unsupported(path: &Path, built_with: TextNormalizerVersion) -> CoreError {
+    CoreError::Typed {
+        code: "GENERATION_NORMALIZER_UNSUPPORTED".to_string(),
+        message: format!(
+            "lexical: sealed generation {} was built under text normalizer {built_with} (this build runs {TEXT_NORMALIZER_VERSION}); it must be rebuilt, never served with mismatched text semantics",
+            path.display()
+        ),
     }
 }
 
@@ -2723,12 +2823,13 @@ fn persist_lexical_sealed_manifest(
             sha256,
         });
     }
-    let manifest = LexicalSealedManifestV1 {
+    let manifest = LexicalSealedManifest {
         format_version: LEXICAL_SEALED_MANIFEST_FORMAT_VERSION,
         manifest_digest: identity.manifest_digest.clone(),
         tantivy_meta_sha256,
         text_authority: !artifacts.is_empty(),
         artifacts,
+        normalizer: TEXT_NORMALIZER_VERSION,
     };
     let bytes = encode_cbor(&manifest.to_row(), "sealed generation manifest")?;
     write_atomic_durable(
@@ -2738,9 +2839,9 @@ fn persist_lexical_sealed_manifest(
     )
 }
 
-fn read_lexical_sealed_manifest(
-    generation_dir: &Path,
-) -> Result<LexicalSealedManifestV1, CoreError> {
+/// Read a sealed manifest, refusing typed any format or normalizer this
+/// build does not serve.
+fn read_lexical_sealed_manifest(generation_dir: &Path) -> Result<LexicalSealedManifest, CoreError> {
     let path = lexical_sealed_manifest_path(generation_dir);
     let bytes = std::fs::read(&path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
@@ -2758,26 +2859,34 @@ fn read_lexical_sealed_manifest(
             ))
         }
     })?;
-    let row: SealedManifestRowV1 = ciborium::from_reader(bytes.as_slice()).map_err(|error| {
+    let value: CborValue = ciborium::from_reader(bytes.as_slice()).map_err(|error| {
         CoreError::Storage(format!(
             "lexical: decode sealed generation manifest {}: {error}",
             path.display()
         ))
     })?;
-    let manifest = LexicalSealedManifestV1::from_row(row);
-    if manifest.format_version == LEXICAL_SEALED_MANIFEST_FORMAT_VERSION {
-        Ok(manifest)
-    } else {
-        Err(CoreError::Typed {
+    let format_version = sealed_manifest_format_version(&value, &path)?;
+    if format_version != LEXICAL_SEALED_MANIFEST_FORMAT_VERSION {
+        return Err(CoreError::Typed {
             code: "GENERATION_MANIFEST_FORMAT_UNSUPPORTED".to_string(),
             message: format!(
-                "lexical: sealed generation manifest {} has format {} (supported {})",
+                "lexical: sealed generation manifest {} has format {format_version} (supported {}); the generation predates the current text normalizer and must be rebuilt",
                 path.display(),
-                manifest.format_version,
                 LEXICAL_SEALED_MANIFEST_FORMAT_VERSION
             ),
-        })
+        });
     }
+    let row: SealedManifestRow = value.deserialized().map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: decode sealed generation manifest {}: {error}",
+            path.display()
+        ))
+    })?;
+    let manifest = LexicalSealedManifest::from_row(row);
+    if manifest.normalizer != TEXT_NORMALIZER_VERSION {
+        return Err(normalizer_unsupported(&path, manifest.normalizer));
+    }
+    Ok(manifest)
 }
 
 fn sidecar_corrupt(generation_dir: &Path, name: &str, reason: &str) -> CoreError {
@@ -2801,7 +2910,7 @@ fn sidecar_corrupt(generation_dir: &Path, name: &str, reason: &str) -> CoreError
 fn verify_lexical_sealed_manifest(
     generation_dir: &Path,
     identity: &GenerationSnapshot,
-) -> Result<LexicalSealedManifestV1, CoreError> {
+) -> Result<LexicalSealedManifest, CoreError> {
     let manifest = read_lexical_sealed_manifest(generation_dir)?;
     if manifest.manifest_digest != identity.manifest_digest {
         return Err(CoreError::Typed {
@@ -3034,6 +3143,63 @@ fn map_trigram_error(context: &str, err: &TrigramError) -> CoreError {
     }
 }
 
+/// Typed refusal codes for a keyword or phrase literal the token surfaces
+/// cannot express.
+const LEX_TEXT_QUERY_NO_TOKENS: &str = "LEX_TEXT_QUERY_NO_TOKENS";
+const LEX_TEXT_QUERY_TOKEN_TOO_LONG: &str = "LEX_TEXT_QUERY_TOKEN_TOO_LONG";
+
+fn map_text_query_error(err: &TextQueryError) -> CoreError {
+    let code = match err {
+        TextQueryError::NoTokens => LEX_TEXT_QUERY_NO_TOKENS,
+        TextQueryError::TokenTooLong { .. } => LEX_TEXT_QUERY_TOKEN_TOO_LONG,
+    };
+    CoreError::Typed {
+        code: code.to_string(),
+        message: format!("lexical: {err}"),
+    }
+}
+
+/// Tokenize a keyword or phrase literal for lowering, refusing typed when
+/// it has no token or a run past the term cap.
+fn text_query_tokens(text: &str, case: CaseMode) -> Result<Vec<normalize::Token>, CoreError> {
+    normalize::query_tokens(text, case).map_err(|err| map_text_query_error(&err))
+}
+
+/// Lower a phrase-planner error to the typed keyword codes or a contract fault.
+///
+/// The planner's literal refusals share the keyword codes, since both leaves
+/// lower through the same tokenizer; its other errors are contract faults of
+/// the plan itself.
+fn map_phrase_plan_error(err: PhrasePlannerError) -> CoreError {
+    match err {
+        PhrasePlannerError::EmptyPhrase => map_text_query_error(&TextQueryError::NoTokens),
+        PhrasePlannerError::TokenTooLong { bytes, max } => {
+            map_text_query_error(&TextQueryError::TokenTooLong { bytes, max })
+        }
+        other @ (PhrasePlannerError::TooFewTokens { .. }
+        | PhrasePlannerError::UnsupportedSlop { .. }
+        | PhrasePlannerError::UnsupportedField { .. }) => {
+            CoreError::InvalidContract(format!("lexical: phrase plan: {other}"))
+        }
+    }
+}
+
+/// Fold one regex literal alternative for the `case:no` trigram prefilter.
+///
+/// An alternative is a byte prefix of some match. The extractor may have
+/// cut it inside a multi-byte character, so only the longest well-formed
+/// UTF-8 prefix is kept — a shorter prefix of a match is still a prefix —
+/// and it is folded with the same per-char fold that built the folded copy.
+/// An alternative with no well-formed prefix folds to nothing, which the
+/// prefilter refuses as unusable rather than filtering anything away.
+fn fold_literal_prefix(literal: &[u8]) -> Vec<u8> {
+    let complete = literal
+        .utf8_chunks()
+        .next()
+        .map_or("", |chunk| chunk.valid());
+    normalize::fold(complete).into_bytes()
+}
+
 fn map_positions_error(context: &str, err: &PositionsError) -> CoreError {
     match err.code {
         PositionsErrorCode::PlanLimitExceeded => CoreError::Typed {
@@ -3184,7 +3350,7 @@ fn plan_text_authority_delta(
 fn collect_text_authority_docs(
     index: &Index,
     fields: &SchemaFields,
-) -> Result<Vec<(String, String, String)>, CoreError> {
+) -> Result<Vec<(String, String)>, CoreError> {
     let reader: IndexReader = index
         .reader_builder()
         .reload_policy(ReloadPolicy::Manual)
@@ -3205,7 +3371,7 @@ fn collect_text_authority_docs(
     let hits = searcher
         .search(&AllQuery, &TopDocs::with_limit(limit))
         .map_err(|err| CoreError::Storage(format!("lexical: text authority scan: {err}")))?;
-    let mut docs: Vec<(String, String, String)> = Vec::new();
+    let mut docs: Vec<(String, String)> = Vec::new();
     for (_score, doc_address) in hits {
         let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
             CoreError::Storage(format!(
@@ -3221,22 +3387,28 @@ fn collect_text_authority_docs(
         let indexed_text = stored_text(&doc, fields.chunk_text).ok_or_else(|| {
             CoreError::Storage("lexical: text authority doc missing chunk_text field".to_string())
         })?;
-        let folded = indexed_text.to_ascii_lowercase();
-        docs.push((candidate_id, indexed_text, folded));
+        docs.push((candidate_id, indexed_text));
     }
     docs.sort_by(|left, right| left.0.cmp(&right.0));
     Ok(docs)
 }
 
-fn phrase_term_positions(text: &str, case_sensitive: bool) -> Vec<(String, Position)> {
-    tokenize_phrase_terms(text, case_sensitive)
-        .into_iter()
-        .enumerate()
-        .map(|(idx, term)| {
-            (
-                term,
-                Position(u32::try_from(idx).map_or(u32::MAX, core::convert::identity)),
-            )
+/// The `(term, position)` pairs of one document for a position sidecar.
+///
+/// The same tokenizer the inverted index runs: NFC text, `case` fold, shared
+/// boundaries, over-long runs skipped but still counted, so a phrase lookup
+/// over the sidecar and a keyword sequence over the index agree.
+fn phrase_term_positions(text: &str, case: CaseMode) -> Result<Vec<(String, Position)>, CoreError> {
+    normalize::tokenize(text, case)
+        .indexable()
+        .map(|token| {
+            let position = u32::try_from(token.position).map_err(|err| {
+                CoreError::InvalidContract(format!(
+                    "lexical: text authority token position {} overflows the position sidecar: {err}",
+                    token.position
+                ))
+            })?;
+            Ok((token.text.clone(), Position(position)))
         })
         .collect()
 }
@@ -3309,20 +3481,27 @@ impl TextAuthorityBuilders {
         })
     }
 
+    /// Add one document to every sidecar.
+    ///
+    /// `indexed_text` is normalized to NFC here regardless of its source (a
+    /// stored Tantivy field or a chunk straight from the batch), and the
+    /// folded copy the `case:no` trigram and raw-substring paths read is the
+    /// shared [`normalize::fold`].
     fn upsert(
         &mut self,
         doc_id: u64,
         candidate_id: String,
-        indexed_text: String,
+        indexed_text: &str,
     ) -> Result<(), CoreError> {
-        let folded_indexed_text = indexed_text.to_ascii_lowercase();
+        let indexed_text = normalize::nfc(indexed_text).into_owned();
+        let folded_indexed_text = normalize::fold(&indexed_text);
         self.trigram
             .upsert_doc(TrigramDocId(doc_id), indexed_text.as_bytes())
             .map_err(|err| map_trigram_error("build trigram sidecar", &err))?;
         self.trigram_folded
             .upsert_doc(TrigramDocId(doc_id), folded_indexed_text.as_bytes())
             .map_err(|err| map_trigram_error("build folded trigram sidecar", &err))?;
-        let sensitive_pairs = phrase_term_positions(&indexed_text, true);
+        let sensitive_pairs = phrase_term_positions(&indexed_text, CaseMode::Sensitive)?;
         self.positions
             .upsert_doc(
                 PositionsDocId(doc_id),
@@ -3331,7 +3510,7 @@ impl TextAuthorityBuilders {
                     .map(|(term, pos)| (term.as_str(), *pos)),
             )
             .map_err(|err| map_positions_error("build positions sidecar", &err))?;
-        let folded_pairs = phrase_term_positions(&indexed_text, false);
+        let folded_pairs = phrase_term_positions(&indexed_text, CaseMode::Folded)?;
         self.positions_folded
             .upsert_doc(
                 PositionsDocId(doc_id),
@@ -3481,12 +3660,11 @@ fn persist_text_authority_sidecars(
         CoreError::InvalidContract(format!("lexical: text authority doc count overflow: {err}"))
     })?;
     let mut builders = TextAuthorityBuilders::empty(generation)?;
-    for (offset, (candidate_id, indexed_text, _folded_indexed_text)) in docs.into_iter().enumerate()
-    {
+    for (offset, (candidate_id, indexed_text)) in docs.into_iter().enumerate() {
         let doc_id = u64::try_from(offset.saturating_add(1)).map_err(|err| {
             CoreError::InvalidContract(format!("lexical: text authority doc id overflow: {err}"))
         })?;
-        builders.upsert(doc_id, candidate_id, indexed_text)?;
+        builders.upsert(doc_id, candidate_id, &indexed_text)?;
     }
     builders.publish(path)?;
     Ok(TextAuthorityWriteReceipt {
@@ -3529,7 +3707,7 @@ fn update_text_authority_sidecars_incrementally(
     })?;
     for (candidate_id, indexed_text) in added_chunks {
         let doc_id = builders.next_doc_id()?;
-        builders.upsert(doc_id, candidate_id.clone(), indexed_text.clone())?;
+        builders.upsert(doc_id, candidate_id.clone(), indexed_text)?;
     }
     builders.publish(path)?;
     Ok(TextAuthorityWriteReceipt {
@@ -3756,6 +3934,19 @@ fn inherit_generation_entry(source: &Path, target: &Path) -> Result<(), CoreErro
             target.display()
         ))
     })
+}
+
+/// Refuse a delta base sealed under another text normalizer.
+///
+/// A delta inherits the base's index and sidecars byte for byte, so a sealed
+/// base must have been built under the current normalizer; the typed
+/// manifest refusals propagate. An unsealed base has no manifest yet and is
+/// admitted — its own seal stamps the current version.
+fn ensure_base_generation_serves_current_normalizer(base_dir: &Path) -> Result<(), CoreError> {
+    if lexical_sealed_manifest_path(base_dir).is_file() {
+        let _manifest = read_lexical_sealed_manifest(base_dir)?;
+    }
+    Ok(())
 }
 
 /// Materializes `src` into `dst` without replacing anything already present.
@@ -4074,7 +4265,9 @@ impl LexicalAdapter {
             revision_id: key.revision_id.clone(),
             generation: requested_base,
         };
-        clone_generation_directory_preserving_existing(&self.index_path(&base_key), &target_path)?;
+        let base_path = self.index_path(&base_key);
+        ensure_base_generation_serves_current_normalizer(&base_path)?;
+        clone_generation_directory_preserving_existing(&base_path, &target_path)?;
         persist_lexical_delta_base(&target_path, requested_base)
     }
 
@@ -4956,7 +5149,6 @@ impl LexicalIndexOpenPort for LexicalAdapter {
             revision_id: revision.clone(),
             generation,
             fields: self.fields.clone(),
-            index,
             reader,
             repo_metadata,
             regex_match_cache,
@@ -5525,7 +5717,6 @@ struct TantivySearcher {
     revision_id: RevisionId,
     generation: ManifestGeneration,
     fields: SchemaFields,
-    index: Index,
     reader: IndexReader,
     repo_metadata: Option<LexicalRepoMetadataPayload>,
     regex_match_cache: Arc<Mutex<RegexMatchCache>>,
@@ -5648,6 +5839,10 @@ fn rewrite_symbol_name_predicate_query(query: &LqQuery) -> Result<Option<LqQuery
 impl TantivySearcher {
     fn is_case_sensitive(options: &LqOptions) -> bool {
         matches!(options.case, Some(quanta_index_contract::LqCase::Sensitive))
+    }
+
+    fn case_mode(options: &LqOptions) -> CaseMode {
+        CaseMode::from_case_sensitive(Self::is_case_sensitive(options))
     }
 
     /// Candidates a page needs: `top_k`, or `min(top_k, N)` under `count:N`.
@@ -5848,39 +6043,24 @@ impl TantivySearcher {
         score * Self::boost_factor(options)
     }
 
-    fn normalize_for_case(text: &str, case_sensitive: bool) -> String {
-        if case_sensitive {
-            text.to_string()
-        } else {
-            text.to_ascii_lowercase()
-        }
-    }
-
-    fn contains_text(needle: &str, haystack: &str, case_sensitive: bool) -> bool {
-        let needle = needle.trim();
-        if needle.is_empty() {
-            return false;
-        }
-        if case_sensitive {
-            haystack.contains(needle)
-        } else {
-            haystack
-                .to_ascii_lowercase()
-                .contains(&needle.to_ascii_lowercase())
-        }
-    }
-
-    fn token_matches(needle: &str, haystack: &str, case_sensitive: bool) -> bool {
-        let needle = needle.trim();
-        if needle.is_empty() {
-            return false;
-        }
-        let normalized_needle = Self::normalize_for_case(needle, case_sensitive);
-        haystack
-            .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
-            .filter(|token| !token.is_empty())
-            .map(|token| Self::normalize_for_case(token, case_sensitive))
-            .any(|token| token == normalized_needle)
+    /// Whether `haystack` holds the token sequence of `text`, on the
+    /// `index:no` route.
+    ///
+    /// The same normalizer as the inverted index and the position sidecar:
+    /// a keyword is its token sequence and a phrase is a contiguous run of
+    /// it, so the scan answers exactly what the indexed route answers,
+    /// including the typed refusal of token-less or over-long literals.
+    fn manual_token_sequence_matches(
+        text: &str,
+        haystack: &str,
+        case: CaseMode,
+    ) -> Result<bool, CoreError> {
+        let wanted = text_query_tokens(text, case)?;
+        let present: Vec<normalize::Token> = normalize::tokenize(haystack, case)
+            .indexable()
+            .cloned()
+            .collect();
+        Ok(normalize::contains_phrase(&present, &wanted))
     }
 
     fn doc_content_text(&self, doc: &TantivyDocument) -> String {
@@ -6176,22 +6356,22 @@ impl TantivySearcher {
         include_path_terms: bool,
         budget: &RequestBudgetV1,
     ) -> Result<bool, CoreError> {
-        let case_sensitive = Self::is_case_sensitive(options);
+        let case = Self::case_mode(options);
         match leaf {
             LqLeaf::Keyword(text) => {
                 if options.pattern_type == LqPatternType::Regexp {
                     return self.manual_regex_matches(text, options, content);
                 }
-                Ok(Self::token_matches(text, content, case_sensitive)
+                Ok(Self::manual_token_sequence_matches(text, content, case)?
                     || (include_path_terms
-                        && Self::token_matches(text, repo_relative_path, case_sensitive)))
+                        && Self::manual_token_sequence_matches(text, repo_relative_path, case)?))
             }
-            LqLeaf::Phrase(text) => Ok(Self::contains_text(text, content, case_sensitive)),
+            LqLeaf::Phrase(text) => Self::manual_token_sequence_matches(text, content, case),
             LqLeaf::RawString(text) => {
                 if options.pattern_type == LqPatternType::Regexp {
                     return self.manual_regex_matches(text, options, content);
                 }
-                Ok(Self::contains_text(text, content, case_sensitive))
+                Ok(normalize::contains_substring(content, text, case))
             }
             LqLeaf::Regex(text) => self.manual_regex_matches(text, options, content),
             LqLeaf::StructuralBlock(_) => Err(CoreError::Typed {
@@ -6722,7 +6902,11 @@ impl TantivySearcher {
         }
     }
 
-    fn query_parser(&self, options: &LqOptions, include_path_terms: bool) -> QueryParser {
+    /// The fields a keyword is looked up in.
+    ///
+    /// Content, plus the tokenized path when the leaf surface allows path
+    /// terms, in the case mode's analyzer.
+    fn keyword_fields(&self, options: &LqOptions, include_path_terms: bool) -> Vec<Field> {
         let mut fields: Vec<Field> = Vec::with_capacity(if include_path_terms { 2 } else { 1 });
         if Self::is_case_sensitive(options) {
             fields.push(self.fields.chunk_text_case);
@@ -6735,7 +6919,52 @@ impl TantivySearcher {
                 fields.push(self.fields.repo_relative_path_query);
             }
         }
-        QueryParser::for_index(&self.index, fields)
+        fields
+    }
+
+    /// Lower a keyword leaf onto the inverted index.
+    ///
+    /// The literal is tokenized by the shared normalizer — never re-parsed
+    /// by a second query grammar, so `-`, `:`, `^` and the like inside a
+    /// keyword are boundaries, not operators. One token is a term query;
+    /// several are a phrase query over the field's positions, which is what
+    /// the position sidecar answers for the same text. A literal with no
+    /// token, or with a run past the term cap, is refused typed.
+    fn compile_keyword_leaf(
+        &self,
+        text: &str,
+        options: &LqOptions,
+        include_path_terms: bool,
+    ) -> Result<Box<dyn Query>, CoreError> {
+        let tokens = text_query_tokens(text, Self::case_mode(options))?;
+        let mut per_field: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+        for field in self.keyword_fields(options, include_path_terms) {
+            let query = Self::token_sequence_query(field, &tokens)
+                .ok_or_else(|| map_text_query_error(&TextQueryError::NoTokens))?;
+            per_field.push((Occur::Should, query));
+        }
+        if per_field.len() == 1
+            && let Some((_, query)) = per_field.pop()
+        {
+            return Ok(query);
+        }
+        Ok(Box::new(BooleanQuery::new(per_field)))
+    }
+
+    /// A term query for one token, a phrase query for a sequence, nothing
+    /// for an empty sequence.
+    fn token_sequence_query(field: Field, tokens: &[normalize::Token]) -> Option<Box<dyn Query>> {
+        let (first, rest) = tokens.split_first()?;
+        let term = |token: &normalize::Token| Term::from_field_text(field, &token.text);
+        if rest.is_empty() {
+            return Some(Box::new(TermQuery::new(
+                term(first),
+                IndexRecordOption::WithFreqs,
+            )));
+        }
+        Some(Box::new(PhraseQuery::new(
+            tokens.iter().map(term).collect(),
+        )))
     }
 
     fn enables_path_term_surface(expr: &LqExpr, options: &LqOptions) -> bool {
@@ -6984,11 +7213,10 @@ impl TantivySearcher {
             shard: authority,
             folded,
         };
-        let query_bytes = if folded {
-            needle.to_ascii_lowercase().into_bytes()
-        } else {
-            needle.as_bytes().to_vec()
-        };
+        let needle = normalize::nfc(needle);
+        let query_bytes = normalize::apply_case(needle.as_ref(), Self::case_mode(options))
+            .into_owned()
+            .into_bytes();
         let verified_doc_ids = query_raw_substring(trigram_index, &query_bytes, &resolver)
             .map_err(|err| match err.code {
                 TrigramErrorCode::RegexPrefilterUnusable => CoreError::Typed {
@@ -7015,9 +7243,14 @@ impl TantivySearcher {
         Ok(out)
     }
 
+    /// The regex source as executed.
+    ///
+    /// NFC-normalized as text (the documents are NFC, so a decomposed literal
+    /// could never match), with the engine's own `(?i)` under `case:no`.
     fn regex_source_for_options(source: &str, options: &LqOptions) -> String {
+        let source = normalize::nfc(source);
         if Self::is_case_sensitive(options) {
-            return source.to_string();
+            return source.into_owned();
         }
         format!("(?i){source}")
     }
@@ -7075,10 +7308,14 @@ impl TantivySearcher {
         // needs one of these literals. Case-insensitive patterns make that
         // concrete — `(?i)fresh` extracts `fresh` and `freſh` — so the prefilter
         // unions per alternative. AND-ing them filtered every document away.
+        // Under `case:no` the folded trigram copy is searched, so every
+        // alternative is folded with the same per-char fold that built it;
+        // an alternative is a char-boundary prefix of some match, so its
+        // fold is a prefix of the match's fold and the prefilter stays sound.
         let literal_alternation = if folded {
             plan.literal_alternation()
                 .iter()
-                .map(|literal| literal.to_ascii_lowercase())
+                .map(|literal| fold_literal_prefix(literal))
                 .collect::<Vec<_>>()
         } else {
             plan.literal_alternation().to_vec()
@@ -7171,7 +7408,7 @@ impl TantivySearcher {
             &PhrasePolicy::defaults(),
             PhraseField::Content,
         )
-        .map_err(|err| CoreError::InvalidContract(format!("lexical: phrase plan: {err}")))?;
+        .map_err(map_phrase_plan_error)?;
         let positions_index = if plan.case_sensitive {
             &authority.positions
         } else {
@@ -8812,8 +9049,7 @@ impl TantivySearcher {
         include_path_terms: bool,
         budget: &RequestBudgetV1,
     ) -> Result<Box<dyn Query>, CoreError> {
-        let parser = self.query_parser(options, include_path_terms);
-        let query_text = match leaf {
+        match leaf {
             LqLeaf::Keyword(text) | LqLeaf::RawString(text) => {
                 // Both AST shapes route through the planner-gated regex
                 // pipeline when the caller's options pin
@@ -8831,7 +9067,7 @@ impl TantivySearcher {
                     }
                     return Ok(self.candidate_restriction_query(&candidate_ids));
                 }
-                text.clone()
+                self.compile_keyword_leaf(text, options, include_path_terms)
             }
             LqLeaf::Phrase(text) => {
                 let candidate_ids =
@@ -8839,19 +9075,14 @@ impl TantivySearcher {
                 if candidate_ids.is_empty() {
                     return Ok(self.match_none_query());
                 }
-                return Ok(self.candidate_restriction_query(&candidate_ids));
+                Ok(self.candidate_restriction_query(&candidate_ids))
             }
-            LqLeaf::Regex(text) => {
-                return self.compile_regex_content_leaf(text, options, budget);
-            }
-            LqLeaf::StructuralBlock(_) => {
-                return Err(CoreError::Typed {
-                    code: "STR_PRODUCER_PARSE_TREE_UNAVAILABLE".to_string(),
-                    message:
-                        "lexical: structural leaf cannot compile without producer parse-tree ops"
-                            .to_string(),
-                });
-            }
+            LqLeaf::Regex(text) => self.compile_regex_content_leaf(text, options, budget),
+            LqLeaf::StructuralBlock(_) => Err(CoreError::Typed {
+                code: "STR_PRODUCER_PARSE_TREE_UNAVAILABLE".to_string(),
+                message: "lexical: structural leaf cannot compile without producer parse-tree ops"
+                    .to_string(),
+            }),
             LqLeaf::Predicate { name, args } => match kind_of(name) {
                 Some(PredicateKind::RepoFileGate) => {
                     let Some((canonical_name, canonical_args)) =
@@ -8868,7 +9099,7 @@ impl TantivySearcher {
                     if repo_ids.is_empty() {
                         return Ok(self.match_none_query());
                     }
-                    return Ok(self.repo_id_restriction_query(&repo_ids));
+                    Ok(self.repo_id_restriction_query(&repo_ids))
                 }
                 Some(PredicateKind::RepoContentGate) => {
                     let Some((canonical_name, canonical_args)) =
@@ -8884,7 +9115,7 @@ impl TantivySearcher {
                     if repo_ids.is_empty() {
                         return Ok(self.match_none_query());
                     }
-                    return Ok(self.repo_id_restriction_query(&repo_ids));
+                    Ok(self.repo_id_restriction_query(&repo_ids))
                 }
                 Some(PredicateKind::RepoCommitRecencyGate) => {
                     let Some((canonical_name, canonical_args)) =
@@ -8900,7 +9131,7 @@ impl TantivySearcher {
                     if repo_ids.is_empty() {
                         return Ok(self.match_none_query());
                     }
-                    return Ok(self.repo_id_restriction_query(&repo_ids));
+                    Ok(self.repo_id_restriction_query(&repo_ids))
                 }
                 Some(PredicateKind::RepoMetaGate) => {
                     let Some((canonical_name, canonical_args)) =
@@ -8915,7 +9146,7 @@ impl TantivySearcher {
                     if repo_ids.is_empty() {
                         return Ok(self.match_none_query());
                     }
-                    return Ok(self.repo_id_restriction_query(&repo_ids));
+                    Ok(self.repo_id_restriction_query(&repo_ids))
                 }
                 Some(PredicateKind::FileOwnerGate) => {
                     let Some((canonical_name, canonical_args)) =
@@ -8931,7 +9162,7 @@ impl TantivySearcher {
                     if candidate_ids.is_empty() {
                         return Ok(self.match_none_query());
                     }
-                    return Ok(self.candidate_restriction_query(&candidate_ids));
+                    Ok(self.candidate_restriction_query(&candidate_ids))
                 }
                 Some(PredicateKind::FileContributorGate) => {
                     let Some((canonical_name, canonical_args)) =
@@ -8947,7 +9178,7 @@ impl TantivySearcher {
                     if candidate_ids.is_empty() {
                         return Ok(self.match_none_query());
                     }
-                    return Ok(self.candidate_restriction_query(&candidate_ids));
+                    Ok(self.candidate_restriction_query(&candidate_ids))
                 }
                 Some(PredicateKind::RepoTopicGate) => {
                     let Some((canonical_name, canonical_args)) =
@@ -8962,7 +9193,7 @@ impl TantivySearcher {
                     if repo_ids.is_empty() {
                         return Ok(self.match_none_query());
                     }
-                    return Ok(self.repo_id_restriction_query(&repo_ids));
+                    Ok(self.repo_id_restriction_query(&repo_ids))
                 }
                 Some(PredicateKind::RepoDescriptionGate) => {
                     let Some((canonical_name, canonical_args)) =
@@ -8977,7 +9208,7 @@ impl TantivySearcher {
                     if repo_ids.is_empty() {
                         return Ok(self.match_none_query());
                     }
-                    return Ok(self.repo_id_restriction_query(&repo_ids));
+                    Ok(self.repo_id_restriction_query(&repo_ids))
                 }
                 Some(PredicateKind::ContentLeaf) => {
                     let Some((canonical_name, canonical_args)) =
@@ -8998,18 +9229,13 @@ impl TantivySearcher {
                         return Ok(self.candidate_restriction_query(&candidate_ids));
                     }
                     let lowered = self.predicate_content_leaf_from_constraint(&constraint);
-                    return self.compile_leaf(&lowered, options, false, budget);
+                    self.compile_leaf(&lowered, options, false, budget)
                 }
-                None => {
-                    return Err(unimplemented_predicate(format!(
-                        "lexical: predicate leaf `{name}` is not executable on Tantivy adapter (owner: {PREDICATE_OWNER})"
-                    )));
-                }
+                None => Err(unimplemented_predicate(format!(
+                    "lexical: predicate leaf `{name}` is not executable on Tantivy adapter (owner: {PREDICATE_OWNER})"
+                ))),
             },
-        };
-        parser
-            .parse_query(&query_text)
-            .map_err(|err| CoreError::InvalidContract(format!("lexical: parse: {err}")))
+        }
     }
 
     fn compile_filter(
@@ -9547,7 +9773,11 @@ fn map_regex_plan_error(err: crate::regex::RegexPlannerError) -> CoreError {
 /// * `Unimplemented { owner_ticket, .. }` surfaces as
 ///   `CoreError::NotImplemented` carrying the owning ticket id, so callers
 ///   can attribute the gap to a concrete follow-up.
-/// * Leaf-planner failures (`RegexPlan`, `TrigramPlan`, `PhrasePlan`,
+/// * `PhrasePlan` lowers through [`map_phrase_plan_error`]: the pre-flight
+///   tokenizes phrase text with the shared normalizer, so a token-less or
+///   over-long phrase is refused here under the same `LEX_TEXT_QUERY_*`
+///   codes the keyword path uses, before any executor lowering runs.
+/// * The other leaf-planner failures (`RegexPlan`, `TrigramPlan`,
 ///   `SymbolPlan`) lower to `InvalidContract` because their dedicated
 ///   typed-error mappers (`map_regex_plan_error`, etc.) own the leaf-side
 ///   surfacing on the live execution path; the planner pre-flight should
@@ -9588,15 +9818,18 @@ fn map_planner_error(err: &crate::planner::LexicalPlannerError) -> CoreError {
         LexicalPlannerError::Unimplemented { node, owner_ticket } => CoreError::NotImplemented(
             format!("lex planner: IR node '{node}' is unimplemented (owner: {owner_ticket})"),
         ),
-        // Leaf-planner errors reaching this site would mean the pre-flight
-        // disagreed with the live executor's leaf-side mapping. They are
-        // never produced on the current pipeline (leaves compile during
-        // executor lowering, not during pre-flight planning); the arm is
-        // kept for completeness and lowers to `InvalidContract` so the
-        // mismatch is visible rather than swallowed.
+        // The pre-flight plans phrase leaves for real (it tokenizes them), so
+        // its literal refusals must carry the same typed codes the executor
+        // would have produced for the keyword shape of the same text.
+        LexicalPlannerError::PhrasePlan(phrase) => map_phrase_plan_error(phrase.clone()),
+        // The remaining leaf-planner errors reaching this site would mean
+        // the pre-flight disagreed with the live executor's leaf-side
+        // mapping. They are never produced on the current pipeline (those
+        // leaves compile during executor lowering, not during pre-flight
+        // planning); the arm is kept for completeness and lowers to
+        // `InvalidContract` so the mismatch is visible rather than swallowed.
         LexicalPlannerError::RegexPlan(_)
         | LexicalPlannerError::TrigramPlan(_)
-        | LexicalPlannerError::PhrasePlan(_)
         | LexicalPlannerError::SymbolPlan(_) => {
             CoreError::InvalidContract(format!("lexical: planner: {err}"))
         }
