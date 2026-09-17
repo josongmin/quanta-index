@@ -313,7 +313,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + QI-BB-032 idempotency catalog(§3.16) + **QI-BB-020 auxiliary authority rows(§3.19, catalog 확장: per-record row, validate→persist→apply, Arc snapshot read, retention prune, legacy 일회 migration)** 완료. 남은 것: quarantine control surface, aux read epoch/visibility interval(§3.19 한계) |
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + QI-BB-027 ANN sealed contract(§3.23) + **QI-BB-016 lexical writer envelope(§3.26)** 완료. 남은 것: sharded sidecar 포맷(O(delta) write), seal마다 ANN 전체 재구축(O(N), §3.23 한계), scope 단위 streamed embed→append(§3.18 한계) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), streaming projection collector |
-| W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. 남은 것: cancel을 lexical collector 내부(candidate batch 사이)까지 내리기, overload/refusal 서버 metric |
+| W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. **QI-BB-014 UDS/state-root private hardening(§3.27)** 완료. 남은 것: cancel을 lexical collector 내부(candidate batch 사이)까지 내리기, overload/refusal 서버 metric, shared mode(group/ACL + peer credential) |
 | W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + QI-BB-018 true hybrid(§3.22) + QI-BB-022 explain = exact presence + lexical score trace(§3.24) + **QI-BB-008 RepoMap bounded query + durable store(§3.25)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), history relevance order(Tantivy history index, §3.20 한계), judged corpus recall/NDCG gate(§3.22 한계), hybrid 후보의 per-lane contribution(§3.24 한계) |
 | W7 | planned | |
 | C1 | planned | |
@@ -1490,6 +1490,46 @@ byte budget(§3.7), semantic cache(§3.18)는 각자 bound가 있지만 하나�
 "하나의 process memory envelope"에서 남은 것). (b) RSS pressure 관측·반응(evict on pressure)은 없다 — idle/LRU/seal의
 결정적 release만. (c) "commit on release"는 방어적이다: 현재 adapter는 모든 build를 즉시 commit하므로 pending doc이 생기지
 않고, test는 release가 committed segment를 잃지 않음을 증명한다.
+
+## 3.27 QI-BB-014 — socket과 state root는 private mode로 강제·검증하고, live socket은 빼앗지 않는다 (구현 완료)
+
+**진단 확정**: `UdsServer::bind`가 parent `create_dir_all`(umask 의존) + 기존 socket 파일 무조건 `remove_file` + bind였다 —
+mode/owner 검증 없음, live listener 확인 없음(다른 state root의 daemon이 같은 override path를 쓰면 앞 daemon의 socket
+pathname을 빼앗음). state root는 `create_dir`(umask)로 만들고 mode/owner를 보지 않았다(lock 파일만 `0600/NOFOLLOW`).
+
+**구현** (private mode — 이 daemon의 유일한 mode):
+
+- **socket directory**: 없으면 `0700`으로 생성(생성 후 uid/mode 재확인). 있으면 **resolve된 대상**으로 검증(macOS `/tmp`는
+  `/private/tmp`로의 symlink — 첫 구현이 symlink 자체를 거부해 harness 전부가 RED, 대상 기준으로 수정) — 디렉토리 아님 거부,
+  `(uid == euid && mode & 0o022 == 0)` 또는 **sticky bit**(공유 temp dir: 남이 내 socket을 unlink/rename 못 함) 아니면
+  `SOCKET_PATH_INSECURE` 거부(mode/uid/euid 명시).
+- **기존 socket path**: socket 아니면(regular file/dir) 거부하고 건드리지 않음; owner ≠ euid 거부; `connect` probe → 성공이면
+  **live listener** → `SOCKET_IN_USE` 거부(probe 연결은 frame 없이 drop, listener는 peer hang-up으로 처리); `ECONNREFUSED`면
+  stale → probe 전후 `(dev, ino)`가 같을 때만 unlink(그 사이 bind한 listener는 보존); 다른 오류는 그대로.
+- **bound socket**: `chmod 0600`.
+- **state root**: 생성하는 디렉토리는 `0700`(`DirBuilder::mode`); 기존 root는 lease 획득 시 `uid == euid && mode & 0o022 == 0`
+  검증, 아니면 `STATE_ROOT_INSECURE`(`chmod go-w` 안내). 남이 **읽는** root는 operator 선택으로 허용, **쓰는** root는 거부.
+- `IpcError::{SocketInUse(path), SocketPathInsecure{path, reason}}` typed 추가(Display에 code 문자열).
+
+**검증** (`quanta-index-ipc::server::tests`, `searchd::app::runtime::tests`):
+
+| 기준 | 검증 |
+| --- | --- |
+| live listener 충돌: 두 번째 bind `SOCKET_IN_USE`, 첫 socket inode 유지, 첫 listener는 probe 뒤에도 accept | `a_live_listener_keeps_its_path_and_a_second_bind_is_refused` |
+| stale socket(listener drop 후 남은 파일) 회수 + 새 socket `0600` | `a_stale_socket_is_reclaimed_and_the_bound_socket_is_private` |
+| server가 만든 dir(2단계) `0700` | `a_directory_the_server_creates_is_private` |
+| 0777 dir 거부(사유 "writable by others"), 1777(sticky) 허용, 0770(group-write) 거부 | `a_socket_directory_others_can_write_is_refused_unless_sticky` |
+| symlink parent는 대상으로 판정: private 대상 허용, 0777 대상 거부 | `a_symlinked_socket_directory_is_judged_by_its_target` |
+| regular file at path: 거부 + 내용 보존 | `a_regular_file_at_the_socket_path_is_refused_and_left_alone` |
+| 새 state root `0700`; 0777 root → `STATE_ROOT_INSECURE`(`chmod go-w`); 0755 root 허용 | `a_created_state_root_is_private_and_a_writable_one_is_refused` |
+| 기존 test: superseded server drop이 replacement socket을 unlink하지 않음(그대로 green) | `dropping_superseded_server_does_not_unlink_replacement_socket` |
+
+**정직한 한계**: (a) "다른 uid 소유" case는 root 없이 test 불가 — code path는 uid 비교로 명시. (b) shared mode(group/ACL
+분리, query/control/ingest 권한 분리, `SO_PEERCRED`/`LOCAL_PEERCRED` peer credential)는 만들지 않았다 — private mode만.
+(c) socket path별 lease(finding의 대안)는 live probe로 대체: probe 성공 ⇒ 거부, ECONNREFUSED ⇒ 회수 — probe와 unlink
+사이의 race는 inode 재확인으로 닫았지만 "listener가 bind 직후 아직 listen 전"인 창은 OS가 bind와 listen을 원자적으로 하지
+않으므로 이론상 남는다(std `UnixListener::bind`는 bind+listen을 연속 호출). (d) 기존 socket이 `0666`처럼 느슨한 mode로
+남아 있어도 owner가 나면 회수 후 `0600`으로 다시 만든다 — 기존 파일의 mode는 검사 대상이 아니다(어차피 교체).
 
 ## 4. Finding 상태 (QI-BB-001–032)
 

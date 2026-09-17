@@ -47,6 +47,15 @@ pub enum IpcError {
     /// A server admission policy named a zero limit or more dispatch slots
     /// than connections.
     InvalidAdmissionPolicy,
+    /// A live listener already answers at the socket path; it was left in
+    /// place (QI-BB-014).
+    SocketInUse(std::path::PathBuf),
+    /// The socket path or its directory cannot be made private: wrong
+    /// owner, a symlink, or a mode that lets others in (QI-BB-014).
+    SocketPathInsecure {
+        path: std::path::PathBuf,
+        reason: String,
+    },
 }
 
 impl core::fmt::Display for IpcError {
@@ -79,6 +88,16 @@ impl core::fmt::Display for IpcError {
             Self::InvalidAdmissionPolicy => f.write_str(
                 "server admission policy must have non-zero connections, slots, budget and I/O timeout, with slots <= connections",
             ),
+            Self::SocketInUse(path) => write!(
+                f,
+                "SOCKET_IN_USE: a live listener already answers at {}; refusing to take its path",
+                path.display()
+            ),
+            Self::SocketPathInsecure { path, reason } => write!(
+                f,
+                "SOCKET_PATH_INSECURE: {} cannot be served privately: {reason}",
+                path.display()
+            ),
         }
     }
 }
@@ -95,7 +114,9 @@ impl std::error::Error for IpcError {
             | Self::Timeout { .. }
             | Self::InvalidClientIoTimeout
             | Self::ClientIoDeadlineElapsed
-            | Self::InvalidAdmissionPolicy => None,
+            | Self::InvalidAdmissionPolicy
+            | Self::SocketInUse(_)
+            | Self::SocketPathInsecure { .. } => None,
         }
     }
 }

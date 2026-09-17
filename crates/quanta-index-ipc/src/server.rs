@@ -14,7 +14,7 @@
 
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::OwnedFd;
-use std::os::unix::fs::{FileTypeExt, MetadataExt};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -264,34 +264,159 @@ impl SocketPathIdentity {
     }
 }
 
+/// Mode of a socket file this server binds: its owner and no one else.
+const SOCKET_MODE: u32 = 0o600;
+/// Mode of a socket directory this server creates.
+const SOCKET_DIRECTORY_MODE: u32 = 0o700;
+/// Group and other write bits.
+const OTHERS_WRITE_BITS: u32 = 0o022;
+/// Group and other access bits.
+const OTHERS_ACCESS_BITS: u32 = 0o077;
+/// The sticky bit: in a shared directory, only an entry's owner may unlink
+/// or rename it.
+const STICKY_BIT: u32 = 0o1000;
+
+fn insecure(path: &Path, reason: impl Into<String>) -> IpcError {
+    IpcError::SocketPathInsecure {
+        path: path.to_path_buf(),
+        reason: reason.into(),
+    }
+}
+
+/// Create the socket directory privately, or verify a pre-existing one.
+///
+/// A directory this process creates is `0700`. A pre-existing directory is
+/// judged by what it resolves to (`/tmp` is a symlink on some systems): it
+/// passes when it is a directory that either belongs to this user with no
+/// group/other write bit, or carries the sticky bit (a shared temporary
+/// directory, where others cannot unlink or rename this user's socket).
+/// Anything else is refused: a permissive directory lets another local
+/// user replace the socket under the daemon.
+fn ensure_private_socket_directory(parent: &Path, owner: u32) -> Result<(), IpcError> {
+    match std::fs::metadata(parent) {
+        Ok(metadata) => {
+            if !metadata.is_dir() {
+                return Err(insecure(parent, "socket directory is not a directory"));
+            }
+            let mode = metadata.mode() & 0o7777;
+            let private = metadata.uid() == owner && mode & OTHERS_WRITE_BITS == 0;
+            let sticky_shared = mode & STICKY_BIT != 0;
+            if !(private || sticky_shared) {
+                return Err(insecure(
+                    parent,
+                    format!(
+                        "socket directory is writable by others without the sticky bit (mode {mode:04o}, uid {}, this process runs as {owner})",
+                        metadata.uid()
+                    ),
+                ));
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(SOCKET_DIRECTORY_MODE)
+                .create(parent)
+                .map_err(IpcError::Io)?;
+            // `recursive` only applies the mode to directories it creates;
+            // the leaf is what the socket lives in, so it is pinned again.
+            std::fs::set_permissions(
+                parent,
+                std::fs::Permissions::from_mode(SOCKET_DIRECTORY_MODE),
+            )
+            .map_err(IpcError::Io)?;
+            let created = std::fs::metadata(parent).map_err(IpcError::Io)?;
+            if created.uid() != owner || created.mode() & OTHERS_ACCESS_BITS != 0 {
+                return Err(insecure(
+                    parent,
+                    format!(
+                        "socket directory came back with mode {:04o} and uid {} after creation",
+                        created.mode() & 0o7777,
+                        created.uid()
+                    ),
+                ));
+            }
+            Ok(())
+        }
+        Err(error) => Err(IpcError::Io(error)),
+    }
+}
+
+/// Leave a live socket alone and reclaim a stale one.
+///
+/// A socket file at the path is probed with a connect. Success means a
+/// listener is alive there: `SOCKET_IN_USE`, and the probe connection is
+/// dropped without a frame (the listener sees a peer hang up, which it
+/// already handles). A refused connection means no listener: the file is
+/// stale, and it is removed — but only if the inode seen before the probe
+/// is still the one at the path, so a listener that bound between probe
+/// and unlink is not evicted. A socket owned by another user is never
+/// touched. A regular file or directory at the path is refused as before.
+fn reclaim_socket_path(path: &Path, owner: u32) -> Result<(), IpcError> {
+    let before = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(IpcError::Io(error)),
+    };
+    if !before.file_type().is_socket() {
+        return Err(insecure(
+            path,
+            "path exists and is not a socket; refusing to remove it",
+        ));
+    }
+    if before.uid() != owner {
+        return Err(insecure(
+            path,
+            format!(
+                "socket is owned by uid {} and this process runs as {owner}",
+                before.uid()
+            ),
+        ));
+    }
+    match UnixStream::connect(path) {
+        Ok(probe) => {
+            drop(probe);
+            return Err(IpcError::SocketInUse(path.to_path_buf()));
+        }
+        Err(error) if error.kind() == ErrorKind::ConnectionRefused => {}
+        Err(error) => return Err(IpcError::Io(error)),
+    }
+    let after = std::fs::symlink_metadata(path).map_err(IpcError::Io)?;
+    if after.dev() != before.dev() || after.ino() != before.ino() {
+        return Err(IpcError::SocketInUse(path.to_path_buf()));
+    }
+    std::fs::remove_file(path).map_err(IpcError::Io)
+}
+
 impl UdsServer {
     /// Bind a new listener at `path` under [`ServerAdmissionPolicy::DEFAULT`].
     pub fn bind(path: &Path) -> Result<Self, IpcError> {
         Self::bind_with_policy(path, ServerAdmissionPolicy::DEFAULT)
     }
 
-    /// Bind a new listener at `path`. Removes any pre-existing socket file
-    /// at that path (only socket files — never a regular file).
+    /// Bind a new listener at `path`, privately (QI-BB-014).
+    ///
+    /// The directory the socket lives in is created `0700` when absent and
+    /// verified when present: a real directory, owned by this process's
+    /// user, that others cannot write to (or a sticky shared directory,
+    /// where others cannot unlink what they do not own). A socket already at
+    /// the path is probed: one that answers belongs to a live listener and
+    /// is left alone under `SOCKET_IN_USE`; one that refuses connections is
+    /// stale and reclaimed, but only if it is still the same inode after the
+    /// probe, so a listener that binds in between keeps its path. The bound
+    /// socket is then made `0600`.
     pub fn bind_with_policy(path: &Path, policy: ServerAdmissionPolicy) -> Result<Self, IpcError> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(IpcError::Io)?;
+        let owner = rustix::process::geteuid().as_raw();
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            ensure_private_socket_directory(parent, owner)?;
         }
-        // Remove stale socket if present and is a socket. metadata() of a
-        // unix socket returns FileType where is_file()==false, is_dir()==false.
-        match std::fs::symlink_metadata(path) {
-            Ok(meta) => {
-                if meta.file_type().is_socket() {
-                    std::fs::remove_file(path).map_err(IpcError::Io)?;
-                } else if meta.file_type().is_file() {
-                    return Err(IpcError::Io(std::io::Error::other(
-                        "uds path exists and is a regular file",
-                    )));
-                }
-            }
-            Err(err) if err.kind() == ErrorKind::NotFound => {}
-            Err(err) => return Err(IpcError::Io(err)),
-        }
+        reclaim_socket_path(path, owner)?;
         let listener = UnixListener::bind(path).map_err(IpcError::Io)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(SOCKET_MODE))
+            .map_err(IpcError::Io)?;
         let socket_path_identity = SocketPathIdentity::capture(path).map_err(IpcError::Io)?;
         listener.set_nonblocking(true).map_err(IpcError::Io)?;
         Ok(Self {
@@ -987,7 +1112,9 @@ fn classify_client_decode_error(
         | IpcError::Timeout { .. }
         | IpcError::InvalidClientIoTimeout
         | IpcError::ClientIoDeadlineElapsed
-        | IpcError::InvalidAdmissionPolicy) => other,
+        | IpcError::InvalidAdmissionPolicy
+        | IpcError::SocketInUse(_)
+        | IpcError::SocketPathInsecure { .. }) => other,
     }
 }
 
@@ -1010,15 +1137,17 @@ fn classify_client_io_error(
 mod tests {
     use super::{
         ClientIoPolicy, ConnectionCloseReason, IpcDispatcher, IpcError, PeerWatch, RequestEnvelope,
-        ResponseEnvelope, UdsServer, connect_before_deadline, connect_requires_completion_wait,
-        create_connect_socket, decode_response, encode_request, handle_connection, send_request,
-        wait_for_connect,
+        ResponseEnvelope, SOCKET_DIRECTORY_MODE, SOCKET_MODE, SocketPathIdentity, UdsServer,
+        connect_before_deadline, connect_requires_completion_wait, create_connect_socket,
+        decode_response, encode_request, handle_connection, send_request, wait_for_connect,
     };
     use rustix::fs::{OFlags, fcntl_getfl};
     use rustix::io::{Errno, FdFlags, fcntl_getfd};
     use std::io::Write;
     use std::net::Shutdown;
+    use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
     use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::Path;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier, mpsc};
     use std::thread;
@@ -1185,6 +1314,171 @@ mod tests {
     #[test]
     fn interrupted_connect_enters_completion_wait_contract() {
         assert!(connect_requires_completion_wait(Errno::INTR));
+    }
+
+    fn typed_bind_error(result: Result<UdsServer, IpcError>) -> Result<IpcError, String> {
+        match result {
+            Ok(_server) => Err("bind must be refused".to_string()),
+            Err(error) => Ok(error),
+        }
+    }
+
+    fn mode_of(path: &Path) -> Result<u32, String> {
+        Ok(std::fs::symlink_metadata(path)
+            .map_err(|error| error.to_string())?
+            .mode()
+            & 0o7777)
+    }
+
+    // QI-BB-014: a socket path with a live listener is never taken.
+    #[test]
+    fn a_live_listener_keeps_its_path_and_a_second_bind_is_refused() -> TestRes {
+        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let socket_path = dir.path().join("live.sock");
+        let first = UdsServer::bind(&socket_path).map_err(|error| error.to_string())?;
+        let identity =
+            SocketPathIdentity::capture(&socket_path).map_err(|error| error.to_string())?;
+        let refused = typed_bind_error(UdsServer::bind(&socket_path))?;
+        if !matches!(refused, IpcError::SocketInUse(ref path) if path == &socket_path) {
+            return Err(format!("expected SOCKET_IN_USE, got {refused}"));
+        }
+        if !identity
+            .still_owns(&socket_path)
+            .map_err(|error| error.to_string())?
+        {
+            return Err("the live socket must keep its inode".to_string());
+        }
+        // The probe's hang-up did not disturb the listener: it still accepts.
+        let client = UnixStream::connect(&socket_path).map_err(|error| error.to_string())?;
+        drop(client);
+        drop(first);
+        Ok(())
+    }
+
+    #[test]
+    fn a_stale_socket_is_reclaimed_and_the_bound_socket_is_private() -> TestRes {
+        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let socket_dir = dir.path().join("plane");
+        let socket_path = socket_dir.join("stale.sock");
+        // A socket file nobody listens on any more.
+        std::fs::create_dir_all(&socket_dir).map_err(|error| error.to_string())?;
+        let stale = UnixListener::bind(&socket_path).map_err(|error| error.to_string())?;
+        drop(stale);
+        if !std::fs::symlink_metadata(&socket_path)
+            .map_err(|error| error.to_string())?
+            .file_type()
+            .is_socket()
+        {
+            return Err("the stale socket file must remain for the test".to_string());
+        }
+        let server = UdsServer::bind(&socket_path).map_err(|error| error.to_string())?;
+        if mode_of(&socket_path)? != SOCKET_MODE {
+            return Err(format!(
+                "socket mode must be {SOCKET_MODE:04o}, got {:04o}",
+                mode_of(&socket_path)?
+            ));
+        }
+        let client = UnixStream::connect(&socket_path).map_err(|error| error.to_string())?;
+        drop(client);
+        drop(server);
+        Ok(())
+    }
+
+    #[test]
+    fn a_directory_the_server_creates_is_private() -> TestRes {
+        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let socket_dir = dir.path().join("created").join("deeper");
+        let socket_path = socket_dir.join("private.sock");
+        let server = UdsServer::bind(&socket_path).map_err(|error| error.to_string())?;
+        if mode_of(&socket_dir)? != SOCKET_DIRECTORY_MODE {
+            return Err(format!(
+                "created socket directory must be {SOCKET_DIRECTORY_MODE:04o}, got {:04o}",
+                mode_of(&socket_dir)?
+            ));
+        }
+        drop(server);
+        Ok(())
+    }
+
+    #[test]
+    fn a_socket_directory_others_can_write_is_refused_unless_sticky() -> TestRes {
+        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let permissive = dir.path().join("permissive");
+        std::fs::create_dir(&permissive).map_err(|error| error.to_string())?;
+        std::fs::set_permissions(&permissive, std::fs::Permissions::from_mode(0o777))
+            .map_err(|error| error.to_string())?;
+        let refused = typed_bind_error(UdsServer::bind(&permissive.join("open.sock")))?;
+        if !matches!(refused, IpcError::SocketPathInsecure { ref reason, .. } if reason.contains("writable by others"))
+        {
+            return Err(format!(
+                "expected SOCKET_PATH_INSECURE for a permissive directory, got {refused}"
+            ));
+        }
+        // The sticky bit makes a shared directory safe to bind under: others
+        // cannot unlink this user's socket.
+        std::fs::set_permissions(&permissive, std::fs::Permissions::from_mode(0o1777))
+            .map_err(|error| error.to_string())?;
+        let server =
+            UdsServer::bind(&permissive.join("shared.sock")).map_err(|error| error.to_string())?;
+        drop(server);
+        // A group-writable directory of this user's own is refused too.
+        let group = dir.path().join("group");
+        std::fs::create_dir(&group).map_err(|error| error.to_string())?;
+        std::fs::set_permissions(&group, std::fs::Permissions::from_mode(0o770))
+            .map_err(|error| error.to_string())?;
+        let refused = typed_bind_error(UdsServer::bind(&group.join("group.sock")))?;
+        if !matches!(refused, IpcError::SocketPathInsecure { .. }) {
+            return Err(format!(
+                "expected SOCKET_PATH_INSECURE for a group-writable directory, got {refused}"
+            ));
+        }
+        Ok(())
+    }
+
+    // A symlinked directory is judged by its target (`/tmp` is a symlink on
+    // macOS): a private target binds, a permissive target is refused.
+    #[test]
+    fn a_symlinked_socket_directory_is_judged_by_its_target() -> TestRes {
+        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let private = dir.path().join("private");
+        std::fs::create_dir(&private).map_err(|error| error.to_string())?;
+        let private_link = dir.path().join("private-link");
+        std::os::unix::fs::symlink(&private, &private_link).map_err(|error| error.to_string())?;
+        let server = UdsServer::bind(&private_link.join("via-link.sock"))
+            .map_err(|error| error.to_string())?;
+        drop(server);
+        let permissive = dir.path().join("permissive");
+        std::fs::create_dir(&permissive).map_err(|error| error.to_string())?;
+        std::fs::set_permissions(&permissive, std::fs::Permissions::from_mode(0o777))
+            .map_err(|error| error.to_string())?;
+        let permissive_link = dir.path().join("permissive-link");
+        std::os::unix::fs::symlink(&permissive, &permissive_link)
+            .map_err(|error| error.to_string())?;
+        let refused = typed_bind_error(UdsServer::bind(&permissive_link.join("via-link.sock")))?;
+        if !matches!(refused, IpcError::SocketPathInsecure { .. }) {
+            return Err(format!(
+                "expected SOCKET_PATH_INSECURE through a symlink to a permissive directory, got {refused}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_regular_file_at_the_socket_path_is_refused_and_left_alone() -> TestRes {
+        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let socket_path = dir.path().join("not-a-socket.sock");
+        std::fs::write(&socket_path, b"keep me").map_err(|error| error.to_string())?;
+        let refused = typed_bind_error(UdsServer::bind(&socket_path))?;
+        if !matches!(refused, IpcError::SocketPathInsecure { ref reason, .. } if reason.contains("not a socket"))
+        {
+            return Err(format!(
+                "expected SOCKET_PATH_INSECURE for a regular file, got {refused}"
+            ));
+        }
+        if std::fs::read(&socket_path).map_err(|error| error.to_string())? != b"keep me" {
+            return Err("the regular file must be untouched".to_string());
+        }
+        Ok(())
     }
 
     #[test]

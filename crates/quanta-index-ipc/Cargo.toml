@@ -16,7 +16,7 @@ path = "src/lib.rs"
 ciborium = { workspace = true }
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
-rustix = { workspace = true, features = ["event", "net"] }
+rustix = { workspace = true, features = ["event", "net", "process"] }
 serde = { workspace = true }
 
 [dev-dependencies]

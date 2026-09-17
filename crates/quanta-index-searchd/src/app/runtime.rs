@@ -119,6 +119,7 @@ impl StateRootLease {
     pub fn acquire(state_root: &Path) -> Result<Self, CoreError> {
         ensure_durable_state_root_v1(state_root)?;
         let state_root_identity_v1 = canonical_state_root_identity_v1(state_root)?;
+        ensure_private_state_root_v1(&state_root_identity_v1)?;
         let path = state_root_identity_v1.join(".searchd-state-root.lock");
         let file = open_state_root_lock_nofollow_v1(&path).map_err(|error| {
             CoreError::Storage(format!(
@@ -208,6 +209,59 @@ fn canonical_state_root_identity_v1(state_root: &Path) -> Result<PathBuf, CoreEr
     })
 }
 
+/// Mode of a state-root directory this daemon creates: its owner only.
+#[cfg(unix)]
+const STATE_ROOT_DIRECTORY_MODE: u32 = 0o700;
+
+/// Refuse a state root another local user could write into (QI-BB-014).
+///
+/// A directory this daemon created is `0700`. A pre-existing one must be
+/// owned by the user the daemon runs as and carry no group or other write
+/// bit: index files, catalogs and sockets live under it, and a writable
+/// root lets another local user replace any of them under the daemon. A
+/// root others can read is the operator's choice and is not refused.
+#[cfg(unix)]
+fn ensure_private_state_root_v1(state_root: &Path) -> Result<(), CoreError> {
+    use std::os::unix::fs::MetadataExt as _;
+    let metadata = fs::metadata(state_root).map_err(|error| {
+        CoreError::Storage(format!(
+            "searchd state-root lease: inspect {}: {error}",
+            state_root.display()
+        ))
+    })?;
+    let owner = rustix::process::geteuid().as_raw();
+    let mode = metadata.mode() & 0o7777;
+    if metadata.uid() != owner || mode & 0o022 != 0 {
+        return Err(CoreError::Typed {
+            code: "STATE_ROOT_INSECURE".to_string(),
+            message: format!(
+                "searchd state root {} is uid {} mode {mode:04o}; it must belong to uid {owner} and carry no group/other write bit (chmod go-w)",
+                state_root.display(),
+                metadata.uid()
+            ),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_private_state_root_v1(_state_root: &Path) -> Result<(), CoreError> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn create_private_directory_v1(directory: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt as _;
+    fs::DirBuilder::new()
+        .mode(STATE_ROOT_DIRECTORY_MODE)
+        .create(directory)
+}
+
+#[cfg(not(unix))]
+fn create_private_directory_v1(directory: &Path) -> std::io::Result<()> {
+    fs::create_dir(directory)
+}
+
 fn ensure_durable_state_root_v1(state_root: &Path) -> Result<(), CoreError> {
     ensure_durable_state_root_with_v1(state_root, &|parent| {
         File::open(parent).and_then(|directory| directory.sync_all())
@@ -241,7 +295,7 @@ fn ensure_durable_state_root_with_v1(
     }
 
     for directory in missing.iter().rev() {
-        match fs::create_dir(directory) {
+        match create_private_directory_v1(directory) {
             Ok(()) => {}
             Err(error)
                 if error.kind() == std::io::ErrorKind::AlreadyExists && directory.is_dir() => {}
@@ -1415,6 +1469,38 @@ mod tests {
 
         assert!(format!("{error:?}").contains("injected parent sync failure"));
         assert!(!state_root.join(".searchd-state-root.lock").exists());
+        Ok(())
+    }
+
+    // QI-BB-014: the state root is private by construction and by check.
+    #[cfg(unix)]
+    #[test]
+    fn a_created_state_root_is_private_and_a_writable_one_is_refused() -> TestRes {
+        use std::os::unix::fs::PermissionsExt as _;
+        let parent = tempfile::tempdir()?;
+        let created = parent.path().join("fresh").join("state");
+        let lease = super::StateRootLease::acquire(&created)?;
+        let mode = std::fs::metadata(&created)?.permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o700, "a created state root is its owner's alone");
+        drop(lease);
+
+        let permissive = parent.path().join("permissive");
+        std::fs::create_dir(&permissive)?;
+        std::fs::set_permissions(&permissive, std::fs::Permissions::from_mode(0o777))?;
+        let error = super::StateRootLease::acquire(&permissive)
+            .expect_err("a state root others can write into must be refused");
+        let quanta_index_core::CoreError::Typed { code, message } = error else {
+            return Err(format!("expected a typed refusal, got {error:?}").into());
+        };
+        assert_eq!(code, "STATE_ROOT_INSECURE");
+        assert!(message.contains("chmod go-w"), "{message}");
+
+        // Readable by others is the operator's call; writable is not.
+        let readable = parent.path().join("readable");
+        std::fs::create_dir(&readable)?;
+        std::fs::set_permissions(&readable, std::fs::Permissions::from_mode(0o755))?;
+        let lease = super::StateRootLease::acquire(&readable)?;
+        drop(lease);
         Ok(())
     }
 
