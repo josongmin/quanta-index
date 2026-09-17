@@ -310,7 +310,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | --- | --- | --- |
 | W0 | **passed** | G0-L/G0-S/G0-C passed, G0-R baseline pinned(cooperative-only). §3 참조. timing 재측정만 `blocked: contended-host` |
 | W1 | in_progress | **QI-BB-011 Unicode normalizer(§3.33)** + **QI-BB-013 search-plane 3 monolith 분할(§3.32)** 완료. 남은 것: snake/camel sub-token 확장(LEX-00, 제품 결정), route×predicate `RequiredDomains`(plan §5.6) |
-| W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + **quarantine control surface(§3.31: live inventory + as-listed discard, control IPC/SDK/CLI)** + QI-BB-032 idempotency catalog(§3.16) + QI-BB-020 auxiliary authority rows(§3.19) 완료. 남은 것: aux read epoch/visibility interval(§3.19 한계) |
+| W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + **quarantine control surface(§3.31: live inventory + as-listed discard, control IPC/SDK/CLI)** + QI-BB-032 idempotency catalog(§3.16) + QI-BB-020 auxiliary authority rows(§3.19) 완료. + **aux read epoch(§3.37: epoch-named snapshot, cursor 연속은 시작 epoch에서, retention bounded)** 완료. 남은 것: 없음(W2 항목 전부 착지; runtime-metadata의 structural epoch wire 노출·epoch metric은 §3.37 한계) |
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + QI-BB-027 ANN sealed contract(§3.23) + **QI-BB-016 lexical writer envelope(§3.26)** 완료. + **QI-BB-027 보완 ANN append per delta seal(§3.35)** 완료. 남은 것: sharded sidecar 포맷(O(delta) write, 진행 중), scope 단위 streamed embed→append(§3.18 한계) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) + **QI-BB-025 보완 #4 runtime/structural window(§3.30)** 완료. 남은 것: runtime/structural keyset cursor, streaming projection collector |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. QI-BB-014 UDS/state-root private hardening(§3.27) 완료. QI-BB-015 metrics 집계 + scrape(§3.28) 완료. **phase 2(§3.29): budget이 lexical native collect/scan/regex verify/predicate scope 안에서 관측** 완료. 남은 것: shared mode(group/ACL + peer credential), semantic lane 내부 관측 |
@@ -1880,6 +1880,49 @@ IPC/harness로만 얻고, searchctl hybrid renderer는 `render_response`로만 �
 요청 변경에 맞춰야 한다(breaking, compat 없음). (d) §3.22 한계 b(dense lane similarity floor / score-aware fusion)는 judged corpus(M4)
 없이 튜닝할 수 없어 그대로 남김.
 
+## 3.37 QI-BB-020/023 보완 — auxiliary read는 epoch로 이름 붙고, cursor 연속은 시작한 epoch에서 서빙된다 (구현 완료)
+
+**진단 확정**: §3.19의 aux snapshot read는 한 query 안에서만 일관됐고 그 snapshot에 이름이 없었다. history keyset cursor(§3.20)로
+page 1과 2 사이에 ingest가 들어오면 page 2는 새 snapshot에서 나와 row가 두 번 보이거나 빠질 수 있었고 caller는 알 수 없었다
+(plan §5.6 "visible row는 immutable version/visibility interval로 선택", §6.2 "in-flight page token은 이전 artifact를 retention 동안 유지").
+
+**구현** (58 files, +3,260/−878):
+
+- **epoch registry** `search-plane/src/readiness/aux_epoch.rs`: (repo, revision, generation, domain)별 `AuxSnapshots<S>` = current + 대체된
+  snapshot `VecDeque`, `AUX_EPOCH_RETAIN = 8`(개수)·`AUX_EPOCH_RETAIN_FOR = 5분`(wall clock, `Instant`는 caller 주입 — test에 timing 없음).
+  `read_at(epoch, now)`: current → ok, 더 새것 → `Unknown`, prune/aged → `Expired`. `advance(epoch, now, mutate)`는 epoch drift 거부,
+  current를 O(1) clone 후 mutate, 이전을 retain, prune. 세 domain state map을 `BTreeMap` → `imbl::OrdMap`(structural sharing; 새 workspace
+  dep `imbl 7.0.2` MPL-2.0, `rust-deny` green)으로 바꿔 retention 메모리가 구조적으로 bounded — §3.19 한계 b(reader 있을 때 generation copy)도 소멸.
+- **durability**: `AuxiliaryRowFamilyV1::Epoch` row가 모든 delta와 **같은 catalog transaction**에 기록; restore가 epoch를 세팅(row 없는
+  옛 generation은 `GENESIS`=0 — 조작 없음, 정의). materializer는 read lock 아래 next epoch 계산 → persist → `aux_advance`; 거부된 mutation은
+  ledger를 건드리지 않음(generation 생성 없음).
+- **wire**(manual serde, fail-closed): `AuxEpochV1(u64)`; `HistoryCursor.aux_epoch`(필수); history/runtime-metadata/structural 응답에 `read_epoch`
+  (history decoder는 `next_cursor.aux_epoch != read_epoch` 거부); `RepairClass::Expired`. core `AUX_EPOCH_EXPIRED_CODE`/`AUX_EPOCH_UNKNOWN_CODE`,
+  `StructuralQueryRequest.aux_epoch`, `StructuralError::AuxEpoch{Expired,Unknown}`. repair hint "restart the page walk without a cursor".
+- **route**: history는 cursor의 epoch에서 읽고 next cursor에 epoch를 찍음; runtime-metadata는 runtime+structural snapshot을 한 guard 아래
+  읽고 runtime epoch를 이름함; structural은 진입 시 snapshot 하나를 pin(`routes/structural/read.rs`)해 eval/universe/lexical leaf 전부에 관통,
+  searchd `LedgerStructuralProducer`가 `request.aux_epoch`에서 실행. pin 시점에 structural authority 없음 → typed `STR_GENERATION_NOT_READY`.
+- SDK가 `AuxEpochV1`/`HistoryCursor` re-export, pager는 epoch를 그대로 통과; searchctl은 window 줄 뒤 `epoch: n`, cursor 줄에 ` aux_epoch=<n>`;
+  harness `E2eHistoryResult.read_epoch`. public-api(contract +78, sdk +2)·cargo-modules(contract +4) baseline 갱신.
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| registry: epoch별 내용, retain ≤ `AUX_EPOCH_RETAIN`(절대), count prune → Expired, wall-clock bound(`start + RETAIN_FOR`), Unknown, 실패한 mutation 무변경, 잘못된 epoch 거부, restore가 sequence 계속 | `aux_epoch.rs` unit 8 |
+| history route: page1 ∪ page2 == epoch-1 row 집합(중복·누락 0), late row 부재, fresh walk는 보임, 8회 더 mutate 후 EXPIRED, retained ≤ bound | `a_continuation_reads_the_epoch_its_cursor_names` |
+| 거부된 aux mutation은 ledger를 그대로 둠 | `a_refused_auxiliary_mutation_leaves_the_ledger_as_it_was` |
+| wire: cursor/page round-trip, `aux_epoch`/`read_epoch` 없으면 거부, cursor/page epoch 불일치 거부, `AuxEpochV1`이 −1/"7"/7.5/null/map 거부; epoch row restore round-trip | contract/catalog tests |
+| **e2e**: commit 30개, top_k 10; page 1과 2 사이에 page 2에 들어갈 recency의 commit 5개 ingest → page 2/3은 정확히 원래 row(중복·누락 0, 총 30), fresh walk는 새 epoch에서 35; `reopen()` 후 persisted epoch 유지, 옛 cursor → `AUX_EPOCH_EXPIRED`, restart 후 ingest는 `fresh_epoch + 1` | `searchd-runtime/tests/e2e_aux_epoch.rs` (test-authority 등록) |
+| 회귀·rail | search-plane 261, searchd 53, contract 237, core 85, sdk 78, searchctl 35+20, catalog 12; e2e auxiliary_catalog 2·restart_replay 20·structural_hellgate 4·perf_chaos 43·end_to_end 35·sdk_frontdoor 15·dsl 8·exact_count_window 4·full_corpus 4·history_order 1; `just rust-clippy` 0; fmt/semgrep(0)/hexagonal/no-allow/derive/cargo-toml/module/error-shape/digest/test-authority/ignored-policy/workspace-lints/deny; fuzz smoke 4 target. main rebase(026+split+normalizer+ANN+hybrid 위, 충돌 5 file = import union + baseline 재생성) 후 unit 914 + e2e 11 target 74 + clippy 0 + semgrep 0 + module/hexagonal green |
+
+**정직한 한계**: (a) brief의 trace line `aux.epoch=<n> retained=<k>`는 넣지 않았다 — history/runtime-metadata/structural 응답에는
+`SearchExplanation` surface가 없고, 없는 DTO를 만들지 않았다. wire는 typed `read_epoch`, `retained`는 in-process(`AuxRead.retained`, bound는
+unit test). (b) retention(대체된 snapshot)은 restart를 넘지 않는다 — epoch 번호만 durable이라 restart 후 옛 cursor는 `AUX_EPOCH_EXPIRED`
+(e2e가 단언, `aux_epoch.rs` 문서화). (c) runtime-metadata의 `read_epoch`는 runtime domain epoch만 — 같이 읽는 structural chunk universe는
+같은 lock 아래 일관된 cut이지만 그 epoch는 wire에 없다. (d) epoch metrics counter 없음. (e) `rust-profile test-daemon` 전체·workspace
+`cargo test`·miri/tsan/asan/mutants/llvm-lines는 agent 미실행(main 통합 verify-rust가 대신).
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -1935,4 +1978,6 @@ IPC/harness로만 얻고, searchctl hybrid renderer는 `render_response`로만 �
 | 2026-09-18 | worktree 013 (ab864a5→68468e3 rebase) | agent: workspace clippy(0) + search-plane 247+38 (rebase 후 250+38) + `end_to_end` 35·`e2e_perf_chaos` 43·`e2e_top_k_truth_table` 4 + hexagonal/semgrep/module-discipline/error-shape/public-api/cargo-modules | 전부 green, 동작 변화 0 (§3.32) |
 | 2026-09-18 | worktree D (68468e3→960be81 rebase) | agent: semantic 117 + core semantic_policy 11 + `e2e_ann_incremental_seal` 1 + `just rust-clippy`(0) + fmt/semgrep/hexagonal/module/error-shape/derive/cargo-toml/test-authority + cargo-modules-update; rebase 후 workspace check + semantic lib 56 + vector_index_contract 8 | 전부 green (§3.35) |
 | 2026-09-18 | worktree C (2f41a00→6fa50eb rebase) | agent: contract 238·core 89·search-plane 294·sdk 78·harness 77·searchctl 58 + e2e slice 24 + workspace clippy(0) + fmt/semgrep/hexagonal/module/error-shape/derive/digest/cargo-toml/test-authority + public-api/cargo-modules update + fuzz smoke; rebase 후 check + 834 + e2e 43, baselines 불변 | 전부 green (§3.36) |
+| 2026-09-18 | 47294db | `just rust-profile verify-rust` (nohup) | RED at `rust-doc` — **2,209 tests passed / 0 failed**, 이후 rustdoc `-D warnings`: `lexical/src/phrase.rs` module doc이 crate-private `normalize`를 intra-doc link(§3.33 잔여) → link 제거(다음 commit) |
+| 2026-09-18 | worktree F (2f41a00→47294db rebase, 충돌 5 file) | agent: search-plane 261·searchd 53·contract 237·core 85·sdk 78·searchctl 55·catalog 12 + e2e 10 target + `just rust-clippy` 0 + fmt/semgrep/hexagonal/no-allow/derive/cargo-toml/module/error-shape/digest/test-authority/ignored-policy/workspace-lints/deny + public-api/cargo-modules update + fuzz smoke; rebase 후 unit 914 + e2e 11 target 74 + clippy 0 + semgrep 0 + module/hexagonal | 전부 green (§3.37) |
 | 2026-09-18 | worktree 011 (7a5ce5e→034c4fd rebase) | agent: workspace clippy(0) + lexical 15 target·lq-norm 88·search-plane 285 + e2e text_route_hellgate 8·perf_chaos 43·dsl_scenarios 8·lexical_full_fidelity 1·dual_syntax_parity 4·full_corpus 4 + harness 77 + hexagonal/semgrep/module/error-shape/cargo-toml/derive/test-authority/deny; rebase 후 lexical carryforward 6 + goldens 8 | 전부 green (§3.33) |

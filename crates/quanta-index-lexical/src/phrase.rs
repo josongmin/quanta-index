@@ -7,10 +7,11 @@
 //!
 //! Execution against the live position index is wired through
 //! `quanta-index-lq-positions` sidecars from the lexical adapter. Phrase
-//! text is tokenized by [`crate::normalize`] — the same NFC, fold and
-//! boundary contract the inverted index and the sidecar builders use — so a
-//! phrase is an exact contiguous run in the token stream a keyword would
-//! see: `"foo bar"` and the keyword `foo.bar` are the same token sequence,
+//! text is tokenized by the crate-private `normalize` module — the same
+//! NFC, fold and boundary contract the inverted index and the sidecar
+//! builders use — so a phrase is an exact contiguous run in the token
+//! stream a keyword would see: `"foo bar"` and the keyword `foo.bar` are
+//! the same token sequence,
 //! and `"CAFÉ au"` matches `café au` under `case:no`. A phrase whose text
 //! carries no token, or a token longer than the term cap, is refused typed
 //! here rather than answered with an empty result.
