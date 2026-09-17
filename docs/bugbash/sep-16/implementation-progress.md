@@ -1038,3 +1038,4 @@ QI-BB-015와 함께. (c) 100만 doc 규모 RSS 측정은 미실행(contended hos
 | 2026-09-17 | 880a5c3 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,021 passed / 0 failed (QI-BB-028 + QI-BB-031 포함) |
 | 2026-09-17 | (W2 tree) | `just rust-fuzz-smoke 30` | 4 target × 30s, crash 0 (receipt wire DTO 변경에 대한 fail-closed 확인) |
 | 2026-09-17 | cb7bbd9 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,016 passed / 0 failed (QI-BB-032 catalog 포함) |
+| 2026-09-17 | 1346134 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,020 passed / 0 failed (QI-BB-024 regex cache bounds 포함) |
