@@ -312,7 +312,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W1 | in_progress | **QI-BB-011 Unicode normalizer(§3.33)** + **QI-BB-013 search-plane 3 monolith 분할(§3.32)** 완료. 남은 것: snake/camel sub-token 확장(LEX-00, 제품 결정), route×predicate `RequiredDomains`(plan §5.6) |
 | W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + **quarantine control surface(§3.31: live inventory + as-listed discard, control IPC/SDK/CLI)** + QI-BB-032 idempotency catalog(§3.16) + QI-BB-020 auxiliary authority rows(§3.19) 완료. + **aux read epoch(§3.37: epoch-named snapshot, cursor 연속은 시작 epoch에서, retention bounded)** 완료. 남은 것: 없음(W2 항목 전부 착지; runtime-metadata의 structural epoch wire 노출·epoch metric은 §3.37 한계) |
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + QI-BB-027 ANN sealed contract(§3.23) + **QI-BB-016 lexical writer envelope(§3.26)** 완료. + **QI-BB-027 보완 ANN append per delta seal(§3.35)** 완료. + **QI-BB-006 완결 sharded text-authority(§3.38)** 완료. 남은 것: scope 단위 streamed embed→append(§3.18 한계, 진행 중) |
-| W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) + **QI-BB-025 보완 #4 runtime/structural window(§3.30)** 완료. 남은 것: runtime/structural keyset cursor, streaming projection collector |
+| W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) + **QI-BB-025 보완 #4 runtime/structural window(§3.30)** + **keyset cursor + streaming collector(§3.39)** 완료. 남은 것: 없음(W4 항목 전부 착지; history selector의 collector 이관은 §3.39 한계 b) |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. QI-BB-014 UDS/state-root private hardening(§3.27) 완료. QI-BB-015 metrics 집계 + scrape(§3.28) 완료. **phase 2(§3.29): budget이 lexical native collect/scan/regex verify/predicate scope 안에서 관측** 완료. 남은 것: shared mode(group/ACL + peer credential), semantic lane 내부 관측 |
 | W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + QI-BB-018 true hybrid(§3.22) + QI-BB-022 explain = exact presence + lexical score trace(§3.24) + **QI-BB-008 RepoMap bounded query + durable store(§3.25)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), history relevance order(Tantivy history index, §3.20 한계), judged corpus recall/NDCG gate(§3.22 한계), **hybrid per-lane contribution(§3.36)** 완료 |
 | W7 | planned | |
@@ -1968,6 +1968,45 @@ injection은 "index ahead" case를 파일 복원으로 staging한 것뿐. (b) ad
 (c) 이후 어떤 batch도 건드리지 않는 path에서 index가 authority보다 앞선 상태는 다음 batch가 아니라 seal에서 잡힌다(count check).
 **QI-BB-006은 이제 `passed`**: 색인 절반(§3.4) + 재도출(§3.4.1) + write bytes(§3.38).
 
+## 3.39 QI-BB-025 완결 — runtime-metadata / structural page는 keyset cursor로 걷고, collector는 k+1만 쥔다 (구현 완료)
+
+**진단 확정**: §3.30이 두 route에 window를 실었지만 cursor가 없어 다음 page를 얻는 방법은 `top_k`를 키우는 것뿐이었고(§3.30 한계 b),
+runtime-metadata는 seed 집합을 전부 materialize한 뒤 잘랐다. history(§3.20)와 aux epoch(§3.37)가 모델.
+
+**구현** (32 files, +4,112/−679):
+
+- **contract**: `RuntimeMetadataCursorV1 { candidate_id, aux_epoch, universe_epoch }`, `StructuralCursorV1 { candidate_id, aux_epoch }`(manual serde);
+  두 request에 `cursor: Option<_>`(None이면 wire 부재, `impl_text_query_page_request_serde!`로 통합); 두 response에 `examined`, `next_cursor`,
+  runtime에는 `universe_epoch`(`impl_keyset_page_response_serde!`). decoder 거부: `window.returned != rows`, row가 candidate_id 오름차순이 아님,
+  `has_more != next_cursor.is_some()`, `next_cursor`가 마지막 row가 아님, cursor epoch ≠ page epoch. **total order = `candidate_id` 오름차순(byte)**:
+  runtime row는 projection이라 score 상수(1.0) → `(score desc, id asc)`가 id로 collapse; structural은 이미 BTreeMap 순서. 두 cursor·DTO·
+  `lexical_candidate_from_chunk`에 문서화.
+- **search-plane** `query_dispatcher/keyset_page.rs`: `KeysetPageCollector<K>` — cursor 뒤 key의 max-heap `top_k+1`, O(log k)/key, 보관 key만
+  clone, `examined`/`matched`, `StreamEnd::{Exhausted → Exact, Stopped → AtLeast}`, test-only `peak_retained`. runtime-metadata route는 stream
+  walk로 재작성: `RuntimeDriver`가 chunk-id 키 authority 중 가장 좁은 것(dirty/changed/facet/snapshot/edge/universe/empty)을 `len()`으로 고르고
+  `range(Excluded(cursor)..)`로 seek, chunk마다 완전한 predicate 평가, probe 뒤 첫 key에서 stop — seed 집합 materialize(`runtime_seed_ids`
+  등) 삭제, `stabilize_ranked_candidates` 미적용(walk 순서가 곧 page 순서). runtime cursor는 **epoch 둘**(runtime `aux_epoch` + structural
+  `universe_epoch`)을 pin — 없으면 universe driver(`dirty:no`, `stale:`) 연속이 page 1 뒤 설치된 chunk를 보게 됨(§3.37 한계 c 해소).
+  structural은 `Exact`·O(matches) 평가 유지(set algebra), page 선택만 collector, 선택된 bucket만 projection(`project_structural_page`).
+- **SDK** `after(cursor)` builder 2종; **searchctl** `parse_keyset_page_query` 하나로 runtime/history/structural `--cursor-json PATH|-`(history도
+  같은 parser), pretty `order: candidate_id matched: N examined: M has_more: B` + `universe_epoch:`/`next_cursor:`; **harness** `E2eRoutePage<R>
+  { Served, Refused }`, `query_runtime_metadata_page`/`query_structural_page`(옛 helper는 위임, 중복 transport ~100줄 제거), late ingest helper.
+  public-api(contract +104, sdk +4)·cargo-modules(contract) baseline 갱신.
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| collector: 10,000 row·k=5에서 `peak_retained ≤ 6`(메모리 oracle), forged boundary, probe row 없는 Stopped stream 거부 등 | `keyset_page.rs` unit 8 |
+| runtime route: driver 선택 6 filter, 23 row를 5씩 page → `examined == [6,6,6,6,3]`, forged cursor/past-the-end, 연속이 epoch 둘을 pin(late chunk install + late dirty mark 비가시), retention churn 후 두 cursor 모두 `AUX_EPOCH_EXPIRED` | `tests/runtime_metadata.rs` 4 |
+| structural route: 23 scrambled match 5씩 page(after-cursor exact count), forged cursor, 연속이 모든 leaf를 cursor epoch에서 실행 / `AUX_EPOCH_UNKNOWN` / `EXPIRED` | `tests/structural.rs` 3 |
+| wire: cursor round-trip + 모든 거부, cross-route cursor 거부, page round-trip, 비일관 page 14 shape + 필수 field 누락 거부 | `contract/tests/ipc_query_result_v2_contract.rs` +4 |
+| **e2e**: route별 chunk 30/집합 25, 10/10/5 page, union == top_k=100 결과; page 2에 들어갈 late row 5개가 연속에는 비가시·fresh walk에는 가시(30); retention churn → 옛 cursor `AUX_EPOCH_EXPIRED`; truth table에 두 route의 cursor 연속 case | `searchd-runtime/tests/e2e_keyset_cursors.rs` 2 (test-authority 등록), `e2e_top_k_truth_table::runtime_and_structural_cursors_continue_the_page` |
+| 회귀·rail | contract 246, sdk 80, search-plane 281+38, searchctl 38+21, harness 77; e2e 16 target 159; workspace clippy 0; fmt/semgrep(0)/module/error-shape/derive/hexagonal/cargo-toml/digest/test-authority/ignored-policy/no-allow/workspace-lints; public-api/cargo-modules update; fuzz smoke 4 target crash 0. main rebase(b8e3ac3 위) 후 check + baselines 불변 + unit 781 + e2e 8 target 66 green |
+
+**정직한 한계**: (a) RSS/latency 실측 없음 — 메모리 bound는 계측 collector로만. (b) `HistoryPageSelector`(§3.20)는 `KeysetPageCollector`와 같은
+모양이라 이관 후보(미착수), `HistoryQueryRequest` serde도 새 macro로 통합 가능. (c) `E2eRoutePage::refusal()`은 typed accessor로만 존재.
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -2027,4 +2066,5 @@ injection은 "index ahead" case를 파일 복원으로 staging한 것뿐. (b) ad
 | 2026-09-18 | worktree F (2f41a00→47294db rebase, 충돌 5 file) | agent: search-plane 261·searchd 53·contract 237·core 85·sdk 78·searchctl 55·catalog 12 + e2e 10 target + `just rust-clippy` 0 + fmt/semgrep/hexagonal/no-allow/derive/cargo-toml/module/error-shape/digest/test-authority/ignored-policy/workspace-lints/deny + public-api/cargo-modules update + fuzz smoke; rebase 후 unit 914 + e2e 11 target 74 + clippy 0 + semgrep 0 + module/hexagonal | 전부 green (§3.37) |
 | 2026-09-18 | fc3ee5c | `just rust-profile verify-rust` (nohup) | **GREEN** — exit 0, **2,225 passed / 0 failed** (026 quarantine surface + 013 split + 011 normalizer + 027 ANN append + hybrid lane provenance + aux read epoch + 작업량 oracle 통합; clippy·semgrep·deny·doc·public-api·hexagonal·test-authority 포함) |
 | 2026-09-18 | worktree E (960be81→0aad39d rebase) | agent: lexical 225 + lq 256 + core 85 + search-plane/searchd 341 + searchd-runtime e2e 전체 242 + workspace clippy(0) + fmt/semgrep/module/error-shape/digest/derive/test-authority/cargo-toml/hexagonal; rebase 후 check + baselines 불변 + lexical 28 + e2e 49 | 전부 green (§3.38) |
+| 2026-09-18 | worktree H (fc3ee5c→b8e3ac3 rebase) | agent: contract 246·sdk 80·search-plane 319·searchctl 59·harness 77 + e2e 16 target 159 + workspace clippy(0) + fmt/semgrep/module/error-shape/derive/hexagonal/cargo-toml/digest/test-authority + public-api/cargo-modules update + fuzz smoke; rebase 후 check + baselines 불변 + unit 781 + e2e 66 | 전부 green (§3.39) |
 | 2026-09-18 | worktree 011 (7a5ce5e→034c4fd rebase) | agent: workspace clippy(0) + lexical 15 target·lq-norm 88·search-plane 285 + e2e text_route_hellgate 8·perf_chaos 43·dsl_scenarios 8·lexical_full_fidelity 1·dual_syntax_parity 4·full_corpus 4 + harness 77 + hexagonal/semgrep/module/error-shape/cargo-toml/derive/test-authority/deny; rebase 후 lexical carryforward 6 + goldens 8 | 전부 green (§3.33) |
