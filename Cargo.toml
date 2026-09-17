@@ -130,6 +130,10 @@ futures = "0.3"
 lancedb = { version = "0.30", default-features = false }
 memchr = "2.8"
 memmap2 = "0.9.5"
+# Safe `getpeereid(3)` wrapper for the socket peer-credential check on the
+# BSDs (macOS included); Linux uses rustix's `SO_PEERCRED`. Only `socket` +
+# `user` are enabled — the two features `nix::unistd::getpeereid` sits behind.
+nix = { version = "0.31.3", default-features = false, features = ["socket", "user"] }
 proptest = "1.6.0"
 regex = "1"
 regex-syntax = "0.8"

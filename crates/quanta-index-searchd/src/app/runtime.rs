@@ -70,6 +70,7 @@ use crate::app::semantic_boot;
 use crate::app::server::{
     SearchPlaneControlServer, SearchPlaneIngestServer, SearchPlaneQueryServer,
 };
+use crate::app::socket_access::SocketRole;
 
 const BENCH_DISABLE_QUERY_OBS_ENV: &str = "QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS";
 
@@ -1000,6 +1001,7 @@ impl SearchdRuntime {
             auxiliary_migration,
             auxiliary_rows_restored,
             repo_map: repo_map_open_report,
+            socket_access: config.socket_access_policies().clone(),
         };
         let auxiliary_parts = AuxiliaryMaterializerParts {
             catalog: Arc::clone(&auxiliary_catalog),
@@ -1124,11 +1126,16 @@ impl SearchdRuntime {
         let query_adapter: Arc<
             dyn IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse>,
         > = Arc::new(SearchPlaneQueryIpcAdapter::new(query_dispatcher));
+        // Each socket carries its own access policy (QI-BB-014); a shared
+        // query socket leaves control and ingest private unless they were
+        // opened by name.
+        let socket_access = config.socket_access_policies();
         let query_server = SearchPlaneQueryServer::bind(
             "quanta-index-query-uds",
             config.query_socket_path(),
             query_adapter,
             config.query_admission_policy(),
+            socket_access.for_role(SocketRole::Query).clone(),
             query_counters,
         )
         .map_err(anyhow::Error::from)?;
@@ -1142,6 +1149,7 @@ impl SearchdRuntime {
             config.control_socket_path(),
             control_adapter,
             ServerAdmissionPolicy::SERIAL_DISPATCH,
+            socket_access.for_role(SocketRole::Control).clone(),
             control_counters,
         )
         .map_err(anyhow::Error::from)?;
@@ -1153,6 +1161,7 @@ impl SearchdRuntime {
             config.ingest_socket_path(),
             ingest_adapter,
             ServerAdmissionPolicy::SERIAL_DISPATCH,
+            socket_access.for_role(SocketRole::Ingest).clone(),
             ingest_counters,
         )
         .map_err(anyhow::Error::from)?;

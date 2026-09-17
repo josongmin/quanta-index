@@ -15,6 +15,8 @@ use quanta_index_ipc::ServerAdmissionPolicy;
 use quanta_index_search_plane::readiness::SearchCorpusHistoryRetentionPolicyV1;
 use quanta_index_search_plane::{SEARCH_OWNED_SEMANTIC_DIMENSION, SnapshotRegistryPolicy};
 
+use crate::app::socket_access::{SocketAccessPolicies, socket_access_policies_from_env};
+
 /// Default `OpenAI` embedding model and dimension when the `openai` profile is
 /// selected without explicit overrides.
 const DEFAULT_OPENAI_MODEL: &str = "text-embedding-3-small";
@@ -179,6 +181,10 @@ pub struct SearchdConfig {
     /// The heap every open lexical generation writer may hold together, the
     /// heap one takes, and how long an idle one is kept (QI-BB-016).
     lexical_writer_policy: LexicalWriterPolicy,
+    /// Who may connect to each socket (QI-BB-014). Every socket is private
+    /// unless its own knob opens it; the state root stays owner-only
+    /// regardless.
+    socket_access_policies: SocketAccessPolicies,
 }
 
 impl SearchdConfig {
@@ -198,6 +204,7 @@ impl SearchdConfig {
             regex_match_cache_policy: RegexMatchCachePolicy::DEFAULT,
             ingest_resource_policy: IngestResourcePolicy::DEFAULT,
             lexical_writer_policy: LexicalWriterPolicy::DEFAULT,
+            socket_access_policies: SocketAccessPolicies::PRIVATE,
         }
     }
 
@@ -211,7 +218,8 @@ impl SearchdConfig {
             .with_query_admission_policy(query_admission_policy_from_env()?)
             .with_regex_match_cache_policy(regex_match_cache_policy_from_env()?)
             .with_ingest_resource_policy(ingest_resource_policy_from_env()?)
-            .with_lexical_writer_policy(lexical_writer_policy_from_env()?);
+            .with_lexical_writer_policy(lexical_writer_policy_from_env()?)
+            .with_socket_access_policies(socket_access_policies_from_env()?);
         let _validated = base.search_corpus_history_retention_policy()?;
         Ok(base)
     }
@@ -320,6 +328,17 @@ impl SearchdConfig {
     }
 
     #[must_use]
+    pub const fn socket_access_policies(&self) -> &SocketAccessPolicies {
+        &self.socket_access_policies
+    }
+
+    #[must_use]
+    pub fn with_socket_access_policies(mut self, policies: SocketAccessPolicies) -> Self {
+        self.socket_access_policies = policies;
+        self
+    }
+
+    #[must_use]
     pub const fn with_ingest_resource_policy(mut self, policy: IngestResourcePolicy) -> Self {
         self.ingest_resource_policy = policy;
         self
@@ -406,7 +425,7 @@ impl SearchdConfig {
 /// not valid UTF-8 is an operator error and is surfaced, not collapsed into
 /// "absent" where it would silently select a default the operator did not ask
 /// for.
-fn optional_env(name: &str) -> Result<Option<String>> {
+pub(crate) fn optional_env(name: &str) -> Result<Option<String>> {
     match std::env::var(name) {
         Ok(value) => Ok(Some(value)),
         Err(std::env::VarError::NotPresent) => Ok(None),
@@ -986,6 +1005,27 @@ mod tests {
                 dimension: SEARCH_OWNED_SEMANTIC_DIMENSION
             }
         );
+    }
+
+    #[test]
+    fn socket_access_defaults_to_private_everywhere_and_the_builder_sets_it() {
+        let config = SearchdConfig::from_state_root(PathBuf::from("/tmp/quanta-index-cfg-test"));
+        assert_eq!(
+            config.socket_access_policies(),
+            &SocketAccessPolicies::PRIVATE
+        );
+        let shared = SocketAccessPolicies::new(
+            quanta_index_ipc::SocketAccessPolicy::Shared(
+                quanta_index_ipc::SharedSocketAccess::new(
+                    Some(2000),
+                    std::collections::BTreeSet::new(),
+                ),
+            ),
+            quanta_index_ipc::SocketAccessPolicy::Private,
+            quanta_index_ipc::SocketAccessPolicy::Private,
+        );
+        let config = config.with_socket_access_policies(shared.clone());
+        assert_eq!(config.socket_access_policies(), &shared);
     }
 
     #[test]

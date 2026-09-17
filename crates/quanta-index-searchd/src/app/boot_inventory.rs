@@ -18,7 +18,10 @@ use quanta_index_core::{
     CoreError, MetricPointV1, MetricSourcePort, QuarantinedGenerationV1, RepoMapOpenReportV1,
     SealedGenerationScanPort, count_from_usize,
 };
+use quanta_index_ipc::SocketAccessPolicy;
 use quanta_index_search_plane::{Ledger, LegacyAuxiliaryMigrationReceipt};
+
+use crate::app::socket_access::{SocketAccessPolicies, SocketRole};
 
 /// One track's inventory outcome.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -54,6 +57,9 @@ pub struct BootInventoryReportV1 {
     /// What the `RepoMap` store found on disk: loaded, migrated, swept and
     /// quarantined files (QI-BB-008).
     pub repo_map: RepoMapOpenReportV1,
+    /// The effective access policy each socket was bound under
+    /// (QI-BB-014): private, or shared with a group and/or listed users.
+    pub socket_access: SocketAccessPolicies,
 }
 
 impl TrackInventoryReportV1 {
@@ -71,11 +77,37 @@ impl TrackInventoryReportV1 {
     }
 }
 
+/// The gauges that describe one socket's access policy: whether it is
+/// shared, how many users it lists, and — only when it names one — the gid
+/// it is shared with.
+fn socket_access_points(role: SocketRole, policy: &SocketAccessPolicy) -> Vec<MetricPointV1> {
+    let name = role.as_str();
+    let mut points = vec![MetricPointV1::gauge_count(
+        format!("boot_socket_{name}_shared"),
+        u64::from(policy.admits_others()),
+    )];
+    let (group, listed) = match policy {
+        SocketAccessPolicy::Private => (None, 0),
+        SocketAccessPolicy::Shared(access) => (access.group(), access.allowed_uids().len()),
+    };
+    points.push(MetricPointV1::gauge_count(
+        format!("boot_socket_{name}_allowed_uids"),
+        count_from_usize(listed),
+    ));
+    if let Some(gid) = group {
+        points.push(MetricPointV1::gauge_count(
+            format!("boot_socket_{name}_group_gid"),
+            u64::from(gid),
+        ));
+    }
+    points
+}
+
 /// What boot found, as gauges fixed for the life of the process,
 /// `boot_…` (QI-BB-015).
 impl MetricSourcePort for BootInventoryReportV1 {
     fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
-        let mut points = Vec::with_capacity(12);
+        let mut points = Vec::with_capacity(21);
         points.extend(self.lexical.metric_points("lexical"));
         points.extend(self.semantic.metric_points("semantic"));
         points.push(MetricPointV1::gauge_count(
@@ -110,6 +142,12 @@ impl MetricSourcePort for BootInventoryReportV1 {
             "boot_repomap_activations_without_snapshot",
             count_from_usize(self.repo_map.activations_without_snapshot.len()),
         ));
+        for role in SocketRole::ALL {
+            points.extend(socket_access_points(
+                role,
+                self.socket_access.for_role(role),
+            ));
+        }
         Ok(points)
     }
 }

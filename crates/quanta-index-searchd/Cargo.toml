@@ -12,6 +12,9 @@ workspace = true
 anyhow.workspace = true
 fs2.workspace = true
 memchr.workspace = true
+# Name resolution for the socket access knobs (`getgrnam_r` / `getpwnam_r`,
+# QI-BB-014); the safe wrapper, so this crate stays free of `unsafe`.
+nix = { workspace = true }
 regex.workspace = true
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }

@@ -102,12 +102,33 @@ def check_lints_inherits(cargo_toml: Path, data: dict) -> list[Violation]:
     return []
 
 
-def check_dependencies(cargo_toml: Path, data: dict) -> list[Violation]:
-    violations: list[Violation] = []
+def dependency_sections(data: dict) -> list[tuple[str, dict]]:
+    """Every dependency table in a manifest, top-level and target-specific.
+
+    `[target.'cfg(...)'.dependencies]` tables carry the same policy as the
+    top-level ones; a platform-gated dep must still come from
+    `[workspace.dependencies]`.
+    """
+    sections: list[tuple[str, dict]] = []
     for section in DEP_SECTIONS:
         block = data.get(section)
-        if not isinstance(block, dict):
-            continue
+        if isinstance(block, dict):
+            sections.append((section, block))
+    targets = data.get("target")
+    if isinstance(targets, dict):
+        for target, tables in targets.items():
+            if not isinstance(tables, dict):
+                continue
+            for section in DEP_SECTIONS:
+                block = tables.get(section)
+                if isinstance(block, dict):
+                    sections.append((f"target.{target}.{section}", block))
+    return sections
+
+
+def check_dependencies(cargo_toml: Path, data: dict) -> list[Violation]:
+    violations: list[Violation] = []
+    for section, block in dependency_sections(data):
         for name, value in block.items():
             internal = name.startswith("quanta-index-")
             violations.extend(check_single_dep(cargo_toml, section, name, value, internal))

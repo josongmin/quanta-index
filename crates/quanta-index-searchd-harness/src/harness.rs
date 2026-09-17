@@ -52,7 +52,9 @@ use quanta_index_core::IngestResourcePolicy;
 use quanta_index_ipc::{ClientIoPolicy, IpcError, send_request};
 use quanta_index_search_plane::{BoundedQueryObsStore, MetricSample, ObsError};
 use quanta_index_searchd::app::searchd::drive;
-use quanta_index_searchd::app::{BootInventoryReportV1, SearchdConfig, SemanticEmbedderProfile};
+use quanta_index_searchd::app::{
+    BootInventoryReportV1, SearchdConfig, SemanticEmbedderProfile, SocketAccessPolicies, SocketRole,
+};
 use quanta_index_searchd_runtime::build_runtime;
 use tempfile::TempDir;
 
@@ -111,6 +113,20 @@ type DriverHandles = (
     BootInventoryReportV1,
 );
 
+/// Everything one daemon start is configured with.
+struct DriverSpec<'a> {
+    state_root: &'a Path,
+    embedder_profile: &'a SemanticEmbedderProfile,
+    history_max_generations: usize,
+    ingest_resource_policy: IngestResourcePolicy,
+    socket_access: &'a SocketAccessPolicies,
+    /// Where the three sockets go: a fresh, unique directory the daemon
+    /// creates under `/tmp` when any socket is shared (so the peers the
+    /// policy admits can traverse the path), the process temp dir
+    /// otherwise.
+    socket_directory: Option<&'a Path>,
+}
+
 fn structural_role_tags(
     root_end: u32,
     identifier_start: u32,
@@ -158,6 +174,15 @@ pub struct E2eRuntime {
     /// fixture; envelope tests tighten it through
     /// [`Self::boot_with_ingest_resource_policy`].
     ingest_resource_policy: IngestResourcePolicy,
+    /// Who may connect to each socket (QI-BB-014). Private everywhere by
+    /// default; shared-mode tests open one through
+    /// [`Self::boot_with_socket_access`].
+    socket_access: SocketAccessPolicies,
+    /// The directory the sockets live in when any of them is shared: a
+    /// unique path under `/tmp` that the daemon creates with the policy's
+    /// mode and group, and that the harness removes on stop. `None` keeps
+    /// the sockets loose in the process temp dir.
+    socket_directory: Option<PathBuf>,
     driver: Option<DriverState>,
     query_obs_store: Option<Arc<BoundedQueryObsStore>>,
     chunk_ids_by_path: BTreeMap<String, ChunkId>,
@@ -331,6 +356,51 @@ impl E2eRuntime {
         Ok(runtime)
     }
 
+    /// Like [`Self::boot`] but binds each socket under its policy in
+    /// `access` (QI-BB-014).
+    ///
+    /// When any socket is shared, the three sockets are placed in a fresh
+    /// directory under `/tmp` — the one directory that is sticky and
+    /// world-traversable on every supported host — which the daemon creates
+    /// with the policy's mode and group; the process temp dir is not
+    /// traversable by other users on macOS, so a shared socket there would
+    /// be refused at bind. The daemon itself resolves nothing here: the
+    /// policies are typed, so a test that wants a name refused at boot goes
+    /// through the daemon's config parser instead.
+    pub fn boot_with_socket_access(access: SocketAccessPolicies) -> AnyResult<Self> {
+        let mut runtime = Self::boot()?;
+        let any_shared = SocketRole::ALL
+            .into_iter()
+            .any(|role| access.for_role(role).admits_others());
+        if any_shared {
+            runtime.socket_directory = Some(unique_shared_socket_directory());
+        }
+        runtime.socket_access = access;
+        Ok(runtime)
+    }
+
+    /// The directory the sockets live in when a shared policy placed them
+    /// under `/tmp`; `None` while the sockets are loose in the process temp
+    /// dir. Exists only once the daemon has bound (it creates the
+    /// directory), and a refused boot leaves nothing behind.
+    #[must_use]
+    pub fn socket_directory(&self) -> Option<&Path> {
+        self.socket_directory.as_deref()
+    }
+
+    /// The paths of the three sockets the running daemon bound, in
+    /// (query, control, ingest) order; `None` while the driver is stopped.
+    #[must_use]
+    pub fn socket_paths(&self) -> Option<(&Path, &Path, &Path)> {
+        self.driver.as_ref().map(|driver| {
+            (
+                driver.query_socket.as_path(),
+                driver.control_socket.as_path(),
+                driver.ingest_socket.as_path(),
+            )
+        })
+    }
+
     fn boot_with_profile_and_history(
         profile: SemanticEmbedderProfile,
         history_max_generations: usize,
@@ -343,6 +413,8 @@ impl E2eRuntime {
             embedder_profile: profile,
             history_max_generations,
             ingest_resource_policy: IngestResourcePolicy::DEFAULT,
+            socket_access: SocketAccessPolicies::PRIVATE,
+            socket_directory: None,
             driver: None,
             query_obs_store: None,
             chunk_ids_by_path: BTreeMap::new(),
@@ -398,7 +470,26 @@ impl E2eRuntime {
             Ok(())
         };
         self.query_obs_store = None;
-        outcome
+        outcome?;
+        self.remove_socket_directory()
+    }
+
+    /// Remove the shared-mode socket directory, if the daemon created it.
+    /// The servers unlink their sockets on shutdown; the directory is the
+    /// harness's to remove. A directory that was never created (a boot
+    /// refused before any bind) is not an error.
+    fn remove_socket_directory(&self) -> AnyResult<()> {
+        let Some(directory) = self.socket_directory.as_deref() else {
+            return Ok(());
+        };
+        match std::fs::remove_dir_all(directory) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(anyhow::anyhow!(
+                "e2e-harness: removing socket directory {} failed: {error}",
+                directory.display()
+            )),
+        }
     }
 
     /// Start the daemon now instead of on the first query, surfacing a boot
@@ -426,12 +517,14 @@ impl E2eRuntime {
                 join,
                 query_obs_store,
                 boot_inventory,
-            ) = start_driver(
-                &self.state_root,
-                &self.embedder_profile,
-                self.history_max_generations,
-                self.ingest_resource_policy,
-            )?;
+            ) = start_driver(&DriverSpec {
+                state_root: &self.state_root,
+                embedder_profile: &self.embedder_profile,
+                history_max_generations: self.history_max_generations,
+                ingest_resource_policy: self.ingest_resource_policy,
+                socket_access: &self.socket_access,
+                socket_directory: self.socket_directory.as_deref(),
+            })?;
             self.query_obs_store = Some(Arc::clone(&query_obs_store));
             self.driver = Some(DriverState {
                 query_socket,
@@ -2795,18 +2888,8 @@ fn explain_transport_error(
     }
 }
 
-fn start_driver(
-    state_root: &Path,
-    embedder_profile: &SemanticEmbedderProfile,
-    history_max_generations: usize,
-    ingest_resource_policy: IngestResourcePolicy,
-) -> AnyResult<DriverHandles> {
-    let config = build_config(
-        state_root,
-        embedder_profile,
-        history_max_generations,
-        ingest_resource_policy,
-    )?;
+fn start_driver(spec: &DriverSpec<'_>) -> AnyResult<DriverHandles> {
+    let config = build_config(spec)?;
     let runtime = build_runtime(config)?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
     let control_socket = runtime.control_server.socket_path().to_path_buf();
@@ -2851,25 +2934,29 @@ fn start_driver(
 
 const DEFAULT_HISTORY_MAX_GENERATIONS: usize = 8;
 
-fn build_config(
-    state_root: &Path,
-    embedder_profile: &SemanticEmbedderProfile,
-    history_max_generations: usize,
-    ingest_resource_policy: IngestResourcePolicy,
-) -> AnyResult<SearchdConfig> {
-    let mut cfg = SearchdConfig::from_state_root(state_root.to_path_buf())
+fn build_config(spec: &DriverSpec<'_>) -> AnyResult<SearchdConfig> {
+    let mut cfg = SearchdConfig::from_state_root(spec.state_root.to_path_buf())
         .try_with_search_corpus_history_retention_limits(
-            history_max_generations,
+            spec.history_max_generations,
             16 * 1024 * 1024,
             128,
             256 * 1024 * 1024,
         )?;
-    let (query_socket, control_socket, ingest_socket) = unique_socket_paths();
+    let (query_socket, control_socket, ingest_socket) =
+        spec.socket_directory
+            .map_or_else(unique_socket_paths, |directory| {
+                (
+                    directory.join("query.sock"),
+                    directory.join("control.sock"),
+                    directory.join("ingest.sock"),
+                )
+            });
     cfg = SearchdConfig::with_socket_overrides(cfg, query_socket, control_socket);
     cfg = SearchdConfig::with_ingest_socket_override(cfg, ingest_socket);
     Ok(cfg
-        .with_semantic_embedder_profile(embedder_profile.clone())
-        .with_ingest_resource_policy(ingest_resource_policy))
+        .with_semantic_embedder_profile(spec.embedder_profile.clone())
+        .with_ingest_resource_policy(spec.ingest_resource_policy)
+        .with_socket_access_policies(spec.socket_access.clone()))
 }
 
 /// Reduce one query response to its bounded-result shape. Routes that do
@@ -2970,6 +3057,19 @@ fn unexpected_response(kind: &str) -> E2eQueryResult {
             message: format!("expected Text, got {kind}"),
         }),
     }
+}
+
+/// A fresh, unique directory path under `/tmp` for shared-mode sockets.
+///
+/// Nothing is created here: the daemon creates it at bind with the
+/// policy's mode and group, so its creation path is what the test proves.
+fn unique_shared_socket_directory() -> PathBuf {
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let sequence = NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed);
+    PathBuf::from("/tmp").join(format!("qi-e2e-sockets-{pid}-{nanos}-{sequence}"))
 }
 
 fn unique_socket_paths() -> (PathBuf, PathBuf, PathBuf) {

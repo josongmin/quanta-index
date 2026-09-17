@@ -18,7 +18,7 @@ use quanta_index_contract::{
 };
 use quanta_index_ipc::{
     IpcDispatcher, IpcError, IpcServerCounters, RequestEnvelope, ResponseEnvelope,
-    ServerAdmissionPolicy, ShutdownHandle as IpcShutdownHandle, UdsServer,
+    ServerAdmissionPolicy, ShutdownHandle as IpcShutdownHandle, SocketAccessPolicy, UdsServer,
 };
 
 /// Composed query server. Holds the bound [`UdsServer`] and a handle to the
@@ -66,16 +66,17 @@ where
     ResponseEnvelopeT: ResponseEnvelope<Response>,
     D: IpcDispatcher<Request, Response> + ?Sized + 'static,
 {
-    /// Bind a server to `socket_path` under `policy` (QI-BB-002), counting
-    /// into `counters` (QI-BB-015).
+    /// Bind a server to `socket_path` under `policy` (QI-BB-002) and
+    /// `access` (QI-BB-014), counting into `counters` (QI-BB-015).
     pub fn bind(
         thread_name: impl Into<String>,
         socket_path: &Path,
         dispatcher: Arc<D>,
         policy: ServerAdmissionPolicy,
+        access: SocketAccessPolicy,
         counters: Arc<IpcServerCounters>,
     ) -> Result<Self, IpcError> {
-        let server = UdsServer::bind_observed(socket_path, policy, counters)?;
+        let server = UdsServer::bind_observed(socket_path, policy, access, counters)?;
         Ok(Self {
             server,
             dispatcher,

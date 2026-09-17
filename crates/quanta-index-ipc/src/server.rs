@@ -7,6 +7,11 @@
 //! [`RequestBudgetV1`], and writes the response back on the same connection.
 //! A peer that hangs up mid-dispatch cancels that request's budget.
 //!
+//! Every accepted connection is first checked against the socket's
+//! [`SocketAccessPolicy`] using the credentials the kernel reports for the
+//! peer; a peer the policy does not admit is closed before a frame is read
+//! and counted, never answered (QI-BB-014).
+//!
 //! Connection-fatal failures (framing, oversized, CBOR decode) close the
 //! connection without writing a response. Request-domain failures (e.g.
 //! `NOT_READY`, `INVALID_REQUEST`), a full dispatch queue and an oversized
@@ -24,6 +29,8 @@ use std::time::{Duration, Instant};
 use quanta_index_core::RequestBudgetV1;
 
 use crate::admission::{DispatchSlots, ServerAdmissionPolicy, SlotRefusal};
+use crate::peer_credentials::{KernelPeerCredentials, PeerCredentialsSource};
+use crate::socket_access::{PeerRefusal, SocketAccessPolicy, admit_peer};
 
 use quanta_index_contract::{
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponseEnvelope,
@@ -227,6 +234,15 @@ pub struct UdsServer {
     socket_path_identity: SocketPathIdentity,
     shutdown: Arc<AtomicBool>,
     policy: ServerAdmissionPolicy,
+    /// Who the socket admits (QI-BB-014): the file mode was set from it at
+    /// bind, and every accepted peer is checked against it before a frame
+    /// is read.
+    access: SocketAccessPolicy,
+    /// The effective uid this server bound as; the owner every policy
+    /// admits.
+    owner: u32,
+    /// Where the accept loop learns each peer's credentials.
+    peer_source: Arc<dyn PeerCredentialsSource>,
     /// What this server has counted since bind (QI-BB-015): live
     /// connections, which the accept loop refuses past the policy's cap
     /// instead of queueing without bound, and every admission outcome.
@@ -264,17 +280,17 @@ impl SocketPathIdentity {
     }
 }
 
-/// Mode of a socket file this server binds: its owner and no one else.
-const SOCKET_MODE: u32 = 0o600;
-/// Mode of a socket directory this server creates.
-const SOCKET_DIRECTORY_MODE: u32 = 0o700;
 /// Group and other write bits.
 const OTHERS_WRITE_BITS: u32 = 0o022;
-/// Group and other access bits.
-const OTHERS_ACCESS_BITS: u32 = 0o077;
 /// The sticky bit: in a shared directory, only an entry's owner may unlink
 /// or rename it.
 const STICKY_BIT: u32 = 0o1000;
+/// The group traverse bit.
+const GROUP_TRAVERSE_BIT: u32 = 0o010;
+/// The other traverse bit.
+const OTHERS_TRAVERSE_BIT: u32 = 0o001;
+/// The permission and special bits of a mode.
+const MODE_BITS: u32 = 0o7777;
 
 fn insecure(path: &Path, reason: impl Into<String>) -> IpcError {
     IpcError::SocketPathInsecure {
@@ -283,63 +299,207 @@ fn insecure(path: &Path, reason: impl Into<String>) -> IpcError {
     }
 }
 
-/// Create the socket directory privately, or verify a pre-existing one.
+fn unsatisfiable(path: &Path, reason: impl Into<String>) -> IpcError {
+    IpcError::SocketAccessUnsatisfiable {
+        path: path.to_path_buf(),
+        reason: reason.into(),
+    }
+}
+
+/// Refuse a shared policy whose group this process is not a member of.
 ///
-/// A directory this process creates is `0700`. A pre-existing directory is
-/// judged by what it resolves to (`/tmp` is a symlink on some systems): it
-/// passes when it is a directory that either belongs to this user with no
-/// group/other write bit, or carries the sticky bit (a shared temporary
-/// directory, where others cannot unlink or rename this user's socket).
-/// Anything else is refused: a permissive directory lets another local
-/// user replace the socket under the daemon.
-fn ensure_private_socket_directory(parent: &Path, owner: u32) -> Result<(), IpcError> {
+/// The check reads the effective gid and the supplementary groups; it is
+/// what `chown` would enforce for an unprivileged process, made explicit
+/// so root gets the same answer and the refusal names the group.
+fn ensure_group_membership(path: &Path, access: &SocketAccessPolicy) -> Result<(), IpcError> {
+    let Some(group) = access.group() else {
+        return Ok(());
+    };
+    if rustix::process::getegid().as_raw() == group {
+        return Ok(());
+    }
+    let supplementary = rustix::process::getgroups()
+        .map_err(std::io::Error::from)
+        .map_err(IpcError::Io)?;
+    if supplementary.iter().any(|gid| gid.as_raw() == group) {
+        return Ok(());
+    }
+    Err(unsatisfiable(
+        path,
+        format!(
+            "this process is not a member of gid {group}, so it cannot share a socket with that group"
+        ),
+    ))
+}
+
+/// Create the socket directory for `access`, or verify a pre-existing one.
+///
+/// A directory this process creates gets the policy's mode (`0700`
+/// private, `0710` group-shared, `0711` uid-shared) and, for a group-shared
+/// socket, the group; every missing component is created and pinned
+/// individually so the umask cannot strip a traverse bit. A pre-existing
+/// directory is judged by what it resolves to (`/tmp` is a symlink on some
+/// systems): it passes when it is a directory that either belongs to this
+/// user with no group/other write bit, or carries the sticky bit (a shared
+/// temporary directory, where others cannot unlink or rename this user's
+/// socket). Anything else is refused: a permissive directory lets another
+/// local user replace the socket under the daemon.
+fn ensure_socket_directory(
+    parent: &Path,
+    owner: u32,
+    access: &SocketAccessPolicy,
+) -> Result<(), IpcError> {
     match std::fs::metadata(parent) {
-        Ok(metadata) => {
-            if !metadata.is_dir() {
-                return Err(insecure(parent, "socket directory is not a directory"));
-            }
-            let mode = metadata.mode() & 0o7777;
-            let private = metadata.uid() == owner && mode & OTHERS_WRITE_BITS == 0;
-            let sticky_shared = mode & STICKY_BIT != 0;
-            if !(private || sticky_shared) {
-                return Err(insecure(
-                    parent,
-                    format!(
-                        "socket directory is writable by others without the sticky bit (mode {mode:04o}, uid {}, this process runs as {owner})",
-                        metadata.uid()
-                    ),
-                ));
-            }
-            Ok(())
-        }
+        Ok(metadata) => verify_existing_socket_directory(parent, owner, &metadata),
         Err(error) if error.kind() == ErrorKind::NotFound => {
-            std::fs::DirBuilder::new()
-                .recursive(true)
-                .mode(SOCKET_DIRECTORY_MODE)
-                .create(parent)
-                .map_err(IpcError::Io)?;
-            // `recursive` only applies the mode to directories it creates;
-            // the leaf is what the socket lives in, so it is pinned again.
-            std::fs::set_permissions(
-                parent,
-                std::fs::Permissions::from_mode(SOCKET_DIRECTORY_MODE),
-            )
-            .map_err(IpcError::Io)?;
-            let created = std::fs::metadata(parent).map_err(IpcError::Io)?;
-            if created.uid() != owner || created.mode() & OTHERS_ACCESS_BITS != 0 {
-                return Err(insecure(
-                    parent,
-                    format!(
-                        "socket directory came back with mode {:04o} and uid {} after creation",
-                        created.mode() & 0o7777,
-                        created.uid()
-                    ),
-                ));
-            }
-            Ok(())
+            create_socket_directory_chain(parent, owner, access)
         }
         Err(error) => Err(IpcError::Io(error)),
     }
+}
+
+fn verify_existing_socket_directory(
+    parent: &Path,
+    owner: u32,
+    metadata: &std::fs::Metadata,
+) -> Result<(), IpcError> {
+    if !metadata.is_dir() {
+        return Err(insecure(parent, "socket directory is not a directory"));
+    }
+    let mode = metadata.mode() & MODE_BITS;
+    let private = metadata.uid() == owner && mode & OTHERS_WRITE_BITS == 0;
+    let sticky_shared = mode & STICKY_BIT != 0;
+    if !(private || sticky_shared) {
+        return Err(insecure(
+            parent,
+            format!(
+                "socket directory is writable by others without the sticky bit (mode {mode:04o}, uid {}, this process runs as {owner})",
+                metadata.uid()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Create every missing component of `parent`, each with the policy's
+/// directory mode and group, and re-read each one to prove it.
+fn create_socket_directory_chain(
+    parent: &Path,
+    owner: u32,
+    access: &SocketAccessPolicy,
+) -> Result<(), IpcError> {
+    let mut missing: Vec<&Path> = Vec::new();
+    let mut cursor = parent;
+    loop {
+        match std::fs::metadata(cursor) {
+            Ok(_present) => break,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                missing.push(cursor);
+                cursor = cursor.parent().ok_or_else(|| {
+                    insecure(
+                        parent,
+                        "socket directory has no existing ancestor to create it under",
+                    )
+                })?;
+            }
+            Err(error) => return Err(IpcError::Io(error)),
+        }
+    }
+    let mode = access.directory_mode();
+    for component in missing.into_iter().rev() {
+        std::fs::DirBuilder::new()
+            .mode(mode)
+            .create(component)
+            .map_err(IpcError::Io)?;
+        if let Some(group) = access.group() {
+            std::os::unix::fs::chown(component, None, Some(group)).map_err(IpcError::Io)?;
+        }
+        // The umask applies at creation; the mode is pinned afterwards.
+        std::fs::set_permissions(component, std::fs::Permissions::from_mode(mode))
+            .map_err(IpcError::Io)?;
+        let created = std::fs::metadata(component).map_err(IpcError::Io)?;
+        let group_matches = access.group().is_none_or(|group| created.gid() == group);
+        if created.uid() != owner || created.mode() & MODE_BITS != mode || !group_matches {
+            return Err(insecure(
+                component,
+                format!(
+                    "socket directory came back with mode {:04o}, uid {} and gid {} after creation (wanted mode {mode:04o}, uid {owner}, gid {:?})",
+                    created.mode() & MODE_BITS,
+                    created.uid(),
+                    created.gid(),
+                    access.group()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Prove the peers a shared policy admits can reach the socket: every
+/// directory from the socket's (resolved) parent up to the root must be
+/// traversable by them.
+///
+/// A uid-shared socket needs the other-traverse bit on each, since the
+/// listed users' groups are not known here. A group-shared socket accepts
+/// either that bit or the group-traverse bit on a directory of the shared
+/// group. The state root above the default socket directory is created
+/// `0700`; sharing a socket there needs the operator to open its traverse
+/// bit (its write bits stay owner-only) or to place the socket elsewhere.
+/// Nothing is widened here: a policy the filesystem contradicts is refused.
+fn ensure_socket_path_reachable(
+    parent: &Path,
+    access: &SocketAccessPolicy,
+) -> Result<(), IpcError> {
+    if !access.admits_others() {
+        return Ok(());
+    }
+    let resolved = std::fs::canonicalize(parent).map_err(IpcError::Io)?;
+    let mut cursor: Option<&Path> = Some(resolved.as_path());
+    while let Some(directory) = cursor {
+        let metadata = std::fs::metadata(directory).map_err(IpcError::Io)?;
+        let mode = metadata.mode() & MODE_BITS;
+        let by_others = mode & OTHERS_TRAVERSE_BIT != 0;
+        let by_group = access
+            .group()
+            .is_some_and(|group| metadata.gid() == group && mode & GROUP_TRAVERSE_BIT != 0);
+        if !(by_others || by_group) {
+            let group_hint = access
+                .group()
+                .map_or_else(String::new, |group| format!(", or gid {group} with g+x"));
+            return Err(unsatisfiable(
+                directory,
+                format!(
+                    "directory mode {mode:04o} gid {} cannot be traversed by the peers the policy admits (needs o+x{group_hint}); open its traverse bit or place the socket under a directory the peers can reach",
+                    metadata.gid()
+                ),
+            ));
+        }
+        cursor = directory.parent();
+    }
+    Ok(())
+}
+
+/// Assign the bound socket file its group and mode, then prove both.
+fn apply_socket_file_access(path: &Path, access: &SocketAccessPolicy) -> Result<(), IpcError> {
+    if let Some(group) = access.group() {
+        std::os::unix::fs::chown(path, None, Some(group)).map_err(IpcError::Io)?;
+    }
+    let mode = access.socket_mode();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).map_err(IpcError::Io)?;
+    let applied = std::fs::symlink_metadata(path).map_err(IpcError::Io)?;
+    let group_matches = access.group().is_none_or(|group| applied.gid() == group);
+    if applied.mode() & MODE_BITS != mode || !group_matches {
+        return Err(insecure(
+            path,
+            format!(
+                "socket came back with mode {:04o} and gid {} (wanted mode {mode:04o}, gid {:?})",
+                applied.mode() & MODE_BITS,
+                applied.gid(),
+                access.group()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// Leave a live socket alone and reclaim a stale one.
@@ -389,49 +549,80 @@ fn reclaim_socket_path(path: &Path, owner: u32) -> Result<(), IpcError> {
 }
 
 impl UdsServer {
-    /// Bind a new listener at `path` under [`ServerAdmissionPolicy::DEFAULT`].
+    /// Bind a private listener at `path` under
+    /// [`ServerAdmissionPolicy::DEFAULT`].
     pub fn bind(path: &Path) -> Result<Self, IpcError> {
         Self::bind_with_policy(path, ServerAdmissionPolicy::DEFAULT)
     }
 
-    /// Bind a new listener at `path`, privately (QI-BB-014).
-    ///
-    /// The directory the socket lives in is created `0700` when absent and
-    /// verified when present: a real directory, owned by this process's
-    /// user, that others cannot write to (or a sticky shared directory,
-    /// where others cannot unlink what they do not own). A socket already at
-    /// the path is probed: one that answers belongs to a live listener and
-    /// is left alone under `SOCKET_IN_USE`; one that refuses connections is
-    /// stale and reclaimed, but only if it is still the same inode after the
-    /// probe, so a listener that binds in between keeps its path. The bound
-    /// socket is then made `0600`.
+    /// Bind a private listener at `path` under `policy`, with counters no
+    /// scrape sees (plane `unnamed`).
     pub fn bind_with_policy(path: &Path, policy: ServerAdmissionPolicy) -> Result<Self, IpcError> {
         Self::bind_observed(
             path,
             policy,
+            SocketAccessPolicy::Private,
             Arc::new(IpcServerCounters::for_plane("unnamed")),
         )
     }
 
-    /// [`Self::bind_with_policy`] with counters the caller keeps a handle to,
-    /// so they can be registered with a scrape before any connection exists
-    /// (QI-BB-015).
+    /// Bind a listener at `path` under `policy` and `access`, counting into
+    /// `counters` the caller keeps a handle to, so they can be registered
+    /// with a scrape before any connection exists (QI-BB-015). Peers are
+    /// identified by the kernel's own report.
     pub fn bind_observed(
         path: &Path,
         policy: ServerAdmissionPolicy,
+        access: SocketAccessPolicy,
         counters: Arc<IpcServerCounters>,
     ) -> Result<Self, IpcError> {
+        Self::bind_with_peer_source(
+            path,
+            policy,
+            access,
+            counters,
+            Arc::new(KernelPeerCredentials),
+        )
+    }
+
+    /// Bind a listener at `path` (QI-BB-014), learning each accepted peer's
+    /// credentials from `peer_source`.
+    ///
+    /// Before anything is bound, a shared policy is checked against this
+    /// process: it must be a member of the group it names, and every
+    /// directory on the socket's path must be traversable by the peers the
+    /// policy admits. The directory the socket lives in is created with the
+    /// policy's mode (and group) when absent and verified when present: a
+    /// real directory, owned by this process's user, that others cannot
+    /// write to (or a sticky shared directory, where others cannot unlink
+    /// what they do not own). A socket already at the path is probed: one
+    /// that answers belongs to a live listener and is left alone under
+    /// `SOCKET_IN_USE`; one that refuses connections is stale and reclaimed,
+    /// but only if it is still the same inode after the probe, so a listener
+    /// that binds in between keeps its path. The bound socket is then
+    /// assigned the policy's group and mode (`0600`, `0660` or `0666`).
+    ///
+    /// `peer_source` is a port so a test can script the peer the accept
+    /// loop observes; production binds through [`Self::bind_observed`].
+    pub fn bind_with_peer_source(
+        path: &Path,
+        policy: ServerAdmissionPolicy,
+        access: SocketAccessPolicy,
+        counters: Arc<IpcServerCounters>,
+        peer_source: Arc<dyn PeerCredentialsSource>,
+    ) -> Result<Self, IpcError> {
         let owner = rustix::process::geteuid().as_raw();
+        ensure_group_membership(path, &access)?;
         if let Some(parent) = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
         {
-            ensure_private_socket_directory(parent, owner)?;
+            ensure_socket_directory(parent, owner, &access)?;
+            ensure_socket_path_reachable(parent, &access)?;
         }
         reclaim_socket_path(path, owner)?;
         let listener = UnixListener::bind(path).map_err(IpcError::Io)?;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(SOCKET_MODE))
-            .map_err(IpcError::Io)?;
+        apply_socket_file_access(path, &access)?;
         let socket_path_identity = SocketPathIdentity::capture(path).map_err(IpcError::Io)?;
         listener.set_nonblocking(true).map_err(IpcError::Io)?;
         Ok(Self {
@@ -440,6 +631,9 @@ impl UdsServer {
             socket_path_identity,
             shutdown: Arc::new(AtomicBool::new(false)),
             policy,
+            access,
+            owner,
+            peer_source,
             counters,
         })
     }
@@ -447,6 +641,32 @@ impl UdsServer {
     #[must_use]
     pub const fn admission_policy(&self) -> ServerAdmissionPolicy {
         self.policy
+    }
+
+    /// Who this socket admits (QI-BB-014).
+    #[must_use]
+    pub const fn socket_access_policy(&self) -> &SocketAccessPolicy {
+        &self.access
+    }
+
+    /// Screen one accepted connection before anything is read from it.
+    ///
+    /// The peer's credentials come from the server's source; a peer the
+    /// access policy does not admit, or one whose credentials the kernel
+    /// did not report, is refused. Only then is the live-connection cap
+    /// consulted, so the cap counts admitted peers alone.
+    fn screen(&self, stream: &UnixStream, max_connections: u64) -> AcceptOutcome {
+        let credentials = match self.peer_source.peer_credentials(stream) {
+            Ok(credentials) => credentials,
+            Err(error) => return AcceptOutcome::PeerUnreadable(error),
+        };
+        if let Err(refusal) = admit_peer(&self.access, credentials, self.owner) {
+            return AcceptOutcome::PeerRefused(refusal);
+        }
+        if self.counters.connections_live() >= max_connections {
+            return AcceptOutcome::CapReached;
+        }
+        AcceptOutcome::Admitted
     }
 
     /// Connections the accept loop closed because the cap was reached.
@@ -477,9 +697,12 @@ impl UdsServer {
 
     /// Run the accept loop until `shutdown` is triggered.
     ///
-    /// Every accepted connection runs on its own thread, so reading one
-    /// peer's request never waits on another's; dispatch concurrency is
-    /// bounded separately by the policy's slots. The listener is
+    /// Every accepted connection is screened against the socket's access
+    /// policy first (QI-BB-014): a peer that is not admitted, or whose
+    /// credentials the kernel did not report, is closed without a frame
+    /// being read and counted. Every admitted connection runs on its own
+    /// thread, so reading one peer's request never waits on another's;
+    /// dispatch concurrency is bounded separately by the policy's slots. The listener is
     /// non-blocking, so an empty accept queue sleeps `accept_idle` before
     /// retrying. On shutdown the loop stops accepting and joins the
     /// connection threads, each of which finishes its in-flight request
@@ -503,10 +726,23 @@ impl UdsServer {
             connection_threads.retain(|handle| !handle.is_finished());
             match self.listener.accept() {
                 Ok((stream, _addr)) => {
-                    if self.counters.connections_live() >= max_connections {
-                        self.counters.connection_refused();
-                        drop(stream);
-                        continue;
+                    match self.screen(&stream, max_connections) {
+                        AcceptOutcome::Admitted => {}
+                        AcceptOutcome::PeerRefused(_refusal) => {
+                            self.counters.peer_refused();
+                            drop(stream);
+                            continue;
+                        }
+                        AcceptOutcome::PeerUnreadable(_error) => {
+                            self.counters.peer_credentials_unreadable();
+                            drop(stream);
+                            continue;
+                        }
+                        AcceptOutcome::CapReached => {
+                            self.counters.connection_refused();
+                            drop(stream);
+                            continue;
+                        }
                     }
                     self.counters.connection_accepted();
                     let dispatcher = Arc::clone(dispatcher);
@@ -567,6 +803,20 @@ impl Drop for UdsServer {
     fn drop(&mut self) {
         drop(self.remove_owned_socket_path());
     }
+}
+
+/// What the accept loop decided about one connection before reading it.
+#[derive(Debug)]
+enum AcceptOutcome {
+    Admitted,
+    /// The access policy does not admit this peer; closed, counted, and
+    /// never named anywhere but this value.
+    PeerRefused(PeerRefusal),
+    /// The kernel did not report the peer's credentials; closed and counted
+    /// as such, never admitted.
+    PeerUnreadable(std::io::Error),
+    /// The live-connection cap is reached; closed and counted.
+    CapReached,
 }
 
 /// Handle returned by [`UdsServer::shutdown_handle`].
@@ -1146,7 +1396,8 @@ fn classify_client_decode_error(
         | IpcError::ClientIoDeadlineElapsed
         | IpcError::InvalidAdmissionPolicy
         | IpcError::SocketInUse(_)
-        | IpcError::SocketPathInsecure { .. }) => other,
+        | IpcError::SocketPathInsecure { .. }
+        | IpcError::SocketAccessUnsatisfiable { .. }) => other,
     }
 }
 
@@ -1169,11 +1420,11 @@ fn classify_client_io_error(
 mod tests {
     use super::{
         ClientIoPolicy, ConnectionCloseReason, IpcDispatcher, IpcError, IpcServerCounters,
-        PeerWatch, RequestEnvelope, ResponseEnvelope, SOCKET_DIRECTORY_MODE, SOCKET_MODE,
-        SocketPathIdentity, UdsServer, connect_before_deadline, connect_requires_completion_wait,
-        create_connect_socket, decode_response, encode_request, handle_connection, send_request,
-        wait_for_connect,
+        PeerWatch, RequestEnvelope, ResponseEnvelope, SocketPathIdentity, UdsServer,
+        connect_before_deadline, connect_requires_completion_wait, create_connect_socket,
+        decode_response, encode_request, handle_connection, send_request, wait_for_connect,
     };
+    use crate::socket_access::{PRIVATE_DIRECTORY_MODE, PRIVATE_SOCKET_MODE};
     use rustix::fs::{OFlags, fcntl_getfl};
     use rustix::io::{Errno, FdFlags, fcntl_getfd};
     use std::io::Write;
@@ -1409,9 +1660,9 @@ mod tests {
             return Err("the stale socket file must remain for the test".to_string());
         }
         let server = UdsServer::bind(&socket_path).map_err(|error| error.to_string())?;
-        if mode_of(&socket_path)? != SOCKET_MODE {
+        if mode_of(&socket_path)? != PRIVATE_SOCKET_MODE {
             return Err(format!(
-                "socket mode must be {SOCKET_MODE:04o}, got {:04o}",
+                "socket mode must be {PRIVATE_SOCKET_MODE:04o}, got {:04o}",
                 mode_of(&socket_path)?
             ));
         }
@@ -1427,9 +1678,9 @@ mod tests {
         let socket_dir = dir.path().join("created").join("deeper");
         let socket_path = socket_dir.join("private.sock");
         let server = UdsServer::bind(&socket_path).map_err(|error| error.to_string())?;
-        if mode_of(&socket_dir)? != SOCKET_DIRECTORY_MODE {
+        if mode_of(&socket_dir)? != PRIVATE_DIRECTORY_MODE {
             return Err(format!(
-                "created socket directory must be {SOCKET_DIRECTORY_MODE:04o}, got {:04o}",
+                "created socket directory must be {PRIVATE_DIRECTORY_MODE:04o}, got {:04o}",
                 mode_of(&socket_dir)?
             ));
         }

@@ -19,5 +19,11 @@ quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 rustix = { workspace = true, features = ["event", "net", "process"] }
 serde = { workspace = true }
 
+# `getpeereid(3)` for the peer-credential check (QI-BB-014): rustix has no
+# wrapper on the BSDs, nix's is the safe one. Linux uses rustix's
+# `SO_PEERCRED` wrapper and never links nix.
+[target.'cfg(any(target_vendor = "apple", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
+nix = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }

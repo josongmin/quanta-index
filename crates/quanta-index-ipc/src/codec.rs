@@ -56,6 +56,14 @@ pub enum IpcError {
         path: std::path::PathBuf,
         reason: String,
     },
+    /// The socket's shared access policy cannot be honoured here: this
+    /// process is not a member of the shared group, or a directory on the
+    /// socket's path cannot be traversed by the peers the policy admits
+    /// (QI-BB-014, shared mode). Nothing was bound.
+    SocketAccessUnsatisfiable {
+        path: std::path::PathBuf,
+        reason: String,
+    },
 }
 
 impl core::fmt::Display for IpcError {
@@ -98,6 +106,11 @@ impl core::fmt::Display for IpcError {
                 "SOCKET_PATH_INSECURE: {} cannot be served privately: {reason}",
                 path.display()
             ),
+            Self::SocketAccessUnsatisfiable { path, reason } => write!(
+                f,
+                "SOCKET_ACCESS_UNSATISFIABLE: {} cannot be shared as configured: {reason}",
+                path.display()
+            ),
         }
     }
 }
@@ -116,7 +129,8 @@ impl std::error::Error for IpcError {
             | Self::ClientIoDeadlineElapsed
             | Self::InvalidAdmissionPolicy
             | Self::SocketInUse(_)
-            | Self::SocketPathInsecure { .. } => None,
+            | Self::SocketPathInsecure { .. }
+            | Self::SocketAccessUnsatisfiable { .. } => None,
         }
     }
 }

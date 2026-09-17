@@ -18,6 +18,13 @@ pub struct IpcServerCounters {
     connections_accepted: AtomicU64,
     /// Connections closed at accept because the policy's cap was reached.
     connections_refused: AtomicU64,
+    /// Connections closed at accept because the peer's credentials are not
+    /// admitted by the socket's access policy (QI-BB-014); no frame was
+    /// read.
+    peers_refused: AtomicU64,
+    /// Connections closed at accept because the kernel did not report the
+    /// peer's credentials; refused, never admitted.
+    peer_credentials_unreadable: AtomicU64,
     connections_live: AtomicU64,
     /// Requests that could not be decoded; the connection closed.
     request_decode_failures: AtomicU64,
@@ -37,6 +44,8 @@ pub struct IpcServerCounters {
 pub struct IpcServerCountersSnapshot {
     pub connections_accepted: u64,
     pub connections_refused: u64,
+    pub peers_refused: u64,
+    pub peer_credentials_unreadable: u64,
     pub connections_live: u64,
     pub request_decode_failures: u64,
     pub requests_overloaded: u64,
@@ -57,6 +66,8 @@ impl IpcServerCounters {
             plane,
             connections_accepted: AtomicU64::new(0),
             connections_refused: AtomicU64::new(0),
+            peers_refused: AtomicU64::new(0),
+            peer_credentials_unreadable: AtomicU64::new(0),
             connections_live: AtomicU64::new(0),
             request_decode_failures: AtomicU64::new(0),
             requests_overloaded: AtomicU64::new(0),
@@ -76,6 +87,8 @@ impl IpcServerCounters {
         IpcServerCountersSnapshot {
             connections_accepted: self.connections_accepted.load(Ordering::Acquire),
             connections_refused: self.connections_refused.load(Ordering::Acquire),
+            peers_refused: self.peers_refused.load(Ordering::Acquire),
+            peer_credentials_unreadable: self.peer_credentials_unreadable.load(Ordering::Acquire),
             connections_live: self.connections_live.load(Ordering::Acquire),
             request_decode_failures: self.request_decode_failures.load(Ordering::Acquire),
             requests_overloaded: self.requests_overloaded.load(Ordering::Acquire),
@@ -94,6 +107,16 @@ impl IpcServerCounters {
 
     pub(crate) fn connection_refused(&self) {
         let _prior = self.connections_refused.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn peer_refused(&self) {
+        let _prior = self.peers_refused.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn peer_credentials_unreadable(&self) {
+        let _prior = self
+            .peer_credentials_unreadable
+            .fetch_add(1, Ordering::AcqRel);
     }
 
     pub(crate) fn connection_closed(&self) {
@@ -141,6 +164,14 @@ impl MetricSourcePort for IpcServerCounters {
             MetricPointV1::counter(
                 self.metric_name("connections_refused_total"),
                 snapshot.connections_refused,
+            ),
+            MetricPointV1::counter(
+                self.metric_name("peer_refused_total"),
+                snapshot.peers_refused,
+            ),
+            MetricPointV1::counter(
+                self.metric_name("peer_credentials_unreadable_total"),
+                snapshot.peer_credentials_unreadable,
             ),
             MetricPointV1::gauge_count(
                 self.metric_name("connections_live"),

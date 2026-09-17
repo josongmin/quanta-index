@@ -145,3 +145,30 @@ def test_repo_audit_passes():
     assert violations == [], "tree fails Cargo.toml hygiene:\n" + "\n".join(
         f"{v.path}: {v.message}" for v in violations
     )
+
+
+def test_target_specific_dependency_tables_are_audited(tmp_path: Path):
+    toml = _toml(
+        """
+        [dependencies]
+        serde = { workspace = true }
+
+        [target.'cfg(target_os = "macos")'.dependencies]
+        nix = "0.31"
+        """
+    )
+    findings = MODULE.check_dependencies(tmp_path / "Cargo.toml", toml)
+    assert len(findings) == 1
+    assert "nix" in findings[0].message
+    assert "target." in findings[0].message
+    assert "bare version string" in findings[0].message
+
+
+def test_target_specific_workspace_dependency_passes(tmp_path: Path):
+    toml = _toml(
+        """
+        [target.'cfg(target_os = "macos")'.dependencies]
+        nix = { workspace = true }
+        """
+    )
+    assert MODULE.check_dependencies(tmp_path / "Cargo.toml", toml) == []

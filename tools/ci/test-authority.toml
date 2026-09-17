@@ -250,6 +250,12 @@ owner = "quanta-index-ipc"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "ipc-socket-access"
+path = "crates/quanta-index-ipc/tests/socket_access.rs"
+owner = "quanta-index-ipc"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "catalog-idempotency"
 path = "crates/quanta-index-catalog/tests/idempotency.rs"
 owner = "quanta-index-catalog"
@@ -565,6 +571,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "searchd-runtime-e2e-metrics-scrape"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_metrics_scrape.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-e2e-socket-access"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_socket_access.rs"
 owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 
