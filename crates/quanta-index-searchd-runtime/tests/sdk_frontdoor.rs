@@ -1753,7 +1753,7 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
         .first()
         .ok_or_else(|| "missing hybrid seed candidate".to_string())?;
     if hybrid.generation != pin()
-        || hybrid_top.candidate.candidate_id != "alpha"
+        || hybrid_top.entity_id != "alpha"
         || hybrid.explanation.summary.is_empty()
     {
         stop_runtime(&shutdown, join)?;
@@ -3718,7 +3718,7 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
         .first()
         .ok_or_else(|| "missing contract-exact hybrid seed candidate".to_string())?;
     if hybrid.generation != pin()
-        || hybrid_top.candidate.candidate_id != "alpha"
+        || hybrid_top.entity_id != "alpha"
         || hybrid.explanation.summary.is_empty()
     {
         stop_runtime(&shutdown, join)?;
@@ -4010,7 +4010,7 @@ fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() 
         .first()
         .ok_or_else(|| "missing hybrid inline-vector seed candidate".to_string())?;
     if hybrid_inline.generation != pin()
-        || hybrid_inline_top.candidate.candidate_id != "alpha"
+        || hybrid_inline_top.entity_id != "alpha"
         || hybrid_inline.explanation.summary.is_empty()
     {
         stop_runtime(&shutdown, join)?;

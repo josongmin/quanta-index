@@ -5608,29 +5608,6 @@ impl core::marker::Unpin for quanta_index_contract::EngineTouched
 impl core::marker::UnsafeUnpin for quanta_index_contract::EngineTouched
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::EngineTouched
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::EngineTouched
-pub enum quanta_index_contract::results::HybridSeedLane
-pub quanta_index_contract::results::HybridSeedLane::Lexical
-pub quanta_index_contract::results::HybridSeedLane::Semantic
-impl core::clone::Clone for quanta_index_contract::HybridSeedLane
-pub fn quanta_index_contract::HybridSeedLane::clone(&self) -> quanta_index_contract::HybridSeedLane
-impl core::cmp::Eq for quanta_index_contract::HybridSeedLane
-impl core::cmp::PartialEq for quanta_index_contract::HybridSeedLane
-pub fn quanta_index_contract::HybridSeedLane::eq(&self, other: &quanta_index_contract::HybridSeedLane) -> bool
-impl core::fmt::Debug for quanta_index_contract::HybridSeedLane
-pub fn quanta_index_contract::HybridSeedLane::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for quanta_index_contract::HybridSeedLane
-impl core::marker::StructuralPartialEq for quanta_index_contract::HybridSeedLane
-impl serde_core::ser::Serialize for quanta_index_contract::HybridSeedLane
-pub fn quanta_index_contract::HybridSeedLane::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::HybridSeedLane
-pub fn quanta_index_contract::HybridSeedLane::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for quanta_index_contract::HybridSeedLane
-impl core::marker::Send for quanta_index_contract::HybridSeedLane
-impl core::marker::Sync for quanta_index_contract::HybridSeedLane
-impl core::marker::Unpin for quanta_index_contract::HybridSeedLane
-impl core::marker::UnsafeUnpin for quanta_index_contract::HybridSeedLane
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HybridSeedLane
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HybridSeedLane
 pub enum quanta_index_contract::results::PlannerStage
 pub quanta_index_contract::results::PlannerStage::Bridge
 pub quanta_index_contract::results::PlannerStage::ExecFanout
@@ -5664,30 +5641,30 @@ impl core::marker::Unpin for quanta_index_contract::PlannerStage
 impl core::marker::UnsafeUnpin for quanta_index_contract::PlannerStage
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::PlannerStage
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::PlannerStage
-pub enum quanta_index_contract::results::SeedLaneV2
-pub quanta_index_contract::results::SeedLaneV2::Bm25
-pub quanta_index_contract::results::SeedLaneV2::Dense
-pub quanta_index_contract::results::SeedLaneV2::Exact
-impl core::clone::Clone for quanta_index_contract::SeedLaneV2
-pub fn quanta_index_contract::SeedLaneV2::clone(&self) -> quanta_index_contract::SeedLaneV2
-impl core::cmp::Eq for quanta_index_contract::SeedLaneV2
-impl core::cmp::PartialEq for quanta_index_contract::SeedLaneV2
-pub fn quanta_index_contract::SeedLaneV2::eq(&self, other: &quanta_index_contract::SeedLaneV2) -> bool
-impl core::fmt::Debug for quanta_index_contract::SeedLaneV2
-pub fn quanta_index_contract::SeedLaneV2::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for quanta_index_contract::SeedLaneV2
-impl core::marker::StructuralPartialEq for quanta_index_contract::SeedLaneV2
-impl serde_core::ser::Serialize for quanta_index_contract::SeedLaneV2
-pub fn quanta_index_contract::SeedLaneV2::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SeedLaneV2
-pub fn quanta_index_contract::SeedLaneV2::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for quanta_index_contract::SeedLaneV2
-impl core::marker::Send for quanta_index_contract::SeedLaneV2
-impl core::marker::Sync for quanta_index_contract::SeedLaneV2
-impl core::marker::Unpin for quanta_index_contract::SeedLaneV2
-impl core::marker::UnsafeUnpin for quanta_index_contract::SeedLaneV2
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SeedLaneV2
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedLaneV2
+pub enum quanta_index_contract::results::SeedLane
+pub quanta_index_contract::results::SeedLane::Bm25
+pub quanta_index_contract::results::SeedLane::Dense
+pub quanta_index_contract::results::SeedLane::Exact
+impl core::clone::Clone for quanta_index_contract::SeedLane
+pub fn quanta_index_contract::SeedLane::clone(&self) -> quanta_index_contract::SeedLane
+impl core::cmp::Eq for quanta_index_contract::SeedLane
+impl core::cmp::PartialEq for quanta_index_contract::SeedLane
+pub fn quanta_index_contract::SeedLane::eq(&self, other: &quanta_index_contract::SeedLane) -> bool
+impl core::fmt::Debug for quanta_index_contract::SeedLane
+pub fn quanta_index_contract::SeedLane::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::SeedLane
+impl core::marker::StructuralPartialEq for quanta_index_contract::SeedLane
+impl serde_core::ser::Serialize for quanta_index_contract::SeedLane
+pub fn quanta_index_contract::SeedLane::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SeedLane
+pub fn quanta_index_contract::SeedLane::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::SeedLane
+impl core::marker::Send for quanta_index_contract::SeedLane
+impl core::marker::Sync for quanta_index_contract::SeedLane
+impl core::marker::Unpin for quanta_index_contract::SeedLane
+impl core::marker::UnsafeUnpin for quanta_index_contract::SeedLane
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SeedLane
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedLane
 pub struct quanta_index_contract::results::ClusterMembershipBatchReadResponseV1
 pub quanta_index_contract::results::ClusterMembershipBatchReadResponseV1::outcomes: alloc::vec::Vec<quanta_index_contract::ClusterMembershipReadOutcomeV1>
 impl quanta_index_contract::ClusterMembershipBatchReadResponseV1
@@ -5889,38 +5866,11 @@ impl core::marker::Unpin for quanta_index_contract::HybridQueryResponse
 impl core::marker::UnsafeUnpin for quanta_index_contract::HybridQueryResponse
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HybridQueryResponse
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HybridQueryResponse
-pub struct quanta_index_contract::results::HybridSeedCandidate
-pub quanta_index_contract::results::HybridSeedCandidate::candidate: quanta_index_contract_base::results::candidates::LexicalCandidate
-pub quanta_index_contract::results::HybridSeedCandidate::lexical_rank: core::option::Option<u32>
-pub quanta_index_contract::results::HybridSeedCandidate::lexical_score_raw: core::option::Option<f32>
-pub quanta_index_contract::results::HybridSeedCandidate::seed_rank: u32
-pub quanta_index_contract::results::HybridSeedCandidate::semantic_rank: core::option::Option<u32>
-pub quanta_index_contract::results::HybridSeedCandidate::semantic_score_raw: core::option::Option<f32>
-pub quanta_index_contract::results::HybridSeedCandidate::source_lanes: alloc::vec::Vec<quanta_index_contract::HybridSeedLane>
-impl core::clone::Clone for quanta_index_contract::HybridSeedCandidate
-pub fn quanta_index_contract::HybridSeedCandidate::clone(&self) -> quanta_index_contract::HybridSeedCandidate
-impl core::cmp::PartialEq for quanta_index_contract::HybridSeedCandidate
-pub fn quanta_index_contract::HybridSeedCandidate::eq(&self, other: &quanta_index_contract::HybridSeedCandidate) -> bool
-impl core::fmt::Debug for quanta_index_contract::HybridSeedCandidate
-pub fn quanta_index_contract::HybridSeedCandidate::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::HybridSeedCandidate
-impl serde_core::ser::Serialize for quanta_index_contract::HybridSeedCandidate
-pub fn quanta_index_contract::HybridSeedCandidate::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::HybridSeedCandidate
-pub fn quanta_index_contract::HybridSeedCandidate::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for quanta_index_contract::HybridSeedCandidate
-impl core::marker::Send for quanta_index_contract::HybridSeedCandidate
-impl core::marker::Sync for quanta_index_contract::HybridSeedCandidate
-impl core::marker::Unpin for quanta_index_contract::HybridSeedCandidate
-impl core::marker::UnsafeUnpin for quanta_index_contract::HybridSeedCandidate
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HybridSeedCandidate
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HybridSeedCandidate
 pub struct quanta_index_contract::results::HybridSeedQueryResponse
 pub quanta_index_contract::results::HybridSeedQueryResponse::explanation: quanta_index_contract::SearchExplanation
 pub quanta_index_contract::results::HybridSeedQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
 pub quanta_index_contract::results::HybridSeedQueryResponse::manifest_digest: alloc::string::String
-pub quanta_index_contract::results::HybridSeedQueryResponse::seed_candidates: alloc::vec::Vec<quanta_index_contract::HybridSeedCandidate>
-pub quanta_index_contract::results::HybridSeedQueryResponse::seed_candidates_v2: core::option::Option<alloc::vec::Vec<quanta_index_contract::SeedCandidateV2>>
+pub quanta_index_contract::results::HybridSeedQueryResponse::seed_candidates: alloc::vec::Vec<quanta_index_contract::SeedCandidate>
 pub quanta_index_contract::results::HybridSeedQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV1
 impl core::clone::Clone for quanta_index_contract::HybridSeedQueryResponse
 pub fn quanta_index_contract::HybridSeedQueryResponse::clone(&self) -> quanta_index_contract::HybridSeedQueryResponse
@@ -6104,90 +6054,90 @@ impl core::marker::Unpin for quanta_index_contract::SearchPlaneStructuralQueryRe
 impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneStructuralQueryResponse
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneStructuralQueryResponse
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneStructuralQueryResponse
-pub struct quanta_index_contract::results::SeedCandidateV2
-pub quanta_index_contract::results::SeedCandidateV2::authority_digest: core::option::Option<alloc::string::String>
-pub quanta_index_contract::results::SeedCandidateV2::contributions: alloc::vec::Vec<quanta_index_contract::SeedContributionV2>
-pub quanta_index_contract::results::SeedCandidateV2::corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>
-pub quanta_index_contract::results::SeedCandidateV2::degraded_reasons: alloc::vec::Vec<alloc::string::String>
-pub quanta_index_contract::results::SeedCandidateV2::entity_id: alloc::string::String
-pub quanta_index_contract::results::SeedCandidateV2::owner_kind: quanta_index_contract::OwnerDocKind
-pub quanta_index_contract::results::SeedCandidateV2::record_id: alloc::string::String
-pub quanta_index_contract::results::SeedCandidateV2::repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath
-pub quanta_index_contract::results::SeedCandidateV2::seed_rank: u32
-pub quanta_index_contract::results::SeedCandidateV2::snippet: alloc::string::String
-impl core::clone::Clone for quanta_index_contract::SeedCandidateV2
-pub fn quanta_index_contract::SeedCandidateV2::clone(&self) -> quanta_index_contract::SeedCandidateV2
-impl core::cmp::PartialEq for quanta_index_contract::SeedCandidateV2
-pub fn quanta_index_contract::SeedCandidateV2::eq(&self, other: &quanta_index_contract::SeedCandidateV2) -> bool
-impl core::convert::From<&quanta_index_contract::SeedCandidateV2> for quanta_index_contract::SeedFusionIdentityV2
-pub fn quanta_index_contract::SeedFusionIdentityV2::from(candidate: &quanta_index_contract::SeedCandidateV2) -> Self
-impl core::fmt::Debug for quanta_index_contract::SeedCandidateV2
-pub fn quanta_index_contract::SeedCandidateV2::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::SeedCandidateV2
-impl serde_core::ser::Serialize for quanta_index_contract::SeedCandidateV2
-pub fn quanta_index_contract::SeedCandidateV2::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SeedCandidateV2
-pub fn quanta_index_contract::SeedCandidateV2::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for quanta_index_contract::SeedCandidateV2
-impl core::marker::Send for quanta_index_contract::SeedCandidateV2
-impl core::marker::Sync for quanta_index_contract::SeedCandidateV2
-impl core::marker::Unpin for quanta_index_contract::SeedCandidateV2
-impl core::marker::UnsafeUnpin for quanta_index_contract::SeedCandidateV2
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SeedCandidateV2
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedCandidateV2
-pub struct quanta_index_contract::results::SeedContributionV2
-pub quanta_index_contract::results::SeedContributionV2::corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>
-pub quanta_index_contract::results::SeedContributionV2::lane: quanta_index_contract::SeedLaneV2
-pub quanta_index_contract::results::SeedContributionV2::rank: u32
-pub quanta_index_contract::results::SeedContributionV2::raw_score: core::option::Option<f32>
-impl core::clone::Clone for quanta_index_contract::SeedContributionV2
-pub fn quanta_index_contract::SeedContributionV2::clone(&self) -> quanta_index_contract::SeedContributionV2
-impl core::cmp::PartialEq for quanta_index_contract::SeedContributionV2
-pub fn quanta_index_contract::SeedContributionV2::eq(&self, other: &quanta_index_contract::SeedContributionV2) -> bool
-impl core::fmt::Debug for quanta_index_contract::SeedContributionV2
-pub fn quanta_index_contract::SeedContributionV2::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::SeedContributionV2
-impl serde_core::ser::Serialize for quanta_index_contract::SeedContributionV2
-pub fn quanta_index_contract::SeedContributionV2::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SeedContributionV2
-pub fn quanta_index_contract::SeedContributionV2::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for quanta_index_contract::SeedContributionV2
-impl core::marker::Send for quanta_index_contract::SeedContributionV2
-impl core::marker::Sync for quanta_index_contract::SeedContributionV2
-impl core::marker::Unpin for quanta_index_contract::SeedContributionV2
-impl core::marker::UnsafeUnpin for quanta_index_contract::SeedContributionV2
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SeedContributionV2
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedContributionV2
-pub struct quanta_index_contract::results::SeedFusionIdentityV2
-impl quanta_index_contract::SeedFusionIdentityV2
-pub fn quanta_index_contract::SeedFusionIdentityV2::cmp_parts(left_owner_kind: quanta_index_contract::OwnerDocKind, left_entity_id: &str, right_owner_kind: quanta_index_contract::OwnerDocKind, right_entity_id: &str) -> core::cmp::Ordering
-pub fn quanta_index_contract::SeedFusionIdentityV2::cmp_parts_with_corpus_v2(left_owner_kind: quanta_index_contract::OwnerDocKind, left_entity_id: &str, left_corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>, right_owner_kind: quanta_index_contract::OwnerDocKind, right_entity_id: &str, right_corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>) -> core::cmp::Ordering
-pub const fn quanta_index_contract::SeedFusionIdentityV2::corpus_kind(&self) -> core::option::Option<quanta_index_contract::SemanticCorpusKindV1>
-pub fn quanta_index_contract::SeedFusionIdentityV2::entity_id(&self) -> &str
-pub const fn quanta_index_contract::SeedFusionIdentityV2::new(owner_kind: quanta_index_contract::OwnerDocKind, entity_id: alloc::string::String) -> Self
-pub const fn quanta_index_contract::SeedFusionIdentityV2::new_with_corpus_v2(owner_kind: quanta_index_contract::OwnerDocKind, entity_id: alloc::string::String, corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>) -> Self
-pub const fn quanta_index_contract::SeedFusionIdentityV2::owner_kind(&self) -> quanta_index_contract::OwnerDocKind
-impl core::clone::Clone for quanta_index_contract::SeedFusionIdentityV2
-pub fn quanta_index_contract::SeedFusionIdentityV2::clone(&self) -> quanta_index_contract::SeedFusionIdentityV2
-impl core::cmp::Eq for quanta_index_contract::SeedFusionIdentityV2
-impl core::cmp::Ord for quanta_index_contract::SeedFusionIdentityV2
-pub fn quanta_index_contract::SeedFusionIdentityV2::cmp(&self, other: &Self) -> core::cmp::Ordering
-impl core::cmp::PartialEq for quanta_index_contract::SeedFusionIdentityV2
-pub fn quanta_index_contract::SeedFusionIdentityV2::eq(&self, other: &quanta_index_contract::SeedFusionIdentityV2) -> bool
-impl core::cmp::PartialOrd for quanta_index_contract::SeedFusionIdentityV2
-pub fn quanta_index_contract::SeedFusionIdentityV2::partial_cmp(&self, other: &Self) -> core::option::Option<core::cmp::Ordering>
-impl core::convert::From<&quanta_index_contract::SeedCandidateV2> for quanta_index_contract::SeedFusionIdentityV2
-pub fn quanta_index_contract::SeedFusionIdentityV2::from(candidate: &quanta_index_contract::SeedCandidateV2) -> Self
-impl core::fmt::Debug for quanta_index_contract::SeedFusionIdentityV2
-pub fn quanta_index_contract::SeedFusionIdentityV2::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::SeedFusionIdentityV2
-impl core::marker::Freeze for quanta_index_contract::SeedFusionIdentityV2
-impl core::marker::Send for quanta_index_contract::SeedFusionIdentityV2
-impl core::marker::Sync for quanta_index_contract::SeedFusionIdentityV2
-impl core::marker::Unpin for quanta_index_contract::SeedFusionIdentityV2
-impl core::marker::UnsafeUnpin for quanta_index_contract::SeedFusionIdentityV2
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SeedFusionIdentityV2
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedFusionIdentityV2
+pub struct quanta_index_contract::results::SeedCandidate
+pub quanta_index_contract::results::SeedCandidate::authority_digest: core::option::Option<alloc::string::String>
+pub quanta_index_contract::results::SeedCandidate::contributions: alloc::vec::Vec<quanta_index_contract::SeedContribution>
+pub quanta_index_contract::results::SeedCandidate::corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>
+pub quanta_index_contract::results::SeedCandidate::degraded_reasons: alloc::vec::Vec<alloc::string::String>
+pub quanta_index_contract::results::SeedCandidate::entity_id: alloc::string::String
+pub quanta_index_contract::results::SeedCandidate::owner_kind: quanta_index_contract::OwnerDocKind
+pub quanta_index_contract::results::SeedCandidate::record_id: alloc::string::String
+pub quanta_index_contract::results::SeedCandidate::repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath
+pub quanta_index_contract::results::SeedCandidate::seed_rank: u32
+pub quanta_index_contract::results::SeedCandidate::snippet: alloc::string::String
+impl core::clone::Clone for quanta_index_contract::SeedCandidate
+pub fn quanta_index_contract::SeedCandidate::clone(&self) -> quanta_index_contract::SeedCandidate
+impl core::cmp::PartialEq for quanta_index_contract::SeedCandidate
+pub fn quanta_index_contract::SeedCandidate::eq(&self, other: &quanta_index_contract::SeedCandidate) -> bool
+impl core::convert::From<&quanta_index_contract::SeedCandidate> for quanta_index_contract::SeedFusionIdentity
+pub fn quanta_index_contract::SeedFusionIdentity::from(candidate: &quanta_index_contract::SeedCandidate) -> Self
+impl core::fmt::Debug for quanta_index_contract::SeedCandidate
+pub fn quanta_index_contract::SeedCandidate::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SeedCandidate
+impl serde_core::ser::Serialize for quanta_index_contract::SeedCandidate
+pub fn quanta_index_contract::SeedCandidate::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SeedCandidate
+pub fn quanta_index_contract::SeedCandidate::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::SeedCandidate
+impl core::marker::Send for quanta_index_contract::SeedCandidate
+impl core::marker::Sync for quanta_index_contract::SeedCandidate
+impl core::marker::Unpin for quanta_index_contract::SeedCandidate
+impl core::marker::UnsafeUnpin for quanta_index_contract::SeedCandidate
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SeedCandidate
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedCandidate
+pub struct quanta_index_contract::results::SeedContribution
+pub quanta_index_contract::results::SeedContribution::corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>
+pub quanta_index_contract::results::SeedContribution::lane: quanta_index_contract::SeedLane
+pub quanta_index_contract::results::SeedContribution::rank: u32
+pub quanta_index_contract::results::SeedContribution::raw_score: core::option::Option<f32>
+impl core::clone::Clone for quanta_index_contract::SeedContribution
+pub fn quanta_index_contract::SeedContribution::clone(&self) -> quanta_index_contract::SeedContribution
+impl core::cmp::PartialEq for quanta_index_contract::SeedContribution
+pub fn quanta_index_contract::SeedContribution::eq(&self, other: &quanta_index_contract::SeedContribution) -> bool
+impl core::fmt::Debug for quanta_index_contract::SeedContribution
+pub fn quanta_index_contract::SeedContribution::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SeedContribution
+impl serde_core::ser::Serialize for quanta_index_contract::SeedContribution
+pub fn quanta_index_contract::SeedContribution::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SeedContribution
+pub fn quanta_index_contract::SeedContribution::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::SeedContribution
+impl core::marker::Send for quanta_index_contract::SeedContribution
+impl core::marker::Sync for quanta_index_contract::SeedContribution
+impl core::marker::Unpin for quanta_index_contract::SeedContribution
+impl core::marker::UnsafeUnpin for quanta_index_contract::SeedContribution
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SeedContribution
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedContribution
+pub struct quanta_index_contract::results::SeedFusionIdentity
+impl quanta_index_contract::SeedFusionIdentity
+pub fn quanta_index_contract::SeedFusionIdentity::cmp_parts(left_owner_kind: quanta_index_contract::OwnerDocKind, left_entity_id: &str, right_owner_kind: quanta_index_contract::OwnerDocKind, right_entity_id: &str) -> core::cmp::Ordering
+pub fn quanta_index_contract::SeedFusionIdentity::cmp_parts_with_corpus_v2(left_owner_kind: quanta_index_contract::OwnerDocKind, left_entity_id: &str, left_corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>, right_owner_kind: quanta_index_contract::OwnerDocKind, right_entity_id: &str, right_corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>) -> core::cmp::Ordering
+pub const fn quanta_index_contract::SeedFusionIdentity::corpus_kind(&self) -> core::option::Option<quanta_index_contract::SemanticCorpusKindV1>
+pub fn quanta_index_contract::SeedFusionIdentity::entity_id(&self) -> &str
+pub const fn quanta_index_contract::SeedFusionIdentity::new(owner_kind: quanta_index_contract::OwnerDocKind, entity_id: alloc::string::String) -> Self
+pub const fn quanta_index_contract::SeedFusionIdentity::new_with_corpus(owner_kind: quanta_index_contract::OwnerDocKind, entity_id: alloc::string::String, corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>) -> Self
+pub const fn quanta_index_contract::SeedFusionIdentity::owner_kind(&self) -> quanta_index_contract::OwnerDocKind
+impl core::clone::Clone for quanta_index_contract::SeedFusionIdentity
+pub fn quanta_index_contract::SeedFusionIdentity::clone(&self) -> quanta_index_contract::SeedFusionIdentity
+impl core::cmp::Eq for quanta_index_contract::SeedFusionIdentity
+impl core::cmp::Ord for quanta_index_contract::SeedFusionIdentity
+pub fn quanta_index_contract::SeedFusionIdentity::cmp(&self, other: &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::SeedFusionIdentity
+pub fn quanta_index_contract::SeedFusionIdentity::eq(&self, other: &quanta_index_contract::SeedFusionIdentity) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::SeedFusionIdentity
+pub fn quanta_index_contract::SeedFusionIdentity::partial_cmp(&self, other: &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<&quanta_index_contract::SeedCandidate> for quanta_index_contract::SeedFusionIdentity
+pub fn quanta_index_contract::SeedFusionIdentity::from(candidate: &quanta_index_contract::SeedCandidate) -> Self
+impl core::fmt::Debug for quanta_index_contract::SeedFusionIdentity
+pub fn quanta_index_contract::SeedFusionIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SeedFusionIdentity
+impl core::marker::Freeze for quanta_index_contract::SeedFusionIdentity
+impl core::marker::Send for quanta_index_contract::SeedFusionIdentity
+impl core::marker::Sync for quanta_index_contract::SeedFusionIdentity
+impl core::marker::Unpin for quanta_index_contract::SeedFusionIdentity
+impl core::marker::UnsafeUnpin for quanta_index_contract::SeedFusionIdentity
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SeedFusionIdentity
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedFusionIdentity
 pub struct quanta_index_contract::results::SemanticQueryResponse
 pub quanta_index_contract::results::SemanticQueryResponse::explanation: quanta_index_contract::SearchExplanation
 pub quanta_index_contract::results::SemanticQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
@@ -6629,29 +6579,6 @@ impl core::marker::Unpin for quanta_index_contract::HistoryRefMutation
 impl core::marker::UnsafeUnpin for quanta_index_contract::HistoryRefMutation
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HistoryRefMutation
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HistoryRefMutation
-pub enum quanta_index_contract::HybridSeedLane
-pub quanta_index_contract::HybridSeedLane::Lexical
-pub quanta_index_contract::HybridSeedLane::Semantic
-impl core::clone::Clone for quanta_index_contract::HybridSeedLane
-pub fn quanta_index_contract::HybridSeedLane::clone(&self) -> quanta_index_contract::HybridSeedLane
-impl core::cmp::Eq for quanta_index_contract::HybridSeedLane
-impl core::cmp::PartialEq for quanta_index_contract::HybridSeedLane
-pub fn quanta_index_contract::HybridSeedLane::eq(&self, other: &quanta_index_contract::HybridSeedLane) -> bool
-impl core::fmt::Debug for quanta_index_contract::HybridSeedLane
-pub fn quanta_index_contract::HybridSeedLane::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for quanta_index_contract::HybridSeedLane
-impl core::marker::StructuralPartialEq for quanta_index_contract::HybridSeedLane
-impl serde_core::ser::Serialize for quanta_index_contract::HybridSeedLane
-pub fn quanta_index_contract::HybridSeedLane::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::HybridSeedLane
-pub fn quanta_index_contract::HybridSeedLane::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for quanta_index_contract::HybridSeedLane
-impl core::marker::Send for quanta_index_contract::HybridSeedLane
-impl core::marker::Sync for quanta_index_contract::HybridSeedLane
-impl core::marker::Unpin for quanta_index_contract::HybridSeedLane
-impl core::marker::UnsafeUnpin for quanta_index_contract::HybridSeedLane
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HybridSeedLane
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HybridSeedLane
 pub enum quanta_index_contract::OwnerDocKind
 pub quanta_index_contract::OwnerDocKind::Callsite
 pub quanta_index_contract::OwnerDocKind::Chunk
@@ -7469,30 +7396,30 @@ impl core::marker::Unpin for quanta_index_contract::SearchScopeSurface
 impl core::marker::UnsafeUnpin for quanta_index_contract::SearchScopeSurface
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchScopeSurface
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchScopeSurface
-pub enum quanta_index_contract::SeedLaneV2
-pub quanta_index_contract::SeedLaneV2::Bm25
-pub quanta_index_contract::SeedLaneV2::Dense
-pub quanta_index_contract::SeedLaneV2::Exact
-impl core::clone::Clone for quanta_index_contract::SeedLaneV2
-pub fn quanta_index_contract::SeedLaneV2::clone(&self) -> quanta_index_contract::SeedLaneV2
-impl core::cmp::Eq for quanta_index_contract::SeedLaneV2
-impl core::cmp::PartialEq for quanta_index_contract::SeedLaneV2
-pub fn quanta_index_contract::SeedLaneV2::eq(&self, other: &quanta_index_contract::SeedLaneV2) -> bool
-impl core::fmt::Debug for quanta_index_contract::SeedLaneV2
-pub fn quanta_index_contract::SeedLaneV2::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for quanta_index_contract::SeedLaneV2
-impl core::marker::StructuralPartialEq for quanta_index_contract::SeedLaneV2
-impl serde_core::ser::Serialize for quanta_index_contract::SeedLaneV2
-pub fn quanta_index_contract::SeedLaneV2::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SeedLaneV2
-pub fn quanta_index_contract::SeedLaneV2::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for quanta_index_contract::SeedLaneV2
-impl core::marker::Send for quanta_index_contract::SeedLaneV2
-impl core::marker::Sync for quanta_index_contract::SeedLaneV2
-impl core::marker::Unpin for quanta_index_contract::SeedLaneV2
-impl core::marker::UnsafeUnpin for quanta_index_contract::SeedLaneV2
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SeedLaneV2
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedLaneV2
+pub enum quanta_index_contract::SeedLane
+pub quanta_index_contract::SeedLane::Bm25
+pub quanta_index_contract::SeedLane::Dense
+pub quanta_index_contract::SeedLane::Exact
+impl core::clone::Clone for quanta_index_contract::SeedLane
+pub fn quanta_index_contract::SeedLane::clone(&self) -> quanta_index_contract::SeedLane
+impl core::cmp::Eq for quanta_index_contract::SeedLane
+impl core::cmp::PartialEq for quanta_index_contract::SeedLane
+pub fn quanta_index_contract::SeedLane::eq(&self, other: &quanta_index_contract::SeedLane) -> bool
+impl core::fmt::Debug for quanta_index_contract::SeedLane
+pub fn quanta_index_contract::SeedLane::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::SeedLane
+impl core::marker::StructuralPartialEq for quanta_index_contract::SeedLane
+impl serde_core::ser::Serialize for quanta_index_contract::SeedLane
+pub fn quanta_index_contract::SeedLane::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SeedLane
+pub fn quanta_index_contract::SeedLane::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::SeedLane
+impl core::marker::Send for quanta_index_contract::SeedLane
+impl core::marker::Sync for quanta_index_contract::SeedLane
+impl core::marker::Unpin for quanta_index_contract::SeedLane
+impl core::marker::UnsafeUnpin for quanta_index_contract::SeedLane
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SeedLane
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedLane
 pub enum quanta_index_contract::SemanticCorpusKindV1
 pub quanta_index_contract::SemanticCorpusKindV1::ClusterCard
 pub quanta_index_contract::SemanticCorpusKindV1::DocumentLeaf
@@ -8684,32 +8611,6 @@ impl core::marker::Unpin for quanta_index_contract::HybridQueryResponse
 impl core::marker::UnsafeUnpin for quanta_index_contract::HybridQueryResponse
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HybridQueryResponse
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HybridQueryResponse
-pub struct quanta_index_contract::HybridSeedCandidate
-pub quanta_index_contract::HybridSeedCandidate::candidate: quanta_index_contract_base::results::candidates::LexicalCandidate
-pub quanta_index_contract::HybridSeedCandidate::lexical_rank: core::option::Option<u32>
-pub quanta_index_contract::HybridSeedCandidate::lexical_score_raw: core::option::Option<f32>
-pub quanta_index_contract::HybridSeedCandidate::seed_rank: u32
-pub quanta_index_contract::HybridSeedCandidate::semantic_rank: core::option::Option<u32>
-pub quanta_index_contract::HybridSeedCandidate::semantic_score_raw: core::option::Option<f32>
-pub quanta_index_contract::HybridSeedCandidate::source_lanes: alloc::vec::Vec<quanta_index_contract::HybridSeedLane>
-impl core::clone::Clone for quanta_index_contract::HybridSeedCandidate
-pub fn quanta_index_contract::HybridSeedCandidate::clone(&self) -> quanta_index_contract::HybridSeedCandidate
-impl core::cmp::PartialEq for quanta_index_contract::HybridSeedCandidate
-pub fn quanta_index_contract::HybridSeedCandidate::eq(&self, other: &quanta_index_contract::HybridSeedCandidate) -> bool
-impl core::fmt::Debug for quanta_index_contract::HybridSeedCandidate
-pub fn quanta_index_contract::HybridSeedCandidate::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::HybridSeedCandidate
-impl serde_core::ser::Serialize for quanta_index_contract::HybridSeedCandidate
-pub fn quanta_index_contract::HybridSeedCandidate::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::HybridSeedCandidate
-pub fn quanta_index_contract::HybridSeedCandidate::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for quanta_index_contract::HybridSeedCandidate
-impl core::marker::Send for quanta_index_contract::HybridSeedCandidate
-impl core::marker::Sync for quanta_index_contract::HybridSeedCandidate
-impl core::marker::Unpin for quanta_index_contract::HybridSeedCandidate
-impl core::marker::UnsafeUnpin for quanta_index_contract::HybridSeedCandidate
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HybridSeedCandidate
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HybridSeedCandidate
 pub struct quanta_index_contract::HybridSeedQueryRequest
 pub quanta_index_contract::HybridSeedQueryRequest::dense_corpora: alloc::vec::Vec<quanta_index_contract::SemanticSeedCorpusBudgetV1>
 pub quanta_index_contract::HybridSeedQueryRequest::generation: core::option::Option<quanta_index_contract_base::query::pin::GenerationPin>
@@ -8739,8 +8640,7 @@ pub struct quanta_index_contract::HybridSeedQueryResponse
 pub quanta_index_contract::HybridSeedQueryResponse::explanation: quanta_index_contract::SearchExplanation
 pub quanta_index_contract::HybridSeedQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
 pub quanta_index_contract::HybridSeedQueryResponse::manifest_digest: alloc::string::String
-pub quanta_index_contract::HybridSeedQueryResponse::seed_candidates: alloc::vec::Vec<quanta_index_contract::HybridSeedCandidate>
-pub quanta_index_contract::HybridSeedQueryResponse::seed_candidates_v2: core::option::Option<alloc::vec::Vec<quanta_index_contract::SeedCandidateV2>>
+pub quanta_index_contract::HybridSeedQueryResponse::seed_candidates: alloc::vec::Vec<quanta_index_contract::SeedCandidate>
 pub quanta_index_contract::HybridSeedQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV1
 impl core::clone::Clone for quanta_index_contract::HybridSeedQueryResponse
 pub fn quanta_index_contract::HybridSeedQueryResponse::clone(&self) -> quanta_index_contract::HybridSeedQueryResponse
@@ -10249,90 +10149,90 @@ impl core::marker::Unpin for quanta_index_contract::SearchScopeKey
 impl core::marker::UnsafeUnpin for quanta_index_contract::SearchScopeKey
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchScopeKey
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchScopeKey
-pub struct quanta_index_contract::SeedCandidateV2
-pub quanta_index_contract::SeedCandidateV2::authority_digest: core::option::Option<alloc::string::String>
-pub quanta_index_contract::SeedCandidateV2::contributions: alloc::vec::Vec<quanta_index_contract::SeedContributionV2>
-pub quanta_index_contract::SeedCandidateV2::corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>
-pub quanta_index_contract::SeedCandidateV2::degraded_reasons: alloc::vec::Vec<alloc::string::String>
-pub quanta_index_contract::SeedCandidateV2::entity_id: alloc::string::String
-pub quanta_index_contract::SeedCandidateV2::owner_kind: quanta_index_contract::OwnerDocKind
-pub quanta_index_contract::SeedCandidateV2::record_id: alloc::string::String
-pub quanta_index_contract::SeedCandidateV2::repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath
-pub quanta_index_contract::SeedCandidateV2::seed_rank: u32
-pub quanta_index_contract::SeedCandidateV2::snippet: alloc::string::String
-impl core::clone::Clone for quanta_index_contract::SeedCandidateV2
-pub fn quanta_index_contract::SeedCandidateV2::clone(&self) -> quanta_index_contract::SeedCandidateV2
-impl core::cmp::PartialEq for quanta_index_contract::SeedCandidateV2
-pub fn quanta_index_contract::SeedCandidateV2::eq(&self, other: &quanta_index_contract::SeedCandidateV2) -> bool
-impl core::convert::From<&quanta_index_contract::SeedCandidateV2> for quanta_index_contract::SeedFusionIdentityV2
-pub fn quanta_index_contract::SeedFusionIdentityV2::from(candidate: &quanta_index_contract::SeedCandidateV2) -> Self
-impl core::fmt::Debug for quanta_index_contract::SeedCandidateV2
-pub fn quanta_index_contract::SeedCandidateV2::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::SeedCandidateV2
-impl serde_core::ser::Serialize for quanta_index_contract::SeedCandidateV2
-pub fn quanta_index_contract::SeedCandidateV2::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SeedCandidateV2
-pub fn quanta_index_contract::SeedCandidateV2::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for quanta_index_contract::SeedCandidateV2
-impl core::marker::Send for quanta_index_contract::SeedCandidateV2
-impl core::marker::Sync for quanta_index_contract::SeedCandidateV2
-impl core::marker::Unpin for quanta_index_contract::SeedCandidateV2
-impl core::marker::UnsafeUnpin for quanta_index_contract::SeedCandidateV2
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SeedCandidateV2
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedCandidateV2
-pub struct quanta_index_contract::SeedContributionV2
-pub quanta_index_contract::SeedContributionV2::corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>
-pub quanta_index_contract::SeedContributionV2::lane: quanta_index_contract::SeedLaneV2
-pub quanta_index_contract::SeedContributionV2::rank: u32
-pub quanta_index_contract::SeedContributionV2::raw_score: core::option::Option<f32>
-impl core::clone::Clone for quanta_index_contract::SeedContributionV2
-pub fn quanta_index_contract::SeedContributionV2::clone(&self) -> quanta_index_contract::SeedContributionV2
-impl core::cmp::PartialEq for quanta_index_contract::SeedContributionV2
-pub fn quanta_index_contract::SeedContributionV2::eq(&self, other: &quanta_index_contract::SeedContributionV2) -> bool
-impl core::fmt::Debug for quanta_index_contract::SeedContributionV2
-pub fn quanta_index_contract::SeedContributionV2::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::SeedContributionV2
-impl serde_core::ser::Serialize for quanta_index_contract::SeedContributionV2
-pub fn quanta_index_contract::SeedContributionV2::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SeedContributionV2
-pub fn quanta_index_contract::SeedContributionV2::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for quanta_index_contract::SeedContributionV2
-impl core::marker::Send for quanta_index_contract::SeedContributionV2
-impl core::marker::Sync for quanta_index_contract::SeedContributionV2
-impl core::marker::Unpin for quanta_index_contract::SeedContributionV2
-impl core::marker::UnsafeUnpin for quanta_index_contract::SeedContributionV2
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SeedContributionV2
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedContributionV2
-pub struct quanta_index_contract::SeedFusionIdentityV2
-impl quanta_index_contract::SeedFusionIdentityV2
-pub fn quanta_index_contract::SeedFusionIdentityV2::cmp_parts(left_owner_kind: quanta_index_contract::OwnerDocKind, left_entity_id: &str, right_owner_kind: quanta_index_contract::OwnerDocKind, right_entity_id: &str) -> core::cmp::Ordering
-pub fn quanta_index_contract::SeedFusionIdentityV2::cmp_parts_with_corpus_v2(left_owner_kind: quanta_index_contract::OwnerDocKind, left_entity_id: &str, left_corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>, right_owner_kind: quanta_index_contract::OwnerDocKind, right_entity_id: &str, right_corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>) -> core::cmp::Ordering
-pub const fn quanta_index_contract::SeedFusionIdentityV2::corpus_kind(&self) -> core::option::Option<quanta_index_contract::SemanticCorpusKindV1>
-pub fn quanta_index_contract::SeedFusionIdentityV2::entity_id(&self) -> &str
-pub const fn quanta_index_contract::SeedFusionIdentityV2::new(owner_kind: quanta_index_contract::OwnerDocKind, entity_id: alloc::string::String) -> Self
-pub const fn quanta_index_contract::SeedFusionIdentityV2::new_with_corpus_v2(owner_kind: quanta_index_contract::OwnerDocKind, entity_id: alloc::string::String, corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>) -> Self
-pub const fn quanta_index_contract::SeedFusionIdentityV2::owner_kind(&self) -> quanta_index_contract::OwnerDocKind
-impl core::clone::Clone for quanta_index_contract::SeedFusionIdentityV2
-pub fn quanta_index_contract::SeedFusionIdentityV2::clone(&self) -> quanta_index_contract::SeedFusionIdentityV2
-impl core::cmp::Eq for quanta_index_contract::SeedFusionIdentityV2
-impl core::cmp::Ord for quanta_index_contract::SeedFusionIdentityV2
-pub fn quanta_index_contract::SeedFusionIdentityV2::cmp(&self, other: &Self) -> core::cmp::Ordering
-impl core::cmp::PartialEq for quanta_index_contract::SeedFusionIdentityV2
-pub fn quanta_index_contract::SeedFusionIdentityV2::eq(&self, other: &quanta_index_contract::SeedFusionIdentityV2) -> bool
-impl core::cmp::PartialOrd for quanta_index_contract::SeedFusionIdentityV2
-pub fn quanta_index_contract::SeedFusionIdentityV2::partial_cmp(&self, other: &Self) -> core::option::Option<core::cmp::Ordering>
-impl core::convert::From<&quanta_index_contract::SeedCandidateV2> for quanta_index_contract::SeedFusionIdentityV2
-pub fn quanta_index_contract::SeedFusionIdentityV2::from(candidate: &quanta_index_contract::SeedCandidateV2) -> Self
-impl core::fmt::Debug for quanta_index_contract::SeedFusionIdentityV2
-pub fn quanta_index_contract::SeedFusionIdentityV2::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::SeedFusionIdentityV2
-impl core::marker::Freeze for quanta_index_contract::SeedFusionIdentityV2
-impl core::marker::Send for quanta_index_contract::SeedFusionIdentityV2
-impl core::marker::Sync for quanta_index_contract::SeedFusionIdentityV2
-impl core::marker::Unpin for quanta_index_contract::SeedFusionIdentityV2
-impl core::marker::UnsafeUnpin for quanta_index_contract::SeedFusionIdentityV2
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SeedFusionIdentityV2
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedFusionIdentityV2
+pub struct quanta_index_contract::SeedCandidate
+pub quanta_index_contract::SeedCandidate::authority_digest: core::option::Option<alloc::string::String>
+pub quanta_index_contract::SeedCandidate::contributions: alloc::vec::Vec<quanta_index_contract::SeedContribution>
+pub quanta_index_contract::SeedCandidate::corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>
+pub quanta_index_contract::SeedCandidate::degraded_reasons: alloc::vec::Vec<alloc::string::String>
+pub quanta_index_contract::SeedCandidate::entity_id: alloc::string::String
+pub quanta_index_contract::SeedCandidate::owner_kind: quanta_index_contract::OwnerDocKind
+pub quanta_index_contract::SeedCandidate::record_id: alloc::string::String
+pub quanta_index_contract::SeedCandidate::repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath
+pub quanta_index_contract::SeedCandidate::seed_rank: u32
+pub quanta_index_contract::SeedCandidate::snippet: alloc::string::String
+impl core::clone::Clone for quanta_index_contract::SeedCandidate
+pub fn quanta_index_contract::SeedCandidate::clone(&self) -> quanta_index_contract::SeedCandidate
+impl core::cmp::PartialEq for quanta_index_contract::SeedCandidate
+pub fn quanta_index_contract::SeedCandidate::eq(&self, other: &quanta_index_contract::SeedCandidate) -> bool
+impl core::convert::From<&quanta_index_contract::SeedCandidate> for quanta_index_contract::SeedFusionIdentity
+pub fn quanta_index_contract::SeedFusionIdentity::from(candidate: &quanta_index_contract::SeedCandidate) -> Self
+impl core::fmt::Debug for quanta_index_contract::SeedCandidate
+pub fn quanta_index_contract::SeedCandidate::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SeedCandidate
+impl serde_core::ser::Serialize for quanta_index_contract::SeedCandidate
+pub fn quanta_index_contract::SeedCandidate::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SeedCandidate
+pub fn quanta_index_contract::SeedCandidate::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::SeedCandidate
+impl core::marker::Send for quanta_index_contract::SeedCandidate
+impl core::marker::Sync for quanta_index_contract::SeedCandidate
+impl core::marker::Unpin for quanta_index_contract::SeedCandidate
+impl core::marker::UnsafeUnpin for quanta_index_contract::SeedCandidate
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SeedCandidate
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedCandidate
+pub struct quanta_index_contract::SeedContribution
+pub quanta_index_contract::SeedContribution::corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>
+pub quanta_index_contract::SeedContribution::lane: quanta_index_contract::SeedLane
+pub quanta_index_contract::SeedContribution::rank: u32
+pub quanta_index_contract::SeedContribution::raw_score: core::option::Option<f32>
+impl core::clone::Clone for quanta_index_contract::SeedContribution
+pub fn quanta_index_contract::SeedContribution::clone(&self) -> quanta_index_contract::SeedContribution
+impl core::cmp::PartialEq for quanta_index_contract::SeedContribution
+pub fn quanta_index_contract::SeedContribution::eq(&self, other: &quanta_index_contract::SeedContribution) -> bool
+impl core::fmt::Debug for quanta_index_contract::SeedContribution
+pub fn quanta_index_contract::SeedContribution::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SeedContribution
+impl serde_core::ser::Serialize for quanta_index_contract::SeedContribution
+pub fn quanta_index_contract::SeedContribution::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SeedContribution
+pub fn quanta_index_contract::SeedContribution::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::SeedContribution
+impl core::marker::Send for quanta_index_contract::SeedContribution
+impl core::marker::Sync for quanta_index_contract::SeedContribution
+impl core::marker::Unpin for quanta_index_contract::SeedContribution
+impl core::marker::UnsafeUnpin for quanta_index_contract::SeedContribution
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SeedContribution
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedContribution
+pub struct quanta_index_contract::SeedFusionIdentity
+impl quanta_index_contract::SeedFusionIdentity
+pub fn quanta_index_contract::SeedFusionIdentity::cmp_parts(left_owner_kind: quanta_index_contract::OwnerDocKind, left_entity_id: &str, right_owner_kind: quanta_index_contract::OwnerDocKind, right_entity_id: &str) -> core::cmp::Ordering
+pub fn quanta_index_contract::SeedFusionIdentity::cmp_parts_with_corpus_v2(left_owner_kind: quanta_index_contract::OwnerDocKind, left_entity_id: &str, left_corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>, right_owner_kind: quanta_index_contract::OwnerDocKind, right_entity_id: &str, right_corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>) -> core::cmp::Ordering
+pub const fn quanta_index_contract::SeedFusionIdentity::corpus_kind(&self) -> core::option::Option<quanta_index_contract::SemanticCorpusKindV1>
+pub fn quanta_index_contract::SeedFusionIdentity::entity_id(&self) -> &str
+pub const fn quanta_index_contract::SeedFusionIdentity::new(owner_kind: quanta_index_contract::OwnerDocKind, entity_id: alloc::string::String) -> Self
+pub const fn quanta_index_contract::SeedFusionIdentity::new_with_corpus(owner_kind: quanta_index_contract::OwnerDocKind, entity_id: alloc::string::String, corpus_kind: core::option::Option<quanta_index_contract::SemanticCorpusKindV1>) -> Self
+pub const fn quanta_index_contract::SeedFusionIdentity::owner_kind(&self) -> quanta_index_contract::OwnerDocKind
+impl core::clone::Clone for quanta_index_contract::SeedFusionIdentity
+pub fn quanta_index_contract::SeedFusionIdentity::clone(&self) -> quanta_index_contract::SeedFusionIdentity
+impl core::cmp::Eq for quanta_index_contract::SeedFusionIdentity
+impl core::cmp::Ord for quanta_index_contract::SeedFusionIdentity
+pub fn quanta_index_contract::SeedFusionIdentity::cmp(&self, other: &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::SeedFusionIdentity
+pub fn quanta_index_contract::SeedFusionIdentity::eq(&self, other: &quanta_index_contract::SeedFusionIdentity) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::SeedFusionIdentity
+pub fn quanta_index_contract::SeedFusionIdentity::partial_cmp(&self, other: &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<&quanta_index_contract::SeedCandidate> for quanta_index_contract::SeedFusionIdentity
+pub fn quanta_index_contract::SeedFusionIdentity::from(candidate: &quanta_index_contract::SeedCandidate) -> Self
+impl core::fmt::Debug for quanta_index_contract::SeedFusionIdentity
+pub fn quanta_index_contract::SeedFusionIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SeedFusionIdentity
+impl core::marker::Freeze for quanta_index_contract::SeedFusionIdentity
+impl core::marker::Send for quanta_index_contract::SeedFusionIdentity
+impl core::marker::Sync for quanta_index_contract::SeedFusionIdentity
+impl core::marker::Unpin for quanta_index_contract::SeedFusionIdentity
+impl core::marker::UnsafeUnpin for quanta_index_contract::SeedFusionIdentity
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SeedFusionIdentity
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedFusionIdentity
 pub struct quanta_index_contract::SemanticIngestBatch
 pub quanta_index_contract::SemanticIngestBatch::base_generation: core::option::Option<quanta_index_contract_base::ids::ManifestGeneration>
 pub quanta_index_contract::SemanticIngestBatch::batch_digest: alloc::string::String

@@ -2674,18 +2674,12 @@ fn route_window_probe_from_response(
             (semantic.results.len(), Some(semantic.window))
         }
         SearchPlaneQueryIpcResponse::Hybrid(hybrid) => (hybrid.results.len(), Some(hybrid.window)),
-        // The hybrid-seed window describes the active candidate list, which
-        // is `seed_candidates_v2` whenever it is present and the legacy list
-        // only otherwise (QI-BB-019 tracks collapsing the two).
-        SearchPlaneQueryIpcResponse::HybridSeed(seed) => (
-            seed.seed_candidates_v2
-                .as_ref()
-                .map_or(seed.seed_candidates.len(), Vec::len),
-            Some(seed.window),
-        ),
+        SearchPlaneQueryIpcResponse::HybridSeed(seed) => {
+            (seed.seed_candidates.len(), Some(seed.window))
+        }
         SearchPlaneQueryIpcResponse::History(history) => (
             history.commits.len().saturating_add(history.diffs.len()),
-            None,
+            Some(history.window),
         ),
         SearchPlaneQueryIpcResponse::RuntimeMetadata(runtime) => (runtime.results.len(), None),
         SearchPlaneQueryIpcResponse::Structural(structural) => (structural.results.len(), None),

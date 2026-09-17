@@ -543,10 +543,6 @@ crate quanta_index_contract
         ├── struct HybridQueryResponse: pub
         ├── struct HybridQueryResponseVisitor: pub(self)
         │   └── type Value: pub(self)
-        ├── struct HybridSeedCandidate: pub
-        ├── struct HybridSeedCandidateVisitor: pub(self)
-        │   └── type Value: pub(self)
-        ├── enum HybridSeedLane: pub
         ├── struct HybridSeedQueryResponse: pub
         ├── struct HybridSeedQueryResponseVisitor: pub(self)
         │   └── type Value: pub(self)
@@ -562,14 +558,14 @@ crate quanta_index_contract
         ├── struct SearchPlaneStructuralQueryResponse: pub
         ├── struct SearchPlaneStructuralQueryResponseVisitor: pub(self)
         │   └── type Value: pub(self)
-        ├── struct SeedCandidateV2: pub
-        ├── struct SeedCandidateV2Visitor: pub(self)
+        ├── struct SeedCandidate: pub
+        ├── struct SeedCandidateVisitor: pub(self)
         │   └── type Value: pub(self)
-        ├── struct SeedContributionV2: pub
-        ├── struct SeedContributionV2Visitor: pub(self)
+        ├── struct SeedContribution: pub
+        ├── struct SeedContributionVisitor: pub(self)
         │   └── type Value: pub(self)
-        ├── struct SeedFusionIdentityV2: pub
-        ├── enum SeedLaneV2: pub
+        ├── struct SeedFusionIdentity: pub
+        ├── enum SeedLane: pub
         ├── struct SemanticQueryResponse: pub
         ├── struct SemanticQueryResponseVisitor: pub(self)
         │   └── type Value: pub(self)

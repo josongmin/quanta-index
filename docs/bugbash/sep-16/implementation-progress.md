@@ -314,7 +314,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + **QI-BB-021 ingest resource envelope(§3.18)** 완료. 남은 것: sharded sidecar 포맷(O(delta) write), ANN versioned artifact(QI-BB-027), scope 단위 streamed embed→append(§3.18 한계) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) 완료. 남은 것: QI-BB-025 보완 #4(bounded window), streaming projection collector |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. 남은 것: cancel을 lexical collector 내부(candidate batch 사이)까지 내리기, overload/refusal 서버 metric |
-| W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + **QI-BB-023 history recency order + keyset cursor(§3.20)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), QI-BB-018/019 hybrid, history relevance order(Tantivy history index, §3.20 한계) |
+| W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + **QI-BB-019 hybrid seed 단일 canonical 응답(§3.21)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), QI-BB-018 true hybrid, history relevance order(Tantivy history index, §3.20 한계) |
 | W7 | planned | |
 | C1 | planned | |
 | C2 | planned | |
@@ -1208,6 +1208,41 @@ scan은 `top_k`가 차면 즉시 멈췄다(가장 최신 commit이 SHA 순서상
 heuristic으로 흉내 내지 않았다. (b) 매 query가 generation의 history를 전부 scan한다(O(n), lock 밖) — time-indexed 보조 구조는
 row catalog 위의 후속. (c) `DiffCandidate`에는 여전히 sha가 없다(cursor가 sha를 나름). (d) large non-match latency/RSS budget(완료
 기준 3)은 contended host라 미측정 — W7.
+
+## 3.21 QI-BB-019 — hybrid seed는 canonical seed list 하나이고, dense 검색은 lane당 정확히 한 번이다 (구현 완료)
+
+**진단 확정**: `hybrid_seed`가 같은 query vector로 (1) lexical id 집합에 scoped된 dense 검색으로 legacy `seed_candidates`를
+만들고, (2) 다시 corpus별(또는 global) dense 검색으로 `seed_candidates_v2`를 만들어 **둘 다** 직렬화했다. decoder는 v2가 있으면
+v2 길이를 window와 대조했고, `lq_merge_result_count` metric은 legacy 길이를 기록했다. CLI는 legacy `candidate`를 렌더링.
+
+**구현**(breaking-first, intentional contract baseline change):
+- contract: `HybridSeedQueryResponse { generation, manifest_digest, seed_candidates: Vec<SeedCandidate>, window, explanation }`.
+  legacy `HybridSeedCandidate`/`HybridSeedLane`/`lexical_score_raw…` 삭제, `seed_candidates_v2` field 삭제(decoder는 unknown
+  field로 거부). `SeedCandidateV2/SeedContributionV2/SeedLaneV2/SeedFusionIdentityV2` → `SeedCandidate/SeedContribution/SeedLane/
+  SeedFusionIdentity`(V2 suffix 제거 — V1 상대가 사라졌으므로).
+- search-plane `hybrid_seed`: scoped dense 검색·`build_hybrid_seed_candidates_v1`·`fuse_rrf` legacy 경로 삭제. dense lane(corpus별
+  또는 global 1회)만 실행 → fused seed list 하나. `lq_merge_result_count`는 `window.returned()`.
+- **legacy가 가리던 fusion 결함**: lexical seed identity가 `(Chunk, id, corpus=None)`, raw-code dense hit이 `(Chunk, id,
+  Some(RawCodeFallback))`라 같은 chunk의 BM25 hit과 dense hit이 **절대 합쳐지지 않았다**(v2가 부가적이던 동안 SDK front door test는
+  legacy list만 봐서 드러나지 않음). lexical lane은 raw-code corpus의 lexical projection이므로 identity를
+  `Some(RawCodeFallback)`로 고정 — 한 chunk는 두 lane의 contribution을 가진 seed 하나가 되고 RRF에서 단일 lane seed를 이긴다.
+- SDK export 갱신(`SeedCandidate/SeedContribution/SeedLane`), searchctl은 전용 `render_hybrid_seed_payload`(entity/owner_kind/path/
+  lane contributions/degraded), harness window probe 단순화. public-api baseline(contract/sdk)·cargo-modules baseline 갱신.
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| mock semantic adapter: scoped dense 검색 **0회**, corpus lane 3개 각각 정확히 1회(같은 query vector, 같은 constraints) | `search_plane::query_dispatcher::tests::hybrid_seed_dispatch_includes_dense_only_entity_in_the_seed_set` (scoped_vectors/constraints empty 단언 추가) |
+| canonical list 1개: window.returned == seed_candidates.len, `seed_candidates_v2` 포함 payload는 decode 거부, JSON/CBOR round-trip | `contract::results::query_responses::tests::{hybrid_seed_query_response_refuses_a_legacy_second_seed_list, hybrid_seed_query_response_round_trips_with_seed_candidates, hybrid_seed_query_response_without_required_window_fails_closed}` |
+| 같은 chunk의 BM25 hit + raw-code dense hit → contribution `[Bm25, Dense]`인 seed 1개, rank 1(두 lane이 단일 lane을 이김), 총 3 seed | `search_plane::query_dispatcher::semantic_query::seed_fusion_tests::seed_fusion_merges_a_chunk_across_the_bm25_and_raw_code_lanes` |
+| SDK front door: hybrid seed top이 `entity_id == "alpha"` (3 경로) | `searchd-runtime/tests/sdk_frontdoor.rs` 3 test |
+| CLI pretty가 `entity=… owner_kind=… lanes=bm25#1,dense#1`를 출력 | `searchctl/tests/cli_smoke.rs::hybrid_seed_pretty_roundtrip` |
+| wire DTO 변경 fail-closed | `just rust-fuzz-smoke 30` |
+
+**정직한 한계**: (a) 보완 #4의 "compat 사용량/sunset gate"는 필요 없어짐 — compat 경로 자체를 제거했다. (b) 일반 `hybrid`
+route는 여전히 lexical-scoped rerank(QI-BB-018 별도). (c) `SeedContribution.raw_score`는 lane별 raw score이고 fused score는
+RRF rank뿐 — explain contribution(QI-BB-022)과 함께 다룬다.
 
 ## 4. Finding 상태 (QI-BB-001–032)
 

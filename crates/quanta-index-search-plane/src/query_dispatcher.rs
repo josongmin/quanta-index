@@ -19,21 +19,21 @@ use quanta_index_contract::{
     CandidateCountV1, ChunkId, ChunkRecord, ClusterMembershipBatchReadRequestV1,
     ClusterMembershipBatchReadResponseV1, CommitCandidate, DiffCandidate, EarlyStopReason,
     EngineTouched, GenerationPin, GenerationSelector, HistoryCursor, HistoryQueryRequest,
-    HybridQueryRequest, HybridQueryResponse, HybridSeedCandidate, HybridSeedLane,
-    HybridSeedQueryRequest, HybridSeedQueryResponse, LQ_VERSION_TAG, LexicalCandidate, LqCase,
-    LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqQuery, LqSpan,
-    LqStructuralBlock, LqStructuralConstraint, LqStructuralConstraintOperand, LqStructuralExpr,
-    LqStructuralHoleRef, LqStructuralNode, LqType, LqYesNoOnly, ManifestGeneration, OwnerDocKind,
-    PlannerStage, PlannerTraceEntry, QueryConstraintIntersectionV1, QueryConstraintSetV1,
-    QueryErrorRepair, QueryResultWindowV1, RepairClass, RepoId, RepoMapQueryRequest,
-    RepoMapQueryResponse, RevisionId, RuntimeMetadataQueryRequest, SearchExplanation,
-    SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
-    SearchPlaneHistoryQueryResponse, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcResponse, SearchPlaneRuntimeMetadataQueryResponse,
-    SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind, SeedCandidateV2, SeedContributionV2,
-    SeedLaneV2, SemanticQueryRequest, SemanticQueryResponse, StructuralQueryRequest,
-    SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse,
-    TextQuerySyntax, continuation_fetch_size,
+    HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest, HybridSeedQueryResponse,
+    LQ_VERSION_TAG, LexicalCandidate, LqCase, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions,
+    LqPatternType, LqQuery, LqSpan, LqStructuralBlock, LqStructuralConstraint,
+    LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleRef, LqStructuralNode, LqType,
+    LqYesNoOnly, ManifestGeneration, OwnerDocKind, PlannerStage, PlannerTraceEntry,
+    QueryConstraintIntersectionV1, QueryConstraintSetV1, QueryErrorRepair, QueryResultWindowV1,
+    RepairClass, RepoId, RepoMapQueryRequest, RepoMapQueryResponse, RevisionId,
+    RuntimeMetadataQueryRequest, SearchExplanation, SearchPlaneExplainQueryRequest,
+    SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
+    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
+    SearchPlaneTrackKind, SeedCandidate, SeedContribution, SeedLane, SemanticQueryRequest,
+    SemanticQueryResponse, StructuralQueryRequest, SymbolCandidate, SymbolQueryRequest,
+    SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    continuation_fetch_size,
 };
 use quanta_index_core::domains::structural::{
     StructuralExecutableFilter, StructuralProducerPort,
@@ -388,11 +388,11 @@ pub type SearchPlaneQueryDispatcher = SearchPlaneDispatcher;
 mod semantic_query;
 use semantic_query::{
     HybridFusion, SemanticScopeV1, SemanticSelection, build_hybrid_response_explanation,
-    build_hybrid_seed_candidates_v1, build_hybrid_seed_candidates_v2,
-    build_hybrid_seed_response_explanation_v2, build_semantic_response_explanation,
-    canonical_dense_corpus_budgets_v1, ensure_query_model_matches_index_v1,
-    prefix_semantic_query_error, resolve_hybrid_request_selection,
-    resolve_hybrid_seed_request_selection, resolve_semantic_request_selection,
+    build_hybrid_seed_candidates, build_hybrid_seed_response_explanation,
+    build_semantic_response_explanation, canonical_dense_corpus_budgets_v1,
+    ensure_query_model_matches_index_v1, prefix_semantic_query_error,
+    resolve_hybrid_request_selection, resolve_hybrid_seed_request_selection,
+    resolve_semantic_request_selection,
 };
 
 impl SearchPlaneDispatcher {
@@ -952,33 +952,19 @@ impl SearchPlaneDispatcher {
                 .candidates
         };
         stabilize_ranked_candidates(&mut lex_results);
-        let lexical_ids = lex_results
-            .iter()
-            .map(|candidate| candidate.candidate_id.clone())
-            .collect::<BTreeSet<_>>();
         budget.checkpoint("hybrid-seed:embed")?;
         let query_vector = self.embed_and_gate_query(
             request.semantic_query_text.as_str(),
             sem_searcher.as_ref(),
             "hybrid seed",
         )?;
-        budget.checkpoint("hybrid-seed:semantic")?;
-        let mut sem_results = sem_searcher.search_scoped_constrained(
-            &query_vector,
-            &lexical_ids,
-            &prepared_language.constraints,
-            internal_top_k,
-        )?;
-        stabilize_ranked_candidates(&mut sem_results);
         let internal_limit = usize::try_from(internal_top_k).map_err(|err| {
             CoreError::InvalidContract(format!("hybrid seed: internal top_k overflow: {err}"))
         })?;
         let primary_lane_limit_reached = lex_results.len() == internal_limit;
-        let seed_candidates = build_hybrid_seed_candidates_v1(
-            &HybridOrchestratorPolicy::fuse_rrf(&lex_results, &sem_results, request.top_k),
-            &lex_results,
-            &sem_results,
-        )?;
+        // One dense lane per requested corpus (or one global lane), each a
+        // single native search over the query vector (QI-BB-019): there is
+        // no second, lexical-scoped dense search behind the seed list.
         let dense_corpora = canonical_dense_corpus_budgets_v1(&request.dense_corpora)?;
         let mut unavailable_corpus_reasons = Vec::new();
         let mut semantic_lanes = Vec::new();
@@ -1032,30 +1018,30 @@ impl SearchPlaneDispatcher {
             .chain(semantic_hits.iter().map(|hit| hit.owner_id.as_str()))
             .collect::<BTreeSet<_>>()
             .len();
-        let seed_candidates_v2 = build_hybrid_seed_candidates_v2(
+        let seed_candidates = build_hybrid_seed_candidates(
             &lex_results,
             &semantic_lanes,
             &unavailable_corpus_reasons,
             request.top_k,
         )?;
-        let early_stop_reason = if fused_entity_universe > seed_candidates_v2.len() {
+        let early_stop_reason = if fused_entity_universe > seed_candidates.len() {
             Some(EarlyStopReason::CountReached)
         } else {
             None
         };
-        let explanation = build_hybrid_seed_response_explanation_v2(
+        let explanation = build_hybrid_seed_response_explanation(
             lex_results.len(),
             lexical_entity_count,
             semantic_hits.len(),
             semantic_entity_count,
-            seed_candidates_v2.len(),
+            seed_candidates.len(),
             internal_top_k,
             &unavailable_corpus_reasons,
             early_stop_reason,
         );
         let window = fused_window_v1(
             request.top_k,
-            seed_candidates_v2.len(),
+            seed_candidates.len(),
             fused_entity_universe,
             primary_lane_limit_reached,
         )?;
@@ -1063,7 +1049,6 @@ impl SearchPlaneDispatcher {
             generation: pin,
             manifest_digest,
             seed_candidates,
-            seed_candidates_v2: Some(seed_candidates_v2),
             window,
             explanation,
         })
@@ -1540,7 +1525,12 @@ impl SearchPlaneDispatcher {
                     &response.generation,
                     response.explanation.engines_touched.len(),
                 );
-                self.emit_merge_count_metric(&response.generation, response.seed_candidates.len());
+                // The merge count is what the window says the page holds
+                // (QI-BB-019): the one canonical seed list.
+                self.emit_merge_count_metric(
+                    &response.generation,
+                    usize::try_from(response.window.returned()).map_or(usize::MAX, |n| n),
+                );
                 self.emit_early_stop_metric(
                     &response.generation,
                     response.explanation.early_stop_reason,
@@ -5178,7 +5168,7 @@ mod tests {
         ERR_HISTORY_PRODUCER_UNAVAILABLE, ERR_HISTORY_SHARD_UNAVAILABLE, ERR_INVALID,
         ERR_NOT_IMPLEMENTED, ERR_NOT_READY, ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED,
         FailClosedStructuralProducer, LexicalSearchPageV1, MAX_OBS_SAMPLES, QueryObsSink,
-        SearchPlaneDispatcher, build_hybrid_seed_candidates_v2, build_probe_query,
+        SearchPlaneDispatcher, build_hybrid_seed_candidates, build_probe_query,
         classify_error_metric_name, finalize_probe_window_v1, fused_window_v1,
         lexical_fetch_limit_v1, lexical_page_window_v1, make_pin, prepare_language_query_v1,
         probe_top_k_v1, runtime_generation_is_stale, runtime_seed_ids, validate_history_query,
@@ -7293,7 +7283,7 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_seed_dispatch_includes_dense_only_entity_in_v2_seed_set() -> TestResult {
+    fn hybrid_seed_dispatch_includes_dense_only_entity_in_the_seed_set() -> TestResult {
         let semantic_state = Arc::new(Mutex::new(RecordingSemanticState::default()));
         let lexical_state = Arc::new(Mutex::new(RecordingLexicalState::default()));
         let constraints = QueryConstraintSetV1::from_exact_repo_relative_path(
@@ -7364,26 +7354,24 @@ mod tests {
                     )
                     .into());
                 }
-                let seed_candidates_v2 = hybrid_seed.seed_candidates_v2.ok_or_else(|| {
-                    "hybrid seed response must carry seed_candidates_v2 on the new path".to_string()
-                })?;
-                if !seed_candidates_v2
+                let seed_candidates = hybrid_seed.seed_candidates;
+                if !seed_candidates
                     .iter()
                     .any(|candidate| candidate.entity_id == "owner:SymbolCard")
                 {
                     return Err(format!(
-                        "dense-only semantic entity must enter v2 seed set, observed={seed_candidates_v2:?}"
+                        "dense-only semantic entity must enter v2 seed set, observed={seed_candidates:?}"
                     )
                     .into());
                 }
-                let cluster_seed = seed_candidates_v2
+                let cluster_seed = seed_candidates
                     .iter()
                     .find(|candidate| {
                         candidate.corpus_kind == Some(SemanticCorpusKindV1::ClusterCard)
                     })
                     .ok_or_else(|| {
                         format!(
-                            "requested ClusterCard lane must reach the hybrid seed response: {seed_candidates_v2:?}"
+                            "requested ClusterCard lane must reach the hybrid seed response: {seed_candidates:?}"
                         )
                     })?;
                 if cluster_seed.authority_digest.as_deref() != Some("authority:ClusterCard") {
@@ -7392,25 +7380,15 @@ mod tests {
                     )
                     .into());
                 }
-                if !seed_candidates_v2.iter().all(|candidate| {
+                if !seed_candidates.iter().all(|candidate| {
                     candidate.degraded_reasons.iter().any(|reason| {
                         reason == "requested_semantic_corpus_unavailable:RepositorySummary"
                     })
                 }) {
                     return Err(format!(
-                        "missing requested corpus must remain explicit on every returned seed: {seed_candidates_v2:?}"
+                        "missing requested corpus must remain explicit on every returned seed: {seed_candidates:?}"
                     )
                     .into());
-                }
-                if hybrid_seed
-                    .seed_candidates
-                    .iter()
-                    .any(|candidate| candidate.candidate.candidate_id == "semantic-inline")
-                {
-                    return Err(
-                        "legacy seed_candidates should remain lexical-scoped on the compat path"
-                            .into(),
-                    );
                 }
             }
             other @ (SearchPlaneQueryIpcResponse::Hybrid(_)
@@ -7451,9 +7429,16 @@ mod tests {
             )
         };
         let expected = default_query_embedder().embed_query("scope alpha")?;
-        if scoped_vectors.as_slice() != [expected.clone()] {
-            return Err(format!("unexpected scoped vectors: {scoped_vectors:?}").into());
+        // QI-BB-019: the seed list is built from the dense lanes alone; no
+        // second, lexical-scoped dense search runs behind it.
+        if !scoped_vectors.is_empty() {
+            return Err(format!(
+                "hybrid seed must not run a lexical-scoped dense search: {scoped_vectors:?}"
+            )
+            .into());
         }
+        // Exactly one dense search per requested corpus lane, all over the
+        // one query vector.
         if search_hit_vectors.as_slice() != [expected.clone(), expected.clone(), expected] {
             return Err(format!("unexpected corpus hit vectors: {search_hit_vectors:?}").into());
         }
@@ -7473,7 +7458,7 @@ mod tests {
                 format!("unexpected corpus-prefiltered searches: {corpus_searches:?}").into(),
             );
         }
-        if scoped_constraints.as_slice() != [constraints.clone()]
+        if !scoped_constraints.is_empty()
             || corpus_constraints.as_slice()
                 != [
                     constraints.clone(),
@@ -7502,7 +7487,7 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_seed_v2_keeps_cross_owner_ids_and_corpus_local_ranks_distinct() -> TestResult {
+    fn hybrid_seed_keeps_cross_owner_ids_and_corpus_local_ranks_distinct() -> TestResult {
         fn hit(
             record_id: &str,
             owner_id: &str,
@@ -7561,7 +7546,7 @@ mod tests {
                 ),
             ],
         ];
-        let seeds = build_hybrid_seed_candidates_v2(&[], &semantic_lanes, &[], 3)?;
+        let seeds = build_hybrid_seed_candidates(&[], &semantic_lanes, &[], 3)?;
         let module_shared = seeds
             .iter()
             .find(|seed| {
@@ -7598,7 +7583,7 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_seed_v2_preserves_authoritative_semantic_owner_kind() -> TestResult {
+    fn hybrid_seed_preserves_authoritative_semantic_owner_kind() -> TestResult {
         let semantic_lanes = vec![vec![SemanticSearchHitV1 {
             candidate: candidate("test-behavior-record", 0.9),
             record_id: "test-behavior-record".to_string(),
@@ -7608,7 +7593,7 @@ mod tests {
             authority_digest: "authority:test-behavior-record".to_string(),
         }]];
 
-        let seeds = build_hybrid_seed_candidates_v2(&[], &semantic_lanes, &[], 1)?;
+        let seeds = build_hybrid_seed_candidates(&[], &semantic_lanes, &[], 1)?;
         let seed = seeds
             .first()
             .ok_or_else(|| "expected one semantic seed".to_string())?;

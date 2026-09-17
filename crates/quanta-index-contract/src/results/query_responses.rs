@@ -255,28 +255,22 @@ pub struct HybridQueryResponse {
 const HYBRID_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "window", "explanation"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HybridSeedLane {
-    Lexical,
-    Semantic,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SeedLaneV2 {
+pub enum SeedLane {
     Exact,
     Bm25,
     Dense,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct SeedContributionV2 {
-    pub lane: SeedLaneV2,
+pub struct SeedContribution {
+    pub lane: SeedLane,
     pub rank: u32,
     pub raw_score: Option<f32>,
     pub corpus_kind: Option<SemanticCorpusKindV1>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct SeedCandidateV2 {
+pub struct SeedCandidate {
     pub record_id: String,
     pub entity_id: String,
     pub owner_kind: OwnerDocKind,
@@ -287,23 +281,23 @@ pub struct SeedCandidateV2 {
     pub repo_relative_path: RepoRelativePath,
     pub snippet: String,
     pub seed_rank: u32,
-    pub contributions: Vec<SeedContributionV2>,
+    pub contributions: Vec<SeedContribution>,
     pub degraded_reasons: Vec<String>,
 }
 
-/// Canonical identity for ranking and deduplicating [`SeedCandidateV2`] values.
+/// Canonical identity for ranking and deduplicating [`SeedCandidate`] values.
 ///
 /// `entity_id` is opaque outside its owner domain. Including `owner_kind` in
 /// the ordered key prevents unrelated records with equal display text from
 /// collapsing during RRF fusion.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SeedFusionIdentityV2 {
+pub struct SeedFusionIdentity {
     owner_kind: OwnerDocKind,
     entity_id: String,
     corpus_kind: Option<SemanticCorpusKindV1>,
 }
 
-impl SeedFusionIdentityV2 {
+impl SeedFusionIdentity {
     #[must_use]
     pub const fn new(owner_kind: OwnerDocKind, entity_id: String) -> Self {
         Self {
@@ -314,7 +308,7 @@ impl SeedFusionIdentityV2 {
     }
 
     #[must_use]
-    pub const fn new_with_corpus_v2(
+    pub const fn new_with_corpus(
         owner_kind: OwnerDocKind,
         entity_id: String,
         corpus_kind: Option<SemanticCorpusKindV1>,
@@ -375,12 +369,12 @@ impl SeedFusionIdentityV2 {
             .cmp(&right_owner_kind)
             .then_with(|| left_entity_id.cmp(right_entity_id))
             .then_with(|| {
-                corpus_kind_code_v2(left_corpus_kind).cmp(corpus_kind_code_v2(right_corpus_kind))
+                corpus_kind_code(left_corpus_kind).cmp(corpus_kind_code(right_corpus_kind))
             })
     }
 }
 
-impl Ord for SeedFusionIdentityV2 {
+impl Ord for SeedFusionIdentity {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         Self::cmp_parts_with_corpus_v2(
             self.owner_kind,
@@ -393,19 +387,19 @@ impl Ord for SeedFusionIdentityV2 {
     }
 }
 
-impl PartialOrd for SeedFusionIdentityV2 {
+impl PartialOrd for SeedFusionIdentity {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-fn corpus_kind_code_v2(corpus_kind: Option<SemanticCorpusKindV1>) -> &'static str {
+fn corpus_kind_code(corpus_kind: Option<SemanticCorpusKindV1>) -> &'static str {
     corpus_kind.map_or("", SemanticCorpusKindV1::as_code_str)
 }
 
-impl From<&SeedCandidateV2> for SeedFusionIdentityV2 {
-    fn from(candidate: &SeedCandidateV2) -> Self {
-        Self::new_with_corpus_v2(
+impl From<&SeedCandidate> for SeedFusionIdentity {
+    fn from(candidate: &SeedCandidate) -> Self {
+        Self::new_with_corpus(
             candidate.owner_kind,
             candidate.entity_id.clone(),
             candidate.corpus_kind,
@@ -414,22 +408,14 @@ impl From<&SeedCandidateV2> for SeedFusionIdentityV2 {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct HybridSeedCandidate {
-    pub candidate: LexicalCandidate,
-    pub seed_rank: u32,
-    pub lexical_rank: Option<u32>,
-    pub lexical_score_raw: Option<f32>,
-    pub semantic_rank: Option<u32>,
-    pub semantic_score_raw: Option<f32>,
-    pub source_lanes: Vec<HybridSeedLane>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
+/// The hybrid seed response: one canonical seed list, fused from the
+/// lexical lane and one dense lane per requested corpus (QI-BB-019).
+///
+/// `window.returned` counts `seed_candidates`; there is no second list.
 pub struct HybridSeedQueryResponse {
     pub generation: GenerationPin,
     pub manifest_digest: String,
-    pub seed_candidates: Vec<HybridSeedCandidate>,
-    pub seed_candidates_v2: Option<Vec<SeedCandidateV2>>,
+    pub seed_candidates: Vec<SeedCandidate>,
     pub window: QueryResultWindowV1,
     pub explanation: SearchExplanation,
 }
@@ -438,18 +424,8 @@ const HYBRID_SEED_QUERY_RESPONSE_FIELDS: &[&str] = &[
     "generation",
     "manifest_digest",
     "seed_candidates",
-    "seed_candidates_v2",
     "window",
     "explanation",
-];
-const HYBRID_SEED_CANDIDATE_FIELDS: &[&str] = &[
-    "candidate",
-    "seed_rank",
-    "lexical_rank",
-    "lexical_score_raw",
-    "semantic_rank",
-    "semantic_score_raw",
-    "source_lanes",
 ];
 const SEED_CONTRIBUTION_V2_FIELDS: &[&str] = &["lane", "rank", "raw_score", "corpus_kind"];
 const SEED_CANDIDATE_V2_FIELDS: &[&str] = &[
@@ -1180,49 +1156,7 @@ impl_generation_results_explanation_response_serde!(
     LexicalCandidate
 );
 
-impl Serialize for HybridSeedLane {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(match self {
-            Self::Lexical => "Lexical",
-            Self::Semantic => "Semantic",
-        })
-    }
-}
-
-impl<'de> Deserialize<'de> for HybridSeedLane {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct HybridSeedLaneVisitor;
-
-        impl Visitor<'_> for HybridSeedLaneVisitor {
-            type Value = HybridSeedLane;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("string enum HybridSeedLane")
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                match value {
-                    "Lexical" => Ok(HybridSeedLane::Lexical),
-                    "Semantic" => Ok(HybridSeedLane::Semantic),
-                    other => Err(de::Error::unknown_variant(other, &["Lexical", "Semantic"])),
-                }
-            }
-        }
-
-        deserializer.deserialize_str(HybridSeedLaneVisitor)
-    }
-}
-
-impl Serialize for SeedLaneV2 {
+impl Serialize for SeedLane {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -1235,18 +1169,18 @@ impl Serialize for SeedLaneV2 {
     }
 }
 
-impl<'de> Deserialize<'de> for SeedLaneV2 {
+impl<'de> Deserialize<'de> for SeedLane {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        struct SeedLaneV2Visitor;
+        struct SeedLaneVisitor;
 
-        impl Visitor<'_> for SeedLaneV2Visitor {
-            type Value = SeedLaneV2;
+        impl Visitor<'_> for SeedLaneVisitor {
+            type Value = SeedLane;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("string enum SeedLaneV2")
+                formatter.write_str("string enum SeedLane")
             }
 
             fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
@@ -1254,9 +1188,9 @@ impl<'de> Deserialize<'de> for SeedLaneV2 {
                 E: de::Error,
             {
                 match value {
-                    "Exact" => Ok(SeedLaneV2::Exact),
-                    "Bm25" => Ok(SeedLaneV2::Bm25),
-                    "Dense" => Ok(SeedLaneV2::Dense),
+                    "Exact" => Ok(SeedLane::Exact),
+                    "Bm25" => Ok(SeedLane::Bm25),
+                    "Dense" => Ok(SeedLane::Dense),
                     other => Err(de::Error::unknown_variant(
                         other,
                         &["Exact", "Bm25", "Dense"],
@@ -1265,11 +1199,11 @@ impl<'de> Deserialize<'de> for SeedLaneV2 {
             }
         }
 
-        deserializer.deserialize_str(SeedLaneV2Visitor)
+        deserializer.deserialize_str(SeedLaneVisitor)
     }
 }
 
-impl Serialize for SeedContributionV2 {
+impl Serialize for SeedContribution {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -1281,7 +1215,7 @@ impl Serialize for SeedContributionV2 {
         if self.corpus_kind.is_some() {
             field_count = field_count.saturating_add(1);
         }
-        let mut state = serializer.serialize_struct("SeedContributionV2", field_count)?;
+        let mut state = serializer.serialize_struct("SeedContribution", field_count)?;
         state.serialize_field("lane", &self.lane)?;
         state.serialize_field("rank", &self.rank)?;
         if let Some(raw_score) = &self.raw_score {
@@ -1294,20 +1228,20 @@ impl Serialize for SeedContributionV2 {
     }
 }
 
-struct SeedContributionV2Visitor;
+struct SeedContributionVisitor;
 
-impl<'de> Visitor<'de> for SeedContributionV2Visitor {
-    type Value = SeedContributionV2;
+impl<'de> Visitor<'de> for SeedContributionVisitor {
+    type Value = SeedContribution;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a SeedContributionV2 map")
+        formatter.write_str("a SeedContribution map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
     where
         A: MapAccess<'de>,
     {
-        let mut lane: Option<SeedLaneV2> = None;
+        let mut lane: Option<SeedLane> = None;
         let mut rank: Option<u32> = None;
         let mut raw_score: Option<f32> = None;
         let mut raw_score_seen = false;
@@ -1344,7 +1278,7 @@ impl<'de> Visitor<'de> for SeedContributionV2Visitor {
                 }
             }
         }
-        Ok(SeedContributionV2 {
+        Ok(SeedContribution {
             lane: lane.ok_or_else(|| de::Error::missing_field("lane"))?,
             rank: rank.ok_or_else(|| de::Error::missing_field("rank"))?,
             raw_score,
@@ -1353,20 +1287,20 @@ impl<'de> Visitor<'de> for SeedContributionV2Visitor {
     }
 }
 
-impl<'de> Deserialize<'de> for SeedContributionV2 {
+impl<'de> Deserialize<'de> for SeedContribution {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "SeedContributionV2",
+            "SeedContribution",
             SEED_CONTRIBUTION_V2_FIELDS,
-            SeedContributionV2Visitor,
+            SeedContributionVisitor,
         )
     }
 }
 
-impl Serialize for SeedCandidateV2 {
+impl Serialize for SeedCandidate {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -1375,7 +1309,7 @@ impl Serialize for SeedCandidateV2 {
         if self.authority_digest.is_some() {
             field_count = field_count.saturating_add(1);
         }
-        let mut state = serializer.serialize_struct("SeedCandidateV2", field_count)?;
+        let mut state = serializer.serialize_struct("SeedCandidate", field_count)?;
         state.serialize_field("record_id", &self.record_id)?;
         state.serialize_field("entity_id", &self.entity_id)?;
         state.serialize_field("owner_kind", &self.owner_kind)?;
@@ -1392,13 +1326,13 @@ impl Serialize for SeedCandidateV2 {
     }
 }
 
-struct SeedCandidateV2Visitor;
+struct SeedCandidateVisitor;
 
-impl<'de> Visitor<'de> for SeedCandidateV2Visitor {
-    type Value = SeedCandidateV2;
+impl<'de> Visitor<'de> for SeedCandidateVisitor {
+    type Value = SeedCandidate;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a SeedCandidateV2 map")
+        formatter.write_str("a SeedCandidate map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -1413,7 +1347,7 @@ impl<'de> Visitor<'de> for SeedCandidateV2Visitor {
         let mut repo_relative_path: Option<RepoRelativePath> = None;
         let mut snippet: Option<String> = None;
         let mut seed_rank: Option<u32> = None;
-        let mut contributions: Option<Vec<SeedContributionV2>> = None;
+        let mut contributions: Option<Vec<SeedContribution>> = None;
         let mut degraded_reasons: Option<Vec<String>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -1482,7 +1416,7 @@ impl<'de> Visitor<'de> for SeedCandidateV2Visitor {
                 }
             }
         }
-        Ok(SeedCandidateV2 {
+        Ok(SeedCandidate {
             record_id: record_id.ok_or_else(|| de::Error::missing_field("record_id"))?,
             entity_id: entity_id.ok_or_else(|| de::Error::missing_field("entity_id"))?,
             owner_kind: owner_kind.ok_or_else(|| de::Error::missing_field("owner_kind"))?,
@@ -1500,158 +1434,15 @@ impl<'de> Visitor<'de> for SeedCandidateV2Visitor {
     }
 }
 
-impl<'de> Deserialize<'de> for SeedCandidateV2 {
+impl<'de> Deserialize<'de> for SeedCandidate {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "SeedCandidateV2",
+            "SeedCandidate",
             SEED_CANDIDATE_V2_FIELDS,
-            SeedCandidateV2Visitor,
-        )
-    }
-}
-
-impl Serialize for HybridSeedCandidate {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut field_count = 3usize;
-        if self.lexical_rank.is_some() {
-            field_count = field_count.saturating_add(1);
-        }
-        if self.lexical_score_raw.is_some() {
-            field_count = field_count.saturating_add(1);
-        }
-        if self.semantic_rank.is_some() {
-            field_count = field_count.saturating_add(1);
-        }
-        if self.semantic_score_raw.is_some() {
-            field_count = field_count.saturating_add(1);
-        }
-        let mut state = serializer.serialize_struct("HybridSeedCandidate", field_count)?;
-        state.serialize_field("candidate", &self.candidate)?;
-        state.serialize_field("seed_rank", &self.seed_rank)?;
-        if let Some(lexical_rank) = &self.lexical_rank {
-            state.serialize_field("lexical_rank", lexical_rank)?;
-        }
-        if let Some(lexical_score_raw) = &self.lexical_score_raw {
-            state.serialize_field("lexical_score_raw", lexical_score_raw)?;
-        }
-        if let Some(semantic_rank) = &self.semantic_rank {
-            state.serialize_field("semantic_rank", semantic_rank)?;
-        }
-        if let Some(semantic_score_raw) = &self.semantic_score_raw {
-            state.serialize_field("semantic_score_raw", semantic_score_raw)?;
-        }
-        state.serialize_field("source_lanes", &self.source_lanes)?;
-        state.end()
-    }
-}
-
-struct HybridSeedCandidateVisitor;
-
-impl<'de> Visitor<'de> for HybridSeedCandidateVisitor {
-    type Value = HybridSeedCandidate;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a HybridSeedCandidate map")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut candidate: Option<LexicalCandidate> = None;
-        let mut seed_rank: Option<u32> = None;
-        let mut lexical_rank: Option<u32> = None;
-        let mut lexical_rank_seen = false;
-        let mut lexical_score_raw: Option<f32> = None;
-        let mut lexical_score_raw_seen = false;
-        let mut semantic_rank: Option<u32> = None;
-        let mut semantic_rank_seen = false;
-        let mut semantic_score_raw: Option<f32> = None;
-        let mut semantic_score_raw_seen = false;
-        let mut source_lanes: Option<Vec<HybridSeedLane>> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "candidate" => {
-                    if candidate.is_some() {
-                        return Err(de::Error::duplicate_field("candidate"));
-                    }
-                    candidate = Some(map.next_value()?);
-                }
-                "seed_rank" => {
-                    if seed_rank.is_some() {
-                        return Err(de::Error::duplicate_field("seed_rank"));
-                    }
-                    seed_rank = Some(map.next_value()?);
-                }
-                "lexical_rank" => {
-                    if lexical_rank_seen {
-                        return Err(de::Error::duplicate_field("lexical_rank"));
-                    }
-                    lexical_rank_seen = true;
-                    lexical_rank = Some(map.next_value()?);
-                }
-                "lexical_score_raw" => {
-                    if lexical_score_raw_seen {
-                        return Err(de::Error::duplicate_field("lexical_score_raw"));
-                    }
-                    lexical_score_raw_seen = true;
-                    lexical_score_raw = Some(map.next_value()?);
-                }
-                "semantic_rank" => {
-                    if semantic_rank_seen {
-                        return Err(de::Error::duplicate_field("semantic_rank"));
-                    }
-                    semantic_rank_seen = true;
-                    semantic_rank = Some(map.next_value()?);
-                }
-                "semantic_score_raw" => {
-                    if semantic_score_raw_seen {
-                        return Err(de::Error::duplicate_field("semantic_score_raw"));
-                    }
-                    semantic_score_raw_seen = true;
-                    semantic_score_raw = Some(map.next_value()?);
-                }
-                "source_lanes" => {
-                    if source_lanes.is_some() {
-                        return Err(de::Error::duplicate_field("source_lanes"));
-                    }
-                    source_lanes = Some(map.next_value()?);
-                }
-                other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        HYBRID_SEED_CANDIDATE_FIELDS,
-                    ));
-                }
-            }
-        }
-        Ok(HybridSeedCandidate {
-            candidate: candidate.ok_or_else(|| de::Error::missing_field("candidate"))?,
-            seed_rank: seed_rank.ok_or_else(|| de::Error::missing_field("seed_rank"))?,
-            lexical_rank,
-            lexical_score_raw,
-            semantic_rank,
-            semantic_score_raw,
-            source_lanes: source_lanes.ok_or_else(|| de::Error::missing_field("source_lanes"))?,
-        })
-    }
-}
-
-impl<'de> Deserialize<'de> for HybridSeedCandidate {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_struct(
-            "HybridSeedCandidate",
-            HYBRID_SEED_CANDIDATE_FIELDS,
-            HybridSeedCandidateVisitor,
+            SeedCandidateVisitor,
         )
     }
 }
@@ -1661,17 +1452,10 @@ impl Serialize for HybridSeedQueryResponse {
     where
         S: Serializer,
     {
-        let mut field_count = 5usize;
-        if self.seed_candidates_v2.is_some() {
-            field_count = field_count.saturating_add(1);
-        }
-        let mut state = serializer.serialize_struct("HybridSeedQueryResponse", field_count)?;
+        let mut state = serializer.serialize_struct("HybridSeedQueryResponse", 5)?;
         state.serialize_field("generation", &self.generation)?;
         state.serialize_field("manifest_digest", &self.manifest_digest)?;
         state.serialize_field("seed_candidates", &self.seed_candidates)?;
-        if let Some(seed_candidates_v2) = &self.seed_candidates_v2 {
-            state.serialize_field("seed_candidates_v2", seed_candidates_v2)?;
-        }
         state.serialize_field("window", &self.window)?;
         state.serialize_field("explanation", &self.explanation)?;
         state.end()
@@ -1693,9 +1477,7 @@ impl<'de> Visitor<'de> for HybridSeedQueryResponseVisitor {
     {
         let mut generation: Option<GenerationPin> = None;
         let mut manifest_digest: Option<String> = None;
-        let mut seed_candidates: Option<Vec<HybridSeedCandidate>> = None;
-        let mut seed_candidates_v2: Option<Vec<SeedCandidateV2>> = None;
-        let mut seed_candidates_v2_seen = false;
+        let mut seed_candidates: Option<Vec<SeedCandidate>> = None;
         let mut window: Option<QueryResultWindowV1> = None;
         let mut explanation: Option<SearchExplanation> = None;
         while let Some(key) = map.next_key::<String>()? {
@@ -1717,13 +1499,6 @@ impl<'de> Visitor<'de> for HybridSeedQueryResponseVisitor {
                         return Err(de::Error::duplicate_field("seed_candidates"));
                     }
                     seed_candidates = Some(map.next_value()?);
-                }
-                "seed_candidates_v2" => {
-                    if seed_candidates_v2_seen {
-                        return Err(de::Error::duplicate_field("seed_candidates_v2"));
-                    }
-                    seed_candidates_v2_seen = true;
-                    seed_candidates_v2 = Some(map.next_value()?);
                 }
                 "window" => {
                     if window.is_some() {
@@ -1748,17 +1523,14 @@ impl<'de> Visitor<'de> for HybridSeedQueryResponseVisitor {
         let seed_candidates =
             seed_candidates.ok_or_else(|| de::Error::missing_field("seed_candidates"))?;
         let window = window.ok_or_else(|| de::Error::missing_field("window"))?;
-        let returned_len = seed_candidates_v2
-            .as_ref()
-            .map_or(seed_candidates.len(), Vec::len);
         let returned = usize::try_from(window.returned()).map_err(|error| {
             de::Error::custom(format!(
                 "hybrid seed window returned count cannot fit usize: {error}"
             ))
         })?;
-        if returned != returned_len {
+        if returned != seed_candidates.len() {
             return Err(de::Error::custom(
-                "hybrid seed window returned count does not match active seed result length",
+                "hybrid seed window returned count does not match seed_candidates length",
             ));
         }
         Ok(HybridSeedQueryResponse {
@@ -1766,7 +1538,6 @@ impl<'de> Visitor<'de> for HybridSeedQueryResponseVisitor {
             manifest_digest: manifest_digest
                 .ok_or_else(|| de::Error::missing_field("manifest_digest"))?,
             seed_candidates,
-            seed_candidates_v2,
             window,
             explanation: explanation.ok_or_else(|| de::Error::missing_field("explanation"))?,
         })
@@ -1841,32 +1612,8 @@ mod tests {
         )
     }
 
-    fn sample_seed_candidate() -> HybridSeedCandidate {
-        HybridSeedCandidate {
-            candidate: LexicalCandidate {
-                candidate_id: "lex-1".to_string(),
-                repo_id: RepoId::new("repo-seed"),
-                revision_id: RevisionId::new("rev-seed"),
-                manifest_generation: ManifestGeneration::new(7),
-                repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-                start_line: 10,
-                end_line: 12,
-                score: 0.75,
-                snippet: "fn demo() {}".to_string(),
-                snippet_hit_offset: None,
-                highlights: Vec::new(),
-            },
-            seed_rank: 1,
-            lexical_rank: Some(1),
-            lexical_score_raw: Some(0.75),
-            semantic_rank: None,
-            semantic_score_raw: None,
-            source_lanes: vec![HybridSeedLane::Lexical],
-        }
-    }
-
-    fn sample_seed_candidate_v2() -> SeedCandidateV2 {
-        SeedCandidateV2 {
+    fn sample_seed_candidate() -> SeedCandidate {
+        SeedCandidate {
             record_id: "semantic-source:symbol-card:symbol:demo".to_string(),
             entity_id: "symbol:demo".to_string(),
             owner_kind: OwnerDocKind::Symbol,
@@ -1875,8 +1622,8 @@ mod tests {
             repo_relative_path: RepoRelativePath::new("src/lib.rs"),
             snippet: "symbol: symbol:demo".to_string(),
             seed_rank: 1,
-            contributions: vec![SeedContributionV2 {
-                lane: SeedLaneV2::Dense,
+            contributions: vec![SeedContribution {
+                lane: SeedLane::Dense,
                 rank: 2,
                 raw_score: Some(0.5),
                 corpus_kind: Some(SemanticCorpusKindV1::SymbolCard),
@@ -1886,19 +1633,19 @@ mod tests {
     }
 
     #[test]
-    fn seed_fusion_identity_borrowed_comparator_matches_owned_order_v2() {
+    fn seed_fusion_identity_borrowed_comparator_matches_owned_order() {
         let identities = [
-            SeedFusionIdentityV2::new(OwnerDocKind::Symbol, "z".to_string()),
-            SeedFusionIdentityV2::new(OwnerDocKind::Chunk, "a".to_string()),
-            SeedFusionIdentityV2::new(OwnerDocKind::Symbol, "a".to_string()),
-            SeedFusionIdentityV2::new(OwnerDocKind::Module, "z".to_string()),
+            SeedFusionIdentity::new(OwnerDocKind::Symbol, "z".to_string()),
+            SeedFusionIdentity::new(OwnerDocKind::Chunk, "a".to_string()),
+            SeedFusionIdentity::new(OwnerDocKind::Symbol, "a".to_string()),
+            SeedFusionIdentity::new(OwnerDocKind::Module, "z".to_string()),
         ];
 
         for left in &identities {
             for right in &identities {
                 assert_eq!(
                     left.cmp(right),
-                    SeedFusionIdentityV2::cmp_parts_with_corpus_v2(
+                    SeedFusionIdentity::cmp_parts_with_corpus_v2(
                         left.owner_kind(),
                         left.entity_id(),
                         left.corpus_kind(),
@@ -1910,7 +1657,7 @@ mod tests {
                 if left.corpus_kind().is_none() && right.corpus_kind().is_none() {
                     assert_eq!(
                         left.cmp(right),
-                        SeedFusionIdentityV2::cmp_parts(
+                        SeedFusionIdentity::cmp_parts(
                             left.owner_kind(),
                             left.entity_id(),
                             right.owner_kind(),
@@ -1931,25 +1678,8 @@ mod tests {
                 "manifest_generation": 7
             },
             "manifest_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "seed_candidates": [{
-                "candidate": {
-                    "candidate_id": "lex-1",
-                    "repo_id": "repo-seed",
-                    "revision_id": "rev-seed",
-                    "manifest_generation": 7,
-                    "repo_relative_path": "src/lib.rs",
-                    "start_line": 10,
-                    "end_line": 12,
-                    "score": 0.75,
-                    "snippet": "fn demo() {}",
-                    "snippet_hit_offset": null,
-                    "highlights": []
-                },
-                "seed_rank": 1,
-                "lexical_rank": 1,
-                "lexical_score_raw": 0.75,
-                "source_lanes": ["Lexical"]
-            }],
+            "seed_candidates": [serde_json::to_value(sample_seed_candidate())
+                .expect("seed candidate must serialize")],
             "explanation": serde_json::to_value(SearchExplanation::default())
                 .expect("default explanation must serialize")
         });
@@ -1960,13 +1690,34 @@ mod tests {
         );
     }
 
+    /// The pre-QI-BB-019 wire shape carried a second, legacy seed list; a
+    /// payload that still does is refused rather than half-read.
     #[test]
-    fn hybrid_seed_query_response_round_trips_with_v2_candidates() {
+    fn hybrid_seed_query_response_refuses_a_legacy_second_seed_list() {
+        let value = serde_json::json!({
+            "generation": {
+                "repo_id": "repo-seed",
+                "revision_id": "rev-seed",
+                "manifest_generation": 7
+            },
+            "manifest_digest": "a".repeat(64),
+            "seed_candidates": [serde_json::to_value(sample_seed_candidate())
+                .expect("seed candidate must serialize")],
+            "seed_candidates_v2": [],
+            "window": serde_json::to_value(QueryResultWindowV1::exact(1))
+                .expect("window must serialize"),
+            "explanation": serde_json::to_value(SearchExplanation::default())
+                .expect("default explanation must serialize")
+        });
+        assert!(serde_json::from_value::<HybridSeedQueryResponse>(value).is_err());
+    }
+
+    #[test]
+    fn hybrid_seed_query_response_round_trips_with_seed_candidates() {
         let response = HybridSeedQueryResponse {
             generation: sample_generation_pin(),
             manifest_digest: "a".repeat(64),
             seed_candidates: vec![sample_seed_candidate()],
-            seed_candidates_v2: Some(vec![sample_seed_candidate_v2()]),
             window: QueryResultWindowV1::exact(1),
             explanation: SearchExplanation::default(),
         };
@@ -1985,8 +1736,8 @@ mod tests {
     }
 
     #[test]
-    fn seed_candidate_v2_authority_digest_is_optional_but_round_trips_when_present() {
-        let candidate = sample_seed_candidate_v2();
+    fn seed_candidate_authority_digest_is_optional_but_round_trips_when_present() {
+        let candidate = sample_seed_candidate();
         let mut encoded = serde_json::to_value(&candidate).expect("seed candidate JSON");
         assert_eq!(
             encoded
@@ -2000,7 +1751,7 @@ mod tests {
             .expect("seed candidate object")
             .remove("authority_digest");
         assert!(removed.is_some());
-        let decoded: SeedCandidateV2 = serde_json::from_value(encoded)
+        let decoded: SeedCandidate = serde_json::from_value(encoded)
             .expect("legacy candidate without digest remains readable");
         assert!(decoded.authority_digest.is_none());
     }

@@ -12,13 +12,14 @@ use std::process::ExitCode;
 
 use quanta_index_contract::{
     EarlyStopReason, EngineTouched, GenerationPin, HistoryQueryRequest, HybridSeedQueryRequest,
-    LexicalCandidate, ManifestGeneration, PlannerTraceEntry, QueryConstraintSetV1,
-    QueryErrorRepair, RepoId, RepoMapDocType, RepoMapFocusSubjectDto, RepoMapQueryRequest,
-    RevisionId, RuntimeMetadataQueryRequest, SearchExplanation, SearchPlaneHistoryQueryResponse,
-    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
-    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
-    SemanticQueryRequest, StructuralQueryRequest, SymbolCandidate, SymbolQueryRequest,
-    SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    HybridSeedQueryResponse, LexicalCandidate, ManifestGeneration, PlannerTraceEntry,
+    QueryConstraintSetV1, QueryErrorRepair, RepoId, RepoMapDocType, RepoMapFocusSubjectDto,
+    RepoMapQueryRequest, RevisionId, RuntimeMetadataQueryRequest, SearchExplanation,
+    SearchPlaneHistoryQueryResponse, SearchPlaneQueryIpcResponse,
+    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRuntimeMetadataQueryResponse,
+    SearchPlaneStructuralQueryResponse, SemanticQueryRequest, StructuralQueryRequest,
+    SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse,
+    TextQuerySyntax,
     ipc::{GenerationStatusReport, SearchPlaneTrackKind},
 };
 use quanta_index_sdk::{ConnectOptions, QuantaIndex, SdkError};
@@ -1362,21 +1363,9 @@ fn render_pretty(
             Some(&payload.explanation),
             rendered,
         ),
-        SearchPlaneQueryIpcResponse::HybridSeed(payload) => render_lexical_payload(
-            "hybrid-seed",
-            &TextQueryResponse {
-                generation: payload.generation.clone(),
-                results: payload
-                    .seed_candidates
-                    .iter()
-                    .map(|candidate| candidate.candidate.clone())
-                    .collect(),
-                window: payload.window,
-                file_owner_rows: None,
-            },
-            Some(&payload.explanation),
-            rendered,
-        ),
+        SearchPlaneQueryIpcResponse::HybridSeed(payload) => {
+            render_hybrid_seed_payload(payload, rendered)
+        }
         SearchPlaneQueryIpcResponse::Explain(payload) => {
             fmt_ok(writeln!(rendered, "kind: explain"))?;
             render_generation(&payload.generation, rendered)?;
@@ -1458,6 +1447,60 @@ fn render_pretty(
                 .to_string(),
         )),
     }
+}
+
+/// Render the one canonical seed list (QI-BB-019): each seed with its
+/// typed identity and the lane contributions that ranked it.
+fn render_hybrid_seed_payload(
+    payload: &HybridSeedQueryResponse,
+    rendered: &mut String,
+) -> CliResult<()> {
+    fmt_ok(writeln!(rendered, "kind: hybrid-seed"))?;
+    render_generation(&payload.generation, rendered)?;
+    fmt_ok(writeln!(
+        rendered,
+        "manifest_digest: {} seeds: {} has_more: {}",
+        payload.manifest_digest,
+        payload.window.returned(),
+        payload.window.has_more()
+    ))?;
+    for seed in &payload.seed_candidates {
+        let contributions = seed
+            .contributions
+            .iter()
+            .map(|contribution| {
+                let lane = match contribution.lane {
+                    quanta_index_contract::SeedLane::Exact => "exact",
+                    quanta_index_contract::SeedLane::Bm25 => "bm25",
+                    quanta_index_contract::SeedLane::Dense => "dense",
+                };
+                contribution.corpus_kind.map_or_else(
+                    || format!("{lane}#{}", contribution.rank),
+                    |corpus| format!("{lane}#{}@{}", contribution.rank, corpus.as_code_str()),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        fmt_ok(writeln!(
+            rendered,
+            "{}. entity={} owner_kind={} path={} lanes={}{}",
+            seed.seed_rank,
+            seed.entity_id,
+            seed.owner_kind.as_code_str(),
+            seed.repo_relative_path.as_str(),
+            contributions,
+            if seed.degraded_reasons.is_empty() {
+                String::new()
+            } else {
+                format!(" degraded={}", seed.degraded_reasons.join(","))
+            }
+        ))?;
+        for line in seed.snippet.lines().take(3) {
+            fmt_ok(writeln!(rendered, "   {line}"))?;
+        }
+    }
+    render_explanation(&payload.explanation, rendered)?;
+    Ok(())
 }
 
 fn render_history_payload(

@@ -16,8 +16,6 @@ pub use quanta_index_sdk::GenerationPin
 pub use quanta_index_sdk::GenerationSelector
 pub use quanta_index_sdk::GenerationSnapshot
 pub use quanta_index_sdk::GenerationStatusReport
-pub use quanta_index_sdk::HybridSeedCandidate
-pub use quanta_index_sdk::HybridSeedLane
 pub use quanta_index_sdk::HybridSeedQueryRequest
 pub use quanta_index_sdk::HybridSeedQueryResponse
 pub use quanta_index_sdk::LanguageCode
@@ -64,6 +62,9 @@ pub use quanta_index_sdk::SearchPlaneStructuralQueryResponse
 pub use quanta_index_sdk::SearchPlaneTrackKind
 pub use quanta_index_sdk::SearchScopeKey
 pub use quanta_index_sdk::SearchScopeSurface
+pub use quanta_index_sdk::SeedCandidate
+pub use quanta_index_sdk::SeedContribution
+pub use quanta_index_sdk::SeedLane
 pub use quanta_index_sdk::SemanticQueryResponse
 pub use quanta_index_sdk::StructuralReplaceScope
 pub use quanta_index_sdk::StructuralTombstoneScope

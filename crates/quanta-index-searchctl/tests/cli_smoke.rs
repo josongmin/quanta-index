@@ -18,14 +18,14 @@ use quanta_index_contract::ipc::{
 };
 use quanta_index_contract::lex::ExplanationRow;
 use quanta_index_contract::{
-    EngineTouched, GenerationPin, HybridSeedCandidate, HybridSeedLane, HybridSeedQueryResponse,
-    LexicalCandidate, ManifestGeneration, PlannerStage, PlannerTraceEntry, QueryResultWindowV1,
-    RepoId, RepoMapDocType, RepoMapEntryDto, RepoMapExactnessSummary, RepoMapFocusSubjectDto,
-    RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapQueryResponse,
-    RepoMapRedactionState, RepoMapSnapshotMeta, RepoRelativePath, RevisionId, SearchExplanation,
-    SearchPlaneExplainQueryResponse, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SemanticQueryResponse, TextQueryResponse, TextQuerySyntax,
+    EngineTouched, GenerationPin, HybridSeedQueryResponse, LexicalCandidate, ManifestGeneration,
+    PlannerStage, PlannerTraceEntry, QueryResultWindowV1, RepoId, RepoMapDocType, RepoMapEntryDto,
+    RepoMapExactnessSummary, RepoMapFocusSubjectDto, RepoMapGraphCoverageClass,
+    RepoMapItemIndexAvailability, RepoMapQueryResponse, RepoMapRedactionState, RepoMapSnapshotMeta,
+    RepoRelativePath, RevisionId, SearchExplanation, SearchPlaneExplainQueryResponse,
+    SearchPlaneIpcError, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
+    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope, SemanticQueryResponse,
+    TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_ipc::{IpcDispatcher, RequestBudgetV1, UdsServer};
 use tempfile::tempdir;
@@ -260,6 +260,9 @@ fn hybrid_query_text_pretty_roundtrip_impl() -> Result<(), Box<dyn std::error::E
     }
     if !stdout.contains("summary: hybrid seed explanation") {
         return Err(format!("missing hybrid-seed summary in stdout: {stdout}").into());
+    }
+    if !stdout.contains("1. entity=chunk-1 owner_kind=Chunk path=src/lib.rs lanes=bm25#1,dense#1") {
+        return Err(format!("missing the seed's lane contributions in stdout: {stdout}").into());
     }
     Ok(())
 }
@@ -899,18 +902,33 @@ fn dispatch_hybrid_seed_request(
         );
     }
     SearchPlaneQueryIpcResponse::HybridSeed(HybridSeedQueryResponse {
-        generation: expected_generation.clone(),
+        generation: expected_generation,
         manifest_digest: "manifest-digest-9".to_string(),
-        seed_candidates: vec![HybridSeedCandidate {
-            candidate: stub_candidate(expected_generation),
+        seed_candidates: vec![quanta_index_contract::SeedCandidate {
+            record_id: "chunk-1".to_string(),
+            entity_id: "chunk-1".to_string(),
+            owner_kind: quanta_index_contract::OwnerDocKind::Chunk,
+            corpus_kind: None,
+            authority_digest: None,
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+            snippet: "fn sample() {}".to_string(),
             seed_rank: 1,
-            lexical_rank: Some(1),
-            lexical_score_raw: Some(1.0),
-            semantic_rank: Some(1),
-            semantic_score_raw: Some(0.5),
-            source_lanes: vec![HybridSeedLane::Lexical, HybridSeedLane::Semantic],
+            contributions: vec![
+                quanta_index_contract::SeedContribution {
+                    lane: quanta_index_contract::SeedLane::Bm25,
+                    rank: 1,
+                    raw_score: Some(1.0),
+                    corpus_kind: None,
+                },
+                quanta_index_contract::SeedContribution {
+                    lane: quanta_index_contract::SeedLane::Dense,
+                    rank: 1,
+                    raw_score: Some(0.5),
+                    corpus_kind: None,
+                },
+            ],
+            degraded_reasons: Vec::new(),
         }],
-        seed_candidates_v2: None,
         window: QueryResultWindowV1::exact(1),
         explanation: stub_explanation(
             "hybrid seed explanation",

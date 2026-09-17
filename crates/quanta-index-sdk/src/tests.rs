@@ -9,14 +9,13 @@ use quanta_index_contract::lex::{
 use quanta_index_contract::{
     BatchPublishReceipt, CapabilityStatusV1, ChunkId, ChunkRecord, DiffHunkSide,
     ExactRepoRelativePathV1, GenerationSelector, GenerationSnapshot, HistoryQueryRequest,
-    HybridSeedCandidate, HybridSeedLane, HybridSeedQueryResponse, ManifestGeneration, OwnerDocKind,
-    PlannerStage, PlannerTraceEntry, QueryResultWindowV1, RepoId, RepoMapChunkExactness,
-    RepoMapExactnessSummary, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
-    RepoMapMutationAck, RepoMapRedactionState, RepoRelativePath, RevisionId,
-    RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1, SearchExplanation,
-    SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponseEnvelope,
-    SearchPlaneHistoryQueryResponse, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    HybridSeedQueryResponse, ManifestGeneration, OwnerDocKind, PlannerStage, PlannerTraceEntry,
+    QueryResultWindowV1, RepoId, RepoMapChunkExactness, RepoMapExactnessSummary,
+    RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapMutationAck,
+    RepoMapRedactionState, RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest,
+    SearchCorpusGenerationIdentityV1, SearchExplanation, SearchPlaneControlIpcRequestEnvelope,
+    SearchPlaneControlIpcResponseEnvelope, SearchPlaneHistoryQueryResponse,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneIpcError, SearchPlaneQueryIpcRequestEnvelope,
     SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneRuntimeMetadataQueryResponse,
@@ -265,15 +264,31 @@ fn sample_hit() -> quanta_index_contract::LexicalCandidate {
     }
 }
 
-fn sample_hybrid_seed_candidate() -> HybridSeedCandidate {
-    HybridSeedCandidate {
-        candidate: sample_hit(),
+fn sample_hybrid_seed_candidate() -> quanta_index_contract::SeedCandidate {
+    quanta_index_contract::SeedCandidate {
+        record_id: "lex-1".to_string(),
+        entity_id: "lex-1".to_string(),
+        owner_kind: OwnerDocKind::Chunk,
+        corpus_kind: None,
+        authority_digest: None,
+        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        snippet: "fn sample() {}".to_string(),
         seed_rank: 1,
-        lexical_rank: Some(1),
-        lexical_score_raw: Some(1.0),
-        semantic_rank: Some(2),
-        semantic_score_raw: Some(0.5),
-        source_lanes: vec![HybridSeedLane::Lexical, HybridSeedLane::Semantic],
+        contributions: vec![
+            quanta_index_contract::SeedContribution {
+                lane: quanta_index_contract::SeedLane::Bm25,
+                rank: 1,
+                raw_score: Some(1.0),
+                corpus_kind: None,
+            },
+            quanta_index_contract::SeedContribution {
+                lane: quanta_index_contract::SeedLane::Dense,
+                rank: 2,
+                raw_score: Some(0.5),
+                corpus_kind: None,
+            },
+        ],
+        degraded_reasons: Vec::new(),
     }
 }
 
@@ -1194,7 +1209,6 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
             generation: sample_generation_pin(),
             manifest_digest: "manifest-digest".to_string(),
             seed_candidates: Vec::new(),
-            seed_candidates_v2: None,
             window: QueryResultWindowV1::exact(0),
             explanation: sample_explanation(),
         }),
@@ -1339,7 +1353,6 @@ fn hybrid_seed_search_builder_dispatches_hybrid_seed_request_with_semantic_text(
             generation: sample_generation_pin(),
             manifest_digest: "manifest-digest".to_string(),
             seed_candidates: vec![sample_hybrid_seed_candidate()],
-            seed_candidates_v2: None,
             window: QueryResultWindowV1::exact(1),
             explanation: sample_explanation(),
         }),
@@ -1432,7 +1445,6 @@ fn hybrid_seed_request_forwards_contract_dto_unchanged() {
             generation: sample_generation_pin(),
             manifest_digest: "manifest-digest".to_string(),
             seed_candidates: vec![sample_hybrid_seed_candidate()],
-            seed_candidates_v2: None,
             window: QueryResultWindowV1::exact(1),
             explanation: sample_explanation(),
         }),

@@ -10,13 +10,13 @@
 
 use super::{
     ActivationCatalog, BTreeMap, BTreeSet, CoreError, EarlyStopReason, EngineTouched,
-    GenerationPin, HybridOrchestratorPolicy, HybridQueryRequest, HybridSeedCandidate,
-    HybridSeedLane, HybridSeedQueryRequest, LexicalCandidate, LexicalErrorCode, OwnerDocKind,
-    PlannerStage, PlannerTraceEntry, QueryResultWindowV1, SearchExplanation, SearchPlaneTrackKind,
-    SeedCandidateV2, SeedContributionV2, SeedLaneV2, SemanticPolicy, SemanticQueryRequest,
-    SemanticSearchHitV1, resolve_lexical_request_pin, resolve_semantic_selector_selection,
+    GenerationPin, HybridOrchestratorPolicy, HybridQueryRequest, HybridSeedQueryRequest,
+    LexicalCandidate, LexicalErrorCode, OwnerDocKind, PlannerStage, PlannerTraceEntry,
+    QueryResultWindowV1, SearchExplanation, SearchPlaneTrackKind, SeedCandidate, SeedContribution,
+    SeedLane, SemanticPolicy, SemanticQueryRequest, SemanticSearchHitV1,
+    resolve_lexical_request_pin, resolve_semantic_selector_selection,
 };
-use quanta_index_contract::{SeedFusionIdentityV2, SemanticSeedCorpusBudgetV1};
+use quanta_index_contract::{SeedFusionIdentity, SemanticCorpusKindV1, SemanticSeedCorpusBudgetV1};
 
 #[derive(Clone, Debug)]
 pub(super) struct SemanticSelection {
@@ -183,98 +183,47 @@ pub(super) fn checked_rank_u32_v1(index: usize, label: &'static str) -> Result<u
         .map_err(|err| CoreError::Storage(format!("{label}: rank exceeds u32: {err}")))
 }
 
-pub(super) fn build_hybrid_seed_candidates_v1(
-    fused: &[LexicalCandidate],
-    lex_results: &[LexicalCandidate],
-    sem_results: &[LexicalCandidate],
-) -> Result<Vec<HybridSeedCandidate>, CoreError> {
-    let lexical_positions = lex_results
-        .iter()
-        .enumerate()
-        .map(|(index, candidate)| {
-            Ok((
-                candidate.candidate_id.clone(),
-                (
-                    checked_rank_u32_v1(index, "hybrid seed lexical")?,
-                    candidate.score,
-                ),
-            ))
-        })
-        .collect::<Result<BTreeMap<_, _>, CoreError>>()?;
-    let semantic_positions = sem_results
-        .iter()
-        .enumerate()
-        .map(|(index, candidate)| {
-            Ok((
-                candidate.candidate_id.clone(),
-                (
-                    checked_rank_u32_v1(index, "hybrid seed semantic")?,
-                    candidate.score,
-                ),
-            ))
-        })
-        .collect::<Result<BTreeMap<_, _>, CoreError>>()?;
-
-    fused
-        .iter()
-        .enumerate()
-        .map(|(index, candidate)| {
-            let lexical = lexical_positions
-                .get(candidate.candidate_id.as_str())
-                .copied();
-            let semantic = semantic_positions
-                .get(candidate.candidate_id.as_str())
-                .copied();
-            let mut source_lanes = Vec::new();
-            if lexical.is_some() {
-                source_lanes.push(HybridSeedLane::Lexical);
-            }
-            if semantic.is_some() {
-                source_lanes.push(HybridSeedLane::Semantic);
-            }
-            Ok(HybridSeedCandidate {
-                candidate: candidate.clone(),
-                seed_rank: checked_rank_u32_v1(index, "hybrid seed fused")?,
-                lexical_rank: lexical.map(|(rank, _score)| rank),
-                lexical_score_raw: lexical.map(|(_rank, score)| score),
-                semantic_rank: semantic.map(|(rank, _score)| rank),
-                semantic_score_raw: semantic.map(|(_rank, score)| score),
-                source_lanes,
-            })
-        })
-        .collect()
-}
-
-fn lane_order_key_v2(lane: SeedLaneV2) -> u8 {
+fn lane_order_key(lane: SeedLane) -> u8 {
     match lane {
-        SeedLaneV2::Exact => 0,
-        SeedLaneV2::Bm25 => 1,
-        SeedLaneV2::Dense => 2,
+        SeedLane::Exact => 0,
+        SeedLane::Bm25 => 1,
+        SeedLane::Dense => 2,
     }
 }
 
-fn lexical_lane_seed_candidates_v2(
+/// The corpus a lexical chunk hit is a member of (QI-BB-019).
+///
+/// The lexical index and the raw-code dense corpus index the same chunk
+/// records, so a BM25 hit and a dense hit for one chunk are one seed, not
+/// two.
+const LEXICAL_LANE_CORPUS: SemanticCorpusKindV1 = SemanticCorpusKindV1::RawCodeFallback;
+
+fn lexical_lane_seed_candidates(
     lexical: &[LexicalCandidate],
-) -> Result<Vec<SeedCandidateV2>, CoreError> {
+) -> Result<Vec<SeedCandidate>, CoreError> {
     let mut seen_identities = BTreeSet::new();
     let mut collapsed = Vec::new();
     for (index, candidate) in lexical.iter().enumerate() {
         let entity_id = candidate.candidate_id.clone();
-        let identity = SeedFusionIdentityV2::new(OwnerDocKind::Chunk, entity_id.clone());
+        let identity = SeedFusionIdentity::new_with_corpus(
+            OwnerDocKind::Chunk,
+            entity_id.clone(),
+            Some(LEXICAL_LANE_CORPUS),
+        );
         if !seen_identities.insert(identity) {
             continue;
         }
-        collapsed.push(SeedCandidateV2 {
+        collapsed.push(SeedCandidate {
             record_id: candidate.candidate_id.clone(),
             entity_id,
             owner_kind: OwnerDocKind::Chunk,
-            corpus_kind: None,
+            corpus_kind: Some(LEXICAL_LANE_CORPUS),
             authority_digest: None,
             repo_relative_path: candidate.repo_relative_path.clone(),
             snippet: candidate.snippet.clone(),
             seed_rank: checked_rank_u32_v1(index, "hybrid seed v2 lexical")?,
-            contributions: vec![SeedContributionV2 {
-                lane: SeedLaneV2::Bm25,
+            contributions: vec![SeedContribution {
+                lane: SeedLane::Bm25,
                 rank: checked_rank_u32_v1(index, "hybrid seed v2 lexical")?,
                 raw_score: Some(candidate.score),
                 corpus_kind: None,
@@ -285,18 +234,15 @@ fn lexical_lane_seed_candidates_v2(
     Ok(collapsed)
 }
 
-fn one_semantic_lane_seed_candidates_v2(
+fn one_semantic_lane_seed_candidates(
     semantic_hits: &[SemanticSearchHitV1],
-) -> Result<Vec<SeedCandidateV2>, CoreError> {
+) -> Result<Vec<SeedCandidate>, CoreError> {
     let mut seen_identities = BTreeSet::new();
     let mut collapsed = Vec::new();
     for (index, hit) in semantic_hits.iter().enumerate() {
         let entity_id = hit.owner_id.clone();
-        let identity = SeedFusionIdentityV2::new_with_corpus_v2(
-            hit.owner_kind,
-            entity_id.clone(),
-            hit.corpus_kind,
-        );
+        let identity =
+            SeedFusionIdentity::new_with_corpus(hit.owner_kind, entity_id.clone(), hit.corpus_kind);
         if !seen_identities.insert(identity) {
             continue;
         }
@@ -304,7 +250,7 @@ fn one_semantic_lane_seed_candidates_v2(
         if hit.corpus_kind.is_none() {
             degraded_reasons.push("semantic_corpus_kind_missing".to_string());
         }
-        collapsed.push(SeedCandidateV2 {
+        collapsed.push(SeedCandidate {
             record_id: hit.record_id.clone(),
             entity_id,
             owner_kind: hit.owner_kind,
@@ -313,8 +259,8 @@ fn one_semantic_lane_seed_candidates_v2(
             repo_relative_path: hit.candidate.repo_relative_path.clone(),
             snippet: hit.candidate.snippet.clone(),
             seed_rank: checked_rank_u32_v1(index, "hybrid seed v2 semantic")?,
-            contributions: vec![SeedContributionV2 {
-                lane: SeedLaneV2::Dense,
+            contributions: vec![SeedContribution {
+                lane: SeedLane::Dense,
                 rank: checked_rank_u32_v1(index, "hybrid seed v2 semantic")?,
                 raw_score: Some(hit.candidate.score),
                 corpus_kind: hit.corpus_kind,
@@ -325,18 +271,18 @@ fn one_semantic_lane_seed_candidates_v2(
     Ok(collapsed)
 }
 
-fn fusion_identities_v2(seed_candidates: &[SeedCandidateV2]) -> Vec<SeedFusionIdentityV2> {
+fn fusion_identities(seed_candidates: &[SeedCandidate]) -> Vec<SeedFusionIdentity> {
     seed_candidates
         .iter()
-        .map(SeedFusionIdentityV2::from)
+        .map(SeedFusionIdentity::from)
         .collect()
 }
 
-fn merge_seed_candidate_v2(acc: &mut SeedCandidateV2, incoming: SeedCandidateV2) {
+fn merge_seed_candidate(acc: &mut SeedCandidate, incoming: SeedCandidate) {
     let prefers_incoming_identity = incoming
         .contributions
         .iter()
-        .any(|contribution| contribution.lane == SeedLaneV2::Dense)
+        .any(|contribution| contribution.lane == SeedLane::Dense)
         || acc.corpus_kind.is_none();
     if prefers_incoming_identity {
         acc.record_id = incoming.record_id;
@@ -350,35 +296,35 @@ fn merge_seed_candidate_v2(acc: &mut SeedCandidateV2, incoming: SeedCandidateV2)
     acc.degraded_reasons.extend(incoming.degraded_reasons);
 }
 
-pub(super) fn build_hybrid_seed_candidates_v2(
+pub(super) fn build_hybrid_seed_candidates(
     lexical: &[LexicalCandidate],
     semantic_lanes: &[Vec<SemanticSearchHitV1>],
     unavailable_corpus_reasons: &[String],
     top_k: u32,
-) -> Result<Vec<SeedCandidateV2>, CoreError> {
-    let collapsed_lexical = lexical_lane_seed_candidates_v2(lexical)?;
+) -> Result<Vec<SeedCandidate>, CoreError> {
+    let collapsed_lexical = lexical_lane_seed_candidates(lexical)?;
     let collapsed_semantic_lanes = semantic_lanes
         .iter()
-        .map(|lane| one_semantic_lane_seed_candidates_v2(lane))
+        .map(|lane| one_semantic_lane_seed_candidates(lane))
         .collect::<Result<Vec<_>, CoreError>>()?;
     let mut identity_lanes = Vec::with_capacity(collapsed_semantic_lanes.len().saturating_add(1));
-    identity_lanes.push(fusion_identities_v2(&collapsed_lexical));
+    identity_lanes.push(fusion_identities(&collapsed_lexical));
     identity_lanes.extend(
         collapsed_semantic_lanes
             .iter()
-            .map(|lane| fusion_identities_v2(lane)),
+            .map(|lane| fusion_identities(lane)),
     );
     let lane_refs = identity_lanes.iter().map(Vec::as_slice).collect::<Vec<_>>();
     let fused = HybridOrchestratorPolicy::fuse_rrf_key_lanes(&lane_refs, top_k);
 
-    let mut by_identity = BTreeMap::<SeedFusionIdentityV2, SeedCandidateV2>::new();
+    let mut by_identity = BTreeMap::<SeedFusionIdentity, SeedCandidate>::new();
     for candidate in collapsed_lexical
         .into_iter()
         .chain(collapsed_semantic_lanes.into_iter().flatten())
     {
-        let identity = SeedFusionIdentityV2::from(&candidate);
+        let identity = SeedFusionIdentity::from(&candidate);
         if let Some(existing) = by_identity.get_mut(&identity) {
-            merge_seed_candidate_v2(existing, candidate);
+            merge_seed_candidate(existing, candidate);
         } else if by_identity.insert(identity, candidate).is_some() {
             return Err(CoreError::Storage(
                 "hybrid seed v2: duplicate typed identity inserted after collapse".to_string(),
@@ -399,8 +345,8 @@ pub(super) fn build_hybrid_seed_candidates_v2(
             })?;
             candidate.seed_rank = checked_rank_u32_v1(index, "hybrid seed v2 fused")?;
             candidate.contributions.sort_by(|left, right| {
-                lane_order_key_v2(left.lane)
-                    .cmp(&lane_order_key_v2(right.lane))
+                lane_order_key(left.lane)
+                    .cmp(&lane_order_key(right.lane))
                     .then(left.rank.cmp(&right.rank))
             });
             candidate
@@ -413,7 +359,7 @@ pub(super) fn build_hybrid_seed_candidates_v2(
         .collect()
 }
 
-pub(super) fn build_hybrid_seed_response_explanation_v2(
+pub(super) fn build_hybrid_seed_response_explanation(
     lexical_hits: usize,
     lexical_entities: usize,
     semantic_hits: usize,
@@ -562,11 +508,11 @@ mod seed_fusion_tests {
     )]
     use quanta_index_contract::{
         LexicalCandidate, ManifestGeneration, OwnerDocKind, RepoId, RepoRelativePath, RevisionId,
-        SeedFusionIdentityV2, SemanticCorpusKindV1,
+        SeedFusionIdentity, SeedLane, SemanticCorpusKindV1,
     };
     use quanta_index_core::domains::semantic::SemanticSearchHitV1;
 
-    use super::build_hybrid_seed_candidates_v2;
+    use super::build_hybrid_seed_candidates;
 
     const EXACT_SYMBOL_ID: &str =
         "runtime_symbol_id_v1:src/session.rs:Function:RuntimeSession::commit:17";
@@ -612,11 +558,62 @@ mod seed_fusion_tests {
         )
     }
 
+    /// One chunk seen by both lanes is one seed (QI-BB-019).
+    ///
+    /// A BM25 hit and a raw-code dense hit for the same chunk are one seed
+    /// with both contributions, and that seed outranks a chunk only one
+    /// lane found: the fusion sees both lanes, not a lexical seed and an
+    /// unrelated dense seed side by side.
     #[test]
-    fn seed_fusion_identity_contract_orders_owner_before_entity_v2() {
-        let symbol_z = SeedFusionIdentityV2::new(OwnerDocKind::Symbol, "z".to_string());
-        let chunk_a = SeedFusionIdentityV2::new(OwnerDocKind::Chunk, "a".to_string());
-        let symbol_a = SeedFusionIdentityV2::new(OwnerDocKind::Symbol, "a".to_string());
+    fn seed_fusion_merges_a_chunk_across_the_bm25_and_raw_code_lanes() {
+        let lexical = [lexical_candidate("beta"), lexical_candidate("alpha")];
+        let dense = vec![
+            semantic_hit(
+                "alpha",
+                "alpha",
+                OwnerDocKind::Chunk,
+                SemanticCorpusKindV1::RawCodeFallback,
+            ),
+            semantic_hit(
+                "gamma",
+                "gamma",
+                OwnerDocKind::Chunk,
+                SemanticCorpusKindV1::RawCodeFallback,
+            ),
+        ];
+        let seeds = build_hybrid_seed_candidates(&lexical, &[dense], &[], 3)
+            .expect("chunk seeds fuse across lanes");
+        let alpha = seeds
+            .iter()
+            .find(|seed| seed.entity_id == "alpha")
+            .expect("alpha is a seed");
+        let lanes: Vec<SeedLane> = alpha
+            .contributions
+            .iter()
+            .map(|contribution| contribution.lane)
+            .collect();
+        assert_eq!(lanes, vec![SeedLane::Bm25, SeedLane::Dense], "{alpha:?}");
+        assert_eq!(
+            alpha.corpus_kind,
+            Some(SemanticCorpusKindV1::RawCodeFallback)
+        );
+        assert_eq!(alpha.seed_rank, 1, "two lanes outrank one: {seeds:?}");
+        assert_eq!(
+            seeds
+                .iter()
+                .filter(|seed| seed.entity_id == "alpha")
+                .count(),
+            1,
+            "one chunk is one seed: {seeds:?}"
+        );
+        assert_eq!(seeds.len(), 3, "{seeds:?}");
+    }
+
+    #[test]
+    fn seed_fusion_identity_contract_orders_owner_before_entity() {
+        let symbol_z = SeedFusionIdentity::new(OwnerDocKind::Symbol, "z".to_string());
+        let chunk_a = SeedFusionIdentity::new(OwnerDocKind::Chunk, "a".to_string());
+        let symbol_a = SeedFusionIdentity::new(OwnerDocKind::Symbol, "a".to_string());
 
         let mut identities = [chunk_a, symbol_z, symbol_a];
         identities.sort();
@@ -630,7 +627,7 @@ mod seed_fusion_tests {
     }
 
     #[test]
-    fn module_and_cluster_cards_with_one_owner_keep_distinct_authority_v2() {
+    fn module_and_cluster_cards_with_one_owner_keep_distinct_authority() {
         let owner_id = "runtime_module_id_v1:src/shared.rs";
         let semantic_lanes = vec![
             vec![SemanticSearchHitV1 {
@@ -651,7 +648,7 @@ mod seed_fusion_tests {
             }],
         ];
 
-        let seeds = build_hybrid_seed_candidates_v2(&[], &semantic_lanes, &[], 2)
+        let seeds = build_hybrid_seed_candidates(&[], &semantic_lanes, &[], 2)
             .expect("typed corpus identities must remain independently ranked");
         assert_eq!(seeds.len(), 2);
         assert!(seeds.iter().any(|seed| {
@@ -666,7 +663,7 @@ mod seed_fusion_tests {
 
     #[test]
     fn seed_fusion_merges_same_exact_symbol_identity_across_dense_lanes() {
-        let seeds = build_hybrid_seed_candidates_v2(
+        let seeds = build_hybrid_seed_candidates(
             &[],
             &[
                 vec![symbol_hit("symbol-card-primary")],
@@ -685,7 +682,7 @@ mod seed_fusion_tests {
 
     #[test]
     fn seed_fusion_keeps_chunk_and_symbol_with_same_opaque_text_independent() {
-        let seeds = build_hybrid_seed_candidates_v2(
+        let seeds = build_hybrid_seed_candidates(
             &[lexical_candidate(EXACT_SYMBOL_ID)],
             &[vec![symbol_hit("symbol-card")]],
             &[],
@@ -704,7 +701,7 @@ mod seed_fusion_tests {
 
     #[test]
     fn seed_fusion_keeps_cross_owner_identity_distinct_within_one_dense_lane() {
-        let seeds = build_hybrid_seed_candidates_v2(
+        let seeds = build_hybrid_seed_candidates(
             &[],
             &[vec![
                 semantic_hit(
@@ -729,7 +726,7 @@ mod seed_fusion_tests {
 
     #[test]
     fn seed_fusion_semantic_tie_uses_canonical_typed_identity_order() {
-        let seeds = build_hybrid_seed_candidates_v2(
+        let seeds = build_hybrid_seed_candidates(
             &[],
             &[
                 vec![symbol_hit("symbol-card")],
