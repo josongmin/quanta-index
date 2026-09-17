@@ -32,20 +32,21 @@ use quanta_index_contract::{
     HybridQueryRequest, LexicalCandidate, ManifestGeneration, MetricsSnapshotRequest,
     MetricsSnapshotV1, OwnerDocKind, QuarantineDiscardAck, QuarantineDiscardRequest,
     QuarantineInventoryRequest, QuarantineInventoryV1, QuarantineTargetV1, QueryResultWindowV1,
-    RawFallbackReasonV1, RepoId, RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest,
-    SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
-    SearchCorpusTombstoneScope, SearchExplanation,
+    RawFallbackReasonV1, RepoId, RepoRelativePath, RevisionId, RuntimeMetadataCursorV1,
+    RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch,
+    SearchCorpusReplaceScope, SearchCorpusTombstoneScope, SearchExplanation,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
     SearchPlaneControlIpcResponseEnvelope, SearchPlaneExplainQueryRequest,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind, SemanticCorpusKindV1,
+    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRuntimeMetadataQueryResponse,
+    SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind, SemanticCorpusKindV1,
     SemanticQueryRequest, SemanticSourceRecordV1, SemanticSourceReplaceScopeV1,
-    SemanticSourceScopeKeyV1, SourceRoleV1, StructuralCandidate, StructuralIngestBatch,
-    StructuralQueryRequest, StructuralReplaceScope, StructuralTreeRecord, SymbolId,
-    TextQueryRequest, TextQuerySyntax,
+    SemanticSourceScopeKeyV1, SourceRoleV1, StructuralCandidate, StructuralCursorV1,
+    StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope, StructuralTreeRecord,
+    SymbolId, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_core::IngestResourcePolicy;
 use quanta_index_ipc::{ClientIoPolicy, IpcError, send_request};
@@ -222,6 +223,36 @@ impl fmt::Display for E2eTypedError {
 }
 
 impl std::error::Error for E2eTypedError {}
+
+/// One keyset page of a route, exactly as the wire carried it (QI-BB-025
+/// W4).
+///
+/// The daemon's typed answer when it served, its typed refusal when it
+/// did not. Harness failures (driver start, transport) are not pages and
+/// surface as `Err` from the query instead.
+#[derive(Clone, Debug)]
+pub enum E2eRoutePage<R> {
+    Served(R),
+    Refused(E2eTypedError),
+}
+
+impl<R> E2eRoutePage<R> {
+    /// The served page, or the refusal as an error naming `what`.
+    pub fn served(self, what: &str) -> AnyResult<R> {
+        match self {
+            Self::Served(page) => Ok(page),
+            Self::Refused(error) => Err(anyhow::anyhow!("{what}: page refused: {error}")),
+        }
+    }
+
+    /// The typed refusal, if the daemon refused.
+    pub const fn refusal(&self) -> Option<&E2eTypedError> {
+        match self {
+            Self::Served(_) => None,
+            Self::Refused(error) => Some(error),
+        }
+    }
+}
 
 /// One query route's answer, reduced to what a bounded-result contract asserts on.
 ///
@@ -946,6 +977,19 @@ impl E2eRuntime {
         content: &str,
         identifier: &str,
     ) -> AnyResult<()> {
+        let tree = Self::structural_function_tree_record(path, content, identifier)?;
+        self.ingest_structural_tree(path, tree)
+    }
+
+    /// The one-function parse tree `ingest_structural_function_tree`
+    /// publishes for `content` at `path`: a `function_item` root whose
+    /// `identifier` child spans `identifier` and whose `block` child
+    /// closes the body.
+    pub fn structural_function_tree_record(
+        path: &str,
+        content: &str,
+        identifier: &str,
+    ) -> AnyResult<ParseTreeRecord> {
         let identifier_start = content.find(identifier).ok_or_else(|| {
             anyhow::anyhow!(
                 "e2e-harness: identifier `{identifier}` not present in structural content"
@@ -959,7 +1003,7 @@ impl E2eRuntime {
         let identifier_end = u32::try_from(identifier_end)
             .map_err(|err| anyhow::anyhow!("e2e harness identifier end overflow: {err}"))?;
         let block_start = byte_end.saturating_sub(2);
-        let tree = ParseTreeRecord {
+        Ok(ParseTreeRecord {
             wire_version: 1,
             lang: LanguageCode::new(language_from_path(path)).map_err(|err| {
                 anyhow::anyhow!("language_from_path must return canonical lowercase codes: {err}")
@@ -992,39 +1036,50 @@ impl E2eRuntime {
                 block_start,
                 byte_end,
             ),
-        };
-        self.ingest_structural_tree(path, tree)
+        })
     }
 
     pub fn ingest_structural_tree(&mut self, path: &str, tree: ParseTreeRecord) -> AnyResult<()> {
+        let batch = self.structural_tree_batch(path, tree, self.current_generation())?;
+        self.publish_structural_batch(batch)
+    }
+
+    /// The unsealed one-scope structural batch that publishes `tree` for
+    /// the lexical chunk the harness recorded at `path`, into
+    /// `generation` — the current one for an ingest before the seal, a
+    /// sealed one for a producer that keeps publishing trees for an
+    /// active generation.
+    pub fn structural_tree_batch(
+        &self,
+        path: &str,
+        tree: ParseTreeRecord,
+        generation: ManifestGeneration,
+    ) -> AnyResult<StructuralIngestBatch> {
         let chunk_id = self.chunk_ids_by_path.get(path).cloned().ok_or_else(|| {
             anyhow::anyhow!("e2e-harness: no lexical chunk recorded for structural path `{path}`")
         })?;
-        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishStructuralBatch(
-            StructuralIngestBatch {
-                repo_id: self.repo(),
-                revision_id: self.revision(),
-                generation: self.current_generation(),
-                base_generation: None,
-                manifest_digest: format!("struct:{path}:{}", self.current_generation().get()),
-                batch_digest: format!(
-                    "struct-batch:{path}:{}",
-                    self.request_id_counter.load(Ordering::Relaxed)
-                ),
-                mode: BatchIngestMode::Delta,
-                replace_scopes: vec![StructuralReplaceScope {
-                    scope: scope_key(path),
-                    scope_digest: format!("struct-scope:{path}"),
-                    trees: vec![StructuralTreeRecord {
-                        chunk_id,
-                        record: tree,
-                    }],
+        Ok(StructuralIngestBatch {
+            repo_id: self.repo(),
+            revision_id: self.revision(),
+            generation,
+            base_generation: None,
+            manifest_digest: format!("struct:{path}:{}", generation.get()),
+            batch_digest: format!(
+                "struct-batch:{path}:{}",
+                self.request_id_counter.load(Ordering::Relaxed)
+            ),
+            mode: BatchIngestMode::Delta,
+            replace_scopes: vec![StructuralReplaceScope {
+                scope: scope_key(path),
+                scope_digest: format!("struct-scope:{path}"),
+                trees: vec![StructuralTreeRecord {
+                    chunk_id,
+                    record: tree,
                 }],
-                tombstone_scopes: Vec::new(),
-                seal: false,
-            },
-        ))?;
-        Ok(())
+            }],
+            tombstone_scopes: Vec::new(),
+            seal: false,
+        })
     }
 
     pub fn ingest_history_fixture(&mut self, file_path: &str) -> AnyResult<()> {
@@ -1185,31 +1240,50 @@ impl E2eRuntime {
     }
 
     pub fn ingest_dirty_for_path(&mut self, path: &str, applied_at_ms: u64) -> AnyResult<()> {
+        let batch = self.dirty_batch(path, applied_at_ms, self.current_generation())?;
+        self.publish_dirty_batch(batch)
+    }
+
+    /// The one-entry dirty batch that marks the lexical chunk the harness
+    /// recorded at `path` dirty at `applied_at_ms`, into `generation` —
+    /// the current one for an ingest before the seal, a sealed one for a
+    /// producer that keeps publishing the overlay of an active
+    /// generation.
+    pub fn dirty_batch(
+        &self,
+        path: &str,
+        applied_at_ms: u64,
+        generation: ManifestGeneration,
+    ) -> AnyResult<quanta_index_contract::DirtyIngestBatch> {
         use quanta_index_contract::lex::DirtyRecord;
         use quanta_index_contract::{DirtyIngestBatch, DirtyMutation};
 
         let chunk_id = self.chunk_ids_by_path.get(path).cloned().ok_or_else(|| {
             anyhow::anyhow!("e2e-harness: no lexical chunk recorded for dirty path `{path}`")
         })?;
-        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishDirtyBatch(
-            DirtyIngestBatch {
-                repo_id: self.repo(),
-                revision_id: self.revision(),
-                generation: self.current_generation(),
-                overlay_epoch_ms: applied_at_ms,
-                batch_digest: format!(
-                    "dirty-batch:{path}:{}",
-                    self.request_id_counter.load(Ordering::Relaxed)
-                ),
-                entries: vec![DirtyMutation::Upsert(DirtyRecord {
-                    wire_version: 1,
-                    doc_id: chunk_id,
-                    applied_at_ms,
-                    payload_hash: [0x5a; 32],
-                })],
-            },
-        ))?;
-        Ok(())
+        Ok(DirtyIngestBatch {
+            repo_id: self.repo(),
+            revision_id: self.revision(),
+            generation,
+            overlay_epoch_ms: applied_at_ms,
+            batch_digest: format!(
+                "dirty-batch:{path}:{}",
+                self.request_id_counter.load(Ordering::Relaxed)
+            ),
+            entries: vec![DirtyMutation::Upsert(DirtyRecord {
+                wire_version: 1,
+                doc_id: chunk_id,
+                applied_at_ms,
+                payload_hash: [0x5a; 32],
+            })],
+        })
+    }
+
+    pub fn publish_dirty_batch(
+        &mut self,
+        batch: quanta_index_contract::DirtyIngestBatch,
+    ) -> AnyResult<()> {
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch))
     }
 
     pub fn ingest_runtime_catalog(&mut self, catalog: &E2eRuntimeCatalogSpec) -> AnyResult<()> {
@@ -1701,46 +1775,8 @@ impl E2eRuntime {
         query_text: &str,
         top_k: u32,
     ) -> E2eQueryResult {
-        let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
-        let envelope = SearchPlaneQueryIpcRequestEnvelope {
-            request_id,
-            payload: SearchPlaneQueryIpcRequest::RuntimeMetadata(RuntimeMetadataQueryRequest {
-                text_query: TextQueryRequest {
-                    syntax,
-                    query_text: query_text.to_string(),
-                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
-                    generation: self.last_sealed_pin(),
-                    generation_selector: None,
-                    top_k,
-                },
-            }),
-        };
-        let socket = match self.ensure_driver() {
-            Ok(socket) => socket,
-            Err(err) => {
-                return E2eQueryResult {
-                    candidates: Vec::new(),
-                    candidate_ids: Vec::new(),
-                    file_owner_rows: Vec::new(),
-                    structural_results: Vec::new(),
-                    hybrid_candidates: Vec::new(),
-                    engines_touched: Vec::new(),
-                    explanation: None,
-                    typed_error: Some(E2eTypedError {
-                        code: "HARNESS_START".to_string(),
-                        message: err.to_string(),
-                    }),
-                };
-            }
-        };
-        let (readiness_reached, response) =
-            wait_for_query_response(&socket, &envelope, query_response_ready);
-        let response: SearchPlaneQueryIpcResponseEnvelope = match response {
-            Ok(r) => r,
-            Err(err) => return self.semantic_transport_error(readiness_reached, err),
-        };
-        match response.payload {
-            SearchPlaneQueryIpcResponse::RuntimeMetadata(runtime) => E2eQueryResult {
+        match self.query_runtime_metadata_page(syntax, query_text, top_k, None) {
+            Ok(E2eRoutePage::Served(runtime)) => E2eQueryResult {
                 candidate_ids: runtime
                     .results
                     .iter()
@@ -1754,30 +1790,152 @@ impl E2eRuntime {
                 explanation: None,
                 typed_error: None,
             },
-            SearchPlaneQueryIpcResponse::Error(err) => E2eQueryResult {
-                candidates: Vec::new(),
-                candidate_ids: Vec::new(),
-                file_owner_rows: Vec::new(),
-                structural_results: Vec::new(),
-                hybrid_candidates: Vec::new(),
-                engines_touched: Vec::new(),
-                explanation: None,
-                typed_error: Some(E2eTypedError {
-                    code: err.code,
-                    message: err.message,
-                }),
+            Ok(E2eRoutePage::Refused(error)) => refused_query_result(error),
+            Err(err) => refused_query_result(E2eTypedError {
+                code: "HARNESS_START".to_string(),
+                message: err.to_string(),
+            }),
+        }
+    }
+
+    /// One runtime-metadata page after `cursor` (QI-BB-025 W4), pinned
+    /// to the last sealed generation.
+    pub fn query_runtime_metadata_page(
+        &mut self,
+        syntax: TextQuerySyntax,
+        query_text: &str,
+        top_k: u32,
+        cursor: Option<RuntimeMetadataCursorV1>,
+    ) -> AnyResult<E2eRoutePage<SearchPlaneRuntimeMetadataQueryResponse>> {
+        let pin = self.last_sealed_pin();
+        self.keyset_page_query(
+            SearchPlaneQueryIpcRequest::RuntimeMetadata(RuntimeMetadataQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax,
+                    query_text: query_text.to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                    generation: pin,
+                    generation_selector: None,
+                    top_k,
+                },
+                cursor,
+            }),
+            query_response_ready,
+            |payload| match payload {
+                SearchPlaneQueryIpcResponse::RuntimeMetadata(page) => Ok(page),
+                other @ (SearchPlaneQueryIpcResponse::Text(_)
+                | SearchPlaneQueryIpcResponse::Symbol(_)
+                | SearchPlaneQueryIpcResponse::Semantic(_)
+                | SearchPlaneQueryIpcResponse::Hybrid(_)
+                | SearchPlaneQueryIpcResponse::HybridSeed(_)
+                | SearchPlaneQueryIpcResponse::History(_)
+                | SearchPlaneQueryIpcResponse::Structural(_)
+                | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+                | SearchPlaneQueryIpcResponse::Explain(_)
+                | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+                | SearchPlaneQueryIpcResponse::Error(_)) => Err(query_response_kind(&other)),
             },
-            SearchPlaneQueryIpcResponse::Text(_) => unexpected_response("Text"),
-            SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_response("Symbol"),
-            SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_response("Semantic"),
-            SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
-            SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_response("HybridSeed"),
-            SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
-            SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
-            SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
-            SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
-            SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
-                unexpected_response("ClusterMembershipRead")
+        )
+    }
+
+    /// One structural page after `cursor` (QI-BB-025 W4), pinned to the
+    /// last sealed generation.
+    pub fn query_structural_page(
+        &mut self,
+        syntax: TextQuerySyntax,
+        query_text: &str,
+        top_k: u32,
+        cursor: Option<StructuralCursorV1>,
+    ) -> AnyResult<E2eRoutePage<SearchPlaneStructuralQueryResponse>> {
+        let pin = self.last_sealed_pin();
+        self.structural_page_with_pin(syntax, query_text, top_k, pin, cursor)
+    }
+
+    fn structural_page_with_pin(
+        &mut self,
+        syntax: TextQuerySyntax,
+        query_text: &str,
+        top_k: u32,
+        pin: Option<GenerationPin>,
+        cursor: Option<StructuralCursorV1>,
+    ) -> AnyResult<E2eRoutePage<SearchPlaneStructuralQueryResponse>> {
+        self.keyset_page_query(
+            SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax,
+                    query_text: query_text.to_string(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                    generation: pin,
+                    generation_selector: None,
+                    top_k,
+                },
+                cursor,
+            }),
+            query_response_ready_allow_structural_not_ready,
+            |payload| match payload {
+                SearchPlaneQueryIpcResponse::Structural(page) => Ok(page),
+                other @ (SearchPlaneQueryIpcResponse::Text(_)
+                | SearchPlaneQueryIpcResponse::Symbol(_)
+                | SearchPlaneQueryIpcResponse::Semantic(_)
+                | SearchPlaneQueryIpcResponse::Hybrid(_)
+                | SearchPlaneQueryIpcResponse::HybridSeed(_)
+                | SearchPlaneQueryIpcResponse::History(_)
+                | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+                | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+                | SearchPlaneQueryIpcResponse::Explain(_)
+                | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+                | SearchPlaneQueryIpcResponse::Error(_)) => Err(query_response_kind(&other)),
+            },
+        )
+    }
+
+    /// Issue one keyset page query and return the daemon's typed page or
+    /// refusal; `extract` names the response variant the route answers
+    /// with, any other variant being a harness error.
+    fn keyset_page_query<R>(
+        &mut self,
+        payload: SearchPlaneQueryIpcRequest,
+        ready: impl Fn(&SearchPlaneQueryIpcResponseEnvelope) -> bool,
+        extract: impl FnOnce(SearchPlaneQueryIpcResponse) -> Result<R, &'static str>,
+    ) -> AnyResult<E2eRoutePage<R>> {
+        let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
+        let envelope = SearchPlaneQueryIpcRequestEnvelope {
+            request_id,
+            payload,
+        };
+        let socket = self.ensure_driver()?;
+        let (readiness_reached, response) = wait_for_query_response(&socket, &envelope, ready);
+        let response = match response {
+            Ok(response) => response,
+            Err(err) => {
+                let failure = self.semantic_transport_error(readiness_reached, err);
+                return Err(anyhow::anyhow!(
+                    "e2e-harness: keyset page transport failure: {}",
+                    failure
+                        .typed_error
+                        .map_or_else(|| "no typed error".to_string(), |error| error.to_string())
+                ));
+            }
+        };
+        match response.payload {
+            SearchPlaneQueryIpcResponse::Error(err) => Ok(E2eRoutePage::Refused(E2eTypedError {
+                code: err.code,
+                message: err.message,
+            })),
+            payload @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)) => {
+                extract(payload).map(E2eRoutePage::Served).map_err(|kind| {
+                    anyhow::anyhow!("e2e-harness: keyset page route answered with {kind}")
+                })
             }
         }
     }
@@ -1887,49 +2045,8 @@ impl E2eRuntime {
         top_k: u32,
         pin: Option<GenerationPin>,
     ) -> E2eQueryResult {
-        let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
-        let envelope = SearchPlaneQueryIpcRequestEnvelope {
-            request_id,
-            payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
-                text_query: TextQueryRequest {
-                    syntax,
-                    query_text: query_text.to_string(),
-                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
-                    generation: pin,
-                    generation_selector: None,
-                    top_k,
-                },
-            }),
-        };
-        let socket = match self.ensure_driver() {
-            Ok(socket) => socket,
-            Err(err) => {
-                return E2eQueryResult {
-                    candidates: Vec::new(),
-                    candidate_ids: Vec::new(),
-                    file_owner_rows: Vec::new(),
-                    structural_results: Vec::new(),
-                    hybrid_candidates: Vec::new(),
-                    engines_touched: Vec::new(),
-                    explanation: None,
-                    typed_error: Some(E2eTypedError {
-                        code: "HARNESS_START".to_string(),
-                        message: err.to_string(),
-                    }),
-                };
-            }
-        };
-        let (readiness_reached, response) = wait_for_query_response(
-            &socket,
-            &envelope,
-            query_response_ready_allow_structural_not_ready,
-        );
-        let response: SearchPlaneQueryIpcResponseEnvelope = match response {
-            Ok(r) => r,
-            Err(err) => return self.semantic_transport_error(readiness_reached, err),
-        };
-        match response.payload {
-            SearchPlaneQueryIpcResponse::Structural(structural) => {
+        match self.structural_page_with_pin(syntax, query_text, top_k, pin, None) {
+            Ok(E2eRoutePage::Served(structural)) => {
                 let results = structural.results;
                 E2eQueryResult {
                     candidate_ids: results
@@ -1945,33 +2062,11 @@ impl E2eRuntime {
                     typed_error: None,
                 }
             }
-            SearchPlaneQueryIpcResponse::Error(err) => E2eQueryResult {
-                candidates: Vec::new(),
-                candidate_ids: Vec::new(),
-                file_owner_rows: Vec::new(),
-                structural_results: Vec::new(),
-                hybrid_candidates: Vec::new(),
-                engines_touched: Vec::new(),
-                explanation: None,
-                typed_error: Some(E2eTypedError {
-                    code: err.code,
-                    message: err.message,
-                }),
-            },
-            SearchPlaneQueryIpcResponse::Text(_) => unexpected_response("Text"),
-            SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_response("Symbol"),
-            SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_response("Semantic"),
-            SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
-            SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_response("HybridSeed"),
-            SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
-            SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
-            SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
-            SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
-                unexpected_response("ClusterMembershipRead")
-            }
-            SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
-                unexpected_response("RuntimeMetadata")
-            }
+            Ok(E2eRoutePage::Refused(error)) => refused_query_result(error),
+            Err(err) => refused_query_result(E2eTypedError {
+                code: "HARNESS_START".to_string(),
+                message: err.to_string(),
+            }),
         }
     }
 
@@ -2826,6 +2921,39 @@ fn route_window_probe_from_response(
         returned_rows,
         window,
     })
+}
+
+/// The variant name of one query response, for a harness error that
+/// names what a route answered with instead of its own page.
+fn query_response_kind(payload: &SearchPlaneQueryIpcResponse) -> &'static str {
+    match payload {
+        SearchPlaneQueryIpcResponse::Text(_) => "Text",
+        SearchPlaneQueryIpcResponse::Symbol(_) => "Symbol",
+        SearchPlaneQueryIpcResponse::Semantic(_) => "Semantic",
+        SearchPlaneQueryIpcResponse::Hybrid(_) => "Hybrid",
+        SearchPlaneQueryIpcResponse::HybridSeed(_) => "HybridSeed",
+        SearchPlaneQueryIpcResponse::History(_) => "History",
+        SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => "RuntimeMetadata",
+        SearchPlaneQueryIpcResponse::Structural(_) => "Structural",
+        SearchPlaneQueryIpcResponse::RepoMapQuery(_) => "RepoMapQuery",
+        SearchPlaneQueryIpcResponse::Explain(_) => "Explain",
+        SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => "ClusterMembershipRead",
+        SearchPlaneQueryIpcResponse::Error(_) => "Error",
+    }
+}
+
+/// An empty query result carrying one typed refusal.
+fn refused_query_result(error: E2eTypedError) -> E2eQueryResult {
+    E2eQueryResult {
+        candidates: Vec::new(),
+        candidate_ids: Vec::new(),
+        file_owner_rows: Vec::new(),
+        structural_results: Vec::new(),
+        hybrid_candidates: Vec::new(),
+        engines_touched: Vec::new(),
+        explanation: None,
+        typed_error: Some(error),
+    }
 }
 
 fn unexpected_response(kind: &str) -> E2eQueryResult {

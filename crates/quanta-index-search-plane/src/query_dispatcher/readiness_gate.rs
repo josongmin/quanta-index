@@ -4,7 +4,7 @@
 use std::time::Instant;
 
 use quanta_index_contract::{
-    GenerationPin, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
+    AuxEpochV1, GenerationPin, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
 };
 use quanta_index_core::{CoreError, StructuralError};
 
@@ -25,8 +25,10 @@ impl SearchPlaneDispatcher {
         Ok(guard.track_materialized(repo_id, revision_id, SearchPlaneTrackKind::Lexical))
     }
 
-    /// The current structural snapshot of the pinned generation and its
-    /// epoch, shared rather than copied (QI-BB-020 W2).
+    /// The structural snapshot of the pinned generation and its epoch,
+    /// shared rather than copied (QI-BB-020 W2): the current one when
+    /// `epoch` is `None`, else exactly the named one — refused typed when
+    /// it is no longer retained or never existed, never substituted.
     ///
     /// A generation with no structural authority at all is refused with
     /// the structural domain's own readiness code, the same one its
@@ -34,6 +36,7 @@ impl SearchPlaneDispatcher {
     pub(super) fn structural_read(
         &self,
         pin: &GenerationPin,
+        epoch: Option<AuxEpochV1>,
     ) -> Result<AuxRead<StructuralAuthorityState>, CoreError> {
         let guard = self
             .ledger
@@ -44,7 +47,7 @@ impl SearchPlaneDispatcher {
                 &pin.repo_id,
                 &pin.revision_id,
                 pin.manifest_generation,
-                None,
+                epoch,
                 Instant::now(),
             )?
             .ok_or_else(|| {

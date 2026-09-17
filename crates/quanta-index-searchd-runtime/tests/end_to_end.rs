@@ -2899,6 +2899,7 @@ fn structural_query_returns_typed_generation_not_ready_error() -> TestResult {
                     generation_selector: None,
                     top_k: 50,
                 },
+                cursor: None,
             }),
         },
     )?;
@@ -2999,6 +3000,7 @@ fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
                 generation_selector: None,
                 top_k: 50,
             },
+            cursor: None,
         }),
     };
     let mut observed: Option<String> = None;
@@ -3076,6 +3078,7 @@ fn structural_query_composition_wiring_emits_typed_error() -> TestResult {
                     generation_selector: None,
                     top_k: 50,
                 },
+                cursor: None,
             }),
         },
     )?;
@@ -3136,6 +3139,7 @@ fn structural_sourcegraph_query_returns_match_after_parse_tree_ingest() -> TestR
                 generation_selector: None,
                 top_k: 50,
             },
+            cursor: None,
         }),
     };
     let mut observed: Option<String> = None;
@@ -3235,6 +3239,7 @@ fn structural_sourcegraph_regex_query_returns_match_after_parse_tree_ingest() ->
                 generation_selector: None,
                 top_k: 50,
             },
+            cursor: None,
         }),
     };
     let mut observed: Option<String> = None;
@@ -3336,6 +3341,7 @@ fn structural_sourcegraph_query_requires_structural_pattern_type() -> TestResult
                     generation_selector: None,
                     top_k: 50,
                 },
+                cursor: None,
             }),
         },
     )?;
@@ -3387,6 +3393,7 @@ fn structural_sourcegraph_query_rejects_select_filter() -> TestResult {
                 generation_selector: None,
                 top_k: 50,
             },
+            cursor: None,
         }),
     };
     let mut observed: Option<String> = None;
@@ -3458,6 +3465,7 @@ fn structural_sourcegraph_query_rejects_timeout_filter() -> TestResult {
                     generation_selector: None,
                     top_k: 50,
                 },
+                cursor: None,
             }),
         },
     )?;
@@ -3507,6 +3515,7 @@ fn structural_query_typed_holes_return_role_tag_scoped_matches() -> TestResult {
                 generation_selector: None,
                 top_k: 50,
             },
+            cursor: None,
         }),
     };
     let mut observed_expr: Option<String> = None;
@@ -3583,6 +3592,7 @@ fn structural_query_typed_holes_return_role_tag_scoped_matches() -> TestResult {
                     generation_selector: None,
                     top_k: 50,
                 },
+                cursor: None,
             }),
         },
     )?;
@@ -3635,6 +3645,7 @@ fn structural_query_rejects_typed_hole_kind_with_exact_code() -> TestResult {
                     generation_selector: None,
                     top_k: 50,
                 },
+                cursor: None,
             }),
         },
     )?;
@@ -3715,6 +3726,7 @@ fn runtime_metadata_query_with_syntax(
                 generation_selector: None,
                 top_k: 50,
             },
+            cursor: None,
         }),
     }
 }

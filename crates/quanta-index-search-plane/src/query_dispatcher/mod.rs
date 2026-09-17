@@ -17,12 +17,14 @@
 //!   `rev_at_time`.
 //! - `semantic_query` — semantic / hybrid selection resolvers, seed fusion,
 //!   explanation builders. Depends on `selection`.
-//! - support: `selection`, `window`, `ranking`, `rev_at_time`, `text_plane`,
-//!   `timeref`, `errors`, `metrics`. `rev_at_time` and `text_plane` depend on
-//!   `timeref` / `errors`; the rest depend only on `errors`.
+//! - support: `selection`, `window`, `keyset_page`, `ranking`, `rev_at_time`,
+//!   `text_plane`, `timeref`, `errors`, `metrics`. `rev_at_time` and
+//!   `text_plane` depend on `timeref` / `errors`; the rest depend only on
+//!   `errors`.
 
 mod dispatcher;
 mod errors;
+mod keyset_page;
 mod metrics;
 mod planning;
 mod ranking;

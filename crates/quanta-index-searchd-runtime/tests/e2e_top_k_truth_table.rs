@@ -32,7 +32,7 @@ use quanta_index_contract::{
 };
 use quanta_index_searchd_harness as e2e_harness;
 
-use e2e_harness::{E2eRouteWindowProbe, E2eRuntime};
+use e2e_harness::{E2eRoutePage, E2eRouteWindowProbe, E2eRuntime};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -134,12 +134,14 @@ fn history(pin: Option<GenerationPin>, top_k: u32) -> SearchPlaneQueryIpcRequest
 fn runtime_metadata(pin: Option<GenerationPin>, top_k: u32) -> SearchPlaneQueryIpcRequest {
     SearchPlaneQueryIpcRequest::RuntimeMetadata(RuntimeMetadataQueryRequest {
         text_query: text_request(TextQuerySyntax::Sourcegraph, RUNTIME_QUERY, pin, top_k),
+        cursor: None,
     })
 }
 
 fn structural(pin: Option<GenerationPin>, top_k: u32) -> SearchPlaneQueryIpcRequest {
     SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
         text_query: text_request(TextQuerySyntax::Native, STRUCTURAL_QUERY, pin, top_k),
+        cursor: None,
     })
 }
 
@@ -281,6 +283,129 @@ fn runtime_and_structural_windows_report_the_continuation() -> TestResult {
     }
     if !failures.is_empty() {
         return Err(format!("route windows drifted:\\n  {}", failures.join("\\n  ")).into());
+    }
+    Ok(())
+}
+
+/// One keyset route as the continuation check sees it: how to fetch a
+/// page after a cursor and how to read the page's rows, window and
+/// cursor.
+struct KeysetRoute<R, C> {
+    name: &'static str,
+    page: fn(&mut E2eRuntime, Option<C>) -> Result<E2eRoutePage<R>, anyhow::Error>,
+    rows: fn(&R) -> Vec<String>,
+    window: fn(&R) -> QueryResultWindowV1,
+    cursor: fn(&R) -> Option<C>,
+    cursor_id: fn(&C) -> &str,
+}
+
+/// Walk `route` at `top_k = 1` over the two-hit fixture and return the
+/// failures observed.
+///
+/// Page one's cursor names its row, the continuation returns the other
+/// row with no cursor, and the two pages together are the whole set in
+/// candidate-id order, once each.
+fn check_two_page_walk<R, C>(rt: &mut E2eRuntime, route: &KeysetRoute<R, C>) -> Vec<String> {
+    let name = route.name;
+    let first = match (route.page)(rt, None) {
+        Ok(E2eRoutePage::Served(page)) => page,
+        Ok(E2eRoutePage::Refused(error)) => {
+            return vec![format!("{name}: page one did not serve: {error}")];
+        }
+        Err(err) => return vec![format!("{name}: page one harness failure: {err}")],
+    };
+    let first_rows = (route.rows)(&first);
+    let cursor = match (route.cursor)(&first) {
+        Some(cursor)
+            if first_rows.last().map(String::as_str) == Some((route.cursor_id)(&cursor)) =>
+        {
+            cursor
+        }
+        _ => {
+            return vec![format!(
+                "{name}: page one of two names its row as the cursor, got rows {first_rows:?} window {:?}",
+                (route.window)(&first)
+            )];
+        }
+    };
+    let second = match (route.page)(rt, Some(cursor)) {
+        Ok(E2eRoutePage::Served(page)) => page,
+        Ok(E2eRoutePage::Refused(error)) => {
+            return vec![format!("{name}: page two did not serve: {error}")];
+        }
+        Err(err) => return vec![format!("{name}: page two harness failure: {err}")],
+    };
+    let mut failures = Vec::new();
+    let mut walked = first_rows;
+    walked.extend((route.rows)(&second));
+    let mut sorted = walked.clone();
+    sorted.sort();
+    sorted.dedup();
+    if walked.len() != 2 || walked != sorted {
+        failures.push(format!(
+            "{name}: two pages of one must walk both rows once in order, got {walked:?}"
+        ));
+    }
+    let window = (route.window)(&second);
+    if window.has_more()
+        || (route.cursor)(&second).is_some()
+        || window.candidate_count() != CandidateCountV1::Exact(1)
+    {
+        failures.push(format!(
+            "{name}: the last page is exact and final, got {window:?}"
+        ));
+    }
+    failures
+}
+
+/// The runtime-metadata and structural routes continue a cut page from
+/// its cursor (QI-BB-025 W4).
+#[test]
+fn runtime_and_structural_cursors_continue_the_page() -> TestResult {
+    let mut rt = two_hit_runtime()?;
+    let mut failures = check_two_page_walk(
+        &mut rt,
+        &KeysetRoute {
+            name: "runtime_metadata",
+            page: |rt, cursor| {
+                rt.query_runtime_metadata_page(
+                    TextQuerySyntax::Sourcegraph,
+                    RUNTIME_QUERY,
+                    1,
+                    cursor,
+                )
+            },
+            rows: |page| {
+                page.results
+                    .iter()
+                    .map(|row| row.candidate_id.clone())
+                    .collect()
+            },
+            window: |page| page.window,
+            cursor: |page| page.next_cursor.clone(),
+            cursor_id: |cursor| cursor.candidate_id.as_str(),
+        },
+    );
+    failures.extend(check_two_page_walk(
+        &mut rt,
+        &KeysetRoute {
+            name: "structural",
+            page: |rt, cursor| {
+                rt.query_structural_page(TextQuerySyntax::Native, STRUCTURAL_QUERY, 1, cursor)
+            },
+            rows: |page| {
+                page.results
+                    .iter()
+                    .map(|row| row.candidate_id.clone())
+                    .collect()
+            },
+            window: |page| page.window,
+            cursor: |page| page.next_cursor.clone(),
+            cursor_id: |cursor| cursor.candidate_id.as_str(),
+        },
+    ));
+    if !failures.is_empty() {
+        return Err(format!("cursor continuation drifted:\n  {}", failures.join("\n  ")).into());
     }
     Ok(())
 }

@@ -440,37 +440,45 @@ crate quanta_index_contract
 │   │   └── struct HistoryCursorVisitor: pub(self)
 │   │       └── type Value: pub(self)
 │   ├── mod options: pub(self)
-│   └── mod requests: pub(self)
-│       ├── enum ExplainCandidateV1: pub
-│       ├── struct ExplainCandidateV1Visitor: pub(self)
-│       │   └── type Value: pub(self)
-│       ├── enum ExplainRequestPolicyErrorV1: pub
-│       ├── struct HistoryQueryRequest: pub
-│       ├── struct HistoryQueryRequestVisitor: pub(self)
-│       │   └── type Value: pub(self)
-│       ├── struct HybridQueryRequest: pub
-│       ├── struct HybridQueryRequestVisitor: pub(self)
-│       │   └── type Value: pub(self)
-│       ├── struct HybridSeedQueryRequest: pub
-│       ├── struct HybridSeedQueryRequestVisitor: pub(self)
-│       │   └── type Value: pub(self)
-│       ├── struct RuntimeMetadataQueryRequest: pub
-│       ├── struct RuntimeMetadataQueryRequestVisitor: pub(self)
-│       │   └── type Value: pub(self)
-│       ├── struct SearchPlaneExplainQueryRequest: pub
-│       ├── struct SearchPlaneExplainQueryRequestVisitor: pub(self)
-│       │   └── type Value: pub(self)
-│       ├── struct SemanticQueryRequest: pub
-│       ├── struct SemanticQueryRequestVisitor: pub(self)
-│       │   └── type Value: pub(self)
-│       ├── struct SemanticSeedCorpusBudgetV1: pub
-│       ├── struct SemanticSeedCorpusBudgetV1Visitor: pub(self)
-│       │   └── type Value: pub(self)
-│       ├── struct StructuralQueryRequest: pub
-│       ├── struct StructuralQueryRequestVisitor: pub(self)
-│       │   └── type Value: pub(self)
-│       ├── struct SymbolQueryRequest: pub
-│       └── struct SymbolQueryRequestVisitor: pub(self)
+│   ├── mod requests: pub(self)
+│   │   ├── enum ExplainCandidateV1: pub
+│   │   ├── struct ExplainCandidateV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── enum ExplainRequestPolicyErrorV1: pub
+│   │   ├── struct HistoryQueryRequest: pub
+│   │   ├── struct HistoryQueryRequestVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct HybridQueryRequest: pub
+│   │   ├── struct HybridQueryRequestVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct HybridSeedQueryRequest: pub
+│   │   ├── struct HybridSeedQueryRequestVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct RuntimeMetadataQueryRequest: pub
+│   │   ├── struct RuntimeMetadataQueryRequestVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct SearchPlaneExplainQueryRequest: pub
+│   │   ├── struct SearchPlaneExplainQueryRequestVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct SemanticQueryRequest: pub
+│   │   ├── struct SemanticQueryRequestVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct SemanticSeedCorpusBudgetV1: pub
+│   │   ├── struct SemanticSeedCorpusBudgetV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct StructuralQueryRequest: pub
+│   │   ├── struct StructuralQueryRequestVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct SymbolQueryRequest: pub
+│   │   └── struct SymbolQueryRequestVisitor: pub(self)
+│   │       └── type Value: pub(self)
+│   ├── mod runtime_metadata_cursor: pub(self)
+│   │   ├── struct RuntimeMetadataCursorV1: pub
+│   │   └── struct RuntimeMetadataCursorV1Visitor: pub(self)
+│   │       └── type Value: pub(self)
+│   └── mod structural_cursor: pub(self)
+│       ├── struct StructuralCursorV1: pub
+│       └── struct StructuralCursorV1Visitor: pub(self)
 │           └── type Value: pub(self)
 ├── mod repomap: pub
 │   ├── struct RepoMapActivateGenerationRequest: pub

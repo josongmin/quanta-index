@@ -11,16 +11,16 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use quanta_index_contract::{
-    AuxEpochV1, EarlyStopReason, EngineTouched, ExplainCandidateV1, GenerationPin,
+    AuxEpochV1, EarlyStopReason, EngineTouched, ExplainCandidateV1, GenerationPin, HistoryCursor,
     HistoryQueryRequest, HybridCandidateV1, HybridQueryResponse, HybridSeedQueryRequest,
     HybridSeedQueryResponse, LexicalCandidate, ManifestGeneration, PlannerTraceEntry,
     QueryConstraintSetV1, QueryErrorRepair, QueryResultWindowV1, RepoId, RepoMapDocType,
-    RepoMapFocusSubjectDto, RepoMapQueryRequest, RevisionId, RuntimeMetadataQueryRequest,
-    SearchExplanation, SearchPlaneHistoryQueryResponse, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRuntimeMetadataQueryResponse,
-    SearchPlaneStructuralQueryResponse, SemanticQueryRequest, StructuralQueryRequest,
-    SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse,
-    TextQuerySyntax,
+    RepoMapFocusSubjectDto, RepoMapQueryRequest, RevisionId, RuntimeMetadataCursorV1,
+    RuntimeMetadataQueryRequest, SearchExplanation, SearchPlaneHistoryQueryResponse,
+    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
+    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
+    SemanticQueryRequest, StructuralCursorV1, StructuralQueryRequest, SymbolCandidate,
+    SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
     ipc::{
         GenerationStatusReport, MetricHistogramV1, MetricsSnapshotV1, QuarantineDiscardAck,
         QuarantineDiscardOutcomeDtoV1, QuarantineInventoryV1, QuarantineTargetV1,
@@ -508,58 +508,56 @@ fn parse_runtime_metadata(
     common: &mut CommonOptions,
     rest: &mut VecDeque<String>,
 ) -> CliResult<CliRequest> {
-    let mut generation_args = PinnedGenerationArgs::default();
-    let mut syntax: Option<TextQuerySyntax> = None;
-    let mut query_text: Option<String> = None;
-    let mut top_k: Option<u32> = None;
-    parse_query_command_flags(
-        common,
-        &mut generation_args,
-        rest,
-        "runtime-metadata",
-        |current, rest| match current {
-            "--syntax" => {
-                syntax = Some(parse_syntax(&take_value(rest, "--syntax")?)?);
-                Ok(true)
-            }
-            "--query-text" => {
-                query_text = Some(take_value(rest, "--query-text")?);
-                Ok(true)
-            }
-            "--top-k" => {
-                top_k = Some(parse_u32_flag(rest, "--top-k")?);
-                Ok(true)
-            }
-            _ => Ok(false),
-        },
-    )?;
-    let generation = generation_args.into_generation_pin()?;
-    let syntax = syntax.ok_or_else(|| CliError::usage("missing --syntax".to_string()))?;
-    let query_text =
-        query_text.ok_or_else(|| CliError::usage("missing --query-text".to_string()))?;
-    let top_k = top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?;
-    let text_query = TextQueryRequest {
-        syntax,
-        query_text,
-        constraints: QueryConstraintSetV1::unconstrained(),
-        generation: Some(generation),
-        generation_selector: None,
-        top_k,
-    };
+    let page = parse_keyset_page_query(common, rest, "runtime-metadata")?;
+    let cursor = page.cursor::<RuntimeMetadataCursorV1>()?;
     Ok(CliRequest::RuntimeMetadata(RuntimeMetadataQueryRequest {
-        text_query,
+        text_query: page.text_query,
+        cursor,
     }))
 }
 
-fn parse_text_query_wrapper(
+/// The flags of one keyset-paged query route: the text query and, for a
+/// continuation, the cursor a previous page printed.
+struct KeysetPageQueryArgs {
+    text_query: TextQueryRequest,
+    /// The `--cursor-json` path (or `-` for stdin) and the route it is for.
+    cursor_json: Option<(String, &'static str)>,
+}
+
+impl KeysetPageQueryArgs {
+    /// Decode the cursor as the route's own type, or `None` for a fresh
+    /// walk. The JSON is what `--output json` prints as `next_cursor`.
+    fn cursor<C>(&self) -> CliResult<Option<C>>
+    where
+        C: serde::de::DeserializeOwned,
+    {
+        self.cursor_json
+            .as_ref()
+            .map(|(path, command)| {
+                let raw = read_json_text(path, &format!("{command} cursor"))?;
+                serde_json::from_str::<C>(&raw).map_err(|err| {
+                    CliError::usage(format!(
+                        "failed to decode {command} cursor json from {path}: {err}"
+                    ))
+                })
+            })
+            .transpose()
+    }
+}
+
+/// Parse `<command> --syntax --query-text --top-k [--cursor-json PATH|-]`
+/// with the pinned-generation flags: the shape of the runtime-metadata,
+/// history and structural routes.
+fn parse_keyset_page_query(
     common: &mut CommonOptions,
     rest: &mut VecDeque<String>,
-    command: &str,
-) -> CliResult<TextQueryRequest> {
+    command: &'static str,
+) -> CliResult<KeysetPageQueryArgs> {
     let mut generation_args = PinnedGenerationArgs::default();
     let mut syntax: Option<TextQuerySyntax> = None;
     let mut query_text: Option<String> = None;
     let mut top_k: Option<u32> = None;
+    let mut cursor_json: Option<String> = None;
     parse_query_command_flags(
         common,
         &mut generation_args,
@@ -578,6 +576,10 @@ fn parse_text_query_wrapper(
                 top_k = Some(parse_u32_flag(rest, "--top-k")?);
                 Ok(true)
             }
+            "--cursor-json" => {
+                cursor_json = Some(take_value(rest, "--cursor-json")?);
+                Ok(true)
+            }
             _ => Ok(false),
         },
     )?;
@@ -586,21 +588,25 @@ fn parse_text_query_wrapper(
     let query_text =
         query_text.ok_or_else(|| CliError::usage("missing --query-text".to_string()))?;
     let top_k = top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?;
-    Ok(TextQueryRequest {
-        syntax,
-        query_text,
-        constraints: QueryConstraintSetV1::unconstrained(),
-        generation: Some(generation),
-        generation_selector: None,
-        top_k,
+    Ok(KeysetPageQueryArgs {
+        text_query: TextQueryRequest {
+            syntax,
+            query_text,
+            constraints: QueryConstraintSetV1::unconstrained(),
+            generation: Some(generation),
+            generation_selector: None,
+            top_k,
+        },
+        cursor_json: cursor_json.map(|path| (path, command)),
     })
 }
 
 fn parse_history(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
-    let text_query = parse_text_query_wrapper(common, rest, "history")?;
+    let page = parse_keyset_page_query(common, rest, "history")?;
+    let cursor = page.cursor::<HistoryCursor>()?;
     Ok(CliRequest::History(HistoryQueryRequest {
-        text_query,
-        cursor: None,
+        text_query: page.text_query,
+        cursor,
     }))
 }
 
@@ -608,9 +614,11 @@ fn parse_structural(
     common: &mut CommonOptions,
     rest: &mut VecDeque<String>,
 ) -> CliResult<CliRequest> {
-    let text_query = parse_text_query_wrapper(common, rest, "structural")?;
+    let page = parse_keyset_page_query(common, rest, "structural")?;
+    let cursor = page.cursor::<StructuralCursorV1>()?;
     Ok(CliRequest::Structural(StructuralQueryRequest {
-        text_query,
+        text_query: page.text_query,
+        cursor,
     }))
 }
 
@@ -2114,6 +2122,25 @@ fn render_read_epoch_line(epoch: AuxEpochV1, rendered: &mut String) -> CliResult
     fmt_ok(writeln!(rendered, "epoch: {epoch}"))
 }
 
+/// One line for a keyset page's order, window and work (QI-BB-025 W4),
+/// in the shape the history page prints: `order: candidate_id matched: N
+/// examined: M has_more: B`.
+fn render_keyset_page_line(
+    window: QueryResultWindowV1,
+    examined: u64,
+    rendered: &mut String,
+) -> CliResult<()> {
+    let matched = match window.candidate_count() {
+        quanta_index_contract::CandidateCountV1::Exact(count) => format!("{count}"),
+        quanta_index_contract::CandidateCountV1::AtLeast(count) => format!(">={count}"),
+    };
+    fmt_ok(writeln!(
+        rendered,
+        "order: candidate_id matched: {matched} examined: {examined} has_more: {}",
+        window.has_more()
+    ))
+}
+
 fn render_structural_payload(
     payload: &SearchPlaneStructuralQueryResponse,
     rendered: &mut String,
@@ -2121,8 +2148,15 @@ fn render_structural_payload(
     fmt_ok(writeln!(rendered, "kind: structural"))?;
     render_generation(&payload.generation, rendered)?;
     fmt_ok(writeln!(rendered, "results: {}", payload.results.len()))?;
-    render_window_line(payload.window, rendered)?;
+    render_keyset_page_line(payload.window, payload.examined, rendered)?;
     render_read_epoch_line(payload.read_epoch, rendered)?;
+    if let Some(cursor) = &payload.next_cursor {
+        fmt_ok(writeln!(
+            rendered,
+            "next_cursor: candidate_id={} aux_epoch={}",
+            cursor.candidate_id, cursor.aux_epoch
+        ))?;
+    }
     for (index, candidate) in payload.results.iter().enumerate() {
         let display_index = index
             .checked_add(1)
@@ -2254,8 +2288,20 @@ fn render_runtime_metadata_payload(
     fmt_ok(writeln!(rendered, "kind: runtime-metadata"))?;
     render_generation(&payload.generation, rendered)?;
     fmt_ok(writeln!(rendered, "results: {}", payload.results.len()))?;
-    render_window_line(payload.window, rendered)?;
+    render_keyset_page_line(payload.window, payload.examined, rendered)?;
     render_read_epoch_line(payload.read_epoch, rendered)?;
+    fmt_ok(writeln!(
+        rendered,
+        "universe_epoch: {}",
+        payload.universe_epoch
+    ))?;
+    if let Some(cursor) = &payload.next_cursor {
+        fmt_ok(writeln!(
+            rendered,
+            "next_cursor: candidate_id={} aux_epoch={} universe_epoch={}",
+            cursor.candidate_id, cursor.aux_epoch, cursor.universe_epoch
+        ))?;
+    }
     for (index, candidate) in payload.results.iter().enumerate() {
         let display_index = index.checked_add(1).ok_or_else(|| {
             CliError::protocol("runtime-metadata candidate index overflow".to_string())
@@ -2472,9 +2518,9 @@ Read-only subcommands:
   hybrid-seed      --repo-id ID --revision-id REV --manifest-generation N --lexical-query TEXT --lexical-syntax native|sourcegraph --semantic-query TEXT --top-k N
   explain          --repo-id ID --revision-id REV --manifest-generation N (--candidate-json PATH|- | --hybrid-candidate-json PATH|-) [--syntax native|sourcegraph --query-text TEXT]
   repomap          --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N --token-budget N [--focus-subject subject_identity:subject_doc_type]
-  runtime-metadata --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
-  history          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
-  structural       --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
+  runtime-metadata --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-]
+  history          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-]
+  structural       --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-]
   readiness        --repo-id ID --revision-id REV
   doctor           --repo-id ID --revision-id REV
   metrics
@@ -2982,6 +3028,13 @@ mod tests {
                     }],
                     window: probe_window,
                     read_epoch: AuxEpochV1::new(4),
+                    universe_epoch: AuxEpochV1::new(9),
+                    examined: 2,
+                    next_cursor: Some(RuntimeMetadataCursorV1 {
+                        candidate_id: "rt-1".to_string(),
+                        aux_epoch: AuxEpochV1::new(4),
+                        universe_epoch: AuxEpochV1::new(9),
+                    }),
                 },
             ),
         };
@@ -2998,8 +3051,16 @@ mod tests {
                 "the read epoch is rendered: {text}"
             );
             assert!(
-                text.contains("matched: >=2 has_more: true"),
+                text.contains("universe_epoch: 9"),
+                "the universe epoch is rendered: {text}"
+            );
+            assert!(
+                text.contains("order: candidate_id matched: >=2 examined: 2 has_more: true"),
                 "the probe window is rendered: {text}"
+            );
+            assert!(
+                text.contains("next_cursor: candidate_id=rt-1 aux_epoch=4 universe_epoch=9"),
+                "the continuation is rendered: {text}"
             );
         }
     }
@@ -3797,6 +3858,8 @@ mod tests {
                 }],
                 window: quanta_index_contract::QueryResultWindowV1::exact(1),
                 read_epoch: AuxEpochV1::new(3),
+                examined: 1,
+                next_cursor: None,
             }),
         };
         let mut stdout = Vec::new();
@@ -3814,8 +3877,12 @@ mod tests {
             assert!(text.contains("candidate_id=struct-1"));
             assert!(text.contains("$NAME: bytes=10-14"));
             assert!(
-                text.contains("matched: 1 has_more: false"),
+                text.contains("order: candidate_id matched: 1 examined: 1 has_more: false"),
                 "the exact window is rendered: {text}"
+            );
+            assert!(
+                !text.contains("next_cursor:"),
+                "a final page prints no continuation: {text}"
             );
         }
     }
@@ -4019,6 +4086,139 @@ mod tests {
                 "{}",
                 error.message
             );
+        }
+    }
+    /// A keyset route continues from the cursor a previous page printed
+    /// as JSON (QI-BB-025 W4).
+    ///
+    /// `--cursor-json` decodes the route's own cursor type, is absent from
+    /// a fresh walk, and refuses another route's cursor shape or a
+    /// malformed document.
+    #[test]
+    fn parses_keyset_routes_with_a_cursor_json_continuation() {
+        let dir = tempfile::tempdir();
+        assert!(dir.is_ok());
+        let Ok(dir) = dir else {
+            return;
+        };
+        let runtime_cursor = RuntimeMetadataCursorV1 {
+            candidate_id: "chunk://alpha".to_string(),
+            aux_epoch: AuxEpochV1::new(4),
+            universe_epoch: AuxEpochV1::new(9),
+        };
+        let structural_cursor = StructuralCursorV1 {
+            candidate_id: "chunk://alpha".to_string(),
+            aux_epoch: AuxEpochV1::new(6),
+        };
+        let history_cursor = HistoryCursor {
+            committer_time_ms: 1_700_000_000_000,
+            sha: quanta_index_contract::lex::CommitSha::ZERO,
+            file_path: None,
+            aux_epoch: AuxEpochV1::new(12),
+        };
+        let write = |name: &str, json: Result<Vec<u8>, serde_json::Error>| -> String {
+            let path = dir.path().join(name);
+            let written = json
+                .map_err(|err| err.to_string())
+                .and_then(|bytes| fs::write(&path, bytes).map_err(|err| err.to_string()));
+            assert!(written.is_ok(), "{written:?}");
+            path.to_string_lossy().into_owned()
+        };
+        let runtime_path = write(
+            "runtime-cursor.json",
+            serde_json::to_vec_pretty(&runtime_cursor),
+        );
+        let structural_path = write(
+            "structural-cursor.json",
+            serde_json::to_vec_pretty(&structural_cursor),
+        );
+        let history_path = write(
+            "history-cursor.json",
+            serde_json::to_vec_pretty(&history_cursor),
+        );
+        let malformed_path = dir.path().join("malformed.json");
+        let written = fs::write(&malformed_path, b"{ not json");
+        assert!(written.is_ok(), "{written:?}");
+        let malformed_path = malformed_path.to_string_lossy().into_owned();
+
+        let common = [
+            "--repo-id",
+            "repo",
+            "--revision-id",
+            "rev",
+            "--manifest-generation",
+            "9",
+            "--syntax",
+            "native",
+            "--query-text",
+            "dirty:yes needle",
+            "--top-k",
+            "10",
+        ];
+        let with_cursor = |command: &str, path: &str| {
+            let mut args = vec![command.to_string()];
+            args.extend(common.iter().map(ToString::to_string));
+            args.push("--cursor-json".to_string());
+            args.push(path.to_string());
+            ParsedCommand::parse(args)
+        };
+
+        let parsed = with_cursor("runtime-metadata", &runtime_path);
+        assert!(parsed.is_ok(), "{parsed:?}");
+        if let Ok(parsed) = parsed {
+            let CliRequest::RuntimeMetadata(request) = parsed.request else {
+                panic!("expected runtime-metadata payload");
+            };
+            assert_eq!(request.cursor, Some(runtime_cursor));
+        }
+        let parsed = with_cursor("structural", &structural_path);
+        assert!(parsed.is_ok(), "{parsed:?}");
+        if let Ok(parsed) = parsed {
+            let CliRequest::Structural(request) = parsed.request else {
+                panic!("expected structural payload");
+            };
+            assert_eq!(request.cursor, Some(structural_cursor));
+        }
+        let parsed = with_cursor("history", &history_path);
+        assert!(parsed.is_ok(), "{parsed:?}");
+        if let Ok(parsed) = parsed {
+            let CliRequest::History(request) = parsed.request else {
+                panic!("expected history payload");
+            };
+            assert_eq!(request.cursor, Some(history_cursor));
+        }
+
+        // A fresh walk carries no cursor.
+        let mut fresh = vec!["structural".to_string()];
+        fresh.extend(common.iter().map(ToString::to_string));
+        let parsed = ParsedCommand::parse(fresh);
+        assert!(parsed.is_ok(), "{parsed:?}");
+        if let Ok(parsed) = parsed {
+            let CliRequest::Structural(request) = parsed.request else {
+                panic!("expected structural payload");
+            };
+            assert_eq!(request.cursor, None);
+        }
+
+        // Another route's cursor, or a document that is not JSON, is a
+        // usage error naming the route.
+        for (command, path) in [
+            ("structural", runtime_path.as_str()),
+            ("runtime-metadata", structural_path.as_str()),
+            ("history", malformed_path.as_str()),
+        ] {
+            let parsed = with_cursor(command, path);
+            assert!(parsed.is_err(), "{command}: {parsed:?}");
+            if let Err(error) = parsed {
+                assert_eq!(error.exit_code, EXIT_USAGE, "{command}: {error:?}");
+                assert!(
+                    error
+                        .message
+                        .contains(&format!("failed to decode {command} cursor json")),
+                    "{command}: {}",
+                    error.message
+                );
+            }
         }
     }
 }

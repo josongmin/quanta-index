@@ -3,7 +3,7 @@ use quanta_index_contract::{
     ChunkId, GenerationPin, GenerationSelector, ManifestGeneration, RepoId, RevisionId,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcResponse, SearchPlaneStructuralQueryResponse, SearchScopeKey,
-    StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope,
+    StructuralCursorV1, StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope,
     StructuralTombstoneScope, StructuralTreeRecord, TextQuerySyntax,
 };
 
@@ -273,6 +273,7 @@ pub struct StructuralQueryBuilder<
 > {
     client: &'a QuantaIndex,
     state: TextQueryBuilderState,
+    cursor: Option<StructuralCursorV1>,
 }
 
 impl<'a> StructuralQueryBuilder<'a> {
@@ -280,6 +281,7 @@ impl<'a> StructuralQueryBuilder<'a> {
         Self {
             client,
             state: TextQueryBuilderState::new(),
+            cursor: None,
         }
     }
 }
@@ -295,7 +297,22 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
         StructuralQueryBuilder {
             client: self.client,
             state: self.state,
+            cursor: self.cursor,
         }
+    }
+
+    /// Continue from the cursor a previous page returned (QI-BB-025 W4):
+    /// the page holds the next `top_k` rows in candidate-id order after
+    /// it.
+    ///
+    /// The page is evaluated against the structural epoch the cursor
+    /// names (QI-BB-020 W2). The cursor is passed through untouched; a
+    /// walk whose epoch the plane no longer retains is refused
+    /// `AUX_EPOCH_EXPIRED` and must start over.
+    #[must_use]
+    pub fn after(mut self, cursor: StructuralCursorV1) -> Self {
+        self.cursor = Some(cursor);
+        self
     }
 
     #[must_use]
@@ -341,7 +358,13 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 impl StructuralQueryBuilder<'_, true, true, true> {
     pub fn execute(self) -> Result<SearchPlaneStructuralQueryResponse, SdkError> {
         let text_query = self.state.build_request("structural")?;
-        dispatch_structural_query_request_v1(self.client, StructuralQueryRequest { text_query })
+        dispatch_structural_query_request_v1(
+            self.client,
+            StructuralQueryRequest {
+                text_query,
+                cursor: self.cursor,
+            },
+        )
     }
 }
 

@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-sdk = { version = "0.1.0", path = "../quanta-index-sdk" }
+serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

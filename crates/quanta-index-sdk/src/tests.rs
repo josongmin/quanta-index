@@ -3044,6 +3044,9 @@ fn runtime_query_routes_through_typed_query_variant() {
             results: vec![sample_hit()],
             window: QueryResultWindowV1::exact(1),
             read_epoch: quanta_index_contract::AuxEpochV1::new(1),
+            universe_epoch: quanta_index_contract::AuxEpochV1::new(1),
+            examined: 1,
+            next_cursor: None,
         }),
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -3084,6 +3087,9 @@ fn runtime_query_request_forwards_contract_dto_unchanged() {
             results: vec![sample_hit()],
             window: QueryResultWindowV1::exact(1),
             read_epoch: quanta_index_contract::AuxEpochV1::new(1),
+            universe_epoch: quanta_index_contract::AuxEpochV1::new(1),
+            examined: 1,
+            next_cursor: None,
         }),
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -3096,6 +3102,7 @@ fn runtime_query_request_forwards_contract_dto_unchanged() {
             generation_selector: None,
             top_k: 3,
         },
+        cursor: None,
     };
     let _response = ok_or_fail!(client.runtime().query_request(request.clone()));
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
@@ -3113,6 +3120,8 @@ fn structural_query_routes_through_typed_query_variant() {
             results: vec![],
             window: QueryResultWindowV1::exact(0),
             read_epoch: quanta_index_contract::AuxEpochV1::new(1),
+            examined: 0,
+            next_cursor: None,
         }),
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -3150,6 +3159,8 @@ fn structural_query_request_forwards_contract_dto_unchanged() {
             results: vec![],
             window: QueryResultWindowV1::exact(0),
             read_epoch: quanta_index_contract::AuxEpochV1::new(1),
+            examined: 0,
+            next_cursor: None,
         }),
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -3165,6 +3176,7 @@ fn structural_query_request_forwards_contract_dto_unchanged() {
             }),
             top_k: 4,
         },
+        cursor: None,
     };
     let _response = ok_or_fail!(client.structural().query_request(request.clone()));
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
@@ -3182,6 +3194,8 @@ fn structural_native_query_preserves_syntax() {
             results: vec![],
             window: QueryResultWindowV1::exact(0),
             read_epoch: quanta_index_contract::AuxEpochV1::new(1),
+            examined: 0,
+            next_cursor: None,
         }),
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -3226,6 +3240,8 @@ fn structural_sourcegraph_query_preserves_syntax() {
             results: vec![],
             window: QueryResultWindowV1::exact(0),
             read_epoch: quanta_index_contract::AuxEpochV1::new(1),
+            examined: 0,
+            next_cursor: None,
         }),
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -3984,4 +4000,118 @@ fn hybrid_seed_builder_refuses_out_of_range_top_k_before_any_round_trip() {
         let sent = ok_or_fail!(query.requests.lock()).len();
         assert_eq!(sent, 0, "a refused top_k must not reach the transport");
     }
+}
+
+/// The runtime builder's `after(cursor)` carries the cursor a previous
+/// page returned onto the wire untouched (QI-BB-025 W4); without it the
+/// request carries no cursor.
+#[test]
+fn runtime_query_builder_carries_the_cursor_it_continues_from() {
+    let cursor = crate::RuntimeMetadataCursorV1 {
+        candidate_id: "chunk://alpha".to_string(),
+        aux_epoch: quanta_index_contract::AuxEpochV1::new(4),
+        universe_epoch: quanta_index_contract::AuxEpochV1::new(9),
+    };
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse {
+            generation: sample_generation_pin(),
+            results: vec![],
+            window: QueryResultWindowV1::exact(0),
+            read_epoch: quanta_index_contract::AuxEpochV1::new(4),
+            universe_epoch: quanta_index_contract::AuxEpochV1::new(9),
+            examined: 0,
+            next_cursor: None,
+        }),
+    ));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let _response = ok_or_fail!(
+        client
+            .runtime()
+            .query()
+            .sourcegraph("dirty:yes")
+            .pinned(sample_generation_pin())
+            .top_k(3)
+            .after(cursor.clone())
+            .execute()
+    );
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::RuntimeMetadata(req) = &captured.payload
+    else {
+        panic!(
+            "expected RuntimeMetadata request, got {:?}",
+            captured.payload
+        );
+    };
+    assert_eq!(req.cursor.as_ref(), Some(&cursor));
+
+    // A builder that never called `after` walks fresh.
+    let fresh_query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse {
+            generation: sample_generation_pin(),
+            results: vec![],
+            window: QueryResultWindowV1::exact(0),
+            read_epoch: quanta_index_contract::AuxEpochV1::new(4),
+            universe_epoch: quanta_index_contract::AuxEpochV1::new(9),
+            examined: 0,
+            next_cursor: None,
+        }),
+    ));
+    let client =
+        QuantaIndex::from_transports(fresh_query.clone(), unused_control(), unused_ingest());
+    let _response = ok_or_fail!(
+        client
+            .runtime()
+            .query()
+            .sourcegraph("dirty:yes")
+            .pinned(sample_generation_pin())
+            .top_k(3)
+            .execute()
+    );
+    let captured = ok_or_fail!(only_query_request(fresh_query.as_ref()));
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::RuntimeMetadata(fresh) =
+        &captured.payload
+    else {
+        panic!(
+            "expected RuntimeMetadata request, got {:?}",
+            captured.payload
+        );
+    };
+    assert_eq!(fresh.cursor, None);
+}
+
+/// The structural builder's `after(cursor)` carries the cursor a previous
+/// page returned onto the wire untouched (QI-BB-025 W4).
+#[test]
+fn structural_query_builder_carries_the_cursor_it_continues_from() {
+    let cursor = crate::StructuralCursorV1 {
+        candidate_id: "chunk://alpha".to_string(),
+        aux_epoch: quanta_index_contract::AuxEpochV1::new(6),
+    };
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
+            generation: sample_generation_pin(),
+            results: vec![],
+            window: QueryResultWindowV1::exact(0),
+            read_epoch: quanta_index_contract::AuxEpochV1::new(6),
+            examined: 0,
+            next_cursor: None,
+        }),
+    ));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let _response = ok_or_fail!(
+        client
+            .structural()
+            .query()
+            .native("match { :[x] }")
+            .pinned(sample_generation_pin())
+            .top_k(2)
+            .after(cursor.clone())
+            .execute()
+    );
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::Structural(req) = &captured.payload
+    else {
+        panic!("expected Structural request, got {:?}", captured.payload);
+    };
+    assert_eq!(req.cursor.as_ref(), Some(&cursor));
 }

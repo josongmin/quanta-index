@@ -119,6 +119,7 @@ fn structural_dispatch_success_emits_closed_obs_metrics() -> TestResult {
                 generation_selector: None,
                 top_k: 4,
             },
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -173,6 +174,7 @@ fn structural_dispatch_routes_happy_path_through_structural_service() -> TestRes
                 generation_selector: None,
                 top_k: 4,
             },
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -270,6 +272,7 @@ fn structural_dispatch_maps_generation_not_ready() -> TestResult {
                 generation_selector: None,
                 top_k: 4,
             },
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -301,6 +304,7 @@ fn structural_dispatch_maps_shard_unavailable() -> TestResult {
                 generation_selector: None,
                 top_k: 4,
             },
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -332,6 +336,7 @@ fn structural_dispatch_maps_lang_not_supported() -> TestResult {
                 generation_selector: None,
                 top_k: 4,
             },
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -360,6 +365,7 @@ fn structural_dispatch_routes_repo_and_file_filters_to_producer() -> TestResult 
                 generation_selector: None,
                 top_k: 4,
             },
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -422,6 +428,7 @@ fn structural_dispatch_rejects_non_executable_filters_before_consulting_producer
                 generation_selector: None,
                 top_k: 4,
             },
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -461,6 +468,7 @@ fn structural_dispatch_routes_sourcegraph_structural_subset_to_producer() -> Tes
                 generation_selector: None,
                 top_k: 4,
             },
+            cursor: None,
         },
     ), &RequestBudgetV1::unbounded());
 
@@ -525,6 +533,7 @@ fn structural_dispatch_rejects_typed_hole_kind_with_exact_code() -> TestResult {
                 generation_selector: None,
                 top_k: 4,
             },
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -560,6 +569,7 @@ fn structural_dispatch_executes_structural_boolean_and_with_canonical_projection
                 generation_selector: None,
                 top_k: 10,
             },
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -640,6 +650,7 @@ fn structural_dispatch_executes_structural_boolean_or() -> TestResult {
                 generation_selector: None,
                 top_k: 10,
             },
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -691,6 +702,7 @@ fn structural_dispatch_executes_bounded_not() -> TestResult {
                 generation_selector: None,
                 top_k: 10,
             },
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -754,6 +766,7 @@ fn structural_dispatch_memoizes_identical_leaf_execution() -> TestResult {
                 generation_selector: None,
                 top_k: 10,
             },
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -826,6 +839,7 @@ fn structural_dispatch_executes_mixed_lexical_and_structural_and() -> TestResult
                 generation_selector: None,
                 top_k: 10,
             },
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -903,6 +917,7 @@ fn structural_dispatch_executes_pure_negative_root_from_pinned_universe() -> Tes
                 generation_selector: None,
                 top_k: 10,
             },
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -947,6 +962,267 @@ fn structural_dispatch_executes_pure_negative_root_from_pinned_universe() -> Tes
     }
     if producer.execute_calls.load(Ordering::SeqCst) != 1 {
         return Err("pure-negative root should execute inner structural leaf once".into());
+    }
+    Ok(())
+}
+
+// ------------------------------------------------------------------
+// QI-BB-025 W4 — keyset paging over the evaluated match set.
+// ------------------------------------------------------------------
+
+/// A structural page request of `top_k` after `cursor` over the fixture
+/// pin.
+fn structural_page_request(
+    top_k: u32,
+    cursor: Option<quanta_index_contract::StructuralCursorV1>,
+) -> SearchPlaneQueryIpcRequest {
+    SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
+        text_query: TextQueryRequest {
+            syntax: TextQuerySyntax::Native,
+            query_text: "match { :[x] }".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+            generation: Some(ready_pin()),
+            generation_selector: None,
+            top_k,
+        },
+        cursor,
+    })
+}
+
+fn structural_page(
+    dispatcher: &SearchPlaneDispatcher,
+    top_k: u32,
+    cursor: Option<quanta_index_contract::StructuralCursorV1>,
+) -> Result<quanta_index_contract::SearchPlaneStructuralQueryResponse, Box<dyn std::error::Error>> {
+    match dispatcher.dispatch(
+        structural_page_request(top_k, cursor),
+        &RequestBudgetV1::unbounded(),
+    ) {
+        SearchPlaneQueryIpcResponse::Structural(page) => Ok(page),
+        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
+        | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::HybridSeed(_)
+        | SearchPlaneQueryIpcResponse::History(_)
+        | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+        | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::Error(_)) => {
+            Err(format!("expected a structural page, got {other:?}").into())
+        }
+    }
+}
+
+/// `count` matches whose candidate ids are offered to the route in a
+/// scrambled order (neither ascending nor descending): the page order
+/// must not depend on it.
+fn scrambled_matches(count: u32) -> Vec<quanta_index_core::StructuralMatchCandidate> {
+    let mut order: Vec<u32> = (0..count).rev().collect();
+    let rotation = order.len().min(5);
+    order.rotate_left(rotation);
+    order
+        .into_iter()
+        .map(|index| structural_match_candidate(&format!("cand-{index:02}")))
+        .collect()
+}
+
+/// Pages of `top_k` partition the match set in candidate-id order with no
+/// gap and no overlap.
+///
+/// Every page carries the exact count of matches after its cursor,
+/// examines the whole match set, and the last has no cursor.
+#[test]
+fn structural_pages_partition_the_match_set_in_candidate_id_order() -> TestResult {
+    const MATCHES: u32 = 23;
+    const TOP_K: u32 = 5;
+    let producer = Arc::new(RecordingStructuralProducer::ready_with(scrambled_matches(
+        MATCHES,
+    )));
+    let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+    let mut walked: Vec<String> = Vec::new();
+    let mut cursor: Option<quanta_index_contract::StructuralCursorV1> = None;
+    let mut remaining = u64::from(MATCHES);
+    for _page in 0..8 {
+        let page = structural_page(&dispatcher, TOP_K, cursor.clone())?;
+        if page.window.candidate_count()
+            != quanta_index_contract::CandidateCountV1::Exact(remaining)
+        {
+            return Err(format!(
+                "the count after the cursor is exact ({remaining}): {:?}",
+                page.window
+            )
+            .into());
+        }
+        if page.examined != u64::from(MATCHES) {
+            return Err(format!(
+                "every matched candidate is walked, examined {}",
+                page.examined
+            )
+            .into());
+        }
+        walked.extend(page.results.iter().map(|row| row.candidate_id.clone()));
+        remaining = remaining.saturating_sub(u64::from(page.window.returned()));
+        match (page.window.has_more(), page.next_cursor) {
+            (true, Some(next)) => {
+                if Some(next.candidate_id.as_str()) != walked.last().map(String::as_str)
+                    || next.aux_epoch != page.read_epoch
+                {
+                    return Err(
+                        format!("the cursor is the last row in the read epoch: {next:?}").into(),
+                    );
+                }
+                cursor = Some(next);
+            }
+            (false, None) => break,
+            (has_more, next) => {
+                return Err(format!("has_more={has_more} and cursor={next:?} disagree").into());
+            }
+        }
+    }
+    let expected: Vec<String> = (0..MATCHES)
+        .map(|index| format!("cand-{index:02}"))
+        .collect();
+    if walked != expected {
+        return Err(format!("the walk is every match once, in order: {walked:?}").into());
+    }
+    Ok(())
+}
+
+/// A cursor key that names no match is a boundary: the page after it
+/// starts at the first match past it, and one past the end is empty.
+#[test]
+fn a_forged_structural_cursor_is_a_boundary_not_a_lookup() -> TestResult {
+    let producer = Arc::new(RecordingStructuralProducer::ready_with(scrambled_matches(
+        6,
+    )));
+    let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+    let first = structural_page(&dispatcher, 6, None)?;
+    let epoch = first.read_epoch;
+    let forged = quanta_index_contract::StructuralCursorV1 {
+        candidate_id: "cand-02-and-a-half".to_string(),
+        aux_epoch: epoch,
+    };
+    let page = structural_page(&dispatcher, 2, Some(forged))?;
+    let ids: Vec<&str> = page
+        .results
+        .iter()
+        .map(|row| row.candidate_id.as_str())
+        .collect();
+    if ids != ["cand-03", "cand-04"]
+        || page.window.candidate_count() != quanta_index_contract::CandidateCountV1::Exact(3)
+        || !page.window.has_more()
+    {
+        return Err(format!("the page after the boundary: {ids:?} {:?}", page.window).into());
+    }
+    let past_the_end = quanta_index_contract::StructuralCursorV1 {
+        candidate_id: "cand-99".to_string(),
+        aux_epoch: epoch,
+    };
+    let empty = structural_page(&dispatcher, 2, Some(past_the_end))?;
+    if !empty.results.is_empty()
+        || empty.window.candidate_count() != quanta_index_contract::CandidateCountV1::Exact(0)
+        || empty.next_cursor.is_some()
+    {
+        return Err(format!("nothing follows a boundary past the end: {empty:?}").into());
+    }
+    Ok(())
+}
+
+/// A continuation pins the epoch its cursor names for every leaf the
+/// producer executes.
+///
+/// A cursor naming a pruned epoch is refused `AUX_EPOCH_EXPIRED`, one
+/// naming an epoch never produced `AUX_EPOCH_UNKNOWN` — neither is
+/// served from the current snapshot.
+#[test]
+fn a_structural_continuation_pins_its_cursor_epoch_or_is_refused() -> TestResult {
+    use quanta_index_core::{AUX_EPOCH_EXPIRED_CODE, AUX_EPOCH_RETAIN, AUX_EPOCH_UNKNOWN_CODE};
+
+    use crate::query_dispatcher::tests::support::structural::install_structural_test_chunk;
+
+    let producer = Arc::new(RecordingStructuralProducer::ready_with(scrambled_matches(
+        5,
+    )));
+    let ledger = ready_ledger_with_structural_universe();
+    let dispatcher =
+        structural_dispatcher_with_producer_and_ledger(Arc::clone(&producer), Arc::clone(&ledger))?;
+    let first = structural_page(&dispatcher, 2, None)?;
+    let cursor = first.next_cursor.ok_or("five matches continue")?;
+    if cursor.aux_epoch != quanta_index_contract::AuxEpochV1::new(1) {
+        return Err(format!("one chunk install is epoch 1: {cursor:?}").into());
+    }
+
+    // A structural mutation lands between the pages.
+    {
+        let mut guard = ledger
+            .write()
+            .map_err(|err| format!("ledger poisoned: {err}"))?;
+        install_structural_test_chunk(&mut guard, "chunk-late", "src/late.rs", "fn late() {}")?;
+    }
+    let second = structural_page(&dispatcher, 2, Some(cursor.clone()))?;
+    if second.read_epoch != cursor.aux_epoch {
+        return Err(format!(
+            "the continuation reads the cursor's epoch, read {:?}",
+            second.read_epoch
+        )
+        .into());
+    }
+    let executed_epochs = producer
+        .executed_epochs
+        .lock()
+        .map_err(|err| format!("recorder poisoned: {err}"))?
+        .clone();
+    if executed_epochs
+        != vec![
+            quanta_index_contract::AuxEpochV1::new(1),
+            quanta_index_contract::AuxEpochV1::new(1),
+        ]
+    {
+        return Err(format!(
+            "every leaf of the continuation executes at the cursor's epoch: {executed_epochs:?}"
+        )
+        .into());
+    }
+    let fresh = structural_page(&dispatcher, 2, None)?;
+    if fresh.read_epoch != quanta_index_contract::AuxEpochV1::new(2) {
+        return Err(format!(
+            "a fresh walk reads the current epoch 2: {:?}",
+            fresh.read_epoch
+        )
+        .into());
+    }
+
+    let unknown = quanta_index_contract::StructuralCursorV1 {
+        candidate_id: cursor.candidate_id.clone(),
+        aux_epoch: quanta_index_contract::AuxEpochV1::new(99),
+    };
+    let (code, _message) = ipc_error_from(dispatcher.dispatch(
+        structural_page_request(2, Some(unknown)),
+        &RequestBudgetV1::unbounded(),
+    ))
+    .map_err(Box::<dyn std::error::Error>::from)?;
+    if code != AUX_EPOCH_UNKNOWN_CODE {
+        return Err(format!("an epoch never produced is refused unknown, got {code}").into());
+    }
+
+    {
+        let mut guard = ledger
+            .write()
+            .map_err(|err| format!("ledger poisoned: {err}"))?;
+        for step in 0..AUX_EPOCH_RETAIN {
+            let name = format!("chunk-churn-{step:02}");
+            install_structural_test_chunk(&mut guard, &name, &format!("src/{name}.rs"), "churn")?;
+        }
+    }
+    let (code, _message) = ipc_error_from(dispatcher.dispatch(
+        structural_page_request(2, Some(cursor)),
+        &RequestBudgetV1::unbounded(),
+    ))
+    .map_err(Box::<dyn std::error::Error>::from)?;
+    if code != AUX_EPOCH_EXPIRED_CODE {
+        return Err(format!("a pruned epoch is refused expired, got {code}").into());
     }
     Ok(())
 }

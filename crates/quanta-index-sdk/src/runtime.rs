@@ -1,7 +1,7 @@
 use quanta_index_contract::lex::DirtyRecord;
 use quanta_index_contract::{
     ChunkId, DirtyDelete, DirtyIngestBatch, DirtyMutation, GenerationPin, GenerationSelector,
-    ManifestGeneration, RepoId, RevisionId, RuntimeMetadataQueryRequest,
+    ManifestGeneration, RepoId, RevisionId, RuntimeMetadataCursorV1, RuntimeMetadataQueryRequest,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcResponse, SearchPlaneRuntimeMetadataQueryResponse, TextQuerySyntax,
 };
@@ -148,6 +148,7 @@ pub struct RuntimeQueryBuilder<
 > {
     client: &'a QuantaIndex,
     state: TextQueryBuilderState,
+    cursor: Option<RuntimeMetadataCursorV1>,
 }
 
 impl<'a> RuntimeQueryBuilder<'a> {
@@ -155,6 +156,7 @@ impl<'a> RuntimeQueryBuilder<'a> {
         Self {
             client,
             state: TextQueryBuilderState::new(),
+            cursor: None,
         }
     }
 }
@@ -170,7 +172,22 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
         RuntimeQueryBuilder {
             client: self.client,
             state: self.state,
+            cursor: self.cursor,
         }
+    }
+
+    /// Continue from the cursor a previous page returned (QI-BB-025 W4):
+    /// the page holds the next `top_k` rows in candidate-id order after
+    /// it.
+    ///
+    /// The page is cut from the runtime and structural epochs the cursor
+    /// names (QI-BB-020 W2). The cursor is passed through untouched; a
+    /// walk whose epoch the plane no longer retains is refused
+    /// `AUX_EPOCH_EXPIRED` and must start over.
+    #[must_use]
+    pub fn after(mut self, cursor: RuntimeMetadataCursorV1) -> Self {
+        self.cursor = Some(cursor);
+        self
     }
 
     #[must_use]
@@ -227,7 +244,13 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 impl RuntimeQueryBuilder<'_, true, true, true> {
     pub fn execute(self) -> Result<SearchPlaneRuntimeMetadataQueryResponse, SdkError> {
         let text_query = self.state.build_request("runtime")?;
-        dispatch_runtime_query_request_v1(self.client, RuntimeMetadataQueryRequest { text_query })
+        dispatch_runtime_query_request_v1(
+            self.client,
+            RuntimeMetadataQueryRequest {
+                text_query,
+                cursor: self.cursor,
+            },
+        )
     }
 }
 

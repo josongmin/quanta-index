@@ -4960,7 +4960,31 @@ impl core::marker::Unpin for quanta_index_contract::HybridSeedQueryRequest
 impl core::marker::UnsafeUnpin for quanta_index_contract::HybridSeedQueryRequest
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HybridSeedQueryRequest
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HybridSeedQueryRequest
+pub struct quanta_index_contract::query::RuntimeMetadataCursorV1
+pub quanta_index_contract::query::RuntimeMetadataCursorV1::aux_epoch: quanta_index_contract::AuxEpochV1
+pub quanta_index_contract::query::RuntimeMetadataCursorV1::candidate_id: alloc::string::String
+pub quanta_index_contract::query::RuntimeMetadataCursorV1::universe_epoch: quanta_index_contract::AuxEpochV1
+impl core::clone::Clone for quanta_index_contract::RuntimeMetadataCursorV1
+pub fn quanta_index_contract::RuntimeMetadataCursorV1::clone(&self) -> quanta_index_contract::RuntimeMetadataCursorV1
+impl core::cmp::Eq for quanta_index_contract::RuntimeMetadataCursorV1
+impl core::cmp::PartialEq for quanta_index_contract::RuntimeMetadataCursorV1
+pub fn quanta_index_contract::RuntimeMetadataCursorV1::eq(&self, other: &quanta_index_contract::RuntimeMetadataCursorV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::RuntimeMetadataCursorV1
+pub fn quanta_index_contract::RuntimeMetadataCursorV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::RuntimeMetadataCursorV1
+impl serde_core::ser::Serialize for quanta_index_contract::RuntimeMetadataCursorV1
+pub fn quanta_index_contract::RuntimeMetadataCursorV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::RuntimeMetadataCursorV1
+pub fn quanta_index_contract::RuntimeMetadataCursorV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::RuntimeMetadataCursorV1
+impl core::marker::Send for quanta_index_contract::RuntimeMetadataCursorV1
+impl core::marker::Sync for quanta_index_contract::RuntimeMetadataCursorV1
+impl core::marker::Unpin for quanta_index_contract::RuntimeMetadataCursorV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::RuntimeMetadataCursorV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RuntimeMetadataCursorV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RuntimeMetadataCursorV1
 pub struct quanta_index_contract::query::RuntimeMetadataQueryRequest
+pub quanta_index_contract::query::RuntimeMetadataQueryRequest::cursor: core::option::Option<quanta_index_contract::RuntimeMetadataCursorV1>
 pub quanta_index_contract::query::RuntimeMetadataQueryRequest::text_query: quanta_index_contract_base::query::requests::TextQueryRequest
 impl core::clone::Clone for quanta_index_contract::RuntimeMetadataQueryRequest
 pub fn quanta_index_contract::RuntimeMetadataQueryRequest::clone(&self) -> quanta_index_contract::RuntimeMetadataQueryRequest
@@ -5053,7 +5077,30 @@ impl core::marker::Unpin for quanta_index_contract::SemanticSeedCorpusBudgetV1
 impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticSeedCorpusBudgetV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticSeedCorpusBudgetV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticSeedCorpusBudgetV1
+pub struct quanta_index_contract::query::StructuralCursorV1
+pub quanta_index_contract::query::StructuralCursorV1::aux_epoch: quanta_index_contract::AuxEpochV1
+pub quanta_index_contract::query::StructuralCursorV1::candidate_id: alloc::string::String
+impl core::clone::Clone for quanta_index_contract::StructuralCursorV1
+pub fn quanta_index_contract::StructuralCursorV1::clone(&self) -> quanta_index_contract::StructuralCursorV1
+impl core::cmp::Eq for quanta_index_contract::StructuralCursorV1
+impl core::cmp::PartialEq for quanta_index_contract::StructuralCursorV1
+pub fn quanta_index_contract::StructuralCursorV1::eq(&self, other: &quanta_index_contract::StructuralCursorV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::StructuralCursorV1
+pub fn quanta_index_contract::StructuralCursorV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::StructuralCursorV1
+impl serde_core::ser::Serialize for quanta_index_contract::StructuralCursorV1
+pub fn quanta_index_contract::StructuralCursorV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::StructuralCursorV1
+pub fn quanta_index_contract::StructuralCursorV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::StructuralCursorV1
+impl core::marker::Send for quanta_index_contract::StructuralCursorV1
+impl core::marker::Sync for quanta_index_contract::StructuralCursorV1
+impl core::marker::Unpin for quanta_index_contract::StructuralCursorV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::StructuralCursorV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::StructuralCursorV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::StructuralCursorV1
 pub struct quanta_index_contract::query::StructuralQueryRequest
+pub quanta_index_contract::query::StructuralQueryRequest::cursor: core::option::Option<quanta_index_contract::StructuralCursorV1>
 pub quanta_index_contract::query::StructuralQueryRequest::text_query: quanta_index_contract_base::query::requests::TextQueryRequest
 impl core::clone::Clone for quanta_index_contract::StructuralQueryRequest
 pub fn quanta_index_contract::StructuralQueryRequest::clone(&self) -> quanta_index_contract::StructuralQueryRequest
@@ -6588,9 +6635,12 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneHistoryQuer
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneHistoryQueryResponse
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneHistoryQueryResponse
 pub struct quanta_index_contract::results::SearchPlaneRuntimeMetadataQueryResponse
+pub quanta_index_contract::results::SearchPlaneRuntimeMetadataQueryResponse::examined: u64
 pub quanta_index_contract::results::SearchPlaneRuntimeMetadataQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
+pub quanta_index_contract::results::SearchPlaneRuntimeMetadataQueryResponse::next_cursor: core::option::Option<quanta_index_contract::RuntimeMetadataCursorV1>
 pub quanta_index_contract::results::SearchPlaneRuntimeMetadataQueryResponse::read_epoch: quanta_index_contract::AuxEpochV1
 pub quanta_index_contract::results::SearchPlaneRuntimeMetadataQueryResponse::results: alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>
+pub quanta_index_contract::results::SearchPlaneRuntimeMetadataQueryResponse::universe_epoch: quanta_index_contract::AuxEpochV1
 pub quanta_index_contract::results::SearchPlaneRuntimeMetadataQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV1
 impl core::clone::Clone for quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse
 pub fn quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse::clone(&self) -> quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse
@@ -6611,7 +6661,9 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneRuntimeMeta
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse
 pub struct quanta_index_contract::results::SearchPlaneStructuralQueryResponse
+pub quanta_index_contract::results::SearchPlaneStructuralQueryResponse::examined: u64
 pub quanta_index_contract::results::SearchPlaneStructuralQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
+pub quanta_index_contract::results::SearchPlaneStructuralQueryResponse::next_cursor: core::option::Option<quanta_index_contract::StructuralCursorV1>
 pub quanta_index_contract::results::SearchPlaneStructuralQueryResponse::read_epoch: quanta_index_contract::AuxEpochV1
 pub quanta_index_contract::results::SearchPlaneStructuralQueryResponse::results: alloc::vec::Vec<quanta_index_contract_base::results::structural::StructuralCandidate>
 pub quanta_index_contract::results::SearchPlaneStructuralQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV1
@@ -10718,7 +10770,31 @@ impl core::marker::Unpin for quanta_index_contract::RuntimeEdgeAuthorityRecord
 impl core::marker::UnsafeUnpin for quanta_index_contract::RuntimeEdgeAuthorityRecord
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RuntimeEdgeAuthorityRecord
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RuntimeEdgeAuthorityRecord
+pub struct quanta_index_contract::RuntimeMetadataCursorV1
+pub quanta_index_contract::RuntimeMetadataCursorV1::aux_epoch: quanta_index_contract::AuxEpochV1
+pub quanta_index_contract::RuntimeMetadataCursorV1::candidate_id: alloc::string::String
+pub quanta_index_contract::RuntimeMetadataCursorV1::universe_epoch: quanta_index_contract::AuxEpochV1
+impl core::clone::Clone for quanta_index_contract::RuntimeMetadataCursorV1
+pub fn quanta_index_contract::RuntimeMetadataCursorV1::clone(&self) -> quanta_index_contract::RuntimeMetadataCursorV1
+impl core::cmp::Eq for quanta_index_contract::RuntimeMetadataCursorV1
+impl core::cmp::PartialEq for quanta_index_contract::RuntimeMetadataCursorV1
+pub fn quanta_index_contract::RuntimeMetadataCursorV1::eq(&self, other: &quanta_index_contract::RuntimeMetadataCursorV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::RuntimeMetadataCursorV1
+pub fn quanta_index_contract::RuntimeMetadataCursorV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::RuntimeMetadataCursorV1
+impl serde_core::ser::Serialize for quanta_index_contract::RuntimeMetadataCursorV1
+pub fn quanta_index_contract::RuntimeMetadataCursorV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::RuntimeMetadataCursorV1
+pub fn quanta_index_contract::RuntimeMetadataCursorV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::RuntimeMetadataCursorV1
+impl core::marker::Send for quanta_index_contract::RuntimeMetadataCursorV1
+impl core::marker::Sync for quanta_index_contract::RuntimeMetadataCursorV1
+impl core::marker::Unpin for quanta_index_contract::RuntimeMetadataCursorV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::RuntimeMetadataCursorV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RuntimeMetadataCursorV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RuntimeMetadataCursorV1
 pub struct quanta_index_contract::RuntimeMetadataQueryRequest
+pub quanta_index_contract::RuntimeMetadataQueryRequest::cursor: core::option::Option<quanta_index_contract::RuntimeMetadataCursorV1>
 pub quanta_index_contract::RuntimeMetadataQueryRequest::text_query: quanta_index_contract_base::query::requests::TextQueryRequest
 impl core::clone::Clone for quanta_index_contract::RuntimeMetadataQueryRequest
 pub fn quanta_index_contract::RuntimeMetadataQueryRequest::clone(&self) -> quanta_index_contract::RuntimeMetadataQueryRequest
@@ -11194,9 +11270,12 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneRollbackSea
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest
 pub struct quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse
+pub quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse::examined: u64
 pub quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
+pub quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse::next_cursor: core::option::Option<quanta_index_contract::RuntimeMetadataCursorV1>
 pub quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse::read_epoch: quanta_index_contract::AuxEpochV1
 pub quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse::results: alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>
+pub quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse::universe_epoch: quanta_index_contract::AuxEpochV1
 pub quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV1
 impl core::clone::Clone for quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse
 pub fn quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse::clone(&self) -> quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse
@@ -11261,7 +11340,9 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneSearchCorpu
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneSearchCorpusRollbackCasAck
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneSearchCorpusRollbackCasAck
 pub struct quanta_index_contract::SearchPlaneStructuralQueryResponse
+pub quanta_index_contract::SearchPlaneStructuralQueryResponse::examined: u64
 pub quanta_index_contract::SearchPlaneStructuralQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
+pub quanta_index_contract::SearchPlaneStructuralQueryResponse::next_cursor: core::option::Option<quanta_index_contract::StructuralCursorV1>
 pub quanta_index_contract::SearchPlaneStructuralQueryResponse::read_epoch: quanta_index_contract::AuxEpochV1
 pub quanta_index_contract::SearchPlaneStructuralQueryResponse::results: alloc::vec::Vec<quanta_index_contract_base::results::structural::StructuralCandidate>
 pub quanta_index_contract::SearchPlaneStructuralQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV1
@@ -11628,6 +11709,28 @@ impl core::marker::Unpin for quanta_index_contract::SemanticTombstoneScope
 impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticTombstoneScope
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticTombstoneScope
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticTombstoneScope
+pub struct quanta_index_contract::StructuralCursorV1
+pub quanta_index_contract::StructuralCursorV1::aux_epoch: quanta_index_contract::AuxEpochV1
+pub quanta_index_contract::StructuralCursorV1::candidate_id: alloc::string::String
+impl core::clone::Clone for quanta_index_contract::StructuralCursorV1
+pub fn quanta_index_contract::StructuralCursorV1::clone(&self) -> quanta_index_contract::StructuralCursorV1
+impl core::cmp::Eq for quanta_index_contract::StructuralCursorV1
+impl core::cmp::PartialEq for quanta_index_contract::StructuralCursorV1
+pub fn quanta_index_contract::StructuralCursorV1::eq(&self, other: &quanta_index_contract::StructuralCursorV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::StructuralCursorV1
+pub fn quanta_index_contract::StructuralCursorV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::StructuralCursorV1
+impl serde_core::ser::Serialize for quanta_index_contract::StructuralCursorV1
+pub fn quanta_index_contract::StructuralCursorV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::StructuralCursorV1
+pub fn quanta_index_contract::StructuralCursorV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::StructuralCursorV1
+impl core::marker::Send for quanta_index_contract::StructuralCursorV1
+impl core::marker::Sync for quanta_index_contract::StructuralCursorV1
+impl core::marker::Unpin for quanta_index_contract::StructuralCursorV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::StructuralCursorV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::StructuralCursorV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::StructuralCursorV1
 pub struct quanta_index_contract::StructuralIngestBatch
 pub quanta_index_contract::StructuralIngestBatch::base_generation: core::option::Option<quanta_index_contract_base::ids::ManifestGeneration>
 pub quanta_index_contract::StructuralIngestBatch::batch_digest: alloc::string::String
@@ -11659,6 +11762,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::StructuralIngestBatch
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::StructuralIngestBatch
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::StructuralIngestBatch
 pub struct quanta_index_contract::StructuralQueryRequest
+pub quanta_index_contract::StructuralQueryRequest::cursor: core::option::Option<quanta_index_contract::StructuralCursorV1>
 pub quanta_index_contract::StructuralQueryRequest::text_query: quanta_index_contract_base::query::requests::TextQueryRequest
 impl core::clone::Clone for quanta_index_contract::StructuralQueryRequest
 pub fn quanta_index_contract::StructuralQueryRequest::clone(&self) -> quanta_index_contract::StructuralQueryRequest

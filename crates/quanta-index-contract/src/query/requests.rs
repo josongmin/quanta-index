@@ -10,8 +10,8 @@ use crate::SemanticCorpusKindV1;
 use crate::{HybridCandidateV1, LexicalCandidate};
 
 use super::{
-    GenerationPin, GenerationSelector, HistoryCursor, QueryConstraintSetV1, TextQueryRequest,
-    TextQuerySyntax,
+    GenerationPin, GenerationSelector, HistoryCursor, QueryConstraintSetV1,
+    RuntimeMetadataCursorV1, StructuralCursorV1, TextQueryRequest, TextQuerySyntax,
 };
 
 /// Semantic query request (LXE-01 §3: lexical scope unified on
@@ -763,15 +763,23 @@ impl<'de> Deserialize<'de> for HistoryQueryRequest {
     }
 }
 
-macro_rules! impl_text_query_wrapper_serde {
-    ($ty:ident, $fields:ident, $visitor:ident) => {
+/// Manual serde for a `{ text_query, cursor? }` keyset page request.
+///
+/// `cursor` is absent on the wire when `None`; when present it is the
+/// route's own cursor type and decoded fail-closed with it.
+macro_rules! impl_text_query_page_request_serde {
+    ($ty:ident, $fields:ident, $visitor:ident, $cursor_ty:ty) => {
         impl Serialize for $ty {
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
                 S: Serializer,
             {
-                let mut state = serializer.serialize_struct(stringify!($ty), 1)?;
+                let field_count = if self.cursor.is_some() { 2 } else { 1 };
+                let mut state = serializer.serialize_struct(stringify!($ty), field_count)?;
                 state.serialize_field("text_query", &self.text_query)?;
+                if let Some(cursor) = &self.cursor {
+                    state.serialize_field("cursor", cursor)?;
+                }
                 state.end()
             }
         }
@@ -790,6 +798,8 @@ macro_rules! impl_text_query_wrapper_serde {
                 A: MapAccess<'de>,
             {
                 let mut text_query: Option<TextQueryRequest> = None;
+                let mut cursor: Option<$cursor_ty> = None;
+                let mut cursor_seen = false;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "text_query" => {
@@ -798,6 +808,13 @@ macro_rules! impl_text_query_wrapper_serde {
                             }
                             text_query = Some(map.next_value()?);
                         }
+                        "cursor" => {
+                            if cursor_seen {
+                                return Err(de::Error::duplicate_field("cursor"));
+                            }
+                            cursor_seen = true;
+                            cursor = map.next_value()?;
+                        }
                         other => {
                             return Err(de::Error::unknown_field(other, $fields));
                         }
@@ -805,6 +822,7 @@ macro_rules! impl_text_query_wrapper_serde {
                 }
                 Ok($ty {
                     text_query: text_query.ok_or_else(|| de::Error::missing_field("text_query"))?,
+                    cursor,
                 })
             }
         }
@@ -820,28 +838,52 @@ macro_rules! impl_text_query_wrapper_serde {
     };
 }
 
+/// A runtime-metadata query: the text query and, for every page after
+/// the first, the cursor the previous page returned (QI-BB-025 W4).
+///
+/// Results are ordered by candidate id under the total order documented
+/// on [`RuntimeMetadataCursorV1`]; `top_k` bounds one page. A
+/// continuation is served from the runtime and structural authority
+/// epochs its cursor names (QI-BB-020 W2), so the pages of one walk
+/// partition one consistent cut; a cursor naming an epoch the plane no
+/// longer retains is refused `AUX_EPOCH_EXPIRED`, one naming an epoch
+/// the plane never produced `AUX_EPOCH_UNKNOWN`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeMetadataQueryRequest {
     pub text_query: TextQueryRequest,
+    pub cursor: Option<RuntimeMetadataCursorV1>,
 }
 
-const RUNTIME_METADATA_QUERY_REQUEST_FIELDS: &[&str] = &["text_query"];
-impl_text_query_wrapper_serde!(
+const RUNTIME_METADATA_QUERY_REQUEST_FIELDS: &[&str] = &["text_query", "cursor"];
+impl_text_query_page_request_serde!(
     RuntimeMetadataQueryRequest,
     RUNTIME_METADATA_QUERY_REQUEST_FIELDS,
-    RuntimeMetadataQueryRequestVisitor
+    RuntimeMetadataQueryRequestVisitor,
+    RuntimeMetadataCursorV1
 );
 
+/// A structural query: the text query and, for every page after the
+/// first, the cursor the previous page returned (QI-BB-025 W4).
+///
+/// Results are ordered by candidate id under the total order documented
+/// on [`StructuralCursorV1`]; `top_k` bounds one page. A continuation is
+/// evaluated against the structural authority epoch its cursor names
+/// (QI-BB-020 W2), so the pages of one walk partition one snapshot's
+/// match set; a cursor naming an epoch the plane no longer retains is
+/// refused `AUX_EPOCH_EXPIRED`, one naming an epoch the plane never
+/// produced `AUX_EPOCH_UNKNOWN`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StructuralQueryRequest {
     pub text_query: TextQueryRequest,
+    pub cursor: Option<StructuralCursorV1>,
 }
 
-const STRUCTURAL_QUERY_REQUEST_FIELDS: &[&str] = &["text_query"];
-impl_text_query_wrapper_serde!(
+const STRUCTURAL_QUERY_REQUEST_FIELDS: &[&str] = &["text_query", "cursor"];
+impl_text_query_page_request_serde!(
     StructuralQueryRequest,
     STRUCTURAL_QUERY_REQUEST_FIELDS,
-    StructuralQueryRequestVisitor
+    StructuralQueryRequestVisitor,
+    StructuralCursorV1
 );
 
 /// The candidate an explain names: the row as the route that ranked it

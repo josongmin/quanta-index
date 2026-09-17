@@ -65,6 +65,7 @@ pub use quanta_index_sdk::RepoMapSourceBundle
 pub use quanta_index_sdk::RepoMapSymbolNode
 pub use quanta_index_sdk::RepoRelativePath
 pub use quanta_index_sdk::RevisionId
+pub use quanta_index_sdk::RuntimeMetadataCursorV1
 pub use quanta_index_sdk::SearchCorpusGenerationIdentityV1
 pub use quanta_index_sdk::SearchCorpusReplaceScope
 pub use quanta_index_sdk::SearchCorpusTombstoneScope
@@ -84,6 +85,7 @@ pub use quanta_index_sdk::SeedCandidate
 pub use quanta_index_sdk::SeedContribution
 pub use quanta_index_sdk::SeedLane
 pub use quanta_index_sdk::SemanticQueryResponse
+pub use quanta_index_sdk::StructuralCursorV1
 pub use quanta_index_sdk::StructuralReplaceScope
 pub use quanta_index_sdk::StructuralTombstoneScope
 pub use quanta_index_sdk::StructuralTreeRecord
@@ -777,6 +779,7 @@ impl quanta_index_sdk::RuntimeQueryBuilder<'_, true, true, true>
 pub fn quanta_index_sdk::RuntimeQueryBuilder<'_, true, true, true>::execute(self) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneRuntimeMetadataQueryResponse, quanta_index_sdk::SdkError>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> quanta_index_sdk::RuntimeQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
 pub fn quanta_index_sdk::RuntimeQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::active(self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId) -> quanta_index_sdk::RuntimeQueryBuilder<'a, HAS_TEXT, true, HAS_TOP_K>
+pub fn quanta_index_sdk::RuntimeQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::after(self, cursor: quanta_index_contract::query::runtime_metadata_cursor::RuntimeMetadataCursorV1) -> Self
 pub fn quanta_index_sdk::RuntimeQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::native(self, query_text: impl core::convert::Into<alloc::string::String>) -> quanta_index_sdk::RuntimeQueryBuilder<'a, true, HAS_SELECTION, HAS_TOP_K>
 pub fn quanta_index_sdk::RuntimeQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::pinned(self, pin: quanta_index_contract_base::query::pin::GenerationPin) -> quanta_index_sdk::RuntimeQueryBuilder<'a, HAS_TEXT, true, HAS_TOP_K>
 pub fn quanta_index_sdk::RuntimeQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::sourcegraph(self, query_text: impl core::convert::Into<alloc::string::String>) -> quanta_index_sdk::RuntimeQueryBuilder<'a, true, HAS_SELECTION, HAS_TOP_K>
@@ -937,6 +940,7 @@ pub struct quanta_index_sdk::StructuralQueryBuilder<'a, const HAS_TEXT: bool, co
 impl quanta_index_sdk::StructuralQueryBuilder<'_, true, true, true>
 pub fn quanta_index_sdk::StructuralQueryBuilder<'_, true, true, true>::execute(self) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneStructuralQueryResponse, quanta_index_sdk::SdkError>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> quanta_index_sdk::StructuralQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
+pub fn quanta_index_sdk::StructuralQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::after(self, cursor: quanta_index_contract::query::structural_cursor::StructuralCursorV1) -> Self
 pub fn quanta_index_sdk::StructuralQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::native(self, query_text: impl core::convert::Into<alloc::string::String>) -> quanta_index_sdk::StructuralQueryBuilder<'a, true, HAS_SELECTION, HAS_TOP_K>
 pub fn quanta_index_sdk::StructuralQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::pinned(self, pin: quanta_index_contract_base::query::pin::GenerationPin) -> quanta_index_sdk::StructuralQueryBuilder<'a, HAS_TEXT, true, HAS_TOP_K>
 pub fn quanta_index_sdk::StructuralQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::sourcegraph(self, query_text: impl core::convert::Into<alloc::string::String>) -> quanta_index_sdk::StructuralQueryBuilder<'a, true, HAS_SELECTION, HAS_TOP_K>

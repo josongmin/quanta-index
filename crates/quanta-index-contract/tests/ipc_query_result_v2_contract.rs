@@ -7,7 +7,7 @@ use quanta_index_contract::results::{
     EngineTouched, PlannerStage, PlannerTraceEntry, SearchExplanation,
 };
 use quanta_index_contract::{
-    DiffCandidate, DiffHunkSide, ExplainCandidateV1, GenerationPin, HighlightSpan,
+    AuxEpochV1, DiffCandidate, DiffHunkSide, ExplainCandidateV1, GenerationPin, HighlightSpan,
     HybridCandidateV1, HybridLaneContributionV1, HybridLaneV1, HybridQueryRequest,
     HybridQueryResponse, HybridSeedQueryRequest, LexicalCandidate, LqQuery, LqSpan,
     ManifestGeneration, QueryConstraintSetV1, QueryResultWindowV1, RepoId, RepoRelativePath,
@@ -336,6 +336,7 @@ fn sourcegraph_structural_request() -> StructuralQueryRequest {
             generation_selector: None,
             top_k: 25,
         },
+        cursor: None,
     }
 }
 
@@ -1423,8 +1424,8 @@ fn explain_response_round_trips_its_presence_and_rejects_a_missing_one() -> Test
 #[test]
 fn search_plane_ipc_response_v2_aux_read_epoch_is_required_and_round_trips() -> TestRes {
     use quanta_index_contract::{
-        AuxEpochV1, HistoryCursor, SearchPlaneHistoryQueryResponse,
-        SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
+        HistoryCursor, SearchPlaneHistoryQueryResponse, SearchPlaneRuntimeMetadataQueryResponse,
+        SearchPlaneStructuralQueryResponse,
     };
 
     let cursor = HistoryCursor {
@@ -1453,6 +1454,9 @@ fn search_plane_ipc_response_v2_aux_read_epoch_is_required_and_round_trips() -> 
             results: vec![lexical_candidate()],
             window: QueryResultWindowV1::exact(1),
             read_epoch: AuxEpochV1::new(3),
+            universe_epoch: AuxEpochV1::new(2),
+            examined: 1,
+            next_cursor: None,
         });
     roundtrip_eq(&runtime_page)?;
     let structural_page =
@@ -1461,6 +1465,8 @@ fn search_plane_ipc_response_v2_aux_read_epoch_is_required_and_round_trips() -> 
             results: Vec::new(),
             window: QueryResultWindowV1::exact(0),
             read_epoch: AuxEpochV1::GENESIS,
+            examined: 0,
+            next_cursor: None,
         });
     roundtrip_eq(&structural_page)?;
     let history_page = SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
@@ -1491,6 +1497,478 @@ fn search_plane_ipc_response_v2_aux_read_epoch_is_required_and_round_trips() -> 
         }
         if serde_json::from_value::<SearchPlaneQueryIpcResponse>(value).is_ok() {
             return Err(format!("{label}: a page without a read epoch must not decode").into());
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// QI-BB-025 W4 — runtime-metadata / structural keyset cursors and pages.
+// ---------------------------------------------------------------------------
+
+fn lexical_candidate_named(candidate_id: &str) -> LexicalCandidate {
+    LexicalCandidate {
+        candidate_id: candidate_id.to_owned(),
+        ..lexical_candidate()
+    }
+}
+
+fn structural_candidate_named(candidate_id: &str) -> quanta_index_contract::StructuralCandidate {
+    quanta_index_contract::StructuralCandidate {
+        candidate_id: candidate_id.to_owned(),
+        bindings: vec![quanta_index_contract::StructuralBinding {
+            metavariable: "name".to_owned(),
+            start_byte: 3,
+            end_byte: 9,
+            start_line: 1,
+            end_line: 1,
+        }],
+    }
+}
+
+fn runtime_cursor(candidate_id: &str) -> quanta_index_contract::RuntimeMetadataCursorV1 {
+    quanta_index_contract::RuntimeMetadataCursorV1 {
+        candidate_id: candidate_id.to_owned(),
+        aux_epoch: AuxEpochV1::new(4),
+        universe_epoch: AuxEpochV1::new(11),
+    }
+}
+
+fn structural_cursor(candidate_id: &str) -> quanta_index_contract::StructuralCursorV1 {
+    quanta_index_contract::StructuralCursorV1 {
+        candidate_id: candidate_id.to_owned(),
+        aux_epoch: AuxEpochV1::new(6),
+    }
+}
+
+/// A well-formed runtime-metadata page: rows ascending by candidate id,
+/// a continuation naming the last row in the epochs the page read.
+fn runtime_page_with_continuation() -> Result<
+    quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse,
+    Box<dyn std::error::Error>,
+> {
+    Ok(
+        quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+            generation: generation_pin(),
+            results: vec![lexical_candidate_named("a"), lexical_candidate_named("b")],
+            window: QueryResultWindowV1::new(
+                2,
+                quanta_index_contract::CandidateCountV1::AtLeast(3),
+                true,
+            )?,
+            read_epoch: AuxEpochV1::new(4),
+            universe_epoch: AuxEpochV1::new(11),
+            examined: 3,
+            next_cursor: Some(runtime_cursor("b")),
+        },
+    )
+}
+
+/// A well-formed structural page with a continuation.
+fn structural_page_with_continuation()
+-> Result<quanta_index_contract::SearchPlaneStructuralQueryResponse, Box<dyn std::error::Error>> {
+    Ok(quanta_index_contract::SearchPlaneStructuralQueryResponse {
+        generation: generation_pin(),
+        results: vec![
+            structural_candidate_named("a"),
+            structural_candidate_named("b"),
+        ],
+        window: QueryResultWindowV1::new(
+            2,
+            quanta_index_contract::CandidateCountV1::Exact(5),
+            true,
+        )?,
+        read_epoch: AuxEpochV1::new(6),
+        examined: 5,
+        next_cursor: Some(structural_cursor("b")),
+    })
+}
+
+/// The two cursors round-trip and decode fail-closed.
+///
+/// They round-trip through CBOR and JSON and are absent from a request
+/// that does not carry them; a missing or duplicated field, an unknown
+/// field, or an epoch that is not an unsigned integer is refused.
+#[test]
+fn keyset_cursors_round_trip_and_decode_fail_closed() -> TestRes {
+    roundtrip_eq(&runtime_cursor("chunk://alpha"))?;
+    roundtrip_eq(&structural_cursor("chunk://alpha"))?;
+
+    let runtime_json = serde_json::to_value(runtime_cursor("chunk://alpha"))?;
+    if runtime_json
+        != serde_json::json!({
+            "candidate_id": "chunk://alpha",
+            "aux_epoch": 4,
+            "universe_epoch": 11
+        })
+    {
+        return Err(format!("runtime cursor wire shape drifted: {runtime_json}").into());
+    }
+    let structural_json = serde_json::to_value(structural_cursor("chunk://alpha"))?;
+    if structural_json != serde_json::json!({ "candidate_id": "chunk://alpha", "aux_epoch": 6 }) {
+        return Err(format!("structural cursor wire shape drifted: {structural_json}").into());
+    }
+
+    let runtime_refusals = [
+        (
+            "missing aux_epoch",
+            serde_json::json!({ "candidate_id": "a", "universe_epoch": 1 }),
+        ),
+        (
+            "missing universe_epoch",
+            serde_json::json!({ "candidate_id": "a", "aux_epoch": 1 }),
+        ),
+        (
+            "missing candidate_id",
+            serde_json::json!({ "aux_epoch": 1, "universe_epoch": 1 }),
+        ),
+        (
+            "unknown field",
+            serde_json::json!({ "candidate_id": "a", "aux_epoch": 1, "universe_epoch": 1, "offset": 3 }),
+        ),
+        (
+            "signed epoch",
+            serde_json::json!({ "candidate_id": "a", "aux_epoch": -1, "universe_epoch": 1 }),
+        ),
+        (
+            "string epoch",
+            serde_json::json!({ "candidate_id": "a", "aux_epoch": "1", "universe_epoch": 1 }),
+        ),
+        (
+            "numeric candidate id",
+            serde_json::json!({ "candidate_id": 7, "aux_epoch": 1, "universe_epoch": 1 }),
+        ),
+    ];
+    for (label, wrong) in runtime_refusals {
+        if serde_json::from_value::<quanta_index_contract::RuntimeMetadataCursorV1>(wrong).is_ok() {
+            return Err(format!("runtime cursor: {label} must not decode").into());
+        }
+    }
+    let structural_refusals = [
+        (
+            "missing aux_epoch",
+            serde_json::json!({ "candidate_id": "a" }),
+        ),
+        (
+            "missing candidate_id",
+            serde_json::json!({ "aux_epoch": 1 }),
+        ),
+        (
+            "unknown field",
+            serde_json::json!({ "candidate_id": "a", "aux_epoch": 1, "universe_epoch": 1 }),
+        ),
+        (
+            "null epoch",
+            serde_json::json!({ "candidate_id": "a", "aux_epoch": null }),
+        ),
+    ];
+    for (label, wrong) in structural_refusals {
+        if serde_json::from_value::<quanta_index_contract::StructuralCursorV1>(wrong).is_ok() {
+            return Err(format!("structural cursor: {label} must not decode").into());
+        }
+    }
+    // A duplicated field is refused on the CBOR wire too.
+    let bytes = mutate_ipc_request_wire(
+        &SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
+            cursor: Some(structural_cursor("a")),
+            ..sourcegraph_structural_request()
+        }),
+        |wire| {
+            let request_fields = map_fields_mut(wire)?;
+            let payload = field_value_mut(request_fields, "payload")?;
+            let payload_fields = map_fields_mut(payload)?;
+            let cursor = field_value_mut(payload_fields, "cursor")?;
+            let cursor_fields = map_fields_mut(cursor)?;
+            cursor_fields.push((
+                ciborium::Value::Text("aux_epoch".to_owned()),
+                ciborium::Value::Integer(6.into()),
+            ));
+            Ok(())
+        },
+    )?;
+    expect_decode_error_contains::<SearchPlaneQueryIpcRequest>(&bytes, "duplicate field")
+}
+
+/// A page request carries its cursor only when it has one, and the two
+/// routes do not accept each other's cursor shape.
+#[test]
+fn keyset_page_requests_carry_the_cursor_only_when_present() -> TestRes {
+    let fresh = quanta_index_contract::RuntimeMetadataQueryRequest {
+        text_query: sourcegraph_text_request(),
+        cursor: None,
+    };
+    roundtrip_eq(&fresh)?;
+    let fresh_json = serde_json::to_value(&fresh)?;
+    if fresh_json
+        .as_object()
+        .is_some_and(|fields| fields.contains_key("cursor"))
+    {
+        return Err(format!("a fresh walk carries no cursor on the wire: {fresh_json}").into());
+    }
+    let continued = quanta_index_contract::RuntimeMetadataQueryRequest {
+        text_query: sourcegraph_text_request(),
+        cursor: Some(runtime_cursor("chunk://alpha")),
+    };
+    roundtrip_eq(&SearchPlaneQueryIpcRequest::RuntimeMetadata(continued))?;
+    let continued = StructuralQueryRequest {
+        cursor: Some(structural_cursor("chunk://alpha")),
+        ..sourcegraph_structural_request()
+    };
+    roundtrip_eq(&SearchPlaneQueryIpcRequest::Structural(continued))?;
+
+    // A structural request with a runtime-metadata cursor (which carries
+    // `universe_epoch`) is refused, not narrowed.
+    let mut crossed = serde_json::to_value(sourcegraph_structural_request())?;
+    let fields = crossed.as_object_mut().ok_or("the request is a map")?;
+    if fields
+        .insert(
+            "cursor".to_owned(),
+            serde_json::to_value(runtime_cursor("chunk://alpha"))?,
+        )
+        .is_some()
+    {
+        return Err("the fixture carries no cursor".into());
+    }
+    if serde_json::from_value::<StructuralQueryRequest>(crossed).is_ok() {
+        return Err("a structural request must not accept a runtime-metadata cursor".into());
+    }
+    Ok(())
+}
+
+/// Both page responses round-trip with and without a continuation, and
+/// `examined` / `next_cursor` / the epochs are on the wire by name.
+#[test]
+fn keyset_pages_round_trip_with_and_without_a_continuation() -> TestRes {
+    let runtime_page = runtime_page_with_continuation()?;
+    roundtrip_eq(&SearchPlaneQueryIpcResponse::RuntimeMetadata(
+        runtime_page.clone(),
+    ))?;
+    let json = serde_json::to_value(&runtime_page)?;
+    let fields = json.as_object().ok_or("the page is a map")?;
+    for name in [
+        "generation",
+        "results",
+        "window",
+        "read_epoch",
+        "universe_epoch",
+        "examined",
+        "next_cursor",
+    ] {
+        if !fields.contains_key(name) {
+            return Err(format!("runtime page serializes `{name}`: {json}").into());
+        }
+    }
+    let final_page = quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+        results: vec![lexical_candidate_named("z")],
+        window: QueryResultWindowV1::exact(1),
+        examined: 9,
+        next_cursor: None,
+        ..runtime_page
+    };
+    roundtrip_eq(&SearchPlaneQueryIpcResponse::RuntimeMetadata(
+        final_page.clone(),
+    ))?;
+    let json = serde_json::to_value(&final_page)?;
+    if json
+        .as_object()
+        .is_some_and(|fields| fields.contains_key("next_cursor"))
+    {
+        return Err(format!("a final page carries no cursor on the wire: {json}").into());
+    }
+
+    let structural_page = structural_page_with_continuation()?;
+    roundtrip_eq(&SearchPlaneQueryIpcResponse::Structural(
+        structural_page.clone(),
+    ))?;
+    let final_page = quanta_index_contract::SearchPlaneStructuralQueryResponse {
+        results: Vec::new(),
+        window: QueryResultWindowV1::exact(0),
+        examined: 0,
+        next_cursor: None,
+        ..structural_page
+    };
+    roundtrip_eq(&SearchPlaneQueryIpcResponse::Structural(final_page))
+}
+
+/// A page whose window, rows, order, cursor and epochs disagree fails to
+/// decode.
+///
+/// A page cannot claim a continuation it does not position, position one
+/// that is not its last row, count rows it does not hold, leave its
+/// order, or hand out a cursor for an epoch it did not read.
+#[test]
+fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
+    let base = runtime_page_with_continuation()?;
+    let runtime_cases: Vec<(
+        &str,
+        quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse,
+    )> = vec![
+        (
+            "has_more without a cursor",
+            quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+                next_cursor: None,
+                ..base.clone()
+            },
+        ),
+        (
+            "a cursor without has_more",
+            quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+                window: QueryResultWindowV1::exact(2),
+                ..base.clone()
+            },
+        ),
+        (
+            "a window that does not count the rows",
+            quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+                window: QueryResultWindowV1::new(
+                    1,
+                    quanta_index_contract::CandidateCountV1::AtLeast(3),
+                    true,
+                )?,
+                ..base.clone()
+            },
+        ),
+        (
+            "rows out of candidate-id order",
+            quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+                results: vec![lexical_candidate_named("b"), lexical_candidate_named("a")],
+                next_cursor: Some(runtime_cursor("a")),
+                ..base.clone()
+            },
+        ),
+        (
+            "a duplicated row",
+            quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+                results: vec![lexical_candidate_named("b"), lexical_candidate_named("b")],
+                ..base.clone()
+            },
+        ),
+        (
+            "a cursor that is not the last row",
+            quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+                next_cursor: Some(runtime_cursor("a")),
+                ..base.clone()
+            },
+        ),
+        (
+            "a cursor naming another runtime epoch than the page read",
+            quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+                read_epoch: AuxEpochV1::new(5),
+                ..base.clone()
+            },
+        ),
+        (
+            "a cursor naming another universe epoch than the page read",
+            quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+                universe_epoch: AuxEpochV1::new(12),
+                ..base
+            },
+        ),
+    ];
+    for (label, page) in runtime_cases {
+        let bytes = encode(&SearchPlaneQueryIpcResponse::RuntimeMetadata(page))?;
+        if decode::<SearchPlaneQueryIpcResponse>(&bytes).is_ok() {
+            return Err(
+                format!("runtime-metadata: {label}: an inconsistent page must not decode").into(),
+            );
+        }
+    }
+
+    let base = structural_page_with_continuation()?;
+    let structural_cases: Vec<(
+        &str,
+        quanta_index_contract::SearchPlaneStructuralQueryResponse,
+    )> = vec![
+        (
+            "has_more without a cursor",
+            quanta_index_contract::SearchPlaneStructuralQueryResponse {
+                next_cursor: None,
+                ..base.clone()
+            },
+        ),
+        (
+            "a cursor without has_more",
+            quanta_index_contract::SearchPlaneStructuralQueryResponse {
+                window: QueryResultWindowV1::exact(2),
+                ..base.clone()
+            },
+        ),
+        (
+            "a window that does not count the rows",
+            quanta_index_contract::SearchPlaneStructuralQueryResponse {
+                window: QueryResultWindowV1::new(
+                    3,
+                    quanta_index_contract::CandidateCountV1::Exact(5),
+                    true,
+                )?,
+                ..base.clone()
+            },
+        ),
+        (
+            "rows out of candidate-id order",
+            quanta_index_contract::SearchPlaneStructuralQueryResponse {
+                results: vec![
+                    structural_candidate_named("b"),
+                    structural_candidate_named("a"),
+                ],
+                next_cursor: Some(structural_cursor("a")),
+                ..base.clone()
+            },
+        ),
+        (
+            "a cursor that is not the last row",
+            quanta_index_contract::SearchPlaneStructuralQueryResponse {
+                next_cursor: Some(structural_cursor("a")),
+                ..base.clone()
+            },
+        ),
+        (
+            "a cursor naming another epoch than the page read",
+            quanta_index_contract::SearchPlaneStructuralQueryResponse {
+                read_epoch: AuxEpochV1::new(7),
+                ..base
+            },
+        ),
+    ];
+    for (label, page) in structural_cases {
+        let bytes = encode(&SearchPlaneQueryIpcResponse::Structural(page))?;
+        if decode::<SearchPlaneQueryIpcResponse>(&bytes).is_ok() {
+            return Err(
+                format!("structural: {label}: an inconsistent page must not decode").into(),
+            );
+        }
+    }
+
+    // Every required field is required: dropping `examined` or an epoch
+    // from the wire refuses the page.
+    for name in ["examined", "universe_epoch", "read_epoch", "window"] {
+        let mut value = serde_json::to_value(SearchPlaneQueryIpcResponse::RuntimeMetadata(
+            runtime_page_with_continuation()?,
+        ))?;
+        let payload = value
+            .get_mut("payload")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or("the response is a tagged map")?;
+        if payload.remove(name).is_none() {
+            return Err(format!("the runtime page serializes `{name}`").into());
+        }
+        if serde_json::from_value::<SearchPlaneQueryIpcResponse>(value).is_ok() {
+            return Err(format!("a runtime page without `{name}` must not decode").into());
+        }
+    }
+    for name in ["examined", "read_epoch", "window"] {
+        let mut value = serde_json::to_value(SearchPlaneQueryIpcResponse::Structural(
+            structural_page_with_continuation()?,
+        ))?;
+        let payload = value
+            .get_mut("payload")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or("the response is a tagged map")?;
+        if payload.remove(name).is_none() {
+            return Err(format!("the structural page serializes `{name}`").into());
+        }
+        if serde_json::from_value::<SearchPlaneQueryIpcResponse>(value).is_ok() {
+            return Err(format!("a structural page without `{name}` must not decode").into());
         }
     }
     Ok(())

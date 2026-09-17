@@ -6,6 +6,8 @@ mod filters;
 mod history_cursor;
 mod options;
 mod requests;
+mod runtime_metadata_cursor;
+mod structural_cursor;
 
 pub use aux_epoch::*;
 pub use cluster_membership::*;
@@ -19,3 +21,5 @@ pub use quanta_index_contract_base::query::{
     QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax,
 };
 pub use requests::*;
+pub use runtime_metadata_cursor::*;
+pub use structural_cursor::*;

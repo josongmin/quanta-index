@@ -76,6 +76,7 @@ fn every_route_refuses_an_interrupted_budget_at_entry_without_opening() -> TestR
             "structural:entry",
             SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
                 text_query: text(),
+                cursor: None,
             }),
         ),
         (

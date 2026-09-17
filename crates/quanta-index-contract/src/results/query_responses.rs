@@ -9,7 +9,7 @@ use serde::{
 use crate::{
     AuxEpochV1, CommitCandidate, DiffCandidate, GenerationPin, HistoryCursor, LexicalCandidate,
     ManifestGeneration, OwnerDocKind, QueryResultWindowV1, RepoId, RepoRelativePath, RevisionId,
-    SemanticCorpusKindV1, StructuralCandidate,
+    RuntimeMetadataCursorV1, SemanticCorpusKindV1, StructuralCandidate, StructuralCursorV1,
     lex::{SymbolKindCode, SymbolKindFamily},
 };
 
@@ -869,13 +869,9 @@ impl<'de> Deserialize<'de> for SearchPlaneHistoryQueryResponse {
     }
 }
 
-/// Manual serde for a `{ generation, results, window, .. }` response.
-///
-/// The trailing `$extra: $extra_ty` fields are required on the wire, one
-/// per extra field: the runtime-metadata and structural responses carry
-/// their `read_epoch` this way (QI-BB-020 W2).
+/// Manual serde for a `{ generation, results, window }` response.
 macro_rules! impl_generation_results_response_serde {
-    ($ty:ident, $fields:ident, $visitor:ident, $result_ty:ty $(, $extra:ident : $extra_ty:ty)* $(,)?) => {
+    ($ty:ident, $fields:ident, $visitor:ident, $result_ty:ty) => {
         impl Serialize for $ty {
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
@@ -885,7 +881,6 @@ macro_rules! impl_generation_results_response_serde {
                 state.serialize_field("generation", &self.generation)?;
                 state.serialize_field("results", &self.results)?;
                 state.serialize_field("window", &self.window)?;
-                $(state.serialize_field(stringify!($extra), &self.$extra)?;)*
                 state.end()
             }
         }
@@ -906,7 +901,6 @@ macro_rules! impl_generation_results_response_serde {
                 let mut generation: Option<GenerationPin> = None;
                 let mut results: Option<Vec<$result_ty>> = None;
                 let mut window: Option<QueryResultWindowV1> = None;
-                $(let mut $extra: Option<$extra_ty> = None;)*
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "generation" => {
@@ -927,14 +921,6 @@ macro_rules! impl_generation_results_response_serde {
                             }
                             window = Some(map.next_value()?);
                         }
-                        $(
-                            stringify!($extra) => {
-                                if $extra.is_some() {
-                                    return Err(de::Error::duplicate_field(stringify!($extra)));
-                                }
-                                $extra = Some(map.next_value()?);
-                            }
-                        )*
                         other => {
                             return Err(de::Error::unknown_field(other, $fields));
                         }
@@ -956,7 +942,188 @@ macro_rules! impl_generation_results_response_serde {
                     generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
                     results,
                     window,
-                    $($extra: $extra.ok_or_else(|| de::Error::missing_field(stringify!($extra)))?,)*
+                })
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                deserializer.deserialize_struct(stringify!($ty), $fields, $visitor)
+            }
+        }
+    };
+}
+
+/// Manual serde for one keyset page (QI-BB-025 W4): `{ generation,
+/// results, window, <epochs...>, examined, next_cursor? }`.
+///
+/// The rows are in the route's total order — `candidate_id` ascending —
+/// and the decoder holds the page to it fail-closed: `window.returned`
+/// counts the rows, the rows strictly ascend by candidate id, `has_more`
+/// and `next_cursor` agree, `next_cursor` names the last row, and every
+/// epoch the cursor carries equals the epoch the page reports for it
+/// (each `(response_epoch, cursor_epoch)` pair in `epochs`).
+macro_rules! impl_keyset_page_response_serde {
+    (
+        $ty:ident,
+        $fields:ident,
+        $visitor:ident,
+        $result_ty:ty,
+        $cursor_ty:ty,
+        epochs = [$(($response_epoch:ident, $cursor_epoch:ident)),+ $(,)?]
+    ) => {
+        impl Serialize for $ty {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                let field_count = if self.next_cursor.is_some() {
+                    $fields.len()
+                } else {
+                    $fields.len().saturating_sub(1)
+                };
+                let mut state = serializer.serialize_struct(stringify!($ty), field_count)?;
+                state.serialize_field("generation", &self.generation)?;
+                state.serialize_field("results", &self.results)?;
+                state.serialize_field("window", &self.window)?;
+                $(state.serialize_field(stringify!($response_epoch), &self.$response_epoch)?;)+
+                state.serialize_field("examined", &self.examined)?;
+                if let Some(next_cursor) = &self.next_cursor {
+                    state.serialize_field("next_cursor", next_cursor)?;
+                }
+                state.end()
+            }
+        }
+
+        struct $visitor;
+
+        impl<'de> Visitor<'de> for $visitor {
+            type Value = $ty;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(concat!("a ", stringify!($ty), " map"))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut generation: Option<GenerationPin> = None;
+                let mut results: Option<Vec<$result_ty>> = None;
+                let mut window: Option<QueryResultWindowV1> = None;
+                $(let mut $response_epoch: Option<AuxEpochV1> = None;)+
+                let mut examined: Option<u64> = None;
+                let mut next_cursor: Option<$cursor_ty> = None;
+                let mut next_cursor_seen = false;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "generation" => {
+                            if generation.is_some() {
+                                return Err(de::Error::duplicate_field("generation"));
+                            }
+                            generation = Some(map.next_value()?);
+                        }
+                        "results" => {
+                            if results.is_some() {
+                                return Err(de::Error::duplicate_field("results"));
+                            }
+                            results = Some(map.next_value()?);
+                        }
+                        "window" => {
+                            if window.is_some() {
+                                return Err(de::Error::duplicate_field("window"));
+                            }
+                            window = Some(map.next_value()?);
+                        }
+                        $(
+                            stringify!($response_epoch) => {
+                                if $response_epoch.is_some() {
+                                    return Err(de::Error::duplicate_field(
+                                        stringify!($response_epoch),
+                                    ));
+                                }
+                                $response_epoch = Some(map.next_value()?);
+                            }
+                        )+
+                        "examined" => {
+                            if examined.is_some() {
+                                return Err(de::Error::duplicate_field("examined"));
+                            }
+                            examined = Some(map.next_value()?);
+                        }
+                        "next_cursor" => {
+                            if next_cursor_seen {
+                                return Err(de::Error::duplicate_field("next_cursor"));
+                            }
+                            next_cursor_seen = true;
+                            next_cursor = map.next_value()?;
+                        }
+                        other => {
+                            return Err(de::Error::unknown_field(other, $fields));
+                        }
+                    }
+                }
+                let results = results.ok_or_else(|| de::Error::missing_field("results"))?;
+                let window = window.ok_or_else(|| de::Error::missing_field("window"))?;
+                let returned = usize::try_from(window.returned()).map_err(|error| {
+                    de::Error::custom(format!(
+                        "query result window returned count cannot fit usize: {error}"
+                    ))
+                })?;
+                if returned != results.len() {
+                    return Err(de::Error::custom(
+                        "query result window returned count does not match results length",
+                    ));
+                }
+                // The page is in the total order the cursor positions.
+                if results
+                    .iter()
+                    .zip(results.iter().skip(1))
+                    .any(|(row, next)| row.candidate_id.as_str() >= next.candidate_id.as_str())
+                {
+                    return Err(de::Error::custom(
+                        "keyset page rows are not strictly ascending by candidate id",
+                    ));
+                }
+                if window.has_more() != next_cursor.is_some() {
+                    return Err(de::Error::custom(
+                        "keyset page has_more and next_cursor disagree",
+                    ));
+                }
+                if let Some(cursor) = &next_cursor {
+                    // The cursor is the last row's key, in the epochs this
+                    // page read; anything else could not have been issued
+                    // by this page.
+                    if results.last().map(|row| row.candidate_id.as_str())
+                        != Some(cursor.candidate_id.as_str())
+                    {
+                        return Err(de::Error::custom(
+                            "keyset page next_cursor does not name the last row",
+                        ));
+                    }
+                    $(
+                        if Some(cursor.$cursor_epoch) != $response_epoch {
+                            return Err(de::Error::custom(concat!(
+                                "keyset page next_cursor names an epoch other than ",
+                                stringify!($response_epoch),
+                            )));
+                        }
+                    )+
+                }
+                Ok($ty {
+                    generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+                    results,
+                    window,
+                    $(
+                        $response_epoch: $response_epoch.ok_or_else(|| {
+                            de::Error::missing_field(stringify!($response_epoch))
+                        })?,
+                    )+
+                    examined: examined.ok_or_else(|| de::Error::missing_field("examined"))?,
+                    next_cursor,
                 })
             }
         }
@@ -1924,54 +2091,91 @@ impl<'de> Deserialize<'de> for HybridSeedQueryResponse {
     }
 }
 
+/// One page of runtime-metadata results (QI-BB-025 W4).
+///
+/// `results` are in candidate-id order — the total order documented on
+/// [`RuntimeMetadataCursorV1`] — and `window` counts that page:
+/// `returned` is the rows on it, `candidate_count` the matches after the
+/// request's cursor as far as the walk looked (at least `returned + 1`
+/// when the walk stopped at its continuation probe, exact when it
+/// exhausted the candidate stream), `has_more` whether a next page
+/// exists, in which case `next_cursor` positions it. `examined` is how
+/// many candidates the walk visited after its cursor to answer.
+///
+/// `read_epoch` is the runtime-metadata authority epoch the page's
+/// predicates were evaluated against and `universe_epoch` the structural
+/// authority epoch its chunk universe was joined from (QI-BB-020 W2):
+/// the current ones, taken in one ledger read, for a fresh walk; the
+/// cursor's for a continuation. `next_cursor` carries both forward.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchPlaneRuntimeMetadataQueryResponse {
     pub generation: GenerationPin,
     pub results: Vec<LexicalCandidate>,
-    /// The page's bounds (QI-BB-025): `returned` rows of at least
-    /// `candidate_count`, with `has_more` when the route's continuation
-    /// probe found a row past the page.
     pub window: QueryResultWindowV1,
-    /// The runtime-metadata authority epoch the page was cut from
-    /// (QI-BB-020 W2). The chunk universe it was joined with is the
-    /// structural authority's snapshot taken in the same ledger read, so
-    /// the pair is one consistent cut; only the route's own authority is
-    /// named here, since this route has no continuation to resume.
     pub read_epoch: AuxEpochV1,
+    pub universe_epoch: AuxEpochV1,
+    pub examined: u64,
+    pub next_cursor: Option<RuntimeMetadataCursorV1>,
 }
 
-const SEARCH_PLANE_RUNTIME_METADATA_QUERY_RESPONSE_FIELDS: &[&str] =
-    &["generation", "results", "window", "read_epoch"];
-impl_generation_results_response_serde!(
+const SEARCH_PLANE_RUNTIME_METADATA_QUERY_RESPONSE_FIELDS: &[&str] = &[
+    "generation",
+    "results",
+    "window",
+    "read_epoch",
+    "universe_epoch",
+    "examined",
+    "next_cursor",
+];
+impl_keyset_page_response_serde!(
     SearchPlaneRuntimeMetadataQueryResponse,
     SEARCH_PLANE_RUNTIME_METADATA_QUERY_RESPONSE_FIELDS,
     SearchPlaneRuntimeMetadataQueryResponseVisitor,
     LexicalCandidate,
-    read_epoch: AuxEpochV1,
+    RuntimeMetadataCursorV1,
+    epochs = [(read_epoch, aux_epoch), (universe_epoch, universe_epoch)]
 );
 
+/// One page of structural results (QI-BB-025 W4).
+///
+/// `results` are in candidate-id order — the total order documented on
+/// [`StructuralCursorV1`] — and `window` counts that page: `returned` is
+/// the rows on it, `candidate_count` the exact number of matched
+/// candidates after the request's cursor (evaluation materializes the
+/// whole match set, so the count is never a bound), `has_more` whether a
+/// next page exists, in which case `next_cursor` positions it.
+/// `examined` is how many matched candidates the page selection walked.
+///
+/// `read_epoch` is the structural authority epoch every leaf of the
+/// query — the pinned universe, each parse-tree match, each symbol
+/// projection — was evaluated against (QI-BB-020 W2): the current one
+/// for a fresh walk, the cursor's for a continuation; `next_cursor`
+/// carries it forward.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchPlaneStructuralQueryResponse {
     pub generation: GenerationPin,
     pub results: Vec<StructuralCandidate>,
-    /// The page's bounds (QI-BB-025). Structural evaluation materializes
-    /// the whole match set before the page is cut, so `candidate_count`
-    /// is exact.
     pub window: QueryResultWindowV1,
-    /// The structural authority epoch every leaf of the query — the
-    /// pinned universe, each parse-tree match, each symbol projection —
-    /// was evaluated against (QI-BB-020 W2).
     pub read_epoch: AuxEpochV1,
+    pub examined: u64,
+    pub next_cursor: Option<StructuralCursorV1>,
 }
 
-const SEARCH_PLANE_STRUCTURAL_QUERY_RESPONSE_FIELDS: &[&str] =
-    &["generation", "results", "window", "read_epoch"];
-impl_generation_results_response_serde!(
+const SEARCH_PLANE_STRUCTURAL_QUERY_RESPONSE_FIELDS: &[&str] = &[
+    "generation",
+    "results",
+    "window",
+    "read_epoch",
+    "examined",
+    "next_cursor",
+];
+impl_keyset_page_response_serde!(
     SearchPlaneStructuralQueryResponse,
     SEARCH_PLANE_STRUCTURAL_QUERY_RESPONSE_FIELDS,
     SearchPlaneStructuralQueryResponseVisitor,
     StructuralCandidate,
-    read_epoch: AuxEpochV1,
+    StructuralCursorV1,
+    epochs = [(read_epoch, aux_epoch)]
 );
 
 /// What the search plane says about one candidate (QI-BB-022).

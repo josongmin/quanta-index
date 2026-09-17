@@ -48,6 +48,7 @@ pub(crate) fn runtime_query_request(
             generation_selector: None,
             top_k: 5,
         },
+        cursor: None,
     })
 }
 
