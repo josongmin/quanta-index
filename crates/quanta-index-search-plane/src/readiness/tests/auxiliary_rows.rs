@@ -10,7 +10,9 @@ use tempfile::tempdir;
 
 use crate::auxiliary_authority;
 use crate::readiness::auxiliary_store::{AuxiliaryAuthorityStore, restore_auxiliary_rows_into};
-use crate::readiness::history_state::{HistoryAuthoritySnapshot, HistoryAuthorityState};
+use crate::readiness::history_state::{
+    HistoryAuthoritySnapshot, HistoryAuthorityState, HistoryStateMeta,
+};
 use crate::readiness::ledger::Ledger;
 use crate::readiness::runtime_state::{RuntimeAuthoritySnapshot, RuntimeMetadataState};
 use crate::readiness::structural_state::StructuralAuthoritySnapshot;
@@ -29,11 +31,13 @@ fn auxiliary_authorities_roundtrip_through_catalog_rows() -> TestResult {
 
     ledger
         .aux_restore_mut::<HistoryAuthorityState>(&repo_id(), &revision_id(), generation())
-        .note_commits_materialized();
-    let _previous = ledger
+        .restore_meta(HistoryStateMeta {
+            commits_materialized: true,
+            ..HistoryStateMeta::default()
+        });
+    ledger
         .aux_restore_mut::<RuntimeMetadataState>(&repo_id(), &revision_id(), generation())
-        .dirty_docs
-        .insert(
+        .restore_dirty_doc(
             ChunkId::new("dirty-1"),
             crate::readiness::runtime_state::DirtyDocState {
                 applied_at_ms: 42,
@@ -240,11 +244,13 @@ fn legacy_auxiliary_snapshots_migrate_into_the_catalog_once() -> TestResult {
     let mut ledger = Ledger::default();
     ledger
         .aux_restore_mut::<HistoryAuthorityState>(&repo_id(), &revision_id(), generation())
-        .note_commits_materialized();
-    let _previous = ledger
+        .restore_meta(HistoryStateMeta {
+            commits_materialized: true,
+            ..HistoryStateMeta::default()
+        });
+    ledger
         .aux_restore_mut::<RuntimeMetadataState>(&repo_id(), &revision_id(), generation())
-        .dirty_docs
-        .insert(
+        .restore_dirty_doc(
             ChunkId::new("dirty-legacy"),
             crate::readiness::runtime_state::DirtyDocState {
                 applied_at_ms: 7,

@@ -15,6 +15,7 @@ use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
+use crate::auxiliary_authority::{RuntimeCatalogDelta, RuntimeDirtyDelta};
 use crate::readiness::errors::{
     ERR_RUNTIME_CATALOG_CONFLICTING_BATCH, ERR_RUNTIME_CATALOG_STALE_BATCH,
     ERR_RUNTIME_CATALOG_UNKNOWN_DOC_ID,
@@ -119,14 +120,19 @@ impl DocFacetState {
     }
 }
 
+/// One generation's dirty overlay and runtime catalog.
+///
+/// The record maps are private: the dirty overlay changes one doc at a
+/// time through the methods here and the catalog is replaced whole by a
+/// validated delta; nothing else writes them.
 #[derive(Clone, Debug, Default)]
 pub struct RuntimeMetadataState {
-    pub(super) dirty_docs: OrdMap<ChunkId, DirtyDocState>,
-    pub(super) changed_docs: OrdMap<ChunkId, ChangedDocState>,
-    pub(super) doc_facets: OrdMap<ChunkId, DocFacetState>,
-    pub(super) snapshots: OrdMap<Box<str>, BTreeSet<ChunkId>>,
-    pub(super) affected_docs: OrdMap<Box<str>, BTreeSet<ChunkId>>,
-    pub(super) invalidated_by_docs: OrdMap<Box<str>, BTreeSet<ChunkId>>,
+    dirty_docs: OrdMap<ChunkId, DirtyDocState>,
+    changed_docs: OrdMap<ChunkId, ChangedDocState>,
+    doc_facets: OrdMap<ChunkId, DocFacetState>,
+    snapshots: OrdMap<Box<str>, BTreeSet<ChunkId>>,
+    affected_docs: OrdMap<Box<str>, BTreeSet<ChunkId>>,
+    invalidated_by_docs: OrdMap<Box<str>, BTreeSet<ChunkId>>,
     catalog_overlay_epoch_ms: Option<u64>,
     catalog_batch_digest: Option<Box<str>>,
     producer_head_applied_at_ms: Option<u64>,
@@ -166,8 +172,35 @@ impl RuntimeMetadataState {
         self.catalog_materialized = meta.catalog_materialized;
     }
 
+    /// Apply a dirty-overlay delta: upserts then deletes, as the
+    /// transition ordered them.
+    pub(crate) fn apply_dirty_delta(&mut self, delta: &RuntimeDirtyDelta) {
+        for (chunk_id, doc) in &delta.upserts {
+            self.restore_dirty_doc(chunk_id.clone(), doc.clone());
+        }
+        for chunk_id in &delta.deletes {
+            self.evict_dirty_doc(chunk_id);
+        }
+    }
+
+    /// Apply a validated catalog delta: the generation's catalog is
+    /// replaced whole, meta included.
+    pub(crate) fn apply_catalog_delta(&mut self, delta: &RuntimeCatalogDelta) {
+        self.restore_meta(delta.meta.clone());
+        self.changed_docs = delta.changed_docs.clone();
+        self.doc_facets = delta.doc_facets.clone();
+        self.snapshots = delta.snapshots.clone();
+        self.affected_docs = delta.affected_docs.clone();
+        self.invalidated_by_docs = delta.invalidated_by_docs.clone();
+    }
+
     pub(crate) fn restore_dirty_doc(&mut self, chunk_id: ChunkId, doc: DirtyDocState) {
         let _previous = self.dirty_docs.insert(chunk_id, doc);
+    }
+
+    /// Drop one doc from the dirty overlay (absent is fine).
+    pub(crate) fn evict_dirty_doc(&mut self, chunk_id: &ChunkId) {
+        let _removed = self.dirty_docs.remove(chunk_id);
     }
 
     pub(crate) fn restore_changed_doc(&mut self, chunk_id: ChunkId, doc: ChangedDocState) {

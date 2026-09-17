@@ -10,23 +10,37 @@ use std::fmt;
 
 use imbl::OrdMap;
 use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord};
+use quanta_index_core::CoreError;
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
+use crate::auxiliary_authority::{HistoryDelta, RefChange};
 use crate::readiness::keys::AuthorityKey;
 use crate::readiness::serde_support::impl_struct_serde;
 
+fn history_ref_not_found(message: String) -> CoreError {
+    CoreError::Typed {
+        code: "HISTORY_REF_NOT_FOUND".to_string(),
+        message,
+    }
+}
+
+/// One generation's commits, refs, tags and diff hunks.
+///
+/// The record maps are private: every write goes through a method here,
+/// so the parent/target checks the channel ops need and the delta
+/// application the catalog needs are the only two ways a record lands.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "history authority tracks four independently materialized shard families"
 )]
 #[derive(Clone, Debug, Default)]
 pub struct HistoryAuthorityState {
-    pub(super) commits: OrdMap<CommitSha, CommitRecord>,
-    pub(super) refs: OrdMap<Box<str>, CommitSha>,
-    pub(super) tags: OrdMap<Box<str>, CommitSha>,
-    pub(super) diff_hunks: OrdMap<HistoryDiffKey, DiffHunkRecord>,
+    commits: OrdMap<CommitSha, CommitRecord>,
+    refs: OrdMap<Box<str>, CommitSha>,
+    tags: OrdMap<Box<str>, CommitSha>,
+    diff_hunks: OrdMap<HistoryDiffKey, DiffHunkRecord>,
     commits_materialized: bool,
     refs_materialized: bool,
     tags_materialized: bool,
@@ -48,20 +62,102 @@ pub(crate) struct HistoryStateMeta {
 }
 
 impl HistoryAuthorityState {
-    pub(super) fn note_commits_materialized(&mut self) {
+    /// Apply a validated delta: the transition already checked every
+    /// record against the state it was computed from, so the rows land
+    /// as they are and the meta is the delta's.
+    pub(crate) fn apply_delta(&mut self, delta: &HistoryDelta) {
+        for record in &delta.commits {
+            self.restore_commit(record.sha, record.clone());
+        }
+        for (changes, map) in [(&delta.refs, &mut self.refs), (&delta.tags, &mut self.tags)] {
+            for change in changes {
+                match change {
+                    RefChange::Upsert(name, sha) => {
+                        let _previous = map.insert(name.clone(), *sha);
+                    }
+                    RefChange::Delete(name) => {
+                        let _removed = map.remove(name.as_ref());
+                    }
+                }
+            }
+        }
+        for (key, record) in &delta.diff_hunks {
+            self.restore_diff_hunk(key.clone(), record.clone());
+        }
+        self.restore_meta(delta.meta);
+    }
+
+    /// Upsert one commit whose parents must already be known (the
+    /// channel-op path); marks commits materialized.
+    pub(crate) fn upsert_commit(&mut self, record: CommitRecord) -> Result<(), CoreError> {
         self.commits_materialized = true;
+        for parent in &record.parents {
+            if !self.commits.contains_key(parent) {
+                return Err(CoreError::Typed {
+                    code: "HISTORY_COMMIT_PARENT_UNKNOWN".to_string(),
+                    message: format!(
+                        "history ingest: parent {} missing before child {}",
+                        parent, record.sha
+                    ),
+                });
+            }
+        }
+        self.restore_commit(record.sha, record);
+        Ok(())
     }
 
-    pub(super) fn note_refs_materialized(&mut self) {
+    /// Point a ref at a known commit; marks refs materialized.
+    pub(crate) fn upsert_ref(&mut self, name: &str, sha: CommitSha) -> Result<(), CoreError> {
         self.refs_materialized = true;
+        if !self.commits.contains_key(&sha) {
+            return Err(history_ref_not_found(format!(
+                "history ingest: ref `{name}` points to unknown commit {sha}"
+            )));
+        }
+        self.restore_ref(name, sha);
+        Ok(())
     }
 
-    pub(super) fn note_tags_materialized(&mut self) {
+    /// Drop a ref (absent is fine); marks refs materialized.
+    pub(crate) fn delete_ref(&mut self, name: &str) {
+        self.refs_materialized = true;
+        let _removed = self.refs.remove(name);
+    }
+
+    /// Point a tag at a known commit; marks tags materialized.
+    pub(crate) fn upsert_tag(&mut self, name: &str, sha: CommitSha) -> Result<(), CoreError> {
         self.tags_materialized = true;
+        if !self.commits.contains_key(&sha) {
+            return Err(history_ref_not_found(format!(
+                "history ingest: tag `{name}` points to unknown commit {sha}"
+            )));
+        }
+        self.restore_tag(name, sha);
+        Ok(())
     }
 
-    pub(super) fn note_diff_hunks_materialized(&mut self) {
+    /// Drop a tag (absent is fine); marks tags materialized.
+    pub(crate) fn delete_tag(&mut self, name: &str) {
+        self.tags_materialized = true;
+        let _removed = self.tags.remove(name);
+    }
+
+    /// Upsert one diff hunk of a known commit; marks diff hunks
+    /// materialized.
+    pub(crate) fn upsert_diff_hunk(
+        &mut self,
+        key: HistoryDiffKey,
+        record: DiffHunkRecord,
+    ) -> Result<(), CoreError> {
         self.diff_hunks_materialized = true;
+        if !self.commits.contains_key(&key.commit_sha) {
+            return Err(history_ref_not_found(format!(
+                "history ingest: diff hunk for unknown commit {}",
+                key.commit_sha
+            )));
+        }
+        self.restore_diff_hunk(key, record);
+        Ok(())
     }
 
     /// The materialization flags.

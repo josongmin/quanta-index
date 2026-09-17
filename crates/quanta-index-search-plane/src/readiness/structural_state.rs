@@ -4,7 +4,7 @@
 //! retain superseded epoch snapshots at the cost of the deltas alone
 //! (QI-BB-020 W2); see `history_state`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use imbl::OrdMap;
@@ -15,6 +15,7 @@ use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
+use crate::auxiliary_authority::{StructuralChunksDelta, StructuralTreesDelta};
 use crate::readiness::keys::{AuthorityKey, TrackAuthorityKey};
 use crate::readiness::serde_support::impl_struct_serde;
 use crate::readiness::track_state::TrackAuthorityState;
@@ -24,15 +25,6 @@ pub(super) fn structural_parse_tree_decode_fail(reason: impl Into<String>) -> Co
         code: "STR_PARSE_TREE_DECODE_FAIL".to_string(),
         message: reason.into(),
     }
-}
-
-pub(super) fn verify_parse_tree_against_chunk(
-    state: &StructuralAuthorityState,
-    chunk_id: &ChunkId,
-    record: &ParseTreeRecord,
-    expected_scope_path: Option<&str>,
-) -> Result<(), CoreError> {
-    verify_parse_tree_against_chunk_map(&state.chunks, chunk_id, record, expected_scope_path)
 }
 
 pub(crate) fn verify_parse_tree_against_chunk_map(
@@ -67,11 +59,17 @@ pub(crate) fn verify_parse_tree_against_chunk_map(
     Ok(())
 }
 
+/// One generation's chunk universe and parse trees.
+///
+/// The record maps are private: a parse tree is written only after it
+/// was verified against the chunk it names, and scope-level replace or
+/// tombstone removes by path through the methods here; nothing else
+/// writes them.
 #[derive(Clone, Debug, Default)]
 pub struct StructuralAuthorityState {
-    pub(super) chunks: OrdMap<ChunkId, ChunkRecord>,
-    pub(super) parse_trees: OrdMap<ChunkId, ParseTreeRecord>,
-    pub(super) seal_requested: bool,
+    chunks: OrdMap<ChunkId, ChunkRecord>,
+    parse_trees: OrdMap<ChunkId, ParseTreeRecord>,
+    seal_requested: bool,
 }
 
 /// The part of a structural generation's state that is not a record.
@@ -91,6 +89,106 @@ impl StructuralAuthorityState {
 
     pub(crate) fn restore_parse_tree(&mut self, chunk_id: ChunkId, tree: ParseTreeRecord) {
         let _previous = self.parse_trees.insert(chunk_id, tree);
+    }
+
+    /// Apply a validated parse-tree delta: removals, then upserts, then
+    /// the seal request as the transition computed it.
+    pub(crate) fn apply_trees_delta(&mut self, delta: &StructuralTreesDelta) {
+        for chunk_id in &delta.removed {
+            self.remove_parse_tree(chunk_id);
+        }
+        for (chunk_id, record) in &delta.upserts {
+            self.restore_parse_tree(chunk_id.clone(), record.clone());
+        }
+        self.seal_requested = delta.seal_requested;
+    }
+
+    /// Apply a chunk-universe delta: clear, removals, then upserts.
+    pub(crate) fn apply_chunks_delta(&mut self, delta: &StructuralChunksDelta) {
+        if delta.clear {
+            self.clear_chunks();
+        }
+        for chunk_id in &delta.removed {
+            self.remove_chunk(chunk_id);
+        }
+        for chunk in &delta.upserts {
+            self.restore_chunk(chunk.chunk_id.clone(), chunk.clone());
+        }
+    }
+
+    /// Drop one chunk from the universe (absent is fine).
+    pub(crate) fn remove_chunk(&mut self, chunk_id: &ChunkId) {
+        let _removed = self.chunks.remove(chunk_id);
+    }
+
+    /// Empty the chunk universe.
+    pub(crate) fn clear_chunks(&mut self) {
+        self.chunks.clear();
+    }
+
+    /// Replace every chunk at `path` with `chunks`.
+    pub(crate) fn replace_scope_chunks(&mut self, path: &str, chunks: Vec<ChunkRecord>) {
+        self.tombstone_scope_chunks(path);
+        for chunk in chunks {
+            self.restore_chunk(chunk.chunk_id.clone(), chunk);
+        }
+    }
+
+    /// Drop every chunk at `path`.
+    pub(crate) fn tombstone_scope_chunks(&mut self, path: &str) {
+        for chunk_id in self.chunk_ids_at_path(path) {
+            self.remove_chunk(&chunk_id);
+        }
+    }
+
+    /// Write one parse tree after verifying it against the chunk it
+    /// names.
+    pub(crate) fn upsert_parse_tree(
+        &mut self,
+        chunk_id: ChunkId,
+        record: ParseTreeRecord,
+    ) -> Result<(), CoreError> {
+        verify_parse_tree_against_chunk_map(&self.chunks, &chunk_id, &record, None)?;
+        self.restore_parse_tree(chunk_id, record);
+        Ok(())
+    }
+
+    /// Drop one parse tree (absent is fine).
+    pub(crate) fn remove_parse_tree(&mut self, chunk_id: &ChunkId) {
+        let _removed = self.parse_trees.remove(chunk_id);
+    }
+
+    /// Replace every parse tree at `path` with `trees`, each verified
+    /// against its chunk and the scope path before anything is removed.
+    pub(crate) fn replace_scope_parse_trees(
+        &mut self,
+        path: &str,
+        trees: Vec<(ChunkId, ParseTreeRecord)>,
+    ) -> Result<(), CoreError> {
+        for (chunk_id, record) in &trees {
+            verify_parse_tree_against_chunk_map(&self.chunks, chunk_id, record, Some(path))?;
+        }
+        self.tombstone_scope_parse_trees(path);
+        for (chunk_id, record) in trees {
+            self.restore_parse_tree(chunk_id, record);
+        }
+        Ok(())
+    }
+
+    /// Drop every parse tree whose chunk sits at `path`.
+    pub(crate) fn tombstone_scope_parse_trees(&mut self, path: &str) {
+        for chunk_id in self.chunk_ids_at_path(path) {
+            self.remove_parse_tree(&chunk_id);
+        }
+    }
+
+    /// The chunk ids of one path in the chunk universe.
+    fn chunk_ids_at_path(&self, path: &str) -> BTreeSet<ChunkId> {
+        self.chunks
+            .iter()
+            .filter(|(_chunk_id, chunk)| chunk.repo_relative_path.as_str() == path)
+            .map(|(chunk_id, _chunk)| chunk_id.clone())
+            .collect()
     }
 
     #[must_use]

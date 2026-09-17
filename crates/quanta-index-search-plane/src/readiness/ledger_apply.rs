@@ -7,14 +7,18 @@
 //! [`Ledger::aux_advance`], which refuses any drift from the sequence;
 //! the in-memory batch paths and the channel ops (tests and fixtures)
 //! take the next epoch themselves.
+//!
+//! This module only sequences epochs and decodes op payloads. What a
+//! delta or an op does to a state is the state type's own method
+//! (`history_state`, `runtime_state`, `structural_state`), so the record
+//! maps have exactly one writer each.
 
-use std::collections::BTreeSet;
 use std::time::Instant;
 
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord, ParseTreeRecord};
 use quanta_index_contract::{
-    ChunkId, DirtyIngestBatch, HistoryIngestBatch, ManifestGeneration, RepoId, RevisionId,
+    DirtyIngestBatch, HistoryIngestBatch, ManifestGeneration, RepoId, RevisionId,
     RuntimeCatalogIngestBatch, SearchCorpusIngestBatch, SearchPlaneTrackKind, SearchScopeSurface,
     StructuralIngestBatch,
 };
@@ -25,9 +29,7 @@ use crate::auxiliary_authority;
 use crate::readiness::history_state::{HistoryAuthorityState, HistoryDiffKey};
 use crate::readiness::ledger::{AuxDomainState, Ledger};
 use crate::readiness::runtime_state::{DirtyDocState, RuntimeMetadataState};
-use crate::readiness::structural_state::{
-    StructuralAuthorityState, verify_parse_tree_against_chunk,
-};
+use crate::readiness::structural_state::StructuralAuthorityState;
 
 impl Ledger {
     /// Apply a search-corpus batch's chunk universe in memory, without
@@ -135,28 +137,7 @@ impl Ledger {
             delta.epoch,
             now,
             |state| {
-                for record in &delta.commits {
-                    let _previous = state.commits.insert(record.sha, record.clone());
-                }
-                for (changes, map) in [
-                    (&delta.refs, &mut state.refs),
-                    (&delta.tags, &mut state.tags),
-                ] {
-                    for change in changes {
-                        match change {
-                            auxiliary_authority::RefChange::Upsert(name, sha) => {
-                                let _previous = map.insert(name.clone(), *sha);
-                            }
-                            auxiliary_authority::RefChange::Delete(name) => {
-                                let _removed = map.remove(name.as_ref());
-                            }
-                        }
-                    }
-                }
-                for (key, record) in &delta.diff_hunks {
-                    let _previous = state.diff_hunks.insert(key.clone(), record.clone());
-                }
-                state.restore_meta(delta.meta);
+                state.apply_delta(delta);
                 Ok(())
             },
         )
@@ -176,12 +157,7 @@ impl Ledger {
             delta.epoch,
             now,
             |state| {
-                for (chunk_id, doc) in &delta.upserts {
-                    let _previous = state.dirty_docs.insert(chunk_id.clone(), doc.clone());
-                }
-                for chunk_id in &delta.deletes {
-                    let _removed = state.dirty_docs.remove(chunk_id);
-                }
+                state.apply_dirty_delta(delta);
                 Ok(())
             },
         )
@@ -201,12 +177,7 @@ impl Ledger {
             delta.epoch,
             now,
             |state| {
-                state.restore_meta(delta.meta.clone());
-                state.changed_docs = delta.changed_docs.clone();
-                state.doc_facets = delta.doc_facets.clone();
-                state.snapshots = delta.snapshots.clone();
-                state.affected_docs = delta.affected_docs.clone();
-                state.invalidated_by_docs = delta.invalidated_by_docs.clone();
+                state.apply_catalog_delta(delta);
                 Ok(())
             },
         )
@@ -227,13 +198,7 @@ impl Ledger {
             delta.epoch,
             now,
             |state| {
-                for chunk_id in &delta.removed {
-                    let _removed = state.parse_trees.remove(chunk_id);
-                }
-                for (chunk_id, record) in &delta.upserts {
-                    let _previous = state.parse_trees.insert(chunk_id.clone(), record.clone());
-                }
-                state.seal_requested = delta.seal_requested;
+                state.apply_trees_delta(delta);
                 Ok(())
             },
         )?;
@@ -260,15 +225,7 @@ impl Ledger {
             delta.epoch,
             now,
             |state| {
-                if delta.clear {
-                    state.chunks.clear();
-                }
-                for chunk_id in &delta.removed {
-                    let _removed = state.chunks.remove(chunk_id);
-                }
-                for chunk in &delta.upserts {
-                    let _previous = state.chunks.insert(chunk.chunk_id.clone(), chunk.clone());
-                }
+                state.apply_chunks_delta(delta);
                 Ok(())
             },
         )
@@ -305,7 +262,7 @@ impl Ledger {
                     payload.generation,
                     now,
                     |state| {
-                        let _previous = state.chunks.insert(payload.chunk_id.clone(), chunk);
+                        state.restore_chunk(payload.chunk_id.clone(), chunk);
                         Ok(())
                     },
                 )
@@ -317,7 +274,7 @@ impl Ledger {
                     payload.generation,
                     now,
                     |state| {
-                        let _removed = state.chunks.remove(&payload.chunk_id);
+                        state.remove_chunk(&payload.chunk_id);
                         Ok(())
                     },
                 ),
@@ -330,10 +287,10 @@ impl Ledger {
                     payload.generation,
                     now,
                     |state| {
-                        remove_chunks_at_path(state, scope.scope.repo_relative_path.as_str());
-                        for chunk in scope.chunks {
-                            let _previous = state.chunks.insert(chunk.chunk_id.clone(), chunk);
-                        }
+                        state.replace_scope_chunks(
+                            scope.scope.repo_relative_path.as_str(),
+                            scope.chunks,
+                        );
                         Ok(())
                     },
                 )
@@ -347,7 +304,7 @@ impl Ledger {
                     payload.generation,
                     now,
                     |state| {
-                        remove_chunks_at_path(state, scope.scope.repo_relative_path.as_str());
+                        state.tombstone_scope_chunks(scope.scope.repo_relative_path.as_str());
                         Ok(())
                     },
                 )
@@ -362,7 +319,7 @@ impl Ledger {
                     payload.generation,
                     now,
                     |state| {
-                        state.chunks.clear();
+                        state.clear_chunks();
                         Ok(())
                     },
                 )
@@ -374,22 +331,7 @@ impl Ledger {
                     &payload.revision_id,
                     payload.generation,
                     now,
-                    |state| {
-                        state.note_commits_materialized();
-                        for parent in &record.parents {
-                            if !state.commits.contains_key(parent) {
-                                return Err(CoreError::Typed {
-                                    code: "HISTORY_COMMIT_PARENT_UNKNOWN".to_string(),
-                                    message: format!(
-                                        "history ingest: parent {} missing before child {}",
-                                        parent, record.sha
-                                    ),
-                                });
-                            }
-                        }
-                        let _previous = state.commits.insert(record.sha, record);
-                        Ok(())
-                    },
+                    |state| state.upsert_commit(record),
                 )
             }
             LexicalChannelOp::UpsertRef(payload) => {
@@ -399,17 +341,7 @@ impl Ledger {
                     &payload.revision_id,
                     payload.generation,
                     now,
-                    |state| {
-                        state.note_refs_materialized();
-                        if !state.commits.contains_key(&sha) {
-                            return Err(history_ref_not_found(format!(
-                                "history ingest: ref `{}` points to unknown commit {}",
-                                payload.name, sha
-                            )));
-                        }
-                        let _previous = state.refs.insert(payload.name.clone(), sha);
-                        Ok(())
-                    },
+                    |state| state.upsert_ref(&payload.name, sha),
                 )
             }
             LexicalChannelOp::DeleteRef(payload) => self.advance_next::<HistoryAuthorityState>(
@@ -418,8 +350,7 @@ impl Ledger {
                 payload.generation,
                 now,
                 |state| {
-                    state.note_refs_materialized();
-                    let _removed = state.refs.remove(payload.name.as_ref());
+                    state.delete_ref(&payload.name);
                     Ok(())
                 },
             ),
@@ -430,17 +361,7 @@ impl Ledger {
                     &payload.revision_id,
                     payload.generation,
                     now,
-                    |state| {
-                        state.note_tags_materialized();
-                        if !state.commits.contains_key(&sha) {
-                            return Err(history_ref_not_found(format!(
-                                "history ingest: tag `{}` points to unknown commit {}",
-                                payload.name, sha
-                            )));
-                        }
-                        let _previous = state.tags.insert(payload.name.clone(), sha);
-                        Ok(())
-                    },
+                    |state| state.upsert_tag(&payload.name, sha),
                 )
             }
             LexicalChannelOp::DeleteTag(payload) => self.advance_next::<HistoryAuthorityState>(
@@ -449,8 +370,7 @@ impl Ledger {
                 payload.generation,
                 now,
                 |state| {
-                    state.note_tags_materialized();
-                    let _removed = state.tags.remove(payload.name.as_ref());
+                    state.delete_tag(&payload.name);
                     Ok(())
                 },
             ),
@@ -463,20 +383,13 @@ impl Ledger {
                     payload.generation,
                     now,
                     |state| {
-                        state.note_diff_hunks_materialized();
-                        if !state.commits.contains_key(&commit_sha) {
-                            return Err(history_ref_not_found(format!(
-                                "history ingest: diff hunk for unknown commit {commit_sha}"
-                            )));
-                        }
-                        let _previous = state.diff_hunks.insert(
+                        state.upsert_diff_hunk(
                             HistoryDiffKey {
                                 commit_sha,
                                 file_path: payload.file_path.clone(),
                             },
                             record,
-                        );
-                        Ok(())
+                        )
                     },
                 )
             }
@@ -486,7 +399,7 @@ impl Ledger {
                 payload.generation,
                 now,
                 |state| {
-                    let _previous = state.dirty_docs.insert(
+                    state.restore_dirty_doc(
                         payload.doc_id.clone(),
                         DirtyDocState {
                             applied_at_ms: payload.applied_at_ms,
@@ -502,7 +415,7 @@ impl Ledger {
                 payload.generation,
                 now,
                 |state| {
-                    let _removed = state.dirty_docs.remove(&payload.doc_id);
+                    state.evict_dirty_doc(&payload.doc_id);
                     Ok(())
                 },
             ),
@@ -513,11 +426,7 @@ impl Ledger {
                     &payload.revision_id,
                     payload.generation,
                     now,
-                    |state| {
-                        verify_parse_tree_against_chunk(state, &payload.chunk_id, &record, None)?;
-                        let _previous = state.parse_trees.insert(payload.chunk_id.clone(), record);
-                        Ok(())
-                    },
+                    |state| state.upsert_parse_tree(payload.chunk_id.clone(), record),
                 )
             }
             LexicalChannelOp::DeleteParseTree(payload) => self
@@ -527,7 +436,7 @@ impl Ledger {
                     payload.generation,
                     now,
                     |state| {
-                        let _removed = state.parse_trees.remove(&payload.chunk_id);
+                        state.remove_parse_tree(&payload.chunk_id);
                         Ok(())
                     },
                 ),
@@ -540,21 +449,14 @@ impl Ledger {
                     payload.generation,
                     now,
                     |state| {
-                        let path = scope.scope.repo_relative_path.as_str();
-                        for tree in &scope.trees {
-                            verify_parse_tree_against_chunk(
-                                state,
-                                &tree.chunk_id,
-                                &tree.record,
-                                Some(path),
-                            )?;
-                        }
-                        remove_parse_trees_at_path(state, path);
-                        for tree in scope.trees {
-                            let _previous =
-                                state.parse_trees.insert(tree.chunk_id.clone(), tree.record);
-                        }
-                        Ok(())
+                        state.replace_scope_parse_trees(
+                            scope.scope.repo_relative_path.as_str(),
+                            scope
+                                .trees
+                                .into_iter()
+                                .map(|tree| (tree.chunk_id, tree.record))
+                                .collect(),
+                        )
                     },
                 )
             }
@@ -567,7 +469,7 @@ impl Ledger {
                     payload.generation,
                     now,
                     |state| {
-                        remove_parse_trees_at_path(state, scope.scope.repo_relative_path.as_str());
+                        state.tombstone_scope_parse_trees(scope.scope.repo_relative_path.as_str());
                         Ok(())
                     },
                 )
@@ -577,35 +479,6 @@ impl Ledger {
             | LexicalChannelOp::DeleteSymbol(_)
             | LexicalChannelOp::Seal(_) => Ok(()),
         }
-    }
-}
-
-fn history_ref_not_found(message: String) -> CoreError {
-    CoreError::Typed {
-        code: "HISTORY_REF_NOT_FOUND".to_string(),
-        message,
-    }
-}
-
-/// The chunk ids of one path in the chunk universe.
-fn chunk_ids_at_path(state: &StructuralAuthorityState, path: &str) -> BTreeSet<ChunkId> {
-    state
-        .chunks
-        .iter()
-        .filter(|(_chunk_id, chunk)| chunk.repo_relative_path.as_str() == path)
-        .map(|(chunk_id, _chunk)| chunk_id.clone())
-        .collect()
-}
-
-fn remove_chunks_at_path(state: &mut StructuralAuthorityState, path: &str) {
-    for chunk_id in chunk_ids_at_path(state, path) {
-        let _removed = state.chunks.remove(&chunk_id);
-    }
-}
-
-fn remove_parse_trees_at_path(state: &mut StructuralAuthorityState, path: &str) {
-    for chunk_id in chunk_ids_at_path(state, path) {
-        let _removed = state.parse_trees.remove(&chunk_id);
     }
 }
 
