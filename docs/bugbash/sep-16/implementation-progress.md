@@ -311,7 +311,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W0 | **passed** | G0-L/G0-S/G0-C passed, G0-R baseline pinned(cooperative-only). §3 참조. timing 재측정만 `blocked: contended-host` |
 | W1 | in_progress | **QI-BB-011 Unicode normalizer(§3.33)** + **QI-BB-013 search-plane 3 monolith 분할(§3.32)** 완료. 남은 것: snake/camel sub-token 확장(LEX-00, 제품 결정), route×predicate `RequiredDomains`(plan §5.6) |
 | W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + **quarantine control surface(§3.31: live inventory + as-listed discard, control IPC/SDK/CLI)** + QI-BB-032 idempotency catalog(§3.16) + QI-BB-020 auxiliary authority rows(§3.19) 완료. 남은 것: aux read epoch/visibility interval(§3.19 한계) |
-| W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + QI-BB-027 ANN sealed contract(§3.23) + **QI-BB-016 lexical writer envelope(§3.26)** 완료. 남은 것: sharded sidecar 포맷(O(delta) write), seal마다 ANN 전체 재구축(O(N), §3.23 한계), scope 단위 streamed embed→append(§3.18 한계) |
+| W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + QI-BB-027 ANN sealed contract(§3.23) + **QI-BB-016 lexical writer envelope(§3.26)** 완료. + **QI-BB-027 보완 ANN append per delta seal(§3.35)** 완료. 남은 것: sharded sidecar 포맷(O(delta) write, 진행 중), scope 단위 streamed embed→append(§3.18 한계) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) + **QI-BB-025 보완 #4 runtime/structural window(§3.30)** 완료. 남은 것: runtime/structural keyset cursor, streaming projection collector |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. QI-BB-014 UDS/state-root private hardening(§3.27) 완료. QI-BB-015 metrics 집계 + scrape(§3.28) 완료. **phase 2(§3.29): budget이 lexical native collect/scan/regex verify/predicate scope 안에서 관측** 완료. 남은 것: shared mode(group/ACL + peer credential), semantic lane 내부 관측 |
 | W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + QI-BB-018 true hybrid(§3.22) + QI-BB-022 explain = exact presence + lexical score trace(§3.24) + **QI-BB-008 RepoMap bounded query + durable store(§3.25)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), history relevance order(Tantivy history index, §3.20 한계), judged corpus recall/NDCG gate(§3.22 한계), hybrid 후보의 per-lane contribution(§3.24 한계) |
@@ -1800,6 +1800,43 @@ docs_derived,docs_retired}_total`. test는 `…_derives_only_the_changed_scope`�
 delta = incremental 1·derived 1·retired 1, 독립 full build = rebuild 1·derived 1,502를 **count로** 단언하고 timing은 evidence line에만.
 `e2e_metrics_scrape`가 daemon scrape에서 counter 4개(2 chunk 적재: rebuild 1 + incremental 1, derived 2, retired 0)를 단언.
 
+## 3.35 QI-BB-027 보완 — delta seal은 상속한 ANN index에 row를 붙이고, 정책이 재학습을 정한다 (구현 완료)
+
+**진단 확정**: §3.23의 `seal_vector_index_v1`은 매 seal에서 상속 index를 전부 drop하고 `IvfHnswSq`를 처음부터 학습했다 —
+dataset은 hard link로 상속(§3.4.2)하면서 index만 O(N)이었다(plan §6.2 "매 seal마다 full ANN rebuild를 강제하지 않는다").
+
+**구현** (`crates/quanta-index-semantic/src/{vector_index.rs, manifest.rs, build.rs}`, core `domains/semantic`):
+
+- **정책**(이름 있는 상수): `ANN_APPEND_RATIO_MAX_PER_MILLE = 250`(학습 row의 25%까지 append), `ANN_APPEND_ROWS_MAX = 2^18`, `ANN_APPEND_SEGMENTS_MAX = 8`
+  (append마다 segment 하나 = query당 graph walk 하나 추가, effort 불변을 지키려면 segment 상한이 필요 — agent 추가). delta seal은 상속 seal이
+  lineage를 갖고 recipe(name/distance/partitions/sample_rate/max_iter/m/ef_construction)와 `ANN_LIBRARY_VERSION`이 정책과 같고 예산 안일 때만
+  **append**: `Table::optimize(OptimizeAction::Index(OptimizeOptions::append().index_names([name])))` — base index file은 그대로, 새 segment만.
+  `index_stats`를 전후로 읽어 `indexed+unindexed == row_count` → `indexed == row_count, unindexed == 0, segments == 기대`를 확인, 아니면 typed 거부.
+  삭제만 있는 delta는 아무것도 호출하지 않고 `deleted_rows`만 전진. 그 외(예산 초과·recipe/version 불일치·lineage 없음)는 오늘의 drop+train.
+  base manifest는 delta seal의 **필수 입력**(없거나 못 읽으면 typed error, retrain으로 덮지 않음); base가 exact seal인데 dataset에 index가 있으면 거부.
+- **manifest**: format 8→9. `AnnIndexSealV1.lineage: Option<AnnIndexLineageV1 { trained_at_generation, trained_rows, appended_rows,
+  deleted_rows, append_ratio_max_per_mille, append_rows_max, append_segments_max }>`. decode 거부: ratio 초과, rows cap 초과, segments > 1+cap,
+  `trained+appended−deleted ≠ indexed_rows`, `trained_at > generation`, `trained_at == generation`인데 appended/deleted ≠ 0, trained_rows 0,
+  overflow, v9에 lineage 없음, v8에 lineage 있음. v8은 이 crate의 기존 V3/V5/V6/V7 legacy decoder 계보 그대로 `SemanticManifestV8` →
+  `lineage: None`(`Unrecorded`, 조작 없음); v8 base 위 delta는 재학습.
+- **core/trace**: `DenseIndexV1::Approximate { effort, lineage }`, `DenseIndexLineageV1::{Recorded(DenseIndexTrainingV1), Unrecorded}`;
+  explanation trace `…; ann.trained_at=g1; ann.appended=32/288; ann.deleted=0` (v8 이하는 `ann.lineage=unrecorded`). query effort 불변.
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| e2e(daemon): g1 288 row train → g2 +32 append. **비용 oracle**: g2 `_indices/` 신규 inode bytes 10,011 vs base 43,334(23%), base index 파일 2개 inode 공유; trace `ann.trained_at=g1; ann.appended=32/288`; g2 전용 row가 cosine 1로 1위 | `searchd-runtime/tests/e2e_ann_incremental_seal.rs` (test-authority 등록) — `QI-BB-027-APPEND-EVIDENCE base_index_bytes=43334 delta_new_index_bytes=10011 appended_rows=32 base_rows=288 shared_index_inodes=2` |
+| adapter: base train / 예산 내 append(lineage 정확, coverage 전부) / 예산 초과 retrain / recipe 불일치 retrain / v8 base retrain / hard-link 비용 oracle(300→+60: 11,315 vs 36,614 = 31%) | `semantic/tests/vector_index_contract.rs` 8 + `vector_index.rs` unit 13 |
+| **recall oracle**: 1,024+200 row·dim 32·query 50, in-test brute force 대비 `appended_recall_at_k=0.9980`, `fresh_recall_at_k=1.0000` (gate: appended ≥ fresh − 0.02) | 같은 파일 — `QI-BB-027-APPEND-RECALL …` |
+| tombstone된 row는 append 후 결과에 없음; manifest decode 거부 전부 | `vector_index.rs`/`manifest.rs` unit |
+| 회귀·rail | semantic 117, core semantic_policy 11, workspace clippy 0, fmt/semgrep/hexagonal/module/error-shape/derive/cargo-toml/test-authority green, `rust-cargo-modules-update`(core +2 type). main rebase(split+normalizer 위) 후 workspace check + semantic lib 56 + vector_index_contract 8 green |
+
+**정직한 한계**: (a) append된 segment의 HNSW graph는 lance 내부 builder의 `HnswBuildParams::default()`(m=20은 정책과 같으나
+**ef_construction=150 vs 정책 300**)로 만들어지며 lancedb 0.30 optimize surface에서 설정 불가 — `library_version` pin(bump 시 retrain),
+append 예산, in-test recall oracle로 완화하고 doc-comment에 기록. (b) multi-partition(≥2·2^20 row) append는 fixture 밖 — partition 수가
+바뀌면 retrain을 강제. (c) 정책 값은 doc-comment의 공학적 판단이지 production corpus tier에서 측정한 값이 아님(M4 이후).
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -1853,4 +1890,5 @@ delta = incremental 1·derived 1·retired 1, 독립 full build = rebuild 1·deri
 | 2026-09-18 | (QI-BB-026 #4 tree) | `cargow --lane test-fast-lane test -p {contract,sdk,searchctl,search-plane,repomap,core,searchd-harness,searchd}` (896/896) + lexical boot_inventory 2 + semantic lib 47 + `searchd-runtime --test {e2e_boot_quarantine 3,e2e_metrics_scrape 2,e2e_perf_chaos 43}` + cli_smoke 20 + ipc admission 3 + workspace clippy + hexagonal/semgrep/module-discipline/error-shape/digest/derive/cargo-toml/test-authority/fmt + `just rust-fuzz-smoke`(4 target 완주) + `just rust-public-api-update`·`rust-cargo-modules-update`(additive) | 전부 green |
 | 2026-09-18 | 68468e3 | `just rust-profile verify-rust` (nohup) | RED — `lexical::generation_delta_base_carryforward::delta_text_authority_update_is_not_slower_than_a_full_rebuild`: wall-clock 비교(delta 10,491ms vs full 8,632ms)가 load 130 host에서 뒤집힘. 026 변경과 무관한 timing assertion → §3.34에서 작업량 oracle로 교체(48759d8) |
 | 2026-09-18 | worktree 013 (ab864a5→68468e3 rebase) | agent: workspace clippy(0) + search-plane 247+38 (rebase 후 250+38) + `end_to_end` 35·`e2e_perf_chaos` 43·`e2e_top_k_truth_table` 4 + hexagonal/semgrep/module-discipline/error-shape/public-api/cargo-modules | 전부 green, 동작 변화 0 (§3.32) |
+| 2026-09-18 | worktree D (68468e3→960be81 rebase) | agent: semantic 117 + core semantic_policy 11 + `e2e_ann_incremental_seal` 1 + `just rust-clippy`(0) + fmt/semgrep/hexagonal/module/error-shape/derive/cargo-toml/test-authority + cargo-modules-update; rebase 후 workspace check + semantic lib 56 + vector_index_contract 8 | 전부 green (§3.35) |
 | 2026-09-18 | worktree 011 (7a5ce5e→034c4fd rebase) | agent: workspace clippy(0) + lexical 15 target·lq-norm 88·search-plane 285 + e2e text_route_hellgate 8·perf_chaos 43·dsl_scenarios 8·lexical_full_fidelity 1·dual_syntax_parity 4·full_corpus 4 + harness 77 + hexagonal/semgrep/module/error-shape/cargo-toml/derive/test-authority/deny; rebase 후 lexical carryforward 6 + goldens 8 | 전부 green (§3.33) |
