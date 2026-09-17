@@ -1727,3 +1727,4 @@ builder 변경은 없다.
 | 2026-09-17 | 33a5b25 | `just rust-profile verify-rust` ×2 | **INVALID** ×2 — 세션 종료(signal 15)로 각각 1,795 / 1,974 passed, 0 failed 지점에서 중단. 테스트 실패 아님, 결과는 폐기 |
 | 2026-09-17 | 33a5b25 | `just rust-profile verify-rust` (nohup, 세션 분리) | **GREEN** — exit 0, 2,141 passed / 0 failed (W5 phase 2 lexical 내부 budget 관측 포함) |
 | 2026-09-18 | (QI-BB-025 #4 tree) | `cargow --lane test-fast-lane test -p {contract,sdk,searchctl,search-plane,searchd-harness}` (717/717) + `searchd-runtime --test {e2e_top_k_truth_table,e2e_perf_chaos,e2e_structural_hellgate}` (51/51) + workspace clippy + `just rust-fuzz-smoke` + hexagonal/semgrep/module-discipline/error-shape/cargo-modules + `just rust-public-api-update`(contract: 두 response의 `window` field 추가, additive) | 전부 green |
+| 2026-09-18 | ed2e447 | `just rust-profile verify-rust` (nohup) | **GREEN** — exit 0, 2,142 passed / 0 failed (QI-BB-025 #4 runtime/structural window 포함) |
