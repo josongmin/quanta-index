@@ -78,6 +78,11 @@ pub trait IpcDispatcher<Request, Response>: Send + Sync {
 
 pub trait RequestEnvelope<Request>: serde::de::DeserializeOwned + Send + Sync + 'static {
     fn into_parts(self) -> (u64, Request);
+
+    /// The repository this request is scoped to, for the per-repository
+    /// in-flight cap (QI-BB-002); `None` for a request that names no
+    /// repository, which only the global slot bound applies to.
+    fn repo_scope(request: &Request) -> Option<String>;
 }
 
 pub trait ResponseEnvelope<Response>: serde::Serialize + Send + Sync + 'static {
@@ -92,10 +97,29 @@ pub trait ResponseEnvelope<Response>: serde::Serialize + Send + Sync + 'static {
         Self: Sized;
 
     /// The envelope to send when no dispatch slot came free within the
-    /// server's queue wait (QI-BB-002). `None` closes the connection.
-    fn overloaded(request_id: u64, waited: Duration, slots: usize) -> Option<Self>
+    /// server's queue wait, or the request's repository held its cap for
+    /// that long (QI-BB-002). `None` closes the connection.
+    fn overloaded(request_id: u64, refusal: &SlotRefusal) -> Option<Self>
     where
         Self: Sized;
+}
+
+/// The repository a pinned or selected generation names.
+fn pinned_repo_scope(
+    pin: Option<&quanta_index_contract::GenerationPin>,
+    selector: Option<&quanta_index_contract::GenerationSelector>,
+) -> Option<String> {
+    if let Some(pin) = pin {
+        return Some(pin.repo_id.as_str().to_string());
+    }
+    match selector? {
+        quanta_index_contract::GenerationSelector::Active { repo_id, .. } => {
+            Some(repo_id.as_str().to_string())
+        }
+        quanta_index_contract::GenerationSelector::Pinned(pin) => {
+            Some(pin.repo_id.as_str().to_string())
+        }
+    }
 }
 
 impl RequestEnvelope<quanta_index_contract::SearchPlaneQueryIpcRequest>
@@ -103,6 +127,61 @@ impl RequestEnvelope<quanta_index_contract::SearchPlaneQueryIpcRequest>
 {
     fn into_parts(self) -> (u64, quanta_index_contract::SearchPlaneQueryIpcRequest) {
         (self.request_id, self.payload)
+    }
+
+    /// Every query route names its repository through a generation pin or
+    /// selector (the repo-map route names it directly); a request that
+    /// names none is refused by its route and is admitted unscoped here.
+    fn repo_scope(request: &quanta_index_contract::SearchPlaneQueryIpcRequest) -> Option<String> {
+        use quanta_index_contract::SearchPlaneQueryIpcRequest as Request;
+        match request {
+            Request::Text(text) => {
+                pinned_repo_scope(text.generation.as_ref(), text.generation_selector.as_ref())
+            }
+            Request::Symbol(symbol) => pinned_repo_scope(
+                symbol.generation.as_ref(),
+                symbol.generation_selector.as_ref(),
+            ),
+            Request::Semantic(semantic) => pinned_repo_scope(
+                semantic.generation.as_ref(),
+                semantic.generation_selector.as_ref(),
+            ),
+            Request::Hybrid(hybrid) => pinned_repo_scope(
+                hybrid
+                    .generation
+                    .as_ref()
+                    .or(hybrid.text_query.generation.as_ref()),
+                hybrid
+                    .generation_selector
+                    .as_ref()
+                    .or(hybrid.text_query.generation_selector.as_ref()),
+            ),
+            Request::HybridSeed(seed) => pinned_repo_scope(
+                seed.generation
+                    .as_ref()
+                    .or(seed.text_query.generation.as_ref()),
+                seed.generation_selector
+                    .as_ref()
+                    .or(seed.text_query.generation_selector.as_ref()),
+            ),
+            Request::History(history) => pinned_repo_scope(
+                history.text_query.generation.as_ref(),
+                history.text_query.generation_selector.as_ref(),
+            ),
+            Request::RuntimeMetadata(runtime) => pinned_repo_scope(
+                runtime.text_query.generation.as_ref(),
+                runtime.text_query.generation_selector.as_ref(),
+            ),
+            Request::Structural(structural) => pinned_repo_scope(
+                structural.text_query.generation.as_ref(),
+                structural.text_query.generation_selector.as_ref(),
+            ),
+            Request::RepoMapQuery(repo_map) => Some(repo_map.repo_id.as_str().to_string()),
+            Request::Explain(explain) => Some(explain.generation.repo_id.as_str().to_string()),
+            Request::ClusterMembershipRead(read) => {
+                Some(read.generation.repo_id.as_str().to_string())
+            }
+        }
     }
 }
 
@@ -131,12 +210,10 @@ impl ResponseEnvelope<quanta_index_contract::SearchPlaneQueryIpcResponse>
         })
     }
 
-    fn overloaded(request_id: u64, waited: Duration, slots: usize) -> Option<Self> {
+    fn overloaded(request_id: u64, refusal: &SlotRefusal) -> Option<Self> {
         Some(Self {
             request_id,
-            payload: quanta_index_contract::SearchPlaneQueryIpcResponse::Error(
-                quanta_index_contract::SearchPlaneIpcError::overloaded(waited, slots),
-            ),
+            payload: quanta_index_contract::SearchPlaneQueryIpcResponse::Error(refusal.ipc_error()),
         })
     }
 }
@@ -146,6 +223,14 @@ impl RequestEnvelope<quanta_index_contract::SearchPlaneControlIpcRequest>
 {
     fn into_parts(self) -> (u64, quanta_index_contract::SearchPlaneControlIpcRequest) {
         (self.request_id, self.payload)
+    }
+
+    /// Control runs one dispatch at a time by policy; a per-repository
+    /// scope would never bind, so control requests are admitted unscoped.
+    fn repo_scope(
+        _request: &quanta_index_contract::SearchPlaneControlIpcRequest,
+    ) -> Option<String> {
+        None
     }
 }
 
@@ -174,11 +259,11 @@ impl ResponseEnvelope<quanta_index_contract::SearchPlaneControlIpcResponse>
         })
     }
 
-    fn overloaded(request_id: u64, waited: Duration, slots: usize) -> Option<Self> {
+    fn overloaded(request_id: u64, refusal: &SlotRefusal) -> Option<Self> {
         Some(Self {
             request_id,
             payload: quanta_index_contract::SearchPlaneControlIpcResponse::Error(
-                quanta_index_contract::SearchPlaneIpcError::overloaded(waited, slots),
+                refusal.ipc_error(),
             ),
         })
     }
@@ -189,6 +274,12 @@ impl RequestEnvelope<quanta_index_contract::SearchPlaneIngestIpcRequest>
 {
     fn into_parts(self) -> (u64, quanta_index_contract::SearchPlaneIngestIpcRequest) {
         (self.request_id, self.payload)
+    }
+
+    /// Ingest runs one dispatch at a time by policy; see the control
+    /// envelope.
+    fn repo_scope(_request: &quanta_index_contract::SearchPlaneIngestIpcRequest) -> Option<String> {
+        None
     }
 }
 
@@ -217,11 +308,11 @@ impl ResponseEnvelope<quanta_index_contract::SearchPlaneIngestIpcResponse>
         })
     }
 
-    fn overloaded(request_id: u64, waited: Duration, slots: usize) -> Option<Self> {
+    fn overloaded(request_id: u64, refusal: &SlotRefusal) -> Option<Self> {
         Some(Self {
             request_id,
             payload: quanta_index_contract::SearchPlaneIngestIpcResponse::Error(
-                quanta_index_contract::SearchPlaneIpcError::overloaded(waited, slots),
+                refusal.ipc_error(),
             ),
         })
     }
@@ -339,18 +430,20 @@ fn ensure_group_membership(path: &Path, access: &SocketAccessPolicy) -> Result<(
 /// socket, the group; every missing component is created and pinned
 /// individually so the umask cannot strip a traverse bit. A pre-existing
 /// directory is judged by what it resolves to (`/tmp` is a symlink on some
-/// systems): it passes when it is a directory that either belongs to this
-/// user with no group/other write bit, or carries the sticky bit (a shared
+/// systems; see the policy module doc): it passes when it is a directory
+/// that either belongs to this user with no mode bit beyond the policy's
+/// — so a directory a permissive umask left at `0755` is refused under a
+/// private policy, not merely one others can write — or carries the
+/// sticky bit (a shared
 /// temporary directory, where others cannot unlink or rename this user's
-/// socket). Anything else is refused: a permissive directory lets another
-/// local user replace the socket under the daemon.
+/// socket). Anything else is refused typed.
 fn ensure_socket_directory(
     parent: &Path,
     owner: u32,
     access: &SocketAccessPolicy,
 ) -> Result<(), IpcError> {
     match std::fs::metadata(parent) {
-        Ok(metadata) => verify_existing_socket_directory(parent, owner, &metadata),
+        Ok(metadata) => verify_existing_socket_directory(parent, owner, access, &metadata),
         Err(error) if error.kind() == ErrorKind::NotFound => {
             create_socket_directory_chain(parent, owner, access)
         }
@@ -361,22 +454,32 @@ fn ensure_socket_directory(
 fn verify_existing_socket_directory(
     parent: &Path,
     owner: u32,
+    access: &SocketAccessPolicy,
     metadata: &std::fs::Metadata,
 ) -> Result<(), IpcError> {
     if !metadata.is_dir() {
         return Err(insecure(parent, "socket directory is not a directory"));
     }
     let mode = metadata.mode() & MODE_BITS;
-    let private = metadata.uid() == owner && mode & OTHERS_WRITE_BITS == 0;
+    let expected = access.directory_mode();
+    // No bit outside the policy's mode: `0755` is wider than a private
+    // `0700`; `0700` under a group policy is narrower, which the
+    // reachability check refuses with the traversal it lacks.
+    let owned_within_policy = metadata.uid() == owner && mode & !expected == 0;
     let sticky_shared = mode & STICKY_BIT != 0;
-    if !(private || sticky_shared) {
-        return Err(insecure(
-            parent,
+    if !(owned_within_policy || sticky_shared) {
+        let reason = if mode & OTHERS_WRITE_BITS != 0 {
             format!(
-                "socket directory is writable by others without the sticky bit (mode {mode:04o}, uid {}, this process runs as {owner})",
+                "socket directory is writable by others without the sticky bit (mode {mode:04o}, uid {}, this process runs as {owner}); it must be {expected:04o} and owned by this user, or sticky",
                 metadata.uid()
-            ),
-        ));
+            )
+        } else {
+            format!(
+                "socket directory is wider than the policy (mode {mode:04o}, uid {}, this process runs as {owner}); it must be {expected:04o} and owned by this user (chmod {expected:o}), or sticky",
+                metadata.uid()
+            )
+        };
+        return Err(insecure(parent, reason));
     }
     Ok(())
 }
@@ -567,19 +670,47 @@ impl UdsServer {
     }
 
     /// Bind a listener at `path` under `policy` and `access`, counting into
-    /// `counters` the caller keeps a handle to, so they can be registered
+    /// `counters`.
+    ///
+    /// The caller keeps a handle to the counters so they can be registered
     /// with a scrape before any connection exists (QI-BB-015). Peers are
-    /// identified by the kernel's own report.
+    /// identified by the kernel's own report. The socket is alone in its
+    /// directory: the directory is held to this socket's own policy.
     pub fn bind_observed(
         path: &Path,
         policy: ServerAdmissionPolicy,
         access: SocketAccessPolicy,
         counters: Arc<IpcServerCounters>,
     ) -> Result<Self, IpcError> {
+        let directory_access = access.clone();
         Self::bind_with_peer_source(
             path,
             policy,
             access,
+            &directory_access,
+            counters,
+            Arc::new(KernelPeerCredentials),
+        )
+    }
+
+    /// [`Self::bind_observed`] for a socket that shares its directory with
+    /// sockets of other policies.
+    ///
+    /// The directory is created and verified under `directory_access`,
+    /// the widest of them ([`SocketAccessPolicy::widest`]), while this
+    /// socket's own file and peer check follow `access`.
+    pub fn bind_observed_in(
+        path: &Path,
+        policy: ServerAdmissionPolicy,
+        access: SocketAccessPolicy,
+        directory_access: &SocketAccessPolicy,
+        counters: Arc<IpcServerCounters>,
+    ) -> Result<Self, IpcError> {
+        Self::bind_with_peer_source(
+            path,
+            policy,
+            access,
+            directory_access,
             counters,
             Arc::new(KernelPeerCredentials),
         )
@@ -591,11 +722,11 @@ impl UdsServer {
     /// Before anything is bound, a shared policy is checked against this
     /// process: it must be a member of the group it names, and every
     /// directory on the socket's path must be traversable by the peers the
-    /// policy admits. The directory the socket lives in is created with the
-    /// policy's mode (and group) when absent and verified when present: a
-    /// real directory, owned by this process's user, that others cannot
-    /// write to (or a sticky shared directory, where others cannot unlink
-    /// what they do not own). A socket already at the path is probed: one
+    /// policy admits. The directory the socket lives in is created with
+    /// `directory_access`'s mode (and group) when absent and verified when
+    /// present: a real directory, owned by this process's user, no wider
+    /// than that mode (or a sticky shared directory, where others cannot
+    /// unlink what they do not own). A socket already at the path is probed: one
     /// that answers belongs to a live listener and is left alone under
     /// `SOCKET_IN_USE`; one that refuses connections is stale and reclaimed,
     /// but only if it is still the same inode after the probe, so a listener
@@ -608,16 +739,18 @@ impl UdsServer {
         path: &Path,
         policy: ServerAdmissionPolicy,
         access: SocketAccessPolicy,
+        directory_access: &SocketAccessPolicy,
         counters: Arc<IpcServerCounters>,
         peer_source: Arc<dyn PeerCredentialsSource>,
     ) -> Result<Self, IpcError> {
         let owner = rustix::process::geteuid().as_raw();
         ensure_group_membership(path, &access)?;
+        ensure_group_membership(path, directory_access)?;
         if let Some(parent) = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
         {
-            ensure_socket_directory(parent, owner, &access)?;
+            ensure_socket_directory(parent, owner, directory_access)?;
             ensure_socket_path_reachable(parent, &access)?;
         }
         reclaim_socket_path(path, owner)?;
@@ -717,7 +850,7 @@ impl UdsServer {
         ResponseEnvelopeT: ResponseEnvelope<Response>,
         D: IpcDispatcher<Request, Response> + ?Sized + 'static,
     {
-        let slots = Arc::new(DispatchSlots::new(self.policy.dispatch_slots()));
+        let slots = Arc::new(DispatchSlots::for_policy(self.policy));
         let max_connections =
             u64::try_from(self.policy.max_connections()).map_or(u64::MAX, |cap| cap);
         let mut connection_threads: Vec<std::thread::JoinHandle<ConnectionCloseReason>> =
@@ -979,31 +1112,41 @@ where
             counters.request_refused_shutting_down();
             return ConnectionCloseReason::ShuttingDown;
         }
-        // Admission: ingress happened above, now the dispatch slot. A full
-        // queue is a typed answer, not an unbounded wait.
-        let permit = match slots.acquire(policy.queue_wait()) {
+        // Admission: ingress happened above, now the dispatch slot, global
+        // and per repository. A full queue is a typed answer, not an
+        // unbounded wait.
+        let repo_scope = RequestEnvelopeT::repo_scope(&request_payload);
+        let permit = match slots.acquire(policy.queue_wait(), repo_scope.as_deref()) {
             Ok(permit) => permit,
-            Err(SlotRefusal::QueueWaitExceeded { waited, slots }) => {
-                counters.request_overloaded();
-                let Some(refusal) = ResponseEnvelopeT::overloaded(request_id, waited, slots) else {
-                    return ConnectionCloseReason::Overloaded { waited };
+            Err(refusal) => {
+                counters.request_overloaded(refusal.is_repo_scoped());
+                let Some(response) = ResponseEnvelopeT::overloaded(request_id, &refusal) else {
+                    return ConnectionCloseReason::Overloaded {
+                        waited: refusal.waited(),
+                    };
                 };
-                match write_response(&mut stream, &refusal) {
+                match write_response(&mut stream, &response, counters) {
                     Ok(()) => continue,
                     Err(reason) => return reason,
                 }
             }
         };
+        counters.dispatch_started(permit.waited());
         let budget = RequestBudgetV1::for_duration(policy.dispatch_budget());
         // A dispatch without a live watch would run with a cancellation that
         // can never fire; refusing the connection is the honest alternative.
         let watch = match PeerWatch::arm(&stream, budget.cancel_handle()) {
             Ok(watch) => watch,
-            Err(err) => return ConnectionCloseReason::PeerWatchFailed(err.to_string()),
+            Err(err) => {
+                drop(permit);
+                counters.dispatch_finished();
+                return ConnectionCloseReason::PeerWatchFailed(err.to_string());
+            }
         };
         let response_payload = dispatcher.dispatch(request_payload, &budget);
         let peer_hung_up = watch.disarm();
         drop(permit);
+        counters.dispatch_finished();
         counters.request_dispatched(peer_hung_up);
         if peer_hung_up {
             // Nothing to write to; the dispatcher already saw the
@@ -1036,33 +1179,43 @@ where
         if let Err(err) = stream.write_all(&frame) {
             return ConnectionCloseReason::ResponseWriteFailed(err.to_string());
         }
+        counters.response_written(frame_bytes(&frame));
         // continue: next request on same conn
     }
+}
+
+/// A frame's length as the byte count the scrape reports.
+fn frame_bytes(frame: &[u8]) -> u64 {
+    u64::try_from(frame.len()).map_or(u64::MAX, |bytes| bytes)
 }
 
 fn write_response<ResponseEnvelopeT: serde::Serialize>(
     stream: &mut UnixStream,
     response: &ResponseEnvelopeT,
+    counters: &IpcServerCounters,
 ) -> Result<(), ConnectionCloseReason> {
     let frame = encode_response(response).map_err(ConnectionCloseReason::ResponseEncodeFailed)?;
     stream
         .write_all(&frame)
-        .map_err(|err| ConnectionCloseReason::ResponseWriteFailed(err.to_string()))
+        .map_err(|err| ConnectionCloseReason::ResponseWriteFailed(err.to_string()))?;
+    counters.response_written(frame_bytes(&frame));
+    Ok(())
 }
 
 /// Watches a connection for a hang-up while its request is dispatching.
 ///
 /// The dispatch runs synchronously on the connection thread, so a second
 /// thread polls the socket. Readable with data means the peer pipelined
-/// its next request; that is not a hang-up and the watch simply stops
-/// looking. `POLLHUP`, `POLLERR` or an end-of-file mean the peer at least
-/// shut its write side — which is *not* yet a hang-up: a peer that sent
-/// its request and half-closed is still waiting for the response. The
-/// watch confirms a hang-up by asking whether the peer can still receive
-/// (a zero-byte send, which fails with `EPIPE` only once the peer's read
-/// side is gone), and after a half-close it keeps asking at the poll
-/// interval instead of polling, since the end-of-file stays readable. The
-/// watch ends when the dispatch returns.
+/// its next request; that is not a hang-up, but the peer may still leave
+/// before its answer, so the watch keeps asking whether it can receive
+/// instead of polling (the pipelined bytes keep the socket readable).
+/// `POLLHUP`, `POLLERR` or an end-of-file mean the peer at least shut its
+/// write side — which is *not* yet a hang-up: a peer that sent its request
+/// and half-closed is still waiting for the response. The watch confirms a
+/// hang-up by asking whether the peer can still receive (a zero-byte send,
+/// which fails with `EPIPE` only once the peer's read side is gone), and
+/// after a half-close or a pipelined frame it keeps asking at the poll
+/// interval. The watch ends when the dispatch returns.
 struct PeerWatch {
     stop: Arc<AtomicBool>,
     hung_up: Arc<AtomicBool>,
@@ -1085,12 +1238,15 @@ impl PeerWatch {
             std::thread::Builder::new()
                 .name("uds-peer-watch".to_string())
                 .spawn(move || {
-                    let mut half_closed = false;
+                    // Once the socket stays readable (a half-close or a
+                    // pipelined frame), polling would spin; the send probe
+                    // alone tells a waiting peer from a departed one.
+                    let mut probe_only = false;
                     while !stop.load(Ordering::Acquire) {
-                        let state = if half_closed {
+                        let state = if probe_only {
                             std::thread::sleep(Self::POLL_INTERVAL);
                             if peer_can_receive(&watched) {
-                                PeerState::HalfClosed
+                                PeerState::Alive
                             } else {
                                 PeerState::HungUp
                             }
@@ -1099,8 +1255,7 @@ impl PeerWatch {
                         };
                         match state {
                             PeerState::Alive => {}
-                            PeerState::HalfClosed => half_closed = true,
-                            PeerState::Pipelined => return,
+                            PeerState::HalfClosed | PeerState::Pipelined => probe_only = true,
                             PeerState::HungUp => {
                                 hung_up.store(true, Ordering::Release);
                                 cancel.cancel();
@@ -1442,7 +1597,7 @@ mod tests {
     use serde::ser::SerializeStruct;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    use crate::admission::{DispatchSlots, ServerAdmissionPolicy};
+    use crate::admission::{DispatchSlots, ServerAdmissionPolicy, SlotRefusal};
     use crate::codec::MAX_FRAME_BODY_BYTES;
 
     type TestRes = Result<(), String>;
@@ -1452,7 +1607,7 @@ mod tests {
     }
 
     fn test_slots() -> DispatchSlots {
-        DispatchSlots::new(ServerAdmissionPolicy::DEFAULT.dispatch_slots())
+        DispatchSlots::for_policy(ServerAdmissionPolicy::DEFAULT)
     }
 
     fn test_policy() -> ServerAdmissionPolicy {
@@ -1472,7 +1627,7 @@ mod tests {
 
     #[test]
     fn client_read_timeout_closes_silent_peer_with_typed_error() -> TestRes {
-        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let dir = private_tempdir()?;
         let socket = dir.path().join("silent-peer.sock");
         let listener = UnixListener::bind(&socket).map_err(|error| error.to_string())?;
         let (release_tx, release_rx) = mpsc::channel();
@@ -1587,7 +1742,7 @@ mod tests {
         }
         drop(socket);
 
-        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let dir = private_tempdir()?;
         let socket_path = dir.path().join("descriptor-state.sock");
         let _listener = UnixListener::bind(&socket_path).map_err(|error| error.to_string())?;
         let stream = connect_before_deadline(&socket_path, Instant::now() + Duration::from_secs(1))
@@ -1602,6 +1757,15 @@ mod tests {
     #[test]
     fn interrupted_connect_enters_completion_wait_contract() {
         assert!(connect_requires_completion_wait(Errno::INTR));
+    }
+
+    /// A tempdir at exactly the private directory mode: `tempfile` creates
+    /// under the umask, and the server refuses a wider existing directory.
+    fn private_tempdir() -> Result<tempfile::TempDir, String> {
+        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| error.to_string())?;
+        Ok(dir)
     }
 
     fn typed_bind_error(result: Result<UdsServer, IpcError>) -> Result<IpcError, String> {
@@ -1621,7 +1785,7 @@ mod tests {
     // QI-BB-014: a socket path with a live listener is never taken.
     #[test]
     fn a_live_listener_keeps_its_path_and_a_second_bind_is_refused() -> TestRes {
-        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let dir = private_tempdir()?;
         let socket_path = dir.path().join("live.sock");
         let first = UdsServer::bind(&socket_path).map_err(|error| error.to_string())?;
         let identity =
@@ -1645,11 +1809,14 @@ mod tests {
 
     #[test]
     fn a_stale_socket_is_reclaimed_and_the_bound_socket_is_private() -> TestRes {
-        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let dir = private_tempdir()?;
         let socket_dir = dir.path().join("plane");
         let socket_path = socket_dir.join("stale.sock");
-        // A socket file nobody listens on any more.
+        // A socket file nobody listens on any more, in a directory at the
+        // private policy's exact mode.
         std::fs::create_dir_all(&socket_dir).map_err(|error| error.to_string())?;
+        std::fs::set_permissions(&socket_dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| error.to_string())?;
         let stale = UnixListener::bind(&socket_path).map_err(|error| error.to_string())?;
         drop(stale);
         if !std::fs::symlink_metadata(&socket_path)
@@ -1674,7 +1841,7 @@ mod tests {
 
     #[test]
     fn a_directory_the_server_creates_is_private() -> TestRes {
-        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let dir = private_tempdir()?;
         let socket_dir = dir.path().join("created").join("deeper");
         let socket_path = socket_dir.join("private.sock");
         let server = UdsServer::bind(&socket_path).map_err(|error| error.to_string())?;
@@ -1690,7 +1857,7 @@ mod tests {
 
     #[test]
     fn a_socket_directory_others_can_write_is_refused_unless_sticky() -> TestRes {
-        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let dir = private_tempdir()?;
         let permissive = dir.path().join("permissive");
         std::fs::create_dir(&permissive).map_err(|error| error.to_string())?;
         std::fs::set_permissions(&permissive, std::fs::Permissions::from_mode(0o777))
@@ -1720,6 +1887,24 @@ mod tests {
                 "expected SOCKET_PATH_INSECURE for a group-writable directory, got {refused}"
             ));
         }
+        // So is one merely wider than the private policy: a directory a
+        // permissive umask left at 0755 is not 0700 (QI-BB-014).
+        let readable = dir.path().join("readable");
+        std::fs::create_dir(&readable).map_err(|error| error.to_string())?;
+        std::fs::set_permissions(&readable, std::fs::Permissions::from_mode(0o755))
+            .map_err(|error| error.to_string())?;
+        let refused = typed_bind_error(UdsServer::bind(&readable.join("readable.sock")))?;
+        if !matches!(refused, IpcError::SocketPathInsecure { ref reason, .. } if reason.contains("wider than the policy") && reason.contains("0700"))
+        {
+            return Err(format!(
+                "expected SOCKET_PATH_INSECURE for a 0755 directory under a private policy, got {refused}"
+            ));
+        }
+        std::fs::set_permissions(&readable, std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| error.to_string())?;
+        let server =
+            UdsServer::bind(&readable.join("readable.sock")).map_err(|error| error.to_string())?;
+        drop(server);
         Ok(())
     }
 
@@ -1727,9 +1912,11 @@ mod tests {
     // macOS): a private target binds, a permissive target is refused.
     #[test]
     fn a_symlinked_socket_directory_is_judged_by_its_target() -> TestRes {
-        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let dir = private_tempdir()?;
         let private = dir.path().join("private");
         std::fs::create_dir(&private).map_err(|error| error.to_string())?;
+        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| error.to_string())?;
         let private_link = dir.path().join("private-link");
         std::os::unix::fs::symlink(&private, &private_link).map_err(|error| error.to_string())?;
         let server = UdsServer::bind(&private_link.join("via-link.sock"))
@@ -1753,7 +1940,7 @@ mod tests {
 
     #[test]
     fn a_regular_file_at_the_socket_path_is_refused_and_left_alone() -> TestRes {
-        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let dir = private_tempdir()?;
         let socket_path = dir.path().join("not-a-socket.sock");
         std::fs::write(&socket_path, b"keep me").map_err(|error| error.to_string())?;
         let refused = typed_bind_error(UdsServer::bind(&socket_path))?;
@@ -1771,7 +1958,7 @@ mod tests {
 
     #[test]
     fn dropping_superseded_server_does_not_unlink_replacement_socket() -> TestRes {
-        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let dir = private_tempdir()?;
         let socket_path = dir.path().join("replacement.sock");
         let superseded = UdsServer::bind(&socket_path).map_err(|error| error.to_string())?;
         std::fs::remove_file(&socket_path).map_err(|error| error.to_string())?;
@@ -1788,7 +1975,7 @@ mod tests {
 
     #[test]
     fn client_read_timeout_closes_partial_response_frame_with_typed_error() -> TestRes {
-        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let dir = private_tempdir()?;
         let socket = dir.path().join("partial-frame.sock");
         let listener = UnixListener::bind(&socket).map_err(|error| error.to_string())?;
         let (release_tx, release_rx) = mpsc::channel();
@@ -1837,7 +2024,7 @@ mod tests {
 
     #[test]
     fn client_write_timeout_closes_peer_that_never_reads_with_typed_error() -> TestRes {
-        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let dir = private_tempdir()?;
         let socket = dir.path().join("write-backpressure.sock");
         let listener = UnixListener::bind(&socket).map_err(|error| error.to_string())?;
         let (release_tx, release_rx) = mpsc::channel();
@@ -1963,6 +2150,10 @@ mod tests {
         fn into_parts(self) -> (u64, u64) {
             (self.request_id, self.payload)
         }
+
+        fn repo_scope(_request: &u64) -> Option<String> {
+            None
+        }
     }
 
     #[derive(Debug, PartialEq)]
@@ -2057,7 +2248,7 @@ mod tests {
             None
         }
 
-        fn overloaded(_request_id: u64, _waited: Duration, _slots: usize) -> Option<Self> {
+        fn overloaded(_request_id: u64, _refusal: &SlotRefusal) -> Option<Self> {
             None
         }
     }
@@ -2078,7 +2269,7 @@ mod tests {
 
     #[test]
     fn absolute_client_deadline_rejects_response_completed_after_decode() -> TestRes {
-        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let dir = private_tempdir()?;
         let socket_path = dir.path().join("late-decode.sock");
         let listener = UnixListener::bind(&socket_path).map_err(|error| error.to_string())?;
         let server = thread::spawn(move || -> TestRes {
@@ -2155,7 +2346,7 @@ mod tests {
             None
         }
 
-        fn overloaded(_request_id: u64, _waited: Duration, _slots: usize) -> Option<Self> {
+        fn overloaded(_request_id: u64, _refusal: &SlotRefusal) -> Option<Self> {
             None
         }
     }
@@ -2223,7 +2414,7 @@ mod tests {
             })
         }
 
-        fn overloaded(_request_id: u64, _waited: Duration, _slots: usize) -> Option<Self> {
+        fn overloaded(_request_id: u64, _refusal: &SlotRefusal) -> Option<Self> {
             None
         }
     }

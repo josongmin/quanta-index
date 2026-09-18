@@ -3,6 +3,7 @@ use quanta_index_contract::{EmbeddingNormalization, PUBLIC_TOP_K_MAX};
 
 use crate::domains::semantic::outbound::TextEmbeddingProvider;
 use crate::error::{CoreError, validate_internal_fetch_size, validate_query_top_k};
+use crate::request_budget::RequestBudgetV1;
 
 /// How far from 1.0 a unit vector's L2 norm may be before it is not one.
 ///
@@ -181,9 +182,14 @@ impl<P: TextEmbeddingProvider> L2UnitEmbeddingProvider<P> {
     }
 }
 
-impl<P: TextEmbeddingProvider> TextEmbeddingProvider for L2UnitEmbeddingProvider<P> {
-    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
-        let mut vectors = self.inner.embed_batch(texts)?;
+impl<P: TextEmbeddingProvider> L2UnitEmbeddingProvider<P> {
+    /// Validate the raw batch and normalize every vector in place: the one
+    /// normalization both the budgeted and the plain batch go through.
+    fn normalize_batch(
+        &self,
+        texts: &[&str],
+        mut vectors: Vec<Vec<f32>>,
+    ) -> Result<Vec<Vec<f32>>, CoreError> {
         if vectors.len() != texts.len() {
             return Err(CoreError::Storage(format!(
                 "semantic: provider {} returned {} vectors for {} texts",
@@ -207,6 +213,22 @@ impl<P: TextEmbeddingProvider> TextEmbeddingProvider for L2UnitEmbeddingProvider
             )?;
         }
         Ok(vectors)
+    }
+}
+
+impl<P: TextEmbeddingProvider> TextEmbeddingProvider for L2UnitEmbeddingProvider<P> {
+    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+        let vectors = self.inner.embed_batch(texts)?;
+        self.normalize_batch(texts, vectors)
+    }
+
+    fn embed_batch_within(
+        &self,
+        texts: &[&str],
+        budget: &RequestBudgetV1,
+    ) -> Result<Vec<Vec<f32>>, CoreError> {
+        let vectors = self.inner.embed_batch_within(texts, budget)?;
+        self.normalize_batch(texts, vectors)
     }
 
     fn model_id(&self) -> &str {

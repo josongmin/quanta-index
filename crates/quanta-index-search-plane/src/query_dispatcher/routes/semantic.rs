@@ -39,10 +39,11 @@ impl SearchPlaneDispatcher {
         query_text: &str,
         sem_searcher: &dyn SemanticSearcher,
         plane: &str,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<f32>, CoreError> {
         let query_vector = self
             .query_embedder
-            .embed_query(query_text)
+            .embed_query(query_text, budget)
             .map_err(|err| prefix_semantic_query_error(plane, err))?;
         ensure_query_model_matches_index_v1(
             self.query_embedder.model_id(),
@@ -124,8 +125,12 @@ impl SearchPlaneDispatcher {
         let scope_candidate_ids = scope.as_ref().map(|scope| &scope.candidate_ids);
         let searcher = view.semantic()?;
         budget.checkpoint("semantic:embed")?;
-        let query_vector =
-            self.embed_and_gate_query(request.query_text.as_str(), searcher.as_ref(), "semantic")?;
+        let query_vector = self.embed_and_gate_query(
+            request.query_text.as_str(),
+            searcher.as_ref(),
+            "semantic",
+            budget,
+        )?;
         let probe_top_k = probe_top_k_v1(request.top_k)?;
         budget.checkpoint("semantic:search")?;
         let mut results = if let Some(scope_ids) = scope_candidate_ids {

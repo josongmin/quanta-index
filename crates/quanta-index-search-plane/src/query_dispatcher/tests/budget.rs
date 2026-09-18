@@ -102,20 +102,33 @@ fn every_route_refuses_an_interrupted_budget_at_entry_without_opening() -> TestR
             );
         }
     }
-    let interrupted = obs_sink
-        .snapshot()
-        .into_iter()
-        .filter(|sample| sample.name.as_ref() == "lq_typed_error_interrupted_total")
-        .count();
-    if interrupted != 8 {
-        return Err(format!("expected 8 interrupted-error samples, got {interrupted}").into());
-    }
-    if obs_sink
-        .snapshot()
+    let samples = obs_sink.snapshot();
+    let cancelled = samples
         .iter()
-        .any(|sample| sample.name.as_ref() == "lq_typed_error_other_total")
-    {
-        return Err("an interruption must not be counted as `other`".into());
+        .filter(|sample| sample.name.as_ref() == "lq_typed_error_cancelled_total")
+        .count();
+    if cancelled != 8 {
+        return Err(format!("expected 8 cancelled-error samples, got {cancelled}").into());
+    }
+    // A cancellation is never a deadline (QI-BB-002): the two counters
+    // are distinct, globally and per route.
+    let per_route_cancelled = samples
+        .iter()
+        .filter(|sample| {
+            sample.name.ends_with("_cancelled_total") && sample.name.starts_with("lq_route_")
+        })
+        .count();
+    if per_route_cancelled != 8 {
+        return Err(
+            format!("expected 8 per-route cancelled samples, got {per_route_cancelled}").into(),
+        );
+    }
+    if samples.iter().any(|sample| {
+        sample.name.as_ref() == "lq_typed_error_other_total"
+            || sample.name.as_ref() == "lq_typed_error_deadline_exceeded_total"
+            || sample.name.ends_with("_deadline_exceeded_total")
+    }) {
+        return Err("a cancellation must not be counted as `other` or as a deadline".into());
     }
     Ok(())
 }
@@ -214,13 +227,12 @@ fn the_request_budget_reaches_the_dense_lane_on_every_dense_route() -> TestResul
         let interrupted = obs_sink
             .snapshot()
             .into_iter()
-            .filter(|sample| sample.name.as_ref() == "lq_typed_error_interrupted_total")
+            .filter(|sample| sample.name.as_ref() == "lq_typed_error_cancelled_total")
             .count();
         if interrupted != 1 {
-            return Err(format!(
-                "{route}: expected one interrupted-error sample, got {interrupted}"
-            )
-            .into());
+            return Err(
+                format!("{route}: expected one cancelled-error sample, got {interrupted}").into(),
+            );
         }
     }
     Ok(())

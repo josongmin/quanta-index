@@ -30,17 +30,19 @@ use quanta_index_core::{
     AUX_EPOCH_EXPIRED_CODE, AUX_EPOCH_UNKNOWN_CODE, AuxiliaryAuthorityCatalogPort, CoreError,
     FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
     HistoryTextIndexPort, IdempotencyCatalogPort, IncompleteGenerationDiscardPort,
-    L2UnitEmbeddingProvider, LexicalIndexOpenPort, MetricSourcePort,
+    L2UnitEmbeddingProvider, LexicalIndexOpenPort, MetricSourcePort, ProcessMemoryProbePort,
     QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
     RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapOpenReportV1,
     RepoMapQuarantinePort, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
-    SealedGenerationReclaimPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
-    SearchCorpusIngestPort, SemanticIndexOpenPort, SemanticIngestPort,
+    RequestBudgetV1, SealedGenerationReclaimPort, SealedGenerationScanPort,
+    SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticIndexOpenPort, SemanticIngestPort,
     SemanticScopeStreamBuildPort, StructuralError, StructuralMatchBinding,
-    StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider,
+    StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider, TrackDiskUsagePort,
+    WriterIdleSweepPort,
 };
 use quanta_index_embed::{
-    CachingEmbeddingProvider, EmbeddingCacheIdentityV1, FileEmbeddingCache, OpenAiEmbeddingProvider,
+    CachingEmbeddingProvider, EmbeddingCacheIdentityV1, FileEmbeddingCache,
+    OpenAiEmbedTelemetrySource, OpenAiEmbeddingProvider,
 };
 use quanta_index_ipc::{IpcDispatcher, IpcServerCounters, ServerAdmissionPolicy};
 use quanta_index_lq_structural::{
@@ -69,6 +71,7 @@ use crate::app::config::{SearchdConfig, SemanticEmbedderProfile};
 use crate::app::ipc_dispatcher::{
     SearchPlaneControlIpcAdapter, SearchPlaneIngestIpcAdapter, SearchPlaneQueryIpcAdapter,
 };
+use crate::app::maintenance::{MaintenanceMetricSource, MaintenanceParts, MaintenanceTimer};
 use crate::app::semantic_boot;
 use crate::app::server::{
     SearchPlaneControlServer, SearchPlaneIngestServer, SearchPlaneQueryServer,
@@ -121,6 +124,16 @@ pub struct SearchdRuntimeParts {
     /// Adapters that keep their own accounting, for the metrics scrape
     /// (QI-BB-015); the composition root adds its own sources to these.
     pub adapter_metric_sources: Vec<Arc<dyn MetricSourcePort>>,
+    /// The lexical writer cache's idle sweep, run by the maintenance timer
+    /// (QI-BB-016).
+    pub writer_idle_sweep: Arc<dyn WriterIdleSweepPort>,
+    /// Each track's own byte walker, for the generation disk gauges the
+    /// maintenance timer refreshes (QI-BB-015).
+    pub lexical_disk_usage: Arc<dyn TrackDiskUsagePort>,
+    pub semantic_disk_usage: Arc<dyn TrackDiskUsagePort>,
+    /// Where the process reads its resident memory (QI-BB-016): the
+    /// kernel in production, a script in a test.
+    pub memory_probe: Arc<dyn ProcessMemoryProbePort>,
 }
 
 /// Exclusive process-lifetime ownership of one daemon state root.
@@ -135,10 +148,20 @@ pub struct StateRootLease {
 }
 
 impl StateRootLease {
+    /// Take the root under [`StateRootAccessV1::Private`].
     pub fn acquire(state_root: &Path) -> Result<Self, CoreError> {
+        Self::acquire_with_access(state_root, StateRootAccessV1::Private)
+    }
+
+    /// Take the root, refusing typed (`STATE_ROOT_INSECURE`) one wider than
+    /// `access` allows; a created root is `0700` whatever the access.
+    pub fn acquire_with_access(
+        state_root: &Path,
+        access: StateRootAccessV1,
+    ) -> Result<Self, CoreError> {
         ensure_durable_state_root_v1(state_root)?;
         let state_root_identity_v1 = canonical_state_root_identity_v1(state_root)?;
-        ensure_private_state_root_v1(&state_root_identity_v1)?;
+        ensure_private_state_root_v1(&state_root_identity_v1, access)?;
         let path = state_root_identity_v1.join(".searchd-state-root.lock");
         let file = open_state_root_lock_nofollow_v1(&path).map_err(|error| {
             CoreError::Storage(format!(
@@ -232,15 +255,69 @@ fn canonical_state_root_identity_v1(state_root: &Path) -> Result<PathBuf, CoreEr
 #[cfg(unix)]
 const STATE_ROOT_DIRECTORY_MODE: u32 = 0o700;
 
-/// Refuse a state root another local user could write into (QI-BB-014).
+/// How wide the state root may be (QI-BB-014).
+///
+/// Private: exactly `0700` — the daemon's index files, catalogs and, by
+/// default, its sockets live under the root, and every wider mode is
+/// refused typed, not just a writable one. Shared: the operator opened at
+/// least one socket to other users, and the default socket directory sits
+/// under the root, so the peers need to traverse it; the root may then
+/// carry group/other traverse bits (`0710`, `0711`) but still no read or
+/// write bit for them. The root is judged as the path resolves (a symlink
+/// to a private directory is that directory); the socket directory's own
+/// policy handles the socket parent.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StateRootAccessV1 {
+    Private,
+    SharedTraversal,
+}
+
+impl StateRootAccessV1 {
+    /// Traversal is shared when any socket admits other users.
+    #[must_use]
+    pub fn for_sockets(policies: &crate::app::socket_access::SocketAccessPolicies) -> Self {
+        if crate::app::socket_access::SocketRole::ALL
+            .iter()
+            .any(|role| policies.for_role(*role).admits_others())
+        {
+            Self::SharedTraversal
+        } else {
+            Self::Private
+        }
+    }
+
+    #[cfg(unix)]
+    const fn admits_mode(self, mode: u32) -> bool {
+        match self {
+            Self::Private => mode == STATE_ROOT_DIRECTORY_MODE,
+            // Owner rwx, group/other at most x.
+            Self::SharedTraversal => mode & 0o7700 == 0o700 && mode & 0o066 == 0,
+        }
+    }
+
+    #[cfg(unix)]
+    const fn expectation(self) -> &'static str {
+        match self {
+            Self::Private => "exactly 0700 (chmod 700)",
+            Self::SharedTraversal => {
+                "0700 with at most the group/other traverse bits, since a socket is shared (chmod 711 or 710)"
+            }
+        }
+    }
+}
+
+/// Refuse a state root wider than its policy (QI-BB-014).
 ///
 /// A directory this daemon created is `0700`. A pre-existing one must be
-/// owned by the user the daemon runs as and carry no group or other write
-/// bit: index files, catalogs and sockets live under it, and a writable
-/// root lets another local user replace any of them under the daemon. A
-/// root others can read is the operator's choice and is not refused.
+/// owned by the user the daemon runs as and be no wider than
+/// [`StateRootAccessV1`] allows: index files, catalogs and sockets live
+/// under it, and a root others can read or write lets another local user
+/// read or replace any of them under the daemon.
 #[cfg(unix)]
-fn ensure_private_state_root_v1(state_root: &Path) -> Result<(), CoreError> {
+fn ensure_private_state_root_v1(
+    state_root: &Path,
+    access: StateRootAccessV1,
+) -> Result<(), CoreError> {
     use std::os::unix::fs::MetadataExt as _;
     let metadata = fs::metadata(state_root).map_err(|error| {
         CoreError::Storage(format!(
@@ -250,13 +327,14 @@ fn ensure_private_state_root_v1(state_root: &Path) -> Result<(), CoreError> {
     })?;
     let owner = rustix::process::geteuid().as_raw();
     let mode = metadata.mode() & 0o7777;
-    if metadata.uid() != owner || mode & 0o022 != 0 {
+    if metadata.uid() != owner || !access.admits_mode(mode) {
         return Err(CoreError::Typed {
             code: "STATE_ROOT_INSECURE".to_string(),
             message: format!(
-                "searchd state root {} is uid {} mode {mode:04o}; it must belong to uid {owner} and carry no group/other write bit (chmod go-w)",
+                "searchd state root {} is uid {} mode {mode:04o}; it must belong to uid {owner} and be {}",
                 state_root.display(),
-                metadata.uid()
+                metadata.uid(),
+                access.expectation()
             ),
         });
     }
@@ -264,7 +342,10 @@ fn ensure_private_state_root_v1(state_root: &Path) -> Result<(), CoreError> {
 }
 
 #[cfg(not(unix))]
-fn ensure_private_state_root_v1(_state_root: &Path) -> Result<(), CoreError> {
+fn ensure_private_state_root_v1(
+    _state_root: &Path,
+    _access: StateRootAccessV1,
+) -> Result<(), CoreError> {
     Ok(())
 }
 
@@ -345,7 +426,11 @@ fn ensure_durable_state_root_with_v1(
 struct ProviderUnavailableQueryTextEmbedder;
 
 impl QueryTextEmbedderPort for ProviderUnavailableQueryTextEmbedder {
-    fn embed_query(&self, _query_text: &str) -> Result<Vec<f32>, quanta_index_core::CoreError> {
+    fn embed_query(
+        &self,
+        _query_text: &str,
+        _budget: &RequestBudgetV1,
+    ) -> Result<Vec<f32>, quanta_index_core::CoreError> {
         Err(quanta_index_core::CoreError::Typed {
             code: LexicalErrorCode::SemProviderUnavailable
                 .as_code_str()
@@ -374,15 +459,19 @@ impl QueryObsSink for NoopQueryObsSink {
 
 /// Adapts the batch-capable [`TextEmbeddingProvider`] to the query side.
 ///
-/// [`QueryTextEmbedderPort`] embeds one text at a time; routing it through the
-/// same provider instance the corpus path uses means the two cannot diverge on
-/// model identity.
+/// [`QueryTextEmbedderPort`] embeds one text at a time under the request's
+/// budget; routing it through the same provider instance the corpus path
+/// uses means the two cannot diverge on model identity.
 struct QueryEmbedderAdapter(Arc<dyn TextEmbeddingProvider + Send + Sync>);
 
 impl QueryTextEmbedderPort for QueryEmbedderAdapter {
-    fn embed_query(&self, query_text: &str) -> Result<Vec<f32>, CoreError> {
+    fn embed_query(
+        &self,
+        query_text: &str,
+        budget: &RequestBudgetV1,
+    ) -> Result<Vec<f32>, CoreError> {
         self.0
-            .embed_batch(&[query_text])?
+            .embed_batch_within(&[query_text], budget)?
             .into_iter()
             .next()
             .ok_or_else(|| {
@@ -447,7 +536,10 @@ fn build_semantic_embedders(
             // Raw provider output is unit-normalized by the shared wrapper
             // before either the cache or a path sees it (QI-BB-031).
             let normalized = L2UnitEmbeddingProvider::new(openai)?;
-            let mut metric_sources: Vec<Arc<dyn MetricSourcePort>> = Vec::new();
+            // The provider's retry/transport/HTTP failure counters reach the
+            // scrape as `embed_provider_…` (QI-BB-009 #5, QI-BB-015).
+            let mut metric_sources: Vec<Arc<dyn MetricSourcePort>> =
+                vec![Arc::new(OpenAiEmbedTelemetrySource)];
             let provider: Arc<dyn TextEmbeddingProvider + Send + Sync> = if tuning.cache_enabled {
                 // Persistent content-hash cache under the identity's own
                 // namespace (model, revision, dimension, policy — QI-BB-028)
@@ -455,14 +547,16 @@ fn build_semantic_embedders(
                 // unchanged chunks and a revision rotation never reuses the
                 // previous revision's vectors.
                 let identity = EmbeddingCacheIdentityV1::of(&normalized);
-                let cache = FileEmbeddingCache::new(
+                let cache = Arc::new(FileEmbeddingCache::new(
                     &state_root.join("embed-cache"),
                     &identity,
                     tuning.cache_retention,
-                )?;
+                )?);
+                let open_source: Arc<dyn MetricSourcePort> = cache.clone();
+                metric_sources.push(open_source);
                 let caching = Arc::new(CachingEmbeddingProvider::new(
                     Box::new(normalized),
-                    Box::new(cache),
+                    Box::new(SharedFileEmbeddingCache(cache)),
                 ));
                 let cache_source: Arc<dyn MetricSourcePort> = caching.clone();
                 metric_sources.push(cache_source);
@@ -486,6 +580,28 @@ fn build_semantic_embedders(
                 metric_sources: Vec::new(),
             })
         }
+    }
+}
+
+/// The file store behind an `Arc`, so the scrape can read its open report
+/// while the caching provider owns the store's traffic.
+struct SharedFileEmbeddingCache(Arc<FileEmbeddingCache>);
+
+impl quanta_index_embed::EmbeddingCache for SharedFileEmbeddingCache {
+    fn get(&self, key: &quanta_index_embed::EmbeddingCacheKey) -> Option<Vec<f32>> {
+        self.0.get(key)
+    }
+
+    fn put(&self, key: &quanta_index_embed::EmbeddingCacheKey, vector: &[f32]) {
+        self.0.put(key, vector);
+    }
+
+    fn evict(&self, key: &quanta_index_embed::EmbeddingCacheKey) {
+        self.0.evict(key);
+    }
+
+    fn stats(&self) -> quanta_index_embed::EmbeddingCacheStats {
+        self.0.stats()
     }
 }
 
@@ -893,6 +1009,17 @@ pub struct SearchdRuntime {
     pub semantic_boot: semantic_boot::SemanticBootReport,
     /// What boot inventoried, quarantined and proved (QI-BB-026).
     pub boot_inventory: BootInventoryReportV1,
+    /// The one process memory envelope this runtime was validated under
+    /// (QI-BB-016).
+    pub process_memory_envelope: quanta_index_core::ProcessMemoryEnvelopeV1,
+    /// What boot wants the operator to read, one line each: the
+    /// development-embedder warning (QI-BB-007) and the writer gate's
+    /// ceiling or absence (QI-BB-016). The daemon entry prints them; an
+    /// in-process harness keeps them as data.
+    pub boot_notices: Vec<String>,
+    /// The maintenance timer (QI-BB-016, QI-BB-015); stops when the
+    /// runtime drops, after the servers have joined.
+    _maintenance: MaintenanceTimer,
     _search_corpus_lifecycle: Arc<SearchCorpusLifecycleOwner>,
     // Rust drops fields in declaration order. Keep the state-root lease last
     // so every adapter, server, and authority handle is gone before ownership
@@ -936,10 +1063,41 @@ impl SearchdRuntime {
             auxiliary_catalog,
             history_text_index,
             adapter_metric_sources,
+            writer_idle_sweep,
+            lexical_disk_usage,
+            semantic_disk_usage,
+            memory_probe,
         } = parts;
         state_root_lease
             .require_state_root_v1(config.state_root())
             .map_err(anyhow::Error::from)?;
+        // The one envelope (QI-BB-016): every resident byte policy of this
+        // config, summed and refused typed over the ceiling, before any
+        // adapter holds a byte of it.
+        let process_memory_envelope = config.process_memory_envelope()?;
+        let profile = config.semantic_embedder_profile();
+        let mut boot_notices: Vec<String> = Vec::new();
+        if profile.is_dev() {
+            // The development label (QI-BB-007): the boot log names the
+            // profile and the scrape reports it, so no deployment serves
+            // token overlap as semantics unknowingly.
+            boot_notices.push(format!(
+                "WARNING: semantic embedder profile `{}` is a development/test embedder (hash slots, no learned semantics); name `openai` for a learned provider",
+                profile.selector()
+            ));
+        }
+        boot_notices.push(process_memory_envelope.rss_ceiling.map_or_else(
+            || {
+                "lexical writer gate disabled: no QUANTA_INDEX_PROCESS_RSS_CEILING_BYTES configured"
+                    .to_string()
+            },
+            |ceiling| {
+                format!(
+                    "lexical writer gate: resident-memory ceiling {ceiling} bytes ({})",
+                    crate::app::process_memory::KernelResidentMemoryProbe::semantics()
+                )
+            },
+        ));
         search_corpus_lifecycle
             .require_state_root_v1(config.state_root())
             .map_err(anyhow::Error::from)?;
@@ -1025,6 +1183,7 @@ impl SearchdRuntime {
             auxiliary_rows_restored,
             repo_map: repo_map_open_report,
             socket_access: config.socket_access_policies().clone(),
+            semantic_profile_is_dev: profile.is_dev(),
         };
         let auxiliary_parts = AuxiliaryMaterializerParts {
             catalog: Arc::clone(&auxiliary_catalog),
@@ -1115,6 +1274,23 @@ impl SearchdRuntime {
         metric_sources.push(semantic_ingest_source);
         let boot_source: Arc<dyn MetricSourcePort> = Arc::new(boot_inventory.clone());
         metric_sources.push(boot_source);
+        // The maintenance timer (QI-BB-016, QI-BB-015): the idle writer
+        // sweep and the per-track disk gauges run on it, and its tallies
+        // plus the process gauge join the scrape.
+        let maintenance = MaintenanceTimer::start(
+            MaintenanceParts {
+                writer_sweep: writer_idle_sweep,
+                lexical_disk_usage,
+                semantic_disk_usage,
+            },
+            config.maintenance_policy().tick(),
+        )
+        .map_err(anyhow::Error::from)?;
+        let maintenance_source: Arc<dyn MetricSourcePort> = Arc::new(MaintenanceMetricSource::new(
+            maintenance.tallies(),
+            memory_probe,
+        ));
+        metric_sources.push(maintenance_source);
         let observability = Arc::new(ObservabilityScrape::new(
             Arc::clone(&query_obs_store),
             metric_sources,
@@ -1178,12 +1354,20 @@ impl SearchdRuntime {
         // query socket leaves control and ingest private unless they were
         // opened by name.
         let socket_access = config.socket_access_policies();
+        // The directory the three sockets share is held to the widest of
+        // their policies (QI-BB-014).
+        let directory_access = quanta_index_ipc::SocketAccessPolicy::widest(
+            SocketRole::ALL
+                .iter()
+                .map(|role| socket_access.for_role(*role)),
+        );
         let query_server = SearchPlaneQueryServer::bind(
             "quanta-index-query-uds",
             config.query_socket_path(),
             query_adapter,
             config.query_admission_policy(),
             socket_access.for_role(SocketRole::Query).clone(),
+            &directory_access,
             query_counters,
         )
         .map_err(anyhow::Error::from)?;
@@ -1198,6 +1382,7 @@ impl SearchdRuntime {
             control_adapter,
             ServerAdmissionPolicy::SERIAL_DISPATCH,
             socket_access.for_role(SocketRole::Control).clone(),
+            &directory_access,
             control_counters,
         )
         .map_err(anyhow::Error::from)?;
@@ -1210,6 +1395,7 @@ impl SearchdRuntime {
             ingest_adapter,
             ServerAdmissionPolicy::SERIAL_DISPATCH,
             socket_access.for_role(SocketRole::Ingest).clone(),
+            &directory_access,
             ingest_counters,
         )
         .map_err(anyhow::Error::from)?;
@@ -1223,6 +1409,9 @@ impl SearchdRuntime {
             query_obs_store,
             semantic_boot: boot_report,
             boot_inventory,
+            process_memory_envelope,
+            boot_notices,
+            _maintenance: maintenance,
             _search_corpus_lifecycle: search_corpus_lifecycle,
             _state_root_lease: state_root_lease,
         })
@@ -1237,8 +1426,8 @@ impl SearchdRuntime {
 mod tests {
     use super::{
         DomainStructuralQueryRequest, GenerationPin, GenerationSelector, Ledger,
-        LedgerStructuralProducer, LqStructuralBlock, StructuralProducerPort, StructuralReadiness,
-        ensure_durable_state_root_with_v1,
+        LedgerStructuralProducer, LqStructuralBlock, RequestBudgetV1, StructuralProducerPort,
+        StructuralReadiness, ensure_durable_state_root_with_v1,
     };
     use quanta_index_contract::{LqOptions, RepoId, RevisionId};
     use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -1450,7 +1639,7 @@ mod tests {
 
         // And the sentinel query embedder itself fails closed on embed — proving no
         // real query vector is ever produced in this config (no silent hash fallback).
-        match query_embedder.embed_query("anything") {
+        match query_embedder.embed_query("anything", &RequestBudgetV1::unbounded()) {
             Err(quanta_index_core::CoreError::Typed { code, .. }) => {
                 let expected = quanta_index_contract::lex::LexicalErrorCode::SemProviderUnavailable
                     .as_code_str();
@@ -1532,7 +1721,7 @@ mod tests {
             .first()
             .ok_or("hash corpus derivation returned no vector")?;
         let query_vector = query_embedder
-            .embed_query(query_text)
+            .embed_query(query_text, &RequestBudgetV1::unbounded())
             .map_err(|err| format!("hash query embed must derive a real vector: {err:?}"))?;
 
         if corpus_vector.len() != SEARCH_OWNED_SEMANTIC_DIMENSION
@@ -1557,7 +1746,7 @@ mod tests {
         // (3) Determinism: re-deriving the SAME text yields the identical vector
         // (searchd's real path must be reproducible for cache/incremental sanity).
         let query_vector_again = query_embedder
-            .embed_query(query_text)
+            .embed_query(query_text, &RequestBudgetV1::unbounded())
             .map_err(|err| format!("hash query re-embed must succeed: {err:?}"))?;
         if query_vector != query_vector_again {
             return Err(
@@ -1568,7 +1757,10 @@ mod tests {
         // (4) Discrimination: a DIFFERENT text derives a DIFFERENT vector (the
         // embedder is not a constant — the negative half of the smoke).
         let other_vector = query_embedder
-            .embed_query("completely unrelated lexical payload zzz")
+            .embed_query(
+                "completely unrelated lexical payload zzz",
+                &RequestBudgetV1::unbounded(),
+            )
             .map_err(|err| format!("hash query embed (other text) must succeed: {err:?}"))?;
         if query_vector == other_vector {
             return Err(
@@ -1646,10 +1838,14 @@ mod tests {
         Ok(())
     }
 
-    // QI-BB-014: the state root is private by construction and by check.
+    // QI-BB-014: the state root is private by construction and by check —
+    // exactly 0700 in private mode; wider modes, readable ones included,
+    // are refused typed. With a shared socket the traverse bits alone are
+    // admitted, so the peers can reach the socket directory.
     #[cfg(unix)]
     #[test]
-    fn a_created_state_root_is_private_and_a_writable_one_is_refused() -> TestRes {
+    fn a_created_state_root_is_0700_and_any_wider_existing_root_is_refused() -> TestRes {
+        use super::StateRootAccessV1;
         use std::os::unix::fs::PermissionsExt as _;
         let parent = tempfile::tempdir()?;
         let created = parent.path().join("fresh").join("state");
@@ -1658,30 +1854,52 @@ mod tests {
         assert_eq!(mode, 0o700, "a created state root is its owner's alone");
         drop(lease);
 
-        let permissive = parent.path().join("permissive");
-        std::fs::create_dir(&permissive)?;
-        std::fs::set_permissions(&permissive, std::fs::Permissions::from_mode(0o777))?;
-        let error = super::StateRootLease::acquire(&permissive)
-            .expect_err("a state root others can write into must be refused");
-        let quanta_index_core::CoreError::Typed { code, message } = error else {
-            return Err(format!("expected a typed refusal, got {error:?}").into());
-        };
-        assert_eq!(code, "STATE_ROOT_INSECURE");
-        assert!(message.contains("chmod go-w"), "{message}");
-
-        // Readable by others is the operator's call; writable is not.
-        let readable = parent.path().join("readable");
-        std::fs::create_dir(&readable)?;
-        std::fs::set_permissions(&readable, std::fs::Permissions::from_mode(0o755))?;
-        let lease = super::StateRootLease::acquire(&readable)?;
-        drop(lease);
+        let existing = parent.path().join("existing");
+        std::fs::create_dir(&existing)?;
+        for (mode, access, admitted) in [
+            (0o777, StateRootAccessV1::Private, false),
+            (0o755, StateRootAccessV1::Private, false),
+            (0o750, StateRootAccessV1::Private, false),
+            (0o711, StateRootAccessV1::Private, false),
+            (0o700, StateRootAccessV1::Private, true),
+            (0o777, StateRootAccessV1::SharedTraversal, false),
+            (0o755, StateRootAccessV1::SharedTraversal, false),
+            (0o722, StateRootAccessV1::SharedTraversal, false),
+            (0o711, StateRootAccessV1::SharedTraversal, true),
+            (0o710, StateRootAccessV1::SharedTraversal, true),
+            (0o700, StateRootAccessV1::SharedTraversal, true),
+        ] {
+            std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(mode))?;
+            let outcome = super::StateRootLease::acquire_with_access(&existing, access);
+            match (outcome, admitted) {
+                (Ok(lease), true) => drop(lease),
+                (Err(quanta_index_core::CoreError::Typed { code, message }), false) => {
+                    assert_eq!(code, "STATE_ROOT_INSECURE", "mode {mode:04o} {access:?}");
+                    assert!(message.contains(&format!("mode {mode:04o}")), "{message}");
+                    assert!(message.contains("chmod"), "{message}");
+                }
+                (other, _) => {
+                    return Err(format!(
+                        "mode {mode:04o} under {access:?}: expected admitted={admitted}, got {other:?}"
+                    )
+                    .into());
+                }
+            }
+        }
         Ok(())
+    }
+
+    fn private_tempdir() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir()?;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+        Ok(dir)
     }
 
     #[test]
     fn state_root_lease_rejects_a_foreign_runtime_root_v1() -> TestRes {
-        let owned_root = tempfile::tempdir()?;
-        let foreign_root = tempfile::tempdir()?;
+        let owned_root = private_tempdir()?;
+        let foreign_root = private_tempdir()?;
         let lease = super::StateRootLease::acquire(owned_root.path())?;
 
         let rejected = lease.require_state_root_v1(foreign_root.path());
@@ -1697,8 +1915,8 @@ mod tests {
     fn state_root_lease_refuses_symlink_lock_file_v1() -> TestRes {
         use std::os::unix::fs::symlink;
 
-        let owned_root = tempfile::tempdir()?;
-        let attacker_root = tempfile::tempdir()?;
+        let owned_root = private_tempdir()?;
+        let attacker_root = private_tempdir()?;
         let attacker_target = attacker_root.path().join("attacker-lock");
         std::fs::write(&attacker_target, b"attacker-controlled")?;
         let lock_path = owned_root.path().join(".searchd-state-root.lock");

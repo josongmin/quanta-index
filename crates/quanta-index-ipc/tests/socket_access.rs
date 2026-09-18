@@ -143,6 +143,7 @@ impl Served {
             socket,
             ServerAdmissionPolicy::DEFAULT,
             access.clone(),
+            access,
             Arc::clone(&counters),
             source,
         )?);
@@ -428,6 +429,12 @@ fn a_listed_uid_policy_screens_every_peer_before_a_frame_is_read() -> TestResult
 #[test]
 fn a_private_socket_is_0600_and_admits_only_its_owner() -> TestResult {
     let dir = tempfile::tempdir()?;
+    // The server refuses a socket directory wider than 0700 (QI-BB-014); a
+    // tempdir is created under the umask, so it is narrowed here.
+    std::fs::set_permissions(
+        dir.path(),
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+    )?;
     let socket = dir.path().join("private.sock");
     let script = Arc::new(ScriptedSource {
         next: Mutex::new(ScriptedPeer::Reports(PeerCredentials {

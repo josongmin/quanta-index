@@ -51,7 +51,7 @@ struct RunningRuntime {
 
 impl RunningRuntime {
     fn start() -> Result<Self, Box<dyn Error>> {
-        let state_root = tempfile::tempdir()?;
+        let state_root = quanta_index_searchd_harness::private_tempdir()?;
         let runtime = build_runtime(config_for(state_root.path()))?;
         let query_socket = runtime.query_server.socket_path().to_path_buf();
         let control_socket = runtime.control_server.socket_path().to_path_buf();

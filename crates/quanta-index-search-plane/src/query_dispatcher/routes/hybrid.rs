@@ -85,7 +85,7 @@ impl SearchPlaneDispatcher {
         stabilize_ranked_candidates(&mut lex_results);
         budget.checkpoint("hybrid:embed")?;
         let query_vector =
-            self.embed_and_gate_query(semantic_query_text, sem_searcher.as_ref(), plane)?;
+            self.embed_and_gate_query(semantic_query_text, sem_searcher.as_ref(), plane, budget)?;
         // Independent dense lane under the same constraints and, per
         // candidate, the same exact filters; never scoped to the lexical
         // hits.

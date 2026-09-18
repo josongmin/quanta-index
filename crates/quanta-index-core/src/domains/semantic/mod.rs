@@ -8,8 +8,9 @@ mod stream;
 pub use inbound::SemanticQueryPort;
 pub use outbound::{
     DenseIndexEffortV1, DenseIndexLineageV1, DenseIndexTrainingV1, DenseIndexV1,
-    DenseLaneAttestationV1, DenseLaneContractV1, SemanticIndexOpenPort, SemanticIngestPort,
-    SemanticReadiness, SemanticSearchHitV1, SemanticSearcher, TextEmbeddingProvider,
+    DenseLaneAttestationV1, DenseLaneContractV1, EMBED_CHECKPOINT, SemanticIndexOpenPort,
+    SemanticIngestPort, SemanticReadiness, SemanticSearchHitV1, SemanticSearcher,
+    TextEmbeddingProvider,
 };
 pub use service::{L2_UNIT_NORM_TOLERANCE, L2UnitEmbeddingProvider, SemanticPolicy};
 pub use stream::{

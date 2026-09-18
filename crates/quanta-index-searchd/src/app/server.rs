@@ -68,15 +68,22 @@ where
 {
     /// Bind a server to `socket_path` under `policy` (QI-BB-002) and
     /// `access` (QI-BB-014), counting into `counters` (QI-BB-015).
+    ///
+    /// The three daemon sockets share one directory, held to
+    /// `directory_access` — the widest of their policies — so each
+    /// socket's admitted peers can reach it while the directory stays no
+    /// wider than any of them needs.
     pub fn bind(
         thread_name: impl Into<String>,
         socket_path: &Path,
         dispatcher: Arc<D>,
         policy: ServerAdmissionPolicy,
         access: SocketAccessPolicy,
+        directory_access: &SocketAccessPolicy,
         counters: Arc<IpcServerCounters>,
     ) -> Result<Self, IpcError> {
-        let server = UdsServer::bind_observed(socket_path, policy, access, counters)?;
+        let server =
+            UdsServer::bind_observed_in(socket_path, policy, access, directory_access, counters)?;
         Ok(Self {
             server,
             dispatcher,

@@ -129,6 +129,12 @@ struct Harness {
 
 fn start_server(policy: ServerAdmissionPolicy) -> Result<Harness, Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
+    // The server refuses a socket directory wider than 0700 (QI-BB-014); a
+    // tempdir is created under the umask, so it is narrowed here.
+    std::fs::set_permissions(
+        dir.path(),
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+    )?;
     let socket = dir.path().join("admission.sock");
     let uds = Arc::new(UdsServer::bind_with_policy(&socket, policy)?);
     let (entered_tx, entered_rx) = mpsc::channel();
@@ -280,6 +286,7 @@ fn a_full_dispatch_queue_is_refused_with_a_typed_overload_then_serves_again() ->
     let policy = ServerAdmissionPolicy::new(
         8,
         1,
+        1,
         QUEUE_WAIT,
         Duration::from_secs(20),
         Duration::from_secs(30),
@@ -350,6 +357,7 @@ fn connections_past_the_cap_are_closed_at_accept_and_counted() -> TestResult {
     let policy = ServerAdmissionPolicy::new(
         1,
         1,
+        1,
         Duration::ZERO,
         Duration::from_secs(20),
         Duration::from_secs(30),
@@ -418,6 +426,7 @@ fn connections_past_the_cap_are_closed_at_accept_and_counted() -> TestResult {
 fn the_dispatch_budget_deadline_reaches_the_dispatcher_checkpoint() -> TestResult {
     let policy = ServerAdmissionPolicy::new(
         8,
+        2,
         2,
         Duration::ZERO,
         SHORT_DISPATCH_BUDGET,

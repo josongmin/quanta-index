@@ -64,6 +64,7 @@ use quanta_index_core::{
     CoreError, GenerationIdentityValidatePort, MetricPointV1, MetricSourcePort,
     SealedGenerationScanPort, SemanticIndexOpenPort, SemanticIngestHeaderV1, SemanticScopeSource,
     SemanticScopeStreamBuildPort, SemanticStreamTallyV1, SemanticStreamWindowPolicy,
+    TrackDiskUsagePort,
     domains::generation::{
         GenerationQuarantineReasonV1, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
         IncompleteGenerationDiscardPort, InventoriedSealedGenerationV1,
@@ -231,6 +232,27 @@ impl SemanticAdapter {
 /// and `semantic_budget_interruptions_…` (QI-BB-015, W5 phase 3): the
 /// queries each lane handed to the library and the request interruptions
 /// it observed inside, across every searcher this adapter opened.
+/// Every generation dataset under the semantic track root, measured by
+/// the same walker an open uses for its residency bound (QI-BB-015).
+impl TrackDiskUsagePort for SemanticAdapter {
+    /// Bytes the semantic state root occupies on disk, by unique inode (an
+    /// inherited dataset's hard-linked fragments count once), measured
+    /// while ingest, seals and reclaims keep running.
+    fn track_disk_bytes(&self) -> Result<u64, CoreError> {
+        if !self.state_root.exists() {
+            return Ok(0);
+        }
+        unique_inode_tree_bytes(std::slice::from_ref(&self.state_root), &|_name| false).map_err(
+            |err| {
+                CoreError::Storage(format!(
+                    "semantic: measure state root {}: {err}",
+                    self.state_root.display()
+                ))
+            },
+        )
+    }
+}
+
 impl MetricSourcePort for SemanticAdapter {
     fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
         Ok(self.query_tallies.scrape())

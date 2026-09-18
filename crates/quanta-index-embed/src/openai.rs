@@ -1,8 +1,12 @@
+use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use quanta_index_contract::EmbeddingNormalization;
 use quanta_index_contract::lex::LexicalErrorCode;
-use quanta_index_core::{CoreError, MAX_EMBEDDING_DIMENSION, TextEmbeddingProvider};
+use quanta_index_core::{
+    CoreError, EMBED_CHECKPOINT, MAX_EMBEDDING_DIMENSION, RequestBudgetV1, TextEmbeddingProvider,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::telemetry;
@@ -41,6 +45,9 @@ pub const DEFAULT_CONCURRENCY: usize = 4;
 /// (`DEFAULT_CONCURRENCY × DEFAULT_MAX_BATCH` texts), which the tests pin.
 pub const MAX_CONCURRENCY: usize = 64;
 const ERROR_BODY_PREVIEW_CHARS: usize = 200;
+/// How often an attempt in flight re-reads its request budget (QI-BB-002):
+/// a cancelled or expired budget is answered within one interval.
+const BUDGET_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 mod batching;
 mod retry;
@@ -53,11 +60,17 @@ use retry::{StatusClass, backoff_delay, classify_status};
 /// Abstracted so the provider's batching / retry / parse logic is unit-testable
 /// without network.
 pub trait EmbeddingTransport: Send + Sync {
+    /// Post one embeddings request, giving up after `timeout`.
+    ///
+    /// The provider passes the smaller of its configured timeout and what
+    /// is left of the request budget (QI-BB-002), so no attempt outlives
+    /// the request it serves.
     fn post_embeddings(
         &self,
         url: &str,
         api_key: &str,
         body: &str,
+        timeout: Duration,
     ) -> Result<HttpResponse, CoreError>;
 
     /// The HTTP timeout this transport's client was built with, when it has one.
@@ -174,8 +187,10 @@ impl OpenAiProviderConfig {
 /// closed on auth / transport / shape errors and retrying transient (429 / 5xx /
 /// network) failures with bounded exponential backoff.
 pub struct OpenAiEmbeddingProvider {
-    transport: Box<dyn EmbeddingTransport>,
-    api_key: String,
+    /// Shared with the thread each attempt runs on, so an attempt a
+    /// cancelled budget abandons can finish on its own.
+    transport: Arc<dyn EmbeddingTransport>,
+    api_key: Arc<str>,
     model: String,
     model_id: String,
     model_revision: String,
@@ -184,6 +199,7 @@ pub struct OpenAiEmbeddingProvider {
     max_batch: usize,
     max_estimated_tokens_per_request: usize,
     max_retries: u32,
+    timeout: Duration,
     concurrency: usize,
 }
 
@@ -232,10 +248,13 @@ impl OpenAiEmbeddingProvider {
                 config.concurrency
             )));
         }
+        if config.timeout.is_zero() {
+            return Err(invalid("openai: timeout must be non-zero"));
+        }
         let model_id = format!("openai:{}", config.model);
         Ok(Self {
-            transport,
-            api_key: config.api_key,
+            transport: Arc::from(transport),
+            api_key: Arc::from(config.api_key),
             model: config.model,
             model_id,
             model_revision: config.model_revision,
@@ -244,6 +263,7 @@ impl OpenAiEmbeddingProvider {
             max_batch: config.max_batch,
             max_estimated_tokens_per_request: config.max_estimated_tokens_per_request,
             max_retries: config.max_retries,
+            timeout: config.timeout,
             concurrency: config.concurrency,
         })
     }
@@ -267,6 +287,7 @@ impl OpenAiEmbeddingProvider {
         &self,
         texts: &[&str],
         estimated_tokens: usize,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<Vec<f32>>, CoreError> {
         let request = EmbeddingsRequest {
             model: &self.model,
@@ -276,7 +297,7 @@ impl OpenAiEmbeddingProvider {
         let body = serde_json::to_string(&request)
             .map_err(|err| invalid(&format!("openai: request encode failed: {err}")))?;
         let url = format!("{}{EMBEDDINGS_PATH}", self.base_url);
-        let raw = self.post_with_retry(&url, &body, texts.len(), estimated_tokens)?;
+        let raw = self.post_with_retry(&url, &body, texts.len(), estimated_tokens, budget)?;
         let parsed: EmbeddingsResponse = serde_json::from_str(&raw)
             .map_err(|err| CoreError::Storage(format!("openai: response decode failed: {err}")))?;
         let mut data = parsed.data;
@@ -305,17 +326,27 @@ impl OpenAiEmbeddingProvider {
         Ok(data.into_iter().map(|item| item.embedding).collect())
     }
 
+    /// Every attempt runs under the request budget (QI-BB-002).
+    ///
+    /// The budget is checked before each attempt and each backoff, the
+    /// attempt's HTTP timeout is capped by what is left of the budget, and
+    /// an attempt in flight is abandoned — answered typed at the
+    /// `semantic:embed` checkpoint — the moment the budget is cancelled or
+    /// expires. The abandoned attempt finishes on its own thread within
+    /// its capped timeout; nothing waits for it.
     fn post_with_retry(
         &self,
         url: &str,
         body: &str,
         texts_in_request: usize,
         estimated_tokens: usize,
+        budget: &RequestBudgetV1,
     ) -> Result<String, CoreError> {
         let mut last_error: Option<CoreError> = None;
         for attempt in 0..=self.max_retries {
+            budget.checkpoint(EMBED_CHECKPOINT)?;
             telemetry::record_http_request(texts_in_request, estimated_tokens);
-            match self.transport.post_embeddings(url, &self.api_key, body) {
+            match self.post_under_budget(url, body, budget) {
                 Ok(response) => match classify_status(response.status) {
                     StatusClass::Success => return Ok(response.body),
                     StatusClass::Auth => {
@@ -349,7 +380,7 @@ impl OpenAiEmbeddingProvider {
             }
             if attempt < self.max_retries {
                 telemetry::record_retry();
-                std::thread::sleep(backoff_delay(attempt));
+                sleep_within_budget(backoff_delay(attempt), budget)?;
             }
         }
         Err(last_error.unwrap_or_else(|| {
@@ -358,6 +389,62 @@ impl OpenAiEmbeddingProvider {
                 "openai: transport exhausted retries without a response",
             )
         }))
+    }
+
+    /// One attempt, on its own thread, watched against the budget.
+    ///
+    /// The attempt's timeout is the smaller of the configured one and the
+    /// budget's remainder, so the thread never outlives the request by more
+    /// than that. The caller polls the budget while it waits; an
+    /// interruption returns at once and the attempt's eventual result is
+    /// dropped with the channel.
+    fn post_under_budget(
+        &self,
+        url: &str,
+        body: &str,
+        budget: &RequestBudgetV1,
+    ) -> Result<HttpResponse, CoreError> {
+        let timeout = self.timeout.min(budget.remaining());
+        if timeout.is_zero() {
+            // The deadline passed between the checkpoint and here.
+            return Err(budget.interrupted_at(EMBED_CHECKPOINT).unwrap_or_else(|| {
+                typed(
+                    LexicalErrorCode::SemProviderTransport,
+                    "openai: no time left in the request budget for an attempt",
+                )
+            }));
+        }
+        let transport = Arc::clone(&self.transport);
+        let api_key = Arc::clone(&self.api_key);
+        let url = url.to_string();
+        let body = body.to_string();
+        let (done, outcome) = mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("openai-embed-attempt".to_string())
+            .spawn(move || {
+                let result = transport.post_embeddings(&url, &api_key, &body, timeout);
+                // The requester may have left: a failed send means exactly
+                // that, and the result is dropped with the receiver.
+                let _abandoned = done.send(result);
+            });
+        if let Err(error) = spawned {
+            return Err(typed(
+                LexicalErrorCode::SemProviderTransport,
+                &format!("openai: could not start the embedding attempt: {error}"),
+            ));
+        }
+        loop {
+            match outcome.recv_timeout(BUDGET_POLL_INTERVAL) {
+                Ok(result) => return result,
+                Err(mpsc::RecvTimeoutError::Timeout) => budget.checkpoint(EMBED_CHECKPOINT)?,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(typed(
+                        LexicalErrorCode::SemProviderTransport,
+                        "openai: embedding attempt thread ended without a result",
+                    ));
+                }
+            }
+        }
     }
 
     /// Dispatch `batches` over a bounded pool of scoped worker threads, each
@@ -372,6 +459,7 @@ impl OpenAiEmbeddingProvider {
         &self,
         texts: &[&str],
         batches: &[RequestBatch],
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<Vec<f32>>, CoreError> {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -394,7 +482,11 @@ impl OpenAiEmbeddingProvider {
                                 };
                                 let result =
                                     request_batch_texts(texts, *batch).and_then(|batch_texts| {
-                                        self.embed_one_batch(batch_texts, batch.estimated_tokens)
+                                        self.embed_one_batch(
+                                            batch_texts,
+                                            batch.estimated_tokens,
+                                            budget,
+                                        )
                                     });
                                 let is_err = result.is_err();
                                 local.push((index, result));
@@ -445,6 +537,22 @@ fn flatten_batch_results(
     Ok(out)
 }
 
+/// Sleep `delay` in budget-poll slices, stopping typed the moment the
+/// budget is cancelled or expires.
+fn sleep_within_budget(delay: Duration, budget: &RequestBudgetV1) -> Result<(), CoreError> {
+    let mut left = delay;
+    while !left.is_zero() {
+        budget.checkpoint(EMBED_CHECKPOINT)?;
+        let slice = left.min(BUDGET_POLL_INTERVAL).min(budget.remaining());
+        if slice.is_zero() {
+            return budget.checkpoint(EMBED_CHECKPOINT);
+        }
+        std::thread::sleep(slice);
+        left = left.saturating_sub(slice);
+    }
+    Ok(())
+}
+
 fn request_batch_texts<'a>(
     texts: &'a [&'a str],
     batch: RequestBatch,
@@ -460,7 +568,18 @@ fn request_batch_texts<'a>(
 }
 
 impl TextEmbeddingProvider for OpenAiEmbeddingProvider {
+    /// The corpus path: the same attempts as the budgeted path, under a
+    /// budget that never interrupts.
     fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+        self.embed_batch_within(texts, &RequestBudgetV1::unbounded())
+    }
+
+    fn embed_batch_within(
+        &self,
+        texts: &[&str],
+        budget: &RequestBudgetV1,
+    ) -> Result<Vec<Vec<f32>>, CoreError> {
+        budget.checkpoint(EMBED_CHECKPOINT)?;
         if texts.is_empty() {
             return Ok(Vec::new());
         }
@@ -472,13 +591,13 @@ impl TextEmbeddingProvider for OpenAiEmbeddingProvider {
             return flatten_batch_results(
                 batches.iter().map(|batch| {
                     request_batch_texts(texts, *batch).and_then(|batch_texts| {
-                        self.embed_one_batch(batch_texts, batch.estimated_tokens)
+                        self.embed_one_batch(batch_texts, batch.estimated_tokens, budget)
                     })
                 }),
                 texts.len(),
             );
         }
-        self.embed_batches_concurrently(texts, &batches)
+        self.embed_batches_concurrently(texts, &batches, budget)
     }
 
     fn model_id(&self) -> &str {
@@ -537,6 +656,7 @@ impl EmbeddingTransport for ReqwestBlockingTransport {
         url: &str,
         api_key: &str,
         body: &str,
+        timeout: Duration,
     ) -> Result<HttpResponse, CoreError> {
         let response = self
             .client
@@ -544,6 +664,7 @@ impl EmbeddingTransport for ReqwestBlockingTransport {
             .bearer_auth(api_key)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body.to_string())
+            .timeout(timeout)
             .send()
             .map_err(|err| {
                 typed(
@@ -726,6 +847,7 @@ mod tests {
             _url: &str,
             _api_key: &str,
             _body: &str,
+            _timeout: Duration,
         ) -> Result<HttpResponse, CoreError> {
             let _prior = self.calls.fetch_add(1, Ordering::SeqCst);
             let mut responses = self.responses.lock().expect("test mutex");
@@ -767,7 +889,7 @@ mod tests {
 
     fn provider_with(
         config: OpenAiProviderConfig,
-        transport: ScriptedTransport,
+        transport: impl EmbeddingTransport + 'static,
     ) -> OpenAiEmbeddingProvider {
         OpenAiEmbeddingProvider::new(config, Box::new(transport))
             .expect("provider builds with a non-empty key/model/dim")
@@ -860,6 +982,7 @@ mod tests {
             _url: &str,
             _api_key: &str,
             body: &str,
+            _timeout: Duration,
         ) -> Result<HttpResponse, CoreError> {
             let current = self
                 .in_flight
@@ -906,6 +1029,7 @@ mod tests {
             _url: &str,
             _api_key: &str,
             _body: &str,
+            _timeout: Duration,
         ) -> Result<HttpResponse, CoreError> {
             Ok(HttpResponse {
                 status: self.status,
@@ -1063,6 +1187,7 @@ mod tests {
             _url: &str,
             _api_key: &str,
             body: &str,
+            _timeout: Duration,
         ) -> Result<HttpResponse, CoreError> {
             let parsed: serde_json::Value =
                 serde_json::from_str(body).expect("partial: body is valid json");
@@ -1427,5 +1552,142 @@ mod tests {
             Err(other) => panic!("empty key wrong error variant: {other:?}"),
             Ok(_) => panic!("empty key must be rejected at construction"),
         }
+    }
+
+    /// A transport whose attempt parks until the test releases it, records
+    /// the timeout it was handed, and counts its calls — the fault injection
+    /// for the budget proofs (QI-BB-002).
+    struct ParkedTransport {
+        entered: std::sync::mpsc::Sender<Duration>,
+        release: Arc<std::sync::Barrier>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl EmbeddingTransport for ParkedTransport {
+        fn post_embeddings(
+            &self,
+            _url: &str,
+            _api_key: &str,
+            _body: &str,
+            timeout: Duration,
+        ) -> Result<HttpResponse, CoreError> {
+            let _prior = self.calls.fetch_add(1, Ordering::SeqCst);
+            let _told = self.entered.send(timeout);
+            let _released = self.release.wait();
+            Ok(ok_body(&[(0, vec![0.5, 0.5])]))
+        }
+    }
+
+    fn parked_provider(
+        retries: u32,
+        timeout: Duration,
+    ) -> (
+        OpenAiEmbeddingProvider,
+        std::sync::mpsc::Receiver<Duration>,
+        Arc<std::sync::Barrier>,
+        Arc<AtomicUsize>,
+    ) {
+        let (entered, entered_rx) = std::sync::mpsc::channel();
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let transport = ParkedTransport {
+            entered,
+            release: Arc::clone(&release),
+            calls: Arc::clone(&calls),
+        };
+        let provider = provider_with(
+            cfg(2).with_max_retries(retries).with_timeout(timeout),
+            transport,
+        );
+        (provider, entered_rx, release, calls)
+    }
+
+    /// A cancelled budget abandons the attempt in flight.
+    ///
+    /// The call returns `REQUEST_CANCELLED` at the `semantic:embed`
+    /// checkpoint while the transport is still parked, and the attempt
+    /// finishes on its own afterwards without a second call.
+    #[test]
+    fn a_cancelled_budget_abandons_the_attempt_in_flight() {
+        let (provider, entered, release, calls) = parked_provider(3, Duration::from_secs(60));
+        let budget = RequestBudgetV1::for_duration(Duration::from_secs(30));
+        let cancel = budget.cancel_handle();
+        let canceller = std::thread::spawn(move || {
+            let _timeout = entered
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the attempt started");
+            cancel.cancel();
+        });
+        let outcome = provider.embed_batch_within(&["a"], &budget);
+        match outcome {
+            Err(CoreError::Typed { code, message }) => {
+                assert_eq!(code, quanta_index_core::REQUEST_CANCELLED_CODE);
+                assert!(message.contains("checkpoint `semantic:embed`"), "{message}");
+            }
+            other => panic!("a cancelled attempt answers typed, got {other:?}"),
+        }
+        canceller.join().expect("canceller thread");
+        // The attempt is still parked: the provider did not wait for it.
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let _released = release.wait();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "no retry after a cancellation"
+        );
+    }
+
+    /// Every attempt's HTTP timeout is capped by what the budget has left.
+    #[test]
+    fn an_attempts_timeout_is_capped_by_the_budget_remainder() {
+        let (provider, entered, release, _calls) = parked_provider(0, Duration::from_secs(60));
+        let budget = RequestBudgetV1::for_duration(Duration::from_millis(400));
+        let releaser = std::thread::spawn(move || {
+            let told = entered
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the attempt started");
+            let _released = release.wait();
+            told
+        });
+        let vectors = provider
+            .embed_batch_within(&["a"], &budget)
+            .expect("released attempt succeeds");
+        assert_eq!(vectors, vec![vec![0.5, 0.5]]);
+        let told = releaser.join().expect("releaser thread");
+        assert!(
+            told <= Duration::from_millis(400),
+            "the attempt was told the budget remainder, not the configured minute: {told:?}"
+        );
+        assert!(!told.is_zero());
+    }
+
+    /// An expired budget between attempts stops the retry loop typed
+    /// instead of sleeping through the backoff and calling again.
+    #[test]
+    fn a_deadline_during_backoff_stops_the_retry_loop_typed() {
+        let transport = ScriptedTransport::new(vec![
+            Ok(HttpResponse {
+                status: 503,
+                body: "unavailable".to_string(),
+            }),
+            Ok(ok_body(&[(0, vec![0.5, 0.5])])),
+        ]);
+        let calls = transport.calls_handle();
+        let provider = provider_with(cfg(2).with_max_retries(3), transport);
+        // The budget expires during the first backoff (≤ 250 ms).
+        let budget = RequestBudgetV1::for_duration(Duration::from_millis(1));
+        std::thread::sleep(Duration::from_millis(5));
+        match provider.embed_batch_within(&["a"], &budget) {
+            Err(CoreError::Typed { code, message }) => {
+                assert_eq!(code, quanta_index_core::REQUEST_DEADLINE_EXCEEDED_CODE);
+                assert!(message.contains("checkpoint `semantic:embed`"), "{message}");
+            }
+            other => panic!("an expired budget answers typed, got {other:?}"),
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "an already-expired budget makes no attempt at all"
+        );
     }
 }

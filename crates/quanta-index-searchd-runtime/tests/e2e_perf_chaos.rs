@@ -71,11 +71,24 @@ const ROUTE_METRIC_ROUTES: [&str; 11] = [
 ];
 
 /// `Some((route, suffix))` when `name` is a route metric.
+///
+/// A route metric is one of the closed per-route suffixes, labelled by the
+/// route name only (QI-BB-015: latency, outcome, the candidates the route
+/// examined, and the two interruption kinds counted apart).
 fn route_metric(name: &str) -> Option<(&str, &str)> {
     let rest = name.strip_prefix("lq_route_")?;
     ROUTE_METRIC_ROUTES.iter().find_map(|route| {
         let suffix = rest.strip_prefix(route)?.strip_prefix('_')?;
-        matches!(suffix, "latency_ms" | "served_total" | "errors_total").then_some((*route, suffix))
+        matches!(
+            suffix,
+            "latency_ms"
+                | "served_total"
+                | "errors_total"
+                | "examined_candidates_total"
+                | "deadline_exceeded_total"
+                | "cancelled_total"
+        )
+        .then_some((*route, suffix))
     })
 }
 

@@ -615,8 +615,12 @@ impl LexicalWriterPolicy {
 pub struct LexicalWriterCacheStats {
     pub open_writers: usize,
     pub max_writers: usize,
-    /// Heap the open writers may use together: `open_writers` times the
-    /// per-writer heap, never above the envelope.
+    /// Heap the open writers were granted together: `open_writers` times
+    /// the per-writer heap, never above the envelope. This is the granted
+    /// budget, not a measurement — the index library (Tantivy 0.22) reports
+    /// arena use only inside its indexing workers and never on the writer
+    /// handle — so the observed pressure signal is the process gauge
+    /// `process_resident_bytes` the writer gate reads (QI-BB-016).
     pub allocated_heap_bytes: u64,
     /// Writers committed and released to make room for another.
     pub lru_releases: u64,

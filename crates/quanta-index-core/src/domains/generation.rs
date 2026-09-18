@@ -390,40 +390,64 @@ pub trait SealedGenerationReclaimPort: Send + Sync {
 /// Symlinks are not followed and not counted; a sealed tree that points
 /// outside itself is refused by the seal, not measured here. Entries
 /// `skip` names (a live writer's lock file, for instance) are ignored.
-/// Directories that do not exist are skipped by the caller, which decides
-/// what an absent root means; here it is an error.
+/// A root that does not exist is an error: the caller decides what an
+/// absent root means. Below the roots the tree may be live — a seal
+/// renaming its temporaries, the index engine deleting merged segments, a
+/// reclaim removing a generation — so an entry that vanishes between the
+/// listing and its stat is not on disk any more and is not counted; every
+/// other I/O error is returned.
 pub fn unique_inode_tree_bytes(
     roots: &[PathBuf],
     skip: &dyn Fn(&str) -> bool,
 ) -> std::io::Result<u64> {
     let mut seen: BTreeSet<(u64, u64)> = BTreeSet::new();
     let mut total = 0_u64;
-    let mut pending: Vec<PathBuf> = roots.to_vec();
-    while let Some(directory) = pending.pop() {
-        for entry in std::fs::read_dir(&directory)? {
-            let entry = entry?;
+    let mut pending: Vec<(PathBuf, bool)> = roots.iter().map(|root| (root.clone(), true)).collect();
+    while let Some((directory, is_root)) = pending.pop() {
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if !is_root && error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        for entry in entries {
+            let Some(entry) = vanished_is_none(entry)? else {
+                continue;
+            };
             let file_name = entry.file_name();
             if file_name.to_str().is_some_and(skip) {
                 continue;
             }
-            let file_type = entry.file_type()?;
+            let Some(file_type) = vanished_is_none(entry.file_type())? else {
+                continue;
+            };
             if file_type.is_symlink() {
                 continue;
             }
             if file_type.is_dir() {
-                pending.push(entry.path());
+                pending.push((entry.path(), false));
                 continue;
             }
             if !file_type.is_file() {
                 continue;
             }
-            let metadata = entry.metadata()?;
+            let Some(metadata) = vanished_is_none(entry.metadata())? else {
+                continue;
+            };
             if seen.insert((metadata.dev(), metadata.ino())) {
                 total = total.saturating_add(metadata.len());
             }
         }
     }
     Ok(total)
+}
+
+/// `None` when the entry vanished (`NotFound`) while the tree was walked.
+fn vanished_is_none<T>(result: std::io::Result<T>) -> std::io::Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]

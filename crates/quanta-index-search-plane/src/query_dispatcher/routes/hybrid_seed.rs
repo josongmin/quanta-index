@@ -80,6 +80,7 @@ impl SearchPlaneDispatcher {
             request.semantic_query_text.as_str(),
             sem_searcher.as_ref(),
             "hybrid seed",
+            budget,
         )?;
         let internal_limit = usize::try_from(internal_top_k).map_err(|err| {
             CoreError::InvalidContract(format!("hybrid seed: internal top_k overflow: {err}"))

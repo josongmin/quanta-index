@@ -447,8 +447,12 @@ pub(crate) struct FixedModelQueryEmbedder {
 }
 
 impl QueryTextEmbedderPort for FixedModelQueryEmbedder {
-    fn embed_query(&self, query_text: &str) -> Result<Vec<f32>, quanta_index_core::CoreError> {
-        HashingQueryTextEmbedder::new(self.dimension).embed_query(query_text)
+    fn embed_query(
+        &self,
+        query_text: &str,
+        budget: &quanta_index_core::RequestBudgetV1,
+    ) -> Result<Vec<f32>, quanta_index_core::CoreError> {
+        HashingQueryTextEmbedder::new(self.dimension).embed_query(query_text, budget)
     }
     fn model_id(&self) -> &'static str {
         self.model_id
@@ -463,7 +467,11 @@ impl QueryTextEmbedderPort for FixedModelQueryEmbedder {
 pub(crate) struct UnavailableTestQueryEmbedder;
 
 impl QueryTextEmbedderPort for UnavailableTestQueryEmbedder {
-    fn embed_query(&self, _query_text: &str) -> Result<Vec<f32>, quanta_index_core::CoreError> {
+    fn embed_query(
+        &self,
+        _query_text: &str,
+        _budget: &quanta_index_core::RequestBudgetV1,
+    ) -> Result<Vec<f32>, quanta_index_core::CoreError> {
         Err(quanta_index_core::CoreError::Typed {
             code: quanta_index_contract::lex::LexicalErrorCode::SemProviderUnavailable
                 .as_code_str()

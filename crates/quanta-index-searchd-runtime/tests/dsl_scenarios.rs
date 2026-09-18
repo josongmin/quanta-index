@@ -358,7 +358,7 @@ fn wait_for_non_error(socket: &Path, request: &SearchPlaneQueryIpcRequestEnvelop
 
 #[test]
 fn sourcegraph_repo_path_lang_filters_are_deterministic_across_repeated_runs() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "dsl-sg-metadata-filters")?;
@@ -473,7 +473,7 @@ fn sourcegraph_repo_path_lang_filters_are_deterministic_across_repeated_runs() -
 
 #[test]
 fn sourcegraph_boolean_text_query_is_deterministic_across_repeated_runs() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "dsl-sg-determinism")?;
     publish_search_corpus_chunks(
@@ -545,7 +545,7 @@ fn sourcegraph_boolean_text_query_is_deterministic_across_repeated_runs() -> Tes
 
 #[test]
 fn sourcegraph_repo_has_file_predicate_executes_live() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "dsl-sg-repo-has-file")?;
@@ -614,7 +614,7 @@ fn sourcegraph_repo_has_file_predicate_executes_live() -> TestResult {
 
 #[test]
 fn sourcegraph_phrase_and_regex_patterns_execute_live() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "dsl-sg-phrase-regex")?;
     publish_search_corpus_chunks(
@@ -724,7 +724,7 @@ fn sourcegraph_phrase_and_regex_patterns_execute_live() -> TestResult {
 
 #[test]
 fn lq_phrase_and_regex_patterns_execute_live() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "dsl-lq-phrase-regex")?;
     publish_search_corpus_chunks(
@@ -809,7 +809,7 @@ fn lq_phrase_and_regex_patterns_execute_live() -> TestResult {
 
 #[test]
 fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scope() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "dsl-semantic-complex-scope")?;
@@ -931,7 +931,7 @@ fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scop
 
 #[test]
 fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "dsl-hybrid-complex-scope")?;
@@ -1058,7 +1058,7 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
 
 #[test]
 fn hybrid_query_surfaces_truthful_count_reached_early_stop() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "dsl-hybrid-count-reached")?;

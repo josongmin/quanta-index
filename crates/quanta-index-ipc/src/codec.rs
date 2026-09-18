@@ -94,7 +94,7 @@ impl core::fmt::Display for IpcError {
                 f.write_str("client I/O deadline elapsed before request dispatch")
             }
             Self::InvalidAdmissionPolicy => f.write_str(
-                "server admission policy must have non-zero connections, slots, budget and I/O timeout, with slots <= connections",
+                "server admission policy must have non-zero connections, slots, per-repository in-flight cap, budget and I/O timeout, with per-repository cap <= slots <= connections",
             ),
             Self::SocketInUse(path) => write!(
                 f,

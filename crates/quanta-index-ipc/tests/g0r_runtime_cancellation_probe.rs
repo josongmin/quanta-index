@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 
 use quanta_index_ipc::{
     ClientIoPolicy, IpcDispatcher, IpcError, RequestBudgetV1, RequestEnvelope, ResponseEnvelope,
-    UdsServer, send_request,
+    SlotRefusal, UdsServer, send_request,
 };
 use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeStruct;
@@ -107,6 +107,10 @@ impl RequestEnvelope<u64> for ProbeRequest {
     fn into_parts(self) -> (u64, u64) {
         (self.request_id, self.payload)
     }
+
+    fn repo_scope(_request: &u64) -> Option<String> {
+        None
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -172,7 +176,7 @@ impl ResponseEnvelope<u64> for ProbeResponse {
         None
     }
 
-    fn overloaded(_request_id: u64, _waited: Duration, _slots: usize) -> Option<Self> {
+    fn overloaded(_request_id: u64, _refusal: &SlotRefusal) -> Option<Self> {
         None
     }
 }
@@ -235,6 +239,12 @@ struct Server {
 
 fn start_server() -> Result<Server, Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
+    // The server refuses a socket directory wider than 0700 (QI-BB-014); a
+    // tempdir is created under the umask, so it is narrowed here.
+    std::fs::set_permissions(
+        dir.path(),
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+    )?;
     let socket = dir.path().join("g0r.sock");
     let server = UdsServer::bind(&socket)?;
     let shutdown = server.shutdown_handle();

@@ -294,9 +294,12 @@ fn sdk_publishes_carry_the_canonical_digest_and_refusals_record_nothing() -> Tes
     let one_record_vector_bytes =
         u64::try_from(quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_DIMENSION)?
             .saturating_mul(4);
+    // The byte ceilings are declared under the process memory envelope
+    // (QI-BB-016), so the text ceiling this test does not exercise keeps
+    // its default rather than an unbounded value the envelope would refuse.
     let policy = IngestResourcePolicy::new(
         usize::MAX,
-        u64::MAX,
+        IngestResourcePolicy::DEFAULT.max_text_bytes(),
         one_record_vector_bytes.saturating_mul(2).saturating_sub(1),
     )?;
     let mut rt = E2eRuntime::boot_with_ingest_resource_policy(policy)?;

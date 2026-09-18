@@ -166,7 +166,10 @@ fn hybrid_seed_dispatch_includes_dense_only_entity_in_the_seed_set() -> TestResu
             guard.corpus_constraints.clone(),
         )
     };
-    let expected = default_query_embedder().embed_query("scope alpha")?;
+    let expected = default_query_embedder().embed_query(
+        "scope alpha",
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     // QI-BB-019: the seed list is built from the dense lanes alone; no
     // second, lexical-scoped dense search runs behind it.
     if !scoped_vectors.is_empty() {

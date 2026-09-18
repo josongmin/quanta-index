@@ -173,7 +173,7 @@ fn start_sdk_frontdoor_runtime_at_state_root(
 }
 
 fn start_sdk_frontdoor_runtime(thread_name: &str) -> Result<SdkFrontdoorRuntime, Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let (client, shutdown, join) =
         start_sdk_frontdoor_runtime_at_state_root(dir.path(), thread_name)?;
 
@@ -183,7 +183,7 @@ fn start_sdk_frontdoor_runtime(thread_name: &str) -> Result<SdkFrontdoorRuntime,
 fn start_sdk_frontdoor_runtime_with_ingest(
     thread_name: &str,
 ) -> Result<SdkFrontdoorRuntimeWithIngest, Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let runtime = build_runtime(build_config(dir.path()))?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
     let control_socket = runtime.control_server.socket_path().to_path_buf();
@@ -1404,7 +1404,7 @@ where
 
 #[test]
 fn sdk_publish_frontdoor_routes_ingest_batches() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let runtime = build_runtime(build_config(dir.path()))?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
     let control_socket = runtime.control_server.socket_path().to_path_buf();
@@ -1476,7 +1476,7 @@ fn sdk_publish_frontdoor_routes_ingest_batches() -> TestResult {
 
 #[test]
 fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let runtime = build_runtime(build_config(dir.path()))?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
     let control_socket = runtime.control_server.socket_path().to_path_buf();
@@ -1739,7 +1739,7 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
 
 #[test]
 fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let runtime = build_runtime(build_config(dir.path()))?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
     let control_socket = runtime.control_server.socket_path().to_path_buf();
@@ -3067,7 +3067,7 @@ fn sdk_text_frontdoor_rebinds_rev_at_time_generation_truth() -> TestResult {
 
 #[test]
 fn sdk_history_query_frontdoor_surfaces_typed_absent_and_shard_errors() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let runtime = build_runtime(build_config(dir.path()))?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
     let control_socket = runtime.control_server.socket_path().to_path_buf();
@@ -4007,7 +4007,7 @@ fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() 
 fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_composite_corpus()
 -> TestResult {
     let complex_timeout = Duration::from_secs(30);
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path().to_path_buf();
     let (client, shutdown, join) =
         start_sdk_frontdoor_runtime_at_state_root(&state_root, "sdk-frontdoor-multigen-v1")?;
@@ -4321,7 +4321,7 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_comp
 
 #[test]
 fn sdk_binary_process_dsl_roundtrip() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let runtime = SearchdBinaryProcess::start(dir.path())?;
     let result = (|| -> TestResult {
         let client = runtime.connect()?;

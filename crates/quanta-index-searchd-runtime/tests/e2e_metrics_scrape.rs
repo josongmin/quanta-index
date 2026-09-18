@@ -25,8 +25,8 @@ type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 const SERVED_QUERIES: u64 = 5;
 
 /// Samples one served lexical query emits: intake, snapshot hit, planner,
-/// engine fan-out, route latency, route outcome.
-const SAMPLES_PER_SERVED_LEXICAL_QUERY: u64 = 6;
+/// engine fan-out, examined candidates, route latency, route outcome.
+const SAMPLES_PER_SERVED_LEXICAL_QUERY: u64 = 7;
 
 /// Samples one lexical query that times out in execution emits: intake,
 /// snapshot hit (the handle is acquired before execution), the typed-error
@@ -209,6 +209,38 @@ fn route_socket_registry_and_diagnostic_tallies_move_by_exactly_the_traffic_sent
         &0,
     )?;
 
+    // The dispatch slots (QI-BB-015): every one-shot query took a slot
+    // without waiting, nothing is in flight now, and every answer's frame
+    // bytes were counted. The response-byte oracle is a lower bound: five
+    // answers of two candidates each cannot be fewer than five frame
+    // headers plus one byte of body apiece.
+    expect_eq(
+        "query dispatch queue waits",
+        &second.counter_delta(&first, "ipc_query_dispatch_queue_wait_total")?,
+        &0,
+    )?;
+    expect_eq(
+        "query dispatch in flight",
+        &second.gauge("ipc_query_dispatch_in_flight")?,
+        &0.0,
+    )?;
+    let response_bytes = second.counter_delta(&first, "ipc_query_response_bytes_total")?;
+    if response_bytes < SERVED_QUERIES.saturating_mul(5) {
+        return Err(format!("five answers carried bytes: {response_bytes}").into());
+    }
+    expect_eq(
+        "repo-scoped overloads",
+        &second.counter_delta(&first, "ipc_query_requests_overloaded_repo_total")?,
+        &0,
+    )?;
+    // Each served query examined exactly the two fixture candidates
+    // (QI-BB-015): the per-route examined counter moves by two per query.
+    expect_eq(
+        "lexical examined candidates",
+        &second.counter_delta(&first, "lq_route_lexical_examined_candidates_total")?,
+        &SERVED_QUERIES.saturating_mul(2),
+    )?;
+
     // The registry served every query from the resident handle, and its
     // own tally agrees with the dispatcher's snapshot-hit counter.
     let registry_hits = second.counter_delta(&first, "snapshot_registry_lexical_hits_total")?;
@@ -270,6 +302,17 @@ fn route_socket_registry_and_diagnostic_tallies_move_by_exactly_the_traffic_sent
         &third.counter_delta(&second, "lq_typed_error_plan_limit_total")?,
         &1,
     )?;
+    // A plan-limit timeout is neither a request deadline nor a peer
+    // cancellation (QI-BB-002): both of those counters stay put, globally
+    // and per route.
+    for name in [
+        "lq_typed_error_deadline_exceeded_total",
+        "lq_typed_error_cancelled_total",
+        "lq_route_lexical_deadline_exceeded_total",
+        "lq_route_lexical_cancelled_total",
+    ] {
+        expect_eq(name, &third.counter_delta(&second, name)?, &0)?;
+    }
     expect_eq(
         "latency observed the error too",
         &third
@@ -413,12 +456,26 @@ fn boot_gauges_match_the_boot_inventory_and_the_writer_envelope_reflects_the_sea
         &0.0,
     )?;
 
-    // Every socket server reports; nothing was refused or overloaded.
+    // Every socket server reports; nothing was refused or overloaded, and
+    // the dispatch-slot points are present on every plane (QI-BB-015).
     for plane in ["query", "control", "ingest"] {
-        for suffix in ["connections_refused_total", "requests_overloaded_total"] {
+        for suffix in [
+            "connections_refused_total",
+            "requests_overloaded_total",
+            "requests_overloaded_repo_total",
+        ] {
             let name = format!("ipc_{plane}_{suffix}");
             expect_eq(&name, &scrape.counter(&name)?, &0)?;
         }
+        let _present = scrape.counter(&format!("ipc_{plane}_dispatch_queue_wait_total"))?;
+        let _present = scrape.counter(&format!("ipc_{plane}_response_bytes_total"))?;
+        // The control dispatch carrying this scrape is the one in flight.
+        let expected_in_flight = if plane == "control" { 1.0 } else { 0.0 };
+        expect_eq(
+            &format!("ipc_{plane}_dispatch_in_flight"),
+            &scrape.gauge(&format!("ipc_{plane}_dispatch_in_flight"))?,
+            &expected_in_flight,
+        )?;
         let live = scrape.gauge(&format!("ipc_{plane}_connections_live"))?;
         // The control connection carrying this very scrape is live.
         let expected_live = if plane == "control" { 1.0 } else { 0.0 };
@@ -436,6 +493,100 @@ fn boot_gauges_match_the_boot_inventory_and_the_writer_envelope_reflects_the_sea
         "ingest refusals",
         &scrape.counter("ingest_batches_refused_total")?,
         &0,
+    )?;
+
+    // The development embedder label (QI-BB-007): the harness boots the
+    // hash profile, and the scrape says so.
+    expect_eq(
+        "dev semantic profile",
+        &scrape.gauge("boot_semantic_profile_is_dev")?,
+        &1.0,
+    )?;
+    if !inventory.semantic_profile_is_dev {
+        return Err("the boot inventory labels the hash profile as dev".into());
+    }
+
+    // The maintenance timer and process gauge (QI-BB-016): the timer
+    // measured both tracks at boot, the writer gate is disabled by
+    // default and says so, and the process reports a resident set.
+    let _present = scrape.counter("maintenance_ticks_total")?;
+    expect_eq(
+        "sweep failures",
+        &scrape.counter("maintenance_sweep_failures_total")?,
+        &0,
+    )?;
+    expect_eq(
+        "disk refresh failures",
+        &scrape.counter("maintenance_disk_refresh_failures_total")?,
+        &0,
+    )?;
+    let _present = scrape.gauge("search_corpus_lexical_generation_disk_bytes")?;
+    let _present = scrape.gauge("search_corpus_semantic_generation_disk_bytes")?;
+    expect_eq(
+        "rss gate disabled by default",
+        &scrape.gauge("lexical_writer_rss_gate_enabled")?,
+        &0.0,
+    )?;
+    expect_eq(
+        "rss refusals",
+        &scrape.counter("lexical_writer_rss_refusals_total")?,
+        &0,
+    )?;
+    if scrape.gauge("process_resident_bytes")? <= 0.0 {
+        return Err("a running daemon has resident pages".into());
+    }
+    Ok(())
+}
+
+/// The embedding provider's counters reach the scrape under the `OpenAI`
+/// profile (QI-BB-009 #5, QI-BB-015): the provider telemetry and the
+/// cache's open report are present from boot, before any request.
+#[test]
+fn the_provider_and_cache_open_metrics_are_scraped_under_the_openai_profile() -> TestResult {
+    let mut rt = E2eRuntime::boot_with_embedder_profile(
+        quanta_index_searchd::app::SemanticEmbedderProfile::OpenAi {
+            model: "text-embedding-3-small".to_string(),
+            model_revision: "scrape-test".to_string(),
+            dimension: 1536,
+            api_key: "sk-scrape-test".to_string(),
+            tuning: quanta_index_searchd::app::config::OpenAiEmbedderTuning::default(),
+        },
+    )?;
+    rt.start()?;
+    let scrape = Scrape::take(&mut rt)?;
+    for name in [
+        "embed_provider_http_requests_total",
+        "embed_provider_retries_total",
+        "embed_provider_http_failures_total",
+        "embed_provider_transport_failures_total",
+        "embedding_cache_hits_total",
+        "embedding_cache_misses_total",
+        "embedding_cache_expirations_total",
+        "embedding_cache_manifest_flushes_total",
+    ] {
+        let _present = scrape.counter(name)?;
+    }
+    for name in [
+        "embedding_cache_entries",
+        "embedding_cache_open_stat_calls",
+        "embedding_cache_retained_foreign_bytes",
+    ] {
+        let _present = scrape.gauge(name)?;
+    }
+    expect_eq(
+        "a fresh cache reads no entry metadata at open",
+        &scrape.gauge("embedding_cache_open_stat_calls")?,
+        &0.0,
+    )?;
+    expect_eq(
+        "the open flushed the first manifest",
+        &scrape.counter("embedding_cache_manifest_flushes_total")?,
+        &1,
+    )?;
+    expect_eq(
+        "not a dev profile",
+        &scrape.gauge("boot_semantic_profile_is_dev")?,
+        &0.0,
     )?;
     Ok(())
 }

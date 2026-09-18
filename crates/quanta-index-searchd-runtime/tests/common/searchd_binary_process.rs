@@ -127,7 +127,7 @@ pub(super) fn searchd_command(state_root: &Path, max_generations: usize) -> Comm
         .arg("serve")
         .arg("--state-root")
         .arg(state_root)
-        .env("QUANTA_INDEX_EMBEDDER", "hash")
+        .env("QUANTA_INDEX_EMBEDDER", "hash-dev")
         .env(
             "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS",
             max_generations.to_string(),

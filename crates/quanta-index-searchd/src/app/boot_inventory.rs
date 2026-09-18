@@ -77,6 +77,13 @@ pub struct BootInventoryReportV1 {
     /// The effective access policy each socket was bound under
     /// (QI-BB-014): private, or shared with a group and/or listed users.
     pub socket_access: SocketAccessPolicies,
+    /// Whether the semantic embedder this daemon serves under is a
+    /// development/test profile (QI-BB-007).
+    ///
+    /// That is the hash embedder, which carries no learned semantics.
+    /// Reported as `boot_semantic_profile_is_dev` so no dashboard mistakes
+    /// it for a learned one.
+    pub semantic_profile_is_dev: bool,
 }
 
 impl TrackInventoryReportV1 {
@@ -169,6 +176,10 @@ impl MetricSourcePort for BootInventoryReportV1 {
                 self.socket_access.for_role(role),
             ));
         }
+        points.push(MetricPointV1::gauge_count(
+            "boot_semantic_profile_is_dev",
+            u64::from(self.semantic_profile_is_dev),
+        ));
         Ok(points)
     }
 }

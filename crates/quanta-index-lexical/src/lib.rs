@@ -114,7 +114,8 @@ use quanta_index_core::{
     RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMetaIngestPort,
     RepoMetadataAuthoritiesV1, RepoMetadataAuthorityV1, RepoTopicIngestPort, RequestBudgetV1,
     SealedGenerationScanPort, SearchCorpusBatchBuildPort, TextAuthorityUpdateStats,
-    TextNormalizerVersionV1, count_from_usize,
+    TextNormalizerVersionV1, TrackDiskUsagePort, UnboundedWriterAdmission, WriterAdmissionPort,
+    WriterIdleSweepPort, count_from_usize,
     domains::lexical::LexicalPolicy,
     timeref::{is_rev_at_time_spec, parse_search_timeref_ms},
 };
@@ -367,6 +368,9 @@ struct WriterCache {
     entries: BTreeMap<GenKey, CachedWriter>,
     order: VecDeque<GenKey>,
     policy: LexicalWriterPolicy,
+    /// Asked before a writer the cache does not hold is opened (QI-BB-016):
+    /// the composition root's resident-memory gate, or the unbounded one.
+    admission: Arc<dyn WriterAdmissionPort>,
     lru_releases: u64,
     idle_releases: u64,
     seal_releases: u64,
@@ -378,6 +382,7 @@ impl WriterCache {
             entries: BTreeMap::new(),
             order: VecDeque::new(),
             policy,
+            admission: Arc::new(UnboundedWriterAdmission),
             lru_releases: 0,
             idle_releases: 0,
             seal_releases: 0,
@@ -473,8 +478,9 @@ impl WriterCache {
         Ok(())
     }
 
-    /// Release every writer nothing has touched for the idle interval.
-    fn release_idle(&mut self, now: Instant) -> Result<(), CoreError> {
+    /// Release every writer nothing has touched for the idle interval;
+    /// returns how many were released.
+    fn release_idle(&mut self, now: Instant) -> Result<u64, CoreError> {
         let idle_after = self.policy.idle_after();
         let idle: Vec<GenKey> = self
             .entries
@@ -482,10 +488,11 @@ impl WriterCache {
             .filter(|(_, cached)| now.saturating_duration_since(cached.last_used) >= idle_after)
             .map(|(key, _)| key.clone())
             .collect();
+        let released = count_from_usize(idle.len());
         for key in idle {
             self.release(&key, WriterRelease::Idle)?;
         }
-        Ok(())
+        Ok(released)
     }
 
     /// Returns the cached handle for `key`, opening and inserting a new one if
@@ -504,8 +511,11 @@ impl WriterCache {
             self.touch(key);
             return Ok(cloned);
         }
-        self.release_idle(now)?;
+        let _released = self.release_idle(now)?;
         self.release_until_room()?;
+        // The process-level gate (QI-BB-016): a writer is never opened while
+        // the process is above its resident-memory ceiling.
+        self.admission.admit_writer_open()?;
         let index = open_or_create_index(fields, path)?;
         let heap_bytes = usize::try_from(self.policy.writer_heap_bytes()).map_err(|err| {
             CoreError::Storage(format!(
@@ -3456,13 +3466,28 @@ impl LexicalAdapter {
     }
 
     /// Commit and release every writer nothing has touched for the policy's
-    /// idle interval (QI-BB-016). The adapter sweeps after every batch; a
-    /// composition root may also sweep on its own schedule.
-    pub fn release_idle_writers(&self) -> Result<(), CoreError> {
+    /// idle interval (QI-BB-016); returns how many were released. The
+    /// adapter sweeps after every batch, and the composition root's
+    /// maintenance timer sweeps on its own schedule through
+    /// [`WriterIdleSweepPort`].
+    pub fn release_idle_writers(&self) -> Result<u64, CoreError> {
         self.writers
             .lock()
             .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?
             .release_idle(Instant::now())
+    }
+
+    /// Install the gate every new writer open is checked against
+    /// (QI-BB-016); the adapter starts with the unbounded one.
+    pub fn with_writer_admission(
+        self,
+        admission: Arc<dyn WriterAdmissionPort>,
+    ) -> Result<Self, CoreError> {
+        self.writers
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?
+            .admission = admission;
+        Ok(self)
     }
 
     /// What the writer cache holds and has done (QI-BB-016).
@@ -3914,6 +3939,35 @@ fn legacy_ops_for_batch(
 
 /// The writer envelope and the regex match cache as scrape points,
 /// `lexical_…` (QI-BB-015).
+impl WriterIdleSweepPort for LexicalAdapter {
+    fn sweep_idle_writers(&self) -> Result<u64, CoreError> {
+        self.release_idle_writers()
+    }
+}
+
+/// Every generation directory under the lexical track root, measured by
+/// the same walker a reclaim and an open use (QI-BB-015).
+impl TrackDiskUsagePort for LexicalAdapter {
+    /// Bytes the lexical state root occupies on disk, by unique inode (a
+    /// delta's hard-linked base segments count once), measured while
+    /// ingest, seals and reclaims keep running.
+    fn track_disk_bytes(&self) -> Result<u64, CoreError> {
+        if !self.state_root.exists() {
+            return Ok(0);
+        }
+        unique_inode_tree_bytes(
+            std::slice::from_ref(&self.state_root),
+            &is_writer_lock_entry,
+        )
+        .map_err(|err| {
+            CoreError::Storage(format!(
+                "lexical: measure state root {}: {err}",
+                self.state_root.display()
+            ))
+        })
+    }
+}
+
 impl MetricSourcePort for LexicalAdapter {
     fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
         let writers = self.writer_cache_stats()?;
@@ -4044,7 +4098,8 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
         }
         // Every batch is a chance to give an abandoned generation's heap back
         // to the envelope (QI-BB-016).
-        self.release_idle_writers()
+        let _released = self.release_idle_writers()?;
+        Ok(())
     }
 }
 

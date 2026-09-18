@@ -302,13 +302,17 @@ notes = "LanceDB dataset (versioned data/manifest/transaction/index/deletion fil
 [[artifact]]
 id = "embedding-cache"
 owner = "quanta-index-embed"
-path = "state_root/embed-cache/<sha256(model_id,revision,dimension,normalization)[..16]>/<key[..2]>/<key>.vec (+ .opened marker)"
+path = "state_root/embed-cache/<sha256(model_id,revision,dimension,normalization)[..16]>/<key[..2]>/<key>.vec (+ .opened marker, ledger.manifest)"
 reproduction = "cache"
-notes = "Identity-namespaced vector cache (QI-BB-028/009): QIEC magic + u16 format + u32 dimension + f32 LE payload + truncated sha256. Pre-namespace v1 shard directories are reclaimed on open. Regenerable at provider-call cost; not migrated."
+notes = "Identity-namespaced vector cache (QI-BB-028/009): QIEC magic + u16 format + u32 dimension + f32 LE payload + truncated sha256. The per-namespace ledger.manifest (QIEM magic + u16 format + u64 count + 48-byte records) is advisory accounting rebuilt from the directory when absent or malformed. Pre-namespace v1 shard directories are reclaimed on open. Regenerable at provider-call cost; not migrated."
 [[artifact.version_constants]]
 file = "crates/quanta-index-embed/src/cache.rs"
 name = "ENTRY_FORMAT_VERSION"
 value = 2
+[[artifact.version_constants]]
+file = "crates/quanta-index-embed/src/cache/manifest.rs"
+name = "MANIFEST_FORMAT_VERSION"
+value = 1
 
 [[artifact]]
 id = "activation-catalog"

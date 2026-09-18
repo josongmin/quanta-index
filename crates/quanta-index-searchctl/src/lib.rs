@@ -2580,9 +2580,26 @@ uses the standard transport/usage/remote/protocol exit codes only for failures
 to *reach* a verdict.
 
 `metrics` scrapes every counter, gauge and histogram the daemon has aggregated
-since it started (route latency and outcomes, socket admission, caches, boot
-inventory) over the control socket; `--output prometheus` emits the text
-exposition format for a scraper.
+since it started (route latency, outcomes and interruptions, socket admission,
+queue wait and in-flight slots, response bytes, examined candidates, caches,
+provider retries and failures, generation disk bytes, the process resident
+set, the maintenance timer, boot inventory) over the control socket;
+`--output prometheus` emits the text exposition format for a scraper.
+
+Operator scrape path: the daemon listens on a private Unix socket, not an
+HTTP port, so a Prometheus server does not scrape it directly. Run this
+command from the daemon's user on a schedule and write its output where the
+node_exporter textfile collector reads it, e.g.
+
+  quanta-index-searchctl --state-root /var/lib/quanta-index metrics \
+    --output prometheus > /var/lib/node_exporter/textfile/quanta_index.prom.tmp \
+    && mv /var/lib/node_exporter/textfile/quanta_index.prom.tmp \
+          /var/lib/node_exporter/textfile/quanta_index.prom
+
+(node_exporter must run with `--collector.textfile.directory` pointing at
+that directory; the temporary-file-then-rename keeps a half-written scrape
+from being read). Every metric is process-wide and label-free by design:
+no repository, generation or query text ever becomes a label.
 
 `quarantine list` prints what the daemon has set aside as it cannot trust it
 (a generation directory with an unreadable or foreign identity, a RepoMap file

@@ -71,7 +71,11 @@ pub use domains::lexical::{
     TextAuthorityUpdateStats,
 };
 pub use domains::observability::{
-    MetricPointV1, MetricSourcePort, MetricValueV1, count_as_f64, count_from_usize,
+    EMBEDDING_CACHE_LEDGER_BYTES_PER_ENTRY, MetricPointV1, MetricSourcePort, MetricValueV1,
+    PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE, PROCESS_RSS_CEILING_EXCEEDED_CODE,
+    ProcessMemoryEnvelopeV1, ProcessMemoryProbePort, ResidentMemoryWriterAdmission,
+    TrackDiskUsagePort, UnboundedWriterAdmission, WriterAdmissionPort, WriterIdleSweepPort,
+    count_as_f64, count_from_usize,
 };
 pub use domains::read_view::{
     FILE_CONTRIBUTOR_UNAVAILABLE_CODE, FILE_OWNERSHIP_UNAVAILABLE_CODE, LexicalArtifactIdentityV1,
@@ -89,8 +93,8 @@ pub use domains::repomap::{
 };
 pub use domains::semantic::{
     DenseIndexEffortV1, DenseIndexLineageV1, DenseIndexTrainingV1, DenseIndexV1,
-    DenseLaneAttestationV1, DenseLaneContractV1, L2_UNIT_NORM_TOLERANCE, L2UnitEmbeddingProvider,
-    ResidentScopeSource, SEMANTIC_STREAM_OWNER_SCOPE_OVER_WINDOW_CODE,
+    DenseLaneAttestationV1, DenseLaneContractV1, EMBED_CHECKPOINT, L2_UNIT_NORM_TOLERANCE,
+    L2UnitEmbeddingProvider, ResidentScopeSource, SEMANTIC_STREAM_OWNER_SCOPE_OVER_WINDOW_CODE,
     SEMANTIC_STREAM_WINDOW_EXCEEDED_CODE, SEMANTIC_STREAM_WINDOW_SCOPES,
     SEMANTIC_STREAM_WINDOW_STILL_RESIDENT_CODE, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES,
     SemanticBatchIdentityV1, SemanticBatchMutationsV1, SemanticGenerationContractV1,

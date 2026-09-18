@@ -132,20 +132,13 @@ impl PrincipalResolver for SystemPrincipals {
     }
 }
 
-/// Resolve the three socket access policies from env.
-pub(crate) fn socket_access_policies_from_env() -> Result<SocketAccessPolicies> {
-    socket_access_policies_from_lookup(super::config::optional_env, &SystemPrincipals)
-}
-
 /// Resolve the three socket access policies from an injected lookup and
-/// resolver. Every knob is independent; an unset knob is `private`.
-pub(crate) fn socket_access_policies_from_lookup<F>(
-    lookup: F,
+/// resolver. Every knob is independent; an unset knob is `private`. The
+/// config chain applies it on both entry points.
+pub(crate) fn socket_access_policies_from_lookup(
+    lookup: &super::config::EnvLookup<'_>,
     principals: &dyn PrincipalResolver,
-) -> Result<SocketAccessPolicies>
-where
-    F: Fn(&str) -> Result<Option<String>>,
-{
+) -> Result<SocketAccessPolicies> {
     let mut policies = [
         SocketAccessPolicy::Private,
         SocketAccessPolicy::Private,
@@ -339,12 +332,12 @@ mod tests {
     /// Unset knobs are private; each knob binds only its own socket.
     #[test]
     fn each_socket_is_private_unless_its_own_knob_says_otherwise() {
-        let unset = socket_access_policies_from_lookup(|_name| Ok(None), &Scripted)
+        let unset = socket_access_policies_from_lookup(&|_name| Ok(None), &Scripted)
             .expect("no knobs selects private everywhere");
         assert_eq!(unset, SocketAccessPolicies::PRIVATE);
 
         let query_only = socket_access_policies_from_lookup(
-            |name| {
+            &|name| {
                 Ok((name == SocketRole::Query.env_name()).then(|| "shared:group=devs".to_string()))
             },
             &Scripted,
@@ -364,7 +357,7 @@ mod tests {
         );
 
         let ingest_bad = socket_access_policies_from_lookup(
-            |name| Ok((name == SocketRole::Ingest.env_name()).then(|| "shared:uid=".to_string())),
+            &|name| Ok((name == SocketRole::Ingest.env_name()).then(|| "shared:uid=".to_string())),
             &Scripted,
         )
         .expect_err("a malformed ingest knob fails the whole config");
@@ -382,7 +375,7 @@ mod tests {
     #[test]
     fn an_unknown_group_name_is_refused_through_the_system_resolver() {
         let error = socket_access_policies_from_lookup(
-            |name| {
+            &|name| {
                 Ok((name == SocketRole::Query.env_name())
                     .then(|| "shared:group=no-such-group-xyz".to_string()))
             },

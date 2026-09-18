@@ -100,7 +100,14 @@ crate quanta_index_core
 │   ├── mod observability: pub
 │   │   ├── struct MetricPointV1: pub
 │   │   ├── trait MetricSourcePort: pub
-│   │   └── enum MetricValueV1: pub
+│   │   ├── enum MetricValueV1: pub
+│   │   ├── struct ProcessMemoryEnvelopeV1: pub
+│   │   ├── trait ProcessMemoryProbePort: pub
+│   │   ├── struct ResidentMemoryWriterAdmission: pub
+│   │   ├── trait TrackDiskUsagePort: pub
+│   │   ├── struct UnboundedWriterAdmission: pub
+│   │   ├── trait WriterAdmissionPort: pub
+│   │   └── trait WriterIdleSweepPort: pub
 │   ├── mod read_view: pub
 │   │   ├── mod declare: pub(self)
 │   │   │   ├── struct LeafReads: pub(self)

@@ -18,28 +18,38 @@
 //! entry or the new one, never a torn file.
 //!
 //! Residency is bounded by an [`EmbeddingCacheRetentionPolicy`]: a
-//! namespace holds at most so many entries and so many bytes, the least
-//! recently used entries are evicted to stay within both, and the cache
-//! root holds at most so many namespaces. The bound is enforced by an
-//! in-process ledger that is rebuilt from the directory at open, so a
+//! namespace holds at most so many entries and so many bytes, none older
+//! than the age cap, the least recently used entries are evicted to stay
+//! within the first two and expired entries are removed for the third,
+//! the cache root holds at most so many namespaces, and every namespace
+//! together stays under one total-bytes ceiling. The bound is enforced by
+//! an in-process ledger that is rebuilt at open from the namespace's
+//! persisted manifest and its directory listing (see [`manifest`]), so a
 //! restart neither loses the accounting nor trusts a stale one, and an
 //! eviction only ever removes whole entries — a concurrent reader sees the
 //! entry or a miss, never a torn file.
 
-use std::collections::BTreeMap;
+mod manifest;
+
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use quanta_index_contract::EmbeddingNormalization;
 use quanta_index_core::{
-    CoreError, MetricPointV1, MetricSourcePort, SemanticPolicy, TextEmbeddingProvider,
+    CoreError, MetricPointV1, MetricSourcePort, RequestBudgetV1, SemanticPolicy,
+    TextEmbeddingProvider,
 };
 use sha2::{Digest, Sha256};
 
+use crate::cache::manifest::{
+    MANIFEST_FILE, MANIFEST_FLUSH_EVERY_PUTS, ManifestRead, ManifestRecord, encode_manifest,
+    read_manifest,
+};
 use crate::telemetry;
 
 const FIELD_SEPARATOR: &[u8] = b"\x1f";
@@ -76,6 +86,18 @@ impl EmbeddingCacheKey {
     #[must_use]
     pub fn hex(&self) -> String {
         hex_encode(&self.0)
+    }
+
+    /// The key's digest bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; KEY_LEN] {
+        &self.0
+    }
+
+    /// A key from its digest bytes, as the manifest stores them.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; KEY_LEN]) -> Self {
+        Self(bytes)
     }
 
     /// A key from its hex form; `None` unless it is exactly one digest.
@@ -183,8 +205,9 @@ fn hex_encode(bytes: &[u8]) -> String {
     hex
 }
 
-/// How much one cache namespace may hold, and how many namespaces a cache
-/// root may keep.
+/// How much one cache namespace may hold, how old an entry may be, how
+/// many namespaces a cache root may keep, and how much every namespace
+/// under it may hold together.
 ///
 /// Every bound is a strict maximum; zero is refused at construction because
 /// a zero ceiling is a configuration defect, not a disabled cache.
@@ -193,34 +216,66 @@ pub struct EmbeddingCacheRetentionPolicy {
     entries: u64,
     resident_bytes: u64,
     namespaces: usize,
+    max_entry_age: Duration,
+    max_total_bytes: u64,
 }
 
 impl EmbeddingCacheRetentionPolicy {
-    /// Production defaults: 500,000 entries and 2 GiB per namespace, four
-    /// namespaces per cache root (the current identity and the three most
-    /// recently opened others, so an A/B rotation keeps both sides warm).
+    /// Production defaults: 500,000 entries and 2 GiB per namespace, no
+    /// entry older than thirty days, four namespaces per cache root (the
+    /// current identity and the three most recently opened others, so an
+    /// A/B rotation keeps both sides warm), and 4 GiB across them all.
     pub const DEFAULT: Self = Self {
         entries: 500_000,
         resident_bytes: 2 * 1024 * 1024 * 1024,
         namespaces: 4,
+        max_entry_age: Duration::from_secs(30 * 24 * 60 * 60),
+        max_total_bytes: 4 * 1024 * 1024 * 1024,
     };
 
-    /// A policy with explicit ceilings; each must be at least one.
+    /// A policy with explicit ceilings; each must be at least one, and
+    /// the total must hold at least one namespace's bytes.
     pub fn new(
         max_entries: u64,
         max_resident_bytes: u64,
         max_namespaces: usize,
+        max_entry_age: Duration,
+        max_total_bytes: u64,
     ) -> Result<Self, CoreError> {
-        if max_entries == 0 || max_resident_bytes == 0 || max_namespaces == 0 {
+        if max_entries == 0
+            || max_resident_bytes == 0
+            || max_namespaces == 0
+            || max_entry_age.is_zero()
+            || max_total_bytes == 0
+        {
             return Err(CoreError::InvalidContract(
                 "embedding cache retention policy: every ceiling must be at least one".to_string(),
             ));
+        }
+        if max_total_bytes < max_resident_bytes {
+            return Err(CoreError::InvalidContract(format!(
+                "embedding cache retention policy: the total ceiling {max_total_bytes} cannot hold one namespace of {max_resident_bytes} bytes"
+            )));
         }
         Ok(Self {
             entries: max_entries,
             resident_bytes: max_resident_bytes,
             namespaces: max_namespaces,
+            max_entry_age,
+            max_total_bytes,
         })
+    }
+
+    /// Oldest an entry may be, measured from its write.
+    #[must_use]
+    pub const fn max_entry_age(&self) -> Duration {
+        self.max_entry_age
+    }
+
+    /// Most bytes every namespace under one cache root holds together.
+    #[must_use]
+    pub const fn max_total_bytes(&self) -> u64 {
+        self.max_total_bytes
     }
 
     /// Most entries one namespace holds.
@@ -258,8 +313,11 @@ pub struct EmbeddingCacheStats {
     pub corrupt_misses: u64,
     /// Entries written.
     pub puts: u64,
-    /// Entries removed to stay within the policy.
+    /// Entries removed to stay within the entry and byte ceilings.
     pub evictions: u64,
+    /// Entries removed because they were written longer ago than the
+    /// policy's age cap.
+    pub expirations: u64,
     /// Writes refused because one entry alone exceeds the byte ceiling.
     pub refused_oversize: u64,
 }
@@ -272,13 +330,29 @@ pub struct EmbeddingCacheOpenReport {
     pub scanned_entries: u64,
     /// Entries evicted at open because the namespace exceeded the policy.
     pub evicted_at_open: u64,
+    /// Entries expired at open because they were older than the age cap.
+    pub expired_at_open: u64,
     /// Temporary files of interrupted writes removed.
     pub stale_staging_removed: u64,
     /// Other identities' namespaces removed to stay within the namespace
-    /// ceiling.
+    /// ceiling or the total-bytes ceiling.
     pub retired_namespaces: u64,
+    /// Entries removed from the other, retained namespaces to bring each
+    /// within the per-namespace policy.
+    pub trimmed_foreign_entries: u64,
+    /// Bytes the other, retained namespaces hold after reconciliation.
+    pub retained_foreign_bytes: u64,
     /// Pre-namespace (format v1) shard directories removed.
     pub reclaimed_legacy_directories: u64,
+    /// Whether this namespace's manifest was present and decoded.
+    pub manifest_present: bool,
+    /// Whether a manifest was present but did not decode (ignored).
+    pub manifest_malformed: bool,
+    /// Entry files whose metadata had to be read at open because no
+    /// manifest covered them, over this namespace and the retained others.
+    pub stat_calls_at_open: u64,
+    /// Manifest records of this namespace whose entry was gone from disk.
+    pub manifest_stale_records: u64,
 }
 
 /// Wraps any [`TextEmbeddingProvider`], serving cached vectors for hits.
@@ -329,9 +403,47 @@ impl MetricSourcePort for CachingEmbeddingProvider {
             MetricPointV1::counter("embedding_cache_corrupt_misses_total", stats.corrupt_misses),
             MetricPointV1::counter("embedding_cache_puts_total", stats.puts),
             MetricPointV1::counter("embedding_cache_evictions_total", stats.evictions),
+            MetricPointV1::counter("embedding_cache_expirations_total", stats.expirations),
             MetricPointV1::counter(
                 "embedding_cache_refused_oversize_total",
                 stats.refused_oversize,
+            ),
+        ])
+    }
+}
+
+/// What opening the file store found, as scrape points,
+/// `embedding_cache_open_…` (QI-BB-009): the bounded rebuild's cost and
+/// what reconciliation removed, fixed at open.
+impl MetricSourcePort for FileEmbeddingCache {
+    fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
+        let report = self.open_report();
+        Ok(vec![
+            MetricPointV1::gauge_count(
+                "embedding_cache_open_stat_calls",
+                report.stat_calls_at_open,
+            ),
+            MetricPointV1::gauge_count(
+                "embedding_cache_open_scanned_entries",
+                report.scanned_entries,
+            ),
+            MetricPointV1::gauge_count("embedding_cache_open_expired", report.expired_at_open),
+            MetricPointV1::gauge_count("embedding_cache_open_evicted", report.evicted_at_open),
+            MetricPointV1::gauge_count(
+                "embedding_cache_open_retired_namespaces",
+                report.retired_namespaces,
+            ),
+            MetricPointV1::gauge_count(
+                "embedding_cache_open_trimmed_foreign_entries",
+                report.trimmed_foreign_entries,
+            ),
+            MetricPointV1::gauge_count(
+                "embedding_cache_retained_foreign_bytes",
+                report.retained_foreign_bytes,
+            ),
+            MetricPointV1::counter(
+                "embedding_cache_manifest_flushes_total",
+                self.manifest_flushes(),
             ),
         ])
     }
@@ -360,6 +472,16 @@ impl CachingEmbeddingProvider {
 
 impl TextEmbeddingProvider for CachingEmbeddingProvider {
     fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+        self.embed_batch_within(texts, &RequestBudgetV1::unbounded())
+    }
+
+    /// Hits are served from the store; only the misses reach the inner
+    /// provider, under the caller's budget (QI-BB-002).
+    fn embed_batch_within(
+        &self,
+        texts: &[&str],
+        budget: &RequestBudgetV1,
+    ) -> Result<Vec<Vec<f32>>, CoreError> {
         let mut slots: Vec<Option<Vec<f32>>> = Vec::with_capacity(texts.len());
         let mut cache_hit_count = 0_usize;
         // Misses deduped BY CONTENT: each distinct uncached text is embedded once
@@ -395,7 +517,7 @@ impl TextEmbeddingProvider for CachingEmbeddingProvider {
         }
         telemetry::record_cache_observation(texts.len(), cache_hit_count, distinct_texts.len());
         if !distinct_texts.is_empty() {
-            let fresh = self.inner.embed_batch(&distinct_texts)?;
+            let fresh = self.inner.embed_batch_within(&distinct_texts, budget)?;
             if fresh.len() != distinct_texts.len() {
                 return Err(CoreError::Storage(format!(
                     "embedding cache: inner returned {} vectors for {} distinct misses",
@@ -459,20 +581,27 @@ impl TextEmbeddingProvider for CachingEmbeddingProvider {
 struct LedgerSlot<V> {
     tick: u64,
     bytes: u64,
+    /// When the entry was written, in nanoseconds since the Unix epoch;
+    /// the age cap is measured from here, not from the last read.
+    written_nanos: u64,
     value: V,
 }
 
 /// Least-recently-used accounting shared by every store: which keys are
-/// resident, how many bytes they occupy, and which to evict first.
+/// resident, how many bytes they occupy, when each was written, and which
+/// to evict first.
 ///
 /// Recency is a monotonic tick; a lookup or write moves the key to the
-/// newest tick, and eviction pops the oldest. Both maps are `O(log n)` per
-/// operation so a namespace of hundreds of thousands of entries costs the
-/// same per hit as one of ten.
+/// newest tick, and eviction pops the oldest. Age is the write time; an
+/// entry past the policy's age cap is expired at the next open, write, or
+/// lookup of it. Every map is `O(log n)` per operation so a namespace of
+/// hundreds of thousands of entries costs the same per hit as one of ten.
 struct RetentionLedger<V> {
     policy: EmbeddingCacheRetentionPolicy,
     by_key: BTreeMap<EmbeddingCacheKey, LedgerSlot<V>>,
     by_tick: BTreeMap<u64, EmbeddingCacheKey>,
+    /// Oldest write first, for the age cap.
+    by_written: BTreeSet<(u64, EmbeddingCacheKey)>,
     next_tick: u64,
     resident_bytes: u64,
     stats: EmbeddingCacheStats,
@@ -484,6 +613,7 @@ impl<V> RetentionLedger<V> {
             policy,
             by_key: BTreeMap::new(),
             by_tick: BTreeMap::new(),
+            by_written: BTreeSet::new(),
             next_tick: 0,
             resident_bytes: 0,
             stats: EmbeddingCacheStats::default(),
@@ -496,18 +626,37 @@ impl<V> RetentionLedger<V> {
         tick
     }
 
-    /// The value under `key`, made most recent; `None` counts a miss.
-    fn touch(&mut self, key: &EmbeddingCacheKey) -> Option<&V> {
+    /// The oldest write time still admitted at `now_nanos`.
+    fn oldest_admitted_nanos(&self, now_nanos: u64) -> u64 {
+        let age_nanos =
+            u64::try_from(self.policy.max_entry_age.as_nanos()).map_or(u64::MAX, |nanos| nanos);
+        now_nanos.saturating_sub(age_nanos)
+    }
+
+    /// The value under `key`, made most recent; `None` counts a miss. An
+    /// entry past the age cap is expired here — counted as an expiration
+    /// and a miss, and returned so a file store can remove it.
+    fn touch(&mut self, key: &EmbeddingCacheKey, now_nanos: u64) -> Touch<'_, V> {
         let tick = self.take_tick();
+        let oldest_admitted = self.oldest_admitted_nanos(now_nanos);
+        let Some(written_nanos) = self.by_key.get(key).map(|slot| slot.written_nanos) else {
+            self.stats.misses = self.stats.misses.saturating_add(1);
+            return Touch::Miss;
+        };
+        if written_nanos < oldest_admitted {
+            let value = self.expire(key);
+            self.stats.misses = self.stats.misses.saturating_add(1);
+            return Touch::Expired(value);
+        }
         let Some(slot) = self.by_key.get_mut(key) else {
             self.stats.misses = self.stats.misses.saturating_add(1);
-            return None;
+            return Touch::Miss;
         };
         let _previous: Option<EmbeddingCacheKey> = self.by_tick.remove(&slot.tick);
         slot.tick = tick;
         let _displaced: Option<EmbeddingCacheKey> = self.by_tick.insert(tick, *key);
         self.stats.hits = self.stats.hits.saturating_add(1);
-        Some(&slot.value)
+        Touch::Hit(&slot.value)
     }
 
     /// Whether one entry of `bytes` can ever be resident under the policy.
@@ -515,14 +664,21 @@ impl<V> RetentionLedger<V> {
         bytes <= self.policy.resident_bytes
     }
 
-    /// Record `value` under `key` at `bytes`, replacing any previous slot,
-    /// then evict least recently used entries until the policy holds.
+    /// Record `value` under `key` at `bytes`, written at `written_nanos`,
+    /// replacing any previous slot, then expire and evict until the policy
+    /// holds.
     ///
     /// Returns what was evicted, oldest first, so a file store can remove
     /// the files. An entry the policy does not admit is refused outright
     /// and counted as such; the previous slot under that key, if any, is
     /// dropped too because the store no longer holds it.
-    fn insert(&mut self, key: EmbeddingCacheKey, bytes: u64, value: V) -> LedgerInsert<V> {
+    fn insert(
+        &mut self,
+        key: EmbeddingCacheKey,
+        bytes: u64,
+        written_nanos: u64,
+        value: V,
+    ) -> LedgerInsert<V> {
         let displaced = self.remove(&key);
         if !self.admits(bytes) {
             self.stats.refused_oversize = self.stats.refused_oversize.saturating_add(1);
@@ -532,7 +688,7 @@ impl<V> RetentionLedger<V> {
             };
         }
         self.stats.puts = self.stats.puts.saturating_add(1);
-        let evicted = self.seed(key, bytes, value);
+        let evicted = self.seed(key, bytes, written_nanos, value);
         LedgerInsert { displaced, evicted }
     }
 
@@ -543,12 +699,21 @@ impl<V> RetentionLedger<V> {
         &mut self,
         key: EmbeddingCacheKey,
         bytes: u64,
+        written_nanos: u64,
         value: V,
     ) -> Vec<(EmbeddingCacheKey, V)> {
         let tick = self.take_tick();
-        let _absent: Option<LedgerSlot<V>> =
-            self.by_key.insert(key, LedgerSlot { tick, bytes, value });
+        let _absent: Option<LedgerSlot<V>> = self.by_key.insert(
+            key,
+            LedgerSlot {
+                tick,
+                bytes,
+                written_nanos,
+                value,
+            },
+        );
         let _displaced: Option<EmbeddingCacheKey> = self.by_tick.insert(tick, key);
+        let _new: bool = self.by_written.insert((written_nanos, key));
         self.resident_bytes = self.resident_bytes.saturating_add(bytes);
         self.evict_to_policy()
     }
@@ -557,8 +722,37 @@ impl<V> RetentionLedger<V> {
     fn remove(&mut self, key: &EmbeddingCacheKey) -> Option<V> {
         let slot = self.by_key.remove(key)?;
         let _removed: Option<EmbeddingCacheKey> = self.by_tick.remove(&slot.tick);
+        let _removed: bool = self.by_written.remove(&(slot.written_nanos, *key));
         self.resident_bytes = self.resident_bytes.saturating_sub(slot.bytes);
         Some(slot.value)
+    }
+
+    /// Drop `key` as expired, counting the expiration.
+    fn expire(&mut self, key: &EmbeddingCacheKey) -> Option<V> {
+        let value = self.remove(key)?;
+        self.stats.expirations = self.stats.expirations.saturating_add(1);
+        Some(value)
+    }
+
+    /// Expire every entry written before the age cap admits at `now_nanos`,
+    /// oldest first.
+    fn expire_to_policy(&mut self, now_nanos: u64) -> Vec<(EmbeddingCacheKey, V)> {
+        let oldest_admitted = self.oldest_admitted_nanos(now_nanos);
+        let mut expired = Vec::new();
+        while let Some(&(written_nanos, key)) = self.by_written.first() {
+            if written_nanos >= oldest_admitted {
+                break;
+            }
+            match self.expire(&key) {
+                Some(value) => expired.push((key, value)),
+                None => {
+                    // The maps are kept in lock-step; an orphan index entry
+                    // is dropped rather than looped on.
+                    let _orphan: bool = self.by_written.remove(&(written_nanos, key));
+                }
+            }
+        }
+        expired
     }
 
     /// Evict least recently used entries until both ceilings hold.
@@ -571,6 +765,7 @@ impl<V> RetentionLedger<V> {
             let Some(slot) = self.by_key.remove(&key) else {
                 continue;
             };
+            let _removed: bool = self.by_written.remove(&(slot.written_nanos, key));
             self.resident_bytes = self.resident_bytes.saturating_sub(slot.bytes);
             self.stats.evictions = self.stats.evictions.saturating_add(1);
             evicted.push((key, slot.value));
@@ -590,6 +785,31 @@ impl<V> RetentionLedger<V> {
             ..self.stats
         }
     }
+
+    /// Every resident entry's accounting, for the manifest.
+    fn manifest_records(&self) -> BTreeMap<EmbeddingCacheKey, ManifestRecord> {
+        self.by_key
+            .iter()
+            .map(|(key, slot)| {
+                (
+                    *key,
+                    ManifestRecord {
+                        bytes: slot.bytes,
+                        written_nanos: slot.written_nanos,
+                    },
+                )
+            })
+            .collect()
+    }
+}
+
+/// The outcome of one ledger lookup.
+enum Touch<'a, V> {
+    Hit(&'a V),
+    Miss,
+    /// The entry was resident but past the age cap; it is gone from the
+    /// ledger and its value is handed back so the store can remove it.
+    Expired(Option<V>),
 }
 
 /// The outcome of one ledger insert; a refused insert evicts nothing and
@@ -614,8 +834,8 @@ impl Default for InMemoryEmbeddingCache {
 }
 
 impl InMemoryEmbeddingCache {
-    /// A store that holds at most what `policy` allows; the namespace
-    /// ceiling does not apply to a store with one namespace.
+    /// A store that holds at most what `policy` allows; the namespace and
+    /// total-bytes ceilings do not apply to a store with one namespace.
     #[must_use]
     pub fn bounded(policy: EmbeddingCacheRetentionPolicy) -> Self {
         Self {
@@ -632,15 +852,20 @@ impl EmbeddingCache for InMemoryEmbeddingCache {
     fn get(&self, key: &EmbeddingCacheKey) -> Option<Vec<f32>> {
         // A poisoned lock degrades to a miss (forces recompute), never a wrong hit.
         match self.ledger.lock() {
-            Ok(mut guard) => guard.touch(key).cloned(),
+            Ok(mut guard) => match guard.touch(key, unix_nanos_now()) {
+                Touch::Hit(vector) => Some(vector.clone()),
+                Touch::Miss | Touch::Expired(_) => None,
+            },
             Err(_poisoned) => None,
         }
     }
 
     fn put(&self, key: &EmbeddingCacheKey, vector: &[f32]) {
         if let Ok(mut guard) = self.ledger.lock() {
+            let now = unix_nanos_now();
+            let _expired: Vec<(EmbeddingCacheKey, Vec<f32>)> = guard.expire_to_policy(now);
             let _outcome: LedgerInsert<Vec<f32>> =
-                guard.insert(*key, vector_bytes(vector), vector.to_vec());
+                guard.insert(*key, vector_bytes(vector), now, vector.to_vec());
         }
     }
 
@@ -689,22 +914,51 @@ static ATOMIC_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 ///
 /// The namespace directory is the identity's ([`EmbeddingCacheIdentityV1::
 /// namespace`]), so a revision rotation starts an empty namespace and leaves
-/// the previous one whole. Opening a namespace rebuilds its ledger from the
-/// directory (recency is the entries' write order), removes the temporary
-/// files of interrupted writes, reclaims pre-namespace shard directories,
-/// and retires the least recently opened other namespaces beyond the
-/// policy's ceiling.
+/// the previous one whole. Opening a namespace rebuilds its ledger from its
+/// manifest and the directory listing (`stat`-ing only what the manifest
+/// does not cover), expires entries past the age cap, evicts down to a
+/// tightened policy, removes the temporary files of interrupted writes,
+/// reclaims pre-namespace shard directories, and reconciles the other
+/// namespaces under the root: the least recently opened beyond the
+/// namespace ceiling are removed, each retained one is trimmed to the
+/// per-namespace policy, and whole namespaces are removed, least recently
+/// opened first, until they leave room for this namespace's full ceiling
+/// under the total-bytes ceiling.
 pub struct FileEmbeddingCache {
     root: PathBuf,
     ledger: Mutex<RetentionLedger<()>>,
     open_report: EmbeddingCacheOpenReport,
+    /// Writes since the manifest was last flushed.
+    puts_since_flush: AtomicU64,
+    /// Manifest flushes so far, for the scrape.
+    manifest_flushes: AtomicU64,
 }
 
-/// One entry found while rebuilding a namespace ledger.
+/// One entry of a namespace as its ledger seeds it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ScannedEntry {
-    modified: SystemTime,
     key: EmbeddingCacheKey,
     bytes: u64,
+    written_nanos: u64,
+}
+
+/// What loading one namespace from its manifest and directory found.
+struct LoadedNamespace {
+    entries: Vec<ScannedEntry>,
+    stale_staging_removed: u64,
+    manifest: ManifestOutcome,
+    /// Entries the manifest did not cover, each of which cost one `stat`.
+    stat_calls: u64,
+    /// Manifest records whose entry was gone from disk.
+    manifest_stale_records: u64,
+}
+
+/// How a namespace's manifest was found at open.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ManifestOutcome {
+    Present,
+    Absent,
+    Malformed,
 }
 
 impl FileEmbeddingCache {
@@ -723,44 +977,66 @@ impl FileEmbeddingCache {
                 namespace_dir.display()
             ))
         })?;
+        let now_nanos = unix_nanos_now();
         let reclaimed_legacy_directories = reclaim_legacy_shards(root)?;
-        let retired_namespaces = retire_other_namespaces(root, &namespace, policy.namespaces)?;
-        let (mut entries, stale_staging_removed) = scan_namespace(&namespace_dir)?;
-        let scanned_entries = count_u64(entries.len());
+        let others = reconcile_other_namespaces(root, &namespace, policy, now_nanos)?;
+        let loaded = load_namespace(&namespace_dir, now_nanos)?;
+        let scanned_entries = count_u64(loaded.entries.len());
         write_atomic(
             &namespace_dir.join(OPENED_MARKER),
-            unix_seconds_now().to_string().as_bytes(),
+            now_nanos.div_euclid(1_000_000_000).to_string().as_bytes(),
         )
         .map_err(|err| storage_error("write open marker in", &namespace_dir, &err))?;
         let mut ledger = RetentionLedger::new(policy);
+        let mut entries = loaded.entries;
         // Oldest write first, so the ledger's recency is the directory's.
-        entries.sort_by_key(|entry| entry.modified);
-        let mut evicted = Vec::new();
+        entries.sort_by_key(|entry| (entry.written_nanos, entry.key));
+        let mut removed: Vec<EmbeddingCacheKey> = Vec::new();
         for entry in entries {
-            evicted.extend(
+            removed.extend(
                 ledger
-                    .seed(entry.key, entry.bytes, ())
+                    .seed(entry.key, entry.bytes, entry.written_nanos, ())
                     .into_iter()
                     .map(|(key, ())| key),
             );
         }
         // A tightened policy evicts on open: the directory held more than
         // the policy now allows.
-        let evicted_at_open = count_u64(evicted.len());
-        for key in evicted {
+        let evicted_at_open = count_u64(removed.len());
+        let expired: Vec<EmbeddingCacheKey> = ledger
+            .expire_to_policy(now_nanos)
+            .into_iter()
+            .map(|(key, ())| key)
+            .collect();
+        let expired_at_open = count_u64(expired.len());
+        removed.extend(expired);
+        for key in removed {
             remove_entry_file(&entry_path(&namespace_dir, &key));
         }
-        Ok(Self {
+        let store = Self {
             root: namespace_dir,
             ledger: Mutex::new(ledger),
             open_report: EmbeddingCacheOpenReport {
                 scanned_entries,
                 evicted_at_open,
-                stale_staging_removed,
-                retired_namespaces,
+                expired_at_open,
+                stale_staging_removed: loaded.stale_staging_removed,
+                retired_namespaces: others.retired_namespaces,
+                trimmed_foreign_entries: others.trimmed_entries,
+                retained_foreign_bytes: others.retained_bytes,
                 reclaimed_legacy_directories,
+                manifest_present: loaded.manifest == ManifestOutcome::Present,
+                manifest_malformed: loaded.manifest == ManifestOutcome::Malformed,
+                stat_calls_at_open: loaded.stat_calls.saturating_add(others.stat_calls),
+                manifest_stale_records: loaded.manifest_stale_records,
             },
-        })
+            puts_since_flush: AtomicU64::new(0),
+            manifest_flushes: AtomicU64::new(0),
+        };
+        // The open's own view is the first manifest, so a crash before the
+        // first flush costs the next open no more than the writes since.
+        store.flush_manifest();
+        Ok(store)
     }
 
     /// What opening this namespace found and removed.
@@ -775,6 +1051,12 @@ impl FileEmbeddingCache {
         &self.root
     }
 
+    /// Manifest flushes since open.
+    #[must_use]
+    pub fn manifest_flushes(&self) -> u64 {
+        self.manifest_flushes.load(Ordering::Acquire)
+    }
+
     /// Sharded path `root/<key[..2]>/<key>.vec`.
     fn path_for(&self, key: &EmbeddingCacheKey) -> PathBuf {
         entry_path(&self.root, key)
@@ -787,6 +1069,41 @@ impl FileEmbeddingCache {
             return None;
         };
         Some(guard)
+    }
+
+    /// Write the ledger's accounting as the namespace manifest.
+    ///
+    /// Best-effort like every write here: a failed flush costs the next
+    /// open a `stat` per entry written since the last good one, never a
+    /// wrong vector.
+    fn flush_manifest(&self) {
+        let records = match self.lock_ledger() {
+            Some(ledger) => ledger.manifest_records(),
+            None => return,
+        };
+        if write_atomic(&self.root.join(MANIFEST_FILE), &encode_manifest(&records)).is_ok() {
+            self.puts_since_flush.store(0, Ordering::Release);
+            let _prior = self.manifest_flushes.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    /// Count one write toward the flush cadence and flush when it is due.
+    fn note_put(&self) {
+        let since = self
+            .puts_since_flush
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        if since >= MANIFEST_FLUSH_EVERY_PUTS {
+            self.flush_manifest();
+        }
+    }
+}
+
+impl Drop for FileEmbeddingCache {
+    /// The last flush: a clean shutdown leaves the next open nothing to
+    /// `stat`.
+    fn drop(&mut self) {
+        self.flush_manifest();
     }
 }
 
@@ -804,10 +1121,18 @@ fn remove_entry_file(path: &Path) {
     drop(std::fs::remove_file(path));
 }
 
-fn unix_seconds_now() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
+/// Now, in nanoseconds since the Unix epoch: the resolution the ledger
+/// orders writes by, so two writes in one second still evict oldest
+/// first. A `u64` of nanoseconds reaches the year 2554.
+fn unix_nanos_now() -> u64 {
+    unix_nanos_of(SystemTime::now())
+}
+
+fn unix_nanos_of(time: SystemTime) -> u64 {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_nanos()).map_or(u64::MAX, |nanos| nanos)
+        })
 }
 
 /// Whether `name` is exactly `len` lowercase hex digits, as every
@@ -846,13 +1171,30 @@ fn reclaim_legacy_shards(root: &Path) -> Result<u64, CoreError> {
     Ok(reclaimed)
 }
 
-/// Keep the current namespace and the `max_namespaces - 1` most recently
-/// opened others; remove the rest.
-fn retire_other_namespaces(
+/// What reconciling the other namespaces under a root did.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct OtherNamespaces {
+    retired_namespaces: u64,
+    trimmed_entries: u64,
+    retained_bytes: u64,
+    stat_calls: u64,
+}
+
+/// Reconcile every namespace under `root` but `current` with `policy`
+/// (QI-BB-009).
+///
+/// Keep the `max_namespaces - 1` most recently opened and remove the
+/// rest; trim each kept one to the per-namespace policy — expired
+/// entries, then the oldest writes past the entry and byte ceilings — and
+/// rewrite its manifest; then, least recently opened first, remove whole
+/// namespaces until what they hold together plus the current namespace's
+/// full byte ceiling fits under the total ceiling.
+fn reconcile_other_namespaces(
     root: &Path,
     current: &str,
-    max_namespaces: usize,
-) -> Result<u64, CoreError> {
+    policy: EmbeddingCacheRetentionPolicy,
+    now_nanos: u64,
+) -> Result<OtherNamespaces, CoreError> {
     let mut others: Vec<(SystemTime, PathBuf)> = Vec::new();
     for entry in std::fs::read_dir(root).map_err(|err| storage_error("list", root, &err))? {
         let entry = entry.map_err(|err| storage_error("list", root, &err))?;
@@ -878,19 +1220,103 @@ fn retire_other_namespaces(
     }
     // Most recently opened first; the current namespace takes one slot.
     others.sort_by(|left, right| right.0.cmp(&left.0));
-    let mut retired = 0_u64;
-    for (_opened, path) in others.into_iter().skip(max_namespaces.saturating_sub(1)) {
-        std::fs::remove_dir_all(&path).map_err(|err| storage_error("remove", &path, &err))?;
-        retired = retired.saturating_add(1);
+    let mut report = OtherNamespaces::default();
+    let keep = policy.namespaces.saturating_sub(1);
+    let mut retained: Vec<(PathBuf, u64)> = Vec::new();
+    for (index, (_opened, path)) in others.into_iter().enumerate() {
+        if index >= keep {
+            std::fs::remove_dir_all(&path).map_err(|err| storage_error("remove", &path, &err))?;
+            report.retired_namespaces = report.retired_namespaces.saturating_add(1);
+            continue;
+        }
+        let trimmed = trim_namespace_to_policy(&path, policy, now_nanos)?;
+        report.trimmed_entries = report.trimmed_entries.saturating_add(trimmed.removed);
+        report.stat_calls = report.stat_calls.saturating_add(trimmed.stat_calls);
+        retained.push((path, trimmed.retained_bytes));
     }
-    Ok(retired)
+    // The global ceiling: the current namespace may fill its whole
+    // per-namespace ceiling, so the others must leave that much room.
+    let room_for_others = policy.max_total_bytes.saturating_sub(policy.resident_bytes);
+    let mut retained_bytes: u64 = retained.iter().map(|(_path, bytes)| *bytes).sum();
+    while retained_bytes > room_for_others {
+        let Some((path, bytes)) = retained.pop() else {
+            break;
+        };
+        std::fs::remove_dir_all(&path).map_err(|err| storage_error("remove", &path, &err))?;
+        report.retired_namespaces = report.retired_namespaces.saturating_add(1);
+        retained_bytes = retained_bytes.saturating_sub(bytes);
+    }
+    report.retained_bytes = retained_bytes;
+    Ok(report)
 }
 
-/// Read every entry of a namespace into the report and remove the
-/// temporary files of interrupted writes.
-fn scan_namespace(namespace_dir: &Path) -> Result<(Vec<ScannedEntry>, u64), CoreError> {
+/// What trimming one retained namespace did.
+struct NamespaceTrim {
+    removed: u64,
+    retained_bytes: u64,
+    stat_calls: u64,
+}
+
+/// Bring a namespace this process is not writing to within the policy.
+///
+/// Expired entries go first and then, oldest write first, whatever
+/// exceeds the entry or byte ceiling; the manifest is rewritten so the
+/// next open of the namespace `stat`s nothing.
+fn trim_namespace_to_policy(
+    namespace_dir: &Path,
+    policy: EmbeddingCacheRetentionPolicy,
+    now_nanos: u64,
+) -> Result<NamespaceTrim, CoreError> {
+    let loaded = load_namespace(namespace_dir, now_nanos)?;
+    let mut ledger: RetentionLedger<()> = RetentionLedger::new(policy);
+    let mut entries = loaded.entries;
+    entries.sort_by_key(|entry| (entry.written_nanos, entry.key));
+    let mut removed: Vec<EmbeddingCacheKey> = Vec::new();
+    for entry in entries {
+        removed.extend(
+            ledger
+                .seed(entry.key, entry.bytes, entry.written_nanos, ())
+                .into_iter()
+                .map(|(key, ())| key),
+        );
+    }
+    removed.extend(
+        ledger
+            .expire_to_policy(now_nanos)
+            .into_iter()
+            .map(|(key, ())| key),
+    );
+    for key in &removed {
+        remove_entry_file(&entry_path(namespace_dir, key));
+    }
+    write_atomic(
+        &namespace_dir.join(MANIFEST_FILE),
+        &encode_manifest(&ledger.manifest_records()),
+    )
+    .map_err(|err| storage_error("write manifest in", namespace_dir, &err))?;
+    Ok(NamespaceTrim {
+        removed: count_u64(removed.len()),
+        retained_bytes: ledger.stats().resident_bytes,
+        stat_calls: loaded.stat_calls,
+    })
+}
+
+/// Load a namespace's entries from its manifest and directory listing,
+/// removing the temporary files of interrupted writes.
+///
+/// The listing names every entry without touching its metadata; an entry
+/// the manifest covers takes its bytes and write time from there, and only
+/// an uncovered entry is `stat`ed, each one counted. A manifest record
+/// with no file behind it is dropped and counted.
+fn load_namespace(namespace_dir: &Path, now_nanos: u64) -> Result<LoadedNamespace, CoreError> {
+    let (manifest, mut records) = match read_manifest(namespace_dir) {
+        ManifestRead::Present(records) => (ManifestOutcome::Present, records),
+        ManifestRead::Absent => (ManifestOutcome::Absent, BTreeMap::new()),
+        ManifestRead::Malformed => (ManifestOutcome::Malformed, BTreeMap::new()),
+    };
     let mut entries = Vec::new();
     let mut stale_staging_removed = 0_u64;
+    let mut stat_calls = 0_u64;
     let children = std::fs::read_dir(namespace_dir)
         .map_err(|err| storage_error("list", namespace_dir, &err))?;
     for child in children {
@@ -929,19 +1355,36 @@ fn scan_namespace(namespace_dir: &Path) -> Result<(Vec<ScannedEntry>, u64), Core
             else {
                 continue;
             };
+            if let Some(record) = records.remove(&key) {
+                entries.push(ScannedEntry {
+                    key,
+                    bytes: record.bytes,
+                    written_nanos: record.written_nanos,
+                });
+                continue;
+            }
+            stat_calls = stat_calls.saturating_add(1);
             let metadata =
                 std::fs::metadata(&path).map_err(|err| storage_error("stat", &path, &err))?;
-            let modified = metadata
+            let written_nanos = metadata
                 .modified()
-                .map_err(|err| storage_error("stat", &path, &err))?;
+                .map(unix_nanos_of)
+                .map_err(|err| storage_error("stat", &path, &err))?
+                .min(now_nanos);
             entries.push(ScannedEntry {
-                modified,
                 key,
                 bytes: metadata.len(),
+                written_nanos,
             });
         }
     }
-    Ok((entries, stale_staging_removed))
+    Ok(LoadedNamespace {
+        entries,
+        stale_staging_removed,
+        manifest,
+        stat_calls,
+        manifest_stale_records: count_u64(records.len()),
+    })
 }
 
 /// Replace `path` with `bytes` so a reader sees either the previous
@@ -979,13 +1422,22 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 impl EmbeddingCache for FileEmbeddingCache {
     fn get(&self, key: &EmbeddingCacheKey) -> Option<Vec<f32>> {
+        let path = self.path_for(key);
         {
             let mut ledger = self.lock_ledger()?;
             // The ledger is authoritative for what this process holds: an
-            // absent key is a miss without a disk probe.
-            let _resident: &() = ledger.touch(key)?;
+            // absent key is a miss without a disk probe, and an entry past
+            // the age cap is removed here, under the lock, before anyone
+            // could read it again.
+            match ledger.touch(key, unix_nanos_now()) {
+                Touch::Hit(()) => {}
+                Touch::Miss => return None,
+                Touch::Expired(_) => {
+                    remove_entry_file(&path);
+                    return None;
+                }
+            }
         }
-        let path = self.path_for(key);
         // Read outside the lock: a concurrent eviction between the touch and
         // the read leaves an absent file, which is a miss.
         let bytes = match std::fs::read(&path) {
@@ -1022,7 +1474,7 @@ impl EmbeddingCache for FileEmbeddingCache {
                 return;
             };
             if !ledger.admits(entry_bytes) {
-                let refused = ledger.insert(*key, entry_bytes, ());
+                let refused = ledger.insert(*key, entry_bytes, unix_nanos_now(), ());
                 drop(ledger);
                 if refused.displaced.is_some() {
                     remove_entry_file(&path);
@@ -1034,18 +1486,30 @@ impl EmbeddingCache for FileEmbeddingCache {
             return;
         }
         // Account the entry as it is on disk now, so two writers of one key
-        // agree on its bytes whichever renamed last, and evict under the
-        // same lock so the ceiling holds at every point a reader can see.
+        // agree on its bytes whichever renamed last, and expire and evict
+        // under the same lock so the ceilings hold at every point a reader
+        // can see.
         let Ok(on_disk) = std::fs::metadata(&path) else {
             return;
         };
-        let Some(mut ledger) = self.lock_ledger() else {
-            return;
+        let now = unix_nanos_now();
+        let removed: Vec<EmbeddingCacheKey> = {
+            let Some(mut ledger) = self.lock_ledger() else {
+                return;
+            };
+            let mut removed: Vec<EmbeddingCacheKey> = ledger
+                .expire_to_policy(now)
+                .into_iter()
+                .map(|(key, ())| key)
+                .collect();
+            let outcome = ledger.insert(*key, on_disk.len(), now, ());
+            removed.extend(outcome.evicted.into_iter().map(|(key, ())| key));
+            removed
         };
-        let outcome = ledger.insert(*key, on_disk.len(), ());
-        for (evicted, ()) in outcome.evicted {
-            remove_entry_file(&self.path_for(&evicted));
+        for gone in removed {
+            remove_entry_file(&self.path_for(&gone));
         }
+        self.note_put();
     }
 
     fn evict(&self, key: &EmbeddingCacheKey) {
@@ -1219,9 +1683,13 @@ mod tests {
         identity("m", "r").key(text)
     }
 
-    /// A small policy: `entries` entries, `bytes` bytes, one namespace.
+    /// An age no test entry reaches.
+    const LONG_AGE: Duration = Duration::from_secs(365 * 24 * 60 * 60);
+
+    /// A small policy: `entries` entries, `bytes` bytes, one namespace,
+    /// no age or total ceiling in reach.
     fn policy(entries: u64, bytes: u64) -> EmbeddingCacheRetentionPolicy {
-        EmbeddingCacheRetentionPolicy::new(entries, bytes, 1).expect("policy")
+        EmbeddingCacheRetentionPolicy::new(entries, bytes, 1, LONG_AGE, u64::MAX).expect("policy")
     }
 
     fn file_cache(root: &Path, policy: EmbeddingCacheRetentionPolicy) -> FileEmbeddingCache {
@@ -1755,14 +2223,17 @@ mod tests {
     fn opening_removes_stale_staging_legacy_shards_and_surplus_namespaces() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().join("embed-cache");
-        // Three other identities opened in order under a generous policy.
+        // Three other identities opened in order under a generous policy
+        // (a finite per-namespace ceiling, so the total ceiling leaves the
+        // others room).
         let identities: Vec<EmbeddingCacheIdentityV1> =
             (0..3).map(|i| identity("m", &format!("old-{i}"))).collect();
         for (index, identity) in identities.iter().enumerate() {
             let cache = FileEmbeddingCache::new(
                 &root,
                 identity,
-                EmbeddingCacheRetentionPolicy::new(64, u64::MAX, 8).expect("policy"),
+                EmbeddingCacheRetentionPolicy::new(64, 1 << 30, 8, LONG_AGE, u64::MAX)
+                    .expect("policy"),
             )
             .expect("cache");
             cache.put(&identity.key("warm"), &[0.0, 1.0]);
@@ -1794,7 +2265,7 @@ mod tests {
         let cache = FileEmbeddingCache::new(
             &root,
             &current,
-            EmbeddingCacheRetentionPolicy::new(64, u64::MAX, 3).expect("policy"),
+            EmbeddingCacheRetentionPolicy::new(64, 1 << 30, 3, LONG_AGE, u64::MAX).expect("policy"),
         )
         .expect("cache");
         let report = cache.open_report();
@@ -1917,9 +2388,356 @@ mod tests {
 
     #[test]
     fn zero_ceilings_are_refused_at_construction() {
-        assert!(EmbeddingCacheRetentionPolicy::new(0, 1, 1).is_err());
-        assert!(EmbeddingCacheRetentionPolicy::new(1, 0, 1).is_err());
-        assert!(EmbeddingCacheRetentionPolicy::new(1, 1, 0).is_err());
-        assert!(EmbeddingCacheRetentionPolicy::new(1, 1, 1).is_ok());
+        let age = Duration::from_secs(1);
+        assert!(EmbeddingCacheRetentionPolicy::new(0, 1, 1, age, 1).is_err());
+        assert!(EmbeddingCacheRetentionPolicy::new(1, 0, 1, age, 1).is_err());
+        assert!(EmbeddingCacheRetentionPolicy::new(1, 1, 0, age, 1).is_err());
+        assert!(EmbeddingCacheRetentionPolicy::new(1, 1, 1, Duration::ZERO, 1).is_err());
+        assert!(EmbeddingCacheRetentionPolicy::new(1, 1, 1, age, 0).is_err());
+        assert!(
+            EmbeddingCacheRetentionPolicy::new(1, 2, 1, age, 1).is_err(),
+            "the total ceiling must hold one namespace"
+        );
+        assert!(EmbeddingCacheRetentionPolicy::new(1, 1, 1, age, 1).is_ok());
+        assert!(
+            EmbeddingCacheRetentionPolicy::DEFAULT.max_total_bytes()
+                >= EmbeddingCacheRetentionPolicy::DEFAULT.max_resident_bytes()
+        );
+    }
+
+    fn nanos(secs: u64) -> u64 {
+        secs.saturating_mul(1_000_000_000)
+    }
+
+    /// The age cap, on the ledger with an injected clock: an entry past
+    /// it is expired at the next lookup (a counted miss) and at the next
+    /// write, never served.
+    #[test]
+    fn the_ledger_expires_entries_past_the_age_cap_on_lookup_and_on_write() {
+        let policy =
+            EmbeddingCacheRetentionPolicy::new(64, u64::MAX, 1, Duration::from_secs(100), u64::MAX)
+                .expect("policy");
+        let mut ledger: RetentionLedger<u32> = RetentionLedger::new(policy);
+        let old = key("old");
+        let fresh = key("fresh");
+        let _seeded: Vec<(EmbeddingCacheKey, u32)> = ledger.seed(old, 8, nanos(1_000), 1);
+        let _seeded: Vec<(EmbeddingCacheKey, u32)> = ledger.seed(fresh, 8, nanos(1_050), 2);
+        // Within the cap, both are hits.
+        assert!(matches!(ledger.touch(&old, nanos(1_099)), Touch::Hit(1)));
+        assert!(matches!(ledger.touch(&fresh, nanos(1_099)), Touch::Hit(2)));
+        // Past it for `old` only: expired on lookup, counted once, gone.
+        assert!(matches!(
+            ledger.touch(&old, nanos(1_101)),
+            Touch::Expired(Some(1))
+        ));
+        assert!(matches!(ledger.touch(&old, nanos(1_101)), Touch::Miss));
+        let stats = ledger.stats();
+        assert_eq!(
+            (stats.expirations, stats.misses, stats.hits, stats.entries),
+            (1, 2, 2, 1)
+        );
+        // A write at a time past `fresh`'s age expires it before the insert.
+        let expired = ledger.expire_to_policy(nanos(1_151));
+        assert_eq!(expired, vec![(fresh, 2)]);
+        let _inserted = ledger.insert(key("newest"), 8, nanos(1_151), 3);
+        let stats = ledger.stats();
+        assert_eq!(
+            (stats.expirations, stats.entries, stats.resident_bytes),
+            (2, 1, 8)
+        );
+        assert!(matches!(
+            ledger.touch(&key("newest"), nanos(1_200)),
+            Touch::Hit(3)
+        ));
+    }
+
+    /// The file store expires on open what the manifest says is too old,
+    /// removes the files, and the ledger equals the disk afterwards.
+    #[test]
+    fn opening_expires_entries_older_than_the_age_cap_from_the_manifest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("embed-cache");
+        let keys: Vec<EmbeddingCacheKey> = (0..4).map(|i| key(&format!("aged-{i}"))).collect();
+        {
+            let cache = file_cache(&root, policy(64, u64::MAX));
+            for key in &keys {
+                cache.put(key, &[0.0, 1.0]);
+            }
+        }
+        // Rewrite the manifest so two entries were written ten days ago.
+        let namespace_dir = root.join(identity("m", "r").namespace());
+        let mut records = match read_manifest(&namespace_dir) {
+            ManifestRead::Present(records) => records,
+            ManifestRead::Absent | ManifestRead::Malformed => {
+                panic!("the drop flushed a manifest")
+            }
+        };
+        let ten_days_ago = unix_nanos_now() - nanos(10 * 24 * 60 * 60);
+        for key in keys.iter().take(2) {
+            records.get_mut(key).expect("manifested").written_nanos = ten_days_ago;
+        }
+        write_atomic(
+            &namespace_dir.join(MANIFEST_FILE),
+            &encode_manifest(&records),
+        )
+        .expect("manifest");
+
+        let reopened = FileEmbeddingCache::new(
+            &root,
+            &identity("m", "r"),
+            EmbeddingCacheRetentionPolicy::new(
+                64,
+                u64::MAX,
+                1,
+                Duration::from_secs(24 * 60 * 60),
+                u64::MAX,
+            )
+            .expect("policy"),
+        )
+        .expect("reopen");
+        let report = reopened.open_report();
+        assert_eq!((report.expired_at_open, report.scanned_entries), (2, 4));
+        assert!(report.manifest_present && report.stat_calls_at_open == 0);
+        for (index, key) in keys.iter().enumerate() {
+            assert_eq!(reopened.path_for(key).exists(), index >= 2, "entry {index}");
+        }
+        assert_eq!(reopened.stats().entries, 2);
+        assert_ledger_matches_disk(&reopened);
+    }
+
+    /// Opening trusts the manifest for the entries it covers and reads
+    /// metadata only for the ones it does not.
+    ///
+    /// The covered entries keep the manifest's write times (distinct from
+    /// their file times, so a re-read would show), the uncovered ones are
+    /// counted, and a record without a file behind it is dropped.
+    #[test]
+    fn opening_trusts_the_manifest_and_stats_only_the_entries_it_does_not_cover() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("embed-cache");
+        let keys: Vec<EmbeddingCacheKey> = (0..6).map(|i| key(&format!("m-{i}"))).collect();
+        {
+            let cache = file_cache(&root, policy(64, u64::MAX));
+            for key in keys.iter().take(4) {
+                cache.put(key, &[0.0, 1.0]);
+            }
+        }
+        let namespace_dir = root.join(identity("m", "r").namespace());
+        // Two entries written after the last flush (a crash before the
+        // next one): the store is forgotten, so its drop never flushes.
+        {
+            let cache = file_cache(&root, policy(64, u64::MAX));
+            for key in keys.iter().skip(4) {
+                cache.put(key, &[0.0, 1.0]);
+            }
+            std::mem::forget(cache);
+        }
+        // The manifest says entry 0 is the newest write and entry 3 the
+        // oldest — the reverse of the file times.
+        let mut records = match read_manifest(&namespace_dir) {
+            ManifestRead::Present(records) => records,
+            ManifestRead::Absent | ManifestRead::Malformed => {
+                panic!("the drop flushed a manifest")
+            }
+        };
+        let base = unix_nanos_now() - nanos(1_000);
+        for (index, key) in keys.iter().take(4).enumerate() {
+            records.get_mut(key).expect("manifested").written_nanos =
+                base - nanos(u64::try_from(index).expect("fits"));
+        }
+        // A record whose file is gone.
+        let _stale = records.insert(
+            key("vanished"),
+            ManifestRecord {
+                bytes: entry_len(),
+                written_nanos: base,
+            },
+        );
+        write_atomic(
+            &namespace_dir.join(MANIFEST_FILE),
+            &encode_manifest(&records),
+        )
+        .expect("manifest");
+        // The uncovered entries' file times are the newest of all.
+        let reopened = file_cache(&root, policy(64, u64::MAX));
+        let report = reopened.open_report();
+        assert!(report.manifest_present);
+        assert_eq!(
+            report.stat_calls_at_open, 2,
+            "only the uncovered entries were read"
+        );
+        assert_eq!(report.manifest_stale_records, 1);
+        assert_eq!(report.scanned_entries, 6);
+        assert_ledger_matches_disk(&reopened);
+        drop(reopened);
+        // Tightened to three entries: the manifest's order rules, so the
+        // survivors are the two uncovered (newest by file time) entries
+        // and entry 0, which the manifest calls the newest covered write —
+        // not entries 2 and 3, which the file times would have kept.
+        let tightened = file_cache(&root, policy(3, u64::MAX));
+        assert_eq!(tightened.open_report().evicted_at_open, 3);
+        for (index, key) in keys.iter().enumerate() {
+            assert_eq!(
+                tightened.path_for(key).exists(),
+                index == 0 || index >= 4,
+                "entry {index}"
+            );
+        }
+        assert_ledger_matches_disk(&tightened);
+    }
+
+    /// A malformed manifest is ignored and counted: every entry is read
+    /// from disk and the store still opens whole.
+    #[test]
+    fn a_malformed_manifest_is_ignored_and_every_entry_is_read_from_disk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("embed-cache");
+        {
+            let cache = file_cache(&root, policy(64, u64::MAX));
+            cache.put(&key("a"), &[0.0, 1.0]);
+            cache.put(&key("b"), &[0.0, 1.0]);
+        }
+        let namespace_dir = root.join(identity("m", "r").namespace());
+        std::fs::write(namespace_dir.join(MANIFEST_FILE), b"not a manifest").expect("clobber");
+        let reopened = file_cache(&root, policy(64, u64::MAX));
+        let report = reopened.open_report();
+        assert!(report.manifest_malformed && !report.manifest_present);
+        assert_eq!((report.stat_calls_at_open, report.scanned_entries), (2, 2));
+        assert_eq!(reopened.stats().entries, 2);
+        assert!(reopened.get(&key("a")).is_some());
+        assert_ledger_matches_disk(&reopened);
+        assert_eq!(
+            reopened.manifest_flushes(),
+            1,
+            "the open rewrote the manifest"
+        );
+    }
+
+    /// Every `.vec` byte under a cache root, over every namespace.
+    fn root_bytes(root: &Path) -> u64 {
+        let mut total = 0_u64;
+        for namespace in std::fs::read_dir(root).expect("root") {
+            let namespace = namespace.expect("namespace");
+            if !namespace.path().is_dir()
+                || !is_hex_name(&namespace.file_name().to_string_lossy(), NAMESPACE_LEN)
+            {
+                continue;
+            }
+            total = total.saturating_add(on_disk_entries(&namespace.path()).values().sum::<u64>());
+        }
+        total
+    }
+
+    /// A narrower policy is applied to the retained other namespaces on
+    /// open, not just counted.
+    ///
+    /// Each is trimmed to the per-namespace policy (oldest writes first)
+    /// and rewrites its manifest, and whole namespaces are dropped, least
+    /// recently opened first, until the total ceiling leaves room for the
+    /// current namespace's full ceiling.
+    #[test]
+    fn opening_trims_retained_namespaces_to_the_policy_and_holds_the_total_ceiling() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("embed-cache");
+        let others: Vec<EmbeddingCacheIdentityV1> = (0..2)
+            .map(|i| identity("m", &format!("other-{i}")))
+            .collect();
+        for (index, other) in others.iter().enumerate() {
+            let cache = FileEmbeddingCache::new(
+                &root,
+                other,
+                EmbeddingCacheRetentionPolicy::new(64, 1 << 30, 8, LONG_AGE, u64::MAX)
+                    .expect("policy"),
+            )
+            .expect("cache");
+            for entry in 0..4 {
+                cache.put(&other.key(&format!("text-{entry}")), &[0.0, 1.0]);
+            }
+            drop(cache);
+            let stamp = SystemTime::UNIX_EPOCH
+                + Duration::from_secs(1_700_000_000 + u64::try_from(index).expect("fits"));
+            std::fs::File::open(root.join(other.namespace()).join(OPENED_MARKER))
+                .expect("marker")
+                .set_modified(stamp)
+                .expect("set modified");
+        }
+        assert_eq!(root_bytes(&root), entry_len() * 8);
+
+        // Two entries per namespace: both others are trimmed to two, the
+        // oldest writes going first, and the total ceiling (room for the
+        // current namespace's 3 entries plus 4 more) keeps both.
+        let current = identity("m", "current");
+        let per_namespace = entry_len() * 3;
+        let cache = FileEmbeddingCache::new(
+            &root,
+            &current,
+            EmbeddingCacheRetentionPolicy::new(
+                2,
+                per_namespace,
+                3,
+                LONG_AGE,
+                per_namespace + entry_len() * 4,
+            )
+            .expect("policy"),
+        )
+        .expect("cache");
+        let report = cache.open_report();
+        assert_eq!(
+            (report.retired_namespaces, report.trimmed_foreign_entries),
+            (0, 4)
+        );
+        assert_eq!(report.retained_foreign_bytes, entry_len() * 4);
+        for other in &others {
+            let disk = on_disk_entries(&root.join(other.namespace()));
+            assert_eq!(disk.len(), 2, "{} trimmed to the policy", other.namespace());
+            for entry in 0..4 {
+                assert_eq!(
+                    disk.contains_key(&other.key(&format!("text-{entry}")).hex()),
+                    entry >= 2,
+                    "the oldest writes went first"
+                );
+            }
+            assert!(matches!(
+                read_manifest(&root.join(other.namespace())),
+                ManifestRead::Present(records) if records.len() == 2
+            ));
+        }
+        assert_eq!(root_bytes(&root), entry_len() * 4);
+        drop(cache);
+
+        // A total ceiling with room for only two foreign entries beside
+        // the current namespace's full ceiling: the least recently opened
+        // other namespace is dropped whole.
+        let cache = FileEmbeddingCache::new(
+            &root,
+            &current,
+            EmbeddingCacheRetentionPolicy::new(
+                2,
+                per_namespace,
+                3,
+                LONG_AGE,
+                per_namespace + entry_len() * 2,
+            )
+            .expect("policy"),
+        )
+        .expect("cache");
+        let report = cache.open_report();
+        assert_eq!(
+            (report.retired_namespaces, report.trimmed_foreign_entries),
+            (1, 0)
+        );
+        assert_eq!(report.retained_foreign_bytes, entry_len() * 2);
+        assert!(
+            !root.join(others[0].namespace()).is_dir(),
+            "the older namespace went"
+        );
+        assert!(root.join(others[1].namespace()).is_dir());
+        // Filling the current namespace to its own ceiling never takes the
+        // root past the total ceiling.
+        for entry in 0..10 {
+            cache.put(&current.key(&format!("fill-{entry}")), &[0.0, 1.0]);
+            assert!(root_bytes(&root) <= per_namespace + entry_len() * 2);
+        }
+        assert_ledger_matches_disk(&cache);
     }
 }

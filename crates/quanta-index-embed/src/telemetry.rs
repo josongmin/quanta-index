@@ -11,6 +11,8 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
+use quanta_index_core::{CoreError, MetricPointV1, MetricSourcePort};
+
 /// Most recent request samples the snapshot carries.
 pub const REQUEST_SAMPLE_CAPACITY: usize = 256;
 
@@ -156,6 +158,44 @@ pub fn snapshot_openai_embed_stats() -> OpenAiEmbedStatsSnapshot {
     }
 }
 
+/// The provider telemetry as scrape points, `embed_provider_…`
+/// (QI-BB-015): outbound requests, retries, retryable (HTTP) failures,
+/// transport failures, and the samples the diagnostic window let go.
+///
+/// The counters are process-global, so one source registered by the
+/// composition root reports every provider instance in the process.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct OpenAiEmbedTelemetrySource;
+
+impl MetricSourcePort for OpenAiEmbedTelemetrySource {
+    fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
+        let snapshot = snapshot_openai_embed_stats();
+        Ok(vec![
+            MetricPointV1::counter(
+                "embed_provider_http_requests_total",
+                snapshot.http_request_count,
+            ),
+            MetricPointV1::counter("embed_provider_retries_total", snapshot.retry_count),
+            MetricPointV1::counter(
+                "embed_provider_http_failures_total",
+                snapshot.retryable_status_count,
+            ),
+            MetricPointV1::counter(
+                "embed_provider_transport_failures_total",
+                snapshot.transport_error_count,
+            ),
+            MetricPointV1::counter(
+                "embed_provider_texts_observed_total",
+                snapshot.total_texts_observed,
+            ),
+            MetricPointV1::counter(
+                "embed_provider_request_samples_dropped_total",
+                snapshot.request_samples_dropped,
+            ),
+        ])
+    }
+}
+
 pub fn reset_openai_embed_stats() {
     let stats = stats();
     stats.total_texts_observed.store(0, Ordering::Relaxed);
@@ -176,6 +216,50 @@ pub fn reset_openai_embed_stats() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quanta_index_core::MetricValueV1;
+
+    fn counter(points: &[MetricPointV1], name: &str) -> u64 {
+        points
+            .iter()
+            .find(|point| point.name == name)
+            .and_then(|point| match point.value {
+                MetricValueV1::Counter(value) => Some(value),
+                MetricValueV1::Gauge(_) => None,
+            })
+            .unwrap_or_else(|| panic!("counter `{name}` is scraped"))
+    }
+
+    /// Every failure the retry loop records reaches the scrape source
+    /// (QI-BB-009 #5).
+    ///
+    /// The counters are process-global and other tests record into them
+    /// concurrently, so the assertions are lower bounds on the deltas.
+    #[test]
+    fn the_telemetry_source_reports_retries_and_failures() {
+        let before = OpenAiEmbedTelemetrySource.scrape().expect("scrape");
+        record_http_request(3, 9);
+        record_retry();
+        record_retryable_status();
+        record_transport_error();
+        let after = OpenAiEmbedTelemetrySource.scrape().expect("scrape");
+        for name in [
+            "embed_provider_http_requests_total",
+            "embed_provider_retries_total",
+            "embed_provider_http_failures_total",
+            "embed_provider_transport_failures_total",
+        ] {
+            assert!(
+                counter(&after, name) >= counter(&before, name).saturating_add(1),
+                "{name} moved by at least the recorded event"
+            );
+        }
+        assert!(
+            after
+                .iter()
+                .all(|point| quanta_index_contract::is_metric_name_v1(&point.name)),
+            "every name is wire-valid"
+        );
+    }
 
     /// The sample window never grows past its capacity, the maxima stay
     /// exact past it, and the snapshot says how many samples it let go.

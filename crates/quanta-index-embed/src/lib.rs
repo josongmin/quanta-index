@@ -21,6 +21,6 @@ pub use openai::{
     OpenAiEmbeddingProvider, OpenAiProviderConfig, ReqwestBlockingTransport,
 };
 pub use telemetry::{
-    OpenAiEmbedStatsSnapshot, OpenAiRequestSample, REQUEST_SAMPLE_CAPACITY,
-    reset_openai_embed_stats, snapshot_openai_embed_stats,
+    OpenAiEmbedStatsSnapshot, OpenAiEmbedTelemetrySource, OpenAiRequestSample,
+    REQUEST_SAMPLE_CAPACITY, reset_openai_embed_stats, snapshot_openai_embed_stats,
 };

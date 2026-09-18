@@ -23,7 +23,7 @@ use quanta_index_contract::{
 use quanta_index_core::{
     GenerationStorageKeyV1, LEXICAL_WRITER_HEAP_BYTES_MIN, LexicalExecutionBudgetV1,
     LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalWriterPolicy, RegexMatchCachePolicy,
-    RequestBudgetV1, SearchCorpusBatchBuildPort,
+    RequestBudgetV1, SearchCorpusBatchBuildPort, count_from_usize,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_lexical::regex::RegexPolicy;
@@ -198,8 +198,15 @@ fn an_idle_writer_is_committed_and_released_on_the_next_sweep() -> TestResult {
     {
         return Err(format!("two writers were opened: {stats:?}").into());
     }
+    let open_before_sweep = stats.open_writers;
     std::thread::sleep(idle.saturating_mul(2));
-    adapter.release_idle_writers()?;
+    let released = adapter.release_idle_writers()?;
+    if released != count_from_usize(open_before_sweep) {
+        return Err(format!(
+            "the sweep reports every writer it released ({open_before_sweep} were open), got {released}"
+        )
+        .into());
+    }
     let stats = adapter.writer_cache_stats()?;
     if stats.open_writers != 0 || stats.idle_releases != 2 || stats.allocated_heap_bytes != 0 {
         return Err(format!("both idle writers give their heap back: {stats:?}").into());

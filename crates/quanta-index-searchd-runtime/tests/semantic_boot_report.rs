@@ -46,7 +46,7 @@ fn socket_paths() -> (PathBuf, PathBuf, PathBuf) {
     reason = "test asserts the assembled boot report via assert macros"
 )]
 fn fresh_runtime_exposes_empty_semantic_boot_report() -> TestResult {
-    let temp = tempfile::tempdir()?;
+    let temp = quanta_index_searchd_harness::private_tempdir()?;
     let (query_socket, control_socket, ingest_socket) = socket_paths();
     let mut config = SearchdConfig::from_state_root(temp.path().to_path_buf())
         .try_with_search_corpus_history_retention_limits(
@@ -166,7 +166,7 @@ fn build_config(state_root: &Path) -> SearchdConfig {
     reason = "test asserts the assembled boot report on an inactive corrupted generation via assert macros"
 )]
 fn runtime_boot_inventories_a_corrupted_inactive_semantic_generation() -> TestResult {
-    let temp = tempfile::tempdir()?;
+    let temp = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = temp.path().to_path_buf();
     let semantic_root = state_root.join("indexes").join("semantic");
     let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;

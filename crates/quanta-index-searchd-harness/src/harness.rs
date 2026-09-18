@@ -49,16 +49,19 @@ use quanta_index_contract::{
     StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope, StructuralTreeRecord,
     SymbolId, TextQueryRequest, TextQuerySyntax,
 };
-use quanta_index_core::{IngestResourcePolicy, SemanticStreamWindowPolicy};
+use quanta_index_core::{
+    IngestResourcePolicy, LexicalWriterPolicy, ProcessMemoryProbePort, SemanticStreamWindowPolicy,
+};
 use quanta_index_ipc::{
     ClientIoPolicy, IpcError, ServerAdmissionPolicy, send_request, stamp_batch_digest_v1,
 };
 use quanta_index_search_plane::{BoundedQueryObsStore, MetricSample, ObsError};
 use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd::app::{
-    BootInventoryReportV1, SearchdConfig, SemanticEmbedderProfile, SocketAccessPolicies, SocketRole,
+    BootInventoryReportV1, KernelResidentMemoryProbe, MaintenancePolicy, ProcessMemoryCeilings,
+    SearchdConfig, SemanticEmbedderProfile, SocketAccessPolicies, SocketRole,
 };
-use quanta_index_searchd_runtime::build_runtime;
+use quanta_index_searchd_runtime::build_runtime_with_memory_probe;
 use tempfile::TempDir;
 
 #[derive(Clone, Debug)]
@@ -127,6 +130,14 @@ struct DriverSpec<'a> {
     /// The query socket's admission limits, including the deadline every
     /// dispatch runs under (QI-BB-002).
     query_admission_policy: ServerAdmissionPolicy,
+    /// The lexical writer envelope (QI-BB-016).
+    lexical_writer_policy: LexicalWriterPolicy,
+    /// The process memory ceilings and where the daemon reads its resident
+    /// memory (QI-BB-016).
+    process_memory_ceilings: ProcessMemoryCeilings,
+    memory_probe: &'a Arc<dyn ProcessMemoryProbePort>,
+    /// The maintenance timer's cadence (QI-BB-016, QI-BB-015).
+    maintenance_policy: MaintenancePolicy,
     socket_access: &'a SocketAccessPolicies,
     /// Where the three sockets go: a fresh, unique directory the daemon
     /// creates under `/tmp` when any socket is shared (so the peers the
@@ -201,6 +212,21 @@ pub struct E2eRuntime {
     /// budget tests shorten it through
     /// [`Self::boot_with_query_admission_policy`].
     query_admission_policy: ServerAdmissionPolicy,
+    /// The lexical writer envelope (QI-BB-016); the production default,
+    /// narrowed by envelope tests through
+    /// [`Self::boot_with_lexical_writer_policy`].
+    lexical_writer_policy: LexicalWriterPolicy,
+    /// The process memory ceilings (QI-BB-016): the production default,
+    /// with a resident-memory gate only where a test installs one through
+    /// [`Self::boot_with_memory_probe`].
+    process_memory_ceilings: ProcessMemoryCeilings,
+    /// Where the daemon reads its resident memory: the kernel, or a
+    /// scripted probe a gate test drives.
+    memory_probe: Arc<dyn ProcessMemoryProbePort>,
+    /// The maintenance timer's cadence (QI-BB-016): fast in the harness,
+    /// so an idle sweep or a disk refresh is observable within a test's
+    /// patience without a sleep the length of the production tick.
+    maintenance_policy: MaintenancePolicy,
     driver: Option<DriverState>,
     query_obs_store: Option<Arc<BoundedQueryObsStore>>,
     chunk_ids_by_path: BTreeMap<String, ChunkId>,
@@ -462,11 +488,37 @@ impl E2eRuntime {
         Ok(runtime)
     }
 
+    /// A runtime whose lexical writer envelope is `policy` (QI-BB-016).
+    pub fn boot_with_lexical_writer_policy(policy: LexicalWriterPolicy) -> AnyResult<Self> {
+        let mut runtime = Self::boot()?;
+        runtime.lexical_writer_policy = policy;
+        Ok(runtime)
+    }
+
+    /// A runtime that reads its resident memory from `probe` under
+    /// `ceilings` (QI-BB-016), so a test can drive the lexical writer gate
+    /// without a real memory spike.
+    pub fn boot_with_memory_probe(
+        probe: Arc<dyn ProcessMemoryProbePort>,
+        ceilings: ProcessMemoryCeilings,
+    ) -> AnyResult<Self> {
+        let mut runtime = Self::boot()?;
+        runtime.memory_probe = probe;
+        runtime.process_memory_ceilings = ceilings;
+        Ok(runtime)
+    }
+
+    /// The maintenance timer's cadence this runtime boots with.
+    #[must_use]
+    pub const fn maintenance_policy(&self) -> MaintenancePolicy {
+        self.maintenance_policy
+    }
+
     fn boot_with_profile_and_history(
         profile: SemanticEmbedderProfile,
         history_max_generations: usize,
     ) -> AnyResult<Self> {
-        let tempdir = tempfile::tempdir()?;
+        let tempdir = private_tempdir()?;
         let state_root = tempdir.path().to_path_buf();
         Ok(Self {
             tempdir: Some(tempdir),
@@ -478,6 +530,10 @@ impl E2eRuntime {
             socket_directory: None,
             semantic_stream_window_policy: SemanticStreamWindowPolicy::DEFAULT,
             query_admission_policy: ServerAdmissionPolicy::DEFAULT,
+            lexical_writer_policy: LexicalWriterPolicy::DEFAULT,
+            process_memory_ceilings: ProcessMemoryCeilings::DEFAULT,
+            memory_probe: Arc::new(KernelResidentMemoryProbe),
+            maintenance_policy: MaintenancePolicy::new(HARNESS_MAINTENANCE_TICK)?,
             driver: None,
             query_obs_store: None,
             chunk_ids_by_path: BTreeMap::new(),
@@ -594,6 +650,10 @@ impl E2eRuntime {
                 ingest_resource_policy: self.ingest_resource_policy,
                 semantic_stream_window_policy: self.semantic_stream_window_policy,
                 query_admission_policy: self.query_admission_policy,
+                lexical_writer_policy: self.lexical_writer_policy,
+                process_memory_ceilings: self.process_memory_ceilings,
+                memory_probe: &self.memory_probe,
+                maintenance_policy: self.maintenance_policy,
                 socket_access: &self.socket_access,
                 socket_directory: self.socket_directory.as_deref(),
             })?;
@@ -2983,7 +3043,7 @@ fn explain_transport_error(
 
 fn start_driver(spec: &DriverSpec<'_>) -> AnyResult<DriverHandles> {
     let config = build_config(spec)?;
-    let runtime = build_runtime(config)?;
+    let runtime = build_runtime_with_memory_probe(config, Arc::clone(spec.memory_probe))?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
     let control_socket = runtime.control_server.socket_path().to_path_buf();
     let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
@@ -3026,6 +3086,9 @@ fn start_driver(spec: &DriverSpec<'_>) -> AnyResult<DriverHandles> {
 }
 
 const DEFAULT_HISTORY_MAX_GENERATIONS: usize = 8;
+/// The maintenance tick every harness daemon runs on: short enough that
+/// an idle sweep or disk refresh lands within a test's bounded wait.
+const HARNESS_MAINTENANCE_TICK: Duration = Duration::from_millis(50);
 
 fn build_config(spec: &DriverSpec<'_>) -> AnyResult<SearchdConfig> {
     let mut cfg = SearchdConfig::from_state_root(spec.state_root.to_path_buf())
@@ -3051,6 +3114,9 @@ fn build_config(spec: &DriverSpec<'_>) -> AnyResult<SearchdConfig> {
         .with_ingest_resource_policy(spec.ingest_resource_policy)
         .with_semantic_stream_window_policy(spec.semantic_stream_window_policy)
         .with_query_admission_policy(spec.query_admission_policy)
+        .with_lexical_writer_policy(spec.lexical_writer_policy)
+        .with_process_memory_ceilings(spec.process_memory_ceilings)
+        .with_maintenance_policy(spec.maintenance_policy)
         .with_socket_access_policies(spec.socket_access.clone()))
 }
 
@@ -3253,6 +3319,19 @@ fn scope_key(path: &str) -> quanta_index_contract::SearchScopeKey {
         doc_surface: quanta_index_contract::SearchScopeSurface::Chunk,
         repo_relative_path: RepoRelativePath::new(path),
     }
+}
+
+/// A temporary directory a daemon will accept as its state root or socket
+/// directory: mode `0700`.
+///
+/// The daemon refuses a state root or socket directory wider than `0700`
+/// (QI-BB-014), and a tempdir is created under the process umask, so every
+/// test that points a daemon at a tempdir narrows it through here.
+pub fn private_tempdir() -> std::io::Result<tempfile::TempDir> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir()?;
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+    Ok(dir)
 }
 
 /// Stamp the canonical batch digest on whichever receipt-bearing batch

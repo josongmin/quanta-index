@@ -270,7 +270,7 @@ fn seal_lexical(socket: &Path) -> TestResult {
 
 #[test]
 fn explain_reports_present_candidate() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "explain-test")?;
     publish_chunk(
@@ -358,7 +358,7 @@ fn explain_reports_present_candidate() -> TestResult {
 
 #[test]
 fn explain_rejects_generation_mismatch() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "explain-mismatch-test")?;

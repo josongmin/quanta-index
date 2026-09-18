@@ -1,6 +1,8 @@
 use quanta_index_contract::EmbeddingNormalization;
 use quanta_index_contract::lex::LexicalErrorCode;
-use quanta_index_core::{CoreError, SemanticPolicy, TextEmbeddingProvider};
+use quanta_index_core::{
+    CoreError, EMBED_CHECKPOINT, RequestBudgetV1, SemanticPolicy, TextEmbeddingProvider,
+};
 
 /// Output dimension of the search-owned hash embedder.
 pub const SEARCH_OWNED_SEMANTIC_DIMENSION: usize = 64;
@@ -22,7 +24,18 @@ pub const SEARCH_OWNED_SEMANTIC_MODEL_ID: &str = "search-owned-hash-text-v1";
 pub const SEARCH_OWNED_SEMANTIC_MODEL_REVISION: &str = "fnv1a64-slots-l2unit-v1";
 
 pub trait QueryTextEmbedderPort {
-    fn embed_query(&self, query_text: &str) -> Result<Vec<f32>, CoreError>;
+    /// Embed one query text under the request's budget (QI-BB-002).
+    ///
+    /// An embedder that reaches a provider observes the budget inside
+    /// that call — the deadline caps every attempt and a cancellation
+    /// abandons the attempt in flight — and answers with the typed
+    /// interruption at the `semantic:embed` checkpoint; an embedder with
+    /// nothing to interrupt checks the budget once and computes.
+    fn embed_query(
+        &self,
+        query_text: &str,
+        budget: &RequestBudgetV1,
+    ) -> Result<Vec<f32>, CoreError>;
 
     /// Stable identity of the model this embedder produces query vectors for.
     /// Query vectors are only comparable (cosine) against a corpus indexed by the
@@ -46,7 +59,12 @@ impl HashingQueryTextEmbedder {
 }
 
 impl QueryTextEmbedderPort for HashingQueryTextEmbedder {
-    fn embed_query(&self, query_text: &str) -> Result<Vec<f32>, CoreError> {
+    fn embed_query(
+        &self,
+        query_text: &str,
+        budget: &RequestBudgetV1,
+    ) -> Result<Vec<f32>, CoreError> {
+        budget.checkpoint(EMBED_CHECKPOINT)?;
         hash_query_text(query_text, self.dimension)
     }
 

@@ -363,7 +363,7 @@ fn publish_and_activate_for(
 
 #[test]
 fn sealed_composite_history_survives_restart_and_admits_predecessor_rollback() -> TestResult {
-    let directory = tempfile::tempdir()?;
+    let directory = quanta_index_searchd_harness::private_tempdir()?;
     let first_process = RunningRuntime::start(directory.path(), "composite-history-first")?;
     publish_two_generations(&first_process.client)?;
     first_process.stop()?;
@@ -389,7 +389,7 @@ enum MissingTargetTrack {
 }
 
 fn assert_missing_target_rejected(track: MissingTargetTrack) -> TestResult {
-    let directory = tempfile::tempdir()?;
+    let directory = quanta_index_searchd_harness::private_tempdir()?;
     let first_process = RunningRuntime::start(directory.path(), "missing-target-first")?;
     publish_two_generations(&first_process.client)?;
     first_process.stop()?;
@@ -446,7 +446,7 @@ fn rollback_rejects_missing_semantic_target_and_preserves_active_composite() -> 
 
 #[test]
 fn rollback_rejects_stale_expected_active_and_preserves_current_composite_v1() -> TestResult {
-    let directory = tempfile::tempdir()?;
+    let directory = quanta_index_searchd_harness::private_tempdir()?;
     let first_process = SearchdBinaryProcess::start(directory.path())?;
     let first_client = first_process.connect()?;
     publish_three_generations(&first_client)?;
@@ -493,7 +493,7 @@ fn rollback_rejects_stale_expected_active_and_preserves_current_composite_v1() -
 
 #[test]
 fn real_child_process_restart_preserves_and_rolls_back_composite_generation_v1() -> TestResult {
-    let directory = tempfile::tempdir()?;
+    let directory = quanta_index_searchd_harness::private_tempdir()?;
 
     let first_process = SearchdBinaryProcess::start(directory.path())?;
     let first_client = first_process.connect()?;
@@ -538,7 +538,7 @@ fn real_child_process_cross_repo_restart_retains_and_rolls_back_each_composite_v
     const B1_DIGEST: &str = "manifest:cross-repo:b:g1";
     const B2_DIGEST: &str = "manifest:cross-repo:b:g2";
 
-    let directory = tempfile::tempdir()?;
+    let directory = quanta_index_searchd_harness::private_tempdir()?;
     let first_process =
         SearchdBinaryProcess::start_with_history_max_generations(directory.path(), 2)?;
     let first_client = first_process.connect()?;
@@ -640,7 +640,7 @@ fn real_child_process_cross_repo_restart_retains_and_rolls_back_each_composite_v
 
 #[test]
 fn real_child_process_state_root_lease_rejects_second_owner_and_releases_v1() -> TestResult {
-    let directory = tempfile::tempdir()?;
+    let directory = quanta_index_searchd_harness::private_tempdir()?;
     let first_process = SearchdBinaryProcess::start(directory.path())?;
 
     let rejected = searchd_lease_probe::require_start_failure(directory.path())?;
@@ -666,7 +666,7 @@ fn real_child_process_state_root_lease_rejects_second_owner_and_releases_v1() ->
 
 #[test]
 fn state_root_has_one_live_runtime_owner_and_releases_lease_on_drop() -> TestResult {
-    let directory = tempfile::tempdir()?;
+    let directory = quanta_index_searchd_harness::private_tempdir()?;
     let first = build_runtime(config_for(directory.path()))?;
 
     let second = build_runtime(config_for(directory.path()));

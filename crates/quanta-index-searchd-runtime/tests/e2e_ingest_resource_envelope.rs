@@ -67,9 +67,12 @@ fn a_batch_past_the_vector_envelope_is_refused_before_any_track_writes() -> Test
     // The harness builds one chunk and one typed semantic source per text
     // batch; the source is what the daemon embeds, so one batch is one
     // embedded record.
+    // The byte ceilings are declared under the process memory envelope
+    // (QI-BB-016), so the text ceiling this test does not exercise keeps
+    // its default rather than an unbounded value the envelope would refuse.
     let policy = IngestResourcePolicy::new(
         usize::MAX,
-        u64::MAX,
+        IngestResourcePolicy::DEFAULT.max_text_bytes(),
         one_record_vector_bytes()?
             .saturating_mul(2)
             .saturating_sub(1),
@@ -154,7 +157,11 @@ fn a_batch_past_the_vector_envelope_is_refused_before_any_track_writes() -> Test
 /// rows, and does not fit a one-row envelope.
 #[test]
 fn the_record_ceiling_counts_every_carried_row() -> TestResult {
-    let policy = IngestResourcePolicy::new(1, u64::MAX, u64::MAX)?;
+    let policy = IngestResourcePolicy::new(
+        1,
+        IngestResourcePolicy::DEFAULT.max_text_bytes(),
+        IngestResourcePolicy::DEFAULT.max_vector_bytes(),
+    )?;
     let mut rt = E2eRuntime::boot_with_ingest_resource_policy(policy)?;
     let batch = rt.text_search_corpus_batch("src/rows.rs", "fn rows_body() { rows_needle }")?;
     let carried = batch

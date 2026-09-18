@@ -629,9 +629,21 @@ fn metrics_fixture() -> MetricsSnapshotV1 {
     }
 }
 
+/// A directory the IPC server will bind its sockets in: mode `0700`.
+///
+/// The server refuses a socket directory wider than its policy (QI-BB-014)
+/// and a tempdir is created under the process umask, so the mock control
+/// servers bind in a narrowed one.
+fn private_socket_dir() -> std::io::Result<tempfile::TempDir> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempdir()?;
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700))?;
+    Ok(dir)
+}
+
 /// Run `metrics --output <mode>` against the control mock and return stdout.
 fn run_metrics(mode: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let dir = tempdir()?;
+    let dir = private_socket_dir()?;
     let query_socket = dir.path().join("query.sock");
     let control_socket = dir.path().join("control.sock");
     let shutdown = start_control_server(&control_socket, ControlScenario::EmptyTracks)?;
@@ -765,7 +777,7 @@ fn quarantine_discard(request: QuarantineDiscardRequest) -> SearchPlaneControlIp
 /// Run `quarantine …` against the control mock; the exit status and both
 /// streams come back so a refusal can be asserted as well as a listing.
 fn run_quarantine(args: &[&str]) -> Result<std::process::Output, Box<dyn std::error::Error>> {
-    let dir = tempdir()?;
+    let dir = private_socket_dir()?;
     let query_socket = dir.path().join("query.sock");
     let control_socket = dir.path().join("control.sock");
     let shutdown = start_control_server(&control_socket, ControlScenario::EmptyTracks)?;
@@ -1002,7 +1014,7 @@ fn start_control_server(
 fn run_doctor_json(
     scenario: ControlScenario,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    let dir = tempdir()?;
+    let dir = private_socket_dir()?;
     let query_socket = dir.path().join("query.sock");
     let control_socket = dir.path().join("control.sock");
     let shutdown = start_control_server(&control_socket, scenario)?;

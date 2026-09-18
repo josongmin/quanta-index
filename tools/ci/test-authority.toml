@@ -280,6 +280,12 @@ owner = "quanta-index-ipc"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "ipc-repo-admission-and-slowloris"
+path = "crates/quanta-index-ipc/tests/repo_admission_and_slowloris.rs"
+owner = "quanta-index-ipc"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "ipc-admission"
 path = "crates/quanta-index-ipc/tests/admission.rs"
 owner = "quanta-index-ipc"
@@ -625,6 +631,18 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "searchd-runtime-e2e-socket-access"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_socket_access.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-e2e-umask-hardening"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_umask_hardening.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-e2e-process-envelope"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_process_envelope.rs"
 owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 

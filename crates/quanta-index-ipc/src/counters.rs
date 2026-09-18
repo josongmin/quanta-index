@@ -9,7 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use quanta_index_core::{CoreError, MetricPointV1, MetricSourcePort};
 
-/// The counts one server keeps, all monotonic but `connections_live`.
+/// The counts one server keeps, all monotonic but `connections_live` and
+/// `dispatch_in_flight`.
 #[derive(Debug)]
 pub struct IpcServerCounters {
     /// The metric-name segment for this server (`query`, `control`,
@@ -30,6 +31,17 @@ pub struct IpcServerCounters {
     request_decode_failures: AtomicU64,
     /// Requests that found no dispatch slot within the queue wait.
     requests_overloaded: AtomicU64,
+    /// Requests refused because their repository held its per-repository
+    /// in-flight cap for the whole queue wait (QI-BB-002); slots may have
+    /// been free for other repositories.
+    requests_overloaded_repo: AtomicU64,
+    /// Dispatches that had to wait for a slot before they were admitted;
+    /// a rising count with a flat `requests_dispatched` is queue pressure.
+    dispatch_queue_waits: AtomicU64,
+    /// Dispatch slots held right now.
+    dispatch_in_flight: AtomicU64,
+    /// Response frame bytes written to peers, header included.
+    response_bytes: AtomicU64,
     /// Requests that arrived after shutdown began; not dispatched.
     requests_refused_shutting_down: AtomicU64,
     /// Requests the dispatcher answered.
@@ -49,6 +61,10 @@ pub struct IpcServerCountersSnapshot {
     pub connections_live: u64,
     pub request_decode_failures: u64,
     pub requests_overloaded: u64,
+    pub requests_overloaded_repo: u64,
+    pub dispatch_queue_waits: u64,
+    pub dispatch_in_flight: u64,
+    pub response_bytes: u64,
     pub requests_refused_shutting_down: u64,
     pub requests_dispatched: u64,
     pub peer_hangups: u64,
@@ -71,6 +87,10 @@ impl IpcServerCounters {
             connections_live: AtomicU64::new(0),
             request_decode_failures: AtomicU64::new(0),
             requests_overloaded: AtomicU64::new(0),
+            requests_overloaded_repo: AtomicU64::new(0),
+            dispatch_queue_waits: AtomicU64::new(0),
+            dispatch_in_flight: AtomicU64::new(0),
+            response_bytes: AtomicU64::new(0),
             requests_refused_shutting_down: AtomicU64::new(0),
             requests_dispatched: AtomicU64::new(0),
             peer_hangups: AtomicU64::new(0),
@@ -92,6 +112,10 @@ impl IpcServerCounters {
             connections_live: self.connections_live.load(Ordering::Acquire),
             request_decode_failures: self.request_decode_failures.load(Ordering::Acquire),
             requests_overloaded: self.requests_overloaded.load(Ordering::Acquire),
+            requests_overloaded_repo: self.requests_overloaded_repo.load(Ordering::Acquire),
+            dispatch_queue_waits: self.dispatch_queue_waits.load(Ordering::Acquire),
+            dispatch_in_flight: self.dispatch_in_flight.load(Ordering::Acquire),
+            response_bytes: self.response_bytes.load(Ordering::Acquire),
             requests_refused_shutting_down: self
                 .requests_refused_shutting_down
                 .load(Ordering::Acquire),
@@ -131,8 +155,33 @@ impl IpcServerCounters {
         let _prior = self.request_decode_failures.fetch_add(1, Ordering::AcqRel);
     }
 
-    pub(crate) fn request_overloaded(&self) {
-        let _prior = self.requests_overloaded.fetch_add(1, Ordering::AcqRel);
+    /// A slot refusal: the global bound or, when `repo_scoped`, the
+    /// per-repository one.
+    pub(crate) fn request_overloaded(&self, repo_scoped: bool) {
+        if repo_scoped {
+            let _prior = self.requests_overloaded_repo.fetch_add(1, Ordering::AcqRel);
+        } else {
+            let _prior = self.requests_overloaded.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    /// A dispatch slot was taken; `waited` says whether the request had to
+    /// wait for it.
+    pub(crate) fn dispatch_started(&self, waited: bool) {
+        if waited {
+            let _prior = self.dispatch_queue_waits.fetch_add(1, Ordering::AcqRel);
+        }
+        let _prior = self.dispatch_in_flight.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// The dispatch slot was released.
+    pub(crate) fn dispatch_finished(&self) {
+        let _prior = self.dispatch_in_flight.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    /// One response frame of `bytes` was written to a peer.
+    pub(crate) fn response_written(&self, bytes: u64) {
+        let _prior = self.response_bytes.fetch_add(bytes, Ordering::AcqRel);
     }
 
     pub(crate) fn request_refused_shutting_down(&self) {
@@ -184,6 +233,22 @@ impl MetricSourcePort for IpcServerCounters {
             MetricPointV1::counter(
                 self.metric_name("requests_overloaded_total"),
                 snapshot.requests_overloaded,
+            ),
+            MetricPointV1::counter(
+                self.metric_name("requests_overloaded_repo_total"),
+                snapshot.requests_overloaded_repo,
+            ),
+            MetricPointV1::counter(
+                self.metric_name("dispatch_queue_wait_total"),
+                snapshot.dispatch_queue_waits,
+            ),
+            MetricPointV1::gauge_count(
+                self.metric_name("dispatch_in_flight"),
+                snapshot.dispatch_in_flight,
+            ),
+            MetricPointV1::counter(
+                self.metric_name("response_bytes_total"),
+                snapshot.response_bytes,
             ),
             MetricPointV1::counter(
                 self.metric_name("requests_refused_shutting_down_total"),

@@ -792,7 +792,7 @@ fn seal_structural(socket: &Path) -> TestResult {
 
 #[test]
 fn publish_dispatch_query_lexical_roundtrip() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "searchd-test-driver")?;
     publish_search_corpus_chunks(
@@ -853,7 +853,7 @@ fn publish_dispatch_query_lexical_roundtrip() -> TestResult {
 
 #[test]
 fn publish_dispatch_query_sourcegraph_roundtrip() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-sourcegraph-query-test")?;
@@ -921,7 +921,7 @@ fn publish_dispatch_query_sourcegraph_roundtrip() -> TestResult {
 
 #[test]
 fn sourcegraph_path_and_lang_filters_execute_against_indexed_metadata() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-sourcegraph-metadata-test")?;
@@ -1004,7 +1004,7 @@ fn sourcegraph_path_and_lang_filters_execute_against_indexed_metadata() -> TestR
 
 #[test]
 fn history_query_returns_typed_generation_not_ready_error() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, _ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-history-generation-not-ready-test")?;
@@ -1030,7 +1030,7 @@ fn history_query_returns_typed_generation_not_ready_error() -> TestResult {
 
 #[test]
 fn history_query_returns_typed_producer_unavailable_without_lexical_fallback() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-history-producer-unavailable-test")?;
@@ -1074,7 +1074,7 @@ fn history_query_returns_typed_producer_unavailable_without_lexical_fallback() -
 
 #[test]
 fn history_query_returns_typed_shard_unavailable_when_diff_shard_missing() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-history-shard-unavailable-test")?;
@@ -1116,7 +1116,7 @@ fn history_query_returns_typed_shard_unavailable_when_diff_shard_missing() -> Te
 
 #[test]
 fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-frontdoor-history-runtime-matrix")?;
@@ -1397,7 +1397,7 @@ fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> Tes
 
 #[test]
 fn hybrid_query_requires_joint_materialization() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "searchd-test-driver")?;
     drop(ingest_socket);
@@ -1441,7 +1441,7 @@ fn hybrid_query_requires_joint_materialization() -> TestResult {
 
 #[test]
 fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
 
     let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "searchd-test-driver")?;
@@ -1525,7 +1525,7 @@ fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
 
 #[test]
 fn hybrid_query_rejects_generation_pin_mismatch() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let config = build_config(state_root);
     let runtime = build_runtime(config)?;
@@ -1598,7 +1598,7 @@ fn hybrid_query_rejects_generation_pin_mismatch() -> TestResult {
 
 #[test]
 fn sourcegraph_context_filter_executes_against_repo_metadata_surface() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-sourcegraph-context-test")?;
@@ -1668,7 +1668,7 @@ fn sourcegraph_context_filter_executes_against_repo_metadata_surface() -> TestRe
 
 #[test]
 fn hybrid_query_visibility_filter_executes_against_repo_metadata_surface() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-hybrid-lowering-error-test")?;
@@ -1747,7 +1747,7 @@ fn hybrid_query_visibility_filter_executes_against_repo_metadata_surface() -> Te
 
 #[test]
 fn semantic_only_query_requires_semantic_materialization() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let config = build_config(state_root);
     let runtime = build_runtime(config)?;
@@ -1804,7 +1804,7 @@ fn semantic_only_query_requires_semantic_materialization() -> TestResult {
 
 #[test]
 fn semantic_query_without_lexical_scope_returns_global_nearest_hit() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-semantic-no-scope-success-test")?;
@@ -1926,7 +1926,7 @@ fn openai_semantic_paraphrase_outranks_unrelated_v1() -> TestResult {
         _ => return Err("OPENAI_API_KEY must be set to run this gated test".into()),
     };
 
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime_with_openai(state_root, "searchd-openai-paraphrase-e2e", api_key)?;
@@ -2020,7 +2020,7 @@ fn openai_semantic_paraphrase_outranks_unrelated_v1() -> TestResult {
 
 #[test]
 fn semantic_query_uses_search_owned_text_derivation_by_default() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-semantic-default-text-derivation-test")?;
@@ -2081,7 +2081,7 @@ fn semantic_query_uses_search_owned_text_derivation_by_default() -> TestResult {
 
 #[test]
 fn semantic_query_uses_search_owned_text_derivation_with_explicit_hash_profile() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime_with_hash(state_root, "searchd-semantic-explicit-hash-test")?;
@@ -2146,7 +2146,7 @@ fn semantic_query_uses_search_owned_text_derivation_with_explicit_hash_profile()
 
 #[test]
 fn semantic_query_rejects_generation_pin_mismatch_with_lexical_scope() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let config = build_config(state_root);
     let runtime = build_runtime(config)?;
@@ -2220,7 +2220,7 @@ fn semantic_query_rejects_generation_pin_mismatch_with_lexical_scope() -> TestRe
 
 #[test]
 fn semantic_query_executes_scoped_unindexed_lexical_scope() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-semantic-unindexed-scope-test")?;
@@ -2289,7 +2289,7 @@ fn semantic_query_executes_scoped_unindexed_lexical_scope() -> TestResult {
 
 #[test]
 fn semantic_query_with_lexical_scope_returns_intersection_only() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let pin = GenerationPin::new(repo(), revision(), generation());
     let (socket, ingest_socket, shutdown, join) =
@@ -2353,7 +2353,7 @@ fn semantic_query_with_lexical_scope_returns_intersection_only() -> TestResult {
 
 #[test]
 fn semantic_scoped_query_ignores_out_of_scope_global_nearest_hit() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let pin = GenerationPin::new(repo(), revision(), generation());
     let (socket, ingest_socket, shutdown, join) =
@@ -2417,7 +2417,7 @@ fn semantic_scoped_query_ignores_out_of_scope_global_nearest_hit() -> TestResult
 
 #[test]
 fn semantic_query_rejects_empty_text_with_typed_code() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-sem-empty-query-test")?;
@@ -2473,7 +2473,7 @@ fn semantic_query_rejects_empty_text_with_typed_code() -> TestResult {
 
 #[test]
 fn semantic_query_fails_closed_when_runtime_has_no_query_embedder() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let mut config = SearchdConfig::from_state_root(state_root.to_path_buf())
         .try_with_search_corpus_history_retention_limits(
@@ -2552,7 +2552,7 @@ fn semantic_query_fails_closed_when_runtime_has_no_query_embedder() -> TestResul
 
 #[test]
 fn hybrid_query_rejects_zero_top_k_with_typed_code() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let config = build_config(state_root);
     let runtime = build_runtime(config)?;
@@ -2627,7 +2627,7 @@ fn hybrid_query_rejects_zero_top_k_with_typed_code() -> TestResult {
 /// first.
 #[test]
 fn hybrid_query_admits_a_semantic_only_relevant_hit_beside_the_lexical_hits() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-hybrid-outsider-test")?;
@@ -2775,7 +2775,7 @@ fn check_hybrid_lane_provenance(results: &[HybridCandidateV1]) -> Result<(), Box
 
 #[test]
 fn hybrid_query_repeated_tied_scope_query_keeps_stable_order() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-hybrid-tie-determinism-test")?;
@@ -2846,7 +2846,7 @@ fn hybrid_query_repeated_tied_scope_query_keeps_stable_order() -> TestResult {
 
 #[test]
 fn structural_query_returns_typed_generation_not_ready_error() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let config = build_config(state_root);
     let runtime = build_runtime(config)?;
@@ -2913,7 +2913,7 @@ fn structural_query_returns_typed_generation_not_ready_error() -> TestResult {
 
 #[test]
 fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-structural-shard-unavailable-test")?;
@@ -3025,7 +3025,7 @@ fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
 /// typed structural code rather than panicking or returning a payload.
 #[test]
 fn structural_query_composition_wiring_emits_typed_error() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let config = build_config(state_root);
     let runtime = build_runtime(config)?;
@@ -3096,7 +3096,7 @@ fn structural_query_composition_wiring_emits_typed_error() -> TestResult {
 
 #[test]
 fn structural_sourcegraph_query_returns_match_after_parse_tree_ingest() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-structural-sourcegraph-success-test")?;
@@ -3192,7 +3192,7 @@ fn structural_sourcegraph_query_returns_match_after_parse_tree_ingest() -> TestR
 
 #[test]
 fn structural_sourcegraph_regex_query_returns_match_after_parse_tree_ingest() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) = start_runtime(
         state_root,
@@ -3288,7 +3288,7 @@ fn structural_sourcegraph_regex_query_returns_match_after_parse_tree_ingest() ->
 
 #[test]
 fn structural_sourcegraph_query_requires_structural_pattern_type() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let config = build_config(state_root);
     let runtime = build_runtime(config)?;
@@ -3349,7 +3349,7 @@ fn structural_sourcegraph_query_requires_structural_pattern_type() -> TestResult
 
 #[test]
 fn structural_sourcegraph_query_rejects_select_filter() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) = start_runtime(
         state_root,
@@ -3412,7 +3412,7 @@ fn structural_sourcegraph_query_rejects_select_filter() -> TestResult {
 
 #[test]
 fn structural_sourcegraph_query_rejects_timeout_filter() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let config = build_config(state_root);
     let runtime = build_runtime(config)?;
@@ -3472,7 +3472,7 @@ fn structural_sourcegraph_query_rejects_timeout_filter() -> TestResult {
 
 #[test]
 fn structural_query_typed_holes_return_role_tag_scoped_matches() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-structural-typed-hole-success-test")?;
@@ -3604,7 +3604,7 @@ fn structural_query_typed_holes_return_role_tag_scoped_matches() -> TestResult {
 
 #[test]
 fn structural_query_rejects_typed_hole_kind_with_exact_code() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, _ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-structural-typed-hole-reject-test")?;

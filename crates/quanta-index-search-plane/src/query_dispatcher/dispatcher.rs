@@ -22,7 +22,8 @@ use crate::history_text::HistoryTextIndexParts;
 use crate::observability::{NoopQueryObsSink, QueryObsSink};
 use crate::query_dispatcher::errors::core_error_to_ipc;
 use crate::query_dispatcher::metrics::{
-    QueryRoute, classify_error_metric_name, elapsed_millis_metric, metric_count_value,
+    QueryRoute, classify_error_metric_name, elapsed_millis_metric, examined_candidates_metric,
+    interruption_route_suffix, metric_count_value,
 };
 use crate::query_embedder::{HashingQueryTextEmbedder, QueryTextEmbedderPort};
 use crate::{
@@ -175,7 +176,10 @@ impl SearchPlaneDispatcher {
     /// `run`; after it the wrapper adds one histogram
     /// (`lq_route_<route>_latency_ms`) and one counter
     /// (`lq_route_<route>_served_total`, or `_errors_total` when the answer
-    /// is a typed error).
+    /// is a typed error). A budget interruption adds one more counter
+    /// naming which kind it was (`_deadline_exceeded_total` or
+    /// `_cancelled_total`, QI-BB-002), so a timeout and a peer that left
+    /// are never one number.
     fn observed_route(
         &self,
         route: QueryRoute,
@@ -192,7 +196,15 @@ impl SearchPlaneDispatcher {
             MetricKind::Histogram,
             latency,
         );
-        let outcome = if matches!(response, SearchPlaneQueryIpcResponse::Error(_)) {
+        let outcome = if let SearchPlaneQueryIpcResponse::Error(error) = &response {
+            if let Some(suffix) = interruption_route_suffix(&error.code) {
+                self.emit_metric(
+                    requested_pin,
+                    &route.metric_name(suffix),
+                    MetricKind::Counter,
+                    1.0,
+                );
+            }
             "errors_total"
         } else {
             "served_total"
@@ -206,6 +218,23 @@ impl SearchPlaneDispatcher {
         response
     }
 
+    /// `lq_route_<route>_examined_candidates_total` (QI-BB-015): the
+    /// candidates the route materialized before cutting the page, from
+    /// the window it answered with.
+    fn emit_examined_candidates_metric(
+        &self,
+        route: QueryRoute,
+        pin: &GenerationPin,
+        window: &quanta_index_contract::QueryResultWindowV1,
+    ) {
+        self.emit_metric(
+            Some(pin),
+            &route.metric_name("examined_candidates_total"),
+            MetricKind::Counter,
+            examined_candidates_metric(window),
+        );
+    }
+
     fn dispatch_text(
         &self,
         request: TextQueryRequest,
@@ -217,6 +246,11 @@ impl SearchPlaneDispatcher {
                 Ok(response) => {
                     self.emit_planner_metric(&response.generation);
                     self.emit_engine_fanout_metric(&response.generation, 1);
+                    self.emit_examined_candidates_metric(
+                        QueryRoute::Lexical,
+                        &response.generation,
+                        &response.window,
+                    );
                     SearchPlaneQueryIpcResponse::Text(response)
                 }
                 Err(err) => {
@@ -238,6 +272,11 @@ impl SearchPlaneDispatcher {
                 Ok(response) => {
                     self.emit_planner_metric(&response.generation);
                     self.emit_engine_fanout_metric(&response.generation, 1);
+                    self.emit_examined_candidates_metric(
+                        QueryRoute::Symbol,
+                        &response.generation,
+                        &response.window,
+                    );
                     SearchPlaneQueryIpcResponse::Symbol(response)
                 }
                 Err(err) => {
@@ -267,6 +306,11 @@ impl SearchPlaneDispatcher {
                     &response.generation,
                     response.explanation.early_stop_reason,
                 );
+                self.emit_examined_candidates_metric(
+                    QueryRoute::Semantic,
+                    &response.generation,
+                    &response.window,
+                );
                 SearchPlaneQueryIpcResponse::Semantic(response)
             }
             Err(err) => {
@@ -294,6 +338,11 @@ impl SearchPlaneDispatcher {
                     self.emit_early_stop_metric(
                         &response.generation,
                         response.explanation.early_stop_reason,
+                    );
+                    self.emit_examined_candidates_metric(
+                        QueryRoute::Hybrid,
+                        &response.generation,
+                        &response.window,
                     );
                     SearchPlaneQueryIpcResponse::Hybrid(response)
                 }
@@ -329,6 +378,11 @@ impl SearchPlaneDispatcher {
                         &response.generation,
                         response.explanation.early_stop_reason,
                     );
+                    self.emit_examined_candidates_metric(
+                        QueryRoute::HybridSeed,
+                        &response.generation,
+                        &response.window,
+                    );
                     SearchPlaneQueryIpcResponse::HybridSeed(response)
                 }
                 Err(err) => {
@@ -354,6 +408,14 @@ impl SearchPlaneDispatcher {
                         &response.generation,
                         response.commits.len().saturating_add(response.diffs.len()),
                     );
+                    // History reports what it examined under its order
+                    // directly; that is the examined count, not the page.
+                    self.emit_metric(
+                        Some(&response.generation),
+                        &QueryRoute::History.metric_name("examined_candidates_total"),
+                        MetricKind::Counter,
+                        quanta_index_core::count_as_f64(response.examined),
+                    );
                     SearchPlaneQueryIpcResponse::History(response)
                 }
                 Err(err) => {
@@ -376,6 +438,12 @@ impl SearchPlaneDispatcher {
                     self.emit_planner_metric(&response.generation);
                     self.emit_engine_fanout_metric(&response.generation, 1);
                     self.emit_merge_count_metric(&response.generation, response.results.len());
+                    self.emit_metric(
+                        Some(&response.generation),
+                        &QueryRoute::Structural.metric_name("examined_candidates_total"),
+                        MetricKind::Counter,
+                        quanta_index_core::count_as_f64(response.examined),
+                    );
                     SearchPlaneQueryIpcResponse::Structural(response)
                 }
                 Err(err) => {
@@ -461,6 +529,12 @@ impl SearchPlaneDispatcher {
                     self.emit_planner_metric(&response.generation);
                     self.emit_engine_fanout_metric(&response.generation, 1);
                     self.emit_merge_count_metric(&response.generation, response.results.len());
+                    self.emit_metric(
+                        Some(&response.generation),
+                        &QueryRoute::RuntimeMetadata.metric_name("examined_candidates_total"),
+                        MetricKind::Counter,
+                        quanta_index_core::count_as_f64(response.examined),
+                    );
                     SearchPlaneQueryIpcResponse::RuntimeMetadata(response)
                 }
                 Err(err) => {

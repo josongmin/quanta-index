@@ -39,14 +39,14 @@ fn classify_error_metric_name_uses_closed_taxonomy() {
                 code: REQUEST_DEADLINE_EXCEEDED_CODE.to_string(),
                 message: "deadline".to_string(),
             },
-            "lq_typed_error_interrupted_total",
+            "lq_typed_error_deadline_exceeded_total",
         ),
         (
             CoreError::Typed {
                 code: REQUEST_CANCELLED_CODE.to_string(),
                 message: "cancelled".to_string(),
             },
-            "lq_typed_error_interrupted_total",
+            "lq_typed_error_cancelled_total",
         ),
         (
             CoreError::Typed {

@@ -342,7 +342,7 @@ fn assert_repo_map_transport_surface(
 
 #[test]
 fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let config = build_config(dir.path());
     let runtime = build_runtime(config)?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
@@ -427,7 +427,7 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
 
 #[test]
 fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
 
     let config = build_config(state_root);
@@ -537,7 +537,7 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
 
 #[test]
 fn repo_map_query_without_materialized_snapshot_fails_closed() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let config = build_config(dir.path());
     let runtime = build_runtime(config)?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
@@ -576,7 +576,7 @@ fn repo_map_query_without_materialized_snapshot_fails_closed() -> TestResult {
 
 #[test]
 fn cross_socket_requests_fail_closed() -> TestResult {
-    let dir = tempfile::tempdir()?;
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
     let config = build_config(dir.path());
     let runtime = build_runtime(config)?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();

@@ -24,6 +24,23 @@
 //! A shared socket does not imply a shared state root: the state root keeps
 //! its owner-only write policy, and only the socket's own file and the
 //! traversal of the directories above it are opened to the peers.
+//!
+//! # The socket directory and symlinked parents
+//!
+//! A directory the server creates for a socket gets the policy's mode
+//! (`0700` / `0710` / `0711`) and is re-read to prove it, so the umask
+//! cannot widen it. A pre-existing directory is judged **by what the path
+//! resolves to**, not refused for being reached through a symlink: `/tmp`
+//! is a symlink on Darwin and the default socket directory of many
+//! deployments, and refusing every symlinked parent would refuse the
+//! platform default while proving nothing about the resolved directory. The
+//! resolved directory must be a real directory that either belongs to the
+//! binding user with no group/other write bit, or carries the sticky bit
+//! (a shared temporary directory, where nobody may unlink or rename this
+//! user's socket). What a symlink could otherwise buy an attacker — a
+//! socket bound into a directory they control — is closed by that check on
+//! the target and by the accept-time peer check on every connection, which
+//! holds whatever directory the socket sits in.
 
 use std::collections::BTreeSet;
 
@@ -148,6 +165,26 @@ impl SocketAccessPolicy {
             Self::Private => false,
             Self::Shared(access) => access.admits_others(),
         }
+    }
+
+    /// The policy a directory holding sockets of every policy in
+    /// `policies` is created and verified under.
+    ///
+    /// It is the one whose directory mode is widest (uid-shared `0711`
+    /// over group-shared `0710` over private `0700`), so every socket's
+    /// admitted peers can traverse it and nobody else can list or write
+    /// it. Private when `policies` is empty.
+    #[must_use]
+    pub fn widest<'a>(policies: impl IntoIterator<Item = &'a Self>) -> Self {
+        policies
+            .into_iter()
+            .fold(Self::Private, |widest, candidate| {
+                if candidate.directory_mode() > widest.directory_mode() {
+                    candidate.clone()
+                } else {
+                    widest
+                }
+            })
     }
 }
 
@@ -363,5 +400,31 @@ mod tests {
         }
         assert_eq!(shared(Some(SHARED_GID), &[]).group(), Some(SHARED_GID));
         assert_eq!(SocketAccessPolicy::Private.group(), None);
+    }
+
+    /// The directory policy for a set of sockets: the widest of them.
+    ///
+    /// A uid-shared socket beside private ones makes the directory
+    /// world-traversable, a group-shared one beside private ones makes it
+    /// the group's, and private sockets alone keep it private.
+    #[test]
+    fn the_widest_policy_decides_the_shared_directory() {
+        let private = SocketAccessPolicy::Private;
+        let group = shared(Some(SHARED_GID), &[]);
+        let listed = shared(None, &[LISTED_UID]);
+        assert_eq!(SocketAccessPolicy::widest([]), private);
+        assert_eq!(SocketAccessPolicy::widest([&private, &private]), private);
+        assert_eq!(
+            SocketAccessPolicy::widest([&group, &private, &private]),
+            group
+        );
+        assert_eq!(
+            SocketAccessPolicy::widest([&private, &group, &listed]),
+            listed
+        );
+        assert_eq!(
+            SocketAccessPolicy::widest([&private, &group, &listed]).directory_mode(),
+            WORLD_DIRECTORY_MODE
+        );
     }
 }

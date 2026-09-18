@@ -188,7 +188,10 @@ fn hybrid_dispatch_embeds_semantic_query_text() -> TestResult {
             guard.search_constraints.clone(),
         )
     };
-    let expected = default_query_embedder().embed_query("scope alpha")?;
+    let expected = default_query_embedder().embed_query(
+        "scope alpha",
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     // QI-BB-018: the dense lane is independent of the lexical hits — one
     // unscoped search over the query vector, under the request's
     // constraints; never a search scoped to the lexical ids.
@@ -350,6 +353,7 @@ fn hybrid_dispatch_emits_closed_obs_metrics() -> TestResult {
         "lq_engine_fanout_count".to_string(),
         "lq_merge_result_count".to_string(),
         "lq_early_stop_total".to_string(),
+        "lq_route_hybrid_examined_candidates_total".to_string(),
         "lq_route_hybrid_latency_ms".to_string(),
         "lq_route_hybrid_served_total".to_string(),
     ];

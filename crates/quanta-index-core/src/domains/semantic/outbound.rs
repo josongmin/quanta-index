@@ -25,6 +25,10 @@ pub trait SemanticIngestPort: Send + Sync {
     ) -> Result<BatchPublishReceipt, CoreError>;
 }
 
+/// The checkpoint every budget-observing embedder names when the budget
+/// interrupts it (QI-BB-002).
+pub const EMBED_CHECKPOINT: &str = "semantic:embed";
+
 /// Produces embedding vectors for text.
 ///
 /// This is the single embedder seam shared by BOTH the query path and corpus
@@ -43,6 +47,23 @@ pub trait SemanticIngestPort: Send + Sync {
 pub trait TextEmbeddingProvider: Send + Sync {
     /// Embed `texts` into one vector each, in input order. Errors fail closed.
     fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError>;
+
+    /// Embed `texts` under a request budget (QI-BB-002).
+    ///
+    /// A provider whose embedding is outbound I/O observes the budget
+    /// inside that I/O — a deadline caps every attempt, a cancellation
+    /// abandons the attempt in flight — and answers with the typed
+    /// interruption at the `semantic:embed` checkpoint. The provided body
+    /// is the whole contract for a provider with nothing to interrupt: one
+    /// checkpoint, then the batch.
+    fn embed_batch_within(
+        &self,
+        texts: &[&str],
+        budget: &RequestBudgetV1,
+    ) -> Result<Vec<Vec<f32>>, CoreError> {
+        budget.checkpoint(EMBED_CHECKPOINT)?;
+        self.embed_batch(texts)
+    }
 
     /// Stable identity of the model these vectors come from.
     fn model_id(&self) -> &str;

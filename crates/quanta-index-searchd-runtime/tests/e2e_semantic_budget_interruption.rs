@@ -147,7 +147,7 @@ fn lane_tallies(rt: &mut E2eRuntime) -> Result<LaneTallies, Box<dyn Error>> {
         exact_interruptions: counter(&snapshot, "semantic_budget_interruptions_exact_total")?,
         ann_queries: counter(&snapshot, "semantic_dense_queries_ann_total")?,
         ann_interruptions: counter(&snapshot, "semantic_budget_interruptions_ann_total")?,
-        interrupted_errors: counter_or_zero(&snapshot, "lq_typed_error_interrupted_total"),
+        interrupted_errors: counter_or_zero(&snapshot, "lq_typed_error_deadline_exceeded_total"),
     })
 }
 
@@ -156,6 +156,7 @@ fn a_deadline_inside_the_dense_lane_is_answered_from_the_lane_counted_and_surviv
     let policy = ServerAdmissionPolicy::new(
         ServerAdmissionPolicy::DEFAULT.max_connections(),
         ServerAdmissionPolicy::DEFAULT.dispatch_slots(),
+        ServerAdmissionPolicy::DEFAULT.max_in_flight_per_repo(),
         ServerAdmissionPolicy::DEFAULT.queue_wait(),
         DISPATCH_BUDGET,
         ServerAdmissionPolicy::DEFAULT.io_timeout(),
