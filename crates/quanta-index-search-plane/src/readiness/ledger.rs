@@ -830,7 +830,7 @@ impl Ledger {
     }
 
     /// Every epoch of one history generation the ledger still holds a
-    /// snapshot of (see [`AuxSnapshots::retained_epochs`]).
+    /// snapshot of (see `AuxSnapshots::retained_epochs`).
     ///
     /// `None` for a generation with no state. What is bound to an epoch
     /// outside this set — its text index — may be reclaimed.
