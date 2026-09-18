@@ -311,7 +311,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W0 | **passed** | G0-L/G0-S/G0-C passed, G0-R baseline pinned(cooperative-only). §3 참조. timing 재측정만 `blocked: contended-host` |
 | W1 | in_progress | **QI-BB-011 Unicode normalizer(§3.33)** + **QI-BB-013 search-plane 3 monolith 분할(§3.32)** 완료. 남은 것: snake/camel sub-token 확장(LEX-00, 제품 결정), route×predicate `RequiredDomains`(plan §5.6) |
 | W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + **quarantine control surface(§3.31: live inventory + as-listed discard, control IPC/SDK/CLI)** + QI-BB-032 idempotency catalog(§3.16) + QI-BB-020 auxiliary authority rows(§3.19) 완료. + **aux read epoch(§3.37: epoch-named snapshot, cursor 연속은 시작 epoch에서, retention bounded)** 완료. 남은 것: 없음(W2 항목 전부 착지; runtime-metadata의 structural epoch wire 노출·epoch metric은 §3.37 한계) |
-| W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + QI-BB-027 ANN sealed contract(§3.23) + **QI-BB-016 lexical writer envelope(§3.26)** 완료. + **QI-BB-027 보완 ANN append per delta seal(§3.35)** 완료. + **QI-BB-006 완결 sharded text-authority(§3.38)** 완료. 남은 것: scope 단위 streamed embed→append(§3.18 한계, 진행 중) |
+| W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + QI-BB-027 ANN sealed contract(§3.23) + **QI-BB-016 lexical writer envelope(§3.26)** 완료. + **QI-BB-027 보완 ANN append per delta seal(§3.35)** 완료. + **QI-BB-006 완결 sharded text-authority(§3.38)** 완료. + **QI-BB-021 완결 scope-streamed embed→append(§3.41)** 완료. 남은 것: 없음(W3 항목 전부 착지) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) + **QI-BB-025 보완 #4 runtime/structural window(§3.30)** + **keyset cursor + streaming collector(§3.39)** 완료. 남은 것: 없음(W4 항목 전부 착지; history selector의 collector 이관은 §3.39 한계 b) |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. QI-BB-014 UDS/state-root private hardening(§3.27) 완료. QI-BB-015 metrics 집계 + scrape(§3.28) 완료. **phase 2(§3.29): budget이 lexical native collect/scan/regex verify/predicate scope 안에서 관측** 완료. + **shared socket mode + peer credential(§3.40)** 완료. 남은 것: semantic lane 내부 budget 관측(진행 예정) |
 | W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + QI-BB-018 true hybrid(§3.22) + QI-BB-022 explain = exact presence + lexical score trace(§3.24) + **QI-BB-008 RepoMap bounded query + durable store(§3.25)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), history relevance order(Tantivy history index, §3.20 한계), judged corpus recall/NDCG gate(§3.22 한계), **hybrid per-lane contribution(§3.36)** 완료 |
@@ -2049,6 +2049,50 @@ runtime-metadata는 seed 집합을 전부 materialize한 뒤 잘랐다. history(
 패턴대로 retention/embedder env만 적용해 socket-access knob을 무시 — `QUANTA_INDEX_STATE_ROOT` env는 전부 적용; override를 같은 env-policy chain으로
 돌리는 후속. (e) `pm.py lint`는 fresh worktree에 gitignored `.cursor/rules/*`가 없어 실패(환경, prompt-manager 미변경).
 
+## 3.41 QI-BB-021 완결 — semantic ingest는 owner scope 단위 window로 embed→validate→append하고, 상주량은 구조로 bounded다 (구현 완료)
+
+**진단 확정**: §3.18 한계 a — batch의 모든 vector를 `all_vectors`로 상주시킨 뒤 검증·기록했고, peak는 정책(`max_vector_bytes` + provider in-flight)
+으로만 bounded였다. `SemanticIngestBatch`가 wire DTO라 lazy iterator를 실을 수 없어 in-process port 분리가 필요했다.
+
+**구현** (37 files):
+
+- **stream 단위 = owner scope** `(corpus_kind, owner_kind, owner_id)` — adapter가 delete-then-append하는 단위. legacy chunk는 자기 owner(큰 path
+  scope는 window마다 replace-scope fragment 하나로 span), semantic source scope는 owner 하나이고 절대 split 안 함. vector만으로 byte bound를 넘는
+  owner는 typed 거부(`SEMANTIC_STREAM_OWNER_SCOPE_OVER_WINDOW`) — soft-cut·delete 경계 넘는 split 없음.
+- **pull 설계**: adapter가 호출 thread(tokio 밖)에서 `SemanticScopeSource::next_window()`를 당기고(blocking reqwest embedder가 async context 안에서
+  돌지 않음) storage step마다 `run_blocking` 진입; window당 Arrow `RecordBatch` 하나; 다음 window 요청 전 drop.
+- **상주 관측 가능**: window마다 `SemanticWindowResidencyV1` lease(drop 시 해제); source는 하나가 밖에 있는 동안 두 번째를 거부
+  (`SEMANTIC_STREAM_WINDOW_STILL_RESIDENT`); sink는 모든 window를 정책에 대해 admit(`SEMANTIC_STREAM_WINDOW_EXCEEDED`); source/sink tally를 독립 집계해
+  일치 강제(거짓말하는 port는 거부).
+- **seal 불변**: manifest commitment는 seal에서 table 전체에 대해 실행(plan §6.4 약화 없음) — streamed manifest가 one-window build와 `built_at_unix_nanos`
+  빼고 byte-identical, row root == in-test 독립 재계산.
+- **순서 변화**: semantic track이 lexical보다 먼저 build — provider 실패가 lexical track을 건드리지 않고 batch를 거부(전량 유도가 갖던 성질; `search_corpus.rs`
+  문서화).
+- 상수(`stream.rs` doc): `SEMANTIC_STREAM_WINDOW_SCOPES = 1024`(= `DEFAULT_CONCURRENCY × DEFAULT_MAX_BATCH`, provider 1 round), `SEMANTIC_STREAM_WINDOW_VECTOR_BYTES
+  = 32 MiB`(`MAX_EMBEDDING_DIMENSION`에서 1 round); embed crate test가 두 관계를 pin. env knob `QUANTA_INDEX_SEMANTIC_STREAM_WINDOW_{SCOPES,VECTOR_BYTES}`
+  (0 거부; ingest envelope knob과 같은 패턴; e2e가 작은 batch에서 ≥3 window를 관측하는 데 필요); adapter·materializer·legacy journal migration이 같은 정책 공유.
+- metrics(`DirectSemanticMaterializer: MetricSourcePort`): `semantic_ingest_windows_total`, `semantic_ingest_resident_vector_bytes_peak`(가장 최근
+  build한 generation의 peak, 다른 generation build 시 reset). `SemanticBatchBuildPort` 삭제, `SemanticIngestPort::publish_batch` →
+  `publish_stream(header, source)`; resident batch(legacy journal·fixture)는 `ResidentScopeSource`로 같은 `build_stream`을 탐(dual path 없음).
+  `SemanticIngestHeaderV1`은 `pin`/`contract`/`batch`/`mutations` group으로 분리(13-field struct 회피).
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| core: 정책/배치, owner별 window(섞인 owner row 재그룹, membership은 owner와 동행), byte ceiling cut + oversize owner 거부, still-resident 거부 + sink admission, resident wrapper tally cross-check | `core/tests/semantic_stream.rs` 6 |
+| semantic: residency ledger peak = window 1 / row 2, manifest bytes identical(clock 제외), root == 재계산, 14 row 전부 서빙; 3번째 window 거부 → seal 없음·partial row 없음, staging은 다음 build가 폐기, 다음 seal은 promoted+own row만 | `build.rs::streamed_windows_stay_bounded_and_seal_to_the_all_at_once_manifest`, `…::a_refused_third_window_seals_nothing_and_leaves_no_partial_rows` |
+| search-plane: window당 provider 호출 1회(정확히 그 window의 text), legacy path가 window를 span, windowing이 derived row/header에 흔적 없음, invalid source는 provider 0회, tally mismatch 거부 + 아무것도 mark 안 함, metrics count/reset | `ingest_dispatcher/tests/*` |
+| embed: 1,024 text → 256짜리 4 request, in-flight ≤ concurrency, 순서 유지, window 상수 == provider default pin | `openai.rs` test |
+| **e2e**(8-row window, 32 one-chunk file **한 batch**, seal, activate, restart, 32 query 각각 자기 row cosine 1로 1위) | `searchd-runtime/tests/e2e_semantic_stream_window.rs` — `QI-BB-021-STREAM-EVIDENCE scopes=32 windows=4 peak_resident_vector_bytes=2048 bound=2048 generation=1` |
+| searchd: env knob binding/0/garbage 거부; migration이 journal batch를 adapter의 (좁은) window로 stream | `config.rs`, `semantic_boot_report` |
+| 회귀·rail | core 95·embed 43·searchd 55·search-plane 313·semantic 119; searchd-runtime/harness/searchctl/catalog/lexical **604/0/1 ignored**(daemon e2e 전체); `just rust-clippy` 0; fmt; hexagonal/module/error-shape/derive/digest/test-authority/cargo-toml/no-allow/workspace-lints/ignored-policy/cargo-modules(update: core −`SemanticBatchBuildPort` +`stream`); semgrep 0. main rebase(94aa0d8 위, 충돌 2 file: config builder chain + harness `DriverSpec` union) 후 check + baselines 불변 + unit 722 + e2e 8 target 65 green |
+
+**정직한 한계**: (a) peak RSS 미측정(contended host) — bound는 residency ledger·sink admission·scrape gauge로 증명. (b) resident batch(legacy
+journal/fixture)는 이미 decode된 상태라 상주 감소 없음; legacy journal은 path 전체를 owner 하나로 정규화하므로 operator가 journal path 하나의 vector보다
+좁은 window를 설정하면 boot migration이 typed 거부(knob을 넓히면 됨; 기본값으로는 도달 불가). (c) owner별 `delete` predicate는 이전 그대로(owner당
+lancedb delete 1회) — append만 window 단위. **QI-BB-021 완결**(§3.18 envelope + §3.41 streaming).
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -2110,4 +2154,6 @@ runtime-metadata는 seed 집합을 전부 materialize한 뒤 잘랐다. history(
 | 2026-09-18 | worktree E (960be81→0aad39d rebase) | agent: lexical 225 + lq 256 + core 85 + search-plane/searchd 341 + searchd-runtime e2e 전체 242 + workspace clippy(0) + fmt/semgrep/module/error-shape/digest/derive/test-authority/cargo-toml/hexagonal; rebase 후 check + baselines 불변 + lexical 28 + e2e 49 | 전부 green (§3.38) |
 | 2026-09-18 | worktree H (fc3ee5c→b8e3ac3 rebase) | agent: contract 246·sdk 80·search-plane 319·searchctl 59·harness 77 + e2e 16 target 159 + workspace clippy(0) + fmt/semgrep/module/error-shape/derive/hexagonal/cargo-toml/digest/test-authority + public-api/cargo-modules update + fuzz smoke; rebase 후 check + baselines 불변 + unit 781 + e2e 66 | 전부 green (§3.39) |
 | 2026-09-18 | worktree I (36d9d53→86d1a34 rebase) | agent: `just rust-test` 2,242/0/2 ignored + `just rust-clippy` 0 + fmt/deny/machete/public-api/workspace-lints/hexagonal/no-allow/derive/cargo-toml/module/error-shape/digest/test-authority/ignored-policy + semgrep 0; rebase 후 check + hygiene + public-api + 180 + e2e 44 + deny | 전부 green (§3.40) |
+| 2026-09-18 | 94aa0d8 | `just rust-profile verify-rust` (nohup) | RED at `rust-clippy` — `lexical/tests/text_authority_shards.rs`(§3.38) `type_complexity` + `too_long_first_doc_paragraph`: gate는 `--all-features`인데 agent/coordinator의 crate별 clippy는 아니었음 → 9c5feb8에서 수정; 이후 main clippy는 `just rust-clippy`로 |
+| 2026-09-18 | worktree G (fc3ee5c→9c5feb8 rebase, 충돌 2 file) | agent: core/embed/searchd/search-plane/semantic 625 + daemon e2e 전체 604 + `just rust-clippy` 0 + fmt/hexagonal/module/error-shape/derive/digest/test-authority/cargo-toml/no-allow/workspace-lints/ignored-policy/cargo-modules + semgrep 0; rebase 후 check + baselines 불변 + unit 722 + e2e 65 | 전부 green (§3.41) |
 | 2026-09-18 | worktree 011 (7a5ce5e→034c4fd rebase) | agent: workspace clippy(0) + lexical 15 target·lq-norm 88·search-plane 285 + e2e text_route_hellgate 8·perf_chaos 43·dsl_scenarios 8·lexical_full_fidelity 1·dual_syntax_parity 4·full_corpus 4 + harness 77 + hexagonal/semgrep/module/error-shape/cargo-toml/derive/test-authority/deny; rebase 후 lexical carryforward 6 + goldens 8 | 전부 green (§3.33) |
