@@ -623,6 +623,18 @@ owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "searchd-runtime-e2e-history-text-predicate"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_history_text_predicate.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-e2e-unicode-text-semantics"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_unicode_text_semantics.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "searchd-runtime-e2e-read-view"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_read_view.rs"
 owner = "quanta-index-searchd-runtime"
