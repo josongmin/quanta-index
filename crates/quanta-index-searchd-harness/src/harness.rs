@@ -50,7 +50,7 @@ use quanta_index_contract::{
     SymbolId, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_core::{IngestResourcePolicy, SemanticStreamWindowPolicy};
-use quanta_index_ipc::{ClientIoPolicy, IpcError, send_request};
+use quanta_index_ipc::{ClientIoPolicy, IpcError, ServerAdmissionPolicy, send_request};
 use quanta_index_search_plane::{BoundedQueryObsStore, MetricSample, ObsError};
 use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd::app::{
@@ -122,6 +122,9 @@ struct DriverSpec<'a> {
     ingest_resource_policy: IngestResourcePolicy,
     /// The semantic track's stream window (QI-BB-021).
     semantic_stream_window_policy: SemanticStreamWindowPolicy,
+    /// The query socket's admission limits, including the deadline every
+    /// dispatch runs under (QI-BB-002).
+    query_admission_policy: ServerAdmissionPolicy,
     socket_access: &'a SocketAccessPolicies,
     /// Where the three sockets go: a fresh, unique directory the daemon
     /// creates under `/tmp` when any socket is shared (so the peers the
@@ -191,6 +194,11 @@ pub struct E2eRuntime {
     /// streaming tests narrow it through
     /// [`Self::boot_with_semantic_stream_window_policy`].
     semantic_stream_window_policy: SemanticStreamWindowPolicy,
+    /// The query socket's admission limits (QI-BB-002). The production
+    /// default's twenty-second dispatch budget never expires on a fixture;
+    /// budget tests shorten it through
+    /// [`Self::boot_with_query_admission_policy`].
+    query_admission_policy: ServerAdmissionPolicy,
     driver: Option<DriverState>,
     query_obs_store: Option<Arc<BoundedQueryObsStore>>,
     chunk_ids_by_path: BTreeMap<String, ChunkId>,
@@ -428,6 +436,15 @@ impl E2eRuntime {
         Ok(runtime)
     }
 
+    /// Like [`Self::boot`] but admits query dispatches under `policy`, so a
+    /// dispatch budget short enough to expire inside a test can be set
+    /// without touching process-global env.
+    pub fn boot_with_query_admission_policy(policy: ServerAdmissionPolicy) -> AnyResult<Self> {
+        let mut runtime = Self::boot()?;
+        runtime.query_admission_policy = policy;
+        Ok(runtime)
+    }
+
     fn boot_with_profile_and_history(
         profile: SemanticEmbedderProfile,
         history_max_generations: usize,
@@ -443,6 +460,7 @@ impl E2eRuntime {
             socket_access: SocketAccessPolicies::PRIVATE,
             socket_directory: None,
             semantic_stream_window_policy: SemanticStreamWindowPolicy::DEFAULT,
+            query_admission_policy: ServerAdmissionPolicy::DEFAULT,
             driver: None,
             query_obs_store: None,
             chunk_ids_by_path: BTreeMap::new(),
@@ -551,6 +569,7 @@ impl E2eRuntime {
                 history_max_generations: self.history_max_generations,
                 ingest_resource_policy: self.ingest_resource_policy,
                 semantic_stream_window_policy: self.semantic_stream_window_policy,
+                query_admission_policy: self.query_admission_policy,
                 socket_access: &self.socket_access,
                 socket_directory: self.socket_directory.as_deref(),
             })?;
@@ -3007,6 +3026,7 @@ fn build_config(spec: &DriverSpec<'_>) -> AnyResult<SearchdConfig> {
         .with_semantic_embedder_profile(spec.embedder_profile.clone())
         .with_ingest_resource_policy(spec.ingest_resource_policy)
         .with_semantic_stream_window_policy(spec.semantic_stream_window_policy)
+        .with_query_admission_policy(spec.query_admission_policy)
         .with_socket_access_policies(spec.socket_access.clone()))
 }
 

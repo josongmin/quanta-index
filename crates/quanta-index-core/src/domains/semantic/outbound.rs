@@ -8,6 +8,7 @@ use quanta_index_contract::{
 
 use crate::domains::semantic::stream::{SemanticIngestHeaderV1, SemanticScopeSource};
 use crate::error::CoreError;
+use crate::request_budget::RequestBudgetV1;
 
 /// Ingest one semantic batch into the direct authority path, streamed one
 /// window of scopes at a time (QI-BB-021). QI-RT-01 counterpart to
@@ -225,6 +226,18 @@ pub struct SemanticSearchHitV1 {
     pub authority_digest: String,
 }
 
+/// Searcher handle returned by [`SemanticIndexOpenPort::open`].
+///
+/// One per opened sealed generation, shareable across concurrent queries;
+/// residency is the search plane's snapshot registry's job.
+///
+/// Every dense search takes the request's [`RequestBudgetV1`] (W5 phase 3):
+/// an implementation observes it inside the lane — before the vector query
+/// is issued, while it is in flight, and as its rows are read — and
+/// answers the typed interruption naming the lane that looked
+/// (`semantic:ann` for an approximate lane, `semantic:exact` for an exact
+/// one), so a peer that left or a deadline that passed stops the work
+/// there rather than at the next checkpoint outside the adapter.
 pub trait SemanticSearcher: Send + Sync {
     /// Bytes this handle keeps resident while open (the dataset files it
     /// maps plus decoded manifests). An open-time estimate consumed by the
@@ -242,16 +255,22 @@ pub trait SemanticSearcher: Send + Sync {
     /// Embed the query externally and pass the dense vector to the searcher.
     /// Returning candidates as `LexicalCandidate` keeps the result shape uniform
     /// for the hybrid orchestrator's RRF fusion (`candidate_id`, score, snippet).
-    fn search(&self, query_vector: &[f32], top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError>;
+    fn search(
+        &self,
+        query_vector: &[f32],
+        top_k: u32,
+        budget: &RequestBudgetV1,
+    ) -> Result<Vec<LexicalCandidate>, CoreError>;
 
     fn search_constrained(
         &self,
         query_vector: &[f32],
         constraints: &QueryConstraintSetV1,
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
         if constraints.is_unconstrained() {
-            self.search(query_vector, top_k)
+            self.search(query_vector, top_k, budget)
         } else {
             Err(CoreError::NotImplemented(
                 "semantic searcher does not provide native query-constraint pushdown".to_string(),
@@ -265,6 +284,7 @@ pub trait SemanticSearcher: Send + Sync {
         &self,
         query_vector: &[f32],
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<SemanticSearchHitV1>, CoreError>;
 
     fn search_hits_constrained(
@@ -272,9 +292,10 @@ pub trait SemanticSearcher: Send + Sync {
         query_vector: &[f32],
         constraints: &QueryConstraintSetV1,
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
         if constraints.is_unconstrained() {
-            self.search_hits(query_vector, top_k)
+            self.search_hits(query_vector, top_k, budget)
         } else {
             Err(CoreError::NotImplemented(
                 "semantic hit searcher does not provide native query-constraint pushdown"
@@ -291,6 +312,7 @@ pub trait SemanticSearcher: Send + Sync {
         query_vector: &[f32],
         corpus_kind: SemanticCorpusKindV1,
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<SemanticSearchHitV1>, CoreError>;
 
     fn search_hits_for_corpus_constrained(
@@ -299,9 +321,10 @@ pub trait SemanticSearcher: Send + Sync {
         corpus_kind: SemanticCorpusKindV1,
         constraints: &QueryConstraintSetV1,
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
         if constraints.is_unconstrained() {
-            self.search_hits_for_corpus(query_vector, corpus_kind, top_k)
+            self.search_hits_for_corpus(query_vector, corpus_kind, top_k, budget)
         } else {
             Err(CoreError::NotImplemented(
                 "semantic corpus searcher does not provide native query-constraint pushdown"
@@ -321,6 +344,7 @@ pub trait SemanticSearcher: Send + Sync {
         query_vector: &[f32],
         allowed_ids: &BTreeSet<String>,
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<LexicalCandidate>, CoreError>;
 
     fn search_scoped_constrained(
@@ -329,9 +353,10 @@ pub trait SemanticSearcher: Send + Sync {
         allowed_ids: &BTreeSet<String>,
         constraints: &QueryConstraintSetV1,
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
         if constraints.is_unconstrained() {
-            self.search_scoped(query_vector, allowed_ids, top_k)
+            self.search_scoped(query_vector, allowed_ids, top_k, budget)
         } else {
             Err(CoreError::NotImplemented(
                 "scoped semantic searcher does not provide native query-constraint pushdown"

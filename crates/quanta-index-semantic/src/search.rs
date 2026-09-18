@@ -10,6 +10,11 @@
 //! reports cosine *distance* in the `_distance` column; we convert
 //! `similarity = 1 - distance` so the historical query-time contract is
 //! preserved).
+//!
+//! Every search runs under the request budget (W5 phase 3): the vector
+//! query is refused before issue, dropped in flight or stopped between
+//! rows once the budget interrupts, and the typed answer names the lane
+//! that looked — see [`crate::budget`].
 
 #![expect(
     clippy::redundant_pub_crate,
@@ -25,7 +30,7 @@ use arrow_schema::DataType;
 use futures::TryStreamExt as _;
 use lancedb::DistanceType;
 use lancedb::connect;
-use lancedb::query::{ExecutableQuery as _, QueryBase as _};
+use lancedb::query::{ExecutableQuery as _, QueryBase as _, VectorQuery};
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
     ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
@@ -37,11 +42,15 @@ use quanta_index_contract::{
     canonical_order::{CanonicalOrderBreakV1, first_canonical_order_break_v1},
     cluster_membership_content_digest_v1,
 };
-use quanta_index_core::CoreError;
 use quanta_index_core::domains::semantic::{
     DenseLaneContractV1, SemanticPolicy, SemanticSearchHitV1, SemanticSearcher,
 };
+use quanta_index_core::{CoreError, RequestBudgetV1};
 
+use crate::budget::{
+    DenseLaneBudgetV1, DenseLaneKindV1, DenseLaneTalliesV1, RowBudgetProbe, failpoint,
+    race_with_budget,
+};
 use crate::errors::lancedb_err;
 use crate::generation_contract::GenerationContract;
 use crate::layout::{
@@ -633,12 +642,16 @@ fn parse_owner_kind_v1(value: &str, record_id: &str) -> Result<OwnerDocKind, Cor
     })
 }
 
+/// Read one result batch into hits, asking `probe` before every row so
+/// the request budget is observed while rows are read back, not only
+/// around the query.
 fn extract_hits(
     batch: &RecordBatch,
     repo_id: &RepoId,
     revision_id: &RevisionId,
     generation: ManifestGeneration,
     format_version: u32,
+    probe: &mut RowBudgetProbe<'_>,
     out: &mut Vec<SemanticSearchHit>,
 ) -> Result<(), CoreError> {
     let id_col = column_as::<StringArray>(batch, COLUMN_EMBEDDING_ID, "Utf8")?;
@@ -669,6 +682,7 @@ fn extract_hits(
     };
     let authority_digest_col = column_as::<StringArray>(batch, COLUMN_AUTHORITY_DIGEST, "Utf8")?;
     for row in 0..batch.num_rows() {
+        probe.tick()?;
         let id = id_col.value(row).to_owned();
         let path = path_col.value(row).to_owned();
         let snippet = snippet_col.value(row).to_owned();
@@ -1026,12 +1040,18 @@ impl LoadedGeneration {
         })
     }
 
+    /// Build the lane's vector query and run it under the request budget
+    /// (W5 phase 3): refused before issue, dropped in flight, or stopped
+    /// between rows, whichever the budget reaches first — see
+    /// [`crate::budget`].
     async fn run_vector_query(
         &self,
         query_vector: &[f32],
         top_k: usize,
         filter: Option<String>,
+        watch: DenseLaneBudgetV1<'_>,
     ) -> Result<Vec<SemanticSearchHit>, CoreError> {
+        let lane = self.vector_index.lane_kind();
         let query_owned: Vec<f32> = query_vector.to_vec();
         // The sealed effort is the only effort: an approximate lane probes,
         // walks and refines exactly as its seal recorded, and an exact lane
@@ -1047,23 +1067,44 @@ impl LoadedGeneration {
         if let Some(predicate) = filter {
             vector_query = vector_query.only_if(predicate);
         }
-        let stream = vector_query
+        race_with_budget(
+            watch,
+            lane,
+            self.issue_and_read_back(vector_query, top_k, watch, lane),
+        )
+        .await
+    }
+
+    /// Issue the query and read its rows back one batch at a time, ticking
+    /// the row probe; the first `top_k` rows end the read and drop the
+    /// stream there.
+    async fn issue_and_read_back(
+        &self,
+        vector_query: VectorQuery,
+        top_k: usize,
+        watch: DenseLaneBudgetV1<'_>,
+        lane: DenseLaneKindV1,
+    ) -> Result<Vec<SemanticSearchHit>, CoreError> {
+        failpoint::hold_dense_lane_if_armed().await;
+        watch.tallies.count_query(lane);
+        let mut stream = vector_query
             .execute()
             .await
             .map_err(|err| lancedb_err("vector_search execute", err))?;
-        let batches: Vec<RecordBatch> = stream
-            .try_collect()
-            .await
-            .map_err(|err| lancedb_err("vector_search stream", err))?;
-
+        let mut probe = RowBudgetProbe::new(watch, lane);
         let mut out: Vec<SemanticSearchHit> = Vec::with_capacity(top_k);
-        for batch in batches {
+        while let Some(batch) = stream
+            .try_next()
+            .await
+            .map_err(|err| lancedb_err("vector_search stream", err))?
+        {
             extract_hits(
                 &batch,
                 &self.repo_id,
                 &self.revision_id,
                 self.generation,
                 self.format_version,
+                &mut probe,
                 &mut out,
             )?;
             if out.len() >= top_k {
@@ -1153,6 +1194,7 @@ impl LoadedGeneration {
         allowed_ids: Option<&BTreeSet<String>>,
         corpus_kind: Option<&str>,
         constraints: &QueryConstraintSetV1,
+        watch: DenseLaneBudgetV1<'_>,
     ) -> Result<Vec<SemanticSearchHit>, CoreError> {
         self.check_query_dim(query_vector)?;
         if allowed_ids.is_some_and(BTreeSet::is_empty) {
@@ -1179,13 +1221,15 @@ impl LoadedGeneration {
                 .chain(Self::language_any_of_filter(constraints))
                 .chain(Self::exact_repo_relative_path_filter(constraints)),
         );
-        self.run_vector_query(query_vector, top_k, filter).await
+        self.run_vector_query(query_vector, top_k, filter, watch)
+            .await
     }
 
     pub(crate) async fn search_async(
         &self,
         query_vector: &[f32],
         top_k: usize,
+        watch: DenseLaneBudgetV1<'_>,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
         self.search_hits_constrained_async(
             query_vector,
@@ -1193,6 +1237,7 @@ impl LoadedGeneration {
             None,
             None,
             &QueryConstraintSetV1::unconstrained(),
+            watch,
         )
         .await
         .map(Self::map_hits_to_candidates)
@@ -1203,6 +1248,7 @@ impl LoadedGeneration {
         query_vector: &[f32],
         allowed_ids: &BTreeSet<String>,
         top_k: usize,
+        watch: DenseLaneBudgetV1<'_>,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
         self.search_hits_constrained_async(
             query_vector,
@@ -1210,6 +1256,7 @@ impl LoadedGeneration {
             Some(allowed_ids),
             None,
             &QueryConstraintSetV1::unconstrained(),
+            watch,
         )
         .await
         .map(Self::map_hits_to_candidates)
@@ -1220,6 +1267,7 @@ impl LoadedGeneration {
         query_vector: &[f32],
         top_k: usize,
         corpus_kind: Option<&str>,
+        watch: DenseLaneBudgetV1<'_>,
     ) -> Result<Vec<SemanticSearchHit>, CoreError> {
         self.search_hits_constrained_async(
             query_vector,
@@ -1227,6 +1275,7 @@ impl LoadedGeneration {
             None,
             corpus_kind,
             &QueryConstraintSetV1::unconstrained(),
+            watch,
         )
         .await
     }
@@ -1236,17 +1285,34 @@ impl LoadedGeneration {
 ///
 /// Bridges the sync `SemanticSearcher` port surface to the async lancedb API
 /// via the adapter's shared tokio runtime — see [`crate::run_blocking`].
+/// Every search runs under the request's budget and reports what its lane
+/// observed to the adapter-wide tallies (W5 phase 3).
 pub(crate) struct PersistedSemanticSearcher {
     loaded: Arc<LoadedGeneration>,
     runtime: Arc<tokio::runtime::Runtime>,
+    tallies: Arc<DenseLaneTalliesV1>,
 }
 
 impl PersistedSemanticSearcher {
     pub(crate) fn new(
         loaded: Arc<LoadedGeneration>,
         runtime: Arc<tokio::runtime::Runtime>,
+        tallies: Arc<DenseLaneTalliesV1>,
     ) -> Self {
-        Self { loaded, runtime }
+        Self {
+            loaded,
+            runtime,
+            tallies,
+        }
+    }
+
+    /// The request's budget paired with this adapter's tallies, as every
+    /// query path below takes it.
+    fn watch<'a>(&'a self, budget: &'a RequestBudgetV1) -> DenseLaneBudgetV1<'a> {
+        DenseLaneBudgetV1 {
+            budget,
+            tallies: &self.tallies,
+        }
     }
 }
 
@@ -1270,18 +1336,11 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         )
     }
 
-    fn search(&self, query_vector: &[f32], top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError> {
-        SemanticPolicy::validate_fetch_size(top_k)?;
-        SemanticPolicy::validate_query_vector(query_vector)?;
-        let limit = top_k_limit(top_k)?;
-        crate::run_blocking(&self.runtime, self.loaded.search_async(query_vector, limit))
-    }
-
-    fn search_constrained(
+    fn search(
         &self,
         query_vector: &[f32],
-        constraints: &QueryConstraintSetV1,
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
         SemanticPolicy::validate_fetch_size(top_k)?;
         SemanticPolicy::validate_query_vector(query_vector)?;
@@ -1289,7 +1348,30 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         crate::run_blocking(
             &self.runtime,
             self.loaded
-                .search_hits_constrained_async(query_vector, limit, None, None, constraints),
+                .search_async(query_vector, limit, self.watch(budget)),
+        )
+    }
+
+    fn search_constrained(
+        &self,
+        query_vector: &[f32],
+        constraints: &QueryConstraintSetV1,
+        top_k: u32,
+        budget: &RequestBudgetV1,
+    ) -> Result<Vec<LexicalCandidate>, CoreError> {
+        SemanticPolicy::validate_fetch_size(top_k)?;
+        SemanticPolicy::validate_query_vector(query_vector)?;
+        let limit = top_k_limit(top_k)?;
+        crate::run_blocking(
+            &self.runtime,
+            self.loaded.search_hits_constrained_async(
+                query_vector,
+                limit,
+                None,
+                None,
+                constraints,
+                self.watch(budget),
+            ),
         )
         .map(LoadedGeneration::map_hits_to_candidates)
     }
@@ -1298,6 +1380,7 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         &self,
         query_vector: &[f32],
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
         SemanticPolicy::validate_fetch_size(top_k)?;
         SemanticPolicy::validate_query_vector(query_vector)?;
@@ -1305,7 +1388,7 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         crate::run_blocking(
             &self.runtime,
             self.loaded
-                .search_hits_filtered_async(query_vector, limit, None),
+                .search_hits_filtered_async(query_vector, limit, None, self.watch(budget)),
         )
         .and_then(LoadedGeneration::map_hits_to_core_v1)
     }
@@ -1315,14 +1398,21 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         query_vector: &[f32],
         constraints: &QueryConstraintSetV1,
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
         SemanticPolicy::validate_fetch_size(top_k)?;
         SemanticPolicy::validate_query_vector(query_vector)?;
         let limit = top_k_limit(top_k)?;
         crate::run_blocking(
             &self.runtime,
-            self.loaded
-                .search_hits_constrained_async(query_vector, limit, None, None, constraints),
+            self.loaded.search_hits_constrained_async(
+                query_vector,
+                limit,
+                None,
+                None,
+                constraints,
+                self.watch(budget),
+            ),
         )
         .and_then(LoadedGeneration::map_hits_to_core_v1)
     }
@@ -1332,6 +1422,7 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         query_vector: &[f32],
         corpus_kind: SemanticCorpusKindV1,
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
         SemanticPolicy::validate_fetch_size(top_k)?;
         SemanticPolicy::validate_query_vector(query_vector)?;
@@ -1342,6 +1433,7 @@ impl SemanticSearcher for PersistedSemanticSearcher {
                 query_vector,
                 limit,
                 Some(corpus_kind.as_code_str()),
+                self.watch(budget),
             ),
         )
         .and_then(LoadedGeneration::map_hits_to_core_v1)
@@ -1353,6 +1445,7 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         corpus_kind: SemanticCorpusKindV1,
         constraints: &QueryConstraintSetV1,
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
         SemanticPolicy::validate_fetch_size(top_k)?;
         SemanticPolicy::validate_query_vector(query_vector)?;
@@ -1365,6 +1458,7 @@ impl SemanticSearcher for PersistedSemanticSearcher {
                 None,
                 Some(corpus_kind.as_code_str()),
                 constraints,
+                self.watch(budget),
             ),
         )
         .and_then(LoadedGeneration::map_hits_to_core_v1)
@@ -1375,6 +1469,7 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         query_vector: &[f32],
         allowed_ids: &BTreeSet<String>,
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
         SemanticPolicy::validate_fetch_size(top_k)?;
         SemanticPolicy::validate_query_vector(query_vector)?;
@@ -1382,7 +1477,7 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         crate::run_blocking(
             &self.runtime,
             self.loaded
-                .search_scoped_async(query_vector, allowed_ids, limit),
+                .search_scoped_async(query_vector, allowed_ids, limit, self.watch(budget)),
         )
     }
 
@@ -1392,6 +1487,7 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         allowed_ids: &BTreeSet<String>,
         constraints: &QueryConstraintSetV1,
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
         SemanticPolicy::validate_fetch_size(top_k)?;
         SemanticPolicy::validate_query_vector(query_vector)?;
@@ -1404,6 +1500,7 @@ impl SemanticSearcher for PersistedSemanticSearcher {
                 Some(allowed_ids),
                 None,
                 constraints,
+                self.watch(budget),
             ),
         )
         .map(LoadedGeneration::map_hits_to_candidates)

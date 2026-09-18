@@ -111,9 +111,12 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     let repo_meta_ingest_port: Arc<dyn RepoMetaIngestPort + Send + Sync> = lex_adapter.clone();
     let lexical_quarantine_discard: Arc<dyn QuarantinedGenerationDiscardPort + Send + Sync> =
         lex_adapter.clone();
-    // The lexical adapter keeps the writer envelope and regex cache tallies
-    // (QI-BB-015); nothing else built here keeps accounting of its own.
+    // The lexical adapter keeps the writer envelope and regex cache tallies,
+    // the semantic adapter the dense lanes' query and budget-interruption
+    // tallies (QI-BB-015); nothing else built here keeps accounting of its
+    // own.
     let lexical_metric_source: Arc<dyn MetricSourcePort> = lex_adapter;
+    let semantic_metric_source: Arc<dyn MetricSourcePort> = sem_adapter.clone();
     let sem_build_port: Arc<dyn SemanticScopeStreamBuildPort + Send + Sync> = sem_adapter.clone();
     let semantic_generation_scanner: Arc<dyn SealedGenerationScanPort + Send + Sync> =
         sem_adapter.clone();
@@ -167,7 +170,7 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
             idempotency,
             auxiliary_catalog,
             history_text_index,
-            adapter_metric_sources: vec![lexical_metric_source],
+            adapter_metric_sources: vec![lexical_metric_source, semantic_metric_source],
         },
     )
 }

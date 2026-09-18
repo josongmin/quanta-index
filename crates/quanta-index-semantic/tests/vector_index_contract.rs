@@ -23,7 +23,7 @@ use quanta_index_contract::{
 use quanta_index_core::{
     CoreError, DenseIndexEffortV1, DenseIndexLineageV1, DenseIndexTrainingV1, DenseIndexV1,
     DenseLaneAttestationV1, DenseLaneContractV1, GenerationIdentityValidatePort,
-    GenerationStorageKeyV1, SemanticIndexOpenPort,
+    GenerationStorageKeyV1, RequestBudgetV1, SemanticIndexOpenPort,
 };
 use quanta_index_semantic::{
     SemanticAdapter, build_resident_batch_v1, legacy_chunk_embedding_record_v1,
@@ -323,7 +323,7 @@ fn the_seal_and_the_dataset_agree_at_the_255_256_boundary() -> TestResult {
     // The lane serves exact scores through the index: the self-vector is the
     // top hit at cosine 1, which the refine step guarantees even though the
     // index scores quantized vectors.
-    let hits = at_searcher.search(&unit_vector(7, DIMENSION), 3)?;
+    let hits = at_searcher.search(&unit_vector(7, DIMENSION), 3, &RequestBudgetV1::unbounded())?;
     let Some(top) = hits.first() else {
         return Err("the indexed lane must serve hits".into());
     };
@@ -432,7 +432,11 @@ fn a_delta_beyond_the_append_budget_retrains_one_index_covering_every_row() -> T
         )
         .into());
     }
-    let hits = searcher.search(&unit_vector(1_042, DIMENSION), 3)?;
+    let hits = searcher.search(
+        &unit_vector(1_042, DIMENSION),
+        3,
+        &RequestBudgetV1::unbounded(),
+    )?;
     if hits.first().map(|hit| hit.candidate_id.as_str()) != Some("new-1042") {
         return Err(
             format!("a delta-only row must be served through the rebuilt index: {hits:?}").into(),
@@ -524,7 +528,11 @@ fn a_delta_inside_the_append_budget_appends_to_the_inherited_index() -> TestResu
     // scores: the refine step re-ranks candidates from every segment on
     // the original vectors, not on one segment's quantized codes.
     for (query_seed, expected) in [(1_042_u64, "new-1042"), (7_u64, "base-7")] {
-        let hits = searcher.search(&unit_vector(query_seed, DIMENSION), 3)?;
+        let hits = searcher.search(
+            &unit_vector(query_seed, DIMENSION),
+            3,
+            &RequestBudgetV1::unbounded(),
+        )?;
         let Some(top) = hits.first() else {
             return Err(format!("the appended index must serve hits for {expected}").into());
         };
@@ -805,7 +813,11 @@ fn a_generation_sealed_before_the_contract_serves_unverified_on_what_it_carries(
     {
         return Err(format!("a v7 index is served unverified: {lane:?}").into());
     }
-    let hits = indexed_searcher.search(&unit_vector(11, DIMENSION), 3)?;
+    let hits = indexed_searcher.search(
+        &unit_vector(11, DIMENSION),
+        3,
+        &RequestBudgetV1::unbounded(),
+    )?;
     if hits.first().map(|hit| hit.candidate_id.as_str()) != Some("row-11") {
         return Err(format!("a v7 index still serves: {hits:?}").into());
     }
@@ -920,7 +932,7 @@ fn the_sealed_effort_keeps_recall_against_an_exact_oracle_and_returns_exact_scor
         };
         let expected = exact_top_k(&rows, &query, K);
         let started = Instant::now();
-        let hits = searcher.search(&query, u32::try_from(K)?)?;
+        let hits = searcher.search(&query, u32::try_from(K)?, &RequestBudgetV1::unbounded())?;
         latencies_micros.push(started.elapsed().as_micros());
         if hits.len() != K {
             return Err(format!("query {query_seed} returned {} of {K} hits", hits.len()).into());

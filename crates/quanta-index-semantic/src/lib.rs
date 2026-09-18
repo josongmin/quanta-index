@@ -22,7 +22,8 @@
 //! A sealed generation is built once (lancedb table + ANN index + scope
 //! manifest + READY/SEALED markers) and opened directly from durable state at
 //! query time. There is no boot-time replay. Vendor / file-layout knowledge
-//! stays inside this crate; the public surface is the two ports plus
+//! stays inside this crate; the public surface is the two ports, the
+//! metrics source over the dense lanes' tallies (W5 phase 3), plus
 //! [`inventory_persisted_generations`] for readiness seeding at the
 //! composition root, and [`semantic_state_root`] so the composition root does
 //! not hardcode the layout root.
@@ -30,6 +31,7 @@
 //! See `docs/plans/may-28-lancedb-adoption/` for the full backend decision and
 //! migration packet.
 
+mod budget;
 mod build;
 mod codec;
 mod errors;
@@ -58,9 +60,9 @@ use quanta_index_contract::{
     GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
 };
 use quanta_index_core::{
-    CoreError, GenerationIdentityValidatePort, SealedGenerationScanPort, SemanticIndexOpenPort,
-    SemanticIngestHeaderV1, SemanticScopeSource, SemanticScopeStreamBuildPort,
-    SemanticStreamTallyV1, SemanticStreamWindowPolicy,
+    CoreError, GenerationIdentityValidatePort, MetricPointV1, MetricSourcePort,
+    SealedGenerationScanPort, SemanticIndexOpenPort, SemanticIngestHeaderV1, SemanticScopeSource,
+    SemanticScopeStreamBuildPort, SemanticStreamTallyV1, SemanticStreamWindowPolicy,
     domains::generation::{
         GenerationQuarantineReasonV1, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
         IncompleteGenerationDiscardPort, QUARANTINE_TARGET_NOT_QUARANTINED_CODE,
@@ -70,6 +72,7 @@ use quanta_index_core::{
     domains::semantic::SemanticSearcher,
 };
 
+use crate::budget::DenseLaneTalliesV1;
 use crate::manifest::SemanticManifest;
 use crate::search::{PersistedSemanticSearcher, open_generation};
 
@@ -79,18 +82,30 @@ pub mod test_support {
     pub fn set_append_fail_path(path: Option<&str>) {
         crate::build::set_append_fail_path_for_debug(path);
     }
+
+    /// Debug-only delay injection for the cancellation end-to-end proof
+    /// (W5 phase 3).
+    ///
+    /// While armed, every dense lane parks before issuing its vector
+    /// query, so a request can only end through its budget. Process-wide;
+    /// disarm it before the next served query.
+    pub fn hold_dense_lane_until_interrupted(enabled: bool) {
+        crate::budget::failpoint::set_hold_dense_lane_until_interrupted(enabled);
+    }
 }
 
 /// Persisted semantic adapter rooted at a semantic state directory.
 ///
 /// The state directory is typically `{state_root}/indexes/semantic` at the
 /// composition root. Owns a tokio runtime used to drive lancedb's async API
-/// behind the sync port surface, and the window policy every streamed build
-/// admits its windows against (QI-BB-021).
+/// behind the sync port surface, the window policy every streamed build
+/// admits its windows against (QI-BB-021), and the dense-lane tallies every
+/// searcher it opens reports to (W5 phase 3).
 pub struct SemanticAdapter {
     state_root: PathBuf,
     runtime: Arc<tokio::runtime::Runtime>,
     window_policy: SemanticStreamWindowPolicy,
+    query_tallies: Arc<DenseLaneTalliesV1>,
 }
 
 /// Single crate-wide async↔sync seam funnel.
@@ -143,6 +158,7 @@ impl SemanticAdapter {
             state_root,
             runtime: Arc::new(runtime),
             window_policy,
+            query_tallies: Arc::new(DenseLaneTalliesV1::default()),
         })
     }
 
@@ -187,7 +203,18 @@ impl SemanticIndexOpenPort for SemanticAdapter {
         Ok(Box::new(PersistedSemanticSearcher::new(
             loaded,
             Arc::clone(&self.runtime),
+            Arc::clone(&self.query_tallies),
         )))
+    }
+}
+
+/// The dense lanes' tallies as scrape points, `semantic_dense_queries_…`
+/// and `semantic_budget_interruptions_…` (QI-BB-015, W5 phase 3): the
+/// queries each lane handed to the library and the request interruptions
+/// it observed inside, across every searcher this adapter opened.
+impl MetricSourcePort for SemanticAdapter {
+    fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
+        Ok(self.query_tallies.scrape())
     }
 }
 

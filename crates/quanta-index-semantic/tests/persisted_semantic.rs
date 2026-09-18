@@ -12,7 +12,9 @@ use quanta_index_contract::{
     ExactRepoRelativePathV1, ManifestGeneration, OwnerDocKind, QueryConstraintSetV1, RepoId,
     RevisionId, SearchScopeKey, SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
 };
-use quanta_index_core::{CoreError, GenerationStorageKeyV1, SemanticIndexOpenPort};
+use quanta_index_core::{
+    CoreError, GenerationStorageKeyV1, RequestBudgetV1, SemanticIndexOpenPort,
+};
 use quanta_index_semantic::{
     SemanticAdapter, build_resident_batch_v1, embedding_record_v1, inventory_persisted_generations,
     legacy_chunk_embedding_record_v1, model_contract_v1, sealed_replace_batch_v1, search_scope_v1,
@@ -207,7 +209,7 @@ fn build_open_roundtrip_serves_from_durable_state() -> TestResult {
     );
 
     let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
-    let hits = searcher.search(&[1.0, 0.0, 0.0], 1)?;
+    let hits = searcher.search(&[1.0, 0.0, 0.0], 1, &RequestBudgetV1::unbounded())?;
     let Some(hit) = hits.first() else {
         return Err("durable semantic search must return one hit".into());
     };
@@ -251,7 +253,12 @@ fn language_constraint_is_applied_before_vector_limit_and_composes_with_scope_v1
     let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
     let rust_only =
         QueryConstraintSetV1::from_languages([LanguageCode::new("rust").map_err(str::to_string)?]);
-    let hits = searcher.search_constrained(&[1.0, 0.0, 0.0], &rust_only, 1)?;
+    let hits = searcher.search_constrained(
+        &[1.0, 0.0, 0.0],
+        &rust_only,
+        1,
+        &RequestBudgetV1::unbounded(),
+    )?;
     assert_eq!(
         hits.first().map(|hit| hit.candidate_id.as_str()),
         Some("rust-target"),
@@ -259,8 +266,13 @@ fn language_constraint_is_applied_before_vector_limit_and_composes_with_scope_v1
     );
 
     let allowed_ids = BTreeSet::from(["rust-target".to_string(), "python-best".to_string()]);
-    let scoped =
-        searcher.search_scoped_constrained(&[1.0, 0.0, 0.0], &allowed_ids, &rust_only, 1)?;
+    let scoped = searcher.search_scoped_constrained(
+        &[1.0, 0.0, 0.0],
+        &allowed_ids,
+        &rust_only,
+        1,
+        &RequestBudgetV1::unbounded(),
+    )?;
     assert_eq!(
         scoped.first().map(|hit| hit.candidate_id.as_str()),
         Some("rust-target")
@@ -322,7 +334,12 @@ fn exact_path_constraint_is_applied_before_vector_limit_v1() -> TestResult {
     let constraints = QueryConstraintSetV1::from_exact_repo_relative_path(
         ExactRepoRelativePathV1::new("src/lib.rs").map_err(str::to_string)?,
     );
-    let hits = searcher.search_constrained(&[1.0, 0.0, 0.0], &constraints, 1)?;
+    let hits = searcher.search_constrained(
+        &[1.0, 0.0, 0.0],
+        &constraints,
+        1,
+        &RequestBudgetV1::unbounded(),
+    )?;
     assert_eq!(
         hits.first().map(|hit| hit.candidate_id.as_str()),
         Some("requested"),
@@ -418,8 +435,13 @@ fn constrained_vector_search_matches_exhaustive_oracle_and_top_k_prefix_v1() -> 
     let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
     for top_k in 1..=expected.len() + 1 {
         let top_k = u32::try_from(top_k).map_err(|err| format!("top_k conversion: {err}"))?;
-        let actual =
-            searcher.search_scoped_constrained(&query, &allowed_ids, &constraints, top_k)?;
+        let actual = searcher.search_scoped_constrained(
+            &query,
+            &allowed_ids,
+            &constraints,
+            top_k,
+            &RequestBudgetV1::unbounded(),
+        )?;
         let expected_prefix = expected
             .get(..actual.len())
             .ok_or("oracle produced fewer rows than the adapter returned")?;
@@ -475,7 +497,7 @@ fn restart_opens_prior_generation_without_replay() -> TestResult {
     // Brand new adapter instance: no in-memory carryover, no journal replay.
     let restarted = SemanticAdapter::with_state_root(root)?;
     let searcher = restarted.open(&repo_id(), &revision_id(), generation)?;
-    let hits = searcher.search(&[0.0, 1.0, 0.0], 3)?;
+    let hits = searcher.search(&[0.0, 1.0, 0.0], 3, &RequestBudgetV1::unbounded())?;
     let Some(hit) = hits.first() else {
         return Err("restarted adapter must serve the persisted generation".into());
     };
@@ -523,7 +545,7 @@ fn replace_scope_overwrites_same_path_entries() -> TestResult {
     )?;
 
     let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
-    let hits = searcher.search(&[0.0, 1.0, 0.0], 5)?;
+    let hits = searcher.search(&[0.0, 1.0, 0.0], 5, &RequestBudgetV1::unbounded())?;
     let Some(hit) = hits.first() else {
         return Err("replacement search must return one hit".into());
     };
@@ -577,7 +599,7 @@ fn tombstone_scope_removes_existing_entries() -> TestResult {
     )?;
 
     let searcher = adapter.open(&repo_id(), &revision_id(), next)?;
-    let hits = searcher.search(&[1.0, 0.0, 0.0], 5)?;
+    let hits = searcher.search(&[1.0, 0.0, 0.0], 5, &RequestBudgetV1::unbounded())?;
     assert!(hits.is_empty());
     Ok(())
 }
@@ -612,12 +634,12 @@ fn generation_pin_isolates_results() -> TestResult {
     )?;
 
     let s1 = adapter.open(&repo_id(), &revision_id(), g1)?;
-    let h1 = s1.search(&[1.0, 0.0, 0.0], 5)?;
+    let h1 = s1.search(&[1.0, 0.0, 0.0], 5, &RequestBudgetV1::unbounded())?;
     let ids1: Vec<String> = h1.iter().map(|c| c.candidate_id.clone()).collect();
     assert_eq!(ids1, vec!["emb-a".to_string()]);
 
     let s2 = adapter.open(&repo_id(), &revision_id(), g2)?;
-    let h2 = s2.search(&[0.0, 0.0, 1.0], 5)?;
+    let h2 = s2.search(&[0.0, 0.0, 1.0], 5, &RequestBudgetV1::unbounded())?;
     let ids2: Vec<String> = h2.iter().map(|c| c.candidate_id.clone()).collect();
     assert_eq!(ids2, vec!["emb-b".to_string()]);
     Ok(())
@@ -653,7 +675,7 @@ fn sealed_empty_generation_serves_empty_hits() -> TestResult {
     )?;
 
     let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
-    let hits = searcher.search(&[1.0, 0.0, 0.0], 1)?;
+    let hits = searcher.search(&[1.0, 0.0, 0.0], 1, &RequestBudgetV1::unbounded())?;
     assert!(hits.is_empty());
     Ok(())
 }
@@ -766,7 +788,7 @@ fn query_dimension_mismatch_fails_closed() -> TestResult {
     )?;
 
     let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
-    let Err(err) = searcher.search(&[1.0, 0.0], 1) else {
+    let Err(err) = searcher.search(&[1.0, 0.0], 1, &RequestBudgetV1::unbounded()) else {
         return Err("query dimension mismatch must fail closed".into());
     };
     match err {
@@ -1012,7 +1034,8 @@ fn search_scoped_restricts_to_allowlist() -> TestResult {
     let mut allow: BTreeSet<String> = BTreeSet::new();
     let _new = allow.insert("emb-2".to_string());
     // The global nearest to [1,0,0] is emb-1, but the allowlist excludes it.
-    let hits = searcher.search_scoped(&[1.0, 0.0, 0.0], &allow, 5)?;
+    let hits =
+        searcher.search_scoped(&[1.0, 0.0, 0.0], &allow, 5, &RequestBudgetV1::unbounded())?;
     let ids: Vec<String> = hits.iter().map(|c| c.candidate_id.clone()).collect();
     assert_eq!(ids, vec!["emb-2".to_string()]);
     Ok(())
@@ -1362,13 +1385,13 @@ fn open_cache_survives_eviction_beyond_capacity() -> TestResult {
             &revision_id(),
             ManifestGeneration::new(generation),
         )?;
-        let _hits = warm.search(&[1.0, 0.0, 0.0], 1)?;
+        let _hits = warm.search(&[1.0, 0.0, 0.0], 1, &RequestBudgetV1::unbounded())?;
     }
 
     // The earliest generation was evicted; it must still reload from durable
     // state and serve identical results.
     let evicted = adapter.open(&repo_id(), &revision_id(), ManifestGeneration::new(1))?;
-    let hits = evicted.search(&[1.0, 0.0, 0.0], 1)?;
+    let hits = evicted.search(&[1.0, 0.0, 0.0], 1, &RequestBudgetV1::unbounded())?;
     let Some(hit) = hits.first() else {
         return Err("evicted generation must reload and serve".into());
     };
@@ -1406,7 +1429,7 @@ fn concurrent_open_of_same_generation_is_consistent() -> TestResult {
                 .open(&repo_id(), &revision_id(), generation)
                 .map_err(|err| format!("open: {err}"))?;
             let hits = searcher
-                .search(&[1.0, 0.0, 0.0], 1)
+                .search(&[1.0, 0.0, 0.0], 1, &RequestBudgetV1::unbounded())
                 .map_err(|err| format!("search: {err}"))?;
             let hit = hits.first().ok_or_else(|| "no hit".to_string())?;
             Ok(hit.candidate_id.clone())
@@ -1575,7 +1598,7 @@ fn validate_before_delete_preserves_prior_unsealed_rows() -> TestResult {
     build_resident_batch_v1(&adapter, &batch3)?;
 
     let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
-    let hits = searcher.search(&[1.0, 0.0, 0.0], 5)?;
+    let hits = searcher.search(&[1.0, 0.0, 0.0], 5, &RequestBudgetV1::unbounded())?;
     let ids: Vec<String> = hits.iter().map(|c| c.candidate_id.clone()).collect();
     assert!(
         ids.contains(&"emb-1".to_string()),
@@ -1651,7 +1674,7 @@ fn append_failure_preserves_prior_unsealed_rows() -> TestResult {
 
     let searcher =
         SemanticAdapter::with_state_root(root)?.open(&repo_id(), &revision_id(), generation)?;
-    let hits = searcher.search(&[1.0, 0.0, 0.0], 5)?;
+    let hits = searcher.search(&[1.0, 0.0, 0.0], 5, &RequestBudgetV1::unbounded())?;
     let ids: Vec<String> = hits
         .iter()
         .map(|candidate| candidate.candidate_id.clone())
@@ -1966,12 +1989,12 @@ fn legacy_v2_manifest_without_generation_contract_opens_for_compatibility() -> T
 
     let reopened = SemanticAdapter::with_state_root(root)?;
     let searcher = reopened.open(&repo_id(), &revision_id(), generation)?;
-    let hits = searcher.search(&[1.0, 0.0, 0.0], 3)?;
+    let hits = searcher.search(&[1.0, 0.0, 0.0], 3, &RequestBudgetV1::unbounded())?;
     let Some(hit) = hits.first() else {
         return Err("legacy v2 sealed generation must still serve hits".into());
     };
     assert_eq!(hit.candidate_id.as_str(), "emb-legacy");
-    let identity_hits = searcher.search_hits(&[1.0, 0.0, 0.0], 3)?;
+    let identity_hits = searcher.search_hits(&[1.0, 0.0, 0.0], 3, &RequestBudgetV1::unbounded())?;
     let Some(identity_hit) = identity_hits.first() else {
         return Err("legacy v2 sealed generation must still serve identity hits".into());
     };

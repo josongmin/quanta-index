@@ -80,6 +80,7 @@ impl SearchPlaneDispatcher {
                 &query_vector,
                 &prepared_language.constraints,
                 internal_top_k,
+                budget,
             )?
         };
         budget.checkpoint("hybrid:fuse")?;

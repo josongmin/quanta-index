@@ -125,9 +125,15 @@ impl SearchPlaneDispatcher {
                 scope_ids,
                 &effective_constraints,
                 probe_top_k,
+                budget,
             )?
         } else {
-            searcher.search_constrained(&query_vector, &effective_constraints, probe_top_k)?
+            searcher.search_constrained(
+                &query_vector,
+                &effective_constraints,
+                probe_top_k,
+                budget,
+            )?
         };
         budget.checkpoint("semantic:project")?;
         let window = finalize_probe_window_v1(&mut results, request.top_k)?;

@@ -1931,9 +1931,9 @@ mod tests {
         SymbolId, lex::LanguageCode,
     };
     use quanta_index_core::{
-        CoreError, ResidentScopeSource, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES, SemanticIndexOpenPort,
-        SemanticIngestHeaderV1, SemanticScopeSource as _, SemanticStreamWindowPolicy,
-        build_resident_semantic_batch_v1,
+        CoreError, RequestBudgetV1, ResidentScopeSource, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES,
+        SemanticIndexOpenPort, SemanticIngestHeaderV1, SemanticScopeSource as _,
+        SemanticStreamWindowPolicy, build_resident_semantic_batch_v1,
     };
 
     use super::{
@@ -1943,6 +1943,7 @@ mod tests {
         open_connection, persist_generation_contract, recover_dataset_artifacts,
         stage_generation_contract, write_atomic,
     };
+    use crate::budget::{DenseLaneBudgetV1, DenseLaneTalliesV1};
     use crate::generation_contract::GenerationContract;
     use crate::layout::{
         self, CLUSTER_MEMBERSHIP_TABLE_NAME, COLUMN_AUTHORITY_DIGEST, COLUMN_CAPABILITY_STATUS,
@@ -1956,6 +1957,17 @@ mod tests {
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     const PROMOTION_CRASH_ROOT_ENV: &str = "QUANTA_INDEX_SEMANTIC_PROMOTION_CRASH_ROOT";
+
+    /// A budget that never interrupts and tallies nobody reads, for the
+    /// searches these build tests run to check what a seal serves.
+    fn unbounded_watch() -> DenseLaneBudgetV1<'static> {
+        static BUDGET: std::sync::OnceLock<RequestBudgetV1> = std::sync::OnceLock::new();
+        static TALLIES: DenseLaneTalliesV1 = DenseLaneTalliesV1::new();
+        DenseLaneBudgetV1 {
+            budget: BUDGET.get_or_init(RequestBudgetV1::unbounded),
+            tallies: &TALLIES,
+        }
+    }
 
     fn repo_id() -> RepoId {
         RepoId::new("repo-build")
@@ -2271,11 +2283,21 @@ mod tests {
         )?;
         let symbol_hits = crate::run_blocking(
             &runtime,
-            loaded.search_hits_filtered_async(&[1.0, 0.0, 0.0], 10, Some("SymbolCard")),
+            loaded.search_hits_filtered_async(
+                &[1.0, 0.0, 0.0],
+                10,
+                Some("SymbolCard"),
+                unbounded_watch(),
+            ),
         )?;
         let module_hits = crate::run_blocking(
             &runtime,
-            loaded.search_hits_filtered_async(&[0.0, 1.0, 0.0], 10, Some("ModuleCard")),
+            loaded.search_hits_filtered_async(
+                &[0.0, 1.0, 0.0],
+                10,
+                Some("ModuleCard"),
+                unbounded_watch(),
+            ),
         )?;
         assert_eq!(symbol_hits.len(), 1);
         assert_eq!(
@@ -2658,7 +2680,12 @@ mod tests {
         )?;
         let module_hits = crate::run_blocking(
             &runtime,
-            loaded.search_hits_filtered_async(&[0.0, 1.0, 0.0], 10, Some("ModuleCard")),
+            loaded.search_hits_filtered_async(
+                &[0.0, 1.0, 0.0],
+                10,
+                Some("ModuleCard"),
+                unbounded_watch(),
+            ),
         )?;
         assert!(
             module_hits.is_empty(),
@@ -2722,7 +2749,10 @@ mod tests {
             &runtime,
             open_generation(&root, &repo_id(), &revision_id(), generation),
         )?;
-        let hits = crate::run_blocking(&runtime, loaded.search_async(&[1.0, 0.0, 0.0], 5))?;
+        let hits = crate::run_blocking(
+            &runtime,
+            loaded.search_async(&[1.0, 0.0, 0.0], 5, unbounded_watch()),
+        )?;
         let ids: Vec<String> = hits
             .into_iter()
             .map(|candidate| candidate.candidate_id)
@@ -2924,7 +2954,12 @@ mod tests {
         )?;
         let removed = crate::run_blocking(
             &runtime,
-            loaded.search_hits_filtered_async(&[1.0, 0.0, 0.0], 10, Some("SymbolCard")),
+            loaded.search_hits_filtered_async(
+                &[1.0, 0.0, 0.0],
+                10,
+                Some("SymbolCard"),
+                unbounded_watch(),
+            ),
         )?;
         assert!(
             removed.is_empty(),
@@ -2932,7 +2967,12 @@ mod tests {
         );
         let kept = crate::run_blocking(
             &runtime,
-            loaded.search_hits_filtered_async(&[0.0, 1.0, 0.0], 10, Some("ModuleCard")),
+            loaded.search_hits_filtered_async(
+                &[0.0, 1.0, 0.0],
+                10,
+                Some("ModuleCard"),
+                unbounded_watch(),
+            ),
         )?;
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].record_id, "record-module-b");
@@ -3020,15 +3060,30 @@ mod tests {
         )?;
         let exact_symbol = crate::run_blocking(
             &runtime,
-            loaded.search_hits_filtered_async(&[1.0, 0.0, 0.0], 10, Some("SymbolCard")),
+            loaded.search_hits_filtered_async(
+                &[1.0, 0.0, 0.0],
+                10,
+                Some("SymbolCard"),
+                unbounded_watch(),
+            ),
         )?;
         let fallback_symbol = crate::run_blocking(
             &runtime,
-            loaded.search_hits_filtered_async(&[0.9, 0.1, 0.0], 10, Some("RawCodeFallback")),
+            loaded.search_hits_filtered_async(
+                &[0.9, 0.1, 0.0],
+                10,
+                Some("RawCodeFallback"),
+                unbounded_watch(),
+            ),
         )?;
         let module = crate::run_blocking(
             &runtime,
-            loaded.search_hits_filtered_async(&[0.0, 1.0, 0.0], 10, Some("ModuleCard")),
+            loaded.search_hits_filtered_async(
+                &[0.0, 1.0, 0.0],
+                10,
+                Some("ModuleCard"),
+                unbounded_watch(),
+            ),
         )?;
         assert!(exact_symbol.is_empty());
         assert!(fallback_symbol.is_empty());
@@ -3197,7 +3252,12 @@ mod tests {
         )?;
         let symbol_hits = crate::run_blocking(
             &runtime,
-            loaded.search_hits_filtered_async(&[1.0, 0.0, 0.0], 10, Some("SymbolCard")),
+            loaded.search_hits_filtered_async(
+                &[1.0, 0.0, 0.0],
+                10,
+                Some("SymbolCard"),
+                unbounded_watch(),
+            ),
         )?;
         assert_eq!(symbol_hits.len(), 1);
         assert_eq!(symbol_hits[0].record_id, "record-filter-symbol");
@@ -3205,7 +3265,12 @@ mod tests {
         assert_eq!(symbol_hits[0].corpus_kind.as_deref(), Some("SymbolCard"));
         let module_hits = crate::run_blocking(
             &runtime,
-            loaded.search_hits_filtered_async(&[0.0, 1.0, 0.0], 10, Some("ModuleCard")),
+            loaded.search_hits_filtered_async(
+                &[0.0, 1.0, 0.0],
+                10,
+                Some("ModuleCard"),
+                unbounded_watch(),
+            ),
         )?;
         assert_eq!(module_hits.len(), 1);
         assert_eq!(module_hits[0].record_id, "record-filter-module");
@@ -3771,7 +3836,7 @@ mod tests {
         )?;
         let hits = crate::run_blocking(
             &runtime,
-            loaded.search_hits_filtered_async(&[1.0, 0.0, 0.0], 14, None),
+            loaded.search_hits_filtered_async(&[1.0, 0.0, 0.0], 14, None, unbounded_watch()),
         )?;
         let mut served: Vec<String> = hits.into_iter().map(|hit| hit.record_id).collect();
         served.sort();
@@ -3871,7 +3936,7 @@ mod tests {
         )?;
         let hits = crate::run_blocking(
             &runtime,
-            loaded.search_hits_filtered_async(&[1.0, 0.0, 0.0], 10, None),
+            loaded.search_hits_filtered_async(&[1.0, 0.0, 0.0], 10, None, unbounded_watch()),
         )?;
         let mut served: Vec<String> = hits.into_iter().map(|hit| hit.record_id).collect();
         served.sort();

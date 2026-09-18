@@ -15,7 +15,7 @@ use quanta_index_contract::{
     BatchIngestMode, ManifestGeneration, OwnerDocKind, RepoId, RevisionId, SemanticCorpusKindV1,
     SemanticIngestBatch, SemanticReplaceScope,
 };
-use quanta_index_core::{CoreError, SemanticIndexOpenPort};
+use quanta_index_core::{CoreError, RequestBudgetV1, SemanticIndexOpenPort};
 use quanta_index_semantic::{
     SemanticAdapter, build_resident_batch_v1, embedding_record_v1, ingest_batch_v1,
     model_contract_v1, search_scope_v1, tombstone_scope_with_semantic_owner_v1,
@@ -158,7 +158,7 @@ fn scv2_s01_exact_owner_replace_does_not_erase_sibling_on_same_path() -> TestRes
     )?;
 
     let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
-    let hits = searcher.search_hits(&[1.0, 1.0, 0.0], 10)?;
+    let hits = searcher.search_hits(&[1.0, 1.0, 0.0], 10, &RequestBudgetV1::unbounded())?;
     let pairs = sorted_owner_record_pairs(&hits);
     assert_eq!(
         pairs,
@@ -227,7 +227,7 @@ fn scv2_s02_owner_tombstone_removes_only_target_owner() -> TestResult {
     )?;
 
     let searcher = adapter.open(&repo_id(), &revision_id(), next)?;
-    let hits = searcher.search_hits(&[1.0, 1.0, 0.0], 10)?;
+    let hits = searcher.search_hits(&[1.0, 1.0, 0.0], 10, &RequestBudgetV1::unbounded())?;
     let pairs = sorted_owner_record_pairs(&hits);
     assert_eq!(
         pairs,
@@ -267,7 +267,7 @@ fn scv2_s03_restart_preserves_owner_and_corpus_identity() -> TestResult {
 
     let restarted = SemanticAdapter::with_state_root(root)?;
     let searcher = restarted.open(&repo_id(), &revision_id(), generation)?;
-    let hits = searcher.search_hits(&[1.0, 0.0, 0.0], 3)?;
+    let hits = searcher.search_hits(&[1.0, 0.0, 0.0], 3, &RequestBudgetV1::unbounded())?;
     let Some(hit) = hits.first() else {
         return Err("restarted adapter must return the persisted symbol card".into());
     };

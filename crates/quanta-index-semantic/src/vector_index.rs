@@ -43,6 +43,7 @@ use quanta_index_core::domains::semantic::{
     DenseLaneAttestationV1, DenseLaneContractV1,
 };
 
+use crate::budget::DenseLaneKindV1;
 use crate::errors::lancedb_err;
 use crate::layout::COLUMN_VECTOR;
 use crate::manifest::{
@@ -713,6 +714,15 @@ impl LoadedVectorIndexV1 {
         match self.approximate.as_ref() {
             Some(approximate) => approximate.effort.apply(query, top_k),
             None => Ok(query.bypass_vector_index()),
+        }
+    }
+
+    /// Which lane a query runs through, as the budget checkpoint names it.
+    pub(crate) const fn lane_kind(&self) -> DenseLaneKindV1 {
+        if self.approximate.is_some() {
+            DenseLaneKindV1::Approximate
+        } else {
+            DenseLaneKindV1::Exact
         }
     }
 

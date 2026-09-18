@@ -150,7 +150,7 @@ mod tests {
         EmbeddingRecord, OwnerDocKind, RepoId, RepoRelativePath, RevisionId, SearchScopeKey,
         SearchScopeSurface, SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
     };
-    use quanta_index_core::{GenerationStorageKeyV1, SemanticIndexOpenPort};
+    use quanta_index_core::{GenerationStorageKeyV1, RequestBudgetV1, SemanticIndexOpenPort};
     use quanta_index_semantic::{
         SemanticAdapter, embedding_record_v1, ingest_batch_v1, inventory_persisted_generations,
         legacy_chunk_embedding_record_v1,
@@ -487,7 +487,7 @@ mod tests {
         assert_eq!(outcome, SemanticMigrationOutcome::Migrated { imported: 1 });
         let searcher = adapter.open(&repo_id(), &revision_id(), ManifestGeneration::new(8))?;
         let served: BTreeSet<String> = searcher
-            .search(&[1.0, 0.0, 0.0], 5)?
+            .search(&[1.0, 0.0, 0.0], 5, &RequestBudgetV1::unbounded())?
             .iter()
             .map(|candidate| candidate.candidate_id.clone())
             .collect();
@@ -548,7 +548,8 @@ mod tests {
 
         let migrated_searcher =
             adapter.open(&repo_id(), &revision_id(), ManifestGeneration::new(7))?;
-        let migrated_hits = migrated_searcher.search(&[0.0, 1.0, 0.0], 5)?;
+        let migrated_hits =
+            migrated_searcher.search(&[0.0, 1.0, 0.0], 5, &RequestBudgetV1::unbounded())?;
         let migrated_ids: BTreeSet<String> = migrated_hits
             .iter()
             .map(|c| c.candidate_id.clone())
@@ -590,7 +591,8 @@ mod tests {
         )?;
         let clean_searcher =
             clean_adapter.open(&repo_id(), &revision_id(), ManifestGeneration::new(7))?;
-        let clean_hits = clean_searcher.search(&[0.0, 1.0, 0.0], 5)?;
+        let clean_hits =
+            clean_searcher.search(&[0.0, 1.0, 0.0], 5, &RequestBudgetV1::unbounded())?;
         let clean_ids: BTreeSet<String> =
             clean_hits.iter().map(|c| c.candidate_id.clone()).collect();
 
@@ -651,7 +653,7 @@ mod tests {
         assert_eq!(outcome, SemanticMigrationOutcome::Migrated { imported: 1 });
 
         let searcher = adapter.open(&repo_id(), &revision_id(), ManifestGeneration::new(2))?;
-        let hits = searcher.search(&[0.0, 1.0, 0.0], 5)?;
+        let hits = searcher.search(&[0.0, 1.0, 0.0], 5, &RequestBudgetV1::unbounded())?;
         let ids: Vec<String> = hits.iter().map(|c| c.candidate_id.clone()).collect();
         assert_eq!(ids, vec!["emb-2".to_string()]);
         Ok(())
@@ -714,15 +716,23 @@ mod tests {
 
         // Both must serve exactly the surviving embeddings {emb-2@x.rs, emb-3@y.rs}.
         let resumed_ids: BTreeSet<String> = resumed_searcher
-            .search(&[0.0, 1.0, 0.0], 10)?
+            .search(&[0.0, 1.0, 0.0], 10, &RequestBudgetV1::unbounded())?
             .iter()
-            .chain(resumed_searcher.search(&[0.0, 0.0, 1.0], 10)?.iter())
+            .chain(
+                resumed_searcher
+                    .search(&[0.0, 0.0, 1.0], 10, &RequestBudgetV1::unbounded())?
+                    .iter(),
+            )
             .map(|c| c.candidate_id.clone())
             .collect();
         let clean_ids: BTreeSet<String> = clean_searcher
-            .search(&[0.0, 1.0, 0.0], 10)?
+            .search(&[0.0, 1.0, 0.0], 10, &RequestBudgetV1::unbounded())?
             .iter()
-            .chain(clean_searcher.search(&[0.0, 0.0, 1.0], 10)?.iter())
+            .chain(
+                clean_searcher
+                    .search(&[0.0, 0.0, 1.0], 10, &RequestBudgetV1::unbounded())?
+                    .iter(),
+            )
             .map(|c| c.candidate_id.clone())
             .collect();
 

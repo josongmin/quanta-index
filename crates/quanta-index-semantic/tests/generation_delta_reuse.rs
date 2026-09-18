@@ -24,7 +24,7 @@ use quanta_index_contract::{
     BatchIngestMode, EmbeddingRecord, ExactRepoRelativePathV1, ManifestGeneration,
     QueryConstraintSetV1, RepoId, RevisionId, SemanticIngestBatch,
 };
-use quanta_index_core::{GenerationStorageKeyV1, SemanticIndexOpenPort};
+use quanta_index_core::{GenerationStorageKeyV1, RequestBudgetV1, SemanticIndexOpenPort};
 use quanta_index_semantic::{
     SemanticAdapter, build_resident_batch_v1, legacy_chunk_embedding_record_v1, model_contract_v1,
     sealed_replace_batch_v1,
@@ -204,7 +204,8 @@ fn scoped_hit_ids(
     let constraints = QueryConstraintSetV1::from_exact_repo_relative_path(
         ExactRepoRelativePathV1::new(path).map_err(str::to_string)?,
     );
-    let hits = searcher.search_constrained(query, &constraints, top_k)?;
+    let hits =
+        searcher.search_constrained(query, &constraints, top_k, &RequestBudgetV1::unbounded())?;
     Ok(hits.iter().map(|hit| hit.candidate_id.clone()).collect())
 }
 

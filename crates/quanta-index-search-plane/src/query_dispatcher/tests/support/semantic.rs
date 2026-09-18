@@ -8,8 +8,8 @@ use quanta_index_contract::{
     SemanticCorpusKindV1, SemanticQueryRequest,
 };
 use quanta_index_core::{
-    CoreError, DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1, SemanticIndexOpenPort,
-    SemanticSearchHitV1, SemanticSearcher,
+    CoreError, DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1, RequestBudgetV1,
+    SemanticIndexOpenPort, SemanticSearchHitV1, SemanticSearcher,
 };
 
 use crate::query_dispatcher::tests::support::common::{candidate, ready_pin};
@@ -97,10 +97,35 @@ pub(crate) struct RecordingSemanticState {
     pub(crate) cluster_membership_opened_pins: Vec<(RepoId, RevisionId, ManifestGeneration)>,
     pub(crate) cluster_membership_requests: Vec<ClusterMembershipBatchReadRequestV1>,
     pub(crate) cluster_membership_response: Option<ClusterMembershipBatchReadResponseV1>,
+    /// When set, every dense search cancels the budget it was handed and
+    /// answers as a lane that observed the cancellation inside would (W5
+    /// phase 3).
+    pub(crate) cancel_inside_search: bool,
 }
 
 pub(crate) struct RecordingSemanticSearcher {
     pub(crate) state: Arc<Mutex<RecordingSemanticState>>,
+}
+
+impl RecordingSemanticSearcher {
+    /// Whether the recorded state asks searches to cancel their budget.
+    fn cancels_inside_search(&self) -> Result<bool, CoreError> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?
+            .cancel_inside_search)
+    }
+
+    /// The stub's own observation of the budget: cancel it and report the
+    /// interruption at the stub's dense checkpoint, when asked to.
+    fn observe_budget(&self, budget: &RequestBudgetV1) -> Result<(), CoreError> {
+        if self.cancels_inside_search()? {
+            budget.cancel_handle().cancel();
+            budget.checkpoint("stub:dense")?;
+        }
+        Ok(())
+    }
 }
 
 impl SemanticSearcher for RecordingSemanticSearcher {
@@ -147,12 +172,14 @@ impl SemanticSearcher for RecordingSemanticSearcher {
         &self,
         query_vector: &[f32],
         _top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
         self.state
             .lock()
             .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?
             .search_vectors
             .push(query_vector.to_vec());
+        self.observe_budget(budget)?;
         Ok(vec![candidate("semantic-inline", 1.0)])
     }
 
@@ -161,6 +188,7 @@ impl SemanticSearcher for RecordingSemanticSearcher {
         query_vector: &[f32],
         constraints: &QueryConstraintSetV1,
         _top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
         let configured = {
             let mut state = self
@@ -171,6 +199,7 @@ impl SemanticSearcher for RecordingSemanticSearcher {
             state.search_constraints.push(constraints.clone());
             state.constrained_search_results.clone()
         };
+        self.observe_budget(budget)?;
         if let Some(rows) = configured {
             return Ok(rows);
         }
@@ -181,12 +210,14 @@ impl SemanticSearcher for RecordingSemanticSearcher {
         &self,
         query_vector: &[f32],
         _top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
         self.state
             .lock()
             .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?
             .search_hit_vectors
             .push(query_vector.to_vec());
+        self.observe_budget(budget)?;
         Ok(vec![SemanticSearchHitV1 {
             candidate: candidate("semantic-inline", 1.0),
             record_id: "semantic-inline-record".to_string(),
@@ -202,6 +233,7 @@ impl SemanticSearcher for RecordingSemanticSearcher {
         query_vector: &[f32],
         constraints: &QueryConstraintSetV1,
         _top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
         {
             let mut state = self
@@ -211,6 +243,7 @@ impl SemanticSearcher for RecordingSemanticSearcher {
             state.search_hit_vectors.push(query_vector.to_vec());
             state.search_hit_constraints.push(constraints.clone());
         }
+        self.observe_budget(budget)?;
         Ok(vec![SemanticSearchHitV1 {
             candidate: candidate("semantic-inline", 1.0),
             record_id: "semantic-inline-record".to_string(),
@@ -226,6 +259,7 @@ impl SemanticSearcher for RecordingSemanticSearcher {
         query_vector: &[f32],
         corpus_kind: SemanticCorpusKindV1,
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
         let mut state = self
             .state
@@ -234,6 +268,7 @@ impl SemanticSearcher for RecordingSemanticSearcher {
         state.search_hit_vectors.push(query_vector.to_vec());
         state.corpus_searches.push((corpus_kind, top_k));
         drop(state);
+        self.observe_budget(budget)?;
         if corpus_kind == SemanticCorpusKindV1::RepositorySummary {
             return Ok(Vec::new());
         }
@@ -253,6 +288,7 @@ impl SemanticSearcher for RecordingSemanticSearcher {
         corpus_kind: SemanticCorpusKindV1,
         constraints: &QueryConstraintSetV1,
         top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
         let mut state = self
             .state
@@ -262,6 +298,7 @@ impl SemanticSearcher for RecordingSemanticSearcher {
         state.corpus_searches.push((corpus_kind, top_k));
         state.corpus_constraints.push(constraints.clone());
         drop(state);
+        self.observe_budget(budget)?;
         if corpus_kind == SemanticCorpusKindV1::RepositorySummary {
             return Ok(Vec::new());
         }
@@ -280,12 +317,14 @@ impl SemanticSearcher for RecordingSemanticSearcher {
         query_vector: &[f32],
         _allowed_ids: &std::collections::BTreeSet<String>,
         _top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
         self.state
             .lock()
             .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?
             .scoped_vectors
             .push(query_vector.to_vec());
+        self.observe_budget(budget)?;
         Ok(vec![candidate("semantic-scoped", 1.0)])
     }
 
@@ -295,6 +334,7 @@ impl SemanticSearcher for RecordingSemanticSearcher {
         _allowed_ids: &std::collections::BTreeSet<String>,
         constraints: &QueryConstraintSetV1,
         _top_k: u32,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
         {
             let mut state = self
@@ -304,6 +344,7 @@ impl SemanticSearcher for RecordingSemanticSearcher {
             state.scoped_vectors.push(query_vector.to_vec());
             state.scoped_constraints.push(constraints.clone());
         }
+        self.observe_budget(budget)?;
         Ok(vec![candidate("semantic-scoped", 1.0)])
     }
 

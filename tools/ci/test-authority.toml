@@ -184,6 +184,12 @@ owner = "quanta-index-semantic"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "semantic-cancellation-inside-search"
+path = "crates/quanta-index-semantic/tests/cancellation_inside_search.rs"
+owner = "quanta-index-semantic"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "contract-ipc-control-metrics"
 path = "crates/quanta-index-contract/tests/ipc_control_metrics_contract.rs"
 owner = "quanta-index-contract"
@@ -631,6 +637,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "searchd-runtime-e2e-ann-incremental-seal"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_ann_incremental_seal.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-e2e-semantic-budget-interruption"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_semantic_budget_interruption.rs"
 owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 

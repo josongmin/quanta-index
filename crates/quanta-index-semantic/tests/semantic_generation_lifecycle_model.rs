@@ -20,7 +20,7 @@ use quanta_index_contract::{
     BatchIngestMode, ManifestGeneration, OwnerDocKind, RepoId, RevisionId, SemanticCorpusKindV1,
     SemanticReplaceScope,
 };
-use quanta_index_core::{CoreError, SemanticIndexOpenPort};
+use quanta_index_core::{CoreError, RequestBudgetV1, SemanticIndexOpenPort};
 use quanta_index_semantic::{
     SemanticAdapter, build_resident_batch_v1, embedding_record_v1, ingest_batch_v1,
     inventory_persisted_generations, model_contract_v1, search_scope_v1,
@@ -173,7 +173,7 @@ impl LifecycleModel {
     fn assert_open_matches(&self, adapter: &SemanticAdapter, generation: u64) -> TestResult {
         let searcher = adapter.open(&repo_id(), &revision_id(), Self::generation(generation))?;
         let mut actual = searcher
-            .search(&[1.0, 1.0, 1.0], 32)?
+            .search(&[1.0, 1.0, 1.0], 32, &RequestBudgetV1::unbounded())?
             .into_iter()
             .map(|hit| hit.candidate_id)
             .collect::<Vec<_>>();

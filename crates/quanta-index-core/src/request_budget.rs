@@ -7,10 +7,11 @@
 //! boundaries — before a native search, between lanes, before encoding —
 //! and, since W5 phase 2, the lexical adapter observes the budget inside
 //! its native scans and candidate loops through a probe and reports what
-//! it saw with [`RequestBudgetV1::interrupted_at`]. Either way execution
-//! stops with a typed interruption naming the checkpoint that observed it.
-//! A request that "was cancelled" always names where, never merely that
-//! the client left.
+//! it saw with [`RequestBudgetV1::interrupted_at`]; since W5 phase 3 the
+//! semantic adapter does the same around its in-flight vector query and
+//! the rows it reads back. Either way execution stops with a typed
+//! interruption naming the checkpoint that observed it. A request that
+//! "was cancelled" always names where, never merely that the client left.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

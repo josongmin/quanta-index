@@ -78,6 +78,7 @@ impl SearchPlaneDispatcher {
                 &query_vector,
                 &prepared_language.constraints,
                 internal_top_k,
+                budget,
             )?;
             stabilize_semantic_seed_hits_v1(&mut hits);
             semantic_lanes.push(hits);
@@ -91,6 +92,7 @@ impl SearchPlaneDispatcher {
                     corpus_budget.corpus_kind,
                     &prepared_language.constraints,
                     corpus_budget.top_k,
+                    budget,
                 )?;
                 stabilize_semantic_seed_hits_v1(&mut hits);
                 if hits.is_empty() {

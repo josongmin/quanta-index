@@ -24,7 +24,8 @@ use quanta_index_contract::{
     SearchPlaneTrackKind,
 };
 use quanta_index_core::{
-    CoreError, GenerationIdentityValidatePort, GenerationStorageKeyV1, SemanticIndexOpenPort,
+    CoreError, GenerationIdentityValidatePort, GenerationStorageKeyV1, RequestBudgetV1,
+    SemanticIndexOpenPort,
 };
 use quanta_index_semantic::{
     SemanticAdapter, build_resident_batch_v1, legacy_chunk_embedding_record_v1,
@@ -112,7 +113,7 @@ fn knock(adapter: &SemanticAdapter, generation: ManifestGeneration) -> Doors {
     let validate = adapter.validate_generation_identity(&identity(generation));
     let open = adapter
         .open(&repo(), &revision(), generation)
-        .and_then(|searcher| searcher.search(&[1.0, 0.0, 0.0], 5))
+        .and_then(|searcher| searcher.search(&[1.0, 0.0, 0.0], 5, &RequestBudgetV1::unbounded()))
         .map(|hits| hits.len());
     Doors { validate, open }
 }
