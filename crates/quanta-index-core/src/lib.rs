@@ -33,11 +33,13 @@ pub use domains::auxiliary::{
 pub use domains::generation::{
     GenerationIdentityValidatePort, GenerationQuarantineReasonV1, GenerationStorageKeyV1,
     IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort,
+    InventoriedSealedGenerationV1, PinnedGenerationReadinessV1,
     QUARANTINE_TARGET_NOT_QUARANTINED_CODE, QuarantineDiscardOutcomeV1,
     QuarantinedGenerationDiscardPort, QuarantinedGenerationV1, SealedArtifactCommitmentV1,
-    SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
-    SealedGenerationScanPort, TreeCommitmentMismatchV1, commit_tree_v1, sha256_of_file,
-    verify_tree_commitment_v1,
+    SealedGenerationBytesV1, SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1,
+    SealedGenerationReclaimPort, SealedGenerationScanPort, TreeCommitmentMismatchV1,
+    UNKNOWN_GENERATION_CODE, commit_tree_v1, sha256_of_file, unique_inode_tree_bytes,
+    unknown_generation_error, validate_pinned_generation_v1, verify_tree_commitment_v1,
 };
 pub use domains::hybrid::{
     DenseAdmissionOutcomeV1, DenseLaneFilterClassV1, ExplainQueryPort, FusedKeyV1, FusedLaneRankV1,

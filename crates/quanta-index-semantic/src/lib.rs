@@ -52,6 +52,7 @@ pub use semantic_ingest_fixtures_v1::{
     tombstone_scope_v1, tombstone_scope_with_semantic_owner_v1,
 };
 
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -65,16 +66,18 @@ use quanta_index_core::{
     SemanticScopeStreamBuildPort, SemanticStreamTallyV1, SemanticStreamWindowPolicy,
     domains::generation::{
         GenerationQuarantineReasonV1, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
-        IncompleteGenerationDiscardPort, QUARANTINE_TARGET_NOT_QUARANTINED_CODE,
-        QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort, QuarantinedGenerationV1,
+        IncompleteGenerationDiscardPort, InventoriedSealedGenerationV1,
+        QUARANTINE_TARGET_NOT_QUARANTINED_CODE, QuarantineDiscardOutcomeV1,
+        QuarantinedGenerationDiscardPort, QuarantinedGenerationV1, SealedGenerationBytesV1,
         SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
+        unique_inode_tree_bytes,
     },
     domains::semantic::SemanticSearcher,
 };
 
 use crate::budget::DenseLaneTalliesV1;
 use crate::manifest::SemanticManifest;
-use crate::search::{PersistedSemanticSearcher, open_generation};
+use crate::search::{LoadedGeneration, PersistedSemanticSearcher, open_generation};
 
 #[cfg(debug_assertions)]
 pub mod test_support {
@@ -195,16 +198,32 @@ impl SemanticIndexOpenPort for SemanticAdapter {
         // A cold open every time, by design: residency belongs to the search
         // plane's snapshot registry, which is the single owner of opened
         // handles across both tracks. A second cache here would double the
-        // resident bytes and hide staleness from the registry's invalidation.
-        let loaded = Arc::new(run_blocking(
+        // resident bytes and hide a retirement from the registry.
+        let loaded = run_blocking(
             &self.runtime,
             open_generation(&self.state_root, repo, revision, generation),
-        )?);
-        Ok(Box::new(PersistedSemanticSearcher::new(
-            loaded,
+        )?;
+        Ok(self.searcher(loaded))
+    }
+
+    fn open_proven(
+        &self,
+        candidate: &GenerationSnapshot,
+    ) -> Result<Box<dyn SemanticSearcher>, CoreError> {
+        let generation_dir = self.sealed_candidate_dir(candidate, "proven open")?;
+        let loaded = self.open_loaded(candidate)?;
+        sync_generation_directory(&generation_dir)?;
+        Ok(self.searcher(loaded))
+    }
+}
+
+impl SemanticAdapter {
+    fn searcher(&self, loaded: LoadedGeneration) -> Box<dyn SemanticSearcher> {
+        Box::new(PersistedSemanticSearcher::new(
+            Arc::new(loaded),
             Arc::clone(&self.runtime),
             Arc::clone(&self.query_tallies),
-        )))
+        ))
     }
 }
 
@@ -223,9 +242,28 @@ impl GenerationIdentityValidatePort for SemanticAdapter {
         &self,
         candidate: &GenerationSnapshot,
     ) -> Result<(), CoreError> {
+        let generation_dir = self.sealed_candidate_dir(candidate, "identity validator")?;
+        // The cold open is the proof (QI-BB-017): it verifies the sealed
+        // manifest's file commitment before decoding the scope manifest,
+        // checks scope and digest, and opens the tables. Nothing is served
+        // from a cache here, so deleted or corrupt physical state cannot be
+        // admitted from a stale in-memory searcher.
+        let _loaded = self.open_loaded(candidate)?;
+        sync_generation_directory(&generation_dir)
+    }
+}
+
+impl SemanticAdapter {
+    /// The generation directory of `candidate`, whose sealed marker names
+    /// exactly `candidate`'s digest.
+    fn sealed_candidate_dir(
+        &self,
+        candidate: &GenerationSnapshot,
+        what: &str,
+    ) -> Result<PathBuf, CoreError> {
         if candidate.track != SearchPlaneTrackKind::Semantic {
             return Err(CoreError::InvalidContract(format!(
-                "semantic identity validator received {:?} track",
+                "semantic {what} received {:?} track",
                 candidate.track
             )));
         }
@@ -270,13 +308,12 @@ impl GenerationIdentityValidatePort for SemanticAdapter {
                 ),
             });
         }
-        // The cold open is the proof (QI-BB-017): it verifies the sealed
-        // manifest's file commitment before decoding the scope manifest,
-        // checks scope and digest, and opens the tables. Nothing is served
-        // from a cache here, so deleted or corrupt physical state cannot be
-        // admitted from a stale in-memory searcher, and nothing is hashed
-        // twice.
-        let _loaded = run_blocking(
+        Ok(generation_dir)
+    }
+
+    /// The cold open of `candidate`'s generation.
+    fn open_loaded(&self, candidate: &GenerationSnapshot) -> Result<LoadedGeneration, CoreError> {
+        run_blocking(
             &self.runtime,
             open_generation(
                 &self.state_root,
@@ -284,17 +321,20 @@ impl GenerationIdentityValidatePort for SemanticAdapter {
                 &candidate.revision_id,
                 candidate.manifest_generation,
             ),
-        )?;
-        File::open(&generation_dir)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| {
-                CoreError::Storage(format!(
-                    "semantic: revalidate generation-directory durability {}: {error}",
-                    generation_dir.display()
-                ))
-            })?;
-        Ok(())
+        )
     }
+}
+
+/// Make the generation directory's entries durable before a door admits it.
+fn sync_generation_directory(generation_dir: &Path) -> Result<(), CoreError> {
+    File::open(generation_dir)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| {
+            CoreError::Storage(format!(
+                "semantic: revalidate generation-directory durability {}: {error}",
+                generation_dir.display()
+            ))
+        })
 }
 
 impl IncompleteGenerationDiscardPort for SemanticAdapter {
@@ -529,6 +569,35 @@ impl SealedGenerationReclaimPort for SemanticAdapter {
         }
         out.sort_by_key(|identity| identity.manifest_generation);
         Ok(out)
+    }
+
+    /// Bytes the named generation directories occupy together, by unique
+    /// inode, dataset and index files included.
+    fn measure_sealed_generations(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generations: &BTreeSet<ManifestGeneration>,
+    ) -> Result<SealedGenerationBytesV1, CoreError> {
+        let mut roots = Vec::with_capacity(generations.len());
+        let mut absent = BTreeSet::new();
+        for generation in generations {
+            let generation_dir =
+                layout::generation_dir(&self.state_root, repo_id, revision_id, *generation);
+            if generation_dir.is_dir() {
+                roots.push(generation_dir);
+            } else {
+                let _new = absent.insert(*generation);
+            }
+        }
+        let bytes = unique_inode_tree_bytes(&roots, &|_name| false).map_err(|err| {
+            CoreError::Storage(format!(
+                "semantic: measure sealed generations of repo={} revision={}: {err}",
+                repo_id.as_str(),
+                revision_id.as_str()
+            ))
+        })?;
+        Ok(SealedGenerationBytesV1 { bytes, absent })
     }
 }
 
@@ -934,7 +1003,15 @@ impl SealedGenerationScanPort for SemanticAdapter {
             sealed: inventory
                 .sealed
                 .iter()
-                .map(PersistedSemanticGeneration::identity)
+                .map(|record| InventoriedSealedGenerationV1 {
+                    identity: record.identity(),
+                    path: layout::generation_dir(
+                        &self.state_root,
+                        &record.repo_id,
+                        &record.revision_id,
+                        record.generation,
+                    ),
+                })
                 .collect(),
             quarantined: inventory.quarantined,
         })

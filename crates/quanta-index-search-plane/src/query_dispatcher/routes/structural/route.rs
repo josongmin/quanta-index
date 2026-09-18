@@ -71,6 +71,7 @@ impl SearchPlaneDispatcher {
                 runtime: None,
                 structural: request.cursor.as_ref().map(|cursor| cursor.aux_epoch),
             }),
+            budget,
         )?;
         let structural = view.structural()?;
         let read = StructuralRead {

@@ -80,6 +80,7 @@ impl SearchPlaneDispatcher {
                 &pin,
             )
             .with_semantic_manifest_digest(selection.expected_manifest_digest.as_deref()),
+            budget,
         )?;
         let scope = match scope_plan.as_ref() {
             Some(plan) => {

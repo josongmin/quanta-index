@@ -8,9 +8,13 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use quanta_index_contract::{
-    AuxEpochV1, GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
+    AuxEpochV1, GenerationPin, GenerationSnapshot, ManifestGeneration, RepoId, RevisionId,
+    SearchPlaneTrackKind,
 };
-use quanta_index_core::{AuxiliaryDomainV1, AuxiliaryGenerationKeyV1, CoreError};
+use quanta_index_core::{
+    AuxiliaryDomainV1, AuxiliaryGenerationKeyV1, CoreError, PinnedGenerationReadinessV1,
+    validate_pinned_generation_v1,
+};
 
 use crate::readiness::aux_epoch::{AuxRead, AuxSnapshots};
 use crate::readiness::errors::{
@@ -234,7 +238,7 @@ impl Ledger {
     /// Callers must durably persist the composite identity before invoking this
     /// method. Per-track seal mutations intentionally do not populate rollback
     /// history: a half-persisted corpus must never become a rollback target.
-    pub(crate) fn record_historically_sealed_search_corpus(
+    pub fn record_historically_sealed_search_corpus(
         &mut self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
@@ -297,10 +301,40 @@ impl Ledger {
                 || key.revision_id != *revision_id
                 || receipt.retains(key.generation)
         });
+        // The semantic per-generation state goes with the identity: a reaped
+        // generation must read as unknown on the semantic route too, not as
+        // "materialized and sealed" from a record the authority forgot. A
+        // generation newer than the one being sealed is a build in progress
+        // and is never touched here.
+        self.semantic_generations.retain(|key, _state| {
+            key.repo_id != *repo_id
+                || key.revision_id != *revision_id
+                || key.generation.get() >= required_generation.get()
+                || receipt.retains(key.generation)
+        });
         let _removed = self
             .search_corpus_history_fenced_pairs
             .remove(&(repo_id.clone(), revision_id.clone()));
         Ok(())
+    }
+
+    /// Every sealed search-corpus generation the ledger retains for one
+    /// track of a pair, with its digest: the serving boundary as boot and
+    /// the quarantine inventory see it.
+    #[must_use]
+    pub fn retained_sealed_generations(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        track: SearchPlaneTrackKind,
+    ) -> BTreeMap<ManifestGeneration, String> {
+        self.sealed_search_track_identities
+            .iter()
+            .filter(|(key, _digest)| {
+                key.repo_id == *repo_id && key.revision_id == *revision_id && key.track == track
+            })
+            .map(|(key, digest)| (key.generation, digest.clone()))
+            .collect()
     }
 
     pub(crate) fn fence_search_corpus_history_v1(
@@ -447,6 +481,33 @@ impl Ledger {
                 generation,
             ))
             .cloned()
+    }
+
+    /// The serving boundary for a pinned track generation (QI-BB-003):
+    /// [`validate_pinned_generation_v1`] over what this ledger knows. The
+    /// sealed identities are what the durable authority recorded at seal,
+    /// restored at boot and pruned on reap, so a reaped generation, a
+    /// crash orphan whose directory is still there, or a generation that
+    /// was never sealed is refused typed here without touching disk.
+    pub fn validate_pinned_track_generation(
+        &self,
+        pin: &GenerationPin,
+        track: SearchPlaneTrackKind,
+        plane: &str,
+    ) -> Result<(), CoreError> {
+        let readiness = PinnedGenerationReadinessV1 {
+            retained_by_authority: self
+                .sealed_track_identity_digest(
+                    &pin.repo_id,
+                    &pin.revision_id,
+                    track,
+                    pin.manifest_generation,
+                )
+                .is_some(),
+            materialized_head: self.track_materialized(&pin.repo_id, &pin.revision_id, track),
+            sealed_head: self.track_sealed(&pin.repo_id, &pin.revision_id, track),
+        };
+        validate_pinned_generation_v1(plane, pin, track, readiness)
     }
 
     pub(crate) fn validate_historically_sealed_track_identity(

@@ -1,14 +1,21 @@
 //! Boot inventory: what was found on disk, what was set aside, and what was
-//! proven (QI-BB-026).
+//! proven (QI-BB-026, QI-BB-003).
 //!
 //! Boot used to deep-validate every sealed generation on disk, twice for
 //! lexical, and stop the daemon on the first defect anywhere. Now each track
-//! is inventoried once (identities only), every inventoried generation is
-//! seeded as sealed in the readiness ledger, everything the inventory could
-//! not trust is quarantined with a path and a reason, and only the active
+//! is inventoried once (identities only), every inventoried generation the
+//! durable search-corpus authority retains is seeded as sealed in the
+//! readiness ledger, everything the inventory could not trust is
+//! quarantined with a path and a reason, every sealed directory the
+//! authority does *not* retain is an orphan — reported here, listed by the
+//! quarantine inventory, never seeded, never served — and only the active
 //! `(lexical, semantic)` pairs are proven physically — once, by the
 //! lifecycle's restart rehydrate. Every other generation is proven at its
 //! own door when something serves, activates, or builds on it.
+//!
+//! The durable search-corpus history is restored into the ledger before
+//! either track is inventoried: the retained identities are what the
+//! inventory is measured against.
 
 use std::sync::{Arc, RwLock};
 
@@ -19,22 +26,32 @@ use quanta_index_core::{
     SealedGenerationScanPort, count_from_usize,
 };
 use quanta_index_ipc::SocketAccessPolicy;
-use quanta_index_search_plane::{Ledger, LegacyAuxiliaryMigrationReceipt};
+use quanta_index_search_plane::{
+    Ledger, LegacyAuxiliaryMigrationReceipt, OrphanedSealedGenerationV1,
+    partition_sealed_inventory_v1,
+};
 
 use crate::app::socket_access::{SocketAccessPolicies, SocketRole};
 
 /// One track's inventory outcome.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TrackInventoryReportV1 {
-    /// Generations whose sealed identity was readable and owns its directory;
-    /// they were seeded as sealed. Their content is unproven until a door
-    /// proves it.
+    /// Generations whose sealed identity was readable, owns its directory,
+    /// and is retained by the durable search-corpus authority; they were
+    /// seeded as sealed. Their content is unproven until a door proves it.
     pub sealed_generations: usize,
     /// Directories the inventory set aside. They are absent from readiness:
-    /// a query pinned to one answers `NOT_READY`, an activation or delta on
-    /// one is refused, and no door will open it until it is repaired or
-    /// removed.
+    /// a query pinned to one is refused typed (`UNKNOWN_GENERATION` when
+    /// the durable authority does not retain it, otherwise the door's own
+    /// refusal), an activation or delta on one is refused, and no door will
+    /// open it until it is repaired or removed.
     pub quarantined: Vec<QuarantinedGenerationV1>,
+    /// Sealed directories the durable search-corpus authority does not
+    /// retain (reaped and left behind by a crash before reclaim, or sealed
+    /// before their record was written). Not seeded: a query pinned to one
+    /// answers `UNKNOWN_GENERATION`. Listed by `quarantine list` under
+    /// `GENERATION_QUARANTINE_ORPHANED` and removed by `quarantine discard`.
+    pub orphaned: Vec<QuarantinedGenerationV1>,
 }
 
 /// What boot found and proved.
@@ -63,7 +80,7 @@ pub struct BootInventoryReportV1 {
 }
 
 impl TrackInventoryReportV1 {
-    fn metric_points(&self, track: &str) -> [MetricPointV1; 2] {
+    fn metric_points(&self, track: &str) -> [MetricPointV1; 3] {
         [
             MetricPointV1::gauge_count(
                 format!("boot_{track}_sealed_generations"),
@@ -72,6 +89,10 @@ impl TrackInventoryReportV1 {
             MetricPointV1::gauge_count(
                 format!("boot_{track}_quarantined_generations"),
                 count_from_usize(self.quarantined.len()),
+            ),
+            MetricPointV1::gauge_count(
+                format!("boot_{track}_orphaned_generations"),
+                count_from_usize(self.orphaned.len()),
             ),
         ]
     }
@@ -107,7 +128,7 @@ fn socket_access_points(role: SocketRole, policy: &SocketAccessPolicy) -> Vec<Me
 /// `boot_…` (QI-BB-015).
 impl MetricSourcePort for BootInventoryReportV1 {
     fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
-        let mut points = Vec::with_capacity(21);
+        let mut points = Vec::with_capacity(23);
         points.extend(self.lexical.metric_points("lexical"));
         points.extend(self.semantic.metric_points("semantic"));
         points.push(MetricPointV1::gauge_count(
@@ -154,10 +175,13 @@ impl MetricSourcePort for BootInventoryReportV1 {
 
 /// Seed one track's readiness from its inventory.
 ///
-/// Every inventoried generation is recorded materialized and sealed under
-/// its manifest digest; the highest generation also seeds the track-level
-/// legacy readiness. Nothing is validated here: the validator runs later,
-/// once, for the active pairs only.
+/// Every inventoried generation the durable search-corpus authority
+/// retains — the ledger's sealed identities, restored before this runs —
+/// is recorded materialized and sealed under its manifest digest; the
+/// highest of them also seeds the track-level legacy readiness. Every
+/// other sealed directory is an orphan: reported, never seeded. Nothing is
+/// validated here: the validator runs later, once, for the active pairs
+/// only.
 pub(super) fn seed_track_readiness(
     ledger: &Arc<RwLock<Ledger>>,
     track: SearchPlaneTrackKind,
@@ -166,38 +190,43 @@ pub(super) fn seed_track_readiness(
     let inventory = scanner
         .inventory_sealed_generations()
         .map_err(anyhow::Error::from)?;
+    for candidate in &inventory.sealed {
+        if candidate.identity.track != track {
+            return Err(anyhow::anyhow!(
+                "{track:?} inventory returned a {:?} generation",
+                candidate.identity.track
+            ));
+        }
+    }
     let mut guard = ledger.write().map_err(|err| {
         anyhow::anyhow!("ledger poisoned during {track:?} readiness bootstrap: {err}")
     })?;
+    let (retained, orphaned) = partition_sealed_inventory_v1(&guard, &inventory.sealed);
+    let retained: Vec<_> = retained.into_iter().cloned().collect();
     let mut highest: Option<(ManifestGeneration, String)> = None;
-    for candidate in &inventory.sealed {
-        if candidate.track != track {
-            return Err(anyhow::anyhow!(
-                "{track:?} inventory returned a {:?} generation",
-                candidate.track
-            ));
-        }
+    for candidate in &retained {
+        let identity = &candidate.identity;
         guard.record_track_materialized(
-            &candidate.repo_id,
-            &candidate.revision_id,
+            &identity.repo_id,
+            &identity.revision_id,
             track,
-            candidate.manifest_generation,
-            Some(candidate.manifest_digest.as_str()),
+            identity.manifest_generation,
+            Some(identity.manifest_digest.as_str()),
         );
         guard.record_track_seal_with_digest(
-            &candidate.repo_id,
-            &candidate.revision_id,
+            &identity.repo_id,
+            &identity.revision_id,
             track,
-            candidate.manifest_generation,
-            candidate.manifest_digest.as_str(),
+            identity.manifest_generation,
+            identity.manifest_digest.as_str(),
         );
         let take_higher = highest
             .as_ref()
-            .is_none_or(|(current, _)| candidate.manifest_generation.get() > current.get());
+            .is_none_or(|(current, _)| identity.manifest_generation.get() > current.get());
         if take_higher {
             highest = Some((
-                candidate.manifest_generation,
-                candidate.manifest_digest.clone(),
+                identity.manifest_generation,
+                identity.manifest_digest.clone(),
             ));
         }
     }
@@ -219,8 +248,12 @@ pub(super) fn seed_track_readiness(
     }
     drop(guard);
     Ok(TrackInventoryReportV1 {
-        sealed_generations: inventory.sealed.len(),
+        sealed_generations: retained.len(),
         quarantined: inventory.quarantined,
+        orphaned: orphaned
+            .iter()
+            .map(OrphanedSealedGenerationV1::quarantined)
+            .collect(),
     })
 }
 
@@ -233,8 +266,8 @@ mod tests {
         GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
     };
     use quanta_index_core::{
-        CoreError, GenerationQuarantineReasonV1, QuarantinedGenerationV1,
-        SealedGenerationInventoryV1, SealedGenerationScanPort,
+        CoreError, GenerationQuarantineReasonV1, InventoriedSealedGenerationV1,
+        QuarantinedGenerationV1, SealedGenerationInventoryV1, SealedGenerationScanPort,
     };
     use quanta_index_search_plane::Ledger;
 
@@ -248,22 +281,41 @@ mod tests {
         }
     }
 
-    fn snapshot(track: SearchPlaneTrackKind, generation: u64) -> GenerationSnapshot {
-        GenerationSnapshot {
-            repo_id: RepoId::new("repo"),
-            revision_id: RevisionId::new("rev"),
-            track,
-            manifest_generation: ManifestGeneration::new(generation),
-            manifest_digest: format!("digest-{generation}"),
+    fn snapshot(track: SearchPlaneTrackKind, generation: u64) -> InventoriedSealedGenerationV1 {
+        InventoriedSealedGenerationV1 {
+            identity: GenerationSnapshot {
+                repo_id: RepoId::new("repo"),
+                revision_id: RevisionId::new("rev"),
+                track,
+                manifest_generation: ManifestGeneration::new(generation),
+                manifest_digest: format!("digest-{generation}"),
+            },
+            path: PathBuf::from(format!(
+                "/state/indexes/lexical/generation-v1-x/g{generation}"
+            )),
         }
     }
 
-    /// Inventoried generations are seeded as sealed under their digest;
-    /// quarantined ones are absent from readiness and reported with their
-    /// reason.
+    /// A ledger whose durable authority retains `generations` of the pair.
+    fn ledger_retaining(generations: &[u64]) -> Arc<RwLock<Ledger>> {
+        let mut ledger = Ledger::new();
+        for generation in generations {
+            ledger.record_historically_sealed_search_corpus(
+                &RepoId::new("repo"),
+                &RevisionId::new("rev"),
+                ManifestGeneration::new(*generation),
+                &format!("digest-{generation}"),
+            );
+        }
+        Arc::new(RwLock::new(ledger))
+    }
+
+    /// Inventoried generations the authority retains are seeded as sealed
+    /// under their digest; quarantined ones are absent from readiness and
+    /// reported with their reason.
     #[test]
-    fn inventory_seeds_sealed_generations_and_keeps_quarantined_ones_out() {
-        let ledger = Arc::new(RwLock::new(Ledger::new()));
+    fn inventory_seeds_retained_generations_and_keeps_quarantined_ones_out() {
+        let ledger = ledger_retaining(&[1, 3]);
         let quarantined = QuarantinedGenerationV1 {
             track: SearchPlaneTrackKind::Lexical,
             path: PathBuf::from("/state/indexes/lexical/generation-v1-x/g9"),
@@ -281,6 +333,7 @@ mod tests {
             .expect("seed succeeds despite a quarantined generation");
         assert_eq!(report.sealed_generations, 2);
         assert_eq!(report.quarantined, vec![quarantined]);
+        assert!(report.orphaned.is_empty());
         // Track readiness is monotonic: the highest inventoried generation is
         // the sealed head under its own digest, and the quarantined g9 —
         // higher than both — did not become the head.
@@ -305,6 +358,53 @@ mod tests {
         assert_eq!(sealed_head, Some(ManifestGeneration::new(3)));
         assert_eq!(head_digest.as_deref(), Some("digest-3"));
         assert_eq!(legacy_head, Some(ManifestGeneration::new(3)));
+    }
+
+    /// A sealed directory the authority does not retain — by generation, or
+    /// by digest — is an orphan: reported with its path, never seeded, and
+    /// never the head even when it is the highest generation on disk.
+    #[test]
+    fn a_sealed_directory_the_authority_does_not_retain_is_an_orphan_not_a_seed() {
+        let ledger = ledger_retaining(&[4]);
+        let mut reaped = snapshot(SearchPlaneTrackKind::Lexical, 2);
+        reaped.path = PathBuf::from("/state/indexes/lexical/generation-v1-x/g2");
+        let mut newer_orphan = snapshot(SearchPlaneTrackKind::Lexical, 5);
+        newer_orphan.path = PathBuf::from("/state/indexes/lexical/generation-v1-x/g5");
+        let mut wrong_digest = snapshot(SearchPlaneTrackKind::Lexical, 4);
+        wrong_digest.identity.manifest_digest = "digest-4-forged".to_string();
+        let scanner = ScriptedInventory(SealedGenerationInventoryV1 {
+            sealed: vec![reaped.clone(), newer_orphan.clone(), wrong_digest.clone()],
+            quarantined: Vec::new(),
+        });
+        let report = seed_track_readiness(&ledger, SearchPlaneTrackKind::Lexical, &scanner)
+            .expect("orphans never fail boot");
+        assert_eq!(report.sealed_generations, 0);
+        let orphaned: Vec<(PathBuf, GenerationQuarantineReasonV1)> = report
+            .orphaned
+            .iter()
+            .map(|entry| (entry.path.clone(), entry.reason))
+            .collect();
+        assert_eq!(
+            orphaned,
+            vec![
+                (reaped.path, GenerationQuarantineReasonV1::Orphaned),
+                (newer_orphan.path, GenerationQuarantineReasonV1::Orphaned),
+                (wrong_digest.path, GenerationQuarantineReasonV1::Orphaned),
+            ]
+        );
+        let (track_head, legacy_head) = {
+            let guard = ledger.read().expect("ledger");
+            (
+                guard.track_sealed(
+                    &RepoId::new("repo"),
+                    &RevisionId::new("rev"),
+                    SearchPlaneTrackKind::Lexical,
+                ),
+                guard.lexical_sealed(),
+            )
+        };
+        assert_eq!(track_head, None, "an orphan must not become the track head");
+        assert_eq!(legacy_head, None);
     }
 
     /// An inventory that returns the wrong track is a wiring defect, not a

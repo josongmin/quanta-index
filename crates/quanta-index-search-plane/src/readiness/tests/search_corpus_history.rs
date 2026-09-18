@@ -16,6 +16,7 @@ use quanta_index_core::CoreError;
 use tempfile::tempdir;
 
 use crate::SearchCorpusLifecycleOwner;
+use crate::readiness::TEST_INDEX_BYTES_PER_GENERATION;
 use crate::readiness::auxiliary_store::AuxiliaryAuthorityStore;
 use crate::readiness::ledger::Ledger;
 use crate::readiness::search_corpus_generation::{
@@ -23,8 +24,8 @@ use crate::readiness::search_corpus_generation::{
 };
 use crate::readiness::tests::support::{
     FailAtParentSync, FailNthSyncForParent, TestResult, assert_active_composite_v1,
-    corpus_generation, corpus_identity, search_corpus_authority_record_len,
-    search_corpus_history_file_names_v1, search_corpus_retention,
+    corpus_generation, corpus_identity, search_corpus_history_file_names_v1,
+    search_corpus_retention,
 };
 use crate::search_corpus_lifecycle::SearchCorpusPairMutationCoordinator;
 use crate::search_corpus_retention::SearchCorpusHistoryRetentionPolicyV1;
@@ -147,6 +148,7 @@ fn unreconciled_retention_receipt_fails_before_ledger_pruning() -> TestResult {
         revision_id: revision.clone(),
         retained_generations: BTreeSet::from([ManifestGeneration::new(18)]),
         reaped_generations: BTreeSet::new(),
+        retained_index_bytes: 0,
         store_reconciled_v1: false,
     };
     assert!(
@@ -177,18 +179,8 @@ fn sealed_search_corpus_history_enforces_byte_cap_without_losing_predecessor() -
     let dir = tempdir()?;
     let repo = RepoId::new("repo-byte-cap");
     let revision = RevisionId::new("rev-byte-cap");
-    let first_len = search_corpus_authority_record_len(
-        &repo,
-        &revision,
-        ManifestGeneration::new(18),
-        "digest-18",
-    )?;
-    let second_len = search_corpus_authority_record_len(
-        &repo,
-        &revision,
-        ManifestGeneration::new(19),
-        "digest-19",
-    )?;
+    let first_len = TEST_INDEX_BYTES_PER_GENERATION;
+    let second_len = TEST_INDEX_BYTES_PER_GENERATION;
     let policy =
         SearchCorpusHistoryRetentionPolicyV1::new(4, first_len + second_len, 64, 64 * 1024 * 1024)?;
     let store = AuxiliaryAuthorityStore::open(dir.path(), policy)?;
@@ -220,18 +212,8 @@ fn sealed_search_corpus_history_rejects_write_before_predecessor_window_overflow
     let dir = tempdir()?;
     let repo = RepoId::new("repo-byte-exhausted");
     let revision = RevisionId::new("rev-byte-exhausted");
-    let first_len = search_corpus_authority_record_len(
-        &repo,
-        &revision,
-        ManifestGeneration::new(18),
-        "digest-18",
-    )?;
-    let second_len = search_corpus_authority_record_len(
-        &repo,
-        &revision,
-        ManifestGeneration::new(19),
-        "digest-19",
-    )?;
+    let first_len = TEST_INDEX_BYTES_PER_GENERATION;
+    let second_len = TEST_INDEX_BYTES_PER_GENERATION;
     let pair_bytes = first_len
         .checked_add(second_len)
         .and_then(|sum| sum.checked_sub(1))
@@ -316,18 +298,8 @@ fn state_root_total_byte_cap_rejects_growth_before_write() -> TestResult {
     let first_revision = RevisionId::new("rev-byte-root-first");
     let second_repo = RepoId::new("repo-byte-root-second");
     let second_revision = RevisionId::new("rev-byte-root-second");
-    let first_len = search_corpus_authority_record_len(
-        &first_repo,
-        &first_revision,
-        ManifestGeneration::new(1),
-        "digest-first",
-    )?;
-    let second_len = search_corpus_authority_record_len(
-        &second_repo,
-        &second_revision,
-        ManifestGeneration::new(1),
-        "digest-second",
-    )?;
+    let first_len = TEST_INDEX_BYTES_PER_GENERATION;
+    let second_len = TEST_INDEX_BYTES_PER_GENERATION;
     let pair_limit = first_len.max(second_len);
     let store = AuxiliaryAuthorityStore::open(
         dir.path(),
@@ -484,7 +456,11 @@ fn startup_reconciles_owned_staging_and_empty_pair_v1() -> TestResult {
 #[test]
 fn retention_missing_active_history_preserves_activation_and_empty_history_v1() -> TestResult {
     let dir = tempdir()?;
-    let owner = SearchCorpusLifecycleOwner::open(dir.path(), search_corpus_retention(2)?)?;
+    let owner = SearchCorpusLifecycleOwner::open(
+        dir.path(),
+        search_corpus_retention(2)?,
+        Arc::new(crate::readiness::ScriptedIndexBytesV1),
+    )?;
     let catalog = owner.activation_catalog();
     let store = owner.authority_store();
     let active = corpus_generation(1, "digest-active-1")?;
@@ -521,7 +497,11 @@ fn retention_missing_active_history_preserves_activation_and_empty_history_v1() 
 #[test]
 fn retention_active_digest_mismatch_preserves_activation_and_history_v1() -> TestResult {
     let dir = tempdir()?;
-    let owner = SearchCorpusLifecycleOwner::open(dir.path(), search_corpus_retention(2)?)?;
+    let owner = SearchCorpusLifecycleOwner::open(
+        dir.path(),
+        search_corpus_retention(2)?,
+        Arc::new(crate::readiness::ScriptedIndexBytesV1),
+    )?;
     let catalog = owner.activation_catalog();
     let store = owner.authority_store();
     let active = corpus_generation(1, "digest-active-1")?;
@@ -576,25 +556,19 @@ fn retention_required_set_exhaustion_preserves_activation_and_history_v1() -> Te
     let revision = RevisionId::new("rev-required-set-exhausted");
     let active_digest = "digest-active-1";
     let candidate_digest = "digest-candidate-2";
-    let active_len = search_corpus_authority_record_len(
-        &repo,
-        &revision,
-        ManifestGeneration::new(1),
-        active_digest,
-    )?;
-    let candidate_len = search_corpus_authority_record_len(
-        &repo,
-        &revision,
-        ManifestGeneration::new(2),
-        candidate_digest,
-    )?;
+    let active_len = TEST_INDEX_BYTES_PER_GENERATION;
+    let candidate_len = TEST_INDEX_BYTES_PER_GENERATION;
     let policy = SearchCorpusHistoryRetentionPolicyV1::new(
         2,
         active_len.max(candidate_len),
         8,
         8 * 1024 * 1024,
     )?;
-    let owner = SearchCorpusLifecycleOwner::open(dir.path(), policy)?;
+    let owner = SearchCorpusLifecycleOwner::open(
+        dir.path(),
+        policy,
+        Arc::new(crate::readiness::ScriptedIndexBytesV1),
+    )?;
     let catalog = owner.activation_catalog();
     let store = owner.authority_store();
     let active = SearchCorpusGenerationV1::new(
@@ -659,7 +633,11 @@ fn retention_required_set_exhaustion_preserves_activation_and_history_v1() -> Te
 #[test]
 fn retention_preserves_rolled_back_active_generation_before_next_activation_v1() -> TestResult {
     let dir = tempdir()?;
-    let owner = SearchCorpusLifecycleOwner::open(dir.path(), search_corpus_retention(2)?)?;
+    let owner = SearchCorpusLifecycleOwner::open(
+        dir.path(),
+        search_corpus_retention(2)?,
+        Arc::new(crate::readiness::ScriptedIndexBytesV1),
+    )?;
     let store = owner.authority_store();
     let catalog = owner.activation_catalog();
     let repo = RepoId::new("repo-corpus");
@@ -867,6 +845,7 @@ fn sealed_search_corpus_retry_revalidates_parent_durability() -> TestResult {
         search_corpus_retention(2)?,
         SearchCorpusPairMutationCoordinator::shared(),
         Arc::new(crate::readiness::auxiliary_store::NoActiveSearchCorpusPinsV1),
+        Arc::new(crate::readiness::ScriptedIndexBytesV1),
         sync.clone(),
     )?;
     let repo = RepoId::new("repo-retry");
@@ -911,6 +890,7 @@ fn sealed_search_corpus_retry_repairs_post_rename_parent_sync_failure() -> TestR
         search_corpus_retention(2)?,
         SearchCorpusPairMutationCoordinator::shared(),
         Arc::new(crate::readiness::auxiliary_store::NoActiveSearchCorpusPinsV1),
+        Arc::new(crate::readiness::ScriptedIndexBytesV1),
         sync.clone(),
     )?;
     let repo = RepoId::new("repo-post-rename");
@@ -954,6 +934,7 @@ fn sealed_search_corpus_retry_repairs_staging_parent_sync_failure_v1() -> TestRe
         search_corpus_retention(2)?,
         SearchCorpusPairMutationCoordinator::shared(),
         Arc::new(crate::readiness::auxiliary_store::NoActiveSearchCorpusPinsV1),
+        Arc::new(crate::readiness::ScriptedIndexBytesV1),
         sync.clone(),
     )?;
     let repo = RepoId::new("repo-staging-retry");
@@ -1010,6 +991,7 @@ fn post_delete_fsync_failure_fences_rollback_and_retry_reconciles_authoritative_
         search_corpus_retention(2)?,
         SearchCorpusPairMutationCoordinator::shared(),
         Arc::new(crate::readiness::auxiliary_store::NoActiveSearchCorpusPinsV1),
+        Arc::new(crate::readiness::ScriptedIndexBytesV1),
         sync.clone(),
     )?;
     ledger.fence_search_corpus_history_v1(&repo, &revision);

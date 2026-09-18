@@ -12,15 +12,17 @@
 //! refused typed rather than served late.
 //!
 //! Every ledger read of a request happens under one read guard here:
-//! lexical readiness, semantic validation, the auxiliary snapshots and
-//! the text index handle (acquired under the same guard so a prune cannot
-//! race the open). The registries are consulted after the guard is
-//! released; they are keyed by the immutable sealed generation. A
-//! required domain that is absent or not ready is refused with that
-//! domain's typed code before any lane executes — never an empty page,
-//! never another generation. Every auxiliary snapshot the view holds is
-//! proven to belong to the pin's generation; a mix is refused
-//! `READ_VIEW_GENERATION_MIX`.
+//! the serving boundary of each pinned track (the durable authority must
+//! retain the exact sealed generation, else `UNKNOWN_GENERATION` /
+//! `NOT_READY`, QI-BB-003), lexical readiness, semantic validation, the
+//! auxiliary snapshots and the text index handle (acquired under the same
+//! guard so a prune cannot race the open). The registries are consulted
+//! after the guard is released, under the request's budget; they are
+//! keyed by the immutable sealed generation. A required domain that is
+//! absent or not ready is refused with that domain's typed code before
+//! any lane executes — never an empty page, never another generation.
+//! Every auxiliary snapshot the view holds is proven to belong to the
+//! pin's generation; a mix is refused `READ_VIEW_GENERATION_MIX`.
 //!
 //! Different domains are supplied by different producers at different
 //! times; the view never claims they are one instant. What it fixes is
@@ -36,8 +38,8 @@ use quanta_index_contract::{
     SearchPlaneTrackKind,
 };
 use quanta_index_core::{
-    AuxiliaryGenerationKeyV1, CoreError, HistoryTextSearcher, LexicalPolicy, LexicalSearcher,
-    QueryRouteV1, ReadDomainV1, ReadIdentityV1, ReadViewRefusedError, RequiredDomainsV1,
+    AuxiliaryGenerationKeyV1, CoreError, HistoryTextSearcher, LexicalSearcher, QueryRouteV1,
+    ReadDomainV1, ReadIdentityV1, ReadViewRefusedError, RequestBudgetV1, RequiredDomainsV1,
     SemanticProfileV1, SemanticSearcher, StructuralError, declare_required_domains_v1,
 };
 
@@ -335,10 +337,13 @@ fn ensure_same_generation(
 
 impl SearchPlaneDispatcher {
     /// Acquire the view one request executes against: exactly the
-    /// declared domains at the pin, each refused typed when absent.
+    /// declared domains at the pin, each refused typed when absent. The
+    /// track handles are acquired under `budget`: a wait on another
+    /// request's cold open ends with this request's own interruption.
     pub(crate) fn acquire_read_view(
         &self,
         request: &ReadViewRequestV1<'_>,
+        budget: &RequestBudgetV1,
     ) -> Result<QueryReadViewV1, CoreError> {
         let parts = {
             let guard = self
@@ -349,12 +354,22 @@ impl SearchPlaneDispatcher {
         };
         let pin = request.pin;
         let lexical = if request.domains.contains(ReadDomainV1::LexicalTrack) {
-            Some(self.acquire_lexical(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?)
+            Some(self.acquire_lexical(
+                &pin.repo_id,
+                &pin.revision_id,
+                pin.manifest_generation,
+                budget,
+            )?)
         } else {
             None
         };
         let semantic = if request.domains.contains(ReadDomainV1::SemanticTrack) {
-            Some(self.acquire_semantic(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?)
+            Some(self.acquire_semantic(
+                &pin.repo_id,
+                &pin.revision_id,
+                pin.manifest_generation,
+                budget,
+            )?)
         } else {
             None
         };
@@ -397,23 +412,19 @@ impl SearchPlaneDispatcher {
     ) -> Result<LedgerParts, CoreError> {
         let pin = request.pin;
         let domains = request.domains;
+        // The serving boundary first (QI-BB-003): a track pin the durable
+        // authority does not retain is refused here, before any lane, so a
+        // reaped or orphaned generation reads as `UNKNOWN_GENERATION` on
+        // every route and never reaches an open.
         if domains.contains(ReadDomainV1::LexicalTrack) {
-            let materialized = ledger.track_materialized(
-                &pin.repo_id,
-                &pin.revision_id,
+            ledger.validate_pinned_track_generation(
+                pin,
                 SearchPlaneTrackKind::Lexical,
-            );
-            LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, materialized)?;
-        }
-        let semantic_manifest_digest = if domains.contains(ReadDomainV1::SemanticTrack) {
-            ledger.validate_semantic_generation(
-                &pin.repo_id,
-                &pin.revision_id,
-                pin.manifest_generation,
-                request.semantic_manifest_digest,
-                true,
                 request.plane,
             )?;
+        }
+        let semantic_manifest_digest = if domains.contains(ReadDomainV1::SemanticTrack) {
+            Self::validate_semantic_pin(ledger, request)?;
             let digest = ledger
                 .semantic_generation_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
                 .map(|state| state.manifest_digest().to_string())
@@ -495,6 +506,43 @@ impl SearchPlaneDispatcher {
             runtime,
             structural,
         })
+    }
+
+    /// The semantic track's serving boundary and readiness, in the order
+    /// their codes are owed: a generation the authority does not retain
+    /// is `UNKNOWN_GENERATION`; one it may still come to retain (the head
+    /// being built, or beyond it) is refused with the semantic track's
+    /// exact readiness code (`SEMANTIC_GENERATION_NOT_MATERIALIZED` /
+    /// `NOT_SEALED`) when that check has one, and `NOT_READY` otherwise;
+    /// a retained one must still carry the digest an `Active` selector
+    /// resolved.
+    fn validate_semantic_pin(
+        ledger: &Ledger,
+        request: &ReadViewRequestV1<'_>,
+    ) -> Result<(), CoreError> {
+        let pin = request.pin;
+        let readiness = || {
+            ledger.validate_semantic_generation(
+                &pin.repo_id,
+                &pin.revision_id,
+                pin.manifest_generation,
+                request.semantic_manifest_digest,
+                true,
+                request.plane,
+            )
+        };
+        match ledger.validate_pinned_track_generation(
+            pin,
+            SearchPlaneTrackKind::Semantic,
+            request.plane,
+        ) {
+            Ok(()) => readiness(),
+            Err(not_ready @ CoreError::NotReady(_)) => {
+                readiness()?;
+                Err(not_ready)
+            }
+            Err(unknown) => Err(unknown),
+        }
     }
 
     /// The epoch's text index handle, from the registry the composition

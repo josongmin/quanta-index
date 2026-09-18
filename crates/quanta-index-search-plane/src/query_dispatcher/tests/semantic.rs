@@ -281,6 +281,12 @@ fn semantic_dispatch_rejects_active_digest_mismatch_with_exact_code() -> TestRes
         ManifestGeneration::new(9),
         "observed-digest-9",
     );
+    ledger.record_historically_sealed_search_corpus(
+        &repo_id,
+        &revision_id,
+        ManifestGeneration::new(9),
+        "observed-digest-9",
+    );
     let dispatcher = SearchPlaneDispatcher::new(
         Arc::new(RejectLexicalOpener),
         Arc::new(RejectSemanticOpener),

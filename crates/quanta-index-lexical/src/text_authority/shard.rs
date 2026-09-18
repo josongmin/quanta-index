@@ -76,6 +76,42 @@ pub(crate) struct ShardBody {
 }
 
 impl ShardBody {
+    /// Bytes this decoded shard keeps on the heap: the document texts
+    /// (NFC and folded) with their ids, the trigram posting lists and the
+    /// positions posting bytes, plus a fixed per-entry allowance for the
+    /// map nodes and vector headers that hold them. An estimate that is
+    /// monotone in the real cost, which is what a byte budget needs; the
+    /// on-disk CBOR is smaller than this by the folded copy and the
+    /// expanded postings.
+    pub(crate) fn heap_bytes_estimate(&self) -> u64 {
+        const ENTRY_OVERHEAD: u64 = 64;
+        let mut bytes = 0_u64;
+        for doc in self.docs_by_id.values() {
+            bytes = bytes
+                .saturating_add(ENTRY_OVERHEAD)
+                .saturating_add(len_u64(doc.candidate_id.len()))
+                .saturating_add(len_u64(doc.indexed_text.len()))
+                .saturating_add(len_u64(doc.folded_indexed_text.len()));
+        }
+        for index in [&self.trigram, &self.trigram_folded] {
+            for (_trigram, postings) in index.iter() {
+                bytes = bytes
+                    .saturating_add(ENTRY_OVERHEAD)
+                    .saturating_add(len_u64(postings.len()).saturating_mul(8));
+            }
+        }
+        for index in [&self.positions, &self.positions_folded] {
+            for term in index.terms() {
+                let postings = index.raw_postings(term).map_or(0, <[u8]>::len);
+                bytes = bytes
+                    .saturating_add(ENTRY_OVERHEAD)
+                    .saturating_add(len_u64(term.len()))
+                    .saturating_add(len_u64(postings));
+            }
+        }
+        bytes
+    }
+
     /// Documents in the shard.
     pub(crate) fn rows(&self) -> Result<u64, CoreError> {
         u64::try_from(self.docs_by_id.len()).map_err(|err| {
@@ -367,6 +403,11 @@ impl ShardBuilders {
                 .map_err(|err| map_positions_error("finalize folded positions sidecar", &err))?,
         })
     }
+}
+
+/// A length as bytes; a length past `u64` saturates rather than wraps.
+fn len_u64(length: usize) -> u64 {
+    u64::try_from(length).map_or(u64::MAX, |value| value)
 }
 
 #[cfg(test)]

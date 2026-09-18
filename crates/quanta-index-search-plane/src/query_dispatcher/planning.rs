@@ -8,7 +8,7 @@ use quanta_index_contract::{
     SearchPlaneTrackKind, TextQueryRequest,
 };
 use quanta_index_core::{
-    CoreError, LexicalPolicy, QueryRouteV1, ReadDomainV1, RequiredDomainsV1,
+    CoreError, LexicalPolicy, QueryRouteV1, ReadDomainV1, RequestBudgetV1, RequiredDomainsV1,
     declare_required_domains_v1,
 };
 
@@ -41,6 +41,7 @@ impl SearchPlaneDispatcher {
         &self,
         request: &TextQueryRequest,
         route: QueryRouteV1,
+        budget: &RequestBudgetV1,
     ) -> Result<PlannedLexicalTextQuery, CoreError> {
         let lowered = lower_lexical_text_query(request)?;
         let prepared_language = prepare_language_query_v1(lowered, &request.constraints)?;
@@ -57,11 +58,10 @@ impl SearchPlaneDispatcher {
         } = prepared_language;
         let prepared = match rev_at_time_selection(&query)? {
             Some(selection) => {
-                let selection_view = self.acquire_read_view(&ReadViewRequestV1::selection(
-                    "lexical",
-                    ReadDomainV1::History,
-                    &base_pin,
-                ))?;
+                let selection_view = self.acquire_read_view(
+                    &ReadViewRequestV1::selection("lexical", ReadDomainV1::History, &base_pin),
+                    budget,
+                )?;
                 rebind_lexical_query_at_time(
                     self.activation_catalog.as_ref(),
                     &selection_view.history()?.state,

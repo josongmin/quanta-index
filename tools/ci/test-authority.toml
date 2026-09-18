@@ -112,6 +112,12 @@ owner = "quanta-index-core"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "core-generation-serving-policy"
+path = "crates/quanta-index-core/tests/generation_serving_policy.rs"
+owner = "quanta-index-core"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "core-lexical-policy"
 path = "crates/quanta-index-core/tests/lexical_policy.rs"
 owner = "quanta-index-core"
@@ -174,6 +180,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "lexical-boot-inventory"
 path = "crates/quanta-index-lexical/tests/boot_inventory.rs"
+owner = "quanta-index-lexical"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lexical-resident-bytes"
+path = "crates/quanta-index-lexical/tests/resident_bytes.rs"
 owner = "quanta-index-lexical"
 rail = "pr-workspace-nextest"
 

@@ -25,7 +25,6 @@ use crate::ingest_dispatcher::dispatcher::SearchPlaneIngestDispatcher;
 use crate::ingest_dispatcher::ports::{
     HistoryIngestPort, RuntimeMetadataIngestPort, StructuralIngestPort,
 };
-use crate::{SnapshotRegistries, SnapshotRegistryPolicy};
 
 type TestRes = Result<(), Box<dyn std::error::Error>>;
 
@@ -146,7 +145,6 @@ fn dispatcher(
         runtime,
         unreachable.clone(),
         unreachable,
-        SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
         catalog,
     )
 }

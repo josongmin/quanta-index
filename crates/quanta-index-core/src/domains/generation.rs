@@ -1,12 +1,107 @@
-use quanta_index_contract::GenerationSnapshot;
-use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind};
+use quanta_index_contract::{
+    GenerationPin, GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
+};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Read;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use crate::CoreError;
+
+/// Wire code for a pin the durable authority does not retain.
+///
+/// Reaped by retention, orphaned by a crash between seal and record, or
+/// never sealed. The refusal is typed so a caller can tell "this
+/// generation is gone" from "this generation is not ready yet"
+/// (`NOT_READY`); neither is ever answered from another generation.
+pub const UNKNOWN_GENERATION_CODE: &str = "UNKNOWN_GENERATION";
+
+/// The typed refusal for a pin the durable authority does not retain.
+#[must_use]
+pub fn unknown_generation_error(
+    plane: &str,
+    pin: &GenerationPin,
+    track: SearchPlaneTrackKind,
+) -> CoreError {
+    CoreError::Typed {
+        code: UNKNOWN_GENERATION_CODE.to_string(),
+        message: format!(
+            "{plane}: generation {} of repo={} revision={} track={track:?} is not a sealed generation the durable search-corpus authority retains (reaped, orphaned or never sealed)",
+            pin.manifest_generation.get(),
+            pin.repo_id.as_str(),
+            pin.revision_id.as_str(),
+        ),
+    }
+}
+
+/// What the readiness authority knows about one track of a pair when a
+/// request pins a generation on it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PinnedGenerationReadinessV1 {
+    /// The durable search-corpus authority retains the pinned generation
+    /// as a sealed identity (recorded at seal, restored at boot, pruned on
+    /// reap).
+    pub retained_by_authority: bool,
+    /// The highest generation the track has materialized, sealed or not.
+    pub materialized_head: Option<ManifestGeneration>,
+    /// The highest generation the track has sealed.
+    pub sealed_head: Option<ManifestGeneration>,
+}
+
+/// The serving boundary of one pinned track generation (QI-BB-003).
+///
+/// The one policy every query route resolves a pin through, for both
+/// tracks. A pin is serveable only when the durable authority retains that
+/// exact sealed generation; nothing else is served, not from a resident
+/// handle and not from a cold open. Of what is not serveable:
+///
+/// - a pin past the track's materialized head, or the head itself while
+///   it is still being built, is `NOT_READY` — it may become serveable;
+/// - everything else — reaped, a crash orphan whose directory is still
+///   there, never sealed — is [`UNKNOWN_GENERATION_CODE`]; it will not.
+///
+/// Neither is ever answered from another generation.
+pub fn validate_pinned_generation_v1(
+    plane: &str,
+    pin: &GenerationPin,
+    track: SearchPlaneTrackKind,
+    readiness: PinnedGenerationReadinessV1,
+) -> Result<(), CoreError> {
+    if readiness.retained_by_authority {
+        return Ok(());
+    }
+    let generation = pin.manifest_generation;
+    match readiness.materialized_head {
+        None => Err(CoreError::NotReady(format!(
+            "{plane}: no materialized {track:?} generation yet for repo={} revision={}",
+            pin.repo_id.as_str(),
+            pin.revision_id.as_str(),
+        ))),
+        Some(head) if generation.get() > head.get() => Err(CoreError::NotReady(format!(
+            "{plane}: requested {track:?} generation {} but materialized only up to {} for repo={} revision={}",
+            generation.get(),
+            head.get(),
+            pin.repo_id.as_str(),
+            pin.revision_id.as_str(),
+        ))),
+        Some(head)
+            if generation == head
+                && readiness
+                    .sealed_head
+                    .is_none_or(|sealed| sealed.get() < head.get()) =>
+        {
+            Err(CoreError::NotReady(format!(
+                "{plane}: {track:?} generation {} is materialized but not sealed yet for repo={} revision={}",
+                generation.get(),
+                pin.repo_id.as_str(),
+                pin.revision_id.as_str(),
+            )))
+        }
+        Some(_) => Err(unknown_generation_error(plane, pin, track)),
+    }
+}
 
 /// Non-mutating physical validation of one sealed generation identity.
 ///
@@ -20,8 +115,11 @@ pub trait GenerationIdentityValidatePort: Send + Sync {
 /// Why boot set a persisted generation aside instead of seeding it
 /// (QI-BB-026).
 ///
-/// Each reason is something the inventory can see from the sealed identity
-/// alone. Content defects (a corrupt sidecar, a row root that no longer
+/// All but one reason are things the adapter's inventory can see from the
+/// sealed identity alone. [`Self::Orphaned`] is the search plane's: it
+/// compares the adapter's inventory with the durable search-corpus
+/// authority and sets aside every sealed directory the authority does not
+/// retain. Content defects (a corrupt sidecar, a row root that no longer
 /// matches) are deliberately not here: the inventory does not look for them,
 /// and every door that serves or mutates a generation verifies content for
 /// itself.
@@ -37,6 +135,13 @@ pub enum GenerationQuarantineReasonV1 {
     ScopeMismatch,
     /// The sealed marker and the manifest disagree on the digest.
     IdentityDigestMismatch,
+    /// A sealed directory whose exact `(generation, digest)` the durable
+    /// search-corpus authority does not retain: reaped and left behind by
+    /// a crash before reclaim, or sealed on disk before its authority
+    /// record was ever written. It is never seeded as sealed and nothing
+    /// serves it; discarding it goes through the sealed-generation reclaim
+    /// port, which re-proves the identity before deleting.
+    Orphaned,
 }
 
 impl GenerationQuarantineReasonV1 {
@@ -47,6 +152,7 @@ impl GenerationQuarantineReasonV1 {
             Self::IdentityUnreadable => "GENERATION_QUARANTINE_IDENTITY_UNREADABLE",
             Self::ScopeMismatch => "GENERATION_QUARANTINE_SCOPE_MISMATCH",
             Self::IdentityDigestMismatch => "GENERATION_QUARANTINE_IDENTITY_DIGEST_MISMATCH",
+            Self::Orphaned => "GENERATION_QUARANTINE_ORPHANED",
         }
     }
 
@@ -58,6 +164,7 @@ impl GenerationQuarantineReasonV1 {
             Self::IdentityUnreadable,
             Self::ScopeMismatch,
             Self::IdentityDigestMismatch,
+            Self::Orphaned,
         ]
         .into_iter()
         .find(|reason| reason.as_code_str() == code)
@@ -84,6 +191,17 @@ pub struct QuarantinedGenerationV1 {
     pub detail: String,
 }
 
+/// One sealed generation the inventory found: its identity and the
+/// adapter-owned directory it was read from.
+///
+/// The path is what lets the search plane name the directory back to the
+/// operator (as an orphan) without knowing the adapter's layout.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoriedSealedGenerationV1 {
+    pub identity: GenerationSnapshot,
+    pub path: PathBuf,
+}
+
 /// What one adapter found under its track root at boot.
 ///
 /// `sealed` carries every generation whose sealed identity was readable and
@@ -92,7 +210,7 @@ pub struct QuarantinedGenerationV1 {
 /// those, once, through [`GenerationIdentityValidatePort`].
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SealedGenerationInventoryV1 {
-    pub sealed: Vec<GenerationSnapshot>,
+    pub sealed: Vec<InventoriedSealedGenerationV1>,
     pub quarantined: Vec<QuarantinedGenerationV1>,
 }
 
@@ -208,6 +326,19 @@ pub enum SealedGenerationReclaimOutcomeV1 {
     Reclaimed { bytes: u64 },
 }
 
+/// What measuring a set of generation directories found (QI-BB-003).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SealedGenerationBytesV1 {
+    /// Bytes the listed directories occupy together: every regular file
+    /// counted once by inode, so a segment two generations hard-link is
+    /// not counted twice. This is what `du` reports for the same set.
+    pub bytes: u64,
+    /// Generations in the request that have no directory on disk; they
+    /// occupy nothing and are reported so the caller can see a retained
+    /// record whose bytes are gone.
+    pub absent: BTreeSet<ManifestGeneration>,
+}
+
 /// Destructive port for a sealed generation the search plane has retired
 /// from its authority (physical GC, QI-BB-003).
 ///
@@ -222,9 +353,10 @@ pub enum SealedGenerationReclaimOutcomeV1 {
 /// The owner sequences the protocol around this port: authority reaped and
 /// the in-memory ledger reconciled first (so no query can pin the generation
 /// any more), the snapshot registry fenced (so no resident handle maps its
-/// files), then reclaim. A crash between reap and reclaim leaves an orphan
-/// that the next sweep finds through
-/// [`Self::sealed_generations_for_pair`].
+/// files and no open in flight can admit one), then reclaim. A crash between
+/// reap and reclaim leaves an orphan that the next sweep finds through
+/// [`Self::sealed_generations_for_pair`] and that boot reports as
+/// quarantined under [`GenerationQuarantineReasonV1::Orphaned`].
 pub trait SealedGenerationReclaimPort: Send + Sync {
     fn reclaim_sealed_generation(
         &self,
@@ -239,6 +371,59 @@ pub trait SealedGenerationReclaimPort: Send + Sync {
         repo_id: &RepoId,
         revision_id: &RevisionId,
     ) -> Result<Vec<GenerationSnapshot>, CoreError>;
+
+    /// The bytes `generations` of the pair occupy on disk together, by
+    /// unique inode (see [`SealedGenerationBytesV1`]). This is the measure
+    /// retention caps and reports: the actual index bytes, never the size
+    /// of an authority record. Measured from metadata only; nothing is
+    /// opened or hashed.
+    fn measure_sealed_generations(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generations: &BTreeSet<ManifestGeneration>,
+    ) -> Result<SealedGenerationBytesV1, CoreError>;
+}
+
+/// Bytes of every regular file under `roots`, each inode counted once.
+///
+/// Symlinks are not followed and not counted; a sealed tree that points
+/// outside itself is refused by the seal, not measured here. Entries
+/// `skip` names (a live writer's lock file, for instance) are ignored.
+/// Directories that do not exist are skipped by the caller, which decides
+/// what an absent root means; here it is an error.
+pub fn unique_inode_tree_bytes(
+    roots: &[PathBuf],
+    skip: &dyn Fn(&str) -> bool,
+) -> std::io::Result<u64> {
+    let mut seen: BTreeSet<(u64, u64)> = BTreeSet::new();
+    let mut total = 0_u64;
+    let mut pending: Vec<PathBuf> = roots.to_vec();
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory)? {
+            let entry = entry?;
+            let file_name = entry.file_name();
+            if file_name.to_str().is_some_and(skip) {
+                continue;
+            }
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                pending.push(entry.path());
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let metadata = entry.metadata()?;
+            if seen.insert((metadata.dev(), metadata.ino())) {
+                total = total.saturating_add(metadata.len());
+            }
+        }
+    }
+    Ok(total)
 }
 
 #[cfg(test)]
@@ -485,6 +670,43 @@ pub fn verify_tree_commitment_v1(
         }
     }
     Ok(Ok(total))
+}
+
+#[cfg(test)]
+mod unique_inode_bytes_tests {
+    use super::unique_inode_tree_bytes;
+
+    /// Two generation directories that hard-link a segment occupy the
+    /// segment once; a symlink and a skipped entry occupy nothing.
+    #[test]
+    fn hard_linked_files_are_counted_once_across_roots() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let base = temp.path().join("g1");
+        let delta = temp.path().join("g2");
+        std::fs::create_dir_all(base.join("sub")).expect("mkdir");
+        std::fs::create_dir_all(&delta).expect("mkdir");
+        std::fs::write(base.join("segment"), [0_u8; 1000]).expect("write");
+        std::fs::write(base.join("sub").join("meta"), [0_u8; 10]).expect("write");
+        std::fs::hard_link(base.join("segment"), delta.join("segment")).expect("link");
+        std::fs::write(delta.join("delta-only"), [0_u8; 5]).expect("write");
+        std::fs::write(delta.join(".lock"), [0_u8; 99]).expect("write");
+        std::os::unix::fs::symlink(base.join("segment"), delta.join("alias")).expect("symlink");
+
+        let skip = |name: &str| name.starts_with(".lock");
+        let both = unique_inode_tree_bytes(&[base.clone(), delta.clone()], &skip).expect("io");
+        assert_eq!(both, 1000 + 10 + 5);
+        let delta_alone = unique_inode_tree_bytes(&[delta], &skip).expect("io");
+        assert_eq!(delta_alone, 1000 + 5);
+        let base_alone = unique_inode_tree_bytes(&[base], &skip).expect("io");
+        assert_eq!(base_alone, 1000 + 10);
+    }
+
+    #[test]
+    fn a_missing_root_is_an_error_not_zero() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let missing = temp.path().join("absent");
+        assert!(unique_inode_tree_bytes(&[missing], &|_name| false).is_err());
+    }
 }
 
 #[cfg(test)]

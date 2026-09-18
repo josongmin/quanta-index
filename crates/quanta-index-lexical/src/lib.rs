@@ -98,8 +98,9 @@ use quanta_index_contract::{
 };
 use quanta_index_core::domains::generation::{
     GenerationQuarantineReasonV1, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
-    IncompleteGenerationDiscardPort, QuarantinedGenerationV1, SealedGenerationInventoryV1,
-    SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
+    IncompleteGenerationDiscardPort, InventoriedSealedGenerationV1, QuarantinedGenerationV1,
+    SealedGenerationBytesV1, SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1,
+    SealedGenerationReclaimPort, unique_inode_tree_bytes,
 };
 use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
@@ -161,7 +162,7 @@ use crate::sealed_generation::{
     scrub_sealed_generation, scrub_status, seal_generation, walk_sealed_generation,
 };
 use crate::text_authority::{
-    AddedTextDoc, ShardBody, ShardedTextAuthority, TextAuthorityManifest,
+    AddedTextDoc, ShardBody, ShardedTextAuthority, TEXT_AUTHORITY_DIR_NAME, TextAuthorityManifest,
     TextAuthorityWriteReceipt, shard_index_of,
 };
 use tantivy::DocSet as _;
@@ -4447,12 +4448,35 @@ impl LexicalIndexOpenPort for LexicalAdapter {
                 ),
             });
         }
-        // The walk both doors share: every file a query decodes is read
-        // once, proved and decoded here; the index is opened from the
-        // proved commit and its segment files are proved present at their
-        // committed length.
+        self.open_sealed(&path, &identity)
+    }
+
+    fn open_proven(
+        &self,
+        candidate: &GenerationSnapshot,
+    ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
+        let (generation_dir, observed) =
+            self.sealed_generation_dir_for(candidate, "proven open")?;
+        let searcher = self.open_sealed(&generation_dir, &observed)?;
+        sync_generation_directory(&generation_dir)?;
+        Ok(searcher)
+    }
+}
+
+impl LexicalAdapter {
+    /// Open the sealed generation at `path` whose identity is `identity`:
+    /// the walk every door shares, keeping what it decodes.
+    ///
+    /// Every file a query decodes is read once, proved and decoded here;
+    /// the index is opened from the proved commit and its segment files are
+    /// proved present at their committed length.
+    fn open_sealed(
+        &self,
+        path: &Path,
+        identity: &GenerationSnapshot,
+    ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
         let mut loaded = LoadedGeneration::default();
-        let verified = walk_sealed_generation(&path, &identity, &mut loaded)?;
+        let verified = walk_sealed_generation(path, identity, &mut loaded)?;
         let reader: IndexReader = verified
             .index
             .reader_builder()
@@ -4473,7 +4497,7 @@ impl LexicalIndexOpenPort for LexicalAdapter {
             .overlay_commitments()
             .map(|(family, _artifact)| family)
             .collect();
-        let resident_bytes_estimate = generation_tree_bytes(&path)?;
+        let resident_bytes_estimate = resident_bytes_estimate(path, text_authority.as_ref())?;
         let artifact_identity = LexicalArtifactIdentityV1 {
             manifest_digest: verified.manifest.manifest_digest.clone(),
             normalizer: TextNormalizerVersionV1 {
@@ -4483,9 +4507,9 @@ impl LexicalIndexOpenPort for LexicalAdapter {
             repo_metadata: materialized_authorities(&overlays),
         };
         Ok(Box::new(TantivySearcher {
-            repo_id: repo.clone(),
-            revision_id: revision.clone(),
-            generation,
+            repo_id: identity.repo_id.clone(),
+            revision_id: identity.revision_id.clone(),
+            generation: identity.manifest_generation,
             fields: self.fields.clone(),
             reader,
             repo_metadata: loaded.repo_metadata,
@@ -4505,6 +4529,18 @@ impl LexicalIndexOpenPort for LexicalAdapter {
     }
 }
 
+/// Make the generation directory's entries durable before a door admits it.
+fn sync_generation_directory(generation_dir: &Path) -> Result<(), CoreError> {
+    File::open(generation_dir)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: revalidate generation-directory durability {}: {error}",
+                generation_dir.display()
+            ))
+        })
+}
+
 impl GenerationIdentityValidatePort for LexicalAdapter {
     fn validate_generation_identity(
         &self,
@@ -4517,15 +4553,7 @@ impl GenerationIdentityValidatePort for LexicalAdapter {
         // from the proved commit; the segment files proved present at their
         // committed length. What is admitted here is what a query can open.
         let _verified = walk_sealed_generation(&generation_dir, &observed, &mut DiscardingVisitor)?;
-        File::open(&generation_dir)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| {
-                CoreError::Storage(format!(
-                    "lexical: revalidate generation-directory durability {}: {error}",
-                    generation_dir.display()
-                ))
-            })?;
-        Ok(())
+        sync_generation_directory(&generation_dir)
     }
 }
 
@@ -4741,14 +4769,67 @@ impl SealedGenerationReclaimPort for LexicalAdapter {
         out.sort_by_key(|identity| identity.manifest_generation);
         Ok(out)
     }
+
+    /// Bytes the named generation directories occupy together, by unique
+    /// inode: a delta's hard-linked base segments count once. Writer lock
+    /// entries are not bytes of the generation.
+    fn measure_sealed_generations(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generations: &BTreeSet<ManifestGeneration>,
+    ) -> Result<SealedGenerationBytesV1, CoreError> {
+        let mut roots = Vec::with_capacity(generations.len());
+        let mut absent = BTreeSet::new();
+        for generation in generations {
+            let generation_dir = self.index_path(&GenKey {
+                repo_id: repo_id.clone(),
+                revision_id: revision_id.clone(),
+                generation: *generation,
+            });
+            if generation_dir.is_dir() {
+                roots.push(generation_dir);
+            } else {
+                let _new = absent.insert(*generation);
+            }
+        }
+        let bytes = unique_inode_tree_bytes(&roots, &is_writer_lock_entry).map_err(|err| {
+            CoreError::Storage(format!(
+                "lexical: measure sealed generations of repo={} revision={}: {err}",
+                repo_id.as_str(),
+                revision_id.as_str()
+            ))
+        })?;
+        Ok(SealedGenerationBytesV1 { bytes, absent })
+    }
+}
+
+/// What an opened handle keeps resident.
+///
+/// Every mapped or decoded file under the generation directory except the
+/// text-authority sidecars (each inode counted once), plus the decoded text
+/// authority's heap estimate in their place.
+fn resident_bytes_estimate(
+    generation_dir: &Path,
+    text_authority: Option<&ShardedTextAuthority>,
+) -> Result<u64, CoreError> {
+    let skip = |name: &str| is_writer_lock_entry(name) || name == TEXT_AUTHORITY_DIR_NAME;
+    let mapped =
+        unique_inode_tree_bytes(&[generation_dir.to_path_buf()], &skip).map_err(|err| {
+            CoreError::Storage(format!(
+                "lexical: measure resident bytes of {}: {err}",
+                generation_dir.display()
+            ))
+        })?;
+    let decoded = text_authority.map_or(0, ShardedTextAuthority::heap_bytes_estimate);
+    Ok(mapped.saturating_add(decoded))
 }
 
 /// Sum of regular-file sizes under `root`, recursively.
 ///
-/// Two readers: a reclaim measures the bytes it gives back before deleting,
-/// and an open takes the honest bound on what one handle can make resident
-/// — Tantivy maps segment files on demand and the text-authority shards
-/// are decoded whole. Writer lock files are transient and excluded.
+/// What a reclaim or a quarantine discard reports giving back. A file
+/// hard-linked into another generation counts here too; the disk frees it
+/// when its last link goes. Writer lock files are transient and excluded.
 fn generation_tree_bytes(root: &Path) -> Result<u64, CoreError> {
     let mut total = 0_u64;
     let mut pending = vec![root.to_path_buf()];
@@ -4856,7 +4937,10 @@ pub fn inventory_sealed_generations(
             }
             let generation_dir = generation_entry.path();
             match inventory_generation_dir(lexical_root, &generation_dir) {
-                Ok(Some(identity)) => inventory.sealed.push(identity),
+                Ok(Some(identity)) => inventory.sealed.push(InventoriedSealedGenerationV1 {
+                    identity,
+                    path: generation_dir,
+                }),
                 Ok(None) => {}
                 Err(quarantined) => inventory.quarantined.push(quarantined),
             }
@@ -5030,8 +5114,11 @@ struct TantivySearcher {
     repo_description: Option<RepoDescriptionShard>,
     file_ownership: Option<FileOwnershipShard>,
     file_contributor: Option<FileContributorShard>,
-    /// On-disk bytes of the generation directory at open: mapped index
-    /// segments plus the sidecars and snapshots this handle decoded.
+    /// What this handle keeps resident, estimated at open: the index and
+    /// snapshot files it maps or decoded (each inode once) plus the decoded
+    /// text authority's heap footprint — not the authority's on-disk CBOR,
+    /// which is smaller than the folded copies and expanded postings the
+    /// handle actually holds.
     resident_bytes_estimate: u64,
     /// What this handle is, for the read view: the sealed manifest digest
     /// the open proved, the normalizer, and which of the six source-repo

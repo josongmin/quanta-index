@@ -1,5 +1,5 @@
 use quanta_index_contract::lex::LexicalErrorCode;
-use quanta_index_contract::{EmbeddingNormalization, ManifestGeneration, PUBLIC_TOP_K_MAX};
+use quanta_index_contract::{EmbeddingNormalization, PUBLIC_TOP_K_MAX};
 
 use crate::domains::semantic::outbound::TextEmbeddingProvider;
 use crate::error::{CoreError, validate_internal_fetch_size, validate_query_top_k};
@@ -65,23 +65,6 @@ impl SemanticPolicy {
             ));
         }
         Ok(())
-    }
-
-    pub fn validate_query_against_readiness(
-        target: ManifestGeneration,
-        materialized: Option<ManifestGeneration>,
-    ) -> Result<(), CoreError> {
-        match materialized {
-            Some(active) if active.get() >= target.get() => Ok(()),
-            Some(active) => Err(CoreError::NotReady(format!(
-                "semantic: requested generation {} but materialized only up to {}",
-                target.get(),
-                active.get()
-            ))),
-            None => Err(CoreError::NotReady(
-                "semantic: no materialized generation yet".to_string(),
-            )),
-        }
     }
 }
 
@@ -267,10 +250,6 @@ mod tests {
     //! - `validate_top_k`: `>` → `>=` mutation on line 26.
     //!   `top_k = MAX_TOP_K` must be accepted (boundary kept by `>`),
     //!   `top_k = MAX_TOP_K + 1` must be rejected.
-    //! - `validate_query_against_readiness`: `>=` → `<` mutation on line 66.
-    //!   At equality `active == target` the request must succeed under
-    //!   `>=`; under `<` (mutant) it would fail. Exact equality test
-    //!   catches both swaps simultaneously.
 
     use super::*;
 
@@ -299,31 +278,5 @@ mod tests {
                 other => panic!("top_k={refused} must be refused with the shared code: {other:?}"),
             }
         }
-    }
-
-    #[test]
-    fn validate_query_against_readiness_kills_ge_to_lt_mutation_at_equality() {
-        // At exact equality `active == target` the readiness check must
-        // succeed under `>=`. Under `<` (mutant), it would fail.
-        let pin = ManifestGeneration::new(7);
-        assert!(SemanticPolicy::validate_query_against_readiness(pin, Some(pin)).is_ok());
-        // Strictly newer materialized generation: still OK.
-        assert!(
-            SemanticPolicy::validate_query_against_readiness(
-                ManifestGeneration::new(7),
-                Some(ManifestGeneration::new(8)),
-            )
-            .is_ok()
-        );
-        // Older materialized: must fail-closed.
-        assert!(
-            SemanticPolicy::validate_query_against_readiness(
-                ManifestGeneration::new(8),
-                Some(ManifestGeneration::new(7)),
-            )
-            .is_err()
-        );
-        // None: must fail-closed.
-        assert!(SemanticPolicy::validate_query_against_readiness(pin, None).is_err());
     }
 }

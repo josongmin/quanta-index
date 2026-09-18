@@ -71,7 +71,13 @@ impl HistoryTextIndexParts {
         epoch: AuxEpochV1,
     ) -> Result<Option<HistoryTextDiscardOutcomeV1>, CoreError> {
         match self.handles.retire(generation, epoch)? {
-            SnapshotRetireOutcome::NotResident | SnapshotRetireOutcome::Released => {
+            // The history-text registry has no single flight to fence: an
+            // epoch is opened under the ledger's read lock and retired
+            // under its write lock, so `OpenFenced` cannot arise here and
+            // reads as "nothing resident".
+            SnapshotRetireOutcome::NotResident
+            | SnapshotRetireOutcome::Released
+            | SnapshotRetireOutcome::OpenFenced => {
                 Ok(Some(self.port.discard_epoch(generation, epoch)?))
             }
             SnapshotRetireOutcome::StillReferenced { .. } => Ok(None),

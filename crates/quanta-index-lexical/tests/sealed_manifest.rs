@@ -358,11 +358,13 @@ fn top_level_files(dir: &Path) -> Result<Vec<NamedFile>, Box<dyn Error>> {
     Ok(files)
 }
 
-/// What both doors said about a generation: the validator's verdict and
-/// whether a query could open and serve it.
+/// What every door said about a generation: the validator's verdict,
+/// whether a query could open and serve it, and whether the activation's
+/// proven open (the proof whose handle is promoted) could.
 struct Doors {
     validate: Result<(), CoreError>,
     open: Result<usize, CoreError>,
+    proven: Result<usize, CoreError>,
 }
 
 fn knock(adapter: &LexicalAdapter, generation: ManifestGeneration) -> Doors {
@@ -373,7 +375,17 @@ fn knock(adapter: &LexicalAdapter, generation: ManifestGeneration) -> Doors {
             searcher.search(&query("sealed_needle"), 5, &RequestBudgetV1::unbounded())
         })
         .map(|hits| hits.len());
-    Doors { validate, open }
+    let proven = adapter
+        .open_proven(&identity(generation))
+        .and_then(|searcher| {
+            searcher.search(&query("sealed_needle"), 5, &RequestBudgetV1::unbounded())
+        })
+        .map(|hits| hits.len());
+    Doors {
+        validate,
+        open,
+        proven,
+    }
 }
 
 fn typed_code(result: &Result<(), CoreError>) -> Option<String> {
@@ -394,13 +406,21 @@ fn expect_admitted(doors: &Doors, what: &str) -> TestResult {
     if let Err(err) = &doors.validate {
         return Err(format!("{what}: validator refused an intact generation: {err}").into());
     }
-    match &doors.open {
-        Ok(1) => Ok(()),
-        Ok(other) => {
-            Err(format!("{what}: intact generation served {other} hits, expected 1").into())
+    for (door, result) in [("open", &doors.open), ("proven open", &doors.proven)] {
+        match result {
+            Ok(1) => {}
+            Ok(other) => {
+                return Err(format!(
+                    "{what}: {door} of an intact generation served {other} hits, expected 1"
+                )
+                .into());
+            }
+            Err(err) => {
+                return Err(format!("{what}: {door} refused an intact generation: {err}").into());
+            }
         }
-        Err(err) => Err(format!("{what}: open refused an intact generation: {err}").into()),
     }
+    Ok(())
 }
 
 fn expect_refused(doors: &Doors, what: &str, code: &str) -> TestResult {
@@ -411,12 +431,14 @@ fn expect_refused(doors: &Doors, what: &str, code: &str) -> TestResult {
         )
         .into());
     }
-    if typed_open_code(&doors.open).as_deref() != Some(code) {
-        return Err(format!(
-            "{what}: open answered {:?}, expected typed {code}",
-            doors.open.as_ref().map(|_| "served")
-        )
-        .into());
+    for (door, result) in [("open", &doors.open), ("proven open", &doors.proven)] {
+        if typed_open_code(result).as_deref() != Some(code) {
+            return Err(format!(
+                "{what}: {door} answered {:?}, expected typed {code}",
+                result.as_ref().map(|_| "served")
+            )
+            .into());
+        }
     }
     Ok(())
 }
@@ -599,6 +621,13 @@ fn an_identity_that_does_not_match_the_manifest_is_refused() -> TestResult {
     }
     if typed_open_code(&doors.open).as_deref() != Some("GENERATION_IDENTITY_DIGEST_MISMATCH") {
         return Err(format!("open answered {:?}", doors.open.as_ref().map(|_| "served")).into());
+    }
+    if typed_open_code(&doors.proven).as_deref() != Some("GENERATION_IDENTITY_DIGEST_MISMATCH") {
+        return Err(format!(
+            "proven open answered {:?}",
+            doors.proven.as_ref().map(|_| "served")
+        )
+        .into());
     }
     std::fs::write(&identity_path, &original)?;
     expect_admitted(&knock(&adapter, generation), "identity restored")
@@ -956,9 +985,14 @@ fn a_generation_that_indexed_nothing_seals_openable() -> TestResult {
     if let Err(err) = doors.validate {
         return Err(format!("validator refused an empty sealed generation: {err}").into());
     }
-    match doors.open {
-        Ok(0) => Ok(()),
-        Ok(hits) => Err(format!("empty generation served {hits} hits").into()),
-        Err(err) => Err(format!("open refused an empty sealed generation: {err}").into()),
+    for (door, result) in [("open", doors.open), ("proven open", doors.proven)] {
+        match result {
+            Ok(0) => {}
+            Ok(hits) => return Err(format!("{door}: empty generation served {hits} hits").into()),
+            Err(err) => {
+                return Err(format!("{door} refused an empty sealed generation: {err}").into());
+            }
+        }
     }
+    Ok(())
 }

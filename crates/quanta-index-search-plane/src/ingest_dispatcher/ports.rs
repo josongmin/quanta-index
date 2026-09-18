@@ -30,11 +30,14 @@ pub trait StructuralIngestPort: Send + Sync {
     ) -> Result<BatchPublishReceipt, CoreError>;
 }
 
-/// Durable owner for complete lexical+semantic rollback history.
+/// The read side of the durable sealed search-corpus history: whether one
+/// exact `(generation, digest)` is recorded right now.
 ///
-/// The port is intentionally composite. Per-track materializers cannot mint a
-/// rollback target independently.
-pub trait SearchCorpusAuthorityWritePort: Send + Sync {
+/// Activation and rollback consult it under the pair guard, immediately
+/// before their durable CAS, so a candidate a concurrent seal has just
+/// reaped from the authority is refused rather than activated on the
+/// strength of an in-memory ledger that has not yet seen the receipt.
+pub trait SearchCorpusAuthorityInspectPort: Send + Sync {
     fn inspect_sealed_search_corpus(
         &self,
         repo_id: &RepoId,
@@ -42,7 +45,13 @@ pub trait SearchCorpusAuthorityWritePort: Send + Sync {
         generation: ManifestGeneration,
         manifest_digest: &str,
     ) -> Result<SealedSearchCorpusAuthorityStateV1, CoreError>;
+}
 
+/// Durable owner for complete lexical+semantic rollback history.
+///
+/// The port is intentionally composite. Per-track materializers cannot mint a
+/// rollback target independently.
+pub trait SearchCorpusAuthorityWritePort: SearchCorpusAuthorityInspectPort {
     /// Persist and reconcile the complete retained set.
     ///
     /// Contract: typed/contract errors reject before durable mutation.
@@ -57,7 +66,7 @@ pub trait SearchCorpusAuthorityWritePort: Send + Sync {
     ) -> Result<SearchCorpusHistoryRetentionReceiptV1, CoreError>;
 }
 
-impl SearchCorpusAuthorityWritePort for AuxiliaryAuthorityStore {
+impl SearchCorpusAuthorityInspectPort for AuxiliaryAuthorityStore {
     fn inspect_sealed_search_corpus(
         &self,
         repo_id: &RepoId,
@@ -67,7 +76,9 @@ impl SearchCorpusAuthorityWritePort for AuxiliaryAuthorityStore {
     ) -> Result<SealedSearchCorpusAuthorityStateV1, CoreError> {
         Self::inspect_sealed_search_corpus(self, repo_id, revision_id, generation, manifest_digest)
     }
+}
 
+impl SearchCorpusAuthorityWritePort for AuxiliaryAuthorityStore {
     fn record_sealed_search_corpus(
         &self,
         repo_id: &RepoId,

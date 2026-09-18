@@ -51,12 +51,10 @@ impl SearchPlaneDispatcher {
             };
             // A presence lookup has no plan: the view is the lexical track
             // alone.
-            let view = self.acquire_read_view(&ReadViewRequestV1::declare(
-                "explain",
-                QueryRouteV1::Explain,
-                None,
-                &pin,
-            ))?;
+            let view = self.acquire_read_view(
+                &ReadViewRequestV1::declare("explain", QueryRouteV1::Explain, None, &pin),
+                budget,
+            )?;
             budget.checkpoint("explain:presence")?;
             let presence = view.lexical()?.candidate_presence(candidate_id)?;
             let mut explanation = build_presence_explanation(candidate_id, presence);
@@ -92,7 +90,7 @@ impl SearchPlaneDispatcher {
             ..text_query
         };
         budget.checkpoint("explain:plan")?;
-        let planned = self.plan_lexical_text_query(&pinned_query, QueryRouteV1::Explain)?;
+        let planned = self.plan_lexical_text_query(&pinned_query, QueryRouteV1::Explain, budget)?;
         if planned.pin != pin {
             return Err(CoreError::InvalidContract(format!(
                 "explain: the query rebinds to generation {} but the candidate is at {}",
@@ -100,8 +98,10 @@ impl SearchPlaneDispatcher {
                 pin.manifest_generation.get()
             )));
         }
-        let view =
-            self.acquire_read_view(&ReadViewRequestV1::new("explain", &pin, planned.domains))?;
+        let view = self.acquire_read_view(
+            &ReadViewRequestV1::new("explain", &pin, planned.domains),
+            budget,
+        )?;
         let searcher = view.lexical()?;
         budget.checkpoint("explain:score")?;
         let explained = if planned.force_empty {

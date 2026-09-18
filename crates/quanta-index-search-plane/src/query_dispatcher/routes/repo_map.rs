@@ -25,12 +25,10 @@ impl SearchPlaneDispatcher {
             request.revision_id.clone(),
             request.manifest_generation,
         );
-        let view = self.acquire_read_view(&ReadViewRequestV1::declare(
-            "repo map",
-            QueryRouteV1::RepoMap,
-            None,
-            &pin,
-        ))?;
+        let view = self.acquire_read_view(
+            &ReadViewRequestV1::declare("repo map", QueryRouteV1::RepoMap, None, &pin),
+            budget,
+        )?;
         if view.domains() != RequiredDomainsV1::of(ReadDomainV1::RepoMap) {
             return Err(CoreError::Storage(format!(
                 "repo map: the read view declared {} for a route that reads the RepoMap store only",

@@ -1,7 +1,7 @@
 //! Fixtures shared by the ingest dispatcher test modules: in-memory
 //! catalogs, port doubles, and batch builders.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -17,17 +17,19 @@ use quanta_index_contract::{
 use quanta_index_core::{
     CoreError, GenerationIdentityValidatePort, IdempotencyBeginV1, IdempotencyCatalogPort,
     IdempotencyKeyV1, IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort,
-    IngestResourcePolicy, RequestBudgetV1, SealedGenerationReclaimOutcomeV1,
-    SealedGenerationReclaimPort, SemanticIngestHeaderV1, SemanticIngestPort, SemanticScopeSource,
-    SemanticScopeStreamBuildPort, SemanticStreamTallyV1, SemanticStreamWindowPolicy,
-    TextEmbeddingProvider,
+    IngestResourcePolicy, RequestBudgetV1, SealedGenerationBytesV1,
+    SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, SemanticIngestHeaderV1,
+    SemanticIngestPort, SemanticScopeSource, SemanticScopeStreamBuildPort, SemanticStreamTallyV1,
+    SemanticStreamWindowPolicy, TextEmbeddingProvider,
 };
 
 use crate::auxiliary_authority::testing::MemoryAuxiliaryCatalog;
 use crate::ingest_dispatcher::auxiliary::{
     AuxiliaryMaterializerParts, AuxiliaryMutationCoordinator,
 };
-use crate::ingest_dispatcher::ports::SearchCorpusAuthorityWritePort;
+use crate::ingest_dispatcher::ports::{
+    SearchCorpusAuthorityInspectPort, SearchCorpusAuthorityWritePort,
+};
 use crate::ingest_dispatcher::search_corpus::{
     DirectSearchCorpusMaterializer, SearchCorpusMaterializerParts,
 };
@@ -206,7 +208,7 @@ pub(super) struct RecordingSearchCorpusAuthority {
     pub(super) exact: bool,
 }
 
-impl SearchCorpusAuthorityWritePort for RecordingSearchCorpusAuthority {
+impl SearchCorpusAuthorityInspectPort for RecordingSearchCorpusAuthority {
     fn inspect_sealed_search_corpus(
         &self,
         _repo_id: &RepoId,
@@ -220,7 +222,9 @@ impl SearchCorpusAuthorityWritePort for RecordingSearchCorpusAuthority {
             SealedSearchCorpusAuthorityStateV1::Absent
         })
     }
+}
 
+impl SearchCorpusAuthorityWritePort for RecordingSearchCorpusAuthority {
     fn record_sealed_search_corpus(
         &self,
         repo_id: &RepoId,
@@ -263,7 +267,7 @@ pub(super) fn recording_search_corpus_authority()
 
 pub(super) struct FailingRetentionAuthority;
 
-impl SearchCorpusAuthorityWritePort for FailingRetentionAuthority {
+impl SearchCorpusAuthorityInspectPort for FailingRetentionAuthority {
     fn inspect_sealed_search_corpus(
         &self,
         _repo_id: &RepoId,
@@ -273,7 +277,9 @@ impl SearchCorpusAuthorityWritePort for FailingRetentionAuthority {
     ) -> Result<SealedSearchCorpusAuthorityStateV1, CoreError> {
         Ok(SealedSearchCorpusAuthorityStateV1::Exact)
     }
+}
 
+impl SearchCorpusAuthorityWritePort for FailingRetentionAuthority {
     fn record_sealed_search_corpus(
         &self,
         _repo_id: &RepoId,
@@ -391,6 +397,18 @@ impl SealedGenerationReclaimPort for NoStorageSealedReclaim {
     ) -> Result<Vec<GenerationSnapshot>, CoreError> {
         Ok(Vec::new())
     }
+
+    fn measure_sealed_generations(
+        &self,
+        _repo_id: &RepoId,
+        _revision_id: &RevisionId,
+        generations: &BTreeSet<ManifestGeneration>,
+    ) -> Result<SealedGenerationBytesV1, CoreError> {
+        Ok(SealedGenerationBytesV1 {
+            bytes: 0,
+            absent: generations.clone(),
+        })
+    }
 }
 
 pub(super) fn no_storage_sealed_reclaim() -> Arc<dyn SealedGenerationReclaimPort + Send + Sync> {
@@ -485,6 +503,27 @@ impl SealedGenerationReclaimPort for ScriptedSealedReclaim {
                 manifest_digest: format!("digest:{}", generation.get()),
             })
             .collect())
+    }
+
+    /// Every scripted generation occupies one byte; an absent one none.
+    fn measure_sealed_generations(
+        &self,
+        _repo_id: &RepoId,
+        _revision_id: &RevisionId,
+        generations: &BTreeSet<ManifestGeneration>,
+    ) -> Result<SealedGenerationBytesV1, CoreError> {
+        let on_disk = self
+            .on_disk
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("scripted reclaim poisoned: {err}")))?;
+        let absent: BTreeSet<ManifestGeneration> = generations
+            .iter()
+            .filter(|generation| !on_disk.contains(generation))
+            .copied()
+            .collect();
+        let bytes = u64::try_from(generations.len().saturating_sub(absent.len()))
+            .map_or(u64::MAX, |present| present);
+        Ok(SealedGenerationBytesV1 { bytes, absent })
     }
 }
 

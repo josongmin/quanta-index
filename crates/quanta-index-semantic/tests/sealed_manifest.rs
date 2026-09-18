@@ -103,10 +103,13 @@ fn dataset_files(generation_dir: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> 
     Ok(files)
 }
 
-/// What both doors said about a generation.
+/// What every door said about a generation: the validator, the query's
+/// open, and the activation's proven open (the proof whose handle is
+/// promoted).
 struct Doors {
     validate: Result<(), CoreError>,
     open: Result<usize, CoreError>,
+    proven: Result<usize, CoreError>,
 }
 
 fn knock(adapter: &SemanticAdapter, generation: ManifestGeneration) -> Doors {
@@ -115,7 +118,15 @@ fn knock(adapter: &SemanticAdapter, generation: ManifestGeneration) -> Doors {
         .open(&repo(), &revision(), generation)
         .and_then(|searcher| searcher.search(&[1.0, 0.0, 0.0], 5, &RequestBudgetV1::unbounded()))
         .map(|hits| hits.len());
-    Doors { validate, open }
+    let proven = adapter
+        .open_proven(&identity(generation))
+        .and_then(|searcher| searcher.search(&[1.0, 0.0, 0.0], 5, &RequestBudgetV1::unbounded()))
+        .map(|hits| hits.len());
+    Doors {
+        validate,
+        open,
+        proven,
+    }
 }
 
 fn typed_code<T>(result: &Result<T, CoreError>) -> Option<String> {
@@ -129,13 +140,21 @@ fn expect_admitted(doors: &Doors, what: &str) -> TestResult {
     if let Err(err) = &doors.validate {
         return Err(format!("{what}: validator refused an intact generation: {err}").into());
     }
-    match &doors.open {
-        Ok(2) => Ok(()),
-        Ok(other) => {
-            Err(format!("{what}: intact generation served {other} hits, expected 2").into())
+    for (door, result) in [("open", &doors.open), ("proven open", &doors.proven)] {
+        match result {
+            Ok(2) => {}
+            Ok(other) => {
+                return Err(format!(
+                    "{what}: {door} of an intact generation served {other} hits, expected 2"
+                )
+                .into());
+            }
+            Err(err) => {
+                return Err(format!("{what}: {door} refused an intact generation: {err}").into());
+            }
         }
-        Err(err) => Err(format!("{what}: open refused an intact generation: {err}").into()),
     }
+    Ok(())
 }
 
 fn expect_refused(doors: &Doors, what: &str, code: &str) -> TestResult {
@@ -146,12 +165,14 @@ fn expect_refused(doors: &Doors, what: &str, code: &str) -> TestResult {
         )
         .into());
     }
-    if typed_code(&doors.open).as_deref() != Some(code) {
-        return Err(format!(
-            "{what}: open answered {:?}, expected typed {code}",
-            doors.open.as_ref().map(|_| "served")
-        )
-        .into());
+    for (door, result) in [("open", &doors.open), ("proven open", &doors.proven)] {
+        if typed_code(result).as_deref() != Some(code) {
+            return Err(format!(
+                "{what}: {door} answered {:?}, expected typed {code}",
+                result.as_ref().map(|_| "served")
+            )
+            .into());
+        }
     }
     Ok(())
 }

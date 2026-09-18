@@ -49,4 +49,4 @@ pub use errors::repair_for_code;
 pub use selection::make_pin;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

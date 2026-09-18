@@ -142,6 +142,8 @@ pub(crate) struct LoadedGeneration {
     vector_index: LoadedVectorIndexV1,
     /// On-disk bytes of the dataset this handle maps, measured at open.
     resident_bytes_estimate: u64,
+    /// The sealed manifest digest the open proved.
+    manifest_digest: String,
 }
 
 enum LoadedClusterMembershipV1 {
@@ -447,6 +449,7 @@ pub(crate) async fn open_generation(
         cluster_membership,
         vector_index,
         resident_bytes_estimate,
+        manifest_digest: sealed_digest,
     })
 }
 
@@ -1025,6 +1028,10 @@ impl LoadedGeneration {
         self.model_version.as_deref()
     }
 
+    fn manifest_digest(&self) -> &str {
+        &self.manifest_digest
+    }
+
     fn check_query_dim(&self, query_vector: &[f32]) -> Result<(), CoreError> {
         if query_vector.len() == self.dimension {
             return Ok(());
@@ -1512,6 +1519,10 @@ impl SemanticSearcher for PersistedSemanticSearcher {
 
     fn index_model_revision(&self) -> Option<&str> {
         self.loaded.model_version()
+    }
+
+    fn manifest_digest(&self) -> &str {
+        self.loaded.manifest_digest()
     }
 
     fn dense_lane(&self) -> DenseLaneContractV1 {

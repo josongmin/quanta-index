@@ -12,15 +12,23 @@ use quanta_index_contract::{
     GenerationSnapshot, RepoId, RevisionId, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
     SearchPlaneSearchCorpusRollbackCasAck,
 };
-use quanta_index_core::{CoreError, GenerationIdentityValidatePort};
-
-use crate::readiness::{SEARCH_CORPUS_LOCK_STRIPES_V1, search_corpus_lock_stripe_v1};
-use crate::{
-    ActivationCatalog, AuxiliaryAuthorityStore, Ledger, PreparedSearchCorpusGenerationV1,
-    SearchCorpusGenerationActivationV1, SearchCorpusGenerationV1,
+use quanta_index_core::{
+    CoreError, LexicalIndexOpenPort, LexicalSearcher, SemanticIndexOpenPort, SemanticSearcher,
 };
 
-const ERR_ACTIVATION_TARGET_UNOPENABLE: &str = "ACTIVATION_TARGET_UNOPENABLE";
+use crate::ingest_dispatcher::SearchCorpusAuthorityInspectPort;
+use crate::readiness::{
+    ERR_SEARCH_TRACK_GENERATION_NOT_SEALED, SEARCH_CORPUS_LOCK_STRIPES_V1,
+    search_corpus_lock_stripe_v1,
+};
+use crate::search_corpus_retention::SearchCorpusIndexBytesPort;
+use crate::{
+    ActivationCatalog, AuxiliaryAuthorityStore, Ledger, OpenedSnapshot,
+    PreparedSearchCorpusGenerationV1, SealedSearchCorpusAuthorityStateV1,
+    SearchCorpusGenerationActivationV1, SearchCorpusGenerationV1, SnapshotKey, SnapshotRegistries,
+};
+
+pub(crate) const ERR_ACTIVATION_TARGET_UNOPENABLE: &str = "ACTIVATION_TARGET_UNOPENABLE";
 const ERR_ROLLBACK_TARGET_UNOPENABLE: &str = "ROLLBACK_TARGET_UNOPENABLE";
 
 #[derive(Debug)]
@@ -114,9 +122,13 @@ pub struct SearchCorpusLifecycleOwner {
 }
 
 impl SearchCorpusLifecycleOwner {
+    /// Open both authorities under `state_root`. `index_bytes` is what
+    /// retention measures its byte limits over: the adapters' on-disk
+    /// generation bytes.
     pub fn open(
         state_root: impl AsRef<Path>,
         retention: crate::readiness::SearchCorpusHistoryRetentionPolicyV1,
+        index_bytes: Arc<dyn SearchCorpusIndexBytesPort>,
     ) -> Result<Self, CoreError> {
         // Resolve one immutable path identity before deriving either mutable
         // authority root. A symlink retarget between the two opens must not
@@ -135,6 +147,7 @@ impl SearchCorpusLifecycleOwner {
             retention,
             Arc::clone(&coordinator),
             active_pins,
+            index_bytes,
         )?);
         Ok(Self {
             state_root_identity_v1,
@@ -171,24 +184,21 @@ impl SearchCorpusLifecycleOwner {
         self.activation_catalog.lifecycle_coordinator()
     }
 
-    /// Revalidate every rehydrated active composite against both physical
-    /// generation owners before the runtime publishes any serving socket.
-    /// Prove every active `(lexical, semantic)` pair physically, once, and
-    /// report how many were proven. This is boot's only deep validation
-    /// (QI-BB-026): a defective active pair fails boot with a typed cause
-    /// before any socket binds; inactive generations are not examined here.
+    /// Prove every active `(lexical, semantic)` pair physically, once,
+    /// promote the proven handles into the snapshot registries so the
+    /// first query after restart is a hit, and report how many pairs were
+    /// proven. This is boot's only deep validation (QI-BB-026): a defective
+    /// active pair fails boot with a typed cause before any socket binds;
+    /// inactive generations are not examined here.
     pub fn validate_rehydrated_active_generations_v1(
         &self,
-        lexical_generation_validator: &dyn GenerationIdentityValidatePort,
-        semantic_generation_validator: &dyn GenerationIdentityValidatePort,
+        promotion: &ActivationPromotionParts,
     ) -> Result<usize, CoreError> {
         let active_pairs = self
             .activation_catalog
             .all_active_search_corpora_for_bootstrap_v1()?;
         for active in &active_pairs {
-            validate_physical_pair_v1(
-                lexical_generation_validator,
-                semantic_generation_validator,
+            promotion.prove_and_promote_pair(
                 active,
                 ERR_ACTIVATION_TARGET_UNOPENABLE,
                 "restart rehydrate",
@@ -211,35 +221,132 @@ pub(crate) trait ActiveSearchCorpusPinReadPort: std::fmt::Debug + Send + Sync {
     ) -> Result<Vec<SearchCorpusGenerationV1>, CoreError>;
 }
 
+/// Where an activation, a rollback or a restart proves a pair and puts the
+/// handles it proved: the openers and the registries that keep the handles
+/// resident (QI-BB-017 보완 #4).
+///
+/// The proof and the promotion are one step: [`LexicalIndexOpenPort::open_proven`]
+/// and [`SemanticIndexOpenPort::open_proven`] prove the candidate exactly
+/// as the activation validator would and return the handle that proof
+/// opened, so each track is walked once and the first query is a registry
+/// hit, not a second full open.
+#[derive(Clone)]
+pub struct ActivationPromotionParts {
+    pub lexical_open: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
+    pub semantic_open: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
+    pub snapshots: SnapshotRegistries,
+}
+
+impl ActivationPromotionParts {
+    /// Prove both tracks of `candidate` by opening them, and promote both
+    /// handles into the registries.
+    ///
+    /// Runs outside every ledger guard: the opens hash the generation's
+    /// decoded bytes, and nothing else in the process should wait on that.
+    /// A track that does not prove is refused typed under `error_code` and
+    /// nothing is promoted for the pair.
+    fn prove_and_promote_pair(
+        &self,
+        candidate: &SearchCorpusGenerationV1,
+        error_code: &str,
+        operation: &str,
+    ) -> Result<(), CoreError> {
+        let key = SnapshotKey::new(
+            candidate.repo_id(),
+            candidate.revision_id(),
+            candidate.manifest_generation(),
+        );
+        let lexical: Arc<dyn LexicalSearcher> = Arc::from(
+            self.lexical_open
+                .open_proven(candidate.lexical())
+                .map_err(|source| {
+                    generation_target_unopenable(
+                        candidate.lexical(),
+                        operation,
+                        error_code,
+                        &source,
+                    )
+                })?,
+        );
+        let semantic: Arc<dyn SemanticSearcher> = Arc::from(
+            self.semantic_open
+                .open_proven(candidate.semantic())
+                .map_err(|source| {
+                    generation_target_unopenable(
+                        candidate.semantic(),
+                        operation,
+                        error_code,
+                        &source,
+                    )
+                })?,
+        );
+        let lexical_bytes = lexical.resident_bytes_estimate();
+        let _retained = self.snapshots.lexical.promote(
+            &key,
+            &OpenedSnapshot {
+                handle: lexical,
+                resident_bytes: lexical_bytes,
+            },
+        )?;
+        let semantic_bytes = semantic.resident_bytes_estimate();
+        let _retained = self.snapshots.semantic.promote(
+            &key,
+            &OpenedSnapshot {
+                handle: semantic,
+                resident_bytes: semantic_bytes,
+            },
+        )?;
+        Ok(())
+    }
+}
+
+/// The ports one `SearchCorpusLifecycleService` is composed from.
+pub struct SearchCorpusLifecycleParts {
+    pub activation_catalog: Arc<ActivationCatalog>,
+    pub ledger: Arc<RwLock<Ledger>>,
+    /// The durable sealed history, consulted under the pair guard right
+    /// before the CAS commits.
+    pub authority: Arc<dyn SearchCorpusAuthorityInspectPort + Send + Sync>,
+    pub promotion: ActivationPromotionParts,
+}
+
 pub(crate) struct SearchCorpusLifecycleService {
     coordinator: Arc<SearchCorpusPairMutationCoordinator>,
     activation_catalog: Arc<ActivationCatalog>,
     ledger: Arc<RwLock<Ledger>>,
-    lexical_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
-    semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
+    authority: Arc<dyn SearchCorpusAuthorityInspectPort + Send + Sync>,
+    promotion: ActivationPromotionParts,
 }
 
 impl SearchCorpusLifecycleService {
-    pub(crate) fn new(
-        coordinator: Arc<SearchCorpusPairMutationCoordinator>,
-        activation_catalog: Arc<ActivationCatalog>,
-        ledger: Arc<RwLock<Ledger>>,
-        lexical_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
-        semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
-    ) -> Self {
-        Self {
-            coordinator,
+    pub(crate) fn new(parts: SearchCorpusLifecycleParts) -> Self {
+        let SearchCorpusLifecycleParts {
             activation_catalog,
             ledger,
-            lexical_generation_validator,
-            semantic_generation_validator,
+            authority,
+            promotion,
+        } = parts;
+        Self {
+            coordinator: activation_catalog.lifecycle_coordinator(),
+            activation_catalog,
+            ledger,
+            authority,
+            promotion,
         }
     }
 
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the readiness read guard must remain held until the durable activation CAS commits"
-    )]
+    /// Activate a prepared composite: validate → prove outside the ledger
+    /// guard → re-check → commit (QI-BB-020 follow-up #2).
+    ///
+    /// The pair guard serializes every durable mutation of the pair, so it
+    /// is held throughout. The ledger read guard is held only for the
+    /// precondition checks — never across the physical proof, which hashes
+    /// the generation's bytes and must not stall every other repo's ingest
+    /// and every query behind a `RwLock` writer. The proof's handles are
+    /// promoted into the snapshot registries, the preconditions are checked
+    /// again (the in-memory ledger and the durable authority, which a
+    /// concurrent seal may have reaped the candidate from), and only then
+    /// does the CAS commit.
     pub(crate) fn activate_prepared_v1(
         &self,
         prepared: &PreparedSearchCorpusGenerationV1,
@@ -248,10 +355,40 @@ impl SearchCorpusLifecycleService {
         let pair_guard = self
             .coordinator
             .lock_pair(candidate.repo_id(), candidate.revision_id())?;
-        let ledger = self
-            .ledger
-            .read()
-            .map_err(|error| CoreError::Storage(format!("ledger poisoned: {error}")))?;
+        self.check_activation_preconditions_v1(candidate)?;
+        self.prove_and_promote_v1(candidate, ERR_ACTIVATION_TARGET_UNOPENABLE, "activation")?;
+        self.check_activation_preconditions_v1(candidate)?;
+        self.require_durably_sealed_v1(candidate, "activation")?;
+        self.activation_catalog
+            .activate_prepared_under_guard_v1(&pair_guard, prepared)
+    }
+
+    /// Roll back to a historically sealed composite: the same shape as
+    /// [`Self::activate_prepared_v1`], with the rollback preconditions.
+    pub(crate) fn rollback_v1(
+        &self,
+        request: &SearchPlaneRollbackSearchCorpusGenerationCasRequest,
+        target: &SearchCorpusGenerationV1,
+    ) -> Result<SearchPlaneSearchCorpusRollbackCasAck, CoreError> {
+        let pair_guard = self
+            .coordinator
+            .lock_pair(target.repo_id(), target.revision_id())?;
+        self.check_rollback_preconditions_v1(target)?;
+        self.prove_and_promote_v1(target, ERR_ROLLBACK_TARGET_UNOPENABLE, "rollback")?;
+        self.check_rollback_preconditions_v1(target)?;
+        self.require_durably_sealed_v1(target, "rollback")?;
+        self.activation_catalog
+            .rollback_under_guard_v1(&pair_guard, request)
+    }
+
+    /// The in-memory preconditions of an activation, under one short read
+    /// guard: both tracks are the currently sealed identity and both are
+    /// historically sealed.
+    fn check_activation_preconditions_v1(
+        &self,
+        candidate: &SearchCorpusGenerationV1,
+    ) -> Result<(), CoreError> {
+        let ledger = self.read_ledger()?;
         validate_currently_sealed_candidate_v1(&ledger, candidate.lexical())?;
         validate_currently_sealed_candidate_v1(&ledger, candidate.semantic())?;
         ledger.validate_historically_sealed_track_identity(
@@ -261,28 +398,16 @@ impl SearchCorpusLifecycleService {
         ledger.validate_historically_sealed_track_identity(
             candidate.semantic(),
             "search-corpus activation",
-        )?;
-        self.validate_physical_pair_v1(candidate, ERR_ACTIVATION_TARGET_UNOPENABLE, "activation")?;
-        self.activation_catalog
-            .activate_prepared_under_guard_v1(&pair_guard, prepared)
+        )
     }
 
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the history read guard must remain held until the durable rollback CAS commits"
-    )]
-    pub(crate) fn rollback_v1(
+    /// The in-memory preconditions of a rollback, under one short read
+    /// guard: both tracks are historically sealed.
+    fn check_rollback_preconditions_v1(
         &self,
-        request: &SearchPlaneRollbackSearchCorpusGenerationCasRequest,
         target: &SearchCorpusGenerationV1,
-    ) -> Result<SearchPlaneSearchCorpusRollbackCasAck, CoreError> {
-        let pair_guard = self
-            .coordinator
-            .lock_pair(target.repo_id(), target.revision_id())?;
-        let ledger = self
-            .ledger
-            .read()
-            .map_err(|error| CoreError::Storage(format!("ledger poisoned: {error}")))?;
+    ) -> Result<(), CoreError> {
+        let ledger = self.read_ledger()?;
         ledger.validate_historically_sealed_track_identity(
             target.lexical(),
             "search-corpus rollback",
@@ -290,25 +415,51 @@ impl SearchCorpusLifecycleService {
         ledger.validate_historically_sealed_track_identity(
             target.semantic(),
             "search-corpus rollback",
-        )?;
-        self.validate_physical_pair_v1(target, ERR_ROLLBACK_TARGET_UNOPENABLE, "rollback")?;
-        self.activation_catalog
-            .rollback_under_guard_v1(&pair_guard, request)
+        )
     }
 
-    fn validate_physical_pair_v1(
+    /// The durable authority's word, under the pair guard the caller
+    /// holds: the exact `(generation, digest)` is recorded right now.
+    fn require_durably_sealed_v1(
+        &self,
+        candidate: &SearchCorpusGenerationV1,
+        operation: &str,
+    ) -> Result<(), CoreError> {
+        match self.authority.inspect_sealed_search_corpus(
+            candidate.repo_id(),
+            candidate.revision_id(),
+            candidate.manifest_generation(),
+            candidate.manifest_digest(),
+        )? {
+            SealedSearchCorpusAuthorityStateV1::Exact => Ok(()),
+            SealedSearchCorpusAuthorityStateV1::Absent => Err(CoreError::Typed {
+                code: ERR_SEARCH_TRACK_GENERATION_NOT_SEALED.to_string(),
+                message: format!(
+                    "search-corpus {operation}: generation {} of repo={} revision={} is not recorded in the durable sealed history any more; it was reaped before the CAS committed",
+                    candidate.manifest_generation().get(),
+                    candidate.repo_id().as_str(),
+                    candidate.revision_id().as_str(),
+                ),
+            }),
+        }
+    }
+
+    fn read_ledger(&self) -> Result<std::sync::RwLockReadGuard<'_, Ledger>, CoreError> {
+        self.ledger
+            .read()
+            .map_err(|error| CoreError::Storage(format!("ledger poisoned: {error}")))
+    }
+
+    /// The physical proof of both tracks, which is also the open of the
+    /// handles it promotes, outside the ledger guard.
+    fn prove_and_promote_v1(
         &self,
         candidate: &SearchCorpusGenerationV1,
         error_code: &str,
         operation: &str,
     ) -> Result<(), CoreError> {
-        validate_physical_pair_v1(
-            self.lexical_generation_validator.as_ref(),
-            self.semantic_generation_validator.as_ref(),
-            candidate,
-            error_code,
-            operation,
-        )
+        self.promotion
+            .prove_and_promote_pair(candidate, error_code, operation)
     }
 }
 
@@ -319,25 +470,6 @@ fn canonical_state_root_identity_v1(state_root: &Path) -> Result<PathBuf, CoreEr
             state_root.display(),
         ))
     })
-}
-
-fn validate_physical_pair_v1(
-    lexical_generation_validator: &dyn GenerationIdentityValidatePort,
-    semantic_generation_validator: &dyn GenerationIdentityValidatePort,
-    candidate: &SearchCorpusGenerationV1,
-    error_code: &str,
-    operation: &str,
-) -> Result<(), CoreError> {
-    lexical_generation_validator
-        .validate_generation_identity(candidate.lexical())
-        .map_err(|source| {
-            generation_target_unopenable(candidate.lexical(), operation, error_code, &source)
-        })?;
-    semantic_generation_validator
-        .validate_generation_identity(candidate.semantic())
-        .map_err(|source| {
-            generation_target_unopenable(candidate.semantic(), operation, error_code, &source)
-        })
 }
 
 fn validate_currently_sealed_candidate_v1(
@@ -398,37 +530,122 @@ mod tests {
     };
     use tempfile::tempdir;
 
+    use std::sync::{Arc, Mutex};
+
     use super::{
-        ActiveSearchCorpusPinReadPort, ERR_ACTIVATION_TARGET_UNOPENABLE,
+        ActivationPromotionParts, ActiveSearchCorpusPinReadPort, ERR_ACTIVATION_TARGET_UNOPENABLE,
         SearchCorpusLifecycleOwner, SearchCorpusPairMutationCoordinator,
     };
+    use crate::query_dispatcher::tests::support::lexical::StubLexicalSearcher;
+    use crate::query_dispatcher::tests::support::semantic::{
+        RecordingSemanticOpener, RecordingSemanticState,
+    };
     use crate::readiness::SearchCorpusHistoryRetentionPolicyV1;
-    use crate::{PreparedSearchCorpusGenerationV1, SearchCorpusGenerationV1};
-    use quanta_index_core::{CoreError, GenerationIdentityValidatePort};
+    use crate::search_corpus_retention::SearchCorpusIndexBytesPort;
+    use crate::{
+        PreparedSearchCorpusGenerationV1, SearchCorpusGenerationV1, SnapshotKey,
+        SnapshotRegistries, SnapshotRegistryPolicy,
+    };
+    use quanta_index_core::{
+        CoreError, LexicalIndexOpenPort, LexicalSearcher, RequestBudgetV1, SemanticIndexOpenPort,
+        SemanticSearcher,
+    };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    struct RejectTrackGeneration {
-        rejected_track: Option<SearchPlaneTrackKind>,
+    /// Openers whose handles prove the digest the rehydrate fixture seals
+    /// under, `manifest-rehydrate-<generation>`; `open_proven` refuses the
+    /// rejected track the way a missing generation would.
+    struct EchoLexicalOpener {
+        reject: bool,
     }
 
-    impl GenerationIdentityValidatePort for RejectTrackGeneration {
-        fn validate_generation_identity(
+    fn injected_missing(candidate: &GenerationSnapshot) -> CoreError {
+        CoreError::NotFound(format!("injected missing {:?} generation", candidate.track))
+    }
+
+    impl LexicalIndexOpenPort for EchoLexicalOpener {
+        fn open(
+            &self,
+            _repo: &RepoId,
+            _revision: &RevisionId,
+            generation: ManifestGeneration,
+        ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
+            Ok(Box::new(StubLexicalSearcher {
+                results: Vec::new(),
+                manifest_digest: Some(format!("manifest-rehydrate-{}", generation.get())),
+            }))
+        }
+
+        fn open_proven(
             &self,
             candidate: &GenerationSnapshot,
-        ) -> Result<(), CoreError> {
-            if self.rejected_track == Some(candidate.track) {
-                return Err(CoreError::NotFound(format!(
-                    "injected missing {:?} generation",
-                    candidate.track
-                )));
+        ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
+            if self.reject {
+                return Err(injected_missing(candidate));
             }
-            Ok(())
+            self.open(
+                &candidate.repo_id,
+                &candidate.revision_id,
+                candidate.manifest_generation,
+            )
+        }
+    }
+
+    struct EchoSemanticOpener {
+        reject: bool,
+    }
+
+    impl SemanticIndexOpenPort for EchoSemanticOpener {
+        fn open(
+            &self,
+            repo: &RepoId,
+            revision: &RevisionId,
+            generation: ManifestGeneration,
+        ) -> Result<Box<dyn SemanticSearcher>, CoreError> {
+            let state = Arc::new(Mutex::new(RecordingSemanticState {
+                manifest_digest: Some(format!("manifest-rehydrate-{}", generation.get())),
+                ..RecordingSemanticState::default()
+            }));
+            RecordingSemanticOpener { state }.open(repo, revision, generation)
+        }
+
+        fn open_proven(
+            &self,
+            candidate: &GenerationSnapshot,
+        ) -> Result<Box<dyn SemanticSearcher>, CoreError> {
+            if self.reject {
+                return Err(injected_missing(candidate));
+            }
+            self.open(
+                &candidate.repo_id,
+                &candidate.revision_id,
+                candidate.manifest_generation,
+            )
+        }
+    }
+
+    /// Promotion over the echo openers, refusing `rejected_track`'s proof.
+    fn promotion_rejecting(
+        rejected_track: Option<SearchPlaneTrackKind>,
+    ) -> ActivationPromotionParts {
+        ActivationPromotionParts {
+            lexical_open: Arc::new(EchoLexicalOpener {
+                reject: rejected_track == Some(SearchPlaneTrackKind::Lexical),
+            }),
+            semantic_open: Arc::new(EchoSemanticOpener {
+                reject: rejected_track == Some(SearchPlaneTrackKind::Semantic),
+            }),
+            snapshots: SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
         }
     }
 
     fn retention() -> Result<SearchCorpusHistoryRetentionPolicyV1, CoreError> {
         SearchCorpusHistoryRetentionPolicyV1::new(2, 1024 * 1024, 8, 8 * 1024 * 1024)
+    }
+
+    fn scripted_bytes() -> Arc<dyn SearchCorpusIndexBytesPort> {
+        Arc::new(crate::readiness::ScriptedIndexBytesV1)
     }
 
     fn active_generation_for(
@@ -476,20 +693,13 @@ mod tests {
         state_root: &Path,
         rejected_track: SearchPlaneTrackKind,
     ) -> TestResult {
-        let owner = SearchCorpusLifecycleOwner::open(state_root, retention()?)?;
+        let owner = SearchCorpusLifecycleOwner::open(state_root, retention()?, scripted_bytes())?;
         activate(&owner)?;
         drop(owner);
-        let owner = SearchCorpusLifecycleOwner::open(state_root, retention()?)?;
-        let lexical = RejectTrackGeneration {
-            rejected_track: (rejected_track == SearchPlaneTrackKind::Lexical)
-                .then_some(SearchPlaneTrackKind::Lexical),
-        };
-        let semantic = RejectTrackGeneration {
-            rejected_track: (rejected_track == SearchPlaneTrackKind::Semantic)
-                .then_some(SearchPlaneTrackKind::Semantic),
-        };
+        let owner = SearchCorpusLifecycleOwner::open(state_root, retention()?, scripted_bytes())?;
+        let promotion = promotion_rejecting(Some(rejected_track));
         let Err(CoreError::Typed { code, message }) =
-            owner.validate_rehydrated_active_generations_v1(&lexical, &semantic)
+            owner.validate_rehydrated_active_generations_v1(&promotion)
         else {
             return Err(format!(
                 "missing rehydrated {rejected_track:?} generation unexpectedly validated"
@@ -505,7 +715,8 @@ mod tests {
     #[test]
     fn lifecycle_owner_derives_both_authority_roots_from_one_state_root_v1() -> TestResult {
         let state_root = tempdir()?;
-        let _owner = SearchCorpusLifecycleOwner::open(state_root.path(), retention()?)?;
+        let _owner =
+            SearchCorpusLifecycleOwner::open(state_root.path(), retention()?, scripted_bytes())?;
         assert!(state_root.path().join("activations/.staging").is_dir());
         assert!(
             state_root
@@ -520,7 +731,8 @@ mod tests {
     fn lifecycle_owner_rejects_a_different_state_root_identity_v1() -> TestResult {
         let owned_root = tempdir()?;
         let foreign_root = tempdir()?;
-        let owner = SearchCorpusLifecycleOwner::open(owned_root.path(), retention()?)?;
+        let owner =
+            SearchCorpusLifecycleOwner::open(owned_root.path(), retention()?, scripted_bytes())?;
 
         let rejected = owner.require_state_root_v1(foreign_root.path());
         let Err(CoreError::InvalidContract(message)) = rejected else {
@@ -542,7 +754,8 @@ mod tests {
             std::fs::create_dir(&attacker_authority)?;
             symlink(&attacker_authority, state_root.path().join(root_name))?;
 
-            let result = SearchCorpusLifecycleOwner::open(state_root.path(), retention()?);
+            let result =
+                SearchCorpusLifecycleOwner::open(state_root.path(), retention()?, scripted_bytes());
             let Err(CoreError::Storage(message)) = result else {
                 return Err(format!(
                     "lifecycle owner followed a symlink {root_name} authority root"
@@ -591,16 +804,51 @@ mod tests {
     #[test]
     fn restart_rehydrate_accepts_complete_active_composite_v1() -> TestResult {
         let state_root = tempdir()?;
-        let owner = SearchCorpusLifecycleOwner::open(state_root.path(), retention()?)?;
+        let owner =
+            SearchCorpusLifecycleOwner::open(state_root.path(), retention()?, scripted_bytes())?;
         activate(&owner)?;
         drop(owner);
-        let owner = SearchCorpusLifecycleOwner::open(state_root.path(), retention()?)?;
-        let valid = RejectTrackGeneration {
-            rejected_track: None,
-        };
-        let validated = owner.validate_rehydrated_active_generations_v1(&valid, &valid)?;
+        let owner =
+            SearchCorpusLifecycleOwner::open(state_root.path(), retention()?, scripted_bytes())?;
+        let promotion = promotion_rejecting(None);
+        let validated = owner.validate_rehydrated_active_generations_v1(&promotion)?;
         if validated != 1 {
             return Err(format!("expected exactly one active pair proven, got {validated}").into());
+        }
+        // The proven handles are resident: the first acquire of the active
+        // pair on either track is a hit and runs no opener.
+        let key = SnapshotKey::new(
+            &RepoId::new("repo-rehydrate"),
+            &RevisionId::new("revision-rehydrate"),
+            ManifestGeneration::new(17),
+        );
+        let lexical =
+            promotion
+                .snapshots
+                .lexical
+                .acquire(&key, &RequestBudgetV1::unbounded(), || {
+                    Err(CoreError::Storage(
+                        "restart rehydrate must have promoted the lexical handle".into(),
+                    ))
+                })?;
+        if lexical.handle.artifact_identity().manifest_digest != "manifest-rehydrate-17" {
+            return Err("the resident lexical handle is not the proven one".into());
+        }
+        let semantic =
+            promotion
+                .snapshots
+                .semantic
+                .acquire(&key, &RequestBudgetV1::unbounded(), || {
+                    Err(CoreError::Storage(
+                        "restart rehydrate must have promoted the semantic handle".into(),
+                    ))
+                })?;
+        if semantic.handle.manifest_digest() != "manifest-rehydrate-17" {
+            return Err("the resident semantic handle is not the proven one".into());
+        }
+        let stats = promotion.snapshots.lexical.stats()?;
+        if stats.promotions != 1 || stats.misses != 0 || stats.hits != 1 {
+            return Err(format!("restart promotion stats drifted: {stats:?}").into());
         }
         Ok(())
     }
@@ -609,8 +857,10 @@ mod tests {
     fn separate_state_roots_rehydrate_same_repo_without_cross_root_aliasing_v1() -> TestResult {
         let state_root_a = tempdir()?;
         let state_root_b = tempdir()?;
-        let owner_a = SearchCorpusLifecycleOwner::open(state_root_a.path(), retention()?)?;
-        let owner_b = SearchCorpusLifecycleOwner::open(state_root_b.path(), retention()?)?;
+        let owner_a =
+            SearchCorpusLifecycleOwner::open(state_root_a.path(), retention()?, scripted_bytes())?;
+        let owner_b =
+            SearchCorpusLifecycleOwner::open(state_root_b.path(), retention()?, scripted_bytes())?;
         activate_generation(
             &owner_a,
             active_generation_for("shared-repo", 17, "manifest-root-a-17")?,
@@ -621,8 +871,10 @@ mod tests {
         )?;
         drop((owner_a, owner_b));
 
-        let owner_a = SearchCorpusLifecycleOwner::open(state_root_a.path(), retention()?)?;
-        let owner_b = SearchCorpusLifecycleOwner::open(state_root_b.path(), retention()?)?;
+        let owner_a =
+            SearchCorpusLifecycleOwner::open(state_root_a.path(), retention()?, scripted_bytes())?;
+        let owner_b =
+            SearchCorpusLifecycleOwner::open(state_root_b.path(), retention()?, scripted_bytes())?;
         let active_a = owner_a
             .activation_catalog()
             .all_active_search_corpora_for_bootstrap_v1()?;

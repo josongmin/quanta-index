@@ -159,8 +159,13 @@ fn inventory_quarantines_untrusted_directories_and_never_reads_content() -> Test
     flip_last_byte(&sealed_dir.join(TEXT_AUTHORITY_MANIFEST))?;
 
     let inventory = adapter.inventory_sealed_generations()?;
-    if inventory.sealed != vec![identity(g1)] {
-        return Err(format!("expected only g1 inventoried, got {:?}", inventory.sealed).into());
+    let sealed: Vec<(GenerationSnapshot, PathBuf)> = inventory
+        .sealed
+        .iter()
+        .map(|entry| (entry.identity.clone(), entry.path.clone()))
+        .collect();
+    if sealed != vec![(identity(g1), sealed_dir)] {
+        return Err(format!("expected only g1 inventoried at its own path, got {sealed:?}").into());
     }
     let mut quarantined = inventory
         .quarantined

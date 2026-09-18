@@ -514,6 +514,7 @@ fn injected_parent_sync_covers_fresh_catalog_and_authority_directories() -> Test
         search_corpus_retention(2)?,
         SearchCorpusPairMutationCoordinator::shared(),
         Arc::new(crate::readiness::auxiliary_store::NoActiveSearchCorpusPinsV1),
+        Arc::new(crate::readiness::ScriptedIndexBytesV1),
         Arc::new(AlwaysFailParentSync),
     );
     let Err(CoreError::Storage(authority_error)) = authority else {

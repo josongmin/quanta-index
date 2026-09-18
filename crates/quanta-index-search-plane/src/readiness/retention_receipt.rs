@@ -16,6 +16,9 @@ pub struct SearchCorpusHistoryRetentionReceiptV1 {
     pub(super) revision_id: RevisionId,
     pub(super) retained_generations: BTreeSet<ManifestGeneration>,
     pub(super) reaped_generations: BTreeSet<ManifestGeneration>,
+    /// The index bytes the retained set was measured at when the plan
+    /// admitted it: what the pair occupies on disk after the reap.
+    pub(super) retained_index_bytes: u64,
     pub(super) store_reconciled_v1: bool,
 }
 
@@ -31,6 +34,7 @@ impl SearchCorpusHistoryRetentionReceiptV1 {
             revision_id: revision_id.clone(),
             retained_generations: generations.into_iter().collect(),
             reaped_generations: BTreeSet::new(),
+            retained_index_bytes: 0,
             store_reconciled_v1: true,
         }
     }
@@ -53,5 +57,12 @@ impl SearchCorpusHistoryRetentionReceiptV1 {
     #[must_use]
     pub fn reaped_generations(&self) -> &BTreeSet<ManifestGeneration> {
         &self.reaped_generations
+    }
+
+    /// The index bytes the retained set occupies on disk, as measured when
+    /// it was admitted.
+    #[must_use]
+    pub const fn retained_index_bytes(&self) -> u64 {
+        self.retained_index_bytes
     }
 }

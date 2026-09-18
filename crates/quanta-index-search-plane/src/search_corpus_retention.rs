@@ -1,17 +1,93 @@
-use std::collections::BTreeSet;
+//! Sealed search-corpus history retention: the per-pair and state-root
+//! limits, and the plan that decides which sealed generations a pair
+//! keeps (QI-BB-003).
+//!
+//! Byte limits are enforced over the **actual index bytes** the retained
+//! generations occupy on disk — the lexical and semantic generation
+//! directories, measured by unique inode so a delta's hard-linked base
+//! segments count once — never over the size of an authority record. The
+//! measurement is a port ([`SearchCorpusIndexBytesPort`]) because the
+//! authority store owns no index layout; the composition root wires the
+//! adapters' measurement in.
 
-use quanta_index_core::CoreError;
+use std::collections::BTreeSet;
+use std::fmt;
+use std::sync::Arc;
+
+use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
+use quanta_index_core::{CoreError, SealedGenerationReclaimPort};
 
 pub(crate) const ERR_SEARCH_CORPUS_HISTORY_RETENTION_POLICY_INVALID: &str =
     "SEARCH_CORPUS_HISTORY_RETENTION_POLICY_INVALID";
 pub(crate) const ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED: &str =
     "SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED";
 
+/// Measures the bytes a set of sealed generations of one pair occupies on
+/// disk across both tracks: what `du` would report for those directories
+/// together, hard links counted once.
+///
+/// Called at admission and at restore with the sets retention is deciding
+/// between; a generation whose directories are absent contributes nothing.
+pub trait SearchCorpusIndexBytesPort: fmt::Debug + Send + Sync {
+    fn measure_index_bytes(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generations: &BTreeSet<ManifestGeneration>,
+    ) -> Result<u64, CoreError>;
+}
+
+/// The measurement over the two tracks' reclaim ports, which are the
+/// adapters that know their generation directories.
+pub struct PairIndexBytesMeasurer {
+    lexical: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
+    semantic: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
+}
+
+impl PairIndexBytesMeasurer {
+    #[must_use]
+    pub fn new(
+        lexical: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
+        semantic: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
+    ) -> Self {
+        Self { lexical, semantic }
+    }
+}
+
+impl fmt::Debug for PairIndexBytesMeasurer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PairIndexBytesMeasurer")
+    }
+}
+
+impl SearchCorpusIndexBytesPort for PairIndexBytesMeasurer {
+    fn measure_index_bytes(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generations: &BTreeSet<ManifestGeneration>,
+    ) -> Result<u64, CoreError> {
+        let lexical = self
+            .lexical
+            .measure_sealed_generations(repo_id, revision_id, generations)?;
+        let semantic =
+            self.semantic
+                .measure_sealed_generations(repo_id, revision_id, generations)?;
+        lexical.bytes.checked_add(semantic.bytes).ok_or_else(|| {
+            CoreError::Storage(
+                "search-corpus history retention: index byte total overflow".to_string(),
+            )
+        })
+    }
+}
+
 /// Explicit state-root retention limits for sealed search-corpus history.
 ///
 /// At least two generations are required so admitting a new generation cannot
-/// erase its immediate predecessor rollback target. Byte limits apply to the
-/// encoded immutable authority records, not filesystem allocation units.
+/// erase its immediate predecessor rollback target. `max_bytes` bounds the
+/// index bytes one pair's retained generations occupy together;
+/// `max_total_bytes` bounds the same across every pair in the state root.
+/// Both are measured on disk through [`SearchCorpusIndexBytesPort`].
 ///
 /// The pair-local limits are allowed to reap generations only inside the pair
 /// being mutated. The state-root limits are admission fences: without a
@@ -92,9 +168,18 @@ impl SearchCorpusHistoryRetentionPolicyV1 {
         self.max_total_bytes
     }
 
+    /// Decide what one pair retains.
+    ///
+    /// The required set — the candidate, the active generation and the
+    /// newest (or, with no active generation, the two newest) — must fit
+    /// `max_generations` and `max_bytes` as measured together, else the
+    /// admission is refused typed with nothing reaped. Older generations
+    /// are then kept newest-first while the retained set, measured as one
+    /// inode set, stays within both limits.
     pub(crate) fn plan(
         self,
         mut items: Vec<SearchCorpusHistoryRetentionItemV1>,
+        measure: &mut dyn FnMut(&BTreeSet<ManifestGeneration>) -> Result<u64, CoreError>,
     ) -> Result<SearchCorpusHistoryRetentionPlanV1, CoreError> {
         items.sort_by(|left, right| right.generation.cmp(&left.generation));
         for pair in items.windows(2) {
@@ -104,12 +189,12 @@ impl SearchCorpusHistoryRetentionPolicyV1 {
             if newer.generation == older.generation {
                 return Err(CoreError::Storage(format!(
                     "search-corpus history retention: duplicate generation {}",
-                    newer.generation
+                    newer.generation.get()
                 )));
             }
         }
 
-        let mut required_generations: BTreeSet<u64> = items
+        let mut required_generations: BTreeSet<ManifestGeneration> = items
             .iter()
             .filter(|item| item.candidate || item.active)
             .map(|item| item.generation)
@@ -122,32 +207,12 @@ impl SearchCorpusHistoryRetentionPolicyV1 {
         } else {
             required_generations.extend(items.iter().take(2).map(|item| item.generation));
         }
-        let required_bytes = items
-            .iter()
-            .filter(|item| required_generations.contains(&item.generation))
-            .try_fold(0_u64, |total, item| {
-                total.checked_add(item.encoded_len).ok_or_else(|| {
-                    CoreError::Storage(
-                        "search-corpus history retention: required byte total overflow".to_string(),
-                    )
-                })
-            })?;
-        if let Some(newest) = items.first()
-            && newest.encoded_len > self.max_bytes
-        {
-            return Err(CoreError::Typed {
-                code: ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED.to_string(),
-                message: format!(
-                    "search-corpus history retention: newest generation {} requires {} bytes, exceeding max_bytes={}",
-                    newest.generation, newest.encoded_len, self.max_bytes,
-                ),
-            });
-        }
+        let required_bytes = measure(&required_generations)?;
         if required_generations.len() > self.max_generations || required_bytes > self.max_bytes {
             return Err(CoreError::Typed {
                 code: ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED.to_string(),
                 message: format!(
-                    "search-corpus history retention: required active/candidate set needs generations={} bytes={required_bytes}, limits are max_generations={} max_bytes={}",
+                    "search-corpus history retention: required active/candidate set needs generations={} index_bytes={required_bytes}, limits are max_generations={} max_bytes={}",
                     required_generations.len(),
                     self.max_generations,
                     self.max_bytes,
@@ -161,41 +226,46 @@ impl SearchCorpusHistoryRetentionPolicyV1 {
             if retained_generations.contains(&item.generation) {
                 continue;
             }
-            let next_bytes = retained_bytes
-                .checked_add(item.encoded_len)
-                .ok_or_else(|| {
-                    CoreError::Storage(
-                        "search-corpus history retention: encoded byte total overflow".to_string(),
-                    )
-                })?;
-            if retained_generations.len() >= self.max_generations || next_bytes > self.max_bytes {
+            if retained_generations.len() >= self.max_generations {
                 break;
             }
-            let _inserted = retained_generations.insert(item.generation);
-            retained_bytes = next_bytes;
+            let mut widened = retained_generations.clone();
+            let _inserted = widened.insert(item.generation);
+            let widened_bytes = measure(&widened)?;
+            if widened_bytes > self.max_bytes {
+                break;
+            }
+            retained_generations = widened;
+            retained_bytes = widened_bytes;
         }
         Ok(SearchCorpusHistoryRetentionPlanV1 {
             retained_generations,
+            retained_bytes,
         })
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SearchCorpusHistoryRetentionItemV1 {
-    pub(crate) generation: u64,
-    pub(crate) encoded_len: u64,
+    pub(crate) generation: ManifestGeneration,
     pub(crate) candidate: bool,
     pub(crate) active: bool,
 }
 
+/// What one pair retains and the index bytes that set was measured at.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct SearchCorpusHistoryRetentionPlanV1 {
-    retained_generations: BTreeSet<u64>,
+    retained_generations: BTreeSet<ManifestGeneration>,
+    retained_bytes: u64,
 }
 
 impl SearchCorpusHistoryRetentionPlanV1 {
-    pub(crate) fn retains(&self, generation: u64) -> bool {
+    pub(crate) fn retains(&self, generation: ManifestGeneration) -> bool {
         self.retained_generations.contains(&generation)
+    }
+
+    pub(crate) const fn retained_bytes(&self) -> u64 {
+        self.retained_bytes
     }
 }
 
@@ -206,9 +276,29 @@ mod tests {
         reason = "Result-returning retention tests use assertions as test-failure reporting"
     )]
 
+    use std::collections::BTreeSet;
+
+    use quanta_index_contract::ManifestGeneration;
+    use quanta_index_core::CoreError;
+
     use super::{SearchCorpusHistoryRetentionItemV1, SearchCorpusHistoryRetentionPolicyV1};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// Every generation occupies ten bytes; sets add up. Fallible like
+    /// the port it stands in for.
+    fn ten_each(set: &BTreeSet<ManifestGeneration>) -> Result<u64, CoreError> {
+        if set.len() > 1_000 {
+            return Err(CoreError::Storage(
+                "the test measure is bounded".to_string(),
+            ));
+        }
+        Ok(10_u64.saturating_mul(u64::try_from(set.len()).map_or(u64::MAX, |len| len)))
+    }
+
+    fn g(value: u64) -> ManifestGeneration {
+        ManifestGeneration::new(value)
+    }
 
     #[test]
     fn retention_policy_rejects_less_than_predecessor_window() {
@@ -221,15 +311,50 @@ mod tests {
     #[test]
     fn retention_plan_applies_count_and_byte_caps() -> TestResult {
         let policy = SearchCorpusHistoryRetentionPolicyV1::new(3, 25, 8, 200)?;
-        let plan = policy.plan(vec![
-            item(4, 10, true),
-            item(3, 10, false),
-            item(2, 10, false),
-            item(1, 10, false),
-        ])?;
-        assert!(plan.retains(4));
-        assert!(plan.retains(3));
-        assert!(!plan.retains(2));
+        let plan = policy.plan(
+            vec![
+                item(4, true),
+                item(3, false),
+                item(2, false),
+                item(1, false),
+            ],
+            &mut ten_each,
+        )?;
+        assert!(plan.retains(g(4)));
+        assert!(plan.retains(g(3)));
+        assert!(!plan.retains(g(2)));
+        assert_eq!(plan.retained_bytes(), 20);
+        Ok(())
+    }
+
+    /// The byte cap is measured over the retained set as one inode set,
+    /// not summed per generation: two generations that share their bytes
+    /// fit where two independent ones would not.
+    #[test]
+    fn retention_plan_measures_the_retained_set_not_a_sum() -> TestResult {
+        let policy = SearchCorpusHistoryRetentionPolicyV1::new(4, 15, 8, 200)?;
+        // Generations 3 and 4 hard-link one segment: together they cost 12,
+        // apart 10 each; generation 2 costs its own 10.
+        let mut shared = |set: &BTreeSet<ManifestGeneration>| -> Result<u64, CoreError> {
+            let mut bytes = 0_u64;
+            if set.contains(&g(4)) || set.contains(&g(3)) {
+                bytes += 10;
+            }
+            if set.contains(&g(4)) && set.contains(&g(3)) {
+                bytes += 2;
+            }
+            if set.contains(&g(2)) {
+                bytes += 10;
+            }
+            Ok(bytes)
+        };
+        let plan = policy.plan(
+            vec![item(4, true), item(3, false), item(2, false)],
+            &mut shared,
+        )?;
+        assert!(plan.retains(g(4)) && plan.retains(g(3)));
+        assert!(!plan.retains(g(2)), "2 would push the set to 22 > 15");
+        assert_eq!(plan.retained_bytes(), 12);
         Ok(())
     }
 
@@ -238,11 +363,10 @@ mod tests {
         let policy = SearchCorpusHistoryRetentionPolicyV1::new(2, 1024, 8, 8192)?;
         assert!(
             policy
-                .plan(vec![
-                    item(4, 10, false),
-                    item(3, 10, false),
-                    item(2, 10, true),
-                ])
+                .plan(
+                    vec![item(4, false), item(3, false), item(2, true)],
+                    &mut ten_each
+                )
                 .is_err()
         );
         Ok(())
@@ -253,7 +377,7 @@ mod tests {
         let policy = SearchCorpusHistoryRetentionPolicyV1::new(4, 19, 8, 200)?;
         assert!(
             policy
-                .plan(vec![item(4, 10, true), item(3, 10, false)])
+                .plan(vec![item(4, true), item(3, false)], &mut ten_each)
                 .is_err()
         );
         Ok(())
@@ -262,18 +386,13 @@ mod tests {
     #[test]
     fn retention_plan_never_silently_reaps_only_newest_generation() -> TestResult {
         let policy = SearchCorpusHistoryRetentionPolicyV1::new(2, 9, 8, 200)?;
-        assert!(policy.plan(vec![item(4, 10, false)]).is_err());
+        assert!(policy.plan(vec![item(4, false)], &mut ten_each).is_err());
         Ok(())
     }
 
-    const fn item(
-        generation: u64,
-        encoded_len: u64,
-        candidate: bool,
-    ) -> SearchCorpusHistoryRetentionItemV1 {
+    const fn item(generation: u64, candidate: bool) -> SearchCorpusHistoryRetentionItemV1 {
         SearchCorpusHistoryRetentionItemV1 {
-            generation,
-            encoded_len,
+            generation: ManifestGeneration::new(generation),
             candidate,
             active: false,
         }
@@ -282,29 +401,29 @@ mod tests {
     #[test]
     fn retention_plan_pins_rolled_back_active_generation_v1() -> TestResult {
         let policy = SearchCorpusHistoryRetentionPolicyV1::new(2, 1024, 8, 8192)?;
-        let plan = policy.plan(vec![
-            SearchCorpusHistoryRetentionItemV1 {
-                generation: 3,
-                encoded_len: 10,
-                candidate: true,
-                active: false,
-            },
-            SearchCorpusHistoryRetentionItemV1 {
-                generation: 2,
-                encoded_len: 10,
-                candidate: false,
-                active: false,
-            },
-            SearchCorpusHistoryRetentionItemV1 {
-                generation: 1,
-                encoded_len: 10,
-                candidate: false,
-                active: true,
-            },
-        ])?;
-        assert!(plan.retains(3));
-        assert!(plan.retains(1));
-        assert!(!plan.retains(2));
+        let plan = policy.plan(
+            vec![
+                SearchCorpusHistoryRetentionItemV1 {
+                    generation: g(3),
+                    candidate: true,
+                    active: false,
+                },
+                SearchCorpusHistoryRetentionItemV1 {
+                    generation: g(2),
+                    candidate: false,
+                    active: false,
+                },
+                SearchCorpusHistoryRetentionItemV1 {
+                    generation: g(1),
+                    candidate: false,
+                    active: true,
+                },
+            ],
+            &mut ten_each,
+        )?;
+        assert!(plan.retains(g(3)));
+        assert!(plan.retains(g(1)));
+        assert!(!plan.retains(g(2)));
         Ok(())
     }
 }

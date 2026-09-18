@@ -127,6 +127,12 @@ pub(crate) fn ready_ledger() -> Arc<RwLock<Ledger>> {
         ManifestGeneration::new(9),
         "manifest-digest-9",
     );
+    ledger.record_historically_sealed_search_corpus(
+        &repo_id,
+        &revision_id,
+        ManifestGeneration::new(9),
+        "manifest-digest-9",
+    );
     Arc::new(RwLock::new(ledger))
 }
 

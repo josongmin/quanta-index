@@ -30,7 +30,9 @@ use crate::search_corpus_lifecycle::SearchCorpusPairMutationGuard;
 use crate::search_corpus_lifecycle::{
     ActiveSearchCorpusPinReadPort, SearchCorpusPairMutationCoordinator,
 };
-use crate::search_corpus_retention::SearchCorpusHistoryRetentionPolicyV1;
+use crate::search_corpus_retention::{
+    SearchCorpusHistoryRetentionPolicyV1, SearchCorpusIndexBytesPort,
+};
 #[cfg(test)]
 use quanta_index_contract::RepoId;
 #[cfg(test)]
@@ -69,6 +71,8 @@ pub struct AuxiliaryAuthorityStore {
     pub(super) lifecycle_coordinator: Arc<SearchCorpusPairMutationCoordinator>,
     pub(super) active_pins: Arc<dyn ActiveSearchCorpusPinReadPort>,
     pub(super) search_corpus_history_retention: SearchCorpusHistoryRetentionPolicyV1,
+    /// The on-disk index bytes retention measures its byte limits over.
+    pub(super) index_bytes: Arc<dyn SearchCorpusIndexBytesPort>,
     pub(super) parent_sync: Arc<dyn ParentDirectorySyncPort>,
 }
 
@@ -76,7 +80,31 @@ pub struct AuxiliaryAuthorityStore {
 #[derive(Debug)]
 pub(super) struct NoActiveSearchCorpusPinsV1;
 
+/// The test measurement: every generation occupies exactly
+/// [`TEST_INDEX_BYTES_PER_GENERATION`] bytes, so byte caps in tests are
+/// generation counts times a constant.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct ScriptedIndexBytesV1;
+
+#[cfg(test)]
+pub(crate) const TEST_INDEX_BYTES_PER_GENERATION: u64 = 100;
+
+#[cfg(test)]
+impl SearchCorpusIndexBytesPort for ScriptedIndexBytesV1 {
+    fn measure_index_bytes(
+        &self,
+        _repo_id: &RepoId,
+        _revision_id: &RevisionId,
+        generations: &std::collections::BTreeSet<quanta_index_contract::ManifestGeneration>,
+    ) -> Result<u64, CoreError> {
+        Ok(TEST_INDEX_BYTES_PER_GENERATION
+            .saturating_mul(u64::try_from(generations.len()).map_or(u64::MAX, |len| len)))
+    }
+}
+
 impl AuxiliaryAuthorityStore {
+    /// A store over the scripted measurement (tests only).
     #[cfg(test)]
     pub fn open(
         root: impl AsRef<Path>,
@@ -88,6 +116,7 @@ impl AuxiliaryAuthorityStore {
             search_corpus_history_retention,
             coordinator,
             Arc::new(NoActiveSearchCorpusPinsV1),
+            Arc::new(ScriptedIndexBytesV1),
             Arc::new(FsParentDirectorySyncPort),
         )
     }
@@ -97,12 +126,14 @@ impl AuxiliaryAuthorityStore {
         search_corpus_history_retention: SearchCorpusHistoryRetentionPolicyV1,
         lifecycle_coordinator: Arc<SearchCorpusPairMutationCoordinator>,
         active_pins: Arc<dyn ActiveSearchCorpusPinReadPort>,
+        index_bytes: Arc<dyn SearchCorpusIndexBytesPort>,
     ) -> Result<Self, CoreError> {
         Self::open_with_parent_sync(
             root,
             search_corpus_history_retention,
             lifecycle_coordinator,
             active_pins,
+            index_bytes,
             Arc::new(FsParentDirectorySyncPort),
         )
     }
@@ -112,6 +143,7 @@ impl AuxiliaryAuthorityStore {
         search_corpus_history_retention: SearchCorpusHistoryRetentionPolicyV1,
         lifecycle_coordinator: Arc<SearchCorpusPairMutationCoordinator>,
         active_pins: Arc<dyn ActiveSearchCorpusPinReadPort>,
+        index_bytes: Arc<dyn SearchCorpusIndexBytesPort>,
         parent_sync: Arc<dyn ParentDirectorySyncPort>,
     ) -> Result<Self, CoreError> {
         let root = root.as_ref();
@@ -140,6 +172,7 @@ impl AuxiliaryAuthorityStore {
             lifecycle_coordinator,
             active_pins,
             search_corpus_history_retention,
+            index_bytes,
             parent_sync,
         };
         store.reconcile_search_corpus_startup_v1()?;

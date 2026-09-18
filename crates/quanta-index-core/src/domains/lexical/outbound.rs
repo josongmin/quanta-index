@@ -3,9 +3,10 @@ use std::collections::BTreeSet;
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::{
     BatchPublishReceipt, CandidatePresenceV1, FileContributorIngestBatch, FileOwnerProjectionRow,
-    FileOwnershipIngestBatch, LexicalCandidate, LqQuery, ManifestGeneration, QueryConstraintSetV1,
-    RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId, RepoMetaIngestBatch,
-    RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch, SymbolCandidate,
+    FileOwnershipIngestBatch, GenerationSnapshot, LexicalCandidate, LqQuery, ManifestGeneration,
+    QueryConstraintSetV1, RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId,
+    RepoMetaIngestBatch, RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch,
+    SymbolCandidate,
 };
 
 use crate::domains::read_view::LexicalArtifactIdentityV1;
@@ -52,6 +53,18 @@ pub trait LexicalIndexOpenPort: Send + Sync {
         repo: &RepoId,
         revision: &RevisionId,
         generation: ManifestGeneration,
+    ) -> Result<Box<dyn LexicalSearcher>, CoreError>;
+    /// Prove `candidate` and return the handle the proof opened.
+    ///
+    /// The proof is the activation validator's: the sealed identity on
+    /// disk is exactly `candidate` (digest included), every committed file
+    /// is what the seal committed, and the generation directory is durable.
+    /// Activation, rollback and restart call this once per track, so the
+    /// proof and the handle the first query is served from are one open
+    /// (QI-BB-017 보완 #4, QI-BB-030 완료 기준 #2).
+    fn open_proven(
+        &self,
+        candidate: &GenerationSnapshot,
     ) -> Result<Box<dyn LexicalSearcher>, CoreError>;
 }
 

@@ -224,6 +224,22 @@ mod tests {
         Ok(())
     }
 
+    /// A ledger whose durable search-corpus authority retains
+    /// `generations` of the fixture pair under the fixture digests: the
+    /// serving boundary the seed measures the inventory against.
+    fn ledger_retaining(generations: &[u64]) -> Arc<RwLock<Ledger>> {
+        let mut ledger = Ledger::new();
+        for generation in generations {
+            ledger.record_historically_sealed_search_corpus(
+                &repo_id(),
+                &revision_id(),
+                ManifestGeneration::new(*generation),
+                &format!("manifest:{generation}"),
+            );
+        }
+        Arc::new(RwLock::new(ledger))
+    }
+
     fn build_legacy_durable(adapter: &SemanticAdapter, batch: &SemanticIngestBatch) -> TestResult {
         build_durable(adapter, &normalize_legacy_semantic_batch_v1(batch))
     }
@@ -302,10 +318,11 @@ mod tests {
             )?,
         )?;
 
-        let ledger = Arc::new(RwLock::new(Ledger::new()));
+        let ledger = ledger_retaining(&[3, 5]);
         let report = seed_persisted_semantic_readiness(&ledger, &adapter)?;
         assert_eq!(report.sealed_generations, 2);
         assert!(report.quarantined.is_empty());
+        assert!(report.orphaned.is_empty());
 
         let guard = ledger
             .read()
@@ -401,7 +418,7 @@ mod tests {
             .map_err(|err| format!("encode manifest cbor: {err}"))?;
         std::fs::write(&manifest_path, &tampered)?;
 
-        let ledger = Arc::new(RwLock::new(Ledger::new()));
+        let ledger = ledger_retaining(&[9]);
         let report = seed_persisted_semantic_readiness(&ledger, &adapter)?;
         assert_eq!(report.sealed_generations, 1);
         assert!(report.quarantined.is_empty());

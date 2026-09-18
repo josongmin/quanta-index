@@ -38,11 +38,12 @@ pub use auxiliary::{
 };
 pub use dispatcher::SearchPlaneIngestDispatcher;
 pub use ports::{
-    HistoryIngestPort, RuntimeMetadataIngestPort, SearchCorpusAuthorityWritePort,
-    StructuralIngestPort,
+    HistoryIngestPort, RuntimeMetadataIngestPort, SearchCorpusAuthorityInspectPort,
+    SearchCorpusAuthorityWritePort, StructuralIngestPort,
 };
 pub use search_corpus::{
-    DirectSearchCorpusMaterializer, IngestResourceStats, SearchCorpusMaterializerParts,
+    DirectSearchCorpusMaterializer, IngestResourceStats, SearchCorpusGcStats,
+    SearchCorpusMaterializerParts,
 };
 pub use semantic::{DirectSemanticMaterializer, SemanticIngestStreamStats};
 

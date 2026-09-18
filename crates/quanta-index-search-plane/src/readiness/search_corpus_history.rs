@@ -26,6 +26,7 @@ use crate::readiness::search_corpus_generation::SearchCorpusGenerationV1;
 use crate::readiness::serde_support::impl_struct_serde;
 use crate::search_corpus_retention::{
     ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED, SearchCorpusHistoryRetentionItemV1,
+    SearchCorpusHistoryRetentionPlanV1,
 };
 
 impl AuxiliaryAuthorityStore {
@@ -33,10 +34,15 @@ impl AuxiliaryAuthorityStore {
     ///
     /// Admission performs one authoritative state-root scan, O(P + G), where
     /// `P` is the number of repo/revision pairs and `G` is the number of
-    /// retained generation records. The resulting snapshot is reused for
-    /// pair-local GC; no second pair scan occurs. Cross-pair deletion is
-    /// intentionally forbidden because this owner has no product-active pin
-    /// authority for choosing a safe victim.
+    /// retained generation records, plus one metadata walk of each retained
+    /// generation's index directories: the byte limits are measured over
+    /// the index bytes on disk, so a seal whose retained set would exceed
+    /// `max_bytes` after the planned reap — or the state root
+    /// `max_total_bytes` — is refused typed before the record is written.
+    /// The resulting snapshot is reused for pair-local GC; no second pair
+    /// scan occurs. Cross-pair deletion is intentionally forbidden because
+    /// this owner has no product-active pin authority for choosing a safe
+    /// victim.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the pair guard must remain held through active-pin validation, durable record admission, and retention GC"
@@ -137,13 +143,14 @@ impl AuxiliaryAuthorityStore {
         )?;
         sync_existing_file_parent_v1(path, "search-corpus authority", self.parent_sync.as_ref())?;
         self.sync_search_corpus_staging_after_exact_retry_v1()?;
-        let plan =
-            self.plan_search_corpus_pair_records_v1(&pair_records, Some(generation), active)?;
-        self.validate_search_corpus_state_root_projection_v1(
-            root_without_pair,
+        let plan = self.plan_search_corpus_pair_records_v1(
+            repo_id,
+            revision_id,
             &pair_records,
-            &plan,
+            Some(generation),
+            active,
         )?;
+        self.validate_search_corpus_state_root_projection_v1(root_without_pair, &plan)?;
         let enforced = self.enforce_search_corpus_history_retention_snapshot_v1(
             repo_id,
             revision_id,
@@ -193,27 +200,9 @@ impl AuxiliaryAuthorityStore {
                 path.display()
             ))
         })?;
-        let encoded_len = u64::try_from(bytes.len()).map_err(|_error| {
-            CoreError::Storage(
-                "search-corpus history retention: candidate record length exceeds u64".to_string(),
-            )
-        })?;
-        if encoded_len > self.search_corpus_history_retention.max_bytes() {
-            return Err(CoreError::Typed {
-                code: ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED.to_string(),
-                message: format!(
-                    "search-corpus history retention: generation {} record exceeds max_bytes={} for repo={} revision={}",
-                    generation.get(),
-                    self.search_corpus_history_retention.max_bytes(),
-                    repo_id.as_str(),
-                    revision_id.as_str(),
-                ),
-            });
-        }
         pair_records.push(SearchCorpusAuthorityFileV1 {
             path: path.to_path_buf(),
             record,
-            encoded_len,
         });
         pair_records.sort_by(|left, right| {
             right
@@ -222,13 +211,14 @@ impl AuxiliaryAuthorityStore {
                 .get()
                 .cmp(&left.record.generation.get())
         });
-        let plan =
-            self.plan_search_corpus_pair_records_v1(&pair_records, Some(generation), active)?;
-        self.validate_search_corpus_state_root_projection_v1(
-            root_without_pair,
+        let plan = self.plan_search_corpus_pair_records_v1(
+            repo_id,
+            revision_id,
             &pair_records,
-            &plan,
+            Some(generation),
+            active,
         )?;
+        self.validate_search_corpus_state_root_projection_v1(root_without_pair, &plan)?;
         ensure_durable_directory_v1(
             pair_dir,
             "search-corpus authority",
@@ -346,17 +336,6 @@ impl AuxiliaryAuthorityStore {
             if records.is_empty() {
                 continue;
             }
-            for record in &records {
-                snapshot.total_bytes = snapshot
-                    .total_bytes
-                    .checked_add(record.encoded_len)
-                    .ok_or_else(|| {
-                        CoreError::Storage(
-                            "search-corpus history retention: state-root byte total overflow"
-                                .to_string(),
-                        )
-                    })?;
-            }
             let _previous = snapshot.pairs.insert(pair_path, records);
         }
         Ok(snapshot)
@@ -423,17 +402,7 @@ impl AuxiliaryAuthorityStore {
                     path.display()
                 )));
             }
-            let encoded_len = u64::try_from(bytes.len()).map_err(|_error| {
-                CoreError::Storage(format!(
-                    "search-corpus authority: record length exceeds u64 in {}",
-                    path.display()
-                ))
-            })?;
-            records.push(SearchCorpusAuthorityFileV1 {
-                path,
-                record,
-                encoded_len,
-            });
+            records.push(SearchCorpusAuthorityFileV1 { path, record });
         }
         records.sort_by(|left, right| {
             right
@@ -445,12 +414,16 @@ impl AuxiliaryAuthorityStore {
         Ok(records)
     }
 
+    /// Plan one pair's retention over its records, measuring every
+    /// candidate retained set's index bytes through the port.
     pub(super) fn plan_search_corpus_pair_records_v1(
         &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
         records: &[SearchCorpusAuthorityFileV1],
         required_generation: Option<ManifestGeneration>,
         active: Option<&SearchCorpusGenerationV1>,
-    ) -> Result<crate::search_corpus_retention::SearchCorpusHistoryRetentionPlanV1, CoreError> {
+    ) -> Result<SearchCorpusHistoryRetentionPlanV1, CoreError> {
         if let Some(active) = active {
             let exact = records.iter().any(|record| {
                 record.record.generation == active.manifest_generation()
@@ -466,12 +439,15 @@ impl AuxiliaryAuthorityStore {
                 )));
             }
         }
+        let mut measure = |generations: &BTreeSet<ManifestGeneration>| {
+            self.index_bytes
+                .measure_index_bytes(repo_id, revision_id, generations)
+        };
         self.search_corpus_history_retention.plan(
             records
                 .iter()
                 .map(|record| SearchCorpusHistoryRetentionItemV1 {
-                    generation: record.record.generation.get(),
-                    encoded_len: record.encoded_len,
+                    generation: record.record.generation,
                     candidate: required_generation == Some(record.record.generation),
                     active: active.is_some_and(|active| {
                         active.manifest_generation() == record.record.generation
@@ -479,35 +455,47 @@ impl AuxiliaryAuthorityStore {
                     }),
                 })
                 .collect(),
+            &mut measure,
         )
     }
 
+    /// The index bytes every other pair in the root occupies: its records
+    /// are exactly its retained generations, measured as one set each.
+    fn other_pairs_index_bytes_v1(
+        &self,
+        root_without_pair: &SearchCorpusAuthorityRootSnapshotV1,
+    ) -> Result<u64, CoreError> {
+        let mut total = 0_u64;
+        for records in root_without_pair.pairs.values() {
+            let Some(first) = records.first() else {
+                continue;
+            };
+            let generations: BTreeSet<ManifestGeneration> = records
+                .iter()
+                .map(|record| record.record.generation)
+                .collect();
+            let bytes = self.index_bytes.measure_index_bytes(
+                &first.record.repo_id,
+                &first.record.revision_id,
+                &generations,
+            )?;
+            total = total.checked_add(bytes).ok_or_else(|| {
+                CoreError::Storage(
+                    "search-corpus history retention: state-root index byte total overflow"
+                        .to_string(),
+                )
+            })?;
+        }
+        Ok(total)
+    }
+
+    /// The state-root admission fence: the pairs and the index bytes the
+    /// root would hold once this pair's plan is applied.
     fn validate_search_corpus_state_root_projection_v1(
         &self,
         root_without_pair: &SearchCorpusAuthorityRootSnapshotV1,
-        pair_records: &[SearchCorpusAuthorityFileV1],
-        plan: &crate::search_corpus_retention::SearchCorpusHistoryRetentionPlanV1,
+        plan: &SearchCorpusHistoryRetentionPlanV1,
     ) -> Result<(), CoreError> {
-        let existing_pair_bytes = pair_records
-            .iter()
-            .filter(|record| record.path.exists())
-            .try_fold(0_u64, |total, record| {
-                total.checked_add(record.encoded_len).ok_or_else(|| {
-                    CoreError::Storage(
-                        "search-corpus history retention: pair byte total overflow".to_string(),
-                    )
-                })
-            })?;
-        let retained_pair_bytes = pair_records
-            .iter()
-            .filter(|record| plan.retains(record.record.generation.get()))
-            .try_fold(0_u64, |total, record| {
-                total.checked_add(record.encoded_len).ok_or_else(|| {
-                    CoreError::Storage(
-                        "search-corpus history retention: retained byte total overflow".to_string(),
-                    )
-                })
-            })?;
         let projected_pairs = root_without_pair
             .pair_directories
             .len()
@@ -517,10 +505,9 @@ impl AuxiliaryAuthorityStore {
                     "search-corpus history retention: revision-pair count overflow".to_string(),
                 )
             })?;
-        let projected_total_bytes = root_without_pair
-            .total_bytes
-            .checked_sub(existing_pair_bytes)
-            .and_then(|remaining| remaining.checked_add(retained_pair_bytes))
+        let projected_total_bytes = self
+            .other_pairs_index_bytes_v1(root_without_pair)?
+            .checked_add(plan.retained_bytes())
             .ok_or_else(|| {
                 CoreError::Storage(
                     "search-corpus history retention: projected state-root byte total overflow"
@@ -533,7 +520,7 @@ impl AuxiliaryAuthorityStore {
             return Err(CoreError::Typed {
                 code: ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED.to_string(),
                 message: format!(
-                    "search-corpus history retention: state-root admission requires revision_pairs={projected_pairs} total_bytes={projected_total_bytes}, limits are max_revision_pairs={} max_total_bytes={}; cross-pair deletion is unavailable without product-active pin authority",
+                    "search-corpus history retention: state-root admission requires revision_pairs={projected_pairs} index_total_bytes={projected_total_bytes}, limits are max_revision_pairs={} max_total_bytes={}; cross-pair deletion is unavailable without product-active pin authority",
                     self.search_corpus_history_retention.max_revision_pairs(),
                     self.search_corpus_history_retention.max_total_bytes(),
                 ),
@@ -548,7 +535,7 @@ impl AuxiliaryAuthorityStore {
         revision_id: &RevisionId,
         pair_dir: &Path,
         records: Vec<SearchCorpusAuthorityFileV1>,
-        plan: &crate::search_corpus_retention::SearchCorpusHistoryRetentionPlanV1,
+        plan: &SearchCorpusHistoryRetentionPlanV1,
     ) -> Result<EnforcedSearchCorpusHistoryRetentionV1, CoreError> {
         for record in &records {
             if &record.record.repo_id != repo_id || &record.record.revision_id != revision_id {
@@ -561,7 +548,7 @@ impl AuxiliaryAuthorityStore {
 
         let (retained, reaped): (Vec<_>, Vec<_>) = records
             .into_iter()
-            .partition(|record| plan.retains(record.record.generation.get()));
+            .partition(|record| plan.retains(record.record.generation));
         let retained_generations = retained
             .iter()
             .map(|record| record.record.generation)
@@ -593,6 +580,7 @@ impl AuxiliaryAuthorityStore {
                 revision_id: revision_id.clone(),
                 retained_generations,
                 reaped_generations,
+                retained_index_bytes: plan.retained_bytes(),
                 store_reconciled_v1: true,
             },
         })
@@ -653,27 +641,27 @@ impl AuxiliaryAuthorityStore {
             let active = active_corpora.iter().find(|active| {
                 active.repo_id() == &repo_id && active.revision_id() == &revision_id
             });
-            let plan = self.plan_search_corpus_pair_records_v1(&observed, None, active)?;
-            for record in observed
-                .iter()
-                .filter(|record| plan.retains(record.record.generation.get()))
-            {
-                projected_total_bytes = projected_total_bytes
-                    .checked_add(record.encoded_len)
-                    .ok_or_else(|| {
-                        CoreError::Storage(
-                            "search-corpus history retention: restore byte total overflow"
-                                .to_string(),
-                        )
-                    })?;
-            }
+            let plan = self.plan_search_corpus_pair_records_v1(
+                &repo_id,
+                &revision_id,
+                &observed,
+                None,
+                active,
+            )?;
+            projected_total_bytes = projected_total_bytes
+                .checked_add(plan.retained_bytes())
+                .ok_or_else(|| {
+                    CoreError::Storage(
+                        "search-corpus history retention: restore byte total overflow".to_string(),
+                    )
+                })?;
             planned.push((pair_path, observed, repo_id, revision_id, plan));
         }
         if projected_total_bytes > self.search_corpus_history_retention.max_total_bytes() {
             return Err(CoreError::Typed {
                 code: ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED.to_string(),
                 message: format!(
-                    "search-corpus history retention: restore requires total_bytes={projected_total_bytes}, exceeding max_total_bytes={}; cross-pair deletion is unavailable without product-active pin authority",
+                    "search-corpus history retention: restore requires index_total_bytes={projected_total_bytes}, exceeding max_total_bytes={}; cross-pair deletion is unavailable without product-active pin authority",
                     self.search_corpus_history_retention.max_total_bytes(),
                 ),
             });
@@ -759,14 +747,12 @@ pub(super) struct SearchCorpusAuthorityRecordV1 {
 pub(super) struct SearchCorpusAuthorityFileV1 {
     path: PathBuf,
     record: SearchCorpusAuthorityRecordV1,
-    encoded_len: u64,
 }
 
 #[derive(Debug, Default)]
 pub(super) struct SearchCorpusAuthorityRootSnapshotV1 {
     pub(super) pair_directories: BTreeSet<PathBuf>,
     pub(super) pairs: BTreeMap<PathBuf, Vec<SearchCorpusAuthorityFileV1>>,
-    total_bytes: u64,
 }
 
 #[derive(Debug)]

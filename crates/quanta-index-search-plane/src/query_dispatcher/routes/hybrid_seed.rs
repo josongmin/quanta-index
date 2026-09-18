@@ -55,6 +55,7 @@ impl SearchPlaneDispatcher {
                 &pin,
             )
             .with_semantic_manifest_digest(selection.expected_manifest_digest.as_deref()),
+            budget,
         )?;
         let manifest_digest = view.semantic_manifest_digest()?.to_string();
         let lex_searcher = view.lexical()?;

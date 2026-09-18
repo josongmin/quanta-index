@@ -1,6 +1,11 @@
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+/// The one error every port speaks.
+///
+/// `Clone` is deliberate: a failure observed once can be owed to several
+/// callers (a single-flight open shared by coalesced waiters), and each
+/// must receive the typed outcome itself, not a rendering of it.
+#[derive(Clone, Debug, Error)]
 pub enum CoreError {
     #[error("invalid contract: {0}")]
     InvalidContract(String),

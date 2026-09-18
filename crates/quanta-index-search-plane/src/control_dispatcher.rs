@@ -4,7 +4,7 @@
 //! headless CLIs can remain view-only while admin or producer surfaces bind to
 //! a separate control plane.
 
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use quanta_index_contract::{
     CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
@@ -14,15 +14,13 @@ use quanta_index_contract::{
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneSearchCorpusActivationCasAck,
     SearchPlaneSearchCorpusRollbackCasAck, TrackReadinessRecord,
 };
-use quanta_index_core::{
-    CoreError, GenerationIdentityValidatePort, RepoMapGenerationActivatePort, RequestBudgetV1,
-};
+use quanta_index_core::{CoreError, RepoMapGenerationActivatePort, RequestBudgetV1};
 
 use crate::observability::ObservabilityScrape;
 use crate::quarantine::QuarantineService;
-use crate::search_corpus_lifecycle::SearchCorpusLifecycleService;
+use crate::search_corpus_lifecycle::{SearchCorpusLifecycleParts, SearchCorpusLifecycleService};
 use crate::{
-    ActivationCatalog, Ledger, PreparedSearchCorpusGenerationV1, SearchCorpusGenerationActivationV1,
+    ActivationCatalog, PreparedSearchCorpusGenerationV1, SearchCorpusGenerationActivationV1,
 };
 
 const ERR_INVALID: &str = "INVALID_REQUEST";
@@ -49,24 +47,25 @@ pub struct SearchPlaneControlDispatcher {
     quarantine: QuarantineService,
 }
 
+/// The ports one [`SearchPlaneControlDispatcher`] is composed from.
+pub struct SearchPlaneControlDispatcherParts {
+    pub repo_map_activate: Arc<dyn RepoMapGenerationActivatePort + Send + Sync>,
+    pub lifecycle: SearchCorpusLifecycleParts,
+    pub observability: Arc<ObservabilityScrape>,
+    pub quarantine: QuarantineService,
+}
+
 impl SearchPlaneControlDispatcher {
     #[must_use]
-    pub fn new(
-        repo_map_activate: Arc<dyn RepoMapGenerationActivatePort + Send + Sync>,
-        activation_catalog: Arc<ActivationCatalog>,
-        ledger: Arc<RwLock<Ledger>>,
-        lexical_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
-        semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
-        observability: Arc<ObservabilityScrape>,
-        quarantine: QuarantineService,
-    ) -> Self {
-        let search_corpus_lifecycle = SearchCorpusLifecycleService::new(
-            activation_catalog.lifecycle_coordinator(),
-            Arc::clone(&activation_catalog),
-            ledger,
-            lexical_generation_validator,
-            semantic_generation_validator,
-        );
+    pub fn new(parts: SearchPlaneControlDispatcherParts) -> Self {
+        let SearchPlaneControlDispatcherParts {
+            repo_map_activate,
+            lifecycle,
+            observability,
+            quarantine,
+        } = parts;
+        let activation_catalog = Arc::clone(&lifecycle.activation_catalog);
+        let search_corpus_lifecycle = SearchCorpusLifecycleService::new(lifecycle);
         Self {
             repo_map_activate,
             activation_catalog,
@@ -299,7 +298,7 @@ mod tests {
         clippy::panic_in_result_fn,
         reason = "Result-returning control tests use assertions as test-failure reporting"
     )]
-    use std::sync::{Arc, RwLock};
+    use std::sync::{Arc, Mutex, RwLock};
 
     use super::SearchPlaneControlDispatcher;
     use quanta_index_contract::{
@@ -312,17 +311,28 @@ mod tests {
         SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneTrackKind,
     };
     use quanta_index_core::{
-        CoreError, GenerationIdentityValidatePort, GenerationQuarantineReasonV1, MetricPointV1,
-        MetricSourcePort, QUARANTINE_TARGET_NOT_QUARANTINED_CODE, RepoMapGenerationActivatePort,
-        RequestBudgetV1,
+        CoreError, GenerationQuarantineReasonV1, MetricPointV1, MetricSourcePort,
+        QUARANTINE_TARGET_NOT_QUARANTINED_CODE, RepoMapGenerationActivatePort, RequestBudgetV1,
     };
     use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
     use tempfile::tempdir;
 
+    use quanta_index_core::{
+        LexicalIndexOpenPort, LexicalSearcher, SemanticIndexOpenPort, SemanticSearcher,
+    };
+
+    use crate::ingest_dispatcher::SearchCorpusAuthorityInspectPort;
     use crate::observability::{BoundedQueryObsStore, ObservabilityScrape, QueryObsSink};
     use crate::quarantine::QuarantineService;
+    use crate::query_dispatcher::tests::support::lexical::StubLexicalSearcher;
+    use crate::query_dispatcher::tests::support::semantic::{
+        RecordingSemanticOpener, RecordingSemanticState,
+    };
+    use crate::search_corpus_lifecycle::{ActivationPromotionParts, SearchCorpusLifecycleParts};
     use crate::{
-        ActivationCatalog, Ledger, PreparedSearchCorpusGenerationV1, SearchCorpusGenerationV1,
+        ActivationCatalog, Ledger, PreparedSearchCorpusGenerationV1,
+        SealedSearchCorpusAuthorityStateV1, SearchCorpusGenerationV1,
+        SearchPlaneControlDispatcherParts, SnapshotRegistries, SnapshotRegistryPolicy,
     };
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -366,26 +376,144 @@ mod tests {
 
     struct StubRepoMapActivatePort;
 
-    struct AlwaysValidGeneration;
+    /// Openers whose generations are sealed under `manifest-digest-<generation>`.
+    ///
+    /// That is the convention every identity in these tests follows.
+    /// `open_proven` refuses a candidate naming any other digest, as the
+    /// adapters' proof does.
+    struct EchoLexicalOpener;
 
-    impl GenerationIdentityValidatePort for AlwaysValidGeneration {
-        fn validate_generation_identity(
+    fn prove_echo_digest(candidate: &GenerationSnapshot) -> Result<(), CoreError> {
+        let sealed = format!("manifest-digest-{}", candidate.manifest_generation.get());
+        if candidate.manifest_digest == sealed {
+            return Ok(());
+        }
+        Err(CoreError::Typed {
+            code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
+            message: format!(
+                "{:?}: sealed under {sealed}, candidate names {}",
+                candidate.track, candidate.manifest_digest
+            ),
+        })
+    }
+
+    impl LexicalIndexOpenPort for EchoLexicalOpener {
+        fn open(
             &self,
-            _candidate: &GenerationSnapshot,
-        ) -> Result<(), CoreError> {
-            Ok(())
+            _repo: &RepoId,
+            _revision: &RevisionId,
+            generation: ManifestGeneration,
+        ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
+            Ok(Box::new(StubLexicalSearcher {
+                results: Vec::new(),
+                manifest_digest: Some(format!("manifest-digest-{}", generation.get())),
+            }))
+        }
+
+        fn open_proven(
+            &self,
+            candidate: &GenerationSnapshot,
+        ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
+            prove_echo_digest(candidate)?;
+            self.open(
+                &candidate.repo_id,
+                &candidate.revision_id,
+                candidate.manifest_generation,
+            )
         }
     }
 
-    fn always_valid_generation() -> Arc<dyn GenerationIdentityValidatePort + Send + Sync> {
-        Arc::new(AlwaysValidGeneration)
+    struct EchoSemanticOpener;
+
+    impl SemanticIndexOpenPort for EchoSemanticOpener {
+        fn open(
+            &self,
+            repo: &RepoId,
+            revision: &RevisionId,
+            generation: ManifestGeneration,
+        ) -> Result<Box<dyn SemanticSearcher>, CoreError> {
+            let state = Arc::new(Mutex::new(RecordingSemanticState {
+                manifest_digest: Some(format!("manifest-digest-{}", generation.get())),
+                ..RecordingSemanticState::default()
+            }));
+            RecordingSemanticOpener { state }.open(repo, revision, generation)
+        }
+
+        fn open_proven(
+            &self,
+            candidate: &GenerationSnapshot,
+        ) -> Result<Box<dyn SemanticSearcher>, CoreError> {
+            prove_echo_digest(candidate)?;
+            self.open(
+                &candidate.repo_id,
+                &candidate.revision_id,
+                candidate.manifest_generation,
+            )
+        }
+    }
+
+    /// A durable history whose answer is scripted.
+    struct ScriptedAuthority(SealedSearchCorpusAuthorityStateV1);
+
+    impl SearchCorpusAuthorityInspectPort for ScriptedAuthority {
+        fn inspect_sealed_search_corpus(
+            &self,
+            _repo_id: &RepoId,
+            _revision_id: &RevisionId,
+            _generation: ManifestGeneration,
+            _manifest_digest: &str,
+        ) -> Result<SealedSearchCorpusAuthorityStateV1, CoreError> {
+            Ok(self.0)
+        }
+    }
+
+    fn exact_authority() -> Arc<dyn SearchCorpusAuthorityInspectPort + Send + Sync> {
+        Arc::new(ScriptedAuthority(SealedSearchCorpusAuthorityStateV1::Exact))
+    }
+
+    /// The parts of a dispatcher over `activation_catalog` and `ledger`,
+    /// with echo openers, a durable history that records everything, and
+    /// fresh registries (handed back so a test can read them).
+    fn control_parts(
+        activation_catalog: Arc<ActivationCatalog>,
+        ledger: Arc<RwLock<Ledger>>,
+    ) -> (SearchPlaneControlDispatcherParts, SnapshotRegistries) {
+        let snapshots = SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT);
+        let parts = SearchPlaneControlDispatcherParts {
+            repo_map_activate: Arc::new(StubRepoMapActivatePort),
+            lifecycle: SearchCorpusLifecycleParts {
+                activation_catalog,
+                ledger,
+                authority: exact_authority(),
+                promotion: ActivationPromotionParts {
+                    lexical_open: Arc::new(EchoLexicalOpener),
+                    semantic_open: Arc::new(EchoSemanticOpener),
+                    snapshots: snapshots.clone(),
+                },
+            },
+            observability: empty_scrape(),
+            quarantine: empty_quarantine(),
+        };
+        (parts, snapshots)
+    }
+
+    fn control_dispatcher(
+        activation_catalog: Arc<ActivationCatalog>,
+        ledger: Arc<RwLock<Ledger>>,
+    ) -> SearchPlaneControlDispatcher {
+        SearchPlaneControlDispatcher::new(control_parts(activation_catalog, ledger).0)
     }
 
     /// A quarantine service whose adapters quarantine nothing.
     fn empty_quarantine() -> QuarantineService {
-        let (service, _lexical_discard) =
-            crate::quarantine::tests::service(Vec::new(), Vec::new(), Vec::new());
-        service
+        crate::quarantine::tests::service(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Arc::new(RwLock::new(Ledger::new())),
+        )
+        .service
     }
 
     fn empty_scrape() -> Arc<ObservabilityScrape> {
@@ -413,15 +541,10 @@ mod tests {
     ) -> TestResult<SearchPlaneControlDispatcher> {
         let dir = tempdir()?;
         let activation_catalog = Arc::new(ActivationCatalog::open(dir.path())?);
-        Ok(SearchPlaneControlDispatcher::new(
-            Arc::new(StubRepoMapActivatePort),
-            activation_catalog,
-            Arc::new(RwLock::new(Ledger::new())),
-            always_valid_generation(),
-            always_valid_generation(),
-            Arc::new(ObservabilityScrape::new(store, sources)),
-            empty_quarantine(),
-        ))
+        let (mut parts, _snapshots) =
+            control_parts(activation_catalog, Arc::new(RwLock::new(Ledger::new())));
+        parts.observability = Arc::new(ObservabilityScrape::new(store, sources));
+        Ok(SearchPlaneControlDispatcher::new(parts))
     }
 
     fn scrape_via_control(
@@ -677,15 +800,7 @@ mod tests {
                 "manifest-digest-11",
             );
         }
-        let dispatcher = SearchPlaneControlDispatcher::new(
-            Arc::new(StubRepoMapActivatePort),
-            activation_catalog.clone(),
-            ledger,
-            always_valid_generation(),
-            always_valid_generation(),
-            empty_scrape(),
-            empty_quarantine(),
-        );
+        let dispatcher = control_dispatcher(activation_catalog.clone(), ledger);
 
         let activate = into_repo_map_mutation_ack(dispatcher.dispatch(
             SearchPlaneControlIpcRequest::RepoMapActivate(RepoMapActivateGenerationRequest {
@@ -767,14 +882,9 @@ mod tests {
     fn composite_ipc_rejects_malformed_identity_before_catalog_mutation() -> TestResult {
         let dir = tempdir()?;
         let activation_catalog = Arc::new(ActivationCatalog::open(dir.path())?);
-        let dispatcher = SearchPlaneControlDispatcher::new(
-            Arc::new(StubRepoMapActivatePort),
+        let dispatcher = control_dispatcher(
             Arc::clone(&activation_catalog),
             Arc::new(RwLock::new(Ledger::new())),
-            always_valid_generation(),
-            always_valid_generation(),
-            empty_scrape(),
-            empty_quarantine(),
         );
         let code = into_error_code(dispatcher.dispatch(
             SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
@@ -861,15 +971,7 @@ mod tests {
         if activation.active.manifest_generation() != ManifestGeneration::new(11) {
             return Err("expected initial composite activation at generation 11".into());
         }
-        let dispatcher = SearchPlaneControlDispatcher::new(
-            Arc::new(StubRepoMapActivatePort),
-            Arc::clone(&activation_catalog),
-            ledger,
-            always_valid_generation(),
-            always_valid_generation(),
-            empty_scrape(),
-            empty_quarantine(),
-        );
+        let dispatcher = control_dispatcher(Arc::clone(&activation_catalog), ledger);
 
         let response = dispatcher.dispatch(
             SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(
@@ -992,6 +1094,309 @@ mod tests {
         Ok(())
     }
 
+    /// A ledger with `generations` of the fixture pair sealed on both
+    /// tracks and recorded in the durable history, under
+    /// `manifest-digest-<generation>`.
+    fn sealed_ledger(generations: &[u64]) -> Arc<RwLock<Ledger>> {
+        let mut ledger = Ledger::new();
+        let repo_id = RepoId::new("repo-map-ipc");
+        let revision_id = RevisionId::new("rev-map-ipc");
+        for generation in generations {
+            let digest = format!("manifest-digest-{generation}");
+            for track in [
+                SearchPlaneTrackKind::Lexical,
+                SearchPlaneTrackKind::Semantic,
+            ] {
+                ledger.record_track_materialized(
+                    &repo_id,
+                    &revision_id,
+                    track,
+                    ManifestGeneration::new(*generation),
+                    Some(&digest),
+                );
+                ledger.record_track_seal_with_digest(
+                    &repo_id,
+                    &revision_id,
+                    track,
+                    ManifestGeneration::new(*generation),
+                    &digest,
+                );
+            }
+            ledger.record_historically_sealed_search_corpus(
+                &repo_id,
+                &revision_id,
+                ManifestGeneration::new(*generation),
+                &digest,
+            );
+        }
+        Arc::new(RwLock::new(ledger))
+    }
+
+    fn activate_request(generation: u64) -> SearchPlaneControlIpcRequest {
+        SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
+            SearchPlaneActivateSearchCorpusGenerationCasRequest {
+                candidate: composite_identity(
+                    "repo-map-ipc",
+                    "rev-map-ipc",
+                    generation,
+                    &format!("manifest-digest-{generation}"),
+                )
+                .expect("fixture identity is well formed"),
+                expected_active: None,
+            },
+        )
+    }
+
+    fn fixture_key(generation: u64) -> crate::SnapshotKey {
+        crate::SnapshotKey::new(
+            &RepoId::new("repo-map-ipc"),
+            &RevisionId::new("rev-map-ipc"),
+            ManifestGeneration::new(generation),
+        )
+    }
+
+    /// Openers that need the ledger's write lock while they prove.
+    ///
+    /// The way an ingest of another repo, or a retention receipt, does.
+    /// They succeed only if activation runs the physical proof outside its
+    /// ledger read guard (QI-BB-020 보완 #2).
+    ///
+    /// They count their proofs, so a test can hold activation to one proof
+    /// per track: the proof is the open whose handle is promoted.
+    struct LedgerWritingOpener<O> {
+        ledger: Arc<RwLock<Ledger>>,
+        inner: O,
+        proofs: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl<O> LedgerWritingOpener<O> {
+        fn prove_outside_the_guard(&self, candidate: &GenerationSnapshot) -> Result<(), CoreError> {
+            let _previous = self
+                .proofs
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            match self.ledger.try_write() {
+                Ok(_guard) => Ok(()),
+                Err(std::sync::TryLockError::WouldBlock) => Err(CoreError::Storage(format!(
+                    "the physical proof of {:?} ran under the ledger read guard; every other repo's ingest would stall behind this open",
+                    candidate.track
+                ))),
+                Err(std::sync::TryLockError::Poisoned(err)) => {
+                    Err(CoreError::Storage(format!("ledger poisoned: {err}")))
+                }
+            }
+        }
+    }
+
+    impl LexicalIndexOpenPort for LedgerWritingOpener<EchoLexicalOpener> {
+        fn open(
+            &self,
+            repo: &RepoId,
+            revision: &RevisionId,
+            generation: ManifestGeneration,
+        ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
+            self.inner.open(repo, revision, generation)
+        }
+
+        fn open_proven(
+            &self,
+            candidate: &GenerationSnapshot,
+        ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
+            self.prove_outside_the_guard(candidate)?;
+            self.inner.open_proven(candidate)
+        }
+    }
+
+    impl SemanticIndexOpenPort for LedgerWritingOpener<EchoSemanticOpener> {
+        fn open(
+            &self,
+            repo: &RepoId,
+            revision: &RevisionId,
+            generation: ManifestGeneration,
+        ) -> Result<Box<dyn SemanticSearcher>, CoreError> {
+            self.inner.open(repo, revision, generation)
+        }
+
+        fn open_proven(
+            &self,
+            candidate: &GenerationSnapshot,
+        ) -> Result<Box<dyn SemanticSearcher>, CoreError> {
+            self.prove_outside_the_guard(candidate)?;
+            self.inner.open_proven(candidate)
+        }
+    }
+
+    /// Activation proves the pair once, outside the ledger guard.
+    ///
+    /// It promotes the handles the proof opened: the first acquire of the
+    /// activated generation on either track is a registry hit, with no
+    /// opener run.
+    #[test]
+    fn activation_proves_outside_the_ledger_guard_and_promotes_the_handles() -> TestResult {
+        let dir = tempdir()?;
+        let activation_catalog = Arc::new(ActivationCatalog::open(dir.path())?);
+        let ledger = sealed_ledger(&[11]);
+        let (mut parts, snapshots) = control_parts(activation_catalog, Arc::clone(&ledger));
+        let lexical_proofs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let semantic_proofs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        parts.lifecycle.promotion.lexical_open = Arc::new(LedgerWritingOpener {
+            ledger: Arc::clone(&ledger),
+            inner: EchoLexicalOpener,
+            proofs: Arc::clone(&lexical_proofs),
+        });
+        parts.lifecycle.promotion.semantic_open = Arc::new(LedgerWritingOpener {
+            ledger: Arc::clone(&ledger),
+            inner: EchoSemanticOpener,
+            proofs: Arc::clone(&semantic_proofs),
+        });
+        let dispatcher = SearchPlaneControlDispatcher::new(parts);
+
+        let SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(ack) =
+            dispatcher.dispatch(activate_request(11), &RequestBudgetV1::unbounded())
+        else {
+            return Err("activation must succeed with the proof outside the guard".into());
+        };
+        assert_eq!(
+            ack.active.lexical.manifest_generation,
+            ManifestGeneration::new(11)
+        );
+
+        let key = fixture_key(11);
+        let lexical = snapshots
+            .lexical
+            .acquire(&key, &RequestBudgetV1::unbounded(), || {
+                Err(CoreError::Storage(
+                    "the lexical handle must already be resident".into(),
+                ))
+            })?;
+        assert_eq!(
+            lexical.handle.artifact_identity().manifest_digest,
+            "manifest-digest-11"
+        );
+        let semantic = snapshots
+            .semantic
+            .acquire(&key, &RequestBudgetV1::unbounded(), || {
+                Err(CoreError::Storage(
+                    "the semantic handle must already be resident".into(),
+                ))
+            })?;
+        assert_eq!(semantic.handle.manifest_digest(), "manifest-digest-11");
+        for registry_stats in [snapshots.lexical.stats()?, snapshots.semantic.stats()?] {
+            assert_eq!(registry_stats.promotions, 1, "{registry_stats:?}");
+            assert_eq!(registry_stats.misses, 0, "{registry_stats:?}");
+            assert_eq!(registry_stats.hits, 1, "{registry_stats:?}");
+        }
+        // One proof per track, and it is the open that produced the
+        // promoted handle: nothing proves the generation a second time.
+        assert_eq!(lexical_proofs.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(semantic_proofs.load(std::sync::atomic::Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    /// A candidate the durable history no longer records when the CAS is
+    /// about to commit — reaped by a concurrent seal after the in-memory
+    /// preconditions passed — is refused typed and activates nothing.
+    #[test]
+    fn activation_refuses_a_candidate_the_durable_history_reaped_before_the_cas() -> TestResult {
+        let dir = tempdir()?;
+        let activation_catalog = Arc::new(ActivationCatalog::open(dir.path())?);
+        let (mut parts, _snapshots) =
+            control_parts(Arc::clone(&activation_catalog), sealed_ledger(&[11]));
+        parts.lifecycle.authority = Arc::new(ScriptedAuthority(
+            SealedSearchCorpusAuthorityStateV1::Absent,
+        ));
+        let dispatcher = SearchPlaneControlDispatcher::new(parts);
+
+        let code = into_error_code(
+            dispatcher.dispatch(activate_request(11), &RequestBudgetV1::unbounded()),
+        )?;
+        assert_eq!(
+            code,
+            crate::readiness::ERR_SEARCH_TRACK_GENERATION_NOT_SEALED
+        );
+        assert!(
+            activation_catalog
+                .resolve_record(
+                    &RepoId::new("repo-map-ipc"),
+                    &RevisionId::new("rev-map-ipc"),
+                    SearchPlaneTrackKind::Lexical,
+                )
+                .is_err(),
+            "nothing was activated"
+        );
+        Ok(())
+    }
+
+    /// A track whose generation on disk is sealed under another digest
+    /// fails the proof: the activation is refused typed, nothing is
+    /// promoted on either track, and nothing is activated.
+    #[test]
+    fn activation_refuses_a_pair_whose_proof_names_another_digest() -> TestResult {
+        struct ForeignDigestOpener;
+
+        impl LexicalIndexOpenPort for ForeignDigestOpener {
+            fn open(
+                &self,
+                _repo: &RepoId,
+                _revision: &RevisionId,
+                _generation: ManifestGeneration,
+            ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
+                Ok(Box::new(StubLexicalSearcher {
+                    results: Vec::new(),
+                    manifest_digest: Some("manifest-digest-foreign".to_string()),
+                }))
+            }
+
+            fn open_proven(
+                &self,
+                candidate: &GenerationSnapshot,
+            ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
+                Err(CoreError::Typed {
+                    code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
+                    message: format!(
+                        "sealed under manifest-digest-foreign, candidate names {}",
+                        candidate.manifest_digest
+                    ),
+                })
+            }
+        }
+
+        let dir = tempdir()?;
+        let activation_catalog = Arc::new(ActivationCatalog::open(dir.path())?);
+        let (mut parts, snapshots) =
+            control_parts(Arc::clone(&activation_catalog), sealed_ledger(&[11]));
+        parts.lifecycle.promotion.lexical_open = Arc::new(ForeignDigestOpener);
+        let dispatcher = SearchPlaneControlDispatcher::new(parts);
+
+        let code = into_error_code(
+            dispatcher.dispatch(activate_request(11), &RequestBudgetV1::unbounded()),
+        )?;
+        assert_eq!(
+            code,
+            crate::search_corpus_lifecycle::ERR_ACTIVATION_TARGET_UNOPENABLE
+        );
+        assert_eq!(
+            snapshots.lexical.stats()?.entries,
+            0,
+            "nothing was promoted"
+        );
+        assert_eq!(
+            snapshots.semantic.stats()?.entries,
+            0,
+            "nothing was promoted"
+        );
+        assert!(
+            activation_catalog
+                .resolve_record(
+                    &RepoId::new("repo-map-ipc"),
+                    &RevisionId::new("rev-map-ipc"),
+                    SearchPlaneTrackKind::Lexical,
+                )
+                .is_err(),
+            "nothing was activated"
+        );
+        Ok(())
+    }
+
     /// The quarantine routes (QI-BB-026) answer with the listing, the ack
     /// and the typed refusal.
     ///
@@ -1007,17 +1412,19 @@ mod tests {
             SearchPlaneTrackKind::Lexical,
             "/state/indexes/lexical/repo/rev/g3",
         );
-        let (quarantine, lexical_discard) =
-            crate::quarantine::tests::service(vec![listed.clone()], Vec::new(), Vec::new());
-        let dispatcher = SearchPlaneControlDispatcher::new(
-            Arc::new(StubRepoMapActivatePort),
-            activation_catalog,
+        let doubles = crate::quarantine::tests::service(
+            vec![listed.clone()],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
             Arc::new(RwLock::new(Ledger::new())),
-            always_valid_generation(),
-            always_valid_generation(),
-            empty_scrape(),
-            quarantine,
         );
+        let quarantine = doubles.service;
+        let lexical_discard = doubles.lexical_discard;
+        let (mut parts, _snapshots) =
+            control_parts(activation_catalog, Arc::new(RwLock::new(Ledger::new())));
+        parts.quarantine = quarantine;
+        let dispatcher = SearchPlaneControlDispatcher::new(parts);
 
         let SearchPlaneControlIpcResponse::QuarantineInventory(inventory) = dispatcher.dispatch(
             SearchPlaneControlIpcRequest::QuarantineInventory(QuarantineInventoryRequest),

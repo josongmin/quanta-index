@@ -135,6 +135,18 @@ pub(crate) fn ledger_with_rev_at_time_history()
             SearchPlaneTrackKind::Lexical,
             ManifestGeneration::new(7),
         );
+        guard.record_historically_sealed_search_corpus(
+            &repo_id,
+            &base_revision_id,
+            ManifestGeneration::new(9),
+            "manifest-digest-9",
+        );
+        guard.record_historically_sealed_search_corpus(
+            &repo_id,
+            &ancestor_revision_id,
+            ManifestGeneration::new(7),
+            "manifest-digest-7",
+        );
         guard.apply_history_batch(
             &quanta_index_contract::HistoryIngestBatch {
                 repo_id,

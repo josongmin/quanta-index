@@ -18,12 +18,15 @@ impl SearchPlaneDispatcher {
         request
             .validate_v1()
             .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
-        let view = self.acquire_read_view(&ReadViewRequestV1::declare(
-            "cluster membership read",
-            QueryRouteV1::ClusterMembershipRead,
-            None,
-            &request.generation,
-        ))?;
+        let view = self.acquire_read_view(
+            &ReadViewRequestV1::declare(
+                "cluster membership read",
+                QueryRouteV1::ClusterMembershipRead,
+                None,
+                &request.generation,
+            ),
+            budget,
+        )?;
         let searcher = view.semantic()?;
         budget.checkpoint("cluster-membership:read")?;
         let outcome = searcher.cluster_membership_batch_read(request)?;

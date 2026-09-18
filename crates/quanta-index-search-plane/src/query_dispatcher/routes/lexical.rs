@@ -30,7 +30,7 @@ impl SearchPlaneDispatcher {
     ) -> Result<TextQueryResponse, CoreError> {
         budget.checkpoint("lexical:entry")?;
         let _accepted_top_k = validate_query_top_k(request.top_k)?;
-        let planned = self.plan_lexical_text_query(request, QueryRouteV1::Lexical)?;
+        let planned = self.plan_lexical_text_query(request, QueryRouteV1::Lexical, budget)?;
         let wants_file_owner_projection = query_selects_file_owner_projection(&planned.query);
         if planned.force_empty {
             return Ok(TextQueryResponse {
@@ -40,11 +40,10 @@ impl SearchPlaneDispatcher {
                 file_owner_rows: wants_file_owner_projection.then(Vec::new),
             });
         }
-        let view = self.acquire_read_view(&ReadViewRequestV1::new(
-            "lexical",
-            &planned.pin,
-            planned.domains,
-        ))?;
+        let view = self.acquire_read_view(
+            &ReadViewRequestV1::new("lexical", &planned.pin, planned.domains),
+            budget,
+        )?;
         let searcher = view.lexical()?;
         let fetch_top_k = lexical_fetch_limit_v1(&planned.query, request.top_k)?;
         budget.checkpoint("lexical:search")?;
@@ -109,12 +108,15 @@ impl SearchPlaneDispatcher {
                 window: QueryResultWindowV1::exact(0),
             });
         }
-        let view = self.acquire_read_view(&ReadViewRequestV1::declare(
-            "symbol",
-            QueryRouteV1::Symbol,
-            Some(&prepared_language.query),
-            &pin,
-        ))?;
+        let view = self.acquire_read_view(
+            &ReadViewRequestV1::declare(
+                "symbol",
+                QueryRouteV1::Symbol,
+                Some(&prepared_language.query),
+                &pin,
+            ),
+            budget,
+        )?;
         let searcher = view.lexical()?;
         // The symbol port has no count collector yet, so a `count` option
         // still yields a probe-derived (at-least) window here.

@@ -14,17 +14,23 @@
 //!
 //! The immutability half is the same trick kept: an auxiliary batch that
 //! names a sealed generation is refused typed (QI-BB-030), so nothing was
-//! mutated and the next query must still be served from the resident
-//! handle after the files are deleted.
+//! mutated and the next lexical *and* semantic query must still be served
+//! from the resident handles after the files are deleted — ingest never
+//! drops residency; only GC retirement does.
 //!
-//! Single-flight coalescing is proven in the registry's unit tests; the
-//! daemon's UDS front door is still serial (QI-BB-002), so a concurrent
-//! front-door probe would prove nothing about the registry.
+//! Activation and restart promote the handles they proved (QI-BB-017 #4):
+//! with the on-disk state deleted right after either, the *first* query
+//! still serves and the registry's miss counter has not moved.
+//!
+//! Single-flight coalescing, fenced retirement and budgeted waits are
+//! proven in the registry's unit tests with barrier-controlled openers.
 
 #![forbid(unsafe_code)]
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
+
+use std::collections::BTreeMap;
 
 use quanta_index_contract::{
     ManifestGeneration, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RevisionId,
@@ -169,6 +175,10 @@ fn an_auxiliary_publish_into_a_sealed_generation_is_refused_and_keeps_residency(
     if first.len() != 2 {
         return Err(format!("fixture served {} rows, expected 2", first.len()).into());
     }
+    let first_semantic = ids(&rt.query_semantic(QUERY, TOP_K, None))?;
+    if first_semantic.is_empty() {
+        return Err("fixture served no semantic rows".into());
+    }
     let generation = pinned_generation(&rt);
     let response = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(
         RepoMetaIngestBatch {
@@ -223,5 +233,104 @@ fn an_auxiliary_publish_into_a_sealed_generation_is_refused_and_keeps_residency(
         )
         .into());
     }
+
+    // The semantic handle was never dropped either: with its open proofs
+    // gone, only the resident handle can still answer.
+    remove_semantic_open_proofs(&semantic_generation_dir(&rt)?)?;
+    let after_semantic = ids(&rt.query_semantic(QUERY, TOP_K, None))?;
+    if after_semantic != first_semantic {
+        return Err(format!(
+            "the semantic handle was dropped by a refused publish: first={first_semantic:?} after={after_semantic:?}"
+        )
+        .into());
+    }
     Ok(())
+}
+
+/// The registry counters of the scrape, by name.
+fn registry_counters(rt: &mut E2eRuntime) -> Result<BTreeMap<String, u64>, Box<dyn Error>> {
+    Ok(rt
+        .metrics_snapshot()?
+        .counters
+        .iter()
+        .filter(|counter| counter.name.starts_with("snapshot_registry_"))
+        .map(|counter| (counter.name.clone(), counter.value))
+        .collect())
+}
+
+fn counter(counters: &BTreeMap<String, u64>, name: &str) -> Result<u64, Box<dyn Error>> {
+    counters
+        .get(name)
+        .copied()
+        .ok_or_else(|| format!("counter `{name}` is in the scrape: {counters:?}").into())
+}
+
+/// The first query on each track is served from a promoted handle.
+///
+/// Deletes everything a cold open of the pinned generation would read on
+/// both tracks, then proves the first query of each is served without one:
+/// it answers, and the registries report no miss and one promotion.
+fn assert_first_queries_are_promoted_hits(rt: &mut E2eRuntime) -> TestResult {
+    let before = registry_counters(rt)?;
+    std::fs::remove_dir_all(lexical_generation_dir(rt)?)?;
+    remove_semantic_open_proofs(&semantic_generation_dir(rt)?)?;
+
+    let text = ids(&rt.query_text(TextQuerySyntax::Native, QUERY, TOP_K))?;
+    if text.len() != 2 {
+        return Err(format!(
+            "the promoted lexical handle served {} rows, expected 2",
+            text.len()
+        )
+        .into());
+    }
+    let semantic = ids(&rt.query_semantic(QUERY, TOP_K, None))?;
+    if semantic.is_empty() {
+        return Err("the promoted semantic handle served no rows".into());
+    }
+    let after = registry_counters(rt)?;
+    for track in ["lexical", "semantic"] {
+        let misses = format!("snapshot_registry_{track}_misses_total");
+        if counter(&after, &misses)? != counter(&before, &misses)? {
+            return Err(format!(
+                "{track}: the first query ran a cold open: {before:?} -> {after:?}"
+            )
+            .into());
+        }
+        if counter(
+            &after,
+            &format!("snapshot_registry_{track}_promotions_total"),
+        )? != 1
+        {
+            return Err(format!("{track}: exactly one promotion is expected: {after:?}").into());
+        }
+        let hits = format!("snapshot_registry_{track}_hits_total");
+        if counter(&after, &hits)? != counter(&before, &hits)?.saturating_add(1) {
+            return Err(
+                format!("{track}: the first query is one hit: {before:?} -> {after:?}").into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The first query after activation is served from the handle activation
+/// proved: the generation's files are gone before the query and the
+/// registry reports a hit, no miss.
+#[test]
+fn the_first_query_after_activation_is_served_from_the_promoted_handle() -> TestResult {
+    let mut rt = E2eRuntime::boot()?;
+    rt.ingest_text("repo", "src/needle.rs", "fn needle() { let needle = 1; }")?;
+    rt.ingest_text("repo", "src/other.rs", "fn other() { let needle = 2; }")?;
+    let _generation = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    assert_first_queries_are_promoted_hits(&mut rt)
+}
+
+/// The first query after a restart is served from the handle boot's
+/// rehydrate proved, the same way.
+#[test]
+fn the_first_query_after_restart_is_served_from_the_promoted_handle() -> TestResult {
+    let mut rt = seeded_runtime()?.reopen();
+    rt.start()?;
+    assert_first_queries_are_promoted_hits(&mut rt)
 }

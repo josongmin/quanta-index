@@ -29,7 +29,9 @@ use quanta_index_lexical::LexicalAdapter;
 use quanta_index_lexical::history_text_index::HistoryTextIndexAdapter;
 use quanta_index_lexical::regex::RegexPolicy;
 use quanta_index_repomap::RepoMapGenerationStore;
-use quanta_index_search_plane::SearchCorpusLifecycleOwner;
+use quanta_index_search_plane::{
+    PairIndexBytesMeasurer, SearchCorpusIndexBytesPort, SearchCorpusLifecycleOwner,
+};
 use quanta_index_searchd::app::LegacySemanticJournalStore;
 use quanta_index_searchd::app::runtime::{SearchdRuntimeParts, StateRootLease};
 use quanta_index_searchd::{SearchdCommand, SearchdConfig, SearchdRuntime, drive};
@@ -71,9 +73,16 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
         RepoMapGenerationStore::open(state_root.join("repo-map")).map_err(anyhow::Error::from)?;
     let repo_map_store = Arc::new(opened_repo_map.store);
     let repo_map_open_report = opened_repo_map.report;
+    // Retention measures its byte limits over the index bytes the two
+    // adapters know how to measure (QI-BB-003), never over record sizes.
+    let index_bytes: Arc<dyn SearchCorpusIndexBytesPort> = Arc::new(PairIndexBytesMeasurer::new(
+        lex_adapter.clone(),
+        sem_adapter.clone(),
+    ));
     let search_corpus_lifecycle = Arc::new(SearchCorpusLifecycleOwner::open(
         &state_root,
         search_corpus_history_retention,
+        index_bytes,
     )?);
     let legacy_semantic_journal_store = Arc::new(LegacySemanticJournalStore::open(
         state_root.join("semantic"),

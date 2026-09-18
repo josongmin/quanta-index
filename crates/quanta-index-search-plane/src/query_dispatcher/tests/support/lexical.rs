@@ -4,8 +4,8 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::{
-    CandidatePresenceV1, LexicalCandidate, LqQuery, ManifestGeneration, QueryConstraintSetV1,
-    RepoId, RepoRelativePath, RevisionId, SymbolCandidate,
+    CandidatePresenceV1, GenerationSnapshot, LexicalCandidate, LqQuery, ManifestGeneration,
+    QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId, SymbolCandidate,
 };
 use quanta_index_core::{
     CoreError, LexicalArtifactIdentityV1, LexicalCandidateExplanationV1, LexicalIndexOpenPort,
@@ -40,10 +40,25 @@ impl LexicalIndexOpenPort for RejectLexicalOpener {
             "repo-map dispatch should not open lexical index".to_string(),
         ))
     }
+
+    fn open_proven(
+        &self,
+        candidate: &GenerationSnapshot,
+    ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
+        self.open(
+            &candidate.repo_id,
+            &candidate.revision_id,
+            candidate.manifest_generation,
+        )
+    }
 }
 
+#[derive(Default)]
 pub(crate) struct StubLexicalSearcher {
     pub(crate) results: Vec<LexicalCandidate>,
+    /// The sealed digest the handle claims to have proved; `None` claims
+    /// the fixture's `stub-lexical-digest`.
+    pub(crate) manifest_digest: Option<String>,
 }
 
 impl LexicalSearcher for StubLexicalSearcher {
@@ -54,7 +69,11 @@ impl LexicalSearcher for StubLexicalSearcher {
     /// The stub holds every source-repo metadata authority: it answers
     /// projections and gates without refusing.
     fn artifact_identity(&self) -> LexicalArtifactIdentityV1 {
-        stub_artifact_identity(RepoMetadataAuthoritiesV1::ALL)
+        let mut identity = stub_artifact_identity(RepoMetadataAuthoritiesV1::ALL);
+        if let Some(digest) = &self.manifest_digest {
+            identity.manifest_digest = digest.clone();
+        }
+        identity
     }
 
     fn search_constrained(
@@ -173,7 +192,19 @@ impl LexicalIndexOpenPort for StubLexicalOpener {
     ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
         Ok(Box::new(StubLexicalSearcher {
             results: self.results.clone(),
+            manifest_digest: None,
         }))
+    }
+
+    fn open_proven(
+        &self,
+        candidate: &GenerationSnapshot,
+    ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
+        self.open(
+            &candidate.repo_id,
+            &candidate.revision_id,
+            candidate.manifest_generation,
+        )
     }
 }
 
@@ -399,6 +430,17 @@ impl LexicalIndexOpenPort for RecordingLexicalOpener {
             state: Arc::clone(&self.state),
             results: self.results.clone(),
         }))
+    }
+
+    fn open_proven(
+        &self,
+        candidate: &GenerationSnapshot,
+    ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
+        self.open(
+            &candidate.repo_id,
+            &candidate.revision_id,
+            candidate.manifest_generation,
+        )
     }
 }
 

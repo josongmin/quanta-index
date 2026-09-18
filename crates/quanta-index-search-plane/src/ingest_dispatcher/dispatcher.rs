@@ -18,7 +18,6 @@ use crate::ingest_dispatcher::errors::core_error_to_ipc;
 use crate::ingest_dispatcher::ports::{
     HistoryIngestPort, RuntimeMetadataIngestPort, StructuralIngestPort,
 };
-use crate::{SnapshotKey, SnapshotRegistries};
 
 // =============================================================================
 // Top-level dispatcher
@@ -39,11 +38,6 @@ pub struct SearchPlaneIngestDispatcher {
     runtime: Arc<dyn RuntimeMetadataIngestPort + Send + Sync>,
     structural: Arc<dyn StructuralIngestPort + Send + Sync>,
     repomap: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
-    /// Resident opened generations shared with the query side. Every routed
-    /// mutation that names a generation drops that generation's residency
-    /// after it lands, so a handle opened before the mutation is never
-    /// served after it (QI-BB-001; sealed-corpus overlay is W2's job).
-    snapshots: SnapshotRegistries,
     /// Durable idempotency records (QI-BB-032): every receipt-bearing route
     /// goes through intent → apply → finalize, so a replay of the same body
     /// is answered from the record and a different body under the same key
@@ -69,7 +63,6 @@ impl SearchPlaneIngestDispatcher {
         runtime: Arc<dyn RuntimeMetadataIngestPort + Send + Sync>,
         structural: Arc<dyn StructuralIngestPort + Send + Sync>,
         repomap: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
-        snapshots: SnapshotRegistries,
         idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
     ) -> Self {
         Self {
@@ -84,7 +77,6 @@ impl SearchPlaneIngestDispatcher {
             runtime,
             structural,
             repomap,
-            snapshots,
             idempotency,
         }
     }
@@ -129,27 +121,6 @@ impl SearchPlaneIngestDispatcher {
         Ok(receipt.recorded_at(durable_sequence))
     }
 
-    /// Publish one generation-scoped batch and, on success, drop both
-    /// tracks' residency for that generation.
-    ///
-    /// The invalidation is unconditional on success rather than keyed to
-    /// "did the adapter actually change bytes": the adapter is the only party
-    /// that knows, and asking it would put a second cache-coherence contract
-    /// on every ingest port. Dropping a handle costs one cold open on the
-    /// next query; serving a stale one costs correctness.
-    fn publish_generation_scoped<R>(
-        &self,
-        repo_id: &RepoId,
-        revision_id: &RevisionId,
-        generation: ManifestGeneration,
-        publish: impl FnOnce() -> Result<R, CoreError>,
-    ) -> Result<R, CoreError> {
-        let receipt = publish()?;
-        self.snapshots
-            .invalidate(&SnapshotKey::new(repo_id, revision_id, generation))?;
-        Ok(receipt)
-    }
-
     /// Serve one ingest request (QI-BB-002).
     ///
     /// The budget is checked once, at entry: a batch whose producer hung up
@@ -177,14 +148,7 @@ impl SearchPlaneIngestDispatcher {
                     batch.generation,
                     &batch.batch_digest,
                     &batch,
-                    || {
-                        self.publish_generation_scoped(
-                            &batch.repo_id,
-                            &batch.revision_id,
-                            batch.generation,
-                            || self.lexical.publish_batch(&batch),
-                        )
-                    },
+                    || self.lexical.publish_batch(&batch),
                 ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
@@ -212,14 +176,7 @@ impl SearchPlaneIngestDispatcher {
                     batch.generation,
                     &batch.batch_digest,
                     &batch,
-                    || {
-                        self.publish_generation_scoped(
-                            &batch.repo_id,
-                            &batch.revision_id,
-                            batch.generation,
-                            || self.repo_commit_recency.publish_batch(&batch),
-                        )
-                    },
+                    || self.repo_commit_recency.publish_batch(&batch),
                 ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
@@ -233,14 +190,7 @@ impl SearchPlaneIngestDispatcher {
                     batch.generation,
                     &batch.batch_digest,
                     &batch,
-                    || {
-                        self.publish_generation_scoped(
-                            &batch.repo_id,
-                            &batch.revision_id,
-                            batch.generation,
-                            || self.repo_topic.publish_batch(&batch),
-                        )
-                    },
+                    || self.repo_topic.publish_batch(&batch),
                 ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RepoTopicReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
@@ -254,14 +204,7 @@ impl SearchPlaneIngestDispatcher {
                     batch.generation,
                     &batch.batch_digest,
                     &batch,
-                    || {
-                        self.publish_generation_scoped(
-                            &batch.repo_id,
-                            &batch.revision_id,
-                            batch.generation,
-                            || self.repo_description.publish_batch(&batch),
-                        )
-                    },
+                    || self.repo_description.publish_batch(&batch),
                 ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
@@ -275,14 +218,7 @@ impl SearchPlaneIngestDispatcher {
                     batch.generation,
                     &batch.batch_digest,
                     &batch,
-                    || {
-                        self.publish_generation_scoped(
-                            &batch.repo_id,
-                            &batch.revision_id,
-                            batch.generation,
-                            || self.file_ownership.publish_batch(&batch),
-                        )
-                    },
+                    || self.file_ownership.publish_batch(&batch),
                 ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::FileOwnershipReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
@@ -296,14 +232,7 @@ impl SearchPlaneIngestDispatcher {
                     batch.generation,
                     &batch.batch_digest,
                     &batch,
-                    || {
-                        self.publish_generation_scoped(
-                            &batch.repo_id,
-                            &batch.revision_id,
-                            batch.generation,
-                            || self.file_contributor.publish_batch(&batch),
-                        )
-                    },
+                    || self.file_contributor.publish_batch(&batch),
                 ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::FileContributorReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
@@ -317,14 +246,7 @@ impl SearchPlaneIngestDispatcher {
                     batch.generation,
                     &batch.batch_digest,
                     &batch,
-                    || {
-                        self.publish_generation_scoped(
-                            &batch.repo_id,
-                            &batch.revision_id,
-                            batch.generation,
-                            || self.repo_meta.publish_batch(&batch),
-                        )
-                    },
+                    || self.repo_meta.publish_batch(&batch),
                 ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RepoMetaReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),

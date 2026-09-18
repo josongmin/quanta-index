@@ -37,23 +37,6 @@ pub(super) fn search_corpus_retention(
     SearchCorpusHistoryRetentionPolicyV1::new(max_generations, 1024 * 1024, 64, 64 * 1024 * 1024)
 }
 
-pub(super) fn search_corpus_authority_record_len(
-    repo_id: &RepoId,
-    revision_id: &RevisionId,
-    generation: ManifestGeneration,
-    manifest_digest: &str,
-) -> Result<u64, Box<dyn std::error::Error>> {
-    let record = crate::readiness::search_corpus_history::SearchCorpusAuthorityRecordV1::new(
-        repo_id,
-        revision_id,
-        generation,
-        manifest_digest,
-    );
-    Ok(u64::try_from(
-        quanta_index_ipc::encode_cbor_payload(&record)?.len(),
-    )?)
-}
-
 #[derive(Debug)]
 pub(super) struct AlwaysFailParentSync;
 

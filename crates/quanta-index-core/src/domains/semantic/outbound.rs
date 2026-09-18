@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use quanta_index_contract::{
     BatchPublishReceipt, ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
-    EmbeddingNormalization, LexicalCandidate, ManifestGeneration, OwnerDocKind,
+    EmbeddingNormalization, GenerationSnapshot, LexicalCandidate, ManifestGeneration, OwnerDocKind,
     QueryConstraintSetV1, RepoId, RevisionId, SemanticCorpusKindV1,
 };
 
@@ -73,6 +73,18 @@ pub trait SemanticIndexOpenPort: Send + Sync {
         repo: &RepoId,
         revision: &RevisionId,
         generation: ManifestGeneration,
+    ) -> Result<Box<dyn SemanticSearcher>, CoreError>;
+    /// Prove `candidate` and return the handle the proof opened.
+    ///
+    /// The proof is the activation validator's: the sealed identity on
+    /// disk is exactly `candidate` (digest included), every committed file
+    /// is what the seal committed, and the generation directory is durable.
+    /// Activation, rollback and restart call this once per track, so the
+    /// proof and the handle the first query is served from are one open
+    /// (QI-BB-017 보완 #4, QI-BB-030 완료 기준 #2).
+    fn open_proven(
+        &self,
+        candidate: &GenerationSnapshot,
     ) -> Result<Box<dyn SemanticSearcher>, CoreError>;
 }
 
@@ -377,6 +389,12 @@ pub trait SemanticSearcher: Send + Sync {
     /// before revisions were required (QI-BB-028); the query gate refuses
     /// it rather than guessing.
     fn index_model_revision(&self) -> Option<&str>;
+
+    /// The sealed manifest digest this open proved: what an activation
+    /// compares with its candidate before promoting the handle into the
+    /// snapshot registry, so a promoted handle is exactly the identity
+    /// the durable activation names.
+    fn manifest_digest(&self) -> &str;
 
     /// The index this searcher's dense lane runs through, and whether the
     /// seal recorded and the open verified it (QI-BB-027).

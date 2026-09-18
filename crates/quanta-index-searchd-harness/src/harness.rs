@@ -371,6 +371,16 @@ impl E2eRuntime {
         Self::boot_with_profile_and_history(SemanticEmbedderProfile::default(), max_generations)
     }
 
+    /// Change the retention window the next daemon start runs under. With
+    /// [`Self::reopen`] this is how a test lowers the cap across a
+    /// restart, so boot's retention reaps records whose directories are
+    /// still on disk: the orphan shape (QI-BB-003).
+    #[must_use]
+    pub fn with_history_max_generations(mut self, max_generations: usize) -> Self {
+        self.history_max_generations = max_generations;
+        self
+    }
+
     /// Like [`Self::boot`] but runs the daemon under `policy` as its ingest
     /// resource envelope, so an envelope refusal can be provoked with a
     /// small batch instead of a hundred-thousand-record one.
@@ -2236,24 +2246,46 @@ impl E2eRuntime {
         top_k: u32,
         lexical_scope: Option<(TextQuerySyntax, &str, u32)>,
     ) -> E2eQueryResult {
+        let pin = self.last_sealed_pin();
+        self.query_semantic_pinned(query_text, top_k, lexical_scope, pin)
+    }
+
+    /// [`Self::query_semantic`] at an explicit pin instead of the last
+    /// sealed generation; the lexical scope, when given, pins the same.
+    pub fn query_semantic_with_pin(
+        &mut self,
+        query_text: &str,
+        top_k: u32,
+        pin: Option<GenerationPin>,
+    ) -> E2eQueryResult {
+        self.query_semantic_pinned(query_text, top_k, None, pin)
+    }
+
+    fn query_semantic_pinned(
+        &mut self,
+        query_text: &str,
+        top_k: u32,
+        lexical_scope: Option<(TextQuerySyntax, &str, u32)>,
+        pin: Option<GenerationPin>,
+    ) -> E2eQueryResult {
         let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
+        let lexical_scope =
+            lexical_scope.map(|(syntax, scope_text, scope_top_k)| TextQueryRequest {
+                syntax,
+                query_text: scope_text.to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: pin.clone(),
+                generation_selector: None,
+                top_k: scope_top_k,
+            });
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
             request_id,
             payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
                 query_text: query_text.to_string(),
                 constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
-                generation: self.last_sealed_pin(),
+                generation: pin,
                 generation_selector: None,
-                lexical_scope: lexical_scope.map(|(syntax, query_text, scope_top_k)| {
-                    TextQueryRequest {
-                        syntax,
-                        query_text: query_text.to_string(),
-                        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
-                        generation: self.last_sealed_pin(),
-                        generation_selector: None,
-                        top_k: scope_top_k,
-                    }
-                }),
+                lexical_scope,
                 top_k,
             }),
         };

@@ -1,6 +1,5 @@
 use quanta_index_contract::{
-    LqExpr, LqFilter, LqLeaf, LqPatternType, LqQuery, LqSelect, LqType, ManifestGeneration,
-    QueryConstraintSetV1,
+    LqExpr, LqFilter, LqLeaf, LqPatternType, LqQuery, LqSelect, LqType, QueryConstraintSetV1,
 };
 
 use crate::error::CoreError;
@@ -116,24 +115,6 @@ impl LexicalPolicy {
         }
         validate_supported_filter_surface(query)?;
         Ok(())
-    }
-
-    /// Reject activation requests when the generation has not been materialized.
-    pub fn validate_query_against_readiness(
-        target: ManifestGeneration,
-        materialized: Option<ManifestGeneration>,
-    ) -> Result<(), CoreError> {
-        match materialized {
-            Some(active) if active.get() >= target.get() => Ok(()),
-            Some(active) => Err(CoreError::NotReady(format!(
-                "lexical: requested generation {} but materialized only up to {}",
-                target.get(),
-                active.get()
-            ))),
-            None => Err(CoreError::NotReady(
-                "lexical: no materialized generation yet".to_string(),
-            )),
-        }
     }
 }
 
@@ -344,7 +325,6 @@ mod tests {
     //! - line 16 `&& !has_content_filter` → `&& has_content_filter` (delete `!`)
     //! - line 23 first `||` → `&&` in the structural-rejection clause
     //! - line 24 second `||` → `&&` in the structural-rejection clause
-    //! - line 44 `>=` → `<` in `validate_query_against_readiness`
     //!
     //! Each test below exercises an input where the original and mutated
     //! conditions disagree, so the observable `Ok`/`Err` outcome flips.
@@ -481,27 +461,6 @@ mod tests {
             ),
             "unexpected result: {result:?}"
         );
-    }
-
-    #[test]
-    fn readiness_kills_ge_to_lt_mutation_at_equality() {
-        let pin = ManifestGeneration::new(11);
-        assert!(LexicalPolicy::validate_query_against_readiness(pin, Some(pin)).is_ok());
-        assert!(
-            LexicalPolicy::validate_query_against_readiness(
-                ManifestGeneration::new(11),
-                Some(ManifestGeneration::new(12)),
-            )
-            .is_ok()
-        );
-        assert!(
-            LexicalPolicy::validate_query_against_readiness(
-                ManifestGeneration::new(12),
-                Some(ManifestGeneration::new(11)),
-            )
-            .is_err()
-        );
-        assert!(LexicalPolicy::validate_query_against_readiness(pin, None).is_err());
     }
 }
 

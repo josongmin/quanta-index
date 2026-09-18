@@ -240,6 +240,12 @@ fn hybrid_dispatch_rejects_unsealed_semantic_generation_with_exact_code() -> Tes
         SearchPlaneTrackKind::Lexical,
         ManifestGeneration::new(9),
     );
+    ledger.record_historically_sealed_search_corpus(
+        &repo_id,
+        &revision_id,
+        ManifestGeneration::new(9),
+        "manifest-digest-9",
+    );
     ledger.record_track_materialized(
         &repo_id,
         &revision_id,

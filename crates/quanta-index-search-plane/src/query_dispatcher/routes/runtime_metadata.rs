@@ -84,6 +84,7 @@ impl SearchPlaneDispatcher {
                 runtime: request.cursor.as_ref().map(|cursor| cursor.aux_epoch),
                 structural: request.cursor.as_ref().map(|cursor| cursor.universe_epoch),
             }),
+            budget,
         )?;
         let read = RuntimeMetadataRead {
             runtime: view.runtime()?.clone(),

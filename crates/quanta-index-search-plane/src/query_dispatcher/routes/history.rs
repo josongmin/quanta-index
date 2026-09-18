@@ -75,6 +75,7 @@ impl SearchPlaneDispatcher {
                     structural: None,
                 })
                 .with_history_text(request.order == HistoryOrderV1::Relevance),
+            budget,
         )?;
         let read = view.history()?;
         ensure_history_shards_ready(&read.state, &lowered)?;

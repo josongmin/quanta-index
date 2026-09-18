@@ -220,6 +220,12 @@ fn lexical_only_ledger() -> Arc<RwLock<Ledger>> {
         SearchPlaneTrackKind::Lexical,
         ManifestGeneration::new(9),
     );
+    ledger.record_historically_sealed_search_corpus(
+        &repo_id,
+        &revision_id,
+        ManifestGeneration::new(9),
+        "manifest-digest-9",
+    );
     Arc::new(RwLock::new(ledger))
 }
 
@@ -514,6 +520,7 @@ fn a_route_reaching_past_its_declaration_is_refused() -> TestResult {
         None,
         None,
         Some(Arc::new(StubLexicalSearcher {
+            manifest_digest: None,
             results: Vec::new(),
         })),
     )?;

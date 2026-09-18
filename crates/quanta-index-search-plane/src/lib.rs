@@ -24,14 +24,15 @@ mod search_corpus_retention;
 mod semantic_derive;
 mod snapshot_registry;
 
-pub use control_dispatcher::SearchPlaneControlDispatcher;
+pub use control_dispatcher::{SearchPlaneControlDispatcher, SearchPlaneControlDispatcherParts};
 pub use history_text::{HistoryTextHandles, HistoryTextIndexParts};
 pub use ingest_dispatcher::{
     AuxiliaryMaterializerParts, AuxiliaryMutationCoordinator, DirectHistoryMaterializer,
     DirectRuntimeMetadataMaterializer, DirectSearchCorpusMaterializer, DirectSemanticMaterializer,
     DirectStructuralMaterializer, HistoryIngestPort, IngestResourceStats,
-    RuntimeMetadataIngestPort, SearchCorpusAuthorityWritePort, SearchCorpusMaterializerParts,
-    SearchPlaneIngestDispatcher, SemanticIngestStreamStats, StructuralIngestPort,
+    RuntimeMetadataIngestPort, SearchCorpusAuthorityInspectPort, SearchCorpusAuthorityWritePort,
+    SearchCorpusGcStats, SearchCorpusMaterializerParts, SearchPlaneIngestDispatcher,
+    SemanticIngestStreamStats, StructuralIngestPort,
 };
 pub use lowering::{lower_lexical_text_query, lower_sourcegraph_query_text};
 pub use observability::{
@@ -39,7 +40,10 @@ pub use observability::{
     ObservabilityScrape, QueryObsSink,
 };
 pub use quanta_index_lq_obs::{MetricSample, ObsError};
-pub use quarantine::{QuarantineService, QuarantineServiceParts};
+pub use quarantine::{
+    OrphanedSealedGenerationV1, QUARANTINE_TARGET_STILL_REFERENCED_CODE, QuarantineService,
+    QuarantineServiceParts, partition_sealed_inventory_v1,
+};
 pub use query_dispatcher::{
     SearchPlaneDispatcher, SearchPlaneQueryDispatcher, SearchPlaneQueryService, make_pin,
     repair_for_code,
@@ -50,13 +54,16 @@ pub use query_embedder::{
 };
 pub use readiness::{
     ActivationCatalog, ActiveGenerationRecord, AuxiliaryAuthorityStore, Ledger,
-    LegacyAuxiliaryMigrationReceipt, PreparedSearchCorpusGenerationV1,
+    LegacyAuxiliaryMigrationReceipt, PairIndexBytesMeasurer, PreparedSearchCorpusGenerationV1,
     SealedSearchCorpusAuthorityStateV1, SearchCorpusGenerationActivationV1,
-    SearchCorpusGenerationV1, TrackLedger,
+    SearchCorpusGenerationV1, SearchCorpusIndexBytesPort, TrackLedger,
 };
-pub use search_corpus_lifecycle::SearchCorpusLifecycleOwner;
+pub use search_corpus_lifecycle::{
+    ActivationPromotionParts, SearchCorpusLifecycleOwner, SearchCorpusLifecycleParts,
+};
 pub use semantic_derive::SemanticDerivationModeV1;
 pub use snapshot_registry::{
-    OpenedSnapshot, SnapshotAcquireOutcome, SnapshotAcquired, SnapshotKey, SnapshotRegistries,
-    SnapshotRegistry, SnapshotRegistryPolicy, SnapshotRegistryStats, SnapshotRetireOutcome,
+    OpenedSnapshot, SnapshotAcquireOutcome, SnapshotAcquired, SnapshotKey, SnapshotPromoteOutcome,
+    SnapshotRegistries, SnapshotRegistry, SnapshotRegistryPolicy, SnapshotRegistryStats,
+    SnapshotRetireOutcome,
 };

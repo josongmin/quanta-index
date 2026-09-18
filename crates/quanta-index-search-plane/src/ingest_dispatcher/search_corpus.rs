@@ -2,12 +2,12 @@
 //! ingest path, from resource preflight through sealed-generation finalize
 //! and retired-generation reclaim.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, RwLock};
 
 use quanta_index_contract::{
-    BatchPublishReceipt, GenerationSnapshot, ManifestGeneration, SearchCorpusIngestBatch,
-    SearchPlaneTrackKind,
+    BatchPublishReceipt, GenerationSnapshot, ManifestGeneration, RepoId, RevisionId,
+    SearchCorpusIngestBatch, SearchPlaneTrackKind,
 };
 use quanta_index_core::{
     AuxiliaryAuthorityCatalogPort, AuxiliaryGenerationKeyV1, CoreError,
@@ -69,6 +69,9 @@ pub struct DirectSearchCorpusMaterializer {
     /// held (QI-BB-021), and what the measured batches added up to.
     resource_policy: IngestResourcePolicy,
     resource_stats: Mutex<IngestResourceStats>,
+    /// What physical GC reclaimed and deferred over the process lifetime
+    /// (QI-BB-003): the receipt of every reclaim pass, kept.
+    gc_stats: Mutex<SearchCorpusGcStats>,
     /// The window the derived semantic source embeds and issues in, so at
     /// most one window of vectors is resident during a build (QI-BB-021).
     semantic_stream_policy: SemanticStreamWindowPolicy,
@@ -96,6 +99,81 @@ pub struct IngestResourceStats {
     pub peak_text_bytes: u64,
     /// Most bytes of vectors one admitted batch expanded into.
     pub peak_vector_bytes: u64,
+}
+
+/// What physical GC of retired sealed generations did, per track, over
+/// the process lifetime (QI-BB-003).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SearchCorpusGcStats {
+    /// Bytes given back by reclaiming lexical generation directories.
+    pub lexical_reclaimed_bytes: u64,
+    /// Lexical generation directories reclaimed.
+    pub lexical_reclaimed_generations: u64,
+    /// Bytes given back by reclaiming semantic generation directories.
+    pub semantic_reclaimed_bytes: u64,
+    /// Semantic generation directories reclaimed.
+    pub semantic_reclaimed_generations: u64,
+    /// Retired generations left on disk for a later pass because a
+    /// resident handle still had holders.
+    pub deferred_pinned: u64,
+    /// The index bytes the retained generations of every pair this
+    /// process sealed occupy on disk, as retention last measured each
+    /// pair: the number `max_bytes` is enforced against.
+    pub retained_index_bytes: BTreeMap<(RepoId, RevisionId), u64>,
+}
+
+impl SearchCorpusGcStats {
+    fn record_retention(&mut self, retention: &SearchCorpusHistoryRetentionReceiptV1) {
+        let _previous = self.retained_index_bytes.insert(
+            (retention.repo_id().clone(), retention.revision_id().clone()),
+            retention.retained_index_bytes(),
+        );
+    }
+
+    fn record(&mut self, receipt: &SearchCorpusPhysicalReclaimReceiptV1) {
+        for ((track, _generation), bytes) in &receipt.reclaimed {
+            match track {
+                SearchPlaneTrackKind::Lexical => {
+                    self.lexical_reclaimed_bytes =
+                        self.lexical_reclaimed_bytes.saturating_add(*bytes);
+                    self.lexical_reclaimed_generations =
+                        self.lexical_reclaimed_generations.saturating_add(1);
+                }
+                SearchPlaneTrackKind::Semantic => {
+                    self.semantic_reclaimed_bytes =
+                        self.semantic_reclaimed_bytes.saturating_add(*bytes);
+                    self.semantic_reclaimed_generations =
+                        self.semantic_reclaimed_generations.saturating_add(1);
+                }
+                SearchPlaneTrackKind::Structural => {}
+            }
+        }
+        self.deferred_pinned = self
+            .deferred_pinned
+            .saturating_add(count_from_usize(receipt.deferred_pinned.len()));
+    }
+
+    /// Bytes reclaimed on both tracks together.
+    #[must_use]
+    pub fn reclaimed_bytes(&self) -> u64 {
+        self.lexical_reclaimed_bytes
+            .saturating_add(self.semantic_reclaimed_bytes)
+    }
+
+    /// Generation directories reclaimed on both tracks together.
+    #[must_use]
+    pub fn reclaimed_generations(&self) -> u64 {
+        self.lexical_reclaimed_generations
+            .saturating_add(self.semantic_reclaimed_generations)
+    }
+
+    /// The retained index bytes of every measured pair, together.
+    #[must_use]
+    pub fn retained_index_bytes_total(&self) -> u64 {
+        self.retained_index_bytes
+            .values()
+            .fold(0_u64, |total, bytes| total.saturating_add(*bytes))
+    }
 }
 
 impl IngestResourceStats {
@@ -192,6 +270,7 @@ impl DirectSearchCorpusMaterializer {
             idempotency,
             resource_policy,
             resource_stats: Mutex::new(IngestResourceStats::default()),
+            gc_stats: Mutex::new(SearchCorpusGcStats::default()),
             semantic_stream_policy,
             auxiliary_catalog,
             auxiliary_coordinator,
@@ -220,12 +299,43 @@ impl DirectSearchCorpusMaterializer {
                 ))
             })
     }
+
+    /// What physical GC has reclaimed and deferred so far, and what the
+    /// measured pairs retain.
+    pub fn gc_stats(&self) -> Result<SearchCorpusGcStats, CoreError> {
+        self.gc_stats
+            .lock()
+            .map(|stats| stats.clone())
+            .map_err(|err| {
+                CoreError::Storage(format!(
+                    "direct search-corpus materialize: gc stats poisoned: {err}"
+                ))
+            })
+    }
+
+    fn record_reclaim_receipt(
+        &self,
+        retention: &SearchCorpusHistoryRetentionReceiptV1,
+        receipt: &SearchCorpusPhysicalReclaimReceiptV1,
+    ) -> Result<(), CoreError> {
+        let mut stats = self.gc_stats.lock().map_err(|err| {
+            CoreError::Storage(format!(
+                "direct search-corpus materialize: gc stats poisoned: {err}"
+            ))
+        })?;
+        stats.record_retention(retention);
+        stats.record(receipt);
+        drop(stats);
+        Ok(())
+    }
 }
 
-/// The resource envelope's tallies as scrape points, `ingest_…` (QI-BB-015).
+/// The resource envelope's tallies as scrape points, `ingest_…`, and
+/// physical GC's, `search_corpus_gc_…` (QI-BB-015).
 impl MetricSourcePort for DirectSearchCorpusMaterializer {
     fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
         let stats = self.resource_stats()?;
+        let gc = self.gc_stats()?;
         Ok(vec![
             MetricPointV1::counter("ingest_batches_admitted_total", stats.admitted),
             MetricPointV1::counter("ingest_batches_refused_total", stats.refused),
@@ -235,6 +345,35 @@ impl MetricSourcePort for DirectSearchCorpusMaterializer {
             ),
             MetricPointV1::gauge_count("ingest_peak_text_bytes", stats.peak_text_bytes),
             MetricPointV1::gauge_count("ingest_peak_vector_bytes", stats.peak_vector_bytes),
+            MetricPointV1::counter(
+                "search_corpus_gc_reclaimed_bytes_total",
+                gc.reclaimed_bytes(),
+            ),
+            MetricPointV1::counter(
+                "search_corpus_gc_reclaimed_generations_total",
+                gc.reclaimed_generations(),
+            ),
+            MetricPointV1::counter("search_corpus_gc_deferred_pinned_total", gc.deferred_pinned),
+            MetricPointV1::counter(
+                "search_corpus_gc_lexical_reclaimed_bytes_total",
+                gc.lexical_reclaimed_bytes,
+            ),
+            MetricPointV1::counter(
+                "search_corpus_gc_lexical_reclaimed_generations_total",
+                gc.lexical_reclaimed_generations,
+            ),
+            MetricPointV1::counter(
+                "search_corpus_gc_semantic_reclaimed_bytes_total",
+                gc.semantic_reclaimed_bytes,
+            ),
+            MetricPointV1::counter(
+                "search_corpus_gc_semantic_reclaimed_generations_total",
+                gc.semantic_reclaimed_generations,
+            ),
+            MetricPointV1::gauge_count(
+                "search_corpus_retained_index_bytes",
+                gc.retained_index_bytes_total(),
+            ),
         ])
     }
 }
@@ -655,7 +794,8 @@ impl DirectSearchCorpusMaterializer {
             }
         }
         if let Some(retention) = retention {
-            let _receipt = self.reclaim_retired_generations_v1(batch, retention)?;
+            let receipt = self.reclaim_retired_generations_v1(batch, retention)?;
+            self.record_reclaim_receipt(retention, &receipt)?;
         }
         Ok(())
     }
@@ -664,14 +804,18 @@ impl DirectSearchCorpusMaterializer {
     ///
     /// Runs only after the durable authority has been reaped and the ledger
     /// reconciled from the receipt, so no query can resolve or pin a retired
-    /// generation any more. For each track, every sealed generation on disk
-    /// that the receipt does not retain and that is older than the one being
-    /// sealed is an orphan of this or an earlier retention pass; it is fenced
-    /// out of the snapshot registry first, and reclaimed only if nothing
-    /// still holds its handle. A pinned generation is deferred, not deleted
-    /// under a reader; the next pass will find it again. Sweeping from the
-    /// filesystem rather than from the receipt's reaped set is what makes a
-    /// crash between reap and reclaim recoverable.
+    /// generation any more (`UNKNOWN_GENERATION`). For each track, every
+    /// sealed generation on disk that the receipt does not retain and that
+    /// is older than the one being sealed is an orphan of this or an earlier
+    /// retention pass; it is fenced out of the snapshot registry first — a
+    /// resident handle dropped, an open in flight fenced and waited for so
+    /// its handle is refused rather than admitted — and reclaimed only if
+    /// nothing still holds its handle. A pinned generation is deferred, not
+    /// deleted under a reader; the next pass will find it again, and boot
+    /// lists it as an orphan meanwhile. Sweeping from the filesystem rather
+    /// than from the receipt's reaped set is what makes a crash between
+    /// reap and reclaim recoverable. The receipt is kept: its bytes and
+    /// counts feed the `search_corpus_gc_…` metrics.
     pub(super) fn reclaim_retired_generations_v1(
         &self,
         batch: &SearchCorpusIngestBatch,

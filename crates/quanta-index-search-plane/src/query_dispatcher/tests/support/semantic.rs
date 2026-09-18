@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::{
     ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1, GenerationPin,
-    LexicalCandidate, ManifestGeneration, QueryConstraintSetV1, RepoId, RevisionId,
-    SemanticCorpusKindV1, SemanticQueryRequest,
+    GenerationSnapshot, LexicalCandidate, ManifestGeneration, QueryConstraintSetV1, RepoId,
+    RevisionId, SemanticCorpusKindV1, SemanticQueryRequest,
 };
 use quanta_index_core::{
     CoreError, DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1, RequestBudgetV1,
@@ -34,6 +34,17 @@ impl SemanticIndexOpenPort for RejectSemanticOpener {
         Err(CoreError::NotImplemented(
             "repo-map dispatch should not open semantic index".to_string(),
         ))
+    }
+
+    fn open_proven(
+        &self,
+        candidate: &GenerationSnapshot,
+    ) -> Result<Box<dyn SemanticSearcher>, CoreError> {
+        self.open(
+            &candidate.repo_id,
+            &candidate.revision_id,
+            candidate.manifest_generation,
+        )
     }
 }
 
@@ -104,10 +115,16 @@ pub(crate) struct RecordingSemanticState {
     /// answers as a lane that observed the cancellation inside would (W5
     /// phase 3).
     pub(crate) cancel_inside_search: bool,
+    /// The sealed digest the opened handle claims to have proved; `None`
+    /// claims the fixture's `manifest-digest-9`.
+    pub(crate) manifest_digest: Option<String>,
 }
 
 pub(crate) struct RecordingSemanticSearcher {
     pub(crate) state: Arc<Mutex<RecordingSemanticState>>,
+    /// Read once at open from the state's `manifest_digest`, so the
+    /// borrow the trait hands out needs no lock.
+    pub(crate) manifest_digest: String,
 }
 
 impl RecordingSemanticSearcher {
@@ -367,6 +384,10 @@ impl SemanticSearcher for RecordingSemanticSearcher {
         Some(crate::query_embedder::SEARCH_OWNED_SEMANTIC_MODEL_REVISION)
     }
 
+    fn manifest_digest(&self) -> &str {
+        &self.manifest_digest
+    }
+
     fn dense_lane(&self) -> DenseLaneContractV1 {
         DenseLaneContractV1 {
             index: DenseIndexV1::Exact,
@@ -386,14 +407,34 @@ impl SemanticIndexOpenPort for RecordingSemanticOpener {
         revision: &RevisionId,
         generation: ManifestGeneration,
     ) -> Result<Box<dyn SemanticSearcher>, CoreError> {
-        self.state
-            .lock()
-            .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?
-            .cluster_membership_opened_pins
-            .push((repo.clone(), revision.clone(), generation));
+        let manifest_digest = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?;
+            state
+                .cluster_membership_opened_pins
+                .push((repo.clone(), revision.clone(), generation));
+            state
+                .manifest_digest
+                .clone()
+                .unwrap_or_else(|| "manifest-digest-9".to_string())
+        };
         Ok(Box::new(RecordingSemanticSearcher {
             state: Arc::clone(&self.state),
+            manifest_digest,
         }))
+    }
+
+    fn open_proven(
+        &self,
+        candidate: &GenerationSnapshot,
+    ) -> Result<Box<dyn SemanticSearcher>, CoreError> {
+        self.open(
+            &candidate.repo_id,
+            &candidate.revision_id,
+            candidate.manifest_generation,
+        )
     }
 }
 

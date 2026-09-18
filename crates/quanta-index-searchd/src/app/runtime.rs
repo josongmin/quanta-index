@@ -51,13 +51,15 @@ use quanta_index_lq_structural::{
     compile_authoritative_pattern,
 };
 use quanta_index_search_plane::{
-    AuxiliaryMaterializerParts, AuxiliaryMutationCoordinator, BoundedQueryObsStore,
-    DirectHistoryMaterializer, DirectRuntimeMetadataMaterializer, DirectSearchCorpusMaterializer,
-    DirectSemanticMaterializer, DirectStructuralMaterializer, HashingQueryTextEmbedder,
-    HistoryIngestPort, HistoryTextIndexParts, Ledger, ObservabilityScrape, QuarantineService,
-    QuarantineServiceParts, QueryObsSink, QueryTextEmbedderPort, RuntimeMetadataIngestPort,
-    SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusLifecycleOwner, SearchCorpusMaterializerParts,
-    SearchPlaneControlDispatcher, SearchPlaneDispatcher, SearchPlaneIngestDispatcher,
+    ActivationPromotionParts, AuxiliaryMaterializerParts, AuxiliaryMutationCoordinator,
+    BoundedQueryObsStore, DirectHistoryMaterializer, DirectRuntimeMetadataMaterializer,
+    DirectSearchCorpusMaterializer, DirectSemanticMaterializer, DirectStructuralMaterializer,
+    HashingQueryTextEmbedder, HistoryIngestPort, HistoryTextIndexParts, Ledger,
+    ObservabilityScrape, QuarantineService, QuarantineServiceParts, QueryObsSink,
+    QueryTextEmbedderPort, RuntimeMetadataIngestPort, SEARCH_OWNED_SEMANTIC_DIMENSION,
+    SearchCorpusAuthorityInspectPort, SearchCorpusAuthorityWritePort, SearchCorpusLifecycleOwner,
+    SearchCorpusLifecycleParts, SearchCorpusMaterializerParts, SearchPlaneControlDispatcher,
+    SearchPlaneControlDispatcherParts, SearchPlaneDispatcher, SearchPlaneIngestDispatcher,
     SnapshotRegistries, StructuralIngestPort,
 };
 use regex::Regex;
@@ -945,6 +947,18 @@ impl SearchdRuntime {
         let activation_catalog = search_corpus_lifecycle.activation_catalog();
         let aux_authority_store = search_corpus_lifecycle.authority_store();
         let ledger = Arc::new(RwLock::new(Ledger::new()));
+        // The durable search-corpus history first (QI-BB-003): the sealed
+        // identities it retains are the serving boundary, and the inventory
+        // below is measured against them — a sealed directory the history
+        // does not retain is an orphan, not a seed.
+        {
+            let mut guard = ledger.write().map_err(|err| {
+                anyhow::anyhow!("ledger poisoned during search-corpus history bootstrap: {err}")
+            })?;
+            aux_authority_store
+                .restore_into(&mut guard)
+                .map_err(anyhow::Error::from)?;
+        }
         // Boot inventory (QI-BB-026): identities only, per track; nothing is
         // opened or hashed until the active pairs are proven below.
         let lexical_inventory = boot_inventory::seed_track_readiness(
@@ -975,12 +989,17 @@ impl SearchdRuntime {
             seed_micros: seed_start.elapsed().as_micros(),
         };
         // The only deep validation boot performs: each active pair, once. A
-        // defective active generation fails here, typed, before any bind.
+        // defective active generation fails here, typed, before any bind,
+        // and the proven handles go straight into the snapshot registries
+        // so the first query after restart is a hit (QI-BB-017 #4).
+        let snapshots = SnapshotRegistries::new(config.snapshot_registry_policy());
+        let promotion = ActivationPromotionParts {
+            lexical_open: Arc::clone(&lex_open_port),
+            semantic_open: Arc::clone(&sem_open_port),
+            snapshots: snapshots.clone(),
+        };
         let active_pairs_validated = search_corpus_lifecycle
-            .validate_rehydrated_active_generations_v1(
-                lexical_generation_validator.as_ref(),
-                semantic_generation_validator.as_ref(),
-            )
+            .validate_rehydrated_active_generations_v1(&promotion)
             .map_err(anyhow::Error::from)?;
         // The pre-catalog snapshot files, if this state root still has
         // them, move into the catalog once; then the auxiliary authorities
@@ -992,9 +1011,6 @@ impl SearchdRuntime {
             let mut guard = ledger.write().map_err(|err| {
                 anyhow::anyhow!("ledger poisoned during auxiliary authority bootstrap: {err}")
             })?;
-            aux_authority_store
-                .restore_into(&mut guard)
-                .map_err(anyhow::Error::from)?;
             quanta_index_search_plane::readiness::restore_auxiliary_rows_into(
                 &mut guard,
                 auxiliary_catalog.as_ref(),
@@ -1030,7 +1046,10 @@ impl SearchdRuntime {
         ));
         let direct_sem_ingest_port: Arc<dyn SemanticIngestPort + Send + Sync> =
             semantic_materializer.clone();
-        let snapshots = SnapshotRegistries::new(config.snapshot_registry_policy());
+        let authority_write_port: Arc<dyn SearchCorpusAuthorityWritePort + Send + Sync> =
+            aux_authority_store.clone();
+        let authority_inspect_port: Arc<dyn SearchCorpusAuthorityInspectPort + Send + Sync> =
+            aux_authority_store;
         let search_corpus_materializer: Arc<DirectSearchCorpusMaterializer> = Arc::new(
             DirectSearchCorpusMaterializer::new_with_search_owned_semantics_from_env(
                 SearchCorpusMaterializerParts {
@@ -1038,13 +1057,13 @@ impl SearchdRuntime {
                     ledger: Arc::clone(&ledger),
                     semantic_ingest: Arc::clone(&direct_sem_ingest_port),
                     semantic_embedder: corpus_embedder,
-                    authority: aux_authority_store,
-                    lexical_generation_validator: Arc::clone(&lexical_generation_validator),
-                    semantic_generation_validator: Arc::clone(&semantic_generation_validator),
+                    authority: authority_write_port,
+                    lexical_generation_validator,
+                    semantic_generation_validator,
                     lexical_incomplete_discard: Arc::clone(&lexical_incomplete_discard),
                     semantic_incomplete_discard: Arc::clone(&semantic_incomplete_discard),
-                    lexical_reclaim: lexical_sealed_reclaim,
-                    semantic_reclaim: semantic_sealed_reclaim,
+                    lexical_reclaim: Arc::clone(&lexical_sealed_reclaim),
+                    semantic_reclaim: Arc::clone(&semantic_sealed_reclaim),
                     snapshots: snapshots.clone(),
                     idempotency: Arc::clone(&idempotency),
                     resource_policy: config.ingest_resource_policy(),
@@ -1119,16 +1138,24 @@ impl SearchdRuntime {
             semantic_scanner: Arc::clone(&semantic_generation_scanner),
             lexical_discard: lexical_quarantine_discard,
             semantic_discard: semantic_quarantine_discard,
+            lexical_reclaim: Arc::clone(&lexical_sealed_reclaim),
+            semantic_reclaim: Arc::clone(&semantic_sealed_reclaim),
             repo_map: repo_map_quarantine,
+            ledger: Arc::clone(&ledger),
+            snapshots,
         });
         let control_dispatcher = Arc::new(SearchPlaneControlDispatcher::new(
-            repo_map_generation_activate_port,
-            activation_catalog,
-            Arc::clone(&ledger),
-            lexical_generation_validator,
-            semantic_generation_validator,
-            observability,
-            quarantine,
+            SearchPlaneControlDispatcherParts {
+                repo_map_activate: repo_map_generation_activate_port,
+                lifecycle: SearchCorpusLifecycleParts {
+                    activation_catalog,
+                    ledger: Arc::clone(&ledger),
+                    authority: authority_inspect_port,
+                    promotion,
+                },
+                observability,
+                quarantine,
+            },
         ));
         let ingest_dispatcher = Arc::new(SearchPlaneIngestDispatcher::new(
             direct_search_corpus_ingest_port,
@@ -1142,7 +1169,6 @@ impl SearchdRuntime {
             direct_runtime_ingest_port,
             direct_structural_ingest_port,
             repo_map_bundle_ingest_port,
-            snapshots,
             idempotency,
         ));
         let query_adapter: Arc<

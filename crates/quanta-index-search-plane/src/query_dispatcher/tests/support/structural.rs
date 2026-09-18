@@ -320,6 +320,12 @@ pub(crate) fn ready_ledger_with_structural_boolean_chunks() -> Arc<RwLock<Ledger
         generation,
         "manifest-digest-9",
     );
+    ledger.record_historically_sealed_search_corpus(
+        &repo_id,
+        &revision_id,
+        generation,
+        "manifest-digest-9",
+    );
     for (chunk_id, path, text) in [
         ("chunk-a", "src/a.rs", "alpha text"),
         ("chunk-shared", "src/shared.rs", "alpha beta text"),

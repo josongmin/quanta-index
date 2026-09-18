@@ -10,7 +10,7 @@ use quanta_index_contract::{
     BatchIngestMode, ManifestGeneration, SearchPlaneTrackKind, SearchScopeSurface,
 };
 use quanta_index_core::{
-    CoreError, IngestResourcePolicy, SearchCorpusIngestPort, SemanticIngestPort,
+    CoreError, IngestResourcePolicy, RequestBudgetV1, SearchCorpusIngestPort, SemanticIngestPort,
     SemanticStreamWindowPolicy,
 };
 
@@ -203,7 +203,7 @@ fn reclaim_sweeps_orphans_and_defers_pinned_generations() -> TestRes {
     );
     let pin = snapshots
         .lexical
-        .acquire(&pinned_key, || {
+        .acquire(&pinned_key, &RequestBudgetV1::unbounded(), || {
             let handle: Arc<dyn quanta_index_core::LexicalSearcher> = Arc::new(PinnedLexicalHandle);
             Ok(crate::OpenedSnapshot {
                 handle,

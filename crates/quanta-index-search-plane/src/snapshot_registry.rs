@@ -10,34 +10,62 @@
 //!
 //! The registry is the one owner of resident query handles in the search
 //! plane: adapters expose a cold `open`, the registry decides what stays
-//! resident. Three properties are load-bearing and each has a test:
+//! resident. Five properties are load-bearing and each has a test:
 //!
 //! - **Single flight.** Concurrent misses on one key run the opener once;
-//!   the others wait on that flight and share its outcome (success or typed
-//!   failure), so a cold open never fans out into N identical loads.
+//!   the others wait on that flight and share its outcome — the handle, or
+//!   the opener's own typed failure by value, never a rendering of it — so a
+//!   cold open never fans out into N identical loads and a coalesced caller
+//!   sees the same wire code the opener saw.
+//! - **Bounded waits.** A caller that waits on another's flight waits under
+//!   its own request budget: past the deadline, or once its peer left, it
+//!   receives the typed interruption and the flight lands for whoever is
+//!   still waiting.
 //! - **Bounded by entries *and* bytes.** A handle carries the adapter's
 //!   resident-bytes estimate; eviction is least-recently-used and runs until
 //!   both limits hold. A handle larger than the whole budget is served but
 //!   not retained — it must not evict everything else to fit.
-//! - **Pins survive eviction.** Handles are `Arc`s. Evicting or invalidating
+//! - **Pins survive eviction.** Handles are `Arc`s. Evicting or retiring
 //!   an entry drops the registry's reference only; a query mid-flight keeps
 //!   its handle alive and the native files it maps. Physical deletion of a
-//!   generation's bytes (W3 GC) must therefore consult [`Self::retire`], which
-//!   reports whether anything still references the handle.
+//!   generation's bytes (GC) must therefore consult [`SnapshotRegistry::retire`],
+//!   which reports whether anything still references the handle.
+//! - **Retirement fences flights.** A generation retired while an open for
+//!   it is in flight is not admitted when that open lands: `retire` marks
+//!   the flight, waits for it to settle, and the landing handle is dropped
+//!   with the opener and its waiters refused `UNKNOWN_GENERATION`. GC never
+//!   deletes under an opener, and an opener never serves a reaped
+//!   generation.
 //!
-//! Invalidation is explicit. A sealed generation never goes stale by itself;
-//! it is invalidated when a mutation the search plane routed touches the
-//! same generation key (auxiliary snapshots published after seal, discard,
-//! retirement). The ingest side owns those calls.
+//! A resident handle is never invalidated by ingest: a sealed generation is
+//! immutable (every publish that names one is refused `GENERATION_IMMUTABLE`
+//! before a byte is written, QI-BB-030), so it cannot go stale. The only
+//! way out of residency besides eviction is retirement, when GC reaps the
+//! generation or a repair replaces a damaged track. Activation and restart
+//! promote the handles they proved into the registry
+//! ([`SnapshotRegistry::promote`]) so the first query after either is a
+//! hit, not a second full open.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Condvar, Mutex};
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
 use quanta_index_core::domains::lexical::LexicalSearcher;
 use quanta_index_core::domains::semantic::SemanticSearcher;
-use quanta_index_core::{CoreError, MetricPointV1, MetricSourcePort, count_from_usize};
+use quanta_index_core::{
+    CoreError, MetricPointV1, MetricSourcePort, RequestBudgetV1, UNKNOWN_GENERATION_CODE,
+    count_from_usize,
+};
+
+/// How often a coalesced waiter wakes to observe its budget while the
+/// flight is still open: cancellation does not signal the flight's
+/// condvar, so the wait is sliced.
+const AWAIT_FLIGHT_POLL: Duration = Duration::from_millis(20);
+
+/// The checkpoint name a waiter's typed interruption carries.
+const AWAIT_FLIGHT_CHECKPOINT: &str = "snapshot-registry:await-flight";
 
 /// Identity of one opened sealed generation within a track's registry.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -127,6 +155,16 @@ pub struct SnapshotAcquired<H: ?Sized> {
     pub outcome: SnapshotAcquireOutcome,
 }
 
+/// Whether a promoted handle stayed resident.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SnapshotPromoteOutcome {
+    /// The handle is resident; the next acquire of its key is a hit.
+    Retained,
+    /// The handle exceeded the whole byte budget and was not retained; the
+    /// next acquire of its key opens again.
+    Oversize,
+}
+
 /// Counters and gauges for one registry, snapshotted under the lock.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SnapshotRegistryStats {
@@ -140,10 +178,19 @@ pub struct SnapshotRegistryStats {
     pub evictions: u64,
     /// Handles served but not retained because they exceeded the byte budget.
     pub oversize_uncached: u64,
-    /// Handles removed by explicit invalidation or retirement.
-    pub invalidations: u64,
+    /// Handles removed because their generation was retired (reaped or
+    /// repaired). A sealed generation is immutable, so nothing else ever
+    /// removes a resident handle.
+    pub retirements: u64,
     /// Cold opens that returned a typed failure.
     pub open_failures: u64,
+    /// Opens in flight that a retirement fenced; each landed refused and
+    /// admitted nothing.
+    pub fenced_in_flight: u64,
+    /// Coalesced waits that ended with the waiter's budget interruption.
+    pub await_interruptions: u64,
+    /// Handles admitted by activation or restart rather than by a query.
+    pub promotions: u64,
     /// Total wall time spent inside the opener, in nanoseconds.
     pub cold_open_nanos: u128,
     /// Handles currently resident.
@@ -155,10 +202,13 @@ pub struct SnapshotRegistryStats {
 /// Outcome of asking the registry to let go of a generation for deletion.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SnapshotRetireOutcome {
-    /// Nothing was resident for the key.
+    /// Nothing was resident or in flight for the key.
     NotResident,
     /// The registry held the last reference; the handle is now dropped.
     Released,
+    /// An open was in flight; it was fenced, has landed, and its handle was
+    /// refused and dropped. Nothing is resident and nothing holds it.
+    OpenFenced,
     /// The registry dropped its reference but other holders remain; their
     /// count is reported so the caller can wait or refuse to delete.
     StillReferenced { holders: usize },
@@ -170,25 +220,51 @@ struct Entry<H: ?Sized> {
     last_use: u64,
 }
 
+/// How a flight settled: the handle, or the opener's failure by value.
+type FlightOutcome<H> = Option<Result<Arc<H>, CoreError>>;
+
 /// One in-progress cold open that concurrent acquires can wait on.
+///
+/// `fenced` is set by [`SnapshotRegistry::retire`]: a flight that lands
+/// fenced admits nothing and settles with the retirement refusal.
 struct Flight<H: ?Sized> {
-    outcome: Mutex<Option<Result<Arc<H>, FlightFailure>>>,
+    outcome: Mutex<FlightOutcome<H>>,
     ready: Condvar,
+    fenced: AtomicBool,
 }
 
-/// The opener's failure, kept as a code/message pair so every waiter can
-/// receive an equivalent typed error without requiring `CoreError: Clone`.
-#[derive(Clone, Debug)]
-struct FlightFailure {
-    rendered: String,
-}
+impl<H: ?Sized> Flight<H> {
+    fn new() -> Self {
+        Self {
+            outcome: Mutex::new(None),
+            ready: Condvar::new(),
+            fenced: AtomicBool::new(false),
+        }
+    }
 
-impl FlightFailure {
-    fn into_error(self) -> CoreError {
-        CoreError::Storage(format!(
-            "snapshot registry: coalesced open failed: {}",
-            self.rendered
-        ))
+    fn lock_outcome(&self) -> Result<MutexGuard<'_, FlightOutcome<H>>, CoreError> {
+        self.outcome
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("snapshot registry flight poisoned: {err}")))
+    }
+
+    fn settle(&self, outcome: Result<Arc<H>, CoreError>) -> Result<(), CoreError> {
+        *self.lock_outcome()? = Some(outcome);
+        self.ready.notify_all();
+        Ok(())
+    }
+
+    /// Block until the flight settles, with no budget: for the retirement
+    /// path, whose wait is bounded by the one open already running.
+    fn wait_settled(&self) -> Result<(), CoreError> {
+        let mut outcome = self.lock_outcome()?;
+        while outcome.is_none() {
+            outcome = self.ready.wait(outcome).map_err(|err| {
+                CoreError::Storage(format!("snapshot registry flight poisoned: {err}"))
+            })?;
+        }
+        drop(outcome);
+        Ok(())
     }
 }
 
@@ -234,19 +310,29 @@ impl<H: ?Sized> RegistryState<H> {
         self.stats.entries = self.resident.len();
     }
 
+    /// Retain `opened` under the policy; reports whether it was retained.
     fn admit(
         &mut self,
         policy: SnapshotRegistryPolicy,
         key: SnapshotKey,
         opened: &OpenedSnapshot<H>,
-    ) {
+    ) -> SnapshotPromoteOutcome {
         if opened.resident_bytes > policy.max_resident_bytes {
             self.stats.oversize_uncached = self.stats.oversize_uncached.saturating_add(1);
-            return;
+            return SnapshotPromoteOutcome::Oversize;
+        }
+        // Replacing a resident entry frees its bytes before the budget is
+        // measured, so a re-admit of the same key never evicts a neighbour
+        // to make room for bytes it is about to give back.
+        if let Some(prior) = self.resident.remove(&key) {
+            self.stats.resident_bytes = self
+                .stats
+                .resident_bytes
+                .saturating_sub(prior.resident_bytes);
         }
         self.evict_until_within(policy, opened.resident_bytes);
         self.tick = self.tick.saturating_add(1);
-        let prior = self.resident.insert(
+        let _none = self.resident.insert(
             key,
             Entry {
                 handle: Arc::clone(&opened.handle),
@@ -254,17 +340,12 @@ impl<H: ?Sized> RegistryState<H> {
                 last_use: self.tick,
             },
         );
-        if let Some(prior) = prior {
-            self.stats.resident_bytes = self
-                .stats
-                .resident_bytes
-                .saturating_sub(prior.resident_bytes);
-        }
         self.stats.resident_bytes = self
             .stats
             .resident_bytes
             .saturating_add(opened.resident_bytes);
         self.stats.entries = self.resident.len();
+        SnapshotPromoteOutcome::Retained
     }
 
     fn remove(&mut self, key: &SnapshotKey) -> Option<Arc<H>> {
@@ -274,7 +355,7 @@ impl<H: ?Sized> RegistryState<H> {
             .resident_bytes
             .saturating_sub(removed.resident_bytes);
         self.stats.entries = self.resident.len();
-        self.stats.invalidations = self.stats.invalidations.saturating_add(1);
+        self.stats.retirements = self.stats.retirements.saturating_add(1);
         Some(removed.handle)
     }
 }
@@ -300,8 +381,11 @@ impl<H: ?Sized + Send + Sync> SnapshotRegistry<H> {
                     coalesced: 0,
                     evictions: 0,
                     oversize_uncached: 0,
-                    invalidations: 0,
+                    retirements: 0,
                     open_failures: 0,
+                    fenced_in_flight: 0,
+                    await_interruptions: 0,
+                    promotions: 0,
                     cold_open_nanos: 0,
                     entries: 0,
                     resident_bytes: 0,
@@ -315,7 +399,7 @@ impl<H: ?Sized + Send + Sync> SnapshotRegistry<H> {
         self.policy
     }
 
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, RegistryState<H>>, CoreError> {
+    fn lock(&self) -> Result<MutexGuard<'_, RegistryState<H>>, CoreError> {
         self.state
             .lock()
             .map_err(|err| CoreError::Storage(format!("snapshot registry poisoned: {err}")))
@@ -325,11 +409,16 @@ impl<H: ?Sized + Send + Sync> SnapshotRegistry<H> {
     /// resident and no other caller is already opening it.
     ///
     /// `open` runs outside the registry lock. Its success is retained under
-    /// the policy; its failure is delivered to every caller that coalesced
-    /// on this flight and is not retained, so the next acquire retries.
+    /// the policy; its failure is delivered by value to every caller that
+    /// coalesced on this flight and is not retained, so the next acquire
+    /// retries. A coalesced caller waits under `budget`: its deadline or
+    /// cancellation ends the wait with the typed interruption while the
+    /// flight lands for the others. A flight whose key was retired while it
+    /// ran admits nothing and is refused [`UNKNOWN_GENERATION_CODE`].
     pub fn acquire(
         &self,
         key: &SnapshotKey,
+        budget: &RequestBudgetV1,
         open: impl FnOnce() -> Result<OpenedSnapshot<H>, CoreError>,
     ) -> Result<SnapshotAcquired<H>, CoreError> {
         let flight = {
@@ -344,16 +433,20 @@ impl<H: ?Sized + Send + Sync> SnapshotRegistry<H> {
             if let Some(flight) = state.in_flight.get(key).map(Arc::clone) {
                 state.stats.coalesced = state.stats.coalesced.saturating_add(1);
                 drop(state);
-                return Self::await_flight(&flight).map(|handle| SnapshotAcquired {
-                    handle,
-                    outcome: SnapshotAcquireOutcome::Coalesced,
-                });
+                return match Self::await_flight(&flight, budget) {
+                    Ok(handle) => Ok(SnapshotAcquired {
+                        handle,
+                        outcome: SnapshotAcquireOutcome::Coalesced,
+                    }),
+                    Err(AwaitFlightFailure::Interrupted(interruption)) => {
+                        self.record_await_interruption()?;
+                        Err(interruption)
+                    }
+                    Err(AwaitFlightFailure::Flight(failure)) => Err(failure),
+                };
             }
             state.stats.misses = state.stats.misses.saturating_add(1);
-            let flight = Arc::new(Flight {
-                outcome: Mutex::new(None),
-                ready: Condvar::new(),
-            });
+            let flight = Arc::new(Flight::new());
             let _prior = state.in_flight.insert(key.clone(), Arc::clone(&flight));
             flight
         };
@@ -369,8 +462,9 @@ impl<H: ?Sized + Send + Sync> SnapshotRegistry<H> {
                 let _removed = state.in_flight.remove(key);
                 state.stats.cold_open_nanos = state.stats.cold_open_nanos.saturating_add(elapsed);
                 match opened {
+                    Ok(_) if flight.fenced.load(Ordering::Acquire) => Err(retired_in_flight(key)),
                     Ok(opened) => {
-                        state.admit(self.policy, key.clone(), &opened);
+                        let _retained = state.admit(self.policy, key.clone(), &opened);
                         Ok(opened.handle)
                     }
                     Err(err) => {
@@ -382,19 +476,7 @@ impl<H: ?Sized + Send + Sync> SnapshotRegistry<H> {
             Err(poisoned) => Err(poisoned),
         };
 
-        let published = match &result {
-            Ok(handle) => Ok(Arc::clone(handle)),
-            Err(err) => Err(FlightFailure {
-                rendered: err.to_string(),
-            }),
-        };
-        {
-            let mut outcome = flight.outcome.lock().map_err(|err| {
-                CoreError::Storage(format!("snapshot registry flight poisoned: {err}"))
-            })?;
-            *outcome = Some(published);
-        }
-        flight.ready.notify_all();
+        flight.settle(result.clone())?;
         result.map(|handle| SnapshotAcquired {
             handle,
             outcome: SnapshotAcquireOutcome::Miss {
@@ -403,51 +485,100 @@ impl<H: ?Sized + Send + Sync> SnapshotRegistry<H> {
         })
     }
 
-    fn await_flight(flight: &Flight<H>) -> Result<Arc<H>, CoreError> {
-        let mut outcome = flight.outcome.lock().map_err(|err| {
-            CoreError::Storage(format!("snapshot registry flight poisoned: {err}"))
-        })?;
+    fn record_await_interruption(&self) -> Result<(), CoreError> {
+        let mut state = self.lock()?;
+        state.stats.await_interruptions = state.stats.await_interruptions.saturating_add(1);
+        drop(state);
+        Ok(())
+    }
+
+    /// Wait for `flight` under `budget`.
+    ///
+    /// The flight's condvar wakes the waiter when the opener settles; the
+    /// budget is observed on every wake and at least every
+    /// [`AWAIT_FLIGHT_POLL`], since a cancelled peer signals nothing here.
+    fn await_flight(
+        flight: &Flight<H>,
+        budget: &RequestBudgetV1,
+    ) -> Result<Arc<H>, AwaitFlightFailure> {
+        let mut outcome = flight.lock_outcome().map_err(AwaitFlightFailure::Flight)?;
         loop {
             if let Some(settled) = outcome.as_ref() {
-                return match settled {
-                    Ok(handle) => Ok(Arc::clone(handle)),
-                    Err(failure) => Err(failure.clone().into_error()),
-                };
+                return settled.clone().map_err(AwaitFlightFailure::Flight);
             }
-            outcome = flight.ready.wait(outcome).map_err(|err| {
-                CoreError::Storage(format!("snapshot registry flight poisoned: {err}"))
+            if let Some(interruption) = budget.interrupted_at(AWAIT_FLIGHT_CHECKPOINT) {
+                return Err(AwaitFlightFailure::Interrupted(interruption));
+            }
+            let slice = budget.remaining().min(AWAIT_FLIGHT_POLL);
+            let (guard, _timed_out) = flight.ready.wait_timeout(outcome, slice).map_err(|err| {
+                AwaitFlightFailure::Flight(CoreError::Storage(format!(
+                    "snapshot registry flight poisoned: {err}"
+                )))
             })?;
+            outcome = guard;
         }
     }
 
-    /// Drop the registry's reference to `key`, if resident. Handles held by
-    /// in-flight queries stay alive. A flight in progress for the key is not
-    /// affected: its result is admitted afresh when it lands, which is the
-    /// correct outcome for a mutation that raced an open.
-    pub fn invalidate(&self, key: &SnapshotKey) -> Result<bool, CoreError> {
+    /// Retain a handle the caller proved outside the registry (activation,
+    /// restart) so the next acquire of `key` is a hit. Byte-accounted like
+    /// any admitted handle: it may evict, and an oversize handle is not
+    /// retained. A flight in progress for the key is left alone; its
+    /// landing re-admits the same generation.
+    pub fn promote(
+        &self,
+        key: &SnapshotKey,
+        opened: &OpenedSnapshot<H>,
+    ) -> Result<SnapshotPromoteOutcome, CoreError> {
         let mut state = self.lock()?;
-        Ok(state.remove(key).is_some())
+        state.stats.promotions = state.stats.promotions.saturating_add(1);
+        Ok(state.admit(self.policy, key.clone(), opened))
     }
 
-    /// Drop the registry's reference to `key` and report whether anything
-    /// else still holds the handle. Callers that intend to delete the
-    /// generation's bytes must not proceed on `StillReferenced`.
+    /// Drop the registry's reference to `key`, fence any open in flight for
+    /// it, and report whether anything else still holds the handle.
+    ///
+    /// A fenced flight is waited for: the wait is bounded by the one open
+    /// already running, and when it lands its handle is refused and dropped
+    /// rather than admitted, so a generation being retired is never served
+    /// from an open that started before the retirement. Callers that intend
+    /// to delete the generation's bytes must not proceed on
+    /// `StillReferenced`.
     pub fn retire(&self, key: &SnapshotKey) -> Result<SnapshotRetireOutcome, CoreError> {
-        let removed = {
-            let mut state = self.lock()?;
-            state.remove(key)
-        };
-        Ok(
-            removed.map_or(SnapshotRetireOutcome::NotResident, |handle| {
-                // Our own `handle` binding is one of the counted references.
-                let holders = Arc::strong_count(&handle).saturating_sub(1);
-                if holders == 0 {
-                    SnapshotRetireOutcome::Released
-                } else {
-                    SnapshotRetireOutcome::StillReferenced { holders }
-                }
-            }),
-        )
+        let (removed, fenced) = self.remove_and_fence(key)?;
+        if let Some(flight) = &fenced {
+            flight.wait_settled()?;
+        }
+        let holders = removed.map(|handle| {
+            // Our own `handle` binding is one of the counted references.
+            Arc::strong_count(&handle).saturating_sub(1)
+        });
+        Ok(match (holders, fenced.is_some()) {
+            (Some(holders), _) if holders > 0 => SnapshotRetireOutcome::StillReferenced { holders },
+            (Some(_), _) => SnapshotRetireOutcome::Released,
+            (None, true) => SnapshotRetireOutcome::OpenFenced,
+            (None, false) => SnapshotRetireOutcome::NotResident,
+        })
+    }
+
+    /// Drop the resident entry for `key` and mark any flight for it fenced,
+    /// under one lock acquisition.
+    #[expect(
+        clippy::type_complexity,
+        reason = "the pair is consumed by `retire` alone; a named struct would outlive its one use"
+    )]
+    fn remove_and_fence(
+        &self,
+        key: &SnapshotKey,
+    ) -> Result<(Option<Arc<H>>, Option<Arc<Flight<H>>>), CoreError> {
+        let mut state = self.lock()?;
+        let removed = state.remove(key);
+        let fenced = state.in_flight.get(key).map(Arc::clone);
+        if let Some(flight) = &fenced {
+            flight.fenced.store(true, Ordering::Release);
+            state.stats.fenced_in_flight = state.stats.fenced_in_flight.saturating_add(1);
+        }
+        drop(state);
+        Ok((removed, fenced))
     }
 
     pub fn stats(&self) -> Result<SnapshotRegistryStats, CoreError> {
@@ -455,8 +586,30 @@ impl<H: ?Sized + Send + Sync> SnapshotRegistry<H> {
     }
 }
 
+/// Why a coalesced wait ended without the flight's outcome.
+enum AwaitFlightFailure {
+    /// The flight settled with the opener's failure, shared by value.
+    Flight(CoreError),
+    /// The waiter's own budget interrupted it; the flight is still landing.
+    Interrupted(CoreError),
+}
+
+/// The refusal a flight lands with when its key was retired while it ran.
+fn retired_in_flight(key: &SnapshotKey) -> CoreError {
+    CoreError::Typed {
+        code: UNKNOWN_GENERATION_CODE.to_string(),
+        message: format!(
+            "snapshot registry: generation {} of repo={} revision={} was retired while its open was in flight; the durable authority no longer retains it and nothing was admitted",
+            key.generation.get(),
+            key.repo_id.as_str(),
+            key.revision_id.as_str(),
+        ),
+    }
+}
+
 /// The two per-track registries the search plane shares between its query
-/// side (which acquires) and its ingest side (which invalidates).
+/// side (which acquires), its activation path (which promotes) and its GC
+/// (which retires).
 ///
 /// One policy governs both: the byte budget is a process-level resource and
 /// splitting it per track would only move the misconfiguration.
@@ -474,14 +627,6 @@ impl SnapshotRegistries {
             semantic: Arc::new(SnapshotRegistry::new(policy)),
         }
     }
-
-    /// Drop both tracks' residency for one generation key. Used after any
-    /// routed mutation that can change what an open handle would observe.
-    pub fn invalidate(&self, key: &SnapshotKey) -> Result<(), CoreError> {
-        let _lexical = self.lexical.invalidate(key)?;
-        let _semantic = self.semantic.invalidate(key)?;
-        Ok(())
-    }
 }
 
 /// One track's registry stats as scrape points, `snapshot_registry_<track>_…`
@@ -494,8 +639,11 @@ fn registry_metric_points(track: &str, stats: &SnapshotRegistryStats) -> Vec<Met
         MetricPointV1::counter(name("coalesced_total"), stats.coalesced),
         MetricPointV1::counter(name("evictions_total"), stats.evictions),
         MetricPointV1::counter(name("oversize_uncached_total"), stats.oversize_uncached),
-        MetricPointV1::counter(name("invalidations_total"), stats.invalidations),
+        MetricPointV1::counter(name("retirements_total"), stats.retirements),
         MetricPointV1::counter(name("open_failures_total"), stats.open_failures),
+        MetricPointV1::counter(name("fenced_in_flight_total"), stats.fenced_in_flight),
+        MetricPointV1::counter(name("await_interruptions_total"), stats.await_interruptions),
+        MetricPointV1::counter(name("promotions_total"), stats.promotions),
         MetricPointV1::counter(
             name("cold_open_nanos_total"),
             u64::try_from(stats.cold_open_nanos).map_or(u64::MAX, |nanos| nanos),
@@ -518,14 +666,17 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
-    use quanta_index_core::CoreError;
+    use quanta_index_core::{
+        CoreError, REQUEST_CANCELLED_CODE, REQUEST_DEADLINE_EXCEEDED_CODE, RequestBudgetV1,
+        UNKNOWN_GENERATION_CODE,
+    };
 
     use super::{
-        OpenedSnapshot, SnapshotKey, SnapshotRegistry, SnapshotRegistryPolicy,
-        SnapshotRetireOutcome,
+        OpenedSnapshot, SnapshotKey, SnapshotPromoteOutcome, SnapshotRegistry,
+        SnapshotRegistryPolicy, SnapshotRetireOutcome,
     };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -548,14 +699,16 @@ mod tests {
             .expect("test policies are nonzero")
     }
 
-    /// Acquire and keep only the handle; outcome-specific tests inspect the
-    /// registry stats instead.
+    /// Acquire under an unbounded budget and keep only the handle;
+    /// outcome-specific tests inspect the registry stats instead.
     fn get(
         registry: &SnapshotRegistry<Handle>,
         key: &SnapshotKey,
         open: impl FnOnce() -> Result<OpenedSnapshot<Handle>, CoreError>,
     ) -> Result<Arc<Handle>, CoreError> {
-        registry.acquire(key, open).map(|acquired| acquired.handle)
+        registry
+            .acquire(key, &RequestBudgetV1::unbounded(), open)
+            .map(|acquired| acquired.handle)
     }
 
     fn opened(key: &SnapshotKey, bytes: u64) -> OpenedSnapshot<Handle> {
@@ -563,6 +716,19 @@ mod tests {
             handle: Arc::new(Handle { key: key.clone() }),
             resident_bytes: bytes,
         }
+    }
+
+    /// Spin until `condition` holds or `limit` passes; the registry's
+    /// stats are the observable a test waits on, never a sleep.
+    fn wait_until(limit: Duration, mut condition: impl FnMut() -> bool) -> bool {
+        let started = Instant::now();
+        while !condition() {
+            if started.elapsed() > limit {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        true
     }
 
     #[test]
@@ -636,49 +802,241 @@ mod tests {
         Ok(())
     }
 
-    /// A failed flight fails every waiter with a typed error and retains
-    /// nothing, so the next acquire retries the opener.
+    /// A failed flight fails every coalesced waiter with the opener's own
+    /// typed error — same variant, same message — and retains nothing, so
+    /// the next acquire retries the opener.
     #[test]
-    fn a_failed_open_is_shared_with_waiters_and_not_retained() -> TestResult {
+    fn a_failed_open_is_shared_with_waiters_by_value_and_not_retained() -> TestResult {
         let registry = Arc::new(SnapshotRegistry::new(policy(4, 1_000)));
-        let barrier = Arc::new(Barrier::new(2));
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let opener = {
+            let registry = Arc::clone(&registry);
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            thread::spawn(move || -> Result<Arc<Handle>, CoreError> {
+                get(&registry, &key(3), || {
+                    let _arrived = entered.wait();
+                    let _released = release.wait();
+                    Err(CoreError::NotFound("generation vanished".to_string()))
+                })
+            })
+        };
+        // The flight is in progress once the opener passed `entered`.
+        let _arrived = entered.wait();
         let waiter = {
             let registry = Arc::clone(&registry);
-            let barrier = Arc::clone(&barrier);
             thread::spawn(move || -> Result<Arc<Handle>, CoreError> {
-                let _arrived = barrier.wait();
-                thread::sleep(Duration::from_millis(10));
                 get(&registry, &key(3), || Ok(opened(&key(3), 1)))
             })
         };
-        let opener = get(&registry, &key(3), || {
-            let _arrived = barrier.wait();
-            thread::sleep(Duration::from_millis(50));
-            Err(CoreError::NotFound("generation vanished".to_string()))
-        });
+        if !wait_until(Duration::from_secs(5), || {
+            registry.stats().is_ok_and(|stats| stats.coalesced == 1)
+        }) {
+            return Err("the waiter did not coalesce on the flight".into());
+        }
+        let _released = release.wait();
+        let opener_outcome = opener.join().map_err(|_panic| "opener panicked")?;
         let waiter_outcome = waiter.join().map_err(|_panic| "waiter panicked")?;
-        if opener.is_ok() {
-            return Err("opener must fail".into());
+        match opener_outcome {
+            Err(CoreError::NotFound(message)) if message == "generation vanished" => {}
+            other => return Err(format!("opener must fail typed: {other:?}").into()),
         }
         match waiter_outcome {
-            Ok(_) => {
-                // The waiter may legitimately have arrived after the flight
-                // settled and opened on its own; that is a miss, not a
-                // coalesce, and the stats say which happened.
-                let stats = registry.stats()?;
-                if stats.coalesced != 0 {
-                    return Err("a coalesced waiter must not succeed on a failed flight".into());
-                }
+            Err(CoreError::NotFound(message)) if message == "generation vanished" => {}
+            other => {
+                return Err(format!(
+                    "a coalesced waiter must receive the opener's typed error by value: {other:?}"
+                )
+                .into());
             }
-            Err(CoreError::Storage(message)) if message.contains("generation vanished") => {}
-            Err(other) => return Err(format!("unexpected waiter error: {other}").into()),
         }
-        if registry.stats()?.entries != 0 {
-            return Err("a failed flight must not be retained".into());
+        let stats = registry.stats()?;
+        if stats.entries != 0 || stats.open_failures != 1 {
+            return Err(format!("a failed flight must not be retained: {stats:?}").into());
         }
         let retried = get(&registry, &key(3), || Ok(opened(&key(3), 1)))?;
         if retried.key != key(3) {
             return Err("retry after failure did not open".into());
+        }
+        Ok(())
+    }
+
+    /// A coalesced waiter waits under its own budget: a deadline that
+    /// passes, or a peer that leaves, ends the wait with the typed
+    /// interruption while the flight still lands and is retained.
+    #[test]
+    fn a_coalesced_wait_observes_its_budget() -> TestResult {
+        let registry = Arc::new(SnapshotRegistry::new(policy(4, 1_000)));
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let opener = {
+            let registry = Arc::clone(&registry);
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            thread::spawn(move || -> Result<Arc<Handle>, CoreError> {
+                get(&registry, &key(5), || {
+                    let _arrived = entered.wait();
+                    let _released = release.wait();
+                    Ok(opened(&key(5), 1))
+                })
+            })
+        };
+        let _arrived = entered.wait();
+        let deadline_waiter = {
+            let registry = Arc::clone(&registry);
+            thread::spawn(move || {
+                registry
+                    .acquire(
+                        &key(5),
+                        &RequestBudgetV1::for_duration(Duration::from_millis(30)),
+                        || Ok(opened(&key(5), 1)),
+                    )
+                    .map(|acquired| acquired.handle)
+            })
+        };
+        let cancelled_budget = RequestBudgetV1::for_duration(Duration::from_secs(60));
+        let cancel = cancelled_budget.cancel_handle();
+        let cancelled_waiter = {
+            let registry = Arc::clone(&registry);
+            thread::spawn(move || {
+                registry
+                    .acquire(&key(5), &cancelled_budget, || Ok(opened(&key(5), 1)))
+                    .map(|acquired| acquired.handle)
+            })
+        };
+        if !wait_until(Duration::from_secs(5), || {
+            registry.stats().is_ok_and(|stats| stats.coalesced == 2)
+        }) {
+            return Err("the waiters did not coalesce on the flight".into());
+        }
+        cancel.cancel();
+        match deadline_waiter.join().map_err(|_panic| "waiter panicked")? {
+            Err(CoreError::Typed { code, message }) if code == REQUEST_DEADLINE_EXCEEDED_CODE => {
+                if !message.contains("snapshot-registry:await-flight") {
+                    return Err(format!("interruption names no checkpoint: {message}").into());
+                }
+            }
+            other => return Err(format!("deadline waiter must be interrupted: {other:?}").into()),
+        }
+        match cancelled_waiter
+            .join()
+            .map_err(|_panic| "waiter panicked")?
+        {
+            Err(CoreError::Typed { code, .. }) if code == REQUEST_CANCELLED_CODE => {}
+            other => return Err(format!("cancelled waiter must be interrupted: {other:?}").into()),
+        }
+        // The flight is still open; releasing it lands the handle for
+        // whoever asks next.
+        let _released = release.wait();
+        let landed = opener.join().map_err(|_panic| "opener panicked")??;
+        let stats = registry.stats()?;
+        if stats.entries != 1 || stats.await_interruptions != 2 || stats.open_failures != 0 {
+            return Err(format!("the flight must land after its waiters left: {stats:?}").into());
+        }
+        let hit = get(&registry, &key(5), || {
+            Err(CoreError::Storage("must hit".into()))
+        })?;
+        if !Arc::ptr_eq(&landed, &hit) {
+            return Err("the landed handle is not the resident one".into());
+        }
+        Ok(())
+    }
+
+    /// Retiring a key whose open is in flight fences the flight: GC waits
+    /// for the open to land, the landing handle is refused typed and never
+    /// admitted, and the opener sees `UNKNOWN_GENERATION`.
+    #[test]
+    fn retire_fences_an_open_in_flight_and_waits_for_it() -> TestResult {
+        let registry = Arc::new(SnapshotRegistry::new(policy(4, 1_000)));
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let opens = Arc::new(AtomicUsize::new(0));
+        let opener = {
+            let registry = Arc::clone(&registry);
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            let opens = Arc::clone(&opens);
+            thread::spawn(move || -> Result<Arc<Handle>, CoreError> {
+                get(&registry, &key(9), || {
+                    let _count = opens.fetch_add(1, Ordering::SeqCst);
+                    let _arrived = entered.wait();
+                    let _released = release.wait();
+                    Ok(opened(&key(9), 1))
+                })
+            })
+        };
+        let _arrived = entered.wait();
+        let retirer = {
+            let registry = Arc::clone(&registry);
+            thread::spawn(move || registry.retire(&key(9)))
+        };
+        // `retire` fences the flight, then blocks until it lands; the
+        // opener is held at `release` until the fence is observable.
+        if !wait_until(Duration::from_secs(5), || {
+            registry
+                .stats()
+                .is_ok_and(|stats| stats.fenced_in_flight == 1)
+        }) {
+            return Err("retire did not fence the open in flight".into());
+        }
+        let _released = release.wait();
+        let retire_outcome = retirer.join().map_err(|_panic| "retirer panicked")??;
+        let opener_outcome = opener.join().map_err(|_panic| "opener panicked")?;
+        if retire_outcome != SnapshotRetireOutcome::OpenFenced {
+            return Err(format!("retire must report the fenced flight: {retire_outcome:?}").into());
+        }
+        match opener_outcome {
+            Err(CoreError::Typed { code, .. }) if code == UNKNOWN_GENERATION_CODE => {}
+            other => {
+                return Err(format!("the fenced opener must be refused typed: {other:?}").into());
+            }
+        }
+        let stats = registry.stats()?;
+        if stats.entries != 0 || stats.fenced_in_flight != 1 || opens.load(Ordering::SeqCst) != 1 {
+            return Err(format!("a fenced flight must admit nothing: {stats:?}").into());
+        }
+        // Nothing is resident and nothing is fenced any more: the next
+        // acquire opens afresh.
+        let reopened = get(&registry, &key(9), || {
+            let _count = opens.fetch_add(1, Ordering::SeqCst);
+            Ok(opened(&key(9), 1))
+        })?;
+        if reopened.key != key(9) || opens.load(Ordering::SeqCst) != 2 {
+            return Err("the key must open afresh after the fence lifted".into());
+        }
+        Ok(())
+    }
+
+    /// A promoted handle is served as a hit; the opener never runs.
+    #[test]
+    fn a_promoted_handle_makes_the_next_acquire_a_hit() -> TestResult {
+        let registry = SnapshotRegistry::new(policy(4, 1_000));
+        let promoted = opened(&key(2), 40);
+        if registry.promote(&key(2), &promoted)? != SnapshotPromoteOutcome::Retained {
+            return Err("a handle within budget must be retained".into());
+        }
+        let served = get(&registry, &key(2), || {
+            Err(CoreError::Storage("must hit".into()))
+        })?;
+        if !Arc::ptr_eq(&served, &promoted.handle) {
+            return Err("the promoted handle was not the one served".into());
+        }
+        let stats = registry.stats()?;
+        if stats.hits != 1
+            || stats.misses != 0
+            || stats.promotions != 1
+            || stats.resident_bytes != 40
+        {
+            return Err(format!("promotion stats drifted: {stats:?}").into());
+        }
+        // Promotion is byte-accounted: an oversize handle is not retained.
+        let oversize = opened(&key(3), 1_001);
+        if registry.promote(&key(3), &oversize)? != SnapshotPromoteOutcome::Oversize {
+            return Err("an oversize handle must not be retained".into());
+        }
+        if registry.stats()?.entries != 1 {
+            return Err("an oversize promotion changed residency".into());
         }
         Ok(())
     }
@@ -701,7 +1059,7 @@ mod tests {
         if stats.entries != 3 || stats.evictions != 1 || stats.resident_bytes != 90 {
             return Err(format!("entry-limit eviction drifted: {stats:?}").into());
         }
-        if registry.invalidate(&key(2))? {
+        if registry.retire(&key(2))? != SnapshotRetireOutcome::NotResident {
             return Err("key 2 should already have been evicted".into());
         }
         // Byte limit: a 60-byte entry needs 90 + 60 <= 100 -> evicts until it fits.
@@ -743,6 +1101,7 @@ mod tests {
         match registry.retire(&key(1))? {
             SnapshotRetireOutcome::NotResident => {}
             reported @ (SnapshotRetireOutcome::Released
+            | SnapshotRetireOutcome::OpenFenced
             | SnapshotRetireOutcome::StillReferenced { .. }) => {
                 return Err(format!("evicted key reported {reported:?}").into());
             }
@@ -754,6 +1113,7 @@ mod tests {
             SnapshotRetireOutcome::StillReferenced { holders: 2 } => {}
             reported @ (SnapshotRetireOutcome::NotResident
             | SnapshotRetireOutcome::Released
+            | SnapshotRetireOutcome::OpenFenced
             | SnapshotRetireOutcome::StillReferenced { .. }) => {
                 return Err(format!("held key reported {reported:?}").into());
             }
@@ -765,6 +1125,7 @@ mod tests {
             SnapshotRetireOutcome::StillReferenced { holders: 1 } => {}
             reported @ (SnapshotRetireOutcome::NotResident
             | SnapshotRetireOutcome::Released
+            | SnapshotRetireOutcome::OpenFenced
             | SnapshotRetireOutcome::StillReferenced { .. }) => {
                 return Err(format!("reopened key reported {reported:?}").into());
             }
@@ -775,6 +1136,7 @@ mod tests {
         match registry.retire(&key(3))? {
             SnapshotRetireOutcome::Released => Ok(()),
             reported @ (SnapshotRetireOutcome::NotResident
+            | SnapshotRetireOutcome::OpenFenced
             | SnapshotRetireOutcome::StillReferenced { .. }) => {
                 Err(format!("unreferenced key reported {reported:?}").into())
             }
