@@ -2363,6 +2363,45 @@ derive allowlist, digest fallibility, wire inventory, test authority, hexagonal)
 **1,135/0**(62 binary), daemon e2e 9 suite(boot_quarantine 3, activation_concurrency 1, lexical_sealed_overlays 2, physical_gc 3, predicate_authority_lifecycle 1, read_view 3,
 snapshot_registry 3, end_to_end 35(+1 ignored), sdk_frontdoor 15) **66/0**. WIP 6개를 tree 동일 확인 후 1 commit으로 squash.
 
+## 3.49 QI-BB-003/001/020 — reap된 pin은 `UNKNOWN_GENERATION`, GC는 실제 byte, activation은 guard 밖에서 한 번의 open으로 증명·승격 (fix wave A2, 87d4450)
+
+§4 감사가 지적한 것: (a) **WRONG** — per-track watermark(`active >= target`, `lexical/service.rs:121-131` b0485b5)라 reap된 generation도 pin 가능; ledger는
+rollback identity만 prune; (b) GC receipt를 버림(`let _receipt = …`), retention은 CBOR encoded byte로 계산; (c) **WRONG** — activation validator가 global
+ledger read guard 아래서 dataset 전량 해시(`search_corpus_lifecycle.rs:239-267`); (d) coalesced open 실패가 `ERR_INTERNAL`로 뭉개짐; (e) 검증 handle 미승격.
+
+**티켓 완료 기준 대조(코드 기준)**
+
+| 티켓 bullet | 판정 | 근거 |
+| --- | --- | --- |
+| QI-BB-003 완료 기준 #1 5 sealed → cap 2 → backend dir 정확히 2 | **MET** | `ingest_dispatcher/search_corpus.rs` reclaim; e2e `e2e_physical_gc::reaping_a_generation_removes_its_directories_on_both_tracks`(fs oracle), `…::an_orphan_left_by_a_restart_is_unknown_listed_and_discardable` |
+| #2 active/candidate/predecessor는 어떤 crash point에서도 삭제 안 됨 | **serving 경계 MET**, crash-point matrix **BLOCKED** | core `domains/generation.rs` `validate_pinned_generation_v1`(pin은 durable authority가 정확한 digest로 보유한 generation만; 나머지는 `UNKNOWN_GENERATION`), `readiness/ledger.rs`(reap 시 semantic generation prune), `read_view/view.rs`(모든 pinned route, 양 track). tests core `generation_serving_policy.rs::every_pin_state_has_exactly_one_outcome`(12행 oracle), e2e `a_reaped_generation_is_unknown_to_every_pinned_route`. per-fsync/rename fault injection은 미구축. |
+| #3 보고 retained bytes = `du` | **MET** | `search_corpus_retained_index_bytes` gauge = 독립 `(dev, ino)` walk(정확 일치, f64 bit 비교), reclaimed-bytes delta = reap 전 측정한 victim dir. e2e `gc_metrics_report_reclaimed_and_retained_bytes_that_match_the_disk` |
+| 보완 #1 track별 GC port | **MET**(repo-map BLOCKED) | `measure_sealed_generations`가 reclaim port에 합류(lexical/semantic impl). repo-map은 sealed-generation dir lifecycle이 없음. |
+| 보완 #2 admission/retention에 실제 재귀 byte | **MET** | `search_corpus_retention.rs` `SearchCorpusIndexBytesPort`/`PairIndexBytesMeasurer`(두 track unique-inode), `readiness/search_corpus_history.rs`(state-root projection이 index byte 기준; `encoded_len` 계산 삭제). **의미 변경**: `QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES`/`MAX_TOTAL_BYTES`가 이제 디스크 index byte. |
+| 보완 #3 crash-recoverable 순서 | cache fence·boot 복구 MET, durable GC-intent **BLOCKED** | registry `retire`가 in-flight open을 fence하고 착지 handle을 `UNKNOWN_GENERATION`으로 거부(`retire_fences_an_open_in_flight_and_waits_for_it`, barrier opener); orphan은 boot에서 seed 안 되고 quarantine surface로 목록·discard(`GENERATION_QUARANTINE_ORPHANED`, reader가 잡고 있으면 `QUARANTINE_TARGET_STILL_REFERENCED`). |
+| 보완 #4 멱등 부분 삭제 복구 | **MET** | `boot_inventory.rs`(orphan 미seed), `quarantine.rs`(두 번째 discard는 `Absent`) |
+| 보완 #5 pair retirement + global byte cap | global cap MET, pair retirement **BLOCKED(설계 불변)** | |
+| QI-BB-001 완료 기준 #2 32 동시 miss → 1 open | **MET** | `snapshot_registry::tests::concurrent_misses_on_one_key_open_once` |
+| #3 eviction/GC vs in-flight query | **MET** | `eviction_and_retire_do_not_invalidate_handles_in_flight`, retire fence |
+| #4 real-size cold/warm p50/p95/p99 + RSS | **BLOCKED(host)** | |
+| 보완 #2 single-flight 실패를 typed로 공유 | **MET** | flight가 `CoreError`를 값으로 공유(`CoreError: Clone`), 보유 안 함: `a_failed_open_is_shared_with_waiters_by_value_and_not_retained`; 대기는 caller budget 관측(`snapshot-registry:await-flight`): `a_coalesced_wait_observes_its_budget` |
+| 보완 #3 entry + 실제 resident byte | **MET** | lexical: unique-inode mapped + decoded text-authority heap(CBOR 아님). `lexical/tests/resident_bytes.rs::the_estimate_counts_the_decoded_authority_not_its_cbor`(main에서 fail) |
+| 보완 #4 invalidate는 GC에서만 | **MET(coordinator가 A3 계약에 맞춰 완성)** | A3(§3.48) 이후 sealed generation은 불변이라 publish가 resident handle을 stale하게 만들 수 없다 → ingest dispatcher의 publish-시 invalidation·`invalidate*` 메서드·registry 필드 **삭제**. handle이 residency를 떠나는 길은 eviction과 retirement(GC reap/repair)뿐(`snapshot_registry_<track>_retirements_total`, 이전 `invalidations_total` 개명). e2e `an_auxiliary_publish_into_a_sealed_generation_is_refused_and_keeps_residency`가 lexical **과 semantic** 양쪽 residency를 증명(A2의 lexical-only invalidation test 2개는 A3 계약에서 도달 불가라 대체). |
+| QI-BB-017 보완 #4 검증 handle을 query cache로 승격 / QI-BB-030 완료 기준 #2 재open 없음 | **MET(coordinator 보정)** | A2 원안은 `validate_physical_pair_v1`(validator walk) **후** `promote_pair`(open walk)로 track당 **두 번** 증명하면서 doc은 "한 open"이라 주장(doc-코드 모순, 감사 기준 위반). coordinator가 core `LexicalIndexOpenPort`/`SemanticIndexOpenPort`에 `open_proven(candidate)`(exact sealed identity + 공유 walk + dir durability → handle)을 추가하고 activation/rollback/restart가 track당 **한 번** 호출해 그 handle을 승격하도록 변경; lifecycle에서 validator 의존 제거. tests: activation unit test가 track당 proof 1회를 셈, lexical `sealed_manifest.rs`와 semantic `sealed_manifest.rs`의 모든 fault injection이 `open_proven`을 세 번째 문으로 validator·open과 같은 판정에 묶음, e2e `the_first_query_after_{activation,restart}_is_served_from_the_promoted_handle`(generation 파일 삭제 후 첫 query serve, miss 불변). |
+| QI-BB-020 보완 #2 activation이 global read guard 밖에서 | **MET** | 짧은 read guard로 precondition → guard 밖에서 증명(=open) → precondition 재확인 → pair guard 아래 durable authority 재확인 → CAS. test `activation_proves_outside_the_ledger_guard_and_promotes_the_handles`(opener가 증명 중 ledger write lock을 잡음; main에서 fail), `activation_refuses_a_candidate_the_durable_history_reaped_before_the_cas` |
+| QI-BB-020 완료 기준 #1 1M-row history query vs 타 repo ingest latency | **BLOCKED(host)** | 구조적 원인(global guard 아래 전량 해시)은 제거 |
+
+**Coordinator 수정(에이전트 보고와 다른 점)**: A2 보고의 "`just rust-clippy` 통과"는 사실이 아니었다 — 착지 gate에서 12건(redundant clone 2, doc paragraph 8,
+by-value `Option<GenerationPin>`, type complexity, float 직접 비교 + lossy `as`, wildcard match, 산술 overflow) + private intra-doc link 1건을 coordinator가 수정.
+A2 원본의 두 doc comment가 한 함수(`resident_bytes_estimate`) 위에 붙어 `generation_tree_bytes`가 doc을 잃은 merge 결함도 수정. 11개 WIP → 1 commit.
+
+**Fail-before**: 1894583 위 A2 harness + main 호환 probe `e2e_a2_before.rs` 0/5(reaped pin이 `NOT_FOUND`, orphan served, GC counter 부재, activation 후 cold open,
+aux publish가 `NOT_READY`); `resident_bytes` main에서 fail; activation-outside-guard unit test main에서 fail.
+
+**검증(coordinator, main b2a3524 위 rebase, 순차)**: fmt, `check --workspace --all-targets`, 정책 lint 8종, `just rust-clippy`(workspace keep-going EXIT=0), `just rust-doc`,
+unit core/contract/lexical/semantic/search-plane/searchd **1,149/0**(64 binary), e2e 10 suite(composite_generation_authority_restart 9, boot_quarantine 3, activation_concurrency 1,
+lexical_sealed_overlays 2, metrics_scrape 2, physical_gc 6, read_view 3, snapshot_registry 5, end_to_end 35(+1 ignored), sdk_frontdoor 15) **81/0**.
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -2375,9 +2414,9 @@ snapshot_registry 3, end_to_end 35(+1 ignored), sdk_frontdoor 15) **66/0**. WIP 
 
 | ID | 등급 | 구현 절 | 판정 | 남은 것(감사 근거) | 수정 wave |
 | --- | --- | --- | --- | --- | --- |
-| QI-BB-001 | P1 | §3.7 | gaps | coalesced open 실패가 `ERR_INTERNAL`(typed code 소실); `retire`가 in-flight cold open 무시(GC race); byte 추정이 on-disk; aux publish가 semantic까지 invalidate; perf blocked | A2 |
+| QI-BB-001 | P1 | §3.2/§3.49 | gaps → **MET(A2)** 단 real-size latency/RSS **BLOCKED(host)** | single-flight 실패 typed 공유, budgeted wait, retire fence, resident byte 실측, invalidate는 GC/repair뿐, activation·restart가 증명한 handle 승격(§3.49) | — |
 | QI-BB-002 | P1 | §3.12/§3.29/§3.43 | gaps | deadline vs cancel metric 공유; per-repo cap 없음; cold open·embed HTTP·`await_flight` budget 미관측; pipelined peer hang-up 감지 중단; slowloris 3-way test 없음 | A2(registry), A7 |
-| QI-BB-003 | P1 | §3.9 | **not closed** | reap된 generation이 explicit pin으로 resolve(`UNKNOWN_GENERATION` 없음), boot가 orphan을 sealed로 재seed; GC receipt 폐기(metric 0); byte 정책이 authority 길이 | A2 |
+| QI-BB-003 | P1 | §3.9/§3.49 | not closed → **MET(A2)** 단 crash-point matrix·durable GC-intent·pair retirement **BLOCKED** | reap된 pin `UNKNOWN_GENERATION`, GC receipt scrape, retention = 디스크 index byte(inode), orphan list/discard(§3.49) | — |
 | QI-BB-004 | P1 | §3.6 | closed | contradiction code가 generic `ERR_INVALID`; chunked join 미구현(≤10k라 실효 낮음) | — |
 | QI-BB-005 | P1 | §3.8 | gaps | projection은 budget까지 full collect(streaming 없음); text/symbol/semantic cursor 없음; `RESULT_TOO_LARGE` 사후 거부; perf blocked | wave B |
 | QI-BB-006 | P2 | §3.4/§3.4.1/§3.4.2/§3.38/§3.48 | gaps → **lexical 증분 commitment MET(A3)** | lexical seal은 inode 상속으로 바뀐 byte만 해시, open은 segment 길이만(§3.48). 남은 것: semantic 측(A4), 100 GB 실측(host) | A4 |
@@ -2391,10 +2430,10 @@ snapshot_registry 3, end_to_end 35(+1 ignored), sdk_frontdoor 15) **66/0**. WIP 
 | QI-BB-014 | P2 | §3.27/§3.40 | gaps | 기존 dir/root 0755 허용(0700 강제 아님); umask test 없음; `--state-root`가 socket-access env silent drop | A7 |
 | QI-BB-015 | P2 | §3.28 | gaps | queue/in-flight·examined·response bytes·generation disk bytes·GC·provider failure metric 없음; 운영 scrape 경로 미문서화 | A7, A2(GC) |
 | QI-BB-016 | P3 | §3.26 | gaps | writer heap만의 envelope(process envelope 아님); RSS 미관측; idle sweep이 ingest 없이는 안 돎; `--state-root` env drop | A7 |
-| QI-BB-017 | P1 | §3.14/§3.48 | gaps → **lexical 측 MET(A3)** | lexical open은 manifest+길이, scrub port+receipt(§3.48). 남은 것: semantic cheap open·scrub 스케줄러·legacy v2–v8(A4), 검증 handle 승격(A2), scrub port 모양 통합(A4) | A4, A2 |
+| QI-BB-017 | P1 | §3.14/§3.48/§3.49 | gaps → **lexical 측 + 검증 handle 승격 MET(A3, A2)** | lexical open은 manifest+길이, scrub port+receipt(§3.48); activation·restart는 한 번의 proven open 승격(§3.49). 남은 것: semantic cheap open·scrub 스케줄러·legacy v2–v8·scrub port 통합(A4), 10M row budget(host) | A4 |
 | QI-BB-018 | P2 | §3.22/§3.36/§3.46 | gaps → **filter 결속 MET(A1, 1894583)** | ~~dense lane이 DSL filter 무시~~ → 전 variant class 분류 + admission/refill(§3.46, e2e 5 fail-before/pass-after); 남은 것: route가 SDK/CLI에 없음(A8); judged corpus blocked(M4) | A8 |
 | QI-BB-019 | P2 | §3.21 | gaps | `dense_corpora` doc이 "legacy/migration window" 주장; empty=global 이중 의미 | A8 |
-| QI-BB-020 | P1 | §3.19/§3.37 | gaps(**WRONG**) | activation이 global read guard 아래 dataset 전량 해시(cross-repo ingest/query 정지); history-text cold open under lock; reconcile-fail-after-durable; I/O fault injection 없음 | A2 |
+| QI-BB-020 | P1 | §3.19/§3.37/§3.49 | gaps(**WRONG**) → **activation guard 밖 증명 MET(A2)** | activation은 짧은 read guard + guard 밖 한 번의 proven open + durable 재확인 후 CAS(§3.49). 남은 것: history-text cold open under lock, reconcile-fail-after-durable, I/O fault injection, latency 실측(host) | wave B |
 | QI-BB-021 | P2 | §3.18/§3.41 | gaps | process envelope 미선언·RSS 미측정; 정책 3분할 | A7 |
 | QI-BB-022 | P2 | §3.24/§3.36 | gaps(**WRONG**) | hybrid explain의 dense/RRF 축이 client payload 자기일관성 검사; hybrid 합성 규칙 미정의; filter/projection 기여 없음 | A8 |
 | QI-BB-023 | P2 | §3.20/§3.37/§3.42/§3.47 | gaps → **predicate 동일·score 결정성 MET(A6)** | ~~두 order가 filter를 다른 의미로~~ → 한 predicate(e2e 8 query × 2 order 동일); ~~score가 ingest 이력 의존~~ → publish compaction으로 live-row 통계(bit-identical test). 남은 것: author/committer 색인(보완 #1, §3.42(b) 결정), latency/RSS budget(host) | — |
@@ -2404,7 +2443,7 @@ snapshot_registry 3, end_to_end 35(+1 ignored), sdk_frontdoor 15) **66/0**. WIP 
 | QI-BB-027 | P2 | §3.23/§3.35 | gaps(**WRONG**) | legacy ≤v7/v8 generation은 ANN 누락을 silent exact fallback으로 서비스; append segment ef_construction≠manifest; recall artifact에 HEAD 없음 | A4, A8 |
 | QI-BB-028 | P1 | §3.15 | gaps | semantic row-root attestation(완료 기준 #5) 미구현 | A4 |
 | QI-BB-029 | P1 | §3.11 | gaps(**WRONG**) | 거부될 batch가 validate 전에 idempotency row 기록; sealed-but-corrupt half pair는 CONFLICT 고정; IPC/SDK preflight test 0건 | A5 |
-| QI-BB-030 | P1 | §3.10/§3.48 | gaps → **WRONG 해소(A3, f0cf9c9)** | ~~overlay가 manifest 밖·`fs::write`·sealed dir mutation~~ → manifest v4가 overlay·segment·text-authority 전부 commit, sealed generation 불변, 두 문 한 walk. 남은 것: 검증 handle 재사용(완료 기준 #2 → A2) | A2 |
+| QI-BB-030 | P1 | §3.10/§3.48/§3.49 | **closed(A3 f0cf9c9 + A2 87d4450)** | manifest v4가 overlay·segment·text-authority 전부 commit, sealed generation 불변, 문 세 개(validator/open/proven open) 한 walk; activation 후 재open 없음(§3.49) | — |
 | QI-BB-031 | P2 | §3.15 | gaps | adapter 경계 validator가 norm 무관(상류 의존); 혼합 batch 값 동일성·artifact 미증명 | A4 |
 | QI-BB-032 | P2 | §3.16 | gaps(**WRONG**) | idempotency forget이 same-pass 양 track 조건(deferred split·미seal row 누수); `batch_digest`↔payload 미결속; crash-resume 재적용 | A5 |
 
