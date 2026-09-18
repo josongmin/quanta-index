@@ -771,10 +771,11 @@ fn a_delta_refuses_to_build_on_a_shard_whose_digest_changed() -> TestResult {
     Ok(())
 }
 
+/// One file of the text-authority directory: its name and bytes.
+type NamedFileBytes = (String, Vec<u8>);
+
 /// Every file of the text-authority directory, by name.
-fn snapshot_text_authority(
-    generation_dir: &Path,
-) -> Result<Vec<(String, Vec<u8>)>, Box<dyn Error>> {
+fn snapshot_text_authority(generation_dir: &Path) -> Result<Vec<NamedFileBytes>, Box<dyn Error>> {
     let mut files = Vec::new();
     for entry in std::fs::read_dir(generation_dir.join(TEXT_AUTHORITY_DIR))? {
         let entry = entry?;
@@ -798,12 +799,13 @@ fn restore_text_authority(generation_dir: &Path, files: &[(String, Vec<u8>)]) ->
     Ok(())
 }
 
-/// A publish that crashed after its index commit leaves the index ahead of
-/// the authority; the next batch that retires one of the unlisted
-/// documents catches up by a full derivation, continues doc ids past what
-/// the index stores, and the generation seals consistent.
+/// A publish that crashed after its index commit is caught up by the
+/// next batch's rebuild.
 ///
-/// The crash is staged by publishing twice and restoring the first
+/// The crash leaves the index ahead of the authority; the next batch that
+/// retires one of the unlisted documents catches up by a full derivation,
+/// continues doc ids past what the index stores, and the generation seals
+/// consistent. The crash is staged by publishing twice and restoring the first
 /// publish's `text-authority/` files over the second's.
 #[test]
 fn a_publish_that_crashed_after_its_commit_is_caught_up_by_a_rebuild() -> TestResult {
