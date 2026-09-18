@@ -19,8 +19,7 @@ use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::lex::{CommitRecord, CommitSha, ParseTreeRecord};
 use quanta_index_contract::{
     DirtyIngestBatch, HistoryIngestBatch, ManifestGeneration, RepoId, RevisionId,
-    RuntimeCatalogIngestBatch, SearchCorpusIngestBatch, SearchPlaneTrackKind, SearchScopeSurface,
-    StructuralIngestBatch,
+    RuntimeCatalogIngestBatch, SearchPlaneTrackKind, SearchScopeSurface,
 };
 use quanta_index_core::CoreError;
 use quanta_index_ipc::decode_cbor_payload;
@@ -32,26 +31,9 @@ use crate::readiness::runtime_state::RuntimeMetadataState;
 use crate::readiness::structural_state::StructuralAuthorityState;
 
 impl Ledger {
-    /// Apply a search-corpus batch's chunk universe in memory, without
-    /// the durable step (tests and in-memory fixtures; production goes
-    /// through the transition, the catalog and then the delta).
-    pub fn apply_search_corpus_batch(
-        &mut self,
-        batch: &SearchCorpusIngestBatch,
-        now: Instant,
-    ) -> Result<(), CoreError> {
-        let epoch =
-            self.structural_next_epoch(&batch.repo_id, &batch.revision_id, batch.generation)?;
-        let delta = auxiliary_authority::structural_chunks_transition(
-            self.structural_state(&batch.repo_id, &batch.revision_id, batch.generation),
-            epoch,
-            batch,
-        );
-        self.apply_structural_chunks_delta(&delta, now)
-    }
-
     /// Validate and apply a history batch in memory, without the durable
-    /// step.
+    /// step (tests and in-memory fixtures; production goes through the
+    /// transition, the catalog and then the delta).
     pub fn apply_history_batch(
         &mut self,
         batch: &HistoryIngestBatch,
@@ -99,28 +81,6 @@ impl Ledger {
             batch,
         )?;
         self.apply_runtime_catalog_delta(&delta, now)
-    }
-
-    /// Validate and apply a structural batch's parse trees in memory,
-    /// without the durable step and without the track bookkeeping.
-    pub fn apply_structural_batch(
-        &mut self,
-        batch: &StructuralIngestBatch,
-        now: Instant,
-    ) -> Result<(), CoreError> {
-        let epoch =
-            self.structural_next_epoch(&batch.repo_id, &batch.revision_id, batch.generation)?;
-        let delta = auxiliary_authority::structural_transition(
-            self.structural_state(&batch.repo_id, &batch.revision_id, batch.generation),
-            self.track_state(
-                &batch.repo_id,
-                &batch.revision_id,
-                SearchPlaneTrackKind::Structural,
-            ),
-            epoch,
-            batch,
-        )?;
-        self.apply_structural_trees_delta(&delta, now)
     }
 
     /// Apply a validated history delta at the epoch its durable rows were
