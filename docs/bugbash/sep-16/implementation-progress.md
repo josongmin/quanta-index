@@ -310,10 +310,10 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | --- | --- | --- |
 | W0 | **passed** | G0-L/G0-S/G0-C passed, G0-R baseline pinned(cooperative-only). §3 참조. timing 재측정만 `blocked: contended-host` |
 | W1 | in_progress | **QI-BB-011 Unicode normalizer(§3.33)** + **QI-BB-013 search-plane 3 monolith 분할(§3.32)** + **route×plan `RequiredDomains` + `QueryReadView`(§3.44)** 완료. 남은 것: snake/camel sub-token 확장(LEX-00, 제품 결정) |
-| W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + **quarantine control surface(§3.31: live inventory + as-listed discard, control IPC/SDK/CLI)** + QI-BB-032 idempotency catalog(§3.16) + QI-BB-020 auxiliary authority rows(§3.19) 완료. + **aux read epoch(§3.37: epoch-named snapshot, cursor 연속은 시작 epoch에서, retention bounded)** 완료. 남은 것: 없음(W2 항목 전부 착지; runtime-metadata의 structural epoch wire 노출·epoch metric은 §3.37 한계) |
-| W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + QI-BB-027 ANN sealed contract(§3.23) + **QI-BB-016 lexical writer envelope(§3.26)** 완료. + **QI-BB-027 보완 ANN append per delta seal(§3.35)** 완료. + **QI-BB-006 완결 sharded text-authority(§3.38)** 완료. + **QI-BB-021 완결 scope-streamed embed→append(§3.41)** 완료. 남은 것: 없음(W3 항목 전부 착지) |
-| W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) + **QI-BB-025 보완 #4 runtime/structural window(§3.30)** + **keyset cursor + streaming collector(§3.39)** 완료. 남은 것: 없음(W4 항목 전부 착지; history selector의 collector 이관은 §3.39 한계 b) |
-| W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. QI-BB-014 UDS/state-root private hardening(§3.27) 완료. QI-BB-015 metrics 집계 + scrape(§3.28) 완료. **phase 2(§3.29): budget이 lexical native collect/scan/regex verify/predicate scope 안에서 관측** 완료. + **shared socket mode + peer credential(§3.40)** 완료. + **phase 3 dense lane 내부 관측(§3.43)** 완료. 남은 것: 없음(W5 항목 전부 착지) |
+| W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + **quarantine control surface(§3.31: live inventory + as-listed discard, control IPC/SDK/CLI)** + QI-BB-032 idempotency catalog(§3.16) + QI-BB-020 auxiliary authority rows(§3.19) 완료. + **aux read epoch(§3.37)** 완료. **감사 후 재개(§4)**: 003 reaped generation 경계·GC receipt(A2), 020 activation under guard(A2), 029/032 catalog(A5) |
+| W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + QI-BB-027 ANN sealed contract(§3.23) + **QI-BB-016 lexical writer envelope(§3.26)** 완료. + **QI-BB-027 보완 ANN append per delta seal(§3.35)** 완료. + **QI-BB-006 완결 sharded text-authority(§3.38)** 완료. + **scope-streamed embed→append(§3.41)** 완료. **감사 후 재개(§4)**: 006/017 read-side O(N) 재해시·Merkle 증분 commitment(A3/A4), 030 overlay sidecar seal 계약(A3), 027 legacy fallback·028 row-root(A4) |
+| W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) + **QI-BB-025 보완 #4 runtime/structural window(§3.30)** + **keyset cursor + streaming collector(§3.39)** 완료. **감사 후 재개(§4)**: 018 hybrid filter push-down(A1), 022 hybrid explain 재유도(A8), 005 projection streaming/text cursor·024 bitmap(wave B) |
+| W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. QI-BB-014 UDS/state-root private hardening(§3.27) 완료. QI-BB-015 metrics 집계 + scrape(§3.28) 완료. **phase 2(§3.29): budget이 lexical native collect/scan/regex verify/predicate scope 안에서 관측** 완료. + **shared socket mode + peer credential(§3.40)** 완료. + **phase 3 dense lane 내부 관측(§3.43)** 완료. **감사 후 재개(§4)**: 002 deadline/cancel metric·per-repo cap·embed budget, 014 0700/`--state-root` env chain, 015/016/009 metric·envelope·cap(A7) |
 | W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + QI-BB-018 true hybrid(§3.22) + QI-BB-022 explain = exact presence + lexical score trace(§3.24) + **QI-BB-008 RepoMap bounded query + durable store(§3.25)** 완료. + **hybrid per-lane contribution(§3.36)** + **history relevance order(§3.42)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), judged corpus recall/NDCG gate(§3.22 한계, M4 의존) |
 | W7 | in_progress | **legacy 경로 감사 + dead op/helper 삭제 + repo-map top_k 잔재 수정 + consumer/wire inventory gate(§3.45)** 완료. blocked: perf/qualification gate(quiet Linux host), producer roundtrip + wire version cut(release), C4 cutover, semantic legacy format 정리(F2, 제품 결정) |
 | C1 | planned | |
@@ -2271,6 +2271,50 @@ F4 repo-map을 top_k truth table harness에; F6 plan §5.1 activation/snapshot r
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
 
 <!-- FINDINGS-TABLE -->
+
+2026-09-18 ticket-closure 감사(read-only, 4 range 병렬, 코드·테스트 대조; 원문 `scratchpad/audit/audit-*.md`) 결과로 채움. "구현 절"은 §3.x, "판정"은
+티켓의 **완료 기준·보완 항목 기준**이며 ledger 주장이 아니라 코드 근거로 판정했다. 판정 열: closed / gaps(closed-with-gaps) / **not closed** / blocked.
+"수정 wave" 열은 2026-09-18 착수한 fix wave A(agent A1–A8) 배정.
+
+| ID | 등급 | 구현 절 | 판정 | 남은 것(감사 근거) | 수정 wave |
+| --- | --- | --- | --- | --- | --- |
+| QI-BB-001 | P1 | §3.7 | gaps | coalesced open 실패가 `ERR_INTERNAL`(typed code 소실); `retire`가 in-flight cold open 무시(GC race); byte 추정이 on-disk; aux publish가 semantic까지 invalidate; perf blocked | A2 |
+| QI-BB-002 | P1 | §3.12/§3.29/§3.43 | gaps | deadline vs cancel metric 공유; per-repo cap 없음; cold open·embed HTTP·`await_flight` budget 미관측; pipelined peer hang-up 감지 중단; slowloris 3-way test 없음 | A2(registry), A7 |
+| QI-BB-003 | P1 | §3.9 | **not closed** | reap된 generation이 explicit pin으로 resolve(`UNKNOWN_GENERATION` 없음), boot가 orphan을 sealed로 재seed; GC receipt 폐기(metric 0); byte 정책이 authority 길이 | A2 |
+| QI-BB-004 | P1 | §3.6 | closed | contradiction code가 generic `ERR_INVALID`; chunked join 미구현(≤10k라 실효 낮음) | — |
+| QI-BB-005 | P1 | §3.8 | gaps | projection은 budget까지 full collect(streaming 없음); text/symbol/semantic cursor 없음; `RESULT_TOO_LARGE` 사후 거부; perf blocked | wave B |
+| QI-BB-006 | P2 | §3.4/§3.4.1/§3.4.2/§3.38 | gaps | write bytes만 O(delta); seal·open·activation이 generation 전체를 재해시(read O(N)), Merkle/증분 commitment 없음; digest 동일성 미충족 | A3, A4 |
+| QI-BB-007 | P1* | (M4) | blocked | judged corpus/real-provider gate는 M4·credential 의존; 단 M4가 약속한 dev/test 라벨 미구현(default `Hash` 무경고) | A7(라벨) |
+| QI-BB-008 | P2 | §3.25 | closed | activation record 무digest, same-pair retention만, legacy bare-JSON read shim(one-shot) | — |
+| QI-BB-009 | P2 | §3.18 | gaps | age cap·global byte cap 없음(좁힌 정책이 retained namespace에 소급 안 됨); open이 entry당 `metadata()`; provider failure counter 미scrape | A7 |
+| QI-BB-010 | P2 | §3.1 | **not closed** | runner가 HEAD에서 깨짐(`--source-fingerprint` 미전달); `git rev-parse --short \|\| unknown` default 치환; artifact 스키마에 QPS/RSS/disk/GC 없음; stale gate 없음; 측정 자체는 host blocked | A8 |
+| QI-BB-011 | P2 | §3.33 | gaps | lq-norm의 `String::to_lowercase()` 두 번째 fold(final-sigma) → `case:no` 유무로 결과 갈림; golden이 DSL 파이프라인 우회; e2e Unicode 없음 | A6 |
+| QI-BB-012 | P2 | (다른 세션) | **not closed** | README `:28/:172-175`, ssot `channel-architecture.md:85,340`이 구현과 정면 모순 | 다른 세션 |
+| QI-BB-013 | P3 | §3.32 | gaps | search-plane만 분할; `lexical/src/lib.rs` 8,311→10,363줄, `semantic/build.rs` 증가; compile-time 측정 없음; `too_many_lines = allow` | wave B |
+| QI-BB-014 | P2 | §3.27/§3.40 | gaps | 기존 dir/root 0755 허용(0700 강제 아님); umask test 없음; `--state-root`가 socket-access env silent drop | A7 |
+| QI-BB-015 | P2 | §3.28 | gaps | queue/in-flight·examined·response bytes·generation disk bytes·GC·provider failure metric 없음; 운영 scrape 경로 미문서화 | A7, A2(GC) |
+| QI-BB-016 | P3 | §3.26 | gaps | writer heap만의 envelope(process envelope 아님); RSS 미관측; idle sweep이 ingest 없이는 안 돎; `--state-root` env drop | A7 |
+| QI-BB-017 | P1 | §3.14 | gaps | open마다 dataset 전체 SHA-256(seal 후 2회); scrub 없음; 검증 handle 미승격; legacy v2–v8 compat 잔존 | A4, A2 |
+| QI-BB-018 | P2 | §3.22/§3.36 | gaps(**WRONG**) | dense lane이 DSL filter(`file:`/`repo:`/`type:`…) 무시 → 질의가 제외한 결과 유출; route가 SDK/CLI에 없음; judged corpus blocked | A1, A8 |
+| QI-BB-019 | P2 | §3.21 | gaps | `dense_corpora` doc이 "legacy/migration window" 주장; empty=global 이중 의미 | A8 |
+| QI-BB-020 | P1 | §3.19/§3.37 | gaps(**WRONG**) | activation이 global read guard 아래 dataset 전량 해시(cross-repo ingest/query 정지); history-text cold open under lock; reconcile-fail-after-durable; I/O fault injection 없음 | A2 |
+| QI-BB-021 | P2 | §3.18/§3.41 | gaps | process envelope 미선언·RSS 미측정; 정책 3분할 | A7 |
+| QI-BB-022 | P2 | §3.24/§3.36 | gaps(**WRONG**) | hybrid explain의 dense/RRF 축이 client payload 자기일관성 검사; hybrid 합성 규칙 미정의; filter/projection 기여 없음 | A8 |
+| QI-BB-023 | P2 | §3.20/§3.37/§3.42 | gaps(**WRONG**) | recency/relevance가 같은 filter를 다른 의미로 평가; relevance score가 ingest 이력 의존; author/committer 미색인 | A6 |
+| QI-BB-024 | P2 | §3.17 | gaps | broad regex의 per-query `BTreeSet<String>` + match당 TermQuery(RSS unbounded); bitmap 없음 | wave B |
+| QI-BB-025 | P1 | §3.5/§3.30/§3.39 | gaps | wire decode가 range 미검증(dispatcher 의존); 최대값 `has_more` 분기 e2e 미실행; SDK seed-budget 미게이트 | A8 |
+| QI-BB-026 | P1 | §3.13/§3.31 | gaps | content-손상 비활성 generation이 quarantine receipt/list에 없고 rollback 대상에서 제외 안 됨; semantic active 손상 boot e2e 없음 | A2(orphan), wave B |
+| QI-BB-027 | P2 | §3.23/§3.35 | gaps(**WRONG**) | legacy ≤v7/v8 generation은 ANN 누락을 silent exact fallback으로 서비스; append segment ef_construction≠manifest; recall artifact에 HEAD 없음 | A4, A8 |
+| QI-BB-028 | P1 | §3.15 | gaps | semantic row-root attestation(완료 기준 #5) 미구현 | A4 |
+| QI-BB-029 | P1 | §3.11 | gaps(**WRONG**) | 거부될 batch가 validate 전에 idempotency row 기록; sealed-but-corrupt half pair는 CONFLICT 고정; IPC/SDK preflight test 0건 | A5 |
+| QI-BB-030 | P1 | §3.10 | gaps(**WRONG**) | repo-metadata overlay sidecar 7종이 manifest·validator 밖 + `std::fs::write` + sealed dir mutation → activation 성공≠query open 성공; handle 재사용 없음; Tantivy segment 미커밋 | A3 |
+| QI-BB-031 | P2 | §3.15 | gaps | adapter 경계 validator가 norm 무관(상류 의존); 혼합 batch 값 동일성·artifact 미증명 | A4 |
+| QI-BB-032 | P2 | §3.16 | gaps(**WRONG**) | idempotency forget이 same-pass 양 track 조건(deferred split·미seal row 누수); `batch_digest`↔payload 미결속; crash-resume 재적용 | A5 |
+
+**§3.x 과장 정정(감사가 지적, 이 table이 우선)**: §3.7 "typed 실패 공유"(coalesced는 `ERR_INTERNAL`), §3.9 "어떤 query도 pin 못 함"·"receipt에 싣는다",
+§3.10 "두 문이 같은 파일 집합", §3.11 "bytes 0개 변경"(catalog 제외), §3.13 "(1) quarantine receipt ✓"(identity 결함만), §3.16 "GC가 forget"(same-pass 한정),
+§3.22 "같은 constraint push-down"(lang만), §3.32 "세 monolith 분할"(lexical 누락), §3.38 "QI-BB-006 passed"(write 기준만), §3.42/§3.43 "완결"/"전부 착지",
+§2 W2/W3/W4/W5 "남은 것: 없음". 원인: ledger의 "구현 완료"와 agent 보고를 근거로 닫았고 티켓 완료 기준을 직접 대조하지 않았다.
 
 ## 5. 실행 command 기록
 
