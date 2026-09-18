@@ -314,7 +314,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + QI-BB-027 ANN sealed contract(§3.23) + **QI-BB-016 lexical writer envelope(§3.26)** 완료. + **QI-BB-027 보완 ANN append per delta seal(§3.35)** 완료. + **QI-BB-006 완결 sharded text-authority(§3.38)** 완료. + **QI-BB-021 완결 scope-streamed embed→append(§3.41)** 완료. 남은 것: 없음(W3 항목 전부 착지) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) + **QI-BB-025 보완 #4 runtime/structural window(§3.30)** + **keyset cursor + streaming collector(§3.39)** 완료. 남은 것: 없음(W4 항목 전부 착지; history selector의 collector 이관은 §3.39 한계 b) |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. QI-BB-014 UDS/state-root private hardening(§3.27) 완료. QI-BB-015 metrics 집계 + scrape(§3.28) 완료. **phase 2(§3.29): budget이 lexical native collect/scan/regex verify/predicate scope 안에서 관측** 완료. + **shared socket mode + peer credential(§3.40)** 완료. 남은 것: semantic lane 내부 budget 관측(진행 예정) |
-| W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + QI-BB-018 true hybrid(§3.22) + QI-BB-022 explain = exact presence + lexical score trace(§3.24) + **QI-BB-008 RepoMap bounded query + durable store(§3.25)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), history relevance order(Tantivy history index, §3.20 한계), judged corpus recall/NDCG gate(§3.22 한계), **hybrid per-lane contribution(§3.36)** 완료 |
+| W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + QI-BB-018 true hybrid(§3.22) + QI-BB-022 explain = exact presence + lexical score trace(§3.24) + **QI-BB-008 RepoMap bounded query + durable store(§3.25)** 완료. + **hybrid per-lane contribution(§3.36)** + **history relevance order(§3.42)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), judged corpus recall/NDCG gate(§3.22 한계, M4 의존) |
 | W7 | planned | |
 | C1 | planned | |
 | C2 | planned | |
@@ -2093,6 +2093,62 @@ journal/fixture)는 이미 decode된 상태라 상주 감소 없음; legacy jour
 좁은 window를 설정하면 boot migration이 typed 거부(knob을 넓히면 됨; 기본값으로는 도달 불가). (c) owner별 `delete` predicate는 이전 그대로(owner당
 lancedb delete 1회) — append만 window 단위. **QI-BB-021 완결**(§3.18 envelope + §3.41 streaming).
 
+## 3.42 QI-BB-023 완결 — history는 명시적 `recency` / `relevance` order를 제공하고, relevance는 epoch-bound Tantivy history index가 점수를 낸다 (구현 완료)
+
+**진단 확정**: §3.20 한계 a — order는 recency 하나이고 text match는 filter였다(score 없는 relevance를 heuristic으로 흉내 내지 않고 남겨둠).
+plan §8.3: "history는 명시적 `relevance`/`recency` order; text relevance는 Tantivy index를 재사용; content row와 index root가 같은 published
+auxiliary epoch를 가리킨다".
+
+**구현** (63 files, +7,183/−274):
+
+- **contract**: `HistoryOrderV1 { Recency, Relevance }`(`HistoryQueryRequest.order` **필수, default 없음**); `HistoryCursor`가 tagged —
+  `order: HistoryCursorOrderV1 { Recency | Relevance { score } }`(recency에 score 있으면/relevance에 없으면 거부); `HistoryScoreV1`(finite f32 newtype,
+  `Ord = total_cmp`, non-finite는 구성·wire 모두 거부, JSON/CBOR bit-exact); `CommitCandidate.score`/`DiffCandidate.score: Option<HistoryScoreV1>`;
+  response `order` echo. decoder: relevance ⇒ 모든 row scored, recency ⇒ 없음, `next_cursor.order == order`. relevance total order
+  `(score desc, committer_time_ms desc, sha asc[, path asc])`.
+- **core port** `domains/lexical/history_text.rs`: `HistoryTextIndexPort { epoch_status, publish_epoch, open_epoch, durable_epochs, discard_epoch,
+  discard_generation }`, `HistoryTextSearcher::search(query, after, limit, admit, budget)`, DTO(`HistoryTextDocV1/KeyV1/KindV1/BuildV1{Full,Incremental}/
+  EpochStatusV1/HitV1/PageV1`), code `HISTORY_TEXT_QUERY_UNSCORABLE`/`HISTORY_TEXT_INDEX_NOT_READY`/`HISTORY_TEXT_INDEX_NORMALIZER_UNSUPPORTED`/
+  `HISTORY_TEXT_INDEX_CORRUPT`. vendor token 없음.
+- **index**(`lexical/src/history_text_index/`, lib.rs는 `pub mod` 한 줄): layout `state_root/authorities/history-text/generation-v1-<sha256(pair)>/g<N>/
+  e<epoch>/{commits,diffs}`(staging `e<N>.staging`); epoch manifest(format 1, `TEXT_NORMALIZER_VERSION` stamp, epoch, kind별 `meta.json` sha256 —
+  다른 stamp ⇒ `Unsupported`, digest 불일치 ⇒ `CORRUPT`); schema는 공유 `NormalizingTokenizer`(§3.33) 위 folded + case-preserving field, `doc_key`로
+  delete-before-add, fast column `committer_time_ms`/`sha`/`path`; publish는 base segment hard link + `meta.json`/`.managed.json` 복사 + delete/add upsert
+  + commit + `wait_merging_threads` + manifest 마지막 + atomic rename + parent fsync(stale staging/미발행 leftover 교체); query는 keyword/phrase → Term/Phrase,
+  All→Must, Any→Should, Not은 positive clause 옆 MustNot만, raw/regex/predicate/structural/Empty ⇒ `HISTORY_TEXT_QUERY_UNSCORABLE`(heuristic 점수 없음);
+  custom collector(exact match count, total-order key cursor boundary + score fast path, admit predicate를 collect 안에서, bounded heap `limit`);
+  `budgeted_search` 아래 실행; `HISTORY_BM25_K1 = 1.2`, `HISTORY_BM25_B = 0.75`(공식·deleted-doc 통계 caveat 문서화).
+- **search-plane**: `history_text.rs`(`HistoryTextIndexParts`, handle registry — `Arc` holder 없을 때만 retire/discard, ledger의 retained epoch에 대해
+  `reconcile_generation`, 아니면 deferred); `AuxSnapshots::retained_epochs`; history materializer가 **catalog apply 전에 index publish**(Incremental over
+  `Servable` current epoch, 아니면 Full) → delta apply → durable epoch vs retained reconcile; search-corpus retention이 generation과 함께 index를 잊음.
+  route `history.rs`(order dispatch, `HISTORY_CURSOR_ORDER_MISMATCH`), `history_relevance.rs`(admit predicate = 기존 row filter를 `history_commit_filters_match`/
+  `history_diff_filters_match`로 분리, hit을 imbl row에 join, exact window, relevance cursor); `with_history_text` 없으면 typed `HISTORY_RELEVANCE_UNAVAILABLE`.
+- **composition/SDK/CLI/harness**: `SearchdRuntimeParts.history_text_index`, adapter root `state_root/authorities/history-text`; `HistoryQueryBuilder::order()`
+  (type-level 필수, 4번째 const generic); searchctl `history --order recency|relevance`(없으면 usage) + `score=`/`next_cursor: order=… score=…`; harness
+  `query_history_page(syntax, text, top_k, order, cursor)`, `E2eHistoryResult { order, scores, .. }`. public-api(contract +126, sdk ±38)·cargo-modules
+  (contract +5, core +14) 갱신.
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| **BM25 oracle**: in-test 참조 BM25(같은 tokenizer, 문서화된 k1/b) vs Tantivy top-k 일치; keyset partition(page 1/3/5/8/9) gap/overlap 0; admit predicate + error 전파; epoch N+1이 unchanged segment inode 공유(base 파일 불변, meta/.managed 사적); normalizer stamp 거부 + full rebuild; corrupt manifest/meta; unscorable 9 shape + `LEX_TEXT_QUERY_NO_TOKENS`; discard/list; stale staging + leftover 교체 | `history_text_index` unit 10 |
+| route: relevance vs recency 순서 상이, recency cursor on relevance → `HISTORY_CURSOR_ORDER_MISMATCH`, pruned epoch → `AUX_EPOCH_EXPIRED` 등 | search-plane `history_relevance` 8 |
+| **e2e**(22 commit, 20 match): relevance top-3 == in-test reference(score 1e-4), recency top-3 = 최신, 5씩 paging이 ranking을 partition, diff relevance scored, page 사이 ingest → page 2는 pinned epoch에서 bit-identical·fresh walk는 새 commit 1위(epoch+1), restart 후 같은 page, pre-restart cursor ⇒ `AUX_EPOCH_EXPIRED`, raw string ⇒ relevance에서 `HISTORY_TEXT_QUERY_UNSCORABLE`/recency에서 filter | `searchd-runtime/tests/e2e_history_relevance.rs` (test-authority 등록) |
+| wire round-trip + 거부(contract +2), searchctl +2 | contract/searchctl |
+| 회귀·rail | contract-base/contract/core/lexical/search-plane/sdk/searchctl/searchd/harness **1,153/0**; e2e 12 target **134/0/1**; `just rust-clippy` 0; fmt; fuzz smoke 4 target crash 0; public-api/cargo-modules update; hexagonal/module/error-shape/derive/digest/cargo-toml/test-authority/ignored-policy/no-allow/workspace-lints; semgrep 0. main rebase(bb52143 위, 충돌 9 file: import union 6 + searchctl parser 합성(H의 `--cursor-json` + J의 `--order`) + runtime composition + test-authority; union이 되살린 `SemanticBatchBuildPort` import 2곳 제거) 후 check + unit 975 + history_text 10 + e2e 13 target 98 + module(35)/hexagonal/semgrep(0)/test-authority + `just rust-clippy` 0 |
+
+**정직한 한계·결정**: (a) relevance는 keyword/phrase leaf만 점수(token 의미, DSL §4대로 fold 기본); raw/regex/predicate/`Not`-only는 typed 거부.
+filter(author/committer/time/rev/file/diff.*/content)는 recency 경로의 row predicate를 collect 안에서 그대로 평가. (b) author/committer는 **색인하지
+않음** — relevance 경로 reader가 참조하지 않아 dead index surface 회피(brief의 괄호 항목에서 벗어남, 명시). (c) 기존 미변경: recency 경로 `matches_text`는
+`case:` 부재를 case-sensitive substring으로 보는데 index는 DSL 기본(folded)을 따름 — 후속. (d) `LEX_TEXT_QUERY_*` code 문자열과 tokenizer 등록이 새
+module에 중복(E의 lib.rs 가시성을 안 바꾸려고) — `normalize.rs`로 lift 후속. (e) full rebuild는 모든 doc을 `Vec`에 materialize(드문 경로); commit의
+`committer_time_ms`가 upsert로 바뀌면 diff doc의 stored time은 그 hunk 재upsert 전까지 stale; BM25는 engine merge 전까지 superseded doc을 셈(문서화);
+handle registry는 cold open을 mutex 하나로 직렬화; mutation 착지 후 reconcile(GC) 실패는 receipt 경로의 error로 surfaced(재시도 수렴). (f) boot는 없는
+index를 만들지 않음 — epoch index 없이 복원된 generation은 다음 history batch(Full rebuild)까지 relevance에 `HISTORY_TEXT_INDEX_NOT_READY`; epoch dir
+retention은 mutation 시(+generation forget)에 reconcile, boot에서는 아님. (g) metrics/trace line 없음(history 응답에 `SearchExplanation` 없음).
+**QI-BB-023 완결**(§3.20 recency+cursor, §3.37 epoch, §3.42 relevance).
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -2156,4 +2212,5 @@ lancedb delete 1회) — append만 window 단위. **QI-BB-021 완결**(§3.18 en
 | 2026-09-18 | worktree I (36d9d53→86d1a34 rebase) | agent: `just rust-test` 2,242/0/2 ignored + `just rust-clippy` 0 + fmt/deny/machete/public-api/workspace-lints/hexagonal/no-allow/derive/cargo-toml/module/error-shape/digest/test-authority/ignored-policy + semgrep 0; rebase 후 check + hygiene + public-api + 180 + e2e 44 + deny | 전부 green (§3.40) |
 | 2026-09-18 | 94aa0d8 | `just rust-profile verify-rust` (nohup) | RED at `rust-clippy` — `lexical/tests/text_authority_shards.rs`(§3.38) `type_complexity` + `too_long_first_doc_paragraph`: gate는 `--all-features`인데 agent/coordinator의 crate별 clippy는 아니었음 → 9c5feb8에서 수정; 이후 main clippy는 `just rust-clippy`로 |
 | 2026-09-18 | worktree G (fc3ee5c→9c5feb8 rebase, 충돌 2 file) | agent: core/embed/searchd/search-plane/semantic 625 + daemon e2e 전체 604 + `just rust-clippy` 0 + fmt/hexagonal/module/error-shape/derive/digest/test-authority/cargo-toml/no-allow/workspace-lints/ignored-policy/cargo-modules + semgrep 0; rebase 후 check + baselines 불변 + unit 722 + e2e 65 | 전부 green (§3.41) |
+| 2026-09-18 | worktree J (36d9d53→bb52143 rebase, 충돌 9 file) | agent: 1,153 unit + history_text 10 + e2e 12 target 134 + `just rust-clippy` 0 + fmt + fuzz smoke + public-api/cargo-modules update + 정책 rail 전부 + semgrep 0; rebase 후 check + unit 975 + e2e 98 + module/hexagonal/semgrep/test-authority + `just rust-clippy` 0 | 전부 green (§3.42) |
 | 2026-09-18 | worktree 011 (7a5ce5e→034c4fd rebase) | agent: workspace clippy(0) + lexical 15 target·lq-norm 88·search-plane 285 + e2e text_route_hellgate 8·perf_chaos 43·dsl_scenarios 8·lexical_full_fidelity 1·dual_syntax_parity 4·full_corpus 4 + harness 77 + hexagonal/semgrep/module/error-shape/cargo-toml/derive/test-authority/deny; rebase 후 lexical carryforward 6 + goldens 8 | 전부 green (§3.33) |
