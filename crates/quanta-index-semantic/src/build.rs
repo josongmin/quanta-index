@@ -51,6 +51,7 @@ use quanta_index_core::{
 
 use crate::errors::{arrow_err, fs_err, lancedb_err};
 use crate::generation_contract::GenerationContract;
+use crate::integrity::SealTalliesV1;
 use crate::layout::{
     self, CLUSTER_MEMBERSHIP_TABLE_NAME, COLUMN_AUTHORITY_DIGEST, COLUMN_CARD_SCHEMA_VERSION,
     COLUMN_CORPUS_KIND, COLUMN_MEMBERSHIP_AUTHORITY_DIGEST, COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID,
@@ -208,7 +209,7 @@ static ATOMIC_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// The file payload is synced before rename and the parent directory is synced
 /// after rename. Pre-rename failures remove the unique temporary file so a
 /// failed build cannot accumulate or later promote stale staging artifacts.
-fn write_atomic(path: &Path, bytes: &[u8], action: &str) -> Result<(), CoreError> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8], action: &str) -> Result<(), CoreError> {
     let parent = path.parent().ok_or_else(|| {
         CoreError::Storage(format!(
             "semantic: {action} target has no parent: {}",
@@ -1578,7 +1579,24 @@ fn inherited_vector_index_seal_v1(
         &header.pin.revision_id,
         base_generation,
     )?;
-    Ok(manifest.vector_index_seal()?.cloned())
+    Ok(Some(manifest.vector_index))
+}
+
+/// The base generation directory a delta seal inherits digests from, if
+/// the generation has a base.
+fn delta_base_dir_v1(
+    semantic_root: &Path,
+    header: &SemanticIngestHeaderV1,
+    generation_contract: &GenerationContract,
+) -> Option<PathBuf> {
+    generation_contract.base_generation.map(|base_generation| {
+        layout::generation_dir(
+            semantic_root,
+            &header.pin.repo_id,
+            &header.pin.revision_id,
+            base_generation,
+        )
+    })
 }
 
 /// The scope manifest of the sealed generation, committed once over the
@@ -1771,6 +1789,7 @@ pub(crate) fn build_stream(
     policy: SemanticStreamWindowPolicy,
     header: &SemanticIngestHeaderV1,
     scopes: &mut dyn SemanticScopeSource,
+    seal_tallies: &SealTalliesV1,
 ) -> Result<SemanticStreamTallyV1, CoreError> {
     let generation_dir = layout::generation_dir(
         semantic_root,
@@ -1881,12 +1900,20 @@ pub(crate) fn build_stream(
             &manifest_bytes,
             "write manifest",
         )?;
-        // The file commitment every door re-measures instead of the rows
-        // (QI-BB-017): measured after the dataset, the contract and the
-        // scope manifest are durable, written before the marker that makes
-        // the generation sealed.
-        let sealed_manifest_bytes =
-            build_sealed_manifest_bytes(&generation_dir, header.batch.manifest_digest.as_str())?;
+        // The file commitment every door checks the layout of and the scrub
+        // proves the bytes of (QI-BB-017): measured after the dataset, the
+        // contract and the scope manifest are durable, written before the
+        // marker that makes the generation sealed. A delta inherits its
+        // base's digests for every file it still shares by inode, so the
+        // bytes hashed here are proportional to what this generation added
+        // (QI-BB-006 #4); the measurement is tallied for the scrape.
+        let base_dir = delta_base_dir_v1(semantic_root, header, &generation_contract);
+        let (sealed_manifest_bytes, measurement) = build_sealed_manifest_bytes(
+            &generation_dir,
+            header.batch.manifest_digest.as_str(),
+            base_dir.as_deref(),
+        )?;
+        seal_tallies.record(measurement);
         write_atomic(
             &sealed_manifest_path(&generation_dir),
             &sealed_manifest_bytes,
@@ -1945,6 +1972,7 @@ mod tests {
     };
     use crate::budget::{DenseLaneBudgetV1, DenseLaneTalliesV1};
     use crate::generation_contract::GenerationContract;
+    use crate::integrity::SealTalliesV1;
     use crate::layout::{
         self, CLUSTER_MEMBERSHIP_TABLE_NAME, COLUMN_AUTHORITY_DIGEST, COLUMN_CAPABILITY_STATUS,
         COLUMN_CARD_SCHEMA_VERSION, COLUMN_CORPUS_KIND, COLUMN_GENERATED, COLUMN_OWNER_ID,
@@ -2196,6 +2224,7 @@ mod tests {
             SemanticStreamWindowPolicy::DEFAULT,
             &header,
             &mut source,
+            &SealTalliesV1::default(),
         )?;
         Ok(())
     }
@@ -3262,7 +3291,7 @@ mod tests {
         assert_eq!(symbol_hits.len(), 1);
         assert_eq!(symbol_hits[0].record_id, "record-filter-symbol");
         assert_eq!(symbol_hits[0].owner_id, "symbol-filter");
-        assert_eq!(symbol_hits[0].corpus_kind.as_deref(), Some("SymbolCard"));
+        assert_eq!(symbol_hits[0].corpus_kind, "SymbolCard");
         let module_hits = crate::run_blocking(
             &runtime,
             loaded.search_hits_filtered_async(
@@ -3275,7 +3304,7 @@ mod tests {
         assert_eq!(module_hits.len(), 1);
         assert_eq!(module_hits[0].record_id, "record-filter-module");
         assert_eq!(module_hits[0].owner_id, "module-filter");
-        assert_eq!(module_hits[0].corpus_kind.as_deref(), Some("ModuleCard"));
+        assert_eq!(module_hits[0].corpus_kind, "ModuleCard");
         Ok(())
     }
 
@@ -3783,6 +3812,7 @@ mod tests {
             two_owners,
             &header,
             &mut source,
+            &SealTalliesV1::default(),
         )?;
         assert_eq!(tally, source.tally(), "sink and source tallies agree");
         assert_eq!(tally.windows, 7);
@@ -3810,6 +3840,7 @@ mod tests {
             SemanticStreamWindowPolicy::DEFAULT,
             &header,
             &mut whole,
+            &SealTalliesV1::default(),
         )?;
         assert_eq!(whole_tally.windows, 1);
         assert_eq!(whole_tally.rows, 14);
@@ -3890,7 +3921,14 @@ mod tests {
         let header = SemanticIngestHeaderV1::of_batch(&sealing);
         let one_owner = SemanticStreamWindowPolicy::new(1, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES)?;
         let mut source = ResidentScopeSource::new(&sealing.replace_scopes, one_owner)?;
-        let Err(error) = build_stream(&runtime, &root, one_owner, &header, &mut source) else {
+        let Err(error) = build_stream(
+            &runtime,
+            &root,
+            one_owner,
+            &header,
+            &mut source,
+            &SealTalliesV1::default(),
+        ) else {
             return Err("a window breaking the contract must abort the build".into());
         };
         assert!(

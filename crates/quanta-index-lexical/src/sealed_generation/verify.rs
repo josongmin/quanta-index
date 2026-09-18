@@ -75,6 +75,8 @@ pub(crate) fn walk_sealed_generation<V: SealedGenerationVisitor>(
     identity: &GenerationSnapshot,
     visitor: &mut V,
 ) -> Result<VerifiedGeneration, CoreError> {
+    // A generation the scrub proved corrupt is refused at every door.
+    crate::sealed_generation::refuse_if_quarantined(generation_dir)?;
     let manifest = read_bound_manifest(generation_dir, &identity.manifest_digest)?;
     let _meta_bytes = read_committed(generation_dir, &manifest.index_meta)?;
     let index = crate::open_sealed_index(generation_dir)?;

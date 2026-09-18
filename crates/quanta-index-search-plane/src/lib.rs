@@ -10,6 +10,8 @@
 //! between transport and the core domain ports.
 
 mod auxiliary_authority;
+#[cfg(test)]
+mod content_roots_test_support;
 mod control_dispatcher;
 mod history_text;
 mod ingest_dispatcher;

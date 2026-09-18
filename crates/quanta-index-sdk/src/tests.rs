@@ -309,6 +309,15 @@ fn sample_cluster_membership_batch_response(
     }
 }
 
+/// The semantic content roots a test generation "sealed" (QI-BB-028):
+/// what a sealed receipt attests and an activation names.
+fn semantic_roots(generation: u64) -> quanta_index_contract::SemanticContentRootsV1 {
+    quanta_index_contract::SemanticContentRootsV1 {
+        row_root_digest: format!("sha256:{generation:0>64x}"),
+        membership_root_digest: format!("sha256:{:0>64x}", generation.saturating_add(0x1000)),
+    }
+}
+
 fn search_corpus_identity(generation: u64, digest: &str) -> SearchCorpusGenerationIdentityV1 {
     SearchCorpusGenerationIdentityV1 {
         lexical: GenerationSnapshot {
@@ -325,6 +334,7 @@ fn search_corpus_identity(generation: u64, digest: &str) -> SearchCorpusGenerati
             manifest_generation: ManifestGeneration::new(generation),
             manifest_digest: digest.to_string(),
         },
+        semantic_content: semantic_roots(generation),
     }
 }
 
@@ -1604,6 +1614,7 @@ fn search_corpus_publish_routes_through_ingest_transport_and_carries_typed_recor
         batch_digest: String::new(),
         applied: true,
         durable_sequence: 7,
+        semantic_content: None,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 1,
         accepted_tombstone_scopes: 0,
@@ -1672,6 +1683,7 @@ fn search_corpus_builder_preserves_semantic_lifecycle_in_canonical_wire_order() 
         batch_digest: String::new(),
         applied: true,
         durable_sequence: 7,
+        semantic_content: None,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 0,
         accepted_tombstone_scopes: 0,
@@ -1745,6 +1757,7 @@ fn search_corpus_builder_preserves_typed_cluster_membership_without_text_inferen
         batch_digest: String::new(),
         applied: true,
         durable_sequence: 7,
+        semantic_content: None,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 0,
         accepted_tombstone_scopes: 0,
@@ -2008,6 +2021,7 @@ fn producer_client_publish_search_corpus_accepts_unsealed_batches() {
             batch_digest: String::new(),
             applied: true,
             durable_sequence: 7,
+            semantic_content: None,
             accepted_clear_surfaces: 0,
             accepted_replace_scopes: 0,
             accepted_tombstone_scopes: 0,
@@ -2049,6 +2063,7 @@ fn producer_client_publish_search_corpus_and_activate_routes_ingest_then_control
         batch_digest: String::new(),
         applied: true,
         durable_sequence: 7,
+        semantic_content: Some(semantic_roots(7)),
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 0,
         accepted_tombstone_scopes: 0,
@@ -2116,7 +2131,18 @@ fn producer_client_rejects_activation_ack_identity_mismatches_v1() {
     wrong_revision.semantic.revision_id = RevisionId::new("other-revision");
     let wrong_generation = search_corpus_identity(8, "manifest:activate");
     let wrong_digest = search_corpus_identity(7, "manifest:other");
+    // Same tracks, other semantic content roots: a different identity
+    // (QI-BB-028), refused like every other ack drift.
+    let mut wrong_roots = candidate.clone();
+    wrong_roots.semantic_content = semantic_roots(70);
     let cases = [
+        (
+            "active semantic content roots",
+            SearchPlaneSearchCorpusActivationCasAck {
+                active: wrong_roots,
+                previous_sealed_active: Some(previous.clone()),
+            },
+        ),
         (
             "active repo",
             SearchPlaneSearchCorpusActivationCasAck {
@@ -2172,6 +2198,7 @@ fn producer_client_rejects_activation_ack_identity_mismatches_v1() {
                 batch_digest: String::new(),
                 applied: true,
                 durable_sequence: 7,
+                semantic_content: Some(semantic_roots(7)),
                 accepted_clear_surfaces: 0,
                 accepted_replace_scopes: 0,
                 accepted_tombstone_scopes: 0,
@@ -2196,6 +2223,52 @@ fn producer_client_rejects_activation_ack_identity_mismatches_v1() {
     }
 }
 
+/// A sealed receipt that attests no semantic content roots cannot become
+/// an activation candidate (QI-BB-028): the SDK refuses before any control
+/// request rather than naming roots it does not know.
+#[test]
+fn producer_client_refuses_to_activate_on_a_sealed_receipt_without_content_roots_v1() {
+    let receipt = BatchPublishReceipt {
+        generation: ManifestGeneration::new(7),
+        manifest_digest: Some("manifest:activate".to_string()),
+        batch_digest: "batch:activate".to_string(),
+        applied: true,
+        durable_sequence: 7,
+        semantic_content: None,
+        accepted_clear_surfaces: 0,
+        accepted_replace_scopes: 0,
+        accepted_tombstone_scopes: 0,
+        sealed: true,
+    };
+    let control = unused_control();
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), control.clone(), ingest);
+    let batch = SearchCorpusBatch::replace_generation(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(7),
+        "manifest:activate",
+    );
+    let error = client
+        .producer()
+        .publish_search_corpus_and_activate(&batch, None)
+        .expect_err("a receipt without content roots must not be activated");
+    assert!(
+        matches!(error, crate::SdkError::Protocol(ref message) if message.contains("attests no semantic content roots")),
+        "got {error:?}"
+    );
+    assert!(
+        control
+            .requests
+            .lock()
+            .expect("control request mutex")
+            .is_empty(),
+        "no control request is sent without roots to name"
+    );
+}
+
 #[test]
 fn producer_client_rejects_mismatched_sealed_receipt_before_composite_activation_v1() {
     let receipt = BatchPublishReceipt {
@@ -2204,6 +2277,7 @@ fn producer_client_rejects_mismatched_sealed_receipt_before_composite_activation
         batch_digest: String::new(),
         applied: true,
         durable_sequence: 7,
+        semantic_content: None,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 0,
         accepted_tombstone_scopes: 0,
@@ -2262,6 +2336,7 @@ fn producer_client_rejects_each_search_corpus_receipt_mismatch_before_activation
         batch_digest: ok_or_fail!(batch.batch_digest()),
         applied: true,
         durable_sequence: 7,
+        semantic_content: None,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 1,
         accepted_tombstone_scopes: 1,
@@ -2339,6 +2414,7 @@ fn producer_client_rejects_invalid_expected_composite_before_ingest_v1() {
             manifest_generation: ManifestGeneration::new(6),
             manifest_digest: "manifest:6".to_string(),
         },
+        semantic_content: semantic_roots(6),
     };
     let ingest = unused_ingest();
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
@@ -2405,6 +2481,7 @@ fn history_publish_routes_through_ingest_transport_and_carries_typed_authority_r
         batch_digest: String::new(),
         applied: true,
         durable_sequence: 3,
+        semantic_content: None,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 4,
         accepted_tombstone_scopes: 0,
@@ -2464,6 +2541,7 @@ fn history_publish_repo_commit_recency_routes_through_ingest_transport() {
         batch_digest: String::new(),
         applied: true,
         durable_sequence: 7,
+        semantic_content: None,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 2,
         accepted_tombstone_scopes: 0,
@@ -2518,6 +2596,7 @@ fn history_publish_repo_meta_routes_through_ingest_transport() {
         batch_digest: String::new(),
         applied: true,
         durable_sequence: 7,
+        semantic_content: None,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 2,
         accepted_tombstone_scopes: 0,
@@ -2573,6 +2652,7 @@ fn history_publish_repo_topic_routes_through_ingest_transport() {
         batch_digest: String::new(),
         applied: true,
         durable_sequence: 7,
+        semantic_content: None,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 3,
         accepted_tombstone_scopes: 0,
@@ -2629,6 +2709,7 @@ fn history_publish_file_ownership_routes_through_ingest_transport() {
         batch_digest: String::new(),
         applied: true,
         durable_sequence: 7,
+        semantic_content: None,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 2,
         accepted_tombstone_scopes: 0,
@@ -2693,6 +2774,7 @@ fn history_publish_file_contributor_routes_through_ingest_transport() {
         batch_digest: String::new(),
         applied: true,
         durable_sequence: 7,
+        semantic_content: None,
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 2,
         accepted_tombstone_scopes: 0,
@@ -3520,6 +3602,7 @@ fn control_request_id_mismatch_is_rejected_for_activation_and_rollback_v1() {
             batch_digest: String::new(),
             applied: true,
             durable_sequence: 7,
+            semantic_content: Some(semantic_roots(7)),
             accepted_clear_surfaces: 0,
             accepted_replace_scopes: 0,
             accepted_tombstone_scopes: 0,
@@ -3656,6 +3739,7 @@ fn generations_status_returns_report_with_track_records() {
     let report = GenerationStatusReport {
         repo_id: repo_id(),
         revision_id: revision_id(),
+        semantic_content: None,
         tracks: vec![
             TrackReadinessRecord {
                 track: Track::Lexical,
@@ -3685,6 +3769,7 @@ fn generations_status_returns_empty_tracks_when_nothing_activated() {
         SearchPlaneControlIpcResponse::GenerationStatusReport(GenerationStatusReport {
             repo_id: repo_id(),
             revision_id: revision_id(),
+            semantic_content: None,
             tracks: vec![],
         }),
     ));
@@ -3769,6 +3854,7 @@ fn observability_metrics_snapshot_refuses_wrong_kind_and_surfaces_remote_errors(
         SearchPlaneControlIpcResponse::GenerationStatusReport(GenerationStatusReport {
             repo_id: repo_id(),
             revision_id: revision_id(),
+            semantic_content: None,
             tracks: vec![],
         }),
     ));

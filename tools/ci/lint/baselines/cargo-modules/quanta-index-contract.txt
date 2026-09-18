@@ -76,6 +76,9 @@ crate quanta_index_contract
 │   │   ├── enum SearchPlaneTrackKind: pub
 │   │   ├── struct SearchPlaneTrackKindVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
+│   │   ├── struct SemanticContentRootsV1: pub
+│   │   ├── struct SemanticContentRootsV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
 │   │   ├── struct TrackReadinessRecord: pub
 │   │   └── struct TrackReadinessRecordVisitor: pub(self)
 │   │       └── type Value: pub(self)

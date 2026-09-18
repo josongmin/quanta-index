@@ -262,13 +262,15 @@ mod vector_contract {
 }
 
 // The dense lane contract renders one trace line a reader can act on
-// (QI-BB-027): the index, whether the seal proved it, the effort, and
-// where the index's centroids came from.
+// (QI-BB-027): the index, whether the seal proved it, the effort, where
+// the index's centroids came from, and how every segment was built — the
+// appended segments' actual construction beam width is named, never the
+// trained recipe claimed for them.
 #[test]
-fn dense_lane_trace_names_index_attestation_effort_and_lineage() {
+fn dense_lane_trace_names_index_attestation_effort_lineage_and_segment_builds() {
     use quanta_index_core::{
-        DenseIndexEffortV1, DenseIndexLineageV1, DenseIndexTrainingV1, DenseIndexV1,
-        DenseLaneAttestationV1, DenseLaneContractV1,
+        DenseIndexBuildV1, DenseIndexEffortV1, DenseIndexSegmentBuildV1, DenseIndexTrainingV1,
+        DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1,
     };
     let effort = || DenseIndexEffortV1 {
         index_kind: "ivf_hnsw_sq".to_string(),
@@ -286,39 +288,55 @@ fn dense_lane_trace_names_index_attestation_effort_and_lineage() {
         exact.trace_detail(),
         "dense.index=exact; dense.attestation=sealed"
     );
+    let trained = DenseLaneContractV1 {
+        index: DenseIndexV1::Approximate {
+            effort: effort(),
+            lineage: DenseIndexTrainingV1 {
+                trained_at_generation: 3,
+                trained_rows: 1_200,
+                appended_rows: 0,
+                deleted_rows: 0,
+            },
+            build: DenseIndexBuildV1 {
+                hnsw_m: 20,
+                hnsw_ef_construction: 300,
+                appended_segments: Vec::new(),
+            },
+        },
+        attestation: DenseLaneAttestationV1::Sealed,
+    };
+    assert_eq!(
+        trained.trace_detail(),
+        "dense.index=ivf_hnsw_sq; dense.attestation=sealed; dense.partitions=3; dense.nprobes=3; dense.ef=max(64,2*candidates); dense.refine_factor=2; ann.trained_at=g3; ann.appended=0/1200; ann.deleted=0; ann.hnsw_m=20; ann.hnsw_ef_construction=300; ann.appended_segments=0; ann.appended_segments_m/ef_construction=none"
+    );
     let appended = DenseLaneContractV1 {
         index: DenseIndexV1::Approximate {
             effort: effort(),
-            lineage: DenseIndexLineageV1::Recorded(DenseIndexTrainingV1 {
+            lineage: DenseIndexTrainingV1 {
                 trained_at_generation: 3,
                 trained_rows: 1_200,
                 appended_rows: 120,
                 deleted_rows: 4,
-            }),
+            },
+            build: DenseIndexBuildV1 {
+                hnsw_m: 20,
+                hnsw_ef_construction: 300,
+                appended_segments: vec![
+                    DenseIndexSegmentBuildV1 {
+                        hnsw_m: 20,
+                        hnsw_ef_construction: 150,
+                    },
+                    DenseIndexSegmentBuildV1 {
+                        hnsw_m: 20,
+                        hnsw_ef_construction: 150,
+                    },
+                ],
+            },
         },
         attestation: DenseLaneAttestationV1::SealedByAnotherLibraryVersion,
     };
     assert_eq!(
         appended.trace_detail(),
-        "dense.index=ivf_hnsw_sq; dense.attestation=sealed_by_another_library_version; dense.partitions=3; dense.nprobes=3; dense.ef=max(64,2*candidates); dense.refine_factor=2; ann.trained_at=g3; ann.appended=120/1200; ann.deleted=4"
-    );
-    let unrecorded = DenseLaneContractV1 {
-        index: DenseIndexV1::Approximate {
-            effort: effort(),
-            lineage: DenseIndexLineageV1::Unrecorded,
-        },
-        attestation: DenseLaneAttestationV1::LegacyUnverified,
-    };
-    assert_eq!(
-        unrecorded.trace_detail(),
-        "dense.index=ivf_hnsw_sq; dense.attestation=legacy_unverified; dense.partitions=3; dense.nprobes=3; dense.ef=max(64,2*candidates); dense.refine_factor=2; ann.lineage=unrecorded"
-    );
-    let legacy = DenseLaneContractV1 {
-        index: DenseIndexV1::Exact,
-        attestation: DenseLaneAttestationV1::LegacyUnverified,
-    };
-    assert_eq!(
-        legacy.trace_detail(),
-        "dense.index=exact; dense.attestation=legacy_unverified"
+        "dense.index=ivf_hnsw_sq; dense.attestation=sealed_by_another_library_version; dense.partitions=3; dense.nprobes=3; dense.ef=max(64,2*candidates); dense.refine_factor=2; ann.trained_at=g3; ann.appended=120/1200; ann.deleted=4; ann.hnsw_m=20; ann.hnsw_ef_construction=300; ann.appended_segments=2; ann.appended_segments_m/ef_construction=20/150,20/150"
     );
 }

@@ -3,9 +3,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use quanta_index_core::{
-    EMBEDDING_CACHE_LEDGER_BYTES_PER_ENTRY, IngestResourcePolicy, LexicalExecutionBudgetV1,
-    LexicalWriterPolicy, MAX_EMBEDDING_DIMENSION, ProcessMemoryEnvelopeV1, RegexMatchCachePolicy,
-    SemanticStreamWindowPolicy,
+    EMBEDDING_CACHE_LEDGER_BYTES_PER_ENTRY, IngestResourcePolicy, IntegrityScrubPolicyV1,
+    LexicalExecutionBudgetV1, LexicalWriterPolicy, MAX_EMBEDDING_DIMENSION,
+    ProcessMemoryEnvelopeV1, RegexMatchCachePolicy, SemanticStreamWindowPolicy,
 };
 use quanta_index_embed::{
     DEFAULT_CONCURRENCY, DEFAULT_MAX_BATCH, DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST,
@@ -312,6 +312,9 @@ pub struct SearchdConfig {
     process_memory_ceilings: ProcessMemoryCeilings,
     /// The maintenance timer's cadence (QI-BB-016, QI-BB-015).
     maintenance_policy: MaintenancePolicy,
+    /// How the integrity scrub is paced as maintenance (QI-BB-017): at most
+    /// one bounded step per interval, on the maintenance timer.
+    integrity_scrub_policy: IntegrityScrubPolicyV1,
 }
 
 /// One env-driven policy family: the knobs it reads and the setter that
@@ -481,6 +484,16 @@ pub(crate) const ENV_POLICY_FAMILIES: &[EnvPolicyFamily] = &[
             Ok(config.with_maintenance_policy(maintenance_policy_from_lookup(lookup)?))
         },
     },
+    EnvPolicyFamily {
+        name: "integrity scrub",
+        env_vars: &[
+            "QUANTA_INDEX_INTEGRITY_SCRUB_INTERVAL_MS",
+            "QUANTA_INDEX_INTEGRITY_SCRUB_MAX_BYTES_PER_STEP",
+        ],
+        apply: |config, lookup| {
+            Ok(config.with_integrity_scrub_policy(integrity_scrub_policy_from_lookup(lookup)?))
+        },
+    },
 ];
 
 /// Env vars the state-root resolution reads, outside every policy family.
@@ -508,6 +521,7 @@ impl SearchdConfig {
             socket_access_policies: SocketAccessPolicies::PRIVATE,
             process_memory_ceilings: ProcessMemoryCeilings::DEFAULT,
             maintenance_policy: MaintenancePolicy::DEFAULT,
+            integrity_scrub_policy: IntegrityScrubPolicyV1::DEFAULT,
         }
     }
 
@@ -689,6 +703,17 @@ impl SearchdConfig {
     #[must_use]
     pub const fn with_maintenance_policy(mut self, policy: MaintenancePolicy) -> Self {
         self.maintenance_policy = policy;
+        self
+    }
+
+    #[must_use]
+    pub const fn integrity_scrub_policy(&self) -> IntegrityScrubPolicyV1 {
+        self.integrity_scrub_policy
+    }
+
+    #[must_use]
+    pub const fn with_integrity_scrub_policy(mut self, policy: IntegrityScrubPolicyV1) -> Self {
+        self.integrity_scrub_policy = policy;
         self
     }
 
@@ -1160,6 +1185,28 @@ fn maintenance_policy_from_lookup(lookup: &EnvLookup<'_>) -> Result<MaintenanceP
     }
 }
 
+/// Resolve the integrity scrub pacing from env (QI-BB-017).
+///
+/// `QUANTA_INDEX_INTEGRITY_SCRUB_INTERVAL_MS` and
+/// `QUANTA_INDEX_INTEGRITY_SCRUB_MAX_BYTES_PER_STEP` are optional as a
+/// pair: neither set selects [`IntegrityScrubPolicyV1::DEFAULT`]; one
+/// without the other is an operator error rather than a half-applied
+/// override, and zero is refused.
+fn integrity_scrub_policy_from_lookup(lookup: &EnvLookup<'_>) -> Result<IntegrityScrubPolicyV1> {
+    const INTERVAL: &str = "QUANTA_INDEX_INTEGRITY_SCRUB_INTERVAL_MS";
+    const BYTES: &str = "QUANTA_INDEX_INTEGRITY_SCRUB_MAX_BYTES_PER_STEP";
+    match (lookup(INTERVAL)?, lookup(BYTES)?) {
+        (None, None) => Ok(IntegrityScrubPolicyV1::DEFAULT),
+        (Some(interval), Some(bytes)) => IntegrityScrubPolicyV1::new(
+            required_positive_raw_u64(INTERVAL, Some(interval))?,
+            required_positive_raw_u64(BYTES, Some(bytes))?,
+        )
+        .map_err(anyhow::Error::from),
+        (Some(_), None) => Err(anyhow::anyhow!("{INTERVAL} is set but {BYTES} is not")),
+        (None, Some(_)) => Err(anyhow::anyhow!("{BYTES} is set but {INTERVAL} is not")),
+    }
+}
+
 fn raw_u64(name: &str, raw: &str) -> Result<u64> {
     raw.trim()
         .parse::<u64>()
@@ -1524,6 +1571,8 @@ mod tests {
             ("QUANTA_INDEX_PROCESS_MEMORY_CEILING_BYTES", "3221225472"),
             ("QUANTA_INDEX_PROCESS_RSS_CEILING_BYTES", "4294967296"),
             ("QUANTA_INDEX_MAINTENANCE_TICK_MS", "1500"),
+            ("QUANTA_INDEX_INTEGRITY_SCRUB_INTERVAL_MS", "750"),
+            ("QUANTA_INDEX_INTEGRITY_SCRUB_MAX_BYTES_PER_STEP", "4096"),
         ])
     }
 
@@ -2456,5 +2505,43 @@ mod tests {
         assert_eq!(config.model, "text-embedding-3-large");
         assert_eq!(config.dimension, 3072);
         assert_eq!(config.api_key, "sk-unit-test");
+    }
+
+    #[test]
+    fn integrity_scrub_env_binding_is_all_or_nothing_and_nonzero() {
+        const INTERVAL: &str = "QUANTA_INDEX_INTEGRITY_SCRUB_INTERVAL_MS";
+        const BYTES: &str = "QUANTA_INDEX_INTEGRITY_SCRUB_MAX_BYTES_PER_STEP";
+        let unset = integrity_scrub_policy_from_lookup(&|_name: &str| Ok(None))
+            .expect("no knobs selects the default");
+        assert_eq!(unset, IntegrityScrubPolicyV1::DEFAULT);
+
+        let half = integrity_scrub_policy_from_lookup(&|name: &str| {
+            Ok((name == INTERVAL).then(|| "250".to_string()))
+        })
+        .expect_err("one knob without the other must fail closed");
+        assert!(half.to_string().contains(BYTES));
+
+        let zero = integrity_scrub_policy_from_lookup(&|name: &str| {
+            Ok(match name {
+                INTERVAL => Some("250".to_string()),
+                BYTES => Some("0".to_string()),
+                _ => None,
+            })
+        })
+        .expect_err("a zero byte budget must fail closed");
+        assert!(zero.to_string().contains(BYTES));
+
+        let explicit = integrity_scrub_policy_from_lookup(&|name: &str| {
+            Ok(match name {
+                INTERVAL => Some("250".to_string()),
+                BYTES => Some("1024".to_string()),
+                _ => None,
+            })
+        })
+        .expect("both knobs set is an explicit policy");
+        assert_eq!(
+            explicit,
+            IntegrityScrubPolicyV1::new(250, 1024).expect("a positive policy")
+        );
     }
 }

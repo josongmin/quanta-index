@@ -6,7 +6,8 @@
 //! independent of the adapter's own claims: the library's index listing and
 //! statistics read straight from the sealed dataset, an exhaustive exact
 //! cosine ranking computed in this file, fault injection on the index files,
-//! and legacy manifests rewritten byte for byte.
+//! and manifests of earlier formats rewritten byte for byte, which every
+//! door must refuse typed rather than serve on what they happen to carry.
 
 #![forbid(unsafe_code)]
 
@@ -21,13 +22,16 @@ use quanta_index_contract::{
     SearchPlaneTrackKind, SemanticReplaceScope,
 };
 use quanta_index_core::{
-    CoreError, DenseIndexEffortV1, DenseIndexLineageV1, DenseIndexTrainingV1, DenseIndexV1,
-    DenseLaneAttestationV1, DenseLaneContractV1, GenerationIdentityValidatePort,
-    GenerationStorageKeyV1, RequestBudgetV1, SemanticIndexOpenPort,
+    CoreError, DenseIndexBuildV1, DenseIndexEffortV1, DenseIndexSegmentBuildV1,
+    DenseIndexTrainingV1, DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1,
+    GenerationIdentityValidatePort, GenerationQuarantineReasonV1, GenerationStorageKeyV1,
+    IntegrityScrubBudgetV1, IntegrityScrubOutcomeV1, IntegrityScrubPort,
+    QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort, RequestBudgetV1,
+    SemanticIndexOpenPort,
 };
 use quanta_index_semantic::{
-    SemanticAdapter, build_resident_batch_v1, legacy_chunk_embedding_record_v1,
-    sealed_replace_batch_v1, search_scope_v1, tombstone_scope_v1,
+    SemanticAdapter, build_resident_batch_v1, inventory_persisted_generations,
+    legacy_chunk_embedding_record_v1, sealed_replace_batch_v1, search_scope_v1, tombstone_scope_v1,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -153,8 +157,20 @@ fn typed_code<T>(result: &Result<T, CoreError>) -> Option<String> {
     }
 }
 
-/// The policy's sealed approximate lane with `lineage` behind it.
-fn sealed_ann_lane(lineage: DenseIndexLineageV1) -> DenseLaneContractV1 {
+/// The policy's graph recipe, as the trained segment carries it.
+const HNSW_M: u32 = 20;
+const HNSW_EF_CONSTRUCTION: u32 = 300;
+/// What the library's incremental builder builds an appended segment with:
+/// its own defaults, which the seal must record verbatim.
+const APPENDED_HNSW_M: u32 = 20;
+const APPENDED_HNSW_EF_CONSTRUCTION: u32 = 150;
+
+/// The policy's sealed approximate lane with `lineage` behind it and
+/// `appended_segments` segments appended by the library's builder.
+fn sealed_ann_lane_with(
+    lineage: DenseIndexTrainingV1,
+    appended_segments: usize,
+) -> DenseLaneContractV1 {
     DenseLaneContractV1 {
         index: DenseIndexV1::Approximate {
             effort: DenseIndexEffortV1 {
@@ -166,20 +182,36 @@ fn sealed_ann_lane(lineage: DenseIndexLineageV1) -> DenseLaneContractV1 {
                 refine_factor: 2,
             },
             lineage,
+            build: DenseIndexBuildV1 {
+                hnsw_m: HNSW_M,
+                hnsw_ef_construction: HNSW_EF_CONSTRUCTION,
+                appended_segments: vec![
+                    DenseIndexSegmentBuildV1 {
+                        hnsw_m: APPENDED_HNSW_M,
+                        hnsw_ef_construction: APPENDED_HNSW_EF_CONSTRUCTION,
+                    };
+                    appended_segments
+                ],
+            },
         },
         attestation: DenseLaneAttestationV1::Sealed,
     }
 }
 
+/// The policy's sealed approximate lane as one trained segment.
+fn sealed_ann_lane(lineage: DenseIndexTrainingV1) -> DenseLaneContractV1 {
+    sealed_ann_lane_with(lineage, 0)
+}
+
 /// The lineage a seal that trained at `generation` over `rows` rows
 /// records.
-fn trained_at(generation: u64, rows: u64) -> DenseIndexLineageV1 {
-    DenseIndexLineageV1::Recorded(DenseIndexTrainingV1 {
+fn trained_at(generation: u64, rows: u64) -> DenseIndexTrainingV1 {
+    DenseIndexTrainingV1 {
         trained_at_generation: generation,
         trained_rows: rows,
         appended_rows: 0,
         deleted_rows: 0,
-    })
+    }
 }
 
 fn sealed_exact_lane() -> DenseLaneContractV1 {
@@ -496,12 +528,17 @@ fn a_delta_inside_the_append_budget_appends_to_the_inherited_index() -> TestResu
     )?;
 
     let searcher = adapter.open(&repo(), &revision(), delta)?;
-    let expected = sealed_ann_lane(DenseIndexLineageV1::Recorded(DenseIndexTrainingV1 {
-        trained_at_generation: 1,
-        trained_rows: 300,
-        appended_rows: 60,
-        deleted_rows: 0,
-    }));
+    // The attestation names the appended segment's actual build parameters
+    // (the library's incremental builder's), never the trained recipe.
+    let expected = sealed_ann_lane_with(
+        DenseIndexTrainingV1 {
+            trained_at_generation: 1,
+            trained_rows: 300,
+            appended_rows: 60,
+            deleted_rows: 0,
+        },
+        1,
+    );
     if searcher.dense_lane() != expected {
         return Err(format!(
             "360 rows inside the budget must append to the base's index, got {:?}",
@@ -657,49 +694,16 @@ fn recommit_scope_manifest(generation_dir: &Path, manifest_bytes: &[u8]) -> Test
     Ok(())
 }
 
-/// A base sealed before the lineage record serves as sealed with an
-/// unrecorded lineage, and a delta over it retrains even inside the budget:
-/// there is no record to append against.
-#[test]
-fn a_base_sealed_before_the_lineage_record_is_retrained_not_appended() -> TestResult {
-    let temp = tempfile::tempdir()?;
-    let root = temp.path().to_path_buf();
-    let adapter = SemanticAdapter::with_state_root(root.clone())?;
-    let base = ManifestGeneration::new(1);
-    let delta = ManifestGeneration::new(2);
-    seal_rows(&adapter, base, 300)?;
-    downgrade_to_v8(&generation_dir(&root, base))?;
-
-    let reopened = SemanticAdapter::with_state_root(root.clone())?;
-    reopened.validate_generation_identity(&identity(base))?;
-    let base_lane = reopened.open(&repo(), &revision(), base)?.dense_lane();
-    if base_lane != sealed_ann_lane(DenseIndexLineageV1::Unrecorded) {
-        return Err(format!(
-            "a v8 generation is sealed and verified but its lineage is unrecorded: {base_lane:?}"
-        )
-        .into());
-    }
-
-    seal_with_scopes(
-        &reopened,
-        delta,
-        Some(base),
-        vec![scope(
-            "src/new.rs",
-            records("new", "src/new.rs", 1_000..1_030)?,
-        )],
-        &[],
-    )?;
-    let delta_lane = reopened.open(&repo(), &revision(), delta)?.dense_lane();
-    if delta_lane != sealed_ann_lane(trained_at(2, 330)) {
-        return Err(format!("a delta over a v8 base must retrain, got {delta_lane:?}").into());
-    }
-    if library_view(&generation_dir(&root, delta))?.stats != Some((330, 0, Some(1))) {
-        return Err("the retrained index must cover every row in one segment".into());
-    }
-    Ok(())
-}
-
+/// The documented typed behaviour of a sealed generation whose ANN files
+/// are lost or damaged (QI-BB-027 완료 기준 #2, QI-BB-017).
+///
+/// A file that is missing or resized is refused at both doors and after a restart,
+/// typed as `GENERATION_SIDECAR_CORRUPT`, by the cheap layout check; a
+/// same-length rewrite passes the cheap doors by design and is the scrub's
+/// to find, after which the generation is quarantined durably and every
+/// door — before and after a restart — refuses it typed as
+/// `GENERATION_QUARANTINED`, the inventory lists it as content-corrupt, and
+/// the quarantine discard is the way it leaves the disk.
 #[test]
 fn losing_or_damaging_the_index_files_refuses_both_doors_and_a_restart() -> TestResult {
     let temp = tempfile::tempdir()?;
@@ -707,14 +711,54 @@ fn losing_or_damaging_the_index_files_refuses_both_doors_and_a_restart() -> Test
     let adapter = SemanticAdapter::with_state_root(root.clone())?;
     let generation = ManifestGeneration::new(1);
     seal_rows(&adapter, generation, 300)?;
-    let generation_dir = generation_dir(&root, generation);
-    let files = index_files(&generation_dir)?;
+    let damaged_dir = generation_dir(&root, generation);
+    let files = index_files(&damaged_dir)?;
     let Some(first) = files.first() else {
         return Err("a 300-row seal writes index files".into());
     };
+    let unbounded = IntegrityScrubBudgetV1 {
+        max_bytes: u64::MAX,
+    };
 
-    // Damage one index file in place.
+    // An intact generation scrubs clean and leaves a completion receipt.
+    let clean = adapter.scrub(&identity(generation), None, unbounded)?;
+    if clean.outcome != IntegrityScrubOutcomeV1::Completed || clean.files_verified == 0 {
+        return Err(format!("an intact generation must scrub clean, got {clean:?}").into());
+    }
+
+    // Truncate one index file: the layout check refuses at both doors.
     let original = std::fs::read(first)?;
+    std::fs::write(
+        first,
+        original
+            .get(..original.len().saturating_sub(1))
+            .ok_or("the index file is not empty")?,
+    )?;
+    for (door, result) in [
+        (
+            "validate",
+            adapter.validate_generation_identity(&identity(generation)),
+        ),
+        (
+            "open",
+            adapter
+                .open(&repo(), &revision(), generation)
+                .map(|_searcher| ()),
+        ),
+    ] {
+        if typed_code(&result).as_deref() != Some("GENERATION_SIDECAR_CORRUPT") {
+            return Err(
+                format!("{door} must refuse a truncated index file, got {result:?}").into(),
+            );
+        }
+    }
+    std::fs::write(first, &original)?;
+    adapter.validate_generation_identity(&identity(generation))?;
+
+    // Damage one index file in place, same length: the layout check cannot
+    // tell (it reads no dataset byte), but the library cannot load the
+    // index's footer, so both doors refuse typed as `ANN_INDEX_MISSING`
+    // rather than serving an exact scan in its place …
     let mut damaged = original.clone();
     let Some(last) = damaged.last_mut() else {
         return Err("index file is empty".into());
@@ -733,15 +777,103 @@ fn losing_or_damaging_the_index_files_refuses_both_doors_and_a_restart() -> Test
                 .map(|_searcher| ()),
         ),
     ] {
-        if typed_code(&result).as_deref() != Some("GENERATION_SIDECAR_CORRUPT") {
-            return Err(format!("{door} must refuse a damaged index file, got {result:?}").into());
+        if typed_code(&result).as_deref() != Some("ANN_INDEX_MISSING") {
+            return Err(format!(
+                "{door} must refuse an index the library cannot load, typed, got {result:?}"
+            )
+            .into());
         }
     }
+    // … and the scrub finds the byte, quarantines the generation, and
+    // reports the entry the inventory now lists.
+    let found = adapter.scrub(&identity(generation), None, unbounded)?;
+    let IntegrityScrubOutcomeV1::Corrupt { quarantined } = &found.outcome else {
+        return Err(format!("the scrub must find the damaged index file, got {found:?}").into());
+    };
+    if quarantined.path != damaged_dir
+        || quarantined.reason != GenerationQuarantineReasonV1::ContentCorrupt
+        || !quarantined.detail.contains("_indices")
+    {
+        return Err(format!("the quarantine names the damaged file: {quarantined:?}").into());
+    }
+    let restarted = SemanticAdapter::with_state_root(root.clone())?;
+    for (door, result) in [
+        (
+            "validate",
+            adapter.validate_generation_identity(&identity(generation)),
+        ),
+        (
+            "open",
+            adapter
+                .open(&repo(), &revision(), generation)
+                .map(|_searcher| ()),
+        ),
+        (
+            "validate after restart",
+            restarted.validate_generation_identity(&identity(generation)),
+        ),
+        (
+            "open after restart",
+            restarted
+                .open(&repo(), &revision(), generation)
+                .map(|_searcher| ()),
+        ),
+        (
+            "scrub again",
+            restarted
+                .scrub(&identity(generation), None, unbounded)
+                .map(|_report| ()),
+        ),
+    ] {
+        if typed_code(&result).as_deref() != Some("GENERATION_QUARANTINED") {
+            return Err(format!(
+                "{door} must refuse a quarantined generation typed, got {result:?}"
+            )
+            .into());
+        }
+    }
+    let inventory = inventory_persisted_generations(&root)?;
+    if !inventory.sealed.is_empty()
+        || inventory
+            .quarantined
+            .iter()
+            .map(|entry| (entry.path.clone(), entry.reason))
+            .collect::<Vec<_>>()
+            != vec![(
+                damaged_dir.clone(),
+                GenerationQuarantineReasonV1::ContentCorrupt,
+            )]
+    {
+        return Err(format!(
+            "the inventory must quarantine the generation as content-corrupt: {inventory:?}"
+        )
+        .into());
+    }
+    // Restoring the bytes does not lift the quarantine: the receipt is
+    // durable and only the quarantine discard removes it.
     std::fs::write(first, &original)?;
-    adapter.validate_generation_identity(&identity(generation))?;
+    let still = restarted
+        .open(&repo(), &revision(), generation)
+        .map(|_searcher| ());
+    if typed_code(&still).as_deref() != Some("GENERATION_QUARANTINED") {
+        return Err(
+            format!("restoring the bytes must not lift the quarantine, got {still:?}").into(),
+        );
+    }
+    let Some(entry) = inventory.quarantined.first() else {
+        return Err("one quarantine entry".into());
+    };
+    let discarded = restarted.discard_quarantined_generation(entry)?;
+    if !matches!(discarded, QuarantineDiscardOutcomeV1::Discarded { bytes } if bytes > 0)
+        || damaged_dir.exists()
+    {
+        return Err(format!("the discard removes the generation, got {discarded:?}").into());
+    }
 
-    // Remove every index file; a restarted adapter refuses the same way.
-    for file in &files {
+    // A generation missing every index file is refused after a restart.
+    let generation = ManifestGeneration::new(2);
+    seal_rows(&restarted, generation, 300)?;
+    for file in index_files(&generation_dir(&root, generation))? {
         std::fs::remove_file(file)?;
     }
     let restarted = SemanticAdapter::with_state_root(root)?;
@@ -788,51 +920,121 @@ fn downgrade_to_v7(generation_dir: &Path) -> TestResult {
     recommit_scope_manifest(generation_dir, &legacy)
 }
 
+/// Every earlier format is refused typed at every door, never served on
+/// what it happens to carry (QI-BB-027, breaking-first).
+///
+/// The cases: a format-8
+/// generation (index contract without lineage), a format-7 one (no index
+/// contract at all), and a delta that names either as its base. The boot
+/// inventory sets them aside under the format reason instead of seeding
+/// them, so nothing downstream can pin, activate or build on them.
 #[test]
-fn a_generation_sealed_before_the_contract_serves_unverified_on_what_it_carries() -> TestResult {
+fn a_generation_sealed_under_an_earlier_format_is_refused_typed_at_every_door() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().to_path_buf();
     let adapter = SemanticAdapter::with_state_root(root.clone())?;
-    let indexed = ManifestGeneration::new(1);
-    let exact = ManifestGeneration::new(2);
-    seal_rows(&adapter, indexed, 300)?;
-    seal_rows(&adapter, exact, 12)?;
-    downgrade_to_v7(&generation_dir(&root, indexed))?;
-    downgrade_to_v7(&generation_dir(&root, exact))?;
+    let format_8 = ManifestGeneration::new(1);
+    let format_7 = ManifestGeneration::new(2);
+    let current = ManifestGeneration::new(3);
+    seal_rows(&adapter, format_8, 300)?;
+    seal_rows(&adapter, format_7, 12)?;
+    seal_rows(&adapter, current, 20)?;
+    downgrade_to_v8(&generation_dir(&root, format_8))?;
+    downgrade_to_v7(&generation_dir(&root, format_7))?;
 
-    let reopened = SemanticAdapter::with_state_root(root)?;
-    reopened.validate_generation_identity(&identity(indexed))?;
-    let indexed_searcher = reopened.open(&repo(), &revision(), indexed)?;
-    let lane = indexed_searcher.dense_lane();
-    let DenseIndexV1::Approximate { effort, lineage } = &lane.index else {
-        return Err(format!("a v7 generation with an index reports it: {lane:?}").into());
-    };
-    if lane.attestation != DenseLaneAttestationV1::LegacyUnverified
-        || effort.index_kind != "ivf_hnsw_sq"
-        || *lineage != DenseIndexLineageV1::Unrecorded
-    {
-        return Err(format!("a v7 index is served unverified: {lane:?}").into());
+    let reopened = SemanticAdapter::with_state_root(root.clone())?;
+    for (label, generation, format) in [("format 8", format_8, 8), ("format 7", format_7, 7)] {
+        let validated = reopened.validate_generation_identity(&identity(generation));
+        let opened = reopened
+            .open(&repo(), &revision(), generation)
+            .map(|_searcher| ());
+        for (door, outcome) in [("validate", validated), ("open", opened)] {
+            match outcome {
+                Err(CoreError::Typed { code, message })
+                    if code == "GENERATION_MANIFEST_FORMAT_UNSUPPORTED"
+                        && message.contains(&format!("format version {format}"))
+                        && message.contains("rebuild") => {}
+                other => {
+                    return Err(format!(
+                        "{label}: {door} must refuse typed with the rebuild instruction, got {other:?}"
+                    )
+                    .into());
+                }
+            }
+        }
+        // A delta over an earlier-format base cannot be sealed on it.
+        let delta = ManifestGeneration::new(generation.get() + 10);
+        let sealed = seal_with_scopes(
+            &reopened,
+            delta,
+            Some(generation),
+            vec![scope(
+                "src/new.rs",
+                records("new", "src/new.rs", 1_000..1_010)?,
+            )],
+            &[],
+        );
+        match sealed {
+            Err(error)
+                if error
+                    .to_string()
+                    .contains("GENERATION_MANIFEST_FORMAT_UNSUPPORTED")
+                    || error
+                        .to_string()
+                        .contains(&format!("format version {format}")) => {}
+            other => {
+                return Err(format!(
+                    "{label}: a delta over the base must be refused, got {other:?}"
+                )
+                .into());
+            }
+        }
     }
-    let hits = indexed_searcher.search(
-        &unit_vector(11, DIMENSION),
-        3,
+    // The current-format generation beside them still serves.
+    reopened.validate_generation_identity(&identity(current))?;
+    let hits = reopened.open(&repo(), &revision(), current)?.search(
+        &unit_vector(3, DIMENSION),
+        1,
         &RequestBudgetV1::unbounded(),
     )?;
-    if hits.first().map(|hit| hit.candidate_id.as_str()) != Some("row-11") {
-        return Err(format!("a v7 index still serves: {hits:?}").into());
+    if hits.first().map(|hit| hit.candidate_id.as_str()) != Some("row-3") {
+        return Err(format!("the current generation must serve: {hits:?}").into());
     }
-
-    let exact_lane = reopened.open(&repo(), &revision(), exact)?.dense_lane();
-    if exact_lane
-        != (DenseLaneContractV1 {
-            index: DenseIndexV1::Exact,
-            attestation: DenseLaneAttestationV1::LegacyUnverified,
-        })
-    {
-        return Err(format!(
-            "a v7 generation without an index is exact, unverified: {exact_lane:?}"
-        )
-        .into());
+    // The inventory quarantines both under the format reason and seeds
+    // only the current one.
+    let inventory = inventory_persisted_generations(&root)?;
+    let seeded: Vec<u64> = inventory
+        .sealed
+        .iter()
+        .map(|record| record.generation.get())
+        .collect();
+    if seeded != vec![current.get()] {
+        return Err(format!("only the current generation is seeded, got {seeded:?}").into());
+    }
+    let mut quarantined: Vec<(PathBuf, GenerationQuarantineReasonV1)> = inventory
+        .quarantined
+        .iter()
+        .map(|entry| (entry.path.clone(), entry.reason))
+        .collect();
+    quarantined.sort();
+    let mut expected = vec![
+        (
+            generation_dir(&root, format_8),
+            GenerationQuarantineReasonV1::FormatUnsupported,
+        ),
+        (
+            generation_dir(&root, format_7),
+            GenerationQuarantineReasonV1::FormatUnsupported,
+        ),
+    ];
+    expected.sort();
+    if quarantined != expected {
+        return Err(format!("unexpected quarantine set: {quarantined:?}").into());
+    }
+    for entry in &inventory.quarantined {
+        if !entry.detail.contains("rebuild") {
+            return Err(format!("the quarantine detail names the remedy: {entry:?}").into());
+        }
     }
     Ok(())
 }

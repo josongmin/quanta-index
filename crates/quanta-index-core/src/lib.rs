@@ -38,8 +38,10 @@ pub use domains::generation::{
     QuarantinedGenerationDiscardPort, QuarantinedGenerationV1, SealedArtifactCommitmentV1,
     SealedGenerationBytesV1, SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1,
     SealedGenerationReclaimPort, SealedGenerationScanPort, TreeCommitmentMismatchV1,
-    UNKNOWN_GENERATION_CODE, commit_tree_v1, sha256_of_file, unique_inode_tree_bytes,
-    unknown_generation_error, validate_pinned_generation_v1, verify_tree_commitment_v1,
+    TreeCommitmentV1, TreeScrubStepV1, TreeScrubVerdictV1, UNKNOWN_GENERATION_CODE,
+    commit_tree_inheriting_v1, commit_tree_v1, hash_committed_step_v1, scrub_tree_commitment_v1,
+    sha256_of_file, unique_inode_tree_bytes, unknown_generation_error,
+    validate_pinned_generation_v1, verify_tree_commitment_v1, verify_tree_layout_v1,
 };
 pub use domains::hybrid::{
     DenseAdmissionOutcomeV1, DenseLaneFilterClassV1, ExplainQueryPort, FusedKeyV1, FusedLaneRankV1,
@@ -52,7 +54,9 @@ pub use domains::idempotency::{
 };
 pub use domains::ingest_body::IngestBatchBodyV1;
 pub use domains::integrity::{
-    IntegrityScrubPort, IntegrityScrubReportV1, IntegrityScrubStampV1, IntegrityScrubStatusV1,
+    GENERATION_QUARANTINED_CODE, IntegrityScrubBudgetV1, IntegrityScrubCandidateV1,
+    IntegrityScrubCursorV1, IntegrityScrubOutcomeV1, IntegrityScrubPolicyV1, IntegrityScrubPort,
+    IntegrityScrubReportV1,
 };
 pub use domains::lexical::{
     FileContributorIngestPort, FileOwnershipIngestPort, HISTORY_TEXT_INDEX_CORRUPT_CODE,
@@ -92,18 +96,20 @@ pub use domains::repomap::{
     RepoMapOpenReportV1, RepoMapPolicy, RepoMapQuarantinePort, RepoMapQueryPort, RepoMapService,
 };
 pub use domains::semantic::{
-    DenseIndexEffortV1, DenseIndexLineageV1, DenseIndexTrainingV1, DenseIndexV1,
-    DenseLaneAttestationV1, DenseLaneContractV1, EMBED_CHECKPOINT, L2_UNIT_NORM_TOLERANCE,
-    L2UnitEmbeddingProvider, ResidentScopeSource, SEMANTIC_STREAM_OWNER_SCOPE_OVER_WINDOW_CODE,
+    DenseIndexBuildV1, DenseIndexEffortV1, DenseIndexSegmentBuildV1, DenseIndexTrainingV1,
+    DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1, EMBED_CHECKPOINT,
+    L2_UNIT_NORM_TOLERANCE, L2UnitEmbeddingProvider, ResidentScopeSource,
+    SEMANTIC_ROW_ROOT_MISMATCH_CODE, SEMANTIC_STREAM_OWNER_SCOPE_OVER_WINDOW_CODE,
     SEMANTIC_STREAM_WINDOW_EXCEEDED_CODE, SEMANTIC_STREAM_WINDOW_SCOPES,
     SEMANTIC_STREAM_WINDOW_STILL_RESIDENT_CODE, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES,
-    SemanticBatchIdentityV1, SemanticBatchMutationsV1, SemanticGenerationContractV1,
-    SemanticIndexOpenPort, SemanticIngestHeaderV1, SemanticIngestPort, SemanticPolicy,
-    SemanticQueryPort, SemanticReadiness, SemanticScopeSource, SemanticScopeStreamBuildPort,
-    SemanticScopeWindowV1, SemanticSearchHitV1, SemanticSearcher, SemanticStreamTallyV1,
-    SemanticStreamWindowPolicy, SemanticWindowFillV1, SemanticWindowIssuerV1,
-    SemanticWindowLeaseV1, SemanticWindowPlacementV1, SemanticWindowResidencyV1,
-    TextEmbeddingProvider, build_resident_semantic_batch_v1, owner_key_v1,
+    SemanticBatchIdentityV1, SemanticBatchMutationsV1, SemanticContentRootsPort,
+    SemanticGenerationContractV1, SemanticIndexOpenPort, SemanticIngestHeaderV1,
+    SemanticIngestPort, SemanticPolicy, SemanticQueryPort, SemanticReadiness, SemanticScopeSource,
+    SemanticScopeStreamBuildPort, SemanticScopeWindowV1, SemanticSearchHitV1, SemanticSearcher,
+    SemanticStreamTallyV1, SemanticStreamWindowPolicy, SemanticWindowFillV1,
+    SemanticWindowIssuerV1, SemanticWindowLeaseV1, SemanticWindowPlacementV1,
+    SemanticWindowResidencyV1, TextEmbeddingProvider, build_resident_semantic_batch_v1,
+    owner_key_v1,
 };
 pub use domains::structural::{
     StructuralError, StructuralMatchBinding, StructuralMatchCandidate, StructuralPolicy,

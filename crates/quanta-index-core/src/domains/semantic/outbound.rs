@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use quanta_index_contract::{
     BatchPublishReceipt, ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
     EmbeddingNormalization, GenerationSnapshot, LexicalCandidate, ManifestGeneration, OwnerDocKind,
-    QueryConstraintSetV1, RepoId, RevisionId, SemanticCorpusKindV1,
+    QueryConstraintSetV1, RepoId, RevisionId, SemanticContentRootsV1, SemanticCorpusKindV1,
 };
 
 use crate::domains::semantic::stream::{SemanticIngestHeaderV1, SemanticScopeSource};
@@ -88,6 +88,27 @@ pub struct SemanticReadiness {
     pub materialized: bool,
 }
 
+/// Wire code for an activation that names semantic content roots the
+/// physical generation does not carry (QI-BB-028).
+pub const SEMANTIC_ROW_ROOT_MISMATCH_CODE: &str = "SEMANTIC_ROW_ROOT_MISMATCH";
+
+/// The content roots a sealed semantic generation carries (QI-BB-028).
+///
+/// The sealed scope manifest records the row root over every sealed row
+/// (vectors included) and the cluster-membership root; this port reads
+/// them back for the identity a producer names, so a seal receipt can
+/// attest them and an activation can be refused when the physical
+/// generation's roots are not the ones named
+/// ([`SEMANTIC_ROW_ROOT_MISMATCH_CODE`]). Implementations read the sealed
+/// manifest only — no rows, no dataset bytes — and refuse an unsealed or
+/// digest-mismatched generation typed.
+pub trait SemanticContentRootsPort: Send + Sync {
+    fn sealed_content_roots(
+        &self,
+        sealed: &GenerationSnapshot,
+    ) -> Result<SemanticContentRootsV1, CoreError>;
+}
+
 pub trait SemanticIndexOpenPort: Send + Sync {
     fn open(
         &self,
@@ -128,37 +149,26 @@ pub struct DenseLaneContractV1 {
 pub enum DenseIndexV1 {
     /// Every row is scored; the result is exact.
     Exact,
-    /// An approximate index: the bounded effort one query spends in it, and
-    /// where its centroids came from.
+    /// An approximate index: the bounded effort one query spends in it,
+    /// where its centroids came from, and how each of its segments was
+    /// built.
     Approximate {
         effort: DenseIndexEffortV1,
-        lineage: DenseIndexLineageV1,
+        lineage: DenseIndexTrainingV1,
+        build: DenseIndexBuildV1,
     },
 }
 
-/// Where an approximate index's centroids came from, as the seal recorded
-/// it and the open verified it (QI-BB-027 W3).
+/// The training record of an approximate index, as the seal recorded it
+/// and the open verified it (QI-BB-027 W3).
 ///
 /// A delta seal may append its rows to the inherited index instead of
 /// retraining it; the centroids then date from an earlier generation and a
 /// growing share of the served rows was never part of their training set.
 /// The trace names that share so a recall question can be answered from
-/// the explanation alone.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DenseIndexLineageV1 {
-    /// The seal recorded the training generation and every row assigned to
-    /// or removed from those centroids since.
-    Recorded(DenseIndexTrainingV1),
-    /// The seal predates the lineage record, or there was no seal: nothing
-    /// is known about how the index was trained.
-    Unrecorded,
-}
-
-/// The training record of an approximate index.
-///
-/// The live coverage is `trained_rows + appended_rows - deleted_rows`; the
-/// adapter refuses a seal whose record does not add up to what the index
-/// covers.
+/// the explanation alone. The live coverage is
+/// `trained_rows + appended_rows - deleted_rows`; the adapter refuses a
+/// seal whose record does not add up to what the index covers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DenseIndexTrainingV1 {
     /// The generation whose seal trained the centroids.
@@ -170,6 +180,30 @@ pub struct DenseIndexTrainingV1 {
     pub appended_rows: u64,
     /// Rows removed from the index since training, cumulative.
     pub deleted_rows: u64,
+}
+
+/// How every segment of an approximate index was built, as the library
+/// reported it back at seal and again at open (QI-BB-027).
+///
+/// The trained segment carries the policy's graph recipe; segments a delta
+/// appended were built by the library's incremental builder under its own
+/// parameters, which the seal records verbatim rather than claiming the
+/// recipe for them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DenseIndexBuildV1 {
+    /// Graph neighbours per node and construction beam width of the
+    /// trained segment: the policy's recipe.
+    pub hnsw_m: u32,
+    pub hnsw_ef_construction: u32,
+    /// Each appended segment's `(m, ef_construction)`, in segment order.
+    pub appended_segments: Vec<DenseIndexSegmentBuildV1>,
+}
+
+/// The graph parameters one appended segment was actually built with.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DenseIndexSegmentBuildV1 {
+    pub hnsw_m: u32,
+    pub hnsw_ef_construction: u32,
 }
 
 /// The bounded effort one query spends in an approximate index.
@@ -190,6 +224,10 @@ pub struct DenseIndexEffortV1 {
 }
 
 /// Whether a dense lane's contract was sealed and verified.
+///
+/// Every served generation carries a seal (a generation without one is
+/// refused at open, never served on what its dataset happens to report),
+/// so the only question left is which library version built the index.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DenseLaneAttestationV1 {
     /// The seal recorded the contract, the open verified the index against
@@ -198,9 +236,6 @@ pub enum DenseLaneAttestationV1 {
     /// As `Sealed`, but a different version of the library built the index
     /// than serves it: the metadata agrees, the recall was measured elsewhere.
     SealedByAnotherLibraryVersion,
-    /// The generation predates the contract; the lane runs on what the
-    /// dataset reports and nothing proved it.
-    LegacyUnverified,
 }
 
 impl DenseLaneContractV1 {
@@ -212,40 +247,62 @@ impl DenseLaneContractV1 {
             DenseLaneAttestationV1::SealedByAnotherLibraryVersion => {
                 "sealed_by_another_library_version"
             }
-            DenseLaneAttestationV1::LegacyUnverified => "legacy_unverified",
         };
         match &self.index {
             DenseIndexV1::Exact => format!("dense.index=exact; dense.attestation={attestation}"),
-            DenseIndexV1::Approximate { effort, lineage } => format!(
-                "dense.index={}; dense.attestation={attestation}; dense.partitions={}; dense.nprobes={}; dense.ef=max({},{}*candidates); dense.refine_factor={}; {}",
+            DenseIndexV1::Approximate {
+                effort,
+                lineage,
+                build,
+            } => format!(
+                "dense.index={}; dense.attestation={attestation}; dense.partitions={}; dense.nprobes={}; dense.ef=max({},{}*candidates); dense.refine_factor={}; {}; {}",
                 effort.index_kind,
                 effort.partitions,
                 effort.nprobes,
                 effort.ef_floor,
                 effort.ef_per_candidate,
                 effort.refine_factor,
-                lineage.trace_detail()
+                lineage.trace_detail(),
+                build.trace_detail()
             ),
         }
     }
 }
 
-impl DenseIndexLineageV1 {
+impl DenseIndexTrainingV1 {
     /// The `ann.*` keys of the planner trace: the training generation and
-    /// the rows appended to and deleted from it since, or that no record
-    /// exists.
+    /// the rows appended to and deleted from it since.
     #[must_use]
     pub fn trace_detail(&self) -> String {
-        match self {
-            Self::Recorded(training) => format!(
-                "ann.trained_at=g{}; ann.appended={}/{}; ann.deleted={}",
-                training.trained_at_generation,
-                training.appended_rows,
-                training.trained_rows,
-                training.deleted_rows
-            ),
-            Self::Unrecorded => "ann.lineage=unrecorded".to_string(),
-        }
+        format!(
+            "ann.trained_at=g{}; ann.appended={}/{}; ann.deleted={}",
+            self.trained_at_generation, self.appended_rows, self.trained_rows, self.deleted_rows
+        )
+    }
+}
+
+impl DenseIndexBuildV1 {
+    /// The `ann.hnsw_*` keys of the planner trace: the trained segment's
+    /// recipe, then each appended segment's actual construction beam width
+    /// so a recall question about appended rows is answerable from the
+    /// explanation alone.
+    #[must_use]
+    pub fn trace_detail(&self) -> String {
+        let appended = if self.appended_segments.is_empty() {
+            "none".to_string()
+        } else {
+            self.appended_segments
+                .iter()
+                .map(|segment| format!("{}/{}", segment.hnsw_m, segment.hnsw_ef_construction))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        format!(
+            "ann.hnsw_m={}; ann.hnsw_ef_construction={}; ann.appended_segments={}; ann.appended_segments_m/ef_construction={appended}",
+            self.hnsw_m,
+            self.hnsw_ef_construction,
+            self.appended_segments.len()
+        )
     }
 }
 

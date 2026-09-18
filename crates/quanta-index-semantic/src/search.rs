@@ -36,9 +36,9 @@ use quanta_index_contract::{
     ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
     ClusterMembershipCompletenessV1, ClusterMembershipReadFailureV1,
     ClusterMembershipReadOutcomeV1, ClusterMembershipReadRejectionV1,
-    ClusterMembershipReadRequestV1, ClusterMembershipSnapshotV1, ClusterMembershipUnavailableV1,
-    GenerationPin, LexicalCandidate, ManifestGeneration, OwnerDocKind, QueryConstraintSetV1,
-    RepoId, RepoRelativePath, RevisionId, SemanticCorpusKindV1, SymbolId,
+    ClusterMembershipReadRequestV1, ClusterMembershipSnapshotV1, GenerationPin, LexicalCandidate,
+    ManifestGeneration, OwnerDocKind, QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId,
+    SemanticCorpusKindV1, SymbolId,
     canonical_order::{CanonicalOrderBreakV1, first_canonical_order_break_v1},
     cluster_membership_content_digest_v1,
 };
@@ -53,32 +53,21 @@ use crate::budget::{
 };
 use crate::errors::lancedb_err;
 use crate::generation_contract::GenerationContract;
+use crate::integrity::refuse_if_quarantined;
 use crate::layout::{
     self, CLUSTER_MEMBERSHIP_TABLE_NAME, COLUMN_AUTHORITY_DIGEST, COLUMN_CORPUS_KIND,
     COLUMN_EMBEDDING_ID, COLUMN_END_LINE, COLUMN_LANGUAGE, COLUMN_MEMBERSHIP_AUTHORITY_DIGEST,
     COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID, COLUMN_MEMBERSHIP_CONTENT_DIGEST,
     COLUMN_MEMBERSHIP_MEMBER_COUNT, COLUMN_MEMBERSHIP_MEMBER_SYMBOL_ID, COLUMN_MEMBERSHIP_ORDINAL,
-    COLUMN_MEMBERSHIP_OWNER_ID, COLUMN_MEMBERSHIP_OWNER_KIND, COLUMN_OWNER_ID, COLUMN_OWNER_KIND,
-    COLUMN_RECORD_ID, COLUMN_REPO_RELATIVE_PATH, COLUMN_SNIPPET, COLUMN_START_LINE, TABLE_NAME,
-    dataset_uri,
+    COLUMN_OWNER_ID, COLUMN_OWNER_KIND, COLUMN_RECORD_ID, COLUMN_REPO_RELATIVE_PATH,
+    COLUMN_SNIPPET, COLUMN_START_LINE, TABLE_NAME, dataset_uri,
 };
-use crate::manifest::{
-    FormatCapabilitiesV1, LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION, SemanticManifest,
-    format_capabilities_v1,
-};
-use crate::membership_integrity::{
-    ClusterMembershipStoredRowV1 as ClusterMembershipIntegrityRowV1,
-    cluster_membership_commitment_v1,
-};
+use crate::manifest::SemanticManifest;
 use crate::sealed_manifest::verify_sealed_manifest;
 use crate::sql::build_id_in_filter;
 use crate::vector_index::{LoadedVectorIndexV1, verify_vector_index_v1};
 
 const COLUMN_DISTANCE: &str = "_distance";
-
-fn has_semantic_corpus_metadata_v1(format_version: u32) -> bool {
-    format_capabilities_v1(format_version).is_some_and(FormatCapabilitiesV1::corpus_metadata)
-}
 
 fn load_generation_contract(generation_dir: &Path) -> Result<GenerationContract, CoreError> {
     let contract_path = layout::build_contract_path(generation_dir);
@@ -89,25 +78,6 @@ fn load_generation_contract(generation_dir: &Path) -> Result<GenerationContract,
         ))
     })?;
     GenerationContract::decode(&bytes)
-}
-
-fn load_generation_contract_for_manifest(
-    generation_dir: &Path,
-    manifest: &SemanticManifest,
-    capabilities: FormatCapabilitiesV1,
-) -> Result<Option<GenerationContract>, CoreError> {
-    let contract_path = layout::build_contract_path(generation_dir);
-    if contract_path.exists() {
-        return load_generation_contract(generation_dir).map(Some);
-    }
-    if capabilities.build_contract() {
-        return Err(CoreError::Storage(format!(
-            "semantic: manifest format version {} requires generation contract {}",
-            manifest.format_version,
-            contract_path.display()
-        )));
-    }
-    Ok(None)
 }
 
 fn read_scope_manifest(generation_dir: &Path) -> Result<SemanticManifest, CoreError> {
@@ -132,39 +102,19 @@ pub(crate) struct LoadedGeneration {
     repo_id: RepoId,
     revision_id: RevisionId,
     generation: ManifestGeneration,
-    format_version: u32,
     dimension: usize,
     model_id: String,
     model_version: Option<String>,
     table: lancedb::Table,
-    cluster_membership: LoadedClusterMembershipV1,
+    /// The cluster-membership sidecar table every sealed generation carries.
+    cluster_membership: lancedb::Table,
     /// The dense lane's index, verified against the seal at open.
     vector_index: LoadedVectorIndexV1,
-    /// On-disk bytes of the dataset this handle maps, measured at open.
+    /// On-disk bytes of the dataset this handle maps, as the seal committed
+    /// them.
     resident_bytes_estimate: u64,
     /// The sealed manifest digest the open proved.
     manifest_digest: String,
-}
-
-enum LoadedClusterMembershipV1 {
-    Available(lancedb::Table),
-    LegacyUnavailable,
-}
-
-fn unavailable_or_rejected_membership_v1(
-    state: &LoadedClusterMembershipV1,
-    request: &ClusterMembershipReadRequestV1,
-) -> Option<ClusterMembershipReadOutcomeV1> {
-    match state {
-        LoadedClusterMembershipV1::Available(_) => None,
-        LoadedClusterMembershipV1::LegacyUnavailable => Some(
-            ClusterMembershipReadOutcomeV1::Unavailable(ClusterMembershipUnavailableV1 {
-                cluster_record_id: request.cluster_record_id.clone(),
-                generation: request.generation.clone(),
-                expected_authority_digest: request.expected_authority_digest.clone(),
-            }),
-        ),
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -244,12 +194,19 @@ pub(crate) struct SemanticSearchHit {
     pub(crate) record_id: String,
     pub(crate) owner_id: String,
     pub(crate) owner_kind: String,
-    pub(crate) corpus_kind: Option<String>,
+    pub(crate) corpus_kind: String,
     pub(crate) authority_digest: String,
 }
 
 /// Open a sealed generation directly from durable state, failing closed on any
-/// absent marker, scope mismatch, or shape mismatch.
+/// absent marker, quarantine, scope mismatch, or shape mismatch.
+///
+/// This is the cheap door (QI-BB-017): it reads the sealed marker, refuses
+/// a generation the scrub quarantined, proves the sealed manifest's layout
+/// (every dataset file present at its committed length, the two sidecars
+/// hashed), decodes the scope manifest and the build contract, opens the
+/// tables, and checks their schemas, row counts and the dense lane's index
+/// against the seal. It reads no dataset payload byte; the scrub does.
 pub(crate) async fn open_generation(
     semantic_root: &Path,
     repo: &RepoId,
@@ -266,32 +223,21 @@ pub(crate) async fn open_generation(
             revision.as_str()
         )));
     }
-    // The marker carries the identity digest, which is all the file
-    // commitment needs: a current-format generation proves every dataset
-    // file, the scope manifest and the build contract against the seal
-    // (QI-BB-017) before the scope manifest is even decoded, so a forged
-    // manifest is refused as a corrupt sidecar rather than interpreted.
-    // Legacy formats predate the commitment and keep their row scans.
+    refuse_if_quarantined(&generation_dir)?;
+    // The marker carries the identity digest, which is all the sealed
+    // manifest needs: every dataset file, the scope manifest and the build
+    // contract are proven against the seal before the scope manifest is
+    // even decoded, so a forged manifest is refused as a corrupt sidecar
+    // rather than interpreted.
     let sealed_digest = std::fs::read_to_string(&marker_path).map_err(|err| {
         CoreError::Storage(format!(
             "semantic: read sealed marker {}: {err}",
             marker_path.display()
         ))
     })?;
-    let sealed_manifest = match verify_sealed_manifest(&generation_dir, &sealed_digest) {
-        Ok(sealed) => Some(sealed),
-        Err(CoreError::Typed { code, message }) if code == "GENERATION_MANIFEST_MISSING" => {
-            let manifest = read_scope_manifest(&generation_dir)?;
-            if manifest.capabilities()?.file_commitment() {
-                return Err(CoreError::Typed { code, message });
-            }
-            None
-        }
-        Err(other) => return Err(other),
-    };
+    let sealed_manifest = verify_sealed_manifest(&generation_dir, &sealed_digest)?;
     let manifest = read_scope_manifest(&generation_dir)?;
     manifest.validate_scope(repo, revision, generation)?;
-    let capabilities = manifest.capabilities()?;
     if manifest.manifest_digest != sealed_digest {
         return Err(CoreError::Typed {
             code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
@@ -302,11 +248,7 @@ pub(crate) async fn open_generation(
             ),
         });
     }
-    if let Some(generation_contract) =
-        load_generation_contract_for_manifest(&generation_dir, &manifest, capabilities)?
-    {
-        generation_contract.validate_manifest(&manifest)?;
-    }
+    load_generation_contract(&generation_dir)?.validate_manifest(&manifest)?;
 
     let dimension = usize::try_from(manifest.dimension).map_err(|err| {
         CoreError::Storage(format!("semantic: manifest dimension overflow: {err}"))
@@ -317,10 +259,7 @@ pub(crate) async fn open_generation(
             manifest.dimension
         ))
     })?;
-    let expected_schema = layout::semantic_schema_for_manifest_version(
-        manifest.format_version,
-        manifest_dimension_i32,
-    )?;
+    let expected_schema = layout::semantic_schema(manifest_dimension_i32);
 
     let uri = dataset_uri(&generation_dir)?;
     let connection = connect(&uri)
@@ -341,25 +280,22 @@ pub(crate) async fn open_generation(
             .field_with_name(expected_field.name())
             .map_err(|err| {
                 CoreError::Storage(format!(
-                    "semantic: table missing expected column `{}` for format version {}: {err}",
+                    "semantic: table missing expected column `{}`: {err}",
                     expected_field.name(),
-                    manifest.format_version,
                 ))
             })?;
         if live_field.data_type() != expected_field.data_type() {
             return Err(CoreError::Storage(format!(
-                "semantic: table column `{}` type {:?} does not match expected {:?} for format version {}",
+                "semantic: table column `{}` type {:?} does not match expected {:?}",
                 expected_field.name(),
                 live_field.data_type(),
                 expected_field.data_type(),
-                manifest.format_version,
             )));
         }
         if *expected_field.data_type() == DataType::Boolean && live_field.is_nullable() {
             return Err(CoreError::Storage(format!(
-                "semantic: table boolean column `{}` unexpectedly nullable for format version {}",
+                "semantic: table boolean column `{}` unexpectedly nullable",
                 expected_field.name(),
-                manifest.format_version,
             )));
         }
     }
@@ -378,77 +314,60 @@ pub(crate) async fn open_generation(
     }
 
     let vector_index =
-        verify_vector_index_v1(&table, manifest.vector_index_seal()?, manifest.row_count).await?;
+        verify_vector_index_v1(&table, &manifest.vector_index, manifest.row_count).await?;
 
-    let cluster_membership = if capabilities.membership_commitment() {
-        let names = connection
-            .table_names()
-            .execute()
-            .await
-            .map_err(|err| lancedb_err("table_names", err))?;
-        if !names
-            .iter()
-            .any(|name| name == CLUSTER_MEMBERSHIP_TABLE_NAME)
-        {
-            return Err(CoreError::Storage(
-                "semantic: current manifest requires the cluster membership table".to_string(),
-            ));
-        }
-        let membership_table = connection
-            .open_table(CLUSTER_MEMBERSHIP_TABLE_NAME)
-            .execute()
-            .await
-            .map_err(|error| lancedb_err("open cluster membership table", error))?;
-        let membership_schema = membership_table
-            .schema()
-            .await
-            .map_err(|error| lancedb_err("read cluster membership schema", error))?;
-        if !layout::cluster_membership_schema()
-            .fields()
-            .iter()
-            .all(|expected| {
-                membership_schema
-                    .field_with_name(expected.name())
-                    .is_ok_and(|live| {
-                        live.data_type() == expected.data_type() && !live.is_nullable()
-                    })
-            })
-        {
-            return Err(CoreError::Storage(
-                "semantic: current cluster membership table has an incompatible schema".to_string(),
-            ));
-        }
-        // With the file commitment verified, the membership rows are the
-        // sealed rows; only the cheap count is re-checked. A generation
-        // without the commitment (legacy format) still streams and re-derives
-        // the membership root.
-        if sealed_manifest.is_some() {
-            verify_cluster_membership_row_count_v1(&membership_table, &manifest).await?;
-        } else {
-            verify_cluster_membership_commitment_v1(&membership_table, &manifest).await?;
-        }
-        LoadedClusterMembershipV1::Available(membership_table)
-    } else {
-        LoadedClusterMembershipV1::LegacyUnavailable
-    };
+    let names = connection
+        .table_names()
+        .execute()
+        .await
+        .map_err(|err| lancedb_err("table_names", err))?;
+    if !names
+        .iter()
+        .any(|name| name == CLUSTER_MEMBERSHIP_TABLE_NAME)
+    {
+        return Err(CoreError::Storage(
+            "semantic: the sealed generation carries no cluster membership table".to_string(),
+        ));
+    }
+    let membership_table = connection
+        .open_table(CLUSTER_MEMBERSHIP_TABLE_NAME)
+        .execute()
+        .await
+        .map_err(|error| lancedb_err("open cluster membership table", error))?;
+    let membership_schema = membership_table
+        .schema()
+        .await
+        .map_err(|error| lancedb_err("read cluster membership schema", error))?;
+    if !layout::cluster_membership_schema()
+        .fields()
+        .iter()
+        .all(|expected| {
+            membership_schema
+                .field_with_name(expected.name())
+                .is_ok_and(|live| live.data_type() == expected.data_type() && !live.is_nullable())
+        })
+    {
+        return Err(CoreError::Storage(
+            "semantic: the cluster membership table has an incompatible schema".to_string(),
+        ));
+    }
+    // With the file layout verified against the seal, the membership rows
+    // are the sealed rows; only the cheap count is re-checked here and the
+    // root is never re-derived on the serving path.
+    verify_cluster_membership_row_count_v1(&membership_table, &manifest).await?;
 
     drop(connection);
-    let resident_bytes_estimate = match &sealed_manifest {
-        Some(sealed) => sealed.dataset_bytes(),
-        None => dataset_tree_bytes(&layout::dataset_dir(&generation_dir))?,
-    };
     Ok(LoadedGeneration {
         repo_id: repo.clone(),
         revision_id: revision.clone(),
         generation,
-        format_version: manifest.format_version,
         dimension,
         model_id: manifest.model_id.clone(),
         model_version: manifest.model_version.clone(),
         table,
-        cluster_membership,
+        cluster_membership: membership_table,
         vector_index,
-        resident_bytes_estimate,
+        resident_bytes_estimate: sealed_manifest.dataset_bytes(),
         manifest_digest: sealed_digest,
     })
 }
@@ -534,87 +453,6 @@ async fn verify_cluster_membership_row_count_v1(
     Ok(())
 }
 
-async fn verify_cluster_membership_commitment_v1(
-    table: &lancedb::Table,
-    manifest: &SemanticManifest,
-) -> Result<(), CoreError> {
-    verify_cluster_membership_row_count_v1(table, manifest).await?;
-
-    let committed_capacity = usize::try_from(manifest.cluster_membership_member_row_count)
-        .map_err(|error| {
-            CoreError::Storage(format!(
-                "semantic: sealed cluster membership row count does not fit memory bound: {error}"
-            ))
-        })?;
-    let mut rows = Vec::with_capacity(committed_capacity);
-    let mut stream = table
-        .query()
-        .execute()
-        .await
-        .map_err(|error| lancedb_err("query cluster membership commitment at open", error))?;
-    while let Some(batch) = stream
-        .try_next()
-        .await
-        .map_err(|error| lancedb_err("stream cluster membership commitment at open", error))?
-    {
-        if rows
-            .len()
-            .checked_add(batch.num_rows())
-            .is_none_or(|next| next > committed_capacity)
-        {
-            return Err(CoreError::Storage(
-                "semantic: cluster membership stream exceeded sealed row bound".to_string(),
-            ));
-        }
-        if batch
-            .columns()
-            .iter()
-            .any(|column| column.null_count() != 0)
-        {
-            return Err(CoreError::Storage(
-                "semantic: cluster membership stream contains null values".to_string(),
-            ));
-        }
-        let cluster_record_ids =
-            column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID, "Utf8")?;
-        let authority_digests =
-            column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_AUTHORITY_DIGEST, "Utf8")?;
-        let owner_kinds = column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_OWNER_KIND, "Utf8")?;
-        let owner_ids = column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_OWNER_ID, "Utf8")?;
-        let member_symbol_ids =
-            column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_MEMBER_SYMBOL_ID, "Utf8")?;
-        let ordinals = column_as::<UInt32Array>(&batch, COLUMN_MEMBERSHIP_ORDINAL, "UInt32")?;
-        let member_counts =
-            column_as::<UInt32Array>(&batch, COLUMN_MEMBERSHIP_MEMBER_COUNT, "UInt32")?;
-        let membership_digests =
-            column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_CONTENT_DIGEST, "Utf8")?;
-        for row in 0..batch.num_rows() {
-            rows.push(ClusterMembershipIntegrityRowV1 {
-                cluster_record_id: cluster_record_ids.value(row).to_owned(),
-                authority_digest: authority_digests.value(row).to_owned(),
-                owner_kind: owner_kinds.value(row).to_owned(),
-                owner_id: owner_ids.value(row).to_owned(),
-                member_symbol_id: member_symbol_ids.value(row).to_owned(),
-                ordinal: ordinals.value(row),
-                member_count: member_counts.value(row),
-                membership_digest: membership_digests.value(row).to_owned(),
-            });
-        }
-    }
-    let observed = cluster_membership_commitment_v1(rows)
-        .map_err(|error| CoreError::Storage(format!("semantic: {error}")))?;
-    if observed.root_digest != manifest.cluster_membership_root_digest
-        || observed.cluster_count != manifest.cluster_membership_cluster_count
-        || observed.member_row_count != manifest.cluster_membership_member_row_count
-    {
-        return Err(CoreError::Storage(
-            "semantic: cluster membership sidecar does not match sealed manifest commitment"
-                .to_string(),
-        ));
-    }
-    Ok(())
-}
-
 /// Convert a lancedb cosine *distance* to the query contract's cosine
 /// *similarity* (`1 - distance`), failing closed on a non-finite distance.
 ///
@@ -653,7 +491,6 @@ fn extract_hits(
     repo_id: &RepoId,
     revision_id: &RevisionId,
     generation: ManifestGeneration,
-    format_version: u32,
     probe: &mut RowBudgetProbe<'_>,
     out: &mut Vec<SemanticSearchHit>,
 ) -> Result<(), CoreError> {
@@ -663,26 +500,10 @@ fn extract_hits(
     let end_col = column_as::<UInt32Array>(batch, COLUMN_END_LINE, "UInt32")?;
     let snippet_col = column_as::<StringArray>(batch, COLUMN_SNIPPET, "Utf8")?;
     let distance_col = column_as::<Float32Array>(batch, COLUMN_DISTANCE, "Float32")?;
-    let record_id_col = if has_semantic_corpus_metadata_v1(format_version) {
-        Some(column_as::<StringArray>(batch, COLUMN_RECORD_ID, "Utf8")?)
-    } else {
-        None
-    };
-    let owner_id_col = if has_semantic_corpus_metadata_v1(format_version) {
-        Some(column_as::<StringArray>(batch, COLUMN_OWNER_ID, "Utf8")?)
-    } else {
-        None
-    };
-    let owner_kind_col = if has_semantic_corpus_metadata_v1(format_version) {
-        Some(column_as::<StringArray>(batch, COLUMN_OWNER_KIND, "Utf8")?)
-    } else {
-        None
-    };
-    let corpus_kind_col = if has_semantic_corpus_metadata_v1(format_version) {
-        Some(column_as::<StringArray>(batch, COLUMN_CORPUS_KIND, "Utf8")?)
-    } else {
-        None
-    };
+    let record_id_col = column_as::<StringArray>(batch, COLUMN_RECORD_ID, "Utf8")?;
+    let owner_id_col = column_as::<StringArray>(batch, COLUMN_OWNER_ID, "Utf8")?;
+    let owner_kind_col = column_as::<StringArray>(batch, COLUMN_OWNER_KIND, "Utf8")?;
+    let corpus_kind_col = column_as::<StringArray>(batch, COLUMN_CORPUS_KIND, "Utf8")?;
     let authority_digest_col = column_as::<StringArray>(batch, COLUMN_AUTHORITY_DIGEST, "Utf8")?;
     for row in 0..batch.num_rows() {
         probe.tick()?;
@@ -709,13 +530,10 @@ fn extract_hits(
         };
         out.push(SemanticSearchHit {
             candidate,
-            record_id: record_id_col.map_or_else(|| id.clone(), |col| col.value(row).to_owned()),
-            owner_id: owner_id_col.map_or_else(|| id.clone(), |col| col.value(row).to_owned()),
-            owner_kind: owner_kind_col.map_or_else(
-                || OwnerDocKind::Chunk.as_code_str().to_owned(),
-                |col| col.value(row).to_owned(),
-            ),
-            corpus_kind: corpus_kind_col.map(|col| col.value(row).to_owned()),
+            record_id: record_id_col.value(row).to_owned(),
+            owner_id: owner_id_col.value(row).to_owned(),
+            owner_kind: owner_kind_col.value(row).to_owned(),
+            corpus_kind: corpus_kind_col.value(row).to_owned(),
             authority_digest: authority_digest_col.value(row).to_owned(),
         });
     }
@@ -808,32 +626,7 @@ impl LoadedGeneration {
                 ClusterMembershipReadFailureV1::GenerationMismatch,
             ));
         }
-        if !matches!(
-            self.cluster_membership,
-            LoadedClusterMembershipV1::Available(_)
-        ) {
-            let outcomes = request
-                .items
-                .iter()
-                .map(|item| item.as_single_request_v1(&request.generation))
-                .map(|single| {
-                    unavailable_or_rejected_membership_v1(&self.cluster_membership, &single)
-                        .unwrap_or_else(|| {
-                            self.cluster_membership_rejection_v1(
-                                &single,
-                                ClusterMembershipReadFailureV1::CorruptSidecar,
-                            )
-                        })
-                })
-                .collect();
-            return Ok(ClusterMembershipBatchReadResponseV1 { outcomes });
-        }
-        let LoadedClusterMembershipV1::Available(table) = &self.cluster_membership else {
-            return Err(CoreError::Storage(
-                "semantic: cluster membership state changed after terminal classification"
-                    .to_string(),
-            ));
-        };
+        let table = &self.cluster_membership;
         let mut predicate = format!("{COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID} IN (");
         for (index, item) in request.items.iter().enumerate() {
             if index > 0 {
@@ -1110,7 +903,6 @@ impl LoadedGeneration {
                 &self.repo_id,
                 &self.revision_id,
                 self.generation,
-                self.format_version,
                 &mut probe,
                 &mut out,
             )?;
@@ -1132,24 +924,19 @@ impl LoadedGeneration {
         hits.into_iter()
             .map(|hit| {
                 let owner_kind = parse_owner_kind_v1(&hit.owner_kind, &hit.record_id)?;
-                let corpus_kind = hit
-                    .corpus_kind
-                    .as_deref()
-                    .map(|value| {
-                        SemanticCorpusKindV1::from_code_str(value).ok_or_else(|| {
-                            CoreError::Storage(format!(
-                                "semantic: unsupported corpus_kind {:?} on record {}",
-                                value, hit.record_id
-                            ))
-                        })
-                    })
-                    .transpose()?;
+                let corpus_kind = SemanticCorpusKindV1::from_code_str(&hit.corpus_kind)
+                    .ok_or_else(|| {
+                        CoreError::Storage(format!(
+                            "semantic: unsupported corpus_kind {:?} on record {}",
+                            hit.corpus_kind, hit.record_id
+                        ))
+                    })?;
                 Ok(SemanticSearchHitV1 {
                     candidate: hit.candidate,
                     record_id: hit.record_id,
                     owner_id: hit.owner_id,
                     owner_kind,
-                    corpus_kind,
+                    corpus_kind: Some(corpus_kind),
                     authority_digest: hit.authority_digest,
                 })
             })
@@ -1206,14 +993,6 @@ impl LoadedGeneration {
         self.check_query_dim(query_vector)?;
         if allowed_ids.is_some_and(BTreeSet::is_empty) {
             return Ok(Vec::new());
-        }
-        if (corpus_kind.is_some() || !constraints.language_any_of.is_empty())
-            && !has_semantic_corpus_metadata_v1(self.format_version)
-        {
-            return Err(CoreError::Storage(format!(
-                "semantic: corpus/language filters require format version {LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION} or newer, found {}",
-                self.format_version
-            )));
         }
         let filter = Self::combine_filters(
             allowed_ids
@@ -1594,14 +1373,13 @@ impl SemanticSearcher for PersistedSemanticSearcher {
 )]
 mod tests {
     use super::{
-        ClusterMembershipReadRowV1, LoadedClusterMembershipV1, cosine_distance_to_score_v1,
-        parse_owner_kind_v1, unavailable_or_rejected_membership_v1,
+        ClusterMembershipReadRowV1, cosine_distance_to_score_v1, parse_owner_kind_v1,
         validate_cluster_membership_rows_v1,
     };
     use quanta_index_contract::{
-        ClusterMembershipReadFailureV1, ClusterMembershipReadOutcomeV1,
-        ClusterMembershipReadRequestV1, GenerationPin, ManifestGeneration, OwnerDocKind, RepoId,
-        RevisionId, SymbolId, cluster_membership_content_digest_v1,
+        ClusterMembershipReadFailureV1, ClusterMembershipReadRequestV1, GenerationPin,
+        ManifestGeneration, OwnerDocKind, RepoId, RevisionId, SymbolId,
+        cluster_membership_content_digest_v1,
     };
     use quanta_index_core::CoreError;
 
@@ -1684,18 +1462,6 @@ mod tests {
                 membership_digest: digest.clone(),
             })
             .collect()
-    }
-
-    #[test]
-    fn cluster_membership_legacy_generation_is_typed_unavailable_v1() {
-        let request = membership_request_v1();
-        assert!(matches!(
-            unavailable_or_rejected_membership_v1(
-                &LoadedClusterMembershipV1::LegacyUnavailable,
-                &request
-            ),
-            Some(ClusterMembershipReadOutcomeV1::Unavailable(_))
-        ));
     }
 
     #[test]

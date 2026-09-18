@@ -171,8 +171,10 @@ fn a_delta_seal_appends_to_the_inherited_ann_index_and_the_trace_says_so() -> Te
     served(&base_query, "semantic query pinned to the base")?;
     let base_trace =
         dense_lane_trace(&base_query).ok_or("the base query has no dense-lane trace")?;
+    // The trained segment carries the policy's recipe and no segment was
+    // appended, and the trace says so (QI-BB-027).
     let expected_base_trace = format!(
-        "ann.trained_at=g{}; ann.appended=0/{BASE_FILES}; ann.deleted=0",
+        "ann.trained_at=g{}; ann.appended=0/{BASE_FILES}; ann.deleted=0; ann.hnsw_m=20; ann.hnsw_ef_construction=300; ann.appended_segments=0; ann.appended_segments_m/ef_construction=none",
         base.get()
     );
     if !base_trace.starts_with("dense.index=ivf_hnsw_sq; dense.attestation=sealed;")
@@ -221,8 +223,11 @@ fn a_delta_seal_appends_to_the_inherited_ann_index_and_the_trace_says_so() -> Te
     }
     let delta_trace =
         dense_lane_trace(&delta_query).ok_or("the delta query has no dense-lane trace")?;
+    // The appended segment was built by the library's incremental builder
+    // under its own parameters (m=20, ef_construction=150), never the
+    // trained recipe; the attestation names them (QI-BB-027).
     let expected_delta_trace = format!(
-        "ann.trained_at=g{}; ann.appended={DELTA_FILES}/{BASE_FILES}; ann.deleted=0",
+        "ann.trained_at=g{}; ann.appended={DELTA_FILES}/{BASE_FILES}; ann.deleted=0; ann.hnsw_m=20; ann.hnsw_ef_construction=300; ann.appended_segments=1; ann.appended_segments_m/ef_construction=20/150",
         base.get()
     );
     if !delta_trace.starts_with("dense.index=ivf_hnsw_sq; dense.attestation=sealed;")

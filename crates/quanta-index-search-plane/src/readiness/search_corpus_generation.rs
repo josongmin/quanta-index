@@ -5,6 +5,7 @@ use std::fmt;
 
 use quanta_index_contract::{
     GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
+    SemanticContentRootsV1,
 };
 use quanta_index_core::CoreError;
 use serde::de::{MapAccess, Visitor};
@@ -13,22 +14,32 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::readiness::errors::ERR_COMPOSITE_ACTIVATION_CAS_CONFLICT;
 
-/// One immutable, query-visible lexical plus semantic generation identity.
+/// One immutable, query-visible lexical plus semantic generation identity,
+/// with the content roots the semantic generation sealed (QI-BB-028).
 ///
 /// Construction validates that both tracks name the exact same source
-/// generation.  The fields intentionally stay private: callers cannot create
-/// a lexical-only or mixed-generation corpus identity by struct literal.
+/// generation and that the roots are canonical digests. The fields
+/// intentionally stay private: callers cannot create a lexical-only or
+/// mixed-generation corpus identity by struct literal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchCorpusGenerationV1 {
     lexical: GenerationSnapshot,
     semantic: GenerationSnapshot,
+    semantic_content: SemanticContentRootsV1,
 }
 
 impl SearchCorpusGenerationV1 {
     pub fn new(
         lexical: GenerationSnapshot,
         semantic: GenerationSnapshot,
+        semantic_content: SemanticContentRootsV1,
     ) -> Result<Self, CoreError> {
+        if !semantic_content.is_canonical_v1() {
+            return Err(CoreError::InvalidContract(
+                "search-corpus generation: semantic content roots must be canonical sha256 digests"
+                    .to_string(),
+            ));
+        }
         if lexical.track != SearchPlaneTrackKind::Lexical
             || semantic.track != SearchPlaneTrackKind::Semantic
         {
@@ -52,7 +63,11 @@ impl SearchCorpusGenerationV1 {
                 "search-corpus generation: manifest_digest must not be empty".to_string(),
             ));
         }
-        Ok(Self { lexical, semantic })
+        Ok(Self {
+            lexical,
+            semantic,
+            semantic_content,
+        })
     }
 
     #[must_use]
@@ -63,6 +78,12 @@ impl SearchCorpusGenerationV1 {
     #[must_use]
     pub fn semantic(&self) -> &GenerationSnapshot {
         &self.semantic
+    }
+
+    /// The content roots the semantic generation sealed (QI-BB-028).
+    #[must_use]
+    pub fn semantic_content(&self) -> &SemanticContentRootsV1 {
+        &self.semantic_content
     }
 
     #[must_use]
@@ -143,24 +164,29 @@ pub struct SearchCorpusGenerationActivationV1 {
 pub(super) struct PersistedSearchCorpusGenerationRootV1 {
     lexical: GenerationSnapshot,
     semantic: GenerationSnapshot,
+    semantic_content: SemanticContentRootsV1,
 }
 
-const PERSISTED_SEARCH_CORPUS_GENERATION_ROOT_V1_FIELDS: &[&str] = &["lexical", "semantic"];
+const PERSISTED_SEARCH_CORPUS_GENERATION_ROOT_V1_FIELDS: &[&str] =
+    &["lexical", "semantic", "semantic_content"];
 
 impl PersistedSearchCorpusGenerationRootV1 {
     pub(super) fn from_generation(generation: &SearchCorpusGenerationV1) -> Self {
         Self {
             lexical: generation.lexical().clone(),
             semantic: generation.semantic().clone(),
+            semantic_content: generation.semantic_content().clone(),
         }
     }
 
     pub(super) fn into_generation(self) -> Result<SearchCorpusGenerationV1, CoreError> {
-        SearchCorpusGenerationV1::new(self.lexical, self.semantic).map_err(|err| {
-            CoreError::Storage(format!(
-                "search-plane activation catalog: invalid composite root: {err:?}"
-            ))
-        })
+        SearchCorpusGenerationV1::new(self.lexical, self.semantic, self.semantic_content).map_err(
+            |err| {
+                CoreError::Storage(format!(
+                    "search-plane activation catalog: invalid composite root: {err:?}"
+                ))
+            },
+        )
     }
 }
 
@@ -169,9 +195,10 @@ impl Serialize for PersistedSearchCorpusGenerationRootV1 {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("PersistedSearchCorpusGenerationRootV1", 2)?;
+        let mut state = serializer.serialize_struct("PersistedSearchCorpusGenerationRootV1", 3)?;
         state.serialize_field("lexical", &self.lexical)?;
         state.serialize_field("semantic", &self.semantic)?;
+        state.serialize_field("semantic_content", &self.semantic_content)?;
         state.end()
     }
 }
@@ -191,6 +218,7 @@ impl<'de> Visitor<'de> for PersistedSearchCorpusGenerationRootV1Visitor {
     {
         let mut lexical = None;
         let mut semantic = None;
+        let mut semantic_content = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "lexical" => {
@@ -205,6 +233,12 @@ impl<'de> Visitor<'de> for PersistedSearchCorpusGenerationRootV1Visitor {
                     }
                     semantic = Some(map.next_value()?);
                 }
+                "semantic_content" => {
+                    if semantic_content.is_some() {
+                        return Err(de::Error::duplicate_field("semantic_content"));
+                    }
+                    semantic_content = Some(map.next_value()?);
+                }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -216,6 +250,8 @@ impl<'de> Visitor<'de> for PersistedSearchCorpusGenerationRootV1Visitor {
         Ok(PersistedSearchCorpusGenerationRootV1 {
             lexical: lexical.ok_or_else(|| de::Error::missing_field("lexical"))?,
             semantic: semantic.ok_or_else(|| de::Error::missing_field("semantic"))?,
+            semantic_content: semantic_content
+                .ok_or_else(|| de::Error::missing_field("semantic_content"))?,
         })
     }
 }
@@ -236,7 +272,11 @@ impl<'de> Deserialize<'de> for PersistedSearchCorpusGenerationRootV1 {
 pub(super) fn search_corpus_generation_from_validated_rollback_identity(
     identity: &quanta_index_contract::SearchCorpusGenerationIdentityV1,
 ) -> Result<SearchCorpusGenerationV1, CoreError> {
-    SearchCorpusGenerationV1::new(identity.lexical.clone(), identity.semantic.clone())
+    SearchCorpusGenerationV1::new(
+        identity.lexical.clone(),
+        identity.semantic.clone(),
+        identity.semantic_content.clone(),
+    )
 }
 
 pub(super) fn search_corpus_generation_into_contract(
@@ -245,6 +285,7 @@ pub(super) fn search_corpus_generation_into_contract(
     quanta_index_contract::SearchCorpusGenerationIdentityV1 {
         lexical: identity.lexical().clone(),
         semantic: identity.semantic().clone(),
+        semantic_content: identity.semantic_content().clone(),
     }
 }
 
@@ -260,9 +301,11 @@ pub(super) fn validate_prepared_search_corpus_expectation(
             || "absent".to_string(),
             |identity| {
                 format!(
-                    "generation={} digest={}",
+                    "generation={} digest={} row_root={} membership_root={}",
                     identity.manifest_generation().get(),
                     identity.manifest_digest(),
+                    identity.semantic_content().row_root_digest,
+                    identity.semantic_content().membership_root_digest,
                 )
             },
         )

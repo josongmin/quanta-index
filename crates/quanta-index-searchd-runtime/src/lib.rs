@@ -18,13 +18,14 @@ use quanta_index_catalog::SqliteCatalog;
 use quanta_index_core::{
     AuxiliaryAuthorityCatalogPort, FileContributorIngestPort, FileOwnershipIngestPort,
     GenerationIdentityValidatePort, HistoryTextIndexPort, IdempotencyCatalogPort,
-    IncompleteGenerationDiscardPort, LexicalIndexOpenPort, MetricSourcePort,
+    IncompleteGenerationDiscardPort, IntegrityScrubPort, LexicalIndexOpenPort, MetricSourcePort,
     ProcessMemoryProbePort, QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort,
     RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
     RepoMapQuarantinePort, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
     ResidentMemoryWriterAdmission, SealedGenerationReclaimPort, SealedGenerationScanPort,
-    SearchCorpusBatchBuildPort, SemanticIndexOpenPort, SemanticScopeStreamBuildPort,
-    TrackDiskUsagePort, UnboundedWriterAdmission, WriterAdmissionPort, WriterIdleSweepPort,
+    SearchCorpusBatchBuildPort, SemanticContentRootsPort, SemanticIndexOpenPort,
+    SemanticScopeStreamBuildPort, TrackDiskUsagePort, UnboundedWriterAdmission,
+    WriterAdmissionPort, WriterIdleSweepPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_lexical::history_text_index::HistoryTextIndexAdapter;
@@ -127,6 +128,7 @@ pub fn build_runtime_with_memory_probe(
         lex_adapter.clone();
     let lexical_generation_scanner: Arc<dyn SealedGenerationScanPort + Send + Sync> =
         lex_adapter.clone();
+    let lexical_integrity_scrub: Arc<dyn IntegrityScrubPort + Send + Sync> = lex_adapter.clone();
     let lexical_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync> =
         lex_adapter.clone();
     let lexical_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync> =
@@ -161,12 +163,17 @@ pub fn build_runtime_with_memory_probe(
         sem_adapter.clone();
     let semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync> =
         sem_adapter.clone();
+    let semantic_content_roots: Arc<dyn SemanticContentRootsPort + Send + Sync> =
+        sem_adapter.clone();
     let semantic_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync> =
         sem_adapter.clone();
     let semantic_sealed_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync> =
         sem_adapter.clone();
     let semantic_quarantine_discard: Arc<dyn QuarantinedGenerationDiscardPort + Send + Sync> =
         sem_adapter.clone();
+    // Both adapters prove their sealed generations' bytes as maintenance
+    // (QI-BB-017), through the one scrub port.
+    let semantic_integrity_scrub: Arc<dyn IntegrityScrubPort + Send + Sync> = sem_adapter.clone();
     let sem_open_port: Arc<dyn SemanticIndexOpenPort + Send + Sync> = sem_adapter;
     let repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync> = repo_map_store.clone();
     let repo_map_bundle_ingest_port: Arc<dyn RepoMapBundleIngestPort + Send + Sync> =
@@ -194,6 +201,7 @@ pub fn build_runtime_with_memory_probe(
             sem_build_port,
             semantic_generation_scanner,
             semantic_generation_validator,
+            semantic_content_roots,
             semantic_incomplete_discard,
             semantic_sealed_reclaim,
             sem_open_port,
@@ -214,6 +222,7 @@ pub fn build_runtime_with_memory_probe(
                 semantic_metric_source,
                 gate_metric_source,
             ],
+            integrity_scrub_ports: vec![lexical_integrity_scrub, semantic_integrity_scrub],
             writer_idle_sweep,
             lexical_disk_usage,
             semantic_disk_usage,

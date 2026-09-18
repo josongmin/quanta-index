@@ -129,6 +129,10 @@ futures = "0.3"
 # lancedb is the semantic-adapter backend (LDB-00 §3.2). Inline pin lives here,
 # in lockstep with deny.toml's `lancedb@0.30` skip-tree entry.
 lancedb = { version = "0.30", default-features = false }
+# lance is the dataset engine under lancedb 0.30 (same locked crate, no new
+# code): the semantic adapter reads per-segment index build parameters from
+# its statistics, which lancedb does not surface (QI-BB-027).
+lance = { version = "=7.0.0", default-features = false }
 memchr = "2.8"
 memmap2 = "0.9.5"
 # Safe `getpeereid(3)` wrapper for the socket peer-credential check on the

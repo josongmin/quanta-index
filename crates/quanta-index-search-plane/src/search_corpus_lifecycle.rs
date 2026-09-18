@@ -13,7 +13,8 @@ use quanta_index_contract::{
     SearchPlaneSearchCorpusRollbackCasAck,
 };
 use quanta_index_core::{
-    CoreError, LexicalIndexOpenPort, LexicalSearcher, SemanticIndexOpenPort, SemanticSearcher,
+    CoreError, LexicalIndexOpenPort, LexicalSearcher, SEMANTIC_ROW_ROOT_MISMATCH_CODE,
+    SemanticContentRootsPort, SemanticIndexOpenPort, SemanticSearcher,
 };
 
 use crate::ingest_dispatcher::SearchCorpusAuthorityInspectPort;
@@ -229,22 +230,28 @@ pub(crate) trait ActiveSearchCorpusPinReadPort: std::fmt::Debug + Send + Sync {
 /// and [`SemanticIndexOpenPort::open_proven`] prove the candidate exactly
 /// as the activation validator would and return the handle that proof
 /// opened, so each track is walked once and the first query is a registry
-/// hit, not a second full open.
+/// hit, not a second full open. The semantic generation's sealed content
+/// roots must also be exactly the ones the candidate names (QI-BB-028).
 #[derive(Clone)]
 pub struct ActivationPromotionParts {
     pub lexical_open: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
     pub semantic_open: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
+    pub semantic_content_roots: Arc<dyn SemanticContentRootsPort + Send + Sync>,
     pub snapshots: SnapshotRegistries,
 }
 
 impl ActivationPromotionParts {
-    /// Prove both tracks of `candidate` by opening them, and promote both
-    /// handles into the registries.
+    /// Prove both tracks of `candidate` by opening them, check the semantic
+    /// content roots the candidate names, and promote both handles into the
+    /// registries.
     ///
     /// Runs outside every ledger guard: the opens hash the generation's
     /// decoded bytes, and nothing else in the process should wait on that.
-    /// A track that does not prove is refused typed under `error_code` and
-    /// nothing is promoted for the pair.
+    /// A track that does not prove is refused typed under `error_code`, a
+    /// semantic generation that sealed other content roots than the
+    /// candidate names is refused `SEMANTIC_ROW_ROOT_MISMATCH` — the same
+    /// source digest built in another state root does not pass as this one
+    /// — and in either case nothing is promoted for the pair.
     fn prove_and_promote_pair(
         &self,
         candidate: &SearchCorpusGenerationV1,
@@ -280,6 +287,27 @@ impl ActivationPromotionParts {
                     )
                 })?,
         );
+        let sealed = self
+            .semantic_content_roots
+            .sealed_content_roots(candidate.semantic())
+            .map_err(|source| {
+                generation_target_unopenable(candidate.semantic(), operation, error_code, &source)
+            })?;
+        if sealed != *candidate.semantic_content() {
+            return Err(CoreError::Typed {
+                code: SEMANTIC_ROW_ROOT_MISMATCH_CODE.to_string(),
+                message: format!(
+                    "search-corpus {operation}: the physical semantic generation for repo={} revision={} generation={} sealed row_root={} membership_root={}, but the identity names row_root={} membership_root={}; nothing was promoted",
+                    candidate.repo_id().as_str(),
+                    candidate.revision_id().as_str(),
+                    candidate.manifest_generation().get(),
+                    sealed.row_root_digest,
+                    sealed.membership_root_digest,
+                    candidate.semantic_content().row_root_digest,
+                    candidate.semantic_content().membership_root_digest,
+                ),
+            });
+        }
         let lexical_bytes = lexical.resident_bytes_estimate();
         let _retained = self.snapshots.lexical.promote(
             &key,
@@ -536,6 +564,7 @@ mod tests {
         ActivationPromotionParts, ActiveSearchCorpusPinReadPort, ERR_ACTIVATION_TARGET_UNOPENABLE,
         SearchCorpusLifecycleOwner, SearchCorpusPairMutationCoordinator,
     };
+    use crate::content_roots_test_support::{generation_keyed_content_roots, roots_for_generation};
     use crate::query_dispatcher::tests::support::lexical::StubLexicalSearcher;
     use crate::query_dispatcher::tests::support::semantic::{
         RecordingSemanticOpener, RecordingSemanticState,
@@ -625,7 +654,8 @@ mod tests {
         }
     }
 
-    /// Promotion over the echo openers, refusing `rejected_track`'s proof.
+    /// Promotion over the echo openers, refusing `rejected_track`'s proof;
+    /// the sealed content roots are the fixtures' (keyed on the generation).
     fn promotion_rejecting(
         rejected_track: Option<SearchPlaneTrackKind>,
     ) -> ActivationPromotionParts {
@@ -636,6 +666,7 @@ mod tests {
             semantic_open: Arc::new(EchoSemanticOpener {
                 reject: rejected_track == Some(SearchPlaneTrackKind::Semantic),
             }),
+            semantic_content_roots: generation_keyed_content_roots(),
             snapshots: SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
         }
     }
@@ -663,6 +694,7 @@ mod tests {
         SearchCorpusGenerationV1::new(
             snapshot(SearchPlaneTrackKind::Lexical),
             snapshot(SearchPlaneTrackKind::Semantic),
+            roots_for_generation(generation),
         )
     }
 
@@ -799,6 +831,58 @@ mod tests {
     fn restart_rehydrate_rejects_missing_active_semantic_generation_v1() -> TestResult {
         let state_root = tempdir()?;
         assert_rehydrated_active_track_rejected(state_root.path(), SearchPlaneTrackKind::Semantic)
+    }
+
+    /// An active composite whose named semantic content roots are not the
+    /// ones the physical generation sealed is refused at restart rehydrate.
+    ///
+    /// Typed `SEMANTIC_ROW_ROOT_MISMATCH` (QI-BB-028), and nothing is
+    /// promoted: the same source digest built in another state root does
+    /// not pass as this one.
+    #[test]
+    fn restart_rehydrate_refuses_an_active_composite_whose_roots_differ_v1() -> TestResult {
+        struct OtherRoots;
+        impl quanta_index_core::SemanticContentRootsPort for OtherRoots {
+            fn sealed_content_roots(
+                &self,
+                _sealed: &GenerationSnapshot,
+            ) -> Result<quanta_index_contract::SemanticContentRootsV1, CoreError> {
+                Ok(roots_for_generation(18))
+            }
+        }
+        let state_root = tempdir()?;
+        let owner =
+            SearchCorpusLifecycleOwner::open(state_root.path(), retention()?, scripted_bytes())?;
+        activate(&owner)?;
+        drop(owner);
+        let owner =
+            SearchCorpusLifecycleOwner::open(state_root.path(), retention()?, scripted_bytes())?;
+        // The physical generation sealed different roots than the active
+        // composite names (the fixture's roots are keyed on generation 17;
+        // this port reports generation 18's).
+        let promotion = ActivationPromotionParts {
+            semantic_content_roots: Arc::new(OtherRoots),
+            ..promotion_rejecting(None)
+        };
+        let Err(CoreError::Typed { code, message }) =
+            owner.validate_rehydrated_active_generations_v1(&promotion)
+        else {
+            return Err("an active composite with foreign roots was rehydrated".into());
+        };
+        assert_eq!(code, quanta_index_core::SEMANTIC_ROW_ROOT_MISMATCH_CODE);
+        assert!(message.contains("restart rehydrate"), "{message}");
+        assert!(
+            message.contains(&roots_for_generation(17).row_root_digest)
+                && message.contains(&roots_for_generation(18).row_root_digest),
+            "the refusal names both roots: {message}"
+        );
+        for stats in [
+            promotion.snapshots.lexical.stats()?,
+            promotion.snapshots.semantic.stats()?,
+        ] {
+            assert_eq!(stats.entries, 0, "nothing was promoted: {stats:?}");
+        }
+        Ok(())
     }
 
     #[test]

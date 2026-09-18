@@ -22,8 +22,8 @@ use std::sync::{Arc, RwLock};
 use anyhow::Result;
 use quanta_index_contract::{ManifestGeneration, SearchPlaneTrackKind};
 use quanta_index_core::{
-    CoreError, MetricPointV1, MetricSourcePort, QuarantinedGenerationV1, RepoMapOpenReportV1,
-    SealedGenerationScanPort, count_from_usize,
+    CoreError, IntegrityScrubPort, MetricPointV1, MetricSourcePort, QuarantinedGenerationV1,
+    RepoMapOpenReportV1, SealedGenerationScanPort, count_from_usize,
 };
 use quanta_index_ipc::SocketAccessPolicy;
 use quanta_index_search_plane::{
@@ -52,6 +52,59 @@ pub struct TrackInventoryReportV1 {
     /// answers `UNKNOWN_GENERATION`. Listed by `quarantine list` under
     /// `GENERATION_QUARANTINE_ORPHANED` and removed by `quarantine discard`.
     pub orphaned: Vec<QuarantinedGenerationV1>,
+    /// The scrub receipts found beside the sealed generations; `None` when
+    /// no adapter scrubs this track.
+    pub scrub: Option<TrackScrubInventoryV1>,
+}
+
+/// What the scrub receipts beside one track's sealed generations said at
+/// boot (QI-BB-017): how many were never scrubbed to completion and the
+/// most recent completion across the rest.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TrackScrubInventoryV1 {
+    /// Sealed generations with no completed scrub receipt.
+    pub never_scrubbed_generations: usize,
+    /// Unix seconds of the most recent completed scrub over any sealed
+    /// generation of the track; `None` when none ever completed.
+    pub last_completed_unix: Option<u64>,
+}
+
+/// Read the scrub receipts of `track` through the scrub ports that own
+/// it: identities and receipts only, no content (QI-BB-017).
+///
+/// `None` when no port scrubs the track, so the report can say "not
+/// scrubbed" apart from "scrubbed, nothing completed yet". Candidates of
+/// another track a port happens to list are not this track's.
+pub(super) fn inventory_scrub_receipts(
+    track: SearchPlaneTrackKind,
+    ports: &[Arc<dyn IntegrityScrubPort + Send + Sync>],
+) -> Result<Option<TrackScrubInventoryV1>> {
+    if ports.is_empty() {
+        return Ok(None);
+    }
+    let mut inventory = TrackScrubInventoryV1::default();
+    for port in ports {
+        let candidates = port.scrub_candidates().map_err(anyhow::Error::from)?;
+        for candidate in candidates
+            .iter()
+            .filter(|candidate| candidate.identity.track == track)
+        {
+            match candidate.last_completed_unix {
+                Some(unix) => {
+                    inventory.last_completed_unix = Some(
+                        inventory
+                            .last_completed_unix
+                            .map_or(unix, |current| current.max(unix)),
+                    );
+                }
+                None => {
+                    inventory.never_scrubbed_generations =
+                        inventory.never_scrubbed_generations.saturating_add(1);
+                }
+            }
+        }
+    }
+    Ok(Some(inventory))
 }
 
 /// What boot found and proved.
@@ -87,8 +140,14 @@ pub struct BootInventoryReportV1 {
 }
 
 impl TrackInventoryReportV1 {
-    fn metric_points(&self, track: &str) -> [MetricPointV1; 3] {
-        [
+    #[must_use]
+    pub const fn with_scrub(mut self, scrub: Option<TrackScrubInventoryV1>) -> Self {
+        self.scrub = scrub;
+        self
+    }
+
+    fn metric_points(&self, track: &str) -> Vec<MetricPointV1> {
+        let mut points = vec![
             MetricPointV1::gauge_count(
                 format!("boot_{track}_sealed_generations"),
                 count_from_usize(self.sealed_generations),
@@ -101,7 +160,22 @@ impl TrackInventoryReportV1 {
                 format!("boot_{track}_orphaned_generations"),
                 count_from_usize(self.orphaned.len()),
             ),
-        ]
+        ];
+        if let Some(scrub) = self.scrub {
+            points.push(MetricPointV1::gauge_count(
+                format!("boot_{track}_never_scrubbed_generations"),
+                count_from_usize(scrub.never_scrubbed_generations),
+            ));
+            // A completion time is scraped only once one exists; "never" is
+            // the never-scrubbed count above, not a zero timestamp.
+            if let Some(unix) = scrub.last_completed_unix {
+                points.push(MetricPointV1::gauge_count(
+                    format!("boot_{track}_scrub_last_completed_unix"),
+                    unix,
+                ));
+            }
+        }
+        points
     }
 }
 
@@ -265,6 +339,7 @@ pub(super) fn seed_track_readiness(
             .iter()
             .map(OrphanedSealedGenerationV1::quarantined)
             .collect(),
+        scrub: None,
     })
 }
 

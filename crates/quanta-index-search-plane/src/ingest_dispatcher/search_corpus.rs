@@ -14,7 +14,7 @@ use quanta_index_core::{
     GenerationIdentityValidatePort, IdempotencyCatalogPort, IncompleteGenerationDiscardPort,
     IngestBatchFootprint, IngestResourcePolicy, MetricPointV1, MetricSourcePort,
     SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, SearchCorpusBatchBuildPort,
-    SearchCorpusIngestPort, SemanticIngestPort, SemanticScopeSource as _,
+    SearchCorpusIngestPort, SemanticContentRootsPort, SemanticIngestPort, SemanticScopeSource as _,
     SemanticStreamWindowPolicy, TextEmbeddingProvider, count_from_usize,
 };
 
@@ -23,6 +23,7 @@ use crate::history_text::HistoryTextIndexParts;
 use crate::ingest_dispatcher::auxiliary::AuxiliaryMutationCoordinator;
 use crate::ingest_dispatcher::errors::{
     ERR_SEARCH_CORPUS_BATCH_SHAPE, ERR_SEARCH_CORPUS_DELTA_BASE_NOT_SEALED,
+    ERR_SEARCH_CORPUS_GENERATION_CONFLICT,
 };
 use crate::ingest_dispatcher::generation_plan::{
     SealedGenerationBuildPlanV1, SearchCorpusPhysicalReclaimReceiptV1, batch_publish_receipt_v1,
@@ -54,6 +55,9 @@ pub struct DirectSearchCorpusMaterializer {
     authority: Arc<dyn SearchCorpusAuthorityWritePort + Send + Sync>,
     lexical_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
     semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
+    /// The content roots a sealed semantic generation carries, attested on
+    /// every sealed receipt (QI-BB-028).
+    semantic_content_roots: Arc<dyn SemanticContentRootsPort + Send + Sync>,
     lexical_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>,
     semantic_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>,
     /// Physical GC of retired sealed generations (QI-BB-003): one reclaim
@@ -196,6 +200,9 @@ pub struct SearchCorpusMaterializerParts {
     pub authority: Arc<dyn SearchCorpusAuthorityWritePort + Send + Sync>,
     pub lexical_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
     pub semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
+    /// Reads the content roots a sealed semantic generation carries, so a
+    /// sealed receipt attests them (QI-BB-028).
+    pub semantic_content_roots: Arc<dyn SemanticContentRootsPort + Send + Sync>,
     pub lexical_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>,
     pub semantic_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>,
     pub lexical_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
@@ -241,6 +248,7 @@ impl DirectSearchCorpusMaterializer {
             authority,
             lexical_generation_validator,
             semantic_generation_validator,
+            semantic_content_roots,
             lexical_incomplete_discard,
             semantic_incomplete_discard,
             lexical_reclaim,
@@ -260,6 +268,7 @@ impl DirectSearchCorpusMaterializer {
             authority,
             lexical_generation_validator,
             semantic_generation_validator,
+            semantic_content_roots,
             lexical_incomplete_discard,
             semantic_incomplete_discard,
             lexical_reclaim,
@@ -484,7 +493,7 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
             .is_some_and(SealedGenerationBuildPlanV1::is_finalize_only)
         {
             self.finalize_sealed_generation_v1(batch)?;
-            return Ok(batch_publish_receipt_v1(batch));
+            return self.sealed_receipt_v1(batch);
         }
         if let Some(plan) = sealed_plan.as_ref() {
             plan.discard_incomplete_v1(
@@ -545,14 +554,38 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
                 "semantic post-build",
             )?;
             self.finalize_sealed_generation_v1(batch)?;
-        } else {
-            self.finalize_generation_v1(batch, None)?;
+            return self.sealed_receipt_v1(batch);
         }
+        self.finalize_generation_v1(batch, None)?;
         Ok(batch_publish_receipt_v1(batch))
     }
 }
 
 impl DirectSearchCorpusMaterializer {
+    /// The receipt of a sealed batch, attesting the content roots the
+    /// semantic generation sealed (QI-BB-028) so the producer can name
+    /// them when it activates. Read from the sealed manifest the seal
+    /// just wrote — never from the batch.
+    fn sealed_receipt_v1(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+    ) -> Result<BatchPublishReceipt, CoreError> {
+        let (_lexical, semantic) = generation_pair_from_batch_v1(batch);
+        let roots = self
+            .semantic_content_roots
+            .sealed_content_roots(&semantic)
+            .map_err(|source| CoreError::Typed {
+                code: ERR_SEARCH_CORPUS_GENERATION_CONFLICT.to_string(),
+                message: format!(
+                    "direct search-corpus materialize: sealed semantic generation {} carries no attestable content roots: {source}",
+                    semantic.manifest_generation.get()
+                ),
+            })?;
+        let mut receipt = batch_publish_receipt_v1(batch);
+        receipt.attest_semantic_content(roots);
+        Ok(receipt)
+    }
+
     /// A delta may only build on a base that both tracks hold as the exact
     /// sealed identity the ledger recorded (QI-BB-029).
     ///

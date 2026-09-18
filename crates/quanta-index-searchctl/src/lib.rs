@@ -1553,6 +1553,16 @@ fn render_readiness(report: &GenerationStatusReport, output: OutputMode) -> CliR
                     record.manifest_digest
                 ))?;
             }
+            // The semantic content roots the active pair was activated
+            // under (QI-BB-028): what the plane sealed, not what the
+            // producer asked for.
+            if let Some(roots) = &report.semantic_content {
+                fmt_ok(writeln!(
+                    rendered,
+                    "semantic_content: row_root={} membership_root={}",
+                    roots.row_root_digest, roots.membership_root_digest
+                ))?;
+            }
             Ok(rendered)
         }
     }
@@ -4171,6 +4181,7 @@ mod tests {
         let report = GenerationStatusReport {
             repo_id: RepoId::new("repo-1"),
             revision_id: RevisionId::new("rev-1"),
+            semantic_content: None,
             tracks: vec![TrackReadinessRecord {
                 track: SearchPlaneTrackKind::Lexical,
                 manifest_generation: ManifestGeneration::new(11),
@@ -4197,6 +4208,7 @@ mod tests {
         let report = GenerationStatusReport {
             repo_id: RepoId::new("repo-1"),
             revision_id: RevisionId::new("rev-1"),
+            semantic_content: None,
             tracks: vec![],
         };
         let rendered = render_readiness(&report, OutputMode::Pretty);
@@ -4216,6 +4228,7 @@ mod tests {
         let report = GenerationStatusReport {
             repo_id: RepoId::new("repo-1"),
             revision_id: RevisionId::new("rev-1"),
+            semantic_content: None,
             tracks: vec![
                 TrackReadinessRecord {
                     track: SearchPlaneTrackKind::Lexical,

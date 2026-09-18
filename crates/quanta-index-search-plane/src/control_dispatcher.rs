@@ -175,10 +175,17 @@ impl SearchPlaneControlDispatcher {
                 manifest_digest: record.manifest_digest,
             })
             .collect();
+        // The active composite root's semantic content roots (QI-BB-028),
+        // so an activator can name the head it expects.
+        let semantic_content = self
+            .activation_catalog
+            .active_search_corpus_v1(&request.repo_id, &request.revision_id)?
+            .map(|active| active.semantic_content().clone());
         Ok(GenerationStatusReport {
             repo_id: request.repo_id,
             revision_id: request.revision_id,
             tracks,
+            semantic_content,
         })
     }
 
@@ -280,7 +287,11 @@ fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
 fn search_corpus_generation_from_validated_contract(
     identity: &SearchCorpusGenerationIdentityV1,
 ) -> Result<crate::SearchCorpusGenerationV1, CoreError> {
-    crate::SearchCorpusGenerationV1::new(identity.lexical.clone(), identity.semantic.clone())
+    crate::SearchCorpusGenerationV1::new(
+        identity.lexical.clone(),
+        identity.semantic.clone(),
+        identity.semantic_content.clone(),
+    )
 }
 
 fn search_corpus_generation_into_contract(
@@ -289,6 +300,7 @@ fn search_corpus_generation_into_contract(
     SearchCorpusGenerationIdentityV1 {
         lexical: identity.lexical().clone(),
         semantic: identity.semantic().clone(),
+        semantic_content: identity.semantic_content().clone(),
     }
 }
 
@@ -321,6 +333,7 @@ mod tests {
         LexicalIndexOpenPort, LexicalSearcher, SemanticIndexOpenPort, SemanticSearcher,
     };
 
+    use crate::content_roots_test_support::{generation_keyed_content_roots, roots_for_generation};
     use crate::ingest_dispatcher::SearchCorpusAuthorityInspectPort;
     use crate::observability::{BoundedQueryObsStore, ObservabilityScrape, QueryObsSink};
     use crate::quarantine::QuarantineService;
@@ -358,6 +371,7 @@ mod tests {
                 manifest_generation: ManifestGeneration::new(generation),
                 manifest_digest: manifest_digest.to_string(),
             },
+            roots_for_generation(generation),
         )
     }
 
@@ -371,6 +385,7 @@ mod tests {
         Ok(SearchCorpusGenerationIdentityV1 {
             lexical: generation.lexical().clone(),
             semantic: generation.semantic().clone(),
+            semantic_content: generation.semantic_content().clone(),
         })
     }
 
@@ -488,6 +503,7 @@ mod tests {
                 promotion: ActivationPromotionParts {
                     lexical_open: Arc::new(EchoLexicalOpener),
                     semantic_open: Arc::new(EchoSemanticOpener),
+                    semantic_content_roots: generation_keyed_content_roots(),
                     snapshots: snapshots.clone(),
                 },
             },
@@ -837,6 +853,7 @@ mod tests {
                             manifest_generation: ManifestGeneration::new(11),
                             manifest_digest: "manifest-digest-11".to_string(),
                         },
+                        semantic_content: roots_for_generation(11),
                     },
                     expected_active: None,
                 },
@@ -904,6 +921,7 @@ mod tests {
                             manifest_generation: ManifestGeneration::new(11),
                             manifest_digest: "manifest-digest-11".to_string(),
                         },
+                        semantic_content: roots_for_generation(11),
                     },
                     expected_active: None,
                 },

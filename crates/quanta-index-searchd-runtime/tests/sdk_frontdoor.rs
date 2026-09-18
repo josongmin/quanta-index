@@ -1160,13 +1160,29 @@ fn current_sdk_search_corpus_or_none(
         revision_id.clone(),
         SearchPlaneTrackKind::Lexical,
     );
-    let semantic =
-        client
-            .generations()
-            .current(repo_id, revision_id, SearchPlaneTrackKind::Semantic);
+    let semantic = client.generations().current(
+        repo_id.clone(),
+        revision_id.clone(),
+        SearchPlaneTrackKind::Semantic,
+    );
     match (lexical, semantic) {
         (Ok(lexical), Ok(semantic)) => {
-            let identity = SearchCorpusGenerationIdentityV1 { lexical, semantic };
+            // The roots the active pair was activated under (QI-BB-028),
+            // from the status report.
+            let semantic_content = client
+                .generations()
+                .status(repo_id, revision_id)?
+                .semantic_content
+                .ok_or_else(|| {
+                    SdkError::Protocol(
+                        "an active search corpus reports no semantic content roots".to_string(),
+                    )
+                })?;
+            let identity = SearchCorpusGenerationIdentityV1 {
+                lexical,
+                semantic,
+                semantic_content,
+            };
             identity.validate_v1().map_err(|error| {
                 SdkError::Protocol(format!(
                     "current search corpus identity is invalid: {error}"

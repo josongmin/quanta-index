@@ -591,6 +591,7 @@ impl ControlScenarioDispatcher {
             repo_id: req.repo_id.clone(),
             revision_id: req.revision_id.clone(),
             tracks: self.listed_track().into_iter().collect(),
+            semantic_content: None,
         })
     }
 

@@ -260,6 +260,7 @@ pub(super) fn corpus_generation(
     SearchCorpusGenerationV1::new(
         corpus_snapshot(SearchPlaneTrackKind::Lexical, generation, digest),
         corpus_snapshot(SearchPlaneTrackKind::Semantic, generation, digest),
+        crate::content_roots_test_support::roots_for_generation(generation),
     )
 }
 
@@ -269,6 +270,7 @@ pub(super) fn corpus_identity(
     SearchCorpusGenerationIdentityV1 {
         lexical: generation.lexical().clone(),
         semantic: generation.semantic().clone(),
+        semantic_content: generation.semantic_content().clone(),
     }
 }
 

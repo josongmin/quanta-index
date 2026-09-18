@@ -243,6 +243,8 @@ fn search_corpus_materializer(
             authority: authority.clone(),
             lexical_generation_validator: always_valid_generation(),
             semantic_generation_validator: always_valid_generation(),
+            semantic_content_roots:
+                crate::content_roots_test_support::generation_keyed_content_roots(),
             lexical_incomplete_discard: test_incomplete_generation_discard(),
             semantic_incomplete_discard: test_incomplete_generation_discard(),
             lexical_reclaim: no_storage_sealed_reclaim(),

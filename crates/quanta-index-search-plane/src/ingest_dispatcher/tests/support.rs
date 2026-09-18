@@ -254,6 +254,8 @@ macro_rules! search_corpus_materializer {
                 authority: $authority,
                 lexical_generation_validator: $lexical_generation_validator,
                 semantic_generation_validator: $semantic_generation_validator,
+                semantic_content_roots:
+                    crate::content_roots_test_support::generation_keyed_content_roots(),
                 lexical_incomplete_discard: $lexical_incomplete_discard,
                 semantic_incomplete_discard: $semantic_incomplete_discard,
                 lexical_reclaim: no_storage_sealed_reclaim(),
@@ -712,6 +714,8 @@ impl ZeroMutationProbe {
                 authority: authority.clone(),
                 lexical_generation_validator: Arc::clone(&validator),
                 semantic_generation_validator: validator,
+                semantic_content_roots:
+                    crate::content_roots_test_support::generation_keyed_content_roots(),
                 lexical_incomplete_discard: test_incomplete_generation_discard(),
                 semantic_incomplete_discard: test_incomplete_generation_discard(),
                 lexical_reclaim: no_storage_sealed_reclaim(),

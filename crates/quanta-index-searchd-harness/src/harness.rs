@@ -28,14 +28,14 @@ use quanta_index_contract::lex::{
 use quanta_index_contract::{
     AuxEpochV1, BatchIngestMode, BatchPublishReceipt, CapabilityStatusV1, ChunkId, ChunkRecord,
     CurrentGenerationRequest, EngineTouched, ExplainCandidateV1, FileOwnerProjectionRow,
-    GenerationPin, GenerationSnapshot, HistoryCursor, HistoryOrderV1, HistoryQueryRequest,
-    HistoryScoreV1, HybridCandidateV1, HybridQueryRequest, LexicalCandidate, ManifestGeneration,
-    MetricsSnapshotRequest, MetricsSnapshotV1, OwnerDocKind, QuarantineDiscardAck,
-    QuarantineDiscardRequest, QuarantineInventoryRequest, QuarantineInventoryV1,
-    QuarantineTargetV1, QueryResultWindowV1, RawFallbackReasonV1, RepoId, RepoRelativePath,
-    RevisionId, RuntimeMetadataCursorV1, RuntimeMetadataQueryRequest,
-    SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
-    SearchCorpusTombstoneScope, SearchExplanation,
+    GenerationPin, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
+    HistoryCursor, HistoryOrderV1, HistoryQueryRequest, HistoryScoreV1, HybridCandidateV1,
+    HybridQueryRequest, LexicalCandidate, ManifestGeneration, MetricsSnapshotRequest,
+    MetricsSnapshotV1, OwnerDocKind, QuarantineDiscardAck, QuarantineDiscardRequest,
+    QuarantineInventoryRequest, QuarantineInventoryV1, QuarantineTargetV1, QueryResultWindowV1,
+    RawFallbackReasonV1, RepoId, RepoRelativePath, RevisionId, RuntimeMetadataCursorV1,
+    RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch,
+    SearchCorpusReplaceScope, SearchCorpusTombstoneScope, SearchExplanation,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
     SearchPlaneControlIpcResponseEnvelope, SearchPlaneExplainQueryRequest,
@@ -43,14 +43,15 @@ use quanta_index_contract::{
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRuntimeMetadataQueryResponse,
-    SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind, SemanticCorpusKindV1,
-    SemanticQueryRequest, SemanticSourceRecordV1, SemanticSourceReplaceScopeV1,
-    SemanticSourceScopeKeyV1, SourceRoleV1, StructuralCandidate, StructuralCursorV1,
-    StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope, StructuralTreeRecord,
-    SymbolId, TextQueryRequest, TextQuerySyntax,
+    SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind, SemanticContentRootsV1,
+    SemanticCorpusKindV1, SemanticQueryRequest, SemanticSourceRecordV1,
+    SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourceRoleV1, StructuralCandidate,
+    StructuralCursorV1, StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope,
+    StructuralTreeRecord, SymbolId, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_core::{
-    IngestResourcePolicy, LexicalWriterPolicy, ProcessMemoryProbePort, SemanticStreamWindowPolicy,
+    IngestResourcePolicy, IntegrityScrubPolicyV1, LexicalWriterPolicy, ProcessMemoryProbePort,
+    SemanticStreamWindowPolicy,
 };
 use quanta_index_ipc::{
     ClientIoPolicy, IpcError, ServerAdmissionPolicy, send_request, stamp_batch_digest_v1,
@@ -138,6 +139,8 @@ struct DriverSpec<'a> {
     memory_probe: &'a Arc<dyn ProcessMemoryProbePort>,
     /// The maintenance timer's cadence (QI-BB-016, QI-BB-015).
     maintenance_policy: MaintenancePolicy,
+    /// How the integrity scrub is paced (QI-BB-017).
+    integrity_scrub_policy: IntegrityScrubPolicyV1,
     socket_access: &'a SocketAccessPolicies,
     /// Where the three sockets go: a fresh, unique directory the daemon
     /// creates under `/tmp` when any socket is shared (so the peers the
@@ -207,6 +210,11 @@ pub struct E2eRuntime {
     /// streaming tests narrow it through
     /// [`Self::boot_with_semantic_stream_window_policy`].
     semantic_stream_window_policy: SemanticStreamWindowPolicy,
+    /// The integrity scrub pacing the daemon boots with: dormant (one step a
+    /// day) unless set through [`Self::boot_with_integrity_scrub_policy`],
+    /// so a test that injects faults into generation directories never
+    /// races a scrub writing its receipt into them.
+    integrity_scrub_policy: IntegrityScrubPolicyV1,
     /// The query socket's admission limits (QI-BB-002). The production
     /// default's twenty-second dispatch budget never expires on a fixture;
     /// budget tests shorten it through
@@ -479,6 +487,15 @@ impl E2eRuntime {
         Ok(runtime)
     }
 
+    /// Like [`Self::boot`] but paces the integrity scrub under `policy`, so
+    /// a scrub can complete inside a test without touching process-global
+    /// env (QI-BB-017).
+    pub fn boot_with_integrity_scrub_policy(policy: IntegrityScrubPolicyV1) -> AnyResult<Self> {
+        let mut runtime = Self::boot()?;
+        runtime.integrity_scrub_policy = policy;
+        Ok(runtime)
+    }
+
     /// Like [`Self::boot`] but admits query dispatches under `policy`, so a
     /// dispatch budget short enough to expire inside a test can be set
     /// without touching process-global env.
@@ -529,6 +546,10 @@ impl E2eRuntime {
             socket_access: SocketAccessPolicies::PRIVATE,
             socket_directory: None,
             semantic_stream_window_policy: SemanticStreamWindowPolicy::DEFAULT,
+            integrity_scrub_policy: IntegrityScrubPolicyV1::new(
+                HARNESS_DORMANT_SCRUB_INTERVAL_MILLIS,
+                IntegrityScrubPolicyV1::DEFAULT.max_bytes_per_step,
+            )?,
             query_admission_policy: ServerAdmissionPolicy::DEFAULT,
             lexical_writer_policy: LexicalWriterPolicy::DEFAULT,
             process_memory_ceilings: ProcessMemoryCeilings::DEFAULT,
@@ -654,6 +675,7 @@ impl E2eRuntime {
                 process_memory_ceilings: self.process_memory_ceilings,
                 memory_probe: &self.memory_probe,
                 maintenance_policy: self.maintenance_policy,
+                integrity_scrub_policy: self.integrity_scrub_policy,
                 socket_access: &self.socket_access,
                 socket_directory: self.socket_directory.as_deref(),
             })?;
@@ -835,6 +857,43 @@ impl E2eRuntime {
         Ok(())
     }
 
+    /// The composite identity of the last sealed batch as its receipt
+    /// attested it — tracks and semantic content roots (QI-BB-028) — for
+    /// tests that activate through the control socket themselves.
+    #[must_use]
+    pub fn last_sealed_search_corpus_identity(&self) -> Option<SearchCorpusGenerationIdentityV1> {
+        self.last_sealed_search_corpus_identity.clone()
+    }
+
+    /// The daemon's readiness report for the harness's pair: every active
+    /// track and the semantic content roots the pair was activated under.
+    pub fn generation_status(&mut self) -> AnyResult<GenerationStatusReport> {
+        let response = self.dispatch_control(SearchPlaneControlIpcRequest::GenerationStatus(
+            GenerationStatusRequest {
+                repo_id: self.repo(),
+                revision_id: self.revision(),
+            },
+        ))?;
+        if let SearchPlaneControlIpcResponse::GenerationStatusReport(report) = response {
+            return Ok(report);
+        }
+        Err(anyhow::anyhow!(
+            "e2e-harness: generation status returned an unexpected control response: {response:?}"
+        ))
+    }
+
+    /// Send one activation CAS as given and return the daemon's answer
+    /// untouched, typed refusals included, for tests that probe the
+    /// activation door with a candidate the harness would never build.
+    pub fn activate_search_corpus_cas_raw(
+        &mut self,
+        request: SearchPlaneActivateSearchCorpusGenerationCasRequest,
+    ) -> AnyResult<SearchPlaneControlIpcResponse> {
+        self.dispatch_control_response_v1(
+            SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(request),
+        )
+    }
+
     fn current_search_corpus_identity_from_control_v1(
         &mut self,
         repo_id: &RepoId,
@@ -888,7 +947,21 @@ impl E2eRuntime {
         match (lexical, semantic) {
             (None, None) => Ok(None),
             (Some(lexical), Some(semantic)) => {
-                let identity = SearchCorpusGenerationIdentityV1 { lexical, semantic };
+                // The semantic content roots the active pair was activated
+                // under (QI-BB-028), read from the status report: the CAS
+                // expectation must name them exactly.
+                let semantic_content = self
+                    .active_semantic_content_from_control_v1(repo_id, revision_id)?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "e2e-harness: the daemon reports an active pair without semantic content roots"
+                        )
+                    })?;
+                let identity = SearchCorpusGenerationIdentityV1 {
+                    lexical,
+                    semantic,
+                    semantic_content,
+                };
                 identity.validate_v1().map_err(|error| {
                     anyhow::anyhow!(
                         "e2e-harness: daemon current search corpus identity is invalid: {error}"
@@ -900,6 +973,45 @@ impl E2eRuntime {
                 "e2e-harness: daemon current search corpus authority is split: lexical_present={} semantic_present={}",
                 lexical.is_some(),
                 semantic.is_some()
+            )),
+        }
+    }
+
+    /// The active composite root's semantic content roots, as the status
+    /// report names them; `None` when the pair has no active root.
+    fn active_semantic_content_from_control_v1(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) -> AnyResult<Option<SemanticContentRootsV1>> {
+        let response = self.dispatch_control_response_v1(
+            SearchPlaneControlIpcRequest::GenerationStatus(GenerationStatusRequest {
+                repo_id: repo_id.clone(),
+                revision_id: revision_id.clone(),
+            }),
+        )?;
+        match response {
+            SearchPlaneControlIpcResponse::GenerationStatusReport(report) => {
+                if report.repo_id != *repo_id || report.revision_id != *revision_id {
+                    return Err(anyhow::anyhow!(
+                        "e2e-harness: generation status response does not match requested authority"
+                    ));
+                }
+                Ok(report.semantic_content)
+            }
+            SearchPlaneControlIpcResponse::Error(error) => Err(anyhow::anyhow!(
+                "e2e-harness generation status failed code={} message={}",
+                error.code,
+                error.message
+            )),
+            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
+            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
+            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => Err(anyhow::anyhow!(
+                "e2e-harness: generation status returned an unexpected control response: {other:?}"
             )),
         }
     }
@@ -2759,6 +2871,13 @@ impl E2eRuntime {
         let manifest_digest = receipt.manifest_digest.clone().ok_or_else(|| {
             anyhow::anyhow!("e2e-harness: sealed search-corpus receipt carries no manifest digest")
         })?;
+        // The roots the plane sealed, attested on the receipt (QI-BB-028);
+        // a sealed receipt without them is a daemon defect, never guessed.
+        let semantic_content = receipt.semantic_content.clone().ok_or_else(|| {
+            anyhow::anyhow!(
+                "e2e-harness: sealed search-corpus receipt attests no semantic content roots"
+            )
+        })?;
         let identity = SearchCorpusGenerationIdentityV1 {
             lexical: GenerationSnapshot {
                 repo_id: repo_id.clone(),
@@ -2774,6 +2893,7 @@ impl E2eRuntime {
                 manifest_generation: sealed,
                 manifest_digest,
             },
+            semantic_content,
         };
         identity.validate_v1().map_err(|err| {
             anyhow::anyhow!("e2e-harness: sealed composite identity is invalid: {err}")
@@ -3121,6 +3241,9 @@ const DEFAULT_HISTORY_MAX_GENERATIONS: usize = 8;
 /// The maintenance tick every harness daemon runs on: short enough that
 /// an idle sweep or disk refresh lands within a test's bounded wait.
 const HARNESS_MAINTENANCE_TICK: Duration = Duration::from_millis(50);
+/// The integrity scrub interval a harness daemon boots with unless a test
+/// paces the scrub itself: a day, longer than any test runs.
+const HARNESS_DORMANT_SCRUB_INTERVAL_MILLIS: u64 = 24 * 60 * 60 * 1_000;
 
 fn build_config(spec: &DriverSpec<'_>) -> AnyResult<SearchdConfig> {
     let mut cfg = SearchdConfig::from_state_root(spec.state_root.to_path_buf())
@@ -3145,6 +3268,7 @@ fn build_config(spec: &DriverSpec<'_>) -> AnyResult<SearchdConfig> {
         .with_semantic_embedder_profile(spec.embedder_profile.clone())
         .with_ingest_resource_policy(spec.ingest_resource_policy)
         .with_semantic_stream_window_policy(spec.semantic_stream_window_policy)
+        .with_integrity_scrub_policy(spec.integrity_scrub_policy)
         .with_query_admission_policy(spec.query_admission_policy)
         .with_lexical_writer_policy(spec.lexical_writer_policy)
         .with_process_memory_ceilings(spec.process_memory_ceilings)

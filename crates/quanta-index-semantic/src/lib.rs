@@ -36,6 +36,7 @@ mod build;
 mod codec;
 mod errors;
 mod generation_contract;
+mod integrity;
 mod layout;
 mod manifest;
 mod membership_integrity;
@@ -55,10 +56,11 @@ pub use semantic_ingest_fixtures_v1::{
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use quanta_index_contract::{
     GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
+    SemanticContentRootsV1,
 };
 use quanta_index_core::{
     CoreError, GenerationIdentityValidatePort, MetricPointV1, MetricSourcePort,
@@ -73,11 +75,12 @@ use quanta_index_core::{
         SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
         unique_inode_tree_bytes,
     },
-    domains::semantic::SemanticSearcher,
+    domains::semantic::{SemanticContentRootsPort, SemanticSearcher},
 };
 
 use crate::budget::DenseLaneTalliesV1;
-use crate::manifest::SemanticManifest;
+use crate::integrity::{SealTalliesV1, read_quarantine_receipt};
+use crate::manifest::{FORMAT_UNSUPPORTED_CODE, SemanticManifest};
 use crate::search::{LoadedGeneration, PersistedSemanticSearcher, open_generation};
 
 #[cfg(debug_assertions)]
@@ -103,13 +106,22 @@ pub mod test_support {
 /// The state directory is typically `{state_root}/indexes/semantic` at the
 /// composition root. Owns a tokio runtime used to drive lancedb's async API
 /// behind the sync port surface, the window policy every streamed build
-/// admits its windows against (QI-BB-021), and the dense-lane tallies every
-/// searcher it opens reports to (W5 phase 3).
+/// admits its windows against (QI-BB-021), the dense-lane tallies every
+/// searcher it opens reports to (W5 phase 3), and the seal tallies every
+/// seal it measures reports to (QI-BB-006 #4).
 pub struct SemanticAdapter {
     state_root: PathBuf,
     runtime: Arc<tokio::runtime::Runtime>,
     window_policy: SemanticStreamWindowPolicy,
     query_tallies: Arc<DenseLaneTalliesV1>,
+    seal_tallies: Arc<SealTalliesV1>,
+    /// Serializes an integrity-scrub step against the removal of a sealed
+    /// generation's directory (reclaim, quarantine discard), so a step
+    /// finds the generation whole or gone — never files vanishing under it,
+    /// which it would report as corruption and quarantine into a directory
+    /// being deleted. The lexical adapter guards its directories the same
+    /// way.
+    directory_lifecycle: Mutex<()>,
 }
 
 /// Single crate-wide async↔sync seam funnel.
@@ -163,6 +175,17 @@ impl SemanticAdapter {
             runtime: Arc::new(runtime),
             window_policy,
             query_tallies: Arc::new(DenseLaneTalliesV1::default()),
+            seal_tallies: Arc::new(SealTalliesV1::default()),
+            directory_lifecycle: Mutex::new(()),
+        })
+    }
+
+    /// Hold the sealed-generation directory lifecycle (see the field).
+    pub(crate) fn directory_lifecycle_guard(&self) -> Result<MutexGuard<'_, ()>, CoreError> {
+        self.directory_lifecycle.lock().map_err(|err| {
+            CoreError::Storage(format!(
+                "semantic: generation directory lifecycle lock poisoned: {err}"
+            ))
         })
     }
 
@@ -170,6 +193,11 @@ impl SemanticAdapter {
     #[must_use]
     pub const fn window_policy(&self) -> SemanticStreamWindowPolicy {
         self.window_policy
+    }
+
+    /// The semantic state directory this adapter owns.
+    pub(crate) fn state_root(&self) -> &Path {
+        &self.state_root
     }
 }
 
@@ -185,6 +213,7 @@ impl SemanticScopeStreamBuildPort for SemanticAdapter {
             self.window_policy,
             header,
             scopes,
+            &self.seal_tallies,
         )
     }
 }
@@ -228,12 +257,7 @@ impl SemanticAdapter {
     }
 }
 
-/// The dense lanes' tallies as scrape points, `semantic_dense_queries_…`
-/// and `semantic_budget_interruptions_…` (QI-BB-015, W5 phase 3): the
-/// queries each lane handed to the library and the request interruptions
-/// it observed inside, across every searcher this adapter opened.
-/// Every generation dataset under the semantic track root, measured by
-/// the same walker an open uses for its residency bound (QI-BB-015).
+/// Every generation dataset under the semantic track root (QI-BB-015).
 impl TrackDiskUsagePort for SemanticAdapter {
     /// Bytes the semantic state root occupies on disk, by unique inode (an
     /// inherited dataset's hard-linked fragments count once), measured
@@ -253,9 +277,17 @@ impl TrackDiskUsagePort for SemanticAdapter {
     }
 }
 
+/// The dense lanes' tallies as scrape points, `semantic_dense_queries_…`
+/// and `semantic_budget_interruptions_…` (QI-BB-015, W5 phase 3): the
+/// queries each lane handed to the library and the request interruptions
+/// it observed inside, across every searcher this adapter opened; and the
+/// seal tallies, `semantic_seal_…` (QI-BB-006 #4): the bytes every seal
+/// hashed itself against what it inherited from its base.
 impl MetricSourcePort for SemanticAdapter {
     fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
-        Ok(self.query_tallies.scrape())
+        let mut points = self.query_tallies.scrape();
+        points.extend(self.seal_tallies.scrape());
+        Ok(points)
     }
 }
 
@@ -357,6 +389,78 @@ fn sync_generation_directory(generation_dir: &Path) -> Result<(), CoreError> {
                 generation_dir.display()
             ))
         })
+}
+
+/// The sealed manifest of a generation sealed under `candidate`'s digest.
+///
+/// The marker must exist and agree with both the candidate and the
+/// manifest, and the manifest must be the current format and own the
+/// candidate's scope. Reads two small files, no rows.
+fn read_sealed_scope_manifest(
+    semantic_root: &Path,
+    candidate: &GenerationSnapshot,
+) -> Result<SemanticManifest, CoreError> {
+    let generation_dir = layout::generation_dir(
+        semantic_root,
+        &candidate.repo_id,
+        &candidate.revision_id,
+        candidate.manifest_generation,
+    );
+    let sealed_digest = std::fs::read_to_string(layout::sealed_marker_path(&generation_dir))
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                CoreError::Typed {
+                    code: "GENERATION_IDENTITY_INCOMPLETE".to_string(),
+                    message: format!(
+                        "semantic: generation {} has no sealed marker",
+                        candidate.manifest_generation.get()
+                    ),
+                }
+            } else {
+                CoreError::Storage(format!(
+                    "semantic: read sealed marker for generation {}: {error}",
+                    candidate.manifest_generation.get()
+                ))
+            }
+        })?;
+    if sealed_digest != candidate.manifest_digest {
+        return Err(generation_digest_mismatch(candidate, "sealed marker"));
+    }
+    let manifest_path = layout::manifest_path(&generation_dir);
+    let manifest = SemanticManifest::decode(&std::fs::read(&manifest_path).map_err(|error| {
+        CoreError::Storage(format!(
+            "semantic: read manifest {}: {error}",
+            manifest_path.display()
+        ))
+    })?)?;
+    manifest.validate_scope(
+        &candidate.repo_id,
+        &candidate.revision_id,
+        candidate.manifest_generation,
+    )?;
+    if manifest.manifest_digest != candidate.manifest_digest {
+        return Err(generation_digest_mismatch(candidate, "manifest"));
+    }
+    Ok(manifest)
+}
+
+impl SemanticContentRootsPort for SemanticAdapter {
+    fn sealed_content_roots(
+        &self,
+        sealed: &GenerationSnapshot,
+    ) -> Result<SemanticContentRootsV1, CoreError> {
+        if sealed.track != SearchPlaneTrackKind::Semantic {
+            return Err(CoreError::InvalidContract(format!(
+                "semantic content roots port received {:?} track",
+                sealed.track
+            )));
+        }
+        let manifest = read_sealed_scope_manifest(&self.state_root, sealed)?;
+        Ok(SemanticContentRootsV1 {
+            row_root_digest: manifest.semantic_row_root_digest,
+            membership_root_digest: manifest.cluster_membership_root_digest,
+        })
+    }
 }
 
 impl IncompleteGenerationDiscardPort for SemanticAdapter {
@@ -461,6 +565,7 @@ impl SealedGenerationReclaimPort for SemanticAdapter {
             &retired.revision_id,
             retired.manifest_generation,
         );
+        let _lifecycle = self.directory_lifecycle_guard()?;
         if !generation_dir.exists() {
             return Ok(SealedGenerationReclaimOutcomeV1::Absent);
         }
@@ -662,7 +767,6 @@ pub struct PersistedSemanticGeneration {
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
     pub manifest_digest: String,
-    format_version: u32,
     semantic_row_root_digest: String,
     row_count: u64,
 }
@@ -687,7 +791,7 @@ pub struct SemanticGenerationInventoryV1 {
     pub quarantined: Vec<QuarantinedGenerationV1>,
 }
 
-/// Opaque proof minted only by a successful v7 durable open.
+/// Opaque proof minted only by a successful durable open.
 #[derive(Clone, Debug)]
 pub struct ValidatedPersistedSemanticGenerationV2 {
     repo_id: RepoId,
@@ -709,17 +813,6 @@ pub fn validate_persisted_generation_v2(
     semantic_root: &Path,
     record: &PersistedSemanticGeneration,
 ) -> Result<ValidatedPersistedSemanticGenerationV2, CoreError> {
-    if !manifest::format_capabilities_v1(record.format_version)
-        .is_some_and(manifest::FormatCapabilitiesV1::semantic_row_root)
-    {
-        return Err(CoreError::Typed {
-            code: "LEGACY_SEMANTIC_MIGRATION_DURABLE_FORMAT_UNVERIFIED".to_string(),
-            message: format!(
-                "semantic generation format {} has no row-root proof",
-                record.format_version
-            ),
-        });
-    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .thread_name("quanta-index-semantic-validate")
@@ -862,11 +955,36 @@ fn inventory_generation_dir(
             detail,
         )
     };
+    // A receipt the integrity scrub left (QI-BB-017): the generation's
+    // bytes were proven not to match its seal, so it is set aside under
+    // that proof rather than seeded and refused at every door.
+    match read_quarantine_receipt(generation_dir) {
+        Ok(Some(receipt)) => {
+            return Err(quarantine(
+                generation_dir.to_path_buf(),
+                GenerationQuarantineReasonV1::ContentCorrupt,
+                receipt.detail,
+            ));
+        }
+        Ok(None) => {}
+        Err(err) => return Err(unreadable(format!("read quarantine receipt: {err}"))),
+    }
     let manifest_path = layout::manifest_path(generation_dir);
     let manifest_bytes = std::fs::read(&manifest_path)
         .map_err(|err| unreadable(format!("read manifest {}: {err}", manifest_path.display())))?;
-    let manifest = SemanticManifest::decode(&manifest_bytes)
-        .map_err(|err| unreadable(format!("decode manifest: {err}")))?;
+    let manifest = SemanticManifest::decode(&manifest_bytes).map_err(|err| {
+        if let CoreError::Typed { code, message } = &err
+            && code == FORMAT_UNSUPPORTED_CODE
+        {
+            quarantine(
+                generation_dir.to_path_buf(),
+                GenerationQuarantineReasonV1::FormatUnsupported,
+                message.clone(),
+            )
+        } else {
+            unreadable(format!("decode manifest: {err}"))
+        }
+    })?;
     let repo_id = RepoId::new(manifest.repo_id.clone());
     let revision_id = RevisionId::new(manifest.revision_id.clone());
     let generation = ManifestGeneration::new(manifest.generation);
@@ -906,7 +1024,6 @@ fn inventory_generation_dir(
         revision_id,
         generation,
         manifest_digest: manifest.manifest_digest,
-        format_version: manifest.format_version,
         semantic_row_root_digest: manifest.semantic_row_root_digest,
         row_count: manifest.row_count,
     }))
@@ -936,6 +1053,7 @@ impl QuarantinedGenerationDiscardPort for SemanticAdapter {
                 entry.track
             )));
         }
+        let _lifecycle = self.directory_lifecycle_guard()?;
         discard_quarantined_directory(
             &self.state_root,
             &inventory_persisted_generations(&self.state_root)?.quarantined,
@@ -1100,13 +1218,13 @@ mod incomplete_generation_discard_tests {
             cluster_membership_root_digest: membership_commitment.root_digest,
             cluster_membership_cluster_count: membership_commitment.cluster_count,
             cluster_membership_member_row_count: membership_commitment.member_row_count,
-            vector_index: Some(crate::manifest::VectorIndexSealV1 {
+            vector_index: crate::manifest::VectorIndexSealV1 {
                 mode: crate::manifest::VECTOR_INDEX_MODE_EXACT.to_string(),
                 library: "lancedb".to_string(),
                 library_version: "0.30.0".to_string(),
                 index_min_rows: 256,
                 ann: None,
-            }),
+            },
         }
     }
 

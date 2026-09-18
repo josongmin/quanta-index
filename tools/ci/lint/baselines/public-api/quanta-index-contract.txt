@@ -977,6 +977,7 @@ pub quanta_index_contract::ipc::SearchCorpusGenerationIdentityValidationErrorV1:
 pub quanta_index_contract::ipc::SearchCorpusGenerationIdentityValidationErrorV1::LexicalTrackRequired
 pub quanta_index_contract::ipc::SearchCorpusGenerationIdentityValidationErrorV1::RepoMismatch
 pub quanta_index_contract::ipc::SearchCorpusGenerationIdentityValidationErrorV1::RevisionMismatch
+pub quanta_index_contract::ipc::SearchCorpusGenerationIdentityValidationErrorV1::SemanticContentRootInvalid
 pub quanta_index_contract::ipc::SearchCorpusGenerationIdentityValidationErrorV1::SemanticTrackRequired
 impl quanta_index_contract::SearchCorpusGenerationIdentityValidationErrorV1
 pub const fn quanta_index_contract::SearchCorpusGenerationIdentityValidationErrorV1::code_v1(self) -> &'static str
@@ -1372,10 +1373,12 @@ pub quanta_index_contract::ipc::BatchPublishReceipt::durable_sequence: u64
 pub quanta_index_contract::ipc::BatchPublishReceipt::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_contract::ipc::BatchPublishReceipt::manifest_digest: core::option::Option<alloc::string::String>
 pub quanta_index_contract::ipc::BatchPublishReceipt::sealed: bool
+pub quanta_index_contract::ipc::BatchPublishReceipt::semantic_content: core::option::Option<quanta_index_contract::SemanticContentRootsV1>
 impl quanta_index_contract::BatchPublishReceipt
 pub fn quanta_index_contract::BatchPublishReceipt::accept_clear_surface(&mut self)
 pub fn quanta_index_contract::BatchPublishReceipt::accept_replace_scope(&mut self)
 pub fn quanta_index_contract::BatchPublishReceipt::accept_tombstone_scope(&mut self)
+pub fn quanta_index_contract::BatchPublishReceipt::attest_semantic_content(&mut self, roots: quanta_index_contract::SemanticContentRootsV1)
 pub fn quanta_index_contract::BatchPublishReceipt::empty_for(generation: quanta_index_contract_base::ids::ManifestGeneration, manifest_digest: core::option::Option<alloc::string::String>, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
 pub fn quanta_index_contract::BatchPublishReceipt::mark_sealed(&mut self)
 pub fn quanta_index_contract::BatchPublishReceipt::recorded_at(self, durable_sequence: u64) -> Self
@@ -1674,6 +1677,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::GenerationS
 pub struct quanta_index_contract::ipc::GenerationStatusReport
 pub quanta_index_contract::ipc::GenerationStatusReport::repo_id: quanta_index_contract_base::ids::RepoId
 pub quanta_index_contract::ipc::GenerationStatusReport::revision_id: quanta_index_contract_base::ids::RevisionId
+pub quanta_index_contract::ipc::GenerationStatusReport::semantic_content: core::option::Option<quanta_index_contract::SemanticContentRootsV1>
 pub quanta_index_contract::ipc::GenerationStatusReport::tracks: alloc::vec::Vec<quanta_index_contract::TrackReadinessRecord>
 impl core::clone::Clone for quanta_index_contract::GenerationStatusReport
 pub fn quanta_index_contract::GenerationStatusReport::clone(&self) -> quanta_index_contract::GenerationStatusReport
@@ -2450,6 +2454,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RuntimeSnap
 pub struct quanta_index_contract::ipc::SearchCorpusGenerationIdentityV1
 pub quanta_index_contract::ipc::SearchCorpusGenerationIdentityV1::lexical: quanta_index_contract::GenerationSnapshot
 pub quanta_index_contract::ipc::SearchCorpusGenerationIdentityV1::semantic: quanta_index_contract::GenerationSnapshot
+pub quanta_index_contract::ipc::SearchCorpusGenerationIdentityV1::semantic_content: quanta_index_contract::SemanticContentRootsV1
 impl quanta_index_contract::SearchCorpusGenerationIdentityV1
 pub fn quanta_index_contract::SearchCorpusGenerationIdentityV1::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::SearchCorpusGenerationIdentityValidationErrorV1>
 impl core::clone::Clone for quanta_index_contract::SearchCorpusGenerationIdentityV1
@@ -2557,6 +2562,7 @@ pub struct quanta_index_contract::ipc::SearchPlaneActivateSearchCorpusGeneration
 pub quanta_index_contract::ipc::SearchPlaneActivateSearchCorpusGenerationCasRequest::candidate: quanta_index_contract::SearchCorpusGenerationIdentityV1
 pub quanta_index_contract::ipc::SearchPlaneActivateSearchCorpusGenerationCasRequest::expected_active: core::option::Option<quanta_index_contract::SearchCorpusGenerationIdentityV1>
 impl quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest
+pub fn quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest::validate_expected_active_v1(candidate_scope: &quanta_index_contract::GenerationSnapshot, expected_active: core::option::Option<&quanta_index_contract::SearchCorpusGenerationIdentityV1>) -> core::result::Result<(), quanta_index_contract::SearchCorpusActivationValidationErrorV1>
 pub fn quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::SearchCorpusActivationValidationErrorV1>
 impl core::clone::Clone for quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest
 pub fn quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest::clone(&self) -> quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest
@@ -2821,6 +2827,30 @@ impl core::marker::Unpin for quanta_index_contract::SearchScopeKey
 impl core::marker::UnsafeUnpin for quanta_index_contract::SearchScopeKey
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchScopeKey
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchScopeKey
+pub struct quanta_index_contract::ipc::SemanticContentRootsV1
+pub quanta_index_contract::ipc::SemanticContentRootsV1::membership_root_digest: alloc::string::String
+pub quanta_index_contract::ipc::SemanticContentRootsV1::row_root_digest: alloc::string::String
+impl quanta_index_contract::SemanticContentRootsV1
+pub fn quanta_index_contract::SemanticContentRootsV1::is_canonical_v1(&self) -> bool
+impl core::clone::Clone for quanta_index_contract::SemanticContentRootsV1
+pub fn quanta_index_contract::SemanticContentRootsV1::clone(&self) -> quanta_index_contract::SemanticContentRootsV1
+impl core::cmp::Eq for quanta_index_contract::SemanticContentRootsV1
+impl core::cmp::PartialEq for quanta_index_contract::SemanticContentRootsV1
+pub fn quanta_index_contract::SemanticContentRootsV1::eq(&self, other: &quanta_index_contract::SemanticContentRootsV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::SemanticContentRootsV1
+pub fn quanta_index_contract::SemanticContentRootsV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SemanticContentRootsV1
+impl serde_core::ser::Serialize for quanta_index_contract::SemanticContentRootsV1
+pub fn quanta_index_contract::SemanticContentRootsV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SemanticContentRootsV1
+pub fn quanta_index_contract::SemanticContentRootsV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::SemanticContentRootsV1
+impl core::marker::Send for quanta_index_contract::SemanticContentRootsV1
+impl core::marker::Sync for quanta_index_contract::SemanticContentRootsV1
+impl core::marker::Unpin for quanta_index_contract::SemanticContentRootsV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticContentRootsV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticContentRootsV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticContentRootsV1
 pub struct quanta_index_contract::ipc::SemanticIngestBatch
 pub quanta_index_contract::ipc::SemanticIngestBatch::base_generation: core::option::Option<quanta_index_contract_base::ids::ManifestGeneration>
 pub quanta_index_contract::ipc::SemanticIngestBatch::batch_digest: alloc::string::String
@@ -7850,6 +7880,7 @@ pub quanta_index_contract::SearchCorpusGenerationIdentityValidationErrorV1::Gene
 pub quanta_index_contract::SearchCorpusGenerationIdentityValidationErrorV1::LexicalTrackRequired
 pub quanta_index_contract::SearchCorpusGenerationIdentityValidationErrorV1::RepoMismatch
 pub quanta_index_contract::SearchCorpusGenerationIdentityValidationErrorV1::RevisionMismatch
+pub quanta_index_contract::SearchCorpusGenerationIdentityValidationErrorV1::SemanticContentRootInvalid
 pub quanta_index_contract::SearchCorpusGenerationIdentityValidationErrorV1::SemanticTrackRequired
 impl quanta_index_contract::SearchCorpusGenerationIdentityValidationErrorV1
 pub const fn quanta_index_contract::SearchCorpusGenerationIdentityValidationErrorV1::code_v1(self) -> &'static str
@@ -8303,10 +8334,12 @@ pub quanta_index_contract::BatchPublishReceipt::durable_sequence: u64
 pub quanta_index_contract::BatchPublishReceipt::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_contract::BatchPublishReceipt::manifest_digest: core::option::Option<alloc::string::String>
 pub quanta_index_contract::BatchPublishReceipt::sealed: bool
+pub quanta_index_contract::BatchPublishReceipt::semantic_content: core::option::Option<quanta_index_contract::SemanticContentRootsV1>
 impl quanta_index_contract::BatchPublishReceipt
 pub fn quanta_index_contract::BatchPublishReceipt::accept_clear_surface(&mut self)
 pub fn quanta_index_contract::BatchPublishReceipt::accept_replace_scope(&mut self)
 pub fn quanta_index_contract::BatchPublishReceipt::accept_tombstone_scope(&mut self)
+pub fn quanta_index_contract::BatchPublishReceipt::attest_semantic_content(&mut self, roots: quanta_index_contract::SemanticContentRootsV1)
 pub fn quanta_index_contract::BatchPublishReceipt::empty_for(generation: quanta_index_contract_base::ids::ManifestGeneration, manifest_digest: core::option::Option<alloc::string::String>, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
 pub fn quanta_index_contract::BatchPublishReceipt::mark_sealed(&mut self)
 pub fn quanta_index_contract::BatchPublishReceipt::recorded_at(self, durable_sequence: u64) -> Self
@@ -9053,6 +9086,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::GenerationS
 pub struct quanta_index_contract::GenerationStatusReport
 pub quanta_index_contract::GenerationStatusReport::repo_id: quanta_index_contract_base::ids::RepoId
 pub quanta_index_contract::GenerationStatusReport::revision_id: quanta_index_contract_base::ids::RevisionId
+pub quanta_index_contract::GenerationStatusReport::semantic_content: core::option::Option<quanta_index_contract::SemanticContentRootsV1>
 pub quanta_index_contract::GenerationStatusReport::tracks: alloc::vec::Vec<quanta_index_contract::TrackReadinessRecord>
 impl core::clone::Clone for quanta_index_contract::GenerationStatusReport
 pub fn quanta_index_contract::GenerationStatusReport::clone(&self) -> quanta_index_contract::GenerationStatusReport
@@ -10662,6 +10696,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RuntimeSnap
 pub struct quanta_index_contract::SearchCorpusGenerationIdentityV1
 pub quanta_index_contract::SearchCorpusGenerationIdentityV1::lexical: quanta_index_contract::GenerationSnapshot
 pub quanta_index_contract::SearchCorpusGenerationIdentityV1::semantic: quanta_index_contract::GenerationSnapshot
+pub quanta_index_contract::SearchCorpusGenerationIdentityV1::semantic_content: quanta_index_contract::SemanticContentRootsV1
 impl quanta_index_contract::SearchCorpusGenerationIdentityV1
 pub fn quanta_index_contract::SearchCorpusGenerationIdentityV1::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::SearchCorpusGenerationIdentityValidationErrorV1>
 impl core::clone::Clone for quanta_index_contract::SearchCorpusGenerationIdentityV1
@@ -10823,6 +10858,7 @@ pub struct quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRe
 pub quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest::candidate: quanta_index_contract::SearchCorpusGenerationIdentityV1
 pub quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest::expected_active: core::option::Option<quanta_index_contract::SearchCorpusGenerationIdentityV1>
 impl quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest
+pub fn quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest::validate_expected_active_v1(candidate_scope: &quanta_index_contract::GenerationSnapshot, expected_active: core::option::Option<&quanta_index_contract::SearchCorpusGenerationIdentityV1>) -> core::result::Result<(), quanta_index_contract::SearchCorpusActivationValidationErrorV1>
 pub fn quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::SearchCorpusActivationValidationErrorV1>
 impl core::clone::Clone for quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest
 pub fn quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest::clone(&self) -> quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest
@@ -11296,6 +11332,30 @@ impl core::marker::Unpin for quanta_index_contract::SeedFusionIdentity
 impl core::marker::UnsafeUnpin for quanta_index_contract::SeedFusionIdentity
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SeedFusionIdentity
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedFusionIdentity
+pub struct quanta_index_contract::SemanticContentRootsV1
+pub quanta_index_contract::SemanticContentRootsV1::membership_root_digest: alloc::string::String
+pub quanta_index_contract::SemanticContentRootsV1::row_root_digest: alloc::string::String
+impl quanta_index_contract::SemanticContentRootsV1
+pub fn quanta_index_contract::SemanticContentRootsV1::is_canonical_v1(&self) -> bool
+impl core::clone::Clone for quanta_index_contract::SemanticContentRootsV1
+pub fn quanta_index_contract::SemanticContentRootsV1::clone(&self) -> quanta_index_contract::SemanticContentRootsV1
+impl core::cmp::Eq for quanta_index_contract::SemanticContentRootsV1
+impl core::cmp::PartialEq for quanta_index_contract::SemanticContentRootsV1
+pub fn quanta_index_contract::SemanticContentRootsV1::eq(&self, other: &quanta_index_contract::SemanticContentRootsV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::SemanticContentRootsV1
+pub fn quanta_index_contract::SemanticContentRootsV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SemanticContentRootsV1
+impl serde_core::ser::Serialize for quanta_index_contract::SemanticContentRootsV1
+pub fn quanta_index_contract::SemanticContentRootsV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SemanticContentRootsV1
+pub fn quanta_index_contract::SemanticContentRootsV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::SemanticContentRootsV1
+impl core::marker::Send for quanta_index_contract::SemanticContentRootsV1
+impl core::marker::Sync for quanta_index_contract::SemanticContentRootsV1
+impl core::marker::Unpin for quanta_index_contract::SemanticContentRootsV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticContentRootsV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticContentRootsV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticContentRootsV1
 pub struct quanta_index_contract::SemanticIngestBatch
 pub quanta_index_contract::SemanticIngestBatch::base_generation: core::option::Option<quanta_index_contract_base::ids::ManifestGeneration>
 pub quanta_index_contract::SemanticIngestBatch::batch_digest: alloc::string::String

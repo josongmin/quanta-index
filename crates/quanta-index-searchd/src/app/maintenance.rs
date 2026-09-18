@@ -8,20 +8,25 @@
 //!   does not pin its heap until another batch happens to arrive;
 //! - refreshes the per-track generation disk-usage gauges from the
 //!   adapters' own byte walkers, so a scrape reads a number no scrape had
-//!   to walk a tree for.
+//!   to walk a tree for;
+//! - steps the integrity scrub (QI-BB-017) when its own interval is due, so
+//!   the bytes of sealed generations are re-proven off the serving path
+//!   without a second maintenance thread.
 //!
 //! Everything the timer does is counted, and a failed sweep or walk is a
 //! counted failure the next tick retries, never a silent stop.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use quanta_index_core::{
     CoreError, MetricPointV1, MetricSourcePort, ProcessMemoryProbePort, TrackDiskUsagePort,
     WriterIdleSweepPort,
 };
+
+use crate::app::integrity_scrub::PacedIntegrityScrubV1;
 
 /// What the timer has done, read by the scrape.
 #[derive(Debug, Default)]
@@ -33,6 +38,10 @@ pub struct MaintenanceTallies {
     disk_refresh_failures: AtomicU64,
     lexical_generation_disk_bytes: AtomicU64,
     semantic_generation_disk_bytes: AtomicU64,
+    /// Ticks that could not step the scrub because an earlier step
+    /// panicked with the scheduler locked; the scrub stays stopped and the
+    /// count says so instead of resuming from a torn state.
+    scrub_poisoned: AtomicU64,
 }
 
 impl MaintenanceTallies {
@@ -66,6 +75,9 @@ pub struct MaintenanceParts {
     pub writer_sweep: Arc<dyn WriterIdleSweepPort>,
     pub lexical_disk_usage: Arc<dyn TrackDiskUsagePort>,
     pub semantic_disk_usage: Arc<dyn TrackDiskUsagePort>,
+    /// The integrity scrub, stepped on its own interval; `None` when no
+    /// adapter scrubs.
+    pub integrity_scrub: Option<Mutex<PacedIntegrityScrubV1>>,
 }
 
 /// One tick's work, shared by the timer thread and the boot-time first
@@ -83,6 +95,17 @@ fn tick(parts: &MaintenanceParts, tallies: &MaintenanceTallies) {
         }
     }
     refresh_disk_usage(parts, tallies);
+    if let Some(scrub) = &parts.integrity_scrub {
+        match scrub.lock() {
+            // What the step did is the scheduler's own tallies.
+            Ok(mut paced) => {
+                let _stepped = paced.step_if_due(Instant::now());
+            }
+            Err(_poisoned) => {
+                let _prior = tallies.scrub_poisoned.fetch_add(1, Ordering::AcqRel);
+            }
+        }
+    }
 }
 
 /// Measure both tracks; a track whose walk fails keeps its last value and
@@ -201,6 +224,10 @@ impl MetricSourcePort for MaintenanceMetricSource {
                 tallies.sweep_failures.load(Ordering::Acquire),
             ),
             MetricPointV1::counter(
+                "maintenance_scrub_poisoned_total",
+                tallies.scrub_poisoned.load(Ordering::Acquire),
+            ),
+            MetricPointV1::counter(
                 "maintenance_disk_refreshes_total",
                 tallies.disk_refreshes.load(Ordering::Acquire),
             ),
@@ -264,6 +291,7 @@ mod tests {
                 writer_sweep,
                 lexical_disk_usage,
                 semantic_disk_usage,
+                integrity_scrub: None,
             },
             Duration::from_millis(10),
         )

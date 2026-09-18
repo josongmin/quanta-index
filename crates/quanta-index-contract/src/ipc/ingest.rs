@@ -45,6 +45,7 @@ use crate::{
 
 use super::{
     batch_body::{BATCH_DIGEST_TOKEN_LEN_V1, is_canonical_batch_digest_token_v1},
+    control::SemanticContentRootsV1,
     error::SearchPlaneIpcError,
     semantic_source::{
         ClusterMembershipReplaceV1, SemanticCorpusKindV1, SemanticSourceReplaceScopeV1,
@@ -4202,6 +4203,11 @@ pub struct BatchPublishReceipt {
     /// across the state root. A replay carries the original apply's
     /// sequence, so a producer can prove two receipts describe one apply.
     pub durable_sequence: u64,
+    /// The content roots the semantic generation sealed (QI-BB-028):
+    /// present exactly when this is a sealed search-corpus receipt, so the
+    /// producer can name them when it activates; `None` for an unsealed
+    /// publish and for every auxiliary route.
+    pub semantic_content: Option<SemanticContentRootsV1>,
 }
 
 const BATCH_PUBLISH_RECEIPT_FIELDS: &[&str] = &[
@@ -4214,6 +4220,7 @@ const BATCH_PUBLISH_RECEIPT_FIELDS: &[&str] = &[
     "sealed",
     "applied",
     "durable_sequence",
+    "semantic_content",
 ];
 
 impl Serialize for BatchPublishReceipt {
@@ -4221,7 +4228,7 @@ impl Serialize for BatchPublishReceipt {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("BatchPublishReceipt", 9)?;
+        let mut state = serializer.serialize_struct("BatchPublishReceipt", 10)?;
         state.serialize_field("generation", &self.generation)?;
         state.serialize_field("manifest_digest", &self.manifest_digest)?;
         state.serialize_field("batch_digest", &self.batch_digest)?;
@@ -4231,6 +4238,7 @@ impl Serialize for BatchPublishReceipt {
         state.serialize_field("sealed", &self.sealed)?;
         state.serialize_field("applied", &self.applied)?;
         state.serialize_field("durable_sequence", &self.durable_sequence)?;
+        state.serialize_field("semantic_content", &self.semantic_content)?;
         state.end()
     }
 }
@@ -4257,6 +4265,7 @@ impl<'de> Visitor<'de> for BatchPublishReceiptVisitor {
         let mut sealed: Option<bool> = None;
         let mut applied: Option<bool> = None;
         let mut durable_sequence: Option<u64> = None;
+        let mut semantic_content: Option<Option<SemanticContentRootsV1>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "generation" => {
@@ -4313,6 +4322,12 @@ impl<'de> Visitor<'de> for BatchPublishReceiptVisitor {
                     }
                     durable_sequence = Some(map.next_value()?);
                 }
+                "semantic_content" => {
+                    if semantic_content.is_some() {
+                        return Err(de::Error::duplicate_field("semantic_content"));
+                    }
+                    semantic_content = Some(map.next_value()?);
+                }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -4336,6 +4351,8 @@ impl<'de> Visitor<'de> for BatchPublishReceiptVisitor {
             applied: applied.ok_or_else(|| de::Error::missing_field("applied"))?,
             durable_sequence: durable_sequence
                 .ok_or_else(|| de::Error::missing_field("durable_sequence"))?,
+            semantic_content: semantic_content
+                .ok_or_else(|| de::Error::missing_field("semantic_content"))?,
         })
     }
 }
@@ -4374,7 +4391,13 @@ impl BatchPublishReceipt {
             sealed: false,
             applied: true,
             durable_sequence: 0,
+            semantic_content: None,
         }
+    }
+
+    /// Attest the content roots the semantic generation sealed.
+    pub fn attest_semantic_content(&mut self, roots: SemanticContentRootsV1) {
+        self.semantic_content = Some(roots);
     }
 
     pub fn accept_replace_scope(&mut self) {
@@ -5648,6 +5671,7 @@ mod tests {
             batch_digest: "batch:fixture".to_string(),
             applied: true,
             durable_sequence: 7,
+            semantic_content: None,
             accepted_replace_scopes: 2,
             accepted_tombstone_scopes: 1,
             accepted_clear_surfaces: 0,
@@ -5785,6 +5809,7 @@ mod tests {
                 batch_digest: "batch:fixture".to_string(),
                 applied: true,
                 durable_sequence: 7,
+                semantic_content: None,
                 accepted_replace_scopes: 1,
                 accepted_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
@@ -5823,6 +5848,7 @@ mod tests {
                 batch_digest: "batch:fixture".to_string(),
                 applied: true,
                 durable_sequence: 7,
+                semantic_content: None,
                 accepted_replace_scopes: 4,
                 accepted_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
@@ -5845,6 +5871,7 @@ mod tests {
                 batch_digest: "batch:fixture".to_string(),
                 applied: true,
                 durable_sequence: 7,
+                semantic_content: None,
                 accepted_replace_scopes: 2,
                 accepted_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
@@ -5867,6 +5894,7 @@ mod tests {
                 batch_digest: "batch:fixture".to_string(),
                 applied: true,
                 durable_sequence: 7,
+                semantic_content: None,
                 accepted_replace_scopes: 2,
                 accepted_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
@@ -5889,6 +5917,7 @@ mod tests {
                 batch_digest: "batch:fixture".to_string(),
                 applied: true,
                 durable_sequence: 7,
+                semantic_content: None,
                 accepted_replace_scopes: 2,
                 accepted_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
@@ -5911,6 +5940,7 @@ mod tests {
                 batch_digest: "batch:fixture".to_string(),
                 applied: true,
                 durable_sequence: 7,
+                semantic_content: None,
                 accepted_replace_scopes: 2,
                 accepted_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
@@ -5933,6 +5963,7 @@ mod tests {
                 batch_digest: "batch:fixture".to_string(),
                 applied: true,
                 durable_sequence: 7,
+                semantic_content: None,
                 accepted_replace_scopes: 2,
                 accepted_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
@@ -5955,6 +5986,7 @@ mod tests {
                 batch_digest: "batch:fixture".to_string(),
                 applied: true,
                 durable_sequence: 7,
+                semantic_content: None,
                 accepted_replace_scopes: 1,
                 accepted_tombstone_scopes: 1,
                 accepted_clear_surfaces: 0,
@@ -5977,6 +6009,7 @@ mod tests {
                 batch_digest: "batch:fixture".to_string(),
                 applied: true,
                 durable_sequence: 7,
+                semantic_content: None,
                 accepted_replace_scopes: 1,
                 accepted_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,

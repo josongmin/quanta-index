@@ -104,18 +104,18 @@ use quanta_index_core::domains::generation::{
 };
 use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
-    IntegrityScrubPort, IntegrityScrubReportV1, IntegrityScrubStampV1, IntegrityScrubStatusV1,
-    LEXICAL_WRITER_HEAP_BYTES_MIN, LexicalArtifactIdentityV1, LexicalCandidateExplanationV1,
-    LexicalExecutionBudgetV1, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPredicateV1,
-    LexicalScoreEngineV1, LexicalScoreTraceV1, LexicalSearchPageV1, LexicalSearcher,
-    LexicalWriterCacheStats, LexicalWriterPolicy, MetricPointV1, MetricSourcePort,
-    QUARANTINE_TARGET_NOT_QUARANTINED_CODE, QuarantineDiscardOutcomeV1,
-    QuarantinedGenerationDiscardPort, RegexMatchCachePolicy, RegexMatchCacheStats,
-    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMetaIngestPort,
-    RepoMetadataAuthoritiesV1, RepoMetadataAuthorityV1, RepoTopicIngestPort, RequestBudgetV1,
-    SealedGenerationScanPort, SearchCorpusBatchBuildPort, TextAuthorityUpdateStats,
-    TextNormalizerVersionV1, TrackDiskUsagePort, UnboundedWriterAdmission, WriterAdmissionPort,
-    WriterIdleSweepPort, count_from_usize,
+    IntegrityScrubBudgetV1, IntegrityScrubCandidateV1, IntegrityScrubCursorV1, IntegrityScrubPort,
+    IntegrityScrubReportV1, LEXICAL_WRITER_HEAP_BYTES_MIN, LexicalArtifactIdentityV1,
+    LexicalCandidateExplanationV1, LexicalExecutionBudgetV1, LexicalIndexBuildPort,
+    LexicalIndexOpenPort, LexicalPredicateV1, LexicalScoreEngineV1, LexicalScoreTraceV1,
+    LexicalSearchPageV1, LexicalSearcher, LexicalWriterCacheStats, LexicalWriterPolicy,
+    MetricPointV1, MetricSourcePort, QUARANTINE_TARGET_NOT_QUARANTINED_CODE,
+    QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort, RegexMatchCachePolicy,
+    RegexMatchCacheStats, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
+    RepoMetaIngestPort, RepoMetadataAuthoritiesV1, RepoMetadataAuthorityV1, RepoTopicIngestPort,
+    RequestBudgetV1, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
+    TextAuthorityUpdateStats, TextNormalizerVersionV1, TrackDiskUsagePort,
+    UnboundedWriterAdmission, WriterAdmissionPort, WriterIdleSweepPort, count_from_usize,
     domains::lexical::LexicalPolicy,
     timeref::{is_rev_at_time_spec, parse_search_timeref_ms},
 };
@@ -158,9 +158,10 @@ use crate::predicate_registry::{
 };
 use crate::regex::RegexPolicy;
 use crate::sealed_generation::{
-    DiscardingVisitor, LEXICAL_SCRUB_RECEIPT_FILE_NAME, LEXICAL_SEALED_MANIFEST_FILE_NAME,
-    OverlayFamily, SealedGenerationVisitor, persist_overlay, remove_overlay,
-    scrub_sealed_generation, scrub_status, seal_generation, walk_sealed_generation,
+    DiscardingVisitor, LEXICAL_QUARANTINE_RECEIPT_FILE_NAME, LEXICAL_SCRUB_RECEIPT_FILE_NAME,
+    LEXICAL_SEALED_MANIFEST_FILE_NAME, OverlayFamily, SealedGenerationVisitor,
+    last_completed_scrub, persist_overlay, quarantined_by_scrub, remove_overlay, scrub_step,
+    seal_generation, walk_sealed_generation,
 };
 use crate::text_authority::{
     AddedTextDoc, ShardBody, ShardedTextAuthority, TEXT_AUTHORITY_DIR_NAME, TextAuthorityManifest,
@@ -3179,19 +3180,21 @@ fn is_writer_lock_entry(file_name: &str) -> bool {
 }
 
 /// Whether an entry is the base's seal (identity or content manifest) or
-/// its scrub receipt.
+/// one of its scrub receipts.
 ///
 /// A delta is unsealed until its own seal writes its own pair; inheriting
 /// the base's would make a half-built delta claim the base's identity on
 /// disk, which a crash before the seal would leave behind for the boot
-/// scanner to refuse. The scrub receipt records a pass over the base's
-/// digest, which says nothing about the delta.
+/// scanner to refuse. The scrub receipts record a pass over, or a
+/// corruption of, the base's committed bytes, which says nothing about
+/// the delta.
 fn is_seal_marker_entry(file_name: &str) -> bool {
     matches!(
         file_name,
         LEXICAL_SEALED_IDENTITY_FILE_NAME
             | LEXICAL_SEALED_MANIFEST_FILE_NAME
             | LEXICAL_SCRUB_RECEIPT_FILE_NAME
+            | LEXICAL_QUARANTINE_RECEIPT_FILE_NAME
     )
 }
 
@@ -3332,6 +3335,15 @@ pub struct LexicalAdapter {
     /// Per-deployment cap on what one execution may materialize
     /// (QI-BB-005), threaded to every opened searcher.
     execution_budget: LexicalExecutionBudgetV1,
+    /// Serializes the two things that act on a sealed generation's
+    /// directory outside a query: an integrity-scrub step, which reads
+    /// every committed file and writes its receipt there, and the removal
+    /// of the directory (reclaim, quarantine discard). Without it a
+    /// reclaim racing a scrub step makes the step meet files vanishing
+    /// under it — a false corruption whose quarantine receipt lands in a
+    /// directory being deleted. Under it a step either finds the
+    /// generation whole or finds it gone, typed.
+    directory_lifecycle: Mutex<()>,
 }
 
 impl LexicalAdapter {
@@ -3370,7 +3382,17 @@ impl LexicalAdapter {
             seal_commitments: Arc::new(Mutex::new(LexicalSealCommitmentStats::default())),
             regex_policy,
             execution_budget,
+            directory_lifecycle: Mutex::new(()),
         }
+    }
+
+    /// Hold the sealed-generation directory lifecycle (see the field).
+    fn directory_lifecycle_guard(&self) -> Result<std::sync::MutexGuard<'_, ()>, CoreError> {
+        self.directory_lifecycle.lock().map_err(|err| {
+            CoreError::Storage(format!(
+                "lexical: generation directory lifecycle lock poisoned: {err}"
+            ))
+        })
     }
 
     /// How much text-authority derivation the adapter has done so far
@@ -4613,22 +4635,29 @@ impl GenerationIdentityValidatePort for LexicalAdapter {
 }
 
 impl IntegrityScrubPort for LexicalAdapter {
-    fn scrub_sealed_generation(
-        &self,
-        candidate: &GenerationSnapshot,
-        stamp: IntegrityScrubStampV1,
-    ) -> Result<IntegrityScrubReportV1, CoreError> {
-        let (generation_dir, observed) = self.sealed_generation_dir_for(candidate, "scrub")?;
-        scrub_sealed_generation(&generation_dir, &observed, stamp)
+    fn scrub_candidates(&self) -> Result<Vec<IntegrityScrubCandidateV1>, CoreError> {
+        inventory_sealed_generations(&self.state_root)?
+            .sealed
+            .into_iter()
+            .map(|sealed| {
+                let last_completed_unix = last_completed_scrub(&sealed.path, &sealed.identity)?;
+                Ok(IntegrityScrubCandidateV1 {
+                    identity: sealed.identity,
+                    last_completed_unix,
+                })
+            })
+            .collect()
     }
 
-    fn integrity_scrub_status(
+    fn scrub(
         &self,
-        candidate: &GenerationSnapshot,
-    ) -> Result<IntegrityScrubStatusV1, CoreError> {
-        let (generation_dir, observed) =
-            self.sealed_generation_dir_for(candidate, "scrub status")?;
-        scrub_status(&generation_dir, &observed)
+        generation: &GenerationSnapshot,
+        cursor: Option<IntegrityScrubCursorV1>,
+        budget: IntegrityScrubBudgetV1,
+    ) -> Result<IntegrityScrubReportV1, CoreError> {
+        let _lifecycle = self.directory_lifecycle_guard()?;
+        let (generation_dir, observed) = self.sealed_generation_dir_for(generation, "scrub")?;
+        scrub_step(&generation_dir, &observed, cursor, budget)
     }
 }
 
@@ -4649,6 +4678,7 @@ impl QuarantinedGenerationDiscardPort for LexicalAdapter {
                 entry.track
             )));
         }
+        let _lifecycle = self.directory_lifecycle_guard()?;
         discard_quarantined_directory(
             &self.state_root,
             &inventory_sealed_generations(&self.state_root)?.quarantined,
@@ -4733,6 +4763,7 @@ impl SealedGenerationReclaimPort for LexicalAdapter {
             generation: retired.manifest_generation,
         };
         let generation_dir = self.index_path(&key);
+        let _lifecycle = self.directory_lifecycle_guard()?;
         if !generation_dir.exists() {
             return Ok(SealedGenerationReclaimOutcomeV1::Absent);
         }
@@ -4992,10 +5023,15 @@ pub fn inventory_sealed_generations(
             }
             let generation_dir = generation_entry.path();
             match inventory_generation_dir(lexical_root, &generation_dir) {
-                Ok(Some(identity)) => inventory.sealed.push(InventoriedSealedGenerationV1 {
-                    identity,
-                    path: generation_dir,
-                }),
+                // A generation the scrub proved corrupt is quarantined by its
+                // receipt, not served (QI-BB-017, QI-BB-026).
+                Ok(Some(identity)) => match quarantined_by_scrub(&generation_dir)? {
+                    Some(quarantined) => inventory.quarantined.push(quarantined),
+                    None => inventory.sealed.push(InventoriedSealedGenerationV1 {
+                        identity,
+                        path: generation_dir,
+                    }),
+                },
                 Ok(None) => {}
                 Err(quarantined) => inventory.quarantined.push(quarantined),
             }

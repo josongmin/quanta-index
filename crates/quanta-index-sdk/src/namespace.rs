@@ -250,6 +250,7 @@ mod tests {
                 .map_err(|err| format!("fixture batch digest: {err}"))?,
             applied: true,
             durable_sequence: 7,
+            semantic_content: None,
             accepted_clear_surfaces: 0,
             accepted_replace_scopes: 1,
             accepted_tombstone_scopes: 0,

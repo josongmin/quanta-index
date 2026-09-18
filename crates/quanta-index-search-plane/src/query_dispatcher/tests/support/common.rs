@@ -75,6 +75,7 @@ pub(crate) fn corpus_generation(
             manifest_generation,
             manifest_digest: manifest_digest.to_string(),
         },
+        crate::content_roots_test_support::roots_for_generation(manifest_generation.get()),
     )
 }
 

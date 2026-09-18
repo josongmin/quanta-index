@@ -1103,7 +1103,7 @@ mod tests {
     use super::*;
     use crate::{
         ManifestGeneration, RepoId, RevisionId, SearchCorpusGenerationIdentityV1,
-        SearchPlaneTrackKind, TextQuerySyntax,
+        SearchPlaneTrackKind, SemanticContentRootsV1, TextQuerySyntax,
     };
     use serde_json::json;
 
@@ -1382,6 +1382,10 @@ mod tests {
                 track: SearchPlaneTrackKind::Semantic,
                 manifest_generation: ManifestGeneration::new(generation),
                 manifest_digest: digest.to_string(),
+            },
+            semantic_content: SemanticContentRootsV1 {
+                row_root_digest: format!("sha256:{generation:0>64x}"),
+                membership_root_digest: format!("sha256:{:0>64x}", generation.saturating_add(1000)),
             },
         }
     }

@@ -13,7 +13,8 @@ use quanta_index_contract::{
     RevisionId, SearchScopeKey, SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
 };
 use quanta_index_core::{
-    CoreError, GenerationStorageKeyV1, RequestBudgetV1, SemanticIndexOpenPort,
+    CoreError, GenerationQuarantineReasonV1, GenerationStorageKeyV1, RequestBudgetV1,
+    SemanticIndexOpenPort,
 };
 use quanta_index_semantic::{
     SemanticAdapter, build_resident_batch_v1, embedding_record_v1, inventory_persisted_generations,
@@ -1957,12 +1958,14 @@ fn open_with_missing_generation_contract_on_v3_manifest_fails_closed() -> TestRe
     expect_sidecar_corrupt(err, "semantic-build-contract.cbor")
 }
 
+/// A generation sealed at format 2 is refused typed at open.
+///
+/// Format 2 has no build contract and no sealed manifest; the refusal
+/// carries the instruction to rebuild and the generation is never decoded
+/// through an older shape and served on what it happens to carry
+/// (breaking-first; QI-BB-027).
 #[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test asserts legacy v2 sealed generations remain openable without the sidecar contract via assert macros"
-)]
-fn legacy_v2_manifest_without_generation_contract_opens_for_compatibility() -> TestResult {
+fn a_format_2_generation_is_refused_typed_at_open() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().to_path_buf();
     let adapter = SemanticAdapter::with_state_root(root.clone())?;
@@ -1988,29 +1991,24 @@ fn legacy_v2_manifest_without_generation_contract_opens_for_compatibility() -> T
     std::fs::remove_file(generation_dir.join("semantic-sealed-manifest.cbor"))?;
 
     let reopened = SemanticAdapter::with_state_root(root)?;
-    let searcher = reopened.open(&repo_id(), &revision_id(), generation)?;
-    let hits = searcher.search(&[1.0, 0.0, 0.0], 3, &RequestBudgetV1::unbounded())?;
-    let Some(hit) = hits.first() else {
-        return Err("legacy v2 sealed generation must still serve hits".into());
-    };
-    assert_eq!(hit.candidate_id.as_str(), "emb-legacy");
-    let identity_hits = searcher.search_hits(&[1.0, 0.0, 0.0], 3, &RequestBudgetV1::unbounded())?;
-    let Some(identity_hit) = identity_hits.first() else {
-        return Err("legacy v2 sealed generation must still serve identity hits".into());
-    };
-    assert_eq!(identity_hit.record_id, "emb-legacy");
-    assert_eq!(identity_hit.owner_id, "emb-legacy");
-    assert_eq!(identity_hit.owner_kind, OwnerDocKind::Chunk);
-    assert_eq!(identity_hit.corpus_kind, None);
+    match reopened.open(&repo_id(), &revision_id(), generation) {
+        Err(CoreError::Typed { code, message })
+            if code == "GENERATION_MANIFEST_MISSING" && message.contains("rebuilt") => {}
+        Ok(_) => return Err("a format-2 generation must not be served".into()),
+        Err(other) => {
+            return Err(format!(
+                "a format-2 generation must be refused typed with the rebuild instruction, got {other:?}"
+            )
+            .into());
+        }
+    }
     Ok(())
 }
 
+/// The inventory sets a format-2 generation aside under the format reason
+/// instead of seeding it, so nothing can pin, activate or build on it.
 #[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test asserts scan keeps legacy v2 sealed generations visible without weakening v3 contract requirements via assert macros"
-)]
-fn scan_reports_legacy_v2_generation_without_generation_contract() -> TestResult {
+fn scan_quarantines_a_format_2_generation_as_format_unsupported() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().to_path_buf();
     let semantic_root = root.join("indexes").join("semantic");
@@ -2034,14 +2032,31 @@ fn scan_reports_legacy_v2_generation_without_generation_contract() -> TestResult
     forge_legacy_v2_manifest(&generation_dir.join("semantic-manifest.cbor"))?;
     std::fs::remove_file(generation_dir.join("semantic-build-contract.cbor"))?;
 
-    let scanned = inventory_persisted_generations(&semantic_root)?.sealed;
-    let Some(record) = scanned
+    let inventory = inventory_persisted_generations(&semantic_root)?;
+    if inventory
+        .sealed
         .iter()
-        .find(|record| record.generation == generation)
+        .any(|record| record.generation == generation)
+    {
+        return Err("a format-2 generation must not be seeded".into());
+    }
+    let Some(entry) = inventory
+        .quarantined
+        .iter()
+        .find(|entry| entry.path == generation_dir)
     else {
-        return Err("legacy v2 sealed generation must still be reported by the inventory".into());
+        return Err(format!(
+            "a format-2 generation must be quarantined: {:?}",
+            inventory.quarantined
+        )
+        .into());
     };
-    assert_eq!(record.manifest_digest, "manifest:22");
+    if entry.reason != GenerationQuarantineReasonV1::FormatUnsupported
+        || !entry.detail.contains("format version 2")
+        || !entry.detail.contains("rebuild")
+    {
+        return Err(format!("the quarantine names the format and the remedy: {entry:?}").into());
+    }
     Ok(())
 }
 

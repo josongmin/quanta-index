@@ -12,8 +12,14 @@
 //!   semantic-build-contract.cbor
 //!                            # pre-seal batch contract / base provenance
 //!   semantic-manifest.cbor    # our scope-level metadata + integrity gate
+//!   semantic-sealed-manifest.cbor
+//!                            # every dataset file's length + SHA-256 (QI-BB-017)
 //!   MARKER_READY              # rows materialized durably
 //!   MARKER_SEALED             # generation finalized; openable for serving
+//!   semantic-scrub-receipt.cbor
+//!                            # written by the integrity scrub on completion
+//!   semantic-quarantine.cbor  # written by the scrub on corruption; while it
+//!                            # exists nothing serves the generation
 //! ```
 
 #![expect(
@@ -24,7 +30,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::manifest::format_capabilities_v1;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
 use quanta_index_core::{CoreError, domains::generation::GenerationStorageKeyV1};
@@ -34,6 +39,8 @@ pub(crate) const BUILD_CONTRACT_FILE_NAME: &str = "semantic-build-contract.cbor"
 pub(crate) const MANIFEST_FILE_NAME: &str = "semantic-manifest.cbor";
 pub(crate) const MARKER_READY_FILE_NAME: &str = "MARKER_READY";
 pub(crate) const MARKER_SEALED_FILE_NAME: &str = "MARKER_SEALED";
+pub(crate) const SCRUB_RECEIPT_FILE_NAME: &str = "semantic-scrub-receipt.cbor";
+pub(crate) const QUARANTINE_RECEIPT_FILE_NAME: &str = "semantic-quarantine.cbor";
 
 /// Lancedb table name for the semantic dataset.
 pub(crate) const TABLE_NAME: &str = "semantic";
@@ -76,26 +83,8 @@ pub(crate) const COLUMN_END_LINE: &str = "end_line";
 pub(crate) const COLUMN_SNIPPET: &str = "snippet";
 pub(crate) const COLUMN_VECTOR: &str = "vector";
 
-/// Arrow schema for the legacy v3 lancedb `semantic` table at the given vector dimension.
-pub(crate) fn semantic_schema_v3(dimension: i32) -> SchemaRef {
-    Arc::new(Schema::new(vec![
-        Field::new(COLUMN_EMBEDDING_ID, DataType::Utf8, false),
-        Field::new(COLUMN_REPO_RELATIVE_PATH, DataType::Utf8, false),
-        Field::new(COLUMN_START_LINE, DataType::UInt32, false),
-        Field::new(COLUMN_END_LINE, DataType::UInt32, false),
-        Field::new(COLUMN_SNIPPET, DataType::Utf8, false),
-        Field::new(
-            COLUMN_VECTOR,
-            DataType::FixedSizeList(
-                Arc::new(Field::new("item", DataType::Float32, true)),
-                dimension,
-            ),
-            false,
-        ),
-    ]))
-}
-
-/// Arrow schema for the v4 lancedb `semantic` table at the given vector dimension.
+/// Arrow schema of the lancedb `semantic` table at the given vector
+/// dimension: the one physical layout every served generation carries.
 pub(crate) fn semantic_schema(dimension: i32) -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new(COLUMN_EMBEDDING_ID, DataType::Utf8, false),
@@ -143,27 +132,6 @@ pub(crate) fn cluster_membership_schema() -> SchemaRef {
         Field::new(COLUMN_MEMBERSHIP_MEMBER_COUNT, DataType::UInt32, false),
         Field::new(COLUMN_MEMBERSHIP_CONTENT_DIGEST, DataType::Utf8, false),
     ]))
-}
-
-/// The table schema a manifest format version was written with.
-///
-/// The physical layout changed once, at the corpus-metadata format; every
-/// later format (membership, row root, file commitment, index seal) added
-/// sidecars and manifest fields, not columns.
-pub(crate) fn semantic_schema_for_manifest_version(
-    format_version: u32,
-    dimension: i32,
-) -> Result<SchemaRef, CoreError> {
-    let capabilities = format_capabilities_v1(format_version).ok_or_else(|| {
-        CoreError::Storage(format!(
-            "semantic: no physical schema registered for manifest format version {format_version}"
-        ))
-    })?;
-    if capabilities.corpus_metadata() {
-        Ok(semantic_schema(dimension))
-    } else {
-        Ok(semantic_schema_v3(dimension))
-    }
 }
 
 pub(crate) fn dimension_to_i32(dimension: usize) -> Result<i32, CoreError> {
@@ -220,6 +188,14 @@ pub(crate) fn ready_marker_path(generation_dir: &Path) -> PathBuf {
 
 pub(crate) fn sealed_marker_path(generation_dir: &Path) -> PathBuf {
     generation_dir.join(MARKER_SEALED_FILE_NAME)
+}
+
+pub(crate) fn scrub_receipt_path(generation_dir: &Path) -> PathBuf {
+    generation_dir.join(SCRUB_RECEIPT_FILE_NAME)
+}
+
+pub(crate) fn quarantine_receipt_path(generation_dir: &Path) -> PathBuf {
+    generation_dir.join(QUARANTINE_RECEIPT_FILE_NAME)
 }
 
 #[cfg(test)]

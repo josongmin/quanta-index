@@ -92,6 +92,8 @@ pub enum SearchCorpusGenerationIdentityValidationErrorV1 {
     GenerationMismatch,
     DigestMismatch,
     EmptyDigest,
+    /// A semantic content root is not a canonical `sha256:<64 hex>` digest.
+    SemanticContentRootInvalid,
 }
 
 impl SearchCorpusGenerationIdentityValidationErrorV1 {
@@ -105,6 +107,7 @@ impl SearchCorpusGenerationIdentityValidationErrorV1 {
             Self::GenerationMismatch => "GENERATION_MISMATCH",
             Self::DigestMismatch => "DIGEST_MISMATCH",
             Self::EmptyDigest => "EMPTY_DIGEST",
+            Self::SemanticContentRootInvalid => "SEMANTIC_CONTENT_ROOT_INVALID",
         }
     }
 }
@@ -117,19 +120,141 @@ impl fmt::Display for SearchCorpusGenerationIdentityValidationErrorV1 {
 
 impl std::error::Error for SearchCorpusGenerationIdentityValidationErrorV1 {}
 
+/// The content roots a sealed semantic generation carries (QI-BB-028):
+/// the row root over every sealed row, vectors included, and the
+/// cluster-membership root.
+///
+/// The manifest digest names what the producer asked for; these name what
+/// the search plane actually sealed. Two state roots that sealed the same
+/// source manifest with different embeddings share the digest but not the
+/// roots, so activation names the roots and the plane refuses a physical
+/// generation whose roots differ (`SEMANTIC_ROW_ROOT_MISMATCH`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SemanticContentRootsV1 {
+    pub row_root_digest: String,
+    pub membership_root_digest: String,
+}
+
+fn is_canonical_sha256_digest(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
+impl SemanticContentRootsV1 {
+    /// Both roots are canonical `sha256:<64 lowercase hex>` digests.
+    #[must_use]
+    pub fn is_canonical_v1(&self) -> bool {
+        is_canonical_sha256_digest(&self.row_root_digest)
+            && is_canonical_sha256_digest(&self.membership_root_digest)
+    }
+}
+
+const SEMANTIC_CONTENT_ROOTS_V1_FIELDS: &[&str] = &["row_root_digest", "membership_root_digest"];
+
+impl Serialize for SemanticContentRootsV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("SemanticContentRootsV1", 2)?;
+        state.serialize_field("row_root_digest", &self.row_root_digest)?;
+        state.serialize_field("membership_root_digest", &self.membership_root_digest)?;
+        state.end()
+    }
+}
+
+struct SemanticContentRootsV1Visitor;
+
+impl<'de> Visitor<'de> for SemanticContentRootsV1Visitor {
+    type Value = SemanticContentRootsV1;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a SemanticContentRootsV1 map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut row_root_digest: Option<String> = None;
+        let mut membership_root_digest: Option<String> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "row_root_digest" => {
+                    if row_root_digest.is_some() {
+                        return Err(de::Error::duplicate_field("row_root_digest"));
+                    }
+                    row_root_digest = Some(map.next_value()?);
+                }
+                "membership_root_digest" => {
+                    if membership_root_digest.is_some() {
+                        return Err(de::Error::duplicate_field("membership_root_digest"));
+                    }
+                    membership_root_digest = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        SEMANTIC_CONTENT_ROOTS_V1_FIELDS,
+                    ));
+                }
+            }
+        }
+        let roots = SemanticContentRootsV1 {
+            row_root_digest: row_root_digest
+                .ok_or_else(|| de::Error::missing_field("row_root_digest"))?,
+            membership_root_digest: membership_root_digest
+                .ok_or_else(|| de::Error::missing_field("membership_root_digest"))?,
+        };
+        if !roots.is_canonical_v1() {
+            return Err(de::Error::custom(
+                "semantic content roots must be canonical sha256 digests",
+            ));
+        }
+        Ok(roots)
+    }
+}
+
+impl<'de> Deserialize<'de> for SemanticContentRootsV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "SemanticContentRootsV1",
+            SEMANTIC_CONTENT_ROOTS_V1_FIELDS,
+            SemanticContentRootsV1Visitor,
+        )
+    }
+}
+
 /// Complete reader-visible generation identity for a search corpus.
 ///
 /// The two records deliberately stay separate so each plane keeps its typed
 /// track identity, while this composite makes lexical-only activation
-/// unrepresentable on the production activation path.
+/// unrepresentable on the production activation path. The semantic content
+/// roots attest what the semantic generation actually sealed (QI-BB-028):
+/// an activation names them, the plane refuses a physical generation whose
+/// roots differ, and the activation CAS compares them like every other
+/// field.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchCorpusGenerationIdentityV1 {
     pub lexical: GenerationSnapshot,
     pub semantic: GenerationSnapshot,
+    pub semantic_content: SemanticContentRootsV1,
 }
 
 impl SearchCorpusGenerationIdentityV1 {
     pub fn validate_v1(&self) -> Result<(), SearchCorpusGenerationIdentityValidationErrorV1> {
+        if !self.semantic_content.is_canonical_v1() {
+            return Err(
+                SearchCorpusGenerationIdentityValidationErrorV1::SemanticContentRootInvalid,
+            );
+        }
         if self.lexical.track != SearchPlaneTrackKind::Lexical {
             return Err(SearchCorpusGenerationIdentityValidationErrorV1::LexicalTrackRequired);
         }
@@ -216,19 +341,33 @@ impl SearchPlaneActivateSearchCorpusGenerationCasRequest {
         self.candidate
             .validate_v1()
             .map_err(SearchCorpusActivationValidationErrorV1::CandidateIdentity)?;
-        let Some(expected_active) = self.expected_active.as_ref() else {
+        Self::validate_expected_active_v1(&self.candidate.lexical, self.expected_active.as_ref())
+    }
+
+    /// The CAS expectation's own invariants against the candidate's scope
+    /// and generation, which a producer knows before it publishes: the
+    /// expectation is a valid identity, names the candidate's pair, and
+    /// the candidate strictly advances it. This is the one authority for
+    /// those invariants; [`Self::validate_v1`] runs it after the candidate
+    /// identity check, and a producer may run it before the candidate's
+    /// content roots exist.
+    pub fn validate_expected_active_v1(
+        candidate_scope: &GenerationSnapshot,
+        expected_active: Option<&SearchCorpusGenerationIdentityV1>,
+    ) -> Result<(), SearchCorpusActivationValidationErrorV1> {
+        let Some(expected_active) = expected_active else {
             return Ok(());
         };
         expected_active
             .validate_v1()
             .map_err(SearchCorpusActivationValidationErrorV1::ExpectedActiveIdentity)?;
-        if self.candidate.lexical.repo_id != expected_active.lexical.repo_id {
+        if candidate_scope.repo_id != expected_active.lexical.repo_id {
             return Err(SearchCorpusActivationValidationErrorV1::RepoMismatch);
         }
-        if self.candidate.lexical.revision_id != expected_active.lexical.revision_id {
+        if candidate_scope.revision_id != expected_active.lexical.revision_id {
             return Err(SearchCorpusActivationValidationErrorV1::RevisionMismatch);
         }
-        if self.candidate.lexical.manifest_generation.get()
+        if candidate_scope.manifest_generation.get()
             <= expected_active.lexical.manifest_generation.get()
         {
             return Err(
@@ -246,7 +385,8 @@ pub struct SearchPlaneSearchCorpusActivationCasAck {
     pub previous_sealed_active: Option<SearchCorpusGenerationIdentityV1>,
 }
 
-const SEARCH_CORPUS_GENERATION_IDENTITY_V1_FIELDS: &[&str] = &["lexical", "semantic"];
+const SEARCH_CORPUS_GENERATION_IDENTITY_V1_FIELDS: &[&str] =
+    &["lexical", "semantic", "semantic_content"];
 const SEARCH_PLANE_ACTIVATE_SEARCH_CORPUS_GENERATION_CAS_REQUEST_FIELDS: &[&str] =
     &["candidate", "expected_active"];
 const SEARCH_PLANE_SEARCH_CORPUS_ACTIVATION_CAS_ACK_FIELDS: &[&str] =
@@ -257,9 +397,10 @@ impl Serialize for SearchCorpusGenerationIdentityV1 {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SearchCorpusGenerationIdentityV1", 2)?;
+        let mut state = serializer.serialize_struct("SearchCorpusGenerationIdentityV1", 3)?;
         state.serialize_field("lexical", &self.lexical)?;
         state.serialize_field("semantic", &self.semantic)?;
+        state.serialize_field("semantic_content", &self.semantic_content)?;
         state.end()
     }
 }
@@ -279,6 +420,7 @@ impl<'de> Visitor<'de> for SearchCorpusGenerationIdentityV1Visitor {
     {
         let mut lexical: Option<GenerationSnapshot> = None;
         let mut semantic: Option<GenerationSnapshot> = None;
+        let mut semantic_content: Option<SemanticContentRootsV1> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "lexical" => {
@@ -293,6 +435,12 @@ impl<'de> Visitor<'de> for SearchCorpusGenerationIdentityV1Visitor {
                     }
                     semantic = Some(map.next_value()?);
                 }
+                "semantic_content" => {
+                    if semantic_content.is_some() {
+                        return Err(de::Error::duplicate_field("semantic_content"));
+                    }
+                    semantic_content = Some(map.next_value()?);
+                }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -304,6 +452,8 @@ impl<'de> Visitor<'de> for SearchCorpusGenerationIdentityV1Visitor {
         Ok(Self::Value {
             lexical: lexical.ok_or_else(|| de::Error::missing_field("lexical"))?,
             semantic: semantic.ok_or_else(|| de::Error::missing_field("semantic"))?,
+            semantic_content: semantic_content
+                .ok_or_else(|| de::Error::missing_field("semantic_content"))?,
         })
     }
 }
@@ -1080,26 +1230,34 @@ impl<'de> Deserialize<'de> for TrackReadinessRecord {
 }
 
 /// Aggregate readiness report across all activated tracks for one
-/// `(repo, revision)` pair. `tracks` is order-stable (lexical before
-/// semantic per `SearchPlaneTrackKind` declaration order).
+/// `(repo, revision)` pair.
+///
+/// `tracks` is order-stable (lexical before semantic per
+/// `SearchPlaneTrackKind` declaration order). `semantic_content` is the
+/// active semantic generation's content roots (QI-BB-028), present exactly
+/// when the pair has an active composite root, so an activator can name
+/// the roots of the head it expects.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GenerationStatusReport {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub tracks: Vec<TrackReadinessRecord>,
+    pub semantic_content: Option<SemanticContentRootsV1>,
 }
 
-const GENERATION_STATUS_REPORT_FIELDS: &[&str] = &["repo_id", "revision_id", "tracks"];
+const GENERATION_STATUS_REPORT_FIELDS: &[&str] =
+    &["repo_id", "revision_id", "tracks", "semantic_content"];
 
 impl Serialize for GenerationStatusReport {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("GenerationStatusReport", 3)?;
+        let mut state = serializer.serialize_struct("GenerationStatusReport", 4)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("tracks", &self.tracks)?;
+        state.serialize_field("semantic_content", &self.semantic_content)?;
         state.end()
     }
 }
@@ -1120,6 +1278,7 @@ impl<'de> Visitor<'de> for GenerationStatusReportVisitor {
         let mut repo_id: Option<RepoId> = None;
         let mut revision_id: Option<RevisionId> = None;
         let mut tracks: Option<Vec<TrackReadinessRecord>> = None;
+        let mut semantic_content: Option<Option<SemanticContentRootsV1>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "repo_id" => {
@@ -1140,6 +1299,12 @@ impl<'de> Visitor<'de> for GenerationStatusReportVisitor {
                     }
                     tracks = Some(map.next_value()?);
                 }
+                "semantic_content" => {
+                    if semantic_content.is_some() {
+                        return Err(de::Error::duplicate_field("semantic_content"));
+                    }
+                    semantic_content = Some(map.next_value()?);
+                }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -1152,6 +1317,8 @@ impl<'de> Visitor<'de> for GenerationStatusReportVisitor {
             repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
             revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
             tracks: tracks.ok_or_else(|| de::Error::missing_field("tracks"))?,
+            semantic_content: semantic_content
+                .ok_or_else(|| de::Error::missing_field("semantic_content"))?,
         })
     }
 }
@@ -1242,6 +1409,13 @@ mod qi_act_01_tests {
         assert_eq!(decoded, snapshot);
     }
 
+    fn fixture_roots(generation: u64) -> SemanticContentRootsV1 {
+        SemanticContentRootsV1 {
+            row_root_digest: format!("sha256:{generation:0>64x}"),
+            membership_root_digest: format!("sha256:{:0>64x}", generation.saturating_add(1000)),
+        }
+    }
+
     fn corpus_identity(generation: u64, digest: &str) -> SearchCorpusGenerationIdentityV1 {
         SearchCorpusGenerationIdentityV1 {
             lexical: GenerationSnapshot {
@@ -1258,7 +1432,55 @@ mod qi_act_01_tests {
                 manifest_generation: ManifestGeneration::new(generation),
                 manifest_digest: digest.to_string(),
             },
+            semantic_content: fixture_roots(generation),
         }
+    }
+
+    /// The semantic content roots are part of the identity (QI-BB-028).
+    ///
+    /// They round-trip, an identity naming a non-canonical root is
+    /// refused by validation, a wire identity without them is refused
+    /// by the decoder, and two identities that differ only in their roots
+    /// are different identities for the activation CAS.
+    #[test]
+    fn search_corpus_identity_carries_and_validates_semantic_content_roots_v1() {
+        let identity = corpus_identity(3, "digest-3");
+        let bytes = encode(&identity).expect("encode identity");
+        let decoded = decode::<SearchCorpusGenerationIdentityV1>(&bytes).expect("decode identity");
+        assert_eq!(decoded, identity);
+
+        let mut other_roots = identity.clone();
+        other_roots.semantic_content = fixture_roots(4);
+        assert_ne!(other_roots, identity, "the roots are identity");
+
+        let mut invalid = identity;
+        invalid.semantic_content.row_root_digest = "not-a-digest".to_string();
+        assert_eq!(
+            invalid.validate_v1(),
+            Err(SearchCorpusGenerationIdentityValidationErrorV1::SemanticContentRootInvalid)
+        );
+        let invalid_bytes = encode(&invalid).expect("encode invalid identity");
+        assert!(
+            decode::<SearchCorpusGenerationIdentityV1>(&invalid_bytes).is_err(),
+            "a non-canonical root does not decode"
+        );
+
+        let without_roots = ciborium::value::Value::Map(vec![
+            (
+                ciborium::value::Value::Text("lexical".to_string()),
+                ciborium::value::Value::Map(Vec::new()),
+            ),
+            (
+                ciborium::value::Value::Text("semantic".to_string()),
+                ciborium::value::Value::Map(Vec::new()),
+            ),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&without_roots, &mut bytes).expect("encode");
+        assert!(
+            decode::<SearchCorpusGenerationIdentityV1>(&bytes).is_err(),
+            "an identity without semantic content roots is refused"
+        );
     }
 
     #[test]
@@ -1554,6 +1776,7 @@ mod qi_act_01_tests {
         let report = GenerationStatusReport {
             repo_id: fixture_repo(),
             revision_id: fixture_rev(),
+            semantic_content: None,
             tracks: vec![
                 TrackReadinessRecord {
                     track: SearchPlaneTrackKind::Lexical,
@@ -1589,6 +1812,7 @@ mod qi_act_01_tests {
         let report = GenerationStatusReport {
             repo_id: fixture_repo(),
             revision_id: fixture_rev(),
+            semantic_content: None,
             tracks: vec![],
         };
         let Ok(bytes) = encode(&report) else {

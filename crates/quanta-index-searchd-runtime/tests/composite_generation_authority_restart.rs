@@ -246,52 +246,78 @@ fn batch_for(
     ))
 }
 
-fn publish_two_generations(client: &QuantaIndex) -> Result<(), Box<dyn Error>> {
-    let first = client
-        .search_corpus()
-        .publish_and_activate(&batch(G1, G1_DIGEST)?, None)?;
-    if first.1.active.lexical.manifest_generation != generation(G1) {
-        return Err("first composite activation did not select G1".into());
-    }
-    let second = client
-        .search_corpus()
-        .publish_and_activate(&batch(G2, G2_DIGEST)?, Some(first.1.active))?;
-    if second.1.active.lexical.manifest_generation != generation(G2) {
-        return Err("second composite activation did not select G2".into());
-    }
-    Ok(())
+/// The identities the daemon activated, roots included (QI-BB-028).
+///
+/// The semantic content roots are what the plane sealed and can only be
+/// learned from its receipts, so every later comparison and rollback names
+/// them from here.
+struct Activated {
+    g0: Option<SearchCorpusGenerationIdentityV1>,
+    g1: SearchCorpusGenerationIdentityV1,
+    g2: SearchCorpusGenerationIdentityV1,
 }
 
-fn publish_three_generations(client: &QuantaIndex) -> Result<(), Box<dyn Error>> {
-    let zero = client
+/// Publish and activate `raw_generation`, checking the ack names the
+/// batch's tracks and the roots the sealed receipt attested.
+fn publish_generation(
+    client: &QuantaIndex,
+    raw_generation: u64,
+    digest: &str,
+    expected_active: Option<SearchCorpusGenerationIdentityV1>,
+) -> Result<SearchCorpusGenerationIdentityV1, Box<dyn Error>> {
+    let (receipt, activation) = client
         .search_corpus()
-        .publish_and_activate(&batch(G0, G0_DIGEST)?, None)?;
-    let one = client
-        .search_corpus()
-        .publish_and_activate(&batch(G1, G1_DIGEST)?, Some(zero.1.active))?;
-    let two = client
-        .search_corpus()
-        .publish_and_activate(&batch(G2, G2_DIGEST)?, Some(one.1.active))?;
-    if two.1.active != composite_identity(G2, G2_DIGEST) {
-        return Err("three-generation setup did not activate exact G2 identity".into());
+        .publish_and_activate(&batch(raw_generation, digest)?, expected_active)?;
+    let expected_tracks = composite_identity_for(REPO, REVISION, raw_generation, digest);
+    if activation.active.lexical != expected_tracks.lexical
+        || activation.active.semantic != expected_tracks.semantic
+    {
+        return Err(format!(
+            "activation of G{raw_generation} selected foreign tracks: {:?}",
+            activation.active
+        )
+        .into());
     }
-    Ok(())
+    if Some(&activation.active.semantic_content) != receipt.semantic_content.as_ref() {
+        return Err(format!(
+            "activation of G{raw_generation} names roots the sealed receipt did not attest: ack={:?} receipt={:?}",
+            activation.active.semantic_content, receipt.semantic_content
+        )
+        .into());
+    }
+    Ok(activation.active)
 }
 
-fn rollback_g2_to_g1(client: &QuantaIndex) -> Result<(), SdkError> {
+fn publish_two_generations(client: &QuantaIndex) -> Result<Activated, Box<dyn Error>> {
+    let g1 = publish_generation(client, G1, G1_DIGEST, None)?;
+    let g2 = publish_generation(client, G2, G2_DIGEST, Some(g1.clone()))?;
+    Ok(Activated { g0: None, g1, g2 })
+}
+
+fn publish_three_generations(client: &QuantaIndex) -> Result<Activated, Box<dyn Error>> {
+    let g0 = publish_generation(client, G0, G0_DIGEST, None)?;
+    let g1 = publish_generation(client, G1, G1_DIGEST, Some(g0.clone()))?;
+    let g2 = publish_generation(client, G2, G2_DIGEST, Some(g1.clone()))?;
+    Ok(Activated {
+        g0: Some(g0),
+        g1,
+        g2,
+    })
+}
+
+fn rollback_g2_to_g1(client: &QuantaIndex, activated: &Activated) -> Result<(), SdkError> {
     client
         .generations()
         .rollback(SearchPlaneRollbackSearchCorpusGenerationCasRequest {
-            expected_active: composite_identity(G2, G2_DIGEST),
-            target: composite_identity(G1, G1_DIGEST),
+            expected_active: activated.g2.clone(),
+            target: activated.g1.clone(),
         })
         .map(|_ack| ())
 }
 
-fn composite_identity(raw_generation: u64, digest: &str) -> SearchCorpusGenerationIdentityV1 {
-    composite_identity_for(REPO, REVISION, raw_generation, digest)
-}
-
+/// The two track snapshots of one composite identity, with placeholder
+/// roots: only its tracks are compared against a live identity, whose
+/// roots the daemon sealed.
 fn composite_identity_for(
     repo_id: &str,
     revision_id: &str,
@@ -313,6 +339,10 @@ fn composite_identity_for(
             manifest_generation: generation(raw_generation),
             manifest_digest: digest.to_string(),
         },
+        semantic_content: quanta_index_contract::SemanticContentRootsV1 {
+            row_root_digest: format!("sha256:{:0>64x}", 0_u64),
+            membership_root_digest: format!("sha256:{:0>64x}", 0_u64),
+        },
     }
 }
 
@@ -320,6 +350,8 @@ fn current_composite(client: &QuantaIndex) -> Result<SearchCorpusGenerationIdent
     current_composite_for(client, REPO, REVISION)
 }
 
+/// The active composite identity as the daemon reports it: both track
+/// snapshots plus the semantic content roots from the status report.
 fn current_composite_for(
     client: &QuantaIndex,
     repo_id: &str,
@@ -335,7 +367,18 @@ fn current_composite_for(
         RevisionId::new(revision_id),
         SearchPlaneTrackKind::Semantic,
     )?;
-    Ok(SearchCorpusGenerationIdentityV1 { lexical, semantic })
+    let semantic_content = client
+        .generations()
+        .status(RepoId::new(repo_id), RevisionId::new(revision_id))?
+        .semantic_content
+        .ok_or_else(|| {
+            SdkError::Protocol("an active pair reports no semantic content roots".to_string())
+        })?;
+    Ok(SearchCorpusGenerationIdentityV1 {
+        lexical,
+        semantic,
+        semantic_content,
+    })
 }
 
 fn publish_and_activate_for(
@@ -346,15 +389,18 @@ fn publish_and_activate_for(
     digest: &str,
     expected_active: Option<SearchCorpusGenerationIdentityV1>,
 ) -> Result<SearchCorpusGenerationIdentityV1, Box<dyn Error>> {
-    let (_publish, activation) = client.search_corpus().publish_and_activate(
+    let (receipt, activation) = client.search_corpus().publish_and_activate(
         &batch_for(repo_id, revision_id, raw_generation, digest)?,
         expected_active,
     )?;
     let expected = composite_identity_for(repo_id, revision_id, raw_generation, digest);
-    if activation.active != expected {
+    if activation.active.lexical != expected.lexical
+        || activation.active.semantic != expected.semantic
+        || Some(&activation.active.semantic_content) != receipt.semantic_content.as_ref()
+    {
         return Err(format!(
-            "publish-and-activate selected a foreign composite identity: expected={expected:?} observed={:?}",
-            activation.active
+            "publish-and-activate selected a foreign composite identity: expected tracks={expected:?} receipt roots={:?} observed={:?}",
+            receipt.semantic_content, activation.active
         )
         .into());
     }
@@ -365,11 +411,11 @@ fn publish_and_activate_for(
 fn sealed_composite_history_survives_restart_and_admits_predecessor_rollback() -> TestResult {
     let directory = quanta_index_searchd_harness::private_tempdir()?;
     let first_process = RunningRuntime::start(directory.path(), "composite-history-first")?;
-    publish_two_generations(&first_process.client)?;
+    let activated = publish_two_generations(&first_process.client)?;
     first_process.stop()?;
 
     let second_process = RunningRuntime::start(directory.path(), "composite-history-second")?;
-    rollback_g2_to_g1(&second_process.client)?;
+    rollback_g2_to_g1(&second_process.client, &activated)?;
     let current = current_composite(&second_process.client)?;
     current
         .validate_v1()
@@ -391,7 +437,7 @@ enum MissingTargetTrack {
 fn assert_missing_target_rejected(track: MissingTargetTrack) -> TestResult {
     let directory = quanta_index_searchd_harness::private_tempdir()?;
     let first_process = RunningRuntime::start(directory.path(), "missing-target-first")?;
-    publish_two_generations(&first_process.client)?;
+    let activated = publish_two_generations(&first_process.client)?;
     first_process.stop()?;
 
     let target_root = match track {
@@ -409,7 +455,7 @@ fn assert_missing_target_rejected(track: MissingTargetTrack) -> TestResult {
     std::fs::remove_dir_all(&target_root)?;
 
     let second_process = RunningRuntime::start(directory.path(), "missing-target-second")?;
-    let rollback = rollback_g2_to_g1(&second_process.client);
+    let rollback = rollback_g2_to_g1(&second_process.client, &activated);
     let Err(SdkError::Remote { code, .. }) = rollback else {
         return Err(format!(
             "rollback with missing target track did not return a typed remote error: {rollback:?}"
@@ -449,14 +495,18 @@ fn rollback_rejects_stale_expected_active_and_preserves_current_composite_v1() -
     let directory = quanta_index_searchd_harness::private_tempdir()?;
     let first_process = SearchdBinaryProcess::start(directory.path())?;
     let first_client = first_process.connect()?;
-    publish_three_generations(&first_client)?;
+    let activated = publish_three_generations(&first_client)?;
+    let g0 = activated
+        .g0
+        .clone()
+        .ok_or("three generations were published")?;
 
     let rollback =
         first_client
             .generations()
             .rollback(SearchPlaneRollbackSearchCorpusGenerationCasRequest {
-                expected_active: composite_identity(G1, G1_DIGEST),
-                target: composite_identity(G0, G0_DIGEST),
+                expected_active: activated.g1.clone(),
+                target: g0,
             });
     let Err(SdkError::Remote { code, .. }) = rollback else {
         return Err(format!(
@@ -475,7 +525,7 @@ fn rollback_rejects_stale_expected_active_and_preserves_current_composite_v1() -
     current
         .validate_v1()
         .map_err(|error| format!("stale rollback split active authority: {error}"))?;
-    if current != composite_identity(G2, G2_DIGEST) {
+    if current != activated.g2 {
         return Err(format!("stale rollback changed active G2: {current:?}").into());
     }
     drop(first_client);
@@ -484,7 +534,7 @@ fn rollback_rejects_stale_expected_active_and_preserves_current_composite_v1() -
     let second_process = SearchdBinaryProcess::start(directory.path())?;
     let second_client = second_process.connect()?;
     let reopened = current_composite(&second_client)?;
-    if reopened != composite_identity(G2, G2_DIGEST) {
+    if reopened != activated.g2 {
         return Err(format!("stale rollback changed reopened G2: {reopened:?}").into());
     }
     drop(second_client);
@@ -497,8 +547,8 @@ fn real_child_process_restart_preserves_and_rolls_back_composite_generation_v1()
 
     let first_process = SearchdBinaryProcess::start(directory.path())?;
     let first_client = first_process.connect()?;
-    publish_two_generations(&first_client)?;
-    if current_composite(&first_client)? != composite_identity(G2, G2_DIGEST) {
+    let activated = publish_two_generations(&first_client)?;
+    if current_composite(&first_client)? != activated.g2 {
         return Err("child process did not activate exact G2 composite identity".into());
     }
     drop(first_client);
@@ -506,11 +556,11 @@ fn real_child_process_restart_preserves_and_rolls_back_composite_generation_v1()
 
     let second_process = SearchdBinaryProcess::start(directory.path())?;
     let second_client = second_process.connect()?;
-    if current_composite(&second_client)? != composite_identity(G2, G2_DIGEST) {
+    if current_composite(&second_client)? != activated.g2 {
         return Err("child process restart did not recover exact G2 composite identity".into());
     }
-    rollback_g2_to_g1(&second_client)?;
-    if current_composite(&second_client)? != composite_identity(G1, G1_DIGEST) {
+    rollback_g2_to_g1(&second_client, &activated)?;
+    if current_composite(&second_client)? != activated.g1 {
         return Err("child process rollback did not activate exact G1 composite identity".into());
     }
     drop(second_client);
@@ -518,7 +568,7 @@ fn real_child_process_restart_preserves_and_rolls_back_composite_generation_v1()
 
     let third_process = SearchdBinaryProcess::start(directory.path())?;
     let third_client = third_process.connect()?;
-    if current_composite(&third_client)? != composite_identity(G1, G1_DIGEST) {
+    if current_composite(&third_client)? != activated.g1 {
         return Err(
             "second child process restart did not preserve rolled-back G1 authority".into(),
         );

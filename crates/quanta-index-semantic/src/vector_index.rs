@@ -18,12 +18,17 @@
 //!   library version and the rows assigned since its centroids were trained
 //!   stay inside the append budget; otherwise it drops what it inherited
 //!   and trains again. Either way the seal reads back what the library
-//!   reports, refuses an index that does not cover every row, and records
-//!   the recipe, the report, the effort and the training lineage in the
-//!   scope manifest.
-//! - **Open**: the open lists the dataset's indices and their statistics
-//!   and refuses a generation whose dataset disagrees with its seal
-//!   (`ANN_INDEX_MISSING`, `ANN_INDEX_INCOMPATIBLE`).
+//!   reports — coverage, segment count, and the graph parameters every
+//!   segment was actually built with — refuses an index that does not
+//!   cover every row, and records the recipe, the report, the effort, the
+//!   training lineage and the per-segment build in the scope manifest. An
+//!   appended segment is built by the library's incremental builder under
+//!   its own parameters; the seal records those verbatim rather than
+//!   claiming the recipe for it.
+//! - **Open**: the open lists the dataset's indices, their statistics and
+//!   their per-segment build parameters and refuses a generation whose
+//!   dataset disagrees with its seal (`ANN_INDEX_MISSING`,
+//!   `ANN_INDEX_INCOMPATIBLE`). A generation without a seal is not served.
 //! - **Query**: the lane runs with exactly the sealed effort, and an exact
 //!   lane bypasses any index by construction.
 
@@ -32,6 +37,7 @@
     reason = "module is intentionally crate-internal; pub(crate) is the deliberate visibility — clippy normalizes to redundant but workspace `unreachable_pub = deny` blocks the alternate `pub` form"
 )]
 
+use lance::index::DatasetIndexExt as _;
 use lancedb::DistanceType;
 use lancedb::index::vector::IvfHnswSqIndexBuilder;
 use lancedb::index::{Index, IndexConfig, IndexStatistics, IndexType};
@@ -39,16 +45,16 @@ use lancedb::query::VectorQuery;
 use lancedb::table::{OptimizeAction, OptimizeOptions};
 use quanta_index_core::CoreError;
 use quanta_index_core::domains::semantic::{
-    DenseIndexEffortV1, DenseIndexLineageV1, DenseIndexTrainingV1, DenseIndexV1,
-    DenseLaneAttestationV1, DenseLaneContractV1,
+    DenseIndexBuildV1, DenseIndexEffortV1, DenseIndexSegmentBuildV1, DenseIndexTrainingV1,
+    DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1,
 };
 
 use crate::budget::DenseLaneKindV1;
 use crate::errors::lancedb_err;
 use crate::layout::COLUMN_VECTOR;
 use crate::manifest::{
-    AnnIndexLineageV1, AnnIndexSealV1, VECTOR_INDEX_MODE_EXACT, VECTOR_INDEX_MODE_IVF_HNSW_SQ,
-    VectorIndexSealV1,
+    AnnIndexLineageV1, AnnIndexSealV1, AnnIndexSegmentSealV1, VECTOR_INDEX_MODE_EXACT,
+    VECTOR_INDEX_MODE_IVF_HNSW_SQ, VectorIndexSealV1,
 };
 
 /// The library that builds and serves the index, as recorded in every seal.
@@ -108,9 +114,10 @@ const REFINE_FACTOR: u32 = 2;
 /// [`IVF_SAMPLE_RATE`] samples per partition of the trained population,
 /// and a quarter more of the same distribution does not move them), and
 /// the rows living in segments whose graphs the library's incremental
-/// builder shaped rather than the policy's own [`HNSW_EF_CONSTRUCTION`].
-/// `vector_index::tests` measure the appended index against a freshly
-/// trained one at this ratio.
+/// builder shaped under its own parameters rather than the policy's
+/// [`HNSW_EF_CONSTRUCTION`] — parameters the seal reads back and records
+/// per segment. `vector_index::tests` measure the appended index against a
+/// freshly trained one at this ratio.
 pub(crate) const ANN_APPEND_RATIO_MAX_PER_MILLE: u32 = 250;
 
 /// The absolute cap on appended rows, whatever the trained population.
@@ -139,8 +146,7 @@ pub(crate) struct VectorIndexSealInputV1<'a> {
     /// The live rows of the dataset being sealed.
     pub(crate) row_count: u64,
     /// The sealed index contract of the base generation whose dataset this
-    /// one inherited by hard link, if it inherited one and the base's
-    /// manifest carried a contract.
+    /// one inherited by hard link, if it inherited one.
     pub(crate) inherited: Option<&'a VectorIndexSealV1>,
 }
 
@@ -276,12 +282,87 @@ async fn read_index_report_v1(
     })
 }
 
+/// The graph parameters of every segment of `index_name`, as the library
+/// reports them, in the library's segment order.
+///
+/// Read from the dataset's index statistics, where each segment carries
+/// the `HnswBuildParams` it was built with. This is the only place the
+/// adapter learns what an appended segment was really built with, so a
+/// report without a segment identity or a graph parameter is a refusal,
+/// never a guess.
+async fn read_index_segments_v1(
+    table: &lancedb::Table,
+    index_name: &str,
+    when: &str,
+) -> Result<Vec<AnnIndexSegmentSealV1>, CoreError> {
+    let dataset = table
+        .dataset()
+        .ok_or_else(|| {
+            CoreError::Storage(format!(
+                "semantic: the table is not a local dataset; its index segments cannot be read {when}"
+            ))
+        })?
+        .get()
+        .await
+        .map_err(|err| lancedb_err(&format!("open dataset for index segments {when}"), err))?;
+    let statistics = dataset.index_statistics(index_name).await.map_err(|err| {
+        CoreError::Storage(format!(
+            "semantic: read index segment statistics {when}: {err}"
+        ))
+    })?;
+    let statistics: serde_json::Value = serde_json::from_str(&statistics).map_err(|err| {
+        CoreError::Storage(format!(
+            "semantic: decode index segment statistics {when}: {err}"
+        ))
+    })?;
+    let malformed = |detail: &str| {
+        CoreError::Storage(format!(
+            "semantic: index segment statistics {when} are malformed: {detail}"
+        ))
+    };
+    let segments = statistics
+        .get("indices")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| malformed("no `indices` list"))?;
+    let mut out = Vec::with_capacity(segments.len());
+    for (position, segment) in segments.iter().enumerate() {
+        let uuid = segment
+            .get("uuid")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| malformed(&format!("segment {position} names no `uuid`")))?;
+        let params = segment
+            .get("sub_index")
+            .and_then(|sub_index| sub_index.get("params"))
+            .ok_or_else(|| {
+                malformed(&format!("segment {position} reports no `sub_index.params`"))
+            })?;
+        let parameter = |name: &str| -> Result<u32, CoreError> {
+            let value = params
+                .get(name)
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| malformed(&format!("segment {position} reports no `{name}`")))?;
+            u32::try_from(value).map_err(|error| {
+                malformed(&format!(
+                    "segment {position} `{name}` {value} overflows: {error}"
+                ))
+            })
+        };
+        out.push(AnnIndexSegmentSealV1 {
+            uuid: uuid.to_string(),
+            hnsw_m: parameter("m")?,
+            hnsw_ef_construction: parameter("ef_construction")?,
+        });
+    }
+    Ok(out)
+}
+
 /// The policy's seal record for an index the library reports as covering
-/// `report` rows, with `lineage` behind it.
+/// `report` rows in `segments`, with `lineage` behind it.
 fn ann_seal_record_v1(
     num_partitions: u32,
     report: IndexReportV1,
     lineage: AnnIndexLineageV1,
+    segments: Vec<AnnIndexSegmentSealV1>,
 ) -> VectorIndexSealV1 {
     VectorIndexSealV1 {
         mode: VECTOR_INDEX_MODE_IVF_HNSW_SQ.to_string(),
@@ -302,7 +383,8 @@ fn ann_seal_record_v1(
             ef_floor: EF_FLOOR,
             ef_per_candidate: EF_PER_CANDIDATE,
             refine_factor: REFINE_FACTOR,
-            lineage: Some(lineage),
+            lineage,
+            segments,
         }),
     }
 }
@@ -354,11 +436,11 @@ struct AppendPlanV1 {
 /// Decide whether this seal appends to the index it inherited.
 ///
 /// Returns `None` when the policy says to train instead: no inherited
-/// contract, an exact one, one without a lineage record, a recipe or
-/// library version other than this policy's, or an append budget the new
-/// rows would exceed. Refuses outright when the dataset disagrees with the
-/// inherited contract, because the seal would then be recording a lineage
-/// for an index it cannot vouch for.
+/// contract, an exact one, a recipe or library version other than this
+/// policy's, or an append budget the new rows would exceed. Refuses
+/// outright when the dataset disagrees with the inherited contract,
+/// because the seal would then be recording a lineage for an index it
+/// cannot vouch for.
 async fn append_plan_v1(
     table: &lancedb::Table,
     input: VectorIndexSealInputV1<'_>,
@@ -377,9 +459,7 @@ async fn append_plan_v1(
         }
         return Ok(None);
     };
-    let Some(base_lineage) = ann.lineage else {
-        return Ok(None);
-    };
+    let base_lineage = ann.lineage;
     if !inherited_matches_policy_v1(inherited, ann, num_partitions) {
         return Ok(None);
     }
@@ -456,10 +536,11 @@ async fn append_plan_v1(
 ///
 /// The library builds the new segment's graph with its own incremental
 /// builder, whose construction parameters are not settable through this
-/// version's optimize surface; the seal pins the library version so a
-/// bump retrains under this policy's parameters rather than appending
-/// under changed ones. A seal with nothing pending changes nothing in the
-/// dataset and only advances the deletion counter.
+/// version's optimize surface; what it built with is read back from the
+/// dataset and recorded per segment, and the seal pins the library
+/// version so a bump retrains under this policy's parameters rather than
+/// appending under changed ones. A seal with nothing pending changes
+/// nothing in the dataset and only advances the deletion counter.
 async fn append_to_inherited_v1(
     table: &lancedb::Table,
     plan: AppendPlanV1,
@@ -492,7 +573,13 @@ async fn append_to_inherited_v1(
             after.segments, plan.expected_segments
         )));
     }
-    Ok(ann_seal_record_v1(plan.num_partitions, after, plan.lineage))
+    let segments = read_index_segments_v1(table, VECTOR_INDEX_NAME, "after the append").await?;
+    Ok(ann_seal_record_v1(
+        plan.num_partitions,
+        after,
+        plan.lineage,
+        segments,
+    ))
 }
 
 /// Drop every vector index the dataset carries and train the policy's.
@@ -529,10 +616,20 @@ async fn train_v1(
             report.indexed_rows, report.unindexed_rows
         )));
     }
+    let segments = read_index_segments_v1(table, VECTOR_INDEX_NAME, "after the train").await?;
+    let trained_as_built = segments.first().is_some_and(|segment| {
+        segment.hnsw_m == HNSW_M && segment.hnsw_ef_construction == HNSW_EF_CONSTRUCTION
+    });
+    if segments.len() != 1 || !trained_as_built {
+        return Err(seal_refused(&format!(
+            "the library reports the trained index as {segments:?}, not one segment built with m={HNSW_M} ef_construction={HNSW_EF_CONSTRUCTION}"
+        )));
+    }
     Ok(ann_seal_record_v1(
         num_partitions,
         report,
         trained_lineage_v1(generation, row_count),
+        segments,
     ))
 }
 
@@ -600,35 +697,37 @@ pub(crate) struct LoadedVectorIndexV1 {
 }
 
 /// The approximate index an opened generation serves: the effort a query
-/// spends in it and where its centroids came from.
+/// spends in it, where its centroids came from, and how its segments were
+/// built.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LoadedApproximateIndexV1 {
     effort: QueryEffortV1,
-    lineage: DenseIndexLineageV1,
+    lineage: DenseIndexTrainingV1,
+    build: DenseIndexBuildV1,
 }
 
 impl LoadedApproximateIndexV1 {
     fn from_seal(ann: &AnnIndexSealV1) -> Self {
         Self {
             effort: QueryEffortV1::from_seal(ann),
-            lineage: ann
-                .lineage
-                .map_or(DenseIndexLineageV1::Unrecorded, |lineage| {
-                    DenseIndexLineageV1::Recorded(DenseIndexTrainingV1 {
-                        trained_at_generation: lineage.trained_at_generation,
-                        trained_rows: lineage.trained_rows,
-                        appended_rows: lineage.appended_rows,
-                        deleted_rows: lineage.deleted_rows,
+            lineage: DenseIndexTrainingV1 {
+                trained_at_generation: ann.lineage.trained_at_generation,
+                trained_rows: ann.lineage.trained_rows,
+                appended_rows: ann.lineage.appended_rows,
+                deleted_rows: ann.lineage.deleted_rows,
+            },
+            build: DenseIndexBuildV1 {
+                hnsw_m: ann.hnsw_m,
+                hnsw_ef_construction: ann.hnsw_ef_construction,
+                appended_segments: ann
+                    .appended_segments()
+                    .iter()
+                    .map(|segment| DenseIndexSegmentBuildV1 {
+                        hnsw_m: segment.hnsw_m,
+                        hnsw_ef_construction: segment.hnsw_ef_construction,
                     })
-                }),
-        }
-    }
-
-    /// A legacy index no seal described: policy effort, unknown lineage.
-    const fn legacy() -> Self {
-        Self {
-            effort: QueryEffortV1::legacy_policy(),
-            lineage: DenseIndexLineageV1::Unrecorded,
+                    .collect(),
+            },
         }
     }
 }
@@ -651,18 +750,6 @@ impl QueryEffortV1 {
             ef_floor: ann.ef_floor,
             ef_per_candidate: ann.ef_per_candidate,
             refine_factor: ann.refine_factor,
-        }
-    }
-
-    /// The policy effort for a legacy index whose partition count no seal
-    /// recorded; the library clamps probes to what exists.
-    const fn legacy_policy() -> Self {
-        Self {
-            partitions: NPROBES,
-            nprobes: NPROBES,
-            ef_floor: EF_FLOOR,
-            ef_per_candidate: EF_PER_CANDIDATE,
-            refine_factor: REFINE_FACTOR,
         }
     }
 
@@ -734,7 +821,8 @@ impl LoadedVectorIndexV1 {
                 .map_or(DenseIndexV1::Exact, |approximate| {
                     DenseIndexV1::Approximate {
                         effort: approximate.effort.contract(),
-                        lineage: approximate.lineage.clone(),
+                        lineage: approximate.lineage,
+                        build: approximate.build.clone(),
                     }
                 }),
             attestation: self.attestation,
@@ -756,18 +844,18 @@ fn ann_incompatible(detail: &str) -> CoreError {
     }
 }
 
-/// Verify the dataset's vector indices against the seal, or observe them
-/// for a generation that sealed none.
+/// Verify the dataset's vector indices against the seal.
 ///
 /// A sealed exact lane must have no vector index (an index the seal did not
 /// record would silently change the served mode); a sealed approximate lane
 /// must have exactly the recorded index, reported by the library with the
-/// recorded type, distance, coverage and segment count. The lineage the
-/// seal recorded (already checked against that coverage when the manifest
-/// was validated) is carried into the served contract as it stands.
+/// recorded type, distance, coverage, segment count and per-segment build
+/// parameters. The lineage the seal recorded (already checked against that
+/// coverage when the manifest was validated) is carried into the served
+/// contract as it stands.
 pub(crate) async fn verify_vector_index_v1(
     table: &lancedb::Table,
-    seal: Option<&VectorIndexSealV1>,
+    seal: &VectorIndexSealV1,
     row_count: u64,
 ) -> Result<LoadedVectorIndexV1, CoreError> {
     let configs = table
@@ -775,15 +863,6 @@ pub(crate) async fn verify_vector_index_v1(
         .await
         .map_err(|err| lancedb_err("list_indices at open", err))?;
     let present = vector_indices(&configs)?;
-    let Some(seal) = seal else {
-        let approximate = present
-            .iter()
-            .any(|listing| listing.index_type == IndexType::IvfHnswSq);
-        return Ok(LoadedVectorIndexV1 {
-            approximate: approximate.then(LoadedApproximateIndexV1::legacy),
-            attestation: DenseLaneAttestationV1::LegacyUnverified,
-        });
-    };
     if seal.library != ANN_LIBRARY {
         return Err(ann_incompatible(&format!(
             "the seal was built by `{}`, which is not the serving library `{ANN_LIBRARY}`",
@@ -875,12 +954,18 @@ pub(crate) async fn verify_vector_index_v1(
             ann.index_name, ann.index_segments
         )));
     }
+    let built = read_index_segments_v1(table, &ann.index_name, "at open").await?;
+    if built != ann.segments {
+        return Err(ann_incompatible(&format!(
+            "vector index `{}` segments were built as {built:?}, the seal recorded {:?}",
+            ann.index_name, ann.segments
+        )));
+    }
     Ok(LoadedVectorIndexV1 {
         approximate: Some(LoadedApproximateIndexV1::from_seal(ann)),
         attestation,
     })
 }
-
 #[cfg(test)]
 #[expect(
     clippy::panic_in_result_fn,
@@ -896,17 +981,30 @@ mod tests {
     use lancedb::query::{ExecutableQuery as _, QueryBase as _};
     use quanta_index_core::CoreError;
     use quanta_index_core::domains::semantic::{
-        DenseIndexLineageV1, DenseIndexTrainingV1, DenseIndexV1, DenseLaneAttestationV1,
+        DenseIndexBuildV1, DenseIndexSegmentBuildV1, DenseIndexTrainingV1, DenseIndexV1,
+        DenseLaneAttestationV1,
     };
 
     use super::{
         ANN_APPEND_RATIO_MAX_PER_MILLE, ANN_APPEND_ROWS_MAX, ANN_APPEND_SEGMENTS_MAX,
-        ANN_LIBRARY_VERSION, LoadedVectorIndexV1, MAX_PARTITIONS, TARGET_PARTITION_ROWS,
-        VECTOR_INDEX_MIN_ROWS, VECTOR_INDEX_NAME, VectorIndexPlanV1, VectorIndexSealInputV1,
-        plan_for_rows_v1, seal_vector_index_v1, verify_vector_index_v1,
+        ANN_LIBRARY_VERSION, HNSW_EF_CONSTRUCTION, HNSW_M, LoadedVectorIndexV1, MAX_PARTITIONS,
+        TARGET_PARTITION_ROWS, VECTOR_INDEX_MIN_ROWS, VECTOR_INDEX_NAME, VectorIndexPlanV1,
+        VectorIndexSealInputV1, plan_for_rows_v1, read_index_segments_v1, seal_vector_index_v1,
+        verify_vector_index_v1,
     };
+
+    /// The graph parameters the library's incremental builder uses for a
+    /// segment appended by `optimize(Index(append))`.
+    ///
+    /// They are its own defaults, not this policy's recipe. Pinned here so a library bump that
+    /// changes them fails loudly, and read back from the dataset in the
+    /// tests below so the pin is checked against the library, not assumed.
+    const LIBRARY_INCREMENTAL_HNSW_M: u32 = 20;
+    const LIBRARY_INCREMENTAL_HNSW_EF_CONSTRUCTION: u32 = 150;
     use crate::layout::COLUMN_VECTOR;
-    use crate::manifest::{AnnIndexLineageV1, VECTOR_INDEX_MODE_EXACT, VectorIndexSealV1};
+    use crate::manifest::{
+        AnnIndexLineageV1, AnnIndexSegmentSealV1, VECTOR_INDEX_MODE_EXACT, VectorIndexSealV1,
+    };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -1138,7 +1236,7 @@ mod tests {
     ) -> Result<AnnIndexLineageV1, Box<dyn std::error::Error>> {
         seal.ann
             .as_ref()
-            .and_then(|ann| ann.lineage)
+            .map(|ann| ann.lineage)
             .ok_or_else(|| "the seal carries no lineage".into())
     }
 
@@ -1173,8 +1271,7 @@ mod tests {
             let ann = sealed.ann.clone().ok_or("the floor seals an index")?;
 
             // The dataset agrees with its own seal.
-            let loaded =
-                verify_vector_index_v1(&table, Some(&sealed), VECTOR_INDEX_MIN_ROWS).await?;
+            let loaded = verify_vector_index_v1(&table, &sealed, VECTOR_INDEX_MIN_ROWS).await?;
             assert!(loaded.approximate.is_some());
             assert_eq!(loaded.attestation, DenseLaneAttestationV1::Sealed);
 
@@ -1183,7 +1280,7 @@ mod tests {
             let mut other_version = sealed.clone();
             other_version.library_version = "0.0.1".to_string();
             let served =
-                verify_vector_index_v1(&table, Some(&other_version), VECTOR_INDEX_MIN_ROWS).await?;
+                verify_vector_index_v1(&table, &other_version, VECTOR_INDEX_MIN_ROWS).await?;
             assert_eq!(
                 served.attestation,
                 DenseLaneAttestationV1::SealedByAnotherLibraryVersion
@@ -1191,13 +1288,13 @@ mod tests {
             let mut other_library = sealed.clone();
             other_library.library = "faiss".to_string();
             let refused =
-                verify_vector_index_v1(&table, Some(&other_library), VECTOR_INDEX_MIN_ROWS).await;
+                verify_vector_index_v1(&table, &other_library, VECTOR_INDEX_MIN_ROWS).await;
             assert_eq!(typed_code(&refused), Some("ANN_INDEX_INCOMPATIBLE"));
 
             // An exact seal over an indexed dataset: the served mode would not
             // be the sealed one.
             let indexed_but_exact =
-                verify_vector_index_v1(&table, Some(&exact_seal()), VECTOR_INDEX_MIN_ROWS).await;
+                verify_vector_index_v1(&table, &exact_seal(), VECTOR_INDEX_MIN_ROWS).await;
             assert_eq!(
                 typed_code(&indexed_but_exact),
                 Some("ANN_INDEX_INCOMPATIBLE")
@@ -1208,15 +1305,14 @@ mod tests {
             if let Some(record) = fewer_rows.ann.as_mut() {
                 record.indexed_rows = record.indexed_rows.saturating_sub(1);
             }
-            let coverage =
-                verify_vector_index_v1(&table, Some(&fewer_rows), VECTOR_INDEX_MIN_ROWS).await;
+            let coverage = verify_vector_index_v1(&table, &fewer_rows, VECTOR_INDEX_MIN_ROWS).await;
             assert_eq!(typed_code(&coverage), Some("ANN_INDEX_INCOMPATIBLE"));
             let mut more_segments = sealed.clone();
             if let Some(record) = more_segments.ann.as_mut() {
                 record.index_segments = record.index_segments.saturating_add(1);
             }
             let segments =
-                verify_vector_index_v1(&table, Some(&more_segments), VECTOR_INDEX_MIN_ROWS).await;
+                verify_vector_index_v1(&table, &more_segments, VECTOR_INDEX_MIN_ROWS).await;
             assert_eq!(typed_code(&segments), Some("ANN_INDEX_INCOMPATIBLE"));
 
             // A seal naming an index the dataset does not list.
@@ -1225,17 +1321,16 @@ mod tests {
                 record.index_name = "vector_idx".to_string();
             }
             let missing_name =
-                verify_vector_index_v1(&table, Some(&renamed), VECTOR_INDEX_MIN_ROWS).await;
+                verify_vector_index_v1(&table, &renamed, VECTOR_INDEX_MIN_ROWS).await;
             assert_eq!(typed_code(&missing_name), Some("ANN_INDEX_MISSING"));
 
             // The index gone from the dataset while the seal still records it.
             table.drop_index(&ann.index_name).await?;
-            let dropped =
-                verify_vector_index_v1(&table, Some(&sealed), VECTOR_INDEX_MIN_ROWS).await;
+            let dropped = verify_vector_index_v1(&table, &sealed, VECTOR_INDEX_MIN_ROWS).await;
             assert_eq!(typed_code(&dropped), Some("ANN_INDEX_MISSING"));
             // ... and the same dataset agrees with an exact seal again.
             let exact =
-                verify_vector_index_v1(&table, Some(&exact_seal()), VECTOR_INDEX_MIN_ROWS).await?;
+                verify_vector_index_v1(&table, &exact_seal(), VECTOR_INDEX_MIN_ROWS).await?;
             assert_eq!(
                 exact,
                 LoadedVectorIndexV1 {
@@ -1243,28 +1338,6 @@ mod tests {
                     attestation: DenseLaneAttestationV1::Sealed,
                 }
             );
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn a_legacy_generation_is_observed_not_verified() -> TestResult {
-        run(async {
-            let temp = tempfile::tempdir()?;
-            let table = vector_table(temp.path(), VECTOR_INDEX_MIN_ROWS, DIMENSION).await?;
-            let none = verify_vector_index_v1(&table, None, VECTOR_INDEX_MIN_ROWS).await?;
-            assert_eq!(
-                none,
-                LoadedVectorIndexV1 {
-                    approximate: None,
-                    attestation: DenseLaneAttestationV1::LegacyUnverified,
-                }
-            );
-            let _sealed = seal_fresh(&table, 1).await?;
-            let some = verify_vector_index_v1(&table, None, VECTOR_INDEX_MIN_ROWS).await?;
-            let approximate = some.approximate.ok_or("a legacy index is served")?;
-            assert_eq!(approximate.lineage, DenseIndexLineageV1::Unrecorded);
-            assert_eq!(some.attestation, DenseLaneAttestationV1::LegacyUnverified);
             Ok(())
         })
     }
@@ -1377,18 +1450,32 @@ mod tests {
             assert_eq!(library_report(&table).await?, (456, 0, Some(2)));
 
             // The open serves the appended index with its lineage.
-            let loaded = verify_vector_index_v1(&table, Some(&delta), 456).await?;
-            let DenseIndexV1::Approximate { lineage, .. } = loaded.contract().index else {
+            let loaded = verify_vector_index_v1(&table, &delta, 456).await?;
+            let DenseIndexV1::Approximate { lineage, build, .. } = loaded.contract().index else {
                 return Err("the appended index is approximate".into());
             };
             assert_eq!(
                 lineage,
-                DenseIndexLineageV1::Recorded(DenseIndexTrainingV1 {
+                DenseIndexTrainingV1 {
                     trained_at_generation: 1,
                     trained_rows: 400,
                     appended_rows: 60,
                     deleted_rows: 4,
-                })
+                }
+            );
+            // The appended segment was built by the library's incremental
+            // builder under its own parameters; the attestation says so
+            // instead of claiming the trained recipe for it.
+            assert_eq!(
+                build,
+                DenseIndexBuildV1 {
+                    hnsw_m: HNSW_M,
+                    hnsw_ef_construction: HNSW_EF_CONSTRUCTION,
+                    appended_segments: vec![DenseIndexSegmentBuildV1 {
+                        hnsw_m: LIBRARY_INCREMENTAL_HNSW_M,
+                        hnsw_ef_construction: LIBRARY_INCREMENTAL_HNSW_EF_CONSTRUCTION,
+                    }],
+                }
             );
 
             // An appended row is served through the index, at the top for
@@ -1415,7 +1502,7 @@ mod tests {
                 }
             );
             assert_eq!(library_report(&table).await?, (454, 0, Some(2)));
-            let loaded = verify_vector_index_v1(&table, Some(&deletion_only), 454).await?;
+            let loaded = verify_vector_index_v1(&table, &deletion_only, 454).await?;
             for id in [1_000_u64, 1_001] {
                 let hits = search_ids(&table, &loaded, &unit_vector(id, DIMENSION), 5).await?;
                 assert!(
@@ -1471,8 +1558,7 @@ mod tests {
     }
 
     /// (iv) A base whose index is not this policy's own recipe, name or
-    /// library version retrains, as does one sealed before the lineage
-    /// record.
+    /// library version retrains.
     #[test]
     fn a_base_that_is_not_the_policy_retrains() -> TestResult {
         run(async {
@@ -1489,13 +1575,6 @@ mod tests {
                     let mut seal = base.clone();
                     if let Some(ann) = seal.ann.as_mut() {
                         ann.hnsw_ef_construction = ann.hnsw_ef_construction.saturating_add(1);
-                    }
-                    seal
-                }),
-                ("no lineage record (format 8)", {
-                    let mut seal = base.clone();
-                    if let Some(ann) = seal.ann.as_mut() {
-                        ann.lineage = None;
                     }
                     seal
                 }),
@@ -1560,6 +1639,101 @@ mod tests {
         })
     }
 
+    /// The seal records what the library built each segment with.
+    ///
+    /// Read back from the dataset: the trained segment carries the policy's
+    /// recipe and an appended segment carries the incremental builder's own
+    /// parameters. The open verifies the record against the dataset and
+    /// refuses a seal that claims the recipe for a segment not built with
+    /// it.
+    #[test]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the test reads the segments it just asserted the count of; a short list fails the test"
+    )]
+    fn the_seal_records_every_segment_as_built_and_the_open_refuses_a_false_claim() -> TestResult {
+        run(async {
+            let temp = tempfile::tempdir()?;
+            let table = vector_table(temp.path(), 400, DIMENSION).await?;
+            let base = seal_fresh(&table, 1).await?;
+            let built = read_index_segments_v1(&table, VECTOR_INDEX_NAME, "in the test").await?;
+            let trained = base.ann.as_ref().ok_or("trained seal")?;
+            assert_eq!(trained.segments, built);
+            assert_eq!(built.len(), 1);
+            assert_eq!(
+                (built[0].hnsw_m, built[0].hnsw_ef_construction),
+                (HNSW_M, HNSW_EF_CONSTRUCTION),
+                "the trained segment is the recipe"
+            );
+
+            append_rows(&table, 1_000..1_060, DIMENSION).await?;
+            let delta = seal_delta(&table, 2, &base).await?;
+            let built = read_index_segments_v1(&table, VECTOR_INDEX_NAME, "in the test").await?;
+            let appended = delta.ann.as_ref().ok_or("appended seal")?;
+            assert_eq!(appended.segments, built);
+            assert_eq!(built.len(), 2);
+            assert_eq!(
+                built[0], trained.segments[0],
+                "the trained segment is unchanged"
+            );
+            assert_eq!(
+                (built[1].hnsw_m, built[1].hnsw_ef_construction),
+                (
+                    LIBRARY_INCREMENTAL_HNSW_M,
+                    LIBRARY_INCREMENTAL_HNSW_EF_CONSTRUCTION
+                ),
+                "the appended segment was built by the library's incremental builder"
+            );
+            assert_ne!(
+                built[1].hnsw_ef_construction, HNSW_EF_CONSTRUCTION,
+                "the appended segment does not carry the recipe, so the record must not claim it"
+            );
+
+            // A seal that claims the recipe for the appended segment is
+            // refused by the manifest validator …
+            let mut claimed = delta.clone();
+            if let Some(ann) = claimed.ann.as_mut() {
+                ann.segments = vec![
+                    AnnIndexSegmentSealV1 {
+                        uuid: built[0].uuid.clone(),
+                        hnsw_m: HNSW_M,
+                        hnsw_ef_construction: HNSW_EF_CONSTRUCTION,
+                    },
+                    AnnIndexSegmentSealV1 {
+                        uuid: built[1].uuid.clone(),
+                        hnsw_m: HNSW_M,
+                        hnsw_ef_construction: HNSW_EF_CONSTRUCTION,
+                    },
+                ];
+            }
+            claimed.validate(460, 2)?;
+            // … it is self-consistent, so it is the open that catches it
+            // against the dataset.
+            let refused = verify_vector_index_v1(&table, &claimed, 460).await;
+            assert_eq!(typed_code(&refused), Some("ANN_INDEX_INCOMPATIBLE"));
+            // A record with a segment the dataset does not have is refused too.
+            let mut foreign = delta.clone();
+            if let Some(ann) = foreign.ann.as_mut()
+                && let Some(segment) = ann.segments.last_mut()
+            {
+                segment.uuid = "not-a-segment".to_string();
+            }
+            let refused = verify_vector_index_v1(&table, &foreign, 460).await;
+            assert_eq!(typed_code(&refused), Some("ANN_INDEX_INCOMPATIBLE"));
+            // The honest record opens, and the attestation names the appended
+            // segment's actual construction beam width.
+            let loaded = verify_vector_index_v1(&table, &delta, 460).await?;
+            let trace = loaded.contract().trace_detail();
+            assert!(
+                trace.contains(&format!(
+                    "ann.appended_segments=1; ann.appended_segments_m/ef_construction={LIBRARY_INCREMENTAL_HNSW_M}/{LIBRARY_INCREMENTAL_HNSW_EF_CONSTRUCTION}"
+                )),
+                "{trace}"
+            );
+            Ok(())
+        })
+    }
+
     /// (v) Recall oracle for an appended index.
     ///
     /// Over one corpus, the appended index and a freshly trained index are
@@ -1592,7 +1766,7 @@ mod tests {
             assert_eq!(lineage_of(&appended)?.appended_rows, DELTA_ROWS);
             let appended_loaded = verify_vector_index_v1(
                 &appended_table,
-                Some(&appended),
+                &appended,
                 BASE_ROWS.saturating_add(DELTA_ROWS),
             )
             .await?;
@@ -1605,12 +1779,9 @@ mod tests {
             )
             .await?;
             let fresh = seal_fresh(&fresh_table, 1).await?;
-            let fresh_loaded = verify_vector_index_v1(
-                &fresh_table,
-                Some(&fresh),
-                BASE_ROWS.saturating_add(DELTA_ROWS),
-            )
-            .await?;
+            let fresh_loaded =
+                verify_vector_index_v1(&fresh_table, &fresh, BASE_ROWS.saturating_add(DELTA_ROWS))
+                    .await?;
 
             let corpus: BTreeSet<u64> = (0..BASE_ROWS.saturating_add(DELTA_ROWS)).collect();
             let mut appended_found = 0_u64;

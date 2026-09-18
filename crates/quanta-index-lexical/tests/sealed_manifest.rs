@@ -38,10 +38,11 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
-    GenerationStorageKeyV1, IntegrityScrubPort, IntegrityScrubStampV1, IntegrityScrubStatusV1,
-    LexicalIndexBuildPort, LexicalIndexOpenPort, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1,
-    SearchCorpusBatchBuildPort,
+    GenerationQuarantineReasonV1, GenerationStorageKeyV1, IntegrityScrubBudgetV1,
+    IntegrityScrubCursorV1, IntegrityScrubOutcomeV1, IntegrityScrubPort, LexicalIndexBuildPort,
+    LexicalIndexOpenPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
+    RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1, SealedGenerationReclaimOutcomeV1,
+    SealedGenerationReclaimPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 
@@ -825,27 +826,18 @@ fn segment_files(generation_dir: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> 
     Ok(files)
 }
 
-fn scrub_code(adapter: &LexicalAdapter, generation: ManifestGeneration) -> Option<String> {
-    match adapter
-        .scrub_sealed_generation(&identity(generation), IntegrityScrubStampV1 { unix_ms: 7 })
-    {
-        Err(CoreError::Typed { code, .. }) => Some(code),
-        _ => None,
-    }
-}
-
-/// Every segment file the commit references is committed by length and
-/// digest.
+/// Every segment file the commit references is proved by length at the
+/// doors.
 ///
-/// A length change or a missing file is refused by both doors. A
-/// same-length flip passes the validator — the doors prove these bytes by
-/// length, never by content, because a query maps them instead of
-/// decoding them — and is refused by the scrub, which is what the manifest
-/// stamps. The flipped file is not mapped here: Tantivy panics rather than
-/// errors on a corrupted segment component, which is exactly the exposure
-/// the scrub exists to close before a query reaches it.
+/// A length change or a missing file is refused by every door. A
+/// same-length flip passes them — the doors prove these bytes by length,
+/// never by content, because a query maps them instead of decoding them —
+/// and is the scrub's to find (next test). The flipped file is not mapped
+/// here: Tantivy panics rather than errors on a corrupted segment
+/// component, which is exactly the exposure the scrub exists to close
+/// before a query reaches it.
 #[test]
-fn segment_files_are_length_proved_at_the_doors_and_content_proved_by_the_scrub() -> TestResult {
+fn segment_files_are_length_proved_at_the_doors() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
@@ -899,40 +891,199 @@ fn segment_files_are_length_proved_at_the_doors_and_content_proved_by_the_scrub(
             )
             .into());
         }
-        if scrub_code(&adapter, generation).as_deref() != Some("GENERATION_SIDECAR_CORRUPT") {
-            return Err(format!("{name} flipped: the scrub did not refuse the content").into());
-        }
-        match adapter.integrity_scrub_status(&identity(generation))? {
-            IntegrityScrubStatusV1::DeepVerifiedAtSeal => {}
-            other @ IntegrityScrubStatusV1::ScrubVerifiedSince(_) => {
-                return Err(
-                    format!("{name} flipped: a refused scrub recorded a pass: {other:?}").into(),
-                );
-            }
-        }
 
         std::fs::write(&path, &original)?;
         expect_admitted(&knock(&adapter, generation), &format!("{name} restored"))?;
     }
-    let report = adapter.scrub_sealed_generation(
+    Ok(())
+}
+
+/// A same-length flip the doors admit is found by the scrub, which
+/// quarantines the generation durably (QI-BB-017, QI-BB-026).
+///
+/// After the corrupt step every door refuses the generation typed
+/// `GENERATION_QUARANTINED`, the inventory lists it as
+/// `GENERATION_QUARANTINE_CONTENT_CORRUPT` at its own directory instead of
+/// seeding it, the scrub no longer offers it, and scrubbing it again is
+/// refused — restoring the bytes does not lift the quarantine; discarding
+/// the directory does.
+#[test]
+fn a_same_length_flip_is_found_by_the_scrub_and_quarantines_the_generation() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let generation = ManifestGeneration::new(1);
+    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let dir = generation_dir(&root, generation);
+    let segment = segment_files(&dir)?
+        .into_iter()
+        .next()
+        .ok_or("a sealed generation has segment files")?;
+    let original = std::fs::read(&segment)?;
+    let mut flipped = original.clone();
+    let middle = flipped.len().div_euclid(2);
+    let byte = flipped.get_mut(middle).ok_or("segment is empty")?;
+    *byte ^= 0x01;
+    std::fs::write(&segment, &flipped)?;
+    adapter.validate_generation_identity(&identity(generation))?;
+
+    let report = adapter.scrub(
         &identity(generation),
-        IntegrityScrubStampV1 {
-            unix_ms: 1_700_000_000_000,
+        None,
+        IntegrityScrubBudgetV1 {
+            max_bytes: u64::MAX,
         },
     )?;
-    if report.files_verified < 9 || report.bytes_verified == 0 {
+    let IntegrityScrubOutcomeV1::Corrupt { quarantined } = &report.outcome else {
+        return Err(format!("the scrub admitted a flipped segment: {report:?}").into());
+    };
+    if quarantined.reason != GenerationQuarantineReasonV1::ContentCorrupt
+        || quarantined.track != SearchPlaneTrackKind::Lexical
+        || quarantined.path != dir
+    {
+        return Err(format!("the quarantine names the wrong entry: {quarantined:?}").into());
+    }
+
+    std::fs::write(&segment, &original)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "quarantined, bytes restored",
+        "GENERATION_QUARANTINED",
+    )?;
+    let inventory = adapter.inventory_sealed_generations()?;
+    if !inventory.sealed.is_empty()
+        || !inventory.quarantined.iter().any(|entry| {
+            entry.path == dir && entry.reason == GenerationQuarantineReasonV1::ContentCorrupt
+        })
+    {
         return Err(
-            format!("the scrub of an intact generation measured too little: {report:?}").into(),
+            format!("the inventory did not quarantine the generation: {inventory:?}").into(),
         );
     }
-    match adapter.integrity_scrub_status(&identity(generation))? {
-        IntegrityScrubStatusV1::ScrubVerifiedSince(recorded) if recorded == report => {}
-        other @ (IntegrityScrubStatusV1::DeepVerifiedAtSeal
-        | IntegrityScrubStatusV1::ScrubVerifiedSince(_)) => {
-            return Err(format!("the scrub pass was not recorded as reported: {other:?}").into());
+    if !adapter.scrub_candidates()?.is_empty() {
+        return Err("a quarantined generation is still offered to the scrub".into());
+    }
+    match adapter.scrub(
+        &identity(generation),
+        None,
+        IntegrityScrubBudgetV1 {
+            max_bytes: u64::MAX,
+        },
+    ) {
+        Err(CoreError::Typed { code, .. }) if code == "GENERATION_QUARANTINED" => Ok(()),
+        other => Err(format!("scrubbing a quarantined generation answered {other:?}").into()),
+    }
+}
+
+/// An intact generation scrubs in bounded, resumable steps (QI-BB-017).
+///
+/// With a one-byte budget each step hashes exactly one committed file and
+/// pauses at the next index, so the pass takes one step per committed file
+/// and the cursor walks them in order; the completed pass is recorded, the
+/// scrub then reports when, and the doors still admit the generation.
+#[test]
+fn an_intact_generation_scrubs_in_bounded_resumable_steps() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(temp.path().to_path_buf());
+    let generation = ManifestGeneration::new(1);
+    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let candidates = adapter.scrub_candidates()?;
+    if candidates.len() != 1 || candidates.iter().any(|c| c.last_completed_unix.is_some()) {
+        return Err(format!("a fresh seal is one never-scrubbed candidate: {candidates:?}").into());
+    }
+
+    let mut cursor: Option<IntegrityScrubCursorV1> = None;
+    let mut steps = 0_u64;
+    let mut files = 0_u64;
+    loop {
+        let report = adapter.scrub(
+            &identity(generation),
+            cursor,
+            IntegrityScrubBudgetV1 { max_bytes: 1 },
+        )?;
+        steps = steps.saturating_add(1);
+        files = files.saturating_add(report.files_verified);
+        if report.files_verified != 1 {
+            return Err(format!("a one-byte step hashes exactly one file: {report:?}").into());
+        }
+        match report.outcome {
+            IntegrityScrubOutcomeV1::Paused { cursor: next } => {
+                if next.next_artifact != steps {
+                    return Err(format!("step {steps} paused at {next:?}").into());
+                }
+                cursor = Some(next);
+            }
+            IntegrityScrubOutcomeV1::Completed => break,
+            IntegrityScrubOutcomeV1::Corrupt { quarantined } => {
+                return Err(
+                    format!("an intact generation was quarantined: {quarantined:?}").into(),
+                );
+            }
         }
     }
+    if files != steps || files < 3 {
+        return Err(format!("{steps} steps hashed {files} files").into());
+    }
+    let completed = adapter
+        .scrub_candidates()?
+        .into_iter()
+        .next()
+        .and_then(|candidate| candidate.last_completed_unix)
+        .ok_or("the completed pass is recorded")?;
+    if completed < before {
+        return Err(format!(
+            "the pass completed at {completed}, before the test began at {before}"
+        )
+        .into());
+    }
     expect_admitted(&knock(&adapter, generation), "after the scrub")
+}
+
+/// A scrub resumed over a reclaimed generation meets it gone, typed.
+///
+/// The generation is reclaimed between two steps of one pass. The next
+/// step is refused `NotFound` — never a corruption verdict over files that
+/// were removed on purpose — and leaves nothing behind: no directory
+/// recreated for a receipt, nothing quarantined, no candidate left.
+#[test]
+fn a_scrub_resumed_over_a_reclaimed_generation_is_refused_not_quarantined() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let generation = ManifestGeneration::new(1);
+    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let one_byte = IntegrityScrubBudgetV1 { max_bytes: 1 };
+    let first = adapter.scrub(&identity(generation), None, one_byte)?;
+    let IntegrityScrubOutcomeV1::Paused { cursor } = first.outcome else {
+        return Err(format!("a one-byte first step pauses: {first:?}").into());
+    };
+    let reclaimed = adapter.reclaim_sealed_generation(&identity(generation))?;
+    if !matches!(
+        reclaimed,
+        SealedGenerationReclaimOutcomeV1::Reclaimed { .. }
+    ) {
+        return Err(format!("the sealed generation is reclaimed: {reclaimed:?}").into());
+    }
+    match adapter.scrub(&identity(generation), Some(cursor), one_byte) {
+        Err(CoreError::NotFound(_)) => {}
+        other => {
+            return Err(format!("a reclaimed generation is refused NotFound: {other:?}").into());
+        }
+    }
+    if generation_dir(&root, generation).exists() {
+        return Err("the refused step recreated the reclaimed directory".into());
+    }
+    let inventory = adapter.inventory_sealed_generations()?;
+    if !inventory.sealed.is_empty() || !inventory.quarantined.is_empty() {
+        return Err(format!("nothing is left to list: {inventory:?}").into());
+    }
+    if !adapter.scrub_candidates()?.is_empty() {
+        return Err("a reclaimed generation is no scrub candidate".into());
+    }
+    Ok(())
 }
 
 /// A durable overlay publish leaves no torn file behind: the file is the

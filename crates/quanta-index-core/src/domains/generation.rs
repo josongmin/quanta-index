@@ -115,14 +115,15 @@ pub trait GenerationIdentityValidatePort: Send + Sync {
 /// Why boot set a persisted generation aside instead of seeding it
 /// (QI-BB-026).
 ///
-/// All but one reason are things the adapter's inventory can see from the
-/// sealed identity alone. [`Self::Orphaned`] is the search plane's: it
-/// compares the adapter's inventory with the durable search-corpus
-/// authority and sets aside every sealed directory the authority does not
-/// retain. Content defects (a corrupt sidecar, a row root that no longer
-/// matches) are deliberately not here: the inventory does not look for them,
-/// and every door that serves or mutates a generation verifies content for
-/// itself.
+/// Each reason is something the inventory can see without reading content:
+/// the sealed identity, its format, and the receipt a scrub left behind.
+/// The inventory never hashes a dataset itself; a content defect enters
+/// here only when the integrity scrub (QI-BB-017) proved it and recorded a
+/// durable quarantine receipt beside the generation, and every door that
+/// serves or mutates a generation still verifies what it opens for itself.
+/// [`Self::Orphaned`] is the search plane's: it compares the adapter's
+/// inventory with the durable search-corpus authority and sets aside every
+/// sealed directory the authority does not retain.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum GenerationQuarantineReasonV1 {
     /// A directory under the track root that is neither a canonical
@@ -142,9 +143,27 @@ pub enum GenerationQuarantineReasonV1 {
     /// serves it; discarding it goes through the sealed-generation reclaim
     /// port, which re-proves the identity before deleting.
     Orphaned,
+    /// The sealed identity decodes but was written in a format this adapter
+    /// no longer serves; the generation must be rebuilt from its producer.
+    FormatUnsupported,
+    /// The integrity scrub proved a committed file no longer matches the
+    /// seal and left its receipt; nothing serves the generation until it
+    /// is discarded or rebuilt.
+    ContentCorrupt,
 }
 
 impl GenerationQuarantineReasonV1 {
+    /// Every reason, in declaration order.
+    pub const ALL: [Self; 7] = [
+        Self::NonCanonicalLayout,
+        Self::IdentityUnreadable,
+        Self::ScopeMismatch,
+        Self::IdentityDigestMismatch,
+        Self::Orphaned,
+        Self::FormatUnsupported,
+        Self::ContentCorrupt,
+    ];
+
     #[must_use]
     pub const fn as_code_str(self) -> &'static str {
         match self {
@@ -153,21 +172,17 @@ impl GenerationQuarantineReasonV1 {
             Self::ScopeMismatch => "GENERATION_QUARANTINE_SCOPE_MISMATCH",
             Self::IdentityDigestMismatch => "GENERATION_QUARANTINE_IDENTITY_DIGEST_MISMATCH",
             Self::Orphaned => "GENERATION_QUARANTINE_ORPHANED",
+            Self::FormatUnsupported => "GENERATION_QUARANTINE_FORMAT_UNSUPPORTED",
+            Self::ContentCorrupt => "GENERATION_QUARANTINE_CONTENT_CORRUPT",
         }
     }
 
     /// Inverse of [`Self::as_code_str`], for a reason that crossed a wire.
     #[must_use]
     pub fn from_code_str(code: &str) -> Option<Self> {
-        [
-            Self::NonCanonicalLayout,
-            Self::IdentityUnreadable,
-            Self::ScopeMismatch,
-            Self::IdentityDigestMismatch,
-            Self::Orphaned,
-        ]
-        .into_iter()
-        .find(|reason| reason.as_code_str() == code)
+        Self::ALL
+            .into_iter()
+            .find(|reason| reason.as_code_str() == code)
     }
 }
 
@@ -696,6 +711,341 @@ pub fn verify_tree_commitment_v1(
     Ok(Ok(total))
 }
 
+/// One regular file found under a tree: its committed name and its length,
+/// from directory metadata alone.
+struct TreeEntryV1 {
+    name: String,
+    bytes: u64,
+    path: PathBuf,
+}
+
+/// Walk `root` and list every regular file with its length, refusing
+/// symlinks, without opening any file.
+fn list_tree_v1(root: &Path, prefix: &str) -> std::io::Result<Vec<TreeEntryV1>> {
+    let mut entries = Vec::new();
+    let mut pending = vec![(root.to_path_buf(), prefix.to_string())];
+    while let Some((directory, name)) = pending.pop() {
+        for entry in std::fs::read_dir(&directory)? {
+            let entry = entry?;
+            let file_name = entry.file_name();
+            let file_name = file_name.to_str().ok_or_else(|| {
+                std::io::Error::other(format!("non-UTF-8 file name under {}", directory.display()))
+            })?;
+            let entry_name = format!("{name}/{file_name}");
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                return Err(std::io::Error::other(format!(
+                    "refusing to measure symlink {entry_name}"
+                )));
+            }
+            if file_type.is_dir() {
+                pending.push((entry.path(), entry_name));
+            } else if file_type.is_file() {
+                entries.push(TreeEntryV1 {
+                    name: entry_name,
+                    bytes: entry.metadata()?.len(),
+                    path: entry.path(),
+                });
+            }
+        }
+    }
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(entries)
+}
+
+/// Compare the file set and lengths under `root` with `committed`, reading
+/// directory metadata only (QI-BB-017).
+///
+/// This is the cheap door check: `Ok(Ok(bytes))` is the committed total,
+/// `Ok(Err(..))` the first missing, extra or resized file in path order. It
+/// never opens a file, so its cost is the number of files, not their bytes;
+/// a same-length rewrite passes here by design and is the scrub's to find
+/// ([`scrub_tree_commitment_v1`]).
+pub fn verify_tree_layout_v1(
+    root: &Path,
+    prefix: &str,
+    committed: &[SealedArtifactCommitmentV1],
+) -> std::io::Result<Result<u64, TreeCommitmentMismatchV1>> {
+    let on_disk = list_tree_v1(root, prefix)?;
+    let by_name: BTreeMap<&str, u64> = on_disk
+        .iter()
+        .map(|entry| (entry.name.as_str(), entry.bytes))
+        .collect();
+    let mut total = 0_u64;
+    for artifact in committed {
+        let Some(bytes) = by_name.get(artifact.name.as_str()) else {
+            return Ok(Err(TreeCommitmentMismatchV1::Missing {
+                name: artifact.name.clone(),
+            }));
+        };
+        if *bytes != artifact.bytes {
+            return Ok(Err(TreeCommitmentMismatchV1::Length {
+                name: artifact.name.clone(),
+                on_disk: *bytes,
+                committed: artifact.bytes,
+            }));
+        }
+        total = total.saturating_add(artifact.bytes);
+    }
+    let committed_names: BTreeSet<&str> = committed
+        .iter()
+        .map(|artifact| artifact.name.as_str())
+        .collect();
+    for entry in &on_disk {
+        if !committed_names.contains(entry.name.as_str()) {
+            return Ok(Err(TreeCommitmentMismatchV1::Extra {
+                name: entry.name.clone(),
+            }));
+        }
+    }
+    Ok(Ok(total))
+}
+
+/// How one bounded scrub step ended.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TreeScrubVerdictV1 {
+    /// Every committed file has now been hashed and matched.
+    Completed,
+    /// The byte budget ran out; the next step starts at this index into
+    /// the committed list.
+    Paused { next_artifact: u64 },
+    /// The first way the tree differs from its commitment.
+    Mismatch(TreeCommitmentMismatchV1),
+}
+
+/// What one bounded scrub step did and how it ended.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TreeScrubStepV1 {
+    /// Committed files whose bytes were hashed and matched in this step.
+    pub files_verified: u64,
+    /// Bytes read and hashed in this step, including a file that turned
+    /// out not to match.
+    pub bytes_read: u64,
+    pub verdict: TreeScrubVerdictV1,
+}
+
+/// Hash committed files from `start_artifact` until `max_bytes` is spent,
+/// after a layout check of the whole tree (QI-BB-017).
+///
+/// The layout check makes a missing, extra or resized file visible on every
+/// step, whatever the cursor; the hashing is [`hash_committed_step_v1`].
+pub fn scrub_tree_commitment_v1(
+    root: &Path,
+    prefix: &str,
+    committed: &[SealedArtifactCommitmentV1],
+    start_artifact: u64,
+    max_bytes: u64,
+) -> std::io::Result<TreeScrubStepV1> {
+    if let Err(mismatch) = verify_tree_layout_v1(root, prefix, committed)? {
+        return Ok(TreeScrubStepV1 {
+            files_verified: 0,
+            bytes_read: 0,
+            verdict: TreeScrubVerdictV1::Mismatch(mismatch),
+        });
+    }
+    hash_committed_step_v1(
+        &|name| committed_path_v1(root, prefix, name),
+        committed,
+        start_artifact,
+        max_bytes,
+    )
+}
+
+/// Hash committed files from `start_artifact` until `max_bytes` is spent
+/// (QI-BB-017): the scrub's content proof, shared by every adapter.
+///
+/// `resolve` maps a committed name to the file to read; the caller owns the
+/// layout. At least one file is hashed per step so a file larger than the
+/// budget still completes; a step whose budget runs out mid-list pauses
+/// with the index to resume from. The verdict is the first mismatch found;
+/// `Err` is an I/O failure that proves nothing.
+pub fn hash_committed_step_v1(
+    resolve: &dyn Fn(&str) -> std::io::Result<PathBuf>,
+    committed: &[SealedArtifactCommitmentV1],
+    start_artifact: u64,
+    max_bytes: u64,
+) -> std::io::Result<TreeScrubStepV1> {
+    let mut step = TreeScrubStepV1 {
+        files_verified: 0,
+        bytes_read: 0,
+        verdict: TreeScrubVerdictV1::Completed,
+    };
+    let start = usize::try_from(start_artifact).map_err(|error| {
+        std::io::Error::other(format!(
+            "scrub cursor {start_artifact} does not fit this platform: {error}"
+        ))
+    })?;
+    let Some(remaining) = committed.get(start..) else {
+        return Err(std::io::Error::other(format!(
+            "scrub cursor {start_artifact} is beyond the {} committed files",
+            committed.len()
+        )));
+    };
+    for (offset, artifact) in remaining.iter().enumerate() {
+        if step.files_verified > 0 && step.bytes_read >= max_bytes {
+            let next = start
+                .checked_add(offset)
+                .ok_or_else(|| std::io::Error::other("scrub cursor overflows"))?;
+            step.verdict = TreeScrubVerdictV1::Paused {
+                next_artifact: u64::try_from(next).map_err(|error| {
+                    std::io::Error::other(format!("scrub cursor does not fit u64: {error}"))
+                })?,
+            };
+            return Ok(step);
+        }
+        let path = resolve(&artifact.name)?;
+        let (bytes, sha256) = match sha256_of_file(&path) {
+            Ok(measured) => measured,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                step.verdict = TreeScrubVerdictV1::Mismatch(TreeCommitmentMismatchV1::Missing {
+                    name: artifact.name.clone(),
+                });
+                return Ok(step);
+            }
+            Err(error) => return Err(error),
+        };
+        step.bytes_read = step.bytes_read.saturating_add(bytes);
+        if bytes != artifact.bytes {
+            step.verdict = TreeScrubVerdictV1::Mismatch(TreeCommitmentMismatchV1::Length {
+                name: artifact.name.clone(),
+                on_disk: bytes,
+                committed: artifact.bytes,
+            });
+            return Ok(step);
+        }
+        if sha256 != artifact.sha256 {
+            step.verdict = TreeScrubVerdictV1::Mismatch(TreeCommitmentMismatchV1::Digest {
+                name: artifact.name.clone(),
+            });
+            return Ok(step);
+        }
+        step.files_verified = step.files_verified.saturating_add(1);
+    }
+    Ok(step)
+}
+
+/// A tree commitment together with how it was measured (QI-BB-006).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TreeCommitmentV1 {
+    pub artifacts: Vec<SealedArtifactCommitmentV1>,
+    /// Bytes this seal read and hashed itself.
+    pub hashed_bytes: u64,
+    /// Bytes whose digest was carried over from the base commitment because
+    /// the file is the base's own inode.
+    pub inherited_bytes: u64,
+    /// Files whose digest was carried over.
+    pub inherited_files: u64,
+}
+
+/// The filesystem identity of a regular file: `(device, inode)`.
+///
+/// Two paths with the same identity are one file, so a hard link inherited
+/// from an immutable base carries the base's bytes exactly.
+#[cfg(unix)]
+fn file_identity_v1(path: &Path) -> std::io::Result<Option<(u64, u64)>> {
+    use std::os::unix::fs::MetadataExt as _;
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+    Ok(Some((metadata.dev(), metadata.ino())))
+}
+
+/// No file identity is available on this platform; every file is hashed.
+#[cfg(not(unix))]
+fn file_identity_v1(_path: &Path) -> std::io::Result<Option<(u64, u64)>> {
+    Ok(None)
+}
+
+/// Whether `path` is the very file at `base_path`: the same inode on the
+/// same device. A base file that is gone is simply not the same file; any
+/// other failure to inspect either side is an error.
+fn is_same_file_v1(path: &Path, base_path: &Path) -> std::io::Result<bool> {
+    let Some(mine) = file_identity_v1(path)? else {
+        return Ok(false);
+    };
+    let theirs = match std::fs::symlink_metadata(base_path) {
+        Ok(_) => file_identity_v1(base_path)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    Ok(theirs == Some(mine))
+}
+
+/// The on-disk path of a committed name (`prefix/rest`) under `root`.
+fn committed_path_v1(root: &Path, prefix: &str, name: &str) -> std::io::Result<PathBuf> {
+    name.strip_prefix(prefix)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .map(|rest| root.join(rest))
+        .ok_or_else(|| {
+            std::io::Error::other(format!("committed name {name} is not under {prefix}/"))
+        })
+}
+
+/// Commit every regular file under `root`, carrying over the digest of any
+/// file that is the same inode as the file `base` committed under the same
+/// name with the same length (QI-BB-006 #4, QI-BB-017).
+///
+/// A delta generation inherits its base's immutable files by hard link, so
+/// a file that is still the base's inode is the bytes the base's seal
+/// hashed; only files new to this generation are read. When the base's
+/// file has since been replaced or the platform reports no identity, the
+/// file is hashed like any other, and the report says so.
+pub fn commit_tree_inheriting_v1(
+    root: &Path,
+    prefix: &str,
+    base: Option<(&Path, &[SealedArtifactCommitmentV1])>,
+) -> std::io::Result<TreeCommitmentV1> {
+    let entries = list_tree_v1(root, prefix)?;
+    let base_by_name: BTreeMap<&str, &SealedArtifactCommitmentV1> = base
+        .map(|(_, artifacts)| {
+            artifacts
+                .iter()
+                .map(|artifact| (artifact.name.as_str(), artifact))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut commitment = TreeCommitmentV1 {
+        artifacts: Vec::with_capacity(entries.len()),
+        hashed_bytes: 0,
+        inherited_bytes: 0,
+        inherited_files: 0,
+    };
+    for entry in entries {
+        let mut inherited = None;
+        if let (Some((base_root, _)), Some(committed)) =
+            (base, base_by_name.get(entry.name.as_str()))
+            && committed.bytes == entry.bytes
+        {
+            let base_path = committed_path_v1(base_root, prefix, &entry.name)?;
+            if is_same_file_v1(&entry.path, &base_path)? {
+                inherited = Some(committed.sha256);
+            }
+        }
+        let sha256 = if let Some(sha256) = inherited {
+            commitment.inherited_bytes = commitment.inherited_bytes.saturating_add(entry.bytes);
+            commitment.inherited_files = commitment.inherited_files.saturating_add(1);
+            sha256
+        } else {
+            let (bytes, sha256) = sha256_of_file(&entry.path)?;
+            if bytes != entry.bytes {
+                return Err(std::io::Error::other(format!(
+                    "{} changed length while being committed ({} then {bytes} bytes)",
+                    entry.name, entry.bytes
+                )));
+            }
+            commitment.hashed_bytes = commitment.hashed_bytes.saturating_add(bytes);
+            sha256
+        };
+        commitment.artifacts.push(SealedArtifactCommitmentV1 {
+            name: entry.name,
+            bytes: entry.bytes,
+            sha256,
+        });
+    }
+    Ok(commitment)
+}
+
 #[cfg(test)]
 mod unique_inode_bytes_tests {
     use super::unique_inode_tree_bytes;
@@ -736,7 +1086,9 @@ mod unique_inode_bytes_tests {
 #[cfg(test)]
 mod tree_commitment_tests {
     use super::{
-        TreeCommitmentMismatchV1, commit_tree_v1, sha256_of_file, verify_tree_commitment_v1,
+        TreeCommitmentMismatchV1, TreeScrubStepV1, TreeScrubVerdictV1, commit_tree_inheriting_v1,
+        commit_tree_v1, scrub_tree_commitment_v1, sha256_of_file, verify_tree_commitment_v1,
+        verify_tree_layout_v1,
     };
 
     fn write(root: &std::path::Path, name: &str, bytes: &[u8]) {
@@ -804,6 +1156,163 @@ mod tree_commitment_tests {
                 name: "dataset/sub/999.manifest".to_string()
             })
         );
+    }
+
+    /// The layout check sees every shape defect but a same-length rewrite,
+    /// which only the scrub finds; the scrub pauses on its byte budget and
+    /// resumes from its cursor without re-reading what it verified.
+    #[test]
+    fn the_layout_check_is_cheap_and_the_scrub_is_bounded_and_resumable() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("dataset");
+        write(&root, "a.lance", b"alpha");
+        write(&root, "sub/b.manifest", b"bravo!");
+        write(&root, "sub/c.idx", b"charlie");
+        let committed = commit_tree_v1(&root, "dataset").expect("commit");
+
+        assert_eq!(
+            verify_tree_layout_v1(&root, "dataset", &committed).expect("io"),
+            Ok(18)
+        );
+        // A same-length rewrite passes the layout check by design…
+        std::fs::write(root.join("a.lance"), b"alphA").expect("flip");
+        assert_eq!(
+            verify_tree_layout_v1(&root, "dataset", &committed).expect("io"),
+            Ok(18)
+        );
+        // …and is the scrub's to find, whatever the cursor; the bytes it
+        // read to find it are reported, not hidden.
+        assert_eq!(
+            scrub_tree_commitment_v1(&root, "dataset", &committed, 0, u64::MAX).expect("io"),
+            TreeScrubStepV1 {
+                files_verified: 0,
+                bytes_read: 5,
+                verdict: TreeScrubVerdictV1::Mismatch(TreeCommitmentMismatchV1::Digest {
+                    name: "dataset/a.lance".to_string()
+                })
+            }
+        );
+        std::fs::write(root.join("a.lance"), b"alpha").expect("restore");
+        // Shape defects are visible to the layout check on every step.
+        std::fs::write(root.join("a.lance"), b"alph").expect("truncate");
+        assert_eq!(
+            verify_tree_layout_v1(&root, "dataset", &committed).expect("io"),
+            Err(TreeCommitmentMismatchV1::Length {
+                name: "dataset/a.lance".to_string(),
+                on_disk: 4,
+                committed: 5
+            })
+        );
+        assert_eq!(
+            scrub_tree_commitment_v1(&root, "dataset", &committed, 2, u64::MAX).expect("io"),
+            TreeScrubStepV1 {
+                files_verified: 0,
+                bytes_read: 0,
+                verdict: TreeScrubVerdictV1::Mismatch(TreeCommitmentMismatchV1::Length {
+                    name: "dataset/a.lance".to_string(),
+                    on_disk: 4,
+                    committed: 5
+                })
+            }
+        );
+        std::fs::write(root.join("a.lance"), b"alpha").expect("restore");
+
+        // A budget of one byte still hashes one file per step, then pauses.
+        let first = scrub_tree_commitment_v1(&root, "dataset", &committed, 0, 1).expect("io");
+        assert_eq!(
+            first,
+            TreeScrubStepV1 {
+                files_verified: 1,
+                bytes_read: 5,
+                verdict: TreeScrubVerdictV1::Paused { next_artifact: 1 }
+            }
+        );
+        let second = scrub_tree_commitment_v1(&root, "dataset", &committed, 1, 6).expect("io");
+        assert_eq!(
+            second,
+            TreeScrubStepV1 {
+                files_verified: 1,
+                bytes_read: 6,
+                verdict: TreeScrubVerdictV1::Paused { next_artifact: 2 }
+            }
+        );
+        let third = scrub_tree_commitment_v1(&root, "dataset", &committed, 2, 6).expect("io");
+        assert_eq!(
+            third,
+            TreeScrubStepV1 {
+                files_verified: 1,
+                bytes_read: 7,
+                verdict: TreeScrubVerdictV1::Completed
+            }
+        );
+        // One unbounded step reads exactly the committed bytes, once.
+        let whole =
+            scrub_tree_commitment_v1(&root, "dataset", &committed, 0, u64::MAX).expect("io");
+        assert_eq!(
+            whole,
+            TreeScrubStepV1 {
+                files_verified: 3,
+                bytes_read: 18,
+                verdict: TreeScrubVerdictV1::Completed
+            }
+        );
+        // A cursor beyond the list is a caller defect, not a completed scrub.
+        assert!(scrub_tree_commitment_v1(&root, "dataset", &committed, 4, u64::MAX).is_err());
+    }
+
+    /// A delta tree inherits the digest of every file that is still the
+    /// base's inode and hashes only what is new or replaced.
+    #[test]
+    fn a_delta_commitment_hashes_only_the_files_that_are_not_the_base_inode() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let base = temp.path().join("g1").join("dataset");
+        write(&base, "data/1.lance", b"alpha");
+        write(&base, "_versions/1.manifest", b"bravo!");
+        let base_commitment = commit_tree_v1(&base, "dataset").expect("commit base");
+
+        let delta = temp.path().join("g2").join("dataset");
+        std::fs::create_dir_all(delta.join("data")).expect("mkdir");
+        std::fs::create_dir_all(delta.join("_versions")).expect("mkdir");
+        std::fs::hard_link(base.join("data/1.lance"), delta.join("data/1.lance")).expect("link");
+        // Same name and length as the base's, but a copy, not its inode.
+        std::fs::write(delta.join("_versions/1.manifest"), b"bravo!").expect("copy");
+        write(&delta, "data/2.lance", b"charlie");
+
+        let commitment =
+            commit_tree_inheriting_v1(&delta, "dataset", Some((&base, &base_commitment)))
+                .expect("commit delta");
+        assert_eq!(commitment.inherited_files, 1);
+        assert_eq!(commitment.inherited_bytes, 5);
+        assert_eq!(commitment.hashed_bytes, 6 + 7);
+        // The inherited digest is the base's, and every digest is the truth:
+        // the same tree committed from scratch agrees byte for byte.
+        assert_eq!(
+            commitment.artifacts,
+            commit_tree_v1(&delta, "dataset").expect("commit from scratch")
+        );
+        assert_eq!(
+            commitment
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.name == "dataset/data/1.lance")
+                .map(|artifact| artifact.sha256),
+            base_commitment
+                .iter()
+                .find(|artifact| artifact.name == "dataset/data/1.lance")
+                .map(|artifact| artifact.sha256)
+        );
+        // Without a base, everything is hashed and nothing is inherited.
+        let fresh = commit_tree_inheriting_v1(&delta, "dataset", None).expect("commit fresh");
+        assert_eq!(fresh.inherited_files, 0);
+        assert_eq!(fresh.hashed_bytes, 18);
+        assert_eq!(fresh.artifacts, commitment.artifacts);
+        // A base file that vanished since is not inherited either.
+        std::fs::remove_file(base.join("data/1.lance")).expect("remove base file");
+        let orphaned =
+            commit_tree_inheriting_v1(&delta, "dataset", Some((&base, &base_commitment)))
+                .expect("commit with a vanished base file");
+        assert_eq!(orphaned.inherited_files, 0);
+        assert_eq!(orphaned.artifacts, commitment.artifacts);
     }
 
     #[test]

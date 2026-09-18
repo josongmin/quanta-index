@@ -3,7 +3,8 @@
 //! Written on the first accepted batch for a target generation and validated on
 //! every subsequent batch plus at sealed open. This keeps `mode`,
 //! `base_generation`, and the model contract authoritative even before the final
-//! sealed manifest exists.
+//! sealed manifest exists. Exactly one format is served; a contract written
+//! under any other is refused typed with the instruction to rebuild.
 
 #![expect(
     clippy::redundant_pub_crate,
@@ -14,10 +15,12 @@ use quanta_index_contract::{BatchIngestMode, ManifestGeneration};
 use quanta_index_core::{CoreError, SemanticGenerationContractV1};
 
 use crate::codec::{self, cbor_serde};
-use crate::manifest::{SemanticManifest, distance_metric_token, normalization_token};
+use crate::manifest::{
+    SemanticManifest, decode_current_format, distance_metric_token, format_unsupported,
+    normalization_token,
+};
 
-const GENERATION_CONTRACT_VERSION: u32 = 2;
-const LEGACY_GENERATION_CONTRACT_VERSION: u32 = 1;
+pub(crate) const GENERATION_CONTRACT_VERSION: u32 = 2;
 
 /// Return `Err($variant(format!(...)))` when two contract fields disagree.
 ///
@@ -59,28 +62,6 @@ cbor_serde!(GenerationContract {
     corpus_policy_digest: Option<String>,
 });
 
-struct LegacyGenerationContractV1 {
-    format_version: u32,
-    mode: BatchIngestMode,
-    base_generation: Option<ManifestGeneration>,
-    model_id: String,
-    model_version: Option<String>,
-    dimension: u32,
-    distance_metric: String,
-    normalization: String,
-}
-
-cbor_serde!(LegacyGenerationContractV1 {
-    format_version: u32,
-    mode: BatchIngestMode,
-    base_generation: Option<ManifestGeneration>,
-    model_id: String,
-    model_version: Option<String>,
-    dimension: u32,
-    distance_metric: String,
-    normalization: String,
-});
-
 impl GenerationContract {
     pub(crate) fn from_batch(batch: &SemanticGenerationContractV1) -> Self {
         Self {
@@ -109,33 +90,13 @@ impl GenerationContract {
         codec::encode(self, "semantic generation contract")
     }
 
+    /// Decode the current format only; any other format is refused typed.
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, CoreError> {
-        match codec::decode(bytes, "semantic generation contract") {
-            Ok(current) => Ok(current),
-            Err(current_err) => {
-                let Ok(legacy) = codec::decode::<LegacyGenerationContractV1>(
-                    bytes,
-                    "legacy semantic generation contract",
-                ) else {
-                    return Err(current_err);
-                };
-                if legacy.format_version != LEGACY_GENERATION_CONTRACT_VERSION {
-                    return Err(current_err);
-                }
-                Ok(Self {
-                    format_version: legacy.format_version,
-                    mode: legacy.mode,
-                    base_generation: legacy.base_generation,
-                    model_id: legacy.model_id,
-                    model_version: legacy.model_version,
-                    dimension: legacy.dimension,
-                    distance_metric: legacy.distance_metric,
-                    normalization: legacy.normalization,
-                    required_corpora: Vec::new(),
-                    corpus_policy_digest: None,
-                })
-            }
-        }
+        decode_current_format(
+            bytes,
+            "semantic generation contract",
+            GENERATION_CONTRACT_VERSION,
+        )
     }
 
     pub(crate) fn validate_batch_shape(
@@ -211,9 +172,6 @@ impl GenerationContract {
                 self.corpus_policy_digest.clone()
             }
             (None, None) => None,
-            (None, Some(_)) if self.format_version == LEGACY_GENERATION_CONTRACT_VERSION => {
-                observed.corpus_policy_digest.clone()
-            }
             _ => {
                 return Err(CoreError::InvalidContract(format!(
                     "semantic: existing generation corpus_policy_digest {:?} does not match batch corpus_policy_digest {:?}",
@@ -288,13 +246,12 @@ impl GenerationContract {
     }
 
     fn validate_format(&self) -> Result<(), CoreError> {
-        if self.format_version != GENERATION_CONTRACT_VERSION
-            && self.format_version != LEGACY_GENERATION_CONTRACT_VERSION
-        {
-            return Err(CoreError::Storage(format!(
-                "semantic: generation contract format version {} unsupported (expected {GENERATION_CONTRACT_VERSION} or legacy {LEGACY_GENERATION_CONTRACT_VERSION})",
-                self.format_version
-            )));
+        if self.format_version != GENERATION_CONTRACT_VERSION {
+            return Err(format_unsupported(
+                "semantic generation contract",
+                self.format_version,
+                GENERATION_CONTRACT_VERSION,
+            ));
         }
         Ok(())
     }
@@ -307,14 +264,39 @@ impl GenerationContract {
 )]
 mod tests {
     use quanta_index_contract::BatchIngestMode;
+    use quanta_index_core::CoreError;
 
-    use super::{GenerationContract, LegacyGenerationContractV1};
-    use crate::codec;
+    use super::{GENERATION_CONTRACT_VERSION, GenerationContract};
+    use crate::manifest::FORMAT_UNSUPPORTED_CODE;
+
+    /// The shape build contract format 1 wrote: no corpus fields. It is
+    /// refused typed, never decoded with fabricated corpus policy.
+    struct BuildContractFormat1 {
+        format_version: u32,
+        mode: BatchIngestMode,
+        base_generation: Option<quanta_index_contract::ManifestGeneration>,
+        model_id: String,
+        model_version: Option<String>,
+        dimension: u32,
+        distance_metric: String,
+        normalization: String,
+    }
+
+    crate::codec::cbor_serde!(BuildContractFormat1 {
+        format_version: u32,
+        mode: BatchIngestMode,
+        base_generation: Option<quanta_index_contract::ManifestGeneration>,
+        model_id: String,
+        model_version: Option<String>,
+        dimension: u32,
+        distance_metric: String,
+        normalization: String,
+    });
 
     #[test]
-    fn decode_legacy_v1_contract_defaults_corpus_policy() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let legacy = LegacyGenerationContractV1 {
+    fn a_format_1_contract_is_refused_typed_with_a_rebuild_instruction()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let legacy = BuildContractFormat1 {
             format_version: 1,
             mode: BatchIngestMode::ReplaceGeneration,
             base_generation: None,
@@ -324,14 +306,19 @@ mod tests {
             distance_metric: "cosine".to_string(),
             normalization: "l2_unit".to_string(),
         };
-        let bytes = codec::encode(&legacy, "legacy generation contract fixture")?;
-
-        let decoded = GenerationContract::decode(&bytes)?;
-
-        assert_eq!(decoded.format_version, 1);
-        assert_eq!(decoded.model_id, "legacy-model");
-        assert!(decoded.required_corpora.is_empty());
-        assert_eq!(decoded.corpus_policy_digest, None);
+        let bytes = crate::codec::encode(&legacy, "format-1 generation contract fixture")?;
+        match GenerationContract::decode(&bytes) {
+            Err(CoreError::Typed { code, message }) => {
+                assert_eq!(code, FORMAT_UNSUPPORTED_CODE);
+                assert!(message.contains("format version 1"), "{message}");
+                assert!(
+                    message.contains(&format!("format {GENERATION_CONTRACT_VERSION} only")),
+                    "{message}"
+                );
+                assert!(message.contains("rebuild"), "{message}");
+            }
+            other => panic!("a format-1 contract must be refused typed, got {other:?}"),
+        }
         Ok(())
     }
 }

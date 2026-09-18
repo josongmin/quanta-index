@@ -357,19 +357,34 @@ impl<'a> SearchCorpusNamespace<'a> {
     /// complete lexical + semantic identity against an explicit composite
     /// active identity. If promotion conflicts, the batch remains sealed but
     /// neither reader plane is made active.
+    ///
+    /// The candidate names the semantic content roots the sealed receipt
+    /// attested (QI-BB-028): what the plane actually sealed, not what the
+    /// batch asked for. A sealed receipt that attests none is a protocol
+    /// error, never an activation with guessed roots.
     pub fn publish_and_activate(
         &self,
         batch: &SearchCorpusBatch,
         expected_active: Option<SearchCorpusGenerationIdentityV1>,
     ) -> Result<(BatchReceipt, SearchPlaneSearchCorpusActivationCasAck), SdkError> {
+        // An expectation that could never be met — invalid, another pair,
+        // or not advanced by this batch — is refused before any byte is
+        // published, by the contract's own rule.
+        SearchPlaneActivateSearchCorpusGenerationCasRequest::validate_expected_active_v1(
+            &batch_lexical_scope_v1(batch),
+            expected_active.as_ref(),
+        )
+        .map_err(|error| {
+            SdkError::Protocol(format!("composite activation request is invalid: {error}"))
+        })?;
+        let receipt = self.publish(batch)?;
         let request = SearchPlaneActivateSearchCorpusGenerationCasRequest {
-            candidate: search_corpus_identity_from_batch_v1(batch)?,
+            candidate: search_corpus_identity_from_sealed_receipt_v1(batch, &receipt)?,
             expected_active,
         };
         request.validate_v1().map_err(|error| {
             SdkError::Protocol(format!("composite activation request is invalid: {error}"))
         })?;
-        let receipt = self.publish(batch)?;
         let expected_ack = SearchPlaneSearchCorpusActivationCasAck {
             active: request.candidate.clone(),
             previous_sealed_active: request.expected_active.clone(),
@@ -415,17 +430,33 @@ fn validate_composite_activation_ack_v1(
     Ok(())
 }
 
-fn search_corpus_identity_from_batch_v1(
+/// The lexical scope a batch publishes into: what the CAS expectation is
+/// validated against before the batch is published.
+fn batch_lexical_scope_v1(batch: &SearchCorpusBatch) -> quanta_index_contract::GenerationSnapshot {
+    quanta_index_contract::GenerationSnapshot {
+        repo_id: batch.repo_id().clone(),
+        revision_id: batch.revision_id().clone(),
+        track: SearchPlaneTrackKind::Lexical,
+        manifest_generation: batch.generation(),
+        manifest_digest: batch.manifest_digest().to_string(),
+    }
+}
+
+/// The composite candidate a sealed receipt describes: the batch's
+/// identity on both tracks (the publish already proved the receipt names
+/// this batch) and the semantic content roots the receipt attested.
+fn search_corpus_identity_from_sealed_receipt_v1(
     batch: &SearchCorpusBatch,
+    receipt: &BatchReceipt,
 ) -> Result<SearchCorpusGenerationIdentityV1, SdkError> {
+    let Some(semantic_content) = receipt.semantic_content.clone() else {
+        return Err(SdkError::Protocol(
+            "sealed receipt attests no semantic content roots; the candidate cannot name what the plane sealed"
+                .to_string(),
+        ));
+    };
     let identity = SearchCorpusGenerationIdentityV1 {
-        lexical: quanta_index_contract::GenerationSnapshot {
-            repo_id: batch.repo_id().clone(),
-            revision_id: batch.revision_id().clone(),
-            track: SearchPlaneTrackKind::Lexical,
-            manifest_generation: batch.generation(),
-            manifest_digest: batch.manifest_digest().to_string(),
-        },
+        lexical: batch_lexical_scope_v1(batch),
         semantic: quanta_index_contract::GenerationSnapshot {
             repo_id: batch.repo_id().clone(),
             revision_id: batch.revision_id().clone(),
@@ -433,6 +464,7 @@ fn search_corpus_identity_from_batch_v1(
             manifest_generation: batch.generation(),
             manifest_digest: batch.manifest_digest().to_string(),
         },
+        semantic_content,
     };
     identity.validate_v1().map_err(|error| {
         SdkError::Protocol(format!(

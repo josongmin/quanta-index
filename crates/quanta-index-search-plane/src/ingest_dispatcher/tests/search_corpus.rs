@@ -229,6 +229,8 @@ fn reclaim_sweeps_orphans_and_defers_pinned_generations() -> TestRes {
             authority: Arc::new(RecordingSearchCorpusAuthority::default()),
             lexical_generation_validator: always_valid_generation(),
             semantic_generation_validator: always_valid_generation(),
+            semantic_content_roots:
+                crate::content_roots_test_support::generation_keyed_content_roots(),
             lexical_incomplete_discard: test_incomplete_generation_discard(),
             semantic_incomplete_discard: test_incomplete_generation_discard(),
             lexical_reclaim: lexical_reclaim.clone(),
@@ -375,6 +377,8 @@ fn a_retained_half_pair_loses_its_records() -> TestRes {
             authority: Arc::new(RecordingSearchCorpusAuthority::default()),
             lexical_generation_validator: always_valid_generation(),
             semantic_generation_validator: always_valid_generation(),
+            semantic_content_roots:
+                crate::content_roots_test_support::generation_keyed_content_roots(),
             lexical_incomplete_discard: test_incomplete_generation_discard(),
             semantic_incomplete_discard: test_incomplete_generation_discard(),
             lexical_reclaim: lexical_reclaim.clone(),
@@ -481,6 +485,8 @@ fn a_sealed_but_corrupt_track_is_rebuilt_by_a_replace_seal_and_refused_for_a_del
             }),
             lexical_generation_validator: lexical_validator,
             semantic_generation_validator: always_valid_generation(),
+            semantic_content_roots:
+                crate::content_roots_test_support::generation_keyed_content_roots(),
             lexical_incomplete_discard: test_incomplete_generation_discard(),
             semantic_incomplete_discard: test_incomplete_generation_discard(),
             lexical_reclaim: lexical_reclaim.clone(),

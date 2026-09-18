@@ -202,6 +202,8 @@ fn corpus_derivation_embeds_one_window_per_provider_call_under_a_narrow_window()
                 authority: recording_search_corpus_authority(),
                 lexical_generation_validator: build_then_valid_generation(),
                 semantic_generation_validator: build_then_valid_generation(),
+                semantic_content_roots:
+                    crate::content_roots_test_support::generation_keyed_content_roots(),
                 lexical_incomplete_discard: test_incomplete_generation_discard(),
                 semantic_incomplete_discard: test_incomplete_generation_discard(),
                 lexical_reclaim: no_storage_sealed_reclaim(),

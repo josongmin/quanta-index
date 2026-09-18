@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::fs::File;
 #[cfg(not(unix))]
 use std::fs::OpenOptions;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use std::{
     fs,
@@ -30,15 +30,15 @@ use quanta_index_core::{
     AUX_EPOCH_EXPIRED_CODE, AUX_EPOCH_UNKNOWN_CODE, AuxiliaryAuthorityCatalogPort, CoreError,
     FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
     HistoryTextIndexPort, IdempotencyCatalogPort, IncompleteGenerationDiscardPort,
-    L2UnitEmbeddingProvider, LexicalIndexOpenPort, MetricSourcePort, ProcessMemoryProbePort,
-    QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
-    RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapOpenReportV1,
-    RepoMapQuarantinePort, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
-    RequestBudgetV1, SealedGenerationReclaimPort, SealedGenerationScanPort,
-    SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticIndexOpenPort, SemanticIngestPort,
-    SemanticScopeStreamBuildPort, StructuralError, StructuralMatchBinding,
-    StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider, TrackDiskUsagePort,
-    WriterIdleSweepPort,
+    IntegrityScrubPort, L2UnitEmbeddingProvider, LexicalIndexOpenPort, MetricSourcePort,
+    ProcessMemoryProbePort, QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort,
+    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
+    RepoMapOpenReportV1, RepoMapQuarantinePort, RepoMapQueryPort, RepoMetaIngestPort,
+    RepoTopicIngestPort, RequestBudgetV1, SealedGenerationReclaimPort, SealedGenerationScanPort,
+    SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticContentRootsPort,
+    SemanticIndexOpenPort, SemanticIngestPort, SemanticScopeStreamBuildPort, StructuralError,
+    StructuralMatchBinding, StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider,
+    TrackDiskUsagePort, WriterIdleSweepPort,
 };
 use quanta_index_embed::{
     CachingEmbeddingProvider, EmbeddingCacheIdentityV1, FileEmbeddingCache,
@@ -68,6 +68,7 @@ use regex::Regex;
 
 use crate::app::boot_inventory::{self, BootInventoryReportV1};
 use crate::app::config::{SearchdConfig, SemanticEmbedderProfile};
+use crate::app::integrity_scrub::{PacedIntegrityScrubV1, ScrubSchedulerV1, ScrubTalliesV1};
 use crate::app::ipc_dispatcher::{
     SearchPlaneControlIpcAdapter, SearchPlaneIngestIpcAdapter, SearchPlaneQueryIpcAdapter,
 };
@@ -97,6 +98,9 @@ pub struct SearchdRuntimeParts {
     pub sem_build_port: Arc<dyn SemanticScopeStreamBuildPort + Send + Sync>,
     pub semantic_generation_scanner: Arc<dyn SealedGenerationScanPort + Send + Sync>,
     pub semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
+    /// The content roots a sealed semantic generation carries (QI-BB-028):
+    /// attested on sealed receipts, proven at activation and rehydrate.
+    pub semantic_content_roots: Arc<dyn SemanticContentRootsPort + Send + Sync>,
     pub semantic_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>,
     pub semantic_sealed_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
     pub sem_open_port: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
@@ -124,6 +128,9 @@ pub struct SearchdRuntimeParts {
     /// Adapters that keep their own accounting, for the metrics scrape
     /// (QI-BB-015); the composition root adds its own sources to these.
     pub adapter_metric_sources: Vec<Arc<dyn MetricSourcePort>>,
+    /// Every adapter whose sealed generations the integrity scrub proves
+    /// as maintenance (QI-BB-017).
+    pub integrity_scrub_ports: Vec<Arc<dyn IntegrityScrubPort + Send + Sync>>,
     /// The lexical writer cache's idle sweep, run by the maintenance timer
     /// (QI-BB-016).
     pub writer_idle_sweep: Arc<dyn WriterIdleSweepPort>,
@@ -1047,6 +1054,7 @@ impl SearchdRuntime {
             sem_build_port,
             semantic_generation_scanner,
             semantic_generation_validator,
+            semantic_content_roots,
             semantic_incomplete_discard,
             semantic_sealed_reclaim,
             sem_open_port,
@@ -1063,6 +1071,7 @@ impl SearchdRuntime {
             auxiliary_catalog,
             history_text_index,
             adapter_metric_sources,
+            integrity_scrub_ports,
             writer_idle_sweep,
             lexical_disk_usage,
             semantic_disk_usage,
@@ -1154,6 +1163,7 @@ impl SearchdRuntime {
         let promotion = ActivationPromotionParts {
             lexical_open: Arc::clone(&lex_open_port),
             semantic_open: Arc::clone(&sem_open_port),
+            semantic_content_roots: Arc::clone(&semantic_content_roots),
             snapshots: snapshots.clone(),
         };
         let active_pairs_validated = search_corpus_lifecycle
@@ -1175,9 +1185,19 @@ impl SearchdRuntime {
             )
             .map_err(anyhow::Error::from)?
         };
+        // The scrub receipts the adapters keep beside their generations
+        // (QI-BB-017): what boot found already proven and what never was.
+        let lexical_scrub = boot_inventory::inventory_scrub_receipts(
+            SearchPlaneTrackKind::Lexical,
+            &integrity_scrub_ports,
+        )?;
+        let semantic_scrub = boot_inventory::inventory_scrub_receipts(
+            SearchPlaneTrackKind::Semantic,
+            &integrity_scrub_ports,
+        )?;
         let boot_inventory = BootInventoryReportV1 {
-            lexical: lexical_inventory,
-            semantic: semantic_inventory,
+            lexical: lexical_inventory.with_scrub(lexical_scrub),
+            semantic: semantic_inventory.with_scrub(semantic_scrub),
             active_pairs_validated,
             auxiliary_migration,
             auxiliary_rows_restored,
@@ -1219,6 +1239,7 @@ impl SearchdRuntime {
                     authority: authority_write_port,
                     lexical_generation_validator,
                     semantic_generation_validator,
+                    semantic_content_roots,
                     lexical_incomplete_discard: Arc::clone(&lexical_incomplete_discard),
                     semantic_incomplete_discard: Arc::clone(&semantic_incomplete_discard),
                     lexical_reclaim: Arc::clone(&lexical_sealed_reclaim),
@@ -1274,14 +1295,33 @@ impl SearchdRuntime {
         metric_sources.push(semantic_ingest_source);
         let boot_source: Arc<dyn MetricSourcePort> = Arc::new(boot_inventory.clone());
         metric_sources.push(boot_source);
+        // The integrity scrub (QI-BB-017) is paced on the maintenance timer:
+        // one bounded step at most every policy interval, retiring a
+        // quarantined generation's resident handle from the registries.
+        let scrub_tallies = Arc::new(ScrubTalliesV1::default());
+        let integrity_scrub = (!integrity_scrub_ports.is_empty()).then(|| {
+            Mutex::new(PacedIntegrityScrubV1::new(
+                ScrubSchedulerV1::new(
+                    integrity_scrub_ports,
+                    config.integrity_scrub_policy(),
+                    snapshots.clone(),
+                    Arc::clone(&scrub_tallies),
+                ),
+                config.integrity_scrub_policy(),
+                Instant::now(),
+            ))
+        });
+        let scrub_source: Arc<dyn MetricSourcePort> = scrub_tallies;
+        metric_sources.push(scrub_source);
         // The maintenance timer (QI-BB-016, QI-BB-015): the idle writer
-        // sweep and the per-track disk gauges run on it, and its tallies
-        // plus the process gauge join the scrape.
+        // sweep, the per-track disk gauges and the scrub run on it, and its
+        // tallies plus the process gauge join the scrape.
         let maintenance = MaintenanceTimer::start(
             MaintenanceParts {
                 writer_sweep: writer_idle_sweep,
                 lexical_disk_usage,
                 semantic_disk_usage,
+                integrity_scrub,
             },
             config.maintenance_policy().tick(),
         )

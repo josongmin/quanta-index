@@ -1,66 +1,134 @@
-//! Deep integrity verification of sealed generations (QI-BB-017 보완 #3,
-//! QI-BB-030).
+//! Deep integrity of sealed generations, off the serving path (QI-BB-017).
 //!
-//! A door that admits a sealed generation — the activation validator, the
-//! cold open — proves every byte a query decodes as it reads it, and proves
-//! only the presence and length of what a query maps without decoding (the
-//! index segment files). Their content is deep-verified when the seal
-//! measures them and again whenever a scrub runs; between seals the scrub
-//! is the only authority for "the bytes on disk are still the sealed
-//! bytes". The scrub records its pass beside the generation, so a reader
-//! can tell "deep-verified at seal, never scrubbed" from "scrub-verified
-//! since `stamp`".
+//! A door — activation, restart, a cold open — proves a sealed generation
+//! by its layout: every committed file exists at its committed length, and
+//! the two decoded sidecars hash to their commitments. Byte integrity of the
+//! dataset itself is proven here instead, by a scrub the composition root
+//! runs as quota'd maintenance: bounded bytes per step, a cursor to resume
+//! from, and a typed outcome. A generation the scrub finds corrupt is
+//! quarantined through the QI-BB-026 surface, durably, so the boot
+//! inventory keeps it out of readiness and every door refuses it typed.
 
 use quanta_index_contract::GenerationSnapshot;
 
 use crate::CoreError;
 
-/// When a scrub ran, as the caller's clock says it (Unix milliseconds).
-///
-/// The port takes the stamp from its caller instead of reading a clock so
-/// the record is attributable and a test can pin it.
+use super::generation::QuarantinedGenerationV1;
+
+/// Where a paused scrub resumes: the index of the next committed artifact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct IntegrityScrubStampV1 {
-    pub unix_ms: u64,
+pub struct IntegrityScrubCursorV1 {
+    pub next_artifact: u64,
 }
 
-/// What one scrub re-measured.
+/// The most bytes one scrub step may read.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IntegrityScrubBudgetV1 {
+    pub max_bytes: u64,
+}
+
+/// How one scrub step ended.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IntegrityScrubOutcomeV1 {
+    /// Every committed file was hashed and matched the seal; the adapter
+    /// recorded the completion beside the generation.
+    Completed,
+    /// The byte budget ran out; the next step resumes from `cursor`.
+    Paused { cursor: IntegrityScrubCursorV1 },
+    /// A committed file does not match the seal; the adapter quarantined
+    /// the generation and this is the entry the inventory now lists.
+    Corrupt {
+        quarantined: QuarantinedGenerationV1,
+    },
+}
+
+/// What one scrub step did.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IntegrityScrubReportV1 {
-    /// Committed files whose length and digest were re-measured.
+    pub generation: GenerationSnapshot,
+    /// Committed files hashed and matched in this step.
     pub files_verified: u64,
-    /// Bytes read to do so.
-    pub bytes_verified: u64,
-    /// When the pass ran.
-    pub stamp: IntegrityScrubStampV1,
+    /// Bytes read and hashed in this step.
+    pub bytes_read: u64,
+    pub outcome: IntegrityScrubOutcomeV1,
 }
 
-/// How deeply a sealed generation's content has been proved since its seal.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum IntegrityScrubStatusV1 {
-    /// The seal measured every committed byte; no scrub has run since.
-    DeepVerifiedAtSeal,
-    /// A scrub re-measured every committed byte, most recently as reported.
-    ScrubVerifiedSince(IntegrityScrubReportV1),
+/// One sealed generation the scrub may take on, with when it was last
+/// scrubbed to completion, if ever.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IntegrityScrubCandidateV1 {
+    pub identity: GenerationSnapshot,
+    /// Unix seconds of the last completed scrub the adapter recorded.
+    pub last_completed_unix: Option<u64>,
 }
 
-/// Re-measure every byte a sealed generation commits to, and record it.
+/// Wire code for a door that meets a generation the scrub quarantined.
+pub const GENERATION_QUARANTINED_CODE: &str = "GENERATION_QUARANTINED";
+
+/// How the composition root paces the scrub as quota'd maintenance: one
+/// step every `interval_millis`, each reading at most `max_bytes_per_step`
+/// (plus the one file that crosses the budget).
 ///
-/// A scrub is strictly stronger than a door: it proves everything a door
-/// proves and hashes what a door only measures by length. Any mismatch is
-/// the same typed refusal a door would give, never a partial pass; a
-/// generation that is not sealed, or whose identity is not `candidate`, is
-/// refused typed as well.
-pub trait IntegrityScrubPort: Send + Sync {
-    fn scrub_sealed_generation(
-        &self,
-        candidate: &GenerationSnapshot,
-        stamp: IntegrityScrubStampV1,
-    ) -> Result<IntegrityScrubReportV1, CoreError>;
+/// The default reads 64 MiB every five seconds: about 13 MB/s of
+/// background I/O, which walks a ten-million-row generation of 1536-wide
+/// vectors (roughly 61 GB) in about eighty minutes without contending
+/// with serving.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IntegrityScrubPolicyV1 {
+    pub interval_millis: u64,
+    pub max_bytes_per_step: u64,
+}
 
-    /// The most recent scrub's record for `candidate`, or that none ran.
-    fn integrity_scrub_status(
+impl IntegrityScrubPolicyV1 {
+    pub const DEFAULT: Self = Self {
+        interval_millis: 5_000,
+        max_bytes_per_step: 64 * 1024 * 1024,
+    };
+
+    /// A policy with both knobs positive; zero would either spin or never
+    /// read a byte, neither of which is a scrub.
+    pub fn new(interval_millis: u64, max_bytes_per_step: u64) -> Result<Self, CoreError> {
+        if interval_millis == 0 || max_bytes_per_step == 0 {
+            return Err(CoreError::InvalidContract(format!(
+                "integrity scrub policy: interval_millis ({interval_millis}) and max_bytes_per_step ({max_bytes_per_step}) must both be positive"
+            )));
+        }
+        Ok(Self {
+            interval_millis,
+            max_bytes_per_step,
+        })
+    }
+
+    #[must_use]
+    pub const fn budget(self) -> IntegrityScrubBudgetV1 {
+        IntegrityScrubBudgetV1 {
+            max_bytes: self.max_bytes_per_step,
+        }
+    }
+}
+
+/// Deep, bounded, resumable integrity verification of one adapter's sealed
+/// generations (QI-BB-017).
+///
+/// Implementations hash committed files against the seal, never decode a
+/// row, read at most `budget.max_bytes` per step (plus the one file that
+/// crosses it), and on a mismatch write a durable quarantine receipt that
+/// their own inventory reports as
+/// [`GenerationQuarantineReasonV1::ContentCorrupt`](super::generation::GenerationQuarantineReasonV1::ContentCorrupt)
+/// and their own doors refuse under [`GENERATION_QUARANTINED_CODE`]. A
+/// completed scrub is recorded beside the generation so the next
+/// [`Self::scrub_candidates`] can order by staleness.
+pub trait IntegrityScrubPort: Send + Sync {
+    /// Every sealed generation this adapter can scrub right now, cheaply:
+    /// identities and receipts only, no content.
+    fn scrub_candidates(&self) -> Result<Vec<IntegrityScrubCandidateV1>, CoreError>;
+
+    /// Run one bounded step over `generation`, from `cursor` or from the
+    /// start.
+    fn scrub(
         &self,
-        candidate: &GenerationSnapshot,
-    ) -> Result<IntegrityScrubStatusV1, CoreError>;
+        generation: &GenerationSnapshot,
+        cursor: Option<IntegrityScrubCursorV1>,
+        budget: IntegrityScrubBudgetV1,
+    ) -> Result<IntegrityScrubReportV1, CoreError>;
 }

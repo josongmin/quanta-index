@@ -33,11 +33,21 @@ use crate::search_corpus_lifecycle::{
     SearchCorpusPairMutationGuard,
 };
 
+/// One `(repo, revision)` pair: the unit an activation root is persisted
+/// and served for.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct ActivationKey {
     repo_id: RepoId,
     revision_id: RevisionId,
-    track: SearchPlaneTrackKind,
+}
+
+impl ActivationKey {
+    fn for_pair(repo_id: &RepoId, revision_id: &RevisionId) -> Self {
+        Self {
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,11 +59,16 @@ pub struct ActiveGenerationRecord {
     pub track: SearchPlaneTrackKind,
 }
 
+/// The active composite roots, one per pair. Each is the complete
+/// lexical + semantic identity with the semantic content roots
+/// (QI-BB-028); per-track views are derived on read.
+type ActiveRoots = BTreeMap<ActivationKey, SearchCorpusGenerationV1>;
+
 #[derive(Debug)]
 pub struct ActivationCatalog {
     activations_dir: PathBuf,
     staging_dir: PathBuf,
-    entries: RwLock<BTreeMap<ActivationKey, ActiveGenerationRecord>>,
+    entries: RwLock<ActiveRoots>,
     lifecycle_coordinator: Arc<SearchCorpusPairMutationCoordinator>,
     // A rename may succeed while the parent-directory fsync fails.  At that
     // point the durable head is ambiguous until a fresh process reopens the
@@ -214,7 +229,7 @@ impl ActivationCatalog {
                 &entries,
                 candidate.repo_id(),
                 candidate.revision_id(),
-            )?
+            )
         };
         validate_prepared_search_corpus_expectation(prepared, current.as_ref())?;
 
@@ -263,7 +278,7 @@ impl ActivationCatalog {
                 &entries,
                 candidate.repo_id(),
                 candidate.revision_id(),
-            )?;
+            );
             if observed != current {
                 return Err(CoreError::Storage(
                     "search-corpus activation: mutation lock failed to preserve the checked head"
@@ -330,7 +345,7 @@ impl ActivationCatalog {
                 &entries,
                 expected_active.repo_id(),
                 expected_active.revision_id(),
-            )?
+            )
             .ok_or_else(|| {
                 CoreError::NotReady(format!(
                     "search-corpus rollback: no active composite generation for repo={} revision={}",
@@ -387,7 +402,7 @@ impl ActivationCatalog {
                 &entries,
                 expected_active.repo_id(),
                 expected_active.revision_id(),
-            )?;
+            );
             if observed.as_ref() != Some(&current) {
                 return Err(CoreError::Storage(
                     "search-corpus rollback: mutation lock failed to preserve the checked head"
@@ -446,22 +461,29 @@ impl ActivationCatalog {
         revision_id: &RevisionId,
         track: SearchPlaneTrackKind,
     ) -> Result<ActiveGenerationRecord, CoreError> {
-        let key = ActivationKey {
-            repo_id: repo_id.clone(),
-            revision_id: revision_id.clone(),
-            track,
-        };
         let entries = self.entries.read().map_err(|err| {
             CoreError::Storage(format!("search-plane activation catalog poisoned: {err}"))
         })?;
         self.ensure_durability_certain_v1()?;
-        entries.get(&key).cloned().ok_or_else(|| {
+        let not_ready = || {
             CoreError::NotReady(format!(
                 "activate-generation: no active {track:?} generation for repo={} revision={}",
                 repo_id.as_str(),
                 revision_id.as_str()
             ))
-        })
+        };
+        let record = {
+            let generation = entries
+                .get(&ActivationKey::for_pair(repo_id, revision_id))
+                .ok_or_else(not_ready)?;
+            match track {
+                SearchPlaneTrackKind::Lexical => active_record_of(generation.lexical()),
+                SearchPlaneTrackKind::Semantic => active_record_of(generation.semantic()),
+                SearchPlaneTrackKind::Structural => return Err(not_ready()),
+            }
+        };
+        drop(entries);
+        Ok(record)
     }
 
     /// QI-ACT-01: return every active generation record for one
@@ -473,22 +495,39 @@ impl ActivationCatalog {
         repo_id: &RepoId,
         revision_id: &RevisionId,
     ) -> Result<Vec<ActiveGenerationRecord>, CoreError> {
-        let mut records: Vec<ActiveGenerationRecord> = {
-            let entries = self.entries.read().map_err(|err| {
-                CoreError::Storage(format!("search-plane activation catalog poisoned: {err}"))
-            })?;
-            self.ensure_durability_certain_v1()?;
-            entries
-                .iter()
-                .filter(|(key, _)| key.repo_id == *repo_id && key.revision_id == *revision_id)
-                .map(|(_, record)| record.clone())
-                .collect()
-        };
-        // ActivationKey BTreeMap iteration is ordered by (repo, revision,
-        // track); the filter preserves that, so `records` is already in
-        // track-declaration order.
-        records.sort_by(|a, b| a.track.cmp(&b.track));
-        Ok(records)
+        let entries = self.entries.read().map_err(|err| {
+            CoreError::Storage(format!("search-plane activation catalog poisoned: {err}"))
+        })?;
+        self.ensure_durability_certain_v1()?;
+        // Lexical before semantic: track declaration order.
+        Ok(entries
+            .get(&ActivationKey::for_pair(repo_id, revision_id))
+            .map(|generation| {
+                vec![
+                    active_record_of(generation.lexical()),
+                    active_record_of(generation.semantic()),
+                ]
+            })
+            .unwrap_or_default())
+    }
+
+    /// The active composite root for one pair, with the semantic content
+    /// roots it was activated under (QI-BB-028); `None` when the pair has
+    /// no activation.
+    pub fn active_search_corpus_v1(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) -> Result<Option<SearchCorpusGenerationV1>, CoreError> {
+        let entries = self.entries.read().map_err(|err| {
+            CoreError::Storage(format!("search-plane activation catalog poisoned: {err}"))
+        })?;
+        self.ensure_durability_certain_v1()?;
+        Ok(active_search_corpus_generation_v1(
+            &entries,
+            repo_id,
+            revision_id,
+        ))
     }
 
     fn ensure_durability_certain_v1(&self) -> Result<(), CoreError> {
@@ -517,7 +556,11 @@ impl ActiveSearchCorpusPinReadPort for ActivationCatalog {
         let entries = self.entries.read().map_err(|error| {
             CoreError::Storage(format!("search-plane activation catalog poisoned: {error}"))
         })?;
-        active_search_corpus_generation_v1(&entries, repo_id, revision_id)
+        Ok(active_search_corpus_generation_v1(
+            &entries,
+            repo_id,
+            revision_id,
+        ))
     }
 
     fn all_active_search_corpora_for_bootstrap_v1(
@@ -527,82 +570,41 @@ impl ActiveSearchCorpusPinReadPort for ActivationCatalog {
         let entries = self.entries.read().map_err(|error| {
             CoreError::Storage(format!("search-plane activation catalog poisoned: {error}"))
         })?;
-        let mut active = Vec::new();
-        for key in entries
-            .keys()
-            .filter(|key| key.track == SearchPlaneTrackKind::Lexical)
-        {
-            if let Some(generation) =
-                active_search_corpus_generation_v1(&entries, &key.repo_id, &key.revision_id)?
-            {
-                active.push(generation);
-            }
-        }
+        let active = entries.values().cloned().collect();
         drop(entries);
         Ok(active)
     }
 }
 
-fn active_record_snapshot(record: &ActiveGenerationRecord) -> GenerationSnapshot {
-    GenerationSnapshot {
-        repo_id: record.repo_id.clone(),
-        revision_id: record.revision_id.clone(),
-        track: record.track,
-        manifest_generation: record.manifest_generation,
-        manifest_digest: record.manifest_digest.clone(),
+/// The per-track view of one snapshot of an active composite root.
+fn active_record_of(snapshot: &GenerationSnapshot) -> ActiveGenerationRecord {
+    ActiveGenerationRecord {
+        repo_id: snapshot.repo_id.clone(),
+        revision_id: snapshot.revision_id.clone(),
+        manifest_generation: snapshot.manifest_generation,
+        manifest_digest: snapshot.manifest_digest.clone(),
+        track: snapshot.track,
     }
 }
 
 fn active_search_corpus_generation_v1(
-    entries: &BTreeMap<ActivationKey, ActiveGenerationRecord>,
+    entries: &ActiveRoots,
     repo_id: &RepoId,
     revision_id: &RevisionId,
-) -> Result<Option<SearchCorpusGenerationV1>, CoreError> {
-    let lexical = entries.get(&ActivationKey {
-        repo_id: repo_id.clone(),
-        revision_id: revision_id.clone(),
-        track: SearchPlaneTrackKind::Lexical,
-    });
-    let semantic = entries.get(&ActivationKey {
-        repo_id: repo_id.clone(),
-        revision_id: revision_id.clone(),
-        track: SearchPlaneTrackKind::Semantic,
-    });
-    match (lexical, semantic) {
-        (None, None) => Ok(None),
-        (Some(lexical), Some(semantic)) => Ok(Some(SearchCorpusGenerationV1::new(
-            active_record_snapshot(lexical),
-            active_record_snapshot(semantic),
-        )?)),
-        _ => Err(CoreError::NotReady(format!(
-            "search-corpus activation: incomplete active composite root for repo={} revision={}",
-            repo_id.as_str(),
-            revision_id.as_str(),
-        ))),
-    }
+) -> Option<SearchCorpusGenerationV1> {
+    entries
+        .get(&ActivationKey::for_pair(repo_id, revision_id))
+        .cloned()
 }
 
 fn insert_search_corpus_generation_records(
-    entries: &mut BTreeMap<ActivationKey, ActiveGenerationRecord>,
+    entries: &mut ActiveRoots,
     generation: &SearchCorpusGenerationV1,
 ) {
-    for snapshot in [generation.lexical(), generation.semantic()] {
-        let key = ActivationKey {
-            repo_id: snapshot.repo_id.clone(),
-            revision_id: snapshot.revision_id.clone(),
-            track: snapshot.track,
-        };
-        let _prior = entries.insert(
-            key,
-            ActiveGenerationRecord {
-                repo_id: snapshot.repo_id.clone(),
-                revision_id: snapshot.revision_id.clone(),
-                manifest_generation: snapshot.manifest_generation,
-                manifest_digest: snapshot.manifest_digest.clone(),
-                track: snapshot.track,
-            },
-        );
-    }
+    let _prior = entries.insert(
+        ActivationKey::for_pair(generation.repo_id(), generation.revision_id()),
+        generation.clone(),
+    );
 }
 
 pub(super) fn search_corpus_root_file_name(repo_id: &RepoId, revision_id: &RevisionId) -> String {

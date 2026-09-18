@@ -167,14 +167,18 @@ name = "LEXICAL_SEALED_MANIFEST_WHOLE_CORPUS_TEXT_AUTHORITY_VERSION"
 value = 2
 
 [[artifact]]
-id = "lexical-scrub-receipt"
+id = "lexical-scrub-receipts"
 owner = "quanta-index-lexical"
-path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/search-corpus-generation-scrub.cbor"
+path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/{search-corpus-generation-scrub.cbor,search-corpus-generation-quarantine.cbor}"
 reproduction = "cache"
-notes = "Record of the most recent integrity scrub of a sealed lexical generation (QI-BB-017 보완 #3): manifest digest, caller stamp, files and bytes re-measured. Not query-required and not part of the sealed manifest; absent means deep-verified at seal, never scrubbed. Regenerable by running the scrub."
+notes = "Receipts the integrity scrub leaves beside a sealed lexical generation (QI-BB-017): the completed pass (the manifest digest it proved, its completion epoch, files and bytes covered; staleness order for the maintenance scheduler and the boot scrape; format 2 records Unix seconds from the adapter clock, format 1 was a caller stamp and is refused), and the durable quarantine written when a committed file no longer matches the seal (the inventory sets the generation aside as GENERATION_QUARANTINE_CONTENT_CORRUPT and every door refuses it as GENERATION_QUARANTINED). Neither is part of the sealed commitment; a scrub receipt is regenerable by the next pass, a quarantine receipt leaves only through the quarantine discard."
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/sealed_generation/scrub.rs"
 name = "LEXICAL_SCRUB_RECEIPT_FORMAT_VERSION"
+value = 2
+[[artifact.version_constants]]
+file = "crates/quanta-index-lexical/src/sealed_generation/scrub.rs"
+name = "LEXICAL_QUARANTINE_RECEIPT_FORMAT_VERSION"
 value = 1
 
 [[artifact]]
@@ -236,60 +240,47 @@ id = "semantic-manifest"
 owner = "quanta-index-semantic"
 path = "state_root/indexes/semantic/generation-v1-<sha256(repo,revision)>/g<N>/semantic-manifest.cbor"
 reproduction = "producer-rebuild"
-notes = "Rebuild cost includes one embedding call per semantic source record (provider-priced) plus ANN training time. The adapter still serves formats 2..=9 through legacy decoders (`SemanticManifestV3/V5/V6/V7/V8`) and reports pre-8 generations as `LegacyUnverified`; this compat read path is a W7 deletion candidate (see the audit report), unlike the lexical side which refuses pre-current formats."
+notes = "Rebuild cost includes one embedding call per semantic source record (provider-priced) plus ANN training time. Exactly one format is served: every earlier format (2..=9) is refused typed as GENERATION_MANIFEST_FORMAT_UNSUPPORTED at decode/open/validate and quarantined by the boot inventory as GENERATION_QUARANTINE_FORMAT_UNSUPPORTED; the legacy decoders were deleted (QI-BB-027, breaking-first). Format 10 records every ANN segment's build parameters as the library reports them."
 [[artifact.version_constants]]
 file = "crates/quanta-index-semantic/src/manifest.rs"
 name = "FORMAT_VERSION"
-value = 9
-[[artifact.version_constants]]
-file = "crates/quanta-index-semantic/src/manifest.rs"
-name = "LEGACY_UNRECORDED_ANN_LINEAGE_FORMAT_VERSION"
-value = 8
-[[artifact.version_constants]]
-file = "crates/quanta-index-semantic/src/manifest.rs"
-name = "LEGACY_UNSEALED_VECTOR_INDEX_FORMAT_VERSION"
-value = 7
-[[artifact.version_constants]]
-file = "crates/quanta-index-semantic/src/manifest.rs"
-name = "LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION"
-value = 6
-[[artifact.version_constants]]
-file = "crates/quanta-index-semantic/src/manifest.rs"
-name = "LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION"
-value = 4
-[[artifact.version_constants]]
-file = "crates/quanta-index-semantic/src/manifest.rs"
-name = "LEGACY_BUILD_CONTRACT_FORMAT_VERSION"
-value = 3
-[[artifact.version_constants]]
-file = "crates/quanta-index-semantic/src/manifest.rs"
-name = "LEGACY_LANCEDB_FORMAT_VERSION"
-value = 2
+value = 10
 
 [[artifact]]
 id = "semantic-build-contract"
 owner = "quanta-index-semantic"
 path = "state_root/indexes/semantic/generation-v1-<sha256(repo,revision)>/g<N>/semantic-build-contract.cbor"
 reproduction = "producer-rebuild"
-notes = "Model id / revision / dimension / normalization / corpus policy the generation was built under. Legacy v1 (no corpus policy) is still decoded; same deletion candidate as the manifest compat path."
+notes = "Model id / revision / dimension / normalization / corpus policy the generation was built under. Exactly one format is served; format 1 (no corpus policy) is refused typed as GENERATION_MANIFEST_FORMAT_UNSUPPORTED (the legacy decoder was deleted)."
 [[artifact.version_constants]]
 file = "crates/quanta-index-semantic/src/generation_contract.rs"
 name = "GENERATION_CONTRACT_VERSION"
 value = 2
-[[artifact.version_constants]]
-file = "crates/quanta-index-semantic/src/generation_contract.rs"
-name = "LEGACY_GENERATION_CONTRACT_VERSION"
-value = 1
 
 [[artifact]]
 id = "semantic-sealed-manifest"
 owner = "quanta-index-semantic"
 path = "state_root/indexes/semantic/generation-v1-<sha256(repo,revision)>/g<N>/{semantic-sealed-manifest.cbor,MARKER_READY,MARKER_SEALED}"
 reproduction = "producer-rebuild"
-notes = "File-set commitment over manifest, build contract and the whole dataset tree (QI-BB-017); the sealed marker is the promotion point."
+notes = "File-set commitment over manifest, build contract and the whole dataset tree (QI-BB-017); the sealed marker is the promotion point. Doors verify the layout (existence + length) and hash only the two decoded sidecars; the integrity scrub hashes the dataset in bounded resumable steps. A delta seal carries the base's digest for every file it still shares by inode."
 [[artifact.version_constants]]
 file = "crates/quanta-index-semantic/src/sealed_manifest.rs"
 name = "SEALED_MANIFEST_FORMAT_VERSION"
+value = 1
+
+[[artifact]]
+id = "semantic-scrub-receipts"
+owner = "quanta-index-semantic"
+path = "state_root/indexes/semantic/generation-v1-<sha256(repo,revision)>/g<N>/{semantic-scrub-receipt.cbor,semantic-quarantine.cbor}"
+reproduction = "cache"
+notes = "Receipts the integrity scrub leaves beside a sealed generation (QI-BB-017): the completion epoch of the last full pass (staleness order for the maintenance scheduler and the boot scrape), and the durable quarantine written when a committed file no longer matches the seal (the boot inventory sets the generation aside as GENERATION_QUARANTINE_CONTENT_CORRUPT and every door refuses it as GENERATION_QUARANTINED). Neither is part of the sealed commitment; a scrub receipt is regenerable by the next pass, a quarantine receipt leaves only through the quarantine discard."
+[[artifact.version_constants]]
+file = "crates/quanta-index-semantic/src/integrity.rs"
+name = "SCRUB_RECEIPT_FORMAT_VERSION"
+value = 1
+[[artifact.version_constants]]
+file = "crates/quanta-index-semantic/src/integrity.rs"
+name = "QUARANTINE_RECEIPT_FORMAT_VERSION"
 value = 1
 
 [[artifact]]

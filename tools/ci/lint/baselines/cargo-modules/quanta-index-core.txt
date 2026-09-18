@@ -29,7 +29,11 @@ crate quanta_index_core
 │   │   ├── enum SealedGenerationReclaimOutcomeV1: pub
 │   │   ├── trait SealedGenerationReclaimPort: pub
 │   │   ├── trait SealedGenerationScanPort: pub
-│   │   └── enum TreeCommitmentMismatchV1: pub
+│   │   ├── enum TreeCommitmentMismatchV1: pub
+│   │   ├── struct TreeCommitmentV1: pub
+│   │   ├── struct TreeEntryV1: pub(self)
+│   │   ├── struct TreeScrubStepV1: pub
+│   │   └── enum TreeScrubVerdictV1: pub
 │   ├── mod hybrid: pub
 │   │   ├── mod dense_admission: pub(self)
 │   │   │   ├── enum DenseAdmissionOutcomeV1: pub
@@ -51,10 +55,13 @@ crate quanta_index_core
 │   ├── mod ingest_body: pub
 │   │   └── trait IngestBatchBodyV1: pub
 │   ├── mod integrity: pub
+│   │   ├── struct IntegrityScrubBudgetV1: pub
+│   │   ├── struct IntegrityScrubCandidateV1: pub
+│   │   ├── struct IntegrityScrubCursorV1: pub
+│   │   ├── enum IntegrityScrubOutcomeV1: pub
+│   │   ├── struct IntegrityScrubPolicyV1: pub
 │   │   ├── trait IntegrityScrubPort: pub
-│   │   ├── struct IntegrityScrubReportV1: pub
-│   │   ├── struct IntegrityScrubStampV1: pub
-│   │   └── enum IntegrityScrubStatusV1: pub
+│   │   └── struct IntegrityScrubReportV1: pub
 │   ├── mod lexical: pub
 │   │   ├── mod history_text: pub(self)
 │   │   │   ├── type HistoryTextAdmitFn: pub
@@ -145,12 +152,14 @@ crate quanta_index_core
 │   │   ├── mod inbound: pub(self)
 │   │   │   └── trait SemanticQueryPort: pub
 │   │   ├── mod outbound: pub(self)
+│   │   │   ├── struct DenseIndexBuildV1: pub
 │   │   │   ├── struct DenseIndexEffortV1: pub
-│   │   │   ├── enum DenseIndexLineageV1: pub
+│   │   │   ├── struct DenseIndexSegmentBuildV1: pub
 │   │   │   ├── struct DenseIndexTrainingV1: pub
 │   │   │   ├── enum DenseIndexV1: pub
 │   │   │   ├── enum DenseLaneAttestationV1: pub
 │   │   │   ├── struct DenseLaneContractV1: pub
+│   │   │   ├── trait SemanticContentRootsPort: pub
 │   │   │   ├── trait SemanticIndexOpenPort: pub
 │   │   │   ├── trait SemanticIngestPort: pub
 │   │   │   ├── struct SemanticReadiness: pub

@@ -257,6 +257,8 @@ fn retention_forgets_auxiliary_generations_the_receipt_does_not_retain() -> Test
             authority: recording_search_corpus_authority(),
             lexical_generation_validator: always_valid_generation(),
             semantic_generation_validator: always_valid_generation(),
+            semantic_content_roots:
+                crate::content_roots_test_support::generation_keyed_content_roots(),
             lexical_incomplete_discard: test_incomplete_generation_discard(),
             semantic_incomplete_discard: test_incomplete_generation_discard(),
             lexical_reclaim: no_storage_sealed_reclaim(),

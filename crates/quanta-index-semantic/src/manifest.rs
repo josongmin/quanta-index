@@ -3,6 +3,12 @@
 //! Internal to `quanta-index`, but correctness-critical: the open path fails
 //! closed on a format, scope, or integrity mismatch rather than guessing around
 //! missing or inconsistent state.
+//!
+//! Exactly one format is served. A manifest written under any other format
+//! is refused typed as `GENERATION_MANIFEST_FORMAT_UNSUPPORTED` at every
+//! door — decode, open, validate, inventory — with the instruction to
+//! rebuild the generation from its producer; nothing is decoded through an
+//! older shape and nothing is fabricated for a field an older shape lacked.
 
 #![expect(
     clippy::redundant_pub_crate,
@@ -37,106 +43,88 @@ fn is_canonical_sha256_v1(value: &str) -> bool {
     })
 }
 
-/// Current manifest format version. Bumped on any durable shape change.
+/// The one manifest format this adapter writes and serves. Bumped on any
+/// durable shape change; every earlier format is refused typed.
 ///
-/// `9` = v8 plus the approximate index's training lineage (QI-BB-027 W3):
-/// which generation trained the centroids, the rows appended to and
-/// deleted from them since, and the append budget the seal was under.
-pub(crate) const FORMAT_VERSION: u32 = 9;
+/// `10` = the approximate index's per-segment build record (QI-BB-027):
+/// the graph parameters every segment was actually built with, read back
+/// from the library, so an appended segment is never claimed to carry the
+/// trained recipe.
+pub(crate) const FORMAT_VERSION: u32 = 10;
 
-/// Legacy manifest with the dense lane's index contract (QI-BB-027) but no
-/// training lineage: every index it sealed was trained by that seal, and
-/// nothing records it, so a delta cannot append to it.
-pub(crate) const LEGACY_UNRECORDED_ANN_LINEAGE_FORMAT_VERSION: u32 = 8;
+/// Wire code for a manifest, contract or sealed manifest written under a
+/// format this adapter does not serve.
+pub(crate) const FORMAT_UNSUPPORTED_CODE: &str = "GENERATION_MANIFEST_FORMAT_UNSUPPORTED";
 
-/// Legacy manifest with the semantic-row root but no vector index seal.
-pub(crate) const LEGACY_UNSEALED_VECTOR_INDEX_FORMAT_VERSION: u32 = 7;
-pub(crate) const LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION: u32 = 6;
-
-/// Legacy structured-membership manifest without a sealed sidecar commitment.
-///
-/// Not a capability threshold: `5` carries the same columns as `4` and, like
-/// it, no membership commitment. It is named for the decode fixtures.
-#[cfg(test)]
-pub(crate) const LEGACY_UNCOMMITTED_MEMBERSHIP_FORMAT_VERSION: u32 = 5;
-
-/// Legacy semantic-corpus manifest without structured membership capability.
-pub(crate) const LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION: u32 = 4;
-
-/// Legacy manifest format with build-contract sidecar but without v4 corpus
-/// coverage fields.
-pub(crate) const LEGACY_BUILD_CONTRACT_FORMAT_VERSION: u32 = 3;
-
-/// Legacy lancedb manifest format that predates `semantic-build-contract.cbor`.
-///
-/// Sealed generations written at `2` remain openable for compatibility, but
-/// they do not get the stronger sidecar cross-check that `FORMAT_VERSION=3`
-/// provides.
-pub(crate) const LEGACY_LANCEDB_FORMAT_VERSION: u32 = 2;
-
-/// What a manifest format version carries and proves.
-///
-/// Every door that used to match on the format-version constants asks this
-/// instead, so adding a format is one threshold here rather than one arm in
-/// each of them. Each capability, once gained by a format, is kept by every
-/// later one.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct FormatCapabilitiesV1 {
-    format_version: u32,
-}
-
-impl FormatCapabilitiesV1 {
-    /// `semantic-build-contract.cbor` is required beside the manifest.
-    pub(crate) const fn build_contract(self) -> bool {
-        self.format_version >= LEGACY_BUILD_CONTRACT_FORMAT_VERSION
-    }
-
-    /// The table carries the corpus, owner and language metadata columns.
-    pub(crate) const fn corpus_metadata(self) -> bool {
-        self.format_version >= LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION
-    }
-
-    /// The manifest commits to the cluster-membership sidecar.
-    pub(crate) const fn membership_commitment(self) -> bool {
-        self.format_version >= LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION
-    }
-
-    /// The manifest commits to the semantic row root.
-    pub(crate) const fn semantic_row_root(self) -> bool {
-        self.format_version >= LEGACY_UNSEALED_VECTOR_INDEX_FORMAT_VERSION
-    }
-
-    /// The seal commits to every file, so an open re-measures files, not
-    /// rows, and a missing commitment is a refusal rather than a scan.
-    pub(crate) const fn file_commitment(self) -> bool {
-        self.format_version >= LEGACY_UNSEALED_VECTOR_INDEX_FORMAT_VERSION
-    }
-
-    /// The manifest records the dense lane's index contract.
-    pub(crate) const fn vector_index_seal(self) -> bool {
-        self.format_version >= LEGACY_UNRECORDED_ANN_LINEAGE_FORMAT_VERSION
-    }
-
-    /// The index contract records the approximate index's training lineage,
-    /// so a later delta can prove an append against it.
-    pub(crate) const fn ann_lineage(self) -> bool {
-        self.format_version >= FORMAT_VERSION
+/// The typed refusal for `format_version` of `what`.
+pub(crate) fn format_unsupported(what: &str, format_version: u32, supported: u32) -> CoreError {
+    CoreError::Typed {
+        code: FORMAT_UNSUPPORTED_CODE.to_string(),
+        message: format!(
+            "semantic: {what} has format version {format_version}; this adapter serves format {supported} only — rebuild the generation from its producer"
+        ),
     }
 }
 
-/// The capabilities of `format_version`, or `None` when this adapter does
-/// not serve that format.
-#[must_use]
-pub(crate) fn format_capabilities_v1(format_version: u32) -> Option<FormatCapabilitiesV1> {
-    (LEGACY_LANCEDB_FORMAT_VERSION..=FORMAT_VERSION)
-        .contains(&format_version)
-        .then_some(FormatCapabilitiesV1 { format_version })
+/// The `format_version` of a manifest-shaped CBOR map, read without
+/// decoding the rest, so a foreign format is named typed rather than as a
+/// decode failure of the current shape.
+struct FormatVersionProbe(u32);
+
+impl<'de> serde::Deserialize<'de> for FormatVersionProbe {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ProbeVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for ProbeVisitor {
+            type Value = FormatVersionProbe;
+
+            fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                formatter.write_str("a map carrying `format_version`")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut format_version: Option<u32> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    if key == "format_version" {
+                        if format_version.is_some() {
+                            return Err(serde::de::Error::duplicate_field("format_version"));
+                        }
+                        format_version = Some(map.next_value()?);
+                    } else {
+                        let _ignored: serde::de::IgnoredAny = map.next_value()?;
+                    }
+                }
+                format_version
+                    .map(FormatVersionProbe)
+                    .ok_or_else(|| serde::de::Error::missing_field("format_version"))
+            }
+        }
+
+        deserializer.deserialize_map(ProbeVisitor)
+    }
 }
 
-fn unsupported_format(format_version: u32) -> CoreError {
-    CoreError::Storage(format!(
-        "semantic: manifest format version {format_version} unsupported (this adapter serves {LEGACY_LANCEDB_FORMAT_VERSION} through {FORMAT_VERSION})"
-    ))
+/// Decode `bytes` as the current `what`, refusing any other format typed.
+///
+/// The format is probed first: bytes that decode as a map naming another
+/// `format_version` are refused as [`FORMAT_UNSUPPORTED_CODE`]; bytes that
+/// name the current format but do not decode as its shape are corrupt.
+pub(crate) fn decode_current_format<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+    what: &str,
+    supported: u32,
+) -> Result<T, CoreError> {
+    let FormatVersionProbe(format_version) = codec::decode(bytes, what)?;
+    if format_version != supported {
+        return Err(format_unsupported(what, format_version, supported));
+    }
+    codec::decode(bytes, what)
 }
 
 /// The dense lane's index contract, sealed with the generation (QI-BB-027).
@@ -165,8 +153,8 @@ cbor_serde!(VectorIndexSealV1 {
 });
 
 /// The approximate index a seal built: its full recipe, what the library
-/// reported about it, the query effort the lane spends in it, and where
-/// its centroids came from.
+/// reported about it, the effort the lane spends in it, where its
+/// centroids came from, and how each segment was actually built.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AnnIndexSealV1 {
     pub(crate) index_name: String,
@@ -174,6 +162,8 @@ pub(crate) struct AnnIndexSealV1 {
     pub(crate) num_partitions: u32,
     pub(crate) sample_rate: u32,
     pub(crate) max_iterations: u32,
+    /// The graph recipe the policy trains with; the trained segment carries
+    /// it, appended segments carry whatever [`Self::segments`] records.
     pub(crate) hnsw_m: u32,
     pub(crate) hnsw_ef_construction: u32,
     pub(crate) indexed_rows: u64,
@@ -182,9 +172,11 @@ pub(crate) struct AnnIndexSealV1 {
     pub(crate) ef_floor: u32,
     pub(crate) ef_per_candidate: u32,
     pub(crate) refine_factor: u32,
-    /// `None` only for format `8`, which trained every index it sealed and
-    /// recorded nothing about it.
-    pub(crate) lineage: Option<AnnIndexLineageV1>,
+    pub(crate) lineage: AnnIndexLineageV1,
+    /// Every segment of the index in the library's listing order, with the
+    /// graph parameters the library reports it was built with. The first
+    /// is the trained segment; the rest were appended.
+    pub(crate) segments: Vec<AnnIndexSegmentSealV1>,
 }
 
 cbor_serde!(AnnIndexSealV1 {
@@ -201,7 +193,23 @@ cbor_serde!(AnnIndexSealV1 {
     ef_floor: u32,
     ef_per_candidate: u32,
     refine_factor: u32,
-    lineage: Option<AnnIndexLineageV1>,
+    lineage: AnnIndexLineageV1,
+    segments: Vec<AnnIndexSegmentSealV1>,
+});
+
+/// One segment of the approximate index as the library reports it: its
+/// identity and the graph parameters it was actually built with.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AnnIndexSegmentSealV1 {
+    pub(crate) uuid: String,
+    pub(crate) hnsw_m: u32,
+    pub(crate) hnsw_ef_construction: u32,
+}
+
+cbor_serde!(AnnIndexSegmentSealV1 {
+    uuid: String,
+    hnsw_m: u32,
+    hnsw_ef_construction: u32,
 });
 
 /// Where the sealed index's centroids came from and how far the served
@@ -319,18 +327,83 @@ impl AnnIndexLineageV1 {
     }
 }
 
+impl AnnIndexSealV1 {
+    /// Refuse a segment record that does not describe every segment, that
+    /// claims the trained recipe for a segment the library did not build
+    /// with it, or whose trained segment is not the recipe.
+    ///
+    /// The first listed segment is the one the seal trained and must carry
+    /// exactly `(hnsw_m, hnsw_ef_construction)`; every later one was
+    /// appended by the library's incremental builder and is recorded as
+    /// the library reported it. A segment without an identity or with a
+    /// zero parameter was never read back from the library.
+    fn validate_segments(&self) -> Result<(), CoreError> {
+        let invalid = |detail: &str| {
+            CoreError::Storage(format!(
+                "semantic: manifest vector index segment record is inconsistent: {detail}"
+            ))
+        };
+        let recorded = u32::try_from(self.segments.len()).map_err(|error| {
+            invalid(&format!(
+                "more segment records than the segment count can hold: {error}"
+            ))
+        })?;
+        if recorded != self.index_segments {
+            return Err(invalid(&format!(
+                "{recorded} segment records for {} segments",
+                self.index_segments
+            )));
+        }
+        let mut seen = BTreeSet::new();
+        for (position, segment) in self.segments.iter().enumerate() {
+            if segment.uuid.is_empty() {
+                return Err(invalid(&format!("segment {position} has no identity")));
+            }
+            if !seen.insert(segment.uuid.as_str()) {
+                return Err(invalid(&format!(
+                    "segment {} is recorded twice",
+                    segment.uuid
+                )));
+            }
+            if segment.hnsw_m == 0 || segment.hnsw_ef_construction == 0 {
+                return Err(invalid(&format!(
+                    "segment {} records a zero graph parameter",
+                    segment.uuid
+                )));
+            }
+        }
+        let Some(trained) = self.segments.first() else {
+            return Err(invalid("no trained segment"));
+        };
+        if trained.hnsw_m != self.hnsw_m
+            || trained.hnsw_ef_construction != self.hnsw_ef_construction
+        {
+            return Err(invalid(&format!(
+                "the trained segment {} was built with m={} ef_construction={}, the recipe says m={} ef_construction={}",
+                trained.uuid,
+                trained.hnsw_m,
+                trained.hnsw_ef_construction,
+                self.hnsw_m,
+                self.hnsw_ef_construction
+            )));
+        }
+        Ok(())
+    }
+
+    /// The segments appended after the trained one, in order.
+    #[must_use]
+    pub(crate) fn appended_segments(&self) -> &[AnnIndexSegmentSealV1] {
+        self.segments.get(1..).unwrap_or_default()
+    }
+}
+
 pub(crate) const VECTOR_INDEX_MODE_EXACT: &str = "exact";
 pub(crate) const VECTOR_INDEX_MODE_IVF_HNSW_SQ: &str = "ivf_hnsw_sq";
 
 impl VectorIndexSealV1 {
-    /// Refuse a seal whose fields contradict each other, the row count, the
-    /// sealing generation, or what its manifest format can carry.
-    pub(crate) fn validate(
-        &self,
-        row_count: u64,
-        generation: u64,
-        capabilities: FormatCapabilitiesV1,
-    ) -> Result<(), CoreError> {
+    /// Refuse a seal whose fields contradict each other, the row count or
+    /// the sealing generation.
+    pub(crate) fn validate(&self, row_count: u64, generation: u64) -> Result<(), CoreError> {
         let invalid = |detail: &str| {
             CoreError::Storage(format!(
                 "semantic: manifest vector index seal is inconsistent: {detail}"
@@ -391,18 +464,8 @@ impl VectorIndexSealV1 {
                 if ann.ef_floor == 0 || ann.ef_per_candidate == 0 || ann.refine_factor == 0 {
                     return Err(invalid("a query effort parameter is zero"));
                 }
-                match (capabilities.ann_lineage(), ann.lineage.as_ref()) {
-                    (true, Some(lineage)) => lineage.validate(generation, ann)?,
-                    (true, None) => {
-                        return Err(invalid("the format requires an index lineage record"));
-                    }
-                    (false, Some(_)) => {
-                        return Err(invalid(
-                            "the format predates the index lineage record it carries",
-                        ));
-                    }
-                    (false, None) => {}
-                }
+                ann.lineage.validate(generation, ann)?;
+                ann.validate_segments()?;
             }
             (other, _) => {
                 return Err(invalid(&format!("unknown mode `{other}`")));
@@ -437,8 +500,7 @@ pub(crate) struct SemanticManifest {
     pub(crate) cluster_membership_root_digest: String,
     pub(crate) cluster_membership_cluster_count: u64,
     pub(crate) cluster_membership_member_row_count: u64,
-    /// `None` only for formats before `8`, which recorded no index contract.
-    pub(crate) vector_index: Option<VectorIndexSealV1>,
+    pub(crate) vector_index: VectorIndexSealV1,
 }
 
 cbor_serde!(SemanticManifest {
@@ -463,303 +525,7 @@ cbor_serde!(SemanticManifest {
     cluster_membership_root_digest: String,
     cluster_membership_cluster_count: u64,
     cluster_membership_member_row_count: u64,
-    vector_index: Option<VectorIndexSealV1>,
-});
-
-/// The format-8 manifest, decode only.
-///
-/// The current shape with the index contract as it was sealed before the
-/// lineage record. A format-8 seal maps to the current record with
-/// `lineage: None`, which is what its capability set says it carries.
-struct SemanticManifestV8 {
-    format_version: u32,
-    repo_id: String,
-    revision_id: String,
-    generation: u64,
-    manifest_digest: String,
-    model_id: String,
-    model_version: Option<String>,
-    dimension: u32,
-    distance_metric: String,
-    normalization: String,
-    row_count: u64,
-    semantic_row_root_digest: String,
-    built_at_unix_nanos: u64,
-    present_corpora: Vec<String>,
-    required_corpora: Vec<String>,
-    card_schema_versions: Vec<u32>,
-    render_policy_digests: Vec<String>,
-    corpus_policy_digest: Option<String>,
-    cluster_membership_root_digest: String,
-    cluster_membership_cluster_count: u64,
-    cluster_membership_member_row_count: u64,
-    vector_index: Option<VectorIndexSealV8>,
-}
-
-cbor_serde!(SemanticManifestV8 {
-    format_version: u32,
-    repo_id: String,
-    revision_id: String,
-    generation: u64,
-    manifest_digest: String,
-    model_id: String,
-    model_version: Option<String>,
-    dimension: u32,
-    distance_metric: String,
-    normalization: String,
-    row_count: u64,
-    semantic_row_root_digest: String,
-    built_at_unix_nanos: u64,
-    present_corpora: Vec<String>,
-    required_corpora: Vec<String>,
-    card_schema_versions: Vec<u32>,
-    render_policy_digests: Vec<String>,
-    corpus_policy_digest: Option<String>,
-    cluster_membership_root_digest: String,
-    cluster_membership_cluster_count: u64,
-    cluster_membership_member_row_count: u64,
-    vector_index: Option<VectorIndexSealV8>,
-});
-
-/// The format-8 index contract: [`VectorIndexSealV1`] without the lineage
-/// record inside its `ann`.
-struct VectorIndexSealV8 {
-    mode: String,
-    library: String,
-    library_version: String,
-    index_min_rows: u64,
-    ann: Option<AnnIndexSealV8>,
-}
-
-cbor_serde!(VectorIndexSealV8 {
-    mode: String,
-    library: String,
-    library_version: String,
-    index_min_rows: u64,
-    ann: Option<AnnIndexSealV8>,
-});
-
-struct AnnIndexSealV8 {
-    index_name: String,
-    distance: String,
-    num_partitions: u32,
-    sample_rate: u32,
-    max_iterations: u32,
-    hnsw_m: u32,
-    hnsw_ef_construction: u32,
-    indexed_rows: u64,
-    index_segments: u32,
-    nprobes: u32,
-    ef_floor: u32,
-    ef_per_candidate: u32,
-    refine_factor: u32,
-}
-
-cbor_serde!(AnnIndexSealV8 {
-    index_name: String,
-    distance: String,
-    num_partitions: u32,
-    sample_rate: u32,
-    max_iterations: u32,
-    hnsw_m: u32,
-    hnsw_ef_construction: u32,
-    indexed_rows: u64,
-    index_segments: u32,
-    nprobes: u32,
-    ef_floor: u32,
-    ef_per_candidate: u32,
-    refine_factor: u32,
-});
-
-impl From<VectorIndexSealV8> for VectorIndexSealV1 {
-    fn from(legacy: VectorIndexSealV8) -> Self {
-        Self {
-            mode: legacy.mode,
-            library: legacy.library,
-            library_version: legacy.library_version,
-            index_min_rows: legacy.index_min_rows,
-            ann: legacy.ann.map(|ann| AnnIndexSealV1 {
-                index_name: ann.index_name,
-                distance: ann.distance,
-                num_partitions: ann.num_partitions,
-                sample_rate: ann.sample_rate,
-                max_iterations: ann.max_iterations,
-                hnsw_m: ann.hnsw_m,
-                hnsw_ef_construction: ann.hnsw_ef_construction,
-                indexed_rows: ann.indexed_rows,
-                index_segments: ann.index_segments,
-                nprobes: ann.nprobes,
-                ef_floor: ann.ef_floor,
-                ef_per_candidate: ann.ef_per_candidate,
-                refine_factor: ann.refine_factor,
-                lineage: None,
-            }),
-        }
-    }
-}
-
-struct SemanticManifestV7 {
-    format_version: u32,
-    repo_id: String,
-    revision_id: String,
-    generation: u64,
-    manifest_digest: String,
-    model_id: String,
-    model_version: Option<String>,
-    dimension: u32,
-    distance_metric: String,
-    normalization: String,
-    row_count: u64,
-    semantic_row_root_digest: String,
-    built_at_unix_nanos: u64,
-    present_corpora: Vec<String>,
-    required_corpora: Vec<String>,
-    card_schema_versions: Vec<u32>,
-    render_policy_digests: Vec<String>,
-    corpus_policy_digest: Option<String>,
-    cluster_membership_root_digest: String,
-    cluster_membership_cluster_count: u64,
-    cluster_membership_member_row_count: u64,
-}
-
-cbor_serde!(SemanticManifestV7 {
-    format_version: u32,
-    repo_id: String,
-    revision_id: String,
-    generation: u64,
-    manifest_digest: String,
-    model_id: String,
-    model_version: Option<String>,
-    dimension: u32,
-    distance_metric: String,
-    normalization: String,
-    row_count: u64,
-    semantic_row_root_digest: String,
-    built_at_unix_nanos: u64,
-    present_corpora: Vec<String>,
-    required_corpora: Vec<String>,
-    card_schema_versions: Vec<u32>,
-    render_policy_digests: Vec<String>,
-    corpus_policy_digest: Option<String>,
-    cluster_membership_root_digest: String,
-    cluster_membership_cluster_count: u64,
-    cluster_membership_member_row_count: u64,
-});
-
-struct SemanticManifestV6 {
-    format_version: u32,
-    repo_id: String,
-    revision_id: String,
-    generation: u64,
-    manifest_digest: String,
-    model_id: String,
-    model_version: Option<String>,
-    dimension: u32,
-    distance_metric: String,
-    normalization: String,
-    row_count: u64,
-    built_at_unix_nanos: u64,
-    present_corpora: Vec<String>,
-    required_corpora: Vec<String>,
-    card_schema_versions: Vec<u32>,
-    render_policy_digests: Vec<String>,
-    corpus_policy_digest: Option<String>,
-    cluster_membership_root_digest: String,
-    cluster_membership_cluster_count: u64,
-    cluster_membership_member_row_count: u64,
-}
-
-cbor_serde!(SemanticManifestV6 {
-    format_version: u32,
-    repo_id: String,
-    revision_id: String,
-    generation: u64,
-    manifest_digest: String,
-    model_id: String,
-    model_version: Option<String>,
-    dimension: u32,
-    distance_metric: String,
-    normalization: String,
-    row_count: u64,
-    built_at_unix_nanos: u64,
-    present_corpora: Vec<String>,
-    required_corpora: Vec<String>,
-    card_schema_versions: Vec<u32>,
-    render_policy_digests: Vec<String>,
-    corpus_policy_digest: Option<String>,
-    cluster_membership_root_digest: String,
-    cluster_membership_cluster_count: u64,
-    cluster_membership_member_row_count: u64,
-});
-
-struct SemanticManifestV5 {
-    format_version: u32,
-    repo_id: String,
-    revision_id: String,
-    generation: u64,
-    manifest_digest: String,
-    model_id: String,
-    model_version: Option<String>,
-    dimension: u32,
-    distance_metric: String,
-    normalization: String,
-    row_count: u64,
-    built_at_unix_nanos: u64,
-    present_corpora: Vec<String>,
-    required_corpora: Vec<String>,
-    card_schema_versions: Vec<u32>,
-    render_policy_digests: Vec<String>,
-    corpus_policy_digest: Option<String>,
-}
-
-cbor_serde!(SemanticManifestV5 {
-    format_version: u32,
-    repo_id: String,
-    revision_id: String,
-    generation: u64,
-    manifest_digest: String,
-    model_id: String,
-    model_version: Option<String>,
-    dimension: u32,
-    distance_metric: String,
-    normalization: String,
-    row_count: u64,
-    built_at_unix_nanos: u64,
-    present_corpora: Vec<String>,
-    required_corpora: Vec<String>,
-    card_schema_versions: Vec<u32>,
-    render_policy_digests: Vec<String>,
-    corpus_policy_digest: Option<String>,
-});
-
-struct SemanticManifestV3 {
-    format_version: u32,
-    repo_id: String,
-    revision_id: String,
-    generation: u64,
-    manifest_digest: String,
-    model_id: String,
-    model_version: Option<String>,
-    dimension: u32,
-    distance_metric: String,
-    normalization: String,
-    row_count: u64,
-    built_at_unix_nanos: u64,
-}
-
-cbor_serde!(SemanticManifestV3 {
-    format_version: u32,
-    repo_id: String,
-    revision_id: String,
-    generation: u64,
-    manifest_digest: String,
-    model_id: String,
-    model_version: Option<String>,
-    dimension: u32,
-    distance_metric: String,
-    normalization: String,
-    row_count: u64,
-    built_at_unix_nanos: u64,
+    vector_index: VectorIndexSealV1,
 });
 
 #[must_use]
@@ -841,7 +607,7 @@ impl SemanticManifest {
             cluster_membership_root_digest: cluster_membership.root_digest,
             cluster_membership_cluster_count: cluster_membership.cluster_count,
             cluster_membership_member_row_count: cluster_membership.member_row_count,
-            vector_index: Some(vector_index),
+            vector_index,
         }
     }
 
@@ -849,241 +615,46 @@ impl SemanticManifest {
         codec::encode(self, "semantic manifest")
     }
 
+    /// Decode the current format only; any other format is refused typed.
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, CoreError> {
-        match codec::decode(bytes, "semantic manifest") {
-            Ok(current) => Ok(current),
-            Err(current_err) => {
-                if let Ok(legacy) = codec::decode::<SemanticManifestV8>(bytes, "semantic manifest")
-                {
-                    return Ok(Self {
-                        format_version: legacy.format_version,
-                        repo_id: legacy.repo_id,
-                        revision_id: legacy.revision_id,
-                        generation: legacy.generation,
-                        manifest_digest: legacy.manifest_digest,
-                        model_id: legacy.model_id,
-                        model_version: legacy.model_version,
-                        dimension: legacy.dimension,
-                        distance_metric: legacy.distance_metric,
-                        normalization: legacy.normalization,
-                        row_count: legacy.row_count,
-                        semantic_row_root_digest: legacy.semantic_row_root_digest,
-                        built_at_unix_nanos: legacy.built_at_unix_nanos,
-                        present_corpora: legacy.present_corpora,
-                        required_corpora: legacy.required_corpora,
-                        card_schema_versions: legacy.card_schema_versions,
-                        render_policy_digests: legacy.render_policy_digests,
-                        corpus_policy_digest: legacy.corpus_policy_digest,
-                        cluster_membership_root_digest: legacy.cluster_membership_root_digest,
-                        cluster_membership_cluster_count: legacy.cluster_membership_cluster_count,
-                        cluster_membership_member_row_count: legacy
-                            .cluster_membership_member_row_count,
-                        vector_index: legacy.vector_index.map(VectorIndexSealV1::from),
-                    });
-                }
-                if let Ok(legacy) = codec::decode::<SemanticManifestV7>(bytes, "semantic manifest")
-                {
-                    return Ok(Self {
-                        format_version: legacy.format_version,
-                        repo_id: legacy.repo_id,
-                        revision_id: legacy.revision_id,
-                        generation: legacy.generation,
-                        manifest_digest: legacy.manifest_digest,
-                        model_id: legacy.model_id,
-                        model_version: legacy.model_version,
-                        dimension: legacy.dimension,
-                        distance_metric: legacy.distance_metric,
-                        normalization: legacy.normalization,
-                        row_count: legacy.row_count,
-                        semantic_row_root_digest: legacy.semantic_row_root_digest,
-                        built_at_unix_nanos: legacy.built_at_unix_nanos,
-                        present_corpora: legacy.present_corpora,
-                        required_corpora: legacy.required_corpora,
-                        card_schema_versions: legacy.card_schema_versions,
-                        render_policy_digests: legacy.render_policy_digests,
-                        corpus_policy_digest: legacy.corpus_policy_digest,
-                        cluster_membership_root_digest: legacy.cluster_membership_root_digest,
-                        cluster_membership_cluster_count: legacy.cluster_membership_cluster_count,
-                        cluster_membership_member_row_count: legacy
-                            .cluster_membership_member_row_count,
-                        vector_index: None,
-                    });
-                }
-                if let Ok(legacy) = codec::decode::<SemanticManifestV6>(bytes, "semantic manifest")
-                {
-                    return Ok(Self {
-                        format_version: legacy.format_version,
-                        repo_id: legacy.repo_id,
-                        revision_id: legacy.revision_id,
-                        generation: legacy.generation,
-                        manifest_digest: legacy.manifest_digest,
-                        model_id: legacy.model_id,
-                        model_version: legacy.model_version,
-                        dimension: legacy.dimension,
-                        distance_metric: legacy.distance_metric,
-                        normalization: legacy.normalization,
-                        row_count: legacy.row_count,
-                        semantic_row_root_digest: String::new(),
-                        built_at_unix_nanos: legacy.built_at_unix_nanos,
-                        present_corpora: legacy.present_corpora,
-                        required_corpora: legacy.required_corpora,
-                        card_schema_versions: legacy.card_schema_versions,
-                        render_policy_digests: legacy.render_policy_digests,
-                        corpus_policy_digest: legacy.corpus_policy_digest,
-                        cluster_membership_root_digest: legacy.cluster_membership_root_digest,
-                        cluster_membership_cluster_count: legacy.cluster_membership_cluster_count,
-                        cluster_membership_member_row_count: legacy
-                            .cluster_membership_member_row_count,
-                        vector_index: None,
-                    });
-                }
-                if let Ok(legacy) = codec::decode::<SemanticManifestV5>(bytes, "semantic manifest")
-                {
-                    return Ok(Self {
-                        format_version: legacy.format_version,
-                        repo_id: legacy.repo_id,
-                        revision_id: legacy.revision_id,
-                        generation: legacy.generation,
-                        manifest_digest: legacy.manifest_digest,
-                        model_id: legacy.model_id,
-                        model_version: legacy.model_version,
-                        dimension: legacy.dimension,
-                        distance_metric: legacy.distance_metric,
-                        normalization: legacy.normalization,
-                        row_count: legacy.row_count,
-                        semantic_row_root_digest: String::new(),
-                        built_at_unix_nanos: legacy.built_at_unix_nanos,
-                        present_corpora: legacy.present_corpora,
-                        required_corpora: legacy.required_corpora,
-                        card_schema_versions: legacy.card_schema_versions,
-                        render_policy_digests: legacy.render_policy_digests,
-                        corpus_policy_digest: legacy.corpus_policy_digest,
-                        cluster_membership_root_digest: String::new(),
-                        cluster_membership_cluster_count: 0,
-                        cluster_membership_member_row_count: 0,
-                        vector_index: None,
-                    });
-                }
-                if let Ok(legacy_v3) =
-                    codec::decode::<SemanticManifestV3>(bytes, "semantic manifest")
-                {
-                    return Ok(Self {
-                        format_version: legacy_v3.format_version,
-                        repo_id: legacy_v3.repo_id,
-                        revision_id: legacy_v3.revision_id,
-                        generation: legacy_v3.generation,
-                        manifest_digest: legacy_v3.manifest_digest,
-                        model_id: legacy_v3.model_id,
-                        model_version: legacy_v3.model_version,
-                        dimension: legacy_v3.dimension,
-                        distance_metric: legacy_v3.distance_metric,
-                        normalization: legacy_v3.normalization,
-                        row_count: legacy_v3.row_count,
-                        semantic_row_root_digest: String::new(),
-                        built_at_unix_nanos: legacy_v3.built_at_unix_nanos,
-                        present_corpora: Vec::new(),
-                        required_corpora: Vec::new(),
-                        card_schema_versions: Vec::new(),
-                        render_policy_digests: Vec::new(),
-                        corpus_policy_digest: None,
-                        cluster_membership_root_digest: String::new(),
-                        cluster_membership_cluster_count: 0,
-                        cluster_membership_member_row_count: 0,
-                        vector_index: None,
-                    });
-                }
-                if let Ok(legacy_v2) =
-                    codec::decode::<SemanticManifestV3>(bytes, "semantic manifest")
-                {
-                    return Ok(Self {
-                        format_version: legacy_v2.format_version,
-                        repo_id: legacy_v2.repo_id,
-                        revision_id: legacy_v2.revision_id,
-                        generation: legacy_v2.generation,
-                        manifest_digest: legacy_v2.manifest_digest,
-                        model_id: legacy_v2.model_id,
-                        model_version: legacy_v2.model_version,
-                        dimension: legacy_v2.dimension,
-                        distance_metric: legacy_v2.distance_metric,
-                        normalization: legacy_v2.normalization,
-                        row_count: legacy_v2.row_count,
-                        semantic_row_root_digest: String::new(),
-                        built_at_unix_nanos: legacy_v2.built_at_unix_nanos,
-                        present_corpora: Vec::new(),
-                        required_corpora: Vec::new(),
-                        card_schema_versions: Vec::new(),
-                        render_policy_digests: Vec::new(),
-                        corpus_policy_digest: None,
-                        cluster_membership_root_digest: String::new(),
-                        cluster_membership_cluster_count: 0,
-                        cluster_membership_member_row_count: 0,
-                        vector_index: None,
-                    });
-                }
-                Err(current_err)
-            }
-        }
+        decode_current_format(bytes, "semantic manifest", FORMAT_VERSION)
     }
 
-    /// What this manifest's format carries and proves.
-    pub(crate) fn capabilities(&self) -> Result<FormatCapabilitiesV1, CoreError> {
-        format_capabilities_v1(self.format_version)
-            .ok_or_else(|| unsupported_format(self.format_version))
-    }
-
-    /// The sealed index contract a current-format manifest carries.
-    pub(crate) fn vector_index_seal(&self) -> Result<Option<&VectorIndexSealV1>, CoreError> {
-        let capabilities = self.capabilities()?;
-        match (capabilities.vector_index_seal(), self.vector_index.as_ref()) {
-            (true, Some(seal)) => Ok(Some(seal)),
-            (true, None) => Err(CoreError::Storage(format!(
-                "semantic: manifest format version {} requires a vector index seal",
-                self.format_version
-            ))),
-            (false, Some(_)) => Err(CoreError::Storage(format!(
-                "semantic: manifest format version {} predates the vector index seal it carries",
-                self.format_version
-            ))),
-            (false, None) => Ok(None),
-        }
-    }
-
-    /// Fail closed unless the manifest describes exactly the requested scope and
-    /// a supported format version.
+    /// Fail closed unless the manifest describes exactly the requested scope
+    /// and is self-consistent.
     pub(crate) fn validate_scope(
         &self,
         repo: &RepoId,
         revision: &RevisionId,
         generation: ManifestGeneration,
     ) -> Result<(), CoreError> {
-        let capabilities = self.capabilities()?;
-        if capabilities.semantic_row_root()
-            && !is_canonical_sha256_v1(&self.semantic_row_root_digest)
-        {
-            return Err(CoreError::Storage(
-                "semantic: current manifest has an invalid semantic row root digest".to_string(),
+        if self.format_version != FORMAT_VERSION {
+            return Err(format_unsupported(
+                "semantic manifest",
+                self.format_version,
+                FORMAT_VERSION,
             ));
         }
-        if capabilities.membership_commitment()
-            && !is_canonical_sha256_v1(&self.cluster_membership_root_digest)
-        {
+        if !is_canonical_sha256_v1(&self.semantic_row_root_digest) {
             return Err(CoreError::Storage(
-                "semantic: current manifest has an invalid cluster membership root digest"
-                    .to_string(),
+                "semantic: manifest has an invalid semantic row root digest".to_string(),
             ));
         }
-        if capabilities.membership_commitment()
-            && ((self.cluster_membership_cluster_count == 0)
-                != (self.cluster_membership_member_row_count == 0)
-                || self.cluster_membership_cluster_count > self.cluster_membership_member_row_count)
-        {
+        if !is_canonical_sha256_v1(&self.cluster_membership_root_digest) {
             return Err(CoreError::Storage(
-                "semantic: current manifest has inconsistent cluster membership counts".to_string(),
+                "semantic: manifest has an invalid cluster membership root digest".to_string(),
             ));
         }
-        if let Some(seal) = self.vector_index_seal()? {
-            seal.validate(self.row_count, self.generation, capabilities)?;
+        if (self.cluster_membership_cluster_count == 0)
+            != (self.cluster_membership_member_row_count == 0)
+            || self.cluster_membership_cluster_count > self.cluster_membership_member_row_count
+        {
+            return Err(CoreError::Storage(
+                "semantic: manifest has inconsistent cluster membership counts".to_string(),
+            ));
         }
+        self.vector_index
+            .validate(self.row_count, self.generation)?;
         if self.repo_id != repo.as_str() {
             return Err(CoreError::Storage(format!(
                 "semantic: manifest repo `{}` does not match requested `{}`",
@@ -1153,84 +724,141 @@ impl SemanticManifest {
 mod tests {
     use super::*;
 
-    #[test]
-    fn format_v6_decodes_without_fabricating_semantic_row_root_v1() {
-        let legacy = SemanticManifestV6 {
-            format_version: LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION,
-            repo_id: "repo".to_string(),
-            revision_id: "rev".to_string(),
-            generation: 7,
-            manifest_digest: "manifest".to_string(),
-            model_id: "model".to_string(),
-            model_version: None,
-            dimension: 3,
-            distance_metric: "cosine".to_string(),
-            normalization: "l2_unit".to_string(),
-            row_count: 1,
-            built_at_unix_nanos: 0,
-            present_corpora: vec!["ClusterCard".to_string()],
-            required_corpora: vec!["ClusterCard".to_string()],
-            card_schema_versions: vec![1],
-            render_policy_digests: vec!["render".to_string()],
-            corpus_policy_digest: Some("policy".to_string()),
-            cluster_membership_root_digest: format!("sha256:{}", "1".repeat(64)),
-            cluster_membership_cluster_count: 1,
-            cluster_membership_member_row_count: 1,
-        };
-        let bytes = codec::encode(&legacy, "legacy semantic manifest").expect("encode legacy");
-        let decoded = SemanticManifest::decode(&bytes).expect("decode legacy");
-        assert_eq!(
-            decoded.format_version,
-            LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION
-        );
-        assert!(decoded.semantic_row_root_digest.is_empty());
-        decoded
-            .validate_scope(
-                &RepoId::new("repo"),
-                &RevisionId::new("rev"),
-                ManifestGeneration::new(7),
-            )
-            .expect("v6 membership proof remains valid");
+    /// The generation the fixtures seal; lineage records name it.
+    const GENERATION: u64 = 7;
+
+    /// A lineage as a fresh train at [`GENERATION`] records it.
+    fn trained_lineage(rows: u64) -> AnnIndexLineageV1 {
+        AnnIndexLineageV1 {
+            trained_at_generation: GENERATION,
+            trained_rows: rows,
+            appended_rows: 0,
+            deleted_rows: 0,
+            append_ratio_max_per_mille: 250,
+            append_rows_max: 1 << 18,
+            append_segments_max: 8,
+        }
     }
 
-    #[test]
-    fn format_v5_decodes_without_fabricating_membership_commitment_v1() {
-        let legacy = SemanticManifestV5 {
-            format_version: LEGACY_UNCOMMITTED_MEMBERSHIP_FORMAT_VERSION,
-            repo_id: "repo".to_string(),
-            revision_id: "rev".to_string(),
-            generation: 7,
-            manifest_digest: "manifest".to_string(),
-            model_id: "model".to_string(),
-            model_version: None,
-            dimension: 3,
-            distance_metric: "cosine".to_string(),
-            normalization: "l2_unit".to_string(),
-            row_count: 1,
-            built_at_unix_nanos: 0,
-            present_corpora: vec!["ClusterCard".to_string()],
-            required_corpora: vec!["ClusterCard".to_string()],
-            card_schema_versions: vec![1],
-            render_policy_digests: vec!["render".to_string()],
-            corpus_policy_digest: Some("policy".to_string()),
-        };
-        let bytes = codec::encode(&legacy, "legacy semantic manifest").expect("encode legacy");
-        let decoded = SemanticManifest::decode(&bytes).expect("decode legacy");
-        assert_eq!(
-            decoded.format_version,
-            LEGACY_UNCOMMITTED_MEMBERSHIP_FORMAT_VERSION
-        );
-        assert!(decoded.cluster_membership_root_digest.is_empty());
-        assert_eq!(decoded.cluster_membership_cluster_count, 0);
-        assert_eq!(decoded.cluster_membership_member_row_count, 0);
+    fn trained_segment(uuid: &str) -> AnnIndexSegmentSealV1 {
+        AnnIndexSegmentSealV1 {
+            uuid: uuid.to_string(),
+            hnsw_m: 20,
+            hnsw_ef_construction: 300,
+        }
     }
 
-    fn v7_manifest(row_count: u64) -> SemanticManifestV7 {
-        SemanticManifestV7 {
-            format_version: LEGACY_UNSEALED_VECTOR_INDEX_FORMAT_VERSION,
+    fn appended_segment(uuid: &str) -> AnnIndexSegmentSealV1 {
+        AnnIndexSegmentSealV1 {
+            uuid: uuid.to_string(),
+            hnsw_m: 20,
+            hnsw_ef_construction: 150,
+        }
+    }
+
+    fn ann_record(indexed_rows: u64, lineage: AnnIndexLineageV1) -> AnnIndexSealV1 {
+        AnnIndexSealV1 {
+            index_name: "vector_ivf_hnsw_sq".to_string(),
+            distance: "cosine".to_string(),
+            num_partitions: 1,
+            sample_rate: 256,
+            max_iterations: 50,
+            hnsw_m: 20,
+            hnsw_ef_construction: 300,
+            indexed_rows,
+            index_segments: 1,
+            nprobes: 1,
+            ef_floor: 64,
+            ef_per_candidate: 2,
+            refine_factor: 2,
+            lineage,
+            segments: vec![trained_segment("trained")],
+        }
+    }
+
+    fn ann_seal(indexed_rows: u64) -> VectorIndexSealV1 {
+        VectorIndexSealV1 {
+            mode: VECTOR_INDEX_MODE_IVF_HNSW_SQ.to_string(),
+            library: "lancedb".to_string(),
+            library_version: "0.30.0".to_string(),
+            index_min_rows: 256,
+            ann: Some(ann_record(indexed_rows, trained_lineage(indexed_rows))),
+        }
+    }
+
+    /// An appended seal: trained on `trained` rows at generation 1,
+    /// `appended` rows assigned and `deleted` removed since, in `segments`
+    /// segments each recorded with the incremental builder's parameters.
+    fn appended_seal(
+        trained: u64,
+        appended: u64,
+        deleted: u64,
+        segments: u32,
+    ) -> VectorIndexSealV1 {
+        let mut ann = ann_record(
+            trained.saturating_add(appended).saturating_sub(deleted),
+            AnnIndexLineageV1 {
+                trained_at_generation: 1,
+                trained_rows: trained,
+                appended_rows: appended,
+                deleted_rows: deleted,
+                ..trained_lineage(trained)
+            },
+        );
+        ann.index_segments = segments;
+        ann.segments = (0..segments)
+            .map(|position| {
+                if position == 0 {
+                    trained_segment("trained")
+                } else {
+                    appended_segment(&format!("appended-{position}"))
+                }
+            })
+            .collect();
+        VectorIndexSealV1 {
+            ann: Some(ann),
+            ..ann_seal(trained)
+        }
+    }
+
+    fn with_lineage(
+        seal: &VectorIndexSealV1,
+        edit: impl FnOnce(&mut AnnIndexLineageV1),
+    ) -> VectorIndexSealV1 {
+        let mut edited = seal.clone();
+        if let Some(lineage) = edited.ann.as_mut().map(|ann| &mut ann.lineage) {
+            edit(lineage);
+        }
+        edited
+    }
+
+    fn with_ann(
+        seal: &VectorIndexSealV1,
+        edit: impl FnOnce(&mut AnnIndexSealV1),
+    ) -> VectorIndexSealV1 {
+        let mut edited = seal.clone();
+        if let Some(ann) = edited.ann.as_mut() {
+            edit(ann);
+        }
+        edited
+    }
+
+    fn exact_seal() -> VectorIndexSealV1 {
+        VectorIndexSealV1 {
+            mode: VECTOR_INDEX_MODE_EXACT.to_string(),
+            library: "lancedb".to_string(),
+            library_version: "0.30.0".to_string(),
+            index_min_rows: 256,
+            ann: None,
+        }
+    }
+
+    fn manifest(row_count: u64, vector_index: VectorIndexSealV1) -> SemanticManifest {
+        SemanticManifest {
+            format_version: FORMAT_VERSION,
             repo_id: "repo".to_string(),
             revision_id: "rev".to_string(),
-            generation: 7,
+            generation: GENERATION,
             manifest_digest: "manifest".to_string(),
             model_id: "model".to_string(),
             model_version: Some("rev-1".to_string()),
@@ -1248,149 +876,25 @@ mod tests {
             cluster_membership_root_digest: format!("sha256:{}", "1".repeat(64)),
             cluster_membership_cluster_count: 0,
             cluster_membership_member_row_count: 0,
+            vector_index,
         }
     }
 
-    /// The generation the fixtures seal; lineage records name it.
-    const GENERATION: u64 = 7;
-
-    fn current_capabilities() -> FormatCapabilitiesV1 {
-        format_capabilities_v1(FORMAT_VERSION).expect("current format is supported")
-    }
-
-    /// A lineage as a fresh train at [`GENERATION`] records it.
-    fn trained_lineage(rows: u64) -> AnnIndexLineageV1 {
-        AnnIndexLineageV1 {
-            trained_at_generation: GENERATION,
-            trained_rows: rows,
-            appended_rows: 0,
-            deleted_rows: 0,
-            append_ratio_max_per_mille: 250,
-            append_rows_max: 1 << 18,
-            append_segments_max: 8,
-        }
-    }
-
-    fn ann_record(indexed_rows: u64, lineage: Option<AnnIndexLineageV1>) -> AnnIndexSealV1 {
-        AnnIndexSealV1 {
-            index_name: "vector_ivf_hnsw_sq".to_string(),
-            distance: "cosine".to_string(),
-            num_partitions: 1,
-            sample_rate: 256,
-            max_iterations: 50,
-            hnsw_m: 20,
-            hnsw_ef_construction: 300,
-            indexed_rows,
-            index_segments: 1,
-            nprobes: 1,
-            ef_floor: 64,
-            ef_per_candidate: 2,
-            refine_factor: 2,
-            lineage,
-        }
-    }
-
-    fn ann_seal(indexed_rows: u64) -> VectorIndexSealV1 {
-        VectorIndexSealV1 {
-            mode: VECTOR_INDEX_MODE_IVF_HNSW_SQ.to_string(),
-            library: "lancedb".to_string(),
-            library_version: "0.30.0".to_string(),
-            index_min_rows: 256,
-            ann: Some(ann_record(
-                indexed_rows,
-                Some(trained_lineage(indexed_rows)),
-            )),
-        }
-    }
-
-    /// An appended seal: trained on `trained` rows at generation 1,
-    /// `appended` rows assigned and `deleted` removed since, in `segments`
-    /// segments.
-    fn appended_seal(
-        trained: u64,
-        appended: u64,
-        deleted: u64,
-        segments: u32,
-    ) -> VectorIndexSealV1 {
-        let mut ann = ann_record(
-            trained.saturating_add(appended).saturating_sub(deleted),
-            Some(AnnIndexLineageV1 {
-                trained_at_generation: 1,
-                trained_rows: trained,
-                appended_rows: appended,
-                deleted_rows: deleted,
-                ..trained_lineage(trained)
-            }),
-        );
-        ann.index_segments = segments;
-        VectorIndexSealV1 {
-            ann: Some(ann),
-            ..ann_seal(trained)
-        }
-    }
-
-    fn with_lineage(
-        seal: &VectorIndexSealV1,
-        edit: impl FnOnce(&mut AnnIndexLineageV1),
-    ) -> VectorIndexSealV1 {
-        let mut edited = seal.clone();
-        if let Some(lineage) = edited.ann.as_mut().and_then(|ann| ann.lineage.as_mut()) {
-            edit(lineage);
-        }
-        edited
-    }
-
-    fn exact_seal() -> VectorIndexSealV1 {
-        VectorIndexSealV1 {
-            mode: VECTOR_INDEX_MODE_EXACT.to_string(),
-            library: "lancedb".to_string(),
-            library_version: "0.30.0".to_string(),
-            index_min_rows: 256,
-            ann: None,
-        }
-    }
-
-    #[test]
-    fn format_v7_decodes_without_fabricating_a_vector_index_seal() {
-        let bytes = codec::encode(&v7_manifest(300), "legacy semantic manifest").expect("encode");
-        let decoded = SemanticManifest::decode(&bytes).expect("decode legacy");
-        assert_eq!(
-            decoded.format_version,
-            LEGACY_UNSEALED_VECTOR_INDEX_FORMAT_VERSION
-        );
-        assert!(decoded.vector_index.is_none());
-        assert_eq!(
-            decoded.semantic_row_root_digest,
-            format!("sha256:{}", "2".repeat(64))
-        );
-        let seal = decoded
-            .vector_index_seal()
-            .expect("a v7 manifest is supported");
-        assert!(seal.is_none(), "v7 has no seal to report");
-        decoded
-            .validate_scope(
-                &RepoId::new("repo"),
-                &RevisionId::new("rev"),
-                ManifestGeneration::new(7),
-            )
-            .expect("v7 row-root proof remains valid");
+    fn validate(manifest: &SemanticManifest) -> Result<(), CoreError> {
+        manifest.validate_scope(
+            &RepoId::new("repo"),
+            &RevisionId::new("rev"),
+            ManifestGeneration::new(GENERATION),
+        )
     }
 
     #[test]
     fn a_current_manifest_round_trips_its_vector_index_seal() {
-        let mut manifest =
-            SemanticManifest::decode(&codec::encode(&v7_manifest(300), "fixture").expect("encode"))
-                .expect("decode");
-        manifest.format_version = FORMAT_VERSION;
-        manifest.row_count = 357;
-        manifest.vector_index = Some(appended_seal(300, 60, 3, 2));
+        let manifest = manifest(357, appended_seal(300, 60, 3, 2));
         let bytes = manifest.encode().expect("encode current");
         let decoded = SemanticManifest::decode(&bytes).expect("decode current");
         assert_eq!(decoded.format_version, FORMAT_VERSION);
-        let seal = decoded
-            .vector_index_seal()
-            .expect("supported")
-            .expect("current format carries a seal");
+        let seal = &decoded.vector_index;
         assert_eq!(seal.mode, VECTOR_INDEX_MODE_IVF_HNSW_SQ);
         let ann = seal.ann.as_ref().expect("ann record");
         assert_eq!(ann.index_name, "vector_ivf_hnsw_sq");
@@ -1398,7 +902,7 @@ mod tests {
         assert_eq!((ann.hnsw_m, ann.hnsw_ef_construction), (20, 300));
         assert_eq!(
             ann.lineage,
-            Some(AnnIndexLineageV1 {
+            AnnIndexLineageV1 {
                 trained_at_generation: 1,
                 trained_rows: 300,
                 appended_rows: 60,
@@ -1406,239 +910,79 @@ mod tests {
                 append_ratio_max_per_mille: 250,
                 append_rows_max: 1 << 18,
                 append_segments_max: 8,
-            })
+            }
         );
-        decoded
-            .validate_scope(
-                &RepoId::new("repo"),
-                &RevisionId::new("rev"),
-                ManifestGeneration::new(GENERATION),
-            )
-            .expect("consistent seal");
-    }
-
-    /// The format-8 manifest as its own seal wrote it: an index contract
-    /// with no lineage inside.
-    fn v8_manifest(seal: Option<VectorIndexSealV8>) -> SemanticManifestV8 {
-        let base = v7_manifest(300);
-        SemanticManifestV8 {
-            format_version: LEGACY_UNRECORDED_ANN_LINEAGE_FORMAT_VERSION,
-            repo_id: base.repo_id,
-            revision_id: base.revision_id,
-            generation: base.generation,
-            manifest_digest: base.manifest_digest,
-            model_id: base.model_id,
-            model_version: base.model_version,
-            dimension: base.dimension,
-            distance_metric: base.distance_metric,
-            normalization: base.normalization,
-            row_count: base.row_count,
-            semantic_row_root_digest: base.semantic_row_root_digest,
-            built_at_unix_nanos: base.built_at_unix_nanos,
-            present_corpora: base.present_corpora,
-            required_corpora: base.required_corpora,
-            card_schema_versions: base.card_schema_versions,
-            render_policy_digests: base.render_policy_digests,
-            corpus_policy_digest: base.corpus_policy_digest,
-            cluster_membership_root_digest: base.cluster_membership_root_digest,
-            cluster_membership_cluster_count: base.cluster_membership_cluster_count,
-            cluster_membership_member_row_count: base.cluster_membership_member_row_count,
-            vector_index: seal,
-        }
-    }
-
-    fn v8_ann_seal(indexed_rows: u64) -> VectorIndexSealV8 {
-        VectorIndexSealV8 {
-            mode: VECTOR_INDEX_MODE_IVF_HNSW_SQ.to_string(),
-            library: "lancedb".to_string(),
-            library_version: "0.30.0".to_string(),
-            index_min_rows: 256,
-            ann: Some(AnnIndexSealV8 {
-                index_name: "vector_ivf_hnsw_sq".to_string(),
-                distance: "cosine".to_string(),
-                num_partitions: 1,
-                sample_rate: 256,
-                max_iterations: 50,
-                hnsw_m: 20,
-                hnsw_ef_construction: 300,
-                indexed_rows,
-                index_segments: 1,
-                nprobes: 1,
-                ef_floor: 64,
-                ef_per_candidate: 2,
-                refine_factor: 2,
-            }),
-        }
-    }
-
-    #[test]
-    fn format_v8_decodes_without_fabricating_an_index_lineage() {
-        let bytes = codec::encode(
-            &v8_manifest(Some(v8_ann_seal(300))),
-            "legacy semantic manifest",
-        )
-        .expect("encode");
-        let decoded = SemanticManifest::decode(&bytes).expect("decode legacy");
         assert_eq!(
-            decoded.format_version,
-            LEGACY_UNRECORDED_ANN_LINEAGE_FORMAT_VERSION
+            ann.appended_segments(),
+            [appended_segment("appended-1")],
+            "the appended segment is recorded with the builder's own parameters"
         );
-        let seal = decoded
-            .vector_index_seal()
-            .expect("a v8 manifest is supported")
-            .expect("v8 carries a seal");
-        let ann = seal.ann.as_ref().expect("v8 seal carries its index record");
-        assert_eq!(ann.indexed_rows, 300);
-        assert_eq!(
-            ann.lineage, None,
-            "v8 recorded no lineage; none is invented"
-        );
-        decoded
-            .validate_scope(
-                &RepoId::new("repo"),
-                &RevisionId::new("rev"),
-                ManifestGeneration::new(GENERATION),
-            )
-            .expect("a v8 seal without lineage is what its format carries");
-
-        // A v8 manifest with an exact seal has no index record to widen and
-        // decodes through the current shape directly.
-        let exact = v8_manifest(Some(VectorIndexSealV8 {
-            mode: VECTOR_INDEX_MODE_EXACT.to_string(),
-            library: "lancedb".to_string(),
-            library_version: "0.30.0".to_string(),
-            index_min_rows: 256,
-            ann: None,
-        }));
-        let mut exact = SemanticManifest::decode(
-            &codec::encode(&exact, "legacy semantic manifest").expect("encode"),
-        )
-        .expect("decode legacy exact");
-        exact.row_count = 12;
-        assert_eq!(exact.vector_index, Some(exact_seal()));
-        exact
-            .validate_scope(
-                &RepoId::new("repo"),
-                &RevisionId::new("rev"),
-                ManifestGeneration::new(GENERATION),
-            )
-            .expect("a v8 exact seal validates");
+        validate(&decoded).expect("consistent seal");
     }
 
+    /// Every other format — older, newer, or a shape that names the
+    /// current format but is not it — is refused typed, never decoded
+    /// through an older shape.
     #[test]
-    fn a_lineage_record_must_match_its_format() {
-        let base = || {
-            SemanticManifest::decode(&codec::encode(&v7_manifest(300), "fixture").expect("encode"))
-                .expect("decode")
+    fn every_other_format_is_refused_typed_with_a_rebuild_instruction() {
+        let typed = |bytes: &[u8]| match SemanticManifest::decode(bytes) {
+            Err(CoreError::Typed { code, message }) => Some((code, message)),
+            _ => None,
         };
-        // Current format without a lineage record.
-        let mut unrecorded = base();
-        unrecorded.format_version = FORMAT_VERSION;
-        unrecorded.vector_index = Some(VectorIndexSealV1 {
-            ann: Some(ann_record(300, None)),
-            ..ann_seal(300)
-        });
-        let error = unrecorded
-            .validate_scope(
-                &RepoId::new("repo"),
-                &RevisionId::new("rev"),
-                ManifestGeneration::new(GENERATION),
+        for foreign in [1_u32, 2, 3, 7, 8, 9, FORMAT_VERSION.saturating_add(1)] {
+            // A map that only names the format: what an older or newer
+            // writer's shape has in common with this one.
+            let mut bytes = Vec::new();
+            ciborium::into_writer(
+                &ciborium::value::Value::Map(vec![
+                    (
+                        ciborium::value::Value::Text("format_version".to_string()),
+                        ciborium::value::Value::Integer(foreign.into()),
+                    ),
+                    (
+                        ciborium::value::Value::Text("repo_id".to_string()),
+                        ciborium::value::Value::Text("repo".to_string()),
+                    ),
+                ]),
+                &mut bytes,
             )
-            .expect_err("format 9 without a lineage record");
-        assert!(
-            error
-                .to_string()
-                .contains("requires an index lineage record"),
-            "{error}"
-        );
-        // Format 8 carrying a lineage record it could not have written.
-        let mut predated = base();
-        predated.format_version = LEGACY_UNRECORDED_ANN_LINEAGE_FORMAT_VERSION;
-        predated.vector_index = Some(ann_seal(300));
-        let error = predated
-            .validate_scope(
-                &RepoId::new("repo"),
-                &RevisionId::new("rev"),
-                ManifestGeneration::new(GENERATION),
-            )
-            .expect_err("format 8 with a lineage record");
-        assert!(
-            error
-                .to_string()
-                .contains("predates the index lineage record it carries"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn a_current_manifest_without_a_seal_is_refused() {
-        let mut manifest =
-            SemanticManifest::decode(&codec::encode(&v7_manifest(300), "fixture").expect("encode"))
-                .expect("decode");
-        manifest.format_version = FORMAT_VERSION;
-        let error = manifest
-            .validate_scope(
-                &RepoId::new("repo"),
-                &RevisionId::new("rev"),
-                ManifestGeneration::new(GENERATION),
-            )
-            .expect_err("format 9 without a seal");
-        assert!(
-            error.to_string().contains("requires a vector index seal"),
-            "{error}"
-        );
-    }
-
-    fn capability_bits(capabilities: FormatCapabilitiesV1) -> [bool; 7] {
-        [
-            capabilities.build_contract(),
-            capabilities.corpus_metadata(),
-            capabilities.membership_commitment(),
-            capabilities.semantic_row_root(),
-            capabilities.file_commitment(),
-            capabilities.vector_index_seal(),
-            capabilities.ann_lineage(),
-        ]
-    }
-
-    #[test]
-    fn format_capabilities_are_monotone_and_bounded() {
-        assert!(format_capabilities_v1(1).is_none());
-        assert!(format_capabilities_v1(FORMAT_VERSION.saturating_add(1)).is_none());
-        let v2 = format_capabilities_v1(2).expect("v2");
-        assert_eq!(capability_bits(v2), [false; 7]);
-        let v7 = format_capabilities_v1(7).expect("v7");
-        assert_eq!(
-            capability_bits(v7),
-            [true, true, true, true, true, false, false]
-        );
-        let v8 = format_capabilities_v1(8).expect("v8");
-        assert_eq!(
-            capability_bits(v8),
-            [true, true, true, true, true, true, false]
-        );
-        let v9 = format_capabilities_v1(9).expect("v9");
-        assert_eq!(capability_bits(v9), [true; 7]);
-        // Each capability, once gained, is never lost by a later format.
-        let mut previous = capability_bits(v2);
-        for version in 3..=FORMAT_VERSION {
-            let current = capability_bits(format_capabilities_v1(version).expect("supported"));
+            .expect("encode probe");
+            let (code, message) =
+                typed(&bytes).unwrap_or_else(|| panic!("format {foreign} must be refused typed"));
+            assert_eq!(code, FORMAT_UNSUPPORTED_CODE);
+            assert!(message.contains("rebuild"), "{message}");
             assert!(
-                previous
-                    .iter()
-                    .zip(current.iter())
-                    .all(|(before, after)| !before || *after),
-                "format {version} lost a capability: {previous:?} -> {current:?}"
+                message.contains(&format!("format version {foreign}")),
+                "{message}"
             );
-            previous = current;
         }
+        // The current format with a missing field is corrupt, not foreign.
+        let mut bytes = Vec::new();
+        ciborium::into_writer(
+            &ciborium::value::Value::Map(vec![(
+                ciborium::value::Value::Text("format_version".to_string()),
+                ciborium::value::Value::Integer(FORMAT_VERSION.into()),
+            )]),
+            &mut bytes,
+        )
+        .expect("encode probe");
+        assert!(matches!(
+            SemanticManifest::decode(&bytes),
+            Err(CoreError::Storage(_))
+        ));
+        // A decoded manifest whose field disagrees with the format it
+        // decoded under is refused by validation as well.
+        let mut stale = manifest(300, ann_seal(300));
+        stale.format_version = 9;
+        assert!(matches!(
+            validate(&stale),
+            Err(CoreError::Typed { code, .. }) if code == FORMAT_UNSUPPORTED_CODE
+        ));
     }
 
     #[test]
     fn the_vector_index_seal_refuses_every_contradiction() {
-        let validate = |seal: &VectorIndexSealV1, rows: u64| {
-            seal.validate(rows, GENERATION, current_capabilities())
-        };
+        let validate = |seal: &VectorIndexSealV1, rows: u64| seal.validate(rows, GENERATION);
         validate(&exact_seal(), 255).expect("exact below the floor");
         validate(&ann_seal(256), 256).expect("ann at the floor");
         let cases: Vec<(&str, VectorIndexSealV1, u64)> = vec![
@@ -1677,28 +1021,96 @@ mod tests {
                 },
                 10,
             ),
+            (
+                "dot distance",
+                with_ann(&ann_seal(300), |ann| ann.distance = "dot".to_string()),
+                300,
+            ),
+            (
+                "nprobes beyond partitions",
+                with_ann(&ann_seal(300), |ann| ann.nprobes = 2),
+                300,
+            ),
+            (
+                "zero refine factor",
+                with_ann(&ann_seal(300), |ann| ann.refine_factor = 0),
+                300,
+            ),
         ];
         for (label, seal, rows) in cases {
             assert!(validate(&seal, rows).is_err(), "{label} must be refused");
         }
-        let mut wrong_distance = ann_seal(300);
-        if let Some(ann) = wrong_distance.ann.as_mut() {
-            ann.distance = "dot".to_string();
+    }
+
+    /// The segment record must describe every segment as the library
+    /// built it.
+    ///
+    /// The trained segment carries the recipe, and a record that claims the
+    /// recipe for an appended segment, or that names fewer segments than
+    /// exist, is refused.
+    #[test]
+    fn the_segment_record_refuses_a_recipe_claimed_for_segments_not_built_with_it() {
+        let validate = |seal: &VectorIndexSealV1| {
+            let rows = seal.ann.as_ref().map_or(0, |ann| ann.indexed_rows);
+            seal.validate(rows, GENERATION)
+        };
+        validate(&appended_seal(300, 60, 3, 3)).expect("appended segments recorded verbatim");
+        let refused: Vec<(&str, VectorIndexSealV1, &str)> = vec![
+            (
+                "fewer records than segments",
+                with_ann(&appended_seal(300, 60, 3, 3), |ann| {
+                    let _dropped = ann.segments.pop();
+                }),
+                "segment records for 3 segments",
+            ),
+            (
+                "no records at all",
+                with_ann(&ann_seal(300), |ann| ann.segments.clear()),
+                "segment records for 1 segments",
+            ),
+            (
+                "the trained segment does not carry the recipe",
+                with_ann(&ann_seal(300), |ann| {
+                    ann.segments = vec![appended_segment("trained")];
+                }),
+                "the trained segment trained was built with m=20 ef_construction=150",
+            ),
+            (
+                "a segment without an identity",
+                with_ann(&ann_seal(300), |ann| {
+                    ann.segments = vec![trained_segment("")];
+                }),
+                "has no identity",
+            ),
+            (
+                "a segment recorded twice",
+                with_ann(&appended_seal(300, 60, 3, 2), |ann| {
+                    ann.segments = vec![trained_segment("same"), appended_segment("same")];
+                }),
+                "recorded twice",
+            ),
+            (
+                "a zero graph parameter",
+                with_ann(&appended_seal(300, 60, 3, 2), |ann| {
+                    ann.segments = vec![
+                        trained_segment("trained"),
+                        AnnIndexSegmentSealV1 {
+                            uuid: "appended".to_string(),
+                            hnsw_m: 20,
+                            hnsw_ef_construction: 0,
+                        },
+                    ];
+                }),
+                "zero graph parameter",
+            ),
+        ];
+        for (label, seal, expected) in refused {
+            let error = validate(&seal).expect_err(label);
+            assert!(
+                error.to_string().contains(expected),
+                "{label}: expected `{expected}` in `{error}`"
+            );
         }
-        assert!(validate(&wrong_distance, 300).is_err(), "dot distance");
-        let mut too_many_probes = ann_seal(300);
-        if let Some(ann) = too_many_probes.ann.as_mut() {
-            ann.nprobes = 2;
-        }
-        assert!(
-            validate(&too_many_probes, 300).is_err(),
-            "nprobes beyond partitions"
-        );
-        let mut zero_refine = ann_seal(300);
-        if let Some(ann) = zero_refine.ann.as_mut() {
-            ann.refine_factor = 0;
-        }
-        assert!(validate(&zero_refine, 300).is_err(), "zero refine factor");
     }
 
     /// The lineage record validates on its own arithmetic and against the
@@ -1708,7 +1120,7 @@ mod tests {
     fn the_index_lineage_refuses_every_contradiction() {
         let validate = |seal: &VectorIndexSealV1| {
             let rows = seal.ann.as_ref().map_or(0, |ann| ann.indexed_rows);
-            seal.validate(rows, GENERATION, current_capabilities())
+            seal.validate(rows, GENERATION)
         };
         // Within budget: 60 of 300 is 200 per mille, two segments.
         validate(&appended_seal(300, 60, 3, 2)).expect("an append inside the budget");

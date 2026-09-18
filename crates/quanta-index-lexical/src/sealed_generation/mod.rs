@@ -16,6 +16,9 @@ pub use seal::LexicalSealCommitmentStats;
 
 pub(crate) use manifest::{LEXICAL_SEALED_MANIFEST_FILE_NAME, manifest_path, read_manifest};
 pub(crate) use overlay::{OverlayFamily, persist_overlay, remove_overlay};
-pub(crate) use scrub::{LEXICAL_SCRUB_RECEIPT_FILE_NAME, scrub_sealed_generation, scrub_status};
+pub(crate) use scrub::{
+    LEXICAL_QUARANTINE_RECEIPT_FILE_NAME, LEXICAL_SCRUB_RECEIPT_FILE_NAME, last_completed_scrub,
+    quarantined_by_scrub, refuse_if_quarantined, scrub_step,
+};
 pub(crate) use seal::seal_generation;
 pub(crate) use verify::{DiscardingVisitor, SealedGenerationVisitor, walk_sealed_generation};

@@ -599,6 +599,12 @@ owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "searchd-runtime-e2e-integrity-scrub"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_integrity_scrub.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "searchd-runtime-e2e-ingest-idempotency"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_ingest_idempotency.rs"
 owner = "quanta-index-searchd-runtime"

@@ -116,6 +116,7 @@ fn prepared_search_corpus_generation_rejects_single_track_and_mixed_identity() -
     let single_track = SearchCorpusGenerationV1::new(
         corpus_snapshot(SearchPlaneTrackKind::Lexical, 17, "digest-17"),
         corpus_snapshot(SearchPlaneTrackKind::Lexical, 17, "digest-17"),
+        crate::content_roots_test_support::roots_for_generation(17),
     );
     let Err(CoreError::InvalidContract(single_track_message)) = single_track else {
         return Err("lexical-only corpus generation unexpectedly constructed".into());
@@ -125,6 +126,7 @@ fn prepared_search_corpus_generation_rejects_single_track_and_mixed_identity() -
     let mixed_identity = SearchCorpusGenerationV1::new(
         corpus_snapshot(SearchPlaneTrackKind::Lexical, 17, "digest-17"),
         corpus_snapshot(SearchPlaneTrackKind::Semantic, 18, "digest-18"),
+        crate::content_roots_test_support::roots_for_generation(17),
     );
     let Err(CoreError::InvalidContract(mixed_identity_message)) = mixed_identity else {
         return Err("mixed corpus generation unexpectedly constructed".into());
@@ -146,6 +148,7 @@ fn prepared_search_corpus_generation_rejects_single_track_and_mixed_identity() -
             manifest_generation: ManifestGeneration::new(17),
             manifest_digest: "digest-17".to_string(),
         },
+        crate::content_roots_test_support::roots_for_generation(17),
     )?;
     let mismatched_expected = PreparedSearchCorpusGenerationV1::new(
         corpus_generation(17, "digest-17")?,

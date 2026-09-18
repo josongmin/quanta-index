@@ -586,6 +586,7 @@ fn retention_required_set_exhaustion_preserves_activation_and_history_v1() -> Te
             manifest_generation: ManifestGeneration::new(1),
             manifest_digest: active_digest.to_string(),
         },
+        crate::content_roots_test_support::roots_for_generation(1),
     )?;
     let _history = store.record_sealed_search_corpus(
         &repo,
