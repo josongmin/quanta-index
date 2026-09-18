@@ -315,7 +315,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) + **QI-BB-025 보완 #4 runtime/structural window(§3.30)** + **keyset cursor + streaming collector(§3.39)** 완료. 남은 것: 없음(W4 항목 전부 착지; history selector의 collector 이관은 §3.39 한계 b) |
 | W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. QI-BB-014 UDS/state-root private hardening(§3.27) 완료. QI-BB-015 metrics 집계 + scrape(§3.28) 완료. **phase 2(§3.29): budget이 lexical native collect/scan/regex verify/predicate scope 안에서 관측** 완료. + **shared socket mode + peer credential(§3.40)** 완료. + **phase 3 dense lane 내부 관측(§3.43)** 완료. 남은 것: 없음(W5 항목 전부 착지) |
 | W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + QI-BB-018 true hybrid(§3.22) + QI-BB-022 explain = exact presence + lexical score trace(§3.24) + **QI-BB-008 RepoMap bounded query + durable store(§3.25)** 완료. + **hybrid per-lane contribution(§3.36)** + **history relevance order(§3.42)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), judged corpus recall/NDCG gate(§3.22 한계, M4 의존) |
-| W7 | planned | |
+| W7 | in_progress | **legacy 경로 감사 + dead op/helper 삭제 + repo-map top_k 잔재 수정 + consumer/wire inventory gate(§3.45)** 완료. blocked: perf/qualification gate(quiet Linux host), producer roundtrip + wire version cut(release), C4 cutover, semantic legacy format 정리(F2, 제품 결정) |
 | C1 | planned | |
 | C2 | planned | |
 | C3 | planned | |
@@ -2225,6 +2225,47 @@ ledger에 손을 댔다. 없는 authority는 첫 read가 일어나는 곳에서 
 `lowering.rs::structural_route_supports_predicate`는 아직 문자열로 이름을 enumerate — core enum으로 바꾸면 SG structural route가 `repo.contains.file/path`·
 `file.contains.content`로 넓어지는 행동 변화라 parity 증명이 필요(미착수). (d) `HistoryPageSelector` vs `KeysetPageCollector` 중복(§3.39 b) 그대로.
 
+## 3.45 W7 — legacy 경로 감사와 consumer/wire inventory (코드 측 완료; 호스트·데이터 의존 gate는 blocked)
+
+plan §11의 "교체 완료 시 남기면 안 되는 경로" 10행을 현재 tree에 대해 `path:line` 근거로 감사하고, 죽은 것은 지웠다.
+
+| # | §11 행 | 대체(존재) | 남은 legacy site | 판정 |
+| --- | --- | --- | --- | --- |
+| 1 | Ledger 전 세대 clone + multi-CBOR persist | `catalog/src/auxiliary.rs` row transaction, `auxiliary_authority.rs` `*_transition → *_delta_rows`, `readiness/aux_epoch.rs`(imbl, epoch) | `migrate_legacy_auxiliary_snapshots`(one-shot, `state.cbor` 삭제, test 있음) — **정당, 유지**; `Ledger::apply_search_corpus_batch`/`apply_structural_batch` caller 0 → **삭제**; `apply_lexical_authority_op` + in-memory `apply_*_batch`는 test-only 대체 write path(fixture가 `query_dispatcher/tests/**`에 있음) — **미삭제(F1)** | 교체됨, dead pair 삭제 |
+| 2 | file activation/authority vs DB dual authority | serve-head 권위는 `ActivationCatalog`(`--corpus.json`)뿐; `SqliteCatalog`는 idempotency+aux row; `AuxiliaryAuthorityStore`는 rollback history + migration | 없음(어떤 fact도 두 store에 쓰이지 않음). plan §5.1의 "activation row를 catalog에"는 미구현 — dual-write 잔재가 아니라 **설계 gap(F6)** | dual authority 없음 |
+| 3 | `validate_generation_identity → () → open` (query 경로) | `query_dispatcher/read_view/snapshots.rs` `SnapshotRegistry::acquire`(single-flight, byte-bounded); open/validate가 `verify_lexical_sealed_manifest` 공유 | caller는 activation(`search_corpus_lifecycle.rs`), delta-base preflight(`generation_plan.rs`), control뿐 — query route 0 | 교체됨 |
+| 4 | lexical full-dir copy / whole-text sidecar rebuild | `inherit_generation_entry`(hard link, copy fallback 없음); sharded text-authority(§3.38); format-2 typed 거부 | `Rebuild` trigger 중 `UpsertChunk`는 production constructor 없음(test fixture만; K 영역) — **미삭제(F1)**; `DeleteChunk` 포함 never-constructed op **10개 삭제** | 교체됨 |
+| 5 | semantic dataset full-copy / 무조건 ANN rebuild | `inherit_dataset_tree`(hard link), ANN append(§3.35) | **legacy read-compat family 생존**: manifest format 2..=8 decoder(`SemanticManifestV8/V7/V6/V5/V3` + cascading `if let Ok(legacy)`), build contract v1, `DenseLaneAttestationV1::LegacyUnverified`/`DenseIndexLineageV1::Unrecorded`, ≈300 ref/13 file, test로 pin. lexical은 반대(typed 거부, rebuild=migration)를 택했음. `LegacySemanticJournalStore`는 one-shot — 유지 | 현재 format은 교체됨; **legacy fallback read path는 load-bearing + 제품 결정이라 미삭제(F2, C4 state-root freeze와 함께 권고)** |
+| 6 | dispatcher별 top-k/lookahead/count/scope cap | `contract-base/query/top_k.rs` + 8 route의 `validate_query_top_k`/`probe_top_k_v1`, scope cap(§3.6), count budget(§3.8), keyset(§3.39) | **잔재 발견**: repo-map route의 자체 check(`repomap/policy.rs`)가 `top_k == 0`만 `InvalidContract`로 거부, 상한 없음 → **수정**: 공유 validator로 위임, 양끝 `QUERY_TOP_K_OUT_OF_RANGE`, unit test(0/MAX+1/u32::MAX 거부, 1/MAX 허용) | 교체됨, 잔재 1 수정 |
+| 7 | serial inline dispatch / adapter별 중첩 runtime | `ipc/server.rs` connection별 thread + `DispatchSlots`; budget이 lexical(§3.29)·dense(§3.43) 안에서 관측 | `SemanticAdapter`당 runtime 1개, `run_blocking` seam 하나; per-call runtime은 legacy journal migration의 `validate_persisted_generation_v2`(one-shot)뿐; 나머지는 `#[cfg(test)]` | 교체됨(요청당 nested runtime 없음); adapter 간 공유 executor 없음·probe 중복은 설계 잔여 |
+| 8 | Legacy/v2 HybridSeed 이중 payload + 중복 vector 호출 | 단일 `seed_candidates`(decoder가 `seed_candidates_v2` 거부), dense lane 1회, `fuse_rrf_candidates` | 없음(`grep seed_candidates_v2\|HybridSeedCandidate\|…` → fail-closed test만) | 교체됨, 0 |
+| 9 | snippet explain / SHA-first history top-k / whole RepoMap clone | `routes/explain.rs` presence+trace; `HistoryRank`/`HistoryPageSelector` + relevance index(§3.42); `repomap/store.rs` `Arc<RepoMapIndexedSnapshot>` 공유 + bounded engine | 없음 | 교체됨 |
+| 10 | old cache identity / raw vector overwrite / unbounded samples·errors | `EmbeddingCacheIdentityV1`, entry format v2 magic+digest, `BoundedRing`(4,096/256), telemetry ring 256 | `reclaim_legacy_shards`(v1 shard dir one-shot GC, test 있음) — 유지 | 교체됨 |
+
+**추가 산출물**: `tools/ci/inventory/wire-surface.toml`(IPC enum 6/variant 65, on-disk artifact 18 — owner, state-root 경로, version 상수, 재생산
+class: `producer-rebuild`/`offline-importer`/`migration-input-only`/`cache`/`vendor-native`) + `tools/ci/lint/check-wire-inventory.py`(code의
+`SearchPlane*Ipc{Request,Response}` variant와 `*FORMAT_VERSION`/`*_FORMAT`/`*SCHEMA_V<n>`/`*CONTRACT_VERSION`/normalizer stamp 상수가 inventory에 정확히
+한 행씩, 값까지 일치; `#[cfg(test)]` 상수 skip; parse 실패는 finding) + pytest 15(그중 1개는 committed inventory를 repo에 대조), `just rust-wire-inventory`
+(`rust-policy`에 포함), pre-push hook, CI job, prompt-manager source 갱신(`pm.py sync`/`lint`/pytest 7 green — `CLAUDE.md`/`AGENT_RULE_CATALOG.md`는
+생성물). SDK guard `contract_channel_surface_keeps_the_deleted_auxiliary_op_names_out_v1`(삭제된 contract symbol 이름, 구현 문자열 아님).
+
+**검증**: `just rust-clippy` 0, `just rust-doc`, fmt, semgrep 0, 정책 rail 11/11 + `rust-wire-inventory`, public-api(contract −500: 삭제된 type과
+dead serde뿐)·cargo-modules(contract −36/+1) update, contract/core/search-plane/lexical/sdk/repomap/lq-trigram/lq-positions **1,178/0**, pytest
+inventory 15. main rebase(7b7d526 위, 충돌 0) 후 check + baselines 불변 + inventory 일치 + unit 1,034 + e2e 4 target 73 + pytest 15 + rust-doc +
+`just rust-clippy` 0. 이어서 coordinator가 `tools/ci/tests`의 static fence 9개(§3.32 분할로 `readiness.rs`가 사라져 pre-existing 실패, CI job에는
+미연결)를 분할 module 경로·현재 symbol로 retarget(4b9d6ee): **pytest tools/ci/tests 196/196**.
+
+**W7에서 여전히 blocked(호스트/데이터/owner)**: perf gate(§3.7/§3.8/§3.18/§3.19/§3.39/§3.41 RSS·latency — quiet Linux host + 큰 fixture);
+외부 producer exact-head roundtrip + wire version cut(plan §11.5 — producer/SDK release); C4 cutover(별도 state root에서 offline freeze/export/import —
+inventory가 importer 필요 항목(activation catalog, search-corpus rollback history, `catalog-v1.sqlite` idempotency+aux rows, repo-map activation) vs
+producer-rebuild(lexical/semantic generation, history-text epoch, repo-map snapshot) vs migration-input-only(legacy aux snapshot, legacy semantic journal)
+vs cache(embed cache)를 이름함); judged-corpus recall/NDCG(M4); crash-injection matrix(§12.2); Linux 전용 `SO_PEERCRED` branch compile.
+
+**후속(F)**: F1 `lexical/tests/*`·`query_dispatcher/tests/support/*` fixture를 `build_batch`/`apply_*_batch`로 옮긴 뒤 test-only op 6개·
+`apply_lexical_authority_op`·in-memory `apply_*_batch` 삭제; F2 semantic format 2–8 + build contract v1 + `LegacyUnverified`/`Unrecorded`를 typed 거부로
+(rebuild = migration, C4에서); F3 `acquire_lexical/acquire_semantic` mirror·`HistoryPageSelector` vs `KeysetPageCollector`·`SemanticSearcher` mirror pair;
+F4 repo-map을 top_k truth table harness에; F6 plan §5.1 activation/snapshot row를 catalog에(설계, W2/C2).
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -2293,4 +2334,6 @@ ledger에 손을 댔다. 없는 authority는 첫 read가 일어나는 곳에서 
 | 2026-09-18 | worktree M (bb52143→24caa1f rebase, 충돌 1) | agent: core/search-plane/searchd/harness/semantic 686 + daemon e2e 전체 252 + `just rust-clippy` 0 + fmt + 정책 rail + semgrep 0; rebase 후 baselines 불변 + unit 695 + e2e 88 + rust-doc + `just rust-clippy` 0 | 전부 green (§3.43) |
 | 2026-09-18 | 81a30ad | `just rust-profile verify-rust` (nohup) | **GREEN** — exit 0, **2,344 passed / 0 failed** (sharded sidecar + keyset cursor + shared socket + streamed embed + history relevance + dense-lane budget 통합; clippy·semgrep·deny·machete·bench-build·doc·policy·public-api·hexagonal·test-authority 포함) |
 | 2026-09-18 | worktree K (cad9416→59fa681 rebase) | agent: workspace(runtime 제외) 2,114 + searchd-runtime 255 + `just rust-clippy` 0 + fmt + 정책 rail + semgrep 0 + cargo-modules update + public-api 불변 + dsl-capability-truth; rebase 후 baselines 불변 + unit 467 + e2e 75 + rust-doc + `just rust-clippy` 0 | 전부 green (§3.44) |
+| 2026-09-18 | worktree L (81a30ad→7b7d526 rebase) | agent: `just rust-clippy` 0 + rust-doc + fmt + semgrep 0 + 정책 rail 11 + wire-inventory + public-api/cargo-modules update + 8 crate 1,178 + pytest 15; rebase 후 check + baselines 불변 + inventory + unit 1,034 + e2e 73 + pytest 15 + rust-doc + `just rust-clippy` 0 | 전부 green (§3.45) |
+| 2026-09-18 | 4b9d6ee | `python3 -m pytest tools/ci/tests -q` | 196 passed (static fence 9개 retarget 후) |
 | 2026-09-18 | worktree 011 (7a5ce5e→034c4fd rebase) | agent: workspace clippy(0) + lexical 15 target·lq-norm 88·search-plane 285 + e2e text_route_hellgate 8·perf_chaos 43·dsl_scenarios 8·lexical_full_fidelity 1·dual_syntax_parity 4·full_corpus 4 + harness 77 + hexagonal/semgrep/module/error-shape/cargo-toml/derive/test-authority/deny; rebase 후 lexical carryforward 6 + goldens 8 | 전부 green (§3.33) |
