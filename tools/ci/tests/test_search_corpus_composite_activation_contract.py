@@ -3,12 +3,13 @@
 import re
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[3]
 CONTRACT_CONTROL = ROOT / "crates/quanta-index-contract/src/ipc/control.rs"
 CONTRACT_SPLIT = ROOT / "crates/quanta-index-contract/src/ipc/split.rs"
 DISPATCHER = ROOT / "crates/quanta-index-search-plane/src/control_dispatcher.rs"
-READINESS = ROOT / "crates/quanta-index-search-plane/src/readiness.rs"
+# The readiness module is a directory since the QI-BB-013 split; the fence
+# reads every production file of it as one text.
+READINESS_DIR = ROOT / "crates/quanta-index-search-plane/src/readiness"
 SDK_CLIENT = ROOT / "crates/quanta-index-sdk/src/client.rs"
 SDK_CORPUS = ROOT / "crates/quanta-index-sdk/src/lexical.rs"
 SDK_GENERATIONS = ROOT / "crates/quanta-index-sdk/src/generations.rs"
@@ -23,17 +24,22 @@ ROLLBACK_PRODUCTION_ROOTS = (
     ROOT / "crates/quanta-index-searchd-runtime/src",
     ROOT / "crates/quanta-index-searchctl/src",
 )
-IPC_REQUEST_FUZZ = (
-    ROOT / "crates/quanta-index-contract/fuzz/fuzz_targets/ipc_request_decode.rs"
-)
-IPC_RESPONSE_FUZZ = (
-    ROOT / "crates/quanta-index-contract/fuzz/fuzz_targets/ipc_response_decode.rs"
-)
+IPC_REQUEST_FUZZ = ROOT / "crates/quanta-index-contract/fuzz/fuzz_targets/ipc_request_decode.rs"
+IPC_RESPONSE_FUZZ = ROOT / "crates/quanta-index-contract/fuzz/fuzz_targets/ipc_response_decode.rs"
 COMPOSITE_CONTROL_FUZZ_DICTIONARY = (
-    ROOT
-    / "crates/quanta-index-contract/fuzz/dictionaries/composite_search_corpus_control.dict"
+    ROOT / "crates/quanta-index-contract/fuzz/dictionaries/composite_search_corpus_control.dict"
 )
 JUSTFILE = ROOT / "Justfile"
+
+
+def read_readiness() -> str:
+    files = sorted(
+        path
+        for path in READINESS_DIR.rglob("*.rs")
+        if "tests" not in path.relative_to(READINESS_DIR).parts
+    )
+    assert files, f"no readiness sources under {READINESS_DIR}"
+    return "\n".join(path.read_text(encoding="utf-8") for path in files)
 
 
 def read_source(path: Path) -> str:
@@ -41,11 +47,7 @@ def read_source(path: Path) -> str:
 
 
 def read_rust_corpus(roots: tuple[Path, ...]) -> str:
-    return "\n".join(
-        read_source(path)
-        for root in roots
-        for path in sorted(root.rglob("*.rs"))
-    )
+    return "\n".join(read_source(path) for root in roots for path in sorted(root.rglob("*.rs")))
 
 
 def test_single_track_activation_contract_and_dispatch_are_removed_v1() -> None:
@@ -68,8 +70,7 @@ def test_single_track_activation_contract_and_dispatch_are_removed_v1() -> None:
         "ActivationCasAck(",
     ):
         assert not any(
-            line.strip().startswith(legacy_variant_prefix)
-            for line in split.splitlines()
+            line.strip().startswith(legacy_variant_prefix) for line in split.splitlines()
         ), legacy_variant_prefix
 
     assert "ActivateGenerationCas(request)" not in dispatcher
@@ -90,7 +91,6 @@ def test_sdk_only_emits_composite_activation_ingress_v1() -> None:
 def test_rollback_contract_is_composite_only_v1() -> None:
     control = read_source(CONTRACT_CONTROL)
     split = read_source(CONTRACT_SPLIT)
-    generations = read_source(SDK_GENERATIONS)
     sdk_sources = "\n".join(
         read_source(path)
         for path in (SDK_CLIENT, SDK_CORPUS, SDK_GENERATIONS, SDK_LIB, SDK_REPOMAP)
@@ -107,8 +107,7 @@ def test_rollback_contract_is_composite_only_v1() -> None:
 
     for legacy_variant_prefix in ("RollbackGeneration(", "RollbackAck("):
         assert not any(
-            line.strip().startswith(legacy_variant_prefix)
-            for line in split.splitlines()
+            line.strip().startswith(legacy_variant_prefix) for line in split.splitlines()
         ), legacy_variant_prefix
         assert legacy_variant_prefix not in production_sources, legacy_variant_prefix
 
@@ -132,8 +131,10 @@ def test_rollback_contract_is_composite_only_v1() -> None:
     assert "RollbackSearchCorpusGenerationCas" in sdk_sources
     assert "SearchCorpusRollbackCasAck" in sdk_sources
 
-    for runtime_owner in (DISPATCHER, READINESS):
-        source = read_source(runtime_owner)
+    for runtime_owner, source in (
+        (DISPATCHER, read_source(DISPATCHER)),
+        (READINESS_DIR, read_readiness()),
+    ):
         assert "request.validate_v1()" in source, runtime_owner
         assert "expected_active.repo_id() != target.repo_id()" not in source, runtime_owner
         assert "target.manifest_generation().get() >=" not in source, runtime_owner
@@ -181,7 +182,9 @@ def test_sdk_search_corpus_receipt_is_exact_bound_before_activation_v1() -> None
         "accepted_clear_surfaces",
     ):
         assert f"receipt.{field}" in corpus, field
-    assert "producer_client_rejects_each_search_corpus_receipt_mismatch_before_activation_v1" in tests
+    assert (
+        "producer_client_rejects_each_search_corpus_receipt_mismatch_before_activation_v1" in tests
+    )
     assert "control request" in tests
 
 
@@ -200,17 +203,13 @@ def test_existing_ipc_fuzz_targets_decode_composite_control_dtos_directly_v1() -
         "SearchPlaneActivateSearchCorpusGenerationCasRequest",
         "SearchPlaneRollbackSearchCorpusGenerationCasRequest",
     ):
-        assert re.search(
-            rf"from_reader::<\s*{request_type}\s*,", request_fuzz
-        ), request_type
+        assert re.search(rf"from_reader::<\s*{request_type}\s*,", request_fuzz), request_type
 
     for response_type in (
         "SearchPlaneSearchCorpusActivationCasAck",
         "SearchPlaneSearchCorpusRollbackCasAck",
     ):
-        assert re.search(
-            rf"from_reader::<\s*{response_type}\s*,", response_fuzz
-        ), response_type
+        assert re.search(rf"from_reader::<\s*{response_type}\s*,", response_fuzz), response_type
 
     assert request_fuzz.count(".validate_v1()") >= 3
     assert response_fuzz.count(".validate_v1()") >= 4

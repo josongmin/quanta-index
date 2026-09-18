@@ -2,18 +2,18 @@
 
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[3]
 PLANE = ROOT / "crates/quanta-index-search-plane/src"
 LIFECYCLE = PLANE / "search_corpus_lifecycle.rs"
-READINESS = PLANE / "readiness.rs"
+# The readiness module is a directory since the QI-BB-013 split; the fence
+# reads every production file of it as one text.
+READINESS_DIR = PLANE / "readiness"
 RETENTION = PLANE / "search_corpus_retention.rs"
 CONTROL = PLANE / "control_dispatcher.rs"
 RUNTIME = ROOT / "crates/quanta-index-searchd-runtime/src/lib.rs"
 APP_RUNTIME = ROOT / "crates/quanta-index-searchd/src/app/runtime.rs"
 RESTART_SCENARIO = (
-    ROOT
-    / "crates/quanta-index-searchd-runtime/tests/composite_generation_authority_restart.rs"
+    ROOT / "crates/quanta-index-searchd-runtime/tests/composite_generation_authority_restart.rs"
 )
 PLANE_LIB = PLANE / "lib.rs"
 
@@ -22,10 +22,17 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def read_readiness() -> str:
+    """Every file of the readiness module, production and tests, as one text."""
+    files = sorted(READINESS_DIR.rglob("*.rs"))
+    assert files, f"no readiness sources under {READINESS_DIR}"
+    return "\n".join(read(path) for path in files)
+
+
 def test_one_pair_mutation_coordinator_owns_catalog_and_retention_v1() -> None:
     lifecycle = read(LIFECYCLE)
     plane_lib = read(PLANE_LIB)
-    readiness = read(READINESS)
+    readiness = read_readiness()
 
     assert "struct SearchCorpusLifecycleOwner" in lifecycle
     assert "struct SearchCorpusPairMutationCoordinator" in lifecycle
@@ -69,17 +76,16 @@ def test_lifecycle_owner_derives_mutable_roots_from_one_state_root_v1() -> None:
     leased_root = runtime.index(
         "let state_root = state_root_lease.state_root_identity_v1().to_path_buf();"
     )
-    lexical_open = runtime.index("LexicalAdapter::with_state_root(")
+    lexical_open = runtime.index("LexicalAdapter::with_state_root_and_policies(")
     assert lease < leased_root < lexical_open
     assert 'state_root.join("activations")' not in runtime
     assert 'state_root.join("authorities")' not in runtime
     assert "state_root_identity_v1: PathBuf" in app_runtime
     assert "pub fn state_root_identity_v1(&self) -> &Path" in app_runtime
     assert app_runtime.count(".require_state_root_v1(config.state_root())") == 2
-    last_root_validation = app_runtime.rindex(
-        ".require_state_root_v1(config.state_root())"
-    )
-    assert last_root_validation < app_runtime.index("bootstrap_persisted_lexical_state(")
+    last_root_validation = app_runtime.rindex(".require_state_root_v1(config.state_root())")
+    # QI-BB-026 replaced the deep lexical bootstrap with the boot inventory.
+    assert last_root_validation < app_runtime.index("boot_inventory::seed_track_readiness(")
 
 
 def test_control_dispatcher_delegates_composite_mutations_v1() -> None:
@@ -94,7 +100,7 @@ def test_control_dispatcher_delegates_composite_mutations_v1() -> None:
 
 def test_retention_requires_active_pin_and_shared_guard_v1() -> None:
     lifecycle = read(LIFECYCLE)
-    readiness = read(READINESS)
+    readiness = read_readiness()
     retention = read(RETENTION)
 
     assert "trait ActiveSearchCorpusPinReadPort" in lifecycle
@@ -105,7 +111,7 @@ def test_retention_requires_active_pin_and_shared_guard_v1() -> None:
 
 
 def test_atomic_writes_stage_outside_canonical_roots_and_boot_reconciles_v1() -> None:
-    readiness = read(READINESS)
+    readiness = read_readiness()
     runtime = read(RUNTIME)
 
     assert 'join(".staging")' in readiness
@@ -123,7 +129,7 @@ def test_atomic_writes_stage_outside_canonical_roots_and_boot_reconciles_v1() ->
 
 
 def test_startup_accepts_the_canonical_uppercase_pair_digest_v1() -> None:
-    readiness = read(READINESS)
+    readiness = read_readiness()
 
     assert 'format!("{digest:X}")' in readiness
     assert "pair_name.bytes().all(|byte| byte.is_ascii_hexdigit())" in readiness
@@ -167,7 +173,7 @@ def test_real_restart_proves_cross_repo_retention_rollback_and_exclusive_root_v1
     assert body.count("SearchPlaneRollbackSearchCorpusGenerationCasRequest") == 2
     assert "repo A rollback ack did not bind the exact CAS transition" in body
     assert "repo B rollback ack did not bind the exact CAS transition" in body
-    assert "SearchdBinaryProcess::require_start_failure(directory.path())" in body
+    assert "searchd_lease_probe::require_start_failure(directory.path())" in body
     assert "ERR_STATE_ROOT_IN_USE" in body
     assert "restart aliased or lost one repo's active composite" in body
     assert "second restart did not preserve both independently rolled-back composites" in body
@@ -195,7 +201,7 @@ def require_fault_matrix_surface_v1(readiness: str) -> None:
 
 
 def test_retention_and_composite_fault_matrix_is_owner_local_v1() -> None:
-    readiness = read(READINESS)
+    readiness = read_readiness()
     lifecycle = read(LIFECYCLE)
 
     require_fault_matrix_surface_v1(readiness)
@@ -218,14 +224,12 @@ def test_retention_and_composite_fault_matrix_is_owner_local_v1() -> None:
         )
     ]
     assert rollback_body.count(".lock_pair(") == 1
-    assert rollback_body.index(".lock_pair(") < rollback_body.index(
-        ".rollback_under_guard_v1("
-    )
+    assert rollback_body.index(".lock_pair(") < rollback_body.index(".rollback_under_guard_v1(")
     assert "search_corpus_root_lock" not in rollback_body
 
 
 def test_fault_matrix_static_fence_self_breaks_v1() -> None:
-    readiness = read(READINESS)
+    readiness = read_readiness()
     broken = readiness.replace(
         "fn rollback_staging_write_failure_preserves_complete_active_pointer_v1",
         "fn removed_rollback_staging_write_failure",
