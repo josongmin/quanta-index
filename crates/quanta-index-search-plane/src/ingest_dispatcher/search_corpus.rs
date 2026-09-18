@@ -10,15 +10,16 @@ use quanta_index_contract::{
     SearchPlaneTrackKind,
 };
 use quanta_index_core::{
-    AuxiliaryAuthorityCatalogPort, CoreError, GenerationIdentityValidatePort,
-    IdempotencyCatalogPort, IncompleteGenerationDiscardPort, IngestBatchFootprint,
-    IngestResourcePolicy, MetricPointV1, MetricSourcePort, SealedGenerationReclaimOutcomeV1,
-    SealedGenerationReclaimPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
-    SemanticIngestPort, SemanticScopeSource as _, SemanticStreamWindowPolicy,
-    TextEmbeddingProvider, count_from_usize,
+    AuxiliaryAuthorityCatalogPort, AuxiliaryGenerationKeyV1, CoreError,
+    GenerationIdentityValidatePort, IdempotencyCatalogPort, IncompleteGenerationDiscardPort,
+    IngestBatchFootprint, IngestResourcePolicy, MetricPointV1, MetricSourcePort,
+    SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, SearchCorpusBatchBuildPort,
+    SearchCorpusIngestPort, SemanticIngestPort, SemanticScopeSource as _,
+    SemanticStreamWindowPolicy, TextEmbeddingProvider, count_from_usize,
 };
 
 use crate::auxiliary_authority::{structural_chunks_delta_rows, structural_chunks_transition};
+use crate::history_text::HistoryTextIndexParts;
 use crate::ingest_dispatcher::auxiliary::AuxiliaryMutationCoordinator;
 use crate::ingest_dispatcher::errors::{
     ERR_SEARCH_CORPUS_BATCH_SHAPE, ERR_SEARCH_CORPUS_DELTA_BASE_NOT_SEALED,
@@ -75,6 +76,10 @@ pub struct DirectSearchCorpusMaterializer {
     auxiliary_coordinator: Arc<AuxiliaryMutationCoordinator>,
     operation_locks: [Mutex<()>; SEARCH_CORPUS_LOCK_STRIPES_V1],
     semantic_derivation_mode: SemanticDerivationModeV1,
+    /// The history text index whose epochs go with a forgotten auxiliary
+    /// generation (QI-BB-023 follow-up #1); a plane composed without one
+    /// has none to reclaim.
+    history_text: Option<HistoryTextIndexParts>,
 }
 
 /// What the resource envelope admitted and refused, and the widest batch
@@ -192,7 +197,16 @@ impl DirectSearchCorpusMaterializer {
             auxiliary_coordinator,
             operation_locks: std::array::from_fn(|_index| Mutex::new(())),
             semantic_derivation_mode,
+            history_text: None,
         }
+    }
+
+    /// Wire the history text index whose epochs retention reclaims with
+    /// the auxiliary generations it forgets.
+    #[must_use]
+    pub fn with_history_text(mut self, history_text: HistoryTextIndexParts) -> Self {
+        self.history_text = Some(history_text);
+        self
     }
 
     /// What the resource envelope has admitted and refused so far.
@@ -627,6 +641,18 @@ impl DirectSearchCorpusMaterializer {
                 &batch.revision_id,
                 generation,
             )?;
+            // A forgotten generation's text indexes go with its rows; one
+            // still held by a reader is deferred to the next pass over
+            // the generation's history mutations (there are none, so to
+            // the next seal of the pair).
+            if let Some(history_text) = &self.history_text {
+                let _deferred =
+                    history_text.retire_and_discard_generation(&AuxiliaryGenerationKeyV1 {
+                        repo_id: batch.repo_id.clone(),
+                        revision_id: batch.revision_id.clone(),
+                        generation,
+                    })?;
+            }
         }
         if let Some(retention) = retention {
             let _receipt = self.reclaim_retired_generations_v1(batch, retention)?;

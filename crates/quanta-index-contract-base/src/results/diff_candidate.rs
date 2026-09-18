@@ -6,6 +6,8 @@ use serde::{
     ser::SerializeStruct,
 };
 
+use crate::results::HistoryScoreV1;
+
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum DiffHunkSide {
     Before,
@@ -61,6 +63,12 @@ impl<'de> Deserialize<'de> for DiffHunkSide {
     }
 }
 
+/// One diff hunk row of a history page.
+///
+/// `score` is the row's relevance score and is present exactly when the
+/// page was served under the history route's `relevance` order; a
+/// recency page carries none (QI-BB-023 follow-up #1). The page decoder
+/// holds the invariant across every row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiffCandidate {
     pub repo_relative_path: String,
@@ -69,6 +77,7 @@ pub struct DiffCandidate {
     pub line_start: u32,
     pub line_end: u32,
     pub snippet: String,
+    pub score: Option<HistoryScoreV1>,
 }
 
 const DIFF_CANDIDATE_FIELDS: &[&str] = &[
@@ -78,6 +87,7 @@ const DIFF_CANDIDATE_FIELDS: &[&str] = &[
     "line_start",
     "line_end",
     "snippet",
+    "score",
 ];
 
 impl Serialize for DiffCandidate {
@@ -85,13 +95,17 @@ impl Serialize for DiffCandidate {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("DiffCandidate", 6)?;
+        let field_count = if self.score.is_some() { 7 } else { 6 };
+        let mut state = serializer.serialize_struct("DiffCandidate", field_count)?;
         state.serialize_field("repo_relative_path", &self.repo_relative_path)?;
         state.serialize_field("hunk_header", &self.hunk_header)?;
         state.serialize_field("side", &self.side)?;
         state.serialize_field("line_start", &self.line_start)?;
         state.serialize_field("line_end", &self.line_end)?;
         state.serialize_field("snippet", &self.snippet)?;
+        if let Some(score) = &self.score {
+            state.serialize_field("score", score)?;
+        }
         state.end()
     }
 }
@@ -115,6 +129,8 @@ impl<'de> Visitor<'de> for DiffCandidateVisitor {
         let mut line_start: Option<u32> = None;
         let mut line_end: Option<u32> = None;
         let mut snippet: Option<String> = None;
+        let mut score: Option<HistoryScoreV1> = None;
+        let mut score_seen = false;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "repo_relative_path" => repo_relative_path = Some(map.next_value()?),
@@ -123,6 +139,13 @@ impl<'de> Visitor<'de> for DiffCandidateVisitor {
                 "line_start" => line_start = Some(map.next_value()?),
                 "line_end" => line_end = Some(map.next_value()?),
                 "snippet" => snippet = Some(map.next_value()?),
+                "score" => {
+                    if score_seen {
+                        return Err(de::Error::duplicate_field("score"));
+                    }
+                    score_seen = true;
+                    score = map.next_value()?;
+                }
                 other => return Err(de::Error::unknown_field(other, DIFF_CANDIDATE_FIELDS)),
             }
         }
@@ -134,6 +157,7 @@ impl<'de> Visitor<'de> for DiffCandidateVisitor {
             line_start: line_start.ok_or_else(|| de::Error::missing_field("line_start"))?,
             line_end: line_end.ok_or_else(|| de::Error::missing_field("line_end"))?,
             snippet: snippet.ok_or_else(|| de::Error::missing_field("snippet"))?,
+            score,
         })
     }
 }

@@ -261,6 +261,24 @@ impl HistoryDiffKey {
     }
 }
 
+/// The text of one diff hunk: the path, the hunk header and the three
+/// hunk sides, one per line.
+///
+/// One definition for what the history route's recency filter matches
+/// and what the history text index scores, so a hunk matched on this
+/// text is the hunk scored on it.
+#[must_use]
+pub(crate) fn history_diff_search_text(key: &HistoryDiffKey, record: &DiffHunkRecord) -> String {
+    format!(
+        "{}\n{}\n{}\n{}\n{}",
+        key.file_path(),
+        record.hunk_header,
+        record.added_text,
+        record.removed_text,
+        record.touched_text
+    )
+}
+
 #[derive(Clone, Debug, Default)]
 pub(super) struct HistoryAuthoritySnapshot {
     pub(super) entries: BTreeMap<AuthorityKey, HistoryAuthorityState>,

@@ -163,6 +163,20 @@ where
         self.superseded.len()
     }
 
+    /// Every epoch the registry holds a snapshot of: the superseded ones
+    /// still retained, oldest first, then the current one.
+    ///
+    /// A wall-clock-aged snapshot is listed until the next mutation prunes
+    /// it; it is unreadable meanwhile, and whatever is bound to it is
+    /// reclaimed with it.
+    pub(crate) fn retained_epochs(&self) -> Vec<AuxEpochV1> {
+        self.superseded
+            .iter()
+            .map(|snapshot| snapshot.epoch)
+            .chain(std::iter::once(self.current_epoch))
+            .collect()
+    }
+
     /// The current snapshot as a read.
     pub(crate) fn read_current(&self) -> AuxRead<S> {
         AuxRead {

@@ -29,12 +29,13 @@ use quanta_index_core::domains::structural::{
 use quanta_index_core::{
     AUX_EPOCH_EXPIRED_CODE, AUX_EPOCH_UNKNOWN_CODE, AuxiliaryAuthorityCatalogPort, CoreError,
     FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
-    IdempotencyCatalogPort, IncompleteGenerationDiscardPort, L2UnitEmbeddingProvider,
-    LexicalIndexOpenPort, MetricSourcePort, QuarantinedGenerationDiscardPort,
-    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
-    RepoMapGenerationActivatePort, RepoMapOpenReportV1, RepoMapQuarantinePort, RepoMapQueryPort,
-    RepoMetaIngestPort, RepoTopicIngestPort, SealedGenerationReclaimPort, SealedGenerationScanPort,
-    SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticIndexOpenPort, SemanticIngestPort,
+    HistoryTextIndexPort, IdempotencyCatalogPort, IncompleteGenerationDiscardPort,
+    L2UnitEmbeddingProvider, LexicalIndexOpenPort, MetricSourcePort,
+    QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
+    RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapOpenReportV1,
+    RepoMapQuarantinePort, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
+    SealedGenerationReclaimPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
+    SearchCorpusIngestPort, SemanticIndexOpenPort, SemanticIngestPort,
     SemanticScopeStreamBuildPort, StructuralError, StructuralMatchBinding,
     StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider,
 };
@@ -53,8 +54,8 @@ use quanta_index_search_plane::{
     AuxiliaryMaterializerParts, AuxiliaryMutationCoordinator, BoundedQueryObsStore,
     DirectHistoryMaterializer, DirectRuntimeMetadataMaterializer, DirectSearchCorpusMaterializer,
     DirectSemanticMaterializer, DirectStructuralMaterializer, HashingQueryTextEmbedder,
-    HistoryIngestPort, Ledger, ObservabilityScrape, QuarantineService, QuarantineServiceParts,
-    QueryObsSink, QueryTextEmbedderPort, RuntimeMetadataIngestPort,
+    HistoryIngestPort, HistoryTextIndexParts, Ledger, ObservabilityScrape, QuarantineService,
+    QuarantineServiceParts, QueryObsSink, QueryTextEmbedderPort, RuntimeMetadataIngestPort,
     SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusLifecycleOwner, SearchCorpusMaterializerParts,
     SearchPlaneControlDispatcher, SearchPlaneDispatcher, SearchPlaneIngestDispatcher,
     SnapshotRegistries, StructuralIngestPort,
@@ -111,6 +112,10 @@ pub struct SearchdRuntimeParts {
     pub idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
     /// Durable auxiliary authority rows (QI-BB-020).
     pub auxiliary_catalog: Arc<dyn AuxiliaryAuthorityCatalogPort + Send + Sync>,
+    /// The per-epoch history text index the relevance order scores with
+    /// (QI-BB-023 follow-up #1); published with every history epoch,
+    /// opened by the history route, reclaimed with epoch retention.
+    pub history_text_index: Arc<dyn HistoryTextIndexPort + Send + Sync>,
     /// Adapters that keep their own accounting, for the metrics scrape
     /// (QI-BB-015); the composition root adds its own sources to these.
     pub adapter_metric_sources: Vec<Arc<dyn MetricSourcePort>>,
@@ -927,6 +932,7 @@ impl SearchdRuntime {
             legacy_semantic_journal_store,
             idempotency,
             auxiliary_catalog,
+            history_text_index,
             adapter_metric_sources,
         } = parts;
         state_root_lease
@@ -1009,6 +1015,9 @@ impl SearchdRuntime {
             coordinator: AuxiliaryMutationCoordinator::shared(),
             ledger: Arc::clone(&ledger),
         };
+        // One registry of opened history text epochs, shared by the route
+        // that acquires them and the two mutation paths that retire them.
+        let history_text = HistoryTextIndexParts::new(history_text_index);
         let SemanticEmbedders {
             query: query_text_embedder,
             corpus: corpus_embedder,
@@ -1044,12 +1053,15 @@ impl SearchdRuntime {
                     auxiliary_coordinator: Arc::clone(&auxiliary_parts.coordinator),
                 },
             )
-            .map_err(anyhow::Error::from)?,
+            .map_err(anyhow::Error::from)?
+            .with_history_text(history_text.clone()),
         );
         let direct_search_corpus_ingest_port: Arc<dyn SearchCorpusIngestPort + Send + Sync> =
             search_corpus_materializer.clone();
-        let direct_history_ingest_port: Arc<dyn HistoryIngestPort + Send + Sync> =
-            Arc::new(DirectHistoryMaterializer::new(auxiliary_parts.clone()));
+        let direct_history_ingest_port: Arc<dyn HistoryIngestPort + Send + Sync> = Arc::new(
+            DirectHistoryMaterializer::new(auxiliary_parts.clone())
+                .with_history_text(history_text.clone()),
+        );
         let direct_runtime_ingest_port: Arc<dyn RuntimeMetadataIngestPort + Send + Sync> = Arc::new(
             DirectRuntimeMetadataMaterializer::new(auxiliary_parts.clone()),
         );
@@ -1088,17 +1100,20 @@ impl SearchdRuntime {
             Arc::clone(&query_obs_store),
             metric_sources,
         ));
-        let query_dispatcher = Arc::new(SearchPlaneDispatcher::new_with_obs(
-            Arc::clone(&lex_open_port),
-            Arc::clone(&sem_open_port),
-            snapshots.clone(),
-            Arc::clone(&repo_map_query_port),
-            Arc::new(LedgerStructuralProducer::new(Arc::clone(&ledger))),
-            Arc::clone(&ledger),
-            activation_catalog.clone(),
-            query_text_embedder,
-            query_obs_sink,
-        ));
+        let query_dispatcher = Arc::new(
+            SearchPlaneDispatcher::new_with_obs(
+                Arc::clone(&lex_open_port),
+                Arc::clone(&sem_open_port),
+                snapshots.clone(),
+                Arc::clone(&repo_map_query_port),
+                Arc::new(LedgerStructuralProducer::new(Arc::clone(&ledger))),
+                Arc::clone(&ledger),
+                activation_catalog.clone(),
+                query_text_embedder,
+                query_obs_sink,
+            )
+            .with_history_text(history_text),
+        );
         let quarantine = QuarantineService::new(QuarantineServiceParts {
             lexical_scanner: Arc::clone(&lexical_generation_scanner),
             semantic_scanner: Arc::clone(&semantic_generation_scanner),

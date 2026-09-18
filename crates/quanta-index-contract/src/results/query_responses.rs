@@ -7,9 +7,10 @@ use serde::{
 };
 
 use crate::{
-    AuxEpochV1, CommitCandidate, DiffCandidate, GenerationPin, HistoryCursor, LexicalCandidate,
-    ManifestGeneration, OwnerDocKind, QueryResultWindowV1, RepoId, RepoRelativePath, RevisionId,
-    RuntimeMetadataCursorV1, SemanticCorpusKindV1, StructuralCandidate, StructuralCursorV1,
+    AuxEpochV1, CommitCandidate, DiffCandidate, GenerationPin, HistoryCursor, HistoryOrderV1,
+    LexicalCandidate, ManifestGeneration, OwnerDocKind, QueryResultWindowV1, RepoId,
+    RepoRelativePath, RevisionId, RuntimeMetadataCursorV1, SemanticCorpusKindV1,
+    StructuralCandidate, StructuralCursorV1,
     lex::{SymbolKindCode, SymbolKindFamily},
 };
 
@@ -686,16 +687,20 @@ const SEED_CANDIDATE_V2_FIELDS: &[&str] = &[
 /// One page of history results (QI-BB-023).
 ///
 /// Exactly one of `commits` / `diffs` is populated, by the query's
-/// `type:`. Both are in recency order — the total order documented on
-/// [`HistoryCursor`] — and `window` counts that page: `returned` is the
-/// rows on it, `candidate_count` the exact number of matches after the
-/// request's cursor, `has_more` whether a next page exists, in which case
-/// `next_cursor` positions it. `examined` is how many records the plane
-/// evaluated to answer. `read_epoch` is the history authority epoch the
-/// page was cut from (QI-BB-020 W2): the current one for a fresh walk,
-/// the cursor's for a continuation; `next_cursor` carries it forward.
+/// `type:`. Both are in the request's `order` — the total order documented
+/// on [`HistoryOrderV1`] and [`HistoryCursor`] — which the page echoes;
+/// under `relevance` every row carries its score, under `recency` none
+/// does. `window` counts that page: `returned` is the rows on it,
+/// `candidate_count` the exact number of matches after the request's
+/// cursor, `has_more` whether a next page exists, in which case
+/// `next_cursor` positions it under the same order. `examined` is how
+/// many records the plane evaluated to answer. `read_epoch` is the
+/// history authority epoch the page was cut from (QI-BB-020 W2): the
+/// current one for a fresh walk, the cursor's for a continuation;
+/// `next_cursor` carries it forward.
 pub struct SearchPlaneHistoryQueryResponse {
     pub generation: GenerationPin,
+    pub order: HistoryOrderV1,
     pub commits: Vec<CommitCandidate>,
     pub diffs: Vec<DiffCandidate>,
     pub window: QueryResultWindowV1,
@@ -706,6 +711,7 @@ pub struct SearchPlaneHistoryQueryResponse {
 
 const SEARCH_PLANE_HISTORY_QUERY_RESPONSE_FIELDS: &[&str] = &[
     "generation",
+    "order",
     "commits",
     "diffs",
     "window",
@@ -719,10 +725,11 @@ impl Serialize for SearchPlaneHistoryQueryResponse {
     where
         S: Serializer,
     {
-        let field_count = if self.next_cursor.is_some() { 7 } else { 6 };
+        let field_count = if self.next_cursor.is_some() { 8 } else { 7 };
         let mut state =
             serializer.serialize_struct("SearchPlaneHistoryQueryResponse", field_count)?;
         state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("order", &self.order)?;
         state.serialize_field("commits", &self.commits)?;
         state.serialize_field("diffs", &self.diffs)?;
         state.serialize_field("window", &self.window)?;
@@ -749,6 +756,7 @@ impl<'de> Visitor<'de> for SearchPlaneHistoryQueryResponseVisitor {
         A: MapAccess<'de>,
     {
         let mut generation: Option<GenerationPin> = None;
+        let mut order: Option<HistoryOrderV1> = None;
         let mut commits: Option<Vec<CommitCandidate>> = None;
         let mut diffs: Option<Vec<DiffCandidate>> = None;
         let mut window: Option<QueryResultWindowV1> = None;
@@ -763,6 +771,12 @@ impl<'de> Visitor<'de> for SearchPlaneHistoryQueryResponseVisitor {
                         return Err(de::Error::duplicate_field("generation"));
                     }
                     generation = Some(map.next_value()?);
+                }
+                "order" => {
+                    if order.is_some() {
+                        return Err(de::Error::duplicate_field("order"));
+                    }
+                    order = Some(map.next_value()?);
                 }
                 "commits" => {
                     if commits.is_some() {
@@ -809,6 +823,7 @@ impl<'de> Visitor<'de> for SearchPlaneHistoryQueryResponseVisitor {
                 }
             }
         }
+        let order = order.ok_or_else(|| de::Error::missing_field("order"))?;
         let commits = commits.ok_or_else(|| de::Error::missing_field("commits"))?;
         let diffs = diffs.ok_or_else(|| de::Error::missing_field("diffs"))?;
         let window = window.ok_or_else(|| de::Error::missing_field("window"))?;
@@ -816,6 +831,35 @@ impl<'de> Visitor<'de> for SearchPlaneHistoryQueryResponseVisitor {
         if !commits.is_empty() && !diffs.is_empty() {
             return Err(de::Error::custom(
                 "history page carries both commits and diffs",
+            ));
+        }
+        // A relevance page scores every row; a recency page scores none.
+        let scored = commits
+            .iter()
+            .map(|commit| commit.score.is_some())
+            .chain(diffs.iter().map(|diff| diff.score.is_some()));
+        for row_scored in scored {
+            match order {
+                HistoryOrderV1::Relevance if !row_scored => {
+                    return Err(de::Error::custom(
+                        "relevance history page carries a row without a score",
+                    ));
+                }
+                HistoryOrderV1::Recency if row_scored => {
+                    return Err(de::Error::custom(
+                        "recency history page carries a scored row",
+                    ));
+                }
+                HistoryOrderV1::Relevance | HistoryOrderV1::Recency => {}
+            }
+        }
+        // The continuation positions the same order the page is in.
+        if next_cursor
+            .as_ref()
+            .is_some_and(|cursor| cursor.order.order() != order)
+        {
+            return Err(de::Error::custom(
+                "history page next_cursor was issued under another order than the page",
             ));
         }
         let returned = usize::try_from(window.returned()).map_err(|error| {
@@ -846,6 +890,7 @@ impl<'de> Visitor<'de> for SearchPlaneHistoryQueryResponseVisitor {
         }
         Ok(SearchPlaneHistoryQueryResponse {
             generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            order,
             commits,
             diffs,
             window,

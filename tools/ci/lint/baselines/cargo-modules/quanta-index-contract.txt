@@ -437,7 +437,12 @@ crate quanta_index_contract
 │   ├── mod filters: pub(self)
 │   ├── mod history_cursor: pub(self)
 │   │   ├── struct HistoryCursor: pub
+│   │   ├── enum HistoryCursorOrderV1: pub
 │   │   └── struct HistoryCursorVisitor: pub(self)
+│   │       └── type Value: pub(self)
+│   ├── mod history_order: pub(self)
+│   │   ├── enum HistoryOrderV1: pub
+│   │   └── struct HistoryOrderV1Visitor: pub(self)
 │   │       └── type Value: pub(self)
 │   ├── mod options: pub(self)
 │   ├── mod requests: pub(self)

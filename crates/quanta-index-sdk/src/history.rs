@@ -2,8 +2,8 @@ use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord};
 use quanta_index_contract::{
     FileContributorEntry, FileContributorIdentityEntry, FileContributorIngestBatch,
     FileOwnershipEntry, FileOwnershipIngestBatch, GenerationPin, GenerationSelector, HistoryCursor,
-    HistoryDiffHunkUpsert, HistoryIngestBatch, HistoryQueryRequest, HistoryRefDelete,
-    HistoryRefMutation, HistoryRefUpsert, HistoryTagMutation, ManifestGeneration,
+    HistoryDiffHunkUpsert, HistoryIngestBatch, HistoryOrderV1, HistoryQueryRequest,
+    HistoryRefDelete, HistoryRefMutation, HistoryRefUpsert, HistoryTagMutation, ManifestGeneration,
     RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoDescriptionEntry,
     RepoDescriptionIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath,
     RepoTopicEntry, RepoTopicIngestBatch, RevisionId, SearchPlaneHistoryQueryResponse,
@@ -758,14 +758,22 @@ fn map_tag_mutation(mutation: &RefMutation) -> HistoryTagMutation {
     map_ref_mutation(mutation)
 }
 
+/// A history query builder.
+///
+/// The text, the generation selection, the `top_k` and the order are
+/// each required and each tracked in the type: `execute` exists only once
+/// all four are set, so a request cannot leave the SDK without saying
+/// which order its pages are in (QI-BB-023 follow-up #1).
 pub struct HistoryQueryBuilder<
     'a,
     const HAS_TEXT: bool = false,
     const HAS_SELECTION: bool = false,
     const HAS_TOP_K: bool = false,
+    const HAS_ORDER: bool = false,
 > {
     client: &'a QuantaIndex,
     state: TextQueryBuilderState,
+    order: Option<HistoryOrderV1>,
     cursor: Option<HistoryCursor>,
 }
 
@@ -774,28 +782,43 @@ impl<'a> HistoryQueryBuilder<'a> {
         Self {
             client,
             state: TextQueryBuilderState::new(),
+            order: None,
             cursor: None,
         }
     }
 }
 
-impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
-    HistoryQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
+impl<
+    'a,
+    const HAS_TEXT: bool,
+    const HAS_SELECTION: bool,
+    const HAS_TOP_K: bool,
+    const HAS_ORDER: bool,
+> HistoryQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K, HAS_ORDER>
 {
-    fn transition<const NEXT_TEXT: bool, const NEXT_SELECTION: bool, const NEXT_TOP_K: bool>(
+    fn transition<
+        const NEXT_TEXT: bool,
+        const NEXT_SELECTION: bool,
+        const NEXT_TOP_K: bool,
+        const NEXT_ORDER: bool,
+    >(
         mut self,
         update: impl FnOnce(&mut TextQueryBuilderState),
-    ) -> HistoryQueryBuilder<'a, NEXT_TEXT, NEXT_SELECTION, NEXT_TOP_K> {
+    ) -> HistoryQueryBuilder<'a, NEXT_TEXT, NEXT_SELECTION, NEXT_TOP_K, NEXT_ORDER> {
         update(&mut self.state);
         HistoryQueryBuilder {
             client: self.client,
             state: self.state,
+            order: self.order,
             cursor: self.cursor,
         }
     }
 
-    /// Continue from the cursor a previous page returned (QI-BB-023): the
-    /// page holds the next `top_k` results in recency order after it.
+    /// Continue from the cursor a previous page returned (QI-BB-023).
+    ///
+    /// The page holds the next `top_k` results after it, under the order
+    /// the cursor was issued under — which must be the order this walk
+    /// asks for, or the plane refuses it `HISTORY_CURSOR_ORDER_MISMATCH`.
     ///
     /// The page is cut from the epoch the cursor names (QI-BB-020 W2). The
     /// cursor is passed through untouched; a walk whose epoch the plane no
@@ -806,11 +829,23 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
         self
     }
 
+    /// The order the pages are in: `recency` (newest commit first, the
+    /// text is a filter) or `relevance` (BM25 over the indexed text, every
+    /// row scored). Required; there is no default.
+    #[must_use]
+    pub fn order(
+        mut self,
+        order: HistoryOrderV1,
+    ) -> HistoryQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K, true> {
+        self.order = Some(order);
+        self.transition(|_state| {})
+    }
+
     #[must_use]
     pub fn native(
         self,
         query_text: impl Into<String>,
-    ) -> HistoryQueryBuilder<'a, true, HAS_SELECTION, HAS_TOP_K> {
+    ) -> HistoryQueryBuilder<'a, true, HAS_SELECTION, HAS_TOP_K, HAS_ORDER> {
         self.transition(|state| {
             state.syntax = TextQuerySyntax::Native;
             state.query_text = Some(query_text.into());
@@ -821,7 +856,7 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
     pub fn sourcegraph(
         self,
         query_text: impl Into<String>,
-    ) -> HistoryQueryBuilder<'a, true, HAS_SELECTION, HAS_TOP_K> {
+    ) -> HistoryQueryBuilder<'a, true, HAS_SELECTION, HAS_TOP_K, HAS_ORDER> {
         self.transition(|state| {
             state.syntax = TextQuerySyntax::Sourcegraph;
             state.query_text = Some(query_text.into());
@@ -829,7 +864,10 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
     }
 
     #[must_use]
-    pub fn pinned(self, pin: GenerationPin) -> HistoryQueryBuilder<'a, HAS_TEXT, true, HAS_TOP_K> {
+    pub fn pinned(
+        self,
+        pin: GenerationPin,
+    ) -> HistoryQueryBuilder<'a, HAS_TEXT, true, HAS_TOP_K, HAS_ORDER> {
         self.transition(|state| {
             state.selection = Some(GenerationSelector::Pinned(pin));
         })
@@ -840,7 +878,7 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
         self,
         repo_id: RepoId,
         revision_id: RevisionId,
-    ) -> HistoryQueryBuilder<'a, HAS_TEXT, true, HAS_TOP_K> {
+    ) -> HistoryQueryBuilder<'a, HAS_TEXT, true, HAS_TOP_K, HAS_ORDER> {
         self.transition(|state| {
             state.selection = Some(GenerationSelector::Active {
                 repo_id,
@@ -850,20 +888,27 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
     }
 
     #[must_use]
-    pub fn top_k(self, top_k: u32) -> HistoryQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, true> {
+    pub fn top_k(
+        self,
+        top_k: u32,
+    ) -> HistoryQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, true, HAS_ORDER> {
         self.transition(|state| {
             state.top_k = Some(top_k);
         })
     }
 }
 
-impl HistoryQueryBuilder<'_, true, true, true> {
+impl HistoryQueryBuilder<'_, true, true, true, true> {
     pub fn execute(self) -> Result<SearchPlaneHistoryQueryResponse, SdkError> {
         let text_query = self.state.build_request("history")?;
+        let order = self
+            .order
+            .ok_or_else(|| SdkError::Usage("history order is required".to_string()))?;
         dispatch_history_query_request_v1(
             self.client,
             HistoryQueryRequest {
                 text_query,
+                order,
                 cursor: self.cursor,
             },
         )

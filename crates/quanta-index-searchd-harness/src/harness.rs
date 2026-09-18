@@ -28,13 +28,14 @@ use quanta_index_contract::lex::{
 use quanta_index_contract::{
     AuxEpochV1, BatchIngestMode, BatchPublishReceipt, CapabilityStatusV1, ChunkId, ChunkRecord,
     CurrentGenerationRequest, EngineTouched, ExplainCandidateV1, FileOwnerProjectionRow,
-    GenerationPin, GenerationSnapshot, HistoryCursor, HistoryQueryRequest, HybridCandidateV1,
-    HybridQueryRequest, LexicalCandidate, ManifestGeneration, MetricsSnapshotRequest,
-    MetricsSnapshotV1, OwnerDocKind, QuarantineDiscardAck, QuarantineDiscardRequest,
-    QuarantineInventoryRequest, QuarantineInventoryV1, QuarantineTargetV1, QueryResultWindowV1,
-    RawFallbackReasonV1, RepoId, RepoRelativePath, RevisionId, RuntimeMetadataCursorV1,
-    RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchCorpusTombstoneScope, SearchExplanation,
+    GenerationPin, GenerationSnapshot, HistoryCursor, HistoryOrderV1, HistoryQueryRequest,
+    HistoryScoreV1, HybridCandidateV1, HybridQueryRequest, LexicalCandidate, ManifestGeneration,
+    MetricsSnapshotRequest, MetricsSnapshotV1, OwnerDocKind, QuarantineDiscardAck,
+    QuarantineDiscardRequest, QuarantineInventoryRequest, QuarantineInventoryV1,
+    QuarantineTargetV1, QueryResultWindowV1, RawFallbackReasonV1, RepoId, RepoRelativePath,
+    RevisionId, RuntimeMetadataCursorV1, RuntimeMetadataQueryRequest,
+    SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
+    SearchCorpusTombstoneScope, SearchExplanation,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
     SearchPlaneControlIpcResponseEnvelope, SearchPlaneExplainQueryRequest,
@@ -229,9 +230,17 @@ pub struct E2eQueryResult {
     pub typed_error: Option<E2eTypedError>,
 }
 
+#[derive(Clone, Debug)]
 pub struct E2eHistoryResult {
     pub commit_ids: Vec<String>,
     pub diff_paths: Vec<String>,
+    /// The order the page was served in, when the daemon answered
+    /// (QI-BB-023 follow-up #1).
+    pub order: Option<HistoryOrderV1>,
+    /// One entry per row of the page (commits or diffs, whichever the page
+    /// holds): the row's relevance score under that order, none under
+    /// recency.
+    pub scores: Vec<Option<HistoryScoreV1>>,
     /// The page's window and continuation, when the daemon answered.
     pub window: Option<QueryResultWindowV1>,
     /// The history authority epoch the page was cut from, when the daemon
@@ -1767,21 +1776,26 @@ impl E2eRuntime {
         self.query_structural_with_pin(syntax, query_text, top_k, pin)
     }
 
+    /// The first history page in recency order.
+    ///
+    /// Recency is the order every history fixture of this harness was
+    /// written against.
     pub fn query_history(
         &mut self,
         syntax: TextQuerySyntax,
         query_text: &str,
         top_k: u32,
     ) -> E2eHistoryResult {
-        self.query_history_page(syntax, query_text, top_k, None)
+        self.query_history_page(syntax, query_text, top_k, HistoryOrderV1::Recency, None)
     }
 
-    /// One history page after `cursor` (QI-BB-023).
+    /// One history page in `order` after `cursor` (QI-BB-023).
     pub fn query_history_page(
         &mut self,
         syntax: TextQuerySyntax,
         query_text: &str,
         top_k: u32,
+        order: HistoryOrderV1,
         cursor: Option<HistoryCursor>,
     ) -> E2eHistoryResult {
         let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
@@ -1796,6 +1810,7 @@ impl E2eRuntime {
                     generation_selector: None,
                     top_k,
                 },
+                order,
                 cursor,
             }),
         };
@@ -1805,6 +1820,8 @@ impl E2eRuntime {
                 return E2eHistoryResult {
                     commit_ids: Vec::new(),
                     diff_paths: Vec::new(),
+                    order: None,
+                    scores: Vec::new(),
                     window: None,
                     read_epoch: None,
                     examined: 0,
@@ -1825,6 +1842,8 @@ impl E2eRuntime {
                 return E2eHistoryResult {
                     commit_ids: Vec::new(),
                     diff_paths: Vec::new(),
+                    order: None,
+                    scores: Vec::new(),
                     window: None,
                     read_epoch: None,
                     examined: 0,
@@ -1835,6 +1854,12 @@ impl E2eRuntime {
         };
         match response.payload {
             SearchPlaneQueryIpcResponse::History(history) => E2eHistoryResult {
+                scores: history
+                    .commits
+                    .iter()
+                    .map(|candidate| candidate.score)
+                    .chain(history.diffs.iter().map(|candidate| candidate.score))
+                    .collect(),
                 commit_ids: history
                     .commits
                     .into_iter()
@@ -1845,6 +1870,7 @@ impl E2eRuntime {
                     .into_iter()
                     .map(|candidate| candidate.repo_relative_path.as_str().to_string())
                     .collect(),
+                order: Some(history.order),
                 window: Some(history.window),
                 read_epoch: Some(history.read_epoch),
                 examined: history.examined,
@@ -1854,6 +1880,8 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Error(err) => E2eHistoryResult {
                 commit_ids: Vec::new(),
                 diff_paths: Vec::new(),
+                order: None,
+                scores: Vec::new(),
                 window: None,
                 read_epoch: None,
                 examined: 0,
@@ -2786,6 +2814,8 @@ fn unexpected_history_response(kind: &str) -> E2eHistoryResult {
     E2eHistoryResult {
         commit_ids: Vec::new(),
         diff_paths: Vec::new(),
+        order: None,
+        scores: Vec::new(),
         window: None,
         read_epoch: None,
         examined: 0,

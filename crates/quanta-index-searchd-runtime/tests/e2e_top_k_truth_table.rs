@@ -24,7 +24,7 @@
 use std::error::Error;
 
 use quanta_index_contract::{
-    CandidateCountV1, GenerationPin, HistoryQueryRequest, HybridQueryRequest,
+    CandidateCountV1, GenerationPin, HistoryOrderV1, HistoryQueryRequest, HybridQueryRequest,
     HybridSeedQueryRequest, PUBLIC_TOP_K_MAX, QueryConstraintSetV1, QueryResultWindowV1,
     RuntimeMetadataQueryRequest, SearchPlaneQueryIpcRequest, SemanticQueryRequest,
     StructuralQueryRequest, SymbolQueryRequest, TOP_K_OUT_OF_RANGE_CODE, TextQueryRequest,
@@ -127,6 +127,7 @@ fn hybrid_seed(pin: Option<GenerationPin>, top_k: u32) -> SearchPlaneQueryIpcReq
 fn history(pin: Option<GenerationPin>, top_k: u32) -> SearchPlaneQueryIpcRequest {
     SearchPlaneQueryIpcRequest::History(HistoryQueryRequest {
         text_query: text_request(TextQuerySyntax::Sourcegraph, HISTORY_QUERY, pin, top_k),
+        order: HistoryOrderV1::Recency,
         cursor: None,
     })
 }

@@ -29,7 +29,7 @@ use quanta_index_contract::lex::{
 };
 use quanta_index_contract::{
     ChunkId, ChunkRecord, FileContributorIdentityEntry, GenerationPin, GenerationSelector,
-    HistoryQueryRequest, HybridSeedQueryRequest, ManifestGeneration, RepoId,
+    HistoryOrderV1, HistoryQueryRequest, HybridSeedQueryRequest, ManifestGeneration, RepoId,
     RepoMapActivateGenerationRequest, RepoMapChunkExactness, RepoMapChunkNode, RepoMapContainsEdge,
     RepoMapDocType, RepoMapEdge, RepoMapExactnessSummary, RepoMapFileNode, RepoMapFocusSubjectDto,
     RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode,
@@ -1807,6 +1807,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
                 .sourcegraph("type:commit rev:refs/heads/main author:alice fix")
                 .pinned(pin())
                 .top_k(5)
+                .order(HistoryOrderV1::Recency)
                 .execute()
         },
         |response| {
@@ -1838,6 +1839,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
                 .native("type:diff todo")
                 .pinned(pin())
                 .top_k(5)
+                .order(HistoryOrderV1::Recency)
                 .execute()
         },
         |response| {
@@ -2840,6 +2842,7 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                             .native(scenario.query_text)
                             .pinned(pin())
                             .top_k(10)
+                            .order(HistoryOrderV1::Recency)
                             .execute(),
                         TextQuerySyntax::Sourcegraph => client
                             .history()
@@ -2847,6 +2850,7 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                             .sourcegraph(scenario.query_text)
                             .pinned(pin())
                             .top_k(10)
+                            .order(HistoryOrderV1::Recency)
                             .execute(),
                     },
                     |response| response.generation == pin(),
@@ -2899,6 +2903,7 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                                     .native(scenario.query_text)
                                     .pinned(pin())
                                     .top_k(10)
+                                    .order(HistoryOrderV1::Recency)
                                     .execute(),
                                 TextQuerySyntax::Sourcegraph => client
                                     .history()
@@ -2906,6 +2911,7 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                                     .sourcegraph(scenario.query_text)
                                     .pinned(pin())
                                     .top_k(10)
+                                    .order(HistoryOrderV1::Recency)
                                     .execute(),
                             }
                         })?
@@ -3118,6 +3124,7 @@ fn sdk_history_query_frontdoor_surfaces_typed_absent_and_shard_errors() -> TestR
             .sourcegraph("type:commit fix")
             .pinned(pin())
             .top_k(5)
+            .order(HistoryOrderV1::Recency)
             .execute(),
         "history query without materialized authority should fail",
     )?;
@@ -3131,6 +3138,7 @@ fn sdk_history_query_frontdoor_surfaces_typed_absent_and_shard_errors() -> TestR
             .sourcegraph("type:commit todo")
             .pinned(pin())
             .top_k(5)
+            .order(HistoryOrderV1::Recency)
             .execute(),
         "history query should not fall back to lexical content",
     )?;
@@ -3144,6 +3152,7 @@ fn sdk_history_query_frontdoor_surfaces_typed_absent_and_shard_errors() -> TestR
             .sourcegraph("type:diff todo")
             .pinned(pin())
             .top_k(5)
+            .order(HistoryOrderV1::Recency)
             .execute(),
         "history diff query should fail when diff shard is absent",
     )?;
@@ -3572,6 +3581,7 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
             generation_selector: Some(pinned_selector(pin())),
             top_k: 5,
         },
+        order: HistoryOrderV1::Recency,
         cursor: None,
     };
     let history = wait_for_sdk_observation(

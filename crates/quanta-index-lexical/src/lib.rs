@@ -44,6 +44,7 @@
 mod analyzer;
 mod budgeted_search;
 pub mod filters;
+pub mod history_text_index;
 mod normalize;
 pub mod phrase;
 pub mod plan;

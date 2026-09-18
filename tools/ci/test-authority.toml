@@ -605,6 +605,12 @@ owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "searchd-runtime-e2e-history-relevance"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_history_relevance.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "searchd-runtime-e2e-exact-count-window"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_exact_count_window.rs"
 owner = "quanta-index-searchd-runtime"

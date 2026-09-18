@@ -829,6 +829,22 @@ impl Ledger {
         self.aux_read_at(repo_id, revision_id, generation, epoch, now)
     }
 
+    /// Every epoch of one history generation the ledger still holds a
+    /// snapshot of (see [`AuxSnapshots::retained_epochs`]).
+    ///
+    /// `None` for a generation with no state. What is bound to an epoch
+    /// outside this set — its text index — may be reclaimed.
+    #[must_use]
+    pub fn history_retained_epochs(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> Option<Vec<AuxEpochV1>> {
+        self.aux_registry::<HistoryAuthorityState>(repo_id, revision_id, generation)
+            .map(AuxSnapshots::retained_epochs)
+    }
+
     /// The runtime-metadata authority of one generation as an immutable
     /// snapshot a caller may scan after releasing the ledger lock; see
     /// [`Ledger::history_read_at`].

@@ -2924,6 +2924,7 @@ fn history_query_routes_through_typed_query_variant() {
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
             generation: sample_generation_pin(),
+            order: quanta_index_contract::HistoryOrderV1::Recency,
             commits: vec![],
             diffs: vec![],
             window: quanta_index_contract::QueryResultWindowV1::exact(0),
@@ -2940,6 +2941,7 @@ fn history_query_routes_through_typed_query_variant() {
             .native("type:commit author:alice")
             .pinned(sample_generation_pin())
             .top_k(5)
+            .order(quanta_index_contract::HistoryOrderV1::Recency)
             .execute()
     );
     assert_eq!(response.generation, sample_generation_pin());
@@ -2963,6 +2965,7 @@ fn history_sourcegraph_query_preserves_rev_filter_and_syntax() {
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
             generation: sample_generation_pin(),
+            order: quanta_index_contract::HistoryOrderV1::Recency,
             commits: vec![],
             diffs: vec![],
             window: quanta_index_contract::QueryResultWindowV1::exact(0),
@@ -2979,6 +2982,7 @@ fn history_sourcegraph_query_preserves_rev_filter_and_syntax() {
             .sourcegraph("type:commit rev:refs/heads/main")
             .pinned(sample_generation_pin())
             .top_k(3)
+            .order(quanta_index_contract::HistoryOrderV1::Relevance)
             .execute()
     );
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
@@ -3005,6 +3009,7 @@ fn history_query_request_forwards_contract_dto_unchanged() {
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
             generation: sample_generation_pin(),
+            order: quanta_index_contract::HistoryOrderV1::Recency,
             commits: vec![],
             diffs: vec![],
             window: quanta_index_contract::QueryResultWindowV1::exact(0),
@@ -3026,6 +3031,7 @@ fn history_query_request_forwards_contract_dto_unchanged() {
             }),
             top_k: 5,
         },
+        order: quanta_index_contract::HistoryOrderV1::Relevance,
         cursor: None,
     };
     let _response = ok_or_fail!(client.history().query_request(request.clone()));

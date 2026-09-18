@@ -71,7 +71,7 @@ pub(crate) use errors::{
     ERR_ROLLBACK_CAS_CONFLICT, ERR_SEARCH_TRACK_GENERATION_NOT_SEALED,
     ERR_SEMANTIC_GENERATION_NOT_SEALED, ERR_SEMANTIC_MANIFEST_DIGEST_MISMATCH,
 };
-pub(crate) use history_state::HistoryStateMeta;
+pub(crate) use history_state::{HistoryStateMeta, history_diff_search_text};
 pub(crate) use pair_digest::{SEARCH_CORPUS_LOCK_STRIPES_V1, search_corpus_lock_stripe_v1};
 pub(crate) use runtime_state::{
     RuntimeStateMeta, enforce_runtime_catalog_batch_order, validate_runtime_catalog_doc_ids,

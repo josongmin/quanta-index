@@ -3,9 +3,12 @@
 
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
-    GenerationPin, ManifestGeneration, QueryErrorRepair, RepairClass, SearchPlaneIpcError,
+    GenerationPin, HistoryOrderV1, ManifestGeneration, QueryErrorRepair, RepairClass,
+    SearchPlaneIpcError,
 };
-use quanta_index_core::{AUX_EPOCH_EXPIRED_CODE, AUX_EPOCH_UNKNOWN_CODE, CoreError};
+use quanta_index_core::{
+    AUX_EPOCH_EXPIRED_CODE, AUX_EPOCH_UNKNOWN_CODE, CoreError, HISTORY_TEXT_QUERY_UNSCORABLE_CODE,
+};
 
 pub(super) const ERR_INVALID: &str = "INVALID_REQUEST";
 pub(super) const ERR_NOT_READY: &str = "NOT_READY";
@@ -16,6 +19,12 @@ pub(super) const ERR_HISTORY_PRODUCER_UNAVAILABLE: &str = "HISTORY_PRODUCER_UNAV
 pub(super) const ERR_HISTORY_GENERATION_NOT_READY: &str = "HISTORY_GENERATION_NOT_READY";
 pub(super) const ERR_HISTORY_SHARD_UNAVAILABLE: &str = "HISTORY_SHARD_UNAVAILABLE";
 pub(super) const ERR_HISTORY_INVALID_TIMEREF: &str = "HISTORY_INVALID_TIMEREF";
+/// A cursor issued under one history order was sent to continue a walk of
+/// the other (QI-BB-023 follow-up #1).
+pub(super) const ERR_HISTORY_CURSOR_ORDER_MISMATCH: &str = "HISTORY_CURSOR_ORDER_MISMATCH";
+/// The composition root wired no history text index, so the relevance
+/// order has nothing to score with.
+pub(super) const ERR_HISTORY_RELEVANCE_UNAVAILABLE: &str = "HISTORY_RELEVANCE_UNAVAILABLE";
 pub(super) const ERR_RUNTIME_CATALOG_NOT_READY: &str = "RUNTIME_CATALOG_NOT_READY";
 pub(super) const ERR_RUNTIME_CATALOG_HEAD_MISSING: &str = "RUNTIME_CATALOG_HEAD_MISSING";
 pub(super) const ERR_RUNTIME_INVALID_SCOPE: &str = "RUNTIME_INVALID_SCOPE";
@@ -90,6 +99,20 @@ pub fn repair_for_code(code: &str) -> Option<QueryErrorRepair> {
             RepairClass::Malformed,
             &["restart the page walk without a cursor"],
         ),
+        // A cursor of one order cannot position a walk of the other.
+        ERR_HISTORY_CURSOR_ORDER_MISMATCH => (
+            RepairClass::Malformed,
+            &[
+                "continue with the order the cursor was issued under",
+                "restart the page walk without a cursor",
+            ],
+        ),
+        // Relevance scores keyword and phrase leaves; anything else has no
+        // score and runs as a filter under recency.
+        HISTORY_TEXT_QUERY_UNSCORABLE_CODE => (
+            RepairClass::Unsupported,
+            &["order: recency", "use keyword or phrase leaves"],
+        ),
         _ => return None,
     };
     Some(QueryErrorRepair {
@@ -132,6 +155,26 @@ pub(super) fn history_shard_unavailable(message: impl Into<String>) -> CoreError
 
 pub(super) fn history_invalid_request(message: impl Into<String>) -> CoreError {
     CoreError::InvalidContract(message.into())
+}
+
+pub(super) fn history_cursor_order_mismatch(
+    cursor_order: HistoryOrderV1,
+    requested: HistoryOrderV1,
+) -> CoreError {
+    CoreError::Typed {
+        code: ERR_HISTORY_CURSOR_ORDER_MISMATCH.to_string(),
+        message: format!(
+            "history: a {cursor_order} cursor cannot continue a {requested} walk; continue with `order: {cursor_order}` or restart without a cursor"
+        ),
+    }
+}
+
+pub(super) fn history_relevance_unavailable() -> CoreError {
+    CoreError::Typed {
+        code: ERR_HISTORY_RELEVANCE_UNAVAILABLE.to_string(),
+        message: "history: this search plane has no history text index wired; the relevance order cannot be served, use `order: recency`"
+            .to_string(),
+    }
 }
 
 pub(super) fn runtime_invalid_scope(message: impl Into<String>) -> CoreError {

@@ -11,6 +11,7 @@
 
 mod auxiliary_authority;
 mod control_dispatcher;
+mod history_text;
 mod ingest_dispatcher;
 mod lowering;
 mod observability;
@@ -24,6 +25,7 @@ mod semantic_derive;
 mod snapshot_registry;
 
 pub use control_dispatcher::SearchPlaneControlDispatcher;
+pub use history_text::{HistoryTextHandles, HistoryTextIndexParts};
 pub use ingest_dispatcher::{
     AuxiliaryMaterializerParts, AuxiliaryMutationCoordinator, DirectHistoryMaterializer,
     DirectRuntimeMetadataMaterializer, DirectSearchCorpusMaterializer, DirectSemanticMaterializer,

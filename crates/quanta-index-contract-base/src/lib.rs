@@ -30,6 +30,6 @@ pub use query::{
     validate_internal_fetch_size, validate_public_top_k,
 };
 pub use results::{
-    CandidateCountV1, DiffCandidate, DiffHunkSide, HighlightSpan, LexicalCandidate,
-    QueryResultWindowV1, StructuralBinding, StructuralCandidate,
+    CandidateCountV1, DiffCandidate, DiffHunkSide, HighlightSpan, HistoryScoreError,
+    HistoryScoreV1, LexicalCandidate, QueryResultWindowV1, StructuralBinding, StructuralCandidate,
 };

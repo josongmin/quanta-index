@@ -4,6 +4,7 @@ mod budget;
 mod cluster_membership;
 mod explain;
 mod history;
+mod history_relevance;
 mod hybrid;
 mod hybrid_seed;
 mod lexical;

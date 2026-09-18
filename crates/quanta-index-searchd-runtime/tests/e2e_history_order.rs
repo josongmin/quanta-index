@@ -10,7 +10,7 @@
 use std::collections::BTreeSet;
 use std::error::Error;
 
-use quanta_index_contract::{CandidateCountV1, HistoryCursor, TextQuerySyntax};
+use quanta_index_contract::{CandidateCountV1, HistoryCursor, HistoryOrderV1, TextQuerySyntax};
 use quanta_index_searchd_harness as e2e_harness;
 
 use e2e_harness::{E2eHistoryFixtureSpec, E2eRuntime};
@@ -60,7 +60,13 @@ fn walk_pages(rt: &mut E2eRuntime, page_size: u32) -> Result<Vec<String>, Box<dy
     let mut cursor: Option<HistoryCursor> = None;
     let mut seen = Vec::new();
     for _page in 0..16 {
-        let page = rt.query_history_page(TextQuerySyntax::Sourcegraph, QUERY, page_size, cursor);
+        let page = rt.query_history_page(
+            TextQuerySyntax::Sourcegraph,
+            QUERY,
+            page_size,
+            HistoryOrderV1::Recency,
+            cursor,
+        );
         if let Some(error) = page.typed_error {
             return Err(format!("history page refused: {error}").into());
         }

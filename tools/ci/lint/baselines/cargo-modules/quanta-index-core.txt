@@ -43,6 +43,20 @@ crate quanta_index_core
 │   │   ├── struct IdempotencyKeyV1: pub
 │   │   └── enum IngestOperationKindV1: pub
 │   ├── mod lexical: pub
+│   │   ├── mod history_text: pub(self)
+│   │   │   ├── type HistoryTextAdmitFn: pub
+│   │   │   ├── enum HistoryTextBuildV1: pub
+│   │   │   ├── enum HistoryTextDiscardOutcomeV1: pub
+│   │   │   ├── enum HistoryTextDocKeyV1: pub
+│   │   │   ├── struct HistoryTextDocV1: pub
+│   │   │   ├── struct HistoryTextEpochReceiptV1: pub
+│   │   │   ├── enum HistoryTextEpochStatusV1: pub
+│   │   │   ├── struct HistoryTextHitV1: pub
+│   │   │   ├── trait HistoryTextIndexPort: pub
+│   │   │   ├── enum HistoryTextKindV1: pub
+│   │   │   ├── struct HistoryTextPageV1: pub
+│   │   │   ├── struct HistoryTextQueryV1: pub
+│   │   │   └── trait HistoryTextSearcher: pub
 │   │   ├── mod inbound: pub(self)
 │   │   │   └── trait LexicalQueryPort: pub
 │   │   ├── mod outbound: pub(self)

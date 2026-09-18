@@ -10,7 +10,7 @@ use crate::SemanticCorpusKindV1;
 use crate::{HybridCandidateV1, LexicalCandidate};
 
 use super::{
-    GenerationPin, GenerationSelector, HistoryCursor, QueryConstraintSetV1,
+    GenerationPin, GenerationSelector, HistoryCursor, HistoryOrderV1, QueryConstraintSetV1,
     RuntimeMetadataCursorV1, StructuralCursorV1, TextQueryRequest, TextQuerySyntax,
 };
 
@@ -672,31 +672,37 @@ macro_rules! impl_symbol_query_request_serde {
 
 impl_symbol_query_request_serde!(SYMBOL_QUERY_REQUEST_FIELDS, SymbolQueryRequestVisitor);
 
-/// A history query: the text query and, for every page after the first,
-/// the cursor the previous page returned (QI-BB-023).
+/// A history query: the text query, the order its pages are in, and, for
+/// every page after the first, the cursor the previous page returned
+/// (QI-BB-023).
 ///
-/// Results are ordered by recency under the total order documented on
-/// [`HistoryCursor`]; `top_k` bounds one page. A continuation is served
-/// from the history authority epoch its cursor names (QI-BB-020 W2), so
-/// the pages of one walk partition one snapshot; a cursor whose epoch the
-/// plane no longer retains is refused `AUX_EPOCH_EXPIRED`, one naming an
-/// epoch the plane never produced `AUX_EPOCH_UNKNOWN`.
+/// `order` is required and has no default: a page is cut under exactly
+/// the total order documented on [`HistoryOrderV1`] and [`HistoryCursor`],
+/// and `top_k` bounds it. A cursor may only continue a walk of the order
+/// it was issued under; a mismatch is refused typed
+/// (`HISTORY_CURSOR_ORDER_MISMATCH`). A continuation is served from the
+/// history authority epoch its cursor names (QI-BB-020 W2), so the pages
+/// of one walk partition one snapshot; a cursor whose epoch the plane no
+/// longer retains is refused `AUX_EPOCH_EXPIRED`, one naming an epoch the
+/// plane never produced `AUX_EPOCH_UNKNOWN`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HistoryQueryRequest {
     pub text_query: TextQueryRequest,
+    pub order: HistoryOrderV1,
     pub cursor: Option<HistoryCursor>,
 }
 
-const HISTORY_QUERY_REQUEST_FIELDS: &[&str] = &["text_query", "cursor"];
+const HISTORY_QUERY_REQUEST_FIELDS: &[&str] = &["text_query", "order", "cursor"];
 
 impl Serialize for HistoryQueryRequest {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let field_count = if self.cursor.is_some() { 2 } else { 1 };
+        let field_count = if self.cursor.is_some() { 3 } else { 2 };
         let mut state = serializer.serialize_struct("HistoryQueryRequest", field_count)?;
         state.serialize_field("text_query", &self.text_query)?;
+        state.serialize_field("order", &self.order)?;
         if let Some(cursor) = &self.cursor {
             state.serialize_field("cursor", cursor)?;
         }
@@ -718,6 +724,7 @@ impl<'de> Visitor<'de> for HistoryQueryRequestVisitor {
         A: MapAccess<'de>,
     {
         let mut text_query: Option<TextQueryRequest> = None;
+        let mut order: Option<HistoryOrderV1> = None;
         let mut cursor: Option<HistoryCursor> = None;
         let mut cursor_seen = false;
         while let Some(key) = map.next_key::<String>()? {
@@ -727,6 +734,12 @@ impl<'de> Visitor<'de> for HistoryQueryRequestVisitor {
                         return Err(de::Error::duplicate_field("text_query"));
                     }
                     text_query = Some(map.next_value()?);
+                }
+                "order" => {
+                    if order.is_some() {
+                        return Err(de::Error::duplicate_field("order"));
+                    }
+                    order = Some(map.next_value()?);
                 }
                 "cursor" => {
                     if cursor_seen {
@@ -745,6 +758,7 @@ impl<'de> Visitor<'de> for HistoryQueryRequestVisitor {
         }
         Ok(HistoryQueryRequest {
             text_query: text_query.ok_or_else(|| de::Error::missing_field("text_query"))?,
+            order: order.ok_or_else(|| de::Error::missing_field("order"))?,
             cursor,
         })
     }

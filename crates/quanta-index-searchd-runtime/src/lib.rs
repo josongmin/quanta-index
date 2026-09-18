@@ -17,14 +17,16 @@ use anyhow::Result;
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_core::{
     AuxiliaryAuthorityCatalogPort, FileContributorIngestPort, FileOwnershipIngestPort,
-    GenerationIdentityValidatePort, IdempotencyCatalogPort, IncompleteGenerationDiscardPort,
-    LexicalIndexOpenPort, MetricSourcePort, QuarantinedGenerationDiscardPort,
-    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
-    RepoMapGenerationActivatePort, RepoMapQuarantinePort, RepoMapQueryPort, RepoMetaIngestPort,
-    RepoTopicIngestPort, SealedGenerationReclaimPort, SealedGenerationScanPort,
-    SearchCorpusBatchBuildPort, SemanticIndexOpenPort, SemanticScopeStreamBuildPort,
+    GenerationIdentityValidatePort, HistoryTextIndexPort, IdempotencyCatalogPort,
+    IncompleteGenerationDiscardPort, LexicalIndexOpenPort, MetricSourcePort,
+    QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
+    RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapQuarantinePort,
+    RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort, SealedGenerationReclaimPort,
+    SealedGenerationScanPort, SearchCorpusBatchBuildPort, SemanticIndexOpenPort,
+    SemanticScopeStreamBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
+use quanta_index_lexical::history_text_index::HistoryTextIndexAdapter;
 use quanta_index_lexical::regex::RegexPolicy;
 use quanta_index_repomap::RepoMapGenerationStore;
 use quanta_index_search_plane::SearchCorpusLifecycleOwner;
@@ -59,6 +61,12 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
             quanta_index_semantic::semantic_state_root(&state_root),
             config.semantic_stream_window_policy(),
         )?);
+    // The history text index lives beside the other authorities, one
+    // immutable directory per published history epoch.
+    let history_text_index: Arc<dyn HistoryTextIndexPort + Send + Sync> = Arc::new(
+        HistoryTextIndexAdapter::with_root(state_root.join("authorities/history-text"))
+            .map_err(anyhow::Error::from)?,
+    );
     let opened_repo_map =
         RepoMapGenerationStore::open(state_root.join("repo-map")).map_err(anyhow::Error::from)?;
     let repo_map_store = Arc::new(opened_repo_map.store);
@@ -158,6 +166,7 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
             legacy_semantic_journal_store,
             idempotency,
             auxiliary_catalog,
+            history_text_index,
             adapter_metric_sources: vec![lexical_metric_source],
         },
     )

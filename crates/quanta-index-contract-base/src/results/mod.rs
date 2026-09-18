@@ -8,10 +8,12 @@
 
 mod candidates;
 mod diff_candidate;
+mod history_score;
 mod query_window;
 mod structural;
 
 pub use candidates::*;
 pub use diff_candidate::*;
+pub use history_score::*;
 pub use query_window::*;
 pub use structural::*;

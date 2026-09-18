@@ -47,14 +47,20 @@ pub use domains::idempotency::{
     IdempotencyCatalogPort, IdempotencyKeyV1, IngestOperationKindV1,
 };
 pub use domains::lexical::{
-    FileContributorIngestPort, FileOwnershipIngestPort, LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE,
-    LEXICAL_WRITER_HEAP_BYTES_MAX, LEXICAL_WRITER_HEAP_BYTES_MIN, LexicalCandidateExplanationV1,
-    LexicalExecutionBudgetV1, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPolicy,
-    LexicalQueryPort, LexicalReadiness, LexicalScoreEngineV1, LexicalScoreTraceV1,
-    LexicalSearchPageV1, LexicalSearcher, LexicalWriterCacheStats, LexicalWriterPolicy,
-    RegexMatchCachePolicy, RegexMatchCacheStats, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, SearchCorpusBatchBuildPort,
-    SearchCorpusIngestPort, TextAuthorityUpdateStats,
+    FileContributorIngestPort, FileOwnershipIngestPort, HISTORY_TEXT_INDEX_CORRUPT_CODE,
+    HISTORY_TEXT_INDEX_NORMALIZER_UNSUPPORTED_CODE, HISTORY_TEXT_INDEX_NOT_READY_CODE,
+    HISTORY_TEXT_QUERY_UNSCORABLE_CODE, HistoryTextAdmitFn, HistoryTextBuildV1,
+    HistoryTextDiscardOutcomeV1, HistoryTextDocKeyV1, HistoryTextDocV1, HistoryTextEpochReceiptV1,
+    HistoryTextEpochStatusV1, HistoryTextHitV1, HistoryTextIndexPort, HistoryTextKindV1,
+    HistoryTextPageV1, HistoryTextQueryV1, HistoryTextSearcher,
+    LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE, LEXICAL_WRITER_HEAP_BYTES_MAX,
+    LEXICAL_WRITER_HEAP_BYTES_MIN, LexicalCandidateExplanationV1, LexicalExecutionBudgetV1,
+    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPolicy, LexicalQueryPort, LexicalReadiness,
+    LexicalScoreEngineV1, LexicalScoreTraceV1, LexicalSearchPageV1, LexicalSearcher,
+    LexicalWriterCacheStats, LexicalWriterPolicy, RegexMatchCachePolicy, RegexMatchCacheStats,
+    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMetaIngestPort,
+    RepoTopicIngestPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
+    TextAuthorityUpdateStats,
 };
 pub use domains::observability::{
     MetricPointV1, MetricSourcePort, MetricValueV1, count_as_f64, count_from_usize,

@@ -12,15 +12,16 @@ use std::process::ExitCode;
 
 use quanta_index_contract::{
     AuxEpochV1, EarlyStopReason, EngineTouched, ExplainCandidateV1, GenerationPin, HistoryCursor,
-    HistoryQueryRequest, HybridCandidateV1, HybridQueryResponse, HybridSeedQueryRequest,
-    HybridSeedQueryResponse, LexicalCandidate, ManifestGeneration, PlannerTraceEntry,
-    QueryConstraintSetV1, QueryErrorRepair, QueryResultWindowV1, RepoId, RepoMapDocType,
-    RepoMapFocusSubjectDto, RepoMapQueryRequest, RevisionId, RuntimeMetadataCursorV1,
-    RuntimeMetadataQueryRequest, SearchExplanation, SearchPlaneHistoryQueryResponse,
-    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
-    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
-    SemanticQueryRequest, StructuralCursorV1, StructuralQueryRequest, SymbolCandidate,
-    SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    HistoryOrderV1, HistoryQueryRequest, HybridCandidateV1, HybridQueryResponse,
+    HybridSeedQueryRequest, HybridSeedQueryResponse, LexicalCandidate, ManifestGeneration,
+    PlannerTraceEntry, QueryConstraintSetV1, QueryErrorRepair, QueryResultWindowV1, RepoId,
+    RepoMapDocType, RepoMapFocusSubjectDto, RepoMapQueryRequest, RevisionId,
+    RuntimeMetadataCursorV1, RuntimeMetadataQueryRequest, SearchExplanation,
+    SearchPlaneHistoryQueryResponse, SearchPlaneQueryIpcResponse,
+    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRuntimeMetadataQueryResponse,
+    SearchPlaneStructuralQueryResponse, SemanticQueryRequest, StructuralCursorV1,
+    StructuralQueryRequest, SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse,
+    TextQueryRequest, TextQueryResponse, TextQuerySyntax,
     ipc::{
         GenerationStatusReport, MetricHistogramV1, MetricsSnapshotV1, QuarantineDiscardAck,
         QuarantineDiscardOutcomeDtoV1, QuarantineInventoryV1, QuarantineTargetV1,
@@ -553,6 +554,17 @@ fn parse_keyset_page_query(
     rest: &mut VecDeque<String>,
     command: &'static str,
 ) -> CliResult<KeysetPageQueryArgs> {
+    parse_keyset_page_query_with(common, rest, command, |_current, _rest| Ok(false))
+}
+
+/// [`parse_keyset_page_query`] with one more local-flag hook, for the
+/// commands that take flags beside the page query (`history --order`).
+fn parse_keyset_page_query_with(
+    common: &mut CommonOptions,
+    rest: &mut VecDeque<String>,
+    command: &'static str,
+    mut parse_extra: impl FnMut(&str, &mut VecDeque<String>) -> CliResult<bool>,
+) -> CliResult<KeysetPageQueryArgs> {
     let mut generation_args = PinnedGenerationArgs::default();
     let mut syntax: Option<TextQuerySyntax> = None;
     let mut query_text: Option<String> = None;
@@ -580,7 +592,7 @@ fn parse_keyset_page_query(
                 cursor_json = Some(take_value(rest, "--cursor-json")?);
                 Ok(true)
             }
-            _ => Ok(false),
+            other => parse_extra(other, rest),
         },
     )?;
     let generation = generation_args.into_generation_pin()?;
@@ -601,11 +613,30 @@ fn parse_keyset_page_query(
     })
 }
 
+/// The history order a `--order` value names.
+fn parse_history_order(value: &str) -> CliResult<HistoryOrderV1> {
+    HistoryOrderV1::from_code_str(value).ok_or_else(|| {
+        CliError::usage(format!(
+            "invalid --order `{value}`; expected `recency` or `relevance`"
+        ))
+    })
+}
+
 fn parse_history(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
-    let page = parse_keyset_page_query(common, rest, "history")?;
+    let mut order: Option<HistoryOrderV1> = None;
+    let page =
+        parse_keyset_page_query_with(common, rest, "history", |current, rest| match current {
+            "--order" => {
+                order = Some(parse_history_order(&take_value(rest, "--order")?)?);
+                Ok(true)
+            }
+            _ => Ok(false),
+        })?;
+    let order = order.ok_or_else(|| CliError::usage("missing --order".to_string()))?;
     let cursor = page.cursor::<HistoryCursor>()?;
     Ok(CliRequest::History(HistoryQueryRequest {
         text_query: page.text_query,
+        order,
         cursor,
     }))
 }
@@ -2043,15 +2074,23 @@ fn render_history_payload(
     };
     fmt_ok(writeln!(
         rendered,
-        "order: recency matched: {matched} examined: {} has_more: {}",
+        "order: {} matched: {matched} examined: {} has_more: {}",
+        payload.order,
         payload.examined,
         payload.window.has_more()
     ))?;
     render_read_epoch_line(payload.read_epoch, rendered)?;
     if let Some(cursor) = &payload.next_cursor {
+        let score = match cursor.order {
+            quanta_index_contract::HistoryCursorOrderV1::Recency => String::new(),
+            quanta_index_contract::HistoryCursorOrderV1::Relevance { score } => {
+                format!(" score={score}")
+            }
+        };
         fmt_ok(writeln!(
             rendered,
-            "next_cursor: committer_time_ms={} sha={}{} aux_epoch={}",
+            "next_cursor: order={}{score} committer_time_ms={} sha={}{} aux_epoch={}",
+            cursor.order.order(),
             cursor.committer_time_ms,
             cursor.sha.to_hex(),
             cursor
@@ -2068,8 +2107,9 @@ fn render_history_payload(
             .ok_or_else(|| CliError::protocol("commit index overflow".to_string()))?;
         fmt_ok(writeln!(
             rendered,
-            "{}. sha={} author={} committer={} committed_at_unix_s={} is_merge={} tags={}",
+            "{}.{} sha={} author={} committer={} committed_at_unix_s={} is_merge={} tags={}",
             display_index,
+            render_history_score(commit.score),
             commit.sha.to_hex(),
             commit.author,
             commit.committer,
@@ -2087,8 +2127,9 @@ fn render_history_payload(
             .ok_or_else(|| CliError::protocol("diff index overflow".to_string()))?;
         fmt_ok(writeln!(
             rendered,
-            "{}. path={} hunk_header={} side={} lines={}-{}",
+            "{}.{} path={} hunk_header={} side={} lines={}-{}",
             display_index,
+            render_history_score(diff.score),
             diff.repo_relative_path,
             diff.hunk_header,
             diff.side.as_str(),
@@ -2100,6 +2141,11 @@ fn render_history_payload(
         }
     }
     Ok(())
+}
+
+/// ` score=<s>` for a scored row (a relevance page), nothing otherwise.
+fn render_history_score(score: Option<quanta_index_contract::HistoryScoreV1>) -> String {
+    score.map_or_else(String::new, |score| format!(" score={score}"))
 }
 
 /// One line for a page's window: how many candidates matched (exactly, or
@@ -2518,9 +2564,7 @@ Read-only subcommands:
   hybrid-seed      --repo-id ID --revision-id REV --manifest-generation N --lexical-query TEXT --lexical-syntax native|sourcegraph --semantic-query TEXT --top-k N
   explain          --repo-id ID --revision-id REV --manifest-generation N (--candidate-json PATH|- | --hybrid-candidate-json PATH|-) [--syntax native|sourcegraph --query-text TEXT]
   repomap          --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N --token-budget N [--focus-subject subject_identity:subject_doc_type]
-  runtime-metadata --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-]
-  history          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-]
-  structural       --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-]
+    history          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N --order recency|relevance, history          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-], runtime-metadata --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N, runtime-metadata --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-], structural       --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N, structural       --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-],
   readiness        --repo-id ID --revision-id REV
   doctor           --repo-id ID --revision-id REV
   metrics
@@ -3128,6 +3172,8 @@ mod tests {
             "feat: add x",
             "--top-k",
             "9",
+            "--order",
+            "relevance",
         ]);
         assert!(parsed.is_ok());
         let Ok(parsed) = parsed else {
@@ -3139,6 +3185,8 @@ mod tests {
         assert_eq!(request.text_query.syntax, TextQuerySyntax::Native);
         assert_eq!(request.text_query.query_text.as_str(), "feat: add x");
         assert_eq!(request.text_query.top_k, 9);
+        assert_eq!(request.order, HistoryOrderV1::Relevance);
+        assert!(request.cursor.is_none());
         assert_eq!(
             request
                 .text_query
@@ -3146,6 +3194,49 @@ mod tests {
                 .map(|pin| pin.manifest_generation.get()),
             Some(7)
         );
+    }
+
+    /// The history order is required and closed: no flag or an unknown
+    /// value is a usage error, never a default.
+    #[test]
+    fn history_requires_a_known_order() {
+        let base = [
+            "history",
+            "--repo-id",
+            "repo",
+            "--revision-id",
+            "rev",
+            "--manifest-generation",
+            "7",
+            "--syntax",
+            "native",
+            "--query-text",
+            "feat: add x",
+            "--top-k",
+            "9",
+        ];
+        let missing = ParsedCommand::parse(base);
+        let Err(error) = missing else {
+            panic!("history without --order must be a usage error");
+        };
+        assert_eq!(error.exit_code, EXIT_USAGE);
+        assert!(error.message.contains("--order"), "{}", error.message);
+
+        let mut unknown: Vec<&str> = base.to_vec();
+        unknown.extend(["--order", "newest"]);
+        let Err(error) = ParsedCommand::parse(unknown) else {
+            panic!("an unknown order must be a usage error");
+        };
+        assert_eq!(error.exit_code, EXIT_USAGE);
+        assert!(error.message.contains("newest"), "{}", error.message);
+
+        let mut recency: Vec<&str> = base.to_vec();
+        recency.extend(["--order", "recency"]);
+        let parsed = ParsedCommand::parse(recency).expect("recency parses");
+        let CliRequest::History(request) = parsed.request else {
+            panic!("expected history payload");
+        };
+        assert_eq!(request.order, HistoryOrderV1::Recency);
     }
 
     #[test]
@@ -3236,6 +3327,7 @@ mod tests {
                     RevisionId::new("rev"),
                     ManifestGeneration::new(7),
                 ),
+                order: HistoryOrderV1::Recency,
                 commits: vec![quanta_index_contract::CommitCandidate {
                     sha: quanta_index_contract::lex::CommitSha::ZERO,
                     parent_ids: Vec::new(),
@@ -3245,6 +3337,7 @@ mod tests {
                     message: "fix: thing\nbody line".to_string(),
                     is_merge: false,
                     tags: vec!["v1.0".to_string()],
+                    score: None,
                 }],
                 diffs: Vec::new(),
                 window: quanta_index_contract::QueryResultWindowV1::new(
@@ -3256,6 +3349,7 @@ mod tests {
                 read_epoch: AuxEpochV1::new(12),
                 examined: 9,
                 next_cursor: Some(quanta_index_contract::HistoryCursor {
+                    order: quanta_index_contract::HistoryCursorOrderV1::Recency,
                     committer_time_ms: 1_700_000_000_000,
                     sha: quanta_index_contract::lex::CommitSha::ZERO,
                     file_path: None,
@@ -3272,8 +3366,12 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("next_cursor: committer_time_ms=1700000000000 sha="),
+            text.contains("next_cursor: order=recency committer_time_ms=1700000000000 sha="),
             "{text}"
+        );
+        assert!(
+            !text.contains("score="),
+            "a recency page renders no score: {text}"
         );
         assert!(
             text.contains("epoch: 12"),
@@ -3286,6 +3384,66 @@ mod tests {
         assert!(text.contains("kind: history"));
         assert!(text.contains("commits: 1 diffs: 0"));
         assert!(text.contains("author=alice"));
+    }
+
+    /// A relevance page says so and prints each row's score and the
+    /// cursor's score.
+    #[test]
+    fn pretty_renderer_prints_relevance_scores() {
+        let score = quanta_index_contract::HistoryScoreV1::try_new(1.5).expect("finite");
+        let response = SearchPlaneQueryIpcResponseEnvelope {
+            request_id: 1,
+            payload: SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
+                generation: GenerationPin::new(
+                    RepoId::new("repo"),
+                    RevisionId::new("rev"),
+                    ManifestGeneration::new(7),
+                ),
+                order: HistoryOrderV1::Relevance,
+                commits: Vec::new(),
+                diffs: vec![quanta_index_contract::DiffCandidate {
+                    repo_relative_path: "src/lib.rs".to_string(),
+                    hunk_header: "@@ -1 +1 @@".to_string(),
+                    side: quanta_index_contract::DiffHunkSide::After,
+                    line_start: 1,
+                    line_end: 2,
+                    snippet: "needle".to_string(),
+                    score: Some(score),
+                }],
+                window: quanta_index_contract::QueryResultWindowV1::new(
+                    1,
+                    quanta_index_contract::CandidateCountV1::Exact(2),
+                    true,
+                )
+                .expect("a page of one out of two"),
+                read_epoch: AuxEpochV1::new(3),
+                examined: 4,
+                next_cursor: Some(quanta_index_contract::HistoryCursor {
+                    order: quanta_index_contract::HistoryCursorOrderV1::Relevance { score },
+                    committer_time_ms: 5,
+                    sha: quanta_index_contract::lex::CommitSha::ZERO,
+                    file_path: Some("src/lib.rs".to_string()),
+                    aux_epoch: AuxEpochV1::new(3),
+                }),
+            }),
+        };
+        let mut stdout = Vec::new();
+        let rendered = render_response(OutputMode::Pretty, &response, &mut stdout);
+        assert!(rendered.is_ok());
+        let text = String::from_utf8(stdout).expect("utf-8");
+        assert!(
+            text.contains("order: relevance matched: 2 examined: 4 has_more: true"),
+            "{text}"
+        );
+        assert!(
+            text.contains("1. score=1.5 path=src/lib.rs"),
+            "each row carries its score: {text}"
+        );
+        assert!(
+            text.contains("next_cursor: order=relevance score=1.5 committer_time_ms=5 sha="),
+            "the cursor carries its score: {text}"
+        );
+        assert!(text.contains(" file_path=src/lib.rs aux_epoch=3"), "{text}");
     }
 
     #[test]
@@ -4111,6 +4269,7 @@ mod tests {
             aux_epoch: AuxEpochV1::new(6),
         };
         let history_cursor = HistoryCursor {
+            order: quanta_index_contract::HistoryCursorOrderV1::Recency,
             committer_time_ms: 1_700_000_000_000,
             sha: quanta_index_contract::lex::CommitSha::ZERO,
             file_path: None,
@@ -4158,6 +4317,12 @@ mod tests {
         let with_cursor = |command: &str, path: &str| {
             let mut args = vec![command.to_string()];
             args.extend(common.iter().map(ToString::to_string));
+            if command == "history" {
+                // The history route names its order; a recency cursor
+                // continues a recency walk.
+                args.push("--order".to_string());
+                args.push("recency".to_string());
+            }
             args.push("--cursor-json".to_string());
             args.push(path.to_string());
             ParsedCommand::parse(args)

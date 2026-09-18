@@ -5,8 +5,8 @@ use std::sync::{Arc, RwLock};
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::lex::{CommitRecord, CommitSha};
 use quanta_index_contract::{
-    HistoryQueryRequest, ManifestGeneration, RepoId, RevisionId, SearchPlaneQueryIpcRequest,
-    SearchPlaneTrackKind, TextQueryRequest, TextQuerySyntax,
+    HistoryOrderV1, HistoryQueryRequest, ManifestGeneration, RepoId, RevisionId,
+    SearchPlaneQueryIpcRequest, SearchPlaneTrackKind, TextQueryRequest, TextQuerySyntax,
 };
 
 use crate::Ledger;
@@ -66,6 +66,7 @@ pub(crate) fn history_query_request(query_text: &str) -> SearchPlaneQueryIpcRequ
             generation_selector: None,
             top_k: 5,
         },
+        order: HistoryOrderV1::Recency,
         cursor: None,
     })
 }

@@ -18,6 +18,7 @@ use quanta_index_core::{
 };
 use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
 
+use crate::history_text::HistoryTextIndexParts;
 use crate::observability::{NoopQueryObsSink, QueryObsSink};
 use crate::query_dispatcher::errors::core_error_to_ipc;
 use crate::query_dispatcher::metrics::{
@@ -42,6 +43,12 @@ pub struct SearchPlaneDispatcher {
     pub(super) activation_catalog: Arc<ActivationCatalog>,
     pub(super) query_embedder: Arc<dyn QueryTextEmbedderPort + Send + Sync>,
     pub(super) obs_sink: Arc<dyn QueryObsSink + Send + Sync>,
+    /// The history text index the relevance order scores with (QI-BB-023
+    /// follow-up #1).
+    ///
+    /// Shared with the ingest side, which publishes and retires its
+    /// epochs; a plane composed without one refuses that order typed.
+    pub(super) history_text: Option<HistoryTextIndexParts>,
 }
 
 pub type SearchPlaneQueryService = SearchPlaneDispatcher;
@@ -97,7 +104,15 @@ impl SearchPlaneDispatcher {
             activation_catalog,
             query_embedder,
             obs_sink,
+            history_text: None,
         }
+    }
+
+    /// Wire the history text index the relevance order scores with.
+    #[must_use]
+    pub fn with_history_text(mut self, history_text: HistoryTextIndexParts) -> Self {
+        self.history_text = Some(history_text);
+        self
     }
 
     /// Serve one query under its request budget (QI-BB-002).

@@ -7,7 +7,14 @@ use serde::{
 };
 
 use crate::lex::CommitSha;
+use crate::results::HistoryScoreV1;
 
+/// One commit row of a history page.
+///
+/// `score` is the row's relevance score and is present exactly when the
+/// page was served under the history route's `relevance` order; a
+/// recency page carries none (QI-BB-023 follow-up #1). The page decoder
+/// holds the invariant across every row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommitCandidate {
     pub sha: CommitSha,
@@ -18,6 +25,7 @@ pub struct CommitCandidate {
     pub message: String,
     pub is_merge: bool,
     pub tags: Vec<String>,
+    pub score: Option<HistoryScoreV1>,
 }
 
 const COMMIT_CANDIDATE_FIELDS: &[&str] = &[
@@ -29,6 +37,7 @@ const COMMIT_CANDIDATE_FIELDS: &[&str] = &[
     "message",
     "is_merge",
     "tags",
+    "score",
 ];
 
 impl Serialize for CommitCandidate {
@@ -36,7 +45,8 @@ impl Serialize for CommitCandidate {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("CommitCandidate", 8)?;
+        let field_count = if self.score.is_some() { 9 } else { 8 };
+        let mut state = serializer.serialize_struct("CommitCandidate", field_count)?;
         state.serialize_field("sha", &self.sha)?;
         state.serialize_field("parent_ids", &self.parent_ids)?;
         state.serialize_field("committed_at_unix_s", &self.committed_at_unix_s)?;
@@ -45,6 +55,9 @@ impl Serialize for CommitCandidate {
         state.serialize_field("message", &self.message)?;
         state.serialize_field("is_merge", &self.is_merge)?;
         state.serialize_field("tags", &self.tags)?;
+        if let Some(score) = &self.score {
+            state.serialize_field("score", score)?;
+        }
         state.end()
     }
 }
@@ -70,6 +83,8 @@ impl<'de> Visitor<'de> for CommitCandidateVisitor {
         let mut message: Option<String> = None;
         let mut is_merge: Option<bool> = None;
         let mut tags: Option<Vec<String>> = None;
+        let mut score: Option<HistoryScoreV1> = None;
+        let mut score_seen = false;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "sha" => sha = Some(map.next_value()?),
@@ -80,6 +95,13 @@ impl<'de> Visitor<'de> for CommitCandidateVisitor {
                 "message" => message = Some(map.next_value()?),
                 "is_merge" => is_merge = Some(map.next_value()?),
                 "tags" => tags = Some(map.next_value()?),
+                "score" => {
+                    if score_seen {
+                        return Err(de::Error::duplicate_field("score"));
+                    }
+                    score_seen = true;
+                    score = map.next_value()?;
+                }
                 other => return Err(de::Error::unknown_field(other, COMMIT_CANDIDATE_FIELDS)),
             }
         }
@@ -93,6 +115,7 @@ impl<'de> Visitor<'de> for CommitCandidateVisitor {
             message: message.ok_or_else(|| de::Error::missing_field("message"))?,
             is_merge: is_merge.ok_or_else(|| de::Error::missing_field("is_merge"))?,
             tags: tags.ok_or_else(|| de::Error::missing_field("tags"))?,
+            score,
         })
     }
 }

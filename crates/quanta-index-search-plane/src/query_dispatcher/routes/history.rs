@@ -1,27 +1,38 @@
 //! History query route: commit/diff matching and keyset paging over the
-//! history authority.
+//! history authority, in the order the request asks for.
 //!
 //! A page is cut from one epoch-named snapshot of the history authority
 //! (QI-BB-020 W2): a fresh walk reads the current epoch, a continuation
 //! reads the epoch its cursor names, and the response says which. A
 //! cursor whose epoch is no longer retained is refused typed; it is never
 //! served from a newer snapshot where a row could repeat or go missing.
+//!
+//! Under `recency` (QI-BB-023) every record of the snapshot is evaluated
+//! here — the text expression is a filter — and the newest matches are
+//! kept. Under `relevance` (follow-up #1) the expression is scored by the
+//! epoch's text index and the rows are joined back from the same snapshot;
+//! see [`super::history_relevance`]. A cursor continues only the order it
+//! was issued under.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use quanta_index_contract::lex::CommitSha;
 use quanta_index_contract::{
-    AuxEpochV1, CommitCandidate, DiffCandidate, GenerationPin, HistoryCursor, HistoryQueryRequest,
-    LqFilter, LqQuery, LqType, QueryResultWindowV1, SearchPlaneHistoryQueryResponse,
-    SearchPlaneTrackKind,
+    AuxEpochV1, CommitCandidate, DiffCandidate, GenerationPin, HistoryCursor, HistoryCursorOrderV1,
+    HistoryOrderV1, HistoryQueryRequest, HistoryScoreV1, LqFilter, LqQuery, LqType,
+    QueryResultWindowV1, SearchPlaneHistoryQueryResponse, SearchPlaneTrackKind,
 };
-use quanta_index_core::{CoreError, RequestBudgetV1, validate_query_top_k};
+use quanta_index_core::{
+    AuxiliaryGenerationKeyV1, CoreError, HistoryTextSearcher, RequestBudgetV1, validate_query_top_k,
+};
 
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::errors::{
-    history_absent_error, history_invalid_request, history_invalid_timeref,
-    history_shard_unavailable,
+    history_absent_error, history_cursor_order_mismatch, history_invalid_request,
+    history_invalid_timeref, history_relevance_unavailable, history_shard_unavailable,
 };
+use crate::query_dispatcher::routes::history_relevance::execute_history_relevance;
 use crate::query_dispatcher::selection::resolve_optional_selection;
 use crate::query_dispatcher::text_plane::{
     ExecutableTextPlanePolicy, expr_matches, leaf_matches_text, matches_text,
@@ -29,10 +40,24 @@ use crate::query_dispatcher::text_plane::{
 };
 use crate::query_dispatcher::timeref::{parse_history_timeref_ms, unix_seconds_from_ms};
 use crate::query_dispatcher::window::top_k_limit;
-use crate::readiness::{AuxRead, HistoryAuthorityState};
+use crate::readiness::{AuxRead, HistoryAuthorityState, history_diff_search_text};
 use crate::{Ledger, lower_lexical_text_query};
 
+/// How one history page is produced, decided under the ledger's read lock.
+enum HistoryExecution {
+    /// Scan the snapshot; the text expression is a filter.
+    Recency,
+    /// Score the text expression on the epoch's text index, acquired under
+    /// the same read lock so the epoch cannot be pruned between the read
+    /// and the open.
+    Relevance(Arc<dyn HistoryTextSearcher>),
+}
+
 impl SearchPlaneDispatcher {
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the ledger read guard is held across the text index acquire on purpose: a mutation pruning the epoch takes the write lock only after this read releases, so the epoch it found retained is the epoch it opens"
+    )]
     pub(crate) fn history(
         &self,
         request: &HistoryQueryRequest,
@@ -42,6 +67,7 @@ impl SearchPlaneDispatcher {
         let _accepted_top_k = validate_query_top_k(request.text_query.top_k)?;
         let lowered = lower_lexical_text_query(&request.text_query)?;
         validate_history_query(&lowered)?;
+        ensure_cursor_continues_order(request.order, request.cursor.as_ref())?;
         let pin = resolve_optional_selection(
             self.activation_catalog.as_ref(),
             request.text_query.generation.clone(),
@@ -52,28 +78,46 @@ impl SearchPlaneDispatcher {
         .ok_or_else(|| {
             CoreError::InvalidContract("history: generation selector required".to_string())
         })?;
-        let read = {
+        let (read, execution) = {
             let guard = self.ledger.read().map_err(|_poisoned| {
                 CoreError::Storage("search-plane ledger poisoned".to_string())
             })?;
-            resolve_history_read(
+            let read = resolve_history_read(
                 &guard,
                 &pin,
                 &lowered,
                 request.cursor.as_ref().map(|cursor| cursor.aux_epoch),
                 Instant::now(),
-            )?
+            )?;
+            let execution = match request.order {
+                HistoryOrderV1::Recency => HistoryExecution::Recency,
+                HistoryOrderV1::Relevance => {
+                    HistoryExecution::Relevance(self.acquire_history_text(&pin, read.epoch)?)
+                }
+            };
+            (read, execution)
         };
         budget.checkpoint("history:execute")?;
-        let page = execute_history_query(
-            &lowered,
-            &read.state,
-            read.epoch,
-            request.text_query.top_k,
-            request.cursor.as_ref(),
-        )?;
+        let page = match execution {
+            HistoryExecution::Recency => execute_history_query(
+                &lowered,
+                &read.state,
+                read.epoch,
+                request.text_query.top_k,
+                request.cursor.as_ref(),
+            )?,
+            HistoryExecution::Relevance(searcher) => execute_history_relevance(
+                &lowered,
+                &read,
+                searcher.as_ref(),
+                request.text_query.top_k,
+                request.cursor.as_ref(),
+                budget,
+            )?,
+        };
         Ok(SearchPlaneHistoryQueryResponse {
             generation: pin,
+            order: request.order,
             commits: page.commits,
             diffs: page.diffs,
             window: page.window,
@@ -81,6 +125,40 @@ impl SearchPlaneDispatcher {
             examined: page.examined,
             next_cursor: page.next_cursor,
         })
+    }
+
+    /// The epoch's text index handle, from the registry the composition
+    /// root wired; refused typed when it wired none.
+    fn acquire_history_text(
+        &self,
+        pin: &GenerationPin,
+        epoch: AuxEpochV1,
+    ) -> Result<Arc<dyn HistoryTextSearcher>, CoreError> {
+        let parts = self
+            .history_text
+            .as_ref()
+            .ok_or_else(history_relevance_unavailable)?;
+        parts.acquire(
+            &AuxiliaryGenerationKeyV1 {
+                repo_id: pin.repo_id.clone(),
+                revision_id: pin.revision_id.clone(),
+                generation: pin.manifest_generation,
+            },
+            epoch,
+        )
+    }
+}
+
+/// A cursor continues exactly the walk it was issued under.
+fn ensure_cursor_continues_order(
+    order: HistoryOrderV1,
+    cursor: Option<&HistoryCursor>,
+) -> Result<(), CoreError> {
+    match cursor {
+        Some(cursor) if cursor.order.order() != order => {
+            Err(history_cursor_order_mismatch(cursor.order.order(), order))
+        }
+        Some(_) | None => Ok(()),
     }
 }
 
@@ -150,7 +228,7 @@ struct HistoryShardRequirements {
 /// A fresh walk reads the current epoch, a continuation the epoch its
 /// cursor names (refused typed when it is no longer retained or never
 /// existed).
-fn resolve_history_read(
+pub(super) fn resolve_history_read(
     ledger: &Ledger,
     pin: &GenerationPin,
     query: &LqQuery,
@@ -259,17 +337,26 @@ impl HistoryRank {
         }
     }
 
-    fn from_cursor(cursor: &HistoryCursor) -> Self {
-        Self {
-            newest_first: std::cmp::Reverse(cursor.committer_time_ms),
-            sha: cursor.sha,
-            file_path: cursor.file_path.as_deref().map(Into::into),
+    /// The rank a recency cursor names; a cursor of another order does
+    /// not position a recency walk.
+    fn from_cursor(cursor: &HistoryCursor) -> Result<Self, CoreError> {
+        match cursor.order {
+            HistoryCursorOrderV1::Recency => Ok(Self {
+                newest_first: std::cmp::Reverse(cursor.committer_time_ms),
+                sha: cursor.sha,
+                file_path: cursor.file_path.as_deref().map(Into::into),
+            }),
+            HistoryCursorOrderV1::Relevance { .. } => Err(history_cursor_order_mismatch(
+                HistoryOrderV1::Relevance,
+                HistoryOrderV1::Recency,
+            )),
         }
     }
 
     /// The cursor for this rank, in the epoch the page was cut from.
     fn into_cursor(self, aux_epoch: AuxEpochV1) -> HistoryCursor {
         HistoryCursor {
+            order: HistoryCursorOrderV1::Recency,
             committer_time_ms: self.newest_first.0,
             sha: self.sha,
             file_path: self.file_path.map(Into::into),
@@ -291,15 +378,19 @@ struct HistoryPageSelector {
 }
 
 impl HistoryPageSelector {
-    fn new(limit: usize, cursor: Option<&HistoryCursor>, epoch: AuxEpochV1) -> Self {
-        Self {
+    fn new(
+        limit: usize,
+        cursor: Option<&HistoryCursor>,
+        epoch: AuxEpochV1,
+    ) -> Result<Self, CoreError> {
+        Ok(Self {
             limit,
             kept: std::collections::BinaryHeap::new(),
             matched: 0,
             examined: 0,
-            after: cursor.map(HistoryRank::from_cursor),
+            after: cursor.map(HistoryRank::from_cursor).transpose()?,
             epoch,
-        }
+        })
     }
 
     fn examined_one(&mut self) {
@@ -347,14 +438,14 @@ impl HistoryPageSelector {
     }
 }
 
-/// One page of history results in recency order.
+/// One page of history results, in the order it was cut under.
 #[derive(Debug)]
-struct HistoryPage {
-    commits: Vec<CommitCandidate>,
-    diffs: Vec<DiffCandidate>,
-    window: QueryResultWindowV1,
-    examined: u64,
-    next_cursor: Option<HistoryCursor>,
+pub(super) struct HistoryPage {
+    pub(super) commits: Vec<CommitCandidate>,
+    pub(super) diffs: Vec<DiffCandidate>,
+    pub(super) window: QueryResultWindowV1,
+    pub(super) examined: u64,
+    pub(super) next_cursor: Option<HistoryCursor>,
 }
 
 /// Evaluate every record of the queried kind, keep the `top_k` newest
@@ -375,15 +466,11 @@ fn execute_history_query(
     cursor: Option<&HistoryCursor>,
 ) -> Result<HistoryPage, CoreError> {
     let kind = resolve_history_query_kind(query)?;
+    ensure_cursor_kind(kind, cursor)?;
     let limit = top_k_limit(top_k);
-    let mut selector = HistoryPageSelector::new(limit, cursor, epoch);
+    let mut selector = HistoryPageSelector::new(limit, cursor, epoch)?;
     match kind {
         HistoryQueryKind::Commit => {
-            if cursor.is_some_and(|cursor| cursor.file_path.is_some()) {
-                return Err(history_invalid_request(
-                    "history: a commit page cannot continue from a diff cursor",
-                ));
-            }
             for record in state.commits().values() {
                 selector.examined_one();
                 if history_commit_matches(query, state, record)? {
@@ -398,7 +485,7 @@ fn execute_history_query(
                     state
                         .commits()
                         .get(&rank.sha)
-                        .map(commit_candidate_from_record)
+                        .map(|record| commit_candidate_from_record(record, None))
                         .ok_or_else(|| {
                             CoreError::Storage(format!(
                                 "history: selected commit {} vanished from the snapshot",
@@ -416,11 +503,6 @@ fn execute_history_query(
             })
         }
         HistoryQueryKind::Diff => {
-            if cursor.is_some_and(|cursor| cursor.file_path.is_none()) {
-                return Err(history_invalid_request(
-                    "history: a diff page cannot continue from a commit cursor",
-                ));
-            }
             for (key, record) in state.diff_hunks() {
                 selector.examined_one();
                 let Some(commit) = state.commits().get(&key.commit_sha()) else {
@@ -442,7 +524,7 @@ fn execute_history_query(
                     state
                         .diff_hunks()
                         .get(&key)
-                        .map(|record| diff_candidate_from_record(&key, record))
+                        .map(|record| diff_candidate_from_record(&key, record, None))
                         .ok_or_else(|| {
                             CoreError::Storage(format!(
                                 "history: selected diff {}:{path} vanished from the snapshot",
@@ -471,13 +553,30 @@ fn history_query_type(query: &LqQuery) -> Option<LqType> {
     None
 }
 
+/// A commit page continues from a commit cursor and a diff page from a
+/// diff cursor, whatever the order.
+pub(super) fn ensure_cursor_kind(
+    kind: HistoryQueryKind,
+    cursor: Option<&HistoryCursor>,
+) -> Result<(), CoreError> {
+    match (kind, cursor) {
+        (HistoryQueryKind::Commit, Some(cursor)) if cursor.file_path.is_some() => Err(
+            history_invalid_request("history: a commit page cannot continue from a diff cursor"),
+        ),
+        (HistoryQueryKind::Diff, Some(cursor)) if cursor.file_path.is_none() => Err(
+            history_invalid_request("history: a diff page cannot continue from a commit cursor"),
+        ),
+        (HistoryQueryKind::Commit | HistoryQueryKind::Diff, Some(_) | None) => Ok(()),
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum HistoryQueryKind {
+pub(super) enum HistoryQueryKind {
     Commit,
     Diff,
 }
 
-fn resolve_history_query_kind(query: &LqQuery) -> Result<HistoryQueryKind, CoreError> {
+pub(super) fn resolve_history_query_kind(query: &LqQuery) -> Result<HistoryQueryKind, CoreError> {
     let has_diff_only_filters = query.filters.iter().any(|filter| {
         matches!(
             filter,
@@ -506,7 +605,24 @@ fn resolve_history_query_kind(query: &LqQuery) -> Result<HistoryQueryKind, CoreE
     }
 }
 
+/// Whether a commit matches the query: its filters and its text
+/// expression (the recency path, where the expression is a filter).
 fn history_commit_matches(
+    query: &LqQuery,
+    state: &HistoryAuthorityState,
+    record: &quanta_index_contract::lex::CommitRecord,
+) -> Result<bool, CoreError> {
+    if !history_commit_filters_match(query, state, record)? {
+        return Ok(false);
+    }
+    expr_matches(&query.expr, &mut |leaf| {
+        leaf_matches_text("history", leaf, record.message.as_ref(), &query.options)
+    })
+}
+
+/// Whether a commit passes every filter of the query, the text
+/// expression aside; the relevance path scores the expression elsewhere.
+pub(super) fn history_commit_filters_match(
     query: &LqQuery,
     state: &HistoryAuthorityState,
     record: &quanta_index_contract::lex::CommitRecord,
@@ -588,12 +704,30 @@ fn history_commit_matches(
             | LqFilter::Context { .. } => {}
         }
     }
+    Ok(true)
+}
+
+/// Whether a diff hunk matches the query: its filters and its text
+/// expression over the hunk's search text (the recency path).
+fn history_diff_matches(
+    query: &LqQuery,
+    state: &HistoryAuthorityState,
+    key: &crate::readiness::HistoryDiffKey,
+    record: &quanta_index_contract::lex::DiffHunkRecord,
+    commit: &quanta_index_contract::lex::CommitRecord,
+) -> Result<bool, CoreError> {
+    if !history_diff_filters_match(query, state, key, record, commit)? {
+        return Ok(false);
+    }
+    let diff_text = history_diff_search_text(key, record);
     expr_matches(&query.expr, &mut |leaf| {
-        leaf_matches_text("history", leaf, record.message.as_ref(), &query.options)
+        leaf_matches_text("history", leaf, &diff_text, &query.options)
     })
 }
 
-fn history_diff_matches(
+/// Whether a diff hunk passes every filter of the query, the text
+/// expression aside.
+pub(super) fn history_diff_filters_match(
     query: &LqQuery,
     state: &HistoryAuthorityState,
     key: &crate::readiness::HistoryDiffKey,
@@ -696,10 +830,7 @@ fn history_diff_matches(
             | LqFilter::Context { .. } => {}
         }
     }
-    let diff_text = history_diff_search_text(key, record);
-    expr_matches(&query.expr, &mut |leaf| {
-        leaf_matches_text("history", leaf, &diff_text, &query.options)
-    })
+    Ok(true)
 }
 
 fn history_rev_matches(state: &HistoryAuthorityState, spec: &str, sha: &CommitSha) -> bool {
@@ -719,8 +850,11 @@ fn history_rev_matches(state: &HistoryAuthorityState, spec: &str, sha: &CommitSh
         .is_some_and(|resolved| resolved == sha)
 }
 
-fn commit_candidate_from_record(
+/// The commit row of a page; `score` is its relevance score under that
+/// order and absent under recency.
+pub(super) fn commit_candidate_from_record(
     record: &quanta_index_contract::lex::CommitRecord,
+    score: Option<HistoryScoreV1>,
 ) -> CommitCandidate {
     CommitCandidate {
         sha: record.sha,
@@ -731,12 +865,15 @@ fn commit_candidate_from_record(
         message: record.message.to_string(),
         is_merge: record.is_merge,
         tags: record.tags.iter().map(ToString::to_string).collect(),
+        score,
     }
 }
 
-fn diff_candidate_from_record(
+/// The diff row of a page; `score` as for [`commit_candidate_from_record`].
+pub(super) fn diff_candidate_from_record(
     key: &crate::readiness::HistoryDiffKey,
     record: &quanta_index_contract::lex::DiffHunkRecord,
+    score: Option<HistoryScoreV1>,
 ) -> DiffCandidate {
     DiffCandidate {
         repo_relative_path: key.file_path().to_string(),
@@ -745,21 +882,8 @@ fn diff_candidate_from_record(
         line_start: record.byte_start,
         line_end: record.byte_end,
         snippet: history_diff_snippet(record),
+        score,
     }
-}
-
-fn history_diff_search_text(
-    key: &crate::readiness::HistoryDiffKey,
-    record: &quanta_index_contract::lex::DiffHunkRecord,
-) -> String {
-    format!(
-        "{}\n{}\n{}\n{}\n{}",
-        key.file_path(),
-        record.hunk_header,
-        record.added_text,
-        record.removed_text,
-        record.touched_text
-    )
 }
 
 fn history_diff_snippet(record: &quanta_index_contract::lex::DiffHunkRecord) -> String {
@@ -857,9 +981,9 @@ mod history_page_tests {
     use quanta_index_contract::DiffHunkSide;
     use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord};
     use quanta_index_contract::{
-        AuxEpochV1, HistoryCursor, HistoryDiffHunkUpsert, HistoryIngestBatch, LQ_VERSION_TAG,
-        LqExpr, LqFilter, LqLeaf, LqOptions, LqQuery, LqSpan, LqType, ManifestGeneration, RepoId,
-        RevisionId,
+        AuxEpochV1, HistoryCursor, HistoryCursorOrderV1, HistoryDiffHunkUpsert, HistoryIngestBatch,
+        LQ_VERSION_TAG, LqExpr, LqFilter, LqLeaf, LqOptions, LqQuery, LqSpan, LqType,
+        ManifestGeneration, RepoId, RevisionId,
     };
     use quanta_index_core::CoreError;
 
@@ -1106,6 +1230,7 @@ mod history_page_tests {
         }
         // A commit cursor cannot position a diff page, nor the reverse.
         let commit_cursor = HistoryCursor {
+            order: HistoryCursorOrderV1::Recency,
             committer_time_ms: 200,
             sha: sha(1),
             file_path: None,

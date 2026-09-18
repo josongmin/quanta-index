@@ -4,6 +4,7 @@
 mod cluster_membership;
 mod explain;
 pub(crate) mod history;
+mod history_relevance;
 mod hybrid;
 mod hybrid_seed;
 mod lexical;

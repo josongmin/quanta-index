@@ -896,6 +896,7 @@ fn history_commit_candidate() -> quanta_index_contract::CommitCandidate {
         message: "bridge request landed".to_owned(),
         is_merge: false,
         tags: vec!["v2".to_owned()],
+        score: None,
     }
 }
 
@@ -907,6 +908,7 @@ fn history_diff_candidate() -> DiffCandidate {
         line_start: 10,
         line_end: 16,
         snippet: "+ bridge_search(query);".to_owned(),
+        score: None,
     }
 }
 
@@ -918,6 +920,7 @@ fn search_plane_ipc_response_v2_history_variant_roundtrips() -> TestRes {
     let commit_page = SearchPlaneQueryIpcResponse::History(
         quanta_index_contract::SearchPlaneHistoryQueryResponse {
             generation: generation_pin(),
+            order: quanta_index_contract::HistoryOrderV1::Recency,
             commits: vec![history_commit_candidate()],
             diffs: Vec::new(),
             window: QueryResultWindowV1::new(
@@ -928,6 +931,7 @@ fn search_plane_ipc_response_v2_history_variant_roundtrips() -> TestRes {
             read_epoch: quanta_index_contract::AuxEpochV1::new(9),
             examined: 7,
             next_cursor: Some(quanta_index_contract::HistoryCursor {
+                order: quanta_index_contract::HistoryCursorOrderV1::Recency,
                 committer_time_ms: 1_717_171_717_000,
                 sha: CommitSha::from_bytes([1u8; 20]),
                 file_path: None,
@@ -939,6 +943,7 @@ fn search_plane_ipc_response_v2_history_variant_roundtrips() -> TestRes {
     let diff_page = SearchPlaneQueryIpcResponse::History(
         quanta_index_contract::SearchPlaneHistoryQueryResponse {
             generation: generation_pin(),
+            order: quanta_index_contract::HistoryOrderV1::Recency,
             commits: Vec::new(),
             diffs: vec![history_diff_candidate()],
             window: QueryResultWindowV1::exact(1),
@@ -958,6 +963,7 @@ fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> Te
     let generation = generation_pin();
     let read_epoch = quanta_index_contract::AuxEpochV1::new(4);
     let cursor = quanta_index_contract::HistoryCursor {
+        order: quanta_index_contract::HistoryCursorOrderV1::Recency,
         committer_time_ms: 5,
         sha: CommitSha::from_bytes([1u8; 20]),
         file_path: None,
@@ -968,6 +974,7 @@ fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> Te
             "has_more without a cursor",
             quanta_index_contract::SearchPlaneHistoryQueryResponse {
                 generation: generation.clone(),
+                order: quanta_index_contract::HistoryOrderV1::Recency,
                 commits: vec![history_commit_candidate()],
                 diffs: Vec::new(),
                 window: QueryResultWindowV1::new(
@@ -984,6 +991,7 @@ fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> Te
             "a cursor without has_more",
             quanta_index_contract::SearchPlaneHistoryQueryResponse {
                 generation: generation.clone(),
+                order: quanta_index_contract::HistoryOrderV1::Recency,
                 commits: vec![history_commit_candidate()],
                 diffs: Vec::new(),
                 window: QueryResultWindowV1::exact(1),
@@ -996,6 +1004,7 @@ fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> Te
             "both row kinds",
             quanta_index_contract::SearchPlaneHistoryQueryResponse {
                 generation: generation.clone(),
+                order: quanta_index_contract::HistoryOrderV1::Recency,
                 commits: vec![history_commit_candidate()],
                 diffs: vec![history_diff_candidate()],
                 window: QueryResultWindowV1::exact(2),
@@ -1008,6 +1017,7 @@ fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> Te
             "a window that does not count the rows",
             quanta_index_contract::SearchPlaneHistoryQueryResponse {
                 generation: generation.clone(),
+                order: quanta_index_contract::HistoryOrderV1::Recency,
                 commits: vec![history_commit_candidate()],
                 diffs: Vec::new(),
                 window: QueryResultWindowV1::exact(2),
@@ -1020,6 +1030,7 @@ fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> Te
             "a cursor naming another epoch than the page read",
             quanta_index_contract::SearchPlaneHistoryQueryResponse {
                 generation,
+                order: quanta_index_contract::HistoryOrderV1::Recency,
                 commits: vec![history_commit_candidate()],
                 diffs: Vec::new(),
                 window: QueryResultWindowV1::new(
@@ -1038,6 +1049,205 @@ fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> Te
         if decode::<SearchPlaneQueryIpcResponse>(&bytes).is_ok() {
             return Err(format!("{label}: an inconsistent history page must not decode").into());
         }
+    }
+    Ok(())
+}
+
+fn history_score(
+    value: f32,
+) -> Result<quanta_index_contract::HistoryScoreV1, Box<dyn std::error::Error>> {
+    Ok(quanta_index_contract::HistoryScoreV1::try_new(value)?)
+}
+
+/// QI-BB-023 follow-up #1 — the relevance order on the wire.
+///
+/// A relevance page carries a score on every row and a relevance cursor
+/// that carries the last row's score; both round-trip bit for bit. The
+/// request says its order and has no default.
+#[test]
+fn search_plane_ipc_v2_history_relevance_pages_and_requests_round_trip() -> TestRes {
+    use quanta_index_contract::{
+        HistoryCursor, HistoryCursorOrderV1, HistoryOrderV1, HistoryQueryRequest,
+        SearchPlaneHistoryQueryResponse, SearchPlaneQueryIpcRequest,
+    };
+
+    let top = history_score(2.625)?;
+    let last = history_score(1.000_000_1)?;
+    let mut first = history_commit_candidate();
+    first.score = Some(top);
+    let mut second = history_commit_candidate();
+    second.sha = CommitSha::from_bytes([7u8; 20]);
+    second.score = Some(last);
+    let page = SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
+        generation: generation_pin(),
+        order: HistoryOrderV1::Relevance,
+        commits: vec![first, second],
+        diffs: Vec::new(),
+        window: QueryResultWindowV1::new(
+            2,
+            quanta_index_contract::CandidateCountV1::Exact(9),
+            true,
+        )?,
+        read_epoch: quanta_index_contract::AuxEpochV1::new(3),
+        examined: 20,
+        next_cursor: Some(HistoryCursor {
+            order: HistoryCursorOrderV1::Relevance { score: last },
+            committer_time_ms: 1_717_171_717_000,
+            sha: CommitSha::from_bytes([7u8; 20]),
+            file_path: None,
+            aux_epoch: quanta_index_contract::AuxEpochV1::new(3),
+        }),
+    });
+    roundtrip_eq(&page)?;
+    let decoded: SearchPlaneQueryIpcResponse = decode(&encode(&page)?)?;
+    let SearchPlaneQueryIpcResponse::History(decoded) = decoded else {
+        return Err("a history page decodes as one".into());
+    };
+    let Some(HistoryCursor {
+        order: HistoryCursorOrderV1::Relevance { score },
+        ..
+    }) = decoded.next_cursor
+    else {
+        return Err("the cursor carries its score".into());
+    };
+    if score.get().to_bits() != last.get().to_bits() {
+        return Err("the cursor's score round-trips bit for bit".into());
+    }
+    let mut diff = history_diff_candidate();
+    diff.score = Some(top);
+    let diff_page = SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
+        generation: generation_pin(),
+        order: HistoryOrderV1::Relevance,
+        commits: Vec::new(),
+        diffs: vec![diff],
+        window: QueryResultWindowV1::exact(1),
+        read_epoch: quanta_index_contract::AuxEpochV1::new(3),
+        examined: 1,
+        next_cursor: None,
+    });
+    roundtrip_eq(&diff_page)?;
+
+    for order in HistoryOrderV1::ALL {
+        let request = SearchPlaneQueryIpcRequest::History(HistoryQueryRequest {
+            text_query: quanta_index_contract::TextQueryRequest {
+                syntax: quanta_index_contract::TextQuerySyntax::Sourcegraph,
+                query_text: "type:commit needle".to_owned(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(generation_pin()),
+                generation_selector: None,
+                top_k: 5,
+            },
+            order,
+            cursor: None,
+        });
+        roundtrip_eq(&request)?;
+        let mut value = serde_json::to_value(&request)?;
+        let payload = value
+            .get_mut("payload")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or("the request is a tagged map")?;
+        if payload.remove("order").is_none() {
+            return Err("the request serializes its order".into());
+        }
+        if serde_json::from_value::<SearchPlaneQueryIpcRequest>(value).is_ok() {
+            return Err("a history request without an order must not decode".into());
+        }
+    }
+    Ok(())
+}
+
+/// A page whose rows, order and cursor disagree fails to decode: the
+/// score is present exactly under relevance, and a cursor continues the
+/// order of the page that issued it.
+#[test]
+fn search_plane_ipc_v2_history_refuses_order_and_score_disagreements() -> TestRes {
+    use quanta_index_contract::{
+        HistoryCursor, HistoryCursorOrderV1, HistoryOrderV1, SearchPlaneHistoryQueryResponse,
+    };
+
+    let score = history_score(1.5)?;
+    let mut scored = history_commit_candidate();
+    scored.score = Some(score);
+    let page = |order: HistoryOrderV1,
+                commit: quanta_index_contract::CommitCandidate,
+                cursor: Option<HistoryCursor>|
+     -> Result<SearchPlaneHistoryQueryResponse, Box<dyn std::error::Error>> {
+        let has_more = cursor.is_some();
+        Ok(SearchPlaneHistoryQueryResponse {
+            generation: generation_pin(),
+            order,
+            commits: vec![commit],
+            diffs: Vec::new(),
+            window: QueryResultWindowV1::new(
+                1,
+                quanta_index_contract::CandidateCountV1::Exact(if has_more { 3 } else { 1 }),
+                has_more,
+            )?,
+            read_epoch: quanta_index_contract::AuxEpochV1::new(2),
+            examined: 3,
+            next_cursor: cursor,
+        })
+    };
+    let recency_cursor = HistoryCursor {
+        order: HistoryCursorOrderV1::Recency,
+        committer_time_ms: 5,
+        sha: CommitSha::from_bytes([1u8; 20]),
+        file_path: None,
+        aux_epoch: quanta_index_contract::AuxEpochV1::new(2),
+    };
+    let relevance_cursor = HistoryCursor {
+        order: HistoryCursorOrderV1::Relevance { score },
+        ..recency_cursor.clone()
+    };
+    let cases: Vec<(&str, SearchPlaneHistoryQueryResponse)> = vec![
+        (
+            "a relevance page with an unscored row",
+            page(HistoryOrderV1::Relevance, history_commit_candidate(), None)?,
+        ),
+        (
+            "a recency page with a scored row",
+            page(HistoryOrderV1::Recency, scored.clone(), None)?,
+        ),
+        (
+            "a recency page continued by a relevance cursor",
+            page(
+                HistoryOrderV1::Recency,
+                history_commit_candidate(),
+                Some(relevance_cursor.clone()),
+            )?,
+        ),
+        (
+            "a relevance page continued by a recency cursor",
+            page(HistoryOrderV1::Relevance, scored, Some(recency_cursor))?,
+        ),
+    ];
+    for (label, page) in cases {
+        let bytes = encode(&SearchPlaneQueryIpcResponse::History(page))?;
+        if decode::<SearchPlaneQueryIpcResponse>(&bytes).is_ok() {
+            return Err(format!("{label}: must not decode").into());
+        }
+    }
+
+    // A cursor's score is present exactly under relevance, and finite.
+    let mut with_score = serde_json::to_value(&relevance_cursor)?;
+    let map = with_score.as_object_mut().ok_or("a cursor is a map")?;
+    let _order = map.insert("order".to_owned(), serde_json::json!("recency"));
+    if serde_json::from_value::<HistoryCursor>(with_score.clone()).is_ok() {
+        return Err("a recency cursor with a score must not decode".into());
+    }
+    let mut without_score = serde_json::to_value(&relevance_cursor)?;
+    let map = without_score.as_object_mut().ok_or("a cursor is a map")?;
+    if map.remove("score").is_none() {
+        return Err("a relevance cursor serializes its score".into());
+    }
+    if serde_json::from_value::<HistoryCursor>(without_score).is_ok() {
+        return Err("a relevance cursor without a score must not decode".into());
+    }
+    let mut unknown_order = serde_json::to_value(&relevance_cursor)?;
+    let map = unknown_order.as_object_mut().ok_or("a cursor is a map")?;
+    let _order = map.insert("order".to_owned(), serde_json::json!("newest"));
+    if serde_json::from_value::<HistoryCursor>(unknown_order).is_ok() {
+        return Err("a cursor with an unknown order must not decode".into());
     }
     Ok(())
 }
@@ -1429,6 +1639,7 @@ fn search_plane_ipc_response_v2_aux_read_epoch_is_required_and_round_trips() -> 
     };
 
     let cursor = HistoryCursor {
+        order: quanta_index_contract::HistoryCursorOrderV1::Recency,
         committer_time_ms: 42,
         sha: CommitSha::from_bytes([3u8; 20]),
         file_path: Some("src/lib.rs".to_string()),
@@ -1471,6 +1682,7 @@ fn search_plane_ipc_response_v2_aux_read_epoch_is_required_and_round_trips() -> 
     roundtrip_eq(&structural_page)?;
     let history_page = SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
         generation: generation_pin(),
+        order: quanta_index_contract::HistoryOrderV1::Recency,
         commits: Vec::new(),
         diffs: vec![history_diff_candidate()],
         window: QueryResultWindowV1::exact(1),

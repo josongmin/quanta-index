@@ -18,7 +18,8 @@ use std::error::Error;
 
 use quanta_index_contract::lex::{CommitRecord, CommitSha};
 use quanta_index_contract::{
-    AuxEpochV1, HistoryCursor, HistoryIngestBatch, ManifestGeneration, TextQuerySyntax,
+    AuxEpochV1, HistoryCursor, HistoryIngestBatch, HistoryOrderV1, ManifestGeneration,
+    TextQuerySyntax,
 };
 use quanta_index_core::AUX_EPOCH_EXPIRED_CODE;
 use quanta_index_searchd_harness as e2e_harness;
@@ -130,7 +131,13 @@ fn walk_from(
     let mut seen = Vec::new();
     for _page in 0..16 {
         let page = served(
-            rt.query_history_page(TextQuerySyntax::Sourcegraph, QUERY, PAGE, cursor),
+            rt.query_history_page(
+                TextQuerySyntax::Sourcegraph,
+                QUERY,
+                PAGE,
+                HistoryOrderV1::Recency,
+                cursor,
+            ),
             what,
         )?;
         if page.read_epoch != Some(epoch) {
@@ -178,7 +185,13 @@ fn a_page_walk_never_mixes_epochs_and_the_epoch_survives_a_restart() -> TestResu
 
     // Page one at the current epoch.
     let first = served(
-        rt.query_history_page(TextQuerySyntax::Sourcegraph, QUERY, PAGE, None),
+        rt.query_history_page(
+            TextQuerySyntax::Sourcegraph,
+            QUERY,
+            PAGE,
+            HistoryOrderV1::Recency,
+            None,
+        ),
         "page one",
     )?;
     let walk_epoch = first.read_epoch.ok_or("a served page names its epoch")?;
@@ -234,7 +247,13 @@ fn a_page_walk_never_mixes_epochs_and_the_epoch_survives_a_restart() -> TestResu
 
     // A fresh walk reads the current epoch and sees all thirty-five.
     let fresh_first = served(
-        rt.query_history_page(TextQuerySyntax::Sourcegraph, QUERY, PAGE, None),
+        rt.query_history_page(
+            TextQuerySyntax::Sourcegraph,
+            QUERY,
+            PAGE,
+            HistoryOrderV1::Recency,
+            None,
+        ),
         "fresh page one",
     )?;
     let fresh_epoch = fresh_first
@@ -262,7 +281,13 @@ fn a_page_walk_never_mixes_epochs_and_the_epoch_survives_a_restart() -> TestResu
     // never served from the restored snapshot.
     let mut rt = rt.reopen();
     let after_restart = served(
-        rt.query_history_page(TextQuerySyntax::Sourcegraph, QUERY, PAGE, None),
+        rt.query_history_page(
+            TextQuerySyntax::Sourcegraph,
+            QUERY,
+            PAGE,
+            HistoryOrderV1::Recency,
+            None,
+        ),
         "page one after restart",
     )?;
     if after_restart.read_epoch != Some(fresh_epoch) {
@@ -272,7 +297,13 @@ fn a_page_walk_never_mixes_epochs_and_the_epoch_survives_a_restart() -> TestResu
         )
         .into());
     }
-    let stale = rt.query_history_page(TextQuerySyntax::Sourcegraph, QUERY, PAGE, Some(cursor));
+    let stale = rt.query_history_page(
+        TextQuerySyntax::Sourcegraph,
+        QUERY,
+        PAGE,
+        HistoryOrderV1::Recency,
+        Some(cursor),
+    );
     match stale.typed_error {
         Some(error) if error.code == AUX_EPOCH_EXPIRED_CODE => {}
         other => {
@@ -293,7 +324,13 @@ fn a_page_walk_never_mixes_epochs_and_the_epoch_survives_a_restart() -> TestResu
     )?;
     rt.publish_history_batch(batch)?;
     let advanced = served(
-        rt.query_history_page(TextQuerySyntax::Sourcegraph, QUERY, PAGE, None),
+        rt.query_history_page(
+            TextQuerySyntax::Sourcegraph,
+            QUERY,
+            PAGE,
+            HistoryOrderV1::Recency,
+            None,
+        ),
         "page one after the post-restart ingest",
     )?;
     if advanced.read_epoch != fresh_epoch.checked_next() {

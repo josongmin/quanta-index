@@ -4,6 +4,7 @@ mod directives;
 mod expression;
 mod filters;
 mod history_cursor;
+mod history_order;
 mod options;
 mod requests;
 mod runtime_metadata_cursor;
@@ -15,6 +16,7 @@ pub use directives::*;
 pub use expression::*;
 pub use filters::*;
 pub use history_cursor::*;
+pub use history_order::*;
 pub use options::*;
 pub use quanta_index_contract_base::query::{
     ExactRepoRelativePathV1, GenerationPin, GenerationSelector, QueryConstraintIntersectionV1,
