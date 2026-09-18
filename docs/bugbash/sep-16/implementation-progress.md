@@ -2327,6 +2327,42 @@ normalizer 9/9, `e2e_unicode_text_semantics` + `e2e_history_text_predicate` 각 
 literal/regexp 기본 case = sensitive, 코드 기본은 folded(lexical route가 원래 그렇게 동작) — spec/code 결정 필요(docs/plans는 다른 세션 소유).
 (d) `file:`이 lexical route에선 regex, history/runtime plane에선 NFC substring — cross-route 차이. (e) recency scan이 record마다 allocating tokenize.
 
+## 3.48 QI-BB-030 — overlay 7종이 sealed manifest 안으로, 두 문은 한 walk (fix wave A3, f0cf9c9)
+
+§4 감사가 **WRONG**으로 판정한 것: repo-metadata overlay sidecar 7종이 `std::fs::write`로 sealed manifest·validator **밖**에 쓰였고(`lexical/src/lib.rs`
+b0485b5 `:936,1134,1321,1507,1730,1956,2200`), aux publish가 sealed(active일 수 있는) directory를 그 자리에서 바꿨다 → activation 성공 ≠ query open 성공.
+
+**계약 변경(producer 영향, breaking-first)**: sealed generation은 **불변**이다. sealed generation에 대한 overlay publish(6 aux route)와 `FullBundle` op는
+어떤 byte도 쓰기 전에 `GENERATION_IMMUTABLE`로 거부된다(index 변경 거부는 main에 이미 있었고 overlay까지 확장). repo metadata는 seal 전에 publish하거나
+다음(delta) generation에 publish한다 — delta는 이전 overlay를 hard link로 상속한다. 근거는 CLAUDE.md "never patch the active query indexes in place".
+(A3 보고가 인용한 ssot `producer-handoff.md` §5.4는 wire version 고정에 관한 조항이라 이 변경의 근거로는 과장 — coordinator 확인.)
+
+**티켓 완료 기준 대조(코드 기준)**
+
+| 티켓 bullet | 판정 | 근거 |
+| --- | --- | --- |
+| 완료 기준 #1 sidecar별 missing/truncation/bit-flip/stale + fsync/rename crash point에서 query-openable 상태만 ack | **MET** | `sealed_generation/verify.rs` `walk_sealed_generation`(두 문 공유), `overlay.rs` `persist_overlay`(temp→fsync→rename→dir fsync), `seal.rs` `remove_publish_leftovers`, `lib.rs` `ensure_unsealed`. tests `sealed_manifest::both_doors_refuse_an_overlay_that_does_not_match_the_manifest`(overlay 7 × missing/zero/truncated/flipped/stale × 두 문), `…_a_sidecar_that_does_not_match_the_manifest`, `…_an_overlay_the_seal_did_not_commit_to`, `an_interrupted_overlay_publish_leaves_nothing_the_seal_commits_to`, e2e `e2e_lexical_sealed_overlays::a_torn_overlay_is_refused_by_restart_and_by_the_query_door`. 잔여(정직): 같은 길이의 Tantivy segment bit-flip은 문(길이만)이 못 보고 scrub가 거부 — Tantivy 0.22는 그런 파일을 map하면 panic(`composite_file.rs:115`), b0485b5부터 있던 노출. |
+| 완료 기준 #2 activation 후 모든 lexical query family가 같은 검증 handle로(재open 없음) | **A2로 이관** | A3는 visitor seam(`LoadedGeneration` 보관 / `DiscardingVisitor` 폐기)만 두었고, 검증 handle의 registry 승격은 A2(§3.49 예정). |
+| 완료 기준 #3 manifest checksum = query에 필요한 모든 byte, identity가 manifest를 결속 | **MET** | `manifest.rs` `LexicalSealedManifest` v4(`meta.json`, 참조 segment 전부, text-authority tree, overlay 전부), `read_bound_manifest`, `index_files.rs` `referenced_index_files`(sealed commit에서 유도). tests `an_identity_that_does_not_match_the_manifest_is_refused`, `both_doors_refuse_an_index_commit_other_than_the_sealed_one`. |
+| 완료 기준 #4 sidecar 없는 generation은 명시적 capability set + typed 거부 | **MET** | manifest의 `text_authority: Option`, `overlays` 목록 = capability set; `materialized_authorities`는 disk가 아니라 manifest에서; 목록에 없는 overlay가 disk에 있으면 거부. |
+| 보완 #1 manifest에 sidecar 목록·format·길이·checksum·Tantivy commit identity | **MET** | format 4; `a_manifest_round_trips`, `structural_violations_are_typed_corruption`, `another_format_or_policy_is_refused_by_name`. |
+| 보완 #2 unique staging → fsync → rename → dir fsync, manifest 다음 identity 마지막 | **MET** | `write_atomic_durable`(temp 이름 = pid+sequence, `create_new`), finalize → manifest → identity. |
+| 보완 #3 validator = serving open과 같은 file set/schema/checksum | **MET** | `validate_generation_identity`와 `open`이 같은 `walk_sealed_generation`. |
+| 보완 #4 불완전/반쯤 승격된 sidecar 복구 protocol | **MET(lexical)** | identity-last라 반쯤 승격된 generation은 unsealed로 남고(`IncompleteGenerationDiscardPort`), sealed 뒤 publish는 원천 불가. |
+| QI-BB-006 보완 #4 shard commitment, 바뀐 shard만 재해시 | **MET** | `seal.rs` `Measurer::commit`(base manifest에서 `(dev, ino)`+길이로 상속 또는 해시), `commit_text_authority`. test `sealed_commitment_cost::a_delta_seal_reads_only_what_the_delta_wrote`(inode oracle: delta seal `bytes_hashed` = base와 inode가 다른 파일 크기 합 = 1,429,963 / base 5,027,459). |
+| QI-BB-006 완료 기준 #1 read bytes ∝ 변경 | fixture 규모 MET, 100 GB 실측 **BLOCKED(host)** | |
+| QI-BB-017 보완 #2 open은 manifest+root 검증, 전체 rescan 아님(lexical) | **MET** | `verify_index_segments`(존재+길이), text-authority shard는 한 번 읽어 decode하며 해시(`from_proved_shards`; 옛 hash-then-decode `load` 삭제). |
+| QI-BB-017 보완 #3 full scrub 분리 + 결과 기록 | **port+lexical impl MET, 스케줄러는 A4** | core `domains/integrity.rs` `IntegrityScrubPort`, `scrub.rs` durable receipt. **A4의 port(budget·cursor·corrupt→quarantine + searchd maintenance task)와 모양이 다름 — A4 착지 때 A4 모양으로 통합하고 lexical이 그것을 구현**(dead port 방지). |
+
+**Fail-before**: b0485b5 source로 4/9 fail(`both_doors_refuse_an_overlay_that_does_not_match_the_manifest`: validator가 `Ok(())`, `a_sealed_generation_refuses_every_mutation_and_keeps_its_bytes`,
+`both_doors_refuse_an_overlay_the_seal_did_not_commit_to`, `an_interrupted_overlay_publish_leaves_nothing_the_seal_commits_to`); 나머지는 새 API라 b0485b5에서 compile 불가(oracle은 독립: 실제 파일 fault injection, inode 분할).
+지나가며 고친 pre-existing 결함: generation의 첫 op가 `FullBundle`이면 directory가 없어 실패하던 것.
+
+**검증(coordinator, rebase된 HEAD에서 순차 실행)**: `just fmt-check`, `cargow check --workspace --locked`, 정책 lint 8종(cargo-toml hygiene, module discipline, error shape,
+derive allowlist, digest fallibility, wire inventory, test authority, hexagonal), `just rust-clippy` 0, `just rust-doc`, unit core/contract/lexical/semantic/search-plane/searchd
+**1,135/0**(62 binary), daemon e2e 9 suite(boot_quarantine 3, activation_concurrency 1, lexical_sealed_overlays 2, physical_gc 3, predicate_authority_lifecycle 1, read_view 3,
+snapshot_registry 3, end_to_end 35(+1 ignored), sdk_frontdoor 15) **66/0**. WIP 6개를 tree 동일 확인 후 1 commit으로 squash.
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -2344,7 +2380,7 @@ literal/regexp 기본 case = sensitive, 코드 기본은 folded(lexical route가
 | QI-BB-003 | P1 | §3.9 | **not closed** | reap된 generation이 explicit pin으로 resolve(`UNKNOWN_GENERATION` 없음), boot가 orphan을 sealed로 재seed; GC receipt 폐기(metric 0); byte 정책이 authority 길이 | A2 |
 | QI-BB-004 | P1 | §3.6 | closed | contradiction code가 generic `ERR_INVALID`; chunked join 미구현(≤10k라 실효 낮음) | — |
 | QI-BB-005 | P1 | §3.8 | gaps | projection은 budget까지 full collect(streaming 없음); text/symbol/semantic cursor 없음; `RESULT_TOO_LARGE` 사후 거부; perf blocked | wave B |
-| QI-BB-006 | P2 | §3.4/§3.4.1/§3.4.2/§3.38 | gaps | write bytes만 O(delta); seal·open·activation이 generation 전체를 재해시(read O(N)), Merkle/증분 commitment 없음; digest 동일성 미충족 | A3, A4 |
+| QI-BB-006 | P2 | §3.4/§3.4.1/§3.4.2/§3.38/§3.48 | gaps → **lexical 증분 commitment MET(A3)** | lexical seal은 inode 상속으로 바뀐 byte만 해시, open은 segment 길이만(§3.48). 남은 것: semantic 측(A4), 100 GB 실측(host) | A4 |
 | QI-BB-007 | P1* | (M4) | blocked | judged corpus/real-provider gate는 M4·credential 의존; 단 M4가 약속한 dev/test 라벨 미구현(default `Hash` 무경고) | A7(라벨) |
 | QI-BB-008 | P2 | §3.25 | closed | activation record 무digest, same-pair retention만, legacy bare-JSON read shim(one-shot) | — |
 | QI-BB-009 | P2 | §3.18 | gaps | age cap·global byte cap 없음(좁힌 정책이 retained namespace에 소급 안 됨); open이 entry당 `metadata()`; provider failure counter 미scrape | A7 |
@@ -2355,7 +2391,7 @@ literal/regexp 기본 case = sensitive, 코드 기본은 folded(lexical route가
 | QI-BB-014 | P2 | §3.27/§3.40 | gaps | 기존 dir/root 0755 허용(0700 강제 아님); umask test 없음; `--state-root`가 socket-access env silent drop | A7 |
 | QI-BB-015 | P2 | §3.28 | gaps | queue/in-flight·examined·response bytes·generation disk bytes·GC·provider failure metric 없음; 운영 scrape 경로 미문서화 | A7, A2(GC) |
 | QI-BB-016 | P3 | §3.26 | gaps | writer heap만의 envelope(process envelope 아님); RSS 미관측; idle sweep이 ingest 없이는 안 돎; `--state-root` env drop | A7 |
-| QI-BB-017 | P1 | §3.14 | gaps | open마다 dataset 전체 SHA-256(seal 후 2회); scrub 없음; 검증 handle 미승격; legacy v2–v8 compat 잔존 | A4, A2 |
+| QI-BB-017 | P1 | §3.14/§3.48 | gaps → **lexical 측 MET(A3)** | lexical open은 manifest+길이, scrub port+receipt(§3.48). 남은 것: semantic cheap open·scrub 스케줄러·legacy v2–v8(A4), 검증 handle 승격(A2), scrub port 모양 통합(A4) | A4, A2 |
 | QI-BB-018 | P2 | §3.22/§3.36/§3.46 | gaps → **filter 결속 MET(A1, 1894583)** | ~~dense lane이 DSL filter 무시~~ → 전 variant class 분류 + admission/refill(§3.46, e2e 5 fail-before/pass-after); 남은 것: route가 SDK/CLI에 없음(A8); judged corpus blocked(M4) | A8 |
 | QI-BB-019 | P2 | §3.21 | gaps | `dense_corpora` doc이 "legacy/migration window" 주장; empty=global 이중 의미 | A8 |
 | QI-BB-020 | P1 | §3.19/§3.37 | gaps(**WRONG**) | activation이 global read guard 아래 dataset 전량 해시(cross-repo ingest/query 정지); history-text cold open under lock; reconcile-fail-after-durable; I/O fault injection 없음 | A2 |
@@ -2368,7 +2404,7 @@ literal/regexp 기본 case = sensitive, 코드 기본은 folded(lexical route가
 | QI-BB-027 | P2 | §3.23/§3.35 | gaps(**WRONG**) | legacy ≤v7/v8 generation은 ANN 누락을 silent exact fallback으로 서비스; append segment ef_construction≠manifest; recall artifact에 HEAD 없음 | A4, A8 |
 | QI-BB-028 | P1 | §3.15 | gaps | semantic row-root attestation(완료 기준 #5) 미구현 | A4 |
 | QI-BB-029 | P1 | §3.11 | gaps(**WRONG**) | 거부될 batch가 validate 전에 idempotency row 기록; sealed-but-corrupt half pair는 CONFLICT 고정; IPC/SDK preflight test 0건 | A5 |
-| QI-BB-030 | P1 | §3.10 | gaps(**WRONG**) | repo-metadata overlay sidecar 7종이 manifest·validator 밖 + `std::fs::write` + sealed dir mutation → activation 성공≠query open 성공; handle 재사용 없음; Tantivy segment 미커밋 | A3 |
+| QI-BB-030 | P1 | §3.10/§3.48 | gaps → **WRONG 해소(A3, f0cf9c9)** | ~~overlay가 manifest 밖·`fs::write`·sealed dir mutation~~ → manifest v4가 overlay·segment·text-authority 전부 commit, sealed generation 불변, 두 문 한 walk. 남은 것: 검증 handle 재사용(완료 기준 #2 → A2) | A2 |
 | QI-BB-031 | P2 | §3.15 | gaps | adapter 경계 validator가 norm 무관(상류 의존); 혼합 batch 값 동일성·artifact 미증명 | A4 |
 | QI-BB-032 | P2 | §3.16 | gaps(**WRONG**) | idempotency forget이 same-pass 양 track 조건(deferred split·미seal row 누수); `batch_digest`↔payload 미결속; crash-resume 재적용 | A5 |
 
