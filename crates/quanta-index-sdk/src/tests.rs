@@ -3929,6 +3929,39 @@ fn search_corpus_public_surface_keeps_legacy_lexical_ingest_names_out_v1() {
     }
 }
 
+// W7 (plan §11): the pre-contract auxiliary channel ops were deleted from the
+// contract because no producer, adapter or ledger path constructs them; the
+// typed ingest batches are the only aux ingress. Their names must not come
+// back on the contract surface.
+#[test]
+fn contract_channel_surface_keeps_the_deleted_auxiliary_op_names_out_v1() {
+    let sdk_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let contract_root = sdk_root.join("../quanta-index-contract/src");
+    let surfaces = [
+        std::fs::read_to_string(contract_root.join("channel/ops.rs")).expect("read channel/ops.rs"),
+        std::fs::read_to_string(contract_root.join("channel/mod.rs")).expect("read channel/mod.rs"),
+        std::fs::read_to_string(contract_root.join("lib.rs")).expect("read contract lib.rs"),
+        std::fs::read_to_string(sdk_root.join("src/lib.rs")).expect("read sdk lib.rs"),
+    ];
+    for forbidden in [
+        "DeleteChunk",
+        "DeleteSymbol",
+        "UpsertTag",
+        "DeleteRef",
+        "DeleteTag",
+        "UpsertDirty",
+        "EvictDirty",
+        "DeleteParseTree",
+        "TombstoneStructuralScope",
+        "UpsertDiffHunk",
+    ] {
+        assert!(
+            surfaces.iter().all(|source| !source.contains(forbidden)),
+            "deleted auxiliary channel op must stay off the contract surface: {forbidden}",
+        );
+    }
+}
+
 // QI-BB-025: the builder refuses an out-of-range `top_k` locally, under the same
 // code the daemon answers with, and never puts the request on the wire.
 #[test]

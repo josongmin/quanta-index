@@ -34,11 +34,10 @@ pub mod repomap;
 pub mod results;
 
 pub use channel::{
-    ChunkId, ChunkRecord, ChunkStructuralMetadata, ClearLexicalSurface, DeleteChunk,
-    DeleteParseTree, DeleteRef, DeleteSymbol, DeleteTag, EmbeddingId, EmbeddingRecord, EvictDirty,
-    LexicalFullBundle, LexicalSeal, OwnerDocKind, ReplaceLexicalScope, ReplaceStructuralScope,
-    SymbolId, TombstoneLexicalScope, TombstoneStructuralScope, UpsertChunk, UpsertCommit,
-    UpsertDiffHunk, UpsertDirty, UpsertParseTree, UpsertRef, UpsertSymbol, UpsertTag,
+    ChunkId, ChunkRecord, ChunkStructuralMetadata, ClearLexicalSurface, EmbeddingId,
+    EmbeddingRecord, LexicalFullBundle, LexicalSeal, OwnerDocKind, ReplaceLexicalScope,
+    ReplaceStructuralScope, SymbolId, TombstoneLexicalScope, UpsertChunk, UpsertCommit,
+    UpsertParseTree, UpsertRef, UpsertSymbol,
 };
 pub use ipc::*;
 pub use quanta_index_contract_base::{

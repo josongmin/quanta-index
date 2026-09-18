@@ -15,52 +15,17 @@ crate quanta_index_contract
 │   │   └── struct SymbolId: pub
 │   ├── mod ops: pub(self)
 │   │   ├── struct ClearLexicalSurface: pub
-│   │   ├── struct DeleteChunk: pub
-│   │   ├── struct DeleteParseTree: pub
-│   │   ├── struct DeleteParseTreeVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct DeleteRef: pub
-│   │   ├── struct DeleteRefVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct DeleteSymbol: pub
-│   │   ├── struct DeleteTag: pub
-│   │   ├── struct DeleteTagVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct EvictDirty: pub
-│   │   ├── struct EvictDirtyVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
 │   │   ├── enum LexicalChannelOp: pub
 │   │   ├── struct LexicalFullBundle: pub
 │   │   ├── struct LexicalSeal: pub
 │   │   ├── struct ReplaceLexicalScope: pub
 │   │   ├── struct ReplaceStructuralScope: pub
 │   │   ├── struct TombstoneLexicalScope: pub
-│   │   ├── struct TombstoneStructuralScope: pub
 │   │   ├── struct UpsertChunk: pub
 │   │   ├── struct UpsertCommit: pub
-│   │   ├── struct UpsertCommitVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct UpsertDiffHunk: pub
-│   │   ├── struct UpsertDiffHunkVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct UpsertDirty: pub
-│   │   ├── struct UpsertDirtyVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
 │   │   ├── struct UpsertParseTree: pub
-│   │   ├── struct UpsertParseTreeVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
 │   │   ├── struct UpsertRef: pub
-│   │   ├── struct UpsertRefVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct UpsertSymbol: pub
-│   │   ├── struct UpsertTag: pub
-│   │   ├── struct UpsertTagVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   └── mod serde_bytes_helper: pub(self)
-│   │       ├── struct ByteBuf: pub(super)
-│   │       ├── struct ByteBufVisitor: pub(self)
-│   │       │   └── type Value: pub(self)
-│   │       └── struct Bytes: pub(super)
+│   │   └── struct UpsertSymbol: pub
 │   └── mod records: pub(self)
 │       ├── struct ChunkRecord: pub
 │       ├── struct ChunkRecordVisitor: pub(self)

@@ -16,7 +16,7 @@
 use std::time::Instant;
 
 use quanta_index_contract::channel::LexicalChannelOp;
-use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord, ParseTreeRecord};
+use quanta_index_contract::lex::{CommitRecord, CommitSha, ParseTreeRecord};
 use quanta_index_contract::{
     DirtyIngestBatch, HistoryIngestBatch, ManifestGeneration, RepoId, RevisionId,
     RuntimeCatalogIngestBatch, SearchCorpusIngestBatch, SearchPlaneTrackKind, SearchScopeSurface,
@@ -26,9 +26,9 @@ use quanta_index_core::CoreError;
 use quanta_index_ipc::decode_cbor_payload;
 
 use crate::auxiliary_authority;
-use crate::readiness::history_state::{HistoryAuthorityState, HistoryDiffKey};
+use crate::readiness::history_state::HistoryAuthorityState;
 use crate::readiness::ledger::{AuxDomainState, Ledger};
-use crate::readiness::runtime_state::{DirtyDocState, RuntimeMetadataState};
+use crate::readiness::runtime_state::RuntimeMetadataState;
 use crate::readiness::structural_state::StructuralAuthorityState;
 
 impl Ledger {
@@ -267,17 +267,6 @@ impl Ledger {
                     },
                 )
             }
-            LexicalChannelOp::DeleteChunk(payload) => self
-                .advance_next::<StructuralAuthorityState>(
-                    &payload.repo_id,
-                    &payload.revision_id,
-                    payload.generation,
-                    now,
-                    |state| {
-                        state.remove_chunk(&payload.chunk_id);
-                        Ok(())
-                    },
-                ),
             LexicalChannelOp::ReplaceLexicalScope(payload) => {
                 let (_mode, _base_generation, scope) =
                     decode_lexical_replace_scope(&payload.payload)?;
@@ -344,81 +333,6 @@ impl Ledger {
                     |state| state.upsert_ref(&payload.name, sha),
                 )
             }
-            LexicalChannelOp::DeleteRef(payload) => self.advance_next::<HistoryAuthorityState>(
-                &payload.repo_id,
-                &payload.revision_id,
-                payload.generation,
-                now,
-                |state| {
-                    state.delete_ref(&payload.name);
-                    Ok(())
-                },
-            ),
-            LexicalChannelOp::UpsertTag(payload) => {
-                let sha = CommitSha::from_bytes(payload.sha);
-                self.advance_next::<HistoryAuthorityState>(
-                    &payload.repo_id,
-                    &payload.revision_id,
-                    payload.generation,
-                    now,
-                    |state| state.upsert_tag(&payload.name, sha),
-                )
-            }
-            LexicalChannelOp::DeleteTag(payload) => self.advance_next::<HistoryAuthorityState>(
-                &payload.repo_id,
-                &payload.revision_id,
-                payload.generation,
-                now,
-                |state| {
-                    state.delete_tag(&payload.name);
-                    Ok(())
-                },
-            ),
-            LexicalChannelOp::UpsertDiffHunk(payload) => {
-                let record: DiffHunkRecord = decode_record(&payload.payload, "diff_hunk")?;
-                let commit_sha = CommitSha::from_bytes(payload.commit_sha);
-                self.advance_next::<HistoryAuthorityState>(
-                    &payload.repo_id,
-                    &payload.revision_id,
-                    payload.generation,
-                    now,
-                    |state| {
-                        state.upsert_diff_hunk(
-                            HistoryDiffKey {
-                                commit_sha,
-                                file_path: payload.file_path.clone(),
-                            },
-                            record,
-                        )
-                    },
-                )
-            }
-            LexicalChannelOp::UpsertDirty(payload) => self.advance_next::<RuntimeMetadataState>(
-                &payload.repo_id,
-                &payload.revision_id,
-                payload.generation,
-                now,
-                |state| {
-                    state.restore_dirty_doc(
-                        payload.doc_id.clone(),
-                        DirtyDocState {
-                            applied_at_ms: payload.applied_at_ms,
-                            payload_hash: payload.payload_hash,
-                        },
-                    );
-                    Ok(())
-                },
-            ),
-            LexicalChannelOp::EvictDirty(payload) => self.advance_next::<RuntimeMetadataState>(
-                &payload.repo_id,
-                &payload.revision_id,
-                payload.generation,
-                now,
-                |state| {
-                    state.evict_dirty_doc(&payload.doc_id);
-                    Ok(())
-                },
-            ),
             LexicalChannelOp::UpsertParseTree(payload) => {
                 let record: ParseTreeRecord = decode_record(&payload.payload, "parse_tree")?;
                 self.advance_next::<StructuralAuthorityState>(
@@ -429,17 +343,6 @@ impl Ledger {
                     |state| state.upsert_parse_tree(payload.chunk_id.clone(), record),
                 )
             }
-            LexicalChannelOp::DeleteParseTree(payload) => self
-                .advance_next::<StructuralAuthorityState>(
-                    &payload.repo_id,
-                    &payload.revision_id,
-                    payload.generation,
-                    now,
-                    |state| {
-                        state.remove_parse_tree(&payload.chunk_id);
-                        Ok(())
-                    },
-                ),
             LexicalChannelOp::ReplaceStructuralScope(payload) => {
                 let (_mode, _base_generation, scope) =
                     decode_structural_replace_scope(&payload.payload)?;
@@ -460,23 +363,8 @@ impl Ledger {
                     },
                 )
             }
-            LexicalChannelOp::TombstoneStructuralScope(payload) => {
-                let (_mode, _base_generation, scope) =
-                    decode_structural_tombstone_scope(&payload.payload)?;
-                self.advance_next::<StructuralAuthorityState>(
-                    &payload.repo_id,
-                    &payload.revision_id,
-                    payload.generation,
-                    now,
-                    |state| {
-                        state.tombstone_scope_parse_trees(scope.scope.repo_relative_path.as_str());
-                        Ok(())
-                    },
-                )
-            }
             LexicalChannelOp::FullBundle(_)
             | LexicalChannelOp::UpsertSymbol(_)
-            | LexicalChannelOp::DeleteSymbol(_)
             | LexicalChannelOp::Seal(_) => Ok(()),
         }
     }
@@ -530,17 +418,4 @@ fn decode_structural_replace_scope(
     CoreError,
 > {
     decode_record(payload, "structural_replace_scope")
-}
-
-fn decode_structural_tombstone_scope(
-    payload: &[u8],
-) -> Result<
-    (
-        quanta_index_contract::BatchIngestMode,
-        Option<ManifestGeneration>,
-        quanta_index_contract::StructuralTombstoneScope,
-    ),
-    CoreError,
-> {
-    decode_record(payload, "structural_tombstone_scope")
 }

@@ -34,8 +34,8 @@
 //! 2. **Upsert-driven** — [`TrigramIndexBuilder::new`] then repeated
 //!    [`TrigramIndexBuilder::upsert_doc`] / [`TrigramIndexBuilder::remove_doc`].
 //!    Replay-safe: re-issuing `upsert_doc(doc_id, ...)` after a crash
-//!    REPLACES the prior content. Subscriber loops that consume
-//!    `UpsertChunk` / `DeleteChunk` events from the producer use this
+//!    REPLACES the prior content. The lexical adapter's text-authority
+//!    delta (scope replace retires and re-adds documents) uses this
 //!    pattern.
 //! 3. **Cross-generation incremental** —
 //!    [`TrigramIndexBuilder::from_prior`] with the previous generation's

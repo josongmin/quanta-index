@@ -118,48 +118,6 @@ impl HistoryAuthorityState {
         Ok(())
     }
 
-    /// Drop a ref (absent is fine); marks refs materialized.
-    pub(crate) fn delete_ref(&mut self, name: &str) {
-        self.refs_materialized = true;
-        let _removed = self.refs.remove(name);
-    }
-
-    /// Point a tag at a known commit; marks tags materialized.
-    pub(crate) fn upsert_tag(&mut self, name: &str, sha: CommitSha) -> Result<(), CoreError> {
-        self.tags_materialized = true;
-        if !self.commits.contains_key(&sha) {
-            return Err(history_ref_not_found(format!(
-                "history ingest: tag `{name}` points to unknown commit {sha}"
-            )));
-        }
-        self.restore_tag(name, sha);
-        Ok(())
-    }
-
-    /// Drop a tag (absent is fine); marks tags materialized.
-    pub(crate) fn delete_tag(&mut self, name: &str) {
-        self.tags_materialized = true;
-        let _removed = self.tags.remove(name);
-    }
-
-    /// Upsert one diff hunk of a known commit; marks diff hunks
-    /// materialized.
-    pub(crate) fn upsert_diff_hunk(
-        &mut self,
-        key: HistoryDiffKey,
-        record: DiffHunkRecord,
-    ) -> Result<(), CoreError> {
-        self.diff_hunks_materialized = true;
-        if !self.commits.contains_key(&key.commit_sha) {
-            return Err(history_ref_not_found(format!(
-                "history ingest: diff hunk for unknown commit {}",
-                key.commit_sha
-            )));
-        }
-        self.restore_diff_hunk(key, record);
-        Ok(())
-    }
-
     /// The materialization flags.
     #[must_use]
     pub(crate) const fn meta(&self) -> HistoryStateMeta {

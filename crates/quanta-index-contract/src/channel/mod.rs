@@ -1,9 +1,10 @@
-//! Legacy channel/op transport shapes.
+//! Lexical build ops, channel identities, and chunk / embedding records.
 //!
-//! These types remain the canonical wire records for persisted op streams and
-//! op-oriented adapter tests. The typed ingest front door is defined under
-//! [`crate::ipc`] (for example [`crate::SearchPlaneIngestIpcRequest`]);
-//! producers are no longer expected to publish these ops directly.
+//! Nothing here is a wire shape: `LexicalChannelOp` has no serde and no
+//! persisted op stream exists. The ops are the lexical adapter's in-process
+//! build vocabulary, lowered from the typed ingest front door under
+//! [`crate::ipc`] (for example [`crate::SearchPlaneIngestIpcRequest`]). The
+//! identities and records are shared by the ingest DTOs.
 
 mod ids;
 mod ops;
@@ -11,9 +12,8 @@ mod records;
 
 pub use ids::{ChannelSeq, ChunkId, EmbeddingId, SymbolId};
 pub use ops::{
-    ClearLexicalSurface, DeleteChunk, DeleteParseTree, DeleteRef, DeleteSymbol, DeleteTag,
-    EvictDirty, LexicalChannelOp, LexicalFullBundle, LexicalSeal, ReplaceLexicalScope,
-    ReplaceStructuralScope, TombstoneLexicalScope, TombstoneStructuralScope, UpsertChunk,
-    UpsertCommit, UpsertDiffHunk, UpsertDirty, UpsertParseTree, UpsertRef, UpsertSymbol, UpsertTag,
+    ClearLexicalSurface, LexicalChannelOp, LexicalFullBundle, LexicalSeal, ReplaceLexicalScope,
+    ReplaceStructuralScope, TombstoneLexicalScope, UpsertChunk, UpsertCommit, UpsertParseTree,
+    UpsertRef, UpsertSymbol,
 };
 pub use records::{ChunkRecord, ChunkStructuralMetadata, EmbeddingRecord, OwnerDocKind};

@@ -3,11 +3,9 @@
 //! Wire shape: [`docs/ssot/producer-handoff.md`](../../../../docs/ssot/producer-handoff.md)
 //! §3.2.1 (`UpsertDirty` payload).
 //!
-//! The op-level `UpsertDirty { repo, revision, generation, doc_id, applied_at_ms,
-//! payload_hash }` carries identity through the channel envelope; this
-//! scaffold lands the **payload subset** that downstream `lq_runtime`
-//! placeholders model directly. The full op (with repo / revision / generation)
-//! is already on the wire via `LexicalChannelOp`.
+//! This is the **payload subset** of the producer's `UpsertDirty` entry;
+//! repo / revision / generation travel on the enclosing
+//! [`crate::DirtyIngestBatch`], the only dirty ingress.
 
 use core::fmt;
 

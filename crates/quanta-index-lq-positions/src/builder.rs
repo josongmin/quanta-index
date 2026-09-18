@@ -21,7 +21,7 @@
 //!    with [`PositionsBuilder::upsert_doc`] (replaces every `(term,
 //!    doc_id, *)` cell atomically) and [`PositionsBuilder::remove_doc`]
 //!    (drops every `(term, doc_id, *)` cell for `doc_id`). Suitable for
-//!    channel-arch replay: producer-side `UpsertChunk(X)` repeated twice
+//!    delta re-application: the same scope replace applied twice
 //!    yields the same builder state. Combine with
 //!    [`PositionsBuilder::from_prior`] to import the previous generation's
 //!    posting lists into a new generation before applying the delta.

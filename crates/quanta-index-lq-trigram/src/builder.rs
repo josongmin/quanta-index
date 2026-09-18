@@ -15,10 +15,10 @@
 //!    `TrigramIndexBuilder::new`, call `TrigramIndexBuilder::upsert_doc`
 //!    for each `(doc_id, content)` pair. Re-issuing
 //!    `upsert_doc(doc_id, content_b)` after `upsert_doc(doc_id, content_a)`
-//!    REPLACES the doc's prior trigram footprint. Channel subscribers
-//!    that may replay events after a crash MUST use this pattern.
-//!    `TrigramIndexBuilder::remove_doc` is the matching `DeleteChunk`
-//!    handler.
+//!    REPLACES the doc's prior trigram footprint. A delta that may be
+//!    re-applied after a crash MUST use this pattern.
+//!    `TrigramIndexBuilder::remove_doc` is the matching retirement
+//!    handler for a document a scope tombstone or replace removes.
 //!
 //! 3. **Cross-generation incremental**: construct via
 //!    `TrigramIndexBuilder::from_prior`

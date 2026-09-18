@@ -3536,26 +3536,13 @@ fn summarize_text_ops(ops: &[LexicalChannelOp]) -> Result<TextOpSummary, CoreErr
                 summary.forces_rebuild = true;
                 summary.added_count = summary.added_count.saturating_add(1);
             }
-            LexicalChannelOp::DeleteChunk(_) => {
-                summary.touches_text = true;
-                summary.forces_rebuild = true;
-            }
             LexicalChannelOp::FullBundle(_)
             | LexicalChannelOp::UpsertSymbol(_)
-            | LexicalChannelOp::DeleteSymbol(_)
             | LexicalChannelOp::Seal(_)
             | LexicalChannelOp::UpsertCommit(_)
             | LexicalChannelOp::UpsertRef(_)
-            | LexicalChannelOp::UpsertTag(_)
-            | LexicalChannelOp::DeleteRef(_)
-            | LexicalChannelOp::DeleteTag(_)
-            | LexicalChannelOp::UpsertDirty(_)
-            | LexicalChannelOp::EvictDirty(_)
             | LexicalChannelOp::UpsertParseTree(_)
-            | LexicalChannelOp::DeleteParseTree(_)
-            | LexicalChannelOp::ReplaceStructuralScope(_)
-            | LexicalChannelOp::TombstoneStructuralScope(_)
-            | LexicalChannelOp::UpsertDiffHunk(_) => {}
+            | LexicalChannelOp::ReplaceStructuralScope(_) => {}
         }
     }
     Ok(summary)
@@ -4197,12 +4184,6 @@ impl LexicalAdapter {
                     .map_err(|err| CoreError::Storage(format!("lexical: add_document: {err}")))?;
                 Ok(true)
             }
-            LexicalChannelOp::DeleteChunk(delete) => {
-                let term =
-                    Term::from_field_text(self.fields.candidate_id, delete.chunk_id.as_str());
-                let _opstamp = writer.delete_term(term);
-                Ok(true)
-            }
             LexicalChannelOp::UpsertSymbol(upsert) => {
                 let candidate_id = upsert.symbol_id.as_str();
                 let term = Term::from_field_text(self.fields.candidate_id, candidate_id);
@@ -4239,12 +4220,6 @@ impl LexicalAdapter {
                 let _opstamp = writer
                     .add_document(doc)
                     .map_err(|err| CoreError::Storage(format!("lexical: add_document: {err}")))?;
-                Ok(true)
-            }
-            LexicalChannelOp::DeleteSymbol(delete) => {
-                let term =
-                    Term::from_field_text(self.fields.candidate_id, delete.symbol_id.as_str());
-                let _opstamp = writer.delete_term(term);
                 Ok(true)
             }
             LexicalChannelOp::ReplaceLexicalScope(payload) => {
@@ -4327,16 +4302,8 @@ impl LexicalAdapter {
             LexicalChannelOp::Seal(_)
             | LexicalChannelOp::UpsertCommit(_)
             | LexicalChannelOp::UpsertRef(_)
-            | LexicalChannelOp::UpsertTag(_)
-            | LexicalChannelOp::DeleteRef(_)
-            | LexicalChannelOp::DeleteTag(_)
-            | LexicalChannelOp::UpsertDirty(_)
-            | LexicalChannelOp::EvictDirty(_)
             | LexicalChannelOp::UpsertParseTree(_)
-            | LexicalChannelOp::DeleteParseTree(_)
-            | LexicalChannelOp::ReplaceStructuralScope(_)
-            | LexicalChannelOp::TombstoneStructuralScope(_)
-            | LexicalChannelOp::UpsertDiffHunk(_) => Ok(false),
+            | LexicalChannelOp::ReplaceStructuralScope(_) => Ok(false),
         }
     }
 }
@@ -4366,22 +4333,12 @@ fn declared_delta_base_generation(
             LexicalChannelOp::ClearLexicalSurface(payload) => payload.base_generation,
             LexicalChannelOp::FullBundle(_)
             | LexicalChannelOp::UpsertChunk(_)
-            | LexicalChannelOp::DeleteChunk(_)
             | LexicalChannelOp::UpsertSymbol(_)
-            | LexicalChannelOp::DeleteSymbol(_)
             | LexicalChannelOp::Seal(_)
             | LexicalChannelOp::UpsertCommit(_)
             | LexicalChannelOp::UpsertRef(_)
-            | LexicalChannelOp::UpsertTag(_)
-            | LexicalChannelOp::DeleteRef(_)
-            | LexicalChannelOp::DeleteTag(_)
-            | LexicalChannelOp::UpsertDirty(_)
-            | LexicalChannelOp::EvictDirty(_)
             | LexicalChannelOp::UpsertParseTree(_)
-            | LexicalChannelOp::DeleteParseTree(_)
-            | LexicalChannelOp::ReplaceStructuralScope(_)
-            | LexicalChannelOp::TombstoneStructuralScope(_)
-            | LexicalChannelOp::UpsertDiffHunk(_) => continue,
+            | LexicalChannelOp::ReplaceStructuralScope(_) => continue,
         };
         return Ok(base_generation);
     }
@@ -4770,9 +4727,7 @@ impl FileContributorIngestPort for LexicalAdapter {
 const fn op_mutates_index(op: &LexicalChannelOp) -> bool {
     match op {
         LexicalChannelOp::UpsertChunk(_)
-        | LexicalChannelOp::DeleteChunk(_)
         | LexicalChannelOp::UpsertSymbol(_)
-        | LexicalChannelOp::DeleteSymbol(_)
         | LexicalChannelOp::ReplaceLexicalScope(_)
         | LexicalChannelOp::TombstoneLexicalScope(_)
         | LexicalChannelOp::ClearLexicalSurface(_) => true,
@@ -4780,16 +4735,8 @@ const fn op_mutates_index(op: &LexicalChannelOp) -> bool {
         | LexicalChannelOp::Seal(_)
         | LexicalChannelOp::UpsertCommit(_)
         | LexicalChannelOp::UpsertRef(_)
-        | LexicalChannelOp::UpsertTag(_)
-        | LexicalChannelOp::DeleteRef(_)
-        | LexicalChannelOp::DeleteTag(_)
-        | LexicalChannelOp::UpsertDirty(_)
-        | LexicalChannelOp::EvictDirty(_)
         | LexicalChannelOp::UpsertParseTree(_)
-        | LexicalChannelOp::DeleteParseTree(_)
-        | LexicalChannelOp::ReplaceStructuralScope(_)
-        | LexicalChannelOp::TombstoneStructuralScope(_)
-        | LexicalChannelOp::UpsertDiffHunk(_) => false,
+        | LexicalChannelOp::ReplaceStructuralScope(_) => false,
     }
 }
 
