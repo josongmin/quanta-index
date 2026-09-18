@@ -2266,6 +2266,30 @@ vs cache(embed cache)를 이름함); judged-corpus recall/NDCG(M4); crash-inject
 (rebuild = migration, C4에서); F3 `acquire_lexical/acquire_semantic` mirror·`HistoryPageSelector` vs `KeysetPageCollector`·`SemanticSearcher` mirror pair;
 F4 repo-map을 top_k truth table harness에; F6 plan §5.1 activation/snapshot row를 catalog에(설계, W2/C2).
 
+## 3.46 QI-BB-018 보완 #3 — 모든 DSL filter가 dense lane에 결속된다 (fix wave A1, 1894583)
+
+§4 감사가 **WRONG**으로 판정한 항목: `prepare_language_query_v1`(`query_dispatcher/planning.rs:102-141`, b0485b5)이 `LqFilter::Lang`만 typed
+constraint로 올려 hybrid/hybrid-seed의 dense lane은 `file:`/`repo:`/`type:`/`content:`/`fork:`… 를 전부 무시했고, 질의가 제외한 dense-only row가
+fused 결과로 유출됐다(`repo:other needle`이 제외한 generation에서 답함).
+
+**티켓 완료 기준 대조(코드 기준)**
+
+| 티켓 bullet | 판정 | 근거 |
+| --- | --- | --- |
+| 보완 #3 "lexical constraints와 authorization은 두 lane에 동일하게 push down하고 post-filter로만 처리하지 않는다" | **MET** | core `domains/hybrid/dense_admission.rs`가 `LqFilter` 전 variant를 exhaustive하게 `pushdown`(`lang:` → typed constraint set) / `exact`(`repo:`·`file:`·`type:file`·`type:symbol`·`content:`·`fork:`·`archived:`·`visibility:`·`context:` → lexical lane의 compiled filter-only plan으로 dense candidate마다 admission) / `unsupported`(history·working-tree·runtime-catalog·projection filter, `count:` → lane 실행 전 typed `HYBRID_FILTER_UNSUPPORTED`)로 분류(`classify_hybrid_filter_v1`, test `every_filter_variant_has_exactly_the_class_the_table_promises`). `exact`는 단순 post-filter가 아니다: `admit_dense_lane_v1`(search-plane `query_dispatcher/dense_admission.rs`)이 over-fetch→admission→refill을 `HybridOrchestratorPolicy::next_dense_admission_fetch`(배수, `INTERNAL_FETCH_CEILING` 상한)로 반복해 admitted depth가 unfiltered lane과 같아지거나 engine이 고갈되거나 ceiling에 닿을 때까지 돈다; outcome(`filled`/`exhausted`/`capped`/`not_needed`)과 examined/admitted 수가 explanation에 실린다(`hybrid.dense_admission=…`). 두 route(hybrid, hybrid_seed)가 같은 loop를 공유해 drift 불가. |
+| 완료 기준 "true-hybrid surface에서 semantic-only relevant hit가 top-k에 들어오는 E2E" | MET(§3.22에서 이미) + 이번에 **filter 결속 E2E 5개** | `searchd-runtime/tests/e2e_hybrid_filters.rs`: `hybrid_file_filter_excludes_dense_rows_from_other_files`, `hybrid_repo_filter_excluding_the_generation_answers_empty`, `hybrid_lang_and_type_filters_bind_the_dense_lane_by_class`, `hybrid_refuses_unsupported_filters_and_negated_filters_typed`, `hybrid_seed_filters_bind_the_dense_lane_under_the_same_contract` — **5개 모두 b0485b5에서 fail, 1894583에서 pass**(fail-before 증명). |
+| 완료 기준 "scoped rerank 별도 유지 시 API/SDK/CLI 이름·explanation·문서 동일" | n/a | scoped rerank surface는 §3.22에서 제거됨. SDK/CLI에 hybrid route 노출은 A8 범위. |
+| 보완 #4 judged corpus recall/NDCG | **BLOCKED** | M4 host/corpus 의존(§3.45와 동일). |
+
+**설계**: `LexicalSearcher` port에 `admitted_candidates(plan, candidate ids) -> admitted set`이 추가되고 Tantivy adapter(`lexical/src/dense_admission.rs`)는
+`search_constrained`와 같은 preparation으로 filter-only plan을 **candidate-restricted collect 1회**로 답한다(ranked re-search 아님, identity당 1회 질문 —
+test `hybrid_dense_lane_refills_until_admitted_rows_fill_top_k`가 admission call 집합의 중복 없음을 단언). search-plane unit 8(`tests/hybrid_filters.rs`:
+제외된 dense-only candidate 미출현, repo filter가 양 lane을 비움, class별 push-down, refill이 top_k를 채움, filled/capped 명명, unsupported filter의
+zero-lane-call typed 거부, hybrid_seed 동일 계약 2). core cargo-modules baseline +4(신규 module). `tools/ci/test-authority.toml`에 새 test file 등록.
+
+**검증(worktree, rebase 후)**: check, `just rust-clippy` 0, `just rust-doc`, fmt, core+search-plane+lexical unit, e2e 5. 통합 main verify는 wave A
+전체 착지 후 §5에 기록.
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -2295,7 +2319,7 @@ F4 repo-map을 top_k truth table harness에; F6 plan §5.1 activation/snapshot r
 | QI-BB-015 | P2 | §3.28 | gaps | queue/in-flight·examined·response bytes·generation disk bytes·GC·provider failure metric 없음; 운영 scrape 경로 미문서화 | A7, A2(GC) |
 | QI-BB-016 | P3 | §3.26 | gaps | writer heap만의 envelope(process envelope 아님); RSS 미관측; idle sweep이 ingest 없이는 안 돎; `--state-root` env drop | A7 |
 | QI-BB-017 | P1 | §3.14 | gaps | open마다 dataset 전체 SHA-256(seal 후 2회); scrub 없음; 검증 handle 미승격; legacy v2–v8 compat 잔존 | A4, A2 |
-| QI-BB-018 | P2 | §3.22/§3.36 | gaps(**WRONG**) | dense lane이 DSL filter(`file:`/`repo:`/`type:`…) 무시 → 질의가 제외한 결과 유출; route가 SDK/CLI에 없음; judged corpus blocked | A1, A8 |
+| QI-BB-018 | P2 | §3.22/§3.36/§3.46 | gaps → **filter 결속 MET(A1, 1894583)** | ~~dense lane이 DSL filter 무시~~ → 전 variant class 분류 + admission/refill(§3.46, e2e 5 fail-before/pass-after); 남은 것: route가 SDK/CLI에 없음(A8); judged corpus blocked(M4) | A8 |
 | QI-BB-019 | P2 | §3.21 | gaps | `dense_corpora` doc이 "legacy/migration window" 주장; empty=global 이중 의미 | A8 |
 | QI-BB-020 | P1 | §3.19/§3.37 | gaps(**WRONG**) | activation이 global read guard 아래 dataset 전량 해시(cross-repo ingest/query 정지); history-text cold open under lock; reconcile-fail-after-durable; I/O fault injection 없음 | A2 |
 | QI-BB-021 | P2 | §3.18/§3.41 | gaps | process envelope 미선언·RSS 미측정; 정책 3분할 | A7 |
