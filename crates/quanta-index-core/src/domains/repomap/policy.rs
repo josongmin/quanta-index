@@ -1,10 +1,17 @@
 use quanta_index_contract::RepoMapQueryRequest;
 
 use crate::CoreError;
+use crate::error::validate_query_top_k;
 
 pub struct RepoMapPolicy;
 
 impl RepoMapPolicy {
+    /// Accept or refuse a repo-map query's shape.
+    ///
+    /// `top_k` goes through the one validator every query route uses, so
+    /// the repo-map route reports the shared `QUERY_TOP_K_OUT_OF_RANGE` code
+    /// and the same public range instead of its own zero-only check
+    /// (QI-BB-025; plan §11 "dispatcher-local top-k caps").
     pub fn validate_query(request: &RepoMapQueryRequest) -> Result<(), CoreError> {
         if request.repo_id.as_str().is_empty() {
             return Err(CoreError::InvalidContract(
@@ -21,11 +28,7 @@ impl RepoMapPolicy {
                 "repomap query: query_text must not be empty".to_string(),
             ));
         }
-        if request.top_k == 0 {
-            return Err(CoreError::InvalidContract(
-                "repomap query: top_k must be > 0".to_string(),
-            ));
-        }
+        let _accepted = validate_query_top_k(request.top_k)?;
         if request.token_budget == 0 {
             return Err(CoreError::InvalidContract(
                 "repomap query: token_budget must be > 0".to_string(),
@@ -38,13 +41,17 @@ impl RepoMapPolicy {
 #[cfg(test)]
 mod tests {
     //! `cargo mutants` exposed missed `==` -> `!=` mutations on the
-    //! `top_k` and `token_budget` zero checks.
+    //! `token_budget` zero check.
     //!
     //! These tests kill both directions by asserting that the policy
-    //! accepts positive values and rejects zero values explicitly.
+    //! accepts positive values and rejects zero values explicitly, and
+    //! that `top_k` is refused with the route-shared typed code at both
+    //! ends of the public range.
 
     use super::*;
-    use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
+    use quanta_index_contract::{
+        ManifestGeneration, PUBLIC_TOP_K_MAX, RepoId, RevisionId, TOP_K_OUT_OF_RANGE_CODE,
+    };
 
     fn base_request() -> RepoMapQueryRequest {
         RepoMapQueryRequest {
@@ -64,20 +71,30 @@ mod tests {
     }
 
     #[test]
-    fn top_k_zero_rejected_kills_eq_to_ne_mutation() {
-        let mut req = base_request();
-        req.top_k = 0;
-        assert!(matches!(
-            RepoMapPolicy::validate_query(&req),
-            Err(CoreError::InvalidContract(msg)) if msg.contains("top_k")
-        ));
+    fn top_k_outside_the_public_range_is_refused_with_the_shared_code() {
+        for refused in [0, PUBLIC_TOP_K_MAX + 1, u32::MAX] {
+            let mut req = base_request();
+            req.top_k = refused;
+            assert!(
+                matches!(
+                    RepoMapPolicy::validate_query(&req),
+                    Err(CoreError::Typed { code, .. }) if code == TOP_K_OUT_OF_RANGE_CODE
+                ),
+                "top_k={refused} must be refused with {TOP_K_OUT_OF_RANGE_CODE}"
+            );
+        }
     }
 
     #[test]
-    fn top_k_nonzero_accepted() {
-        let mut req = base_request();
-        req.top_k = 1;
-        assert!(RepoMapPolicy::validate_query(&req).is_ok());
+    fn top_k_inside_the_public_range_is_accepted_at_both_ends() {
+        for accepted in [1, PUBLIC_TOP_K_MAX] {
+            let mut req = base_request();
+            req.top_k = accepted;
+            assert!(
+                RepoMapPolicy::validate_query(&req).is_ok(),
+                "top_k={accepted} is inside the public range"
+            );
+        }
     }
 
     #[test]
