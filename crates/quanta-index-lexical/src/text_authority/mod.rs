@@ -14,7 +14,8 @@ pub(crate) use manifest::{
     TEXT_AUTHORITY_MANIFEST_FILE_NAME, TextAuthorityManifest, leading_format_version,
     read_manifest, shard_index_of, text_authority_dir,
 };
-pub(crate) use reader::ShardedTextAuthority;
+pub(crate) use reader::{ShardedTextAuthority, load_shard};
+pub(crate) use shard::{ShardBody, sha256_of_bytes};
 pub(crate) use writer::{
     AddedTextDoc, TextAuthorityWriteReceipt, finalize_for_seal, rebuild, update,
 };

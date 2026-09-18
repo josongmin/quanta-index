@@ -1,13 +1,14 @@
 //! The sharded text authority as a query reads it.
 //!
-//! [`ShardedTextAuthority`] loads the manifest and every listed shard —
-//! plain reads, each shard proved against its committed length and digest
-//! before it is decoded — and answers the byte surfaces (raw substring,
-//! regex prefilter and verify) and the token surfaces (phrase, adjacency)
-//! by handing the `lq-trigram` and `lq-positions` algorithms a union view
-//! over the shards. The algorithms are the single-index ones, unchanged;
-//! the union is exact because shards partition the doc-id space in
-//! ascending ranges, and doc ids are global so nothing is remapped.
+//! [`ShardedTextAuthority`] holds every listed shard — each read once,
+//! proved against its committed length and digest and decoded by the
+//! sealed-generation walk that both doors share — and answers the byte
+//! surfaces (raw substring, regex prefilter and verify) and the token
+//! surfaces (phrase, adjacency) by handing the `lq-trigram` and
+//! `lq-positions` algorithms a union view over the shards. The algorithms
+//! are the single-index ones, unchanged; the union is exact because shards
+//! partition the doc-id space in ascending ranges, and doc ids are global
+//! so nothing is remapped.
 
 use std::path::Path;
 
@@ -30,25 +31,28 @@ pub(crate) struct ShardedTextAuthority {
 }
 
 impl ShardedTextAuthority {
-    /// Load the text authority under `generation_dir`, or `None` when the
-    /// generation published none.
+    /// The authority over shards the sealed-generation walk proved and
+    /// decoded, given in ascending index order as the manifest lists them.
     ///
-    /// Every listed shard is read, proved against the manifest's length and
-    /// digest, decoded and checked against the manifest's row count and
-    /// doc-id extremes; any disagreement is a typed refusal, never a
-    /// partial authority.
-    pub(crate) fn load(generation_dir: &Path) -> Result<Option<Self>, CoreError> {
-        let Some(manifest) = super::manifest::read_manifest(generation_dir)? else {
-            return Ok(None);
-        };
-        let mut shards = Vec::with_capacity(manifest.shards.len());
-        for entry in &manifest.shards {
-            shards.push(LoadedShard {
-                index: entry.index,
-                body: load_shard(generation_dir, entry)?,
-            });
+    /// The walk is the only reader of shard files, so every shard here was
+    /// read once, proved against its committed length and digest, and
+    /// checked against the manifest's row count and doc-id extremes; a
+    /// disagreement refused the whole generation, never a partial
+    /// authority.
+    pub(crate) fn from_proved_shards(shards: Vec<(u64, ShardBody)>) -> Result<Self, CoreError> {
+        let mut loaded = Vec::with_capacity(shards.len());
+        for (index, body) in shards {
+            if loaded
+                .last()
+                .is_some_and(|previous: &LoadedShard| previous.index >= index)
+            {
+                return Err(CoreError::InvalidContract(format!(
+                    "lexical: text authority shard {index} handed out of ascending order"
+                )));
+            }
+            loaded.push(LoadedShard { index, body });
         }
-        Ok(Some(Self { shards }))
+        Ok(Self { shards: loaded })
     }
 
     /// The document with `doc_id`, if the authority holds it.
@@ -130,8 +134,9 @@ impl DocResolver for TextAuthorityResolver<'_> {
 
 /// Read, prove and decode one listed shard.
 ///
-/// Shared by the query reader (every shard) and the incremental writer
-/// (the touched shards only), so both doors prove the same commitment.
+/// Shared by the sealed-generation walk (every shard, for both doors) and
+/// the incremental writer (the touched shards only), so every reader
+/// proves the same commitment.
 pub(crate) fn load_shard(
     generation_dir: &Path,
     entry: &ShardEntry,

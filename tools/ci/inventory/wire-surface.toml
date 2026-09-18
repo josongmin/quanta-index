@@ -156,15 +156,26 @@ id = "lexical-sealed-manifest"
 owner = "quanta-index-lexical"
 path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/search-corpus-generation-manifest.cbor"
 reproduction = "producer-rebuild"
-notes = "Seal commitment: identity digest, Tantivy meta.json sha256, normalizer stamp, text-authority tree commitment. Format 2 (whole-corpus text authority) is refused typed; rebuild is the migration."
+notes = "Seal commitment (QI-BB-030): identity digest, normalizer stamp, Tantivy meta.json (length + sha256), every segment component file the commit references (length + sha256; content proved at seal and by scrub, length at the doors), the text-authority tree, and every repo-metadata overlay present. Formats 1-3 are refused typed (2 by the text-authority format code); rebuild is the migration."
 [[artifact.version_constants]]
-file = "crates/quanta-index-lexical/src/lib.rs"
+file = "crates/quanta-index-lexical/src/sealed_generation/manifest.rs"
 name = "LEXICAL_SEALED_MANIFEST_FORMAT_VERSION"
-value = 3
+value = 4
 [[artifact.version_constants]]
-file = "crates/quanta-index-lexical/src/lib.rs"
+file = "crates/quanta-index-lexical/src/sealed_generation/manifest.rs"
 name = "LEXICAL_SEALED_MANIFEST_WHOLE_CORPUS_TEXT_AUTHORITY_VERSION"
 value = 2
+
+[[artifact]]
+id = "lexical-scrub-receipt"
+owner = "quanta-index-lexical"
+path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/search-corpus-generation-scrub.cbor"
+reproduction = "cache"
+notes = "Record of the most recent integrity scrub of a sealed lexical generation (QI-BB-017 보완 #3): manifest digest, caller stamp, files and bytes re-measured. Not query-required and not part of the sealed manifest; absent means deep-verified at seal, never scrubbed. Regenerable by running the scrub."
+[[artifact.version_constants]]
+file = "crates/quanta-index-lexical/src/sealed_generation/scrub.rs"
+name = "LEXICAL_SCRUB_RECEIPT_FORMAT_VERSION"
+value = 1
 
 [[artifact]]
 id = "lexical-sealed-identity"
@@ -178,7 +189,7 @@ id = "lexical-tantivy-index"
 owner = "quanta-index-lexical"
 path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/{meta.json,.managed.json,<segment>.*}"
 reproduction = "vendor-native"
-notes = "Tantivy 0.22 segment files (immutable, hard-linked across delta generations) plus the two generation-local files Tantivy rewrites in place."
+notes = "Tantivy 0.22 segment files (immutable, hard-linked across delta generations) plus the two generation-local files Tantivy rewrites in place. `meta.json` and every segment component file it references are committed by the sealed manifest (length + sha256); `.managed.json` and lock files are Tantivy bookkeeping a query never decodes and are not committed."
 
 [[artifact]]
 id = "lexical-text-authority"
@@ -207,7 +218,7 @@ id = "lexical-repo-metadata-overlays"
 owner = "quanta-index-lexical"
 path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/{repo-metadata,repo-commit-recency,repo-meta,repo-topic,repo-description,file-ownership,file-contributor}.cbor"
 reproduction = "producer-rebuild"
-notes = "Generation-scoped overlay snapshots written by the six aux ingest routes (repo meta/topic/description/commit-recency, file ownership/contributor); rewritten whole per publish, replaced by atomic rename. No in-file version field."
+notes = "Generation-scoped overlay snapshots written before the seal by the FullBundle payload and the six aux ingest routes (repo meta/topic/description/commit-recency, file ownership/contributor); rewritten whole per publish by atomic durable rename, listed in the sealed manifest with length + sha256, and refused typed (GENERATION_IMMUTABLE) once the generation is sealed. No in-file version field."
 
 [[artifact]]
 id = "history-text-epoch-manifest"

@@ -12,9 +12,10 @@
 //! touches the dataset; the dataset itself stays because `LanceDB` reads
 //! fragments per scan rather than at open.
 //!
-//! The invalidation half is the same trick inverted: publish an auxiliary
-//! batch that names the generation, delete the files, and the next query
-//! must *fail* — the registry dropped the handle and the cold open ran.
+//! The immutability half is the same trick kept: an auxiliary batch that
+//! names a sealed generation is refused typed (QI-BB-030), so nothing was
+//! mutated and the next query must still be served from the resident
+//! handle after the files are deleted.
 //!
 //! Single-flight coalescing is proven in the registry's unit tests; the
 //! daemon's UDS front door is still serial (QI-BB-002), so a concurrent
@@ -26,7 +27,8 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use quanta_index_contract::{
-    ManifestGeneration, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RevisionId, TextQuerySyntax,
+    ManifestGeneration, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RevisionId,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, TextQuerySyntax,
 };
 use quanta_index_core::GenerationStorageKeyV1;
 use quanta_index_searchd_harness as e2e_harness;
@@ -152,51 +154,74 @@ fn second_semantic_query_does_not_reopen_the_generation() -> TestResult {
     Ok(())
 }
 
-/// A routed mutation that names the generation drops its residency.
+/// An auxiliary publish that names a sealed generation is refused typed
+/// and leaves its residency alone (QI-BB-030): nothing may land in a
+/// sealed generation, so there is no mutation to invalidate for.
 ///
-/// After an auxiliary publish, the next query cold-opens and therefore
-/// fails on the deleted files. Without invalidation it would have kept
-/// serving the pre-mutation handle.
+/// The refusal is proved from the outside: the publish answers
+/// `GENERATION_IMMUTABLE`, no overlay file appears on disk, and the next
+/// query is still served from the resident handle — the generation
+/// directory is deleted first, so a cold open would fail instead.
 #[test]
-fn an_auxiliary_publish_invalidates_the_resident_generation() -> TestResult {
+fn an_auxiliary_publish_into_a_sealed_generation_is_refused_and_keeps_residency() -> TestResult {
     let mut rt = seeded_runtime()?;
     let first = ids(&rt.query_text(TextQuerySyntax::Native, QUERY, TOP_K))?;
     if first.len() != 2 {
         return Err(format!("fixture served {} rows, expected 2", first.len()).into());
     }
     let generation = pinned_generation(&rt);
-    rt.publish_repo_meta_batch(RepoMetaIngestBatch {
-        repo_id: rt.repo(),
-        revision_id: rt.revision(),
-        generation,
-        batch_digest: "e2e-snapshot-invalidate".to_string(),
-        entries: vec![RepoMetaEntry {
-            source_repo_id: RepoId::new("repo"),
-            key: "license".to_string(),
-            value: "apache-2.0".to_string(),
-        }],
-    })?;
+    let response = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(
+        RepoMetaIngestBatch {
+            repo_id: rt.repo(),
+            revision_id: rt.revision(),
+            generation,
+            batch_digest: "e2e-snapshot-invalidate".to_string(),
+            entries: vec![RepoMetaEntry {
+                source_repo_id: RepoId::new("repo"),
+                key: "license".to_string(),
+                value: "apache-2.0".to_string(),
+            }],
+        },
+    ))?;
+    let SearchPlaneIngestIpcResponse::Error(error) = response else {
+        return Err(format!(
+            "an auxiliary publish into a sealed generation must be refused typed GENERATION_IMMUTABLE, got {response:?}"
+        )
+        .into());
+    };
+    if error.code != "GENERATION_IMMUTABLE" {
+        return Err(format!(
+            "an auxiliary publish into a sealed generation must be refused typed GENERATION_IMMUTABLE, got {}: {}",
+            error.code, error.message
+        )
+        .into());
+    }
 
-    // Prove the mutation landed on disk in this generation before deleting.
+    // Nothing landed on disk in the sealed generation.
     let dir = lexical_generation_dir(&rt)?;
-    let mut meta_written = false;
     for entry in std::fs::read_dir(&dir)? {
         if entry?.file_name().to_string_lossy().contains("repo-meta") {
-            meta_written = true;
+            return Err(
+                format!("a refused publish wrote an overlay into {}", dir.display()).into(),
+            );
         }
-    }
-    if !meta_written {
-        return Err(format!("repo-meta snapshot was not written into {}", dir.display()).into());
     }
     std::fs::remove_dir_all(&dir)?;
 
     let after = rt.query_text(TextQuerySyntax::Native, QUERY, TOP_K);
-    match after.typed_error {
-        Some(_) => Ok(()),
-        None => Err(format!(
-            "query after an auxiliary publish was served from a stale resident handle: {:?}",
+    if let Some(error) = after.typed_error {
+        return Err(format!(
+            "a refused publish dropped the resident handle; the query cold-opened and failed: {}: {}",
+            error.code, error.message
+        )
+        .into());
+    }
+    if ids(&after)? != first {
+        return Err(format!(
+            "the resident handle served {:?}, expected {first:?}",
             after.candidate_ids
         )
-        .into()),
+        .into());
     }
+    Ok(())
 }

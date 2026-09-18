@@ -46,6 +46,11 @@ crate quanta_index_core
 │   │   ├── trait IdempotencyCatalogPort: pub
 │   │   ├── struct IdempotencyKeyV1: pub
 │   │   └── enum IngestOperationKindV1: pub
+│   ├── mod integrity: pub
+│   │   ├── trait IntegrityScrubPort: pub
+│   │   ├── struct IntegrityScrubReportV1: pub
+│   │   ├── struct IntegrityScrubStampV1: pub
+│   │   └── enum IntegrityScrubStatusV1: pub
 │   ├── mod lexical: pub
 │   │   ├── mod history_text: pub(self)
 │   │   │   ├── type HistoryTextAdmitFn: pub

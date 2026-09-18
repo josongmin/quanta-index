@@ -2638,10 +2638,9 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
     let (_dir, client, ingest_socket, shutdown, join) =
         start_sdk_frontdoor_runtime_with_ingest("sdk-frontdoor-widened-query-matrix")?;
 
-    let corpus_batch = lexical_frontdoor_matrix_batch()?;
-    let _corpus_active = publish_and_activate_sdk_search_corpus(&client, &corpus_batch)?;
-    let _history_receipt = client.history().publish(&history_batch())?;
-    let _structural_receipt = client.structural().publish(&structural_batch()?)?;
+    // The repo-metadata overlays belong to the generation's sealed
+    // contract, so they are published before the seal (QI-BB-030); a
+    // publish into the sealed generation would be refused typed.
     let _repo_commit_recency_receipt = client
         .history()
         .publish_repo_commit_recency(&repo_commit_recency_batch()?)?;
@@ -2656,6 +2655,10 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
     let _file_contributor_receipt = client
         .history()
         .publish_file_contributor(&file_contributor_batch())?;
+    let corpus_batch = lexical_frontdoor_matrix_batch()?;
+    let _corpus_active = publish_and_activate_sdk_search_corpus(&client, &corpus_batch)?;
+    let _history_receipt = client.history().publish(&history_batch())?;
+    let _structural_receipt = client.structural().publish(&structural_batch()?)?;
     let _dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
     publish_runtime_catalog_batch(&ingest_socket)?;
 
@@ -4351,6 +4354,9 @@ fn sdk_binary_process_dsl_roundtrip() -> TestResult {
     let runtime = SearchdBinaryProcess::start(dir.path())?;
     let result = (|| -> TestResult {
         let client = runtime.connect()?;
+        // The repo-meta overlay is part of the sealed contract: published
+        // before the seal, never into the sealed generation (QI-BB-030).
+        let _repo_meta_receipt = client.history().publish_repo_meta(&repo_meta_batch())?;
         let batch = lexical_frontdoor_matrix_batch()?;
         let active = publish_and_activate_sdk_search_corpus(&client, &batch)?;
         if active.lexical.manifest_generation != generation()
@@ -4391,7 +4397,6 @@ fn sdk_binary_process_dsl_roundtrip() -> TestResult {
             .into());
         }
 
-        let _repo_meta_receipt = client.history().publish_repo_meta(&repo_meta_batch())?;
         let predicate = wait_for_sdk_observation(
             SOCKET_TIMEOUT,
             || {

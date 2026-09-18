@@ -48,6 +48,9 @@ pub use domains::idempotency::{
     BATCH_DIGEST_CONFLICT_CODE, CATALOG_BUSY_CODE, CATALOG_ROW_CORRUPT_CODE, IdempotencyBeginV1,
     IdempotencyCatalogPort, IdempotencyKeyV1, IngestOperationKindV1,
 };
+pub use domains::integrity::{
+    IntegrityScrubPort, IntegrityScrubReportV1, IntegrityScrubStampV1, IntegrityScrubStatusV1,
+};
 pub use domains::lexical::{
     FileContributorIngestPort, FileOwnershipIngestPort, HISTORY_TEXT_INDEX_CORRUPT_CODE,
     HISTORY_TEXT_INDEX_NORMALIZER_UNSUPPORTED_CODE, HISTORY_TEXT_INDEX_NOT_READY_CODE,

@@ -20,6 +20,17 @@
 //! and rewrites only the shards it touches; every other shard is the base
 //! generation's file, hard-linked.
 //!
+//! Beside the index and the text authority, a generation carries the
+//! repo-metadata overlays (the crate-private `sealed_generation::overlay`
+//! families): whole-snapshot files the aux ingest routes publish before the
+//! seal. The seal writes a manifest that names every file a query opens —
+//! the Tantivy commit and the segment files it references, the
+//! text-authority tree, the overlays — with length and digest, and nothing
+//! may land in a sealed generation afterwards: an index-mutating op and an
+//! overlay publish alike are refused typed. The activation validator and
+//! the query open walk that manifest through one function, so activation
+//! can only admit a generation a query can open (QI-BB-030).
+//!
 //! The adapter caches one `IndexWriter` per generation to amortize the
 //! per-commit cost across many ops, and one `IndexReader` per opened
 //! generation.
@@ -51,6 +62,7 @@ pub mod plan;
 pub mod planner;
 mod predicate_registry;
 pub mod regex;
+mod sealed_generation;
 pub mod symbol;
 mod text_authority;
 pub mod trigram_plan;
@@ -58,6 +70,7 @@ pub mod trigram_plan;
 /// The one text normalization contract (QI-BB-011), shared with the query DSL
 /// and the search plane; every text surface of this crate lowers through it.
 pub(crate) use quanta_index_lq_text_normalizer as normalize;
+pub use sealed_generation::LexicalSealCommitmentStats;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{File, OpenOptions};
@@ -85,12 +98,12 @@ use quanta_index_contract::{
 };
 use quanta_index_core::domains::generation::{
     GenerationQuarantineReasonV1, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
-    IncompleteGenerationDiscardPort, QuarantinedGenerationV1, SealedArtifactCommitmentV1,
-    SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
-    commit_tree_v1, verify_tree_commitment_v1,
+    IncompleteGenerationDiscardPort, QuarantinedGenerationV1, SealedGenerationInventoryV1,
+    SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
 };
 use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
+    IntegrityScrubPort, IntegrityScrubReportV1, IntegrityScrubStampV1, IntegrityScrubStatusV1,
     LEXICAL_WRITER_HEAP_BYTES_MIN, LexicalArtifactIdentityV1, LexicalCandidateExplanationV1,
     LexicalExecutionBudgetV1, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPredicateV1,
     LexicalScoreEngineV1, LexicalScoreTraceV1, LexicalSearchPageV1, LexicalSearcher,
@@ -142,9 +155,14 @@ use crate::predicate_registry::{
     parse_repo_meta_arg, parse_repo_topic_arg, parse_timeref_scalar_arg, unimplemented_predicate,
 };
 use crate::regex::RegexPolicy;
+use crate::sealed_generation::{
+    DiscardingVisitor, LEXICAL_SCRUB_RECEIPT_FILE_NAME, LEXICAL_SEALED_MANIFEST_FILE_NAME,
+    OverlayFamily, SealedGenerationVisitor, persist_overlay, remove_overlay,
+    scrub_sealed_generation, scrub_status, seal_generation, walk_sealed_generation,
+};
 use crate::text_authority::{
-    AddedTextDoc, ShardedTextAuthority, TEXT_AUTHORITY_DIR_NAME, TextAuthorityManifest,
-    TextAuthorityWriteReceipt, shard_index_of, text_authority_dir,
+    AddedTextDoc, ShardBody, ShardedTextAuthority, TextAuthorityManifest,
+    TextAuthorityWriteReceipt, shard_index_of,
 };
 use tantivy::DocSet as _;
 use tantivy::collector::{Count, TopDocs};
@@ -160,13 +178,14 @@ use tantivy::{DocAddress, Index, IndexReader, IndexWriter, ReloadPolicy, Term};
 
 const TEXT_DOC_KIND: &str = "text";
 const SYMBOL_DOC_KIND: &str = "symbol";
-const REPO_METADATA_FILE_NAME: &str = "repo-metadata.cbor";
-const REPO_COMMIT_RECENCY_FILE_NAME: &str = "repo-commit-recency.cbor";
-const REPO_META_FILE_NAME: &str = "repo-meta.cbor";
-const REPO_TOPIC_FILE_NAME: &str = "repo-topic.cbor";
-const REPO_DESCRIPTION_FILE_NAME: &str = "repo-description.cbor";
-const FILE_OWNERSHIP_FILE_NAME: &str = "file-ownership.cbor";
-const FILE_CONTRIBUTOR_FILE_NAME: &str = "file-contributor.cbor";
+/// Typed refusal for a sealed generation whose bytes are not what its
+/// manifest committed to: a file missing, truncated, rewritten, stale, or
+/// present although the seal never listed it.
+const GENERATION_SIDECAR_CORRUPT_CODE: &str = "GENERATION_SIDECAR_CORRUPT";
+/// Typed refusal for anything that would change a sealed generation.
+const GENERATION_IMMUTABLE_CODE: &str = "GENERATION_IMMUTABLE";
+/// Marker inside the name of a durable write's temporary file.
+const DURABLE_WRITE_TEMPORARY_MARKER: &str = ".tmp-";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum QueryDocKind {
@@ -381,24 +400,53 @@ impl WriterCache {
     }
 
     /// Commit and drop one writer, counting why.
+    ///
+    /// A seal release also waits for the writer's background merges: a
+    /// merge that finished after the seal measured the directory would
+    /// rewrite `meta.json` behind the manifest, so the seal's commit is
+    /// only final once no merge is in flight. That needs the writer by
+    /// value, which is only possible when no in-flight build still holds
+    /// it — for a seal, a structural guarantee the batch order gives.
     fn release(&mut self, key: &GenKey, why: WriterRelease) -> Result<(), CoreError> {
         let Some(victim) = self.remove(key) else {
             return Err(CoreError::Storage(
                 "lexical writer cache: order references missing entry".to_string(),
             ));
         };
-        // If a concurrent build still holds the Arc this lock contends; that
-        // is acceptable because the cap is small and contention only happens
-        // on release, not on the hot path.
-        let mut guarded = victim
-            .lock()
-            .map_err(|err| CoreError::Storage(format!("lexical: release lock poisoned: {err}")))?;
-        let _opstamp = guarded
-            .writer
-            .commit()
-            .map_err(|err| CoreError::Storage(format!("lexical: release commit: {err}")))?;
-        drop(guarded);
-        drop(victim);
+        match why {
+            WriterRelease::Seal => {
+                let Ok(owned) = Arc::try_unwrap(victim) else {
+                    return Err(CoreError::Storage(format!(
+                        "lexical: seal of generation {} while a build still holds its writer",
+                        key.generation.get()
+                    )));
+                };
+                let GenerationWriter { index, mut writer } = owned.into_inner().map_err(|err| {
+                    CoreError::Storage(format!("lexical: release lock poisoned: {err}"))
+                })?;
+                let _opstamp = writer
+                    .commit()
+                    .map_err(|err| CoreError::Storage(format!("lexical: seal commit: {err}")))?;
+                writer.wait_merging_threads().map_err(|err| {
+                    CoreError::Storage(format!("lexical: seal wait for merges: {err}"))
+                })?;
+                drop(index);
+            }
+            WriterRelease::Lru | WriterRelease::Idle => {
+                // If a concurrent build still holds the Arc this lock contends;
+                // that is acceptable because the cap is small and contention
+                // only happens on release, not on the hot path.
+                let mut guarded = victim.lock().map_err(|err| {
+                    CoreError::Storage(format!("lexical: release lock poisoned: {err}"))
+                })?;
+                let _opstamp = guarded
+                    .writer
+                    .commit()
+                    .map_err(|err| CoreError::Storage(format!("lexical: release commit: {err}")))?;
+                drop(guarded);
+                drop(victim);
+            }
+        }
         match why {
             WriterRelease::Lru => self.lru_releases = self.lru_releases.saturating_add(1),
             WriterRelease::Idle => self.idle_releases = self.idle_releases.saturating_add(1),
@@ -674,6 +722,36 @@ fn decode_symbol_payload(bytes: &[u8]) -> Result<SymbolRecord, CoreError> {
         .map_err(|err| CoreError::InvalidContract(format!("lexical: symbol payload decode: {err}")))
 }
 
+/// A length or a count as `u64`; a platform where `usize` exceeds `u64`
+/// is refused rather than truncated.
+fn count_from_len(value: usize) -> Result<u64, CoreError> {
+    u64::try_from(value)
+        .map_err(|err| CoreError::InvalidContract(format!("lexical: count overflow: {err}")))
+}
+
+/// Open an existing generation's index strictly, never creating or
+/// repairing one, with the tokenizers registered.
+///
+/// A cached writer handle could survive deletion or corruption of the
+/// backing files, so every door bypasses that cache and opens the durable
+/// directory.
+fn open_sealed_index(generation_dir: &Path) -> Result<Index, CoreError> {
+    let index = Index::open_in_dir(generation_dir).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: strict open existing generation {}: {error}",
+            generation_dir.display()
+        ))
+    })?;
+    register_index_tokenizers(&index);
+    Ok(index)
+}
+
+/// Whether `name` is a durable write's temporary file
+/// (`.<file>.tmp-<pid>-<n>`), which only a crash leaves behind.
+fn is_durable_write_temporary(name: &str) -> bool {
+    name.starts_with('.') && name.contains(DURABLE_WRITE_TEMPORARY_MARKER)
+}
+
 fn encode_cbor<T>(value: &T, label: &str) -> Result<Vec<u8>, CoreError>
 where
     T: serde::Serialize,
@@ -930,59 +1008,6 @@ fn decode_repo_metadata_payload(
     }))
 }
 
-fn persist_repo_metadata_snapshot(
-    path: &Path,
-    metadata: Option<&LexicalRepoMetadataPayload>,
-) -> Result<(), CoreError> {
-    match metadata {
-        Some(metadata) => {
-            let payload = encode_repo_metadata_payload(metadata)?;
-            std::fs::write(path, payload).map_err(|err| {
-                CoreError::Storage(format!(
-                    "lexical: write repo metadata snapshot {}: {err}",
-                    path.display()
-                ))
-            })?;
-        }
-        None => match std::fs::remove_file(path) {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => {
-                return Err(CoreError::Storage(format!(
-                    "lexical: remove repo metadata snapshot {}: {err}",
-                    path.display()
-                )));
-            }
-        },
-    }
-    Ok(())
-}
-
-fn load_repo_metadata_snapshot(
-    path: &Path,
-) -> Result<Option<LexicalRepoMetadataPayload>, CoreError> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let payload = std::fs::read(path).map_err(|err| {
-        CoreError::Storage(format!(
-            "lexical: read repo metadata snapshot {}: {err}",
-            path.display()
-        ))
-    })?;
-    decode_repo_metadata_payload(payload.as_slice()).map_err(|err| match err {
-        CoreError::InvalidContract(message) => CoreError::InvalidContract(format!(
-            "lexical: repo metadata decode {}: {message}",
-            path.display()
-        )),
-        other @ (CoreError::Typed { .. }
-        | CoreError::NotReady(_)
-        | CoreError::NotImplemented(_)
-        | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => other,
-    })
-}
-
 fn encode_repo_commit_recency_snapshot(
     shard: &RepoCommitRecencyShard,
 ) -> Result<Vec<u8>, CoreError> {
@@ -1121,10 +1146,10 @@ fn decode_repo_commit_recency_snapshot(bytes: &[u8]) -> Result<RepoCommitRecency
     })
 }
 
-fn persist_repo_commit_recency_snapshot(
-    path: &Path,
+/// The commit-recency snapshot one batch publishes, encoded.
+fn encode_repo_commit_recency_batch(
     batch: &RepoCommitRecencyIngestBatch,
-) -> Result<(), CoreError> {
+) -> Result<Vec<u8>, CoreError> {
     let mut latest_committer_time_ms_by_repo_id = BTreeMap::new();
     for entry in &batch.entries {
         let _prior = latest_committer_time_ms_by_repo_id.insert(
@@ -1132,43 +1157,9 @@ fn persist_repo_commit_recency_snapshot(
             entry.latest_committer_time_ms,
         );
     }
-    let payload = encode_repo_commit_recency_snapshot(&RepoCommitRecencyShard {
+    encode_repo_commit_recency_snapshot(&RepoCommitRecencyShard {
         latest_committer_time_ms_by_repo_id,
-    })?;
-    std::fs::write(path, payload).map_err(|err| {
-        CoreError::Storage(format!(
-            "lexical: write repo commit recency snapshot {}: {err}",
-            path.display()
-        ))
-    })?;
-    Ok(())
-}
-
-fn load_repo_commit_recency_snapshot(
-    path: &Path,
-) -> Result<Option<RepoCommitRecencyShard>, CoreError> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let payload = std::fs::read(path).map_err(|err| {
-        CoreError::Storage(format!(
-            "lexical: read repo commit recency snapshot {}: {err}",
-            path.display()
-        ))
-    })?;
-    decode_repo_commit_recency_snapshot(payload.as_slice())
-        .map(Some)
-        .map_err(|err| match err {
-            CoreError::InvalidContract(message) => CoreError::InvalidContract(format!(
-                "lexical: repo commit recency decode {}: {message}",
-                path.display()
-            )),
-            other @ (CoreError::Typed { .. }
-            | CoreError::NotReady(_)
-            | CoreError::NotImplemented(_)
-            | CoreError::NotFound(_)
-            | CoreError::Storage(_)) => other,
-        })
+    })
 }
 
 fn encode_repo_meta_snapshot(shard: &RepoMetaShard) -> Result<Vec<u8>, CoreError> {
@@ -1308,7 +1299,8 @@ fn decode_repo_meta_snapshot(bytes: &[u8]) -> Result<RepoMetaShard, CoreError> {
     Ok(RepoMetaShard { meta_by_repo_id })
 }
 
-fn persist_repo_meta_snapshot(path: &Path, batch: &RepoMetaIngestBatch) -> Result<(), CoreError> {
+/// The repo-meta snapshot one batch publishes, encoded.
+fn encode_repo_meta_batch(batch: &RepoMetaIngestBatch) -> Result<Vec<u8>, CoreError> {
     let mut meta_by_repo_id: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
     for entry in &batch.entries {
         let normalized_key = normalize_repo_meta_key(&entry.key).ok_or_else(|| {
@@ -1321,39 +1313,7 @@ fn persist_repo_meta_snapshot(path: &Path, batch: &RepoMetaIngestBatch) -> Resul
             .or_default()
             .insert(normalized_key, entry.value.clone());
     }
-    let payload = encode_repo_meta_snapshot(&RepoMetaShard { meta_by_repo_id })?;
-    std::fs::write(path, payload).map_err(|err| {
-        CoreError::Storage(format!(
-            "lexical: write repo meta snapshot {}: {err}",
-            path.display()
-        ))
-    })?;
-    Ok(())
-}
-
-fn load_repo_meta_snapshot(path: &Path) -> Result<Option<RepoMetaShard>, CoreError> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let payload = std::fs::read(path).map_err(|err| {
-        CoreError::Storage(format!(
-            "lexical: read repo meta snapshot {}: {err}",
-            path.display()
-        ))
-    })?;
-    decode_repo_meta_snapshot(payload.as_slice())
-        .map(Some)
-        .map_err(|err| match err {
-            CoreError::InvalidContract(message) => CoreError::InvalidContract(format!(
-                "lexical: repo meta decode {}: {message}",
-                path.display()
-            )),
-            other @ (CoreError::Typed { .. }
-            | CoreError::NotReady(_)
-            | CoreError::NotImplemented(_)
-            | CoreError::NotFound(_)
-            | CoreError::Storage(_)) => other,
-        })
+    encode_repo_meta_snapshot(&RepoMetaShard { meta_by_repo_id })
 }
 
 fn encode_repo_topic_snapshot(shard: &RepoTopicShard) -> Result<Vec<u8>, CoreError> {
@@ -1494,7 +1454,8 @@ fn decode_repo_topic_snapshot(bytes: &[u8]) -> Result<RepoTopicShard, CoreError>
     Ok(RepoTopicShard { topics_by_repo_id })
 }
 
-fn persist_repo_topic_snapshot(path: &Path, batch: &RepoTopicIngestBatch) -> Result<(), CoreError> {
+/// The repo-topic snapshot one batch publishes, encoded.
+fn encode_repo_topic_batch(batch: &RepoTopicIngestBatch) -> Result<Vec<u8>, CoreError> {
     let mut topics_by_repo_id: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for entry in &batch.entries {
         let topic = normalize_repo_topic_value(&entry.topic).ok_or_else(|| {
@@ -1507,39 +1468,7 @@ fn persist_repo_topic_snapshot(path: &Path, batch: &RepoTopicIngestBatch) -> Res
             .or_default()
             .insert(topic);
     }
-    let payload = encode_repo_topic_snapshot(&RepoTopicShard { topics_by_repo_id })?;
-    std::fs::write(path, payload).map_err(|err| {
-        CoreError::Storage(format!(
-            "lexical: write repo topic snapshot {}: {err}",
-            path.display()
-        ))
-    })?;
-    Ok(())
-}
-
-fn load_repo_topic_snapshot(path: &Path) -> Result<Option<RepoTopicShard>, CoreError> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let payload = std::fs::read(path).map_err(|err| {
-        CoreError::Storage(format!(
-            "lexical: read repo topic snapshot {}: {err}",
-            path.display()
-        ))
-    })?;
-    decode_repo_topic_snapshot(payload.as_slice())
-        .map(Some)
-        .map_err(|err| match err {
-            CoreError::InvalidContract(message) => CoreError::InvalidContract(format!(
-                "lexical: repo topic decode {}: {message}",
-                path.display()
-            )),
-            other @ (CoreError::Typed { .. }
-            | CoreError::NotReady(_)
-            | CoreError::NotImplemented(_)
-            | CoreError::NotFound(_)
-            | CoreError::Storage(_)) => other,
-        })
+    encode_repo_topic_snapshot(&RepoTopicShard { topics_by_repo_id })
 }
 
 /// Validate a producer-published repo description.
@@ -1704,10 +1633,8 @@ fn decode_repo_description_snapshot(bytes: &[u8]) -> Result<RepoDescriptionShard
     })
 }
 
-fn persist_repo_description_snapshot(
-    path: &Path,
-    batch: &RepoDescriptionIngestBatch,
-) -> Result<(), CoreError> {
+/// The repo-description snapshot one batch publishes, encoded.
+fn encode_repo_description_batch(batch: &RepoDescriptionIngestBatch) -> Result<Vec<u8>, CoreError> {
     let mut descriptions_by_repo_id: BTreeMap<String, String> = BTreeMap::new();
     for entry in &batch.entries {
         let description = validate_repo_description_value(&entry.description).ok_or_else(|| {
@@ -1728,41 +1655,9 @@ fn persist_repo_description_snapshot(
             )));
         }
     }
-    let payload = encode_repo_description_snapshot(&RepoDescriptionShard {
+    encode_repo_description_snapshot(&RepoDescriptionShard {
         descriptions_by_repo_id,
-    })?;
-    std::fs::write(path, payload).map_err(|err| {
-        CoreError::Storage(format!(
-            "lexical: write repo description snapshot {}: {err}",
-            path.display()
-        ))
-    })?;
-    Ok(())
-}
-
-fn load_repo_description_snapshot(path: &Path) -> Result<Option<RepoDescriptionShard>, CoreError> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let payload = std::fs::read(path).map_err(|err| {
-        CoreError::Storage(format!(
-            "lexical: read repo description snapshot {}: {err}",
-            path.display()
-        ))
-    })?;
-    decode_repo_description_snapshot(payload.as_slice())
-        .map(Some)
-        .map_err(|err| match err {
-            CoreError::InvalidContract(message) => CoreError::InvalidContract(format!(
-                "lexical: repo description decode {}: {message}",
-                path.display()
-            )),
-            other @ (CoreError::Typed { .. }
-            | CoreError::NotReady(_)
-            | CoreError::NotImplemented(_)
-            | CoreError::NotFound(_)
-            | CoreError::Storage(_)) => other,
-        })
+    })
 }
 
 fn encode_file_ownership_snapshot(shard: &FileOwnershipShard) -> Result<Vec<u8>, CoreError> {
@@ -1932,10 +1827,8 @@ fn decode_file_ownership_snapshot(bytes: &[u8]) -> Result<FileOwnershipShard, Co
     Ok(FileOwnershipShard { owners_by_repo_id })
 }
 
-fn persist_file_ownership_snapshot(
-    path: &Path,
-    batch: &FileOwnershipIngestBatch,
-) -> Result<(), CoreError> {
+/// The file-ownership snapshot one batch publishes, encoded.
+fn encode_file_ownership_batch(batch: &FileOwnershipIngestBatch) -> Result<Vec<u8>, CoreError> {
     let mut owners_by_repo_id: BTreeMap<String, BTreeMap<String, BTreeSet<String>>> =
         BTreeMap::new();
     for entry in &batch.entries {
@@ -1956,39 +1849,7 @@ fn persist_file_ownership_snapshot(
             .or_default()
             .insert(repo_relative_path, owners);
     }
-    let payload = encode_file_ownership_snapshot(&FileOwnershipShard { owners_by_repo_id })?;
-    std::fs::write(path, payload).map_err(|err| {
-        CoreError::Storage(format!(
-            "lexical: write file ownership snapshot {}: {err}",
-            path.display()
-        ))
-    })?;
-    Ok(())
-}
-
-fn load_file_ownership_snapshot(path: &Path) -> Result<Option<FileOwnershipShard>, CoreError> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let payload = std::fs::read(path).map_err(|err| {
-        CoreError::Storage(format!(
-            "lexical: read file ownership snapshot {}: {err}",
-            path.display()
-        ))
-    })?;
-    decode_file_ownership_snapshot(payload.as_slice())
-        .map(Some)
-        .map_err(|err| match err {
-            CoreError::InvalidContract(message) => CoreError::InvalidContract(format!(
-                "lexical: file ownership decode {}: {message}",
-                path.display()
-            )),
-            other @ (CoreError::Typed { .. }
-            | CoreError::NotReady(_)
-            | CoreError::NotImplemented(_)
-            | CoreError::NotFound(_)
-            | CoreError::Storage(_)) => other,
-        })
+    encode_file_ownership_snapshot(&FileOwnershipShard { owners_by_repo_id })
 }
 
 fn encode_file_contributor_snapshot(shard: &FileContributorShard) -> Result<Vec<u8>, CoreError> {
@@ -2171,10 +2032,8 @@ fn decode_file_contributor_snapshot(bytes: &[u8]) -> Result<FileContributorShard
     })
 }
 
-fn persist_file_contributor_snapshot(
-    path: &Path,
-    batch: &FileContributorIngestBatch,
-) -> Result<(), CoreError> {
+/// The file-contributor snapshot one batch publishes, encoded.
+fn encode_file_contributor_batch(batch: &FileContributorIngestBatch) -> Result<Vec<u8>, CoreError> {
     let mut contributors_by_repo_id: BTreeMap<
         String,
         BTreeMap<String, BTreeSet<FileContributorIdentityEntry>>,
@@ -2198,41 +2057,61 @@ fn persist_file_contributor_snapshot(
             .or_default()
             .insert(repo_relative_path, contributors);
     }
-    let payload = encode_file_contributor_snapshot(&FileContributorShard {
+    encode_file_contributor_snapshot(&FileContributorShard {
         contributors_by_repo_id,
-    })?;
-    std::fs::write(path, payload).map_err(|err| {
-        CoreError::Storage(format!(
-            "lexical: write file contributor snapshot {}: {err}",
-            path.display()
-        ))
-    })?;
-    Ok(())
+    })
 }
 
-fn load_file_contributor_snapshot(path: &Path) -> Result<Option<FileContributorShard>, CoreError> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let payload = std::fs::read(path).map_err(|err| {
-        CoreError::Storage(format!(
-            "lexical: read file contributor snapshot {}: {err}",
-            path.display()
-        ))
-    })?;
-    decode_file_contributor_snapshot(payload.as_slice())
-        .map(Some)
-        .map_err(|err| match err {
-            CoreError::InvalidContract(message) => CoreError::InvalidContract(format!(
-                "lexical: file contributor decode {}: {message}",
-                path.display()
-            )),
-            other @ (CoreError::Typed { .. }
-            | CoreError::NotReady(_)
-            | CoreError::NotImplemented(_)
-            | CoreError::NotFound(_)
-            | CoreError::Storage(_)) => other,
-        })
+/// One overlay family's snapshot as a query holds it, decoded from the
+/// bytes the sealed-generation walk proved.
+enum OverlaySnapshot {
+    RepoMetadata(LexicalRepoMetadataPayload),
+    CommitRecency(RepoCommitRecencyShard),
+    Meta(RepoMetaShard),
+    Topic(RepoTopicShard),
+    Description(RepoDescriptionShard),
+    FileOwnership(FileOwnershipShard),
+    Contributor(FileContributorShard),
+}
+
+/// Decode one overlay family's proved bytes; a decode failure names the
+/// file and is a corrupt sealed generation, never a partial authority.
+fn decode_overlay(
+    family: OverlayFamily,
+    bytes: &[u8],
+    generation_dir: &Path,
+) -> Result<OverlaySnapshot, CoreError> {
+    let decoded = match family {
+        OverlayFamily::RepoMetadata => decode_repo_metadata_payload(bytes).and_then(|payload| {
+            payload.map(OverlaySnapshot::RepoMetadata).ok_or_else(|| {
+                CoreError::InvalidContract("repo metadata snapshot carries no payload".to_string())
+            })
+        }),
+        OverlayFamily::CommitRecency => {
+            decode_repo_commit_recency_snapshot(bytes).map(OverlaySnapshot::CommitRecency)
+        }
+        OverlayFamily::Meta => decode_repo_meta_snapshot(bytes).map(OverlaySnapshot::Meta),
+        OverlayFamily::Topic => decode_repo_topic_snapshot(bytes).map(OverlaySnapshot::Topic),
+        OverlayFamily::Description => {
+            decode_repo_description_snapshot(bytes).map(OverlaySnapshot::Description)
+        }
+        OverlayFamily::FileOwnership => {
+            decode_file_ownership_snapshot(bytes).map(OverlaySnapshot::FileOwnership)
+        }
+        OverlayFamily::Contributor => {
+            decode_file_contributor_snapshot(bytes).map(OverlaySnapshot::Contributor)
+        }
+    };
+    decoded.map_err(|err| match err {
+        CoreError::InvalidContract(message) => {
+            sidecar_corrupt(generation_dir, family.file_name(), &message)
+        }
+        other @ (CoreError::Typed { .. }
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)
+        | CoreError::Storage(_)) => other,
+    })
 }
 
 /// Build an `LqOptions` snapshot pinned to the standard pattern type.
@@ -2568,9 +2447,12 @@ fn lexical_sealed_identity_path(generation_dir: &Path) -> PathBuf {
     generation_dir.join(LEXICAL_SEALED_IDENTITY_FILE_NAME)
 }
 
-/// A delta generation inherits searchable data from its base, never the
-/// base's immutable sealed identity. The target remains mutable until its own
-/// seal batch durably writes a generation-scoped identity.
+/// Write `bytes` to `path` durably.
+///
+/// A uniquely named temporary beside it, fsync, rename over `path`, fsync
+/// the parent. A crash leaves either the old file or the new one, never a
+/// torn one, plus at most a temporary the seal removes
+/// ([`is_durable_write_temporary`]).
 fn write_atomic_durable(path: &Path, bytes: &[u8], label: &str) -> Result<(), CoreError> {
     static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let parent = path.parent().ok_or_else(|| {
@@ -2590,7 +2472,7 @@ fn write_atomic_durable(path: &Path, bytes: &[u8], label: &str) -> Result<(), Co
         })?;
     let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temporary = parent.join(format!(
-        ".{file_name}.tmp-{}-{sequence}",
+        ".{file_name}{DURABLE_WRITE_TEMPORARY_MARKER}{}-{sequence}",
         std::process::id()
     ));
     let mut file = OpenOptions::new()
@@ -2653,112 +2535,6 @@ fn persist_lexical_sealed_identity(
     )
 }
 
-/// File name of the sealed manifest: the content commitment every query
-/// open and every activation validator checks (QI-BB-030).
-const LEXICAL_SEALED_MANIFEST_FILE_NAME: &str = "search-corpus-generation-manifest.cbor";
-/// Manifest format.
-///
-/// Version 1 had no normalizer stamp and described generations built under
-/// the pre-QI-BB-011 analyzers (Tantivy default for the index, whitespace +
-/// ASCII folding for the sidecars); those answer differently under the
-/// current normalizer and are refused, never served. Version 2 committed
-/// the whole-corpus five-file text authority; version 3 commits the
-/// sharded `text-authority/` tree (manifest plus shard files, by `/`-joined
-/// path) and its index stores each text document's text-authority doc id.
-/// A version-2 generation is refused as an unsupported text-authority
-/// format; the migration is a rebuild.
-const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 3;
-/// The version-2 layout: whole-corpus text-authority sidecars beside the
-/// index, no doc ids in the index.
-const LEXICAL_SEALED_MANIFEST_WHOLE_CORPUS_TEXT_AUTHORITY_VERSION: u32 = 2;
-
-fn lexical_sealed_manifest_path(generation_dir: &Path) -> PathBuf {
-    generation_dir.join(LEXICAL_SEALED_MANIFEST_FILE_NAME)
-}
-
-/// What a sealed lexical generation promises a query can open.
-///
-/// Written after every sidecar is durable and before the sealed identity, so
-/// the identity's presence implies the manifest's. It names the Tantivy
-/// commit (`meta.json` digest) and every file of the `text-authority/`
-/// tree — the manifest and each shard, by `/`-joined path — with its
-/// length and SHA-256, it carries the identity's `manifest_digest` so the
-/// two files bind each other, and it records the text normalizer the index
-/// and the shards were built under so a query never runs one contract
-/// over data built with another. `text_authority` is explicit: a generation
-/// built without a text authority says so, instead of "no files" meaning
-/// either "not required" or "lost".
-///
-/// Auxiliary snapshots (repo meta, ownership, ...) are not committed here:
-/// under the current authority they are still published into a sealed
-/// generation after the seal, which is the mutable overlay W2 moves out.
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct LexicalSealedManifest {
-    format_version: u32,
-    manifest_digest: String,
-    tantivy_meta_sha256: [u8; 32],
-    text_authority: bool,
-    artifacts: Vec<SealedArtifactCommitmentV1>,
-    normalizer: TextNormalizerVersion,
-}
-
-/// Wire shape of the manifest: a fixed-order CBOR array so the encoding is
-/// auditable without a derive. Element 0 is the format version, which is
-/// read on its own before the rest of the row is decoded.
-type SealedManifestRow = (
-    u32,
-    String,
-    [u8; 32],
-    bool,
-    Vec<(String, u64, [u8; 32])>,
-    (u16, u16),
-);
-
-impl LexicalSealedManifest {
-    fn to_row(&self) -> SealedManifestRow {
-        (
-            self.format_version,
-            self.manifest_digest.clone(),
-            self.tantivy_meta_sha256,
-            self.text_authority,
-            self.artifacts
-                .iter()
-                .map(|artifact| (artifact.name.clone(), artifact.bytes, artifact.sha256))
-                .collect(),
-            (self.normalizer.major, self.normalizer.minor),
-        )
-    }
-
-    fn from_row(row: SealedManifestRow) -> Self {
-        let (
-            format_version,
-            manifest_digest,
-            tantivy_meta_sha256,
-            text_authority,
-            artifacts,
-            (normalizer_major, normalizer_minor),
-        ) = row;
-        Self {
-            format_version,
-            manifest_digest,
-            tantivy_meta_sha256,
-            text_authority,
-            artifacts: artifacts
-                .into_iter()
-                .map(|(name, bytes, sha256)| SealedArtifactCommitmentV1 {
-                    name,
-                    bytes,
-                    sha256,
-                })
-                .collect(),
-            normalizer: TextNormalizerVersion {
-                major: normalizer_major,
-                minor: normalizer_minor,
-            },
-        }
-    }
-}
-
 fn normalizer_unsupported(path: &Path, built_with: TextNormalizerVersion) -> CoreError {
     CoreError::Typed {
         code: "GENERATION_NORMALIZER_UNSUPPORTED".to_string(),
@@ -2769,333 +2545,16 @@ fn normalizer_unsupported(path: &Path, built_with: TextNormalizerVersion) -> Cor
     }
 }
 
-/// Length and SHA-256 of one committed file, streamed with bounded memory.
-fn sha256_of_file(path: &Path, label: &str) -> Result<(u64, [u8; 32]), CoreError> {
-    quanta_index_core::sha256_of_file(path).map_err(|error| {
-        CoreError::Storage(format!(
-            "lexical: read {label} {} for commitment: {error}",
-            path.display()
-        ))
-    })
-}
-
-/// Commit the `text-authority/` tree as the seal will verify it.
-///
-/// The tree is brought to its manifest's file set first, then every file
-/// is measured. The measured set must be exactly the manifest plus its
-/// listed shards, and each shard's measured digest must be the one its
-/// manifest lists, so the two manifests can never disagree about what a
-/// query will decode. Returns the text-authority manifest and the tree's
-/// commitment; `Ok(None)` is a generation without a text authority.
-fn commit_text_authority_tree(
-    generation_dir: &Path,
-) -> Result<Option<(TextAuthorityManifest, Vec<SealedArtifactCommitmentV1>)>, CoreError> {
-    let Some(manifest) = text_authority::finalize_for_seal(generation_dir)? else {
-        return Ok(None);
-    };
-    let artifacts = commit_tree_v1(&text_authority_dir(generation_dir), TEXT_AUTHORITY_DIR_NAME)
-        .map_err(|error| {
-            CoreError::Storage(format!(
-                "lexical: measure text authority under {} for commitment: {error}",
-                generation_dir.display()
-            ))
-        })?;
-    let measured: BTreeMap<&str, [u8; 32]> = artifacts
-        .iter()
-        .map(|artifact| (artifact.name.as_str(), artifact.sha256))
-        .collect();
-    let manifest_name = format!(
-        "{TEXT_AUTHORITY_DIR_NAME}/{}",
-        text_authority::TEXT_AUTHORITY_MANIFEST_FILE_NAME
-    );
-    if !measured.contains_key(manifest_name.as_str()) {
-        return Err(sidecar_corrupt(generation_dir, &manifest_name, "missing"));
-    }
-    let mut expected: BTreeSet<String> = BTreeSet::new();
-    let _inserted = expected.insert(manifest_name);
-    for shard in &manifest.shards {
-        let name = format!("{TEXT_AUTHORITY_DIR_NAME}/{}", shard.file_name());
-        match measured.get(name.as_str()) {
-            None => return Err(sidecar_corrupt(generation_dir, &name, "missing")),
-            Some(digest) if *digest != shard.sha256 => {
-                return Err(sidecar_corrupt(
-                    generation_dir,
-                    &name,
-                    "content digest differs from the digest the text-authority manifest lists",
-                ));
-            }
-            Some(_) => {}
-        }
-        let _inserted = expected.insert(name);
-    }
-    for artifact in &artifacts {
-        if !expected.contains(&artifact.name) {
-            return Err(sidecar_corrupt(
-                generation_dir,
-                &artifact.name,
-                "present although the text-authority manifest does not list it",
-            ));
-        }
-    }
-    Ok(Some((manifest, artifacts)))
-}
-
-/// How many live text documents the committed index holds.
-fn live_text_doc_count(generation_dir: &Path, fields: &SchemaFields) -> Result<u64, CoreError> {
-    let index = Index::open_in_dir(generation_dir).map_err(|error| {
-        CoreError::Storage(format!(
-            "lexical: open generation {} to count its text documents: {error}",
-            generation_dir.display()
-        ))
-    })?;
-    register_index_tokenizers(&index);
-    let reader: IndexReader = index
-        .reader_builder()
-        .reload_policy(ReloadPolicy::Manual)
-        .try_into()
-        .map_err(|err| CoreError::Storage(format!("lexical: text doc count reader: {err}")))?;
-    reader.reload().map_err(|err| {
-        CoreError::Storage(format!("lexical: text doc count reader reload: {err}"))
-    })?;
-    let query = TermQuery::new(
-        Term::from_field_text(fields.doc_kind, TEXT_DOC_KIND),
-        IndexRecordOption::Basic,
-    );
-    let count = reader
-        .searcher()
-        .search(&query, &Count)
-        .map_err(|err| CoreError::Storage(format!("lexical: text doc count: {err}")))?;
-    u64::try_from(count)
-        .map_err(|err| CoreError::InvalidContract(format!("lexical: text doc count: {err}")))
-}
-
-/// The seal's coverage proof: the text authority lists exactly as many
-/// documents as the index holds live text documents.
-///
-/// The two are published separately (Tantivy commit, then the shards), so
-/// a publish that crashed in between leaves the index ahead of the
-/// authority; sealing that would serve keyword hits a regex or phrase can
-/// never see. The count is one term query, never a scan.
-fn ensure_text_authority_covers_index(
-    generation_dir: &Path,
-    fields: &SchemaFields,
-    manifest: Option<&TextAuthorityManifest>,
-) -> Result<(), CoreError> {
-    let live = live_text_doc_count(generation_dir, fields)?;
-    let listed = manifest.map_or(0, |manifest| {
-        manifest
-            .shards
-            .iter()
-            .fold(0_u64, |total, shard| total.saturating_add(shard.rows))
-    });
-    if live != listed {
-        return Err(sidecar_corrupt(
-            generation_dir,
-            TEXT_AUTHORITY_DIR_NAME,
-            &format!("lists {listed} documents but the index holds {live} live text documents"),
-        ));
-    }
-    Ok(())
-}
-
-/// Measure the generation directory as sealed and write its manifest.
-///
-/// Runs after the Tantivy commit and the text-authority publish are durable
-/// and before the sealed identity is written, so a crash in between leaves
-/// an unsealed generation (no identity), never a sealed one without a
-/// manifest.
-fn persist_lexical_sealed_manifest(
-    generation_dir: &Path,
-    fields: &SchemaFields,
-    identity: &GenerationSnapshot,
-) -> Result<(), CoreError> {
-    let (_meta_len, tantivy_meta_sha256) = sha256_of_file(
-        &generation_dir.join(TANTIVY_INDEX_META_FILE_NAME),
-        "tantivy meta",
-    )?;
-    let committed = commit_text_authority_tree(generation_dir)?;
-    ensure_text_authority_covers_index(
-        generation_dir,
-        fields,
-        committed.as_ref().map(|(manifest, _)| manifest),
-    )?;
-    let artifacts = committed.map(|(_, artifacts)| artifacts);
-    let manifest = LexicalSealedManifest {
-        format_version: LEXICAL_SEALED_MANIFEST_FORMAT_VERSION,
-        manifest_digest: identity.manifest_digest.clone(),
-        tantivy_meta_sha256,
-        text_authority: artifacts.is_some(),
-        artifacts: artifacts.unwrap_or_default(),
-        normalizer: TEXT_NORMALIZER_VERSION,
-    };
-    let bytes = encode_cbor(&manifest.to_row(), "sealed generation manifest")?;
-    write_atomic_durable(
-        &lexical_sealed_manifest_path(generation_dir),
-        &bytes,
-        "sealed generation manifest",
-    )
-}
-
-/// Read a sealed manifest, refusing typed any format or normalizer this
-/// build does not serve.
-fn read_lexical_sealed_manifest(generation_dir: &Path) -> Result<LexicalSealedManifest, CoreError> {
-    let path = lexical_sealed_manifest_path(generation_dir);
-    let bytes = std::fs::read(&path).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            CoreError::Typed {
-                code: "GENERATION_MANIFEST_MISSING".to_string(),
-                message: format!(
-                    "lexical: sealed generation has no content manifest at {}; it predates the sealed-manifest format and requires explicit migration",
-                    path.display()
-                ),
-            }
-        } else {
-            CoreError::Storage(format!(
-                "lexical: read sealed generation manifest {}: {error}",
-                path.display()
-            ))
-        }
-    })?;
-    let value: CborValue = ciborium::from_reader(bytes.as_slice()).map_err(|error| {
-        CoreError::Storage(format!(
-            "lexical: decode sealed generation manifest {}: {error}",
-            path.display()
-        ))
-    })?;
-    let format_version =
-        text_authority::leading_format_version(&value, "sealed generation manifest", &path)?;
-    if format_version == LEXICAL_SEALED_MANIFEST_WHOLE_CORPUS_TEXT_AUTHORITY_VERSION {
-        // The one difference between formats 2 and 3 is the text-authority
-        // layout, so a format-2 generation is refused by that name: its
-        // whole-corpus sidecars and its index without doc ids cannot be
-        // reinterpreted, only rebuilt.
-        return Err(CoreError::Typed {
-            code: text_authority::TEXT_AUTHORITY_FORMAT_UNSUPPORTED_CODE.to_string(),
-            message: format!(
-                "lexical: sealed generation manifest {} has format {format_version}, the whole-corpus text-authority layout; this build serves format {} with the sharded text authority, and the generation must be rebuilt",
-                path.display(),
-                LEXICAL_SEALED_MANIFEST_FORMAT_VERSION
-            ),
-        });
-    }
-    if format_version != LEXICAL_SEALED_MANIFEST_FORMAT_VERSION {
-        return Err(CoreError::Typed {
-            code: "GENERATION_MANIFEST_FORMAT_UNSUPPORTED".to_string(),
-            message: format!(
-                "lexical: sealed generation manifest {} has format {format_version} (supported {}); the generation predates the current text normalizer and must be rebuilt",
-                path.display(),
-                LEXICAL_SEALED_MANIFEST_FORMAT_VERSION
-            ),
-        });
-    }
-    let row: SealedManifestRow = value.deserialized().map_err(|error| {
-        CoreError::Storage(format!(
-            "lexical: decode sealed generation manifest {}: {error}",
-            path.display()
-        ))
-    })?;
-    let manifest = LexicalSealedManifest::from_row(row);
-    if manifest.normalizer != TEXT_NORMALIZER_VERSION {
-        return Err(normalizer_unsupported(&path, manifest.normalizer));
-    }
-    Ok(manifest)
-}
-
+/// The typed refusal for a sealed generation that is not what its
+/// manifest committed to.
 fn sidecar_corrupt(generation_dir: &Path, name: &str, reason: &str) -> CoreError {
     CoreError::Typed {
-        code: "GENERATION_SIDECAR_CORRUPT".to_string(),
+        code: GENERATION_SIDECAR_CORRUPT_CODE.to_string(),
         message: format!(
             "lexical: generation {} does not match its manifest: {name}: {reason}",
             generation_dir.display()
         ),
     }
-}
-
-/// Prove that what is on disk is what the seal committed to.
-///
-/// This is the check the activation validator and the cold open share, so
-/// activation can only ack a generation a query can open. It reads and
-/// hashes every committed file — once per residency, thanks to the snapshot
-/// registry — and refuses on any missing, truncated, rewritten or extra
-/// text-authority file, on a Tantivy commit other than the sealed one, and
-/// on a manifest whose digest is not the identity's.
-fn verify_lexical_sealed_manifest(
-    generation_dir: &Path,
-    identity: &GenerationSnapshot,
-) -> Result<LexicalSealedManifest, CoreError> {
-    let manifest = read_lexical_sealed_manifest(generation_dir)?;
-    if manifest.manifest_digest != identity.manifest_digest {
-        return Err(CoreError::Typed {
-            code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
-            message: format!(
-                "lexical: sealed manifest under {} was written for digest {} but the identity says {}",
-                generation_dir.display(),
-                manifest.manifest_digest,
-                identity.manifest_digest
-            ),
-        });
-    }
-    let (_meta_len, meta_sha256) = sha256_of_file(
-        &generation_dir.join(TANTIVY_INDEX_META_FILE_NAME),
-        "tantivy meta",
-    )?;
-    if meta_sha256 != manifest.tantivy_meta_sha256 {
-        return Err(sidecar_corrupt(
-            generation_dir,
-            TANTIVY_INDEX_META_FILE_NAME,
-            "index commit differs from the sealed commit",
-        ));
-    }
-    let tree = text_authority_dir(generation_dir);
-    let manifest_name = format!(
-        "{TEXT_AUTHORITY_DIR_NAME}/{}",
-        text_authority::TEXT_AUTHORITY_MANIFEST_FILE_NAME
-    );
-    let commits_manifest = manifest
-        .artifacts
-        .iter()
-        .any(|artifact| artifact.name == manifest_name);
-    match (manifest.text_authority, commits_manifest, tree.is_dir()) {
-        (true, true, true) => {}
-        (false, false, false) => return Ok(manifest),
-        (true, true, false) => {
-            return Err(sidecar_corrupt(
-                generation_dir,
-                TEXT_AUTHORITY_DIR_NAME,
-                "missing",
-            ));
-        }
-        (false, false, true) => {
-            return Err(sidecar_corrupt(
-                generation_dir,
-                TEXT_AUTHORITY_DIR_NAME,
-                "present although the seal committed to no text authority",
-            ));
-        }
-        (_, _, _) => {
-            return Err(sidecar_corrupt(
-                generation_dir,
-                TEXT_AUTHORITY_DIR_NAME,
-                "manifest text-authority capability and commitments disagree",
-            ));
-        }
-    }
-    let _committed_bytes: u64 =
-        verify_tree_commitment_v1(&tree, TEXT_AUTHORITY_DIR_NAME, &manifest.artifacts)
-            .map_err(|error| {
-                CoreError::Storage(format!(
-                    "lexical: measure text authority under {} against its commitment: {error}",
-                    generation_dir.display()
-                ))
-            })?
-            .map_err(|mismatch| {
-                sidecar_corrupt(
-                    generation_dir,
-                    TEXT_AUTHORITY_DIR_NAME,
-                    &mismatch.to_string(),
-                )
-            })?;
-    Ok(manifest)
 }
 
 fn read_lexical_sealed_identity(generation_dir: &Path) -> Result<GenerationSnapshot, CoreError> {
@@ -3708,16 +3167,20 @@ fn is_writer_lock_entry(file_name: &str) -> bool {
     file_name.starts_with(TANTIVY_LOCK_FILE_PREFIX)
 }
 
-/// Whether an entry is the base's seal (identity or content manifest).
+/// Whether an entry is the base's seal (identity or content manifest) or
+/// its scrub receipt.
 ///
 /// A delta is unsealed until its own seal writes its own pair; inheriting
 /// the base's would make a half-built delta claim the base's identity on
 /// disk, which a crash before the seal would leave behind for the boot
-/// scanner to refuse.
+/// scanner to refuse. The scrub receipt records a pass over the base's
+/// digest, which says nothing about the delta.
 fn is_seal_marker_entry(file_name: &str) -> bool {
     matches!(
         file_name,
-        LEXICAL_SEALED_IDENTITY_FILE_NAME | LEXICAL_SEALED_MANIFEST_FILE_NAME
+        LEXICAL_SEALED_IDENTITY_FILE_NAME
+            | LEXICAL_SEALED_MANIFEST_FILE_NAME
+            | LEXICAL_SCRUB_RECEIPT_FILE_NAME
     )
 }
 
@@ -3762,8 +3225,8 @@ fn inherit_generation_entry(source: &Path, target: &Path) -> Result<(), CoreErro
 /// refusals propagate. An unsealed base has no manifest yet and is
 /// admitted — its own seal stamps the current versions.
 fn ensure_base_generation_is_servable(base_dir: &Path) -> Result<(), CoreError> {
-    if lexical_sealed_manifest_path(base_dir).is_file() {
-        let _manifest = read_lexical_sealed_manifest(base_dir)?;
+    if sealed_generation::manifest_path(base_dir).is_file() {
+        let _manifest = sealed_generation::read_manifest(base_dir)?;
     }
     Ok(())
 }
@@ -3839,12 +3302,14 @@ pub struct LexicalAdapter {
     state_root: PathBuf,
     fields: SchemaFields,
     writers: Arc<Mutex<WriterCache>>,
-    repo_metadata: Arc<Mutex<BTreeMap<GenKey, LexicalRepoMetadataPayload>>>,
     regex_match_cache: Arc<Mutex<RegexMatchCache>>,
     /// How much text-authority work the adapter has done (QI-BB-006):
     /// rebuilds versus in-place updates, in documents derived and retired
     /// and in shards written and inherited.
     text_authority_updates: Arc<Mutex<TextAuthorityUpdateStats>>,
+    /// What the adapter's seals read to commit their generations
+    /// (QI-BB-006 보완 #4).
+    seal_commitments: Arc<Mutex<LexicalSealCommitmentStats>>,
     /// Per-deployment regex policy injected at construction time.
     ///
     /// Owned by the adapter (not fabricated at the leaf call site) so all
@@ -3889,9 +3354,9 @@ impl LexicalAdapter {
             state_root,
             fields: SchemaFields::build(),
             writers: Arc::new(Mutex::new(WriterCache::new(writer_policy))),
-            repo_metadata: Arc::new(Mutex::new(BTreeMap::new())),
             regex_match_cache: Arc::new(Mutex::new(RegexMatchCache::new(regex_match_cache_policy))),
             text_authority_updates: Arc::new(Mutex::new(TextAuthorityUpdateStats::default())),
+            seal_commitments: Arc::new(Mutex::new(LexicalSealCommitmentStats::default())),
             regex_policy,
             execution_budget,
         }
@@ -3932,6 +3397,24 @@ impl LexicalAdapter {
         Ok(())
     }
 
+    /// What the adapter's seals read and inherited so far
+    /// (QI-BB-006 보완 #4).
+    pub fn seal_commitment_stats(&self) -> Result<LexicalSealCommitmentStats, CoreError> {
+        self.seal_commitments
+            .lock()
+            .map(|stats| *stats)
+            .map_err(|err| CoreError::Storage(format!("lexical seal stats poisoned: {err}")))
+    }
+
+    /// Fold one seal's measurement into the adapter's running totals.
+    fn record_seal_measurement(&self, seal: LexicalSealCommitmentStats) -> Result<(), CoreError> {
+        self.seal_commitments
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("lexical seal stats poisoned: {err}")))?
+            .absorb(seal);
+        Ok(())
+    }
+
     /// What the regex match cache has done so far (QI-BB-024).
     pub fn regex_match_cache_stats(&self) -> Result<RegexMatchCacheStats, CoreError> {
         self.regex_match_cache
@@ -3945,13 +3428,14 @@ impl LexicalAdapter {
             .generation_dir(&self.state_root, key.generation)
     }
 
-    /// Make the sealed index final: open the writer (creating an empty index
-    /// for a generation that indexed nothing, which must still be openable),
-    /// commit once so the sealed `meta.json` is the last one any writer
-    /// produces, and drop the writer from the cache so nothing can commit to
-    /// this generation again.
-    /// Commit and release the generation's writer: a sealed generation is
-    /// never built again, so its heap goes back to the envelope now.
+    /// Make the sealed index final.
+    ///
+    /// Opens the writer (creating an empty index for a generation that
+    /// indexed nothing, which must still be openable), commits once, waits
+    /// for its merges so the sealed `meta.json` is the last one any writer
+    /// produces, and drops the writer from the cache so nothing can commit
+    /// to this generation again. A sealed generation is never built again,
+    /// so its heap goes back to the envelope now.
     fn finalize_index_for_seal(&self, key: &GenKey) -> Result<(), CoreError> {
         let handle = self.writer_handle(key)?;
         drop(handle);
@@ -3995,53 +3479,6 @@ impl LexicalAdapter {
             .map_err(|err| CoreError::Storage(format!("lexical regex cache poisoned: {err}")))?
             .invalidate_generation(key);
         Ok(())
-    }
-
-    fn repo_metadata_path(&self, key: &GenKey) -> PathBuf {
-        self.index_path(key).join(REPO_METADATA_FILE_NAME)
-    }
-
-    fn repo_commit_recency_path(&self, key: &GenKey) -> PathBuf {
-        self.index_path(key).join(REPO_COMMIT_RECENCY_FILE_NAME)
-    }
-
-    fn repo_meta_path(&self, key: &GenKey) -> PathBuf {
-        self.index_path(key).join(REPO_META_FILE_NAME)
-    }
-
-    fn repo_topic_path(&self, key: &GenKey) -> PathBuf {
-        self.index_path(key).join(REPO_TOPIC_FILE_NAME)
-    }
-
-    fn repo_description_path(&self, key: &GenKey) -> PathBuf {
-        self.index_path(key).join(REPO_DESCRIPTION_FILE_NAME)
-    }
-
-    fn file_ownership_path(&self, key: &GenKey) -> PathBuf {
-        self.index_path(key).join(FILE_OWNERSHIP_FILE_NAME)
-    }
-
-    fn file_contributor_path(&self, key: &GenKey) -> PathBuf {
-        self.index_path(key).join(FILE_CONTRIBUTOR_FILE_NAME)
-    }
-
-    /// Returns the current number of cached writers. Exposed for the LRU
-    /// eviction integration test; not part of the stable adapter surface.
-    #[doc(hidden)]
-    fn repo_metadata_for_key(
-        &self,
-        key: &GenKey,
-    ) -> Result<Option<LexicalRepoMetadataPayload>, CoreError> {
-        let cached = self
-            .repo_metadata
-            .lock()
-            .map_err(|err| CoreError::Storage(format!("lexical repo metadata poisoned: {err}")))?
-            .get(key)
-            .cloned();
-        if cached.is_some() {
-            return Ok(cached);
-        }
-        load_repo_metadata_snapshot(&self.repo_metadata_path(key))
     }
 
     /// Materializes the base generation this batch declares, exactly once.
@@ -4113,28 +3550,84 @@ impl LexicalAdapter {
         true
     }
 
-    /// Apply an op that writes a generation-local snapshot rather than the
+    /// Apply an op that writes a generation-local overlay rather than the
     /// index. Returns `false` (nothing to commit) for every op it handles and
     /// for ops this adapter does not act on.
+    ///
+    /// The `FullBundle` payload is the repo-metadata overlay: a typed
+    /// payload replaces the snapshot, an empty one removes it. Both land
+    /// durably, and only before the seal.
     fn apply_snapshot_op(&self, key: &GenKey, op: &LexicalChannelOp) -> Result<bool, CoreError> {
         if let LexicalChannelOp::FullBundle(bundle) = op {
-            let metadata = decode_repo_metadata_payload(&bundle.payload)?;
-            {
-                let mut guard = self.repo_metadata.lock().map_err(|err| {
-                    CoreError::Storage(format!("lexical repo metadata poisoned: {err}"))
-                })?;
-                match metadata.clone() {
-                    Some(metadata) => {
-                        let _prior = guard.insert(key.clone(), metadata);
-                    }
-                    None => {
-                        let _prior = guard.remove(key);
-                    }
-                }
+            let generation_dir = self.index_path(key);
+            match decode_repo_metadata_payload(&bundle.payload)? {
+                Some(metadata) => persist_overlay(
+                    &generation_dir,
+                    OverlayFamily::RepoMetadata,
+                    &encode_repo_metadata_payload(&metadata)?,
+                )?,
+                None => remove_overlay(&generation_dir, OverlayFamily::RepoMetadata)?,
             }
-            persist_repo_metadata_snapshot(&self.repo_metadata_path(key), metadata.as_ref())?;
         }
         Ok(false)
+    }
+
+    /// Publish one overlay family's snapshot into an unsealed generation.
+    ///
+    /// Every aux ingest route lands here: the batch is encoded by its
+    /// family, written durably, and receipted with one accepted scope per
+    /// entry. A sealed generation refuses the publish typed before any byte
+    /// is written; its manifest committed to the overlays it has.
+    fn publish_overlay(
+        &self,
+        key: &GenKey,
+        family: OverlayFamily,
+        bytes: &[u8],
+        batch_digest: String,
+        entries: usize,
+    ) -> Result<quanta_index_contract::BatchPublishReceipt, CoreError> {
+        let generation_dir = self.index_path(key);
+        ensure_unsealed(&generation_dir, key.generation, family.file_name())?;
+        persist_overlay(&generation_dir, family, bytes)?;
+        let mut receipt = quanta_index_contract::BatchPublishReceipt::empty_for(
+            key.generation,
+            None,
+            batch_digest,
+        );
+        for _entry in 0..entries {
+            receipt.accept_replace_scope();
+        }
+        Ok(receipt)
+    }
+
+    /// The generation directory a sealed candidate names, and the identity
+    /// found there: the preamble every door and every scrub shares.
+    fn sealed_generation_dir_for(
+        &self,
+        candidate: &GenerationSnapshot,
+        what: &str,
+    ) -> Result<(PathBuf, GenerationSnapshot), CoreError> {
+        if candidate.track != SearchPlaneTrackKind::Lexical {
+            return Err(CoreError::InvalidContract(format!(
+                "lexical {what} received {:?} track",
+                candidate.track
+            )));
+        }
+        let key = GenKey {
+            repo_id: candidate.repo_id.clone(),
+            revision_id: candidate.revision_id.clone(),
+            generation: candidate.manifest_generation,
+        };
+        let generation_dir = self.index_path(&key);
+        if !generation_dir.is_dir() {
+            return Err(CoreError::NotFound(format!(
+                "lexical: generation directory is absent: {}",
+                generation_dir.display()
+            )));
+        }
+        let observed = read_lexical_sealed_identity(&generation_dir)?;
+        validate_lexical_sealed_identity(&observed, candidate)?;
+        Ok((generation_dir, observed))
     }
 
     /// Apply one op to the writer; `true` when something must be committed.
@@ -4425,7 +3918,13 @@ impl MetricSourcePort for LexicalAdapter {
         let writers = self.writer_cache_stats()?;
         let regex = self.regex_match_cache_stats()?;
         let text_authority = self.text_authority_update_stats()?;
+        let seals = self.seal_commitment_stats()?;
         Ok(vec![
+            MetricPointV1::counter("lexical_seals_total", seals.seals),
+            MetricPointV1::counter("lexical_seal_files_hashed_total", seals.files_hashed),
+            MetricPointV1::counter("lexical_seal_bytes_hashed_total", seals.bytes_hashed),
+            MetricPointV1::counter("lexical_seal_files_inherited_total", seals.files_inherited),
+            MetricPointV1::counter("lexical_seal_bytes_inherited_total", seals.bytes_inherited),
             MetricPointV1::counter(
                 "lexical_text_authority_rebuilds_total",
                 text_authority.rebuilds,
@@ -4502,7 +4001,7 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
         if lexical_sealed_identity_path(&generation_dir).exists() {
             if !batch.seal {
                 return Err(CoreError::Typed {
-                    code: "GENERATION_IMMUTABLE".to_string(),
+                    code: GENERATION_IMMUTABLE_CODE.to_string(),
                     message: format!(
                         "lexical: generation {} is already sealed; refusing non-seal mutation",
                         batch.generation.get()
@@ -4520,12 +4019,26 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
             // behind the manifest. Then manifest first, identity last: the
             // identity's presence is the promotion point and implies a
             // durable manifest.
-            self.finalize_index_for_seal(&GenKey {
+            let key = GenKey {
                 repo_id: batch.repo_id.clone(),
                 revision_id: batch.revision_id.clone(),
                 generation: batch.generation,
-            })?;
-            persist_lexical_sealed_manifest(&generation_dir, &self.fields, &candidate)?;
+            };
+            self.finalize_index_for_seal(&key)?;
+            let base_dir = read_lexical_delta_base(&generation_dir)?.map(|base| {
+                self.index_path(&GenKey {
+                    repo_id: key.repo_id.clone(),
+                    revision_id: key.revision_id.clone(),
+                    generation: base,
+                })
+            });
+            let measured = seal_generation(
+                &generation_dir,
+                &self.fields,
+                &candidate,
+                base_dir.as_deref(),
+            )?;
+            self.record_seal_measurement(measured)?;
             persist_lexical_sealed_identity(&generation_dir, &candidate)?;
         }
         // Every batch is a chance to give an abandoned generation's heap back
@@ -4544,23 +4057,14 @@ impl RepoCommitRecencyIngestPort for LexicalAdapter {
             revision_id: batch.revision_id.clone(),
             generation: batch.generation,
         };
-        let index_path = self.index_path(&key);
-        std::fs::create_dir_all(&index_path).map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: create repo commit recency dir {}: {err}",
-                index_path.display()
-            ))
-        })?;
-        persist_repo_commit_recency_snapshot(self.repo_commit_recency_path(&key).as_path(), batch)?;
-        let mut receipt = quanta_index_contract::BatchPublishReceipt::empty_for(
-            batch.generation,
-            None,
+        let bytes = encode_repo_commit_recency_batch(batch)?;
+        self.publish_overlay(
+            &key,
+            OverlayFamily::CommitRecency,
+            &bytes,
             batch.batch_digest.clone(),
-        );
-        for _entry in &batch.entries {
-            receipt.accept_replace_scope();
-        }
-        Ok(receipt)
+            batch.entries.len(),
+        )
     }
 }
 
@@ -4574,23 +4078,14 @@ impl RepoMetaIngestPort for LexicalAdapter {
             revision_id: batch.revision_id.clone(),
             generation: batch.generation,
         };
-        let index_path = self.index_path(&key);
-        std::fs::create_dir_all(&index_path).map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: create repo meta dir {}: {err}",
-                index_path.display()
-            ))
-        })?;
-        persist_repo_meta_snapshot(self.repo_meta_path(&key).as_path(), batch)?;
-        let mut receipt = quanta_index_contract::BatchPublishReceipt::empty_for(
-            batch.generation,
-            None,
+        let bytes = encode_repo_meta_batch(batch)?;
+        self.publish_overlay(
+            &key,
+            OverlayFamily::Meta,
+            &bytes,
             batch.batch_digest.clone(),
-        );
-        for _entry in &batch.entries {
-            receipt.accept_replace_scope();
-        }
-        Ok(receipt)
+            batch.entries.len(),
+        )
     }
 }
 
@@ -4604,23 +4099,14 @@ impl RepoTopicIngestPort for LexicalAdapter {
             revision_id: batch.revision_id.clone(),
             generation: batch.generation,
         };
-        let index_path = self.index_path(&key);
-        std::fs::create_dir_all(&index_path).map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: create repo topic dir {}: {err}",
-                index_path.display()
-            ))
-        })?;
-        persist_repo_topic_snapshot(self.repo_topic_path(&key).as_path(), batch)?;
-        let mut receipt = quanta_index_contract::BatchPublishReceipt::empty_for(
-            batch.generation,
-            None,
+        let bytes = encode_repo_topic_batch(batch)?;
+        self.publish_overlay(
+            &key,
+            OverlayFamily::Topic,
+            &bytes,
             batch.batch_digest.clone(),
-        );
-        for _entry in &batch.entries {
-            receipt.accept_replace_scope();
-        }
-        Ok(receipt)
+            batch.entries.len(),
+        )
     }
 }
 
@@ -4634,23 +4120,14 @@ impl RepoDescriptionIngestPort for LexicalAdapter {
             revision_id: batch.revision_id.clone(),
             generation: batch.generation,
         };
-        let index_path = self.index_path(&key);
-        std::fs::create_dir_all(&index_path).map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: create repo description dir {}: {err}",
-                index_path.display()
-            ))
-        })?;
-        persist_repo_description_snapshot(self.repo_description_path(&key).as_path(), batch)?;
-        let mut receipt = quanta_index_contract::BatchPublishReceipt::empty_for(
-            batch.generation,
-            None,
+        let bytes = encode_repo_description_batch(batch)?;
+        self.publish_overlay(
+            &key,
+            OverlayFamily::Description,
+            &bytes,
             batch.batch_digest.clone(),
-        );
-        for _entry in &batch.entries {
-            receipt.accept_replace_scope();
-        }
-        Ok(receipt)
+            batch.entries.len(),
+        )
     }
 }
 
@@ -4664,23 +4141,14 @@ impl FileOwnershipIngestPort for LexicalAdapter {
             revision_id: batch.revision_id.clone(),
             generation: batch.generation,
         };
-        let index_path = self.index_path(&key);
-        std::fs::create_dir_all(&index_path).map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: create file ownership dir {}: {err}",
-                index_path.display()
-            ))
-        })?;
-        persist_file_ownership_snapshot(self.file_ownership_path(&key).as_path(), batch)?;
-        let mut receipt = quanta_index_contract::BatchPublishReceipt::empty_for(
-            batch.generation,
-            None,
+        let bytes = encode_file_ownership_batch(batch)?;
+        self.publish_overlay(
+            &key,
+            OverlayFamily::FileOwnership,
+            &bytes,
             batch.batch_digest.clone(),
-        );
-        for _entry in &batch.entries {
-            receipt.accept_replace_scope();
-        }
-        Ok(receipt)
+            batch.entries.len(),
+        )
     }
 }
 
@@ -4694,33 +4162,23 @@ impl FileContributorIngestPort for LexicalAdapter {
             revision_id: batch.revision_id.clone(),
             generation: batch.generation,
         };
-        let index_path = self.index_path(&key);
-        std::fs::create_dir_all(&index_path).map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: create file contributor dir {}: {err}",
-                index_path.display()
-            ))
-        })?;
-        persist_file_contributor_snapshot(self.file_contributor_path(&key).as_path(), batch)?;
-        let mut receipt = quanta_index_contract::BatchPublishReceipt::empty_for(
-            batch.generation,
-            None,
+        let bytes = encode_file_contributor_batch(batch)?;
+        self.publish_overlay(
+            &key,
+            OverlayFamily::Contributor,
+            &bytes,
             batch.batch_digest.clone(),
-        );
-        for _entry in &batch.entries {
-            receipt.accept_replace_scope();
-        }
-        Ok(receipt)
+            batch.entries.len(),
+        )
     }
 }
 
 /// Whether an op changes the Tantivy index (and therefore needs a writer and
-/// a commit), as opposed to writing a generation-local snapshot file or
+/// a commit), as opposed to writing a generation-local overlay file or
 /// being a no-op for this adapter.
 ///
-/// The classification is what lets a sealed generation keep accepting the
-/// mutable overlay (repo metadata) while refusing anything that would change
-/// the committed index behind its sealed manifest.
+/// The classification decides whether a batch opens a writer; whether a
+/// batch may land at all is [`op_writes_generation`]'s.
 const fn op_mutates_index(op: &LexicalChannelOp) -> bool {
     match op {
         LexicalChannelOp::UpsertChunk(_)
@@ -4735,6 +4193,31 @@ const fn op_mutates_index(op: &LexicalChannelOp) -> bool {
         | LexicalChannelOp::UpsertParseTree(_)
         | LexicalChannelOp::ReplaceStructuralScope(_) => false,
     }
+}
+
+/// Whether an op writes anything into the generation directory: the index
+/// or the repo-metadata overlay. After the seal neither may land; the
+/// remaining ops are no-ops for this adapter and stay no-ops.
+const fn op_writes_generation(op: &LexicalChannelOp) -> bool {
+    op_mutates_index(op) || matches!(op, LexicalChannelOp::FullBundle(_))
+}
+
+/// Refuse typed anything that would change a sealed generation.
+fn ensure_unsealed(
+    generation_dir: &Path,
+    generation: ManifestGeneration,
+    what: &str,
+) -> Result<(), CoreError> {
+    if lexical_sealed_identity_path(generation_dir).exists() {
+        return Err(CoreError::Typed {
+            code: GENERATION_IMMUTABLE_CODE.to_string(),
+            message: format!(
+                "lexical: generation {} is sealed; refusing to write {what} behind its sealed manifest",
+                generation.get()
+            ),
+        });
+    }
+    Ok(())
 }
 
 impl LexicalIndexBuildPort for LexicalAdapter {
@@ -4765,19 +4248,12 @@ impl LexicalIndexBuildPort for LexicalAdapter {
             generation,
         };
         let mutates_index = ops.iter().any(op_mutates_index);
-        let sealed = lexical_sealed_identity_path(&self.index_path(&key)).exists();
-        if sealed && mutates_index {
-            return Err(CoreError::Typed {
-                code: "GENERATION_IMMUTABLE".to_string(),
-                message: format!(
-                    "lexical: generation {} is sealed; its index cannot change behind the sealed manifest",
-                    generation.get()
-                ),
-            });
+        if ops.iter().any(op_writes_generation) {
+            ensure_unsealed(&self.index_path(&key), generation, "an index or overlay op")?;
         }
         self.prepare_generation_for_ops(&key, ops)?;
         if !mutates_index {
-            // Snapshot-only ops never touch the index, so they must not open
+            // Overlay-only ops never touch the index, so they must not open
             // a writer: a writer left in the cache would commit on eviction
             // and rewrite `meta.json` under a sealed manifest.
             for op in ops {
@@ -4886,6 +4362,58 @@ impl LexicalAdapter {
     }
 }
 
+/// The open's visitor: keeps every proved and decoded file to become a
+/// searcher.
+#[derive(Default)]
+struct LoadedGeneration {
+    shards: Vec<(u64, ShardBody)>,
+    repo_metadata: Option<LexicalRepoMetadataPayload>,
+    repo_commit_recency: Option<RepoCommitRecencyShard>,
+    repo_meta: Option<RepoMetaShard>,
+    repo_topic: Option<RepoTopicShard>,
+    repo_description: Option<RepoDescriptionShard>,
+    file_ownership: Option<FileOwnershipShard>,
+    file_contributor: Option<FileContributorShard>,
+}
+
+impl SealedGenerationVisitor for LoadedGeneration {
+    fn text_authority_shard(&mut self, index: u64, body: ShardBody) -> Result<(), CoreError> {
+        self.shards.push((index, body));
+        Ok(())
+    }
+
+    fn overlay(&mut self, snapshot: OverlaySnapshot) -> Result<(), CoreError> {
+        match snapshot {
+            OverlaySnapshot::RepoMetadata(payload) => self.repo_metadata = Some(payload),
+            OverlaySnapshot::CommitRecency(shard) => self.repo_commit_recency = Some(shard),
+            OverlaySnapshot::Meta(shard) => self.repo_meta = Some(shard),
+            OverlaySnapshot::Topic(shard) => self.repo_topic = Some(shard),
+            OverlaySnapshot::Description(shard) => self.repo_description = Some(shard),
+            OverlaySnapshot::FileOwnership(shard) => self.file_ownership = Some(shard),
+            OverlaySnapshot::Contributor(shard) => self.file_contributor = Some(shard),
+        }
+        Ok(())
+    }
+}
+
+/// The repo-metadata authorities a sealed manifest says the generation
+/// carries: the explicit capability set a query's typed refusals are
+/// answered from.
+fn materialized_authorities(overlays: &[OverlayFamily]) -> RepoMetadataAuthoritiesV1 {
+    overlays.iter().fold(
+        RepoMetadataAuthoritiesV1::NONE,
+        |set, family| match family {
+            OverlayFamily::RepoMetadata => set,
+            OverlayFamily::CommitRecency => set.with(RepoMetadataAuthorityV1::CommitRecency),
+            OverlayFamily::Meta => set.with(RepoMetadataAuthorityV1::Meta),
+            OverlayFamily::Topic => set.with(RepoMetadataAuthorityV1::Topic),
+            OverlayFamily::Description => set.with(RepoMetadataAuthorityV1::Description),
+            OverlayFamily::FileOwnership => set.with(RepoMetadataAuthorityV1::FileOwnership),
+            OverlayFamily::Contributor => set.with(RepoMetadataAuthorityV1::Contributor),
+        },
+    )
+}
+
 impl LexicalIndexOpenPort for LexicalAdapter {
     fn open(
         &self,
@@ -4919,21 +4447,14 @@ impl LexicalIndexOpenPort for LexicalAdapter {
                 ),
             });
         }
-        // Prove the sealed commitment before decoding anything it covers.
-        let manifest = verify_lexical_sealed_manifest(&path, &identity)?;
-        // Serving must never create or repair a generation. A cached writer
-        // handle could survive deletion or corruption of the backing files,
-        // so every open bypasses that cache and proves the durable directory.
-        let index = Index::open_in_dir(&path).map_err(|error| {
-            CoreError::Storage(format!(
-                "lexical: strict open existing generation {}: {error}",
-                path.display()
-            ))
-        })?;
-        register_index_tokenizers(&index);
-        let repo_metadata = self.repo_metadata_for_key(&key)?;
-        let regex_match_cache = Arc::clone(&self.regex_match_cache);
-        let reader: IndexReader = index
+        // The walk both doors share: every file a query decodes is read
+        // once, proved and decoded here; the index is opened from the
+        // proved commit and its segment files are proved present at their
+        // committed length.
+        let mut loaded = LoadedGeneration::default();
+        let verified = walk_sealed_generation(&path, &identity, &mut loaded)?;
+        let reader: IndexReader = verified
+            .index
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
             .try_into()
@@ -4941,54 +4462,25 @@ impl LexicalIndexOpenPort for LexicalAdapter {
         reader
             .reload()
             .map_err(|err| CoreError::Storage(format!("lexical: reader reload: {err}")))?;
-        let text_authority = ShardedTextAuthority::load(&path)?;
-        if text_authority.is_some() != manifest.text_authority {
-            return Err(sidecar_corrupt(
-                &path,
-                TEXT_AUTHORITY_DIR_NAME,
-                "loaded capability disagrees with the sealed manifest",
-            ));
-        }
-        let repo_commit_recency =
-            load_repo_commit_recency_snapshot(&self.repo_commit_recency_path(&key))?;
-        let repo_meta = load_repo_meta_snapshot(&self.repo_meta_path(&key))?;
-        let repo_topic = load_repo_topic_snapshot(&self.repo_topic_path(&key))?;
-        let repo_description = load_repo_description_snapshot(&self.repo_description_path(&key))?;
-        let file_ownership = load_file_ownership_snapshot(&self.file_ownership_path(&key))?;
-        let file_contributor = load_file_contributor_snapshot(&self.file_contributor_path(&key))?;
+        let text_authority = verified
+            .manifest
+            .text_authority
+            .as_ref()
+            .map(|_files| ShardedTextAuthority::from_proved_shards(loaded.shards))
+            .transpose()?;
+        let overlays: Vec<OverlayFamily> = verified
+            .manifest
+            .overlay_commitments()
+            .map(|(family, _artifact)| family)
+            .collect();
         let resident_bytes_estimate = generation_tree_bytes(&path)?;
-        let mut materialized_authorities = RepoMetadataAuthoritiesV1::NONE;
-        for (present, authority) in [
-            (
-                repo_commit_recency.is_some(),
-                RepoMetadataAuthorityV1::CommitRecency,
-            ),
-            (repo_meta.is_some(), RepoMetadataAuthorityV1::Meta),
-            (repo_topic.is_some(), RepoMetadataAuthorityV1::Topic),
-            (
-                repo_description.is_some(),
-                RepoMetadataAuthorityV1::Description,
-            ),
-            (
-                file_ownership.is_some(),
-                RepoMetadataAuthorityV1::FileOwnership,
-            ),
-            (
-                file_contributor.is_some(),
-                RepoMetadataAuthorityV1::Contributor,
-            ),
-        ] {
-            if present {
-                materialized_authorities = materialized_authorities.with(authority);
-            }
-        }
         let artifact_identity = LexicalArtifactIdentityV1 {
-            manifest_digest: manifest.manifest_digest.clone(),
+            manifest_digest: verified.manifest.manifest_digest.clone(),
             normalizer: TextNormalizerVersionV1 {
-                major: manifest.normalizer.major,
-                minor: manifest.normalizer.minor,
+                major: verified.manifest.normalizer.major,
+                minor: verified.manifest.normalizer.minor,
             },
-            repo_metadata: materialized_authorities,
+            repo_metadata: materialized_authorities(&overlays),
         };
         Ok(Box::new(TantivySearcher {
             repo_id: repo.clone(),
@@ -4996,17 +4488,17 @@ impl LexicalIndexOpenPort for LexicalAdapter {
             generation,
             fields: self.fields.clone(),
             reader,
-            repo_metadata,
-            regex_match_cache,
+            repo_metadata: loaded.repo_metadata,
+            regex_match_cache: Arc::clone(&self.regex_match_cache),
             regex_policy: self.regex_policy,
             execution_budget: self.execution_budget,
             text_authority,
-            repo_commit_recency,
-            repo_meta,
-            repo_topic,
-            repo_description,
-            file_ownership,
-            file_contributor,
+            repo_commit_recency: loaded.repo_commit_recency,
+            repo_meta: loaded.repo_meta,
+            repo_topic: loaded.repo_topic,
+            repo_description: loaded.repo_description,
+            file_ownership: loaded.file_ownership,
+            file_contributor: loaded.file_contributor,
             resident_bytes_estimate,
             artifact_identity,
         }))
@@ -5018,36 +4510,13 @@ impl GenerationIdentityValidatePort for LexicalAdapter {
         &self,
         candidate: &GenerationSnapshot,
     ) -> Result<(), CoreError> {
-        if candidate.track != SearchPlaneTrackKind::Lexical {
-            return Err(CoreError::InvalidContract(format!(
-                "lexical identity validator received {:?} track",
-                candidate.track
-            )));
-        }
-        let key = GenKey {
-            repo_id: candidate.repo_id.clone(),
-            revision_id: candidate.revision_id.clone(),
-            generation: candidate.manifest_generation,
-        };
-        let generation_dir = self.index_path(&key);
-        if !generation_dir.is_dir() {
-            return Err(CoreError::NotFound(format!(
-                "lexical: generation directory is absent: {}",
-                generation_dir.display()
-            )));
-        }
-        let observed = read_lexical_sealed_identity(&generation_dir)?;
-        validate_lexical_sealed_identity(&observed, candidate)?;
-        // The same commitment a query open proves: every sidecar a query
-        // reads, by length and digest, plus the sealed Tantivy commit.
-        let _manifest = verify_lexical_sealed_manifest(&generation_dir, &observed)?;
-        let index = Index::open_in_dir(&generation_dir).map_err(|error| {
-            CoreError::Storage(format!(
-                "lexical: strict open existing generation {}: {error}",
-                generation_dir.display()
-            ))
-        })?;
-        register_index_tokenizers(&index);
+        let (generation_dir, observed) =
+            self.sealed_generation_dir_for(candidate, "identity validator")?;
+        // The very walk a query's open runs, over the same manifest: every
+        // decodable file read once, proved and decoded; the index opened
+        // from the proved commit; the segment files proved present at their
+        // committed length. What is admitted here is what a query can open.
+        let _verified = walk_sealed_generation(&generation_dir, &observed, &mut DiscardingVisitor)?;
         File::open(&generation_dir)
             .and_then(|directory| directory.sync_all())
             .map_err(|error| {
@@ -5057,6 +4526,26 @@ impl GenerationIdentityValidatePort for LexicalAdapter {
                 ))
             })?;
         Ok(())
+    }
+}
+
+impl IntegrityScrubPort for LexicalAdapter {
+    fn scrub_sealed_generation(
+        &self,
+        candidate: &GenerationSnapshot,
+        stamp: IntegrityScrubStampV1,
+    ) -> Result<IntegrityScrubReportV1, CoreError> {
+        let (generation_dir, observed) = self.sealed_generation_dir_for(candidate, "scrub")?;
+        scrub_sealed_generation(&generation_dir, &observed, stamp)
+    }
+
+    fn integrity_scrub_status(
+        &self,
+        candidate: &GenerationSnapshot,
+    ) -> Result<IntegrityScrubStatusV1, CoreError> {
+        let (generation_dir, observed) =
+            self.sealed_generation_dir_for(candidate, "scrub status")?;
+        scrub_status(&generation_dir, &observed)
     }
 }
 
@@ -5139,11 +4628,6 @@ impl IncompleteGenerationDiscardPort for LexicalAdapter {
         drop(writer_guard);
         drop(writer);
         drop(writers);
-        let _removed_metadata = self
-            .repo_metadata
-            .lock()
-            .map_err(|err| CoreError::Storage(format!("lexical repo metadata poisoned: {err}")))?
-            .remove(&key);
         self.invalidate_regex_match_cache_generation(&key)?;
         Ok(IncompleteGenerationDiscardOutcomeV1::Discarded)
     }
@@ -5208,11 +4692,6 @@ impl SealedGenerationReclaimPort for LexicalAdapter {
                     ))
                 })?;
         }
-        let _removed_metadata = self
-            .repo_metadata
-            .lock()
-            .map_err(|err| CoreError::Storage(format!("lexical repo metadata poisoned: {err}")))?
-            .remove(&key);
         self.invalidate_regex_match_cache_generation(&key)?;
         Ok(SealedGenerationReclaimOutcomeV1::Reclaimed { bytes })
     }

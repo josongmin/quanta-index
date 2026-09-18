@@ -166,6 +166,12 @@ owner = "quanta-index-lexical"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "lexical-sealed-commitment-cost"
+path = "crates/quanta-index-lexical/tests/sealed_commitment_cost.rs"
+owner = "quanta-index-lexical"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "lexical-boot-inventory"
 path = "crates/quanta-index-lexical/tests/boot_inventory.rs"
 owner = "quanta-index-lexical"
@@ -559,6 +565,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "searchd-runtime-e2e-boot-quarantine"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_boot_quarantine.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-e2e-lexical-sealed-overlays"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_lexical_sealed_overlays.rs"
 owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 

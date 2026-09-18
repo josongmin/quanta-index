@@ -7,30 +7,41 @@
 //! verified. A sidecar lost, truncated or bit-flipped after the seal passed
 //! activation and failed the first query.
 //!
-//! Now the seal writes a manifest (Tantivy commit digest, every file of the
-//! `text-authority/` tree — its manifest and each shard — with length and
-//! SHA-256, the identity's digest) before the identity, and both
-//! `validate_generation_identity` (activation, restart) and `open` (query)
-//! verify it. The oracle here is fault injection on the real files: every
-//! text-authority file in turn is removed, truncated, bit-flipped and
-//! replaced by a stale copy from another generation, and both doors must
-//! refuse under the typed code and admit again once the file is restored.
+//! Now the seal writes a manifest (the Tantivy commit and every segment
+//! file it references, every file of the `text-authority/` tree — its
+//! manifest and each shard — and every repo-metadata overlay, each with
+//! length and SHA-256, plus the identity's digest) before the identity,
+//! and both `validate_generation_identity` (activation, restart) and
+//! `open` (query) walk it through one function. The oracle here is fault
+//! injection on the real files: every text-authority file and every
+//! overlay in turn is removed, truncated, bit-flipped and replaced by a
+//! stale copy from another generation, and both doors must refuse under
+//! the typed code and admit again once the file is restored. Segment files
+//! are proved by presence and length at the doors and by content at the
+//! seal and the scrub, so a same-length flip is the scrub's to refuse.
 
 #![forbid(unsafe_code)]
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
+use quanta_index_contract::channel::{LexicalChannelOp, LexicalFullBundle, UpsertChunk};
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, GenerationSnapshot, LQ_VERSION_TAG, LqExpr, LqLeaf,
-    LqOptions, LqQuery, LqSpan, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
-    SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchPlaneTrackKind, SearchScopeKey,
-    SearchScopeSurface,
+    BatchIngestMode, ChunkId, ChunkRecord, FileContributorEntry, FileContributorIdentityEntry,
+    FileContributorIngestBatch, FileOwnershipEntry, FileOwnershipIngestBatch, GenerationSnapshot,
+    LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery, LqSpan, ManifestGeneration,
+    RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoDescriptionEntry,
+    RepoDescriptionIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath,
+    RepoTopicEntry, RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch,
+    SearchCorpusReplaceScope, SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
 };
 use quanta_index_core::{
-    CoreError, GenerationIdentityValidatePort, GenerationStorageKeyV1, LexicalIndexOpenPort,
-    RequestBudgetV1, SearchCorpusBatchBuildPort,
+    CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
+    GenerationStorageKeyV1, IntegrityScrubPort, IntegrityScrubStampV1, IntegrityScrubStatusV1,
+    LexicalIndexBuildPort, LexicalIndexOpenPort, RepoCommitRecencyIngestPort,
+    RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1,
+    SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 
@@ -41,6 +52,16 @@ const TEXT_AUTHORITY_MANIFEST: &str = "manifest.cbor";
 const MANIFEST: &str = "search-corpus-generation-manifest.cbor";
 const IDENTITY: &str = "search-corpus-generation-identity.cbor";
 const TANTIVY_META: &str = "meta.json";
+/// The repo-metadata overlay sidecars a query decodes at open, by file name.
+const OVERLAY_FILES: [&str; 7] = [
+    "repo-metadata.cbor",
+    "repo-commit-recency.cbor",
+    "repo-meta.cbor",
+    "repo-topic.cbor",
+    "repo-description.cbor",
+    "file-ownership.cbor",
+    "file-contributor.cbor",
+];
 
 fn repo() -> RepoId {
     RepoId::new("manifest-repo")
@@ -125,6 +146,216 @@ fn query(term: &str) -> LqQuery {
         directives: Vec::new(),
         source_span: LqSpan::eof(0),
     }
+}
+
+/// The `FullBundle` repo-metadata payload: the wire map the adapter decodes.
+fn repo_metadata_bundle_payload(context: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut visibility = Vec::new();
+    ciborium::into_writer(
+        &quanta_index_contract::LqVisibility::Private,
+        &mut visibility,
+    )?;
+    let visibility: ciborium::Value = ciborium::from_reader(visibility.as_slice())?;
+    let wire = ciborium::Value::Map(vec![
+        (
+            ciborium::Value::Text("fork".to_string()),
+            ciborium::Value::Bool(false),
+        ),
+        (
+            ciborium::Value::Text("archived".to_string()),
+            ciborium::Value::Bool(false),
+        ),
+        (ciborium::Value::Text("visibility".to_string()), visibility),
+        (
+            ciborium::Value::Text("contexts".to_string()),
+            ciborium::Value::Array(vec![ciborium::Value::Text(context.to_string())]),
+        ),
+    ]);
+    let mut payload = Vec::new();
+    ciborium::into_writer(&wire, &mut payload)?;
+    Ok(payload)
+}
+
+/// What every overlay publish of one generation answered.
+struct OverlayPublishOutcome {
+    what: &'static str,
+    result: Result<(), CoreError>,
+}
+
+/// Publish all seven repo-metadata overlays into `generation`, stamped with
+/// `label` so two generations' overlays differ byte for byte.
+///
+/// Returns one outcome per overlay so a caller can demand that every one
+/// landed (before the seal) or that every one was refused (after it).
+fn publish_overlays(
+    adapter: &LexicalAdapter,
+    generation: ManifestGeneration,
+    label: &str,
+) -> Result<Vec<OverlayPublishOutcome>, Box<dyn Error>> {
+    let source = RepoId::new(format!("source-{label}"));
+    let digest = |family: &str| format!("overlay:{family}:{label}:{}", generation.get());
+    let bundle = LexicalChannelOp::FullBundle(LexicalFullBundle {
+        repo_id: repo(),
+        revision_id: revision(),
+        generation,
+        payload: repo_metadata_bundle_payload(label)?,
+    });
+    Ok(vec![
+        OverlayPublishOutcome {
+            what: "repo commit recency",
+            result: RepoCommitRecencyIngestPort::publish_batch(
+                adapter,
+                &RepoCommitRecencyIngestBatch {
+                    repo_id: repo(),
+                    revision_id: revision(),
+                    generation,
+                    batch_digest: digest("commit-recency"),
+                    entries: vec![RepoCommitRecencyEntry {
+                        source_repo_id: source.clone(),
+                        latest_committer_time_ms: 1_700_000_000_000,
+                    }],
+                },
+            )
+            .map(|_receipt| ()),
+        },
+        OverlayPublishOutcome {
+            what: "repo meta",
+            result: RepoMetaIngestPort::publish_batch(
+                adapter,
+                &RepoMetaIngestBatch {
+                    repo_id: repo(),
+                    revision_id: revision(),
+                    generation,
+                    batch_digest: digest("meta"),
+                    entries: vec![RepoMetaEntry {
+                        source_repo_id: source.clone(),
+                        key: "lifecycle".to_string(),
+                        value: label.to_string(),
+                    }],
+                },
+            )
+            .map(|_receipt| ()),
+        },
+        OverlayPublishOutcome {
+            what: "repo topic",
+            result: RepoTopicIngestPort::publish_batch(
+                adapter,
+                &RepoTopicIngestBatch {
+                    repo_id: repo(),
+                    revision_id: revision(),
+                    generation,
+                    batch_digest: digest("topic"),
+                    entries: vec![RepoTopicEntry {
+                        source_repo_id: source.clone(),
+                        topic: format!("topic-{label}"),
+                    }],
+                },
+            )
+            .map(|_receipt| ()),
+        },
+        OverlayPublishOutcome {
+            what: "repo description",
+            result: RepoDescriptionIngestPort::publish_batch(
+                adapter,
+                &RepoDescriptionIngestBatch {
+                    repo_id: repo(),
+                    revision_id: revision(),
+                    generation,
+                    batch_digest: digest("description"),
+                    entries: vec![RepoDescriptionEntry {
+                        source_repo_id: source.clone(),
+                        description: format!("{label} description"),
+                    }],
+                },
+            )
+            .map(|_receipt| ()),
+        },
+        OverlayPublishOutcome {
+            what: "file ownership",
+            result: FileOwnershipIngestPort::publish_batch(
+                adapter,
+                &FileOwnershipIngestBatch {
+                    repo_id: repo(),
+                    revision_id: revision(),
+                    generation,
+                    batch_digest: digest("ownership"),
+                    entries: vec![FileOwnershipEntry {
+                        source_repo_id: source.clone(),
+                        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+                        owners: vec![format!("@{label}-owner")],
+                    }],
+                },
+            )
+            .map(|_receipt| ()),
+        },
+        OverlayPublishOutcome {
+            what: "file contributor",
+            result: FileContributorIngestPort::publish_batch(
+                adapter,
+                &FileContributorIngestBatch {
+                    repo_id: repo(),
+                    revision_id: revision(),
+                    generation,
+                    batch_digest: digest("contributor"),
+                    entries: vec![FileContributorEntry {
+                        source_repo_id: source,
+                        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+                        contributors: vec![FileContributorIdentityEntry {
+                            canonical: format!("{label}-contributor"),
+                            name: Some(format!("{label} contributor")),
+                            email: Some(format!("{label}@example.test")),
+                        }],
+                    }],
+                },
+            )
+            .map(|_receipt| ()),
+        },
+        OverlayPublishOutcome {
+            what: "repo-metadata bundle",
+            result: adapter.build(&repo(), &revision(), generation, &[bundle]),
+        },
+    ])
+}
+
+/// Every overlay publish landed.
+fn expect_overlays_landed(outcomes: Vec<OverlayPublishOutcome>) -> TestResult {
+    for outcome in outcomes {
+        if let Err(err) = outcome.result {
+            return Err(format!("{} publish before the seal failed: {err}", outcome.what).into());
+        }
+    }
+    Ok(())
+}
+
+/// A sealed generation carrying every overlay, built from `body`.
+fn sealed_generation_with_overlays(
+    adapter: &LexicalAdapter,
+    generation: ManifestGeneration,
+    label: &str,
+    body: &str,
+) -> TestResult {
+    expect_overlays_landed(publish_overlays(adapter, generation, label)?)?;
+    adapter.build_batch(&sealed_batch(generation, body)?)?;
+    Ok(())
+}
+
+/// One regular file directly under a generation directory: its name and
+/// its bytes.
+type NamedFile = (String, Vec<u8>);
+
+/// `(name, bytes)` of every regular file directly under `dir`, sorted.
+fn top_level_files(dir: &Path) -> Result<Vec<NamedFile>, Box<dyn Error>> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        files.push((name, std::fs::read(entry.path())?));
+    }
+    files.sort();
+    Ok(files)
 }
 
 /// What both doors said about a generation: the validator's verdict and
@@ -373,18 +604,142 @@ fn an_identity_that_does_not_match_the_manifest_is_refused() -> TestResult {
     expect_admitted(&knock(&adapter, generation), "identity restored")
 }
 
-/// After the seal nothing may change the index: an index-mutating op is
-/// refused as immutable, while the mutable overlay (repo metadata) still
-/// lands, and the manifest keeps matching.
+/// Every overlay sidecar, under every corruption, is refused by both doors
+/// and admitted again once restored (QI-BB-030, the audit's crash scenario).
+///
+/// The scenario the audit reproduced: a publish that crashes mid-write
+/// leaves `repo-meta.cbor` truncated, activation and restart validate the
+/// generation, and the first query fails decoding the overlay. Here the
+/// truncation is injected on the real file and the validator must refuse it
+/// exactly as the open does.
 #[test]
-fn a_sealed_generation_refuses_index_mutation_but_keeps_its_overlay() -> TestResult {
-    use quanta_index_contract::channel::{LexicalChannelOp, LexicalFullBundle, UpsertChunk};
-    use quanta_index_core::LexicalIndexBuildPort;
-
+fn both_doors_refuse_an_overlay_that_does_not_match_the_manifest() -> TestResult {
     let temp = tempfile::tempdir()?;
-    let adapter = LexicalAdapter::with_state_root(temp.path().to_path_buf());
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
     let generation = ManifestGeneration::new(1);
+    let stale_generation = ManifestGeneration::new(2);
+    sealed_generation_with_overlays(&adapter, generation, "one", "fn one() { sealed_needle }")?;
+    sealed_generation_with_overlays(
+        &adapter,
+        stale_generation,
+        "two",
+        "fn two() { sealed_needle other }",
+    )?;
+    expect_admitted(&knock(&adapter, generation), "intact")?;
+
+    let dir = generation_dir(&root, generation);
+    let stale_dir = generation_dir(&root, stale_generation);
+    for name in OVERLAY_FILES {
+        let path = dir.join(name);
+        let original = std::fs::read(&path)
+            .map_err(|err| format!("{name} was not written before the seal: {err}"))?;
+
+        std::fs::remove_file(&path)?;
+        expect_refused(
+            &knock(&adapter, generation),
+            &format!("{name} missing"),
+            "GENERATION_SIDECAR_CORRUPT",
+        )?;
+
+        std::fs::write(&path, b"")?;
+        expect_refused(
+            &knock(&adapter, generation),
+            &format!("{name} truncated to zero bytes"),
+            "GENERATION_SIDECAR_CORRUPT",
+        )?;
+
+        let half = original.len().div_euclid(2);
+        std::fs::write(
+            &path,
+            original.get(..half).ok_or("overlay shorter than half")?,
+        )?;
+        expect_refused(
+            &knock(&adapter, generation),
+            &format!("{name} truncated"),
+            "GENERATION_SIDECAR_CORRUPT",
+        )?;
+
+        let mut flipped = original.clone();
+        let middle = flipped.len().div_euclid(2);
+        if let Some(byte) = flipped.get_mut(middle) {
+            *byte ^= 0x01;
+        }
+        std::fs::write(&path, &flipped)?;
+        expect_refused(
+            &knock(&adapter, generation),
+            &format!("{name} bit-flipped"),
+            "GENERATION_SIDECAR_CORRUPT",
+        )?;
+
+        let stale = std::fs::read(stale_dir.join(name))?;
+        if stale == original {
+            return Err(format!("{name}: the stale fixture is byte-identical").into());
+        }
+        std::fs::write(&path, &stale)?;
+        expect_refused(
+            &knock(&adapter, generation),
+            &format!("{name} stale copy"),
+            "GENERATION_SIDECAR_CORRUPT",
+        )?;
+
+        std::fs::write(&path, &original)?;
+        expect_admitted(&knock(&adapter, generation), &format!("{name} restored"))?;
+    }
+    Ok(())
+}
+
+/// An overlay file the seal did not commit to is refused when it appears:
+/// a generation sealed without an overlay family says so in its manifest,
+/// and a file that shows up later is not silently decoded.
+#[test]
+fn both_doors_refuse_an_overlay_the_seal_did_not_commit_to() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let generation = ManifestGeneration::new(1);
+    let donor = ManifestGeneration::new(2);
     adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    sealed_generation_with_overlays(&adapter, donor, "donor", "fn two() { sealed_needle }")?;
+    expect_admitted(&knock(&adapter, generation), "intact")?;
+    let dir = generation_dir(&root, generation);
+    let donor_dir = generation_dir(&root, donor);
+    for name in OVERLAY_FILES {
+        let path = dir.join(name);
+        if path.exists() {
+            return Err(format!("{name} exists although no overlay was published").into());
+        }
+        let _copied: u64 = std::fs::copy(donor_dir.join(name), &path)?;
+        expect_refused(
+            &knock(&adapter, generation),
+            &format!("{name} appeared after the seal"),
+            "GENERATION_SIDECAR_CORRUPT",
+        )?;
+        std::fs::remove_file(&path)?;
+        expect_admitted(
+            &knock(&adapter, generation),
+            &format!("{name} removed again"),
+        )?;
+    }
+    Ok(())
+}
+
+/// After the seal nothing may change the generation.
+///
+/// An index-mutating op and every overlay publish are refused as
+/// immutable, the directory is byte for byte what the seal measured, and
+/// both doors still admit it. Before this, the overlay publishes landed in the sealed directory with
+/// plain writes the manifest never covered, so a crash mid-publish left a
+/// sealed generation that activation admitted and a query could not open.
+#[test]
+fn a_sealed_generation_refuses_every_mutation_and_keeps_its_bytes() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let generation = ManifestGeneration::new(1);
+    sealed_generation_with_overlays(&adapter, generation, "one", "fn one() { sealed_needle }")?;
+    let dir = generation_dir(&root, generation);
+    let sealed_files = top_level_files(&dir)?;
 
     let mutation = LexicalChannelOp::UpsertChunk(UpsertChunk {
         repo_id: repo(),
@@ -397,15 +752,193 @@ fn a_sealed_generation_refuses_index_mutation_but_keeps_its_overlay() -> TestRes
         Err(CoreError::Typed { code, .. }) if code == "GENERATION_IMMUTABLE" => {}
         other => return Err(format!("index mutation after seal answered {other:?}").into()),
     }
+    for outcome in publish_overlays(&adapter, generation, "late")? {
+        match outcome.result {
+            Err(CoreError::Typed { code, .. }) if code == "GENERATION_IMMUTABLE" => {}
+            other => {
+                return Err(format!(
+                    "{} publish after the seal answered {other:?}, expected typed GENERATION_IMMUTABLE",
+                    outcome.what
+                )
+                .into());
+            }
+        }
+    }
+    let files_now = top_level_files(&dir)?;
+    if files_now != sealed_files {
+        let names: Vec<&String> = files_now.iter().map(|(name, _)| name).collect();
+        return Err(format!("refused publishes changed the sealed directory: {names:?}").into());
+    }
+    expect_admitted(&knock(&adapter, generation), "after refused mutations")
+}
 
-    let overlay = LexicalChannelOp::FullBundle(LexicalFullBundle {
-        repo_id: repo(),
-        revision_id: revision(),
-        generation,
-        payload: Vec::new(),
-    });
-    adapter.build(&repo(), &revision(), generation, &[overlay])?;
-    expect_admitted(&knock(&adapter, generation), "overlay after seal")
+/// The segment component files the sealed commit references: every
+/// top-level file named `<segment id>.<component>`, sorted.
+fn segment_files(generation_dir: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(generation_dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some((stem, _extension)) = name.split_once('.') else {
+            continue;
+        };
+        if stem.len() == 32 && stem.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            files.push(entry.path());
+        }
+    }
+    files.sort();
+    if files.len() < 6 {
+        return Err(format!("expected at least six segment component files, got {files:?}").into());
+    }
+    Ok(files)
+}
+
+fn scrub_code(adapter: &LexicalAdapter, generation: ManifestGeneration) -> Option<String> {
+    match adapter
+        .scrub_sealed_generation(&identity(generation), IntegrityScrubStampV1 { unix_ms: 7 })
+    {
+        Err(CoreError::Typed { code, .. }) => Some(code),
+        _ => None,
+    }
+}
+
+/// Every segment file the commit references is committed by length and
+/// digest.
+///
+/// A length change or a missing file is refused by both doors. A
+/// same-length flip passes the validator — the doors prove these bytes by
+/// length, never by content, because a query maps them instead of
+/// decoding them — and is refused by the scrub, which is what the manifest
+/// stamps. The flipped file is not mapped here: Tantivy panics rather than
+/// errors on a corrupted segment component, which is exactly the exposure
+/// the scrub exists to close before a query reaches it.
+#[test]
+fn segment_files_are_length_proved_at_the_doors_and_content_proved_by_the_scrub() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let generation = ManifestGeneration::new(1);
+    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    expect_admitted(&knock(&adapter, generation), "intact")?;
+    let dir = generation_dir(&root, generation);
+    for path in segment_files(&dir)? {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .ok_or("name")?;
+        let original = std::fs::read(&path)?;
+
+        std::fs::remove_file(&path)?;
+        expect_refused(
+            &knock(&adapter, generation),
+            &format!("{name} missing"),
+            "GENERATION_SIDECAR_CORRUPT",
+        )?;
+
+        let mut longer = original.clone();
+        longer.push(0);
+        std::fs::write(&path, &longer)?;
+        expect_refused(
+            &knock(&adapter, generation),
+            &format!("{name} one byte longer"),
+            "GENERATION_SIDECAR_CORRUPT",
+        )?;
+
+        let half = original.len().div_euclid(2);
+        std::fs::write(
+            &path,
+            original.get(..half).ok_or("segment shorter than half")?,
+        )?;
+        expect_refused(
+            &knock(&adapter, generation),
+            &format!("{name} truncated"),
+            "GENERATION_SIDECAR_CORRUPT",
+        )?;
+
+        let mut flipped = original.clone();
+        let middle = flipped.len().div_euclid(2);
+        if let Some(byte) = flipped.get_mut(middle) {
+            *byte ^= 0x01;
+        }
+        std::fs::write(&path, &flipped)?;
+        if let Err(err) = adapter.validate_generation_identity(&identity(generation)) {
+            return Err(format!(
+                "{name} flipped: the validator, which proves segment files by length, refused: {err}"
+            )
+            .into());
+        }
+        if scrub_code(&adapter, generation).as_deref() != Some("GENERATION_SIDECAR_CORRUPT") {
+            return Err(format!("{name} flipped: the scrub did not refuse the content").into());
+        }
+        match adapter.integrity_scrub_status(&identity(generation))? {
+            IntegrityScrubStatusV1::DeepVerifiedAtSeal => {}
+            other @ IntegrityScrubStatusV1::ScrubVerifiedSince(_) => {
+                return Err(
+                    format!("{name} flipped: a refused scrub recorded a pass: {other:?}").into(),
+                );
+            }
+        }
+
+        std::fs::write(&path, &original)?;
+        expect_admitted(&knock(&adapter, generation), &format!("{name} restored"))?;
+    }
+    let report = adapter.scrub_sealed_generation(
+        &identity(generation),
+        IntegrityScrubStampV1 {
+            unix_ms: 1_700_000_000_000,
+        },
+    )?;
+    if report.files_verified < 9 || report.bytes_verified == 0 {
+        return Err(
+            format!("the scrub of an intact generation measured too little: {report:?}").into(),
+        );
+    }
+    match adapter.integrity_scrub_status(&identity(generation))? {
+        IntegrityScrubStatusV1::ScrubVerifiedSince(recorded) if recorded == report => {}
+        other @ (IntegrityScrubStatusV1::DeepVerifiedAtSeal
+        | IntegrityScrubStatusV1::ScrubVerifiedSince(_)) => {
+            return Err(format!("the scrub pass was not recorded as reported: {other:?}").into());
+        }
+    }
+    expect_admitted(&knock(&adapter, generation), "after the scrub")
+}
+
+/// A durable overlay publish leaves no torn file behind: the file is the
+/// batch's whole snapshot, and a temporary a crashed publish left is not
+/// what the seal commits to.
+#[test]
+fn an_interrupted_overlay_publish_leaves_nothing_the_seal_commits_to() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let generation = ManifestGeneration::new(1);
+    expect_overlays_landed(publish_overlays(&adapter, generation, "one")?)?;
+    let dir = generation_dir(&root, generation);
+    // The crash: a temporary the durable write had opened but never renamed.
+    let leftover = dir.join(".repo-meta.cbor.tmp-99999-7");
+    std::fs::write(&leftover, b"torn")?;
+    let published = std::fs::read(dir.join("repo-meta.cbor"))?;
+    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    if leftover.exists() {
+        return Err("the seal left a crashed publish's temporary in the sealed directory".into());
+    }
+    if std::fs::read(dir.join("repo-meta.cbor"))? != published {
+        return Err("the seal changed a published overlay".into());
+    }
+    let names: Vec<String> = top_level_files(&dir)?
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    if names.iter().any(|name| name.contains(".tmp-")) {
+        return Err(format!("a temporary survived the seal: {names:?}").into());
+    }
+    expect_admitted(
+        &knock(&adapter, generation),
+        "sealed after a crashed publish",
+    )
 }
 
 /// A generation that indexed nothing still seals to an openable state: the
