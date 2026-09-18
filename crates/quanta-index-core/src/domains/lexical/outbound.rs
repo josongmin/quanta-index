@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::{
     BatchPublishReceipt, CandidatePresenceV1, FileContributorIngestBatch, FileOwnerProjectionRow,
@@ -336,4 +338,29 @@ pub trait LexicalSearcher: Send + Sync {
         candidate_id: &str,
         budget: &RequestBudgetV1,
     ) -> Result<LexicalCandidateExplanationV1, CoreError>;
+
+    /// Which of `candidate_ids` the filters of `query` admit under
+    /// `constraints`: the dense lane's exact per-candidate evaluation
+    /// (QI-BB-018 보완 #3).
+    ///
+    /// `query` is a filter-only plan — an empty expression and the filters
+    /// the hybrid contract classes as exact
+    /// ([`HybridFilterPlanV1::admission_query`]). Implementations compile
+    /// it exactly as [`Self::search_constrained`] would and answer the
+    /// subset of `candidate_ids` that names a live document of the plan's
+    /// doc kind which the compiled plan matches. A candidate this
+    /// generation does not index cannot be proven admitted and is not in
+    /// the answer; a filter the plan cannot compile is the same typed
+    /// refusal `search_constrained` gives; a generation-level gate the
+    /// filters fail admits nothing. Never a ranked re-search: the answer
+    /// does not depend on the corpus around the candidates.
+    ///
+    /// [`HybridFilterPlanV1::admission_query`]: crate::domains::hybrid::HybridFilterPlanV1::admission_query
+    fn admitted_candidates(
+        &self,
+        query: &LqQuery,
+        constraints: &QueryConstraintSetV1,
+        candidate_ids: &BTreeSet<String>,
+        budget: &RequestBudgetV1,
+    ) -> Result<BTreeSet<String>, CoreError>;
 }

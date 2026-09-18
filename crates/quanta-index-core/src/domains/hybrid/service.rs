@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use quanta_index_contract::{
-    HybridCandidateV1, HybridLaneContributionV1, HybridLaneV1, LexicalCandidate, ManifestGeneration,
+    HybridCandidateV1, HybridLaneContributionV1, HybridLaneV1, INTERNAL_FETCH_CEILING,
+    LexicalCandidate, ManifestGeneration,
 };
 
 use crate::{
@@ -59,6 +60,33 @@ impl HybridOrchestratorPolicy {
         } else {
             floored
         }
+    }
+
+    /// The most dense rows the admission loop examines for one query
+    /// (QI-BB-018 보완 #3): the search plane's internal fetch ceiling.
+    ///
+    /// A dense lane under exact filters refetches at growing sizes until
+    /// its admitted rows are as deep as an unfiltered lane; this bounds the
+    /// work so a filter that admits almost nothing cannot make one query
+    /// read the whole generation. The lane is `capped` past it, and the
+    /// route's trace says so.
+    #[must_use]
+    pub const fn dense_admission_examine_ceiling() -> u32 {
+        INTERNAL_FETCH_CEILING
+    }
+
+    /// The fetch size after `fetched` rows admitted too few (QI-BB-018
+    /// 보완 #3): double, capped at
+    /// [`Self::dense_admission_examine_ceiling`]; `None` once the ceiling
+    /// itself was fetched, which ends the loop `capped`.
+    #[must_use]
+    pub const fn next_dense_admission_fetch(fetched: u32) -> Option<u32> {
+        let ceiling = Self::dense_admission_examine_ceiling();
+        if fetched >= ceiling {
+            return None;
+        }
+        let doubled = fetched.saturating_mul(2);
+        Some(if doubled > ceiling { ceiling } else { doubled })
     }
 
     /// Require both tracks to have materialized the requested generation. If
@@ -399,6 +427,30 @@ mod tests {
             snippet_hit_offset: None,
             highlights: Vec::new(),
         }
+    }
+
+    #[test]
+    fn dense_admission_refill_doubles_to_the_ceiling_then_stops() {
+        let ceiling = HybridOrchestratorPolicy::dense_admission_examine_ceiling();
+        assert_eq!(ceiling, quanta_index_contract::INTERNAL_FETCH_CEILING);
+        assert_eq!(
+            HybridOrchestratorPolicy::next_dense_admission_fetch(100),
+            Some(200)
+        );
+        assert_eq!(
+            HybridOrchestratorPolicy::next_dense_admission_fetch(6_400),
+            Some(ceiling),
+            "the last refill is cut to the ceiling"
+        );
+        assert_eq!(
+            HybridOrchestratorPolicy::next_dense_admission_fetch(ceiling),
+            None,
+            "a fetch of the ceiling ends the loop"
+        );
+        assert_eq!(
+            HybridOrchestratorPolicy::next_dense_admission_fetch(u32::MAX),
+            None
+        );
     }
 
     #[test]

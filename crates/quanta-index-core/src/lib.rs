@@ -40,7 +40,9 @@ pub use domains::generation::{
     verify_tree_commitment_v1,
 };
 pub use domains::hybrid::{
-    ExplainQueryPort, FusedKeyV1, FusedLaneRankV1, HybridOrchestratorPolicy, HybridQueryPort,
+    DenseAdmissionOutcomeV1, DenseLaneFilterClassV1, ExplainQueryPort, FusedKeyV1, FusedLaneRankV1,
+    HYBRID_FILTER_UNSUPPORTED_CODE, HybridFilterPlanV1, HybridOrchestratorPolicy, HybridQueryPort,
+    classify_hybrid_filter_v1, dense_admission_round_outcome_v1, hybrid_filter_name_v1,
 };
 pub use domains::idempotency::{
     BATCH_DIGEST_CONFLICT_CODE, CATALOG_BUSY_CODE, CATALOG_ROW_CORRUPT_CODE, IdempotencyBeginV1,

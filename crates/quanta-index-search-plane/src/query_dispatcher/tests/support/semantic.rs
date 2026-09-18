@@ -83,10 +83,13 @@ pub(crate) fn available_cluster_membership_batch_response_v1(
 
 #[derive(Default)]
 pub(crate) struct RecordingSemanticState {
-    /// What `search_constrained` answers; `None` answers the one inline
-    /// `semantic-inline` hit.
+    /// What `search_constrained` answers, cut to the `top_k` asked for;
+    /// `None` answers the one inline `semantic-inline` hit.
     pub(crate) constrained_search_results: Option<Vec<LexicalCandidate>>,
     pub(crate) search_vectors: Vec<Vec<f32>>,
+    /// The `top_k` of every `search_constrained` call, in call order: the
+    /// dense lane's fetch sizes (QI-BB-018 보완 #3 refill).
+    pub(crate) search_top_ks: Vec<u32>,
     pub(crate) search_hit_vectors: Vec<Vec<f32>>,
     pub(crate) corpus_searches: Vec<(SemanticCorpusKindV1, u32)>,
     pub(crate) scoped_vectors: Vec<Vec<f32>>,
@@ -187,7 +190,7 @@ impl SemanticSearcher for RecordingSemanticSearcher {
         &self,
         query_vector: &[f32],
         constraints: &QueryConstraintSetV1,
-        _top_k: u32,
+        top_k: u32,
         budget: &RequestBudgetV1,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
         let configured = {
@@ -197,10 +200,15 @@ impl SemanticSearcher for RecordingSemanticSearcher {
                 .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?;
             state.search_vectors.push(query_vector.to_vec());
             state.search_constraints.push(constraints.clone());
+            state.search_top_ks.push(top_k);
             state.constrained_search_results.clone()
         };
         self.observe_budget(budget)?;
-        if let Some(rows) = configured {
+        if let Some(mut rows) = configured {
+            // A ranked engine answers at most `top_k` rows.
+            rows.truncate(usize::try_from(top_k).map_err(|err| {
+                CoreError::InvalidContract(format!("stub top_k overflow: {err}"))
+            })?);
             return Ok(rows);
         }
         Ok(vec![candidate("semantic-inline", 1.0)])

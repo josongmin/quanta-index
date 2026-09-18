@@ -555,6 +555,16 @@ impl quanta_index_core::LexicalSearcher for PinnedLexicalHandle {
     ) -> Result<quanta_index_core::LexicalCandidateExplanationV1, CoreError> {
         Err(CoreError::NotImplemented("pin-only handle".to_string()))
     }
+
+    fn admitted_candidates(
+        &self,
+        _query: &quanta_index_contract::LqQuery,
+        _constraints: &quanta_index_contract::QueryConstraintSetV1,
+        _candidate_ids: &std::collections::BTreeSet<String>,
+        _budget: &RequestBudgetV1,
+    ) -> Result<std::collections::BTreeSet<String>, CoreError> {
+        Err(CoreError::NotImplemented("pin-only handle".to_string()))
+    }
 }
 
 /// One materializer over recording fakes, plus the fakes, so a test can

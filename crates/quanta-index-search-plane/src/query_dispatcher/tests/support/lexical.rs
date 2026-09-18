@@ -1,5 +1,6 @@
 //! Lexical opener / searcher test doubles.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::{
@@ -144,6 +145,19 @@ impl LexicalSearcher for StubLexicalSearcher {
                 })
             }))
     }
+
+    /// The stub has no filter store: it admits every candidate. Filter
+    /// admission is proved through `RecordingLexicalSearcher`, whose state
+    /// configures the admitted set.
+    fn admitted_candidates(
+        &self,
+        _query: &quanta_index_contract::LqQuery,
+        _constraints: &QueryConstraintSetV1,
+        candidate_ids: &BTreeSet<String>,
+        _budget: &RequestBudgetV1,
+    ) -> Result<BTreeSet<String>, CoreError> {
+        Ok(candidate_ids.clone())
+    }
 }
 
 pub(crate) struct StubLexicalOpener {
@@ -180,6 +194,12 @@ pub(crate) struct RecordingLexicalState {
     pub(crate) repo_metadata: Option<RepoMetadataAuthoritiesV1>,
     /// How many times the handle's identity was asked for.
     pub(crate) identity_reads: usize,
+    /// The candidate ids the filter-only admission plan admits (QI-BB-018
+    /// 보완 #3); `None` admits every candidate asked about.
+    pub(crate) admitted_ids: Option<BTreeSet<String>>,
+    /// Every admission evaluation asked of the handle: the filter-only
+    /// plan and the candidate ids it was asked about, in call order.
+    pub(crate) admission_calls: Vec<(LqQuery, BTreeSet<String>)>,
 }
 
 pub(crate) struct RecordingLexicalSearcher {
@@ -333,6 +353,28 @@ impl LexicalSearcher for RecordingLexicalSearcher {
                     emitted_score: candidate.score,
                 })
             }))
+    }
+
+    fn admitted_candidates(
+        &self,
+        query: &quanta_index_contract::LqQuery,
+        _constraints: &QueryConstraintSetV1,
+        candidate_ids: &BTreeSet<String>,
+        _budget: &RequestBudgetV1,
+    ) -> Result<BTreeSet<String>, CoreError> {
+        let mut guard = self
+            .state
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?;
+        guard
+            .admission_calls
+            .push((query.clone(), candidate_ids.clone()));
+        let admitted = guard.admitted_ids.as_ref().map_or_else(
+            || candidate_ids.clone(),
+            |admitted| candidate_ids.intersection(admitted).cloned().collect(),
+        );
+        drop(guard);
+        Ok(admitted)
     }
 }
 

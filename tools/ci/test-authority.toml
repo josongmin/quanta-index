@@ -683,6 +683,12 @@ owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "searchd-runtime-hybrid-filters"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_hybrid_filters.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "searchd-runtime-repo-map-end-to-end"
 path = "crates/quanta-index-searchd-runtime/tests/repo_map_end_to_end.rs"
 owner = "quanta-index-searchd-runtime"

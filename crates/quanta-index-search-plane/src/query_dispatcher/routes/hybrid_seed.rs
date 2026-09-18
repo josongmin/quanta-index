@@ -4,10 +4,12 @@ use std::collections::BTreeSet;
 
 use quanta_index_contract::{EarlyStopReason, HybridSeedQueryRequest, HybridSeedQueryResponse};
 use quanta_index_core::{
-    CoreError, HybridOrchestratorPolicy, LexicalPolicy, QueryRouteV1, RequestBudgetV1,
+    CoreError, HybridFilterPlanV1, HybridOrchestratorPolicy, LexicalPolicy, QueryRouteV1,
+    RequestBudgetV1, SemanticSearchHitV1,
 };
 
 use crate::lower_lexical_text_query;
+use crate::query_dispatcher::dense_admission::admit_dense_lane_v1;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::planning::prepare_language_query_v1;
 use crate::query_dispatcher::ranking::{
@@ -15,12 +17,21 @@ use crate::query_dispatcher::ranking::{
 };
 use crate::query_dispatcher::read_view::{ReadViewRequestV1, attach_read_view_trace};
 use crate::query_dispatcher::semantic_query::{
-    SeedLaneTallyV1, build_hybrid_seed_candidates, build_hybrid_seed_response_explanation,
-    canonical_dense_corpus_budgets_v1, resolve_hybrid_seed_request_selection,
+    HybridFilterTraceV1, SeedLaneTallyV1, build_hybrid_seed_candidates,
+    build_hybrid_seed_response_explanation, canonical_dense_corpus_budgets_v1,
+    resolve_hybrid_seed_request_selection,
 };
 use crate::query_dispatcher::window::{fused_window_v1, hybrid_probe_top_k_v1};
 
 impl SearchPlaneDispatcher {
+    /// The hybrid-seed route: one lexical lane and one dense lane per
+    /// requested corpus (or one global dense lane), fused on entity.
+    ///
+    /// Every DSL filter binds every lane (QI-BB-018 보완 #3) under the same
+    /// contract as the hybrid route: `lang:` pushed down typed, exact
+    /// filters admitting each dense hit through the lexical plan, anything
+    /// else refused typed before any lane runs. Each dense lane's admission
+    /// outcome is its own trace entry.
     pub(crate) fn hybrid_seed(
         &self,
         request: &HybridSeedQueryRequest,
@@ -32,6 +43,7 @@ impl SearchPlaneDispatcher {
             resolve_hybrid_seed_request_selection(self.activation_catalog.as_ref(), request)?;
         let pin = selection.pin.clone();
         let lexical_query = lower_lexical_text_query(&request.text_query)?;
+        let filter_plan = HybridFilterPlanV1::plan(&lexical_query)?;
         let prepared_language =
             prepare_language_query_v1(lexical_query, &request.text_query.constraints)?;
         LexicalPolicy::validate_query(&prepared_language.query)?;
@@ -73,42 +85,73 @@ impl SearchPlaneDispatcher {
         })?;
         let primary_lane_limit_reached = lex_results.len() == internal_limit;
         // One dense lane per requested corpus (or one global lane), each a
-        // single native search over the query vector (QI-BB-019): there is
-        // no second, lexical-scoped dense search behind the seed list.
+        // single native search over the query vector per admission round
+        // (QI-BB-019): there is no second, lexical-scoped dense search
+        // behind the seed list.
         let dense_corpora = canonical_dense_corpus_budgets_v1(&request.dense_corpora)?;
         let mut unavailable_corpus_reasons = Vec::new();
         let mut semantic_lanes = Vec::new();
+        let mut admission_traces = Vec::new();
         if prepared_language.force_empty {
             semantic_lanes.push(Vec::new());
         } else if dense_corpora.is_empty() {
-            budget.checkpoint("hybrid-seed:dense")?;
-            let mut hits = sem_searcher.search_hits_constrained(
-                &query_vector,
+            let lane = admit_dense_lane_v1(
+                &filter_plan,
+                lex_searcher.as_ref(),
                 &prepared_language.constraints,
                 internal_top_k,
                 budget,
+                |hit: &SemanticSearchHitV1| hit.candidate.candidate_id.as_str(),
+                |fetch_size| {
+                    budget.checkpoint("hybrid-seed:dense")?;
+                    sem_searcher.search_hits_constrained(
+                        &query_vector,
+                        &prepared_language.constraints,
+                        fetch_size,
+                        budget,
+                    )
+                },
             )?;
+            admission_traces.push(lane.trace_detail("hybrid_seed.dense_admission[global]"));
+            let mut hits = lane.rows;
             stabilize_semantic_seed_hits_v1(&mut hits);
             semantic_lanes.push(hits);
         } else {
             for corpus_budget in dense_corpora {
-                // One dense lane per requested corpus; each is its own
-                // native call, so each gets its own checkpoint.
-                budget.checkpoint("hybrid-seed:dense")?;
-                let mut hits = sem_searcher.search_hits_for_corpus_constrained(
-                    &query_vector,
-                    corpus_budget.corpus_kind,
+                let corpus_kind = corpus_budget.corpus_kind;
+                let lane = admit_dense_lane_v1(
+                    &filter_plan,
+                    lex_searcher.as_ref(),
                     &prepared_language.constraints,
                     corpus_budget.top_k,
                     budget,
+                    |hit: &SemanticSearchHitV1| hit.candidate.candidate_id.as_str(),
+                    |fetch_size| {
+                        // Each native call gets its own checkpoint.
+                        budget.checkpoint("hybrid-seed:dense")?;
+                        sem_searcher.search_hits_for_corpus_constrained(
+                            &query_vector,
+                            corpus_kind,
+                            &prepared_language.constraints,
+                            fetch_size,
+                            budget,
+                        )
+                    },
                 )?;
-                stabilize_semantic_seed_hits_v1(&mut hits);
-                if hits.is_empty() {
+                admission_traces.push(lane.trace_detail(&format!(
+                    "hybrid_seed.dense_admission[{}]",
+                    corpus_kind.as_code_str()
+                )));
+                // A corpus is unavailable when its lane returned no row to
+                // examine, not when the filters admitted none.
+                if lane.examined == 0 {
                     unavailable_corpus_reasons.push(format!(
                         "requested_semantic_corpus_unavailable:{}",
-                        corpus_budget.corpus_kind.as_code_str()
+                        corpus_kind.as_code_str()
                     ));
                 }
+                let mut hits = lane.rows;
+                stabilize_semantic_seed_hits_v1(&mut hits);
                 semantic_lanes.push(hits);
             }
         }
@@ -153,6 +196,10 @@ impl SearchPlaneDispatcher {
             &unavailable_corpus_reasons,
             early_stop_reason,
             &sem_searcher.dense_lane(),
+            &HybridFilterTraceV1 {
+                filters: format!("hybrid_seed.filters={filter_plan}"),
+                admission: admission_traces,
+            },
         );
         attach_read_view_trace(&mut explanation, view.identity());
         let window = fused_window_v1(

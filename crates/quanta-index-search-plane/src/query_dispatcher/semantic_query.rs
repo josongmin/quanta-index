@@ -379,12 +379,36 @@ pub(super) struct SeedLaneTallyV1 {
     pub(super) fused_hits: usize,
 }
 
+/// How one hybrid execution bound its DSL filters to the dense lane.
+///
+/// Planner trace entries (QI-BB-018 보완 #3): the push-down class per
+/// filter (`hybrid.filters=pushdown:lang; exact:file`) and, per dense lane,
+/// how the admission loop ended.
+pub(super) struct HybridFilterTraceV1 {
+    pub(super) filters: String,
+    pub(super) admission: Vec<String>,
+}
+
+impl HybridFilterTraceV1 {
+    fn trace_entries(&self) -> impl Iterator<Item = PlannerTraceEntry> + '_ {
+        std::iter::once(PlannerTraceEntry {
+            stage: PlannerStage::Plan,
+            detail: self.filters.clone(),
+        })
+        .chain(self.admission.iter().map(|detail| PlannerTraceEntry {
+            stage: PlannerStage::ExecFanout,
+            detail: detail.clone(),
+        }))
+    }
+}
+
 pub(super) fn build_hybrid_seed_response_explanation(
     tally: &SeedLaneTallyV1,
     internal_top_k: u32,
     unavailable_corpus_reasons: &[String],
     early_stop_reason: Option<EarlyStopReason>,
     dense_lane: &DenseLaneContractV1,
+    filters: &HybridFilterTraceV1,
 ) -> SearchExplanation {
     let SeedLaneTallyV1 {
         lexical_hits,
@@ -407,31 +431,35 @@ pub(super) fn build_hybrid_seed_response_explanation(
         (false, false) => "empty",
     }
     .to_string();
+    let mut planner_trace = vec![
+        PlannerTraceEntry {
+            stage: PlannerStage::Plan,
+            detail: format!("hybrid_seed.internal_top_k={internal_top_k}"),
+        },
+        dense_lane_trace_entry_v1(dense_lane),
+    ];
+    planner_trace.extend(filters.trace_entries());
+    planner_trace.extend([
+        PlannerTraceEntry {
+            stage: PlannerStage::ExecFanout,
+            detail: format!(
+                "hybrid_seed.semantic_scoped_to_lexical=false; lexical_hits={lexical_hits}; lexical_entities={lexical_entities}; semantic_hits={semantic_hits}; semantic_entities={semantic_entities}"
+            ),
+        },
+        PlannerTraceEntry {
+            stage: PlannerStage::Merge,
+            detail: format!("hybrid_seed.fused_entities={fused_hits}"),
+        },
+        PlannerTraceEntry {
+            stage: PlannerStage::Plan,
+            detail: format!(
+                "hybrid_seed.unavailable_corpora={}",
+                unavailable_corpus_reasons.join(",")
+            ),
+        },
+    ]);
     SearchExplanation {
-        planner_trace: vec![
-            PlannerTraceEntry {
-                stage: PlannerStage::Plan,
-                detail: format!("hybrid_seed.internal_top_k={internal_top_k}"),
-            },
-            dense_lane_trace_entry_v1(dense_lane),
-            PlannerTraceEntry {
-                stage: PlannerStage::ExecFanout,
-                detail: format!(
-                    "hybrid_seed.semantic_scoped_to_lexical=false; lexical_hits={lexical_hits}; lexical_entities={lexical_entities}; semantic_hits={semantic_hits}; semantic_entities={semantic_entities}"
-                ),
-            },
-            PlannerTraceEntry {
-                stage: PlannerStage::Merge,
-                detail: format!("hybrid_seed.fused_entities={fused_hits}"),
-            },
-            PlannerTraceEntry {
-                stage: PlannerStage::Plan,
-                detail: format!(
-                    "hybrid_seed.unavailable_corpora={}",
-                    unavailable_corpus_reasons.join(",")
-                ),
-            },
-        ],
+        planner_trace,
         engines_touched,
         early_stop_reason,
         contributions: Vec::new(),
@@ -848,15 +876,27 @@ pub(super) fn build_semantic_response_explanation(
     }
 }
 
+/// What each hybrid lane produced and what the fusion made of it.
+pub(super) struct HybridLaneTallyV1 {
+    pub(super) lexical_hits: usize,
+    pub(super) semantic_hits: usize,
+    pub(super) fused_universe: usize,
+    pub(super) fused_hits: usize,
+}
+
 pub(super) fn build_hybrid_response_explanation(
-    lexical_hits: usize,
-    semantic_hits: usize,
-    fused_universe: usize,
-    fused_hits: usize,
+    tally: &HybridLaneTallyV1,
     internal_top_k: u32,
     early_stop_reason: Option<EarlyStopReason>,
     dense_lane: &DenseLaneContractV1,
+    filters: &HybridFilterTraceV1,
 ) -> SearchExplanation {
+    let HybridLaneTallyV1 {
+        lexical_hits,
+        semantic_hits,
+        fused_universe,
+        fused_hits,
+    } = *tally;
     // Two independent lanes (QI-BB-018): report which of them contributed
     // and the strategy that actually ran — a genuine two-lane RRF only when
     // BOTH lanes returned candidates, otherwise the single-lane reality (or
@@ -875,24 +915,28 @@ pub(super) fn build_hybrid_response_explanation(
         (false, false) => "empty",
     }
     .to_string();
+    let mut planner_trace = vec![
+        PlannerTraceEntry {
+            stage: PlannerStage::Plan,
+            detail: format!("hybrid.internal_top_k={internal_top_k}"),
+        },
+        dense_lane_trace_entry_v1(dense_lane),
+    ];
+    planner_trace.extend(filters.trace_entries());
+    planner_trace.extend([
+        PlannerTraceEntry {
+            stage: PlannerStage::ExecFanout,
+            detail: format!(
+                "hybrid.lanes=independent; lexical_hits={lexical_hits}; semantic_hits={semantic_hits}; fused_universe={fused_universe}"
+            ),
+        },
+        PlannerTraceEntry {
+            stage: PlannerStage::Merge,
+            detail: format!("hybrid.fused_results={fused_hits}"),
+        },
+    ]);
     SearchExplanation {
-        planner_trace: vec![
-            PlannerTraceEntry {
-                stage: PlannerStage::Plan,
-                detail: format!("hybrid.internal_top_k={internal_top_k}"),
-            },
-            dense_lane_trace_entry_v1(dense_lane),
-            PlannerTraceEntry {
-                stage: PlannerStage::ExecFanout,
-                detail: format!(
-                    "hybrid.lanes=independent; lexical_hits={lexical_hits}; semantic_hits={semantic_hits}; fused_universe={fused_universe}"
-                ),
-            },
-            PlannerTraceEntry {
-                stage: PlannerStage::Merge,
-                detail: format!("hybrid.fused_results={fused_hits}"),
-            },
-        ],
+        planner_trace,
         engines_touched,
         early_stop_reason,
         contributions: Vec::new(),

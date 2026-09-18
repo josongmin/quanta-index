@@ -24,15 +24,42 @@ use crate::query_dispatcher::tests::support::semantic::{
 };
 use crate::query_dispatcher::tests::support::structural::FailClosedStructuralProducer;
 
+/// The explanation of one hybrid execution with the given lane tally and
+/// no DSL filter.
+fn hybrid_explanation(
+    lexical_hits: usize,
+    semantic_hits: usize,
+    fused_universe: usize,
+    fused_hits: usize,
+) -> quanta_index_contract::SearchExplanation {
+    use crate::query_dispatcher::semantic_query::{
+        HybridFilterTraceV1, HybridLaneTallyV1, build_hybrid_response_explanation,
+    };
+    build_hybrid_response_explanation(
+        &HybridLaneTallyV1 {
+            lexical_hits,
+            semantic_hits,
+            fused_universe,
+            fused_hits,
+        },
+        100,
+        None,
+        &exact_dense_lane(),
+        &HybridFilterTraceV1 {
+            filters: "hybrid.filters=none".to_string(),
+            admission: vec!["hybrid.dense_admission=not_needed".to_string()],
+        },
+    )
+}
+
 // CASE-COVERS: hybrid explanation honesty over two independent lanes.
 #[test]
 fn build_hybrid_response_explanation_reports_honest_lane_contribution_v1() {
-    use crate::query_dispatcher::semantic_query::build_hybrid_response_explanation;
     use quanta_index_contract::EngineTouched;
-    // args: (lexical_hits, semantic_hits, fused_universe, fused, top_k, stop, dense lane)
+    // args: (lexical_hits, semantic_hits, fused_universe, fused)
     // Both lanes contributed -> genuine RRF over both engines, and the
     // trace says the lanes are independent (QI-BB-018).
-    let both = build_hybrid_response_explanation(2, 2, 3, 2, 100, None, &exact_dense_lane());
+    let both = hybrid_explanation(2, 2, 3, 2);
     assert_eq!(both.strategy, "rrf", "both-lane hybrid must stay rrf");
     assert_eq!(
         both.engines_touched,
@@ -46,10 +73,19 @@ fn build_hybrid_response_explanation_reports_honest_lane_contribution_v1() {
         both.planner_trace
     );
 
+    // The filter contract's trace entries ride along (QI-BB-018 보완 #3).
+    for detail in ["hybrid.filters=none", "hybrid.dense_admission=not_needed"] {
+        assert!(
+            both.planner_trace.iter().any(|e| e.detail == detail),
+            "hybrid trace must carry {detail}: {:?}",
+            both.planner_trace
+        );
+    }
+
     // Lexical found candidates but the dense lane matched none -> must
     // NOT claim a symmetric rrf fusion; it is lexical-only and the
     // Semantic engine is not touched.
-    let lex_only = build_hybrid_response_explanation(3, 0, 3, 3, 100, None, &exact_dense_lane());
+    let lex_only = hybrid_explanation(3, 0, 3, 3);
     assert_eq!(
         lex_only.strategy, "lexical_only",
         "semantic-empty hybrid must report lexical_only, not rrf"
@@ -61,7 +97,7 @@ fn build_hybrid_response_explanation_reports_honest_lane_contribution_v1() {
     );
 
     // No lane found anything: honest "empty", no engines claimed.
-    let empty = build_hybrid_response_explanation(0, 0, 0, 0, 100, None, &exact_dense_lane());
+    let empty = hybrid_explanation(0, 0, 0, 0);
     assert_eq!(empty.strategy, "empty", "no-hit hybrid must report empty");
     assert!(
         empty.engines_touched.is_empty(),
@@ -71,8 +107,7 @@ fn build_hybrid_response_explanation_reports_honest_lane_contribution_v1() {
 
     // Dense-only recall is a real outcome now: the lexical lane found
     // nothing but the dense lane did.
-    let semantic_only =
-        build_hybrid_response_explanation(0, 1, 1, 1, 100, None, &exact_dense_lane());
+    let semantic_only = hybrid_explanation(0, 1, 1, 1);
     assert_eq!(semantic_only.strategy, "semantic_only");
     assert_eq!(semantic_only.engines_touched, vec![EngineTouched::Semantic]);
 }

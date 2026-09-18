@@ -6,6 +6,7 @@ mod explain;
 mod history;
 mod history_relevance;
 mod hybrid;
+mod hybrid_filters;
 mod hybrid_seed;
 mod lexical;
 mod metrics;

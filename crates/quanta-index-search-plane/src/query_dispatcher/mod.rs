@@ -20,11 +20,15 @@
 //!   `rev_at_time`.
 //! - `semantic_query` — semantic / hybrid selection resolvers, seed fusion,
 //!   explanation builders. Depends on `selection`.
+//! - `dense_admission` — the dense lane under exact DSL filters: the
+//!   over-fetch / admit / refill loop the `hybrid` and `hybrid_seed` routes
+//!   share (QI-BB-018 보완 #3). Depends only on core.
 //! - support: `selection`, `window`, `keyset_page`, `ranking`, `rev_at_time`,
 //!   `text_plane`, `timeref`, `errors`, `metrics`. `rev_at_time` and
 //!   `text_plane` depend on `timeref` / `errors`; the rest depend only on
 //!   `errors`.
 
+mod dense_admission;
 mod dispatcher;
 mod errors;
 mod keyset_page;

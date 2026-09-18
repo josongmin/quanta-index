@@ -43,6 +43,7 @@
 
 mod analyzer;
 mod budgeted_search;
+mod dense_admission;
 pub mod filters;
 pub mod history_text_index;
 mod normalize;
@@ -10157,6 +10158,16 @@ impl LexicalSearcher for TantivySearcher {
                 ),
             },
         ))
+    }
+
+    fn admitted_candidates(
+        &self,
+        query: &LqQuery,
+        constraints: &QueryConstraintSetV1,
+        candidate_ids: &BTreeSet<String>,
+        budget: &RequestBudgetV1,
+    ) -> Result<BTreeSet<String>, CoreError> {
+        self.admitted_candidates_v1(query, constraints, candidate_ids, budget)
     }
 }
 

@@ -28,6 +28,10 @@ crate quanta_index_core
 │   │   ├── trait SealedGenerationScanPort: pub
 │   │   └── enum TreeCommitmentMismatchV1: pub
 │   ├── mod hybrid: pub
+│   │   ├── mod dense_admission: pub(self)
+│   │   │   ├── enum DenseAdmissionOutcomeV1: pub
+│   │   │   ├── enum DenseLaneFilterClassV1: pub
+│   │   │   └── struct HybridFilterPlanV1: pub
 │   │   ├── mod inbound: pub(self)
 │   │   │   ├── trait ExplainQueryPort: pub
 │   │   │   └── trait HybridQueryPort: pub
