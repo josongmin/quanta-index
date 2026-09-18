@@ -313,7 +313,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + **quarantine control surface(§3.31: live inventory + as-listed discard, control IPC/SDK/CLI)** + QI-BB-032 idempotency catalog(§3.16) + QI-BB-020 auxiliary authority rows(§3.19) 완료. + **aux read epoch(§3.37: epoch-named snapshot, cursor 연속은 시작 epoch에서, retention bounded)** 완료. 남은 것: 없음(W2 항목 전부 착지; runtime-metadata의 structural epoch wire 노출·epoch metric은 §3.37 한계) |
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + QI-BB-027 ANN sealed contract(§3.23) + **QI-BB-016 lexical writer envelope(§3.26)** 완료. + **QI-BB-027 보완 ANN append per delta seal(§3.35)** 완료. + **QI-BB-006 완결 sharded text-authority(§3.38)** 완료. + **QI-BB-021 완결 scope-streamed embed→append(§3.41)** 완료. 남은 것: 없음(W3 항목 전부 착지) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) + **QI-BB-025 보완 #4 runtime/structural window(§3.30)** + **keyset cursor + streaming collector(§3.39)** 완료. 남은 것: 없음(W4 항목 전부 착지; history selector의 collector 이관은 §3.39 한계 b) |
-| W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. QI-BB-014 UDS/state-root private hardening(§3.27) 완료. QI-BB-015 metrics 집계 + scrape(§3.28) 완료. **phase 2(§3.29): budget이 lexical native collect/scan/regex verify/predicate scope 안에서 관측** 완료. + **shared socket mode + peer credential(§3.40)** 완료. 남은 것: semantic lane 내부 budget 관측(진행 예정) |
+| W5 | in_progress | QI-BB-002 phase 1(§3.12) 완료: per-connection thread + bounded dispatch slot + typed overload + cooperative `RequestBudgetV1`(deadline/cancel) + peer watch. QI-BB-014 UDS/state-root private hardening(§3.27) 완료. QI-BB-015 metrics 집계 + scrape(§3.28) 완료. **phase 2(§3.29): budget이 lexical native collect/scan/regex verify/predicate scope 안에서 관측** 완료. + **shared socket mode + peer credential(§3.40)** 완료. + **phase 3 dense lane 내부 관측(§3.43)** 완료. 남은 것: 없음(W5 항목 전부 착지) |
 | W6 | in_progress | QI-BB-028 + QI-BB-031 embedding identity/vector invariant(§3.15) + QI-BB-009 embedding cache retention/telemetry bound(§3.18) + QI-BB-023 history recency order + keyset cursor(§3.20) + QI-BB-019 hybrid seed 단일 canonical 응답(§3.21) + QI-BB-018 true hybrid(§3.22) + QI-BB-022 explain = exact presence + lexical score trace(§3.24) + **QI-BB-008 RepoMap bounded query + durable store(§3.25)** 완료. + **hybrid per-lane contribution(§3.36)** + **history relevance order(§3.42)** 완료. 남은 것: QI-BB-007(M4: production profile 측정 후), judged corpus recall/NDCG gate(§3.22 한계, M4 의존) |
 | W7 | planned | |
 | C1 | planned | |
@@ -2149,6 +2149,42 @@ index를 만들지 않음 — epoch index 없이 복원된 generation은 다음 
 retention은 mutation 시(+generation forget)에 reconcile, boot에서는 아님. (g) metrics/trace line 없음(history 응답에 `SearchExplanation` 없음).
 **QI-BB-023 완결**(§3.20 recency+cursor, §3.37 epoch, §3.42 relevance).
 
+## 3.43 W5 phase 3 — request budget는 dense lane **안에서** 관측된다 (구현 완료)
+
+**진단 확정**: §3.29 뒤에도 semantic adapter는 route checkpoint(`semantic:entry`, `hybrid:semantic`)에서만 budget을 봤다 — 긴 ANN probe나 큰
+exact scan은 deadline/disconnect 뒤에도 끝까지 돌았다(§3.29 남은 항목 "semantic lane 내부 관측").
+
+**구현** (24 files, +1,792/−111):
+
+- core `SemanticSearcher`의 dense search 8 method가 `budget: &RequestBudgetV1`를 받음(breaking; default body가 전달), trait doc이 checkpoint를 이름.
+- `semantic/src/budget.rs`: `SEMANTIC_BUDGET_TICK_ROWS = 256`, `SEMANTIC_BUDGET_POLL_INTERVAL = 10ms`, `DenseLaneKindV1 { Approximate → "semantic:ann",
+  Exact → "semantic:exact" }`(`LoadedVectorIndexV1::lane_kind()`에서 선택), `DenseLaneTalliesV1`(lane별 queries/interruptions, scrape), `DenseLaneBudgetV1`
+  (모든 query path에 명시적으로 전달), `RowBudgetProbe`(row 1과 256행마다), `race_with_budget`(`tokio::select! biased;` watcher 우선: issue 전 거부·
+  in-flight drop), `watch_budget`(deadline까지 sleep, cancel flag 10ms poll), debug-only failpoint `hold_dense_lane_if_armed`(release는 no-op fn; crate의
+  기존 build.rs failpoint 관례). module doc이 lance의 drop 동작을 문서화(plan stream은 더 이상 poll되지 않음; lance global `spawn_blocking` CPU pool에
+  이미 올라간 kernel은 완료 후 폐기, slot/memory는 그동안 charged — plan §7.3) 및 refill/rerank 단계가 없음을 명시(prefilter 기본, refine은 plan 안).
+- `search.rs::run_vector_query`: query 구성 → `issue_and_read_back`(hold → count query → `execute()` → batch별 `try_next` + row마다 `probe.tick()`, `top_k`에서
+  early stop하며 stream drop)을 budget과 race; `PersistedSemanticSearcher`가 `Arc<DenseLaneTalliesV1>` 보유.
+- `SemanticAdapter: MetricSourcePort` → `semantic_dense_queries_{ann,exact}_total`, `semantic_budget_interruptions_{ann,exact}_total`; composition root가
+  adapter를 metric source로 등록. search-plane semantic/hybrid/hybrid_seed route 5곳이 request budget 전달; harness `boot_with_query_admission_policy`.
+
+**검증**(cancellation token / 이미 지난 deadline / parked lane — timing assertion 없음):
+
+| 기준 | 검증 |
+| --- | --- |
+| unit: cancelled budget → `REQUEST_CANCELLED … checkpoint \`semantic:ann\`` + 작업 미시작(flag oracle); self-cancelling pending future → drop, `semantic:exact`; 지난 deadline → `REQUEST_DEADLINE_EXCEEDED`; live budget은 작업의 Ok/Err 통과; row probe: 769행 live 통과, 취소 시 첫 행 거부, 첫 look 후 취소 시 정확히 `TICK_ROWS − 1`행 더 통과; scrape counter 4 | `budget::tests` 4 |
+| adapter(실 lancedb, exact 64 row + approximate 256 row 한 adapter): 두 lane에서 cancelled/expired 거부 + lane 이름, `semantic_dense_queries_<lane>_total == 0`(lance에 query 미전달) + interruptions 3; 같은 handle이 live 서빙(own row cosine 1 top-1, global·scoped/constrained); tally는 lane별로만 이동; parked lane + 다른 thread의 외부 취소 → `semantic:exact`, query 0, 이후 같은 handle 서빙 | `semantic/tests/cancellation_inside_search.rs` 2 (test-authority 등록) |
+| dispatcher: stub이 받은 budget을 취소하고 `stub:dense`로 답 → semantic/hybrid/hybrid-seed 각각 relay, dense search 1회, `lq_typed_error_interrupted_total` 1 | `tests/budget.rs::the_request_budget_reaches_the_dense_lane_on_every_dense_route` |
+| **e2e**: 2s dispatch budget, warm query(queries=1/interruptions=0), lane hold → wire `REQUEST_DEADLINE_EXCEEDED` + `checkpoint \`semantic:exact\``, scrape `semantic_budget_interruptions_exact_total == 1`, queries 불변, `lq_typed_error_interrupted_total` +1, ann counter 0; hold 해제 → 같은 daemon/generation에서 다음 query 서빙(own row top-1), queries +1 | `searchd-runtime/tests/e2e_semantic_budget_interruption.rs` (등록) |
+| 회귀·rail | core 95·search-plane 328·searchd 61·harness 77·semantic 125; **daemon e2e 전체 252/0/1**; `just rust-clippy` 0; fmt; hexagonal/module/error-shape/derive/digest/cargo-toml/no-allow/workspace-lints/ignored-policy/test-authority; semgrep 0; cargo-modules 불변. main rebase(24caa1f 위, 충돌 1) 후 baselines 불변 + unit 695 + e2e 8 target 88 + `just rust-doc` + `just rust-clippy` 0 |
+
+**정직한 한계·결정**: (a) lance 안에서 실제 실행 중인 query의 in-flight drop은 pending/self-cancelling future와 parked lane으로 증명; lance의 drop
+동작은 소스(`lance-core::utils::tokio::spawn_cpu`)에서 문서화했지 측정하지 않음. (b) peer disconnect → dense lane 취소의 daemon e2e는 없음(ipc
+`a_disconnected_peer_cancels_its_dispatch_budget` + adapter 외부-thread 취소가 chain을 두 절반으로 덮음). (c) tick/poll 상수는 문서화된 공학 판단.
+(d) stage는 phase별이 아니라 **lane별**(`semantic:ann`/`semantic:exact`) — Rust 쪽 refill/rerank loop가 없어 brief의 `semantic:refill`/`rerank`는 만들지
+않음. (e) `cluster_membership_batch_read`는 budget 없이(bounded read, route checkpoint만). (f) lexical `BudgetProbe`와 semantic `RowBudgetProbe`는 별개 —
+core로 probe 하나를 lift하는 후속. **W5 항목 전부 착지**(phase 1 §3.12, phase 2 §3.29, 014 §3.27/§3.40, 015 §3.28, phase 3 §3.43).
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -2214,4 +2250,5 @@ retention은 mutation 시(+generation forget)에 reconcile, boot에서는 아님
 | 2026-09-18 | worktree G (fc3ee5c→9c5feb8 rebase, 충돌 2 file) | agent: core/embed/searchd/search-plane/semantic 625 + daemon e2e 전체 604 + `just rust-clippy` 0 + fmt/hexagonal/module/error-shape/derive/digest/test-authority/cargo-toml/no-allow/workspace-lints/ignored-policy/cargo-modules + semgrep 0; rebase 후 check + baselines 불변 + unit 722 + e2e 65 | 전부 green (§3.41) |
 | 2026-09-18 | worktree J (36d9d53→bb52143 rebase, 충돌 9 file) | agent: 1,153 unit + history_text 10 + e2e 12 target 134 + `just rust-clippy` 0 + fmt + fuzz smoke + public-api/cargo-modules update + 정책 rail 전부 + semgrep 0; rebase 후 check + unit 975 + e2e 98 + module/hexagonal/semgrep/test-authority + `just rust-clippy` 0 | 전부 green (§3.42) |
 | 2026-09-18 | 3b785b4 | `just rust-profile verify-rust` (nohup) | RED at `rust-doc` — **2,336 tests passed / 0 failed**(E/H/I/G/J 통합), 이후 rustdoc: `readiness/ledger.rs` doc이 private `AuxSnapshots::retained_epochs`를 intra-doc link(§3.42) → link 제거(다음 commit); 이후 verify 전 `just rust-doc`을 먼저 돌림 |
+| 2026-09-18 | worktree M (bb52143→24caa1f rebase, 충돌 1) | agent: core/search-plane/searchd/harness/semantic 686 + daemon e2e 전체 252 + `just rust-clippy` 0 + fmt + 정책 rail + semgrep 0; rebase 후 baselines 불변 + unit 695 + e2e 88 + rust-doc + `just rust-clippy` 0 | 전부 green (§3.43) |
 | 2026-09-18 | worktree 011 (7a5ce5e→034c4fd rebase) | agent: workspace clippy(0) + lexical 15 target·lq-norm 88·search-plane 285 + e2e text_route_hellgate 8·perf_chaos 43·dsl_scenarios 8·lexical_full_fidelity 1·dual_syntax_parity 4·full_corpus 4 + harness 77 + hexagonal/semgrep/module/error-shape/cargo-toml/derive/test-authority/deny; rebase 후 lexical carryforward 6 + goldens 8 | 전부 green (§3.33) |
