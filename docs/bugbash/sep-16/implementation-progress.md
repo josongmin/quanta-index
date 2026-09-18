@@ -2402,6 +2402,42 @@ aux publish가 `NOT_READY`); `resident_bytes` main에서 fail; activation-outsid
 unit core/contract/lexical/semantic/search-plane/searchd **1,149/0**(64 binary), e2e 10 suite(composite_generation_authority_restart 9, boot_quarantine 3, activation_concurrency 1,
 lexical_sealed_overlays 2, metrics_scrape 2, physical_gc 6, read_view 3, snapshot_registry 5, end_to_end 35(+1 ignored), sdk_frontdoor 15) **81/0**.
 
+## 3.50 QI-BB-029/032 — 검증이 idempotency record보다 먼저, `batch_digest`는 body의 canonical digest, record는 pair와 함께 산다 (fix wave A5, 0917d82)
+
+§4 감사가 **WRONG**으로 판정한 것: (a) 거부될 batch가 validate 전에 idempotency row를 기록(`ingest_dispatcher/dispatcher.rs:102-135` b0485b5에서
+`idempotency.begin`이 apply/validate보다 먼저); (b) `batch_digest`가 caller가 고른 문자열이라 payload와 무관; (c) record forget이 "같은 pass에서 두 track
+모두 reclaim"일 때만(pin으로 갈린 pair, unseal row는 영구 누수); (d) sealed-but-corrupt half pair가 `CONFLICT` 고정; (e) IPC/SDK fault test 0건.
+
+**티켓 완료 기준 대조(코드 기준)**
+
+| 티켓 bullet | 판정 | 근거 |
+| --- | --- | --- |
+| QI-BB-029 완료 기준 #1 invalid mode/base, 빈 digest, absent/unsealed/mismatched base → lexical·semantic·authority byte 0 변경 | **MET** | `SearchCorpusIngestPort::preflight_batch`(core `lexical/outbound.rs`; impl `search_corpus.rs`: shape + surface authority + resource envelope 1회 집계 + delta-base cross-track)가 `publish_idempotent`에서 **`begin` 전**에 실행(digest → preflight → intent → apply → finalize). tests `malformed_or_baseless_batches_change_zero_bytes`, `a_refused_search_corpus_batch_leaves_no_record`(catalog row 0, builder/authority/embedder 무접촉; audited hunk 복원 시 fail), e2e `e2e_ingest_preflight::every_preflight_refusal_over_raw_ipc_changes_nothing`(raw IPC 7종: replace+base, delta-no-base, base>=target, unsealed base, empty/opaque/forged digest — oracle: `catalog-v1.sqlite` row 수 직접 조회 + state-root 파일/길이 snapshot) |
+| #2 lexical seal 직후~authority commit 각 failpoint 재시도 수렴 | **plan 수준 MET**, adapter 내부 failpoint **BLOCKED** | `sealed_exact_retry_repairs_authority_without_rebuilding_tracks`, `exact_lexical_missing_semantic_retry_builds_only_missing_track`, `incomplete_lexical_exact_semantic_retry_discards_and_rebuilds_only_lexical`, `jointly_incomplete_tracks_keep_staged_data_for_normal_seal`, `a_resumed_sealed_batch_finalizes_without_re_embedding`(0 embed, 0 build) |
+| #3 half-sealed fixture가 수동 삭제 없이 typed repair/안전 rebuild | **ingest 측 MET**, boot-inventory `HalfSealedPair` 보고 **wave B(B3)** | `generation_plan.rs` 검증 refusal을 `Corrupt { code }`로 분류; `ReplaceGeneration` seal batch는 registry fence(`retire`) 후 손상 track만 verified identity로 reclaim·rebuild(`repair_corrupt_v1`), delta/non-seal은 `SEARCH_CORPUS_GENERATION_REPAIR_REQUIRED`(복구 방법 명시). tests `a_sealed_but_corrupt_track_is_rebuilt_by_a_replace_seal_and_refused_for_a_delta`, `a_delta_over_a_corrupt_base_is_refused_with_the_repair` |
+| #4 cross-track preflight + fault matrix, raw IPC와 SDK | **MET** | `e2e_ingest_preflight.rs`(raw 7 + SDK: unsealed base, resource envelope, receipt의 canonical digest, SDK replay). SDK typestate는 mode/base/digest fault를 표현 불가(구성상) — test header에 명시 |
+| 보완 #1 `validate_v1()` 공통 pre-mutation 검사 | **MET** | contract `ipc/ingest.rs` `BatchDigestNotCanonical`, fuzz target `search_corpus_ingest_decode.rs`에 `validate_v1` 추가 |
+| QI-BB-032 완료 기준 #1 disconnect/crash/timeout → materialize/embed/persist 1회 | **MET**(unsealed apply→finalize crash 창의 재embed 1회는 **BLOCKED**: track format 변경 필요) | `e2e_ingest_idempotency::a_replay_is_acked_from_the_record_and_a_forged_digest_never_lands`, `a_replay_after_restart_is_still_a_replay`, `a_resumed_sealed_batch_finalizes_without_re_embedding` |
+| #2 같은 digest, payload 1 byte 변경 → mutation 전 typed conflict | **MET** | dispatcher가 digest 재계산 후 `BATCH_DIGEST_MISMATCH`(preflight·record 전). tests `a_replay_is_answered_from_the_record_and_a_forged_digest_is_refused`, `a_well_formed_but_wrong_digest_is_a_mismatch`, e2e 1-byte text 변경(row 수 불변) |
+| #3 receipt field 의미 route 공통, producer가 replay 식별 | **MET** | 모든 receipt의 `batch_digest`가 body canonical digest; SDK 7 route test가 `receipt.batch_digest == batch.batch_digest()?` |
+| #4 1/8/32 동시 중복 → 1 apply, 같은 durable receipt | **MET** | `eight_…`/`thirty_two_concurrent_duplicate_publishes_converge_on_one_apply`(applied 정확히 1, sequence 1개, catalog row 1, serve row 1; `SERVER_OVERLOADED`는 admission 계약대로 backoff 재시도 = 같은 key의 replay) |
+| 보완 #1 서버가 canonical body 해시와 caller digest 비교, format/domain/version 고정 | **MET** | contract `batch_body.rs`(`quanta-index:ingest-batch-digest:v1`, route code 구분자, 64 lowercase hex), ipc `batch_digest.rs`(`canonical_batch_digest_v1`/`stamp_…`/`verify_…`), core `IngestBatchBodyV1`(11 DTO). SDK·harness는 모든 batch에 stamp, caller digest 인자 삭제 |
+| 보완 #5 record retention을 generation GC/pin에 결속 | **MET** | reclaim pass마다 catalog가 아는 pair의 generation(sealing보다 오래된 것)을 두 track sealed listing과 대조, whole sealed pair가 아니면 멱등 forget(`forget_broken_pair_records_v1`, `IdempotencyCatalogPort::generations_for_pair`); pin으로 defer된 track은 reclaim되는 pass까지 record 유지. tests `reclaim_sweeps_orphans_and_defers_pinned_generations`(same-pass 조건 복원 시 fail), `a_retained_half_pair_loses_its_records`, catalog `the_pair_listing_and_forget_cover_every_route_and_forget_is_idempotent` |
+
+**계약 변경(producer 영향)**: SDK batch 생성자에서 `batch_digest` 인자 삭제, `batch_digest()`는 `Result<String, SdkError>`로 계산; contract에 digest domain 상수·
+`IngestOperationKindV1`(core에서 이동) 추가(public-api baseline 갱신). raw IPC producer는 `stamp_batch_digest_v1`로 찍어야 한다.
+
+**Coordinator 수정**: A5 마지막 WIP(동시 publisher backoff)가 **컴파일되지 않은 채** 남아 있었다(`Box<dyn Error>`를 thread 경계로 넘김) — `Send + Sync`로
+수정 + clippy 3건. rebase 충돌 6 file 해소(A2가 삭제한 `publish_generation_scoped` wrapper를 A5의 새 `publish_idempotent(&mut batch, preflight, apply)` 형태에서
+벗김). A2/A3가 A5 base 이후 추가한 raw-IPC e2e 2건(sealed generation 거부)이 digest gate에 먼저 막히지 않도록 canonical digest를 찍게 수정. **A2 착지 때
+누락된 core cargo-modules baseline(A2 타입 3개)도 이 commit에서 재생성으로 바로잡음**(착지 gate에 cargo-modules/public-api 검사를 추가).
+
+**검증(coordinator, main 3b06405 위 rebase, 순차)**: fmt, check, 정책 lint 8종, workspace clippy keep-going 0, cargo-modules + public-api baseline 일치, `just rust-doc`,
+unit 11 crate **1,404/0**(82 binary), searchd-runtime e2e **전체** **272 passed / 2 failed** — 두 실패는 A5와 무관한
+**main 회귀**(A6·A2 착지 때 coordinator가 runtime e2e 전체가 아니라 일부 suite만 돌려 놓침): `e2e_top_k_truth_table`(A6 이후 history keyword는 토큰 매칭 —
+`needle` ≠ `alpha_content_needle`)과 `semantic_boot_report`(A2 이후 authority 기록 없는 generation은 seed가 아니라 orphan). 둘 다 새 계약이 맞으므로 테스트를
+새 계약으로 고친 별도 commit `fa8fd4c`로 해소, 두 suite 7/7 + runtime crate clippy 0. **이후 모든 착지는 runtime e2e 전체를 돈다.**
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -2442,10 +2478,10 @@ lexical_sealed_overlays 2, metrics_scrape 2, physical_gc 6, read_view 3, snapsho
 | QI-BB-026 | P1 | §3.13/§3.31 | gaps | content-손상 비활성 generation이 quarantine receipt/list에 없고 rollback 대상에서 제외 안 됨; semantic active 손상 boot e2e 없음 | A2(orphan), wave B |
 | QI-BB-027 | P2 | §3.23/§3.35 | gaps(**WRONG**) | legacy ≤v7/v8 generation은 ANN 누락을 silent exact fallback으로 서비스; append segment ef_construction≠manifest; recall artifact에 HEAD 없음 | A4, A8 |
 | QI-BB-028 | P1 | §3.15 | gaps | semantic row-root attestation(완료 기준 #5) 미구현 | A4 |
-| QI-BB-029 | P1 | §3.11 | gaps(**WRONG**) | 거부될 batch가 validate 전에 idempotency row 기록; sealed-but-corrupt half pair는 CONFLICT 고정; IPC/SDK preflight test 0건 | A5 |
+| QI-BB-029 | P1 | §3.11/§3.50 | gaps(**WRONG**) → **MET(A5, 0917d82)** 단 adapter 내부 crash failpoint **BLOCKED**, boot `HalfSealedPair` 보고는 B3 | validate→intent 순서, raw IPC 7 + SDK fault matrix(SQLite·state-root oracle), corrupt half pair typed repair(§3.50) | B3 |
 | QI-BB-030 | P1 | §3.10/§3.48/§3.49 | **closed(A3 f0cf9c9 + A2 87d4450)** | manifest v4가 overlay·segment·text-authority 전부 commit, sealed generation 불변, 문 세 개(validator/open/proven open) 한 walk; activation 후 재open 없음(§3.49) | — |
 | QI-BB-031 | P2 | §3.15 | gaps | adapter 경계 validator가 norm 무관(상류 의존); 혼합 batch 값 동일성·artifact 미증명 | A4 |
-| QI-BB-032 | P2 | §3.16 | gaps(**WRONG**) | idempotency forget이 same-pass 양 track 조건(deferred split·미seal row 누수); `batch_digest`↔payload 미결속; crash-resume 재적용 | A5 |
+| QI-BB-032 | P2 | §3.16/§3.50 | gaps(**WRONG**) → **MET(A5)** 단 unsealed apply→finalize crash 창 재embed **BLOCKED**(track format) | canonical body digest + `BATCH_DIGEST_MISMATCH`, pair-bound record forget(pin 분리·never-sealed 포함), 1/8/32 동시 중복 1 apply(§3.50) | — |
 
 **§3.x 과장 정정(감사가 지적, 이 table이 우선)**: §3.7 "typed 실패 공유"(coalesced는 `ERR_INTERNAL`), §3.9 "어떤 query도 pin 못 함"·"receipt에 싣는다",
 §3.10 "두 문이 같은 파일 집합", §3.11 "bytes 0개 변경"(catalog 제외), §3.13 "(1) quarantine receipt ✓"(identity 결함만), §3.16 "GC가 forget"(same-pass 한정),
