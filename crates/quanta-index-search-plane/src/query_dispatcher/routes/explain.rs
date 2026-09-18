@@ -9,11 +9,11 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, ExplainQueryPort, HybridOrchestratorPolicy, LexicalCandidateExplanationV1,
-    LexicalPolicy, LexicalScoreEngineV1, LexicalScoreTraceV1, RequestBudgetV1,
-    validate_query_top_k,
+    LexicalScoreEngineV1, LexicalScoreTraceV1, QueryRouteV1, RequestBudgetV1, validate_query_top_k,
 };
 
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
+use crate::query_dispatcher::read_view::{ReadViewRequestV1, attach_read_view_trace};
 
 impl SearchPlaneDispatcher {
     /// Explain one candidate (QI-BB-022): an exact presence lookup, and when
@@ -41,10 +41,6 @@ impl SearchPlaneDispatcher {
                 "explain: candidate (repo, revision) does not match pin".to_string(),
             ));
         }
-        let materialized = self.snapshot_lex_materialized(&pin.repo_id, &pin.revision_id)?;
-        LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, materialized)?;
-        let searcher =
-            self.acquire_lexical(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let candidate_id = row.candidate_id.as_str();
         let Some(text_query) = request.text_query else {
             let ExplainCandidateV1::Lexical(_) = &request.candidate else {
@@ -53,12 +49,22 @@ impl SearchPlaneDispatcher {
                         .to_string(),
                 ));
             };
+            // A presence lookup has no plan: the view is the lexical track
+            // alone.
+            let view = self.acquire_read_view(&ReadViewRequestV1::declare(
+                "explain",
+                QueryRouteV1::Explain,
+                None,
+                &pin,
+            ))?;
             budget.checkpoint("explain:presence")?;
-            let presence = searcher.candidate_presence(candidate_id)?;
+            let presence = view.lexical()?.candidate_presence(candidate_id)?;
+            let mut explanation = build_presence_explanation(candidate_id, presence);
+            attach_read_view_trace(&mut explanation, view.identity());
             return Ok(SearchPlaneExplainQueryResponse {
                 generation: pin,
                 presence,
-                explanation: build_presence_explanation(candidate_id, presence),
+                explanation,
             });
         };
         // The query names its generation at most once, and it is this one.
@@ -86,7 +92,7 @@ impl SearchPlaneDispatcher {
             ..text_query
         };
         budget.checkpoint("explain:plan")?;
-        let planned = self.plan_lexical_text_query(&pinned_query)?;
+        let planned = self.plan_lexical_text_query(&pinned_query, QueryRouteV1::Explain)?;
         if planned.pin != pin {
             return Err(CoreError::InvalidContract(format!(
                 "explain: the query rebinds to generation {} but the candidate is at {}",
@@ -94,6 +100,9 @@ impl SearchPlaneDispatcher {
                 pin.manifest_generation.get()
             )));
         }
+        let view =
+            self.acquire_read_view(&ReadViewRequestV1::new("explain", &pin, planned.domains))?;
+        let searcher = view.lexical()?;
         budget.checkpoint("explain:score")?;
         let explained = if planned.force_empty {
             match searcher.candidate_presence(candidate_id)? {
@@ -115,7 +124,7 @@ impl SearchPlaneDispatcher {
             LexicalCandidateExplanationV1::NotMatched { .. }
             | LexicalCandidateExplanationV1::Matched(_) => CandidatePresenceV1::Indexed,
         };
-        let explanation = match &request.candidate {
+        let mut explanation = match &request.candidate {
             ExplainCandidateV1::Lexical(candidate) => {
                 build_lexical_score_explanation(candidate, &planned.query.options, &explained)?
             }
@@ -123,6 +132,7 @@ impl SearchPlaneDispatcher {
                 build_hybrid_score_explanation(candidate, &planned.query.options, &explained)?
             }
         };
+        attach_read_view_trace(&mut explanation, view.identity());
         Ok(SearchPlaneExplainQueryResponse {
             generation: pin,
             presence,

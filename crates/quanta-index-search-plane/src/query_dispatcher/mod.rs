@@ -7,13 +7,16 @@
 //!   request budget, per-route metric emission. Depends on `routes`,
 //!   `metrics`, `errors`.
 //! - `routes/*` — one file per query route (`impl SearchPlaneDispatcher`
-//!   blocks). Depend on the support modules below and on `readiness_gate`
-//!   / `snapshots` / `planning`; never on each other except
-//!   `hybrid`/`hybrid_seed` -> `semantic` (shared embed gate) and
-//!   `structural/route` -> its own sub-modules.
-//! - `snapshots` — resident opened-generation acquisition via the registries.
-//! - `readiness_gate` — ledger snapshot reads shared by routes.
-//! - `planning` — the one executable lexical plan; depends on `selection`,
+//!   blocks). Depend on the support modules below and on `read_view` /
+//!   `planning`; never on each other except `hybrid`/`hybrid_seed` ->
+//!   `semantic` (shared embed gate) and `structural/route` -> its own
+//!   sub-modules.
+//! - `read_view` — the one `QueryReadViewV1` a request executes against:
+//!   the declared domains acquired once, every ledger read under one
+//!   guard, the track handles through its private `snapshots` child.
+//!   Routes never reach the ledger or the registries except through it.
+//! - `planning` — the one executable lexical plan; depends on
+//!   `read_view` (the `rev:at.time(...)` selection view), `selection`,
 //!   `rev_at_time`.
 //! - `semantic_query` — semantic / hybrid selection resolvers, seed fusion,
 //!   explanation builders. Depends on `selection`.
@@ -28,12 +31,11 @@ mod keyset_page;
 mod metrics;
 mod planning;
 mod ranking;
-mod readiness_gate;
+mod read_view;
 mod rev_at_time;
 mod routes;
 mod selection;
 mod semantic_query;
-mod snapshots;
 mod text_plane;
 mod timeref;
 mod window;

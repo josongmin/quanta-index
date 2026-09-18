@@ -10,14 +10,14 @@ use quanta_index_contract::{
     RuntimeMetadataQueryRequest, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
     TextQueryRequest, TextQuerySyntax,
 };
-use quanta_index_core::{CoreError, RequestBudgetV1};
+use quanta_index_core::{CoreError, RUNTIME_NOT_READY_CODE, RequestBudgetV1};
 
 use crate::Ledger;
 use crate::observability::BoundedQueryObsStore;
 use crate::query_dispatcher::errors::ERR_NOT_IMPLEMENTED;
 use crate::query_dispatcher::routes::runtime_metadata::{
     RuntimeMetadataPage, RuntimeMetadataRead, execute_runtime_metadata_query,
-    resolve_runtime_metadata_read, runtime_generation_is_stale, validate_runtime_metadata_query,
+    runtime_generation_is_stale, validate_runtime_metadata_query,
 };
 use crate::query_dispatcher::tests::support::common::{
     TestResult, dispatcher_with_obs, ipc_error_from, manual_query, ready_ledger, ready_pin,
@@ -53,8 +53,8 @@ fn runtime_metadata_dispatch_not_ready_emits_closed_obs_metric() -> TestResult {
         &RequestBudgetV1::unbounded(),
     );
     let (code, _message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-    if code != "NOT_READY" {
-        return Err(format!("expected NOT_READY, got {code}").into());
+    if code != RUNTIME_NOT_READY_CODE {
+        return Err(format!("expected {RUNTIME_NOT_READY_CODE}, got {code}").into());
     }
     let names = obs_sink
         .snapshot()
@@ -195,18 +195,44 @@ fn runtime_generation_is_stale_requires_producer_head_ahead() -> TestResult {
     Ok(())
 }
 
+/// The two snapshots the route's read view pins for the fixture
+/// generation, read straight from the ledger under one guard: the
+/// current epochs, or the two a `cursor` names.
+fn read_at(
+    ledger: &Arc<RwLock<Ledger>>,
+    cursor: Option<&RuntimeMetadataCursorV1>,
+) -> Result<RuntimeMetadataRead, CoreError> {
+    let guard = ledger.read().map_err(|_poisoned| {
+        CoreError::Storage("runtime metadata test ledger poisoned".to_string())
+    })?;
+    let pin = ready_pin();
+    let now = Instant::now();
+    let runtime = guard
+        .runtime_read_at(
+            &pin.repo_id,
+            &pin.revision_id,
+            pin.manifest_generation,
+            cursor.map(|cursor| cursor.aux_epoch),
+            now,
+        )?
+        .ok_or_else(|| CoreError::Storage("runtime state missing".to_string()))?;
+    let universe = guard
+        .structural_read_at(
+            &pin.repo_id,
+            &pin.revision_id,
+            pin.manifest_generation,
+            cursor.map(|cursor| cursor.universe_epoch),
+            now,
+        )?
+        .ok_or_else(|| CoreError::Storage("structural state missing".to_string()))?;
+    drop(guard);
+    Ok(RuntimeMetadataRead { runtime, universe })
+}
+
 /// The read of the fixture generation: both snapshots, the current
 /// epochs, taken under one guard.
 fn read_current(ledger: &Arc<RwLock<Ledger>>) -> Result<RuntimeMetadataRead, Box<dyn Error>> {
-    let guard = ledger
-        .read()
-        .map_err(|err| format!("runtime metadata test ledger poisoned: {err}"))?;
-    Ok(resolve_runtime_metadata_read(
-        &guard,
-        &ready_pin(),
-        None,
-        Instant::now(),
-    )?)
+    Ok(read_at(ledger, None)?)
 }
 
 /// The read a continuation makes: the two epochs `cursor` names.
@@ -214,10 +240,7 @@ fn read_at_cursor(
     ledger: &Arc<RwLock<Ledger>>,
     cursor: &RuntimeMetadataCursorV1,
 ) -> Result<RuntimeMetadataRead, CoreError> {
-    let guard = ledger.read().map_err(|_poisoned| {
-        CoreError::Storage("runtime metadata test ledger poisoned".to_string())
-    })?;
-    resolve_runtime_metadata_read(&guard, &ready_pin(), Some(cursor), Instant::now())
+    read_at(ledger, Some(cursor))
 }
 
 fn lowered(query_text: &str) -> Result<LqQuery, CoreError> {

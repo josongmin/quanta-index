@@ -7,23 +7,40 @@ use quanta_index_contract::{
     GenerationPin, LqFilter, LqQuery, QueryConstraintIntersectionV1, QueryConstraintSetV1,
     SearchPlaneTrackKind, TextQueryRequest,
 };
-use quanta_index_core::{CoreError, LexicalPolicy};
+use quanta_index_core::{
+    CoreError, LexicalPolicy, QueryRouteV1, ReadDomainV1, RequiredDomainsV1,
+    declare_required_domains_v1,
+};
 
 use crate::lower_lexical_text_query;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
-use crate::query_dispatcher::rev_at_time::prepare_lexical_text_query_for_execution;
+use crate::query_dispatcher::read_view::ReadViewRequestV1;
+use crate::query_dispatcher::rev_at_time::{
+    PreparedLexicalTextQuery, rebind_lexical_query_at_time, rev_at_time_selection,
+};
 use crate::query_dispatcher::selection::resolve_lexical_request_pin;
 
 impl SearchPlaneDispatcher {
     /// Lower a text request into the one executable lexical plan: lowered
-    /// query, composed constraints and the generation it runs against.
+    /// query, composed constraints, the generation it runs against and the
+    /// domains it declares.
     ///
     /// The ranked search and the per-candidate explanation (QI-BB-022) both
     /// plan here, so an explanation scores a candidate through exactly the
-    /// plan that ranked it.
+    /// plan that ranked it. `route` names which of the two is planning: the
+    /// declaration is a function of it.
+    ///
+    /// A `rev:at.time(...)` selector is resolved here, before the execution
+    /// view is acquired: it is a generation *selection* (plan §5.6, the
+    /// resolution order explicit -> pin -> active), walked through a view
+    /// that pins only the history authority of the requested generation and
+    /// rebinds the plan to the selected commit's active generation. The
+    /// executed plan carries no `rev:` filter, so the execution view it
+    /// declares does not require history.
     pub(super) fn plan_lexical_text_query(
         &self,
         request: &TextQueryRequest,
+        route: QueryRouteV1,
     ) -> Result<PlannedLexicalTextQuery, CoreError> {
         let lowered = lower_lexical_text_query(request)?;
         let prepared_language = prepare_language_query_v1(lowered, &request.constraints)?;
@@ -33,21 +50,40 @@ impl SearchPlaneDispatcher {
             SearchPlaneTrackKind::Lexical,
             "lexical",
         )?;
-        let prepared = prepare_lexical_text_query_for_execution(
-            self.activation_catalog.as_ref(),
-            self.ledger.as_ref(),
-            &base_pin,
-            prepared_language.query,
-        )?;
-        LexicalPolicy::validate_query_with_constraints(
-            &prepared.query,
-            &prepared_language.constraints,
-        )?;
+        let PreparedLanguageQueryV1 {
+            query,
+            constraints,
+            force_empty: language_force_empty,
+        } = prepared_language;
+        let prepared = match rev_at_time_selection(&query)? {
+            Some(selection) => {
+                let selection_view = self.acquire_read_view(&ReadViewRequestV1::selection(
+                    "lexical",
+                    ReadDomainV1::History,
+                    &base_pin,
+                ))?;
+                rebind_lexical_query_at_time(
+                    self.activation_catalog.as_ref(),
+                    &selection_view.history()?.state,
+                    &base_pin,
+                    query,
+                    &selection,
+                )?
+            }
+            None => PreparedLexicalTextQuery {
+                pin: base_pin,
+                query,
+                force_empty: false,
+            },
+        };
+        LexicalPolicy::validate_query_with_constraints(&prepared.query, &constraints)?;
+        let domains = declare_required_domains_v1(route, Some(&prepared.query));
         Ok(PlannedLexicalTextQuery {
             pin: prepared.pin,
             query: prepared.query,
-            constraints: prepared_language.constraints,
-            force_empty: prepared.force_empty || prepared_language.force_empty,
+            constraints,
+            force_empty: prepared.force_empty || language_force_empty,
+            domains,
         })
     }
 }
@@ -120,4 +156,6 @@ pub(super) struct PlannedLexicalTextQuery {
     pub(super) query: LqQuery,
     pub(super) constraints: QueryConstraintSetV1,
     pub(super) force_empty: bool,
+    /// The domains the plan reads, declared from the executed query.
+    pub(super) domains: RequiredDomainsV1,
 }

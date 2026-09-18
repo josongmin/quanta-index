@@ -32,7 +32,7 @@ use std::time::Instant;
 use quanta_index_contract::AuxEpochV1;
 use quanta_index_core::{
     AUX_EPOCH_EXPIRED_CODE, AUX_EPOCH_RETAIN, AUX_EPOCH_RETAIN_FOR, AUX_EPOCH_UNKNOWN_CODE,
-    AuxiliaryDomainV1, CoreError,
+    AuxiliaryDomainV1, AuxiliaryGenerationKeyV1, CoreError,
 };
 
 /// Why a read at a named epoch was refused.
@@ -105,11 +105,17 @@ struct SupersededSnapshot<S> {
     state: Arc<S>,
 }
 
-/// What a reader got: the snapshot, the epoch it is, and how many
-/// superseded epochs were still retained beside the current one at the
-/// time of the read.
+/// What a reader got: the snapshot, which generation and domain it is a
+/// snapshot of, the epoch it is, and how many superseded epochs were
+/// still retained beside the current one at the time of the read.
+///
+/// The generation is stamped by the registry that served the read, so a
+/// read view can prove every snapshot it holds belongs to its pin rather
+/// than trust the order its parts were fetched in.
 #[derive(Clone, Debug)]
 pub struct AuxRead<S> {
+    pub domain: AuxiliaryDomainV1,
+    pub generation: AuxiliaryGenerationKeyV1,
     pub epoch: AuxEpochV1,
     pub retained: usize,
     pub state: Arc<S>,
@@ -120,6 +126,7 @@ pub struct AuxRead<S> {
 #[derive(Debug)]
 pub(crate) struct AuxSnapshots<S> {
     domain: AuxiliaryDomainV1,
+    generation: AuxiliaryGenerationKeyV1,
     current_epoch: AuxEpochV1,
     current: Arc<S>,
     superseded: VecDeque<SupersededSnapshot<S>>,
@@ -129,13 +136,16 @@ impl<S> AuxSnapshots<S>
 where
     S: Clone + Default,
 {
-    /// A registry whose current snapshot is the default state at
-    /// [`AuxEpochV1::GENESIS`]: the shape of a generation restored from
-    /// rows before its epoch row (if any) is restored, or of one created
-    /// in memory.
-    pub(crate) fn genesis(domain: AuxiliaryDomainV1) -> Self {
+    /// A registry of `generation`'s `domain` authority at
+    /// [`AuxEpochV1::GENESIS`].
+    ///
+    /// Its current snapshot is the default state: the shape of a
+    /// generation restored from rows before its epoch row (if any) is
+    /// restored, or of one created in memory.
+    pub(crate) fn genesis(domain: AuxiliaryDomainV1, generation: AuxiliaryGenerationKeyV1) -> Self {
         Self {
             domain,
+            generation,
             current_epoch: AuxEpochV1::GENESIS,
             current: Arc::new(S::default()),
             superseded: VecDeque::with_capacity(AUX_EPOCH_RETAIN),
@@ -180,6 +190,8 @@ where
     /// The current snapshot as a read.
     pub(crate) fn read_current(&self) -> AuxRead<S> {
         AuxRead {
+            domain: self.domain,
+            generation: self.generation.clone(),
             epoch: self.current_epoch,
             retained: self.retained(),
             state: Arc::clone(&self.current),
@@ -219,6 +231,8 @@ where
             return Err(expired());
         }
         Ok(AuxRead {
+            domain: self.domain,
+            generation: self.generation.clone(),
             epoch: snapshot.epoch,
             retained: self.retained(),
             state: Arc::clone(&snapshot.state),
@@ -293,12 +307,23 @@ where
 mod tests {
     use std::time::{Duration, Instant};
 
-    use quanta_index_contract::AuxEpochV1;
-    use quanta_index_core::{AUX_EPOCH_RETAIN, AUX_EPOCH_RETAIN_FOR, AuxiliaryDomainV1, CoreError};
+    use quanta_index_contract::{AuxEpochV1, ManifestGeneration, RepoId, RevisionId};
+    use quanta_index_core::{
+        AUX_EPOCH_RETAIN, AUX_EPOCH_RETAIN_FOR, AuxiliaryDomainV1, AuxiliaryGenerationKeyV1,
+        CoreError,
+    };
 
     use super::{AuxEpochRefusedError, AuxSnapshots};
 
     type TestRes = Result<(), Box<dyn std::error::Error>>;
+
+    fn generation() -> AuxiliaryGenerationKeyV1 {
+        AuxiliaryGenerationKeyV1 {
+            repo_id: RepoId::new("repo"),
+            revision_id: RevisionId::new("rev"),
+            generation: ManifestGeneration::new(1),
+        }
+    }
 
     /// A state whose content is the list of mutations applied to it.
     #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -316,7 +341,7 @@ mod tests {
     #[test]
     fn a_retained_epoch_reads_as_the_content_it_had() -> TestRes {
         let now = Instant::now();
-        let mut ring = AuxSnapshots::<Journal>::genesis(AuxiliaryDomainV1::History);
+        let mut ring = AuxSnapshots::<Journal>::genesis(AuxiliaryDomainV1::History, generation());
         advance(&mut ring, 1, now)?;
         advance(&mut ring, 2, now)?;
         advance(&mut ring, 3, now)?;
@@ -341,7 +366,7 @@ mod tests {
     #[test]
     fn the_registry_never_retains_more_than_the_bound() -> TestRes {
         let now = Instant::now();
-        let mut ring = AuxSnapshots::<Journal>::genesis(AuxiliaryDomainV1::Runtime);
+        let mut ring = AuxSnapshots::<Journal>::genesis(AuxiliaryDomainV1::Runtime, generation());
         for value in 1..=u64::try_from(AUX_EPOCH_RETAIN)?.saturating_mul(4) {
             advance(&mut ring, value, now)?;
             if ring.retained() > AUX_EPOCH_RETAIN {
@@ -365,7 +390,7 @@ mod tests {
     #[test]
     fn an_epoch_pruned_by_count_is_expired_and_never_served_from_another() -> TestRes {
         let now = Instant::now();
-        let mut ring = AuxSnapshots::<Journal>::genesis(AuxiliaryDomainV1::History);
+        let mut ring = AuxSnapshots::<Journal>::genesis(AuxiliaryDomainV1::History, generation());
         advance(&mut ring, 1, now)?;
         let pinned = ring.read_current().epoch;
         for value in 2..=u64::try_from(AUX_EPOCH_RETAIN)?.saturating_add(1) {
@@ -386,7 +411,8 @@ mod tests {
     #[test]
     fn an_epoch_superseded_longer_than_the_wall_clock_bound_is_expired() -> TestRes {
         let start = Instant::now();
-        let mut ring = AuxSnapshots::<Journal>::genesis(AuxiliaryDomainV1::Structural);
+        let mut ring =
+            AuxSnapshots::<Journal>::genesis(AuxiliaryDomainV1::Structural, generation());
         advance(&mut ring, 1, start)?;
         let pinned = ring.read_current().epoch;
         advance(&mut ring, 2, start)?;
@@ -424,7 +450,7 @@ mod tests {
     #[test]
     fn an_epoch_newer_than_the_current_is_unknown() -> TestRes {
         let now = Instant::now();
-        let mut ring = AuxSnapshots::<Journal>::genesis(AuxiliaryDomainV1::History);
+        let mut ring = AuxSnapshots::<Journal>::genesis(AuxiliaryDomainV1::History, generation());
         advance(&mut ring, 1, now)?;
         match ring.read_at(AuxEpochV1::new(2), now) {
             Err(AuxEpochRefusedError::Unknown { .. }) => Ok(()),
@@ -435,7 +461,7 @@ mod tests {
     #[test]
     fn a_failed_mutation_changes_nothing() -> TestRes {
         let now = Instant::now();
-        let mut ring = AuxSnapshots::<Journal>::genesis(AuxiliaryDomainV1::History);
+        let mut ring = AuxSnapshots::<Journal>::genesis(AuxiliaryDomainV1::History, generation());
         advance(&mut ring, 1, now)?;
         let epoch = ring.next_epoch()?;
         let refused = ring.advance(epoch, now, |state| {
@@ -459,7 +485,7 @@ mod tests {
     #[test]
     fn a_mutation_stamped_with_the_wrong_epoch_is_refused() -> TestRes {
         let now = Instant::now();
-        let mut ring = AuxSnapshots::<Journal>::genesis(AuxiliaryDomainV1::History);
+        let mut ring = AuxSnapshots::<Journal>::genesis(AuxiliaryDomainV1::History, generation());
         advance(&mut ring, 1, now)?;
         let drift = ring.advance(AuxEpochV1::new(5), now, |_state| Ok(()));
         match drift {
@@ -471,7 +497,7 @@ mod tests {
     #[test]
     fn restore_fills_the_current_snapshot_without_advancing() -> TestRes {
         let now = Instant::now();
-        let mut ring = AuxSnapshots::<Journal>::genesis(AuxiliaryDomainV1::Runtime);
+        let mut ring = AuxSnapshots::<Journal>::genesis(AuxiliaryDomainV1::Runtime, generation());
         ring.restore_state_mut().0.push(7);
         ring.restore_epoch(AuxEpochV1::new(41));
         if ring.retained() != 0 || ring.read_current().epoch != AuxEpochV1::new(41) {

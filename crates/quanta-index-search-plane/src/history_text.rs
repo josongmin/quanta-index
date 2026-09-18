@@ -11,11 +11,12 @@
 //! query mid-flight keeps its handle and the files it maps, and the next
 //! mutation of the generation finds the epoch again and retries.
 //!
-//! The query side acquires under the ledger's read lock (see the history
-//! route): a mutation that prunes the epoch takes the write lock after
-//! the read released, retires the handle, sees the query's hold, and
-//! defers. Acquiring outside the lock could let the prune and the discard
-//! run between a read that found the epoch retained and the open.
+//! The query side acquires under the ledger's read lock, as part of the
+//! request's read view (`query_dispatcher/read_view.rs`): a mutation that
+//! prunes the epoch takes the write lock after the read released, retires
+//! the handle, sees the query's hold, and defers. Acquiring outside the
+//! lock could let the prune and the discard run between a read that found
+//! the epoch retained and the open.
 //!
 //! Residency is bounded by what the ledger retains: at most
 //! `AUX_EPOCH_RETAIN + 1` epochs per history generation, and only the

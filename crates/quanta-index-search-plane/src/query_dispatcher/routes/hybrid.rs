@@ -6,13 +6,15 @@ use quanta_index_contract::{
     EarlyStopReason, HybridQueryRequest, HybridQueryResponse, TextQueryRequest,
 };
 use quanta_index_core::{
-    CoreError, HybridOrchestratorPolicy, HybridQueryPort, LexicalPolicy, RequestBudgetV1,
+    CoreError, HybridOrchestratorPolicy, HybridQueryPort, LexicalPolicy, QueryRouteV1,
+    RequestBudgetV1,
 };
 
 use crate::lower_lexical_text_query;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::planning::prepare_language_query_v1;
 use crate::query_dispatcher::ranking::stabilize_ranked_candidates;
+use crate::query_dispatcher::read_view::{ReadViewRequestV1, attach_read_view_trace};
 use crate::query_dispatcher::selection::SemanticSelection;
 use crate::query_dispatcher::semantic_query::{
     HybridFusion, build_hybrid_response_explanation, resolve_hybrid_request_selection,
@@ -41,17 +43,20 @@ impl SearchPlaneDispatcher {
         budget: &RequestBudgetV1,
     ) -> Result<HybridFusion, CoreError> {
         let pin = selection.pin.clone();
-        let lex_materialized = self.snapshot_lex_materialized(&pin.repo_id, &pin.revision_id)?;
-        LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, lex_materialized)?;
-        self.validate_semantic_selection(selection, plane)?;
-
-        let lex_searcher =
-            self.acquire_lexical(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
-        let sem_searcher =
-            self.acquire_semantic(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let lexical_query = lower_lexical_text_query(text_query)?;
         let prepared_language = prepare_language_query_v1(lexical_query, &text_query.constraints)?;
         LexicalPolicy::validate_query(&prepared_language.query)?;
+        let view = self.acquire_read_view(
+            &ReadViewRequestV1::declare(
+                plane,
+                QueryRouteV1::Hybrid,
+                Some(&prepared_language.query),
+                &pin,
+            )
+            .with_semantic_manifest_digest(selection.expected_manifest_digest.as_deref()),
+        )?;
+        let lex_searcher = view.lexical()?;
+        let sem_searcher = view.semantic()?;
         let internal_top_k = hybrid_probe_top_k_v1(top_k)?;
         budget.checkpoint("hybrid:lexical")?;
         let mut lex_results = if prepared_language.force_empty {
@@ -107,7 +112,7 @@ impl SearchPlaneDispatcher {
         } else {
             None
         };
-        let explanation = build_hybrid_response_explanation(
+        let mut explanation = build_hybrid_response_explanation(
             lex_results.len(),
             sem_results.len(),
             fused_universe_size,
@@ -116,6 +121,7 @@ impl SearchPlaneDispatcher {
             early_stop_reason,
             &sem_searcher.dense_lane(),
         );
+        attach_read_view_trace(&mut explanation, view.identity());
         let window = fused_window_v1(top_k, fused.len(), fused_universe_size, lane_limit_reached)?;
         Ok(HybridFusion {
             pin,

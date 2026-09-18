@@ -9,6 +9,7 @@ use core::fmt;
 use std::collections::BTreeSet;
 
 use quanta_index_contract::{LqExpr, LqLeaf, LqPredicateArg, LqQuery};
+use quanta_index_core::LexicalPredicateV1;
 
 use crate::filters::{FilterPlannerError, plan_filters};
 use crate::phrase::{PhraseField, PhrasePlannerError, PhrasePolicy, plan_phrase};
@@ -241,7 +242,7 @@ impl LexicalPlanner {
         // `symbol.has.name` lowers through the symbol planner, not the lexical
         // content/repo seam, so it is handled here before consulting the
         // lexical predicate registry (which intentionally does not own it).
-        if name == "symbol.has.name" {
+        if name == LexicalPredicateV1::SymbolHasName.name() {
             let needle = single_string_arg(name, args)?;
             let plan = plan_symbol(&needle, None, &SymbolPolicy::defaults())
                 .map_err(LexicalPlannerError::SymbolPlan)?;
@@ -400,7 +401,7 @@ fn single_string_arg(name: &str, args: &[LqPredicateArg]) -> Result<String, Lexi
 /// the planner accepts today; unknown names route through the
 /// `Unimplemented { node: "predicate_leaf" }` arm above without this helper.
 fn predicate_arity_label(name: &str) -> &'static str {
-    if name == "symbol.has.name" {
+    if name == LexicalPredicateV1::SymbolHasName.name() {
         "predicate_symbol_has_name_arity"
     } else if matches!(canonical_predicate_name(name), Some("repo.has.file")) {
         "predicate_repo_has_file_arity"

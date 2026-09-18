@@ -1,12 +1,15 @@
 //! Structural query route entry: lowering, pinning the read, seeding,
 //! evaluation, page selection, projection.
 //!
-//! A page is cut from one epoch-named structural snapshot (QI-BB-020 W2):
-//! a fresh walk pins the current epoch, a continuation the epoch its
-//! cursor names, and every leaf of the query — the pinned universe, each
+//! A page is cut from one epoch-named structural snapshot (QI-BB-020 W2),
+//! the structural domain of the request's read view (`read_view.rs`): a
+//! fresh walk pins the current epoch, a continuation the epoch its cursor
+//! names, and every leaf of the query — the pinned universe, each
 //! parse-tree match the producer executes, each symbol projection — reads
-//! that one snapshot. A cursor whose epoch is no longer retained is
-//! refused typed; it is never served from a newer snapshot.
+//! that one snapshot. A tree with lexical leaves declares the lexical
+//! track too, so the view holds the one lexical handle every leaf runs
+//! on. A cursor whose epoch is no longer retained is refused typed; it is
+//! never served from a newer snapshot.
 //!
 //! Evaluation materializes the whole match set on purpose: a boolean tree
 //! of `match { ... }` leaves is decided by set algebra over every leaf's
@@ -20,11 +23,14 @@ use quanta_index_contract::{
     AuxEpochV1, LqQuery, QueryResultWindowV1, SearchPlaneStructuralQueryResponse,
     StructuralCandidate, StructuralCursorV1, StructuralQueryRequest,
 };
-use quanta_index_core::{CoreError, RequestBudgetV1, StructuralService, validate_query_top_k};
+use quanta_index_core::{
+    CoreError, QueryRouteV1, RequestBudgetV1, StructuralService, validate_query_top_k,
+};
 
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::errors::structural_invalid_request;
 use crate::query_dispatcher::keyset_page::{KeysetPageCollector, StreamEnd};
+use crate::query_dispatcher::read_view::{AuxEpochPinsV1, QueryReadViewV1, ReadViewRequestV1};
 use crate::query_dispatcher::routes::structural::buckets::StructuralCandidateBuckets;
 use crate::query_dispatcher::routes::structural::eval::{
     StructuralEvalContext, evaluate_structural_expr, extract_structural_requested_lang,
@@ -51,16 +57,29 @@ impl SearchPlaneDispatcher {
             lower_structural_query_request(self.activation_catalog.as_ref(), request)?;
         // The whole query — the pinned universe, every parse-tree leaf the
         // producer executes, every symbol projection — reads one structural
-        // snapshot, taken here (QI-BB-020 W2): the cursor's epoch for a
+        // snapshot, the view's (QI-BB-020 W2): the cursor's epoch for a
         // continuation, the current one for a fresh walk.
-        let structural =
-            self.structural_read(&pin, request.cursor.as_ref().map(|cursor| cursor.aux_epoch))?;
+        let view = self.acquire_read_view(
+            &ReadViewRequestV1::declare(
+                "structural",
+                QueryRouteV1::Structural,
+                Some(&lowered),
+                &pin,
+            )
+            .with_epochs(AuxEpochPinsV1 {
+                history: None,
+                runtime: None,
+                structural: request.cursor.as_ref().map(|cursor| cursor.aux_epoch),
+            }),
+        )?;
+        let structural = view.structural()?;
         let read = StructuralRead {
             pin: &pin,
             epoch: structural.epoch,
             state: structural.state.as_ref(),
         };
         let page = self.execute_structural_page(
+            &view,
             read,
             &lowered,
             request.text_query.top_k,
@@ -81,6 +100,7 @@ impl SearchPlaneDispatcher {
     /// select the page after `cursor`.
     fn execute_structural_page(
         &self,
+        view: &QueryReadViewV1,
         read: StructuralRead<'_>,
         lowered: &LqQuery,
         top_k: u32,
@@ -110,7 +130,7 @@ impl SearchPlaneDispatcher {
         let mut ctx = StructuralEvalContext::default();
         let lexical_eval = if has_lexical {
             Some(LexicalSubexprEvaluator {
-                dispatcher: self,
+                searcher: view.lexical()?.as_ref(),
                 read,
                 query: lowered,
                 budget,

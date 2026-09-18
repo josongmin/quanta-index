@@ -3,9 +3,10 @@
 use quanta_index_contract::{
     ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
 };
-use quanta_index_core::{CoreError, RequestBudgetV1};
+use quanta_index_core::{CoreError, QueryRouteV1, RequestBudgetV1};
 
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
+use crate::query_dispatcher::read_view::ReadViewRequestV1;
 
 impl SearchPlaneDispatcher {
     pub fn cluster_membership_batch_read(
@@ -17,25 +18,13 @@ impl SearchPlaneDispatcher {
         request
             .validate_v1()
             .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
-        {
-            let ledger = self
-                .ledger
-                .read()
-                .map_err(|error| CoreError::Storage(format!("ledger poisoned: {error}")))?;
-            ledger.validate_semantic_generation(
-                &request.generation.repo_id,
-                &request.generation.revision_id,
-                request.generation.manifest_generation,
-                None,
-                true,
-                "cluster membership read",
-            )?;
-        }
-        let searcher = self.acquire_semantic(
-            &request.generation.repo_id,
-            &request.generation.revision_id,
-            request.generation.manifest_generation,
-        )?;
+        let view = self.acquire_read_view(&ReadViewRequestV1::declare(
+            "cluster membership read",
+            QueryRouteV1::ClusterMembershipRead,
+            None,
+            &request.generation,
+        ))?;
+        let searcher = view.semantic()?;
         budget.checkpoint("cluster-membership:read")?;
         let outcome = searcher.cluster_membership_batch_read(request)?;
         outcome.validate_against_v1(request).map_err(|failure| {

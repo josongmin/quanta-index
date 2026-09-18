@@ -10,7 +10,7 @@ use std::time::Instant;
 use quanta_index_contract::{
     AuxEpochV1, GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
 };
-use quanta_index_core::{AuxiliaryDomainV1, CoreError};
+use quanta_index_core::{AuxiliaryDomainV1, AuxiliaryGenerationKeyV1, CoreError};
 
 use crate::readiness::aux_epoch::{AuxRead, AuxSnapshots};
 use crate::readiness::errors::{
@@ -645,7 +645,24 @@ impl Ledger {
     ) -> &mut AuxSnapshots<S> {
         S::registries_mut(self)
             .entry(Self::authority_key(repo_id, revision_id, generation))
-            .or_insert_with(|| AuxSnapshots::genesis(S::DOMAIN))
+            .or_insert_with(|| {
+                AuxSnapshots::genesis(
+                    S::DOMAIN,
+                    Self::auxiliary_generation_key(repo_id, revision_id, generation),
+                )
+            })
+    }
+
+    fn auxiliary_generation_key(
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> AuxiliaryGenerationKeyV1 {
+        AuxiliaryGenerationKeyV1 {
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            generation,
+        }
     }
 
     /// The current state of one authority generation, if it exists.
@@ -669,7 +686,13 @@ impl Ledger {
     ) -> Result<AuxEpochV1, CoreError> {
         self.aux_registry::<S>(repo_id, revision_id, generation)
             .map_or_else(
-                || AuxSnapshots::<S>::genesis(S::DOMAIN).next_epoch(),
+                || {
+                    AuxSnapshots::<S>::genesis(
+                        S::DOMAIN,
+                        Self::auxiliary_generation_key(repo_id, revision_id, generation),
+                    )
+                    .next_epoch()
+                },
                 AuxSnapshots::next_epoch,
             )
     }
@@ -718,7 +741,10 @@ impl Ledger {
         match S::registries_mut(self).entry(Self::authority_key(repo_id, revision_id, generation)) {
             Entry::Occupied(mut occupied) => occupied.get_mut().advance(epoch, now, mutate),
             Entry::Vacant(vacant) => {
-                let mut registry = AuxSnapshots::genesis(S::DOMAIN);
+                let mut registry = AuxSnapshots::genesis(
+                    S::DOMAIN,
+                    Self::auxiliary_generation_key(repo_id, revision_id, generation),
+                );
                 registry.advance(epoch, now, mutate)?;
                 let _inserted = vacant.insert(registry);
                 Ok(())

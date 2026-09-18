@@ -3,7 +3,9 @@
 use std::collections::BTreeSet;
 
 use quanta_index_contract::{EarlyStopReason, HybridSeedQueryRequest, HybridSeedQueryResponse};
-use quanta_index_core::{CoreError, HybridOrchestratorPolicy, LexicalPolicy, RequestBudgetV1};
+use quanta_index_core::{
+    CoreError, HybridOrchestratorPolicy, LexicalPolicy, QueryRouteV1, RequestBudgetV1,
+};
 
 use crate::lower_lexical_text_query;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
@@ -11,6 +13,7 @@ use crate::query_dispatcher::planning::prepare_language_query_v1;
 use crate::query_dispatcher::ranking::{
     stabilize_ranked_candidates, stabilize_semantic_seed_hits_v1,
 };
+use crate::query_dispatcher::read_view::{ReadViewRequestV1, attach_read_view_trace};
 use crate::query_dispatcher::semantic_query::{
     SeedLaneTallyV1, build_hybrid_seed_candidates, build_hybrid_seed_response_explanation,
     canonical_dense_corpus_budgets_v1, resolve_hybrid_seed_request_selection,
@@ -28,17 +31,22 @@ impl SearchPlaneDispatcher {
         let selection =
             resolve_hybrid_seed_request_selection(self.activation_catalog.as_ref(), request)?;
         let pin = selection.pin.clone();
-        let lex_materialized = self.snapshot_lex_materialized(&pin.repo_id, &pin.revision_id)?;
-        LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, lex_materialized)?;
-        let manifest_digest = self.validated_semantic_manifest_digest(&selection, "hybrid seed")?;
-        let lex_searcher =
-            self.acquire_lexical(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
-        let sem_searcher =
-            self.acquire_semantic(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let lexical_query = lower_lexical_text_query(&request.text_query)?;
         let prepared_language =
             prepare_language_query_v1(lexical_query, &request.text_query.constraints)?;
         LexicalPolicy::validate_query(&prepared_language.query)?;
+        let view = self.acquire_read_view(
+            &ReadViewRequestV1::declare(
+                "hybrid seed",
+                QueryRouteV1::HybridSeed,
+                Some(&prepared_language.query),
+                &pin,
+            )
+            .with_semantic_manifest_digest(selection.expected_manifest_digest.as_deref()),
+        )?;
+        let manifest_digest = view.semantic_manifest_digest()?.to_string();
+        let lex_searcher = view.lexical()?;
+        let sem_searcher = view.semantic()?;
         let internal_top_k = hybrid_probe_top_k_v1(request.top_k)?;
         budget.checkpoint("hybrid-seed:lexical")?;
         let mut lex_results = if prepared_language.force_empty {
@@ -133,7 +141,7 @@ impl SearchPlaneDispatcher {
         } else {
             None
         };
-        let explanation = build_hybrid_seed_response_explanation(
+        let mut explanation = build_hybrid_seed_response_explanation(
             &SeedLaneTallyV1 {
                 lexical_hits: lex_results.len(),
                 lexical_entities: lexical_entity_count,
@@ -146,6 +154,7 @@ impl SearchPlaneDispatcher {
             early_stop_reason,
             &sem_searcher.dense_lane(),
         );
+        attach_read_view_trace(&mut explanation, view.identity());
         let window = fused_window_v1(
             request.top_k,
             seed_candidates.len(),

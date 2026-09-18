@@ -87,14 +87,16 @@ use quanta_index_core::domains::generation::{
 };
 use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
-    LEXICAL_WRITER_HEAP_BYTES_MIN, LexicalCandidateExplanationV1, LexicalExecutionBudgetV1,
-    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalScoreEngineV1, LexicalScoreTraceV1,
-    LexicalSearchPageV1, LexicalSearcher, LexicalWriterCacheStats, LexicalWriterPolicy,
-    MetricPointV1, MetricSourcePort, QUARANTINE_TARGET_NOT_QUARANTINED_CODE,
-    QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort, RegexMatchCachePolicy,
-    RegexMatchCacheStats, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
-    RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1, SealedGenerationScanPort,
-    SearchCorpusBatchBuildPort, TextAuthorityUpdateStats, count_from_usize,
+    LEXICAL_WRITER_HEAP_BYTES_MIN, LexicalArtifactIdentityV1, LexicalCandidateExplanationV1,
+    LexicalExecutionBudgetV1, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPredicateV1,
+    LexicalScoreEngineV1, LexicalScoreTraceV1, LexicalSearchPageV1, LexicalSearcher,
+    LexicalWriterCacheStats, LexicalWriterPolicy, MetricPointV1, MetricSourcePort,
+    QUARANTINE_TARGET_NOT_QUARANTINED_CODE, QuarantineDiscardOutcomeV1,
+    QuarantinedGenerationDiscardPort, RegexMatchCachePolicy, RegexMatchCacheStats,
+    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMetaIngestPort,
+    RepoMetadataAuthoritiesV1, RepoMetadataAuthorityV1, RepoTopicIngestPort, RequestBudgetV1,
+    SealedGenerationScanPort, SearchCorpusBatchBuildPort, TextAuthorityUpdateStats,
+    TextNormalizerVersionV1, count_from_usize,
     domains::lexical::LexicalPolicy,
     timeref::{is_rev_at_time_spec, parse_search_timeref_ms},
 };
@@ -5011,6 +5013,39 @@ impl LexicalIndexOpenPort for LexicalAdapter {
         let file_ownership = load_file_ownership_snapshot(&self.file_ownership_path(&key))?;
         let file_contributor = load_file_contributor_snapshot(&self.file_contributor_path(&key))?;
         let resident_bytes_estimate = generation_tree_bytes(&path)?;
+        let mut materialized_authorities = RepoMetadataAuthoritiesV1::NONE;
+        for (present, authority) in [
+            (
+                repo_commit_recency.is_some(),
+                RepoMetadataAuthorityV1::CommitRecency,
+            ),
+            (repo_meta.is_some(), RepoMetadataAuthorityV1::Meta),
+            (repo_topic.is_some(), RepoMetadataAuthorityV1::Topic),
+            (
+                repo_description.is_some(),
+                RepoMetadataAuthorityV1::Description,
+            ),
+            (
+                file_ownership.is_some(),
+                RepoMetadataAuthorityV1::FileOwnership,
+            ),
+            (
+                file_contributor.is_some(),
+                RepoMetadataAuthorityV1::Contributor,
+            ),
+        ] {
+            if present {
+                materialized_authorities = materialized_authorities.with(authority);
+            }
+        }
+        let artifact_identity = LexicalArtifactIdentityV1 {
+            manifest_digest: manifest.manifest_digest.clone(),
+            normalizer: TextNormalizerVersionV1 {
+                major: manifest.normalizer.major,
+                minor: manifest.normalizer.minor,
+            },
+            repo_metadata: materialized_authorities,
+        };
         Ok(Box::new(TantivySearcher {
             repo_id: repo.clone(),
             revision_id: revision.clone(),
@@ -5029,6 +5064,7 @@ impl LexicalIndexOpenPort for LexicalAdapter {
             file_ownership,
             file_contributor,
             resident_bytes_estimate,
+            artifact_identity,
         }))
     }
 }
@@ -5574,6 +5610,10 @@ struct TantivySearcher {
     /// On-disk bytes of the generation directory at open: mapped index
     /// segments plus the sidecars and snapshots this handle decoded.
     resident_bytes_estimate: u64,
+    /// What this handle is, for the read view: the sealed manifest digest
+    /// the open proved, the normalizer, and which of the six source-repo
+    /// metadata snapshots above were present to decode.
+    artifact_identity: LexicalArtifactIdentityV1,
 }
 
 struct PreparedPredicatePlan {
@@ -5650,7 +5690,7 @@ fn rewrite_symbol_name_predicate_query(query: &LqQuery) -> Result<Option<LqQuery
     let LqExpr::Leaf(LqLeaf::Predicate { name, args }) = &query.expr else {
         return Ok(None);
     };
-    if name != "symbol.has.name" {
+    if name != LexicalPredicateV1::SymbolHasName.name() {
         return Ok(None);
     }
 
@@ -6995,42 +7035,50 @@ impl TantivySearcher {
 
     fn repo_commit_recency_authority(&self) -> Result<&RepoCommitRecencyShard, CoreError> {
         self.repo_commit_recency.as_ref().ok_or_else(|| CoreError::Typed {
-            code: "HISTORY_REPO_COMMIT_RECENCY_UNAVAILABLE".to_string(),
+            code: RepoMetadataAuthorityV1::CommitRecency
+                .unavailable_code()
+                .to_string(),
             message: "lexical: repo.has.commit.after execution requires materialized source-repo commit recency authority for this generation".to_string(),
         })
     }
 
     fn repo_meta_authority(&self) -> Result<&RepoMetaShard, CoreError> {
         self.repo_meta.as_ref().ok_or_else(|| CoreError::Typed {
-            code: "REPO_META_UNAVAILABLE".to_string(),
+            code: RepoMetadataAuthorityV1::Meta.unavailable_code().to_string(),
             message: "lexical: repo.has.meta execution requires materialized source-repo repo metadata authority for this generation".to_string(),
         })
     }
 
     fn repo_topic_authority(&self) -> Result<&RepoTopicShard, CoreError> {
         self.repo_topic.as_ref().ok_or_else(|| CoreError::Typed {
-            code: "REPO_TOPIC_UNAVAILABLE".to_string(),
+            code: RepoMetadataAuthorityV1::Topic.unavailable_code().to_string(),
             message: "lexical: repo.has.topic execution requires materialized source-repo repo topic authority for this generation".to_string(),
         })
     }
 
     fn repo_description_authority(&self) -> Result<&RepoDescriptionShard, CoreError> {
         self.repo_description.as_ref().ok_or_else(|| CoreError::Typed {
-            code: "REPO_DESCRIPTION_UNAVAILABLE".to_string(),
+            code: RepoMetadataAuthorityV1::Description
+                .unavailable_code()
+                .to_string(),
             message: "lexical: repo.has.description execution requires materialized source-repo repo description authority for this generation".to_string(),
         })
     }
 
     fn file_ownership_authority(&self) -> Result<&FileOwnershipShard, CoreError> {
         self.file_ownership.as_ref().ok_or_else(|| CoreError::Typed {
-            code: "FILE_OWNERSHIP_UNAVAILABLE".to_string(),
+            code: RepoMetadataAuthorityV1::FileOwnership
+                .unavailable_code()
+                .to_string(),
             message: "lexical: file.has.owner execution requires materialized source-repo file ownership authority for this generation".to_string(),
         })
     }
 
     fn file_contributor_authority(&self) -> Result<&FileContributorShard, CoreError> {
         self.file_contributor.as_ref().ok_or_else(|| CoreError::Typed {
-            code: "FILE_CONTRIBUTOR_UNAVAILABLE".to_string(),
+            code: RepoMetadataAuthorityV1::Contributor
+                .unavailable_code()
+                .to_string(),
             message: "lexical: file.has.contributor execution requires materialized source-repo file contributor authority for this generation".to_string(),
         })
     }
@@ -9656,6 +9704,10 @@ fn map_planner_error(err: &crate::planner::LexicalPlannerError) -> CoreError {
 impl LexicalSearcher for TantivySearcher {
     fn resident_bytes_estimate(&self) -> u64 {
         self.resident_bytes_estimate
+    }
+
+    fn artifact_identity(&self) -> LexicalArtifactIdentityV1 {
+        self.artifact_identity.clone()
     }
 
     fn search_constrained(

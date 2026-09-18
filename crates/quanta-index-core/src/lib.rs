@@ -65,6 +65,16 @@ pub use domains::lexical::{
 pub use domains::observability::{
     MetricPointV1, MetricSourcePort, MetricValueV1, count_as_f64, count_from_usize,
 };
+pub use domains::read_view::{
+    FILE_CONTRIBUTOR_UNAVAILABLE_CODE, FILE_OWNERSHIP_UNAVAILABLE_CODE, LexicalArtifactIdentityV1,
+    LexicalPredicateAliasV1, LexicalPredicateFamilyV1, LexicalPredicateV1, QueryRouteV1,
+    READ_VIEW_DOMAIN_UNDECLARED_CODE, READ_VIEW_GENERATION_MIX_CODE,
+    REPO_COMMIT_RECENCY_UNAVAILABLE_CODE, REPO_DESCRIPTION_UNAVAILABLE_CODE,
+    REPO_META_UNAVAILABLE_CODE, REPO_TOPIC_UNAVAILABLE_CODE, RUNTIME_NOT_READY_CODE, ReadDomainV1,
+    ReadIdentityV1, ReadViewRefusedError, RepoMetadataAuthoritiesV1, RepoMetadataAuthorityV1,
+    RequiredDomainsV1, SemanticProfileV1, TextNormalizerVersionV1, declare_required_domains_v1,
+    lexical_predicate_v1,
+};
 pub use domains::repomap::{
     QuarantinedRepoMapFileV1, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
     RepoMapOpenReportV1, RepoMapPolicy, RepoMapQuarantinePort, RepoMapQueryPort, RepoMapService,

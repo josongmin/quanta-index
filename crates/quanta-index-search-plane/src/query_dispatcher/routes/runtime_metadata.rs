@@ -3,12 +3,13 @@
 //!
 //! A page is cut from one consistent cut of two epoch-named snapshots
 //! (QI-BB-020 W2): the runtime authority its predicates read and the
-//! structural authority its chunk universe is joined from. A fresh walk
-//! takes both current snapshots under one ledger read; a continuation
-//! reads the two epochs its cursor names, and the response says which.
-//! A cursor whose epoch is no longer retained is refused typed; it is
-//! never served from a newer snapshot where a row could repeat, go
-//! missing or appear from nowhere.
+//! structural authority its chunk universe is joined from. Both are the
+//! request's read view (`read_view.rs`), taken under one ledger read: a
+//! fresh walk pins both current snapshots; a continuation pins the two
+//! epochs its cursor names, and the response says which. A cursor whose
+//! epoch is no longer retained is refused typed; it is never served from
+//! a newer snapshot where a row could repeat, go missing or appear from
+//! nowhere.
 //!
 //! The walk is a stream, not a materialization (QI-BB-025 W4): it drives
 //! the narrowest authority set the query's filters name — or the chunk
@@ -19,7 +20,6 @@
 
 use std::collections::BTreeSet;
 use std::ops::Bound;
-use std::time::Instant;
 
 use imbl::OrdMap;
 use quanta_index_contract::{
@@ -27,15 +27,15 @@ use quanta_index_contract::{
     LqYesNoOnly, QueryResultWindowV1, RuntimeMetadataCursorV1, RuntimeMetadataQueryRequest,
     SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneTrackKind,
 };
-use quanta_index_core::{CoreError, RequestBudgetV1, validate_query_top_k};
+use quanta_index_core::{CoreError, QueryRouteV1, RequestBudgetV1, validate_query_top_k};
 
-use crate::Ledger;
 use crate::lower_lexical_text_query;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::errors::{
     ERR_RUNTIME_CATALOG_NOT_READY, runtime_catalog_head_missing, runtime_snapshot_unknown,
 };
 use crate::query_dispatcher::keyset_page::{KeysetPageCollector, StreamEnd};
+use crate::query_dispatcher::read_view::{AuxEpochPinsV1, ReadViewRequestV1};
 use crate::query_dispatcher::selection::resolve_optional_selection;
 use crate::query_dispatcher::text_plane::{
     ExecutableTextPlanePolicy, expr_matches, leaf_matches_text, matches_text,
@@ -69,14 +69,25 @@ impl SearchPlaneDispatcher {
         .ok_or_else(|| {
             CoreError::InvalidContract("runtime metadata: generation selector required".to_string())
         })?;
-        // Snapshots are taken under one read lock and scanned outside it
-        // (QI-BB-020): a long scan never holds up an ingest, an ingest
-        // never holds up a query.
-        let read = {
-            let guard = self.ledger.read().map_err(|_poisoned| {
-                CoreError::Storage("search-plane ledger poisoned".to_string())
-            })?;
-            resolve_runtime_metadata_read(&guard, &pin, request.cursor.as_ref(), Instant::now())?
+        // Both snapshots are the read view's, taken under one read lock
+        // and scanned outside it (QI-BB-020): a long scan never holds up
+        // an ingest, an ingest never holds up a query.
+        let view = self.acquire_read_view(
+            &ReadViewRequestV1::declare(
+                "runtime metadata",
+                QueryRouteV1::RuntimeMetadata,
+                Some(&lowered),
+                &pin,
+            )
+            .with_epochs(AuxEpochPinsV1 {
+                history: None,
+                runtime: request.cursor.as_ref().map(|cursor| cursor.aux_epoch),
+                structural: request.cursor.as_ref().map(|cursor| cursor.universe_epoch),
+            }),
+        )?;
+        let read = RuntimeMetadataRead {
+            runtime: view.runtime()?.clone(),
+            universe: view.structural()?.clone(),
         };
         if runtime_query_requires_catalog(&lowered) {
             ensure_runtime_catalog_ready(&read.runtime.state)?;
@@ -129,50 +140,6 @@ impl RuntimeMetadataRead {
             universe: self.universe.epoch,
         }
     }
-}
-
-/// The snapshots a runtime-metadata page reads, taken under the ledger
-/// lock the caller holds and scanned after it is released.
-///
-/// A fresh walk reads the current snapshot of both authorities — one
-/// consistent cut, since both are read under the same guard. A
-/// continuation reads the two epochs its cursor names, each refused typed
-/// when it is no longer retained or never existed.
-pub(crate) fn resolve_runtime_metadata_read(
-    ledger: &Ledger,
-    pin: &GenerationPin,
-    cursor: Option<&RuntimeMetadataCursorV1>,
-    now: Instant,
-) -> Result<RuntimeMetadataRead, CoreError> {
-    let runtime = ledger
-        .runtime_read_at(
-            &pin.repo_id,
-            &pin.revision_id,
-            pin.manifest_generation,
-            cursor.map(|cursor| cursor.aux_epoch),
-            now,
-        )?
-        .ok_or_else(|| {
-            CoreError::NotReady(format!(
-                "runtime metadata: generation {} is not materialized",
-                pin.manifest_generation.get()
-            ))
-        })?;
-    let universe = ledger
-        .structural_read_at(
-            &pin.repo_id,
-            &pin.revision_id,
-            pin.manifest_generation,
-            cursor.map(|cursor| cursor.universe_epoch),
-            now,
-        )?
-        .ok_or_else(|| {
-            CoreError::NotReady(format!(
-                "runtime metadata: lexical chunk authority for generation {} is not materialized",
-                pin.manifest_generation.get()
-            ))
-        })?;
-    Ok(RuntimeMetadataRead { runtime, universe })
 }
 
 pub(crate) fn validate_runtime_metadata_query(query: &LqQuery) -> Result<(), CoreError> {

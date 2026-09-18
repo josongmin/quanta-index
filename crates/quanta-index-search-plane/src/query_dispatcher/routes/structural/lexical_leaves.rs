@@ -4,20 +4,23 @@ use quanta_index_contract::{
     ChunkRecord, LQ_VERSION_TAG, LexicalCandidate, LqExpr, LqLeaf, LqPatternType, LqQuery,
     SymbolCandidate,
 };
-use quanta_index_core::{CoreError, LexicalPolicy, RequestBudgetV1, StructuralMatchCandidate};
+use quanta_index_core::{
+    CoreError, LexicalPolicy, LexicalSearcher, RequestBudgetV1, StructuralMatchCandidate,
+};
 
-use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::routes::structural::buckets::{
     StructuralCandidateBuckets, normalize_structural_match_bucket,
 };
 use crate::query_dispatcher::routes::structural::read::StructuralRead;
 use crate::readiness::StructuralAuthorityState;
 
-/// Evaluates the lexical leaves of a mixed structural tree against the
-/// generation the query pinned; symbol projections read the same
-/// structural snapshot as the rest of the query (QI-BB-020 W2).
+/// Evaluates the lexical leaves of a mixed structural tree on the lexical
+/// handle the query's read view pinned.
+///
+/// Symbol projections read the same structural snapshot as the rest of
+/// the query (QI-BB-020 W2).
 pub(super) struct LexicalSubexprEvaluator<'a> {
-    pub(super) dispatcher: &'a SearchPlaneDispatcher,
+    pub(super) searcher: &'a dyn LexicalSearcher,
     pub(super) read: StructuralRead<'a>,
     pub(super) query: &'a LqQuery,
     pub(super) budget: &'a RequestBudgetV1,
@@ -38,24 +41,14 @@ impl LexicalSubexprEvaluator<'_> {
             source_span: self.query.source_span,
         };
         LexicalPolicy::validate_query(&subquery)?;
-        let pin = self.read.pin;
-        let materialized = self
-            .dispatcher
-            .snapshot_lex_materialized(&pin.repo_id, &pin.revision_id)?;
-        LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, materialized)?;
-        let searcher = self.dispatcher.acquire_lexical(
-            &pin.repo_id,
-            &pin.revision_id,
-            pin.manifest_generation,
-        )?;
         // Every lexical leaf of a structural expression is its own native
         // search; a boolean tree can hold many, so each one is a checkpoint.
         self.budget.checkpoint("structural:lexical-leaf")?;
         if symbol_name_predicate_leaf(expr) {
-            let results = searcher.search_symbols_all(&subquery, self.budget)?;
+            let results = self.searcher.search_symbols_all(&subquery, self.budget)?;
             return Ok(symbol_hits_to_structural_buckets(results, self.read.state));
         }
-        let results = searcher.search_all(&subquery, self.budget)?;
+        let results = self.searcher.search_all(&subquery, self.budget)?;
         Ok(lexical_hits_to_structural_buckets(results))
     }
 }

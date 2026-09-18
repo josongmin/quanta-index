@@ -19,14 +19,18 @@
 //! lowers through the symbol planner, not the lexical content/repo seam, and
 //! the planner handles it on a dedicated arm before consulting this registry.
 //!
-//! Adding a predicate is a registry-row change: append a [`PredicateSpec`] and,
-//! only if it introduces a genuinely new lowering shape, one new
-//! [`PredicateKind`] variant with its dispatch arm. Unsupported names continue
-//! to typed-fail through [`unimplemented_predicate`] /
-//! [`PREDICATE_UNIMPLEMENTED_CODE`].
+//! Predicate *names* are enumerated once, in core
+//! ([`LexicalPredicateV1`] / [`LexicalPredicateAliasV1`], each with the
+//! domain it reads for the read view); every row here keys on one of
+//! those variants, and the tests prove the content/repo family and the
+//! alias table are covered exactly once. Adding a predicate is a core
+//! variant plus a registry row and, only if it introduces a genuinely new
+//! lowering shape, one new [`PredicateKind`] variant with its dispatch
+//! arm. Unsupported names continue to typed-fail through
+//! [`unimplemented_predicate`] / [`PREDICATE_UNIMPLEMENTED_CODE`].
 
 use quanta_index_contract::{LqFileScope, LqPredicateArg};
-use quanta_index_core::CoreError;
+use quanta_index_core::{CoreError, LexicalPredicateAliasV1, LexicalPredicateV1};
 
 /// Stable typed-reject code for predicate shapes outside the executable
 /// subset. Kept as the single owner of this wire code so diagnostics cannot
@@ -94,17 +98,39 @@ pub(crate) enum PredicateKind {
 
 /// One predicate capability row.
 pub(crate) struct PredicateSpec {
-    /// Canonical dot-joined predicate name (e.g. `repo.has.file`).
-    pub name: &'static str,
+    /// The predicate, as core enumerates it; its canonical dot-joined name
+    /// (e.g. `repo.has.file`) is [`LexicalPredicateV1::name`].
+    pub predicate: LexicalPredicateV1,
     /// Lowering target for this predicate.
     pub kind: PredicateKind,
 }
 
+impl PredicateSpec {
+    /// The canonical dot-joined predicate name.
+    pub(crate) const fn name(&self) -> &'static str {
+        self.predicate.name()
+    }
+}
+
 /// Native alias that rewrites onto one canonical executable predicate row.
 pub(crate) struct PredicateAliasSpec {
-    pub alias: &'static str,
-    pub canonical: &'static str,
+    /// The alias, as core enumerates it; its name and the canonical
+    /// predicate it rewrites onto are [`LexicalPredicateAliasV1::name`] and
+    /// [`LexicalPredicateAliasV1::canonical`].
+    pub alias: LexicalPredicateAliasV1,
     pub rewrite: PredicateAliasRewrite,
+}
+
+impl PredicateAliasSpec {
+    /// The alias name a lowered leaf carries.
+    pub(crate) const fn name(&self) -> &'static str {
+        self.alias.name()
+    }
+
+    /// The canonical name the alias rewrites onto.
+    pub(crate) const fn canonical(&self) -> &'static str {
+        self.alias.canonical().name()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -117,59 +143,57 @@ pub(crate) enum PredicateAliasRewrite {
 /// names are enumerated for the content/repo families.
 pub(crate) const PREDICATE_REGISTRY: &[PredicateSpec] = &[
     PredicateSpec {
-        name: "file.contains",
+        predicate: LexicalPredicateV1::FileContains,
         kind: PredicateKind::ContentLeaf,
     },
     PredicateSpec {
-        name: "file.has.content",
+        predicate: LexicalPredicateV1::FileHasContent,
         kind: PredicateKind::ContentLeaf,
     },
     PredicateSpec {
-        name: "repo.has.file",
+        predicate: LexicalPredicateV1::RepoHasFile,
         kind: PredicateKind::RepoFileGate,
     },
     PredicateSpec {
-        name: "repo.has.content",
+        predicate: LexicalPredicateV1::RepoHasContent,
         kind: PredicateKind::RepoContentGate,
     },
     PredicateSpec {
-        name: "repo.has.commit.after",
+        predicate: LexicalPredicateV1::RepoHasCommitAfter,
         kind: PredicateKind::RepoCommitRecencyGate,
     },
     PredicateSpec {
-        name: "repo.has.meta",
+        predicate: LexicalPredicateV1::RepoHasMeta,
         kind: PredicateKind::RepoMetaGate,
     },
     PredicateSpec {
-        name: "repo.has.topic",
+        predicate: LexicalPredicateV1::RepoHasTopic,
         kind: PredicateKind::RepoTopicGate,
     },
     PredicateSpec {
-        name: "repo.has.description",
+        predicate: LexicalPredicateV1::RepoHasDescription,
         kind: PredicateKind::RepoDescriptionGate,
     },
     PredicateSpec {
-        name: "file.has.owner",
+        predicate: LexicalPredicateV1::FileHasOwner,
         kind: PredicateKind::FileOwnerGate,
     },
     PredicateSpec {
-        name: "file.has.contributor",
+        predicate: LexicalPredicateV1::FileHasContributor,
         kind: PredicateKind::FileContributorGate,
     },
 ];
 
 pub(crate) const PREDICATE_ALIASES: &[PredicateAliasSpec] = &[
     PredicateAliasSpec {
-        alias: "repo.has.path",
-        canonical: "repo.has.file",
+        alias: LexicalPredicateAliasV1::RepoHasPath,
         rewrite: PredicateAliasRewrite::RepoHasPathScalarToPathFilter,
     },
     // Sourcegraph documents `repo:contains.file(...)` as a pure alias of
     // `repo:has.file(...)`, so it forwards the full matcher surface (scalar path
     // shorthand and `path:` / `name:` / `lang:` filters) unchanged.
     PredicateAliasSpec {
-        alias: "repo.contains.file",
-        canonical: "repo.has.file",
+        alias: LexicalPredicateAliasV1::RepoContainsFile,
         rewrite: PredicateAliasRewrite::IdentityArgs,
     },
     // `repo:contains.path(...)` is Sourcegraph's alias of `repo:has.path(...)`,
@@ -177,23 +201,19 @@ pub(crate) const PREDICATE_ALIASES: &[PredicateAliasSpec] = &[
     // collapses it directly onto `repo.has.file`, mirroring the `repo.has.path`
     // scalar→`path:` rewrite so `kind_of` resolves a registry kind.
     PredicateAliasSpec {
-        alias: "repo.contains.path",
-        canonical: "repo.has.file",
+        alias: LexicalPredicateAliasV1::RepoContainsPath,
         rewrite: PredicateAliasRewrite::RepoHasPathScalarToPathFilter,
     },
     PredicateAliasSpec {
-        alias: "file.contains.content",
-        canonical: "file.contains",
+        alias: LexicalPredicateAliasV1::FileContainsContent,
         rewrite: PredicateAliasRewrite::IdentityArgs,
     },
     PredicateAliasSpec {
-        alias: "repo.contains.content",
-        canonical: "repo.has.content",
+        alias: LexicalPredicateAliasV1::RepoContainsContent,
         rewrite: PredicateAliasRewrite::IdentityArgs,
     },
     PredicateAliasSpec {
-        alias: "repo.contains.commit.after",
-        canonical: "repo.has.commit.after",
+        alias: LexicalPredicateAliasV1::RepoContainsCommitAfter,
         rewrite: PredicateAliasRewrite::IdentityArgs,
     },
 ];
@@ -210,17 +230,17 @@ pub(crate) enum PredicateCanonicalizeError {
 }
 
 fn registry_spec(name: &str) -> Option<&'static PredicateSpec> {
-    PREDICATE_REGISTRY.iter().find(|spec| spec.name == name)
+    PREDICATE_REGISTRY.iter().find(|spec| spec.name() == name)
 }
 
 fn alias_spec(name: &str) -> Option<&'static PredicateAliasSpec> {
-    PREDICATE_ALIASES.iter().find(|spec| spec.alias == name)
+    PREDICATE_ALIASES.iter().find(|spec| spec.name() == name)
 }
 
 pub(crate) fn canonical_predicate_name(name: &str) -> Option<&'static str> {
     registry_spec(name)
-        .map(|spec| spec.name)
-        .or_else(|| alias_spec(name).map(|spec| spec.canonical))
+        .map(PredicateSpec::name)
+        .or_else(|| alias_spec(name).map(PredicateAliasSpec::canonical))
 }
 
 pub(crate) fn canonicalize_predicate_call(
@@ -229,7 +249,7 @@ pub(crate) fn canonicalize_predicate_call(
 ) -> Result<Option<CanonicalPredicateCall>, PredicateCanonicalizeError> {
     if let Some(spec) = registry_spec(name) {
         return Ok(Some(CanonicalPredicateCall {
-            name: spec.name,
+            name: spec.name(),
             args: args.to_vec(),
         }));
     }
@@ -254,7 +274,7 @@ pub(crate) fn canonicalize_predicate_call(
         }
     };
     Ok(Some(CanonicalPredicateCall {
-        name: alias.canonical,
+        name: alias.canonical(),
         args,
     }))
 }
@@ -872,7 +892,51 @@ pub(crate) fn parse_content_predicate_constraint(
 
 #[cfg(test)]
 mod tests {
+    use quanta_index_core::LexicalPredicateFamilyV1;
+
     use super::*;
+
+    /// The registry covers core's enumeration exactly once.
+    ///
+    /// Every row keys on a core variant, the content/repo family and the
+    /// alias table are each covered once, so a predicate that reads a
+    /// domain (declared in core) is always executable here, and a row
+    /// here always has a declared domain.
+    #[test]
+    fn registry_rows_cover_the_core_enumeration_exactly_once() {
+        let content_or_repo: Vec<LexicalPredicateV1> = LexicalPredicateV1::ALL
+            .into_iter()
+            .filter(|predicate| predicate.family() == LexicalPredicateFamilyV1::ContentOrRepo)
+            .collect();
+        let rows: Vec<LexicalPredicateV1> = PREDICATE_REGISTRY
+            .iter()
+            .map(|spec| spec.predicate)
+            .collect();
+        assert_eq!(rows, content_or_repo, "one row per content/repo predicate");
+        let aliases: Vec<LexicalPredicateAliasV1> =
+            PREDICATE_ALIASES.iter().map(|spec| spec.alias).collect();
+        assert_eq!(
+            aliases,
+            LexicalPredicateAliasV1::ALL.to_vec(),
+            "one row per alias"
+        );
+        for alias in PREDICATE_ALIASES {
+            assert!(
+                registry_spec(alias.canonical()).is_some(),
+                "{} rewrites onto a registered row",
+                alias.name()
+            );
+        }
+        for predicate in LexicalPredicateV1::ALL {
+            let executable = kind_of(predicate.name()).is_some();
+            assert_eq!(
+                executable,
+                predicate.family() == LexicalPredicateFamilyV1::ContentOrRepo,
+                "{}: registry membership follows the family",
+                predicate.name()
+            );
+        }
+    }
 
     #[test]
     fn registry_resolves_shipped_predicate_kinds() {

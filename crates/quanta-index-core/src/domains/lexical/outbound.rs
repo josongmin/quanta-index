@@ -6,6 +6,7 @@ use quanta_index_contract::{
     RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch, SymbolCandidate,
 };
 
+use crate::domains::read_view::LexicalArtifactIdentityV1;
 use crate::error::CoreError;
 use crate::request_budget::RequestBudgetV1;
 
@@ -224,6 +225,16 @@ pub trait LexicalSearcher: Send + Sync {
     /// monotone in the real cost so that a count-only cache cannot admit a
     /// corpus-sized handle as "one entry".
     fn resident_bytes_estimate(&self) -> u64;
+
+    /// What this opened generation is (plan §7.1 `ReadIdentity`).
+    ///
+    /// The sealed manifest digest the open proved, the text normalizer it
+    /// was built under, and the source-repo metadata authorities the
+    /// handle decoded beside the index. The read view checks the
+    /// authorities a plan declares against this before any lane executes,
+    /// so a missing authority is refused typed at acquisition rather than
+    /// wherever the first predicate happens to read it.
+    fn artifact_identity(&self) -> LexicalArtifactIdentityV1;
 
     /// Unconstrained page of results; the constrained form is the one
     /// execution path.

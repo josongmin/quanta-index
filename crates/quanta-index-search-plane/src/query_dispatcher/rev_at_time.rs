@@ -1,19 +1,20 @@
 //! `rev:at.time(...)` selection: rebind a lexical query to the reachable
 //! commit at or before a timeref via the history authority.
+//!
+//! The history snapshot the selection walks is the one the planner's
+//! selection view pinned for the requested generation (see
+//! `planning.rs`); nothing here reads the ledger.
 
 use std::collections::BTreeSet;
-use std::sync::RwLock;
 
 use quanta_index_contract::lex::CommitSha;
 use quanta_index_contract::{GenerationPin, LqFilter, LqQuery, RevisionId, SearchPlaneTrackKind};
 use quanta_index_core::CoreError;
 use quanta_index_core::timeref::{parse_rev_at_time_spec, parse_search_timeref_ms};
 
-use crate::query_dispatcher::errors::{
-    history_absent_error, history_invalid_timeref, history_shard_unavailable,
-};
+use crate::ActivationCatalog;
+use crate::query_dispatcher::errors::{history_invalid_timeref, history_shard_unavailable};
 use crate::readiness::HistoryAuthorityState;
-use crate::{ActivationCatalog, Ledger};
 
 pub(super) struct PreparedLexicalTextQuery {
     pub(super) pin: GenerationPin,
@@ -21,53 +22,33 @@ pub(super) struct PreparedLexicalTextQuery {
     pub(super) force_empty: bool,
 }
 
-struct RevAtTimeSelection<'a> {
-    timeref: &'a str,
-    explicit_anchor: Option<&'a str>,
+/// The `rev:at.time(...)` selector a query carries: its timeref, parsed
+/// to the boundary it names, and the explicit rev anchor beside it, if
+/// any.
+pub(super) struct RevAtTimeSelection {
+    boundary_ms: u64,
+    explicit_anchor: Option<String>,
 }
 
-pub(super) fn prepare_lexical_text_query_for_execution(
+/// Rebind `query` to the active lexical generation of the reachable
+/// commit at or before `selection`'s timeref, walking `history` — the
+/// history authority of `base_pin`'s generation — from the anchor.
+///
+/// A timeref before every reachable commit selects nothing: the plan is
+/// then an explicit empty result at `base_pin`, never an unbound search.
+pub(super) fn rebind_lexical_query_at_time(
     activation_catalog: &ActivationCatalog,
-    ledger: &RwLock<Ledger>,
+    history: &HistoryAuthorityState,
     base_pin: &GenerationPin,
     query: LqQuery,
+    selection: &RevAtTimeSelection,
 ) -> Result<PreparedLexicalTextQuery, CoreError> {
-    let Some(selection) = rev_at_time_selection(&query)? else {
-        return Ok(PreparedLexicalTextQuery {
-            pin: base_pin.clone(),
-            query,
-            force_empty: false,
-        });
-    };
-
-    let boundary_ms = parse_search_timeref_ms(selection.timeref).ok_or_else(|| {
-        history_invalid_timeref(format!(
-            "history: timeref `{}` is not a valid RFC3339 timestamp, named date, human phrase, or duration",
-            selection.timeref
-        ))
-    })?;
-
-    let guard = ledger
-        .read()
-        .map_err(|err| CoreError::Storage(format!("search-plane ledger poisoned: {err}")))?;
-    let Some(history_state) = guard.history_state(
-        &base_pin.repo_id,
-        &base_pin.revision_id,
-        base_pin.manifest_generation,
-    ) else {
-        let lexical_materialized = guard.track_materialized(
-            &base_pin.repo_id,
-            &base_pin.revision_id,
-            SearchPlaneTrackKind::Lexical,
-        );
-        return Err(history_absent_error(base_pin, lexical_materialized));
-    };
-    ensure_rev_at_time_history_ready(history_state, selection.explicit_anchor, base_pin)?;
-    let anchor_sha =
-        resolve_rev_at_time_anchor_sha(history_state, selection.explicit_anchor, base_pin)?;
+    let explicit_anchor = selection.explicit_anchor.as_deref();
+    ensure_rev_at_time_history_ready(history, explicit_anchor, base_pin)?;
+    let anchor_sha = resolve_rev_at_time_anchor_sha(history, explicit_anchor, base_pin)?;
     let stripped_query = strip_rev_filters(query);
     let Some(selected_commit_sha) =
-        select_reachable_commit_at_or_before(history_state, anchor_sha, boundary_ms)?
+        select_reachable_commit_at_or_before(history, anchor_sha, selection.boundary_ms)?
     else {
         return Ok(PreparedLexicalTextQuery {
             pin: base_pin.clone(),
@@ -75,7 +56,6 @@ pub(super) fn prepare_lexical_text_query_for_execution(
             force_empty: true,
         });
     };
-    drop(guard);
     let rebound_revision = RevisionId::new(selected_commit_sha.to_hex());
     let rebound_pin = activation_catalog.resolve(
         &base_pin.repo_id,
@@ -89,7 +69,12 @@ pub(super) fn prepare_lexical_text_query_for_execution(
     })
 }
 
-fn rev_at_time_selection(query: &LqQuery) -> Result<Option<RevAtTimeSelection<'_>>, CoreError> {
+/// The `rev:at.time(...)` selector of `query`, if it carries one; a
+/// second timeref selector, a second explicit anchor or a timeref that
+/// does not parse is refused here, before anything is acquired.
+pub(super) fn rev_at_time_selection(
+    query: &LqQuery,
+) -> Result<Option<RevAtTimeSelection>, CoreError> {
     let mut timeref: Option<&str> = None;
     let mut explicit_anchor: Option<&str> = None;
     for filter in &query.filters {
@@ -110,9 +95,17 @@ fn rev_at_time_selection(query: &LqQuery) -> Result<Option<RevAtTimeSelection<'_
             ));
         }
     }
-    Ok(timeref.map(|timeref| RevAtTimeSelection {
-        timeref,
-        explicit_anchor,
+    let Some(timeref) = timeref else {
+        return Ok(None);
+    };
+    let boundary_ms = parse_search_timeref_ms(timeref).ok_or_else(|| {
+        history_invalid_timeref(format!(
+            "history: timeref `{timeref}` is not a valid RFC3339 timestamp, named date, human phrase, or duration"
+        ))
+    })?;
+    Ok(Some(RevAtTimeSelection {
+        boundary_ms,
+        explicit_anchor: explicit_anchor.map(str::to_string),
     }))
 }
 

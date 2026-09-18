@@ -136,6 +136,12 @@ owner = "quanta-index-core"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "core-read-view-declaration"
+path = "crates/quanta-index-core/tests/read_view_declaration.rs"
+owner = "quanta-index-core"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "corpus-smoke-cli"
 path = "crates/quanta-index-corpus-smoke/tests/cli_smoke.rs"
 owner = "quanta-index-corpus-smoke"
@@ -613,6 +619,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "searchd-runtime-e2e-history-relevance"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_history_relevance.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-e2e-read-view"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_read_view.rs"
 owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 

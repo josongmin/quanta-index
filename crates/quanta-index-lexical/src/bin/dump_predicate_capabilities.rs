@@ -35,11 +35,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dump = PredicateCapabilitiesDump {
         canonical_predicates: predicate_registry_dump::PREDICATE_REGISTRY
             .iter()
-            .map(|spec| spec.name)
+            .map(predicate_registry_dump::PredicateSpec::name)
             .collect(),
         aliases: predicate_registry_dump::PREDICATE_ALIASES
             .iter()
-            .map(|spec| (spec.alias, spec.canonical))
+            .map(|spec| (spec.name(), spec.canonical()))
             .collect(),
     };
     let json = serde_json::to_string_pretty(&dump)?;

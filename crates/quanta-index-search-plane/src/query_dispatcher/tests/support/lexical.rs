@@ -7,11 +7,24 @@ use quanta_index_contract::{
     RepoId, RepoRelativePath, RevisionId, SymbolCandidate,
 };
 use quanta_index_core::{
-    CoreError, LexicalCandidateExplanationV1, LexicalIndexOpenPort, LexicalScoreEngineV1,
-    LexicalSearchPageV1, LexicalSearcher, RequestBudgetV1,
+    CoreError, LexicalArtifactIdentityV1, LexicalCandidateExplanationV1, LexicalIndexOpenPort,
+    LexicalScoreEngineV1, LexicalSearchPageV1, LexicalSearcher, RepoMetadataAuthoritiesV1,
+    RequestBudgetV1, TextNormalizerVersionV1,
 };
 
 use crate::query_dispatcher::tests::support::common::symbol_candidate;
+
+/// The identity a test double reports: a fixed digest and normalizer,
+/// and the source-repo metadata authorities the double claims to hold.
+pub(crate) fn stub_artifact_identity(
+    repo_metadata: RepoMetadataAuthoritiesV1,
+) -> LexicalArtifactIdentityV1 {
+    LexicalArtifactIdentityV1 {
+        manifest_digest: "stub-lexical-digest".to_string(),
+        normalizer: TextNormalizerVersionV1 { major: 2, minor: 0 },
+        repo_metadata,
+    }
+}
 
 pub(crate) struct RejectLexicalOpener;
 
@@ -35,6 +48,12 @@ pub(crate) struct StubLexicalSearcher {
 impl LexicalSearcher for StubLexicalSearcher {
     fn resident_bytes_estimate(&self) -> u64 {
         0
+    }
+
+    /// The stub holds every source-repo metadata authority: it answers
+    /// projections and gates without refusing.
+    fn artifact_identity(&self) -> LexicalArtifactIdentityV1 {
+        stub_artifact_identity(RepoMetadataAuthoritiesV1::ALL)
     }
 
     fn search_constrained(
@@ -156,6 +175,11 @@ pub(crate) struct RecordingLexicalState {
     /// answers as a native collect that observed the cancellation
     /// would (W5 phase 2).
     pub(crate) cancel_inside_search: bool,
+    /// The source-repo metadata authorities the opened handle reports;
+    /// `None` reports every one of them.
+    pub(crate) repo_metadata: Option<RepoMetadataAuthoritiesV1>,
+    /// How many times the handle's identity was asked for.
+    pub(crate) identity_reads: usize,
 }
 
 pub(crate) struct RecordingLexicalSearcher {
@@ -166,6 +190,21 @@ pub(crate) struct RecordingLexicalSearcher {
 impl LexicalSearcher for RecordingLexicalSearcher {
     fn resident_bytes_estimate(&self) -> u64 {
         0
+    }
+
+    fn artifact_identity(&self) -> LexicalArtifactIdentityV1 {
+        // A poisoned double still reports its identity: the test that
+        // poisoned it is the one that failed.
+        let mut guard = match self.state.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.identity_reads = guard.identity_reads.saturating_add(1);
+        let repo_metadata = guard
+            .repo_metadata
+            .unwrap_or(RepoMetadataAuthoritiesV1::ALL);
+        drop(guard);
+        stub_artifact_identity(repo_metadata)
     }
 
     fn search_constrained(

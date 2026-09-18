@@ -1,5 +1,8 @@
 //! Resident opened-generation acquisition through the snapshot registries,
 //! with the hit / coalesced / cold-open metrics.
+//!
+//! Private to the read view: a route acquires a track handle only as a
+//! declared domain of its view, never here.
 
 use std::sync::Arc;
 

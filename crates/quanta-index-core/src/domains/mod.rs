@@ -11,6 +11,7 @@ pub mod hybrid;
 pub mod idempotency;
 pub mod lexical;
 pub mod observability;
+pub mod read_view;
 pub mod repomap;
 pub mod semantic;
 pub mod structural;

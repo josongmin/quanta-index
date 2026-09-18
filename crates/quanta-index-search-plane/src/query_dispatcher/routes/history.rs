@@ -13,25 +13,26 @@
 //! epoch's text index and the rows are joined back from the same snapshot;
 //! see [`super::history_relevance`]. A cursor continues only the order it
 //! was issued under.
-
-use std::sync::Arc;
-use std::time::Instant;
+//!
+//! The snapshot and, under `relevance`, the epoch's text index are the
+//! history domain of the request's read view (`read_view.rs`), acquired
+//! once after the plan; the route executes against that view.
 
 use quanta_index_contract::lex::CommitSha;
 use quanta_index_contract::{
-    AuxEpochV1, CommitCandidate, DiffCandidate, GenerationPin, HistoryCursor, HistoryCursorOrderV1,
+    AuxEpochV1, CommitCandidate, DiffCandidate, HistoryCursor, HistoryCursorOrderV1,
     HistoryOrderV1, HistoryQueryRequest, HistoryScoreV1, LqFilter, LqQuery, LqType,
     QueryResultWindowV1, SearchPlaneHistoryQueryResponse, SearchPlaneTrackKind,
 };
-use quanta_index_core::{
-    AuxiliaryGenerationKeyV1, CoreError, HistoryTextSearcher, RequestBudgetV1, validate_query_top_k,
-};
+use quanta_index_core::{CoreError, QueryRouteV1, RequestBudgetV1, validate_query_top_k};
 
+use crate::lower_lexical_text_query;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::errors::{
-    history_absent_error, history_cursor_order_mismatch, history_invalid_request,
-    history_invalid_timeref, history_relevance_unavailable, history_shard_unavailable,
+    history_cursor_order_mismatch, history_invalid_request, history_invalid_timeref,
+    history_shard_unavailable,
 };
+use crate::query_dispatcher::read_view::{AuxEpochPinsV1, ReadViewRequestV1};
 use crate::query_dispatcher::routes::history_relevance::execute_history_relevance;
 use crate::query_dispatcher::selection::resolve_optional_selection;
 use crate::query_dispatcher::text_plane::{
@@ -40,24 +41,9 @@ use crate::query_dispatcher::text_plane::{
 };
 use crate::query_dispatcher::timeref::{parse_history_timeref_ms, unix_seconds_from_ms};
 use crate::query_dispatcher::window::top_k_limit;
-use crate::readiness::{AuxRead, HistoryAuthorityState, history_diff_search_text};
-use crate::{Ledger, lower_lexical_text_query};
-
-/// How one history page is produced, decided under the ledger's read lock.
-enum HistoryExecution {
-    /// Scan the snapshot; the text expression is a filter.
-    Recency,
-    /// Score the text expression on the epoch's text index, acquired under
-    /// the same read lock so the epoch cannot be pruned between the read
-    /// and the open.
-    Relevance(Arc<dyn HistoryTextSearcher>),
-}
+use crate::readiness::{HistoryAuthorityState, history_diff_search_text};
 
 impl SearchPlaneDispatcher {
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the ledger read guard is held across the text index acquire on purpose: a mutation pruning the epoch takes the write lock only after this read releases, so the epoch it found retained is the epoch it opens"
-    )]
     pub(crate) fn history(
         &self,
         request: &HistoryQueryRequest,
@@ -78,38 +64,30 @@ impl SearchPlaneDispatcher {
         .ok_or_else(|| {
             CoreError::InvalidContract("history: generation selector required".to_string())
         })?;
-        let (read, execution) = {
-            let guard = self.ledger.read().map_err(|_poisoned| {
-                CoreError::Storage("search-plane ledger poisoned".to_string())
-            })?;
-            let read = resolve_history_read(
-                &guard,
-                &pin,
-                &lowered,
-                request.cursor.as_ref().map(|cursor| cursor.aux_epoch),
-                Instant::now(),
-            )?;
-            let execution = match request.order {
-                HistoryOrderV1::Recency => HistoryExecution::Recency,
-                HistoryOrderV1::Relevance => {
-                    HistoryExecution::Relevance(self.acquire_history_text(&pin, read.epoch)?)
-                }
-            };
-            (read, execution)
-        };
+        let view = self.acquire_read_view(
+            &ReadViewRequestV1::declare("history", QueryRouteV1::History, Some(&lowered), &pin)
+                .with_epochs(AuxEpochPinsV1 {
+                    history: request.cursor.as_ref().map(|cursor| cursor.aux_epoch),
+                    runtime: None,
+                    structural: None,
+                })
+                .with_history_text(request.order == HistoryOrderV1::Relevance),
+        )?;
+        let read = view.history()?;
+        ensure_history_shards_ready(&read.state, &lowered)?;
         budget.checkpoint("history:execute")?;
-        let page = match execution {
-            HistoryExecution::Recency => execute_history_query(
+        let page = match request.order {
+            HistoryOrderV1::Recency => execute_history_query(
                 &lowered,
                 &read.state,
                 read.epoch,
                 request.text_query.top_k,
                 request.cursor.as_ref(),
             )?,
-            HistoryExecution::Relevance(searcher) => execute_history_relevance(
+            HistoryOrderV1::Relevance => execute_history_relevance(
                 &lowered,
-                &read,
-                searcher.as_ref(),
+                read,
+                view.history_text()?.as_ref(),
                 request.text_query.top_k,
                 request.cursor.as_ref(),
                 budget,
@@ -125,27 +103,6 @@ impl SearchPlaneDispatcher {
             examined: page.examined,
             next_cursor: page.next_cursor,
         })
-    }
-
-    /// The epoch's text index handle, from the registry the composition
-    /// root wired; refused typed when it wired none.
-    fn acquire_history_text(
-        &self,
-        pin: &GenerationPin,
-        epoch: AuxEpochV1,
-    ) -> Result<Arc<dyn HistoryTextSearcher>, CoreError> {
-        let parts = self
-            .history_text
-            .as_ref()
-            .ok_or_else(history_relevance_unavailable)?;
-        parts.acquire(
-            &AuxiliaryGenerationKeyV1 {
-                repo_id: pin.repo_id.clone(),
-                revision_id: pin.revision_id.clone(),
-                generation: pin.manifest_generation,
-            },
-            epoch,
-        )
     }
 }
 
@@ -222,39 +179,9 @@ struct HistoryShardRequirements {
     diff_hunks: bool,
 }
 
-/// The history snapshot a query scans, taken under the ledger lock and
-/// scanned after it is released.
-///
-/// A fresh walk reads the current epoch, a continuation the epoch its
-/// cursor names (refused typed when it is no longer retained or never
-/// existed).
-pub(super) fn resolve_history_read(
-    ledger: &Ledger,
-    pin: &GenerationPin,
-    query: &LqQuery,
-    cursor_epoch: Option<AuxEpochV1>,
-    now: Instant,
-) -> Result<AuxRead<HistoryAuthorityState>, CoreError> {
-    let Some(read) = ledger.history_read_at(
-        &pin.repo_id,
-        &pin.revision_id,
-        pin.manifest_generation,
-        cursor_epoch,
-        now,
-    )?
-    else {
-        let lexical_materialized = ledger.track_materialized(
-            &pin.repo_id,
-            &pin.revision_id,
-            SearchPlaneTrackKind::Lexical,
-        );
-        return Err(history_absent_error(pin, lexical_materialized));
-    };
-    ensure_history_shards_ready(&read.state, query)?;
-    Ok(read)
-}
-
-fn ensure_history_shards_ready(
+/// Every shard `query` reads must be materialized in the pinned snapshot;
+/// a missing one is refused typed before the scan.
+pub(super) fn ensure_history_shards_ready(
     state: &HistoryAuthorityState,
     query: &LqQuery,
 ) -> Result<(), CoreError> {
@@ -987,8 +914,8 @@ mod history_page_tests {
     };
     use quanta_index_core::CoreError;
 
-    use super::{HistoryPage, execute_history_query, resolve_history_read};
-    use crate::readiness::{HistoryAuthorityState, Ledger};
+    use super::{HistoryPage, ensure_history_shards_ready, execute_history_query};
+    use crate::readiness::{AuxRead, HistoryAuthorityState, Ledger};
 
     type TestRes = Result<(), Box<dyn std::error::Error>>;
 
@@ -1096,6 +1023,29 @@ mod history_page_tests {
         cursor: Option<&HistoryCursor>,
     ) -> Result<HistoryPage, CoreError> {
         execute_history_query(&query(kind), state, AuxEpochV1::new(1), top_k, cursor)
+    }
+
+    /// The history snapshot the route would pin for `pin` at
+    /// `cursor_epoch` (current when `None`), with `query`'s shards proven,
+    /// read straight from the ledger the way the read view reads it.
+    fn resolve_history_read(
+        ledger: &Ledger,
+        pin: &quanta_index_contract::GenerationPin,
+        query: &LqQuery,
+        cursor_epoch: Option<AuxEpochV1>,
+        now: Instant,
+    ) -> Result<AuxRead<HistoryAuthorityState>, CoreError> {
+        let read = ledger
+            .history_read_at(
+                &pin.repo_id,
+                &pin.revision_id,
+                pin.manifest_generation,
+                cursor_epoch,
+                now,
+            )?
+            .ok_or_else(|| CoreError::Storage("history state missing".to_string()))?;
+        ensure_history_shards_ready(&read.state, query)?;
+        Ok(read)
     }
 
     #[test]

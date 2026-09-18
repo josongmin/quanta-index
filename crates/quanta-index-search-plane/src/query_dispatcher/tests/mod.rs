@@ -10,6 +10,7 @@ mod hybrid_seed;
 mod lexical;
 mod metrics;
 mod planning;
+mod read_view;
 mod repo_map;
 mod rev_at_time;
 mod runtime_metadata;

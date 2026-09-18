@@ -88,6 +88,26 @@ crate quanta_index_core
 │   │   ├── struct MetricPointV1: pub
 │   │   ├── trait MetricSourcePort: pub
 │   │   └── enum MetricValueV1: pub
+│   ├── mod read_view: pub
+│   │   ├── mod declare: pub(self)
+│   │   │   ├── struct LeafReads: pub(self)
+│   │   │   └── enum QueryRouteV1: pub
+│   │   ├── mod domain: pub(self)
+│   │   │   ├── enum ReadDomainV1: pub
+│   │   │   ├── struct RepoMetadataAuthoritiesV1: pub
+│   │   │   ├── enum RepoMetadataAuthorityV1: pub
+│   │   │   └── struct RequiredDomainsV1: pub
+│   │   ├── mod errors: pub(self)
+│   │   │   └── enum ReadViewRefusedError: pub
+│   │   ├── mod identity: pub(self)
+│   │   │   ├── struct LexicalArtifactIdentityV1: pub
+│   │   │   ├── struct ReadIdentityV1: pub
+│   │   │   ├── struct SemanticProfileV1: pub
+│   │   │   └── struct TextNormalizerVersionV1: pub
+│   │   └── mod predicate: pub(self)
+│   │       ├── enum LexicalPredicateAliasV1: pub
+│   │       ├── enum LexicalPredicateFamilyV1: pub
+│   │       └── enum LexicalPredicateV1: pub
 │   ├── mod repomap: pub
 │   │   ├── mod inbound: pub(self)
 │   │   │   └── trait RepoMapQueryPort: pub

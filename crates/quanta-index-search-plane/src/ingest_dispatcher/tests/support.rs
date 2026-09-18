@@ -497,6 +497,14 @@ impl quanta_index_core::LexicalSearcher for PinnedLexicalHandle {
         1
     }
 
+    fn artifact_identity(&self) -> quanta_index_core::LexicalArtifactIdentityV1 {
+        quanta_index_core::LexicalArtifactIdentityV1 {
+            manifest_digest: "pin-only".to_string(),
+            normalizer: quanta_index_core::TextNormalizerVersionV1 { major: 0, minor: 0 },
+            repo_metadata: quanta_index_core::RepoMetadataAuthoritiesV1::NONE,
+        }
+    }
+
     fn search_constrained(
         &self,
         _query: &quanta_index_contract::LqQuery,
