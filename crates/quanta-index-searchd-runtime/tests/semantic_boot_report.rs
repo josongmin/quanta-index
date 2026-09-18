@@ -14,11 +14,12 @@ use std::path::{Path, PathBuf};
 use quanta_index_contract::{
     BatchIngestMode, CapabilityStatusV1, EmbeddingDistanceMetric, EmbeddingId,
     EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, ManifestGeneration,
-    OwnerDocKind, RepoId, RepoRelativePath, RevisionId, SearchScopeKey, SearchScopeSurface,
-    SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope, SourceRoleV1,
-    lex::LanguageCode,
+    OwnerDocKind, RepoId, RepoRelativePath, RevisionId, SearchPlaneTrackKind, SearchScopeKey,
+    SearchScopeSurface, SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
+    SourceRoleV1, lex::LanguageCode,
 };
 use quanta_index_core::GenerationStorageKeyV1;
+use quanta_index_core::domains::generation::GenerationQuarantineReasonV1;
 use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::semantic_boot::SemanticMigrationOutcome;
 use quanta_index_searchd_runtime::build_runtime;
@@ -149,11 +150,16 @@ fn build_config(state_root: &Path) -> SearchdConfig {
     SearchdConfig::with_ingest_socket_override(config, ingest_socket)
 }
 
-/// A corrupted generation nothing activates is inventoried, not fatal.
+/// A corrupted generation nothing activates and nothing retains is an
+/// orphan, not fatal and not seeded.
 ///
 /// Boot proves the active set only (QI-BB-026), and this state root has
-/// none. The door that opens the generation refuses it;
-/// `e2e_boot_quarantine` proves that end to end.
+/// none. The generation was built straight through the adapter, so the
+/// durable search-corpus authority never recorded it: boot lists it as an
+/// orphan (QI-BB-003) without looking at its content, seeds nothing, and a
+/// pin to it answers `UNKNOWN_GENERATION`. The door that opens a retained
+/// corrupt generation refuses it; `e2e_boot_quarantine` proves that end to
+/// end.
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
@@ -195,10 +201,31 @@ fn runtime_boot_inventories_a_corrupted_inactive_semantic_generation() -> TestRe
     std::fs::write(&manifest_path, &tampered)?;
 
     let runtime = build_runtime(build_config(&state_root))?;
-    assert_eq!(runtime.semantic_boot.seed.sealed_generations, 1);
+    assert_eq!(runtime.semantic_boot.seed.sealed_generations, 0);
     assert_eq!(runtime.semantic_boot.seed.quarantined_generations, 0);
-    assert_eq!(runtime.boot_inventory.semantic.sealed_generations, 1);
+    assert_eq!(runtime.boot_inventory.semantic.sealed_generations, 0);
     assert!(runtime.boot_inventory.semantic.quarantined.is_empty());
+    // The runtime names directories under the canonical state root.
+    let generation_dir = std::fs::canonicalize(
+        manifest_path
+            .parent()
+            .ok_or("the manifest lives in its generation directory")?,
+    )?;
+    let orphaned: Vec<(SearchPlaneTrackKind, &Path, GenerationQuarantineReasonV1)> = runtime
+        .boot_inventory
+        .semantic
+        .orphaned
+        .iter()
+        .map(|entry| (entry.track, entry.path.as_path(), entry.reason))
+        .collect();
+    assert_eq!(
+        orphaned,
+        vec![(
+            SearchPlaneTrackKind::Semantic,
+            generation_dir.as_path(),
+            GenerationQuarantineReasonV1::Orphaned
+        )]
+    );
     assert_eq!(
         runtime.boot_inventory.active_pairs_validated, 0,
         "nothing is active, so boot proves nothing"

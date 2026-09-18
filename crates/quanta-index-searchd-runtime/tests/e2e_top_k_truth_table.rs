@@ -53,7 +53,12 @@ struct Route {
 /// be measuring the wrong thing.
 const LEXICAL_QUERY: &str = "needle";
 const SYMBOL_QUERY: &str = "symbol.has.name(needle)";
-const HISTORY_QUERY: &str = "type:commit needle";
+/// The history query names a whole token of the fixture's commit message.
+///
+/// The message is `fix: sample history alpha_content_needle`; history
+/// keywords match whole folded tokens (QI-BB-011/023: one tokenizer for
+/// every text route, `_` is a token character), not substrings.
+const HISTORY_QUERY: &str = "type:commit alpha_content_needle";
 const RUNTIME_QUERY: &str = "dirty:only needle";
 const STRUCTURAL_QUERY: &str = "match { function_item { { identifier :[name] } } }";
 
