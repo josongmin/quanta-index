@@ -309,7 +309,7 @@ gate BLOCK은 실패가 아니라 확정된 설계 사실이다. BLOCK을 우회
 | ID | 상태 | 근거 |
 | --- | --- | --- |
 | W0 | **passed** | G0-L/G0-S/G0-C passed, G0-R baseline pinned(cooperative-only). §3 참조. timing 재측정만 `blocked: contended-host` |
-| W1 | in_progress | **QI-BB-011 Unicode normalizer(§3.33)** + **QI-BB-013 search-plane 3 monolith 분할(§3.32)** 완료. 남은 것: snake/camel sub-token 확장(LEX-00, 제품 결정), route×predicate `RequiredDomains`(plan §5.6) |
+| W1 | in_progress | **QI-BB-011 Unicode normalizer(§3.33)** + **QI-BB-013 search-plane 3 monolith 분할(§3.32)** + **route×plan `RequiredDomains` + `QueryReadView`(§3.44)** 완료. 남은 것: snake/camel sub-token 확장(LEX-00, 제품 결정) |
 | W2 | in_progress | QI-BB-029 preflight(§3.11) + QI-BB-026 boot inventory/quarantine(§3.13) + **quarantine control surface(§3.31: live inventory + as-listed discard, control IPC/SDK/CLI)** + QI-BB-032 idempotency catalog(§3.16) + QI-BB-020 auxiliary authority rows(§3.19) 완료. + **aux read epoch(§3.37: epoch-named snapshot, cursor 연속은 시작 epoch에서, retention bounded)** 완료. 남은 것: 없음(W2 항목 전부 착지; runtime-metadata의 structural epoch wire 노출·epoch metric은 §3.37 한계) |
 | W3 | in_progress | lexical hard-link(§3.4) + sidecar 증분(§3.4.1) + semantic hard-link(§3.4.2) + physical GC(§3.9) + lexical sealed manifest(§3.10) + semantic sealed manifest/QI-BB-017(§3.14) + QI-BB-021 ingest resource envelope(§3.18) + QI-BB-027 ANN sealed contract(§3.23) + **QI-BB-016 lexical writer envelope(§3.26)** 완료. + **QI-BB-027 보완 ANN append per delta seal(§3.35)** 완료. + **QI-BB-006 완결 sharded text-authority(§3.38)** 완료. + **QI-BB-021 완결 scope-streamed embed→append(§3.41)** 완료. 남은 것: 없음(W3 항목 전부 착지) |
 | W4 | in_progress | QI-BB-004 scope cap(§3.6) + SnapshotRegistry(§3.7) + QI-BB-005 execution budget(§3.8) + QI-BB-024 regex cache bounds(§3.17) + **QI-BB-025 보완 #4 runtime/structural window(§3.30)** + **keyset cursor + streaming collector(§3.39)** 완료. 남은 것: 없음(W4 항목 전부 착지; history selector의 collector 이관은 §3.39 한계 b) |
@@ -2185,6 +2185,46 @@ exact scan은 deadline/disconnect 뒤에도 끝까지 돌았다(§3.29 남은 �
 않음. (e) `cluster_membership_batch_read`는 budget 없이(bounded read, route checkpoint만). (f) lexical `BudgetProbe`와 semantic `RowBudgetProbe`는 별개 —
 core로 probe 하나를 lift하는 후속. **W5 항목 전부 착지**(phase 1 §3.12, phase 2 §3.29, 014 §3.27/§3.40, 015 §3.28, phase 3 §3.43).
 
+## 3.44 W1/W4 — 요청마다 read view 하나: route×plan이 필요한 domain을 선언하고, 한 번에 획득하며, 없는 domain은 route별 typed not-ready다 (구현 완료)
+
+**진단 확정**: plan §5.6/§7.1의 `RequiredDomains`/`QueryReadView`가 없었다 — 각 route가 `readiness_gate.rs`/`snapshots.rs`/`selection.rs`로 필요한
+것을 ad hoc으로 잡고, aux authority가 필요한 predicate(`repo:has.commit…`, `rev:at.time`, dirty/runtime, ownership/contributor)는 **평가 도중**
+ledger에 손을 댔다. 없는 authority는 첫 read가 일어나는 곳에서 그 read의 code로 실패했다.
+
+**구현** (43 files, +3,940/−612):
+
+- **core `domains/read_view/`**: `ReadDomainV1 { LexicalTrack, SemanticTrack, StructuralChunkUniverse, RuntimeOverlay, History, RepoMap,
+  RepoMetadata(CommitRecency|Meta|Topic|Description|FileOwnership|Contributor) }`, bit-set `RequiredDomainsV1`, `QueryRouteV1` + 순수 함수
+  `declare_required_domains_v1(route, plan)`(filter/leaf exhaustive match, wildcard 없음); **predicate 이름의 유일한 enumeration** `LexicalPredicateV1`/
+  `LexicalPredicateAliasV1`(각각 `read_domain()`) — lexical `PREDICATE_REGISTRY`/`PREDICATE_ALIASES`가 core variant를 key로(두 번째 목록 없음; dump bin과
+  `check-dsl-capability-truth.py` 출력 불변); `ReadIdentityV1 { pin, domains, lexical_artifact, semantic_artifact, aux_epochs, normalizer_version, profile }`
+  + `trace_details()`; code `RUNTIME_NOT_READY`, `READ_VIEW_GENERATION_MIX`, `READ_VIEW_DOMAIN_UNDECLARED` + repo-metadata `*_UNAVAILABLE` 6개를 core로.
+  `LexicalSearcher::artifact_identity()`(manifest digest, normalizer version, materialized repo-metadata authority).
+- **search-plane `query_dispatcher/read_view/{mod,view,snapshots}.rs`**: `ReadViewRequestV1` → `acquire_read_view` → `QueryReadViewV1`(typed accessor);
+  한 요청의 모든 ledger read를 **guard 하나** 아래(lexical readiness, semantic validation+digest, history/runtime/structural을 cursor epoch에서, relevance의
+  history text index) → registry handle(획득은 private child, route에서 도달 불가). `readiness_gate.rs` 삭제; `rev_at_time.rs`는 ledger를 안 만짐(planner가
+  base pin에 대한 History-only selection view를 잡고 rebind → 실행 view는 stripped plan에서 선언); structural lexical leaf는 view의 handle 하나로;
+  runtime-metadata의 runtime+structural cut은 view의 두 domain; explain/semantic/hybrid/hybrid-seed trace에 `read_view.domains=…; read_view.epochs=…;
+  read_view.pin=…` + artifact/normalizer/profile. `AuxRead`가 `domain`+`generation`을 실어 cross-generation snapshot은 view가 거부.
+- **route별 typed not-ready, lane 실행 전**: history는 기존 pair(`HISTORY_GENERATION_NOT_READY`/`HISTORY_PRODUCER_UNAVAILABLE`), `repo:has.commit.after`는
+  RepoMetadata(CommitRecency) read로 `HISTORY_REPO_COMMIT_RECENCY_UNAVAILABLE` 유지, runtime authority 없는 runtime-metadata는 generic `NOT_READY` →
+  `RUNTIME_NOT_READY`(metric class 불변), chunk universe 없으면 `STR_GENERATION_NOT_READY`. repo-metadata check는 lexical handle을 **열지만**(identity가
+  부재의 증명) search는 돌지 않음; history 거부는 아무것도 열지 않음. 순서 변화: plan lowering/validate 뒤 acquire(§7.1) — not-ready generation의
+  malformed query는 `NOT_READY`가 아니라 plan error.
+
+**검증**:
+
+| 기준 | 검증 |
+| --- | --- |
+| 선언 table이 DSL registry의 모든 predicate를 exhaustive하게 덮음(선언 없는 leaf = test 실패); runtime predicate ⇒ RuntimeOverlay+StructuralChunkUniverse; history ⇒ History; plain keyword ⇒ Lexical만; `rev:at.time`은 선택 route(Lexical/Explain)에서 History | `core/tests/read_view_declaration.rs` 13, lexical registry parity |
+| mock port + call counter: plain lexical은 lexical snapshot만(semantic opener 0, aux read 0); hybrid는 둘; History 필요 predicate가 history authority 없는 generation에서 `HISTORY_*` typed + **lane 실행 0**; cross-generation aux mix 거부 | `query_dispatcher/tests/read_view.rs` 7 |
+| **e2e**: lexical+semantic seal, history 미ingest → history predicate query는 typed not-ready, plain query는 서빙; trace가 view의 domain/epoch를 이름; truth table/hellgate 불변 | `searchd-runtime/tests/e2e_read_view.rs` 3 |
+| 회귀·rail | workspace(searchd-runtime 제외) **2,114/0**; searchd-runtime **255/0**(38 target); `just rust-clippy` 0; fmt; hexagonal/module/error-shape/derive/no-allow/digest/cargo-toml/workspace-lints/ignored-policy/test-authority; semgrep 0; cargo-modules update(core +20); public-api 불변; `check-dsl-capability-truth.py` in sync. main rebase(59fa681 위, 충돌 0) 후 check + baselines 불변 + unit 467 + e2e 11 target 75 + rust-doc + `just rust-clippy` 0 |
+
+**정직한 한계·후속**: (a) RSS/latency 미측정. (b) RepoMap route의 view는 identity-only(port가 곧 domain), 그 응답엔 trace surface 없음. (c)
+`lowering.rs::structural_route_supports_predicate`는 아직 문자열로 이름을 enumerate — core enum으로 바꾸면 SG structural route가 `repo.contains.file/path`·
+`file.contains.content`로 넓어지는 행동 변화라 parity 증명이 필요(미착수). (d) `HistoryPageSelector` vs `KeysetPageCollector` 중복(§3.39 b) 그대로.
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -2252,4 +2292,5 @@ core로 probe 하나를 lift하는 후속. **W5 항목 전부 착지**(phase 1 �
 | 2026-09-18 | 3b785b4 | `just rust-profile verify-rust` (nohup) | RED at `rust-doc` — **2,336 tests passed / 0 failed**(E/H/I/G/J 통합), 이후 rustdoc: `readiness/ledger.rs` doc이 private `AuxSnapshots::retained_epochs`를 intra-doc link(§3.42) → link 제거(다음 commit); 이후 verify 전 `just rust-doc`을 먼저 돌림 |
 | 2026-09-18 | worktree M (bb52143→24caa1f rebase, 충돌 1) | agent: core/search-plane/searchd/harness/semantic 686 + daemon e2e 전체 252 + `just rust-clippy` 0 + fmt + 정책 rail + semgrep 0; rebase 후 baselines 불변 + unit 695 + e2e 88 + rust-doc + `just rust-clippy` 0 | 전부 green (§3.43) |
 | 2026-09-18 | 81a30ad | `just rust-profile verify-rust` (nohup) | **GREEN** — exit 0, **2,344 passed / 0 failed** (sharded sidecar + keyset cursor + shared socket + streamed embed + history relevance + dense-lane budget 통합; clippy·semgrep·deny·machete·bench-build·doc·policy·public-api·hexagonal·test-authority 포함) |
+| 2026-09-18 | worktree K (cad9416→59fa681 rebase) | agent: workspace(runtime 제외) 2,114 + searchd-runtime 255 + `just rust-clippy` 0 + fmt + 정책 rail + semgrep 0 + cargo-modules update + public-api 불변 + dsl-capability-truth; rebase 후 baselines 불변 + unit 467 + e2e 75 + rust-doc + `just rust-clippy` 0 | 전부 green (§3.44) |
 | 2026-09-18 | worktree 011 (7a5ce5e→034c4fd rebase) | agent: workspace clippy(0) + lexical 15 target·lq-norm 88·search-plane 285 + e2e text_route_hellgate 8·perf_chaos 43·dsl_scenarios 8·lexical_full_fidelity 1·dual_syntax_parity 4·full_corpus 4 + harness 77 + hexagonal/semgrep/module/error-shape/cargo-toml/derive/test-authority/deny; rebase 후 lexical carryforward 6 + goldens 8 | 전부 green (§3.33) |
