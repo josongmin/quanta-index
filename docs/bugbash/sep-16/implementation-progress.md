@@ -2290,6 +2290,43 @@ zero-lane-call typed 거부, hybrid_seed 동일 계약 2). core cargo-modules ba
 **검증(worktree, rebase 후)**: check, `just rust-clippy` 0, `just rust-doc`, fmt, core+search-plane+lexical unit, e2e 5. 통합 main verify는 wave A
 전체 착지 후 §5에 기록.
 
+## 3.47 QI-BB-011 완결 + QI-BB-023 보완 #3 — 텍스트 정규화는 crate 하나, history 두 order는 같은 row predicate (fix wave A6, efeea9a)
+
+§4 감사가 지적한 것: (a) lq-norm `apply_case_to_leaf`가 `String::to_lowercase()`로 **두 번째 fold**를 했다(final sigma: `ΟΔΟΣ case:no` → `οδος`,
+adapter는 per-char fold `οδοσ` → `case:no` 유무로 결과가 갈림); golden이 DSL 파이프라인을 우회했고 daemon e2e에 Unicode가 없었다. (b) history
+`recency`와 `relevance`가 같은 text filter를 다른 의미로 평가했다(recency = raw substring, relevance = BM25 token) — 같은 질의에 row 집합이 달랐고
+relevance score가 ingest 이력(tombstone이 남긴 `N`/`df`/`avgdl`)에 의존했다.
+
+**티켓 완료 기준 대조(코드 기준)**
+
+| 티켓 bullet | 판정 | 근거 |
+| --- | --- | --- |
+| QI-BB-011 보완 #1 "하나의 shared normalizer(NFC, case fold, token boundary)" | **MET** | 새 leaf crate `quanta-index-lq-text-normalizer`(`unicode-normalization`만 의존; `case.rs` `CaseMode`/`fold` = per-char `char::to_lowercase`, `tokens.rs` = 옛 `lexical/src/normalize.rs` 이동, `version.rs` `TEXT_NORMALIZER_VERSION = "2.0"` 불변). DSL은 더 이상 fold하지 않는다: `lq-norm normalizer/implementation.rs` `record_regex_case_flag`/`normalize_expr`(leaf 원문 유지), case 기본값은 `LqOptions::case_mode()` 하나(`ast.rs`)를 lexical(`lib.rs`, `filters.rs`, `phrase.rs`, `history_text_index/query.rs`)과 search-plane(`text_plane.rs`)이 읽는다. `(?i)` + 명시적 `case:yes`는 `UnsupportedCombo`로 typed 거부(이전엔 flag가 silent override). |
+| 보완 #2 "analyzer와 sidecar가 한 token stream" | MET(§3.33) + in-memory text plane으로 확장 | `text_plane.rs` `leaf_matches_text` — history/runtime-metadata plane의 `author:`/`committer:`/`message:`/`file:`/`diff.*:`/`lang:` pattern이 이제 query case mode 아래 NFC substring(이전: `case:no` 철자일 때만 ASCII lowercase, 아니면 exact). |
+| 보완 #3 "byte vs text semantics 문서화" | MET | normalizer `lib.rs:46-63`, contract `history_order.rs:14-41`, `text_plane.rs` module doc; e2e row `'foo.bar'`(raw) vs `foo.bar`(token). |
+| 완료 기준 "golden corpus(구두점·snake/camel·accented·NFC/NFD·CJK·emoji) leaf별" | **MET(DSL 경로)** | `searchd-runtime/tests/e2e_unicode_text_semantics.rs::every_syntax_case_spelling_and_route_answers_the_golden_set` — 13 doc × 29 golden row(Greek final sigma, `café`/`CAFÉ`/`cafe\u{301}`, `検索`, `ok👍done`, `\u{212A}elvin`, `foo.bar`/`foo_bar`/`fooBar`, raw string) × Native/Sourcegraph × {as written, `index:no`, `case:no`, 둘 다} exact set; `a_regex_case_flag_beside_case_yes_is_refused_typed`. **b0485b5에서 8 spelling fail**(`ΟΔΟΣ case:no` → `{greek_lower_final}`), 지금 pass. adapter golden 80행(§3.33)은 유지. |
+| QI-BB-023 보완 #3 "order/tie-break 명시, filter 의미 동일" | **MET** | 두 order가 같은 predicate: `routes/history.rs` `history_commit_matches`/`history_diff_matches`(recency scan)와 `routes/history_relevance.rs` `admit_predicate`(relevance는 index가 sound over-approximation을 compile — `history_text_index/query.rs` `compile`/`approximate`/`conjunction`/`disjunction` — 한 뒤 같은 predicate로 admit). raw string 규칙: scored clause가 bound하면 filter(`needle AND 'x'`), row가 raw string만으로 match할 수 있으면 relevance는 `HISTORY_TEXT_QUERY_UNSCORABLE` typed 거부, recency는 filter로 serve. tests `recency_and_relevance_count_the_same_rows_for_the_same_text_query`(search-plane; before: `{1,2,4}` vs `{1,3,4}`), e2e `e2e_history_text_predicate.rs::recency_and_relevance_count_the_same_rows_for_the_same_query`(8 query × 두 order → row·exact total 동일). |
+| 완료 기준 #2 "ingest 순서/restart 무관 동일 결과·cursor" | **MET** | `history_text_index/publish.rs` `compact_superseded`(row를 잃은 segment는 commit 후 재작성, `segments_with_superseded_docs`가 0임을 검증 — 남으면 typed `Storage`), `bm25.rs` 통계는 live row만. test `scores_depend_on_the_live_rows_not_on_the_ingest_history`(fresh full build vs full+rewrite epoch+verbatim re-upsert epoch → `(key, time, score bits)` bit-identical, tombstone 0; before: score bits 달랐음). restart 결정성은 기존 `e2e_history_relevance`/`e2e_history_order` 유지. |
+| 완료 기준 #1 recency 정렬/tie-break | MET(기존 `HistoryRank`, 불변) | |
+| 완료 기준 #3 latency/RSS budget | **BLOCKED** | budget rail 없음(host); recency는 여전히 per-query full scan(이제 tokenizing). |
+| 보완 #1 author/committer 색인 | **미착수(범위 밖, §3.42(b) 결정 유지)** | |
+
+**설계 결정**: core port가 아닌 shared leaf crate(search-plane이 recency scan을 위해 메모리에서 tokenize해야 하고 lq-norm이 `case:` → `CaseMode`를
+매핑해야 함). BM25 결정성은 live-statistics provider(토큰 수 column + format bump 필요) 대신 publish 시 compaction(engine-exact `N`/`df`/`avgdl`);
+"segment 공유"의 의미는 "epoch의 upsert가 건드리지 않은 segment"로 좁아짐(`an_incremental_epoch_shares_unchanged_segments_by_inode` add-only fixture로 재고정).
+hexagonal allowlist를 사실대로 갱신(lexical → lq-positions/regex/trigram/text-normalizer, search-plane → lq-regex/text-normalizer, lq-norm → text-normalizer).
+wire inventory의 normalizer stamp row는 새 crate 경로로(값 2.0 불변).
+
+**검증(worktree, 0f1385c 위 rebase, cold build)**: `just rust-clippy` 0, `just rust-doc`, fmt, check, semgrep 18 rule/0, 정책 lint 11개, public-api/cargo-modules 불변;
+normalizer 9, lq-norm 88+2, lexical 105 + integration 15 binary, search-plane 317+38, daemon e2e 143(13 suite). coordinator 독립 재실행: lq-norm 88/88 + property 2/2,
+normalizer 9/9, `e2e_unicode_text_semantics` + `e2e_history_text_predicate` 각 1/1·2/2 pass.
+
+**후속(이름 붙임)**: (a) Sourcegraph route는 DSL normalizer를 안 거친다(`lowering.rs:44`가 bridge regex를 그대로 engine에) → `/(?i)δ/`는 그 syntax에서
+`LEX_REGEX_DIALECT_UNSUPPORTED`로 fail-closed(pre-existing); `(?i)` e2e row는 Native만. (b) `lint-hexagonal-boundaries.py:184` `path_dependencies`가
+`{version, path}` dep 이름을 underscore로 만들어 internal-dep allowlist가 사실상 미집행 — `-`/`_` 수정 필요(wave B). (c) DSL spec(`docs/plans/...dsl.md:352/355`)은
+literal/regexp 기본 case = sensitive, 코드 기본은 folded(lexical route가 원래 그렇게 동작) — spec/code 결정 필요(docs/plans는 다른 세션 소유).
+(d) `file:`이 lexical route에선 regex, history/runtime plane에선 NFC substring — cross-route 차이. (e) recency scan이 record마다 allocating tokenize.
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -2312,7 +2349,7 @@ zero-lane-call typed 거부, hybrid_seed 동일 계약 2). core cargo-modules ba
 | QI-BB-008 | P2 | §3.25 | closed | activation record 무digest, same-pair retention만, legacy bare-JSON read shim(one-shot) | — |
 | QI-BB-009 | P2 | §3.18 | gaps | age cap·global byte cap 없음(좁힌 정책이 retained namespace에 소급 안 됨); open이 entry당 `metadata()`; provider failure counter 미scrape | A7 |
 | QI-BB-010 | P2 | §3.1 | **not closed** | runner가 HEAD에서 깨짐(`--source-fingerprint` 미전달); `git rev-parse --short \|\| unknown` default 치환; artifact 스키마에 QPS/RSS/disk/GC 없음; stale gate 없음; 측정 자체는 host blocked | A8 |
-| QI-BB-011 | P2 | §3.33 | gaps | lq-norm의 `String::to_lowercase()` 두 번째 fold(final-sigma) → `case:no` 유무로 결과 갈림; golden이 DSL 파이프라인 우회; e2e Unicode 없음 | A6 |
+| QI-BB-011 | P2 | §3.33/§3.47 | **closed(A6, efeea9a)** | ~~두 번째 fold~~ → normalizer crate 하나, DSL은 fold 안 함, `(?i)`+`case:yes` typed 거부; DSL 경로 golden e2e 29 row(8 spelling fail-before). 남은 것: Sourcegraph route의 `(?i)`는 fail-closed 유지(후속 a) | — |
 | QI-BB-012 | P2 | (다른 세션) | **not closed** | README `:28/:172-175`, ssot `channel-architecture.md:85,340`이 구현과 정면 모순 | 다른 세션 |
 | QI-BB-013 | P3 | §3.32 | gaps | search-plane만 분할; `lexical/src/lib.rs` 8,311→10,363줄, `semantic/build.rs` 증가; compile-time 측정 없음; `too_many_lines = allow` | wave B |
 | QI-BB-014 | P2 | §3.27/§3.40 | gaps | 기존 dir/root 0755 허용(0700 강제 아님); umask test 없음; `--state-root`가 socket-access env silent drop | A7 |
@@ -2324,7 +2361,7 @@ zero-lane-call typed 거부, hybrid_seed 동일 계약 2). core cargo-modules ba
 | QI-BB-020 | P1 | §3.19/§3.37 | gaps(**WRONG**) | activation이 global read guard 아래 dataset 전량 해시(cross-repo ingest/query 정지); history-text cold open under lock; reconcile-fail-after-durable; I/O fault injection 없음 | A2 |
 | QI-BB-021 | P2 | §3.18/§3.41 | gaps | process envelope 미선언·RSS 미측정; 정책 3분할 | A7 |
 | QI-BB-022 | P2 | §3.24/§3.36 | gaps(**WRONG**) | hybrid explain의 dense/RRF 축이 client payload 자기일관성 검사; hybrid 합성 규칙 미정의; filter/projection 기여 없음 | A8 |
-| QI-BB-023 | P2 | §3.20/§3.37/§3.42 | gaps(**WRONG**) | recency/relevance가 같은 filter를 다른 의미로 평가; relevance score가 ingest 이력 의존; author/committer 미색인 | A6 |
+| QI-BB-023 | P2 | §3.20/§3.37/§3.42/§3.47 | gaps → **predicate 동일·score 결정성 MET(A6)** | ~~두 order가 filter를 다른 의미로~~ → 한 predicate(e2e 8 query × 2 order 동일); ~~score가 ingest 이력 의존~~ → publish compaction으로 live-row 통계(bit-identical test). 남은 것: author/committer 색인(보완 #1, §3.42(b) 결정), latency/RSS budget(host) | — |
 | QI-BB-024 | P2 | §3.17 | gaps | broad regex의 per-query `BTreeSet<String>` + match당 TermQuery(RSS unbounded); bitmap 없음 | wave B |
 | QI-BB-025 | P1 | §3.5/§3.30/§3.39 | gaps | wire decode가 range 미검증(dispatcher 의존); 최대값 `has_more` 분기 e2e 미실행; SDK seed-budget 미게이트 | A8 |
 | QI-BB-026 | P1 | §3.13/§3.31 | gaps | content-손상 비활성 generation이 quarantine receipt/list에 없고 rollback 대상에서 제외 안 됨; semantic active 손상 boot e2e 없음 | A2(orphan), wave B |
