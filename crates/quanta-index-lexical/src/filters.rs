@@ -16,9 +16,10 @@
 use core::fmt;
 
 use quanta_index_contract::{
-    LqCase, LqCountBound, LqFileScope, LqFilter, LqOptions, LqType, LqVisibility, LqYesNoOnly,
+    LqCountBound, LqFileScope, LqFilter, LqOptions, LqType, LqVisibility, LqYesNoOnly,
 };
 
+use crate::normalize::CaseMode;
 use crate::symbol::{ResultSurface, SymbolPlannerError, resolve_result_surface};
 
 /// Pre-candidate repo constraint.
@@ -88,12 +89,13 @@ pub enum CasePolicy {
 }
 
 impl CasePolicy {
-    /// Lower an [`LqOptions::case`] into the planner's case policy.
+    /// Lower an [`LqOptions::case`] into the planner's case policy, through
+    /// the DSL's one default (`LqOptions::case_mode`).
     #[must_use]
     pub const fn from_options(options: &LqOptions) -> Self {
-        match options.case {
-            Some(LqCase::Sensitive) => Self::Sensitive,
-            Some(LqCase::Insensitive) | None => Self::Insensitive,
+        match options.case_mode() {
+            CaseMode::Sensitive => Self::Sensitive,
+            CaseMode::Folded => Self::Insensitive,
         }
     }
 

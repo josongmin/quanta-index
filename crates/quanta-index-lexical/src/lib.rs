@@ -46,7 +46,6 @@ mod budgeted_search;
 mod dense_admission;
 pub mod filters;
 pub mod history_text_index;
-mod normalize;
 pub mod phrase;
 pub mod plan;
 pub mod planner;
@@ -55,6 +54,10 @@ pub mod regex;
 pub mod symbol;
 mod text_authority;
 pub mod trigram_plan;
+
+/// The one text normalization contract (QI-BB-011), shared with the query DSL
+/// and the search plane; every text surface of this crate lowers through it.
+pub(crate) use quanta_index_lq_text_normalizer as normalize;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{File, OpenOptions};
@@ -3194,18 +3197,11 @@ fn map_trigram_error(context: &str, err: &TrigramError) -> CoreError {
     }
 }
 
-/// Typed refusal codes for a keyword or phrase literal the token surfaces
-/// cannot express.
-const LEX_TEXT_QUERY_NO_TOKENS: &str = "LEX_TEXT_QUERY_NO_TOKENS";
-const LEX_TEXT_QUERY_TOKEN_TOO_LONG: &str = "LEX_TEXT_QUERY_TOKEN_TOO_LONG";
-
+/// The typed refusal for a keyword or phrase literal the token surfaces
+/// cannot express; the code is the normalizer's, shared by every route.
 fn map_text_query_error(err: &TextQueryError) -> CoreError {
-    let code = match err {
-        TextQueryError::NoTokens => LEX_TEXT_QUERY_NO_TOKENS,
-        TextQueryError::TokenTooLong { .. } => LEX_TEXT_QUERY_TOKEN_TOO_LONG,
-    };
     CoreError::Typed {
-        code: code.to_string(),
+        code: err.code().to_string(),
         message: format!("lexical: {err}"),
     }
 }
@@ -5663,12 +5659,13 @@ fn rewrite_symbol_name_predicate_query(query: &LqQuery) -> Result<Option<LqQuery
 }
 
 impl TantivySearcher {
+    /// The DSL's one case default (`LqOptions::case_mode`), read here.
     fn is_case_sensitive(options: &LqOptions) -> bool {
-        matches!(options.case, Some(quanta_index_contract::LqCase::Sensitive))
+        Self::case_mode(options) == CaseMode::Sensitive
     }
 
     fn case_mode(options: &LqOptions) -> CaseMode {
-        CaseMode::from_case_sensitive(Self::is_case_sensitive(options))
+        options.case_mode()
     }
 
     /// Candidates a page needs: `top_k`, or `min(top_k, N)` under `count:N`.

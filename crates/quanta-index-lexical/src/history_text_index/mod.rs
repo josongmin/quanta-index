@@ -3,7 +3,7 @@
 //! Implements [`quanta_index_core::HistoryTextIndexPort`]: for every
 //! auxiliary epoch of a history generation, one immutable directory
 //! holding a commit-message index and a diff-hunk index, analyzed by the
-//! crate's one normalizer, sharing unchanged segments with the previous
+//! shared text normalizer, sharing unchanged segments with the previous
 //! epoch by hard link, and stamped with the normalizer version so an
 //! index built under another contract is rebuilt, never served.
 //!

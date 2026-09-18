@@ -193,12 +193,12 @@ value = 1
 
 [[artifact]]
 id = "lexical-text-normalizer-stamp"
-owner = "quanta-index-lexical"
+owner = "quanta-index-lq-text-normalizer"
 path = "(stamped into lexical-sealed-manifest, lexical-text-authority and history-text-epoch-manifest)"
 reproduction = "producer-rebuild"
 notes = "Unicode normalizer contract version (QI-BB-011). A generation stamped with another version is refused at open, activation and as a delta base; rebuild is the migration."
 [[artifact.version_constants]]
-file = "crates/quanta-index-lexical/src/normalize.rs"
+file = "crates/quanta-index-lq-text-normalizer/src/version.rs"
 name = "TEXT_NORMALIZER_VERSION"
 value = "2.0"
 

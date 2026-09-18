@@ -1,6 +1,6 @@
 //! The schema of one kind's index and how a document is written to it.
 //!
-//! The text field is analyzed by the crate's one normalizer
+//! The text field is analyzed by the shared text normalizer
 //! ([`crate::analyzer::NormalizingTokenizer`]) in both case modes, exactly
 //! as the corpus index is, so a keyword or phrase means the same tokens
 //! here as on the lexical route. The row identity (sha, path) and the

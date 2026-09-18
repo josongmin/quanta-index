@@ -3,8 +3,11 @@
 //! Idempotent: `normalize(normalize(x)) == normalize(x)` (byte-identical).
 //!
 //! Transforms per dsl.md §10:
-//! 1. Apply `LqOptions.case` to pattern leaves (case-fold the `Keyword` /
-//!    `Phrase` bodies when `case:no`; raw / regex / structural preserved).
+//! 1. Strip a leading `(?i)` from regex leaves and record it as `case:no`
+//!    on the options (refused as `UnsupportedCombo` when the query also
+//!    says `case:yes`). Leaf text is never folded here: the `case` option
+//!    only selects the text normalizer's mode, and the surface that
+//!    executes the query folds both sides once (QI-BB-011).
 //! 2. Flatten nested `LqExpr::All`/`LqExpr::Any` of the same kind (one level
 //!    deep — fixed-point after the recursive `normalize_expr` returns).
 //! 3. Sort commutative children (`All`, `Any`) by canonical key.
@@ -17,14 +20,15 @@
 //! is computed by [`crate::hasher`] after normalize completes.
 
 use crate::ast::{LqCase, LqDirective, LqExpr, LqFilter, LqLeaf, LqNormalizedQuery, LqOptions};
-use crate::errors::LqParseError;
+use crate::errors::{LqParseError, LqParseErrorCode, LqSpan};
 use crate::limits::MAX_FANOUT_PER_NODE;
 
 /// Normalize a parsed query into canonical form.
 ///
 /// Returns an error only if the normalize pass surfaces a deferred limit
-/// violation (e.g. fan-out after flattening). The `LqParseError` shape is
-/// shared with parse so callers see one typed surface.
+/// violation (e.g. fan-out after flattening) or a contradiction between a
+/// regex's leading `(?i)` and an explicit `case:yes`. The `LqParseError`
+/// shape is shared with parse so callers see one typed surface.
 pub fn normalize(mut q: LqNormalizedQuery) -> Result<LqNormalizedQuery, LqParseError> {
     // First pass: scan Regex leaves for `(?i)` prefix canonicalization and
     // mid-pattern flag rejection. Walks expr + filter-embedded leaves.
@@ -36,12 +40,32 @@ pub fn normalize(mut q: LqNormalizedQuery) -> Result<LqNormalizedQuery, LqParseE
         }
     }
     if saw_leading_i {
-        q.options.case = Some(LqCase::Insensitive);
+        record_regex_case_flag(&mut q.options, q.source_span)?;
     }
-    q.expr = normalize_expr(q.expr, q.options.case)?;
+    q.expr = normalize_expr(q.expr)?;
     sort_filters(&mut q.filters);
     sort_directives(&mut q.directives);
     Ok(q)
+}
+
+/// Record a regex's leading `(?i)` as the query-scoped `case:no`.
+///
+/// The option is what every executing surface reads, so the flag changes
+/// nothing about how a keyword beside the regex is matched: `case:no` is
+/// also the default. An explicit `case:yes` contradicts the flag and the
+/// query is refused rather than one of the two silently winning.
+fn record_regex_case_flag(options: &mut LqOptions, span: LqSpan) -> Result<(), LqParseError> {
+    match options.case {
+        Some(LqCase::Sensitive) => Err(LqParseError::new(
+            LqParseErrorCode::UnsupportedCombo,
+            span,
+            "a regex's leading `(?i)` contradicts `case:yes`; drop one of them",
+        )),
+        Some(LqCase::Insensitive) | None => {
+            options.case = Some(LqCase::Insensitive);
+            Ok(())
+        }
+    }
 }
 
 /// Walk `expr` and canonicalize regex inline-flag prefixes per dsl.md §6.2.
@@ -146,8 +170,8 @@ fn reject_mid_pattern_inline_flags(src: &str) -> Result<(), LqParseError> {
                     let term = bytes.get(j).copied();
                     if matches!(term, Some(b')' | b':')) {
                         return Err(LqParseError::new(
-                            crate::errors::LqParseErrorCode::ForbiddenSyntax,
-                            crate::errors::LqSpan::synthetic(0),
+                            LqParseErrorCode::ForbiddenSyntax,
+                            LqSpan::synthetic(0),
                             "mid-pattern inline regex flag is forbidden",
                         ));
                     }
@@ -160,32 +184,30 @@ fn reject_mid_pattern_inline_flags(src: &str) -> Result<(), LqParseError> {
     Ok(())
 }
 
-fn normalize_expr(expr: LqExpr, case: Option<LqCase>) -> Result<LqExpr, LqParseError> {
+/// Normalize one expression tree. Leaf text is carried verbatim: the
+/// `case` option is not applied here (see the module doc).
+fn normalize_expr(expr: LqExpr) -> Result<LqExpr, LqParseError> {
     match expr {
         LqExpr::Empty => Ok(LqExpr::Empty),
-        LqExpr::Leaf(leaf) => Ok(LqExpr::Leaf(apply_case_to_leaf(leaf, case))),
+        LqExpr::Leaf(leaf) => Ok(LqExpr::Leaf(leaf)),
         LqExpr::Not(inner) => {
-            let inner = normalize_expr(*inner, case)?;
+            let inner = normalize_expr(*inner)?;
             // Constant fold: NOT NOT x → x.
             if let LqExpr::Not(grandchild) = inner {
                 return Ok(*grandchild);
             }
             Ok(LqExpr::Not(Box::new(inner)))
         }
-        LqExpr::All(children) => normalize_n_ary(children, case, /*is_all=*/ true),
-        LqExpr::Any(children) => normalize_n_ary(children, case, /*is_all=*/ false),
+        LqExpr::All(children) => normalize_n_ary(children, /*is_all=*/ true),
+        LqExpr::Any(children) => normalize_n_ary(children, /*is_all=*/ false),
     }
 }
 
-fn normalize_n_ary(
-    children: Vec<LqExpr>,
-    case: Option<LqCase>,
-    is_all: bool,
-) -> Result<LqExpr, LqParseError> {
+fn normalize_n_ary(children: Vec<LqExpr>, is_all: bool) -> Result<LqExpr, LqParseError> {
     // 1. Recursively normalize each child.
     let mut normalized: Vec<LqExpr> = Vec::with_capacity(children.len());
     for c in children {
-        let nc = normalize_expr(c, case)?;
+        let nc = normalize_expr(c)?;
         normalized.push(nc);
     }
     // 2. Flatten: pull up same-kind nested vectors.
@@ -219,8 +241,8 @@ fn normalize_n_ary(
     }
     if flat.len() > MAX_FANOUT_PER_NODE {
         return Err(LqParseError::new(
-            crate::errors::LqParseErrorCode::LimitExceededFanout,
-            crate::errors::LqSpan::new(0, 0),
+            LqParseErrorCode::LimitExceededFanout,
+            LqSpan::new(0, 0),
             "fan-out exceeds 64 after normalize",
         ));
     }
@@ -228,24 +250,6 @@ fn normalize_n_ary(
         Ok(LqExpr::All(flat))
     } else {
         Ok(LqExpr::Any(flat))
-    }
-}
-
-fn apply_case_to_leaf(leaf: LqLeaf, case: Option<LqCase>) -> LqLeaf {
-    if !matches!(case, Some(LqCase::Insensitive)) {
-        return leaf;
-    }
-    match leaf {
-        LqLeaf::Keyword(s) => LqLeaf::Keyword(s.to_lowercase()),
-        LqLeaf::Phrase(s) => LqLeaf::Phrase(s.to_lowercase()),
-        // Raw strings and regex bodies are case-preserved: their
-        // case-handling is delegated to the regex engine / literal matcher.
-        // Structural patterns and predicates are not case-folded either
-        // (per dsl.md §8 / predicate semantics are planner-scope).
-        LqLeaf::RawString(s) => LqLeaf::RawString(s),
-        LqLeaf::Regex(s) => LqLeaf::Regex(s),
-        LqLeaf::StructuralBlock(b) => LqLeaf::StructuralBlock(b),
-        LqLeaf::Predicate { name, args } => LqLeaf::Predicate { name, args },
     }
 }
 
@@ -623,16 +627,94 @@ mod tests {
         }
     }
 
+    /// QI-BB-011 — `case:no` is recorded on the options and the leaf text
+    /// is left exactly as written.
+    ///
+    /// The text normalizer is the only case fold in the pipeline; a fold
+    /// here would be a second one, and `str::to_lowercase`'s final-sigma
+    /// rule (`ΟΔΟΣ` → `οδος`) disagrees with the per-character fold the
+    /// index was built under (`οδοσ`), so the folded query could never
+    /// match the indexed term.
     #[test]
-    fn case_insensitive_lowercases_keyword_leaves() {
-        let q = run("Foo case:no");
+    fn case_no_records_the_option_and_keeps_leaf_text_verbatim() {
+        for (source, keyword) in [("Foo case:no", "Foo"), ("ΟΔΟΣ case:no", "ΟΔΟΣ")] {
+            let q = run(source);
+            match q.expr {
+                LqExpr::Leaf(LqLeaf::Keyword(s)) => assert_eq!(s, keyword, "{source}"),
+                other => {
+                    assert!(
+                        false,
+                        "{source}: expected a verbatim Keyword, got {other:?}"
+                    );
+                }
+            }
+            assert_eq!(q.options.case, Some(LqCase::Insensitive), "{source}");
+        }
+        let q = run("\"ΟΔΟΣ Αθήνα\" case:no");
         match q.expr {
-            LqExpr::Leaf(LqLeaf::Keyword(s)) => assert_eq!(s, "foo"),
+            LqExpr::Leaf(LqLeaf::Phrase(s)) => assert_eq!(s, "ΟΔΟΣ Αθήνα"),
             other => {
-                assert!(false, "expected lowercased Keyword, got {other:?}");
+                assert!(false, "expected a verbatim Phrase, got {other:?}");
             }
         }
+    }
+
+    /// A leading `(?i)` records `case:no` for the query without touching
+    /// any leaf's text, so it cannot change what a keyword beside the
+    /// regex matches.
+    #[test]
+    fn regex_case_flag_records_the_option_without_folding_sibling_leaves() {
+        let q = run("ΟΔΟΣ /(?i)δ/");
         assert_eq!(q.options.case, Some(LqCase::Insensitive));
+        let leaves: Vec<LqLeaf> = match q.expr {
+            LqExpr::All(children) => children
+                .into_iter()
+                .filter_map(|child| match child {
+                    LqExpr::Leaf(leaf) => Some(leaf),
+                    _ => None,
+                })
+                .collect(),
+            other => {
+                assert!(false, "expected an All, got {other:?}");
+                Vec::new()
+            }
+        };
+        assert_eq!(
+            leaves,
+            vec![
+                LqLeaf::Keyword("ΟΔΟΣ".to_owned()),
+                LqLeaf::Regex("δ".to_owned())
+            ]
+        );
+    }
+
+    /// `case:yes` and a leading `(?i)` contradict each other; the query is
+    /// refused rather than one of them silently winning.
+    #[test]
+    fn regex_case_flag_contradicting_case_yes_is_refused() {
+        let source = "case:yes /(?i)hello/ world";
+        let toks = match tokenize(source) {
+            Ok(t) => t,
+            Err(e) => {
+                assert!(false, "tokenize failed: {e}");
+                return;
+            }
+        };
+        let q = match parse(&toks, source) {
+            Ok(q) => q,
+            Err(e) => {
+                assert!(false, "parse failed: {e}");
+                return;
+            }
+        };
+        match normalize(q) {
+            Ok(q) => assert!(false, "expected UnsupportedCombo, got {q:?}"),
+            Err(e) => assert_eq!(
+                e.code,
+                crate::errors::LqParseErrorCode::UnsupportedCombo,
+                "got {e}"
+            ),
+        }
     }
 
     #[test]

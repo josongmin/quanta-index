@@ -4,10 +4,14 @@
 //! (Unicode lowercase, `_` a boundary), the phrase sidecar split on
 //! whitespace and ASCII-lowercased, and the raw/regex sidecars folded with
 //! ASCII lowercase, so the same DSL query answered differently depending on
-//! the leaf kind. Now `quanta_index_lexical::normalize` is the single
+//! the leaf kind. Now `quanta_index_lq_text_normalizer` is the single
 //! authority: NFC before indexing and before query lowering, per-char
 //! Unicode lowercase folding, and tokens as maximal runs of
 //! `char::is_alphanumeric() || '_'` (combining marks never break a token).
+//!
+//! This table builds `LqQuery` values directly and so exercises the adapter
+//! alone; the same corpus classes go through the daemon's DSL pipeline in
+//! `quanta-index-searchd-runtime/tests/e2e_unicode_text_semantics.rs`.
 //!
 //! The oracle is an explicit golden table over a corpus that exercises
 //! punctuation adjacency, `snake_case` vs `camelCase`, accented Latin,

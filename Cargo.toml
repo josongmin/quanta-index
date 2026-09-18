@@ -16,6 +16,7 @@ members = [
     "crates/quanta-index-searchctl",
     "crates/quanta-index-sdk",
     "crates/quanta-index-lq-norm",
+    "crates/quanta-index-lq-text-normalizer",
     "crates/quanta-index-lq-trigram",
     "crates/quanta-index-lq-positions",
     "crates/quanta-index-lq-regex",

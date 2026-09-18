@@ -22,7 +22,7 @@
 
 use core::fmt;
 
-use quanta_index_contract::{LqCase, LqOptions};
+use quanta_index_contract::LqOptions;
 
 use crate::normalize::{CaseMode, TextQueryError, query_tokens};
 
@@ -210,7 +210,7 @@ pub struct PhraseTrace {
 ///
 /// `tokens` is the post-normalization sequence that the position lookup
 /// will use as term keys. `case_sensitive` is the carry-through of
-/// [`LqCase`] so the executor can fold case identically on the read side.
+/// `LqOptions::case_mode` so the executor can fold case identically on the read side.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PhrasePlan {
     pub tokens: Vec<String>,
@@ -282,7 +282,7 @@ pub fn plan_phrase(
         });
     }
 
-    let case_sensitive = matches!(options.case, Some(LqCase::Sensitive));
+    let case_sensitive = options.case_mode() == CaseMode::Sensitive;
     let tokens = tokenize_phrase_terms(text, case_sensitive)?;
 
     if tokens.len() < policy.min_tokens {

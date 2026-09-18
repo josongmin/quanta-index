@@ -39,7 +39,17 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     "quanta-index-contract-base": frozenset(),
     "quanta-index-contract": frozenset({"quanta-index-lq-norm"}),
     "quanta-index-core": frozenset({"quanta-index-contract"}),
-    "quanta-index-lexical": _ADAPTER_CRATE_DEPS,
+    # The lexical adapter also uses the lq-* index primitives and the shared
+    # text normalizer (one Unicode contract for index, sidecars and query).
+    "quanta-index-lexical": _ADAPTER_CRATE_DEPS
+    | frozenset(
+        {
+            "quanta-index-lq-positions",
+            "quanta-index-lq-regex",
+            "quanta-index-lq-text-normalizer",
+            "quanta-index-lq-trigram",
+        }
+    ),
     "quanta-index-semantic": _ADAPTER_CRATE_DEPS,
     # Embedding adapter: implements core outbound ports from contract DTOs.
     "quanta-index-embed": _ADAPTER_CRATE_DEPS,
@@ -50,12 +60,20 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
             "quanta-index-core",
             "quanta-index-lq-bridge",
             "quanta-index-lq-norm",
+            "quanta-index-lq-regex",
+            "quanta-index-lq-text-normalizer",
         }
     ),
     # PRE-NORM lexical-query normalizer. Stand-alone until PRE-CONTRACT-EXT
     # publishes the canonical `LqQuery` carrier in the contract crate, at
     # which point this crate will start depending on quanta-index-contract.
-    "quanta-index-lq-norm": frozenset({"quanta-index-contract"}),
+    # The DSL maps its `case:` option onto the text normalizer's mode.
+    "quanta-index-lq-norm": frozenset(
+        {"quanta-index-contract", "quanta-index-lq-text-normalizer"}
+    ),
+    # The one Unicode text normalization contract (QI-BB-011): a leaf crate
+    # shared by the DSL, the lexical adapter and the search plane.
+    "quanta-index-lq-text-normalizer": frozenset(),
     # LQ trigram index (in-progress). Peer of the lq-* family.
     "quanta-index-lq-trigram": frozenset({"quanta-index-contract"}),
     # LQ positional index (in-progress). Peer of the lq-* family.

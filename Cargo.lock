@@ -4317,13 +4317,13 @@ dependencies = [
  "quanta-index-core",
  "quanta-index-lq-positions",
  "quanta-index-lq-regex",
+ "quanta-index-lq-text-normalizer",
  "quanta-index-lq-trigram",
  "serde",
  "serde_json",
  "sha2",
  "tantivy",
  "tempfile",
- "unicode-normalization",
 ]
 
 [[package]]
@@ -4343,6 +4343,7 @@ dependencies = [
  "ciborium",
  "criterion",
  "proptest",
+ "quanta-index-lq-text-normalizer",
  "regex-syntax",
  "serde",
  "sha2",
@@ -4387,6 +4388,13 @@ dependencies = [
  "quanta-index-contract",
  "quanta-index-lq-regex",
  "serde",
+]
+
+[[package]]
+name = "quanta-index-lq-text-normalizer"
+version = "0.1.0"
+dependencies = [
+ "unicode-normalization",
 ]
 
 [[package]]
@@ -4446,6 +4454,7 @@ dependencies = [
  "quanta-index-lq-norm",
  "quanta-index-lq-obs",
  "quanta-index-lq-regex",
+ "quanta-index-lq-text-normalizer",
  "rustix 1.1.4",
  "serde",
  "serde_json",

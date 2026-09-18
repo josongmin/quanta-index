@@ -3,8 +3,9 @@
 //! Idempotent: `normalize(normalize(x)) == normalize(x)` (byte-identical).
 //!
 //! Transforms per dsl.md §10:
-//! 1. Apply `LqOptions.case` to pattern leaves (case-fold the `Keyword` /
-//!    `Phrase` bodies when `case:no`; raw / regex / structural preserved).
+//! 1. Strip a leading `(?i)` from regex leaves and record it as `case:no`
+//!    on the options; leaf text is never folded here (the text normalizer
+//!    folds once, on the executing surface — QI-BB-011).
 //! 2. Flatten nested `LqExpr::All`/`LqExpr::Any` of the same kind (one level
 //!    deep — fixed-point after the recursive `normalize_expr` returns).
 //! 3. Sort commutative children (`All`, `Any`) by canonical key.

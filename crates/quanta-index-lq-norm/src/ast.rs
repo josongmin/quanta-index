@@ -11,6 +11,8 @@
 
 use core::fmt;
 
+use quanta_index_lq_text_normalizer::CaseMode;
+
 use crate::errors::LqSpan;
 
 /// Lq DSL version tag baked into the canonical hash root.
@@ -43,6 +45,11 @@ impl LqPatternType {
 }
 
 /// `case:` option per dsl.md §6.2.
+///
+/// The option only selects the text normalizer's [`CaseMode`] (see
+/// [`LqOptions::case_mode`]); the parser and normalizer never fold a
+/// literal themselves. `case:no` and an absent option mean the same thing:
+/// the executing surface folds both sides once, per character.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LqCase {
     Sensitive,
@@ -387,6 +394,21 @@ impl LqOptions {
             timeout_ms: None,
             index_mode: None,
             boost_millis: None,
+        }
+    }
+
+    /// The case mode the query's text is compared under, on every route.
+    ///
+    /// This is the one definition of the DSL default: `case:yes` is
+    /// [`CaseMode::Sensitive`]; `case:no` and an absent option are
+    /// [`CaseMode::Folded`], whatever the pattern type. The mode is applied
+    /// once, by the text normalizer, on the surface that executes the query
+    /// (index terms, sidecars, in-memory filters); nothing upstream folds.
+    #[must_use]
+    pub const fn case_mode(&self) -> CaseMode {
+        match self.case {
+            Some(LqCase::Sensitive) => CaseMode::Sensitive,
+            Some(LqCase::Insensitive) | None => CaseMode::Folded,
         }
     }
 }

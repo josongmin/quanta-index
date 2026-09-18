@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 ciborium = { workspace = true }
+quanta-index-lq-text-normalizer = { version = "0.1.0", path = "../quanta-index-lq-text-normalizer" }
 regex-syntax = { workspace = true }
 serde = { workspace = true }
 sha2 = { workspace = true }
