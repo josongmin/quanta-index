@@ -180,8 +180,10 @@ fn an_auxiliary_publish_into_a_sealed_generation_is_refused_and_keeps_residency(
         return Err("fixture served no semantic rows".into());
     }
     let generation = pinned_generation(&rt);
-    let response = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(
-        RepoMetaIngestBatch {
+    // A well-formed publish with its canonical digest: the refusal under
+    // test is the sealed generation's, not the digest gate's.
+    let response = rt.ingest_once(e2e_harness::stamped_ingest_request(
+        SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(RepoMetaIngestBatch {
             repo_id: rt.repo(),
             revision_id: rt.revision(),
             generation,
@@ -191,8 +193,8 @@ fn an_auxiliary_publish_into_a_sealed_generation_is_refused_and_keeps_residency(
                 key: "license".to_string(),
                 value: "apache-2.0".to_string(),
             }],
-        },
-    ))?;
+        }),
+    )?)?;
     let SearchPlaneIngestIpcResponse::Error(error) = response else {
         return Err(format!(
             "an auxiliary publish into a sealed generation must be refused typed GENERATION_IMMUTABLE, got {response:?}"

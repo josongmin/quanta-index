@@ -129,12 +129,20 @@ impl ControlTransport for StubControlTransport {
     }
 }
 
-/// QI-SDK-01: stub ingest transport. Replaces the old channel-publisher
-/// fixtures the SDK used to spin up. Records incoming requests so tests can
-/// assert on the typed batch the SDK assembled.
+/// QI-SDK-01: stub ingest transport.
+///
+/// Replaces the old channel-publisher fixtures the SDK used to spin up.
+/// Records incoming requests so tests can assert on the typed batch the SDK
+/// assembled, answers one canned response and, like the search plane,
+/// admits only a batch whose carried `batch_digest` is the canonical digest
+/// of its body (QI-BB-032).
 struct StubIngestTransport {
     requests: Mutex<Vec<SearchPlaneIngestIpcRequestEnvelope>>,
     response: Mutex<Option<SearchPlaneIngestIpcResponse>>,
+    /// Like the search plane, the receipt names the verified digest of the
+    /// batch it answers; `false` answers the canned receipt verbatim, for
+    /// tests that inject a receipt the SDK must refuse.
+    names_request_digest: bool,
 }
 
 impl StubIngestTransport {
@@ -142,7 +150,75 @@ impl StubIngestTransport {
         Self {
             requests: Mutex::new(Vec::new()),
             response: Mutex::new(Some(response)),
+            names_request_digest: true,
         }
+    }
+
+    fn answering_verbatim(response: SearchPlaneIngestIpcResponse) -> Self {
+        Self {
+            names_request_digest: false,
+            ..Self::new(response)
+        }
+    }
+}
+
+/// Verify the carried digest of a receipt-bearing request as the search
+/// plane does, returning the verified token; a repo-map bundle carries
+/// none.
+fn verified_request_digest(
+    request: &SearchPlaneIngestIpcRequest,
+) -> Result<Option<String>, crate::SdkError> {
+    fn verify<B: quanta_index_ipc::IngestBatchBodyV1 + serde::Serialize + Clone>(
+        body: &B,
+    ) -> Result<Option<String>, crate::SdkError> {
+        let mut body = body.clone();
+        match quanta_index_ipc::verify_batch_digest_v1(&mut body)
+            .map_err(|err| crate::SdkError::Serialization(err.to_string()))?
+        {
+            quanta_index_ipc::BatchDigestVerdictV1::Verified(_) => {
+                Ok(Some(body.batch_digest().to_string()))
+            }
+            quanta_index_ipc::BatchDigestVerdictV1::Mismatch { carried, expected } => {
+                Err(crate::SdkError::Protocol(format!(
+                    "stub ingest: batch_digest {carried} is not the body's digest {expected}"
+                )))
+            }
+        }
+    }
+    match request {
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => verify(batch),
+        SearchPlaneIngestIpcRequest::PublishHistoryBatch(batch) => verify(batch),
+        SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(batch) => verify(batch),
+        SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(batch) => verify(batch),
+        SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(batch) => verify(batch),
+        SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(batch) => verify(batch),
+        SearchPlaneIngestIpcRequest::PublishFileContributorBatch(batch) => verify(batch),
+        SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(batch) => verify(batch),
+        SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch) => verify(batch),
+        SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(batch) => verify(batch),
+        SearchPlaneIngestIpcRequest::PublishStructuralBatch(batch) => verify(batch),
+        SearchPlaneIngestIpcRequest::PublishRepoMapBundle(_) => Ok(None),
+    }
+}
+
+/// Name `digest` in whichever receipt `payload` carries.
+fn name_receipt_digest(payload: &mut SearchPlaneIngestIpcResponse, digest: &str) {
+    match payload {
+        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt)
+        | SearchPlaneIngestIpcResponse::HistoryReceipt(receipt)
+        | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(receipt)
+        | SearchPlaneIngestIpcResponse::RepoTopicReceipt(receipt)
+        | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(receipt)
+        | SearchPlaneIngestIpcResponse::FileContributorReceipt(receipt)
+        | SearchPlaneIngestIpcResponse::DirtyReceipt(receipt)
+        | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(receipt)
+        | SearchPlaneIngestIpcResponse::StructuralReceipt(receipt)
+        | SearchPlaneIngestIpcResponse::RepoMetaReceipt(receipt)
+        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(receipt) => {
+            receipt.batch_digest = digest.to_string();
+        }
+        SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+        | SearchPlaneIngestIpcResponse::Error(_) => {}
     }
 }
 
@@ -151,16 +227,20 @@ impl IngestTransport for StubIngestTransport {
         &self,
         request: SearchPlaneIngestIpcRequestEnvelope,
     ) -> Result<SearchPlaneIngestIpcResponseEnvelope, crate::SdkError> {
+        let verified = verified_request_digest(&request.payload)?;
         self.requests
             .lock()
             .map_err(|err| crate::SdkError::Protocol(format!("ingest transport poisoned: {err}")))?
             .push(request.clone());
-        let payload = self
+        let mut payload = self
             .response
             .lock()
             .map_err(|err| crate::SdkError::Protocol(format!("ingest response poisoned: {err}")))?
             .take()
             .ok_or_else(|| crate::SdkError::Protocol("missing stub ingest response".to_string()))?;
+        if let (true, Some(digest)) = (self.names_request_digest, verified) {
+            name_receipt_digest(&mut payload, &digest);
+        }
         Ok(SearchPlaneIngestIpcResponseEnvelope {
             request_id: request.request_id,
             payload,
@@ -1521,7 +1601,7 @@ fn search_corpus_publish_routes_through_ingest_transport_and_carries_typed_recor
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(1),
         manifest_digest: Some("manifest:feed".to_string()),
-        batch_digest: "batch:feed".to_string(),
+        batch_digest: String::new(),
         applied: true,
         durable_sequence: 7,
         accepted_clear_surfaces: 0,
@@ -1540,7 +1620,6 @@ fn search_corpus_publish_routes_through_ingest_transport_and_carries_typed_recor
         revision_id(),
         ManifestGeneration::new(1),
         "manifest:feed",
-        "batch:feed",
     )
     .replace_scope(
         sample_search_scope(),
@@ -1549,7 +1628,11 @@ fn search_corpus_publish_routes_through_ingest_transport_and_carries_typed_recor
         vec![symbol.clone()],
     );
     let observed = ok_or_fail!(client.search_corpus().publish(&batch));
-    assert_eq!(observed, receipt);
+    let expected = BatchPublishReceipt {
+        batch_digest: ok_or_fail!(batch.batch_digest()),
+        ..receipt
+    };
+    assert_eq!(observed, expected);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(
         matches!(
@@ -1564,7 +1647,7 @@ fn search_corpus_publish_routes_through_ingest_transport_and_carries_typed_recor
     };
     assert_eq!(wire.repo_id, repo_id());
     assert_eq!(wire.manifest_digest, "manifest:feed");
-    assert_eq!(wire.batch_digest, "batch:feed");
+    assert_eq!(wire.batch_digest, ok_or_fail!(batch.batch_digest()));
     assert_eq!(wire.replace_scopes.len(), 1);
     assert_eq!(wire.tombstone_scopes.len(), 0);
     assert!(wire.seal);
@@ -1586,7 +1669,7 @@ fn search_corpus_builder_preserves_semantic_lifecycle_in_canonical_wire_order() 
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(1),
         manifest_digest: Some("manifest:semantic".to_string()),
-        batch_digest: "batch:semantic".to_string(),
+        batch_digest: String::new(),
         applied: true,
         durable_sequence: 7,
         accepted_clear_surfaces: 0,
@@ -1607,7 +1690,6 @@ fn search_corpus_builder_preserves_semantic_lifecycle_in_canonical_wire_order() 
         revision_id(),
         ManifestGeneration::new(1),
         "manifest:semantic",
-        "batch:semantic",
     )
     .replace_semantic_scope(
         scope_b.clone(),
@@ -1660,7 +1742,7 @@ fn search_corpus_builder_preserves_typed_cluster_membership_without_text_inferen
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(1),
         manifest_digest: Some("manifest:cluster".to_string()),
-        batch_digest: "batch:cluster".to_string(),
+        batch_digest: String::new(),
         applied: true,
         durable_sequence: 7,
         accepted_clear_surfaces: 0,
@@ -1681,7 +1763,6 @@ fn search_corpus_builder_preserves_typed_cluster_membership_without_text_inferen
         revision_id(),
         ManifestGeneration::new(1),
         "manifest:cluster",
-        "batch:cluster",
     )
     .replace_semantic_scope_with_cluster_memberships_v1(
         sample_cluster_semantic_scope("auth-service"),
@@ -1723,7 +1804,6 @@ fn search_corpus_builder_rejects_missing_mismatched_or_misplaced_cluster_members
         revision_id(),
         ManifestGeneration::new(1),
         "manifest:cluster-missing",
-        "batch:cluster-missing",
     )
     .replace_semantic_scope(
         sample_cluster_semantic_scope("auth-service"),
@@ -1743,7 +1823,6 @@ fn search_corpus_builder_rejects_missing_mismatched_or_misplaced_cluster_members
         revision_id(),
         ManifestGeneration::new(1),
         "manifest:cluster-mismatch",
-        "batch:cluster-mismatch",
     )
     .replace_semantic_scope_with_cluster_memberships_v1(
         sample_cluster_semantic_scope("auth-service"),
@@ -1763,7 +1842,6 @@ fn search_corpus_builder_rejects_missing_mismatched_or_misplaced_cluster_members
         revision_id(),
         ManifestGeneration::new(1),
         "manifest:membership-misplaced",
-        "batch:membership-misplaced",
     )
     .replace_semantic_scope_with_cluster_memberships_v1(
         sample_semantic_scope("symbol-a"),
@@ -1798,7 +1876,6 @@ fn search_corpus_semantic_surface_conflict_fails_before_transport_io() {
         revision_id(),
         ManifestGeneration::new(1),
         "manifest:conflict",
-        "batch:conflict",
     )
     .clear_surface(SearchScopeSurface::Symbol)
     .replace_semantic_scope(
@@ -1834,7 +1911,6 @@ fn search_corpus_semantic_scope_conflicts_fail_before_transport_io() {
         revision_id(),
         ManifestGeneration::new(1),
         "manifest:scope-conflict",
-        "batch:scope-conflict",
     )
     .replace_semantic_scope(
         scope.clone(),
@@ -1858,7 +1934,6 @@ fn search_corpus_semantic_scope_conflicts_fail_before_transport_io() {
         revision_id(),
         ManifestGeneration::new(1),
         "manifest:duplicate-scope",
-        "batch:duplicate-scope",
     )
     .replace_semantic_scope(
         scope.clone(),
@@ -1930,7 +2005,7 @@ fn producer_client_publish_search_corpus_accepts_unsealed_batches() {
         SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt {
             generation: ManifestGeneration::new(2),
             manifest_digest: Some("manifest:unsealed".to_string()),
-            batch_digest: "batch:unsealed".to_string(),
+            batch_digest: String::new(),
             applied: true,
             durable_sequence: 7,
             accepted_clear_surfaces: 0,
@@ -1945,7 +2020,6 @@ fn producer_client_publish_search_corpus_accepts_unsealed_batches() {
         revision_id(),
         ManifestGeneration::new(2),
         "manifest:unsealed",
-        "batch:unsealed",
     )
     .without_seal();
     let _receipt = ok_or_fail!(client.producer().publish_search_corpus(&batch));
@@ -1972,7 +2046,7 @@ fn producer_client_publish_search_corpus_and_activate_routes_ingest_then_control
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(7),
         manifest_digest: Some("manifest:activate".to_string()),
-        batch_digest: "batch:activate".to_string(),
+        batch_digest: String::new(),
         applied: true,
         durable_sequence: 7,
         accepted_clear_surfaces: 0,
@@ -2003,14 +2077,17 @@ fn producer_client_publish_search_corpus_and_activate_routes_ingest_then_control
         revision_id(),
         ManifestGeneration::new(7),
         "manifest:activate",
-        "batch:activate",
     );
     let (observed_receipt, observed_ack) = ok_or_fail!(
         client
             .producer()
             .publish_search_corpus_and_activate(&batch, None)
     );
-    assert_eq!(observed_receipt, receipt);
+    let expected_receipt = BatchPublishReceipt {
+        batch_digest: ok_or_fail!(batch.batch_digest()),
+        ..receipt
+    };
+    assert_eq!(observed_receipt, expected_receipt);
     assert_eq!(observed_ack, ack);
 
     let ingest_request = ok_or_fail!(only_ingest_request(ingest.as_ref()));
@@ -2092,7 +2169,7 @@ fn producer_client_rejects_activation_ack_identity_mismatches_v1() {
             SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt {
                 generation: ManifestGeneration::new(7),
                 manifest_digest: Some("manifest:activate".to_string()),
-                batch_digest: "batch:activate".to_string(),
+                batch_digest: String::new(),
                 applied: true,
                 durable_sequence: 7,
                 accepted_clear_surfaces: 0,
@@ -2107,7 +2184,6 @@ fn producer_client_rejects_activation_ack_identity_mismatches_v1() {
             revision_id(),
             ManifestGeneration::new(7),
             "manifest:activate",
-            "batch:activate",
         );
         let error = client
             .producer()
@@ -2125,7 +2201,7 @@ fn producer_client_rejects_mismatched_sealed_receipt_before_composite_activation
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(7),
         manifest_digest: Some("manifest:unexpected".to_string()),
-        batch_digest: "batch:unexpected".to_string(),
+        batch_digest: String::new(),
         applied: true,
         durable_sequence: 7,
         accepted_clear_surfaces: 0,
@@ -2143,7 +2219,6 @@ fn producer_client_rejects_mismatched_sealed_receipt_before_composite_activation
         revision_id(),
         ManifestGeneration::new(7),
         "manifest:expected",
-        "batch:activate",
     );
     let error = client
         .producer()
@@ -2170,7 +2245,6 @@ fn producer_client_rejects_each_search_corpus_receipt_mismatch_before_activation
         revision_id(),
         ManifestGeneration::new(7),
         "manifest:receipt-exact",
-        "batch:receipt-exact",
     )
     .replace_scope(
         sample_search_scope(),
@@ -2185,7 +2259,7 @@ fn producer_client_rejects_each_search_corpus_receipt_mismatch_before_activation
     let valid = BatchPublishReceipt {
         generation: ManifestGeneration::new(7),
         manifest_digest: Some("manifest:receipt-exact".to_string()),
-        batch_digest: "batch:receipt-exact".to_string(),
+        batch_digest: ok_or_fail!(batch.batch_digest()),
         applied: true,
         durable_sequence: 7,
         accepted_clear_surfaces: 0,
@@ -2225,7 +2299,7 @@ fn producer_client_rejects_each_search_corpus_receipt_mismatch_before_activation
 
     for (label, receipt) in cases {
         let control = unused_control();
-        let ingest = Arc::new(StubIngestTransport::new(
+        let ingest = Arc::new(StubIngestTransport::answering_verbatim(
             SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt),
         ));
         let client = QuantaIndex::from_transports(unused_query(), control.clone(), ingest);
@@ -2273,7 +2347,6 @@ fn producer_client_rejects_invalid_expected_composite_before_ingest_v1() {
         revision_id(),
         ManifestGeneration::new(7),
         "manifest:7",
-        "batch:activate",
     );
     let error = client
         .producer()
@@ -2302,7 +2375,6 @@ fn producer_client_delegates_non_advancing_activation_rejection_before_ingest_v1
         revision_id(),
         ManifestGeneration::new(7),
         "manifest:7-new",
-        "batch:activate",
     );
     let error = client
         .producer()
@@ -2330,7 +2402,7 @@ fn history_publish_routes_through_ingest_transport_and_carries_typed_authority_r
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(3),
         manifest_digest: None,
-        batch_digest: "batch:history".to_string(),
+        batch_digest: String::new(),
         applied: true,
         durable_sequence: 3,
         accepted_clear_surfaces: 0,
@@ -2342,19 +2414,18 @@ fn history_publish_routes_through_ingest_transport_and_carries_typed_authority_r
         SearchPlaneIngestIpcResponse::HistoryReceipt(receipt.clone()),
     ));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
-    let batch = HistoryBatch::new(
-        repo_id(),
-        revision_id(),
-        ManifestGeneration::new(3),
-        "batch:history-3",
-    )
-    .manifest_digest("manifest:history-3")
-    .commit(sample_commit_record())
-    .ref_upsert("refs/heads/main", sample_commit_sha())
-    .tag_upsert("v1.0.0", sample_commit_sha())
-    .diff_hunk(sample_commit_sha(), "src/lib.rs", sample_diff_record());
+    let batch = HistoryBatch::new(repo_id(), revision_id(), ManifestGeneration::new(3))
+        .manifest_digest("manifest:history-3")
+        .commit(sample_commit_record())
+        .ref_upsert("refs/heads/main", sample_commit_sha())
+        .tag_upsert("v1.0.0", sample_commit_sha())
+        .diff_hunk(sample_commit_sha(), "src/lib.rs", sample_diff_record());
     let observed = ok_or_fail!(client.history().publish(&batch));
-    assert_eq!(observed, receipt);
+    let expected = BatchPublishReceipt {
+        batch_digest: ok_or_fail!(batch.batch_digest()),
+        ..receipt
+    };
+    assert_eq!(observed, expected);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(
         matches!(
@@ -2368,7 +2439,7 @@ fn history_publish_routes_through_ingest_transport_and_carries_typed_authority_r
         return;
     };
     assert_eq!(wire.manifest_digest.as_deref(), Some("manifest:history-3"));
-    assert_eq!(wire.batch_digest, "batch:history-3");
+    assert_eq!(wire.batch_digest, ok_or_fail!(batch.batch_digest()));
     assert_eq!(wire.commits.len(), 1);
     assert_eq!(wire.refs.len(), 1);
     assert_eq!(wire.tags.len(), 1);
@@ -2390,7 +2461,7 @@ fn history_publish_repo_commit_recency_routes_through_ingest_transport() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(3),
         manifest_digest: None,
-        batch_digest: "batch:repo-commit-recency-3".to_string(),
+        batch_digest: String::new(),
         applied: true,
         durable_sequence: 7,
         accepted_clear_surfaces: 0,
@@ -2402,16 +2473,16 @@ fn history_publish_repo_commit_recency_routes_through_ingest_transport() {
         SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(receipt.clone()),
     ));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
-    let batch = crate::RepoCommitRecencyBatch::new(
-        repo_id(),
-        revision_id(),
-        ManifestGeneration::new(3),
-        "batch:repo-commit-recency-3",
-    )
-    .entry(RepoId::new("corp-a"), 1_717_171_717_000)
-    .entry(RepoId::new("corp-b"), 1_617_171_717_000);
+    let batch =
+        crate::RepoCommitRecencyBatch::new(repo_id(), revision_id(), ManifestGeneration::new(3))
+            .entry(RepoId::new("corp-a"), 1_717_171_717_000)
+            .entry(RepoId::new("corp-b"), 1_617_171_717_000);
     let observed = ok_or_fail!(client.history().publish_repo_commit_recency(&batch));
-    assert_eq!(observed, receipt);
+    let expected = BatchPublishReceipt {
+        batch_digest: ok_or_fail!(batch.batch_digest()),
+        ..receipt
+    };
+    assert_eq!(observed, expected);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(
         matches!(
@@ -2424,7 +2495,7 @@ fn history_publish_repo_commit_recency_routes_through_ingest_transport() {
     let SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(wire) = &captured.payload else {
         return;
     };
-    assert_eq!(wire.batch_digest, "batch:repo-commit-recency-3");
+    assert_eq!(wire.batch_digest, ok_or_fail!(batch.batch_digest()));
     let [entry_a, entry_b] = wire.entries.as_slice() else {
         assert!(
             false,
@@ -2444,7 +2515,7 @@ fn history_publish_repo_meta_routes_through_ingest_transport() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(4),
         manifest_digest: None,
-        batch_digest: "batch:repo-meta-4".to_string(),
+        batch_digest: String::new(),
         applied: true,
         durable_sequence: 7,
         accepted_clear_surfaces: 0,
@@ -2456,16 +2527,15 @@ fn history_publish_repo_meta_routes_through_ingest_transport() {
         SearchPlaneIngestIpcResponse::RepoMetaReceipt(receipt.clone()),
     ));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
-    let batch = crate::RepoMetaBatch::new(
-        repo_id(),
-        revision_id(),
-        ManifestGeneration::new(4),
-        "batch:repo-meta-4",
-    )
-    .entry(RepoId::new("corp-a"), "license", "apache-2.0")
-    .entry(RepoId::new("corp-b"), "license", "gpl-3.0");
+    let batch = crate::RepoMetaBatch::new(repo_id(), revision_id(), ManifestGeneration::new(4))
+        .entry(RepoId::new("corp-a"), "license", "apache-2.0")
+        .entry(RepoId::new("corp-b"), "license", "gpl-3.0");
     let observed = ok_or_fail!(client.history().publish_repo_meta(&batch));
-    assert_eq!(observed, receipt);
+    let expected = BatchPublishReceipt {
+        batch_digest: ok_or_fail!(batch.batch_digest()),
+        ..receipt
+    };
+    assert_eq!(observed, expected);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(
         matches!(
@@ -2478,7 +2548,7 @@ fn history_publish_repo_meta_routes_through_ingest_transport() {
     let SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(wire) = &captured.payload else {
         return;
     };
-    assert_eq!(wire.batch_digest, "batch:repo-meta-4");
+    assert_eq!(wire.batch_digest, ok_or_fail!(batch.batch_digest()));
     let [entry_a, entry_b] = wire.entries.as_slice() else {
         assert!(
             false,
@@ -2500,7 +2570,7 @@ fn history_publish_repo_topic_routes_through_ingest_transport() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(5),
         manifest_digest: None,
-        batch_digest: "batch:repo-topic-5".to_string(),
+        batch_digest: String::new(),
         applied: true,
         durable_sequence: 7,
         accepted_clear_surfaces: 0,
@@ -2512,17 +2582,16 @@ fn history_publish_repo_topic_routes_through_ingest_transport() {
         SearchPlaneIngestIpcResponse::RepoTopicReceipt(receipt.clone()),
     ));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
-    let batch = crate::RepoTopicBatch::new(
-        repo_id(),
-        revision_id(),
-        ManifestGeneration::new(5),
-        "batch:repo-topic-5",
-    )
-    .entry(RepoId::new("corp-a"), "security")
-    .entry(RepoId::new("corp-a"), "platform")
-    .entry(RepoId::new("corp-b"), "ml");
+    let batch = crate::RepoTopicBatch::new(repo_id(), revision_id(), ManifestGeneration::new(5))
+        .entry(RepoId::new("corp-a"), "security")
+        .entry(RepoId::new("corp-a"), "platform")
+        .entry(RepoId::new("corp-b"), "ml");
     let observed = ok_or_fail!(client.history().publish_repo_topic(&batch));
-    assert_eq!(observed, receipt);
+    let expected = BatchPublishReceipt {
+        batch_digest: ok_or_fail!(batch.batch_digest()),
+        ..receipt
+    };
+    assert_eq!(observed, expected);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(
         matches!(
@@ -2535,7 +2604,7 @@ fn history_publish_repo_topic_routes_through_ingest_transport() {
     let SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(wire) = &captured.payload else {
         return;
     };
-    assert_eq!(wire.batch_digest, "batch:repo-topic-5");
+    assert_eq!(wire.batch_digest, ok_or_fail!(batch.batch_digest()));
     let [entry_a, entry_b, entry_c] = wire.entries.as_slice() else {
         assert!(
             false,
@@ -2557,7 +2626,7 @@ fn history_publish_file_ownership_routes_through_ingest_transport() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(5),
         manifest_digest: None,
-        batch_digest: "batch:file-ownership-5".to_string(),
+        batch_digest: String::new(),
         applied: true,
         durable_sequence: 7,
         accepted_clear_surfaces: 0,
@@ -2569,24 +2638,24 @@ fn history_publish_file_ownership_routes_through_ingest_transport() {
         SearchPlaneIngestIpcResponse::FileOwnershipReceipt(receipt.clone()),
     ));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
-    let batch = crate::FileOwnershipBatch::new(
-        repo_id(),
-        revision_id(),
-        ManifestGeneration::new(5),
-        "batch:file-ownership-5",
-    )
-    .entry(
-        RepoId::new("corp-a"),
-        RepoRelativePath::new("src/gate-a.rs"),
-        vec!["@alice".to_string(), "@acme/platform".to_string()],
-    )
-    .entry(
-        RepoId::new("corp-b"),
-        RepoRelativePath::new("src/gate-b.rs"),
-        Vec::new(),
-    );
+    let batch =
+        crate::FileOwnershipBatch::new(repo_id(), revision_id(), ManifestGeneration::new(5))
+            .entry(
+                RepoId::new("corp-a"),
+                RepoRelativePath::new("src/gate-a.rs"),
+                vec!["@alice".to_string(), "@acme/platform".to_string()],
+            )
+            .entry(
+                RepoId::new("corp-b"),
+                RepoRelativePath::new("src/gate-b.rs"),
+                Vec::new(),
+            );
     let observed = ok_or_fail!(client.history().publish_file_ownership(&batch));
-    assert_eq!(observed, receipt);
+    let expected = BatchPublishReceipt {
+        batch_digest: ok_or_fail!(batch.batch_digest()),
+        ..receipt
+    };
+    assert_eq!(observed, expected);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(
         matches!(
@@ -2599,7 +2668,7 @@ fn history_publish_file_ownership_routes_through_ingest_transport() {
     let SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(wire) = &captured.payload else {
         return;
     };
-    assert_eq!(wire.batch_digest, "batch:file-ownership-5");
+    assert_eq!(wire.batch_digest, ok_or_fail!(batch.batch_digest()));
     let [entry_a, entry_b] = wire.entries.as_slice() else {
         assert!(
             false,
@@ -2621,7 +2690,7 @@ fn history_publish_file_contributor_routes_through_ingest_transport() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(6),
         manifest_digest: None,
-        batch_digest: "batch:file-contributor-6".to_string(),
+        batch_digest: String::new(),
         applied: true,
         durable_sequence: 7,
         accepted_clear_surfaces: 0,
@@ -2633,24 +2702,24 @@ fn history_publish_file_contributor_routes_through_ingest_transport() {
         SearchPlaneIngestIpcResponse::FileContributorReceipt(receipt.clone()),
     ));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
-    let batch = crate::FileContributorBatch::new(
-        repo_id(),
-        revision_id(),
-        ManifestGeneration::new(6),
-        "batch:file-contributor-6",
-    )
-    .entry(
-        RepoId::new("corp-a"),
-        RepoRelativePath::new("src/gate-a.rs"),
-        vec!["alice".to_string(), "carol".to_string()],
-    )
-    .entry(
-        RepoId::new("corp-b"),
-        RepoRelativePath::new("src/gate-b.rs"),
-        vec!["bob".to_string()],
-    );
+    let batch =
+        crate::FileContributorBatch::new(repo_id(), revision_id(), ManifestGeneration::new(6))
+            .entry(
+                RepoId::new("corp-a"),
+                RepoRelativePath::new("src/gate-a.rs"),
+                vec!["alice".to_string(), "carol".to_string()],
+            )
+            .entry(
+                RepoId::new("corp-b"),
+                RepoRelativePath::new("src/gate-b.rs"),
+                vec!["bob".to_string()],
+            );
     let observed = ok_or_fail!(client.history().publish_file_contributor(&batch));
-    assert_eq!(observed, receipt);
+    let expected = BatchPublishReceipt {
+        batch_digest: ok_or_fail!(batch.batch_digest()),
+        ..receipt
+    };
+    assert_eq!(observed, expected);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(
         matches!(
@@ -2663,7 +2732,7 @@ fn history_publish_file_contributor_routes_through_ingest_transport() {
     let SearchPlaneIngestIpcRequest::PublishFileContributorBatch(wire) = &captured.payload else {
         return;
     };
-    assert_eq!(wire.batch_digest, "batch:file-contributor-6");
+    assert_eq!(wire.batch_digest, ok_or_fail!(batch.batch_digest()));
     let [entry_a, entry_b] = wire.entries.as_slice() else {
         assert!(
             false,
@@ -2701,7 +2770,6 @@ fn dirty_publish_routes_through_ingest_transport_and_carries_typed_entries() {
         revision_id(),
         ManifestGeneration::new(4),
         1_717_171_717_000,
-        "batch:dirty-4",
     )
     .upsert(sample_dirty_record())
     .delete(ChunkId::new("chunk-evict"));
@@ -2719,7 +2787,7 @@ fn dirty_publish_routes_through_ingest_transport_and_carries_typed_entries() {
         return;
     };
     assert_eq!(wire.overlay_epoch_ms, 1_717_171_717_000);
-    assert_eq!(wire.batch_digest, "batch:dirty-4");
+    assert_eq!(wire.batch_digest, ok_or_fail!(batch.batch_digest()));
     assert_eq!(wire.entries.len(), 2);
 }
 
@@ -2735,7 +2803,6 @@ fn structural_publish_routes_through_ingest_transport_and_carries_parse_trees() 
         ManifestGeneration::new(5),
         ManifestGeneration::new(4),
         "manifest:structural",
-        "batch:structural",
     )
     .replace_scope(
         sample_search_scope(),
@@ -3300,7 +3367,6 @@ fn lexical_publish_propagates_ingest_error_as_typed_remote() {
         revision_id(),
         ManifestGeneration::new(1),
         "manifest:feed",
-        "batch:feed",
     );
     let err = client.search_corpus().publish(&batch).err();
     assert!(
@@ -3451,7 +3517,7 @@ fn control_request_id_mismatch_is_rejected_for_activation_and_rollback_v1() {
         SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt {
             generation: ManifestGeneration::new(7),
             manifest_digest: Some("manifest:request-id".to_string()),
-            batch_digest: "batch:request-id".to_string(),
+            batch_digest: String::new(),
             applied: true,
             durable_sequence: 7,
             accepted_clear_surfaces: 0,
@@ -3466,7 +3532,6 @@ fn control_request_id_mismatch_is_rejected_for_activation_and_rollback_v1() {
         revision_id(),
         ManifestGeneration::new(7),
         "manifest:request-id",
-        "batch:request-id",
     );
     let activation_error = client
         .producer()

@@ -13,6 +13,12 @@
 //! every read. `durable_sequence` is allocated from `catalog_sequence_v1`
 //! inside the finalizing transaction, so it is unique and monotonic across
 //! every key in the catalog.
+//!
+//! `batch_digest` is the canonical body digest the dispatcher verified
+//! (QI-BB-032), so `body_sha256` — the same 32 bytes — is redundant with the
+//! key on the dispatcher's path; the table keeps it as its own invariant
+//! (a `begin` under a different body is refused) so the catalog does not
+//! depend on its callers having verified the digest.
 
 use std::path::Path;
 
@@ -340,6 +346,39 @@ impl IdempotencyCatalogPort for SqliteCatalog {
             .map_err(|error| engine_error("commit finalize", &path, &error))?;
         drop(connection);
         Ok(durable_sequence)
+    }
+
+    fn generations_for_pair(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) -> Result<Vec<ManifestGeneration>, CoreError> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT DISTINCT generation FROM idempotency_v1
+                 WHERE repo_id = ?1 AND revision_id = ?2
+                 ORDER BY generation ASC",
+            )
+            .map_err(|error| engine_error("prepare generations for pair", &self.path, &error))?;
+        let rows = statement
+            .query_map(params![repo_id.as_str(), revision_id.as_str()], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(|error| engine_error("list generations for pair", &self.path, &error))?;
+        let mut generations = Vec::new();
+        for row in rows {
+            let generation =
+                row.map_err(|error| engine_error("read generation row", &self.path, &error))?;
+            let generation = u64::try_from(generation).map_err(|error| CoreError::Typed {
+                code: CATALOG_ROW_CORRUPT_CODE.to_string(),
+                message: format!("catalog: generation column holds {generation}: {error}"),
+            })?;
+            generations.push(ManifestGeneration::new(generation));
+        }
+        drop(statement);
+        drop(connection);
+        Ok(generations)
     }
 
     fn forget_generation(

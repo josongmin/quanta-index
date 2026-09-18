@@ -447,6 +447,9 @@ fn scope_key(path: &str) -> SearchScopeKey {
 }
 
 fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestResult {
+    // Like every producer, stamp the canonical batch digest before sending
+    // (QI-BB-032); the search plane refuses any other digest.
+    let payload = quanta_index_searchd_harness::stamped_ingest_request(payload)?;
     let response = send_ingest_request(
         socket,
         &SearchPlaneIngestIpcRequestEnvelope {
@@ -491,10 +494,7 @@ fn publish_search_corpus_chunks(
             generation: generation(),
             base_generation: None,
             manifest_digest: format!("e2e-lex-manifest-{}", generation().get()),
-            batch_digest: format!(
-                "e2e-lex-batch-{}",
-                NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
-            ),
+            batch_digest: String::new(),
             mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload,
             clear_surfaces: Vec::new(),
@@ -516,10 +516,7 @@ fn tombstone_lexical_scopes(socket: &Path, paths: &[&str]) -> TestResult {
             generation: generation(),
             base_generation: None,
             manifest_digest: format!("e2e-lex-del-{}", generation().get()),
-            batch_digest: format!(
-                "e2e-lex-del-batch-{}",
-                NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
-            ),
+            batch_digest: String::new(),
             mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload: None,
             clear_surfaces: Vec::new(),
@@ -546,10 +543,7 @@ fn seal_lexical(socket: &Path) -> TestResult {
             generation: generation(),
             base_generation: None,
             manifest_digest: format!("e2e-lex-seal-{}", generation().get()),
-            batch_digest: format!(
-                "e2e-lex-seal-batch-{}",
-                NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
-            ),
+            batch_digest: String::new(),
             mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload: None,
             clear_surfaces: Vec::new(),
@@ -570,10 +564,7 @@ fn publish_history_commits(socket: &Path, commits: Vec<CommitRecord>) -> TestRes
             revision_id: revision(),
             generation: generation(),
             manifest_digest: Some(format!("e2e-history-manifest-{}", generation().get())),
-            batch_digest: format!(
-                "e2e-history-batch-{}",
-                NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
-            ),
+            batch_digest: String::new(),
             commits,
             refs: Vec::new(),
             tags: Vec::new(),
@@ -596,10 +587,7 @@ fn publish_history_authority_fixture(socket: &Path) -> TestResult {
             revision_id: revision(),
             generation: generation(),
             manifest_digest: Some(format!("e2e-history-authority-{}", generation().get())),
-            batch_digest: format!(
-                "e2e-history-authority-batch-{}",
-                NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
-            ),
+            batch_digest: String::new(),
             commits: vec![CommitRecord {
                 wire_version: 1,
                 sha: commit_sha,
@@ -653,10 +641,7 @@ fn publish_runtime_catalog_fixture(socket: &Path) -> TestResult {
             revision_id: revision(),
             generation: generation(),
             overlay_epoch_ms: 20,
-            batch_digest: format!(
-                "e2e-runtime-catalog-batch-{}",
-                NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
-            ),
+            batch_digest: String::new(),
             producer_head_applied_at_ms: 100,
             generation_materialized_at_ms: 20,
             changed_entries: vec![RuntimeChangedRecord {
@@ -751,10 +736,7 @@ fn publish_structural_scope(
             generation: generation(),
             base_generation: None,
             manifest_digest: format!("e2e-struct-manifest-{}", generation().get()),
-            batch_digest: format!(
-                "e2e-struct-batch-{}",
-                NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
-            ),
+            batch_digest: String::new(),
             mode: BatchIngestMode::ReplaceGeneration,
             replace_scopes: vec![StructuralReplaceScope {
                 scope: scope_key(path),
@@ -776,10 +758,7 @@ fn tombstone_structural_scopes(socket: &Path, paths: &[&str]) -> TestResult {
             generation: generation(),
             base_generation: None,
             manifest_digest: format!("e2e-struct-del-{}", generation().get()),
-            batch_digest: format!(
-                "e2e-struct-del-batch-{}",
-                NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
-            ),
+            batch_digest: String::new(),
             mode: BatchIngestMode::ReplaceGeneration,
             replace_scopes: Vec::new(),
             tombstone_scopes: paths
@@ -802,10 +781,7 @@ fn seal_structural(socket: &Path) -> TestResult {
             generation: generation(),
             base_generation: None,
             manifest_digest: format!("e2e-struct-seal-{}", generation().get()),
-            batch_digest: format!(
-                "e2e-struct-seal-batch-{}",
-                NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
-            ),
+            batch_digest: String::new(),
             mode: BatchIngestMode::ReplaceGeneration,
             replace_scopes: Vec::new(),
             tombstone_scopes: Vec::new(),

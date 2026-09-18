@@ -191,7 +191,6 @@ fn corpus_batch(raw_generation: u64) -> Result<SearchCorpusBatch, Box<dyn Error>
         revision(),
         generation(raw_generation),
         format!("manifest:generation-activation-concurrency:{label}"),
-        format!("batch:generation-activation-concurrency:{label}"),
     );
 
     for index in 0..RESULT_COUNT {
@@ -226,12 +225,7 @@ fn corpus_batch(raw_generation: u64) -> Result<SearchCorpusBatch, Box<dyn Error>
 fn authority_batch(raw_generation: u64) -> RepoMetaBatch {
     let label = label(raw_generation);
     (0..RESULT_COUNT).fold(
-        RepoMetaBatch::new(
-            repo(),
-            revision(),
-            generation(raw_generation),
-            format!("meta:generation-activation-concurrency:{label}"),
-        ),
+        RepoMetaBatch::new(repo(), revision(), generation(raw_generation)),
         |batch, index| batch.entry(source_repo(raw_generation, index), "epoch", label.clone()),
     )
 }

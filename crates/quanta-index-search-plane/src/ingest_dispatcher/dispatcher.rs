@@ -4,15 +4,16 @@
 use std::sync::Arc;
 
 use quanta_index_contract::{
-    BatchPublishReceipt, ManifestGeneration, RepoId, RepoMapMutationAck, RevisionId,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
+    BatchPublishReceipt, RepoMapMutationAck, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcResponse,
 };
 use quanta_index_core::{
-    CoreError, FileContributorIngestPort, FileOwnershipIngestPort, IdempotencyBeginV1,
-    IdempotencyCatalogPort, IdempotencyKeyV1, IngestOperationKindV1, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMetaIngestPort, RepoTopicIngestPort,
-    RequestBudgetV1, SearchCorpusIngestPort,
+    BATCH_DIGEST_MISMATCH_CODE, CoreError, FileContributorIngestPort, FileOwnershipIngestPort,
+    IdempotencyBeginV1, IdempotencyCatalogPort, IdempotencyKeyV1, IngestBatchBodyV1,
+    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
+    RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1, SearchCorpusIngestPort,
 };
+use quanta_index_ipc::{BatchDigestVerdictV1, verify_batch_digest_v1};
 
 use crate::ingest_dispatcher::errors::core_error_to_ipc;
 use crate::ingest_dispatcher::ports::{
@@ -39,9 +40,10 @@ pub struct SearchPlaneIngestDispatcher {
     structural: Arc<dyn StructuralIngestPort + Send + Sync>,
     repomap: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
     /// Durable idempotency records (QI-BB-032): every receipt-bearing route
-    /// goes through intent → apply → finalize, so a replay of the same body
-    /// is answered from the record and a different body under the same key
-    /// is refused before any mutation.
+    /// goes through digest verification → preflight → intent → apply →
+    /// finalize, so a replay of the same body is answered from the record,
+    /// a forged digest is refused before anything durable, and a refused
+    /// batch leaves no record.
     idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
 }
 
@@ -82,33 +84,46 @@ impl SearchPlaneIngestDispatcher {
     }
 
     /// Run one receipt-bearing publish under its idempotency record
-    /// (QI-BB-032).
+    /// (QI-BB-032), in this fixed order:
     ///
-    /// The canonical body is hashed, the record is begun, and then: a
-    /// finalized record with the same body answers with the recorded receipt
-    /// marked `applied = false` and nothing runs; a record with a different
-    /// body is refused typed by the catalog; otherwise `apply` runs and the
-    /// receipt it produces is recorded, stamped with the catalog's durable
-    /// sequence, and returned as `applied = true`. A record left in progress
-    /// by a crash re-runs `apply`, which every route makes idempotent.
-    fn publish_idempotent<B: serde::Serialize>(
+    /// 1. **Digest verification.** The carried `batch_digest` is recomputed
+    ///    from the body ([`verify_batch_digest_v1`]); a batch whose digest
+    ///    is not its body's is refused `BATCH_DIGEST_MISMATCH`. Nothing
+    ///    durable has happened.
+    /// 2. **Route preflight.** Everything the route can refuse without
+    ///    mutating (shape, surface authority, resource envelope, delta
+    ///    base) runs now, so a refused batch leaves no record and zero bytes
+    ///    changed (QI-BB-029).
+    /// 3. **Intent.** The record is begun under the verified digest. A
+    ///    finalized record answers with the recorded receipt marked
+    ///    `applied = false` and nothing runs.
+    /// 4. **Apply.** The route materializes the batch.
+    /// 5. **Finalize.** The receipt is recorded, stamped with the catalog's
+    ///    durable sequence, and returned as `applied = true`.
+    ///
+    /// A record left in progress by a crash between 4 and 5 re-runs the
+    /// apply, which every route makes idempotent and which the sealed
+    /// search-corpus path answers without re-materializing or re-embedding
+    /// when the durable end state already exists. Because the digest is the
+    /// body's, two bodies can never share a key; the catalog's own
+    /// different-body refusal is its invariant, not a path this dispatcher
+    /// can reach.
+    fn publish_idempotent<B: IngestBatchBodyV1 + serde::Serialize>(
         &self,
-        kind: IngestOperationKindV1,
-        repo_id: &RepoId,
-        revision_id: &RevisionId,
-        generation: ManifestGeneration,
-        batch_digest: &str,
-        body: &B,
-        apply: impl FnOnce() -> Result<BatchPublishReceipt, CoreError>,
+        body: &mut B,
+        preflight: impl FnOnce(&B) -> Result<(), CoreError>,
+        apply: impl FnOnce(&B) -> Result<BatchPublishReceipt, CoreError>,
     ) -> Result<BatchPublishReceipt, CoreError> {
+        let body_sha256 = verified_batch_digest_v1(body)?;
+        let body: &B = body;
+        preflight(body)?;
         let key = IdempotencyKeyV1 {
-            kind,
-            repo_id: repo_id.clone(),
-            revision_id: revision_id.clone(),
-            generation,
-            batch_digest: batch_digest.to_string(),
+            kind: B::OPERATION,
+            repo_id: body.repo_id().clone(),
+            revision_id: body.revision_id().clone(),
+            generation: body.generation(),
+            batch_digest: body.batch_digest().to_string(),
         };
-        let body_sha256 = canonical_body_sha256_v1(kind, body)?;
         match self.idempotency.begin(&key, &body_sha256)? {
             IdempotencyBeginV1::Replay {
                 receipt,
@@ -116,7 +131,7 @@ impl SearchPlaneIngestDispatcher {
             } => return Ok(receipt.recorded_at(durable_sequence).replayed()),
             IdempotencyBeginV1::Fresh | IdempotencyBeginV1::Resume => {}
         }
-        let receipt = apply()?;
+        let receipt = apply(body)?;
         let durable_sequence = self.idempotency.finalize(&key, &body_sha256, &receipt)?;
         Ok(receipt.recorded_at(durable_sequence))
     }
@@ -140,156 +155,92 @@ impl SearchPlaneIngestDispatcher {
             return SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err));
         }
         match request {
-            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => {
+            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(mut batch) => {
                 match self.publish_idempotent(
-                    IngestOperationKindV1::SearchCorpus,
-                    &batch.repo_id,
-                    &batch.revision_id,
-                    batch.generation,
-                    &batch.batch_digest,
-                    &batch,
-                    || self.lexical.publish_batch(&batch),
+                    &mut batch,
+                    |batch| self.lexical.preflight_batch(batch),
+                    |batch| self.lexical.publish_batch(batch),
                 ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneIngestIpcRequest::PublishHistoryBatch(batch) => {
-                match self.publish_idempotent(
-                    IngestOperationKindV1::History,
-                    &batch.repo_id,
-                    &batch.revision_id,
-                    batch.generation,
-                    &batch.batch_digest,
-                    &batch,
-                    || self.history.publish_batch(&batch),
-                ) {
+            SearchPlaneIngestIpcRequest::PublishHistoryBatch(mut batch) => {
+                match self.publish_idempotent(&mut batch, no_storage_free_preflight, |batch| {
+                    self.history.publish_batch(batch)
+                }) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::HistoryReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(batch) => {
-                match self.publish_idempotent(
-                    IngestOperationKindV1::RepoCommitRecency,
-                    &batch.repo_id,
-                    &batch.revision_id,
-                    batch.generation,
-                    &batch.batch_digest,
-                    &batch,
-                    || self.repo_commit_recency.publish_batch(&batch),
-                ) {
+            SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(mut batch) => {
+                match self.publish_idempotent(&mut batch, no_storage_free_preflight, |batch| {
+                    self.repo_commit_recency.publish_batch(batch)
+                }) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(batch) => {
-                match self.publish_idempotent(
-                    IngestOperationKindV1::RepoTopic,
-                    &batch.repo_id,
-                    &batch.revision_id,
-                    batch.generation,
-                    &batch.batch_digest,
-                    &batch,
-                    || self.repo_topic.publish_batch(&batch),
-                ) {
+            SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(mut batch) => {
+                match self.publish_idempotent(&mut batch, no_storage_free_preflight, |batch| {
+                    self.repo_topic.publish_batch(batch)
+                }) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RepoTopicReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(batch) => {
-                match self.publish_idempotent(
-                    IngestOperationKindV1::RepoDescription,
-                    &batch.repo_id,
-                    &batch.revision_id,
-                    batch.generation,
-                    &batch.batch_digest,
-                    &batch,
-                    || self.repo_description.publish_batch(&batch),
-                ) {
+            SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(mut batch) => {
+                match self.publish_idempotent(&mut batch, no_storage_free_preflight, |batch| {
+                    self.repo_description.publish_batch(batch)
+                }) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(batch) => {
-                match self.publish_idempotent(
-                    IngestOperationKindV1::FileOwnership,
-                    &batch.repo_id,
-                    &batch.revision_id,
-                    batch.generation,
-                    &batch.batch_digest,
-                    &batch,
-                    || self.file_ownership.publish_batch(&batch),
-                ) {
+            SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(mut batch) => {
+                match self.publish_idempotent(&mut batch, no_storage_free_preflight, |batch| {
+                    self.file_ownership.publish_batch(batch)
+                }) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::FileOwnershipReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneIngestIpcRequest::PublishFileContributorBatch(batch) => {
-                match self.publish_idempotent(
-                    IngestOperationKindV1::FileContributor,
-                    &batch.repo_id,
-                    &batch.revision_id,
-                    batch.generation,
-                    &batch.batch_digest,
-                    &batch,
-                    || self.file_contributor.publish_batch(&batch),
-                ) {
+            SearchPlaneIngestIpcRequest::PublishFileContributorBatch(mut batch) => {
+                match self.publish_idempotent(&mut batch, no_storage_free_preflight, |batch| {
+                    self.file_contributor.publish_batch(batch)
+                }) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::FileContributorReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(batch) => {
-                match self.publish_idempotent(
-                    IngestOperationKindV1::RepoMeta,
-                    &batch.repo_id,
-                    &batch.revision_id,
-                    batch.generation,
-                    &batch.batch_digest,
-                    &batch,
-                    || self.repo_meta.publish_batch(&batch),
-                ) {
+            SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(mut batch) => {
+                match self.publish_idempotent(&mut batch, no_storage_free_preflight, |batch| {
+                    self.repo_meta.publish_batch(batch)
+                }) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RepoMetaReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch) => {
-                match self.publish_idempotent(
-                    IngestOperationKindV1::Dirty,
-                    &batch.repo_id,
-                    &batch.revision_id,
-                    batch.generation,
-                    &batch.batch_digest,
-                    &batch,
-                    || self.runtime.publish_batch(&batch),
-                ) {
+            SearchPlaneIngestIpcRequest::PublishDirtyBatch(mut batch) => {
+                match self.publish_idempotent(&mut batch, no_storage_free_preflight, |batch| {
+                    self.runtime.publish_batch(batch)
+                }) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::DirtyReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(batch) => {
-                match self.publish_idempotent(
-                    IngestOperationKindV1::RuntimeCatalog,
-                    &batch.repo_id,
-                    &batch.revision_id,
-                    batch.generation,
-                    &batch.batch_digest,
-                    &batch,
-                    || self.runtime.publish_catalog_batch(&batch),
-                ) {
+            SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(mut batch) => {
+                match self.publish_idempotent(&mut batch, no_storage_free_preflight, |batch| {
+                    self.runtime.publish_catalog_batch(batch)
+                }) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneIngestIpcRequest::PublishStructuralBatch(batch) => {
-                match self.publish_idempotent(
-                    IngestOperationKindV1::Structural,
-                    &batch.repo_id,
-                    &batch.revision_id,
-                    batch.generation,
-                    &batch.batch_digest,
-                    &batch,
-                    || self.structural.publish_batch(&batch),
-                ) {
+            SearchPlaneIngestIpcRequest::PublishStructuralBatch(mut batch) => {
+                match self.publish_idempotent(&mut batch, no_storage_free_preflight, |batch| {
+                    self.structural.publish_batch(batch)
+                }) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::StructuralReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
@@ -310,22 +261,46 @@ impl SearchPlaneIngestDispatcher {
     }
 }
 
-/// SHA-256 over the batch's canonical CBOR encoding under a per-route
-/// domain: the identity a replay must match byte for byte.
-fn canonical_body_sha256_v1<B: serde::Serialize>(
-    kind: IngestOperationKindV1,
-    body: &B,
+/// The preflight of a route whose refusals are only discoverable inside
+/// its apply.
+///
+/// The auxiliary authority routes compute their delta against the ledger
+/// and refuse from there. A typed refusal inside such an apply leaves an
+/// in-progress record that dies with its generation at the next reclaim
+/// pass; the digest is verified before the record either way.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the signature is the route preflight contract every route is dispatched through; this route has nothing storage-free to refuse"
+)]
+fn no_storage_free_preflight<B: IngestBatchBodyV1>(_body: &B) -> Result<(), CoreError> {
+    Ok(())
+}
+
+/// Recompute `body`'s canonical digest and require the carried token to be
+/// it (QI-BB-032).
+///
+/// The verified bytes are the idempotency record's body hash. A body that
+/// cannot be encoded is a contract defect of the batch.
+fn verified_batch_digest_v1<B: IngestBatchBodyV1 + serde::Serialize>(
+    body: &mut B,
 ) -> Result<[u8; 32], CoreError> {
-    use sha2::Digest as _;
-    let encoded = quanta_index_ipc::encode_cbor_payload(body).map_err(|err| {
-        CoreError::Storage(format!(
-            "ingest idempotency: encode {kind} batch body: {err}"
+    let verdict = verify_batch_digest_v1(body).map_err(|err| {
+        CoreError::InvalidContract(format!(
+            "ingest: encode {} batch body for its digest: {err}",
+            B::OPERATION
         ))
     })?;
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(b"quanta-index:ingest-batch-body:v1\0");
-    hasher.update(kind.as_code_str().as_bytes());
-    hasher.update(b"\x1f");
-    hasher.update(&encoded);
-    Ok(hasher.finalize().into())
+    match verdict {
+        BatchDigestVerdictV1::Verified(digest) => Ok(digest),
+        BatchDigestVerdictV1::Mismatch { carried, expected } => Err(CoreError::Typed {
+            code: BATCH_DIGEST_MISMATCH_CODE.to_string(),
+            message: format!(
+                "{} batch for repo={} revision={} generation={} carries batch_digest={carried} but its body digests to {expected}; a batch digest is the canonical digest of the body it names, computed after the body is final",
+                B::OPERATION,
+                body.repo_id().as_str(),
+                body.revision_id().as_str(),
+                body.generation().get(),
+            ),
+        }),
+    }
 }

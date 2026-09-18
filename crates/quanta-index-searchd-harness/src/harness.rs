@@ -50,7 +50,9 @@ use quanta_index_contract::{
     SymbolId, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_core::{IngestResourcePolicy, SemanticStreamWindowPolicy};
-use quanta_index_ipc::{ClientIoPolicy, IpcError, ServerAdmissionPolicy, send_request};
+use quanta_index_ipc::{
+    ClientIoPolicy, IpcError, ServerAdmissionPolicy, send_request, stamp_batch_digest_v1,
+};
 use quanta_index_search_plane::{BoundedQueryObsStore, MetricSample, ObsError};
 use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd::app::{
@@ -204,6 +206,11 @@ pub struct E2eRuntime {
     chunk_ids_by_path: BTreeMap<String, ChunkId>,
     chunk_records_by_path: BTreeMap<String, ChunkRecord>,
     request_id_counter: AtomicU64,
+    /// Each harness-built mutation is a distinct producer declaration: the
+    /// sequence is folded into producer-declared content digests so two
+    /// helper calls with the same arguments are two batches, not one
+    /// replayed body (QI-BB-032 binds `batch_digest` to the body).
+    batch_sequence: AtomicU64,
     generation_counter: u64,
     last_sealed_search_corpus_identity: Option<SearchCorpusGenerationIdentityV1>,
 }
@@ -476,9 +483,16 @@ impl E2eRuntime {
             chunk_ids_by_path: BTreeMap::new(),
             chunk_records_by_path: BTreeMap::new(),
             request_id_counter: AtomicU64::new(1),
+            batch_sequence: AtomicU64::new(1),
             generation_counter: 1,
             last_sealed_search_corpus_identity: None,
         })
+    }
+
+    /// The next producer-side declaration sequence for a harness-built
+    /// mutation; see the field.
+    fn next_batch_sequence(&self) -> u64 {
+        self.batch_sequence.fetch_add(1, Ordering::Relaxed)
     }
 
     /// The daemon's state root. Fault-injection tests use it to reach the
@@ -909,10 +923,7 @@ impl E2eRuntime {
                 generation: self.current_generation(),
                 base_generation,
                 manifest_digest: format!("lex:{path}:{}", self.current_generation().get()),
-                batch_digest: format!(
-                    "lex-batch:{path}:{}",
-                    self.request_id_counter.load(Ordering::Relaxed)
-                ),
+                batch_digest: String::new(),
                 mode,
                 bundle_payload: None,
                 clear_surfaces: Vec::new(),
@@ -1029,10 +1040,7 @@ impl E2eRuntime {
                     files.len(),
                     self.current_generation().get()
                 ),
-                batch_digest: format!(
-                    "lex-multi-batch:{}",
-                    self.request_id_counter.load(Ordering::Relaxed)
-                ),
+                batch_digest: String::new(),
                 mode,
                 bundle_payload: None,
                 clear_surfaces: Vec::new(),
@@ -1061,10 +1069,7 @@ impl E2eRuntime {
                 generation: self.current_generation(),
                 base_generation,
                 manifest_digest: format!("lex-meta:{}", self.current_generation().get()),
-                batch_digest: format!(
-                    "lex-meta-batch:{}",
-                    self.request_id_counter.load(Ordering::Relaxed)
-                ),
+                batch_digest: String::new(),
                 mode,
                 bundle_payload: Some(payload),
                 clear_surfaces: Vec::new(),
@@ -1215,14 +1220,11 @@ impl E2eRuntime {
             generation,
             base_generation: None,
             manifest_digest: format!("struct:{path}:{}", generation.get()),
-            batch_digest: format!(
-                "struct-batch:{path}:{}",
-                self.request_id_counter.load(Ordering::Relaxed)
-            ),
+            batch_digest: String::new(),
             mode: BatchIngestMode::Delta,
             replace_scopes: vec![StructuralReplaceScope {
                 scope: scope_key(path),
-                scope_digest: format!("struct-scope:{path}"),
+                scope_digest: format!("struct-scope:{path}:{}", self.next_batch_sequence()),
                 trees: vec![StructuralTreeRecord {
                     chunk_id,
                     record: tree,
@@ -1277,11 +1279,7 @@ impl E2eRuntime {
                     spec.file_path,
                     self.current_generation().get()
                 )),
-                batch_digest: format!(
-                    "history-batch:{}:{}",
-                    spec.file_path,
-                    self.request_id_counter.load(Ordering::Relaxed)
-                ),
+                batch_digest: String::new(),
                 commits: vec![CommitRecord {
                     wire_version: 1,
                     sha: commit_sha,
@@ -1417,10 +1415,7 @@ impl E2eRuntime {
             revision_id: self.revision(),
             generation,
             overlay_epoch_ms: applied_at_ms,
-            batch_digest: format!(
-                "dirty-batch:{path}:{}",
-                self.request_id_counter.load(Ordering::Relaxed)
-            ),
+            batch_digest: String::new(),
             entries: vec![DirtyMutation::Upsert(DirtyRecord {
                 wire_version: 1,
                 doc_id: chunk_id,
@@ -1535,10 +1530,7 @@ impl E2eRuntime {
                 revision_id: self.revision(),
                 generation: self.current_generation(),
                 overlay_epoch_ms: catalog.generation_materialized_at_ms,
-                batch_digest: format!(
-                    "runtime-catalog:{}",
-                    self.request_id_counter.load(Ordering::Relaxed)
-                ),
+                batch_digest: String::new(),
                 producer_head_applied_at_ms: catalog.producer_head_applied_at_ms,
                 generation_materialized_at_ms: catalog.generation_materialized_at_ms,
                 changed_entries,
@@ -1563,10 +1555,7 @@ impl E2eRuntime {
                 revision_id: self.revision(),
                 generation: self.current_generation(),
                 overlay_epoch_ms: 0,
-                batch_digest: format!(
-                    "dirty-evict:{path}:{}",
-                    self.request_id_counter.load(Ordering::Relaxed)
-                ),
+                batch_digest: String::new(),
                 entries: vec![DirtyMutation::Delete(DirtyDelete { doc_id: chunk_id })],
             },
         ))?;
@@ -1583,10 +1572,7 @@ impl E2eRuntime {
                 generation: self.current_generation(),
                 base_generation: None,
                 manifest_digest: format!("struct-del:{path}:{}", self.current_generation().get()),
-                batch_digest: format!(
-                    "struct-del-batch:{path}:{}",
-                    self.request_id_counter.load(Ordering::Relaxed)
-                ),
+                batch_digest: String::new(),
                 mode: BatchIngestMode::Delta,
                 replace_scopes: Vec::new(),
                 tombstone_scopes: vec![StructuralTombstoneScope {
@@ -1607,10 +1593,7 @@ impl E2eRuntime {
                 generation: self.current_generation(),
                 base_generation,
                 manifest_digest: format!("lex-del:{path}:{}", self.current_generation().get()),
-                batch_digest: format!(
-                    "lex-del-batch:{path}:{}",
-                    self.request_id_counter.load(Ordering::Relaxed)
-                ),
+                batch_digest: String::new(),
                 mode,
                 bundle_payload: None,
                 clear_surfaces: Vec::new(),
@@ -1673,7 +1656,7 @@ impl E2eRuntime {
                 generation: self.current_generation(),
                 base_generation,
                 manifest_digest: format!("lex-symbol:{path}:{}", self.current_generation().get()),
-                batch_digest: format!("lex-symbol-batch:{path}:{symbol_id}"),
+                batch_digest: String::new(),
                 mode,
                 bundle_payload: None,
                 clear_surfaces: Vec::new(),
@@ -1729,7 +1712,7 @@ impl E2eRuntime {
                     generation: sealed,
                     base_generation,
                     manifest_digest: manifest_digest.clone(),
-                    batch_digest: format!("lex-seal-batch:{}", sealed.get()),
+                    batch_digest: String::new(),
                     mode,
                     bundle_payload: None,
                     clear_surfaces: Vec::new(),
@@ -2735,13 +2718,13 @@ impl E2eRuntime {
     }
 
     /// Build, without publishing, the unsealed single-chunk search-corpus
-    /// batch `ingest_text` would publish for `path`, under an explicit batch
-    /// digest, so a test can publish the same body more than once.
+    /// batch `ingest_text` would publish for `path`, stamped with its
+    /// canonical digest, so a test can publish the same body more than once
+    /// through [`Self::ingest_once`] and observe the replay.
     pub fn text_search_corpus_batch(
         &self,
         path: &str,
         content: &str,
-        batch_digest: &str,
     ) -> AnyResult<SearchCorpusIngestBatch> {
         let language = LanguageCode::new(language_from_path(path)).map_err(|err| {
             anyhow::anyhow!("language_from_path must return canonical lowercase codes: {err}")
@@ -2762,13 +2745,13 @@ impl E2eRuntime {
         };
         let records = vec![record];
         let (mode, base_generation) = self.lexical_batch_contract();
-        Ok(SearchCorpusIngestBatch {
+        let mut batch = SearchCorpusIngestBatch {
             repo_id: self.repo(),
             revision_id: self.revision(),
             generation: self.current_generation(),
             base_generation,
             manifest_digest: format!("lex:{path}:{}", self.current_generation().get()),
-            batch_digest: batch_digest.to_string(),
+            batch_digest: String::new(),
             mode,
             bundle_payload: None,
             clear_surfaces: Vec::new(),
@@ -2782,13 +2765,22 @@ impl E2eRuntime {
             semantic_replace_scopes: semantic_source_scopes_for_chunk_records(&records),
             semantic_tombstone_scopes: Vec::new(),
             seal: false,
-        })
+        };
+        stamp_batch_digest_v1(&mut batch)?;
+        Ok(batch)
     }
 
+    /// Publish `payload` as a producer would: like the SDK, the harness
+    /// stamps the canonical batch digest on every receipt-bearing batch it
+    /// sends (QI-BB-032), so harness-built batches and test-supplied
+    /// batches alike name their body. A test that must send a batch
+    /// verbatim (a forged digest, for instance) uses
+    /// [`Self::ingest_once`], which interprets nothing.
     fn dispatch_ingest_response(
         &mut self,
         payload: SearchPlaneIngestIpcRequest,
     ) -> AnyResult<SearchPlaneIngestIpcResponse> {
+        let payload = stamped_ingest_request(payload)?;
         let socket = self.ensure_ingest_socket()?;
         let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
         let envelope = SearchPlaneIngestIpcRequestEnvelope {
@@ -3261,4 +3253,53 @@ fn scope_key(path: &str) -> quanta_index_contract::SearchScopeKey {
         doc_surface: quanta_index_contract::SearchScopeSurface::Chunk,
         repo_relative_path: RepoRelativePath::new(path),
     }
+}
+
+/// Stamp the canonical batch digest on whichever receipt-bearing batch
+/// `payload` carries (QI-BB-032); a repo-map bundle names none.
+pub fn stamped_ingest_request(
+    payload: SearchPlaneIngestIpcRequest,
+) -> AnyResult<SearchPlaneIngestIpcRequest> {
+    fn stamped<B: quanta_index_core::IngestBatchBodyV1 + serde::Serialize>(
+        mut batch: B,
+    ) -> AnyResult<B> {
+        stamp_batch_digest_v1(&mut batch)?;
+        Ok(batch)
+    }
+    Ok(match payload {
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => {
+            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(stamped(batch)?)
+        }
+        SearchPlaneIngestIpcRequest::PublishHistoryBatch(batch) => {
+            SearchPlaneIngestIpcRequest::PublishHistoryBatch(stamped(batch)?)
+        }
+        SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(batch) => {
+            SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(stamped(batch)?)
+        }
+        SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(batch) => {
+            SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(stamped(batch)?)
+        }
+        SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(batch) => {
+            SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(stamped(batch)?)
+        }
+        SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(batch) => {
+            SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(stamped(batch)?)
+        }
+        SearchPlaneIngestIpcRequest::PublishFileContributorBatch(batch) => {
+            SearchPlaneIngestIpcRequest::PublishFileContributorBatch(stamped(batch)?)
+        }
+        SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(batch) => {
+            SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(stamped(batch)?)
+        }
+        SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch) => {
+            SearchPlaneIngestIpcRequest::PublishDirtyBatch(stamped(batch)?)
+        }
+        SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(batch) => {
+            SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(stamped(batch)?)
+        }
+        SearchPlaneIngestIpcRequest::PublishStructuralBatch(batch) => {
+            SearchPlaneIngestIpcRequest::PublishStructuralBatch(stamped(batch)?)
+        }
+        bundle @ SearchPlaneIngestIpcRequest::PublishRepoMapBundle(_) => bundle,
+    })
 }

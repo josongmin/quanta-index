@@ -145,9 +145,11 @@ fn an_overlay_publish_into_a_sealed_generation_is_refused_typed() -> TestResult 
     let sealed = seal_with_overlay(&mut rt, "src/one.rs", "one")?;
     expect_meta_hit(&mut rt, "one", "before the refused publish")?;
 
-    let response = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(
-        repo_meta_batch(&rt, sealed, "late"),
-    ))?;
+    // A well-formed publish with its canonical digest: the refusal under
+    // test is the sealed generation's, not the digest gate's.
+    let response = rt.ingest_once(e2e_harness::stamped_ingest_request(
+        SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(repo_meta_batch(&rt, sealed, "late")),
+    )?)?;
     let SearchPlaneIngestIpcResponse::Error(error) = response else {
         return Err(format!(
             "an overlay publish into a sealed generation must be refused typed GENERATION_IMMUTABLE, got {response:?}"

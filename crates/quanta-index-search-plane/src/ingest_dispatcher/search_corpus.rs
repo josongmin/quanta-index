@@ -23,13 +23,11 @@ use crate::history_text::HistoryTextIndexParts;
 use crate::ingest_dispatcher::auxiliary::AuxiliaryMutationCoordinator;
 use crate::ingest_dispatcher::errors::{
     ERR_SEARCH_CORPUS_BATCH_SHAPE, ERR_SEARCH_CORPUS_DELTA_BASE_NOT_SEALED,
-    ERR_SEARCH_CORPUS_GENERATION_CONFLICT,
 };
 use crate::ingest_dispatcher::generation_plan::{
-    PhysicalGenerationStateV1, SealedGenerationBuildPlanV1, SearchCorpusPhysicalReclaimReceiptV1,
-    batch_publish_receipt_v1, ensure_generation_is_mutable_v1, generation_pair_from_batch_v1,
-    inspect_physical_generation_v1, validate_physical_generation_v1,
-    validate_semantic_publish_receipt_v1,
+    SealedGenerationBuildPlanV1, SearchCorpusPhysicalReclaimReceiptV1, batch_publish_receipt_v1,
+    ensure_generation_is_mutable_v1, generation_pair_from_batch_v1, inspect_physical_generation_v1,
+    validate_delta_base_v1, validate_physical_generation_v1, validate_semantic_publish_receipt_v1,
 };
 use crate::ingest_dispatcher::ports::SearchCorpusAuthorityWritePort;
 use crate::readiness::{
@@ -379,9 +377,30 @@ impl MetricSourcePort for DirectSearchCorpusMaterializer {
 }
 
 impl DirectSearchCorpusMaterializer {
-    /// Measure `batch` against the envelope before anything is held
-    /// (QI-BB-021); a batch that does not fit is refused typed here, with
-    /// zero bytes changed.
+    /// The batch's own shape and surface-mutation authority (QI-BB-029):
+    /// storage-free, refused typed.
+    fn validate_batch_shape_v1(batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
+        batch.validate_v1().map_err(|err| CoreError::Typed {
+            code: ERR_SEARCH_CORPUS_BATCH_SHAPE.to_string(),
+            message: format!("direct search-corpus materialize: {err}"),
+        })?;
+        batch.validate_surface_mutations_v1().map_err(|err| {
+            CoreError::InvalidContract(format!("direct search-corpus materialize: {err}"))
+        })
+    }
+
+    /// Measure `batch` against the envelope (QI-BB-021) without touching the
+    /// tallies: the pure check `publish_batch` repeats under its lock.
+    fn measure_resource_envelope(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
+        self.resource_policy
+            .admit_search_corpus_batch(batch, self.semantic_embedder.dimension())
+            .map(|_footprint| ())
+    }
+
+    /// Measure `batch` against the envelope and tally the outcome
+    /// (QI-BB-021). This is the admission point: it runs once per batch,
+    /// in `preflight_batch`, before anything is held; a batch that does not
+    /// fit is refused typed here with zero bytes changed and no record.
     fn admit_resource_envelope(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
         let outcome = self
             .resource_policy
@@ -402,18 +421,29 @@ impl DirectSearchCorpusMaterializer {
 }
 
 impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
+    /// Everything that refuses without mutating, in the order the
+    /// dispatcher relies on before it records durable intent (QI-BB-029):
+    /// shape and surface authority, the resource envelope (tallied here),
+    /// then — for a delta — that both tracks hold the base as the exact
+    /// sealed identity the ledger recorded. No lock is taken: the checks
+    /// read the ledger and the tracks' sealed identities only, and
+    /// `publish_batch` repeats the delta-base check under its lock before
+    /// the first mutation.
+    fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
+        Self::validate_batch_shape_v1(batch)?;
+        self.admit_resource_envelope(batch)?;
+        if let Some(base_generation) = batch.base_generation {
+            self.preflight_delta_base_v1(batch, base_generation)?;
+        }
+        Ok(())
+    }
+
     fn publish_batch(
         &self,
         batch: &SearchCorpusIngestBatch,
     ) -> Result<BatchPublishReceipt, CoreError> {
-        batch.validate_v1().map_err(|err| CoreError::Typed {
-            code: ERR_SEARCH_CORPUS_BATCH_SHAPE.to_string(),
-            message: format!("direct search-corpus materialize: {err}"),
-        })?;
-        batch.validate_surface_mutations_v1().map_err(|err| {
-            CoreError::InvalidContract(format!("direct search-corpus materialize: {err}"))
-        })?;
-        self.admit_resource_envelope(batch)?;
+        Self::validate_batch_shape_v1(batch)?;
+        self.measure_resource_envelope(batch)?;
         let stripe = search_corpus_lock_stripe_v1(&batch.repo_id, &batch.revision_id);
         let operation_lock = self.operation_locks.get(stripe).ok_or_else(|| {
             CoreError::Storage(format!(
@@ -460,6 +490,12 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
             plan.discard_incomplete_v1(
                 self.lexical_incomplete_discard.as_ref(),
                 self.semantic_incomplete_discard.as_ref(),
+            )?;
+            plan.repair_corrupt_v1(
+                batch.mode,
+                &self.snapshots,
+                self.lexical_reclaim.as_ref(),
+                self.semantic_reclaim.as_ref(),
             )?;
         }
 
@@ -578,26 +614,31 @@ impl DirectSearchCorpusMaterializer {
                 manifest_generation: base_generation,
                 manifest_digest: digest,
             };
-            validate_physical_generation_v1(
-                validator.as_ref(),
-                &base,
-                &format!("{label} delta base"),
-            )?;
+            validate_delta_base_v1(validator.as_ref(), &base, &format!("{label} delta base"))?;
         }
         Ok(())
     }
 
     /// Computes the convergent per-track recovery plan before any mutation.
+    ///
+    /// The authority is consulted first so a batch that names a different
+    /// digest than the one recorded for the generation is refused typed;
+    /// past that, the plan follows the tracks' physical states alone. An
+    /// authority that already knows the identity while a track is absent,
+    /// incomplete or damaged is the repair case (a discarded, crashed or
+    /// corrupt track being rebuilt under the recorded identity), and one
+    /// that knows nothing is the first seal; both converge the same way.
     fn preflight_sealed_generation_v1(
         &self,
         batch: &SearchCorpusIngestBatch,
     ) -> Result<SealedGenerationBuildPlanV1, CoreError> {
-        let authority = self.authority.inspect_sealed_search_corpus(
-            &batch.repo_id,
-            &batch.revision_id,
-            batch.generation,
-            batch.manifest_digest.as_str(),
-        )?;
+        let _known: SealedSearchCorpusAuthorityStateV1 =
+            self.authority.inspect_sealed_search_corpus(
+                &batch.repo_id,
+                &batch.revision_id,
+                batch.generation,
+                batch.manifest_digest.as_str(),
+            )?;
         let (lexical, semantic) = generation_pair_from_batch_v1(batch);
         let lexical_state = inspect_physical_generation_v1(
             self.lexical_generation_validator.as_ref(),
@@ -609,33 +650,12 @@ impl DirectSearchCorpusMaterializer {
             &semantic,
             "semantic preflight",
         )?;
-
-        match (authority, lexical_state, semantic_state) {
-            (
-                SealedSearchCorpusAuthorityStateV1::Exact,
-                PhysicalGenerationStateV1::Exact,
-                PhysicalGenerationStateV1::Exact,
-            ) => Ok(SealedGenerationBuildPlanV1::finalize_only(
-                lexical, semantic,
-            )),
-            (SealedSearchCorpusAuthorityStateV1::Absent, lexical_state, semantic_state) => {
-                Ok(SealedGenerationBuildPlanV1 {
-                    lexical,
-                    semantic,
-                    lexical_state,
-                    semantic_state,
-                })
-            }
-            (authority, lexical_state, semantic_state) => Err(CoreError::Typed {
-                code: ERR_SEARCH_CORPUS_GENERATION_CONFLICT.to_string(),
-                message: format!(
-                    "direct search-corpus materialize: non-atomic sealed-generation state for repo={} revision={} generation={}: authority={authority:?} lexical={lexical_state:?} semantic={semantic_state:?}",
-                    batch.repo_id.as_str(),
-                    batch.revision_id.as_str(),
-                    batch.generation.get(),
-                ),
-            }),
-        }
+        Ok(SealedGenerationBuildPlanV1 {
+            lexical,
+            semantic,
+            lexical_state,
+            semantic_state,
+        })
     }
 
     fn finalize_sealed_generation_v1(
@@ -858,26 +878,67 @@ impl DirectSearchCorpusMaterializer {
                 }
             }
         }
-        // A generation reclaimed on both tracks describes nothing a replay
-        // could still converge on; its idempotency records go with it.
-        let mut forgotten = BTreeSet::new();
-        for (track, generation) in receipt.reclaimed.keys() {
-            let other = match track {
-                SearchPlaneTrackKind::Lexical => SearchPlaneTrackKind::Semantic,
-                SearchPlaneTrackKind::Semantic => SearchPlaneTrackKind::Lexical,
-                SearchPlaneTrackKind::Structural => continue,
-            };
-            if receipt.reclaimed.contains_key(&(other, *generation)) {
-                let _new = forgotten.insert(*generation);
+        receipt.forgotten_records = self.forget_broken_pair_records_v1(batch)?;
+        Ok(receipt)
+    }
+
+    /// Idempotency records live and die with their generation (QI-BB-032
+    /// 보완 #5).
+    ///
+    /// A record answers a replay with "this body is durably applied"; that
+    /// is only true while the generation is a whole sealed pair on disk.
+    /// After the sweep, every generation the catalog knows for the pair —
+    /// older than the one being sealed, so the records of the batch in
+    /// flight and of any newer staging generation are never touched — is
+    /// reconciled against what each track still holds as sealed: a
+    /// generation reclaimed on either track (this pass or an earlier one),
+    /// absent because it never sealed, or discarded on one track is no
+    /// longer whole, and its records are forgotten so a replay applies
+    /// afresh instead of being acked from a record that describes nothing.
+    /// A track deferred under a pin still holds the generation, so its
+    /// records survive until the pass that reclaims it. Forgetting is
+    /// idempotent; a crash between reclaim and forget is repaired by the
+    /// next pass.
+    fn forget_broken_pair_records_v1(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+    ) -> Result<BTreeMap<ManifestGeneration, u64>, CoreError> {
+        let mut whole: BTreeMap<ManifestGeneration, BTreeSet<SearchPlaneTrackKind>> =
+            BTreeMap::new();
+        let tracks: [(
+            &Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
+            SearchPlaneTrackKind,
+        ); 2] = [
+            (&self.lexical_reclaim, SearchPlaneTrackKind::Lexical),
+            (&self.semantic_reclaim, SearchPlaneTrackKind::Semantic),
+        ];
+        for (port, track) in tracks {
+            for sealed in port.sealed_generations_for_pair(&batch.repo_id, &batch.revision_id)? {
+                let _new = whole
+                    .entry(sealed.manifest_generation)
+                    .or_default()
+                    .insert(track);
             }
         }
-        for generation in forgotten {
-            let _records = self.idempotency.forget_generation(
+        let mut forgotten = BTreeMap::new();
+        for generation in self
+            .idempotency
+            .generations_for_pair(&batch.repo_id, &batch.revision_id)?
+        {
+            if generation >= batch.generation {
+                continue;
+            }
+            let held_on_both_tracks = whole.get(&generation).is_some_and(|held| held.len() == 2);
+            if held_on_both_tracks {
+                continue;
+            }
+            let records = self.idempotency.forget_generation(
                 &batch.repo_id,
                 &batch.revision_id,
                 generation,
             )?;
+            let _prior = forgotten.insert(generation, records);
         }
-        Ok(receipt)
+        Ok(forgotten)
     }
 }

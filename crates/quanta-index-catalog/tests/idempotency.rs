@@ -9,7 +9,9 @@
 //! 4. Sequences are unique and monotonic across keys and survive reopen.
 //! 5. A second writer holding the database past the busy budget is a typed
 //!    `CATALOG_BUSY`.
-//! 6. Forgetting a generation drops exactly its records.
+//! 6. Forgetting a generation drops exactly its records, across every
+//!    route, and forgetting it again is `Ok(0)`; the pair's generation
+//!    listing is what a reclaim pass reconciles against disk.
 
 #![forbid(unsafe_code)]
 
@@ -17,10 +19,12 @@ use std::error::Error;
 use std::time::Duration;
 
 use quanta_index_catalog::{CATALOG_FILE_NAME, SqliteCatalog, catalog_dir};
-use quanta_index_contract::{BatchPublishReceipt, ManifestGeneration, RepoId, RevisionId};
+use quanta_index_contract::{
+    BatchPublishReceipt, IngestOperationKindV1, ManifestGeneration, RepoId, RevisionId,
+};
 use quanta_index_core::{
     BATCH_DIGEST_CONFLICT_CODE, CATALOG_BUSY_CODE, CATALOG_ROW_CORRUPT_CODE, CoreError,
-    IdempotencyBeginV1, IdempotencyCatalogPort, IdempotencyKeyV1, IngestOperationKindV1,
+    IdempotencyBeginV1, IdempotencyCatalogPort, IdempotencyKeyV1,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -272,6 +276,65 @@ fn forgetting_a_generation_drops_exactly_its_records() -> TestResult {
         IdempotencyBeginV1::Replay { .. }
     ) {
         return Err("another generation's record must survive".into());
+    }
+    Ok(())
+}
+
+/// Records of every route die with their generation, the listing names
+/// each generation once in ascending order, and a second forget is a
+/// no-op rather than an error (QI-BB-032 retention).
+#[test]
+fn the_pair_listing_and_forget_cover_every_route_and_forget_is_idempotent() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
+    let repo = RepoId::new("repo-cat");
+    let revision = RevisionId::new("rev-cat");
+    for (kind, generation, digest) in [
+        (IngestOperationKindV1::SearchCorpus, 4, "s"),
+        (IngestOperationKindV1::History, 4, "h"),
+        (IngestOperationKindV1::Dirty, 2, "d"),
+        (IngestOperationKindV1::Structural, 9, "t"),
+    ] {
+        let key = key(kind, generation, digest);
+        let body = [u8::try_from(generation)?; 32];
+        // A record left in progress (never finalized) is listed too: the
+        // sweep must be able to forget a generation that never sealed.
+        let _fresh = catalog.begin(&key, &body)?;
+        if kind != IngestOperationKindV1::Dirty {
+            let _sequence = catalog.finalize(&key, &body, &receipt(generation, digest, 0))?;
+        }
+    }
+    let listed: Vec<u64> = catalog
+        .generations_for_pair(&repo, &revision)?
+        .into_iter()
+        .map(ManifestGeneration::get)
+        .collect();
+    if listed != vec![2, 4, 9] {
+        return Err(format!("expected generations [2, 4, 9], got {listed:?}").into());
+    }
+    if !catalog
+        .generations_for_pair(&RepoId::new("other"), &revision)?
+        .is_empty()
+    {
+        return Err("another pair's listing must be empty".into());
+    }
+    let removed = catalog.forget_generation(&repo, &revision, ManifestGeneration::new(4))?;
+    if removed != 2 {
+        return Err(
+            format!("both routes' records of generation 4 must go, removed {removed}").into(),
+        );
+    }
+    let again = catalog.forget_generation(&repo, &revision, ManifestGeneration::new(4))?;
+    if again != 0 {
+        return Err(format!("a second forget must be a no-op, removed {again}").into());
+    }
+    let listed: Vec<u64> = catalog
+        .generations_for_pair(&repo, &revision)?
+        .into_iter()
+        .map(ManifestGeneration::get)
+        .collect();
+    if listed != vec![2, 9] {
+        return Err(format!("expected generations [2, 9] after forget, got {listed:?}").into());
     }
     Ok(())
 }

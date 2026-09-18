@@ -8,8 +8,12 @@ use quanta_index_contract::{
 };
 
 use crate::text_query_builder::TextQueryBuilderState;
-use crate::{BatchMode, BatchReceipt, QuantaIndex, SdkError};
+use crate::{BatchMode, BatchReceipt, QuantaIndex, SdkError, stamp_batch_digest_v1};
 
+/// A structural publish under construction.
+///
+/// Its `batch_digest` is the canonical digest of the wire body, computed
+/// when it is sent (QI-BB-032); see [`Self::batch_digest`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StructuralBatch<const SEALED: bool = true> {
     repo_id: RepoId,
@@ -17,7 +21,6 @@ pub struct StructuralBatch<const SEALED: bool = true> {
     generation: ManifestGeneration,
     base_generation: Option<ManifestGeneration>,
     manifest_digest: String,
-    batch_digest: String,
     mode: BatchMode,
     replace_scopes: Vec<StructuralReplaceScope>,
     tombstone_scopes: Vec<StructuralTombstoneScope>,
@@ -30,7 +33,6 @@ impl StructuralBatch {
         revision_id: RevisionId,
         generation: ManifestGeneration,
         manifest_digest: impl Into<String>,
-        batch_digest: impl Into<String>,
     ) -> Self {
         Self {
             repo_id,
@@ -38,7 +40,6 @@ impl StructuralBatch {
             generation,
             base_generation: None,
             manifest_digest: manifest_digest.into(),
-            batch_digest: batch_digest.into(),
             mode: BatchMode::ReplaceGeneration,
             replace_scopes: Vec::new(),
             tombstone_scopes: Vec::new(),
@@ -52,7 +53,6 @@ impl StructuralBatch {
         generation: ManifestGeneration,
         base_generation: ManifestGeneration,
         manifest_digest: impl Into<String>,
-        batch_digest: impl Into<String>,
     ) -> Self {
         Self {
             repo_id,
@@ -60,7 +60,6 @@ impl StructuralBatch {
             generation,
             base_generation: Some(base_generation),
             manifest_digest: manifest_digest.into(),
-            batch_digest: batch_digest.into(),
             mode: BatchMode::Delta,
             replace_scopes: Vec::new(),
             tombstone_scopes: Vec::new(),
@@ -115,7 +114,6 @@ impl<const SEALED: bool> StructuralBatch<SEALED> {
             generation: self.generation,
             base_generation: self.base_generation,
             manifest_digest: self.manifest_digest,
-            batch_digest: self.batch_digest,
             mode: self.mode,
             replace_scopes: self.replace_scopes,
             tombstone_scopes: self.tombstone_scopes,
@@ -147,9 +145,11 @@ impl<const SEALED: bool> StructuralBatch<SEALED> {
         &self.manifest_digest
     }
 
-    #[must_use]
-    pub fn batch_digest(&self) -> &str {
-        &self.batch_digest
+    /// The canonical digest this batch publishes under: the idempotency
+    /// key the receipt will name. Computed from the wire body, so it
+    /// changes with any mutation of the batch.
+    pub fn batch_digest(&self) -> Result<String, SdkError> {
+        Ok(self.to_wire_batch()?.batch_digest)
     }
 
     #[must_use]
@@ -172,19 +172,23 @@ impl<const SEALED: bool> StructuralBatch<SEALED> {
         SEALED
     }
 
-    fn to_wire_batch(&self) -> StructuralIngestBatch {
-        StructuralIngestBatch {
+    /// The wire batch, stamped with its canonical digest.
+    fn to_wire_batch(&self) -> Result<StructuralIngestBatch, SdkError> {
+        let mut wire = StructuralIngestBatch {
             repo_id: self.repo_id.clone(),
             revision_id: self.revision_id.clone(),
             generation: self.generation,
             base_generation: self.base_generation,
             manifest_digest: self.manifest_digest.clone(),
-            batch_digest: self.batch_digest.clone(),
+            batch_digest: String::new(),
             mode: self.mode.to_wire(),
             replace_scopes: self.replace_scopes.clone(),
             tombstone_scopes: self.tombstone_scopes.clone(),
             seal: SEALED,
-        }
+        };
+        stamp_batch_digest_v1(&mut wire)
+            .map_err(|err| SdkError::Serialization(format!("structural batch digest: {err}")))?;
+        Ok(wire)
     }
 }
 
@@ -235,7 +239,7 @@ fn publish_structural_batch<const SEALED: bool>(
     batch: &StructuralBatch<SEALED>,
 ) -> Result<BatchReceipt, SdkError> {
     let response = client.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishStructuralBatch(
-        batch.to_wire_batch(),
+        batch.to_wire_batch()?,
     ))?;
     match response {
         SearchPlaneIngestIpcResponse::StructuralReceipt(receipt) => Ok(receipt),

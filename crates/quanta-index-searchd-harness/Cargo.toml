@@ -22,5 +22,6 @@ quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
 quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane" }
 quanta-index-searchd = { version = "0.1.0", path = "../quanta-index-searchd" }
 quanta-index-searchd-runtime = { version = "0.1.0", path = "../quanta-index-searchd-runtime" }
+serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

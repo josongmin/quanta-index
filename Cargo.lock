@@ -4305,6 +4305,7 @@ dependencies = [
  "quanta-index-core",
  "rustix 1.1.4",
  "serde",
+ "sha2",
  "tempfile",
 ]
 
@@ -4508,6 +4509,7 @@ dependencies = [
  "quanta-index-search-plane",
  "quanta-index-searchd",
  "quanta-index-searchd-runtime",
+ "serde",
  "serde_json",
  "tempfile",
 ]
@@ -4531,6 +4533,7 @@ dependencies = [
  "quanta-index-searchd",
  "quanta-index-searchd-harness",
  "quanta-index-semantic",
+ "rusqlite",
  "rustix 1.1.4",
  "serde",
  "tempfile",

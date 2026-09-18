@@ -27,6 +27,8 @@ pub use quanta_index_sdk::HybridLaneContributionV1
 pub use quanta_index_sdk::HybridLaneV1
 pub use quanta_index_sdk::HybridSeedQueryRequest
 pub use quanta_index_sdk::HybridSeedQueryResponse
+pub use quanta_index_sdk::IngestBatchBodyV1
+pub use quanta_index_sdk::IngestOperationKindV1
 pub use quanta_index_sdk::LanguageCode
 pub use quanta_index_sdk::LexicalCandidate
 pub use quanta_index_sdk::ManifestGeneration
@@ -103,6 +105,8 @@ pub use quanta_index_sdk::SymbolSpan
 pub use quanta_index_sdk::TextQueryResponse
 pub use quanta_index_sdk::TextQuerySyntax
 pub use quanta_index_sdk::TrackReadinessRecord
+pub use quanta_index_sdk::canonical_batch_digest_v1
+pub use quanta_index_sdk::stamp_batch_digest_v1
 pub enum quanta_index_sdk::BatchMode
 pub quanta_index_sdk::BatchMode::Delta
 pub quanta_index_sdk::BatchMode::ReplaceGeneration
@@ -248,15 +252,15 @@ impl core::marker::UnsafeUnpin for quanta_index_sdk::DiffHunkMutation
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::DiffHunkMutation
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::DiffHunkMutation
 pub struct quanta_index_sdk::DirtyBatch
-pub quanta_index_sdk::DirtyBatch::batch_digest: alloc::string::String
 pub quanta_index_sdk::DirtyBatch::entries: alloc::vec::Vec<quanta_index_sdk::DirtyBatchMutation>
 pub quanta_index_sdk::DirtyBatch::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_sdk::DirtyBatch::overlay_epoch_ms: u64
 pub quanta_index_sdk::DirtyBatch::repo_id: quanta_index_contract_base::ids::RepoId
 pub quanta_index_sdk::DirtyBatch::revision_id: quanta_index_contract_base::ids::RevisionId
 impl quanta_index_sdk::DirtyBatch
+pub fn quanta_index_sdk::DirtyBatch::batch_digest(&self) -> core::result::Result<alloc::string::String, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::DirtyBatch::delete(self, doc_id: quanta_index_contract::channel::ids::ChunkId) -> Self
-pub fn quanta_index_sdk::DirtyBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, overlay_epoch_ms: u64, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn quanta_index_sdk::DirtyBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, overlay_epoch_ms: u64) -> Self
 pub fn quanta_index_sdk::DirtyBatch::upsert(self, record: quanta_index_contract::lex::dirty::DirtyRecord) -> Self
 impl core::clone::Clone for quanta_index_sdk::DirtyBatch
 pub fn quanta_index_sdk::DirtyBatch::clone(&self) -> quanta_index_sdk::DirtyBatch
@@ -274,15 +278,15 @@ impl core::marker::UnsafeUnpin for quanta_index_sdk::DirtyBatch
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::DirtyBatch
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::DirtyBatch
 pub struct quanta_index_sdk::FileContributorBatch
-pub quanta_index_sdk::FileContributorBatch::batch_digest: alloc::string::String
 pub quanta_index_sdk::FileContributorBatch::entries: alloc::vec::Vec<quanta_index_sdk::FileContributorMutation>
 pub quanta_index_sdk::FileContributorBatch::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_sdk::FileContributorBatch::repo_id: quanta_index_contract_base::ids::RepoId
 pub quanta_index_sdk::FileContributorBatch::revision_id: quanta_index_contract_base::ids::RevisionId
 impl quanta_index_sdk::FileContributorBatch
+pub fn quanta_index_sdk::FileContributorBatch::batch_digest(&self) -> core::result::Result<alloc::string::String, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::FileContributorBatch::entry(self, source_repo_id: quanta_index_contract_base::ids::RepoId, repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath, contributors: alloc::vec::Vec<alloc::string::String>) -> Self
 pub fn quanta_index_sdk::FileContributorBatch::entry_identities(self, source_repo_id: quanta_index_contract_base::ids::RepoId, repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath, contributors: alloc::vec::Vec<quanta_index_contract::ipc::ingest::FileContributorIdentityEntry>) -> Self
-pub fn quanta_index_sdk::FileContributorBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn quanta_index_sdk::FileContributorBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration) -> Self
 impl core::clone::Clone for quanta_index_sdk::FileContributorBatch
 pub fn quanta_index_sdk::FileContributorBatch::clone(&self) -> quanta_index_sdk::FileContributorBatch
 impl core::cmp::Eq for quanta_index_sdk::FileContributorBatch
@@ -318,14 +322,14 @@ impl core::marker::UnsafeUnpin for quanta_index_sdk::FileContributorMutation
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::FileContributorMutation
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::FileContributorMutation
 pub struct quanta_index_sdk::FileOwnershipBatch
-pub quanta_index_sdk::FileOwnershipBatch::batch_digest: alloc::string::String
 pub quanta_index_sdk::FileOwnershipBatch::entries: alloc::vec::Vec<quanta_index_sdk::FileOwnershipMutation>
 pub quanta_index_sdk::FileOwnershipBatch::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_sdk::FileOwnershipBatch::repo_id: quanta_index_contract_base::ids::RepoId
 pub quanta_index_sdk::FileOwnershipBatch::revision_id: quanta_index_contract_base::ids::RevisionId
 impl quanta_index_sdk::FileOwnershipBatch
+pub fn quanta_index_sdk::FileOwnershipBatch::batch_digest(&self) -> core::result::Result<alloc::string::String, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::FileOwnershipBatch::entry(self, source_repo_id: quanta_index_contract_base::ids::RepoId, repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath, owners: alloc::vec::Vec<alloc::string::String>) -> Self
-pub fn quanta_index_sdk::FileOwnershipBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn quanta_index_sdk::FileOwnershipBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration) -> Self
 impl core::clone::Clone for quanta_index_sdk::FileOwnershipBatch
 pub fn quanta_index_sdk::FileOwnershipBatch::clone(&self) -> quanta_index_sdk::FileOwnershipBatch
 impl core::cmp::Eq for quanta_index_sdk::FileOwnershipBatch
@@ -373,7 +377,6 @@ impl<'a> core::marker::UnsafeUnpin for quanta_index_sdk::GenerationNamespace<'a>
 impl<'a> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::GenerationNamespace<'a>
 impl<'a> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::GenerationNamespace<'a>
 pub struct quanta_index_sdk::HistoryBatch
-pub quanta_index_sdk::HistoryBatch::batch_digest: alloc::string::String
 pub quanta_index_sdk::HistoryBatch::commits: alloc::vec::Vec<quanta_index_contract::lex::history::CommitRecord>
 pub quanta_index_sdk::HistoryBatch::diff_hunks: alloc::vec::Vec<quanta_index_sdk::DiffHunkMutation>
 pub quanta_index_sdk::HistoryBatch::generation: quanta_index_contract_base::ids::ManifestGeneration
@@ -383,10 +386,11 @@ pub quanta_index_sdk::HistoryBatch::repo_id: quanta_index_contract_base::ids::Re
 pub quanta_index_sdk::HistoryBatch::revision_id: quanta_index_contract_base::ids::RevisionId
 pub quanta_index_sdk::HistoryBatch::tags: alloc::vec::Vec<quanta_index_sdk::RefMutation>
 impl quanta_index_sdk::HistoryBatch
+pub fn quanta_index_sdk::HistoryBatch::batch_digest(&self) -> core::result::Result<alloc::string::String, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::HistoryBatch::commit(self, record: quanta_index_contract::lex::history::CommitRecord) -> Self
 pub fn quanta_index_sdk::HistoryBatch::diff_hunk(self, commit_sha: quanta_index_contract::lex::history::CommitSha, file_path: impl core::convert::Into<alloc::string::String>, record: quanta_index_contract::lex::diff::DiffHunkRecord) -> Self
 pub fn quanta_index_sdk::HistoryBatch::manifest_digest(self, manifest_digest: impl core::convert::Into<alloc::string::String>) -> Self
-pub fn quanta_index_sdk::HistoryBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn quanta_index_sdk::HistoryBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration) -> Self
 pub fn quanta_index_sdk::HistoryBatch::ref_delete(self, name: impl core::convert::Into<alloc::string::String>) -> Self
 pub fn quanta_index_sdk::HistoryBatch::ref_upsert(self, name: impl core::convert::Into<alloc::string::String>, sha: quanta_index_contract::lex::history::CommitSha) -> Self
 pub fn quanta_index_sdk::HistoryBatch::tag_delete(self, name: impl core::convert::Into<alloc::string::String>) -> Self
@@ -586,14 +590,14 @@ impl<'a> core::marker::UnsafeUnpin for quanta_index_sdk::ReaderClient<'a>
 impl<'a> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::ReaderClient<'a>
 impl<'a> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::ReaderClient<'a>
 pub struct quanta_index_sdk::RepoCommitRecencyBatch
-pub quanta_index_sdk::RepoCommitRecencyBatch::batch_digest: alloc::string::String
 pub quanta_index_sdk::RepoCommitRecencyBatch::entries: alloc::vec::Vec<quanta_index_sdk::RepoCommitRecencyMutation>
 pub quanta_index_sdk::RepoCommitRecencyBatch::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_sdk::RepoCommitRecencyBatch::repo_id: quanta_index_contract_base::ids::RepoId
 pub quanta_index_sdk::RepoCommitRecencyBatch::revision_id: quanta_index_contract_base::ids::RevisionId
 impl quanta_index_sdk::RepoCommitRecencyBatch
+pub fn quanta_index_sdk::RepoCommitRecencyBatch::batch_digest(&self) -> core::result::Result<alloc::string::String, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::RepoCommitRecencyBatch::entry(self, source_repo_id: quanta_index_contract_base::ids::RepoId, latest_committer_time_ms: u64) -> Self
-pub fn quanta_index_sdk::RepoCommitRecencyBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn quanta_index_sdk::RepoCommitRecencyBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration) -> Self
 impl core::clone::Clone for quanta_index_sdk::RepoCommitRecencyBatch
 pub fn quanta_index_sdk::RepoCommitRecencyBatch::clone(&self) -> quanta_index_sdk::RepoCommitRecencyBatch
 impl core::cmp::Eq for quanta_index_sdk::RepoCommitRecencyBatch
@@ -628,14 +632,14 @@ impl core::marker::UnsafeUnpin for quanta_index_sdk::RepoCommitRecencyMutation
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::RepoCommitRecencyMutation
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::RepoCommitRecencyMutation
 pub struct quanta_index_sdk::RepoDescriptionBatch
-pub quanta_index_sdk::RepoDescriptionBatch::batch_digest: alloc::string::String
 pub quanta_index_sdk::RepoDescriptionBatch::entries: alloc::vec::Vec<quanta_index_sdk::RepoDescriptionMutation>
 pub quanta_index_sdk::RepoDescriptionBatch::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_sdk::RepoDescriptionBatch::repo_id: quanta_index_contract_base::ids::RepoId
 pub quanta_index_sdk::RepoDescriptionBatch::revision_id: quanta_index_contract_base::ids::RevisionId
 impl quanta_index_sdk::RepoDescriptionBatch
+pub fn quanta_index_sdk::RepoDescriptionBatch::batch_digest(&self) -> core::result::Result<alloc::string::String, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::RepoDescriptionBatch::entry(self, source_repo_id: quanta_index_contract_base::ids::RepoId, description: impl core::convert::Into<alloc::string::String>) -> Self
-pub fn quanta_index_sdk::RepoDescriptionBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn quanta_index_sdk::RepoDescriptionBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration) -> Self
 impl core::clone::Clone for quanta_index_sdk::RepoDescriptionBatch
 pub fn quanta_index_sdk::RepoDescriptionBatch::clone(&self) -> quanta_index_sdk::RepoDescriptionBatch
 impl core::cmp::Eq for quanta_index_sdk::RepoDescriptionBatch
@@ -682,14 +686,14 @@ impl<'a> core::marker::UnsafeUnpin for quanta_index_sdk::RepoMapNamespace<'a>
 impl<'a> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::RepoMapNamespace<'a>
 impl<'a> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::RepoMapNamespace<'a>
 pub struct quanta_index_sdk::RepoMetaBatch
-pub quanta_index_sdk::RepoMetaBatch::batch_digest: alloc::string::String
 pub quanta_index_sdk::RepoMetaBatch::entries: alloc::vec::Vec<quanta_index_sdk::RepoMetaMutation>
 pub quanta_index_sdk::RepoMetaBatch::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_sdk::RepoMetaBatch::repo_id: quanta_index_contract_base::ids::RepoId
 pub quanta_index_sdk::RepoMetaBatch::revision_id: quanta_index_contract_base::ids::RevisionId
 impl quanta_index_sdk::RepoMetaBatch
+pub fn quanta_index_sdk::RepoMetaBatch::batch_digest(&self) -> core::result::Result<alloc::string::String, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::RepoMetaBatch::entry(self, source_repo_id: quanta_index_contract_base::ids::RepoId, key: impl core::convert::Into<alloc::string::String>, value: impl core::convert::Into<alloc::string::String>) -> Self
-pub fn quanta_index_sdk::RepoMetaBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn quanta_index_sdk::RepoMetaBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration) -> Self
 impl core::clone::Clone for quanta_index_sdk::RepoMetaBatch
 pub fn quanta_index_sdk::RepoMetaBatch::clone(&self) -> quanta_index_sdk::RepoMetaBatch
 impl core::cmp::Eq for quanta_index_sdk::RepoMetaBatch
@@ -725,14 +729,14 @@ impl core::marker::UnsafeUnpin for quanta_index_sdk::RepoMetaMutation
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::RepoMetaMutation
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::RepoMetaMutation
 pub struct quanta_index_sdk::RepoTopicBatch
-pub quanta_index_sdk::RepoTopicBatch::batch_digest: alloc::string::String
 pub quanta_index_sdk::RepoTopicBatch::entries: alloc::vec::Vec<quanta_index_sdk::RepoTopicMutation>
 pub quanta_index_sdk::RepoTopicBatch::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_sdk::RepoTopicBatch::repo_id: quanta_index_contract_base::ids::RepoId
 pub quanta_index_sdk::RepoTopicBatch::revision_id: quanta_index_contract_base::ids::RevisionId
 impl quanta_index_sdk::RepoTopicBatch
+pub fn quanta_index_sdk::RepoTopicBatch::batch_digest(&self) -> core::result::Result<alloc::string::String, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::RepoTopicBatch::entry(self, source_repo_id: quanta_index_contract_base::ids::RepoId, topic: impl core::convert::Into<alloc::string::String>) -> Self
-pub fn quanta_index_sdk::RepoTopicBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn quanta_index_sdk::RepoTopicBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration) -> Self
 impl core::clone::Clone for quanta_index_sdk::RepoTopicBatch
 pub fn quanta_index_sdk::RepoTopicBatch::clone(&self) -> quanta_index_sdk::RepoTopicBatch
 impl core::cmp::Eq for quanta_index_sdk::RepoTopicBatch
@@ -797,11 +801,11 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::RuntimeQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
 pub struct quanta_index_sdk::SearchCorpusBatch<const SEALED: bool>
 impl quanta_index_sdk::SearchCorpusBatch
-pub fn quanta_index_sdk::SearchCorpusBatch::delta(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, base_generation: quanta_index_contract_base::ids::ManifestGeneration, manifest_digest: impl core::convert::Into<alloc::string::String>, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
-pub fn quanta_index_sdk::SearchCorpusBatch::replace_generation(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, manifest_digest: impl core::convert::Into<alloc::string::String>, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn quanta_index_sdk::SearchCorpusBatch::delta(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, base_generation: quanta_index_contract_base::ids::ManifestGeneration, manifest_digest: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn quanta_index_sdk::SearchCorpusBatch::replace_generation(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, manifest_digest: impl core::convert::Into<alloc::string::String>) -> Self
 impl<const SEALED: bool> quanta_index_sdk::SearchCorpusBatch<SEALED>
 pub const fn quanta_index_sdk::SearchCorpusBatch<SEALED>::base_generation(&self) -> core::option::Option<quanta_index_contract_base::ids::ManifestGeneration>
-pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::batch_digest(&self) -> &str
+pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::batch_digest(&self) -> core::result::Result<alloc::string::String, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::clear_surface(self, surface: quanta_index_contract::ipc::ingest::SearchScopeSurface) -> Self
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::clear_surfaces(&self) -> &[quanta_index_contract::ipc::ingest::SearchScopeSurface]
 pub const fn quanta_index_sdk::SearchCorpusBatch<SEALED>::generation(&self) -> quanta_index_contract_base::ids::ManifestGeneration
@@ -896,11 +900,11 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool,
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool, const HAS_SCOPE: bool, const HAS_SCOPE_TOP_K: bool> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::SemanticQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K, HAS_SCOPE, HAS_SCOPE_TOP_K>
 pub struct quanta_index_sdk::StructuralBatch<const SEALED: bool>
 impl quanta_index_sdk::StructuralBatch
-pub fn quanta_index_sdk::StructuralBatch::delta(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, base_generation: quanta_index_contract_base::ids::ManifestGeneration, manifest_digest: impl core::convert::Into<alloc::string::String>, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
-pub fn quanta_index_sdk::StructuralBatch::replace_generation(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, manifest_digest: impl core::convert::Into<alloc::string::String>, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn quanta_index_sdk::StructuralBatch::delta(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, base_generation: quanta_index_contract_base::ids::ManifestGeneration, manifest_digest: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn quanta_index_sdk::StructuralBatch::replace_generation(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, manifest_digest: impl core::convert::Into<alloc::string::String>) -> Self
 impl<const SEALED: bool> quanta_index_sdk::StructuralBatch<SEALED>
 pub const fn quanta_index_sdk::StructuralBatch<SEALED>::base_generation(&self) -> core::option::Option<quanta_index_contract_base::ids::ManifestGeneration>
-pub fn quanta_index_sdk::StructuralBatch<SEALED>::batch_digest(&self) -> &str
+pub fn quanta_index_sdk::StructuralBatch<SEALED>::batch_digest(&self) -> core::result::Result<alloc::string::String, quanta_index_sdk::SdkError>
 pub const fn quanta_index_sdk::StructuralBatch<SEALED>::generation(&self) -> quanta_index_contract_base::ids::ManifestGeneration
 pub fn quanta_index_sdk::StructuralBatch<SEALED>::manifest_digest(&self) -> &str
 pub const fn quanta_index_sdk::StructuralBatch<SEALED>::mode(&self) -> quanta_index_sdk::BatchMode

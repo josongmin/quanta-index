@@ -5,9 +5,8 @@
 #![deny(clippy::let_underscore_must_use)]
 #![deny(clippy::map_err_ignore)]
 
-use quanta_index_core as _;
-
 mod admission;
+mod batch_digest;
 mod codec;
 mod counters;
 mod peer_credentials;
@@ -15,6 +14,9 @@ mod server;
 mod socket_access;
 
 pub use admission::{DispatchPermit, DispatchSlots, ServerAdmissionPolicy, SlotRefusal};
+pub use batch_digest::{
+    BatchDigestVerdictV1, canonical_batch_digest_v1, stamp_batch_digest_v1, verify_batch_digest_v1,
+};
 pub use codec::{
     IpcError, IpcIoOperation, MAX_FRAME_BODY_BYTES, decode_cbor_payload, decode_request,
     decode_response, encode_cbor_payload, encode_request, encode_response,
@@ -22,8 +24,8 @@ pub use codec::{
 pub use counters::{IpcServerCounters, IpcServerCountersSnapshot};
 pub use peer_credentials::{KernelPeerCredentials, PeerCredentialsSource};
 pub use quanta_index_core::{
-    BudgetInterruptionV1, CancelHandleV1, REQUEST_CANCELLED_CODE, REQUEST_DEADLINE_EXCEEDED_CODE,
-    RequestBudgetV1,
+    BudgetInterruptionV1, CancelHandleV1, IngestBatchBodyV1, REQUEST_CANCELLED_CODE,
+    REQUEST_DEADLINE_EXCEEDED_CODE, RequestBudgetV1,
 };
 pub use server::{
     ClientIoPolicy, DEFAULT_CLIENT_IO_TIMEOUT, IpcDispatcher, RequestEnvelope, ResponseEnvelope,

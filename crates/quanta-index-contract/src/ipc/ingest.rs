@@ -44,6 +44,7 @@ use crate::{
 };
 
 use super::{
+    batch_body::{BATCH_DIGEST_TOKEN_LEN_V1, is_canonical_batch_digest_token_v1},
     error::SearchPlaneIpcError,
     semantic_source::{
         ClusterMembershipReplaceV1, SemanticCorpusKindV1, SemanticSourceReplaceScopeV1,
@@ -740,10 +741,15 @@ pub enum SearchCorpusBatchShapeErrorV1 {
         base_generation: ManifestGeneration,
         generation: ManifestGeneration,
     },
-    /// `manifest_digest` or `batch_digest` is empty or not a bare printable
-    /// ASCII token; the activation identity and the retention record both
-    /// key on it and neither can carry such a value.
+    /// `manifest_digest` is empty or not a bare printable ASCII token; the
+    /// activation identity and the retention record both key on it and
+    /// neither can carry such a value.
     DigestNotCanonical { field: &'static str },
+    /// `batch_digest` does not have the shape of a canonical batch digest
+    /// (64 lowercase hex characters, see
+    /// [`is_canonical_batch_digest_token_v1`]); the idempotency record keys
+    /// on it and the search plane recomputes it from the body.
+    BatchDigestNotCanonical,
 }
 
 impl fmt::Display for SearchCorpusBatchShapeErrorV1 {
@@ -769,6 +775,10 @@ impl fmt::Display for SearchCorpusBatchShapeErrorV1 {
                 formatter,
                 "{field} must be a non-empty printable ASCII token without whitespace"
             ),
+            Self::BatchDigestNotCanonical => write!(
+                formatter,
+                "batch_digest must be the canonical batch digest: {BATCH_DIGEST_TOKEN_LEN_V1} lowercase hex characters of SHA-256 over the canonical body"
+            ),
         }
     }
 }
@@ -781,9 +791,12 @@ fn is_canonical_digest_token(value: &str) -> bool {
 
 impl SearchCorpusIngestBatch {
     /// Validate everything about the batch that needs no storage access:
-    /// mode/base shape, base ordering, canonical digests and the surface
-    /// mutation authority. The materializer runs this before taking any
-    /// lock, so a malformed batch changes zero bytes on either track.
+    /// mode/base shape, base ordering and the digests' shapes. The
+    /// materializer runs this before taking any lock and the ingest
+    /// dispatcher before it records durable intent, so a malformed batch
+    /// changes zero bytes on either track and leaves no idempotency record.
+    /// Whether `batch_digest` is *the* digest of this body is the
+    /// dispatcher's recomputation to prove; this only checks its shape.
     pub fn validate_v1(&self) -> Result<(), SearchCorpusBatchShapeErrorV1> {
         match (self.mode, self.base_generation) {
             (BatchIngestMode::ReplaceGeneration, None) => {}
@@ -807,10 +820,8 @@ impl SearchCorpusIngestBatch {
                 field: "manifest_digest",
             });
         }
-        if !is_canonical_digest_token(&self.batch_digest) {
-            return Err(SearchCorpusBatchShapeErrorV1::DigestNotCanonical {
-                field: "batch_digest",
-            });
+        if !is_canonical_batch_digest_token_v1(&self.batch_digest) {
+            return Err(SearchCorpusBatchShapeErrorV1::BatchDigestNotCanonical);
         }
         Ok(())
     }
@@ -5159,6 +5170,11 @@ mod tests {
         }
     }
 
+    /// A token with the canonical batch-digest shape; the contract checks
+    /// shape only, the dispatcher proves the value.
+    const FIXTURE_BATCH_DIGEST: &str =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
     fn fixture_search_corpus_batch() -> SearchCorpusIngestBatch {
         SearchCorpusIngestBatch {
             repo_id: fixture_repo_id(),
@@ -5166,7 +5182,7 @@ mod tests {
             generation: fixture_generation(),
             base_generation: None,
             manifest_digest: "manifest:feed".to_string(),
-            batch_digest: "batch:feed".to_string(),
+            batch_digest: FIXTURE_BATCH_DIGEST.to_string(),
             mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload: None,
             clear_surfaces: Vec::new(),
@@ -6025,21 +6041,25 @@ mod tests {
         ));
         batch.validate_v1()?;
 
-        for (field, value) in [
-            ("manifest_digest", ""),
-            ("manifest_digest", "has space"),
-            ("batch_digest", "tab\there"),
-            ("batch_digest", "\u{e9}"),
-        ] {
+        for value in ["", "has space"] {
             let mut malformed = fixture_search_corpus_batch();
-            if field == "manifest_digest" {
-                malformed.manifest_digest = value.to_string();
-            } else {
-                malformed.batch_digest = value.to_string();
-            }
+            malformed.manifest_digest = value.to_string();
             assert_eq!(
                 malformed.validate_v1(),
-                Err(SearchCorpusBatchShapeErrorV1::DigestNotCanonical { field }),
+                Err(SearchCorpusBatchShapeErrorV1::DigestNotCanonical {
+                    field: "manifest_digest"
+                }),
+                "value {value:?}"
+            );
+        }
+        // The batch digest must have the canonical shape: 64 lowercase hex.
+        let uppercase = FIXTURE_BATCH_DIGEST.to_ascii_uppercase();
+        for value in ["", "batch:feed", "tab\there", "\u{e9}", &uppercase] {
+            let mut malformed = fixture_search_corpus_batch();
+            malformed.batch_digest = value.to_string();
+            assert_eq!(
+                malformed.validate_v1(),
+                Err(SearchCorpusBatchShapeErrorV1::BatchDigestNotCanonical),
                 "value {value:?}"
             );
         }

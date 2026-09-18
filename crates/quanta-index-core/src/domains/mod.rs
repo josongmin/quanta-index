@@ -9,6 +9,7 @@ pub mod auxiliary;
 pub mod generation;
 pub mod hybrid;
 pub mod idempotency;
+pub mod ingest_body;
 pub mod integrity;
 pub mod lexical;
 pub mod observability;

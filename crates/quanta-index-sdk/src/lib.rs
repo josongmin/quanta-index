@@ -38,6 +38,10 @@ pub use lexical::{
 };
 pub(crate) use namespace::{NamespaceIngest, NamespaceQuery};
 pub use observability::ObservabilityNamespace;
+/// The canonical batch digest (QI-BB-032): the SDK builders stamp it on
+/// every batch they send; producers that assemble wire batches themselves
+/// stamp them with the same function before publishing.
+pub use quanta_index_ipc::{IngestBatchBodyV1, canonical_batch_digest_v1, stamp_batch_digest_v1};
 pub use quarantine::QuarantineNamespace;
 pub use repomap::RepoMapNamespace;
 pub use runtime::{DirtyBatch, DirtyBatchMutation, RuntimeNamespace, RuntimeQueryBuilder};
@@ -61,25 +65,25 @@ pub use quanta_index_contract::{
     ExactRepoRelativePathV1, ExplainCandidateV1, GenerationPin, GenerationSelector,
     GenerationSnapshot, GenerationStatusReport, HistoryCursor, HistoryCursorOrderV1,
     HistoryOrderV1, HistoryScoreV1, HybridCandidateV1, HybridLaneContributionV1, HybridLaneV1,
-    HybridSeedQueryRequest, HybridSeedQueryResponse, LexicalCandidate, ManifestGeneration,
-    MetricBucketV1, MetricCounterV1, MetricGaugeV1, MetricHistogramV1, MetricsDiagnosticsV1,
-    MetricsSnapshotV1, OwnerDocKind, QuarantineDiscardAck, QuarantineDiscardOutcomeDtoV1,
-    QuarantineInventoryV1, QuarantineTargetV1, QuarantinedGenerationEntryV1,
-    QuarantinedRepoMapFileEntryV1, RepoId, RepoMapActivateGenerationRequest, RepoMapCallEdge,
-    RepoMapChunkNode, RepoMapContainsEdge, RepoMapDependsOnEdge, RepoMapEdge, RepoMapFileNode,
-    RepoMapGraphCoverage, RepoMapImportEdge, RepoMapModuleId, RepoMapModuleNode,
-    RepoMapMutationAck, RepoMapNode, RepoMapNodeRef, RepoMapOwnsChunkEdge, RepoMapQueryRequest,
-    RepoMapQueryResponse, RepoMapSourceBundle, RepoMapSymbolNode, RepoRelativePath, RevisionId,
-    RuntimeMetadataCursorV1, SearchCorpusGenerationIdentityV1, SearchCorpusReplaceScope,
-    SearchCorpusTombstoneScope, SearchExplanation,
-    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneExplainQueryResponse,
-    SearchPlaneHistoryQueryResponse, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
-    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneSearchCorpusActivationCasAck,
-    SearchPlaneSearchCorpusRollbackCasAck, SearchPlaneStructuralQueryResponse,
-    SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface, SeedCandidate, SeedContribution,
-    SeedLane, SemanticQueryResponse, StructuralCursorV1, StructuralReplaceScope,
-    StructuralTombstoneScope, StructuralTreeRecord, SymbolCandidate, SymbolId, SymbolQueryResponse,
-    TextQueryResponse, TextQuerySyntax, TrackReadinessRecord,
+    HybridSeedQueryRequest, HybridSeedQueryResponse, IngestOperationKindV1, LexicalCandidate,
+    ManifestGeneration, MetricBucketV1, MetricCounterV1, MetricGaugeV1, MetricHistogramV1,
+    MetricsDiagnosticsV1, MetricsSnapshotV1, OwnerDocKind, QuarantineDiscardAck,
+    QuarantineDiscardOutcomeDtoV1, QuarantineInventoryV1, QuarantineTargetV1,
+    QuarantinedGenerationEntryV1, QuarantinedRepoMapFileEntryV1, RepoId,
+    RepoMapActivateGenerationRequest, RepoMapCallEdge, RepoMapChunkNode, RepoMapContainsEdge,
+    RepoMapDependsOnEdge, RepoMapEdge, RepoMapFileNode, RepoMapGraphCoverage, RepoMapImportEdge,
+    RepoMapModuleId, RepoMapModuleNode, RepoMapMutationAck, RepoMapNode, RepoMapNodeRef,
+    RepoMapOwnsChunkEdge, RepoMapQueryRequest, RepoMapQueryResponse, RepoMapSourceBundle,
+    RepoMapSymbolNode, RepoRelativePath, RevisionId, RuntimeMetadataCursorV1,
+    SearchCorpusGenerationIdentityV1, SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
+    SearchExplanation, SearchPlaneActivateSearchCorpusGenerationCasRequest,
+    SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse,
+    SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneRuntimeMetadataQueryResponse,
+    SearchPlaneSearchCorpusActivationCasAck, SearchPlaneSearchCorpusRollbackCasAck,
+    SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
+    SeedCandidate, SeedContribution, SeedLane, SemanticQueryResponse, StructuralCursorV1,
+    StructuralReplaceScope, StructuralTombstoneScope, StructuralTreeRecord, SymbolCandidate,
+    SymbolId, SymbolQueryResponse, TextQueryResponse, TextQuerySyntax, TrackReadinessRecord,
 };
 
 pub type CodeHit = LexicalCandidate;

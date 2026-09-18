@@ -12,7 +12,7 @@ use quanta_index_contract::{
 };
 
 use crate::text_query_builder::TextQueryBuilderState;
-use crate::{BatchReceipt, QuantaIndex, SdkError};
+use crate::{BatchReceipt, QuantaIndex, SdkError, stamp_batch_digest_v1};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RefMutation {
@@ -27,13 +27,18 @@ pub struct DiffHunkMutation {
     pub record: DiffHunkRecord,
 }
 
+/// A history publish.
+///
+/// Like every SDK ingest batch, its `batch_digest` is not chosen by the
+/// caller: it is the canonical digest of the wire body, computed when the
+/// batch is sent (QI-BB-032), so a resend of the same content replays the
+/// same idempotency key.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HistoryBatch {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
     pub manifest_digest: Option<String>,
-    pub batch_digest: String,
     pub commits: Vec<CommitRecord>,
     pub refs: Vec<RefMutation>,
     pub tags: Vec<RefMutation>,
@@ -45,7 +50,6 @@ pub struct RepoCommitRecencyBatch {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
-    pub batch_digest: String,
     pub entries: Vec<RepoCommitRecencyMutation>,
 }
 
@@ -60,7 +64,6 @@ pub struct RepoMetaBatch {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
-    pub batch_digest: String,
     pub entries: Vec<RepoMetaMutation>,
 }
 
@@ -76,7 +79,6 @@ pub struct RepoTopicBatch {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
-    pub batch_digest: String,
     pub entries: Vec<RepoTopicMutation>,
 }
 
@@ -91,7 +93,6 @@ pub struct RepoDescriptionBatch {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
-    pub batch_digest: String,
     pub entries: Vec<RepoDescriptionMutation>,
 }
 
@@ -106,7 +107,6 @@ pub struct FileOwnershipBatch {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
-    pub batch_digest: String,
     pub entries: Vec<FileOwnershipMutation>,
 }
 
@@ -122,7 +122,6 @@ pub struct FileContributorBatch {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
-    pub batch_digest: String,
     pub entries: Vec<FileContributorMutation>,
 }
 
@@ -135,18 +134,12 @@ pub struct FileContributorMutation {
 
 impl HistoryBatch {
     #[must_use]
-    pub fn new(
-        repo_id: RepoId,
-        revision_id: RevisionId,
-        generation: ManifestGeneration,
-        batch_digest: impl Into<String>,
-    ) -> Self {
+    pub fn new(repo_id: RepoId, revision_id: RevisionId, generation: ManifestGeneration) -> Self {
         Self {
             repo_id,
             revision_id,
             generation,
             manifest_digest: None,
-            batch_digest: batch_digest.into(),
             commits: Vec::new(),
             refs: Vec::new(),
             tags: Vec::new(),
@@ -210,21 +203,46 @@ impl HistoryBatch {
         });
         self
     }
+
+    /// The canonical digest this batch publishes under.
+    pub fn batch_digest(&self) -> Result<String, SdkError> {
+        Ok(self.to_wire_batch()?.batch_digest)
+    }
+
+    /// The wire batch, stamped with its canonical digest.
+    fn to_wire_batch(&self) -> Result<HistoryIngestBatch, SdkError> {
+        let mut wire = HistoryIngestBatch {
+            repo_id: self.repo_id.clone(),
+            revision_id: self.revision_id.clone(),
+            generation: self.generation,
+            manifest_digest: self.manifest_digest.clone(),
+            batch_digest: String::new(),
+            commits: self.commits.clone(),
+            refs: self.refs.iter().map(map_ref_mutation).collect(),
+            tags: self.tags.iter().map(map_tag_mutation).collect(),
+            diff_hunks: self
+                .diff_hunks
+                .iter()
+                .map(|mutation| HistoryDiffHunkUpsert {
+                    commit_sha: mutation.commit_sha,
+                    file_path: mutation.file_path.clone().into_boxed_str(),
+                    record: mutation.record.clone(),
+                })
+                .collect(),
+        };
+        stamp_batch_digest_v1(&mut wire)
+            .map_err(|err| SdkError::Serialization(format!("History batch digest: {err}")))?;
+        Ok(wire)
+    }
 }
 
 impl RepoCommitRecencyBatch {
     #[must_use]
-    pub fn new(
-        repo_id: RepoId,
-        revision_id: RevisionId,
-        generation: ManifestGeneration,
-        batch_digest: impl Into<String>,
-    ) -> Self {
+    pub fn new(repo_id: RepoId, revision_id: RevisionId, generation: ManifestGeneration) -> Self {
         Self {
             repo_id,
             revision_id,
             generation,
-            batch_digest: batch_digest.into(),
             entries: Vec::new(),
         }
     }
@@ -237,21 +255,42 @@ impl RepoCommitRecencyBatch {
         });
         self
     }
+
+    /// The canonical digest this batch publishes under.
+    pub fn batch_digest(&self) -> Result<String, SdkError> {
+        Ok(self.to_wire_batch()?.batch_digest)
+    }
+
+    /// The wire batch, stamped with its canonical digest.
+    fn to_wire_batch(&self) -> Result<RepoCommitRecencyIngestBatch, SdkError> {
+        let mut wire = RepoCommitRecencyIngestBatch {
+            repo_id: self.repo_id.clone(),
+            revision_id: self.revision_id.clone(),
+            generation: self.generation,
+            batch_digest: String::new(),
+            entries: self
+                .entries
+                .iter()
+                .map(|entry| RepoCommitRecencyEntry {
+                    source_repo_id: entry.source_repo_id.clone(),
+                    latest_committer_time_ms: entry.latest_committer_time_ms,
+                })
+                .collect(),
+        };
+        stamp_batch_digest_v1(&mut wire).map_err(|err| {
+            SdkError::Serialization(format!("RepoCommitRecency batch digest: {err}"))
+        })?;
+        Ok(wire)
+    }
 }
 
 impl RepoMetaBatch {
     #[must_use]
-    pub fn new(
-        repo_id: RepoId,
-        revision_id: RevisionId,
-        generation: ManifestGeneration,
-        batch_digest: impl Into<String>,
-    ) -> Self {
+    pub fn new(repo_id: RepoId, revision_id: RevisionId, generation: ManifestGeneration) -> Self {
         Self {
             repo_id,
             revision_id,
             generation,
-            batch_digest: batch_digest.into(),
             entries: Vec::new(),
         }
     }
@@ -270,21 +309,42 @@ impl RepoMetaBatch {
         });
         self
     }
+
+    /// The canonical digest this batch publishes under.
+    pub fn batch_digest(&self) -> Result<String, SdkError> {
+        Ok(self.to_wire_batch()?.batch_digest)
+    }
+
+    /// The wire batch, stamped with its canonical digest.
+    fn to_wire_batch(&self) -> Result<RepoMetaIngestBatch, SdkError> {
+        let mut wire = RepoMetaIngestBatch {
+            repo_id: self.repo_id.clone(),
+            revision_id: self.revision_id.clone(),
+            generation: self.generation,
+            batch_digest: String::new(),
+            entries: self
+                .entries
+                .iter()
+                .map(|entry| RepoMetaEntry {
+                    source_repo_id: entry.source_repo_id.clone(),
+                    key: entry.key.clone(),
+                    value: entry.value.clone(),
+                })
+                .collect(),
+        };
+        stamp_batch_digest_v1(&mut wire)
+            .map_err(|err| SdkError::Serialization(format!("RepoMeta batch digest: {err}")))?;
+        Ok(wire)
+    }
 }
 
 impl RepoTopicBatch {
     #[must_use]
-    pub fn new(
-        repo_id: RepoId,
-        revision_id: RevisionId,
-        generation: ManifestGeneration,
-        batch_digest: impl Into<String>,
-    ) -> Self {
+    pub fn new(repo_id: RepoId, revision_id: RevisionId, generation: ManifestGeneration) -> Self {
         Self {
             repo_id,
             revision_id,
             generation,
-            batch_digest: batch_digest.into(),
             entries: Vec::new(),
         }
     }
@@ -297,21 +357,41 @@ impl RepoTopicBatch {
         });
         self
     }
+
+    /// The canonical digest this batch publishes under.
+    pub fn batch_digest(&self) -> Result<String, SdkError> {
+        Ok(self.to_wire_batch()?.batch_digest)
+    }
+
+    /// The wire batch, stamped with its canonical digest.
+    fn to_wire_batch(&self) -> Result<RepoTopicIngestBatch, SdkError> {
+        let mut wire = RepoTopicIngestBatch {
+            repo_id: self.repo_id.clone(),
+            revision_id: self.revision_id.clone(),
+            generation: self.generation,
+            batch_digest: String::new(),
+            entries: self
+                .entries
+                .iter()
+                .map(|entry| RepoTopicEntry {
+                    source_repo_id: entry.source_repo_id.clone(),
+                    topic: entry.topic.clone(),
+                })
+                .collect(),
+        };
+        stamp_batch_digest_v1(&mut wire)
+            .map_err(|err| SdkError::Serialization(format!("RepoTopic batch digest: {err}")))?;
+        Ok(wire)
+    }
 }
 
 impl RepoDescriptionBatch {
     #[must_use]
-    pub fn new(
-        repo_id: RepoId,
-        revision_id: RevisionId,
-        generation: ManifestGeneration,
-        batch_digest: impl Into<String>,
-    ) -> Self {
+    pub fn new(repo_id: RepoId, revision_id: RevisionId, generation: ManifestGeneration) -> Self {
         Self {
             repo_id,
             revision_id,
             generation,
-            batch_digest: batch_digest.into(),
             entries: Vec::new(),
         }
     }
@@ -324,21 +404,42 @@ impl RepoDescriptionBatch {
         });
         self
     }
+
+    /// The canonical digest this batch publishes under.
+    pub fn batch_digest(&self) -> Result<String, SdkError> {
+        Ok(self.to_wire_batch()?.batch_digest)
+    }
+
+    /// The wire batch, stamped with its canonical digest.
+    fn to_wire_batch(&self) -> Result<RepoDescriptionIngestBatch, SdkError> {
+        let mut wire = RepoDescriptionIngestBatch {
+            repo_id: self.repo_id.clone(),
+            revision_id: self.revision_id.clone(),
+            generation: self.generation,
+            batch_digest: String::new(),
+            entries: self
+                .entries
+                .iter()
+                .map(|entry| RepoDescriptionEntry {
+                    source_repo_id: entry.source_repo_id.clone(),
+                    description: entry.description.clone(),
+                })
+                .collect(),
+        };
+        stamp_batch_digest_v1(&mut wire).map_err(|err| {
+            SdkError::Serialization(format!("RepoDescription batch digest: {err}"))
+        })?;
+        Ok(wire)
+    }
 }
 
 impl FileOwnershipBatch {
     #[must_use]
-    pub fn new(
-        repo_id: RepoId,
-        revision_id: RevisionId,
-        generation: ManifestGeneration,
-        batch_digest: impl Into<String>,
-    ) -> Self {
+    pub fn new(repo_id: RepoId, revision_id: RevisionId, generation: ManifestGeneration) -> Self {
         Self {
             repo_id,
             revision_id,
             generation,
-            batch_digest: batch_digest.into(),
             entries: Vec::new(),
         }
     }
@@ -357,21 +458,42 @@ impl FileOwnershipBatch {
         });
         self
     }
+
+    /// The canonical digest this batch publishes under.
+    pub fn batch_digest(&self) -> Result<String, SdkError> {
+        Ok(self.to_wire_batch()?.batch_digest)
+    }
+
+    /// The wire batch, stamped with its canonical digest.
+    fn to_wire_batch(&self) -> Result<FileOwnershipIngestBatch, SdkError> {
+        let mut wire = FileOwnershipIngestBatch {
+            repo_id: self.repo_id.clone(),
+            revision_id: self.revision_id.clone(),
+            generation: self.generation,
+            batch_digest: String::new(),
+            entries: self
+                .entries
+                .iter()
+                .map(|entry| FileOwnershipEntry {
+                    source_repo_id: entry.source_repo_id.clone(),
+                    repo_relative_path: entry.repo_relative_path.clone(),
+                    owners: entry.owners.clone(),
+                })
+                .collect(),
+        };
+        stamp_batch_digest_v1(&mut wire)
+            .map_err(|err| SdkError::Serialization(format!("FileOwnership batch digest: {err}")))?;
+        Ok(wire)
+    }
 }
 
 impl FileContributorBatch {
     #[must_use]
-    pub fn new(
-        repo_id: RepoId,
-        revision_id: RevisionId,
-        generation: ManifestGeneration,
-        batch_digest: impl Into<String>,
-    ) -> Self {
+    pub fn new(repo_id: RepoId, revision_id: RevisionId, generation: ManifestGeneration) -> Self {
         Self {
             repo_id,
             revision_id,
             generation,
-            batch_digest: batch_digest.into(),
             entries: Vec::new(),
         }
     }
@@ -412,6 +534,34 @@ impl FileContributorBatch {
         });
         self
     }
+
+    /// The canonical digest this batch publishes under.
+    pub fn batch_digest(&self) -> Result<String, SdkError> {
+        Ok(self.to_wire_batch()?.batch_digest)
+    }
+
+    /// The wire batch, stamped with its canonical digest.
+    fn to_wire_batch(&self) -> Result<FileContributorIngestBatch, SdkError> {
+        let mut wire = FileContributorIngestBatch {
+            repo_id: self.repo_id.clone(),
+            revision_id: self.revision_id.clone(),
+            generation: self.generation,
+            batch_digest: String::new(),
+            entries: self
+                .entries
+                .iter()
+                .map(|entry| FileContributorEntry {
+                    source_repo_id: entry.source_repo_id.clone(),
+                    repo_relative_path: entry.repo_relative_path.clone(),
+                    contributors: entry.contributors.clone(),
+                })
+                .collect(),
+        };
+        stamp_batch_digest_v1(&mut wire).map_err(|err| {
+            SdkError::Serialization(format!("FileContributor batch digest: {err}"))
+        })?;
+        Ok(wire)
+    }
 }
 
 pub struct HistoryNamespace<'a> {
@@ -436,20 +586,7 @@ impl<'a> HistoryNamespace<'a> {
         &self,
         batch: &RepoCommitRecencyBatch,
     ) -> Result<BatchReceipt, SdkError> {
-        let wire = RepoCommitRecencyIngestBatch {
-            repo_id: batch.repo_id.clone(),
-            revision_id: batch.revision_id.clone(),
-            generation: batch.generation,
-            batch_digest: batch.batch_digest.clone(),
-            entries: batch
-                .entries
-                .iter()
-                .map(|entry| RepoCommitRecencyEntry {
-                    source_repo_id: entry.source_repo_id.clone(),
-                    latest_committer_time_ms: entry.latest_committer_time_ms,
-                })
-                .collect(),
-        };
+        let wire = batch.to_wire_batch()?;
         let response = self.client.dispatch_ingest(
             SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(wire),
         )?;
@@ -474,21 +611,7 @@ impl<'a> HistoryNamespace<'a> {
     }
 
     pub fn publish_repo_meta(&self, batch: &RepoMetaBatch) -> Result<BatchReceipt, SdkError> {
-        let wire = RepoMetaIngestBatch {
-            repo_id: batch.repo_id.clone(),
-            revision_id: batch.revision_id.clone(),
-            generation: batch.generation,
-            batch_digest: batch.batch_digest.clone(),
-            entries: batch
-                .entries
-                .iter()
-                .map(|entry| RepoMetaEntry {
-                    source_repo_id: entry.source_repo_id.clone(),
-                    key: entry.key.clone(),
-                    value: entry.value.clone(),
-                })
-                .collect(),
-        };
+        let wire = batch.to_wire_batch()?;
         let response = self
             .client
             .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(wire))?;
@@ -513,20 +636,7 @@ impl<'a> HistoryNamespace<'a> {
     }
 
     pub fn publish_repo_topic(&self, batch: &RepoTopicBatch) -> Result<BatchReceipt, SdkError> {
-        let wire = RepoTopicIngestBatch {
-            repo_id: batch.repo_id.clone(),
-            revision_id: batch.revision_id.clone(),
-            generation: batch.generation,
-            batch_digest: batch.batch_digest.clone(),
-            entries: batch
-                .entries
-                .iter()
-                .map(|entry| RepoTopicEntry {
-                    source_repo_id: entry.source_repo_id.clone(),
-                    topic: entry.topic.clone(),
-                })
-                .collect(),
-        };
+        let wire = batch.to_wire_batch()?;
         let response = self
             .client
             .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(wire))?;
@@ -554,20 +664,7 @@ impl<'a> HistoryNamespace<'a> {
         &self,
         batch: &RepoDescriptionBatch,
     ) -> Result<BatchReceipt, SdkError> {
-        let wire = RepoDescriptionIngestBatch {
-            repo_id: batch.repo_id.clone(),
-            revision_id: batch.revision_id.clone(),
-            generation: batch.generation,
-            batch_digest: batch.batch_digest.clone(),
-            entries: batch
-                .entries
-                .iter()
-                .map(|entry| RepoDescriptionEntry {
-                    source_repo_id: entry.source_repo_id.clone(),
-                    description: entry.description.clone(),
-                })
-                .collect(),
-        };
+        let wire = batch.to_wire_batch()?;
         let response = self.client.dispatch_ingest(
             SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(wire),
         )?;
@@ -595,21 +692,7 @@ impl<'a> HistoryNamespace<'a> {
         &self,
         batch: &FileOwnershipBatch,
     ) -> Result<BatchReceipt, SdkError> {
-        let wire = FileOwnershipIngestBatch {
-            repo_id: batch.repo_id.clone(),
-            revision_id: batch.revision_id.clone(),
-            generation: batch.generation,
-            batch_digest: batch.batch_digest.clone(),
-            entries: batch
-                .entries
-                .iter()
-                .map(|entry| FileOwnershipEntry {
-                    source_repo_id: entry.source_repo_id.clone(),
-                    repo_relative_path: entry.repo_relative_path.clone(),
-                    owners: entry.owners.clone(),
-                })
-                .collect(),
-        };
+        let wire = batch.to_wire_batch()?;
         let response = self
             .client
             .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(wire))?;
@@ -637,21 +720,7 @@ impl<'a> HistoryNamespace<'a> {
         &self,
         batch: &FileContributorBatch,
     ) -> Result<BatchReceipt, SdkError> {
-        let wire = FileContributorIngestBatch {
-            repo_id: batch.repo_id.clone(),
-            revision_id: batch.revision_id.clone(),
-            generation: batch.generation,
-            batch_digest: batch.batch_digest.clone(),
-            entries: batch
-                .entries
-                .iter()
-                .map(|entry| FileContributorEntry {
-                    source_repo_id: entry.source_repo_id.clone(),
-                    repo_relative_path: entry.repo_relative_path.clone(),
-                    contributors: entry.contributors.clone(),
-                })
-                .collect(),
-        };
+        let wire = batch.to_wire_batch()?;
         let response = self.client.dispatch_ingest(
             SearchPlaneIngestIpcRequest::PublishFileContributorBatch(wire),
         )?;
@@ -692,25 +761,7 @@ impl crate::NamespaceIngest for HistoryNs {
     type Receipt = BatchReceipt;
 
     fn publish(client: &QuantaIndex, batch: &HistoryBatch) -> Result<BatchReceipt, SdkError> {
-        let wire = HistoryIngestBatch {
-            repo_id: batch.repo_id.clone(),
-            revision_id: batch.revision_id.clone(),
-            generation: batch.generation,
-            manifest_digest: batch.manifest_digest.clone(),
-            batch_digest: batch.batch_digest.clone(),
-            commits: batch.commits.clone(),
-            refs: batch.refs.iter().map(map_ref_mutation).collect(),
-            tags: batch.tags.iter().map(map_tag_mutation).collect(),
-            diff_hunks: batch
-                .diff_hunks
-                .iter()
-                .map(|mutation| HistoryDiffHunkUpsert {
-                    commit_sha: mutation.commit_sha,
-                    file_path: mutation.file_path.clone().into_boxed_str(),
-                    record: mutation.record.clone(),
-                })
-                .collect(),
-        };
+        let wire = batch.to_wire_batch()?;
         let response =
             client.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishHistoryBatch(wire))?;
         match response {

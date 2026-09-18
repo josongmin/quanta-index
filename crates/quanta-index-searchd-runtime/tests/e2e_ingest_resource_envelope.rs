@@ -18,6 +18,7 @@ use quanta_index_contract::{
 use quanta_index_core::{
     GenerationStorageKeyV1, INGEST_RESOURCE_BUDGET_EXCEEDED_CODE, IngestResourcePolicy,
 };
+use quanta_index_ipc::stamp_batch_digest_v1;
 use quanta_index_searchd_harness as e2e_harness;
 
 use e2e_harness::E2eRuntime;
@@ -76,21 +77,20 @@ fn a_batch_past_the_vector_envelope_is_refused_before_any_track_writes() -> Test
     let mut rt = E2eRuntime::boot_with_ingest_resource_policy(policy)?;
     rt.start()?;
 
-    let mut oversized = rt.text_search_corpus_batch(
-        "src/envelope.rs",
-        "fn envelope_body() { envelope_needle }",
-        "envelope-2",
-    )?;
+    let mut oversized =
+        rt.text_search_corpus_batch("src/envelope.rs", "fn envelope_body() { envelope_needle }")?;
     // A second scope doubles the embedded records: two sources, two vectors.
     let mut second = rt.text_search_corpus_batch(
         "src/envelope_two.rs",
         "fn envelope_second() { envelope_second_needle }",
-        "envelope-2",
     )?;
     oversized.replace_scopes.append(&mut second.replace_scopes);
     oversized
         .semantic_replace_scopes
         .append(&mut second.semantic_replace_scopes);
+    // The body changed after the harness stamped it: re-stamp, as a
+    // producer does last (QI-BB-032), so the envelope is what refuses it.
+    stamp_batch_digest_v1(&mut oversized)?;
 
     let refused = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
         oversized,
@@ -113,11 +113,8 @@ fn a_batch_past_the_vector_envelope_is_refused_before_any_track_writes() -> Test
     }
 
     // One record fits: the same daemon applies it and serves it.
-    let fits = rt.text_search_corpus_batch(
-        "src/envelope.rs",
-        "fn envelope_body() { envelope_needle }",
-        "envelope-1",
-    )?;
+    let fits =
+        rt.text_search_corpus_batch("src/envelope.rs", "fn envelope_body() { envelope_needle }")?;
     let accepted = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(fits))?;
     match &accepted {
         SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt) if receipt.applied => {}
@@ -159,8 +156,7 @@ fn a_batch_past_the_vector_envelope_is_refused_before_any_track_writes() -> Test
 fn the_record_ceiling_counts_every_carried_row() -> TestResult {
     let policy = IngestResourcePolicy::new(1, u64::MAX, u64::MAX)?;
     let mut rt = E2eRuntime::boot_with_ingest_resource_policy(policy)?;
-    let batch =
-        rt.text_search_corpus_batch("src/rows.rs", "fn rows_body() { rows_needle }", "rows-1")?;
+    let batch = rt.text_search_corpus_batch("src/rows.rs", "fn rows_body() { rows_needle }")?;
     let carried = batch
         .replace_scopes
         .iter()

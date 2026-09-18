@@ -40,6 +40,8 @@ crate quanta_index_contract
 │       └── struct OwnerDocKindVisitor: pub(self)
 │           └── type Value: pub(self)
 ├── mod ipc: pub
+│   ├── mod batch_body: pub(self)
+│   │   └── enum IngestOperationKindV1: pub
 │   ├── mod control: pub(self)
 │   │   ├── struct CurrentGenerationRequest: pub
 │   │   ├── struct CurrentGenerationRequestVisitor: pub(self)

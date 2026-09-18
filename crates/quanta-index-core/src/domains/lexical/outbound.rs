@@ -75,6 +75,16 @@ pub trait LexicalIndexOpenPort: Send + Sync {
 /// batch-native. Implementations commit the batch and return the accepted
 /// surface in [`BatchPublishReceipt`].
 pub trait SearchCorpusIngestPort: Send + Sync {
+    /// Everything that can refuse `batch` without mutating anything: its
+    /// shape, its surface-mutation authority, the resource envelope, and
+    /// (for a delta) that both tracks hold the base as the exact sealed
+    /// identity the ledger recorded (QI-BB-029). The ingest dispatcher runs
+    /// it before it records durable intent, so a refused batch leaves no
+    /// idempotency record and zero bytes changed. `publish_batch` re-runs
+    /// the same checks under its own lock; the preflight protects the
+    /// record, the locked check protects the mutation.
+    fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError>;
+
     fn publish_batch(
         &self,
         batch: &SearchCorpusIngestBatch,

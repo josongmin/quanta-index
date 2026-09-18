@@ -1,3 +1,4 @@
+mod batch_body;
 mod control;
 mod error;
 mod ingest;
@@ -6,6 +7,7 @@ mod quarantine;
 mod semantic_source;
 mod split;
 
+pub use batch_body::*;
 pub use control::*;
 pub use error::*;
 pub use ingest::*;

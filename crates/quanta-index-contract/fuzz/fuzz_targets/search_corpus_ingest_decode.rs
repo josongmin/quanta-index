@@ -16,6 +16,7 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
 
+    let _ = batch.validate_v1();
     let _ = batch.validate_surface_mutations_v1();
     for scope in &batch.semantic_replace_scopes {
         for source in &scope.sources {

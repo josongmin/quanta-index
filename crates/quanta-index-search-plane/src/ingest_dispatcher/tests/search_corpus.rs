@@ -7,17 +7,19 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
 
 use quanta_index_contract::{
-    BatchIngestMode, ManifestGeneration, SearchPlaneTrackKind, SearchScopeSurface,
+    BatchIngestMode, GenerationSnapshot, IngestOperationKindV1, ManifestGeneration, RepoId,
+    RevisionId, SearchPlaneTrackKind, SearchScopeSurface,
 };
 use quanta_index_core::{
-    CoreError, IngestResourcePolicy, RequestBudgetV1, SearchCorpusIngestPort, SemanticIngestPort,
+    CoreError, GenerationIdentityValidatePort, IdempotencyCatalogPort as _, IdempotencyKeyV1,
+    IngestResourcePolicy, RequestBudgetV1, SearchCorpusIngestPort, SemanticIngestPort,
     SemanticStreamWindowPolicy,
 };
 
 use crate::ingest_dispatcher::auxiliary::AuxiliaryMutationCoordinator;
 use crate::ingest_dispatcher::errors::{
     ERR_SEARCH_CORPUS_BATCH_SHAPE, ERR_SEARCH_CORPUS_DELTA_BASE_NOT_SEALED,
-    ERR_SEARCH_CORPUS_GENERATION_CONFLICT,
+    ERR_SEARCH_CORPUS_GENERATION_REPAIR_REQUIRED,
 };
 use crate::ingest_dispatcher::generation_plan::generation_pair_from_batch_v1;
 use crate::ingest_dispatcher::search_corpus::{
@@ -25,12 +27,13 @@ use crate::ingest_dispatcher::search_corpus::{
 };
 use crate::ingest_dispatcher::semantic::DirectSemanticMaterializer;
 use crate::ingest_dispatcher::tests::support::{
-    FailingRetentionAuthority, FakeSearchCorpusBuilder, FakeSemanticBuilder, MismatchedGeneration,
-    MismatchedSemanticIngest, PinnedLexicalHandle, RecordingIncompleteGenerationDiscard,
-    RecordingSearchCorpusAuthority, ScriptedSealedReclaim, TestRes, ZeroMutationProbe,
-    always_valid_generation, build_then_valid_generation, fixture_search_corpus_batch,
-    incomplete_then_valid_generation, memory_aux_catalog, memory_catalog, multi_scope_corpus_batch,
-    no_storage_sealed_reclaim, recording_search_corpus_authority, search_corpus_materializer,
+    CorruptTrackGeneration, FailingRetentionAuthority, FakeSearchCorpusBuilder,
+    FakeSemanticBuilder, MemoryIdempotencyCatalog, MismatchedGeneration, MismatchedSemanticIngest,
+    PinnedLexicalHandle, RecordingIncompleteGenerationDiscard, RecordingSearchCorpusAuthority,
+    ScriptedSealedReclaim, TestRes, ZeroMutationProbe, always_valid_generation,
+    build_then_valid_generation, fixture_search_corpus_batch, incomplete_then_valid_generation,
+    memory_aux_catalog, memory_catalog, multi_scope_corpus_batch, no_storage_sealed_reclaim,
+    recording_search_corpus_authority, search_corpus_materializer,
     test_incomplete_generation_discard,
 };
 use crate::readiness::SearchCorpusHistoryRetentionReceiptV1;
@@ -71,7 +74,9 @@ fn malformed_or_baseless_batches_change_zero_bytes() -> TestRes {
     }
     probe.assert_nothing_touched("base never sealed")?;
 
-    // The ledger knows the base, but the physical identity disagrees.
+    // The ledger knows the base, but the physical identity disagrees: the
+    // base is sealed under another digest, so it is refused with the
+    // repair to perform rather than as an opaque conflict.
     let mismatched = ZeroMutationProbe::new(Arc::new(MismatchedGeneration));
     mismatched
         .ledger
@@ -84,7 +89,8 @@ fn malformed_or_baseless_batches_change_zero_bytes() -> TestRes {
             "manifest:base",
         );
     match mismatched.materializer.publish_batch(&unsealed_base) {
-        Err(CoreError::Typed { code, .. }) if code == ERR_SEARCH_CORPUS_GENERATION_CONFLICT => {}
+        Err(CoreError::Typed { code, .. })
+            if code == ERR_SEARCH_CORPUS_GENERATION_REPAIR_REQUIRED => {}
         other => return Err(format!("mismatched base answered {other:?}").into()),
     }
     mismatched.assert_nothing_touched("base identity mismatch")
@@ -109,6 +115,13 @@ fn a_batch_outside_the_resource_envelope_changes_zero_bytes() -> TestRes {
         always_valid_generation(),
         IngestResourcePolicy::new(usize::MAX, u64::MAX, vector_bytes - 1)?,
     );
+    // The preflight is the admission point (it tallies); the publish
+    // repeats the measurement under its lock and refuses the same way.
+    match tight.materializer.preflight_batch(&batch) {
+        Err(CoreError::Typed { code, .. })
+            if code == quanta_index_core::INGEST_RESOURCE_BUDGET_EXCEEDED_CODE => {}
+        other => return Err(format!("oversized batch preflight answered {other:?}").into()),
+    }
     match tight.materializer.publish_batch(&batch) {
         Err(CoreError::Typed { code, .. })
             if code == quanta_index_core::INGEST_RESOURCE_BUDGET_EXCEEDED_CODE => {}
@@ -129,6 +142,7 @@ fn a_batch_outside_the_resource_envelope_changes_zero_bytes() -> TestRes {
         always_valid_generation(),
         IngestResourcePolicy::new(embedded_records, text_bytes, vector_bytes)?,
     );
+    fits.materializer.preflight_batch(&batch)?;
     let _receipt = fits.materializer.publish_batch(&batch)?;
     let stats = fits.materializer.resource_stats()?;
     let expected = IngestResourceStats {
@@ -144,13 +158,52 @@ fn a_batch_outside_the_resource_envelope_changes_zero_bytes() -> TestRes {
     Ok(())
 }
 
-/// The physical reclaim protocol under pins and orphans.
+/// One idempotency record per `(kind, generation)`, finalized, so the
+/// sweep has something to reconcile against disk.
+fn seed_records(
+    catalog: &MemoryIdempotencyCatalog,
+    repo_id: &RepoId,
+    revision_id: &RevisionId,
+    generations: &[u64],
+) -> TestRes {
+    for generation in generations {
+        for kind in [
+            IngestOperationKindV1::SearchCorpus,
+            IngestOperationKindV1::History,
+        ] {
+            let key = IdempotencyKeyV1 {
+                kind,
+                repo_id: repo_id.clone(),
+                revision_id: revision_id.clone(),
+                generation: ManifestGeneration::new(*generation),
+                batch_digest: format!("{kind}:{generation}"),
+            };
+            let body = [u8::try_from(*generation)?; 32];
+            let _fresh = catalog.begin(&key, &body)?;
+            let receipt = quanta_index_contract::BatchPublishReceipt::empty_for(
+                ManifestGeneration::new(*generation),
+                None,
+                key.batch_digest.clone(),
+            );
+            let _sequence = catalog.finalize(&key, &body, &receipt)?;
+        }
+    }
+    Ok(())
+}
+
+/// The physical reclaim protocol under pins and orphans, and the
+/// idempotency records that live and die with each generation.
 ///
 /// Every sealed directory the receipt does not retain is reclaimed —
 /// including one whose authority record was reaped by an earlier pass
 /// (the crash orphan) — except a generation a resident handle still
 /// pins, which is deferred and reclaimed on the next pass once the pin
-/// is gone.
+/// is gone. Records go with the first pass that leaves the generation
+/// less than a whole pair: the orphan's, the reclaimed pair's, and the
+/// deferred-split generation's (its semantic half went in pass one) —
+/// each exactly once across both passes — as do the records of a
+/// generation that never sealed on either track; the retained and the
+/// sealing generations keep theirs.
 #[test]
 fn reclaim_sweeps_orphans_and_defers_pinned_generations() -> TestRes {
     let lexical_reclaim =
@@ -158,6 +211,7 @@ fn reclaim_sweeps_orphans_and_defers_pinned_generations() -> TestRes {
     let semantic_reclaim =
         ScriptedSealedReclaim::new(SearchPlaneTrackKind::Semantic, &[2, 3, 4, 5]);
     let snapshots = SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT);
+    let catalog = memory_catalog();
     let lexical_ledger = Arc::new(RwLock::new(Ledger::new()));
     let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
         Arc::new(DirectSemanticMaterializer::new(
@@ -180,7 +234,7 @@ fn reclaim_sweeps_orphans_and_defers_pinned_generations() -> TestRes {
             lexical_reclaim: lexical_reclaim.clone(),
             semantic_reclaim: semantic_reclaim.clone(),
             snapshots: snapshots.clone(),
-            idempotency: memory_catalog(),
+            idempotency: catalog.clone(),
             resource_policy: IngestResourcePolicy::DEFAULT,
             semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
             auxiliary_catalog: memory_aux_catalog(),
@@ -194,6 +248,14 @@ fn reclaim_sweeps_orphans_and_defers_pinned_generations() -> TestRes {
         &batch.revision_id,
         [ManifestGeneration::new(4), ManifestGeneration::new(5)],
     );
+    // Generation 0 never sealed on either track (a batch that crashed or
+    // was rejected mid-apply); 1..=5 are the generations on disk above.
+    seed_records(
+        &catalog,
+        &batch.repo_id,
+        &batch.revision_id,
+        &[0, 1, 2, 3, 4, 5],
+    )?;
 
     // A query still holds generation 2 on the lexical track.
     let pinned_key = SnapshotKey::new(
@@ -235,8 +297,38 @@ fn reclaim_sweeps_orphans_and_defers_pinned_generations() -> TestRes {
         )
         .into());
     }
+    // Records: 0 (never sealed), 1 (lexical-only orphan, reclaimed), 3
+    // (reclaimed on both tracks) and 2 (semantic half reclaimed, lexical
+    // half deferred: no longer whole) are forgotten, two records each;
+    // 4 (retained) and 5 (sealing) keep theirs.
+    let expected_first: Vec<(u64, u64)> = vec![(0, 2), (1, 2), (2, 2), (3, 2)];
+    if catalog.forgets() != expected_first {
+        return Err(format!(
+            "first pass must forget the generations that are no longer whole pairs, once each: {:?}",
+            catalog.forgets()
+        )
+        .into());
+    }
+    if first
+        .forgotten_records
+        .iter()
+        .map(|(generation, records)| (generation.get(), *records))
+        .collect::<Vec<_>>()
+        != expected_first
+    {
+        return Err(format!("the receipt must report the forgets: {first:?}").into());
+    }
+    for kept in [4, 5] {
+        if catalog.records_for_generation(ManifestGeneration::new(kept)) != 2 {
+            return Err(format!("generation {kept} must keep its records").into());
+        }
+    }
+    if catalog.records() != 4 {
+        return Err(format!("expected 4 records left, found {}", catalog.records()).into());
+    }
 
-    // Release the pin: the next pass reclaims the orphan it left behind.
+    // Release the pin: the next pass reclaims the orphan it left behind
+    // and has nothing left to forget for it.
     drop(pin);
     let second = materializer.reclaim_retired_generations_v1(&batch, &receipt)?;
     if !second.deferred_pinned.is_empty() || lexical_reclaim.remaining() != [4, 5] {
@@ -247,7 +339,253 @@ fn reclaim_sweeps_orphans_and_defers_pinned_generations() -> TestRes {
         )
         .into());
     }
+    if catalog.forgets() != expected_first || !second.forgotten_records.is_empty() {
+        return Err(format!(
+            "the second pass must not forget again: {:?} / {:?}",
+            catalog.forgets(),
+            second.forgotten_records
+        )
+        .into());
+    }
     Ok(())
+}
+
+/// A retained generation whose pair is no longer whole on disk loses its
+/// records too.
+///
+/// With one track discarded, a replay of its batch applies afresh instead
+/// of being acked from a record that describes half a pair.
+#[test]
+fn a_retained_half_pair_loses_its_records() -> TestRes {
+    let lexical_reclaim = ScriptedSealedReclaim::new(SearchPlaneTrackKind::Lexical, &[4, 5]);
+    // Generation 4's semantic half is gone.
+    let semantic_reclaim = ScriptedSealedReclaim::new(SearchPlaneTrackKind::Semantic, &[5]);
+    let catalog = memory_catalog();
+    let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
+        SearchCorpusMaterializerParts {
+            builder: Arc::new(FakeSearchCorpusBuilder::default()),
+            ledger: Arc::new(RwLock::new(Ledger::new())),
+            semantic_ingest: Arc::new(DirectSemanticMaterializer::new(
+                Arc::new(FakeSemanticBuilder::default()),
+                Arc::new(RwLock::new(Ledger::new())),
+            )),
+            semantic_embedder: Arc::new(crate::HashingQueryTextEmbedder::new(
+                SEARCH_OWNED_SEMANTIC_DIMENSION,
+            )),
+            authority: Arc::new(RecordingSearchCorpusAuthority::default()),
+            lexical_generation_validator: always_valid_generation(),
+            semantic_generation_validator: always_valid_generation(),
+            lexical_incomplete_discard: test_incomplete_generation_discard(),
+            semantic_incomplete_discard: test_incomplete_generation_discard(),
+            lexical_reclaim: lexical_reclaim.clone(),
+            semantic_reclaim: semantic_reclaim.clone(),
+            snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+            idempotency: catalog.clone(),
+            resource_policy: IngestResourcePolicy::DEFAULT,
+            semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
+            auxiliary_catalog: memory_aux_catalog(),
+            auxiliary_coordinator: AuxiliaryMutationCoordinator::shared(),
+        },
+    );
+    let mut batch = fixture_search_corpus_batch()?;
+    batch.generation = ManifestGeneration::new(5);
+    let receipt = SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
+        &batch.repo_id,
+        &batch.revision_id,
+        [ManifestGeneration::new(4), ManifestGeneration::new(5)],
+    );
+    seed_records(&catalog, &batch.repo_id, &batch.revision_id, &[4, 5])?;
+    let pass = materializer.reclaim_retired_generations_v1(&batch, &receipt)?;
+    if !lexical_reclaim.reclaimed().is_empty() || !semantic_reclaim.reclaimed().is_empty() {
+        return Err("retained generations are never reclaimed".into());
+    }
+    if catalog.forgets() != vec![(4, 2)] || pass.forgotten_records.len() != 1 {
+        return Err(format!(
+            "the half pair's records must go and the whole pair's stay: {:?}",
+            catalog.forgets()
+        )
+        .into());
+    }
+    if catalog.records_for_generation(ManifestGeneration::new(5)) != 2 {
+        return Err("the sealing generation keeps its records".into());
+    }
+    Ok(())
+}
+
+/// A validator that reports one track's generation as sealed but damaged
+/// for as long as the scripted reclaim still holds it, and exact once it
+/// has been reclaimed and rebuilt.
+struct CorruptUntilReclaimed {
+    track: SearchPlaneTrackKind,
+    reclaim: Arc<ScriptedSealedReclaim>,
+}
+
+impl GenerationIdentityValidatePort for CorruptUntilReclaimed {
+    fn validate_generation_identity(
+        &self,
+        candidate: &GenerationSnapshot,
+    ) -> Result<(), CoreError> {
+        if candidate.track == self.track
+            && self
+                .reclaim
+                .remaining()
+                .contains(&candidate.manifest_generation.get())
+        {
+            return Err(CoreError::Typed {
+                code: "GENERATION_SIDECAR_CORRUPT".to_string(),
+                message: format!(
+                    "injected sidecar damage on {:?} generation {}",
+                    candidate.track,
+                    candidate.manifest_generation.get()
+                ),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// QI-BB-029 보완 #4: a sealed-but-corrupt half pair is repaired by the
+/// next `ReplaceGeneration` seal batch without any manual directory
+/// deletion.
+///
+/// The damaged track is reclaimed under its verified identity and rebuilt
+/// from the batch, the healthy track is left alone, while a `Delta` seal
+/// batch is refused typed with the repair to perform and touches nothing.
+#[test]
+fn a_sealed_but_corrupt_track_is_rebuilt_by_a_replace_seal_and_refused_for_a_delta() -> TestRes {
+    let batch = fixture_search_corpus_batch()?;
+    let lexical_reclaim =
+        ScriptedSealedReclaim::new(SearchPlaneTrackKind::Lexical, &[batch.generation.get()]);
+    let lexical_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync> =
+        Arc::new(CorruptUntilReclaimed {
+            track: SearchPlaneTrackKind::Lexical,
+            reclaim: Arc::clone(&lexical_reclaim),
+        });
+    let semantic_builder = Arc::new(FakeSemanticBuilder::default());
+    let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
+    let ledger = Arc::new(RwLock::new(Ledger::new()));
+    let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
+        SearchCorpusMaterializerParts {
+            builder: lexical_builder.clone(),
+            ledger: Arc::clone(&ledger),
+            semantic_ingest: Arc::new(DirectSemanticMaterializer::new(
+                semantic_builder.clone(),
+                Arc::new(RwLock::new(Ledger::new())),
+            )),
+            semantic_embedder: Arc::new(crate::HashingQueryTextEmbedder::new(
+                SEARCH_OWNED_SEMANTIC_DIMENSION,
+            )),
+            authority: Arc::new(RecordingSearchCorpusAuthority {
+                identities: Mutex::new(Vec::new()),
+                exact: true,
+            }),
+            lexical_generation_validator: lexical_validator,
+            semantic_generation_validator: always_valid_generation(),
+            lexical_incomplete_discard: test_incomplete_generation_discard(),
+            semantic_incomplete_discard: test_incomplete_generation_discard(),
+            lexical_reclaim: lexical_reclaim.clone(),
+            semantic_reclaim: no_storage_sealed_reclaim(),
+            snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+            idempotency: memory_catalog(),
+            resource_policy: IngestResourcePolicy::DEFAULT,
+            semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
+            auxiliary_catalog: memory_aux_catalog(),
+            auxiliary_coordinator: AuxiliaryMutationCoordinator::shared(),
+        },
+    );
+
+    // A delta cannot rebuild the track it patches: refused typed, nothing
+    // reclaimed, nothing built.
+    let mut delta = batch.clone();
+    delta.mode = BatchIngestMode::Delta;
+    delta.base_generation = Some(ManifestGeneration::new(6));
+    ledger
+        .write()
+        .map_err(|err| format!("ledger poisoned: {err}"))?
+        .record_historically_sealed_search_corpus(
+            &delta.repo_id,
+            &delta.revision_id,
+            ManifestGeneration::new(6),
+            "manifest:base",
+        );
+    match materializer.publish_batch(&delta) {
+        Err(CoreError::Typed { code, message })
+            if code == ERR_SEARCH_CORPUS_GENERATION_REPAIR_REQUIRED
+                && message.contains("publish a ReplaceGeneration seal batch") => {}
+        other => return Err(format!("delta over a corrupt track answered {other:?}").into()),
+    }
+    if !lexical_reclaim.reclaimed().is_empty()
+        || !lexical_builder
+            .batches
+            .lock()
+            .map_err(|err| format!("fake lexical builder poisoned: {err}"))?
+            .is_empty()
+        || !semantic_builder.take()?.is_empty()
+    {
+        return Err("a refused delta must reclaim and build nothing".into());
+    }
+
+    // The replace seal batch rebuilds exactly the damaged track.
+    let receipt = materializer.publish_batch(&batch)?;
+    if !receipt.sealed {
+        return Err(format!("the repair must seal: {receipt:?}").into());
+    }
+    if lexical_reclaim.reclaimed() != [batch.generation.get()] {
+        return Err(format!(
+            "the damaged lexical track must be reclaimed under its identity: {:?}",
+            lexical_reclaim.reclaimed()
+        )
+        .into());
+    }
+    if lexical_builder
+        .batches
+        .lock()
+        .map_err(|err| format!("fake lexical builder poisoned: {err}"))?
+        .len()
+        != 1
+        || !semantic_builder.take()?.is_empty()
+    {
+        return Err("only the damaged track is rebuilt".into());
+    }
+    Ok(())
+}
+
+/// A delta over a base that is sealed but damaged on one track is refused
+/// before any mutation with the repair to perform.
+#[test]
+fn a_delta_over_a_corrupt_base_is_refused_with_the_repair() -> TestRes {
+    let probe = ZeroMutationProbe::new(Arc::new(CorruptTrackGeneration {
+        corrupt: SearchPlaneTrackKind::Semantic,
+        code: "GENERATION_IDENTITY_DIGEST_MISMATCH",
+    }));
+    let mut delta = fixture_search_corpus_batch()?;
+    delta.mode = BatchIngestMode::Delta;
+    delta.base_generation = Some(ManifestGeneration::new(3));
+    probe
+        .ledger
+        .write()
+        .map_err(|err| format!("ledger poisoned: {err}"))?
+        .record_historically_sealed_search_corpus(
+            &delta.repo_id,
+            &delta.revision_id,
+            ManifestGeneration::new(3),
+            "manifest:base",
+        );
+    for (label, outcome) in [
+        ("preflight", probe.materializer.preflight_batch(&delta)),
+        (
+            "publish",
+            probe.materializer.publish_batch(&delta).map(|_receipt| ()),
+        ),
+    ] {
+        match outcome {
+            Err(CoreError::Typed { code, message })
+                if code == ERR_SEARCH_CORPUS_GENERATION_REPAIR_REQUIRED
+                    && message.contains("publish a ReplaceGeneration seal batch") => {}
+            other => return Err(format!("{label} over a corrupt base answered {other:?}").into()),
+        }
+    }
+    probe.assert_nothing_touched("corrupt delta base")
 }
 
 #[test]

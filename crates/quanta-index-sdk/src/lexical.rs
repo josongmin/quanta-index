@@ -18,8 +18,16 @@ use quanta_index_contract::{
 };
 
 use crate::text_query_builder::TextQueryBuilderState;
-use crate::{BatchMode, BatchReceipt, QuantaIndex, SdkError};
+use crate::{BatchMode, BatchReceipt, QuantaIndex, SdkError, stamp_batch_digest_v1};
 
+/// A search-corpus publish under construction.
+///
+/// The batch's `batch_digest` is not chosen by the caller: it is the
+/// canonical digest of the wire body (QI-BB-032), computed when the batch
+/// is sent, so a resend of the same content is a replay of the same
+/// idempotency key and the search plane refuses any digest that is not the
+/// body's. [`Self::batch_digest`] computes it ahead of publishing for
+/// callers that correlate receipts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchCorpusBatch<const SEALED: bool = true> {
     repo_id: RepoId,
@@ -27,7 +35,6 @@ pub struct SearchCorpusBatch<const SEALED: bool = true> {
     generation: ManifestGeneration,
     base_generation: Option<ManifestGeneration>,
     manifest_digest: String,
-    batch_digest: String,
     mode: BatchMode,
     clear_surfaces: Vec<SearchScopeSurface>,
     replace_scopes: Vec<SearchCorpusReplaceScope>,
@@ -43,7 +50,6 @@ impl SearchCorpusBatch {
         revision_id: RevisionId,
         generation: ManifestGeneration,
         manifest_digest: impl Into<String>,
-        batch_digest: impl Into<String>,
     ) -> Self {
         Self {
             repo_id,
@@ -51,7 +57,6 @@ impl SearchCorpusBatch {
             generation,
             base_generation: None,
             manifest_digest: manifest_digest.into(),
-            batch_digest: batch_digest.into(),
             mode: BatchMode::ReplaceGeneration,
             clear_surfaces: Vec::new(),
             replace_scopes: Vec::new(),
@@ -68,7 +73,6 @@ impl SearchCorpusBatch {
         generation: ManifestGeneration,
         base_generation: ManifestGeneration,
         manifest_digest: impl Into<String>,
-        batch_digest: impl Into<String>,
     ) -> Self {
         Self {
             repo_id,
@@ -76,7 +80,6 @@ impl SearchCorpusBatch {
             generation,
             base_generation: Some(base_generation),
             manifest_digest: manifest_digest.into(),
-            batch_digest: batch_digest.into(),
             mode: BatchMode::Delta,
             clear_surfaces: Vec::new(),
             replace_scopes: Vec::new(),
@@ -199,7 +202,6 @@ impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
             generation: self.generation,
             base_generation: self.base_generation,
             manifest_digest: self.manifest_digest,
-            batch_digest: self.batch_digest,
             mode: self.mode,
             clear_surfaces: self.clear_surfaces,
             replace_scopes: self.replace_scopes,
@@ -234,9 +236,11 @@ impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
         &self.manifest_digest
     }
 
-    #[must_use]
-    pub fn batch_digest(&self) -> &str {
-        &self.batch_digest
+    /// The canonical digest this batch publishes under: the idempotency
+    /// key the receipt will name. Computed from the wire body, so it
+    /// changes with any mutation of the batch.
+    pub fn batch_digest(&self) -> Result<String, SdkError> {
+        Ok(self.to_wire_batch()?.batch_digest)
     }
 
     #[must_use]
@@ -274,14 +278,15 @@ impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
         SEALED
     }
 
-    fn to_wire_batch(&self) -> SearchCorpusIngestBatch {
-        SearchCorpusIngestBatch {
+    /// The wire batch, stamped with its canonical digest.
+    fn to_wire_batch(&self) -> Result<SearchCorpusIngestBatch, SdkError> {
+        let mut wire = SearchCorpusIngestBatch {
             repo_id: self.repo_id.clone(),
             revision_id: self.revision_id.clone(),
             generation: self.generation,
             base_generation: self.base_generation,
             manifest_digest: self.manifest_digest.clone(),
-            batch_digest: self.batch_digest.clone(),
+            batch_digest: String::new(),
             mode: self.mode.to_wire(),
             bundle_payload: None,
             clear_surfaces: self.clear_surfaces.clone(),
@@ -290,7 +295,10 @@ impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
             semantic_replace_scopes: self.semantic_replace_scopes.clone(),
             semantic_tombstone_scopes: self.semantic_tombstone_scopes.clone(),
             seal: SEALED,
-        }
+        };
+        stamp_batch_digest_v1(&mut wire)
+            .map_err(|err| SdkError::Serialization(format!("search corpus batch digest: {err}")))?;
+        Ok(wire)
     }
 }
 
@@ -463,16 +471,17 @@ fn dispatch_search_corpus_publish_v1<const SEALED: bool>(
     batch: &SearchCorpusBatch<SEALED>,
 ) -> Result<BatchReceipt, SdkError> {
     validate_semantic_cluster_membership_authority_v1(batch.semantic_replace_scopes())?;
-    let wire_batch = batch.to_wire_batch();
+    let wire_batch = batch.to_wire_batch()?;
     wire_batch.validate_surface_mutations_v1().map_err(|err| {
         SdkError::Protocol(format!("invalid search corpus surface mutation: {err}"))
     })?;
+    let batch_digest = wire_batch.batch_digest.clone();
     let response = client.dispatch_ingest(
         SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(wire_batch),
     )?;
     match response {
         SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt) => {
-            validate_search_corpus_publish_receipt_v1(batch, &receipt)?;
+            validate_search_corpus_publish_receipt_v1(batch, &batch_digest, &receipt)?;
             Ok(receipt)
         }
         other @ (SearchPlaneIngestIpcResponse::HistoryReceipt(_)
@@ -569,6 +578,7 @@ fn validate_semantic_cluster_membership_authority_v1(
 
 fn validate_search_corpus_publish_receipt_v1<const SEALED: bool>(
     batch: &SearchCorpusBatch<SEALED>,
+    batch_digest: &str,
     receipt: &BatchReceipt,
 ) -> Result<(), SdkError> {
     if receipt.generation != batch.generation() {
@@ -581,7 +591,7 @@ fn validate_search_corpus_publish_receipt_v1<const SEALED: bool>(
             "search corpus receipt manifest digest differs from the published batch".to_string(),
         ));
     }
-    if receipt.batch_digest != batch.batch_digest() {
+    if receipt.batch_digest != batch_digest {
         return Err(SdkError::Protocol(
             "search corpus receipt batch digest differs from the published batch".to_string(),
         ));

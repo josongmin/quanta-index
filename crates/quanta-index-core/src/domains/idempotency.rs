@@ -2,32 +2,53 @@
 //!
 //! A producer that loses an ack re-sends the same batch. Without a durable
 //! record of what was applied, the search plane could not tell a replay
-//! from a first publish: it re-derived, re-embedded and re-built, and a
-//! different body under the same key was applied as if it were the same.
-//! The catalog behind this port records, per idempotency key, the canonical
-//! body hash and the receipt the first apply produced, so a replay with the
-//! same body is answered from the record without touching storage and a
-//! replay with a different body is refused typed before any mutation.
+//! from a first publish: it re-derived, re-embedded and re-built. The
+//! catalog behind this port records, per idempotency key, the body digest
+//! and the receipt the first apply produced, so a replay with the same
+//! body is answered from the record without touching storage.
 //!
-//! The protocol is intent → apply → finalize:
-//! 1. [`IdempotencyCatalogPort::begin`] records the key and body hash as in
+//! The key's `batch_digest` is the canonical digest of the batch body
+//! ([`crate::IngestBatchBodyV1`]): the dispatcher
+//! recomputes it and refuses a batch whose carried digest differs
+//! ([`BATCH_DIGEST_MISMATCH_CODE`]) before this port is reached, so two
+//! bodies can never share a key. The port still refuses a `begin` whose
+//! body hash differs from the recorded one ([`BATCH_DIGEST_CONFLICT_CODE`])
+//! as its own invariant: the catalog does not rely on its callers having
+//! verified the digest.
+//!
+//! The protocol is preflight → intent → apply → finalize:
+//! 1. The dispatcher verifies the digest and runs the route's storage-free
+//!    preflight; a batch refused here leaves no record.
+//! 2. [`IdempotencyCatalogPort::begin`] records the key and body hash as in
 //!    progress (or reports the existing record).
-//! 2. The caller applies the batch.
-//! 3. [`IdempotencyCatalogPort::finalize`] stores the receipt and marks the
+//! 3. The caller applies the batch.
+//! 4. [`IdempotencyCatalogPort::finalize`] stores the receipt and marks the
 //!    record applied.
 //!
-//! A crash between 2 and 3 leaves an in-progress record whose next replay
+//! A crash between 3 and 4 leaves an in-progress record whose next replay
 //! re-runs the apply; the apply paths are idempotent per operation and the
-//! seal path recognizes a generation already sealed under its identity, so
-//! the second run converges on the same durable state and then finalizes.
+//! sealed search-corpus path recognizes a generation already sealed under
+//! its identity, so the second run converges on the same durable state
+//! without re-materializing or re-embedding, and then finalizes.
+//!
+//! Records live and die with their generation: physical GC forgets a
+//! generation's records once the generation is no longer a whole sealed
+//! pair on disk ([`IdempotencyCatalogPort::generations_for_pair`] lists what
+//! the sweep must reconcile).
 
-use std::fmt;
-
-use quanta_index_contract::{BatchPublishReceipt, ManifestGeneration, RepoId, RevisionId};
+use quanta_index_contract::{
+    BatchPublishReceipt, IngestOperationKindV1, ManifestGeneration, RepoId, RevisionId,
+};
 
 use crate::error::CoreError;
 
-/// Wire code for a replay whose body differs from the recorded one.
+/// Wire code for a batch whose carried `batch_digest` is not its body's.
+///
+/// The batch was forged, corrupted in transit, or mutated after its digest
+/// was computed; it is refused before any record or mutation.
+pub const BATCH_DIGEST_MISMATCH_CODE: &str = "BATCH_DIGEST_MISMATCH";
+/// Wire code for a `begin` whose body hash differs from the one recorded
+/// under the same key.
 pub const BATCH_DIGEST_CONFLICT_CODE: &str = "BATCH_DIGEST_CONFLICT";
 /// Wire code for a catalog row whose own digest no longer matches its
 /// content (G0-C: the engine serves bit-rotted cells with a clean
@@ -36,52 +57,6 @@ pub const CATALOG_ROW_CORRUPT_CODE: &str = "CATALOG_ROW_CORRUPT";
 /// Wire code for a catalog write that met a held lock past its busy budget.
 pub const CATALOG_BUSY_CODE: &str = "CATALOG_BUSY";
 
-/// Which ingest route a key belongs to.
-///
-/// The same `(repo, revision, generation, batch_digest)` under two routes
-/// are two records. The repo-map bundle route answers with a mutation ack,
-/// not a receipt, and names no batch digest; it is outside the catalog until
-/// it does.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum IngestOperationKindV1 {
-    SearchCorpus,
-    History,
-    Dirty,
-    RuntimeCatalog,
-    Structural,
-    RepoCommitRecency,
-    RepoTopic,
-    RepoDescription,
-    FileOwnership,
-    FileContributor,
-    RepoMeta,
-}
-
-impl IngestOperationKindV1 {
-    #[must_use]
-    pub const fn as_code_str(self) -> &'static str {
-        match self {
-            Self::SearchCorpus => "search-corpus",
-            Self::History => "history",
-            Self::Dirty => "dirty",
-            Self::RuntimeCatalog => "runtime-catalog",
-            Self::Structural => "structural",
-            Self::RepoCommitRecency => "repo-commit-recency",
-            Self::RepoTopic => "repo-topic",
-            Self::RepoDescription => "repo-description",
-            Self::FileOwnership => "file-ownership",
-            Self::FileContributor => "file-contributor",
-            Self::RepoMeta => "repo-meta",
-        }
-    }
-}
-
-impl fmt::Display for IngestOperationKindV1 {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_code_str())
-    }
-}
-
 /// The durable identity of one publish.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct IdempotencyKeyV1 {
@@ -89,6 +64,8 @@ pub struct IdempotencyKeyV1 {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
+    /// The canonical batch digest token the batch carried and the
+    /// dispatcher verified.
     pub batch_digest: String,
 }
 
@@ -106,7 +83,8 @@ pub enum IdempotencyBeginV1 {
     },
     /// A record with the same body exists but was never finalized: a prior
     /// attempt crashed or is still running. The caller re-applies (the
-    /// apply is idempotent) and finalizes.
+    /// apply is idempotent and converges on durable state that already
+    /// exists) and finalizes.
     Resume,
 }
 
@@ -136,8 +114,19 @@ pub trait IdempotencyCatalogPort: Send + Sync {
         receipt: &BatchPublishReceipt,
     ) -> Result<u64, CoreError>;
 
-    /// Drop every record for `generation` of the pair, once the generation
-    /// itself is reaped; the records outlive nothing they describe.
+    /// Every generation of the pair that holds at least one record, in
+    /// ascending order, so a reclaim pass can reconcile records against
+    /// what is on disk (a record of a generation that never sealed, or
+    /// whose pair is no longer whole, describes nothing durable).
+    fn generations_for_pair(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) -> Result<Vec<ManifestGeneration>, CoreError>;
+
+    /// Drop every record for `generation` of the pair, across every route;
+    /// returns how many were dropped. Idempotent: a generation with no
+    /// records is `Ok(0)`.
     fn forget_generation(
         &self,
         repo_id: &RepoId,

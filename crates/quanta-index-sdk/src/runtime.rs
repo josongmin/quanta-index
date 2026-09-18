@@ -7,7 +7,7 @@ use quanta_index_contract::{
 };
 
 use crate::text_query_builder::TextQueryBuilderState;
-use crate::{BatchReceipt, QuantaIndex, SdkError};
+use crate::{BatchReceipt, QuantaIndex, SdkError, stamp_batch_digest_v1};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DirtyBatchMutation {
@@ -15,13 +15,16 @@ pub enum DirtyBatchMutation {
     Delete { doc_id: ChunkId },
 }
 
+/// A dirty-overlay publish.
+///
+/// Its `batch_digest` is the canonical digest of the wire body, computed
+/// when it is sent (QI-BB-032); see [`Self::batch_digest`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DirtyBatch {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
     pub overlay_epoch_ms: u64,
-    pub batch_digest: String,
     pub entries: Vec<DirtyBatchMutation>,
 }
 
@@ -32,16 +35,43 @@ impl DirtyBatch {
         revision_id: RevisionId,
         generation: ManifestGeneration,
         overlay_epoch_ms: u64,
-        batch_digest: impl Into<String>,
     ) -> Self {
         Self {
             repo_id,
             revision_id,
             generation,
             overlay_epoch_ms,
-            batch_digest: batch_digest.into(),
             entries: Vec::new(),
         }
+    }
+
+    /// The canonical digest this batch publishes under.
+    pub fn batch_digest(&self) -> Result<String, SdkError> {
+        Ok(self.to_wire_batch()?.batch_digest)
+    }
+
+    /// The wire batch, stamped with its canonical digest.
+    fn to_wire_batch(&self) -> Result<DirtyIngestBatch, SdkError> {
+        let mut wire = DirtyIngestBatch {
+            repo_id: self.repo_id.clone(),
+            revision_id: self.revision_id.clone(),
+            generation: self.generation,
+            overlay_epoch_ms: self.overlay_epoch_ms,
+            batch_digest: String::new(),
+            entries: self
+                .entries
+                .iter()
+                .map(|entry| match entry {
+                    DirtyBatchMutation::Upsert(record) => DirtyMutation::Upsert(record.clone()),
+                    DirtyBatchMutation::Delete { doc_id } => DirtyMutation::Delete(DirtyDelete {
+                        doc_id: doc_id.clone(),
+                    }),
+                })
+                .collect(),
+        };
+        stamp_batch_digest_v1(&mut wire)
+            .map_err(|err| SdkError::Serialization(format!("dirty batch digest: {err}")))?;
+        Ok(wire)
     }
 
     #[must_use]
@@ -92,23 +122,7 @@ impl crate::NamespaceIngest for RuntimeNs {
     type Receipt = BatchReceipt;
 
     fn publish(client: &QuantaIndex, batch: &DirtyBatch) -> Result<BatchReceipt, SdkError> {
-        let wire = DirtyIngestBatch {
-            repo_id: batch.repo_id.clone(),
-            revision_id: batch.revision_id.clone(),
-            generation: batch.generation,
-            overlay_epoch_ms: batch.overlay_epoch_ms,
-            batch_digest: batch.batch_digest.clone(),
-            entries: batch
-                .entries
-                .iter()
-                .map(|entry| match entry {
-                    DirtyBatchMutation::Upsert(record) => DirtyMutation::Upsert(record.clone()),
-                    DirtyBatchMutation::Delete { doc_id } => DirtyMutation::Delete(DirtyDelete {
-                        doc_id: doc_id.clone(),
-                    }),
-                })
-                .collect(),
-        };
+        let wire = batch.to_wire_batch()?;
         let response =
             client.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishDirtyBatch(wire))?;
         match response {

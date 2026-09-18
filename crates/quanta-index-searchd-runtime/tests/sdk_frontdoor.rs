@@ -211,6 +211,9 @@ fn start_sdk_frontdoor_runtime_with_ingest(
 }
 
 fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestResult {
+    // Like every producer, stamp the canonical batch digest before sending
+    // (QI-BB-032); the search plane refuses any other digest.
+    let payload = quanta_index_searchd_harness::stamped_ingest_request(payload)?;
     let response: SearchPlaneIngestIpcResponseEnvelope = send_request(
         socket,
         &SearchPlaneIngestIpcRequestEnvelope {
@@ -262,7 +265,7 @@ fn stop_runtime(shutdown: &Arc<AtomicBool>, join: DriverJoin) -> TestResult {
 }
 
 fn history_batch() -> quanta_index_sdk::HistoryBatch {
-    quanta_index_sdk::HistoryBatch::new(repo(), revision(), generation(), "batch:history-sdk")
+    quanta_index_sdk::HistoryBatch::new(repo(), revision(), generation())
         .manifest_digest("manifest:history-sdk")
         .commit(CommitRecord {
             wire_version: 1,
@@ -300,98 +303,89 @@ fn history_batch() -> quanta_index_sdk::HistoryBatch {
 }
 
 fn history_commit_only_batch() -> quanta_index_sdk::HistoryBatch {
-    quanta_index_sdk::HistoryBatch::new(
-        repo(),
-        revision(),
-        generation(),
-        "batch:history-sdk-commit-only",
-    )
-    .manifest_digest("manifest:history-sdk-commit-only")
-    .commit(CommitRecord {
-        wire_version: 1,
-        sha: commit_sha(),
-        parents: Vec::new(),
-        author_time_ms: 21,
-        committer_time_ms: 22,
-        applied_at_ms: 23,
-        author: "alice".to_string().into_boxed_str(),
-        author_name: None,
-        author_email: None,
-        committer: "alice".to_string().into_boxed_str(),
-        committer_name: None,
-        committer_email: None,
-        message: "todo: shard gap".to_string().into_boxed_str(),
-        is_merge: false,
-        tags: Vec::new(),
-    })
+    quanta_index_sdk::HistoryBatch::new(repo(), revision(), generation())
+        .manifest_digest("manifest:history-sdk-commit-only")
+        .commit(CommitRecord {
+            wire_version: 1,
+            sha: commit_sha(),
+            parents: Vec::new(),
+            author_time_ms: 21,
+            committer_time_ms: 22,
+            applied_at_ms: 23,
+            author: "alice".to_string().into_boxed_str(),
+            author_name: None,
+            author_email: None,
+            committer: "alice".to_string().into_boxed_str(),
+            committer_name: None,
+            committer_email: None,
+            message: "todo: shard gap".to_string().into_boxed_str(),
+            is_merge: false,
+            tags: Vec::new(),
+        })
 }
 
 fn lexical_batch() -> Result<SearchCorpusBatch, Box<dyn Error>> {
-    Ok(SearchCorpusBatch::replace_generation(
-        repo(),
-        revision(),
-        generation(),
-        "manifest:lexical",
-        "batch:lexical",
+    Ok(
+        SearchCorpusBatch::replace_generation(repo(), revision(), generation(), "manifest:lexical")
+            .replace_scope(
+                SearchScopeKey {
+                    doc_surface: SearchScopeSurface::File,
+                    repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+                },
+                "scope:lexical-lib",
+                vec![
+                    lexical_chunk(
+                        "chunk-dirty",
+                        "src/lib.rs",
+                        "todo!()",
+                        "text:digest",
+                        "shape:digest",
+                        12,
+                    )?,
+                    lexical_chunk(
+                        "chunk-tree",
+                        "src/lib.rs",
+                        "fn main() {}",
+                        "text:tree",
+                        "shape:tree",
+                        12,
+                    )?,
+                ],
+                vec![symbol_record()?],
+            )
+            .replace_scope(
+                SearchScopeKey {
+                    doc_surface: SearchScopeSurface::File,
+                    repo_relative_path: RepoRelativePath::new("src/alpha.rs"),
+                },
+                "scope:lexical-alpha",
+                vec![lexical_chunk(
+                    "alpha",
+                    "src/alpha.rs",
+                    "sphinx of quartz",
+                    "text:alpha",
+                    "shape:alpha",
+                    16,
+                )?],
+                Vec::new(),
+            )
+            .replace_scope(
+                SearchScopeKey {
+                    doc_surface: SearchScopeSurface::File,
+                    repo_relative_path: RepoRelativePath::new("src/beta.rs"),
+                },
+                "scope:lexical-beta",
+                vec![lexical_chunk(
+                    "beta",
+                    "src/beta.rs",
+                    "sphinx riddles",
+                    "text:beta",
+                    "shape:beta",
+                    14,
+                )?],
+                Vec::new(),
+            ),
     )
-    .replace_scope(
-        SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-        },
-        "scope:lexical-lib",
-        vec![
-            lexical_chunk(
-                "chunk-dirty",
-                "src/lib.rs",
-                "todo!()",
-                "text:digest",
-                "shape:digest",
-                12,
-            )?,
-            lexical_chunk(
-                "chunk-tree",
-                "src/lib.rs",
-                "fn main() {}",
-                "text:tree",
-                "shape:tree",
-                12,
-            )?,
-        ],
-        vec![symbol_record()?],
-    )
-    .replace_scope(
-        SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new("src/alpha.rs"),
-        },
-        "scope:lexical-alpha",
-        vec![lexical_chunk(
-            "alpha",
-            "src/alpha.rs",
-            "sphinx of quartz",
-            "text:alpha",
-            "shape:alpha",
-            16,
-        )?],
-        Vec::new(),
-    )
-    .replace_scope(
-        SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new("src/beta.rs"),
-        },
-        "scope:lexical-beta",
-        vec![lexical_chunk(
-            "beta",
-            "src/beta.rs",
-            "sphinx riddles",
-            "text:beta",
-            "shape:beta",
-            14,
-        )?],
-        Vec::new(),
-    ))
 }
 
 fn lexical_frontdoor_matrix_batch() -> Result<SearchCorpusBatch, Box<dyn Error>> {
@@ -471,7 +465,6 @@ fn lexical_batch_two() -> Result<SearchCorpusBatch, Box<dyn Error>> {
         revision(),
         generation_two(),
         "manifest:lexical-v2",
-        "batch:lexical-v2",
     )
     .replace_scope(
         SearchScopeKey {
@@ -573,45 +566,37 @@ fn now_epoch_ms() -> Result<u64, Box<dyn Error>> {
 
 fn repo_commit_recency_batch() -> Result<RepoCommitRecencyBatch, Box<dyn Error>> {
     let now_ms = now_epoch_ms()?;
-    Ok(RepoCommitRecencyBatch::new(
-        repo(),
-        revision(),
-        generation(),
-        "batch:repo-commit-recency-sdk",
+    Ok(
+        RepoCommitRecencyBatch::new(repo(), revision(), generation())
+            .entry(
+                RepoId::new("corp-a"),
+                now_ms.saturating_sub(6 * 60 * 60 * 1000),
+            )
+            .entry(RepoId::new("corp-b"), 1_700_000_000_000),
     )
-    .entry(
-        RepoId::new("corp-a"),
-        now_ms.saturating_sub(6 * 60 * 60 * 1000),
-    )
-    .entry(RepoId::new("corp-b"), 1_700_000_000_000))
 }
 
 fn repo_meta_batch() -> RepoMetaBatch {
-    RepoMetaBatch::new(repo(), revision(), generation(), "batch:repo-meta-sdk")
+    RepoMetaBatch::new(repo(), revision(), generation())
         .entry(RepoId::new("corp-a"), "license", "apache-2.0")
         .entry(RepoId::new("corp-b"), "license", "gpl-3.0")
 }
 
 fn repo_topic_batch() -> RepoTopicBatch {
-    RepoTopicBatch::new(repo(), revision(), generation(), "batch:repo-topic-sdk")
+    RepoTopicBatch::new(repo(), revision(), generation())
         .entry(RepoId::new("corp-a"), "security")
         .entry(RepoId::new("corp-a"), "platform")
         .entry(RepoId::new("corp-b"), "ml")
 }
 
 fn repo_description_batch() -> RepoDescriptionBatch {
-    RepoDescriptionBatch::new(
-        repo(),
-        revision(),
-        generation(),
-        "batch:repo-description-sdk",
-    )
-    .entry(RepoId::new("corp-a"), "Apache distributed systems platform")
-    .entry(RepoId::new("corp-b"), "Machine learning training pipelines")
+    RepoDescriptionBatch::new(repo(), revision(), generation())
+        .entry(RepoId::new("corp-a"), "Apache distributed systems platform")
+        .entry(RepoId::new("corp-b"), "Machine learning training pipelines")
 }
 
 fn file_ownership_batch() -> FileOwnershipBatch {
-    FileOwnershipBatch::new(repo(), revision(), generation(), "batch:file-ownership-sdk")
+    FileOwnershipBatch::new(repo(), revision(), generation())
         .entry(
             RepoId::new("corp-a"),
             RepoRelativePath::new("src/recency_a.rs"),
@@ -630,46 +615,41 @@ fn file_ownership_batch() -> FileOwnershipBatch {
 }
 
 fn file_contributor_batch() -> FileContributorBatch {
-    FileContributorBatch::new(
-        repo(),
-        revision(),
-        generation(),
-        "batch:file-contributor-sdk",
-    )
-    .entry_identities(
-        RepoId::new("corp-a"),
-        RepoRelativePath::new("src/recency_a.rs"),
-        vec![
-            FileContributorIdentityEntry {
+    FileContributorBatch::new(repo(), revision(), generation())
+        .entry_identities(
+            RepoId::new("corp-a"),
+            RepoRelativePath::new("src/recency_a.rs"),
+            vec![
+                FileContributorIdentityEntry {
+                    canonical: "alice".to_string(),
+                    name: Some("Alice Example".to_string()),
+                    email: Some("alice@example.com".to_string()),
+                },
+                FileContributorIdentityEntry {
+                    canonical: "carol".to_string(),
+                    name: Some("Carol Example".to_string()),
+                    email: Some("carol@example.com".to_string()),
+                },
+            ],
+        )
+        .entry_identities(
+            RepoId::new("corp-a"),
+            RepoRelativePath::new("src/recency_gate.rs"),
+            vec![FileContributorIdentityEntry {
                 canonical: "alice".to_string(),
                 name: Some("Alice Example".to_string()),
                 email: Some("alice@example.com".to_string()),
-            },
-            FileContributorIdentityEntry {
-                canonical: "carol".to_string(),
-                name: Some("Carol Example".to_string()),
-                email: Some("carol@example.com".to_string()),
-            },
-        ],
-    )
-    .entry_identities(
-        RepoId::new("corp-a"),
-        RepoRelativePath::new("src/recency_gate.rs"),
-        vec![FileContributorIdentityEntry {
-            canonical: "alice".to_string(),
-            name: Some("Alice Example".to_string()),
-            email: Some("alice@example.com".to_string()),
-        }],
-    )
-    .entry_identities(
-        RepoId::new("corp-b"),
-        RepoRelativePath::new("src/recency_b.rs"),
-        vec![FileContributorIdentityEntry {
-            canonical: "bob".to_string(),
-            name: Some("Bob Builder".to_string()),
-            email: Some("bob@example.com".to_string()),
-        }],
-    )
+            }],
+        )
+        .entry_identities(
+            RepoId::new("corp-b"),
+            RepoRelativePath::new("src/recency_b.rs"),
+            vec![FileContributorIdentityEntry {
+                canonical: "bob".to_string(),
+                name: Some("Bob Builder".to_string()),
+                email: Some("bob@example.com".to_string()),
+            }],
+        )
 }
 
 fn rev_at_time_ancestor_revision() -> RevisionId {
@@ -716,7 +696,6 @@ fn rev_at_time_lexical_batch(
         revision_id,
         generation,
         format!("manifest:rev-at-time:{}:{}", path, generation.get()),
-        format!("batch:rev-at-time:{}:{}", path, generation.get()),
     )
     .replace_scope(
         SearchScopeKey {
@@ -744,7 +723,6 @@ fn rev_at_time_history_batch() -> Result<quanta_index_sdk::HistoryBatch, Box<dyn
         repo(),
         rev_at_time_head_revision(),
         rev_at_time_head_generation(),
-        "batch:rev-at-time-history-sdk",
     )
     .manifest_digest("manifest:rev-at-time-history-sdk")
     .commit(CommitRecord {
@@ -823,20 +801,14 @@ fn symbol_record() -> Result<SymbolRecord, Box<dyn Error>> {
 }
 
 fn dirty_batch() -> DirtyBatch {
-    DirtyBatch::new(
-        repo(),
-        revision(),
-        generation(),
-        1_717_171_717_000,
-        "batch:dirty-sdk",
-    )
-    .upsert(DirtyRecord {
-        wire_version: 1,
-        doc_id: ChunkId::new("chunk-dirty"),
-        applied_at_ms: 55,
-        payload_hash: [7; 32],
-    })
-    .delete(ChunkId::new("chunk-evict"))
+    DirtyBatch::new(repo(), revision(), generation(), 1_717_171_717_000)
+        .upsert(DirtyRecord {
+            wire_version: 1,
+            doc_id: ChunkId::new("chunk-dirty"),
+            applied_at_ms: 55,
+            payload_hash: [7; 32],
+        })
+        .delete(ChunkId::new("chunk-evict"))
 }
 
 fn repo_map_bundle() -> Result<RepoMapSourceBundle, Box<dyn Error>> {
@@ -992,44 +964,45 @@ fn repo_map_query_request() -> RepoMapQueryRequest {
 }
 
 fn structural_batch_with_chunk(chunk_id: ChunkId) -> Result<StructuralBatch, Box<dyn Error>> {
-    Ok(StructuralBatch::replace_generation(
-        repo(),
-        revision(),
-        generation(),
-        "manifest:structural",
-        "batch:structural",
-    )
-    .replace_tree(
-        structural_scope(),
-        "scope:structural",
-        chunk_id,
-        ParseTreeRecord {
-            wire_version: 1,
-            lang: rust_language()?,
-            root: ParseNode {
-                kind: "function_item".to_string().into_boxed_str(),
-                byte_start: 0,
-                byte_end: 10,
-                children: vec![
-                    ParseNode {
-                        kind: "identifier".to_string().into_boxed_str(),
-                        byte_start: 3,
-                        byte_end: 7,
-                        children: Vec::new(),
-                    },
-                    ParseNode {
-                        kind: "block".to_string().into_boxed_str(),
-                        byte_start: 8,
-                        byte_end: 10,
-                        children: Vec::new(),
-                    },
-                ],
+    Ok(
+        StructuralBatch::replace_generation(
+            repo(),
+            revision(),
+            generation(),
+            "manifest:structural",
+        )
+        .replace_tree(
+            structural_scope(),
+            "scope:structural",
+            chunk_id,
+            ParseTreeRecord {
+                wire_version: 1,
+                lang: rust_language()?,
+                root: ParseNode {
+                    kind: "function_item".to_string().into_boxed_str(),
+                    byte_start: 0,
+                    byte_end: 10,
+                    children: vec![
+                        ParseNode {
+                            kind: "identifier".to_string().into_boxed_str(),
+                            byte_start: 3,
+                            byte_end: 7,
+                            children: Vec::new(),
+                        },
+                        ParseNode {
+                            kind: "block".to_string().into_boxed_str(),
+                            byte_start: 8,
+                            byte_end: 10,
+                            children: Vec::new(),
+                        },
+                    ],
+                },
+                source_hash: compute_parse_tree_source_hash("fn main() {}"),
+                role_tag_schema_version: 1,
+                role_tags: structural_role_tags(10, 3, 7, 8, 10),
             },
-            source_hash: compute_parse_tree_source_hash("fn main() {}"),
-            role_tag_schema_version: 1,
-            role_tags: structural_role_tags(10, 3, 7, 8, 10),
-        },
-    ))
+        ),
+    )
 }
 
 fn structural_batch() -> Result<StructuralBatch, Box<dyn Error>> {
@@ -1042,7 +1015,6 @@ fn structural_batch_two() -> Result<StructuralBatch, Box<dyn Error>> {
         revision(),
         generation_two(),
         "manifest:structural-v2",
-        "batch:structural-v2",
     )
     .replace_tree(
         structural_scope(),
@@ -3832,7 +3804,6 @@ fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_quer
         generation_two(),
         generation(),
         "manifest:lexical-tombstone-only",
-        "batch:lexical-tombstone-only",
     )
     .tombstone_scope(removed_scope);
 

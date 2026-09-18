@@ -23,6 +23,8 @@ use quanta_index_core::{
     SemanticStreamWindowPolicy, TextEmbeddingProvider,
 };
 
+use quanta_index_ipc::stamp_batch_digest_v1;
+
 use crate::auxiliary_authority::testing::MemoryAuxiliaryCatalog;
 use crate::ingest_dispatcher::auxiliary::{
     AuxiliaryMaterializerParts, AuxiliaryMutationCoordinator,
@@ -52,11 +54,52 @@ pub(super) type MemoryRecord = ([u8; 32], Option<(BatchPublishReceipt, u64)>);
 pub(crate) struct MemoryIdempotencyCatalog {
     records: Mutex<BTreeMap<IdempotencyKeyV1, MemoryRecord>>,
     next_sequence: AtomicUsize,
+    /// Every `forget_generation` call, in order, with how many records it
+    /// dropped: the oracle for "forgotten once, idempotently".
+    forgets: Mutex<Vec<(ManifestGeneration, u64)>>,
 }
 
 impl MemoryIdempotencyCatalog {
     pub(crate) fn records(&self) -> usize {
         self.records.lock().map_or(0, |records| records.len())
+    }
+
+    /// Records for one generation of any pair, across routes.
+    pub(crate) fn records_for_generation(&self, generation: ManifestGeneration) -> usize {
+        self.records.lock().map_or(0, |records| {
+            records
+                .keys()
+                .filter(|key| key.generation == generation)
+                .count()
+        })
+    }
+
+    pub(crate) fn forgets(&self) -> Vec<(u64, u64)> {
+        self.forgets.lock().map_or_else(
+            |_poisoned| Vec::new(),
+            |forgets| {
+                forgets
+                    .iter()
+                    .map(|(generation, records)| (generation.get(), *records))
+                    .collect()
+            },
+        )
+    }
+
+    /// Seed a record as a crash left it: begun under `body_sha256`, never
+    /// finalized.
+    pub(crate) fn seed_in_progress(
+        &self,
+        key: IdempotencyKeyV1,
+        body_sha256: [u8; 32],
+    ) -> Result<(), CoreError> {
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
+        let _prior = records.insert(key, (body_sha256, None));
+        drop(records);
+        Ok(())
     }
 }
 
@@ -123,6 +166,24 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
         Ok(sequence)
     }
 
+    fn generations_for_pair(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) -> Result<Vec<ManifestGeneration>, CoreError> {
+        let records = self
+            .records
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
+        let generations: std::collections::BTreeSet<ManifestGeneration> = records
+            .keys()
+            .filter(|key| key.repo_id == *repo_id && key.revision_id == *revision_id)
+            .map(|key| key.generation)
+            .collect();
+        drop(records);
+        Ok(generations.into_iter().collect())
+    }
+
     fn forget_generation(
         &self,
         repo_id: &RepoId,
@@ -139,8 +200,14 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
                 && key.revision_id == *revision_id
                 && key.generation == generation)
         });
-        u64::try_from(before.saturating_sub(records.len()))
-            .map_err(|err| CoreError::Storage(err.to_string()))
+        let removed = u64::try_from(before.saturating_sub(records.len()))
+            .map_err(|err| CoreError::Storage(err.to_string()))?;
+        drop(records);
+        self.forgets
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?
+            .push((generation, removed));
+        Ok(removed)
     }
 }
 
@@ -690,6 +757,32 @@ impl ZeroMutationProbe {
     }
 }
 
+/// A validator that reports one track's generation as sealed but damaged
+/// (identity present, content failing validation) and the other as exact.
+pub(super) struct CorruptTrackGeneration {
+    pub(super) corrupt: SearchPlaneTrackKind,
+    pub(super) code: &'static str,
+}
+
+impl GenerationIdentityValidatePort for CorruptTrackGeneration {
+    fn validate_generation_identity(
+        &self,
+        candidate: &GenerationSnapshot,
+    ) -> Result<(), CoreError> {
+        if candidate.track == self.corrupt {
+            return Err(CoreError::Typed {
+                code: self.code.to_string(),
+                message: format!(
+                    "injected damage on {:?} generation {}",
+                    candidate.track,
+                    candidate.manifest_generation.get()
+                ),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// A validator that reports the base as sealed under a different digest.
 pub(super) struct MismatchedGeneration;
 
@@ -911,15 +1004,20 @@ pub(super) fn fixture_chunk_record() -> Result<ChunkRecord, Box<dyn std::error::
     })
 }
 
+/// A sealed single-scope search-corpus batch carrying its canonical
+/// digest.
+///
+/// Tests that change the body after taking the fixture must re-stamp it
+/// (`stamp_batch_digest_v1`) unless the mismatch is the point.
 pub(super) fn fixture_search_corpus_batch()
 -> Result<SearchCorpusIngestBatch, Box<dyn std::error::Error>> {
-    Ok(SearchCorpusIngestBatch {
+    let mut batch = SearchCorpusIngestBatch {
         repo_id: RepoId::new("r"),
         revision_id: RevisionId::new("rev"),
         generation: ManifestGeneration::new(7),
         base_generation: None,
         manifest_digest: "manifest:lex".to_string(),
-        batch_digest: "batch:lex".to_string(),
+        batch_digest: String::new(),
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
         clear_surfaces: Vec::new(),
@@ -933,7 +1031,9 @@ pub(super) fn fixture_search_corpus_batch()
         semantic_replace_scopes: Vec::new(),
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
-    })
+    };
+    stamp_batch_digest_v1(&mut batch)?;
+    Ok(batch)
 }
 
 pub(super) fn fixture_dirty_batch() -> DirtyIngestBatch {
@@ -1085,13 +1185,13 @@ pub(super) fn scope_with_chunks(
 // A batch spanning 3 scopes with 2 / 1 / 2 chunks = 5 chunk texts in total.
 pub(super) fn multi_scope_corpus_batch()
 -> Result<SearchCorpusIngestBatch, Box<dyn std::error::Error>> {
-    Ok(SearchCorpusIngestBatch {
+    let mut batch = SearchCorpusIngestBatch {
         repo_id: RepoId::new("r"),
         revision_id: RevisionId::new("rev"),
         generation: ManifestGeneration::new(7),
         base_generation: None,
         manifest_digest: "manifest:lex".to_string(),
-        batch_digest: "batch:lex".to_string(),
+        batch_digest: String::new(),
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
         clear_surfaces: Vec::new(),
@@ -1122,7 +1222,9 @@ pub(super) fn multi_scope_corpus_batch()
         semantic_replace_scopes: Vec::new(),
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
-    })
+    };
+    stamp_batch_digest_v1(&mut batch)?;
+    Ok(batch)
 }
 
 // An embedder that counts embed_batch calls and returns one zero vector per

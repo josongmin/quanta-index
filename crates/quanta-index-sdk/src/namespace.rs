@@ -239,18 +239,22 @@ mod tests {
         )
     }
 
-    fn fixture_receipt() -> BatchPublishReceipt {
-        BatchPublishReceipt {
+    /// The receipt the search plane would answer `fixture_batch` with: it
+    /// names the batch's canonical digest.
+    fn fixture_receipt() -> Result<BatchPublishReceipt, String> {
+        Ok(BatchPublishReceipt {
             generation: ManifestGeneration::new(1),
             manifest_digest: Some("manifest:digest".to_string()),
-            batch_digest: "batch:digest".to_string(),
+            batch_digest: fixture_batch()?
+                .batch_digest()
+                .map_err(|err| format!("fixture batch digest: {err}"))?,
             applied: true,
             durable_sequence: 7,
             accepted_clear_surfaces: 0,
             accepted_replace_scopes: 1,
             accepted_tombstone_scopes: 0,
             sealed: true,
-        }
+        })
     }
 
     fn assert_test_ok(result: &TestRes) {
@@ -265,7 +269,6 @@ mod tests {
             RevisionId::new("rev"),
             ManifestGeneration::new(1),
             "manifest:digest",
-            "batch:digest",
         )
         .replace_scope(
             quanta_index_contract::SearchScopeKey {
@@ -313,7 +316,7 @@ mod tests {
             let ingest = Arc::new(StubIngestTransport {
                 requests: Mutex::new(Vec::new()),
                 response: Mutex::new(Some(SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
-                    fixture_receipt(),
+                    fixture_receipt()?,
                 ))),
             });
             let client = make_client(Arc::clone(&ingest));
@@ -344,7 +347,7 @@ mod tests {
             let sugar_ingest = Arc::new(StubIngestTransport {
                 requests: Mutex::new(Vec::new()),
                 response: Mutex::new(Some(SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
-                    fixture_receipt(),
+                    fixture_receipt()?,
                 ))),
             });
             let sugar_client = make_client(Arc::clone(&sugar_ingest));
@@ -356,7 +359,7 @@ mod tests {
             let ns_ingest = Arc::new(StubIngestTransport {
                 requests: Mutex::new(Vec::new()),
                 response: Mutex::new(Some(SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
-                    fixture_receipt(),
+                    fixture_receipt()?,
                 ))),
             });
             let ns_client = make_client(Arc::clone(&ns_ingest));

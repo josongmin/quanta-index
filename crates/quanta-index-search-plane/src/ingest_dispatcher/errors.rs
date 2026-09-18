@@ -14,6 +14,14 @@ pub(super) const ERR_SEARCH_CORPUS_BATCH_SHAPE: &str = "SEARCH_CORPUS_BATCH_SHAP
 /// A delta names a base the ledger never sealed; nothing was mutated.
 pub(super) const ERR_SEARCH_CORPUS_DELTA_BASE_NOT_SEALED: &str =
     "SEARCH_CORPUS_DELTA_BASE_NOT_SEALED";
+/// A track of the generation is sealed but damaged and this batch cannot
+/// rebuild it (QI-BB-029 보완 #4).
+///
+/// The message names the repair: a `ReplaceGeneration` seal batch for that
+/// generation, after a quarantine discard where the sealed identity itself
+/// is unreadable. Nothing was mutated.
+pub(super) const ERR_SEARCH_CORPUS_GENERATION_REPAIR_REQUIRED: &str =
+    "SEARCH_CORPUS_GENERATION_REPAIR_REQUIRED";
 
 pub(super) fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
     let (code, message) = match err {

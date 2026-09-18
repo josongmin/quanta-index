@@ -1,34 +1,53 @@
-//! QI-BB-032 — a batch digest names one immutable body, applied once.
+//! QI-BB-032 — a batch digest is the canonical digest of one body, applied
+//! once.
 //!
 //! Before this, a producer that lost an ack and re-sent its batch made the
 //! search plane derive, embed and build again, and a different body under
-//! the same digest was applied as if it were the same. Now every
-//! receipt-bearing publish runs under a durable idempotency record: a
-//! replay of the same body is answered from the record with `applied =
-//! false` and the original sequence, a different body is a typed
-//! `BATCH_DIGEST_CONFLICT` before any mutation, concurrent duplicates
-//! converge on one apply, and the record survives a daemon restart.
+//! the same digest was applied as if it were the same. Now `batch_digest`
+//! is the canonical digest of the body and every receipt-bearing publish
+//! runs under a durable idempotency record: a replay of the same body is
+//! answered from the record with `applied = false` and the original
+//! sequence, a body that is not what its digest names is a typed
+//! `BATCH_DIGEST_MISMATCH` before any mutation or record, 8 and 32
+//! concurrent duplicates converge on one apply, and the record survives a
+//! daemon restart.
 //!
 //! Oracles are external: the receipts' `applied` / `durable_sequence`, the
-//! typed refusal, and what a query serves afterwards.
+//! typed refusal, the idempotency table's row count read straight from the
+//! catalog file, and what a query serves afterwards.
 
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeSet;
 use std::error::Error;
+use std::path::Path;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use quanta_index_contract::{
-    BatchPublishReceipt, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope,
-    SearchPlaneIngestIpcResponse, SearchPlaneIngestIpcResponseEnvelope, TextQuerySyntax,
+    BatchPublishReceipt, ERR_SERVER_OVERLOADED, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    SearchPlaneIngestIpcResponseEnvelope, TextQuerySyntax,
 };
-use quanta_index_core::BATCH_DIGEST_CONFLICT_CODE;
+use quanta_index_core::BATCH_DIGEST_MISMATCH_CODE;
 use quanta_index_ipc::{ClientIoPolicy, send_request};
 use quanta_index_searchd_harness as e2e_harness;
 
 use e2e_harness::E2eRuntime;
 
 type TestResult = Result<(), Box<dyn Error>>;
+
+/// The idempotency table's row count, read straight from the catalog file
+/// the daemon writes (`state_root/catalog/catalog-v1.sqlite`).
+fn idempotency_rows(rt: &E2eRuntime) -> Result<u64, Box<dyn Error>> {
+    let path = quanta_index_catalog::catalog_dir(rt.state_root())
+        .join(quanta_index_catalog::CATALOG_FILE_NAME);
+    let connection =
+        rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let rows: i64 =
+        connection.query_row("SELECT COUNT(*) FROM idempotency_v1", [], |row| row.get(0))?;
+    Ok(u64::try_from(rows)?)
+}
 
 fn receipt_of(
     response: SearchPlaneIngestIpcResponse,
@@ -72,18 +91,21 @@ fn typed_code(response: &SearchPlaneIngestIpcResponse) -> Option<&str> {
     }
 }
 
-/// The same body twice is one apply; a different body under the same
-/// digest is refused and never served.
+/// The same body twice is one apply; a different body wearing the first
+/// body's digest is refused, records nothing, and is never served.
 #[test]
-fn a_replay_is_acked_from_the_record_and_a_conflict_never_lands() -> TestResult {
+fn a_replay_is_acked_from_the_record_and_a_forged_digest_never_lands() -> TestResult {
     let mut rt = E2eRuntime::boot()?;
-    let batch =
-        rt.text_search_corpus_batch("src/idem.rs", "fn first_body() { idem_first }", "idem-1")?;
+    let batch = rt.text_search_corpus_batch("src/idem.rs", "fn first_body() { idem_first }")?;
     let first = receipt_of(rt.ingest_once(
         SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
     )?)?;
-    if !first.applied || first.durable_sequence == 0 || first.batch_digest != "idem-1" {
+    if !first.applied || first.durable_sequence == 0 || first.batch_digest != batch.batch_digest {
         return Err(format!("first publish must apply under a sequence: {first:?}").into());
+    }
+    let rows_after_apply = idempotency_rows(&rt)?;
+    if rows_after_apply != 1 {
+        return Err(format!("one apply must leave one record, found {rows_after_apply}").into());
     }
 
     let replay = receipt_of(rt.ingest_once(
@@ -103,21 +125,25 @@ fn a_replay_is_acked_from_the_record_and_a_conflict_never_lands() -> TestResult 
         .into());
     }
 
-    let mut different = batch;
-    different
+    // One byte of the body changes; the carried digest does not.
+    let mut forged = batch;
+    forged
         .replace_scopes
         .first_mut()
         .and_then(|scope| scope.chunks.first_mut())
         .ok_or("the batch carries one chunk")?
         .text = "fn second_body() { idem_second }".into();
     let refused = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
-        different,
+        forged,
     ))?;
-    if typed_code(&refused) != Some(BATCH_DIGEST_CONFLICT_CODE) {
+    if typed_code(&refused) != Some(BATCH_DIGEST_MISMATCH_CODE) {
         return Err(format!(
-            "a different body under the same digest must be refused typed, got {refused:?}"
+            "a body that is not what its digest names must be refused typed, got {refused:?}"
         )
         .into());
+    }
+    if idempotency_rows(&rt)? != rows_after_apply {
+        return Err("a refused forged batch must leave the catalog untouched".into());
     }
 
     // What is served is the first body and only the first body.
@@ -140,30 +166,59 @@ fn a_replay_is_acked_from_the_record_and_a_conflict_never_lands() -> TestResult 
     Ok(())
 }
 
-/// Eight publishers of the same batch converge on one apply: exactly one
-/// receipt says `applied`, every receipt carries the same sequence, and the
-/// corpus holds the row once.
-#[test]
-fn concurrent_duplicate_publishes_converge_on_one_apply() -> TestResult {
+/// One producer publishing `request` the way the admission contract asks.
+///
+/// A typed `SERVER_OVERLOADED` (QI-BB-002) — the serial ingest slot was
+/// busy past the queue budget — is retried with backoff, and every retry
+/// of the same body is itself a replay of the same idempotency key.
+fn publish_with_backoff(
+    socket: &Path,
+    request_id: u64,
+    request: &SearchPlaneIngestIpcRequest,
+) -> Result<SearchPlaneIngestIpcResponse, Box<dyn Error + Send + Sync>> {
+    const PATIENCE: Duration = Duration::from_secs(120);
+    let started = Instant::now();
+    loop {
+        let envelope = SearchPlaneIngestIpcRequestEnvelope {
+            request_id,
+            payload: request.clone(),
+        };
+        let response = send_request::<_, SearchPlaneIngestIpcResponseEnvelope>(
+            socket,
+            &envelope,
+            ClientIoPolicy::default(),
+        )?
+        .payload;
+        let overloaded = matches!(
+            &response,
+            SearchPlaneIngestIpcResponse::Error(error) if error.code == ERR_SERVER_OVERLOADED
+        );
+        if !overloaded || started.elapsed() >= PATIENCE {
+            return Ok(response);
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// `publishers` publishers of the same batch converge on one apply.
+///
+/// Exactly one receipt says `applied`, every receipt carries the same
+/// sequence, the catalog holds one record, and the corpus holds the row
+/// once.
+fn duplicate_publishes_converge_on_one_apply(publishers: u64) -> TestResult {
     let mut rt = E2eRuntime::boot()?;
-    let batch =
-        rt.text_search_corpus_batch("src/race.rs", "fn raced_body() { idem_race }", "idem-race")?;
+    let batch = rt.text_search_corpus_batch("src/race.rs", "fn raced_body() { idem_race }")?;
     let socket = rt.ingest_socket_path()?;
-    let publishers = (0..8_u64)
+    let publishers = (0..publishers)
         .map(|index| {
             let socket = socket.clone();
             let batch = batch.clone();
             thread::spawn(move || {
-                let envelope = SearchPlaneIngestIpcRequestEnvelope {
-                    request_id: 1_000 + index,
-                    payload: SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch),
-                };
-                send_request::<_, SearchPlaneIngestIpcResponseEnvelope>(
+                publish_with_backoff(
                     &socket,
-                    &envelope,
-                    ClientIoPolicy::default(),
+                    1_000_u64.saturating_add(index),
+                    &SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch),
                 )
-                .map(|response| response.payload)
             })
         })
         .collect::<Vec<_>>();
@@ -171,7 +226,8 @@ fn concurrent_duplicate_publishes_converge_on_one_apply() -> TestResult {
     for publisher in publishers {
         let response = publisher
             .join()
-            .map_err(|panic| format!("publisher panicked: {panic:?}"))??;
+            .map_err(|panic| format!("publisher panicked: {panic:?}"))?
+            .map_err(|err| -> Box<dyn Error> { err })?;
         receipts.push(receipt_of(response)?);
     }
     let applied = receipts.iter().filter(|receipt| receipt.applied).count();
@@ -188,6 +244,9 @@ fn concurrent_duplicate_publishes_converge_on_one_apply() -> TestResult {
         )
         .into());
     }
+    if idempotency_rows(&rt)? != 1 {
+        return Err("duplicate publishes must leave exactly one record".into());
+    }
     let _sealed = rt.seal()?;
     let served = rt.query_text(TextQuerySyntax::Native, "idem_race", 5);
     if let Some(error) = served.typed_error {
@@ -195,7 +254,7 @@ fn concurrent_duplicate_publishes_converge_on_one_apply() -> TestResult {
     }
     if served.candidate_ids.len() != 1 {
         return Err(format!(
-            "eight duplicate publishes must leave one row, found {}",
+            "duplicate publishes must leave one row, found {}",
             served.candidate_ids.len()
         )
         .into());
@@ -203,16 +262,23 @@ fn concurrent_duplicate_publishes_converge_on_one_apply() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn eight_concurrent_duplicate_publishes_converge_on_one_apply() -> TestResult {
+    duplicate_publishes_converge_on_one_apply(8)
+}
+
+#[test]
+fn thirty_two_concurrent_duplicate_publishes_converge_on_one_apply() -> TestResult {
+    duplicate_publishes_converge_on_one_apply(32)
+}
+
 /// The record is durable: a replay after a daemon restart is still answered
 /// from it, with the original sequence.
 #[test]
 fn a_replay_after_restart_is_still_a_replay() -> TestResult {
     let mut rt = E2eRuntime::boot()?;
-    let batch = rt.text_search_corpus_batch(
-        "src/durable.rs",
-        "fn durable_body() { idem_durable }",
-        "idem-durable",
-    )?;
+    let batch =
+        rt.text_search_corpus_batch("src/durable.rs", "fn durable_body() { idem_durable }")?;
     let first = receipt_of(rt.ingest_once(
         SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
     )?)?;

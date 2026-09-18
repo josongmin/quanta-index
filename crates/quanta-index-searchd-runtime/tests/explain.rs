@@ -201,6 +201,9 @@ fn start_runtime(state_root: &Path, thread_name: &str) -> Result<RuntimeHandles,
 }
 
 fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestResult {
+    // Like every producer, stamp the canonical batch digest before sending
+    // (QI-BB-032); the search plane refuses any other digest.
+    let payload = quanta_index_searchd_harness::stamped_ingest_request(payload)?;
     let response = send_ingest_request(
         socket,
         &SearchPlaneIngestIpcRequestEnvelope {
@@ -225,10 +228,7 @@ fn publish_chunk(socket: &Path, chunk: ChunkRecord) -> TestResult {
             generation: generation(),
             base_generation: None,
             manifest_digest: format!("explain-lex-manifest-{}", generation().get()),
-            batch_digest: format!(
-                "explain-lex-batch-{}",
-                NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
-            ),
+            batch_digest: String::new(),
             mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload: None,
             clear_surfaces: Vec::new(),
@@ -255,10 +255,7 @@ fn seal_lexical(socket: &Path) -> TestResult {
             generation: generation(),
             base_generation: None,
             manifest_digest: format!("explain-lex-seal-{}", generation().get()),
-            batch_digest: format!(
-                "explain-lex-seal-batch-{}",
-                NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
-            ),
+            batch_digest: String::new(),
             mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload: None,
             clear_surfaces: Vec::new(),

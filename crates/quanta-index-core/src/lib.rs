@@ -47,9 +47,10 @@ pub use domains::hybrid::{
     classify_hybrid_filter_v1, dense_admission_round_outcome_v1, hybrid_filter_name_v1,
 };
 pub use domains::idempotency::{
-    BATCH_DIGEST_CONFLICT_CODE, CATALOG_BUSY_CODE, CATALOG_ROW_CORRUPT_CODE, IdempotencyBeginV1,
-    IdempotencyCatalogPort, IdempotencyKeyV1, IngestOperationKindV1,
+    BATCH_DIGEST_CONFLICT_CODE, BATCH_DIGEST_MISMATCH_CODE, CATALOG_BUSY_CODE,
+    CATALOG_ROW_CORRUPT_CODE, IdempotencyBeginV1, IdempotencyCatalogPort, IdempotencyKeyV1,
 };
+pub use domains::ingest_body::IngestBatchBodyV1;
 pub use domains::integrity::{
     IntegrityScrubPort, IntegrityScrubReportV1, IntegrityScrubStampV1, IntegrityScrubStatusV1,
 };

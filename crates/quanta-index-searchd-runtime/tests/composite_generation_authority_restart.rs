@@ -183,7 +183,6 @@ fn batch(raw_generation: u64, digest: &str) -> Result<SearchCorpusBatch, Box<dyn
         revision(),
         generation(raw_generation),
         digest,
-        format!("batch:composite-restart:{raw_generation}"),
     )
     .replace_scope(
         SearchScopeKey {
@@ -223,7 +222,6 @@ fn batch_for(
         RevisionId::new(revision_id),
         generation(raw_generation),
         digest,
-        format!("batch:composite-restart:{repo_id}:{raw_generation}"),
     )
     .replace_scope(
         SearchScopeKey {
