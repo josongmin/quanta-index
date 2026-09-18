@@ -229,6 +229,9 @@ jobs:
       - name: Error shape (pub *Error must implement std::error::Error)
         run: python3 tools/ci/lint/check-error-shape.py
 
+      - name: Wire-surface inventory (IPC opcodes + on-disk format versions)
+        run: python3 tools/ci/lint/check-wire-inventory.py
+
       - name: Digest fallibility (pub fn -> [u8; N] must be Result or doc'd infallible)
         run: python3 tools/ci/lint/check-digest-fallibility.py
 

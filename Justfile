@@ -514,6 +514,11 @@ rust-test-authority:
 rust-ignored-test-policy:
     python3 tools/ci/lint/check-ignored-test-policy.py
 
+# Consumer / wire inventory (plan §11): every IPC opcode and on-disk format
+# version must be listed in tools/ci/inventory/wire-surface.toml.
+rust-wire-inventory:
+    python3 tools/ci/lint/check-wire-inventory.py
+
 rust-cargo-modules:
     python3 tools/ci/lint/check-cargo-modules-snapshot.py
 
@@ -560,6 +565,7 @@ rust-policy:
     @just rust-digest-fallibility
     @just rust-test-authority
     @just rust-ignored-test-policy
+    @just rust-wire-inventory
     @just rust-deny
 
 verify-rust:

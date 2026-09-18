@@ -1,0 +1,354 @@
+# Consumer / wire-surface inventory (plan §11 "State/wire migration" item 1).
+#
+# Machine-checked by `tools/ci/lint/check-wire-inventory.py` (`just
+# rust-wire-inventory`, part of `just rust-policy`):
+#
+#   * every `SearchPlane{Query,Control,Ingest}Ipc{Request,Response}` variant
+#     in `crates/quanta-index-contract/src/ipc/{split,ingest}.rs` must be
+#     listed under `[[ipc]]`, and nothing may be listed that the code does
+#     not have;
+#   * every on-disk format-version constant in workspace `src/` trees
+#     (`*FORMAT_VERSION*`, `*_SCHEMA_V<n>`, `*CONTRACT_VERSION`,
+#     `RECEIPT_FORMAT`, plus the text normalizer stamp) must be named by
+#     exactly one `[[artifact]]` with the value the code declares.
+#
+# The `reproduction` field is the cutover classification plan §11 asks for:
+#
+#   producer-rebuild     the artifact is derived from producer batches and is
+#                        rebuilt at a new state root by replaying them to the
+#                        same durable high-water (cost noted per row: embedding
+#                        calls, wall time, extra disk);
+#   offline-importer     the artifact holds state producers cannot re-send
+#                        (activation choice, operation dedup, sealed lineage,
+#                        runtime overlays); an explicit importer must carry it;
+#   migration-input-only the file is read once by a boot-time migration and
+#                        deleted; it must not exist at a new root;
+#   cache                regenerable on demand; may be dropped at cutover at
+#                        the cost of provider calls;
+#   vendor-native        bytes owned by a vendor library and reproduced by the
+#                        owning adapter's build; never copied by hand.
+
+schema = 1
+
+# ---------------------------------------------------------------------------
+# IPC opcodes
+# ---------------------------------------------------------------------------
+
+[[ipc]]
+enum = "SearchPlaneQueryIpcRequest"
+file = "crates/quanta-index-contract/src/ipc/split.rs"
+plane = "query"
+direction = "request"
+variants = [
+  "Text",
+  "Symbol",
+  "Semantic",
+  "Hybrid",
+  "HybridSeed",
+  "History",
+  "RuntimeMetadata",
+  "Structural",
+  "RepoMapQuery",
+  "Explain",
+  "ClusterMembershipRead",
+]
+
+[[ipc]]
+enum = "SearchPlaneQueryIpcResponse"
+file = "crates/quanta-index-contract/src/ipc/split.rs"
+plane = "query"
+direction = "response"
+variants = [
+  "Text",
+  "Symbol",
+  "Semantic",
+  "Hybrid",
+  "HybridSeed",
+  "History",
+  "RuntimeMetadata",
+  "Structural",
+  "RepoMapQuery",
+  "Explain",
+  "ClusterMembershipRead",
+  "Error",
+]
+
+[[ipc]]
+enum = "SearchPlaneControlIpcRequest"
+file = "crates/quanta-index-contract/src/ipc/split.rs"
+plane = "control"
+direction = "request"
+variants = [
+  "ActivateSearchCorpusGenerationCas",
+  "RollbackSearchCorpusGenerationCas",
+  "RepoMapActivate",
+  "CurrentGeneration",
+  "GenerationStatus",
+  "MetricsSnapshot",
+  "QuarantineInventory",
+  "QuarantineDiscard",
+]
+
+[[ipc]]
+enum = "SearchPlaneControlIpcResponse"
+file = "crates/quanta-index-contract/src/ipc/split.rs"
+plane = "control"
+direction = "response"
+variants = [
+  "SearchCorpusActivationCasAck",
+  "SearchCorpusRollbackCasAck",
+  "RepoMapMutationAck",
+  "Error",
+  "CurrentGenerationSnapshot",
+  "GenerationStatusReport",
+  "MetricsSnapshot",
+  "QuarantineInventory",
+  "QuarantineDiscardAck",
+]
+
+[[ipc]]
+enum = "SearchPlaneIngestIpcRequest"
+file = "crates/quanta-index-contract/src/ipc/ingest.rs"
+plane = "ingest"
+direction = "request"
+variants = [
+  "PublishSearchCorpusBatch",
+  "PublishHistoryBatch",
+  "PublishRepoCommitRecencyBatch",
+  "PublishRepoTopicBatch",
+  "PublishFileOwnershipBatch",
+  "PublishFileContributorBatch",
+  "PublishDirtyBatch",
+  "PublishRuntimeCatalogBatch",
+  "PublishStructuralBatch",
+  "PublishRepoMapBundle",
+  "PublishRepoMetaBatch",
+  "PublishRepoDescriptionBatch",
+]
+
+[[ipc]]
+enum = "SearchPlaneIngestIpcResponse"
+file = "crates/quanta-index-contract/src/ipc/ingest.rs"
+plane = "ingest"
+direction = "response"
+variants = [
+  "SearchCorpusReceipt",
+  "HistoryReceipt",
+  "RepoCommitRecencyReceipt",
+  "RepoTopicReceipt",
+  "FileOwnershipReceipt",
+  "FileContributorReceipt",
+  "DirtyReceipt",
+  "RuntimeCatalogReceipt",
+  "StructuralReceipt",
+  "RepoMapReceipt",
+  "RepoMetaReceipt",
+  "RepoDescriptionReceipt",
+  "Error",
+]
+
+# ---------------------------------------------------------------------------
+# On-disk artifacts, by owning crate
+# ---------------------------------------------------------------------------
+
+[[artifact]]
+id = "lexical-sealed-manifest"
+owner = "quanta-index-lexical"
+path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/search-corpus-generation-manifest.cbor"
+reproduction = "producer-rebuild"
+notes = "Seal commitment: identity digest, Tantivy meta.json sha256, normalizer stamp, text-authority tree commitment. Format 2 (whole-corpus text authority) is refused typed; rebuild is the migration."
+[[artifact.version_constants]]
+file = "crates/quanta-index-lexical/src/lib.rs"
+name = "LEXICAL_SEALED_MANIFEST_FORMAT_VERSION"
+value = 3
+[[artifact.version_constants]]
+file = "crates/quanta-index-lexical/src/lib.rs"
+name = "LEXICAL_SEALED_MANIFEST_WHOLE_CORPUS_TEXT_AUTHORITY_VERSION"
+value = 2
+
+[[artifact]]
+id = "lexical-sealed-identity"
+owner = "quanta-index-lexical"
+path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/search-corpus-generation-identity.cbor"
+reproduction = "producer-rebuild"
+notes = "Promotion point of a sealed lexical generation (written after the manifest). Typed by the `GenerationSnapshot` shape; no in-file version field. Companion `search-corpus-delta-base.cbor` names the delta base."
+
+[[artifact]]
+id = "lexical-tantivy-index"
+owner = "quanta-index-lexical"
+path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/{meta.json,.managed.json,<segment>.*}"
+reproduction = "vendor-native"
+notes = "Tantivy 0.22 segment files (immutable, hard-linked across delta generations) plus the two generation-local files Tantivy rewrites in place."
+
+[[artifact]]
+id = "lexical-text-authority"
+owner = "quanta-index-lexical"
+path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/text-authority/{manifest.cbor,shard-<index:08>-<sha256[..8]>.cbor}"
+reproduction = "producer-rebuild"
+notes = "Doc-id range shards (SHARD_DOCS=2048) holding doc table + trigram + positions; untouched shards are hard links of the base generation (QI-BB-006)."
+[[artifact.version_constants]]
+file = "crates/quanta-index-lexical/src/text_authority/manifest.rs"
+name = "TEXT_AUTHORITY_FORMAT_VERSION"
+value = 1
+
+[[artifact]]
+id = "lexical-text-normalizer-stamp"
+owner = "quanta-index-lexical"
+path = "(stamped into lexical-sealed-manifest, lexical-text-authority and history-text-epoch-manifest)"
+reproduction = "producer-rebuild"
+notes = "Unicode normalizer contract version (QI-BB-011). A generation stamped with another version is refused at open, activation and as a delta base; rebuild is the migration."
+[[artifact.version_constants]]
+file = "crates/quanta-index-lexical/src/normalize.rs"
+name = "TEXT_NORMALIZER_VERSION"
+value = "2.0"
+
+[[artifact]]
+id = "lexical-repo-metadata-overlays"
+owner = "quanta-index-lexical"
+path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/{repo-metadata,repo-commit-recency,repo-meta,repo-topic,repo-description,file-ownership,file-contributor}.cbor"
+reproduction = "producer-rebuild"
+notes = "Generation-scoped overlay snapshots written by the six aux ingest routes (repo meta/topic/description/commit-recency, file ownership/contributor); rewritten whole per publish, replaced by atomic rename. No in-file version field."
+
+[[artifact]]
+id = "history-text-epoch-manifest"
+owner = "quanta-index-lexical"
+path = "state_root/authorities/history-text/generation-v1-<sha256(repo,revision)>/g<N>/e<epoch>/{history-text-manifest.cbor,commits/,diffs/}"
+reproduction = "producer-rebuild"
+notes = "Epoch-bound Tantivy history index (QI-BB-023 relevance order). Not rebuilt at boot: a restored generation serves HISTORY_TEXT_INDEX_NOT_READY on the relevance order until the next history batch triggers a full build."
+[[artifact.version_constants]]
+file = "crates/quanta-index-lexical/src/history_text_index/manifest.rs"
+name = "MANIFEST_FORMAT_VERSION"
+value = 1
+
+[[artifact]]
+id = "semantic-manifest"
+owner = "quanta-index-semantic"
+path = "state_root/indexes/semantic/generation-v1-<sha256(repo,revision)>/g<N>/semantic-manifest.cbor"
+reproduction = "producer-rebuild"
+notes = "Rebuild cost includes one embedding call per semantic source record (provider-priced) plus ANN training time. The adapter still serves formats 2..=9 through legacy decoders (`SemanticManifestV3/V5/V6/V7/V8`) and reports pre-8 generations as `LegacyUnverified`; this compat read path is a W7 deletion candidate (see the audit report), unlike the lexical side which refuses pre-current formats."
+[[artifact.version_constants]]
+file = "crates/quanta-index-semantic/src/manifest.rs"
+name = "FORMAT_VERSION"
+value = 9
+[[artifact.version_constants]]
+file = "crates/quanta-index-semantic/src/manifest.rs"
+name = "LEGACY_UNRECORDED_ANN_LINEAGE_FORMAT_VERSION"
+value = 8
+[[artifact.version_constants]]
+file = "crates/quanta-index-semantic/src/manifest.rs"
+name = "LEGACY_UNSEALED_VECTOR_INDEX_FORMAT_VERSION"
+value = 7
+[[artifact.version_constants]]
+file = "crates/quanta-index-semantic/src/manifest.rs"
+name = "LEGACY_UNCOMMITTED_SEMANTIC_ROW_ROOT_FORMAT_VERSION"
+value = 6
+[[artifact.version_constants]]
+file = "crates/quanta-index-semantic/src/manifest.rs"
+name = "LEGACY_SEMANTIC_CORPUS_FORMAT_VERSION"
+value = 4
+[[artifact.version_constants]]
+file = "crates/quanta-index-semantic/src/manifest.rs"
+name = "LEGACY_BUILD_CONTRACT_FORMAT_VERSION"
+value = 3
+[[artifact.version_constants]]
+file = "crates/quanta-index-semantic/src/manifest.rs"
+name = "LEGACY_LANCEDB_FORMAT_VERSION"
+value = 2
+
+[[artifact]]
+id = "semantic-build-contract"
+owner = "quanta-index-semantic"
+path = "state_root/indexes/semantic/generation-v1-<sha256(repo,revision)>/g<N>/semantic-build-contract.cbor"
+reproduction = "producer-rebuild"
+notes = "Model id / revision / dimension / normalization / corpus policy the generation was built under. Legacy v1 (no corpus policy) is still decoded; same deletion candidate as the manifest compat path."
+[[artifact.version_constants]]
+file = "crates/quanta-index-semantic/src/generation_contract.rs"
+name = "GENERATION_CONTRACT_VERSION"
+value = 2
+[[artifact.version_constants]]
+file = "crates/quanta-index-semantic/src/generation_contract.rs"
+name = "LEGACY_GENERATION_CONTRACT_VERSION"
+value = 1
+
+[[artifact]]
+id = "semantic-sealed-manifest"
+owner = "quanta-index-semantic"
+path = "state_root/indexes/semantic/generation-v1-<sha256(repo,revision)>/g<N>/{semantic-sealed-manifest.cbor,MARKER_READY,MARKER_SEALED}"
+reproduction = "producer-rebuild"
+notes = "File-set commitment over manifest, build contract and the whole dataset tree (QI-BB-017); the sealed marker is the promotion point."
+[[artifact.version_constants]]
+file = "crates/quanta-index-semantic/src/sealed_manifest.rs"
+name = "SEALED_MANIFEST_FORMAT_VERSION"
+value = 1
+
+[[artifact]]
+id = "semantic-lance-dataset"
+owner = "quanta-index-semantic"
+path = "state_root/indexes/semantic/generation-v1-<sha256(repo,revision)>/g<N>/dataset/"
+reproduction = "vendor-native"
+notes = "LanceDB dataset (versioned data/manifest/transaction/index/deletion files, hard-linked across delta generations; `_versions/latest_version_hint.json` copied). ANN index recipe and library version (`ANN_LIBRARY_VERSION`) are recorded in the semantic manifest's vector-index seal."
+
+[[artifact]]
+id = "embedding-cache"
+owner = "quanta-index-embed"
+path = "state_root/embed-cache/<sha256(model_id,revision,dimension,normalization)[..16]>/<key[..2]>/<key>.vec (+ .opened marker)"
+reproduction = "cache"
+notes = "Identity-namespaced vector cache (QI-BB-028/009): QIEC magic + u16 format + u32 dimension + f32 LE payload + truncated sha256. Pre-namespace v1 shard directories are reclaimed on open. Regenerable at provider-call cost; not migrated."
+[[artifact.version_constants]]
+file = "crates/quanta-index-embed/src/cache.rs"
+name = "ENTRY_FORMAT_VERSION"
+value = 2
+
+[[artifact]]
+id = "activation-catalog"
+owner = "quanta-index-search-plane"
+path = "state_root/activations/<pair-digest>--corpus.json"
+reproduction = "offline-importer"
+notes = "Query-time serve-head authority (`ActivationCatalog`): the active composite (lexical, semantic) generation pair per repo/revision. Persisted as `PersistedSearchCorpusGenerationRootV1` JSON; no in-file version field. The operator's activation choice is not derivable from producer input."
+
+[[artifact]]
+id = "search-corpus-rollback-history"
+owner = "quanta-index-search-plane"
+path = "state_root/authorities/search-corpus/<sha256(repo,revision)>/g<N>.cbor"
+reproduction = "offline-importer"
+notes = "Retention-bounded record of every sealed search-corpus generation (`SealedSearchCorpusAuthorityStateV1`), the rollback lineage and delta-base preflight source. Sealed identities are not re-derivable from a replayed producer stream."
+[[artifact.version_constants]]
+file = "crates/quanta-index-search-plane/src/readiness/search_corpus_history.rs"
+name = "SEARCH_CORPUS_AUTHORITY_SCHEMA_V1"
+value = 1
+
+[[artifact]]
+id = "catalog-sqlite"
+owner = "quanta-index-catalog"
+path = "state_root/catalog/catalog-v1.sqlite (WAL, synchronous=FULL)"
+reproduction = "offline-importer"
+notes = "Tables `idempotency_v1` + `catalog_sequence_v1` (batch-digest dedup receipts and the global durable sequence; not reproducible) and `auxiliary_rows_v1` + `auxiliary_tracks_v1` (history / runtime / structural authority rows across the 14 `AuxiliaryRowFamilyV1` families Commit, Ref, Tag, DiffHunk, DirtyDoc, ChangedDoc, DocFacet, Snapshot, AffectedDocs, InvalidatedByDocs, Chunk, ParseTree, StateMeta, Epoch). Runtime dirty overlays and the Epoch family are not reproducible; history/structural rows could be replayed from producer batches but plan §11 item 3 keeps them under the importer with the dedup state. Schema is versioned by table-name suffix; no `user_version` pragma."
+
+[[artifact]]
+id = "repo-map-store"
+owner = "quanta-index-repomap"
+path = "state_root/repo-map/{snapshots/<identity>.json,activations/<identity>.json,quarantine/<name>{,.reason}}"
+reproduction = "producer-rebuild"
+notes = "Snapshots are `{format_version, sha256, snapshot}` envelopes rebuilt from RepoMap bundles; the activation records (which generation is active) are operator state and need the importer like the search-corpus activation catalog."
+[[artifact.version_constants]]
+file = "crates/quanta-index-repomap/src/persistence.rs"
+name = "SNAPSHOT_FILE_FORMAT_VERSION"
+value = 2
+
+[[artifact]]
+id = "legacy-semantic-journal"
+owner = "quanta-index-searchd"
+path = "state_root/semantic/{journal.cbor,MIGRATED,MIGRATED.lock}"
+reproduction = "migration-input-only"
+notes = "Pre-generation semantic batch journal read once by `migrate_legacy_semantic_journal` (`LegacySemanticJournalStore`); the MIGRATED receipt records the outcome."
+[[artifact.version_constants]]
+file = "crates/quanta-index-searchd/src/app/legacy_semantic_migration.rs"
+name = "RECEIPT_FORMAT"
+value = 2
+
+[[artifact]]
+id = "legacy-auxiliary-snapshots"
+owner = "quanta-index-search-plane"
+path = "state_root/authorities/{history,runtime,structural}/state.cbor"
+reproduction = "migration-input-only"
+notes = "Pre-catalog whole-map CBOR snapshots read once by `AuxiliaryAuthorityStore::migrate_legacy_auxiliary_snapshots` into `auxiliary_rows_v1`, then deleted. No version field."

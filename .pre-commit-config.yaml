@@ -190,6 +190,15 @@ repos:
         files: ^crates/.*/src/.*\.rs$
         stages: [pre-push]
 
+      - id: rust-wire-inventory
+        name: wire-surface inventory (IPC opcodes + on-disk format versions)
+        entry: python3 tools/ci/lint/check-wire-inventory.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: ^(tools/ci/inventory/wire-surface\.toml|crates/.*/src/.*\.rs)$
+        stages: [pre-push]
+
       - id: rust-digest-fallibility
         name: rust digest fallibility
         entry: python3 tools/ci/lint/check-digest-fallibility.py
