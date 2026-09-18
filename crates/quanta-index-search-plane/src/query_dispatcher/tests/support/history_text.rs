@@ -2,8 +2,10 @@
 //! whitespace/punctuation tokenizer, so the history route's relevance
 //! path is exercised against an oracle that is not the engine.
 //!
-//! Only what the route tests need is scorable: a single keyword leaf, or
-//! an `All` of keyword leaves (scores add). Everything else is refused
+//! Only what the route tests need is scorable: a single keyword leaf, a
+//! phrase, or an `All` of those (scores add) — with a raw string beside a
+//! scored clause dropped from the scoring the way the real adapter drops
+//! it (the route's predicate filters it). Everything else is refused
 //! [`HISTORY_TEXT_QUERY_UNSCORABLE_CODE`], as the real adapter refuses it.
 
 use std::collections::BTreeMap;
@@ -207,25 +209,35 @@ pub(crate) fn tokens(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// The keyword terms of a scorable expression, or the typed refusal.
-fn keyword_terms(expr: &LqExpr) -> Result<Vec<String>, CoreError> {
-    let unscorable = || CoreError::Typed {
+fn unscorable() -> CoreError {
+    CoreError::Typed {
         code: HISTORY_TEXT_QUERY_UNSCORABLE_CODE.to_string(),
-        message: "memory history text index: only keyword conjunctions are scorable".to_string(),
-    };
+        message: "memory history text index: only keyword / phrase conjunctions are scorable"
+            .to_string(),
+    }
+}
+
+/// The scored terms of an expression, or the typed refusal.
+///
+/// A phrase contributes its tokens as terms (every one must occur: a
+/// superset of the phrase's rows, which the route's predicate narrows);
+/// a raw string contributes none. An expression with no term at all is
+/// refused by the caller.
+fn scored_terms(expr: &LqExpr) -> Result<Vec<String>, CoreError> {
     match expr {
-        LqExpr::Leaf(LqLeaf::Keyword(text)) => {
+        LqExpr::Leaf(LqLeaf::Keyword(text) | LqLeaf::Phrase(text)) => {
             let terms = tokens(text);
-            if terms.len() == 1 {
-                Ok(terms)
-            } else {
+            if terms.is_empty() {
                 Err(unscorable())
+            } else {
+                Ok(terms)
             }
         }
+        LqExpr::Leaf(LqLeaf::RawString(_)) => Ok(Vec::new()),
         LqExpr::All(children) if !children.is_empty() => {
             let mut terms = Vec::new();
             for child in children {
-                terms.extend(keyword_terms(child)?);
+                terms.extend(scored_terms(child)?);
             }
             Ok(terms)
         }
@@ -290,7 +302,10 @@ impl HistoryTextSearcher for MemoryEpochSearcher {
         admit: Arc<HistoryTextAdmitFn>,
         _budget: &RequestBudgetV1,
     ) -> Result<HistoryTextPageV1, CoreError> {
-        let terms = keyword_terms(&query.expr)?;
+        let terms = scored_terms(&query.expr)?;
+        if terms.is_empty() {
+            return Err(unscorable());
+        }
         let of_kind: Vec<&HistoryTextDocV1> = self
             .docs
             .values()

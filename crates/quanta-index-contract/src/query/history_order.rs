@@ -10,6 +10,36 @@
 //! - `relevance`: the row's BM25 score over the generation's indexed
 //!   commit-message / diff text descending, then the recency key. Every
 //!   row carries its score; the text expression is what is scored.
+//!
+//! # One row predicate (보완 #3)
+//!
+//! The order chooses *which* matching rows come first, never *what*
+//! matches. Under either order a row is on the result set exactly when it
+//! passes the query's filters and its text expression, evaluated with the
+//! one text normalizer: a keyword or phrase leaf is a whole-token
+//! sequence after NFC under the query's case mode (`case:no`, the
+//! default, folds per character; `case:yes` does not fold), a raw string
+//! is an NFC substring under the same mode, and a filter pattern
+//! (`author:`, `committer:`, `message:`, `file:`, `diff.*:`) is an NFC
+//! substring under the same mode. The same query therefore reports the
+//! same exact `window` total and the same row set under both orders.
+//!
+//! What differs is scorability. `relevance` scores keyword and phrase
+//! leaves; a raw string is admitted only where a scored clause bounds it
+//! (a conjunct of a keyword, or negated), so every row on the page is
+//! reached by a scored leaf. A query a row could satisfy through a raw
+//! string alone (a raw string as the whole expression or as an
+//! alternative), an empty expression, or a negation with no positive
+//! clause beside it is refused typed under `relevance`
+//! (`HISTORY_TEXT_QUERY_UNSCORABLE`) and served as a filter under
+//! `recency`. A keyword or phrase literal with no token is refused typed
+//! under both orders (`LEX_TEXT_QUERY_NO_TOKENS`), before any row is
+//! read.
+//!
+//! A `relevance` score is a function of the epoch's live rows only: a
+//! row superseded by a later upsert never counts in the BM25 statistics,
+//! so the same rows rank the same whatever sequence of ingests produced
+//! them, and a restart serves the same pages and cursors.
 
 use core::fmt;
 

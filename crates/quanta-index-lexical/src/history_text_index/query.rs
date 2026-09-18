@@ -1,21 +1,41 @@
 //! Lowering a relevance text expression onto one kind's index.
 //!
-//! Only what has a BM25 score is admitted: keyword and phrase leaves,
-//! combined with `All` (every clause must match; scores add) and `Any`
-//! (at least one clause must match; the matching clauses' scores add),
-//! and `Not` only as a clause of an `All` that has a positive sibling
-//! (the negated documents are excluded; nothing is scored by absence).
-//! A raw string, a regex, a predicate, a structural block, a bare or
-//! `Any`-side negation, an `All`/`Any` with no positive clause, or an
-//! empty expression is refused [`HISTORY_TEXT_QUERY_UNSCORABLE_CODE`]:
-//! the recency order runs those as filters, relevance never invents a
-//! score for them.
+//! The index's job under `relevance` is to *enumerate and score*; the
+//! search plane's row predicate (which re-evaluates the whole expression
+//! with the same normalizer) decides membership, so the two orders answer
+//! the same row set. The compiled query is therefore a sound
+//! over-approximation of the expression — every row the expression
+//! matches is a hit of the compiled query — scored by the keyword and
+//! phrase leaves it contains:
+//!
+//! - a keyword or phrase leaf is a term or phrase query (exact);
+//! - a raw string has substring semantics and no BM25 score: inside a
+//!   conjunction it narrows the row set through the predicate and is
+//!   dropped from the compiled query, and under a negation it is dropped
+//!   the same way (`NOT 'x'` cannot exclude anything soundly, so the
+//!   predicate excludes);
+//! - `All` is a conjunction of its scorable children (scores add), with a
+//!   negated child a `MustNot` of that child's *under*-approximation
+//!   (excluding a superset would drop matches);
+//! - `Any` is a disjunction of its children (the matching clauses' scores
+//!   add), and is unconstrained as soon as one child is — a row could then
+//!   match through a clause that has no score.
+//!
+//! An expression whose over-approximation is unconstrained (empty, a raw
+//! string alone or as an alternative, a bare or `Any`-side negation, an
+//! `All` with no positive scorable clause) has rows no scorable leaf
+//! reaches, and relevance never invents a score for them: it is refused
+//! [`HISTORY_TEXT_QUERY_UNSCORABLE_CODE`]. Regex, predicate and structural
+//! leaves are refused the same way (the route refuses them earlier for
+//! both orders). The recency order runs the same expression as a filter
+//! and needs no score, so it serves what relevance refuses.
 //!
 //! A keyword with several tokens is a phrase, as on the lexical route
 //! (`standard` mode: adjacency is strict). Case follows the query's
-//! `case:` option; absent means folded, the DSL default.
+//! `case:` option through the DSL's one default
+//! (`LqOptions::case_mode`).
 
-use quanta_index_contract::{LqCase, LqExpr, LqLeaf, LqOptions, LqPatternType};
+use quanta_index_contract::{LqExpr, LqLeaf, LqPatternType};
 use quanta_index_core::{CoreError, HISTORY_TEXT_QUERY_UNSCORABLE_CODE, HistoryTextQueryV1};
 use tantivy::Term;
 use tantivy::query::{BooleanQuery, Occur, PhraseQuery, Query, TermQuery};
@@ -23,16 +43,6 @@ use tantivy::schema::{Field, IndexRecordOption};
 
 use crate::history_text_index::schema::KindSchema;
 use crate::normalize::{self, CaseMode, TextQueryError, Token};
-
-/// Typed refusal code for a literal without a token.
-///
-/// The same code the corpus route answers with for the same literal
-/// (`LEX_TEXT_QUERY_NO_TOKENS` in the adapter root), since both lower
-/// through one tokenizer.
-const LEX_TEXT_QUERY_NO_TOKENS: &str = "LEX_TEXT_QUERY_NO_TOKENS";
-/// Typed refusal code for a literal with a run past the term cap; the
-/// corpus route's `LEX_TEXT_QUERY_TOKEN_TOO_LONG`.
-const LEX_TEXT_QUERY_TOKEN_TOO_LONG: &str = "LEX_TEXT_QUERY_TOKEN_TOO_LONG";
 
 fn unscorable(message: impl Into<String>) -> CoreError {
     CoreError::Typed {
@@ -42,26 +52,10 @@ fn unscorable(message: impl Into<String>) -> CoreError {
 }
 
 fn map_text_query_error(err: &TextQueryError) -> CoreError {
-    let code = match err {
-        TextQueryError::NoTokens => LEX_TEXT_QUERY_NO_TOKENS,
-        TextQueryError::TokenTooLong { .. } => LEX_TEXT_QUERY_TOKEN_TOO_LONG,
-    };
     CoreError::Typed {
-        code: code.to_string(),
+        code: err.code().to_string(),
         message: format!("history relevance: {err}"),
     }
-}
-
-/// The case mode a query's options select.
-#[must_use]
-pub(super) fn case_mode(options: &LqOptions) -> CaseMode {
-    CaseMode::from_case_sensitive(matches!(options.case, Some(LqCase::Sensitive)))
-}
-
-/// One clause of a boolean query: how it occurs and what it is.
-struct Clause {
-    occur: Occur,
-    query: Box<dyn Query>,
 }
 
 /// Compile `query` against `schema`.
@@ -78,91 +72,182 @@ pub(super) fn compile(
             )));
         }
     }
-    let field = schema.text_field(case_mode(&query.options));
-    let case = case_mode(&query.options);
-    compile_positive(&query.expr, field, case)
-}
-
-/// Compile an expression that must contribute a positive (scored) match.
-fn compile_positive(
-    expr: &LqExpr,
-    field: Field,
-    case: CaseMode,
-) -> Result<Box<dyn Query>, CoreError> {
-    match expr {
-        LqExpr::Empty => Err(unscorable(
-            "relevance order requires a text expression to score; the query has none",
+    let case = query.options.case_mode();
+    let lowering = Lowering {
+        field: schema.text_field(case),
+        case,
+    };
+    match lowering.approximate(&query.expr, Side::Over)? {
+        Approximation::Query(query) => Ok(query),
+        Approximation::Everything => Err(unscorable(
+            "relevance order scores keyword and phrase leaves, and every row on the page must be reached by one; this expression has rows no scorable leaf reaches (an empty expression, a raw string alone or as an alternative, or a negation with no positive clause beside it) — use `order: recency`, or put the raw string beside a keyword (`needle AND 'x'`)",
         )),
-        LqExpr::Leaf(leaf) => compile_leaf(leaf, field, case),
-        LqExpr::Not(_) => Err(unscorable(
+        Approximation::Nothing => Err(unscorable(
+            "the expression can match no row (it contradicts itself); nothing to score",
+        )),
+        Approximation::Excluding(_) => Err(unscorable(
             "a negation can only be scored beside a positive clause it excludes from (`a AND NOT b`)",
         )),
-        LqExpr::All(children) => {
-            let mut clauses = Vec::with_capacity(children.len());
-            for child in children {
-                clauses.push(match child {
-                    LqExpr::Not(inner) => Clause {
-                        occur: Occur::MustNot,
-                        query: compile_positive(inner, field, case)?,
-                    },
-                    LqExpr::Empty | LqExpr::Leaf(_) | LqExpr::All(_) | LqExpr::Any(_) => Clause {
-                        occur: Occur::Must,
-                        query: compile_positive(child, field, case)?,
-                    },
-                });
-            }
-            if !clauses.iter().any(|clause| clause.occur == Occur::Must) {
-                return Err(unscorable(
-                    "a conjunction needs at least one positive clause to score",
-                ));
-            }
-            Ok(boolean(clauses))
+    }
+}
+
+/// Which bound of the expression's row set is being computed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Side {
+    /// A superset of the rows the expression matches.
+    Over,
+    /// A subset of the rows the expression matches.
+    Under,
+}
+
+impl Side {
+    const fn flipped(self) -> Self {
+        match self {
+            Self::Over => Self::Under,
+            Self::Under => Self::Over,
         }
-        LqExpr::Any(children) => {
-            if children.is_empty() {
-                return Err(unscorable("an empty disjunction has nothing to score"));
-            }
-            let mut clauses = Vec::with_capacity(children.len());
-            for child in children {
-                clauses.push(Clause {
-                    occur: Occur::Should,
-                    query: compile_positive(child, field, case)?,
-                });
-            }
-            Ok(boolean(clauses))
+    }
+
+    /// What an unscorable leaf contributes on this side.
+    fn unscored(self) -> Approximation {
+        match self {
+            Self::Over => Approximation::Everything,
+            Self::Under => Approximation::Nothing,
         }
     }
 }
 
-fn boolean(clauses: Vec<Clause>) -> Box<dyn Query> {
-    Box::new(BooleanQuery::new(
-        clauses
-            .into_iter()
-            .map(|clause| (clause.occur, clause.query))
-            .collect(),
-    ))
+/// One bound of a sub-expression's row set.
+enum Approximation {
+    /// The rows this query hits.
+    Query(Box<dyn Query>),
+    /// Every row; carries no score.
+    Everything,
+    /// No row.
+    Nothing,
+    /// Every row the inner query does not hit; only expressible as a
+    /// `MustNot` clause of a conjunction.
+    Excluding(Box<dyn Query>),
 }
 
-fn compile_leaf(leaf: &LqLeaf, field: Field, case: CaseMode) -> Result<Box<dyn Query>, CoreError> {
-    match leaf {
-        LqLeaf::Keyword(text) | LqLeaf::Phrase(text) => {
-            let tokens =
-                normalize::query_tokens(text, case).map_err(|err| map_text_query_error(&err))?;
-            token_sequence_query(field, &tokens)
+impl Approximation {
+    /// The bound of `NOT expr` on the other side, given this bound of
+    /// `expr`.
+    fn complement(self) -> Self {
+        match self {
+            Self::Query(query) => Self::Excluding(query),
+            Self::Excluding(query) => Self::Query(query),
+            Self::Everything => Self::Nothing,
+            Self::Nothing => Self::Everything,
         }
-        LqLeaf::RawString(_) => Err(unscorable(
-            "a raw string has substring semantics and no BM25 score; use a keyword or `order: recency`",
-        )),
-        LqLeaf::Regex(_) => Err(unscorable(
-            "a regex has no BM25 score; use a keyword or `order: recency`",
-        )),
-        LqLeaf::StructuralBlock(_) => Err(unscorable(
-            "a structural block is not executable on the history route",
-        )),
-        LqLeaf::Predicate { name, .. } => Err(unscorable(format!(
-            "predicate `{name}` is not executable on the history route"
-        ))),
     }
+}
+
+/// The field and case mode one kind's index is queried under.
+#[derive(Clone, Copy)]
+struct Lowering {
+    field: Field,
+    case: CaseMode,
+}
+
+impl Lowering {
+    /// The `side` bound of the rows `expr` matches.
+    fn approximate(self, expr: &LqExpr, side: Side) -> Result<Approximation, CoreError> {
+        match expr {
+            LqExpr::Empty => Ok(Approximation::Everything),
+            LqExpr::Leaf(leaf) => self.leaf(leaf, side),
+            LqExpr::Not(inner) => Ok(self.approximate(inner, side.flipped())?.complement()),
+            LqExpr::All(children) => {
+                let parts = children
+                    .iter()
+                    .map(|child| self.approximate(child, side))
+                    .collect::<Result<Vec<_>, CoreError>>()?;
+                Ok(conjunction(parts, side))
+            }
+            LqExpr::Any(children) => {
+                let parts = children
+                    .iter()
+                    .map(|child| self.approximate(child, side))
+                    .collect::<Result<Vec<_>, CoreError>>()?;
+                Ok(disjunction(parts, side))
+            }
+        }
+    }
+
+    /// A keyword or phrase leaf is exact on both sides; a raw string is
+    /// unscored (everything as a superset, nothing as a subset); the other
+    /// leaves are refused.
+    fn leaf(self, leaf: &LqLeaf, side: Side) -> Result<Approximation, CoreError> {
+        match leaf {
+            LqLeaf::Keyword(text) | LqLeaf::Phrase(text) => {
+                let tokens = normalize::query_tokens(text, self.case)
+                    .map_err(|err| map_text_query_error(&err))?;
+                token_sequence_query(self.field, &tokens).map(Approximation::Query)
+            }
+            LqLeaf::RawString(_) => Ok(side.unscored()),
+            LqLeaf::Regex(_) => Err(unscorable(
+                "a regex has no BM25 score; use a keyword or `order: recency`",
+            )),
+            LqLeaf::StructuralBlock(_) => Err(unscorable(
+                "a structural block is not executable on the history route",
+            )),
+            LqLeaf::Predicate { name, .. } => Err(unscorable(format!(
+                "predicate `{name}` is not executable on the history route"
+            ))),
+        }
+    }
+}
+
+/// The intersection of `parts`.
+///
+/// `Must` for queries, `MustNot` for exclusions; unconstrained parts
+/// vanish; one empty part empties the whole. A conjunction of exclusions
+/// alone is not enumerable: as a superset it is everything, as a subset it
+/// is nothing.
+fn conjunction(parts: Vec<Approximation>, side: Side) -> Approximation {
+    let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(parts.len());
+    for part in parts {
+        match part {
+            Approximation::Nothing => return Approximation::Nothing,
+            Approximation::Everything => {}
+            Approximation::Query(query) => clauses.push((Occur::Must, query)),
+            Approximation::Excluding(query) => clauses.push((Occur::MustNot, query)),
+        }
+    }
+    if clauses.is_empty() {
+        return Approximation::Everything;
+    }
+    if !clauses.iter().any(|(occur, _)| *occur == Occur::Must) {
+        return match side {
+            Side::Over => Approximation::Everything,
+            Side::Under => Approximation::Nothing,
+        };
+    }
+    Approximation::Query(Box::new(BooleanQuery::new(clauses)))
+}
+
+/// The union of `parts`.
+///
+/// `Should` for queries; empty parts vanish. An unconstrained or excluding
+/// part cannot be a `Should` clause: as a superset it makes the whole
+/// unconstrained (a row could match through it without a score), as a
+/// subset it is dropped.
+fn disjunction(parts: Vec<Approximation>, side: Side) -> Approximation {
+    let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(parts.len());
+    for part in parts {
+        match part {
+            Approximation::Everything | Approximation::Excluding(_) => match side {
+                Side::Over => return Approximation::Everything,
+                Side::Under => {}
+            },
+            Approximation::Nothing => {}
+            Approximation::Query(query) => clauses.push((Occur::Should, query)),
+        }
+    }
+    if clauses.is_empty() {
+        return Approximation::Nothing;
+    }
+    Approximation::Query(Box::new(BooleanQuery::new(clauses)))
 }
 
 /// A term query for one token, a phrase query for a sequence.

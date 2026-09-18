@@ -11,12 +11,15 @@
 //! commit, not the size of the history.
 //!
 //! Each kind's index is then opened (or created), every upsert deletes
-//! the document under its key before adding the new one, and the index
-//! is committed and its merges awaited so the directory is quiescent.
-//! The manifest is written last, and only then is the staging directory
-//! renamed to `e{epoch}` and the rename made durable. A crash anywhere
-//! before the rename leaves a staging directory the next attempt removes;
-//! a crash after it leaves a complete epoch.
+//! the document under its key before adding the new one, the index is
+//! committed and its merges awaited, and every segment that lost a row
+//! is rewritten without it (`compact_superseded`) so the epoch's scores
+//! are a function of its live rows only; the segments an epoch's upserts
+//! did not touch stay shared with the base. The manifest is written last,
+//! and only then is the staging directory renamed to `e{epoch}` and the
+//! rename made durable. A crash anywhere before the rename leaves a
+//! staging directory the next attempt removes; a crash after it leaves a
+//! complete epoch.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -183,7 +186,8 @@ fn open_or_create_kind_index(schema: &KindSchema, dir: &Path) -> Result<Index, C
     Ok(index)
 }
 
-/// Write one kind's documents into its staged index and commit.
+/// Write one kind's documents into its staged index, commit, and compact
+/// away every superseded document (see [`compact_superseded`]).
 fn write_kind(
     schema: &KindSchema,
     dir: &Path,
@@ -193,13 +197,7 @@ fn write_kind(
 ) -> Result<u64, CoreError> {
     let kind = schema.kind.as_str();
     let index = open_or_create_kind_index(schema, dir)?;
-    let mut writer: IndexWriter<TantivyDocument> = index
-        .writer_with_num_threads(1, writer_heap_bytes)
-        .map_err(|err| {
-            CoreError::Storage(format!(
-                "history text index: open {kind} index writer: {err}"
-            ))
-        })?;
+    let mut writer = open_writer(&index, kind, writer_heap_bytes)?;
     let mut written = 0_u64;
     for doc in docs.into_values() {
         if delete_first {
@@ -213,12 +211,87 @@ fn write_kind(
     let _opstamp = writer.commit().map_err(|err| {
         CoreError::Storage(format!("history text index: commit {kind} index: {err}"))
     })?;
+    await_merges(writer, kind)?;
+    compact_superseded(&index, kind, writer_heap_bytes)?;
+    Ok(written)
+}
+
+fn open_writer(
+    index: &Index,
+    kind: &str,
+    writer_heap_bytes: usize,
+) -> Result<IndexWriter<TantivyDocument>, CoreError> {
+    index
+        .writer_with_num_threads(1, writer_heap_bytes)
+        .map_err(|err| {
+            CoreError::Storage(format!(
+                "history text index: open {kind} index writer: {err}"
+            ))
+        })
+}
+
+/// Wait until the engine has no merge in flight or pending for `kind`.
+fn await_merges(writer: IndexWriter<TantivyDocument>, kind: &str) -> Result<(), CoreError> {
     writer.wait_merging_threads().map_err(|err| {
         CoreError::Storage(format!(
             "history text index: await {kind} index merges: {err}"
         ))
+    })
+}
+
+/// The committed segments of `index` that still hold superseded documents.
+fn segments_with_superseded_docs(
+    index: &Index,
+    kind: &str,
+) -> Result<Vec<tantivy::SegmentId>, CoreError> {
+    Ok(index
+        .searchable_segment_metas()
+        .map_err(|err| {
+            CoreError::Storage(format!(
+                "history text index: list {kind} index segments: {err}"
+            ))
+        })?
+        .iter()
+        .filter(|meta| meta.num_deleted_docs() > 0)
+        .map(tantivy::SegmentMeta::id)
+        .collect())
+}
+
+/// Rewrite every committed segment that holds a superseded document
+/// without it, so the epoch's BM25 statistics count live rows only.
+///
+/// An upsert of an existing key tombstones the old document in the
+/// segment it lives in; the engine keeps counting a tombstoned document
+/// in `N`, in `df` and in the field-length total until the segment is
+/// merged, which would make a score depend on how the epoch's rows were
+/// ingested rather than on what they are (QI-BB-023). Only the segments
+/// that lost a row are rewritten — the rest stay hard-linked to the base
+/// epoch — and the rewrite is verified: an epoch that still holds a
+/// superseded document after it is never published.
+fn compact_superseded(
+    index: &Index,
+    kind: &str,
+    writer_heap_bytes: usize,
+) -> Result<(), CoreError> {
+    let stale = segments_with_superseded_docs(index, kind)?;
+    if stale.is_empty() {
+        return Ok(());
+    }
+    let mut writer = open_writer(index, kind, writer_heap_bytes)?;
+    let _merged: Option<tantivy::SegmentMeta> = writer.merge(&stale).wait().map_err(|err| {
+        CoreError::Storage(format!(
+            "history text index: compact superseded {kind} documents: {err}"
+        ))
     })?;
-    Ok(written)
+    await_merges(writer, kind)?;
+    let remaining = segments_with_superseded_docs(index, kind)?;
+    if !remaining.is_empty() {
+        return Err(CoreError::Storage(format!(
+            "history text index: {} {kind} index segment(s) still hold superseded documents after compaction",
+            remaining.len()
+        )));
+    }
+    Ok(())
 }
 
 /// Build and publish the index of `epoch`; see the module doc.

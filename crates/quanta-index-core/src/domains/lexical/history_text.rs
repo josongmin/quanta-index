@@ -28,10 +28,13 @@ use crate::request_budget::RequestBudgetV1;
 
 /// Wire code for a relevance query whose text expression has no score.
 ///
-/// No expression at all, a raw-string / regex / predicate / structural
-/// leaf, a regexp or literal pattern mode, or a negation with no positive
-/// clause beside it: relevance scores token leaves (keyword, phrase) and
-/// everything else has no BM25 score and is never given a heuristic one.
+/// No expression at all, a regex / predicate / structural leaf, a regexp
+/// or literal pattern mode, a negation with no positive clause beside it,
+/// or a raw string a row could match through alone (the whole expression,
+/// or an alternative): relevance scores token leaves (keyword, phrase),
+/// a raw string is a filter only where a scored clause bounds it (a
+/// conjunct of a keyword, or negated), and nothing else has a BM25 score
+/// or is ever given a heuristic one.
 pub const HISTORY_TEXT_QUERY_UNSCORABLE_CODE: &str = "HISTORY_TEXT_QUERY_UNSCORABLE";
 
 /// Wire code for a relevance read at an epoch that has no text index.
@@ -169,15 +172,25 @@ pub enum HistoryTextDiscardOutcomeV1 {
 }
 
 /// The text expression one relevance query scores.
+///
+/// The adapter enumerates a sound superset of the rows the expression
+/// matches, scored by its keyword and phrase leaves; the search plane's
+/// [`HistoryTextAdmitFn`] evaluates the whole expression on every
+/// enumerated row, so membership is decided by one predicate under both
+/// orders and the index only ranks.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistoryTextQueryV1 {
     pub kind: HistoryTextKindV1,
-    /// Keyword and phrase leaves under `All` / `Any`, with `Not` admitted
-    /// only beside a positive sibling; anything else is refused
-    /// [`HISTORY_TEXT_QUERY_UNSCORABLE_CODE`].
+    /// The expression to score: keyword and phrase leaves under `All` / `Any`.
+    ///
+    /// `Not` is admitted only beside a positive sibling and a raw string only
+    /// where a scored clause bounds it (a conjunct of a keyword, or negated);
+    /// anything else is refused [`HISTORY_TEXT_QUERY_UNSCORABLE_CODE`].
     pub expr: LqExpr,
-    /// The query's options; `case` selects the folded or case-preserving
-    /// terms (absent means folded, as on the lexical route) and a
+    /// The query's options.
+    ///
+    /// `case` selects the folded or case-preserving terms through the DSL's
+    /// one default (absent means folded, as on every route) and a
     /// `pattern_type` other than standard / keyword is unscorable.
     pub options: LqOptions,
 }
@@ -226,11 +239,13 @@ pub struct HistoryTextPageV1 {
 
 /// Which visited documents belong on the page.
 ///
-/// The index scores the expression; every other constraint of the
-/// history query (author, committer, time window, ref, path, diff sides,
-/// content filters) is the search plane's, evaluated against the row the
-/// hit names in the epoch's snapshot. The predicate runs inside the
-/// collect so that the page stays bounded and the match count exact.
+/// The index scores the expression; membership is the search plane's:
+/// every constraint of the history query (author, committer, time window,
+/// ref, path, diff sides, content filters) *and* the text expression
+/// itself, evaluated against the row the hit names in the epoch's
+/// snapshot with the same normalizer the recency order uses. The
+/// predicate runs inside the collect so that the page stays bounded and
+/// the match count exact.
 ///
 /// An error it returns aborts the search with that error.
 pub type HistoryTextAdmitFn = dyn Fn(&HistoryTextHitV1) -> Result<bool, CoreError> + Send + Sync;

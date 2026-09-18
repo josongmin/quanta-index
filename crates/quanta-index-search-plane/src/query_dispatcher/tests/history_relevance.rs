@@ -598,6 +598,52 @@ fn an_unscorable_expression_is_refused_under_relevance_and_filters_under_recency
     Ok(())
 }
 
+/// QI-BB-023 보완 #3 — one text predicate on both orders.
+///
+/// `fix` over `{"Fix typo", "prefix", "fix bug"}`: a keyword is a folded
+/// whole-token match under both orders, so both count exactly the same
+/// two commits (`Fix typo`, `fix bug`) — never `prefix`, which only a
+/// substring would admit, and never a case-sensitive miss of `Fix`.
+/// A raw string beside the keyword narrows both orders' row sets the
+/// same way.
+#[test]
+fn recency_and_relevance_count_the_same_rows_for_the_same_text_query() -> TestResult {
+    let plane = plane()?;
+    let _receipt = plane.materializer.publish_batch(&batch(
+        "predicate-parity",
+        vec![
+            commit(1, 100, "alice", "fix bug"),
+            commit(2, 200, "alice", "prefix"),
+            commit(3, 300, "alice", "Fix typo"),
+            commit(4, 400, "alice", "fix the 'x.y' literal"),
+        ],
+    ))?;
+    for (query_text, expected) in [
+        ("type:commit fix", BTreeSet::from([sha(1), sha(3), sha(4)])),
+        ("type:commit fix case:yes", BTreeSet::from([sha(1), sha(4)])),
+        ("type:commit fix 'x.y'", BTreeSet::from([sha(4)])),
+        ("type:commit \"fix bug\"", BTreeSet::from([sha(1)])),
+    ] {
+        let mut totals = Vec::new();
+        for order in HistoryOrderV1::ALL {
+            let served = page(&plane.dispatcher, query_text, order, 10, None)?;
+            let rows: BTreeSet<CommitSha> = served.commits.iter().map(|row| row.sha).collect();
+            if rows != expected {
+                return Err(format!(
+                    "{query_text} under {order}: rows {rows:?}, expected {expected:?}"
+                )
+                .into());
+            }
+            totals.push(served.window.candidate_count());
+        }
+        let want = CandidateCountV1::Exact(u64::try_from(expected.len())?);
+        if totals.iter().any(|total| *total != want) {
+            return Err(format!("{query_text}: totals differ across orders: {totals:?}").into());
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn filters_apply_to_relevance_rows_and_the_count_is_exact() -> TestResult {
     let plane = plane()?;

@@ -16,6 +16,7 @@ quanta-index-lq-bridge = { version = "0.1.0", path = "../quanta-index-lq-bridge"
 quanta-index-lq-norm = { version = "0.1.0", path = "../quanta-index-lq-norm" }
 quanta-index-lq-obs = { version = "0.1.0", path = "../quanta-index-lq-obs" }
 quanta-index-lq-regex = { version = "0.1.0", path = "../quanta-index-lq-regex" }
+quanta-index-lq-text-normalizer = { version = "0.1.0", path = "../quanta-index-lq-text-normalizer" }
 imbl = { workspace = true }
 serde = { workspace = true }
 serde_json.workspace = true

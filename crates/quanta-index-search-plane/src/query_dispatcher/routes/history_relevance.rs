@@ -1,14 +1,18 @@
 //! The history route's `relevance` order (QI-BB-023 follow-up #1).
 //!
 //! The text expression is scored by the epoch's history text index —
-//! the same epoch the rows are read from — and every other constraint of
-//! the query is evaluated against the row a hit names, inside the index's
-//! collect, so the page stays bounded to `top_k` and the match count is
-//! exact. The hits come back under the relevance total order (score
-//! descending, committer time descending, sha ascending, path ascending),
-//! strictly after the cursor when there is one, and are joined back to
-//! the snapshot's records for the response rows. The cursor is the last
-//! row's key under that order, in the epoch the page was cut from.
+//! the same epoch the rows are read from — and the whole query (its
+//! filters *and* its text expression, through the same predicate the
+//! recency order runs) is evaluated against the row a hit names, inside
+//! the index's collect, so the page stays bounded to `top_k`, the match
+//! count is exact, and the rows are exactly the rows recency would count
+//! (보완 #3): the index enumerates a sound superset of the expression's
+//! rows with their scores, the predicate decides membership. The hits come
+//! back under the relevance total order (score descending, committer time
+//! descending, sha ascending, path ascending), strictly after the cursor
+//! when there is one, and are joined back to the snapshot's records for
+//! the response rows. The cursor is the last row's key under that order,
+//! in the epoch the page was cut from.
 
 use std::sync::Arc;
 
@@ -24,8 +28,7 @@ use quanta_index_core::{
 use crate::query_dispatcher::errors::history_cursor_order_mismatch;
 use crate::query_dispatcher::routes::history::{
     HistoryPage, HistoryQueryKind, commit_candidate_from_record, diff_candidate_from_record,
-    ensure_cursor_kind, history_commit_filters_match, history_diff_filters_match,
-    resolve_history_query_kind,
+    ensure_cursor_kind, history_commit_matches, history_diff_matches, resolve_history_query_kind,
 };
 use crate::query_dispatcher::window::top_k_limit;
 use crate::readiness::{AuxRead, HistoryAuthorityState, HistoryDiffKey};
@@ -84,7 +87,8 @@ fn row_vanished(hit: &HistoryTextHitV1) -> CoreError {
     ))
 }
 
-/// The predicate the index runs on every visited row: the query's filters
+/// The predicate the index runs on every visited row: the whole query —
+/// filters and text expression, the recency order's own predicate —
 /// against the row the hit names in the snapshot.
 fn admit_predicate(
     kind: HistoryQueryKind,
@@ -99,7 +103,7 @@ fn admit_predicate(
                 .commits()
                 .get(&hit.key.sha())
                 .ok_or_else(|| row_vanished(hit))?;
-            history_commit_filters_match(&query, &state, record)
+            history_commit_matches(&query, &state, record)
         }),
         HistoryQueryKind::Diff => Arc::new(move |hit| {
             let path = hit.key.file_path().ok_or_else(|| row_vanished(hit))?;
@@ -112,7 +116,7 @@ fn admit_predicate(
                 .commits()
                 .get(&hit.key.sha())
                 .ok_or_else(|| row_vanished(hit))?;
-            history_diff_filters_match(&query, &state, &key, record, commit)
+            history_diff_matches(&query, &state, &key, record, commit)
         }),
     }
 }

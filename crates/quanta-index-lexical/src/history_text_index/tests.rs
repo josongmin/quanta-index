@@ -585,7 +585,11 @@ fn file_identities(dir: &Path) -> Result<BTreeMap<String, (u64, u64)>, Box<dyn s
 ///
 /// An incremental epoch links the previous epoch's segment files rather
 /// than copying them, the previous epoch's files are untouched, and each
-/// epoch answers with its own content.
+/// epoch answers with its own content. Epoch 2 adds rows only, so every
+/// segment of epoch 1 is unchanged and shared; a rewrite of an existing
+/// row is exercised separately
+/// (`scores_depend_on_the_live_rows_not_on_the_ingest_history`), since the
+/// segment that loses the row is compacted rather than shared.
 #[cfg(unix)]
 #[test]
 fn an_incremental_epoch_shares_unchanged_segments_by_inode() -> TestRes {
@@ -606,7 +610,7 @@ fn an_incremental_epoch_shares_unchanged_segments_by_inode() -> TestRes {
         HistoryTextKindV1::Commit,
     )?;
 
-    // Epoch 2: one new commit and one rewritten message.
+    // Epoch 2: two new commits.
     let receipt = port.publish_epoch(
         &generation,
         AuxEpochV1::new(2),
@@ -614,7 +618,7 @@ fn an_incremental_epoch_shares_unchanged_segments_by_inode() -> TestRes {
             base: AuxEpochV1::new(1),
             upserts: vec![
                 commit_doc(0x31, 1_000, "needle arrives in epoch two"),
-                commit_doc(0x14, 400, "now this one says needle too"),
+                commit_doc(0x32, 1_100, "and so does this needle"),
             ],
         },
     )?;
@@ -696,10 +700,10 @@ fn an_incremental_epoch_shares_unchanged_segments_by_inode() -> TestRes {
     };
     let first_keys = keys(&first_page);
     let second_keys = keys(&second_page);
-    if first_keys.contains(&0x31) || first_keys.contains(&0x14) {
+    if first_keys.contains(&0x31) || first_keys.contains(&0x32) {
         return Err(format!("epoch 1 must not see epoch 2's rows: {first_keys:?}").into());
     }
-    if !second_keys.contains(&0x31) || !second_keys.contains(&0x14) {
+    if !second_keys.contains(&0x31) || !second_keys.contains(&0x32) {
         return Err(format!("epoch 2 must see its upserts: {second_keys:?}").into());
     }
     if second_page.matched != first_page.matched.saturating_add(2) {
@@ -924,6 +928,26 @@ fn unscorable_expressions_are_refused_typed() -> TestRes {
             keyword_query(HistoryTextKindV1::Commit, LqExpr::Any(Vec::new())),
         ),
         (
+            "raw string as an alternative",
+            keyword_query(
+                HistoryTextKindV1::Commit,
+                LqExpr::Any(vec![
+                    keyword("needle"),
+                    LqExpr::Leaf(LqLeaf::RawString("x.y".to_string())),
+                ]),
+            ),
+        ),
+        (
+            "raw string beside only a negation",
+            keyword_query(
+                HistoryTextKindV1::Commit,
+                LqExpr::All(vec![
+                    LqExpr::Leaf(LqLeaf::RawString("x.y".to_string())),
+                    LqExpr::Not(Box::new(keyword("thread"))),
+                ]),
+            ),
+        ),
+        (
             "regexp pattern type",
             HistoryTextQueryV1 {
                 kind: HistoryTextKindV1::Commit,
@@ -964,6 +988,67 @@ fn unscorable_expressions_are_refused_typed() -> TestRes {
         Err(CoreError::Typed { code, .. }) if code == "LEX_TEXT_QUERY_NO_TOKENS" => Ok(()),
         other => Err(format!("a token-less literal is refused typed, got {other:?}").into()),
     }
+}
+
+/// QI-BB-023 보완 #3 — a raw string beside a scored clause is the search
+/// plane's filter.
+///
+/// The index enumerates the clause's rows (a sound superset of the
+/// expression's) with the clause's scores, and a negated raw string is
+/// dropped the same way rather than excluding anything.
+#[test]
+fn a_raw_string_beside_a_scored_clause_is_enumerated_and_scored_by_the_clause() -> TestRes {
+    let root = tempfile::tempdir()?;
+    let port = adapter(root.path())?;
+    let generation = generation();
+    let _receipt = port.publish_epoch(
+        &generation,
+        AuxEpochV1::new(1),
+        HistoryTextBuildV1::Full {
+            docs: vec![
+                commit_doc(1, 1, "needle x.y"),
+                commit_doc(2, 2, "needle"),
+                commit_doc(3, 3, "thread x.y"),
+            ],
+        },
+    )?;
+    let searcher = port.open_epoch(&generation, AuxEpochV1::new(1))?;
+    let keyword_only = search(
+        searcher.as_ref(),
+        &keyword_query(HistoryTextKindV1::Commit, keyword("needle")),
+        None,
+        10,
+    )?;
+    let raw = |text: &str| LqExpr::Leaf(LqLeaf::RawString(text.to_string()));
+    for (label, expr) in [
+        ("conjunct", LqExpr::All(vec![keyword("needle"), raw("x.y")])),
+        (
+            "negated conjunct",
+            LqExpr::All(vec![keyword("needle"), LqExpr::Not(Box::new(raw("x.y")))]),
+        ),
+        (
+            "nested alternative under a conjunct",
+            LqExpr::All(vec![
+                keyword("needle"),
+                LqExpr::Any(vec![raw("x.y"), keyword("thread")]),
+            ]),
+        ),
+    ] {
+        let page = search(
+            searcher.as_ref(),
+            &keyword_query(HistoryTextKindV1::Commit, expr),
+            None,
+            10,
+        )?;
+        if page.hits != keyword_only.hits {
+            return Err(format!(
+                "{label}: the index enumerates the scored clause's rows with its scores:\n  got  {:?}\n  want {:?}",
+                page.hits, keyword_only.hits
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 #[test]
@@ -1085,6 +1170,133 @@ fn a_stale_staging_directory_and_an_unpublished_leftover_are_replaced() -> TestR
     )?;
     if stale.matched != 0 {
         return Err("the leftover's content is gone".into());
+    }
+    Ok(())
+}
+
+/// One ranked row: key, committer time and the score's exact bits.
+type ExactRow = (HistoryTextDocKeyV1, u64, u32);
+
+/// The whole ranking of `needle` over one kind at `epoch`.
+fn exact_ranking(
+    port: &HistoryTextIndexAdapter,
+    epoch: AuxEpochV1,
+    kind: HistoryTextKindV1,
+) -> Result<Vec<ExactRow>, Box<dyn std::error::Error>> {
+    let searcher = port.open_epoch(&generation(), epoch)?;
+    let page = search(
+        searcher.as_ref(),
+        &keyword_query(kind, keyword("needle")),
+        None,
+        100,
+    )?;
+    Ok(page
+        .hits
+        .into_iter()
+        .map(|hit| (hit.key, hit.committer_time_ms, hit.score.get().to_bits()))
+        .collect())
+}
+
+/// Superseded documents left in one kind's index at `epoch`, summed over
+/// its segments (the engine's own count of tombstoned rows).
+fn superseded_docs(root: &Path, epoch: AuxEpochV1, kind: HistoryTextKindV1) -> TestRes {
+    let dir = kind_dir(&epoch_dir(root, &generation(), epoch), kind);
+    let index = tantivy::Index::open_in_dir(&dir)?;
+    let tombstoned: u32 = index
+        .searchable_segment_metas()?
+        .iter()
+        .map(tantivy::SegmentMeta::num_deleted_docs)
+        .sum();
+    if tombstoned != 0 {
+        return Err(format!(
+            "{} index at epoch {epoch} still holds {tombstoned} superseded document(s)",
+            kind.as_str()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// QI-BB-023 — a score is a function of the epoch's live rows only.
+///
+/// The same live rows reached by two ingest histories — every row once,
+/// or a row upserted and then upserted again (a restart replay, a
+/// rewritten message) — rank identically, bit for bit: a superseded
+/// document never counts in `N`, `df` or the average length. The oracle
+/// is the fresh index; the engine's own tombstone count proves nothing
+/// superseded survives a publish.
+#[test]
+fn scores_depend_on_the_live_rows_not_on_the_ingest_history() -> TestRes {
+    let rewritten = commit_doc(0x14, 400, "now this one says needle needle too");
+    // Fresh: every row once, with the rewritten message.
+    let fresh_root = tempfile::tempdir()?;
+    let fresh = adapter(fresh_root.path())?;
+    let mut fresh_docs = oracle_fixture();
+    fresh_docs.retain(|doc| doc.key != rewritten.key);
+    fresh_docs.push(rewritten.clone());
+    let _receipt = fresh.publish_epoch(
+        &generation(),
+        AuxEpochV1::new(1),
+        HistoryTextBuildV1::Full { docs: fresh_docs },
+    )?;
+
+    // Replayed: the fixture, then the rewrite as a second epoch, then a
+    // verbatim re-upsert of two unchanged rows as a third (a restart
+    // replaying a batch it already applied).
+    let replay_root = tempfile::tempdir()?;
+    let replay = adapter(replay_root.path())?;
+    let _receipt = replay.publish_epoch(
+        &generation(),
+        AuxEpochV1::new(1),
+        HistoryTextBuildV1::Full {
+            docs: oracle_fixture(),
+        },
+    )?;
+    let _receipt = replay.publish_epoch(
+        &generation(),
+        AuxEpochV1::new(2),
+        HistoryTextBuildV1::Incremental {
+            base: AuxEpochV1::new(1),
+            upserts: vec![rewritten],
+        },
+    )?;
+    let verbatim: Vec<HistoryTextDocV1> = oracle_fixture()
+        .into_iter()
+        .filter(|doc| {
+            matches!(
+                doc.key,
+                HistoryTextDocKeyV1::Commit { sha } if sha == self::sha(0x12) || sha == self::sha(0x24)
+            )
+        })
+        .collect();
+    if verbatim.len() != 2 {
+        return Err("two fixture rows are replayed verbatim".into());
+    }
+    let _receipt = replay.publish_epoch(
+        &generation(),
+        AuxEpochV1::new(3),
+        HistoryTextBuildV1::Incremental {
+            base: AuxEpochV1::new(2),
+            upserts: verbatim,
+        },
+    )?;
+
+    for kind in [HistoryTextKindV1::Commit, HistoryTextKindV1::Diff] {
+        let expected = exact_ranking(&fresh, AuxEpochV1::new(1), kind)?;
+        if expected.is_empty() {
+            return Err(format!("the {} oracle ranking is not empty", kind.as_str()).into());
+        }
+        for epoch in [AuxEpochV1::new(2), AuxEpochV1::new(3)] {
+            let observed = exact_ranking(&replay, epoch, kind)?;
+            if observed != expected {
+                return Err(format!(
+                    "{} ranking at replayed epoch {epoch} differs from the fresh index:\n  replayed {observed:?}\n  fresh    {expected:?}",
+                    kind.as_str()
+                )
+                .into());
+            }
+            superseded_docs(replay_root.path(), epoch, kind)?;
+        }
     }
     Ok(())
 }

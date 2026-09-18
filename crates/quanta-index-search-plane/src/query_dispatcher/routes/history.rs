@@ -11,8 +11,11 @@
 //! here — the text expression is a filter — and the newest matches are
 //! kept. Under `relevance` (follow-up #1) the expression is scored by the
 //! epoch's text index and the rows are joined back from the same snapshot;
-//! see [`super::history_relevance`]. A cursor continues only the order it
-//! was issued under.
+//! see [`super::history_relevance`]. Both orders admit a row through one
+//! predicate ([`history_commit_matches`] / [`history_diff_matches`]): the
+//! query's filters plus its text expression, evaluated with the one text
+//! normalizer, so the same query counts the same rows under either order
+//! (보완 #3). A cursor continues only the order it was issued under.
 //!
 //! The snapshot and, under `relevance`, the epoch's text index are the
 //! history domain of the request's read view (`read_view.rs`), acquired
@@ -532,9 +535,12 @@ pub(super) fn resolve_history_query_kind(query: &LqQuery) -> Result<HistoryQuery
     }
 }
 
-/// Whether a commit matches the query: its filters and its text
-/// expression (the recency path, where the expression is a filter).
-fn history_commit_matches(
+/// Whether a commit matches the query: its filters and its text expression.
+///
+/// This is the row predicate of both orders: `recency` runs it over every
+/// record, `relevance` over every record the text index enumerates
+/// (QI-BB-023 보완 #3).
+pub(super) fn history_commit_matches(
     query: &LqQuery,
     state: &HistoryAuthorityState,
     record: &quanta_index_contract::lex::CommitRecord,
@@ -548,8 +554,8 @@ fn history_commit_matches(
 }
 
 /// Whether a commit passes every filter of the query, the text
-/// expression aside; the relevance path scores the expression elsewhere.
-pub(super) fn history_commit_filters_match(
+/// expression aside.
+fn history_commit_filters_match(
     query: &LqQuery,
     state: &HistoryAuthorityState,
     record: &quanta_index_contract::lex::CommitRecord,
@@ -634,9 +640,12 @@ pub(super) fn history_commit_filters_match(
     Ok(true)
 }
 
-/// Whether a diff hunk matches the query: its filters and its text
-/// expression over the hunk's search text (the recency path).
-fn history_diff_matches(
+/// Whether a diff hunk matches the query: its filters and its text expression.
+///
+/// The expression runs over the hunk's search text — the text the history
+/// text index scores. The row predicate of both orders, as
+/// [`history_commit_matches`] is for commits.
+pub(super) fn history_diff_matches(
     query: &LqQuery,
     state: &HistoryAuthorityState,
     key: &crate::readiness::HistoryDiffKey,
@@ -654,7 +663,7 @@ fn history_diff_matches(
 
 /// Whether a diff hunk passes every filter of the query, the text
 /// expression aside.
-pub(super) fn history_diff_filters_match(
+fn history_diff_filters_match(
     query: &LqQuery,
     state: &HistoryAuthorityState,
     key: &crate::readiness::HistoryDiffKey,
