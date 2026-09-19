@@ -36,9 +36,9 @@ use quanta_index_contract::{
     ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
     ClusterMembershipCompletenessV1, ClusterMembershipReadFailureV1,
     ClusterMembershipReadOutcomeV1, ClusterMembershipReadRejectionV1,
-    ClusterMembershipReadRequestV1, ClusterMembershipSnapshotV1, GenerationPin, LexicalCandidate,
-    ManifestGeneration, OwnerDocKind, QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId,
-    SemanticCorpusKindV1, SymbolId,
+    ClusterMembershipReadRequestV1, ClusterMembershipSnapshotV1, EmbeddingNormalization,
+    GenerationPin, LexicalCandidate, ManifestGeneration, OwnerDocKind, QueryConstraintSetV1,
+    RepoId, RepoRelativePath, RevisionId, SemanticCorpusKindV1, SymbolId,
     canonical_order::{CanonicalOrderBreakV1, first_canonical_order_break_v1},
     cluster_membership_content_digest_v1,
 };
@@ -103,6 +103,9 @@ pub(crate) struct LoadedGeneration {
     revision_id: RevisionId,
     generation: ManifestGeneration,
     dimension: usize,
+    /// The normalization the generation was sealed under: what every query
+    /// vector is held to, as every ingested row was (QI-BB-031).
+    normalization: EmbeddingNormalization,
     model_id: String,
     model_version: Option<String>,
     table: lancedb::Table,
@@ -249,6 +252,7 @@ pub(crate) async fn open_generation(
         });
     }
     load_generation_contract(&generation_dir)?.validate_manifest(&manifest)?;
+    let normalization = manifest.normalization_contract()?;
 
     let dimension = usize::try_from(manifest.dimension).map_err(|err| {
         CoreError::Storage(format!("semantic: manifest dimension overflow: {err}"))
@@ -362,6 +366,7 @@ pub(crate) async fn open_generation(
         revision_id: revision.clone(),
         generation,
         dimension,
+        normalization,
         model_id: manifest.model_id.clone(),
         model_version: manifest.model_version.clone(),
         table,
@@ -825,19 +830,27 @@ impl LoadedGeneration {
         &self.manifest_digest
     }
 
-    fn check_query_dim(&self, query_vector: &[f32]) -> Result<(), CoreError> {
-        if query_vector.len() == self.dimension {
-            return Ok(());
+    /// Hold a query vector to the contract the generation's rows were held
+    /// to at ingest (QI-BB-031): its dimension (`SEM_DIM_MISMATCH`), then
+    /// finite components, a non-zero norm and, under `L2Unit`, a unit norm
+    /// (`SEM_INVALID_VECTOR`) — the one validator every ingested row passed.
+    fn validate_query_vector(&self, query_vector: &[f32]) -> Result<(), CoreError> {
+        if query_vector.len() != self.dimension {
+            return Err(CoreError::Typed {
+                code: LexicalErrorCode::SemDimMismatch.as_code_str().to_string(),
+                message: format!(
+                    "semantic: query vector dim {} does not match index dim {} for generation {}",
+                    query_vector.len(),
+                    self.dimension,
+                    self.generation.get()
+                ),
+            });
         }
-        Err(CoreError::Typed {
-            code: LexicalErrorCode::SemDimMismatch.as_code_str().to_string(),
-            message: format!(
-                "semantic: query vector dim {} does not match index dim {} for generation {}",
-                query_vector.len(),
-                self.dimension,
-                self.generation.get()
-            ),
-        })
+        SemanticPolicy::validate_embedding_vector_v1(
+            query_vector,
+            self.dimension,
+            self.normalization,
+        )
     }
 
     /// Build the lane's vector query and run it under the request budget
@@ -990,7 +1003,7 @@ impl LoadedGeneration {
         constraints: &QueryConstraintSetV1,
         watch: DenseLaneBudgetV1<'_>,
     ) -> Result<Vec<SemanticSearchHit>, CoreError> {
-        self.check_query_dim(query_vector)?;
+        self.validate_query_vector(query_vector)?;
         if allowed_ids.is_some_and(BTreeSet::is_empty) {
             return Ok(Vec::new());
         }
@@ -1041,7 +1054,7 @@ impl LoadedGeneration {
         query_vector: &[f32],
         watch: DenseLaneBudgetV1<'_>,
     ) -> Result<Option<f32>, CoreError> {
-        self.check_query_dim(query_vector)?;
+        self.validate_query_vector(query_vector)?;
         let mut allowed_ids = BTreeSet::new();
         let _inserted = allowed_ids.insert(candidate_id.to_owned());
         let query_owned: Vec<f32> = query_vector.to_vec();
@@ -1172,7 +1185,6 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         budget: &RequestBudgetV1,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
         SemanticPolicy::validate_fetch_size(top_k)?;
-        SemanticPolicy::validate_query_vector(query_vector)?;
         let limit = top_k_limit(top_k)?;
         crate::run_blocking(
             &self.runtime,
@@ -1189,7 +1201,6 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         budget: &RequestBudgetV1,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
         SemanticPolicy::validate_fetch_size(top_k)?;
-        SemanticPolicy::validate_query_vector(query_vector)?;
         let limit = top_k_limit(top_k)?;
         crate::run_blocking(
             &self.runtime,
@@ -1212,7 +1223,6 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         budget: &RequestBudgetV1,
     ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
         SemanticPolicy::validate_fetch_size(top_k)?;
-        SemanticPolicy::validate_query_vector(query_vector)?;
         let limit = top_k_limit(top_k)?;
         crate::run_blocking(
             &self.runtime,
@@ -1230,7 +1240,6 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         budget: &RequestBudgetV1,
     ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
         SemanticPolicy::validate_fetch_size(top_k)?;
-        SemanticPolicy::validate_query_vector(query_vector)?;
         let limit = top_k_limit(top_k)?;
         crate::run_blocking(
             &self.runtime,
@@ -1254,7 +1263,6 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         budget: &RequestBudgetV1,
     ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
         SemanticPolicy::validate_fetch_size(top_k)?;
-        SemanticPolicy::validate_query_vector(query_vector)?;
         let limit = top_k_limit(top_k)?;
         crate::run_blocking(
             &self.runtime,
@@ -1277,7 +1285,6 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         budget: &RequestBudgetV1,
     ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
         SemanticPolicy::validate_fetch_size(top_k)?;
-        SemanticPolicy::validate_query_vector(query_vector)?;
         let limit = top_k_limit(top_k)?;
         crate::run_blocking(
             &self.runtime,
@@ -1301,7 +1308,6 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         budget: &RequestBudgetV1,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
         SemanticPolicy::validate_fetch_size(top_k)?;
-        SemanticPolicy::validate_query_vector(query_vector)?;
         let limit = top_k_limit(top_k)?;
         crate::run_blocking(
             &self.runtime,
@@ -1319,7 +1325,6 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         budget: &RequestBudgetV1,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
         SemanticPolicy::validate_fetch_size(top_k)?;
-        SemanticPolicy::validate_query_vector(query_vector)?;
         let limit = top_k_limit(top_k)?;
         crate::run_blocking(
             &self.runtime,
@@ -1341,7 +1346,6 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         query_vector: &[f32],
         budget: &RequestBudgetV1,
     ) -> Result<Option<f32>, CoreError> {
-        SemanticPolicy::validate_query_vector(query_vector)?;
         crate::run_blocking(
             &self.runtime,
             self.loaded

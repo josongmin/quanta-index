@@ -42,27 +42,6 @@ fn semantic_top_k_public_maximum_is_accepted() {
     );
 }
 
-#[test]
-fn semantic_query_vector_nan_is_invalid() {
-    assert_eq!(
-        typed_code_or_debug(SemanticPolicy::validate_query_vector(&[1.0, f32::NAN])),
-        "SEM_INVALID_VECTOR"
-    );
-}
-
-#[test]
-fn semantic_query_vector_zero_norm_is_invalid() {
-    assert_eq!(
-        typed_code_or_debug(SemanticPolicy::validate_query_vector(&[0.0, 0.0, 0.0])),
-        "SEM_INVALID_VECTOR"
-    );
-}
-
-#[test]
-fn semantic_query_vector_finite_non_zero_is_valid() {
-    assert!(SemanticPolicy::validate_query_vector(&[1.0, 0.0, 2.0]).is_ok());
-}
-
 // ---------------------------------------------------------------------------
 // QI-BB-031 — the vector contract is one validator and one normalizer,
 // applied to fresh provider output, cache hits and every ingested row.
@@ -244,6 +223,74 @@ mod vector_contract {
                 "{label}: must fail the batch, got {outcome:?}"
             );
         }
+    }
+
+    fn scraped(tallies: &quanta_index_core::RawNormTallies) -> Result<(u64, u64, f64), CoreError> {
+        use quanta_index_core::{MetricSourcePort, MetricValueV1};
+        let points = tallies.scrape()?;
+        let counter = |name: &str| {
+            points
+                .iter()
+                .find(|point| point.name == name)
+                .map(|point| point.value)
+        };
+        match (
+            counter("semantic_embedding_raw_vectors_normalized_total"),
+            counter("semantic_embedding_raw_vectors_off_unit_total"),
+            counter("semantic_embedding_raw_norm_deviation_max"),
+        ) {
+            (
+                Some(MetricValueV1::Counter(normalized)),
+                Some(MetricValueV1::Counter(off_unit)),
+                Some(MetricValueV1::Gauge(max_deviation)),
+            ) => Ok((normalized, off_unit, max_deviation)),
+            other => Err(CoreError::Storage(format!(
+                "the tallies name three points: {other:?}"
+            ))),
+        }
+    }
+
+    /// The wrapper reports how far its raw provider was from unit before it
+    /// normalized (QI-BB-031 보완 #4).
+    ///
+    /// A unit vector, one inside the tolerance and one of norm 2.0 count as
+    /// three normalized, one off unit, and a largest deviation of exactly
+    /// 1.0; a batch the wrapper refuses records nothing, and a later batch
+    /// with a smaller deviation keeps the maximum.
+    #[test]
+    fn the_wrapper_reports_how_far_its_raw_provider_was_from_unit() {
+        let provider = L2UnitEmbeddingProvider::new(raw(vec![
+            vec![0.6, 0.8],
+            vec![0.9996, 0.0],
+            vec![2.0, 0.0],
+        ]))
+        .expect("raw provider wraps");
+        let tallies = provider.raw_norm_tallies();
+        assert_eq!(scraped(&tallies).expect("the tallies scrape"), (0, 0, 0.0));
+        let _served = provider
+            .embed_batch(&["unit", "close", "double"])
+            .expect("normalized");
+        assert_eq!(scraped(&tallies).expect("the tallies scrape"), (3, 1, 1.0));
+
+        let refused = L2UnitEmbeddingProvider::new(raw(vec![vec![3.0, 0.0], vec![f32::NAN, 0.0]]))
+            .expect("raw provider wraps");
+        let refused_tallies = refused.raw_norm_tallies();
+        assert!(refused.embed_batch(&["triple", "nan"]).is_err());
+        assert_eq!(
+            scraped(&refused_tallies).expect("the tallies scrape"),
+            (0, 0, 0.0),
+            "a refused batch records nothing, not even its first vector"
+        );
+
+        let smaller =
+            L2UnitEmbeddingProvider::new(raw(vec![vec![0.5, 0.0]])).expect("raw provider wraps");
+        let smaller_tallies = smaller.raw_norm_tallies();
+        let _served = smaller.embed_batch(&["half"]).expect("normalized");
+        let _served = smaller.embed_batch(&["half"]).expect("normalized");
+        assert_eq!(
+            scraped(&smaller_tallies).expect("the tallies scrape"),
+            (2, 2, 0.5)
+        );
     }
 
     /// Stacking normalizers would hide which layer is trusted; a provider

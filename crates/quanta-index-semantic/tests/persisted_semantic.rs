@@ -8,13 +8,14 @@ use std::path::{Path, PathBuf};
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BatchIngestMode, EmbeddingDistanceMetric, EmbeddingModelContract, EmbeddingRecord,
-    ExactRepoRelativePathV1, ManifestGeneration, OwnerDocKind, QueryConstraintSetV1, RepoId,
-    RevisionId, SearchScopeKey, SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
+    BatchIngestMode, EmbeddingDistanceMetric, EmbeddingModelContract, EmbeddingNormalization,
+    EmbeddingRecord, ExactRepoRelativePathV1, ManifestGeneration, OwnerDocKind,
+    QueryConstraintSetV1, RepoId, RevisionId, SearchScopeKey, SemanticCorpusKindV1,
+    SemanticIngestBatch, SemanticReplaceScope,
 };
 use quanta_index_core::{
-    CoreError, GenerationQuarantineReasonV1, GenerationStorageKeyV1, RequestBudgetV1,
-    SemanticIndexOpenPort,
+    CoreError, GenerationQuarantineReasonV1, GenerationStorageKeyV1, L2_UNIT_NORM_TOLERANCE,
+    RequestBudgetV1, SemanticIndexOpenPort,
 };
 use quanta_index_semantic::{
     SemanticAdapter, build_resident_batch_v1, embedding_record_v1, inventory_persisted_generations,
@@ -803,6 +804,228 @@ fn query_dimension_mismatch_fails_closed() -> TestResult {
         | CoreError::Storage(_)) => {
             return Err(format!("expected typed SemDimMismatch, got {other:?}").into());
         }
+    }
+    Ok(())
+}
+
+fn typed_code<T>(result: &Result<T, CoreError>) -> Option<String> {
+    match result {
+        Err(CoreError::Typed { code, .. }) => Some(code.clone()),
+        _ => None,
+    }
+}
+
+/// Vectors an `L2Unit` contract of dimension 3 refuses, as a query and as
+/// an ingested row alike.
+fn off_contract_unit_vectors() -> [(&'static str, Vec<f32>); 5] {
+    [
+        ("half norm", vec![0.5, 0.0, 0.0]),
+        ("double norm", vec![2.0, 0.0, 0.0]),
+        ("zero", vec![0.0, 0.0, 0.0]),
+        ("nan", vec![f32::NAN, 0.0, 0.0]),
+        ("inf", vec![f32::INFINITY, 0.0, 0.0]),
+    ]
+}
+
+/// Every query vector is held to the contract the generation's rows were
+/// held to at ingest (QI-BB-031).
+///
+/// Under `L2Unit` a unit query serves; a vector of norm 0.5 or 2.0, a zero
+/// vector and a non-finite one are refused `SEM_INVALID_VECTOR` by every
+/// query entry — neighbour search, hits, candidate score — and the same
+/// vector as an ingested row is refused under the same code, so the corpus
+/// side and the query side agree. The wrong dimension stays
+/// `SEM_DIM_MISMATCH`.
+#[test]
+fn query_vectors_are_held_to_the_generations_normalization() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let generation = ManifestGeneration::new(1);
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            generation,
+            "src/main.rs",
+            vec![
+                embedding_record("emb-1", "src/main.rs", vec![1.0, 0.0, 0.0])?,
+                embedding_record("emb-2", "src/main.rs", vec![0.0, 1.0, 0.0])?,
+            ],
+            3,
+        ),
+    )?;
+    let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
+    let unbounded = RequestBudgetV1::unbounded();
+    let served = searcher.search(&[0.6, 0.8, 0.0], 2, &unbounded)?;
+    if served.len() != 2 {
+        return Err(format!("a unit query must serve both rows, served {}", served.len()).into());
+    }
+    let _score = searcher.score_candidate("emb-1", &[0.6, 0.8, 0.0], &unbounded)?;
+
+    for (index, (label, vector)) in (2_u64..).zip(off_contract_unit_vectors()) {
+        for (entry, code) in [
+            (
+                "search",
+                typed_code(&searcher.search(&vector, 2, &unbounded)),
+            ),
+            (
+                "hits",
+                typed_code(&searcher.search_hits(&vector, 2, &unbounded)),
+            ),
+            (
+                "score",
+                typed_code(&searcher.score_candidate("emb-1", &vector, &unbounded)),
+            ),
+        ] {
+            if code.as_deref() != Some("SEM_INVALID_VECTOR") {
+                return Err(format!("a {label} query via {entry} answered {code:?}").into());
+            }
+        }
+        let mut row = embedding_record("emb-off", "src/off.rs", vec![1.0, 0.0, 0.0])?;
+        row.vector.clone_from(&vector);
+        let ingested = build_resident_batch_v1(
+            &adapter,
+            &sealed_batch(ManifestGeneration::new(index), "src/off.rs", vec![row], 3),
+        );
+        if typed_code(&ingested).as_deref() != Some("SEM_INVALID_VECTOR") {
+            return Err(
+                format!("a {label} row must be refused like the query: {ingested:?}").into(),
+            );
+        }
+    }
+    match typed_code(&searcher.search(&[1.0, 0.0], 2, &unbounded)).as_deref() {
+        Some("SEM_DIM_MISMATCH") => Ok(()),
+        other => Err(format!("a two-component query answered {other:?}").into()),
+    }
+}
+
+/// A raw (`None`) generation holds its query vectors to what its rows were
+/// held to: finite, non-zero, the right dimension — a norm of 2.0 serves,
+/// a zero or non-finite vector does not (QI-BB-031).
+#[test]
+fn a_raw_generation_serves_any_finite_non_zero_query() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let generation = ManifestGeneration::new(1);
+    let mut row = embedding_record("emb-1", "src/main.rs", vec![1.0, 0.0, 0.0])?;
+    row.vector = vec![2.0, 0.0, 0.0];
+    let mut batch = sealed_batch(generation, "src/main.rs", vec![row], 3);
+    batch.model_contract.normalization = EmbeddingNormalization::None;
+    build_resident_batch_v1(&adapter, &batch)?;
+    let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
+    let unbounded = RequestBudgetV1::unbounded();
+    if searcher.search(&[2.0, 0.0, 0.0], 1, &unbounded)?.len() != 1 {
+        return Err("a raw generation must serve a finite non-zero query".into());
+    }
+    for (label, vector) in [
+        ("zero", vec![0.0, 0.0, 0.0]),
+        ("nan", vec![f32::NAN, 0.0, 0.0]),
+    ] {
+        let code = typed_code(&searcher.search(&vector, 1, &unbounded));
+        if code.as_deref() != Some("SEM_INVALID_VECTOR") {
+            return Err(format!("a {label} query on a raw generation answered {code:?}").into());
+        }
+    }
+    Ok(())
+}
+
+/// Every persisted row of an `L2Unit` generation is a unit vector, and the
+/// manifest names the policy (QI-BB-031 완료 기준 #2).
+///
+/// The rows come from directions of every scale and are read back straight
+/// from the sealed dataset, past the adapter; the policy is decoded from
+/// the scope manifest's own bytes.
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test-only direct library read of the sealed dataset; the sync seam is the test's own runtime"
+)]
+fn every_persisted_row_of_an_l2_unit_generation_is_unit() -> TestResult {
+    use arrow_array::{Array, FixedSizeListArray, Float32Array};
+    use futures::TryStreamExt;
+    use lancedb::query::ExecutableQuery;
+
+    const ROWS: u32 = 40;
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let generation = ManifestGeneration::new(1);
+    let embeddings = (0..ROWS)
+        .map(|row| {
+            let scale = f32::from(u16::try_from(row)?).mul_add(0.37, 0.01);
+            let tilt = f32::from(u16::try_from(row % 7)?) - 3.0;
+            embedding_record(&format!("emb-{row}"), "src/main.rs", vec![scale, tilt, 0.5])
+                .map_err(|err| -> Box<dyn std::error::Error> { err.into() })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(generation, "src/main.rs", embeddings, 3),
+    )?;
+
+    let dir = generation_dir(temp.path(), generation);
+    let manifest: ciborium::value::Value =
+        ciborium::from_reader(std::fs::read(dir.join("semantic-manifest.cbor"))?.as_slice())?;
+    let normalization = manifest
+        .as_map()
+        .and_then(|entries| {
+            entries
+                .iter()
+                .find(|(key, _value)| key.as_text() == Some("normalization"))
+        })
+        .and_then(|(_key, value)| value.as_text());
+    if normalization != Some("l2_unit") {
+        return Err(format!("the manifest must name l2_unit, names {normalization:?}").into());
+    }
+
+    let uri = dir.join("dataset").to_string_lossy().into_owned();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let batches = runtime.block_on(async {
+        let connection = lancedb::connect(&uri)
+            .execute()
+            .await
+            .map_err(|err| format!("connect: {err}"))?;
+        let table = connection
+            .open_table("semantic")
+            .execute()
+            .await
+            .map_err(|err| format!("open_table: {err}"))?;
+        let stream = table
+            .query()
+            .execute()
+            .await
+            .map_err(|err| format!("query: {err}"))?;
+        stream
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|err| format!("read rows: {err}"))
+    })?;
+    let mut seen = 0_u32;
+    for batch in &batches {
+        let vectors = batch
+            .column_by_name("vector")
+            .and_then(|column| column.as_any().downcast_ref::<FixedSizeListArray>())
+            .ok_or("the dataset stores a fixed-size vector column")?;
+        for row in vectors.iter() {
+            let row = row.ok_or("a stored vector is null")?;
+            let components = row
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .ok_or("a stored vector is f32")?;
+            let norm = components
+                .values()
+                .iter()
+                .map(|component| f64::from(*component) * f64::from(*component))
+                .sum::<f64>()
+                .sqrt();
+            if (norm - 1.0).abs() > L2_UNIT_NORM_TOLERANCE {
+                return Err(format!("a persisted row has norm {norm}").into());
+            }
+            seen = seen.saturating_add(1);
+        }
+    }
+    if seen != ROWS {
+        return Err(format!("read {seen} persisted rows, expected {ROWS}").into());
     }
     Ok(())
 }

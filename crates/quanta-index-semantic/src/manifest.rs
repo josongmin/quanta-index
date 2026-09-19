@@ -682,8 +682,25 @@ impl SemanticManifest {
                 self.distance_metric
             )));
         }
+        let _normalization = self.normalization_contract()?;
         self.validate_corpus_coverage()?;
         Ok(())
+    }
+
+    /// The normalization every row was held to at ingest, as the contract
+    /// names it: what every query vector is held to at the door
+    /// (QI-BB-031). A token this adapter does not write is refused, never
+    /// read as "no normalization".
+    pub(crate) fn normalization_contract(&self) -> Result<EmbeddingNormalization, CoreError> {
+        [EmbeddingNormalization::None, EmbeddingNormalization::L2Unit]
+            .into_iter()
+            .find(|normalization| normalization_token(*normalization) == self.normalization)
+            .ok_or_else(|| {
+                CoreError::Storage(format!(
+                    "semantic: manifest normalization `{}` is not one this adapter serves (`none`, `l2_unit`)",
+                    self.normalization
+                ))
+            })
     }
 
     pub(crate) fn validate_corpus_coverage(&self) -> Result<(), CoreError> {
@@ -886,6 +903,33 @@ mod tests {
             &RevisionId::new("rev"),
             ManifestGeneration::new(GENERATION),
         )
+    }
+
+    /// The normalization token names the contract every query vector is
+    /// held to; a token this adapter never writes is refused at validation,
+    /// not read as "no normalization" (QI-BB-031).
+    #[test]
+    fn the_normalization_token_is_the_contract_or_a_refusal() {
+        for normalization in [EmbeddingNormalization::None, EmbeddingNormalization::L2Unit] {
+            let mut sealed = manifest(10, exact_seal());
+            sealed.normalization = normalization_token(normalization).to_string();
+            assert_eq!(
+                sealed.normalization_contract().expect("a written token"),
+                normalization
+            );
+            validate(&sealed).expect("a written token validates");
+        }
+        for foreign in ["", "L2Unit", "l2", "unit"] {
+            let mut sealed = manifest(10, exact_seal());
+            sealed.normalization = foreign.to_string();
+            match (sealed.normalization_contract(), validate(&sealed)) {
+                (Err(CoreError::Storage(read)), Err(CoreError::Storage(validated))) => {
+                    assert!(read.contains("is not one this adapter serves"), "{read}");
+                    assert_eq!(read, validated);
+                }
+                other => panic!("the token `{foreign}` must be refused, got {other:?}"),
+            }
+        }
     }
 
     #[test]

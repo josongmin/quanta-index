@@ -1610,6 +1610,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
+    use quanta_index_core::L2UnitEmbeddingProvider;
+
     /// Counts how many texts it was asked to embed, so a cache hit can be proven
     /// to avoid the inner provider. Vectors are unit-normalized, as the
     /// composition root's wrapper guarantees for a real provider.
@@ -2087,6 +2089,109 @@ mod tests {
             0,
             "persisted cache must avoid all re-embedding"
         );
+    }
+
+    /// A raw provider: no output is on the unit sphere (each is the text's
+    /// byte sum and length, scaled by 2.5), as a remote model's may not be.
+    struct RawProvider {
+        embedded: Arc<AtomicUsize>,
+    }
+
+    impl TextEmbeddingProvider for RawProvider {
+        fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+            let _prior = self.embedded.fetch_add(texts.len(), Ordering::SeqCst);
+            Ok(texts
+                .iter()
+                .map(|text| {
+                    let sum: u32 = text.bytes().map(u32::from).sum();
+                    let sum = u16::try_from(sum % 1000).map_or(0.0, f32::from);
+                    let length = u16::try_from(text.len()).map_or(0.0, f32::from);
+                    vec![2.5 * sum, 2.5 * length, 2.5]
+                })
+                .collect())
+        }
+        fn model_id(&self) -> &'static str {
+            "raw-mixed"
+        }
+        fn model_revision(&self) -> &'static str {
+            "r1"
+        }
+        fn dimension(&self) -> usize {
+            3
+        }
+        fn normalization(&self) -> EmbeddingNormalization {
+            EmbeddingNormalization::None
+        }
+    }
+
+    /// Where a mixed batch's hits come from.
+    #[derive(Clone, Copy, Debug)]
+    enum Store {
+        Memory,
+        File,
+    }
+
+    /// A batch that mixes cache hits and fresh misses is the batch an
+    /// uncached provider returns, bit for bit (QI-BB-031 완료 기준 #3).
+    ///
+    /// The production shape — a cache over the `L2Unit` wrapper over a raw
+    /// provider — is warmed with two texts, then asked for a batch holding
+    /// both, two new texts and a repeat: every vector equals by bits what the
+    /// wrapper alone returns for the same batch, only the two new texts
+    /// reach the provider, and every vector holds the unit contract. Once
+    /// through memory and once through the file cache's disk round trip.
+    #[test]
+    fn a_mixed_hit_and_miss_batch_is_the_uncached_batch_bit_for_bit() {
+        let batch = ["alpha", "beta", "gamma", "delta", "alpha"];
+        let bits = |vectors: &[Vec<f32>]| -> Vec<Vec<u32>> {
+            vectors
+                .iter()
+                .map(|vector| vector.iter().map(|component| component.to_bits()).collect())
+                .collect()
+        };
+        let oracle = L2UnitEmbeddingProvider::new(RawProvider {
+            embedded: Arc::new(AtomicUsize::new(0)),
+        })
+        .expect("wrap the raw provider")
+        .embed_batch(&batch)
+        .expect("uncached batch");
+        let dir = tempfile::tempdir().expect("tempdir");
+        for store in [Store::Memory, Store::File] {
+            let embedded = Arc::new(AtomicUsize::new(0));
+            let inner = L2UnitEmbeddingProvider::new(RawProvider {
+                embedded: Arc::clone(&embedded),
+            })
+            .expect("wrap the raw provider");
+            let cache: Box<dyn EmbeddingCache> = match store {
+                Store::Memory => Box::new(InMemoryEmbeddingCache::default()),
+                Store::File => Box::new(
+                    FileEmbeddingCache::new(
+                        &dir.path().join("embed-cache"),
+                        &EmbeddingCacheIdentityV1::of(&inner),
+                        EmbeddingCacheRetentionPolicy::DEFAULT,
+                    )
+                    .expect("file cache"),
+                ),
+            };
+            let provider = CachingEmbeddingProvider::new(Box::new(inner), cache);
+            let _warm = provider.embed_batch(&["alpha", "gamma"]).expect("warm");
+            let warmed = embedded.load(Ordering::SeqCst);
+            let mixed = provider.embed_batch(&batch).expect("mixed batch");
+            assert_eq!(
+                embedded.load(Ordering::SeqCst).saturating_sub(warmed),
+                2,
+                "{store:?}: only the two new texts reach the provider"
+            );
+            assert_eq!(bits(&mixed), bits(&oracle), "{store:?}");
+            for vector in &mixed {
+                SemanticPolicy::validate_embedding_vector_v1(
+                    vector,
+                    3,
+                    EmbeddingNormalization::L2Unit,
+                )
+                .expect("every vector holds the unit contract");
+            }
+        }
     }
 
     /// Bytes of one two-component entry on disk.

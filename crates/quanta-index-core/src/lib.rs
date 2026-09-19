@@ -99,7 +99,7 @@ pub use domains::repomap::{
 pub use domains::semantic::{
     DenseIndexBuildV1, DenseIndexEffortV1, DenseIndexSegmentBuildV1, DenseIndexTrainingV1,
     DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1, EMBED_CHECKPOINT,
-    L2_UNIT_NORM_TOLERANCE, L2UnitEmbeddingProvider, ResidentScopeSource,
+    L2_UNIT_NORM_TOLERANCE, L2UnitEmbeddingProvider, RawNormTallies, ResidentScopeSource,
     SEMANTIC_ROW_ROOT_MISMATCH_CODE, SEMANTIC_STREAM_OWNER_SCOPE_OVER_WINDOW_CODE,
     SEMANTIC_STREAM_WINDOW_EXCEEDED_CODE, SEMANTIC_STREAM_WINDOW_SCOPES,
     SEMANTIC_STREAM_WINDOW_STILL_RESIDENT_CODE, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES,

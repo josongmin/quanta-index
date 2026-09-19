@@ -550,9 +550,12 @@ fn build_semantic_embedders(
             // before either the cache or a path sees it (QI-BB-031).
             let normalized = L2UnitEmbeddingProvider::new(openai)?;
             // The provider's retry/transport/HTTP failure counters reach the
-            // scrape as `embed_provider_…` (QI-BB-009 #5, QI-BB-015).
+            // scrape as `embed_provider_…` (QI-BB-009 #5, QI-BB-015), and
+            // how far its raw vectors were from unit as
+            // `semantic_embedding_raw_…` (QI-BB-031 #4).
+            let raw_norms: Arc<dyn MetricSourcePort> = normalized.raw_norm_tallies();
             let mut metric_sources: Vec<Arc<dyn MetricSourcePort>> =
-                vec![Arc::new(OpenAiEmbedTelemetrySource)];
+                vec![Arc::new(OpenAiEmbedTelemetrySource), raw_norms];
             let provider: Arc<dyn TextEmbeddingProvider + Send + Sync> = if tuning.cache_enabled {
                 // Persistent content-hash cache under the identity's own
                 // namespace (model, revision, dimension, policy — QI-BB-028)

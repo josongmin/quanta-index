@@ -29,6 +29,10 @@ use quanta_index_semantic::{
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+/// The (1, 1, 1) direction at unit norm: the generations are `L2Unit`, so
+/// their queries are held to the unit contract (QI-BB-031).
+const DIAGONAL_XYZ: [f32; 3] = [0.577_350_26, 0.577_350_26, 0.577_350_26];
+
 const DIMENSION: u32 = 3;
 
 fn repo_id() -> RepoId {
@@ -173,7 +177,7 @@ impl LifecycleModel {
     fn assert_open_matches(&self, adapter: &SemanticAdapter, generation: u64) -> TestResult {
         let searcher = adapter.open(&repo_id(), &revision_id(), Self::generation(generation))?;
         let mut actual = searcher
-            .search(&[1.0, 1.0, 1.0], 32, &RequestBudgetV1::unbounded())?
+            .search(&DIAGONAL_XYZ, 32, &RequestBudgetV1::unbounded())?
             .into_iter()
             .map(|hit| hit.candidate_id)
             .collect::<Vec<_>>();

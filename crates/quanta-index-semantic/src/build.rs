@@ -3099,7 +3099,9 @@ mod tests {
         let fallback_symbol = crate::run_blocking(
             &runtime,
             loaded.search_hits_filtered_async(
-                &[0.9, 0.1, 0.0],
+                // The direction (0.9, 0.1, 0) at unit norm: the generation is
+                // `L2Unit`, so its queries are held to the unit contract.
+                &[0.993_883_7, 0.110_431_5, 0.0],
                 10,
                 Some("RawCodeFallback"),
                 unbounded_watch(),

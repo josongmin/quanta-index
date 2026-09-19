@@ -23,6 +23,14 @@ use quanta_index_semantic::{
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+/// The (1, 1, 0) direction at unit norm: the generations are `L2Unit`, so
+/// their queries are held to the unit contract (QI-BB-031).
+const DIAGONAL_XY: [f32; 3] = [
+    std::f32::consts::FRAC_1_SQRT_2,
+    std::f32::consts::FRAC_1_SQRT_2,
+    0.0,
+];
+
 const DIMENSION: u32 = 3;
 const MANIFEST_DIGEST: &str = "manifest:scv2-product-scenarios";
 const CORPUS_POLICY_DIGEST: &str = "policy:semantic-source-v1";
@@ -158,7 +166,7 @@ fn scv2_s01_exact_owner_replace_does_not_erase_sibling_on_same_path() -> TestRes
     )?;
 
     let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
-    let hits = searcher.search_hits(&[1.0, 1.0, 0.0], 10, &RequestBudgetV1::unbounded())?;
+    let hits = searcher.search_hits(&DIAGONAL_XY, 10, &RequestBudgetV1::unbounded())?;
     let pairs = sorted_owner_record_pairs(&hits);
     assert_eq!(
         pairs,
@@ -227,7 +235,7 @@ fn scv2_s02_owner_tombstone_removes_only_target_owner() -> TestResult {
     )?;
 
     let searcher = adapter.open(&repo_id(), &revision_id(), next)?;
-    let hits = searcher.search_hits(&[1.0, 1.0, 0.0], 10, &RequestBudgetV1::unbounded())?;
+    let hits = searcher.search_hits(&DIAGONAL_XY, 10, &RequestBudgetV1::unbounded())?;
     let pairs = sorted_owner_record_pairs(&hits);
     assert_eq!(
         pairs,

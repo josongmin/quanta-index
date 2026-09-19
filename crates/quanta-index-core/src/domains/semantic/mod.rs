@@ -13,7 +13,9 @@ pub use outbound::{
     SemanticIngestPort, SemanticReadiness, SemanticSearchHitV1, SemanticSearcher,
     TextEmbeddingProvider,
 };
-pub use service::{L2_UNIT_NORM_TOLERANCE, L2UnitEmbeddingProvider, SemanticPolicy};
+pub use service::{
+    L2_UNIT_NORM_TOLERANCE, L2UnitEmbeddingProvider, RawNormTallies, SemanticPolicy,
+};
 pub use stream::{
     ResidentScopeSource, SEMANTIC_STREAM_OWNER_SCOPE_OVER_WINDOW_CODE,
     SEMANTIC_STREAM_WINDOW_EXCEEDED_CODE, SEMANTIC_STREAM_WINDOW_SCOPES,

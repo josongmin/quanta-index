@@ -542,9 +542,10 @@ fn boot_gauges_match_the_boot_inventory_and_the_writer_envelope_reflects_the_sea
     Ok(())
 }
 
-/// The embedding provider's counters reach the scrape under the `OpenAI`
-/// profile (QI-BB-009 #5, QI-BB-015): the provider telemetry and the
-/// cache's open report are present from boot, before any request.
+/// The embedding provider's counters are scraped from boot under `OpenAI`.
+///
+/// QI-BB-009 #5, QI-BB-015: the provider telemetry, the cache's open report
+/// and the raw-norm tallies (QI-BB-031) are present before any request.
 #[test]
 fn the_provider_and_cache_open_metrics_are_scraped_under_the_openai_profile() -> TestResult {
     let mut rt = E2eRuntime::boot_with_embedder_profile(
@@ -570,6 +571,19 @@ fn the_provider_and_cache_open_metrics_are_scraped_under_the_openai_profile() ->
     ] {
         let _present = scrape.counter(name)?;
     }
+    // How far the raw provider's vectors were from unit (QI-BB-031 #4):
+    // registered at boot, nothing normalized yet.
+    for name in [
+        "semantic_embedding_raw_vectors_normalized_total",
+        "semantic_embedding_raw_vectors_off_unit_total",
+    ] {
+        expect_eq(name, &scrape.counter(name)?, &0)?;
+    }
+    expect_eq(
+        "no raw vector has been seen",
+        &scrape.gauge("semantic_embedding_raw_norm_deviation_max")?,
+        &0.0,
+    )?;
     for name in [
         "embedding_cache_entries",
         "embedding_cache_open_stat_calls",

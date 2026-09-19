@@ -171,6 +171,7 @@ crate quanta_index_core
 │   │   │   └── trait TextEmbeddingProvider: pub
 │   │   ├── mod service: pub(self)
 │   │   │   ├── struct L2UnitEmbeddingProvider: pub
+│   │   │   ├── struct RawNormTallies: pub
 │   │   │   └── struct SemanticPolicy: pub
 │   │   └── mod stream: pub(self)
 │   │       ├── struct ResidentOwnerGroup: pub(self)

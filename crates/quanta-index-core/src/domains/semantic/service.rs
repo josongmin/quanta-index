@@ -1,6 +1,10 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{EmbeddingNormalization, PUBLIC_TOP_K_MAX};
 
+use crate::domains::observability::{MetricPointV1, MetricSourcePort};
 use crate::domains::semantic::outbound::TextEmbeddingProvider;
 use crate::error::{CoreError, validate_internal_fetch_size, validate_query_top_k};
 use crate::request_budget::RequestBudgetV1;
@@ -41,30 +45,6 @@ impl SemanticPolicy {
     /// been accepted.
     pub fn validate_fetch_size(fetch: u32) -> Result<(), CoreError> {
         let _accepted = validate_internal_fetch_size(fetch)?;
-        Ok(())
-    }
-
-    pub fn validate_query_vector(query_vector: &[f32]) -> Result<(), CoreError> {
-        if query_vector.is_empty() {
-            return Err(invalid_vector(
-                "semantic: query vector must not be empty".to_string(),
-            ));
-        }
-        let mut norm_sq = 0.0_f32;
-        for component in query_vector {
-            if !component.is_finite() {
-                return Err(invalid_vector(format!(
-                    "semantic: query vector contains non-finite component {component}"
-                )));
-            }
-            norm_sq += component * component;
-        }
-        if !norm_sq.is_finite() || norm_sq <= 0.0 {
-            return Err(invalid_vector(
-                "semantic: query vector must contain at least one non-zero finite component"
-                    .to_string(),
-            ));
-        }
         Ok(())
     }
 }
@@ -165,6 +145,55 @@ fn l2_norm_v1(vector: &[f32]) -> Result<f64, CoreError> {
 /// wrong dimension fails the whole batch closed.
 pub struct L2UnitEmbeddingProvider<P: TextEmbeddingProvider> {
     inner: P,
+    raw_norms: Arc<RawNormTallies>,
+}
+
+/// How far the raw provider's vectors were from unit before the wrapper
+/// normalized them (QI-BB-031 보완 #4).
+///
+/// Every raw vector of every batch the wrapper returned is counted; a
+/// batch it refused records nothing. "Off unit" is a norm outside
+/// [`L2_UNIT_NORM_TOLERANCE`] of one: a provider that promises unit
+/// vectors and drifts shows here before any consumer depends on it.
+#[derive(Debug, Default)]
+pub struct RawNormTallies {
+    normalized: AtomicU64,
+    off_unit: AtomicU64,
+    /// Bits of the largest `|norm - 1|` seen: a non-negative `f64`'s bits
+    /// order like its value, so `fetch_max` keeps the maximum.
+    max_deviation_bits: AtomicU64,
+}
+
+impl RawNormTallies {
+    fn record(&self, normalized: u64, off_unit: u64, max_deviation: f64) {
+        let _prior = self.normalized.fetch_add(normalized, Ordering::Relaxed);
+        let _prior = self.off_unit.fetch_add(off_unit, Ordering::Relaxed);
+        let _prior = self
+            .max_deviation_bits
+            .fetch_max(max_deviation.to_bits(), Ordering::Relaxed);
+    }
+}
+
+impl MetricSourcePort for RawNormTallies {
+    /// `semantic_embedding_raw_vectors_normalized_total`,
+    /// `semantic_embedding_raw_vectors_off_unit_total` and the gauge
+    /// `semantic_embedding_raw_norm_deviation_max`.
+    fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
+        Ok(vec![
+            MetricPointV1::counter(
+                "semantic_embedding_raw_vectors_normalized_total",
+                self.normalized.load(Ordering::Relaxed),
+            ),
+            MetricPointV1::counter(
+                "semantic_embedding_raw_vectors_off_unit_total",
+                self.off_unit.load(Ordering::Relaxed),
+            ),
+            MetricPointV1::gauge(
+                "semantic_embedding_raw_norm_deviation_max",
+                f64::from_bits(self.max_deviation_bits.load(Ordering::Relaxed)),
+            ),
+        ])
+    }
 }
 
 impl<P: TextEmbeddingProvider> L2UnitEmbeddingProvider<P> {
@@ -178,7 +207,16 @@ impl<P: TextEmbeddingProvider> L2UnitEmbeddingProvider<P> {
                 inner.normalization()
             )));
         }
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            raw_norms: Arc::new(RawNormTallies::default()),
+        })
+    }
+
+    /// The raw-norm tallies, for the metrics scrape.
+    #[must_use]
+    pub fn raw_norm_tallies(&self) -> Arc<RawNormTallies> {
+        Arc::clone(&self.raw_norms)
     }
 }
 
@@ -199,12 +237,19 @@ impl<P: TextEmbeddingProvider> L2UnitEmbeddingProvider<P> {
             )));
         }
         let dimension = self.inner.dimension();
+        let mut off_unit = 0_u64;
+        let mut max_deviation = 0.0_f64;
         for vector in &mut vectors {
             SemanticPolicy::validate_embedding_vector_v1(
                 vector,
                 dimension,
                 EmbeddingNormalization::None,
             )?;
+            let deviation = (l2_norm_v1(vector)? - 1.0).abs();
+            if deviation > L2_UNIT_NORM_TOLERANCE {
+                off_unit = off_unit.saturating_add(1);
+            }
+            max_deviation = max_deviation.max(deviation);
             SemanticPolicy::normalize_l2_unit_v1(vector)?;
             SemanticPolicy::validate_embedding_vector_v1(
                 vector,
@@ -212,6 +257,10 @@ impl<P: TextEmbeddingProvider> L2UnitEmbeddingProvider<P> {
                 EmbeddingNormalization::L2Unit,
             )?;
         }
+        let normalized = u64::try_from(vectors.len()).map_err(|error| {
+            CoreError::Storage(format!("semantic: batch size overflow: {error}"))
+        })?;
+        self.raw_norms.record(normalized, off_unit, max_deviation);
         Ok(vectors)
     }
 }
@@ -261,14 +310,10 @@ mod tests {
     //! `quanta-index-core`, 21 missed). The tests below kill the specific
     //! mutations:
     //!
-    //! - `validate_query_vector`: `*` → `+` mutation on line 50 (`norm_sq +=
-    //!   component * component`). With the multiplication, `[3.0, 4.0]`
-    //!   gives `norm_sq = 25.0`; with the buggy addition it would give
-    //!   `norm_sq = 14.0`. We can't observe `norm_sq` directly, but the
-    //!   only behavioural exit it controls is the zero-norm rejection at
-    //!   line 52. A vector like `[1.0, -1.0]` has `norm = sqrt(2)` under
-    //!   multiplication (passes) but `norm = 0.0` under addition (fails) —
-    //!   exercising both arms catches the swap.
+    //! - the L2 norm's `*` → `+` mutation (`sum += component * component`):
+    //!   `[1.0, -1.0]` has norm `sqrt(2)` under multiplication and passes a
+    //!   raw contract, but sums to zero under addition and would be refused
+    //!   as zero-norm — exercising both arms catches the swap.
     //! - `validate_top_k`: `>` → `>=` mutation on line 26.
     //!   `top_k = MAX_TOP_K` must be accepted (boundary kept by `>`),
     //!   `top_k = MAX_TOP_K + 1` must be rejected.
@@ -276,15 +321,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validate_query_vector_kills_norm_sq_mul_to_add_mutation() {
-        // Under `+`, `1 + (-1) = 0` → norm_sq is 0 → reject.
-        // Under `*`, `1*1 + (-1)*(-1) = 2` → norm_sq is 2 → accept.
-        // Test that the implementation accepts this vector — kills the
-        // `*` → `+` mutant which would reject it.
-        assert!(SemanticPolicy::validate_query_vector(&[1.0, -1.0]).is_ok());
-        // Counter-check: pure-zero vector must still be rejected
-        // regardless of the mutation.
-        assert!(SemanticPolicy::validate_query_vector(&[0.0, 0.0]).is_err());
+    fn the_norm_squares_its_components() {
+        // Under `+`, `1 + (-1) = 0` → zero norm → refused; under `*` the
+        // norm is sqrt(2) and a raw contract accepts it.
+        assert!(
+            SemanticPolicy::validate_embedding_vector_v1(
+                &[1.0, -1.0],
+                2,
+                quanta_index_contract::EmbeddingNormalization::None
+            )
+            .is_ok()
+        );
+        assert!(
+            SemanticPolicy::validate_embedding_vector_v1(
+                &[0.0, 0.0],
+                2,
+                quanta_index_contract::EmbeddingNormalization::None
+            )
+            .is_err()
+        );
     }
 
     #[test]
