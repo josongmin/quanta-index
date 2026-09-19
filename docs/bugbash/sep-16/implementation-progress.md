@@ -2512,6 +2512,51 @@ client)가 encode 거부에 걸려 요청을 못 보내고 `IPC_TRANSPORT`로 �
 `format!` push → `write!`, 그리고 rail binary 2개에서 A8이 `#[expect(print_*)]`와 `fn main` 사이에 `fn run`을 끼워 속성이 엉뚱한 함수에 붙은 것) — 전부 수정,
 workspace clippy EXIT=0.
 
+## 3.53 QI-BB-017/027/028/006 — 값싼 문, 두 track 공통의 integrity scrub(유지보수 타이머 위), manifest 형식 하나, content root attestation (fix wave A4 + coordinator 통합, ad54e6f)
+
+§4 감사가 지적한 것: QI-BB-017 — open마다 dataset 전체 SHA-256(seal 후 2회), scrub 없음, legacy v2–v8 compat 잔존; QI-BB-027 **WRONG** — legacy ≤v7/v8
+generation은 ANN 누락을 silent exact fallback으로 serve, append segment `ef_construction`≠manifest; QI-BB-028 — semantic row-root attestation(완료 기준 #5)
+미구현; QI-BB-031 — adapter 경계 validator가 norm 무관.
+
+**티켓 완료 기준 대조(코드 기준)**
+
+| 티켓 bullet | 판정 | 근거 |
+| --- | --- | --- |
+| QI-BB-017 보완 #1/#2 seal-time 전체 증명과 open-time identity 증명 분리; open은 manifest+root만 | **MET(semantic, A4)** + lexical(§3.48) | semantic `sealed_manifest.rs`: open(activation·restart·cold query)은 커밋된 dataset 파일의 존재·길이를 directory metadata로, 디코드하는 sidecar 2개만 digest로 증명 — dataset byte를 읽지 않음. tests semantic `sealed_manifest.rs`(`the_doors_read_no_dataset_payload_byte`: payload 파일을 읽기 불가로 만들어도 문은 통과, 행을 읽는 query만 실패) |
+| 보완 #3/#6 full scrub을 background로, 결과를 metric·receipt로 | **MET(두 track, coordinator 통합)** | core `IntegrityScrubPort`(`scrub_candidates`, bounded·resumable `scrub(generation, cursor, budget)` → `Completed`/`Paused{cursor}`/`Corrupt{quarantined}`)를 **semantic과 lexical 모두** 구현. A3가 lexical에 만든 다른 모양의 port(stamp/status)는 A4 port로 **통합·삭제**, 해시 루프는 core `hash_committed_step_v1` 하나를 공유(layout 검사는 adapter 소유). 완료 pass → scrub receipt, 불일치 → durable quarantine receipt → inventory가 `GENERATION_QUARANTINE_CONTENT_CORRUPT`로 격리, 모든 문(validator·open·proven open)이 `GENERATION_QUARANTINED` 거부(quarantine discard로만 해제). scheduler는 **A7 maintenance timer의 한 작업**(policy interval마다 최대 1 step; A4의 별도 스레드 제거), env family `QUANTA_INDEX_INTEGRITY_SCRUB_{INTERVAL_MS,MAX_BYTES_PER_STEP}`(A7 config fence에 등록), corruption 시 해당 track registry handle을 `retire`(fence 포함). boot scrape에 track별 never-scrubbed 수·마지막 완료(없으면 gauge 생략 — 0 치환 안 함). tests: lexical `a_same_length_flip_is_found_by_the_scrub_and_quarantines_the_generation`(문은 통과하던 같은 길이 flip → Corrupt → 문 거부·inventory 격리·후보 제외·재scrub 거부), `an_intact_generation_scrubs_in_bounded_resumable_steps`(1-byte budget: step당 파일 1개, cursor 순행, 완료 receipt), semantic `the_scrub_is_bounded_resumable_and_accounted`, scheduler `a_corruption_is_counted_and_fences_the_resident_handle`(retirements 1), daemon `e2e_integrity_scrub.rs` |
+| 보완 #5 membership commitment streaming | 기존(§3.14) | |
+| 완료 기준 #1 seal 후 동일 generation full scan 0/1회 | **MET(구조)** | 문은 payload를 읽지 않음(위 test); full hash는 seal 1회 + scrub(off serving path) |
+| 완료 기준 #3 1천만 row budget·RSS | **BLOCKED(host)** | |
+| 완료 기준 #4 marker/manifest/table/version corruption이 cheap open 또는 scrub에서 fail-closed | **MET** | shape defect(누락·길이·foreign file)는 문에서 `GENERATION_SIDECAR_CORRUPT`, 같은 길이 rewrite는 scrub에서 quarantine; 형식은 아래 |
+| legacy v2–v8 (QI-BB-017/027) | **MET(삭제)** | manifest decoder v2..v8, build contract v1, `DenseLaneAttestationV1::LegacyUnverified`, `DenseIndexLineageV1::Unrecorded` 삭제; 다른 형식은 `GENERATION_MANIFEST_FORMAT_UNSUPPORTED` typed 거부(rebuild = migration), inventory는 `FORMAT_UNSUPPORTED`로 격리 → unrecorded index·exact fallback으로 serve되는 generation 없음. tests `every_other_format_is_refused_typed_with_a_rebuild_instruction`, `a_generation_sealed_under_an_earlier_format_is_refused_typed_at_every_door`, `a_format_2_generation_is_refused_typed_at_open` |
+| QI-BB-027 append segment 파라미터 정직성 | **MET** | manifest가 append된 ANN segment마다 실제 빌드 `(m, ef_construction)`(`DenseIndexSegmentBuildV1`) 기록, 만들지 않은 recipe를 주장하는 기록은 validation·open이 거부. tests `the_segment_record_refuses_a_recipe_claimed_for_segments_not_built_with_it`, `the_seal_records_every_segment_as_built_and_the_open_refuses_a_false_claim` |
+| QI-BB-027 완료 기준 #2 ANN 파일 제거/손상 후 restart·query의 typed 동작 | **MET** | vector_index_contract: 누락/크기 변경 → 문에서 `GENERATION_SIDECAR_CORRUPT`(restart 포함), 같은 길이 rewrite → scrub quarantine 후 모든 문 `GENERATION_QUARANTINED` |
+| QI-BB-028 완료 기준 #5 두 state root의 같은 외부 identity가 다른 row root면 activation 거부 | **MET(coordinator 통합)** | activation identity·sealed receipt·status report가 semantic row/membership root를 실음; activation·rollback·restart는 **한 번의 proven open 안에서**(§3.49 구조) root 대조 후 불일치면 `SEMANTIC_ROW_ROOT_MISMATCH`, 아무것도 승격 안 함. tests lifecycle `restart_rehydrate_refuses_an_active_composite_whose_roots_differ_v1`(승격 0 확인 추가), daemon `e2e_integrity_scrub.rs` foreign roots |
+| QI-BB-006 #4 semantic delta seal 증분 | **MET** | base inode 공유 파일은 base digest 상속(`semantic_seal_{hashed,inherited}_*`). test `a_delta_seal_hashes_only_the_files_it_added` |
+| QI-BB-027 완료 기준 #3 recall@k·p95/p99·build time·index bytes를 current HEAD artifact로 | **미충족** | recall gate test(§3.23)는 수치를 stdout에만 남김 — HEAD·digest가 붙은 artifact 아님(wave B) |
+| QI-BB-031 adapter 경계 norm 검증 | **미착수** | A4 에이전트가 손대지 않음(§4 배정은 A4였음) → wave B로 이관 |
+
+**Coordinator 통합(A4는 d0a84ef 기준이라 A3·A2·A5·A7·A8과 22 file 충돌)**: lifecycle·control_dispatcher·runtime·config·boot_inventory는 main 버전에서 시작해 A4 의도를
+재적용(A4는 validator 묶음 구조 위에서 root 검사를 넣었으나 main은 §3.49의 단일 proven open 구조). A4 scheduler가 A2에서 삭제된 `invalidate`와 시계 오류 시
+`map_or(0)` 기본값을 쓰던 것 → `retire` + 오류 카운트. `TrackInventoryReportV1`의 `unwrap_or(0)` gauge → 값이 없으면 생략. A4 에이전트가 clippy 도중 죽어
+남은 **40건 이상의 clippy finding**(원인 버리는 `map_err(|_|)`, 금지된 `unwrap_or`, 테스트 slicing·인덱싱, guard 조기 drop, 불필요한 `Result`, doc 문단 등) 수정.
+wire inventory: lexical scrub receipt 형식 1→2(Unix 초, adapter clock) + lexical quarantine receipt 등록.
+
+**Landing gate가 찾은 실제 경합(coordinator 수정)**: 첫 전체 gate에서 e2e 284/1(`e2e_snapshot_registry` ENOTEMPTY). 원인은 test가 아니라
+설계: scrub은 maintenance timer에서, retention GC·quarantine discard는 ingest·control 경로에서 같은 generation 디렉터리를 만지는데 조율이 없었다
+— GC가 지우는 도중 scrub step이 파일 소실을 `Missing`→`ContentCorrupt`로 판정해 지워지는 디렉터리에 quarantine receipt를 쓸 수 있었다(거짓
+손상 경보 + GC `remove_dir_all` 실패). 수정: 두 adapter가 **scrub step과 sealed 디렉터리 제거(reclaim, quarantine discard)를 lock 하나로
+직렬화**(adapter 인스턴스는 track당 하나, state root는 프로세스 독점 lease) — step은 generation을 온전하게 보거나 typed로 사라진 것(`NotFound`/
+`NotReady`)으로만 본다. scrub 첫 step은 부팅 즉시가 아니라 **한 interval 뒤**(부팅은 query·activation 시간, scrub은 background 증명). e2e
+harness 기본 scrub은 휴면(하루 간격) — scrub을 명시적으로 켠 test만 상호작용. `e2e_integrity_scrub`의 대기 조건 오류(track 공통 gauge를
+기다린 뒤 semantic receipt를 단정 — lexical이 port 0이라 먼저 끝나면 실패, 부팅 즉시 step 시절엔 seal 타이밍 운으로 통과)를 semantic
+generation 자신의 durable receipt 대기로 수정. tests: 두 track `a_scrub_resumed_over_a_reclaimed_generation_is_refused_not_quarantined`(step 사이
+reclaim → typed 거부, 디렉터리 재생성·quarantine·후보 없음), `the_pacing_waits_one_interval_from_the_start_and_between_steps`. 한계: lock 자체의
+동시성은 결정적 test가 없다(step 내부에 멈출 지점 없음) — 분류 test + 구조로 증명.
+
+**검증(coordinator, main 951f97f 위 rebase, 순차)**: fmt, check, 정책 lint 8종 + bench gate + CI pytest, workspace clippy keep-going 0, cargo-modules + public-api 일치,
+`just rust-doc`, unit 11 crate **1,448/0**, searchd-runtime e2e **전체 285/0**(수정 후 `e2e_integrity_scrub` 4회·`e2e_snapshot_registry` 3회 반복 green).
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -2529,7 +2574,7 @@ workspace clippy EXIT=0.
 | QI-BB-003 | P1 | §3.9/§3.49 | not closed → **MET(A2)** 단 crash-point matrix·durable GC-intent·pair retirement **BLOCKED** | reap된 pin `UNKNOWN_GENERATION`, GC receipt scrape, retention = 디스크 index byte(inode), orphan list/discard(§3.49) | — |
 | QI-BB-004 | P1 | §3.6 | closed | contradiction code가 generic `ERR_INVALID`; chunked join 미구현(≤10k라 실효 낮음) | — |
 | QI-BB-005 | P1 | §3.8 | gaps | projection은 budget까지 full collect(streaming 없음); text/symbol/semantic cursor 없음; `RESULT_TOO_LARGE` 사후 거부; perf blocked | wave B |
-| QI-BB-006 | P2 | §3.4/§3.4.1/§3.4.2/§3.38/§3.48 | gaps → **lexical 증분 commitment MET(A3)** | lexical seal은 inode 상속으로 바뀐 byte만 해시, open은 segment 길이만(§3.48). 남은 것: semantic 측(A4), 100 GB 실측(host) | A4 |
+| QI-BB-006 | P2 | §3.4/§3.4.1/§3.4.2/§3.38/§3.48/§3.53 | gaps → **MET(A3+A4)** 단 100 GB 실측 **BLOCKED(host)** | lexical seal은 inode 상속으로 바뀐 byte만 해시(§3.48), semantic delta seal도 base inode 공유 파일은 digest 상속(§3.53) | — |
 | QI-BB-007 | P1* | (M4)/§3.51 | blocked(M4) — **dev 라벨 MET(A7)** | `hash-dev` selector, unset 거부(`QUANTA_INDEX_ALLOW_DEV_EMBEDDER`), boot notice + gauge(§3.51). judged corpus/real provider는 M4 | — |
 | QI-BB-008 | P2 | §3.25 | closed | activation record 무digest, same-pair retention만, legacy bare-JSON read shim(one-shot) | — |
 | QI-BB-009 | P2 | §3.18/§3.51 | gaps → **MET(A7)** | age cap + global byte cap(retained namespace 소급), manifest 기반 bounded open, provider failure scrape(§3.51) | — |
@@ -2540,7 +2585,7 @@ workspace clippy EXIT=0.
 | QI-BB-014 | P2 | §3.27/§3.40/§3.51 | gaps → **MET(A7)** 단 wrong-owner test **BLOCKED**(두 번째 uid) | root 정확히 `0700`, 넓은 기존 root typed 거부, umask 077 + 실제 binary umask e2e, `--state-root` 단일 chain(§3.51) | — |
 | QI-BB-015 | P2 | §3.28/§3.49/§3.51 | gaps → **MET(A7, A2)** | queue/in-flight·examined·response bytes·track disk bytes·provider failure(A7), GC reclaimed/retained bytes(A2), scrape 경로 문서화(§3.49/§3.51) | — |
 | QI-BB-016 | P3 | §3.26/§3.51 | gaps → **MET(A7)** 단 Tantivy writer 할당 byte 관측 **BLOCKED**(API 없음) | `ProcessMemoryEnvelopeV1` 합산·천장, RSS 관측 + writer admission gate, timer 기반 idle sweep(§3.51) | — |
-| QI-BB-017 | P1 | §3.14/§3.48/§3.49 | gaps → **lexical 측 + 검증 handle 승격 MET(A3, A2)** | lexical open은 manifest+길이, scrub port+receipt(§3.48); activation·restart는 한 번의 proven open 승격(§3.49). 남은 것: semantic cheap open·scrub 스케줄러·legacy v2–v8·scrub port 통합(A4), 10M row budget(host) | A4 |
+| QI-BB-017 | P1 | §3.14/§3.48/§3.49/§3.53 | gaps → **MET(A3+A2+A4)** 단 10M row budget·RSS **BLOCKED(host)** | 두 track 문은 layout만(semantic dataset byte 0), 한 scrub port가 두 track을 maintenance timer에서 bounded·resumable로(receipt·quarantine·retire), scrub과 디렉터리 제거 직렬화, legacy v2–v8 삭제(§3.53) | — |
 | QI-BB-018 | P2 | §3.22/§3.36/§3.46/§3.52 | **MET(A1+A8)** 단 judged corpus **BLOCKED(M4)** | dense lane filter 결속(§3.46), SDK `HybridQueryBuilder` + `searchctl hybrid` + 문서 동일 표현(§3.52) | — |
 | QI-BB-019 | P2 | §3.21/§3.52 | **MET(A8)** | `dense_corpora` doc: empty = generation 전체 한 lane, 두 모양 canonical, migration window 없음(§3.52) | — |
 | QI-BB-020 | P1 | §3.19/§3.37/§3.49 | gaps(**WRONG**) → **activation guard 밖 증명 MET(A2)** | activation은 짧은 read guard + guard 밖 한 번의 proven open + durable 재확인 후 CAS(§3.49). 남은 것: history-text cold open under lock, reconcile-fail-after-durable, I/O fault injection, latency 실측(host) | wave B |
@@ -2549,12 +2594,12 @@ workspace clippy EXIT=0.
 | QI-BB-023 | P2 | §3.20/§3.37/§3.42/§3.47 | gaps → **predicate 동일·score 결정성 MET(A6)** | ~~두 order가 filter를 다른 의미로~~ → 한 predicate(e2e 8 query × 2 order 동일); ~~score가 ingest 이력 의존~~ → publish compaction으로 live-row 통계(bit-identical test). 남은 것: author/committer 색인(보완 #1, §3.42(b) 결정), latency/RSS budget(host) | — |
 | QI-BB-024 | P2 | §3.17 | gaps | broad regex의 per-query `BTreeSet<String>` + match당 TermQuery(RSS unbounded); bitmap 없음 | wave B |
 | QI-BB-025 | P1 | §3.5/§3.30/§3.39/§3.52 | gaps → **한 코드 MET(A8+coordinator)** | SDK·encoder·dispatcher가 같은 validator, raw bytes도 같은 코드의 typed 응답(모든 route e2e), 최대값에서 window 무모순 e2e(§3.52). 남은 것: `has_more=true` 분기(10,001+ row fixture) e2e | — |
-| QI-BB-026 | P1 | §3.13/§3.31 | gaps | content-손상 비활성 generation이 quarantine receipt/list에 없고 rollback 대상에서 제외 안 됨; semantic active 손상 boot e2e 없음 | A2(orphan), wave B |
-| QI-BB-027 | P2 | §3.23/§3.35 | gaps(**WRONG**) | legacy ≤v7/v8 generation은 ANN 누락을 silent exact fallback으로 서비스; append segment ef_construction≠manifest; recall artifact에 HEAD 없음 | A4, A8 |
-| QI-BB-028 | P1 | §3.15 | gaps | semantic row-root attestation(완료 기준 #5) 미구현 | A4 |
+| QI-BB-026 | P1 | §3.13/§3.31/§3.53 | gaps | scrub이 찾은 content 손상은 durable quarantine receipt·list·모든 문 거부로 rollback에서 제외(§3.53). 남은 것: 문(gate)이 찾은 비활성 손상의 quarantine 기록, semantic active 손상 boot e2e, HalfSealedPair boot 보고(QI-BB-029) | wave B |
+| QI-BB-027 | P2 | §3.23/§3.35/§3.53 | gaps(**WRONG**) → **legacy·segment 정직성 MET(A4)** | ~~legacy ≤v8 silent exact fallback~~ → 형식 하나, 나머지 typed 거부·`FORMAT_UNSUPPORTED` 격리; append segment 실제 build 파라미터 기록·거짓 주장 거부(§3.53). 남은 것: recall@k·p95/p99·build time·index bytes의 HEAD artifact(완료 기준 #3) | wave B |
+| QI-BB-028 | P1 | §3.15/§3.53 | gaps → **MET(A4+coordinator)** | activation identity·sealed receipt·status가 row/membership root를 싣고, activation·rollback·restart가 proven open 안에서 대조, 불일치는 `SEMANTIC_ROW_ROOT_MISMATCH`로 승격 0(§3.53) | — |
 | QI-BB-029 | P1 | §3.11/§3.50 | gaps(**WRONG**) → **MET(A5, 0917d82)** 단 adapter 내부 crash failpoint **BLOCKED**, boot `HalfSealedPair` 보고는 B3 | validate→intent 순서, raw IPC 7 + SDK fault matrix(SQLite·state-root oracle), corrupt half pair typed repair(§3.50) | B3 |
 | QI-BB-030 | P1 | §3.10/§3.48/§3.49 | **closed(A3 f0cf9c9 + A2 87d4450)** | manifest v4가 overlay·segment·text-authority 전부 commit, sealed generation 불변, 문 세 개(validator/open/proven open) 한 walk; activation 후 재open 없음(§3.49) | — |
-| QI-BB-031 | P2 | §3.15 | gaps | adapter 경계 validator가 norm 무관(상류 의존); 혼합 batch 값 동일성·artifact 미증명 | A4 |
+| QI-BB-031 | P2 | §3.15 | gaps | adapter 경계 validator가 norm 무관(상류 의존); 혼합 batch 값 동일성·artifact 미증명 — A4 배정이었으나 미착수(§3.53) | wave B |
 | QI-BB-032 | P2 | §3.16/§3.50 | gaps(**WRONG**) → **MET(A5)** 단 unsealed apply→finalize crash 창 재embed **BLOCKED**(track format) | canonical body digest + `BATCH_DIGEST_MISMATCH`, pair-bound record forget(pin 분리·never-sealed 포함), 1/8/32 동시 중복 1 apply(§3.50) | — |
 
 **§3.x 과장 정정(감사가 지적, 이 table이 우선)**: §3.7 "typed 실패 공유"(coalesced는 `ERR_INTERNAL`), §3.9 "어떤 query도 pin 못 함"·"receipt에 싣는다",
