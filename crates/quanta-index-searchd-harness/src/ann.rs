@@ -338,6 +338,9 @@ pub fn artifact(
     let latency = LatencySummary::from_samples_ms(&report.latencies_ms);
     let row = BenchRowV1 {
         scenario_id: format!("ann.recall_at_{}", config.k),
+        // The family of the result shape (chunk candidates), as the judged
+        // relevance routes record it; the dense lane is named in
+        // `engine_touched`.
         route_family: RouteFamily::Lexical,
         syntax: BenchSyntax::Native,
         result_shape: ResultShape::Candidates,
