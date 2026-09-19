@@ -153,7 +153,7 @@ pub(crate) fn load_shard(
     let name = format!("{TEXT_AUTHORITY_DIR_NAME}/{}", entry.file_name());
     let bytes = std::fs::read(&path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
-            crate::sidecar_corrupt(generation_dir, &name, "missing")
+            crate::index_store::sidecar_corrupt(generation_dir, &name, "missing")
         } else {
             CoreError::Storage(format!(
                 "lexical: read text authority shard {}: {error}",
@@ -168,14 +168,14 @@ pub(crate) fn load_shard(
         ))
     })?;
     if length != entry.bytes {
-        return Err(crate::sidecar_corrupt(
+        return Err(crate::index_store::sidecar_corrupt(
             generation_dir,
             &name,
             &format!("{length} bytes on disk, {} committed", entry.bytes),
         ));
     }
     if sha256_of_bytes(&bytes) != entry.sha256 {
-        return Err(crate::sidecar_corrupt(
+        return Err(crate::index_store::sidecar_corrupt(
             generation_dir,
             &name,
             "content digest differs from the committed digest",
@@ -184,14 +184,14 @@ pub(crate) fn load_shard(
     let body = ShardBody::decode(&bytes, entry.index, generation_dir, &name)?;
     let rows = body.rows()?;
     if rows != entry.rows {
-        return Err(crate::sidecar_corrupt(
+        return Err(crate::index_store::sidecar_corrupt(
             generation_dir,
             &name,
             &format!("{rows} rows decoded, {} committed", entry.rows),
         ));
     }
     if body.doc_id_extremes() != Some((entry.min_doc_id, entry.max_doc_id)) {
-        return Err(crate::sidecar_corrupt(
+        return Err(crate::index_store::sidecar_corrupt(
             generation_dir,
             &name,
             &format!(

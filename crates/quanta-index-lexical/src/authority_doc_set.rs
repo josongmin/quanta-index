@@ -290,7 +290,7 @@ mod tests {
     fn corpus(texts: u64, symbols: u64) -> (Index, SchemaFields) {
         let fields = SchemaFields::build();
         let index = Index::create_in_ram(fields.schema.clone());
-        crate::register_index_tokenizers(&index);
+        crate::index_store::register_index_tokenizers(&index);
         let mut writer: IndexWriter = index.writer(15_000_000).expect("writer");
         let half = texts.div_euclid(2);
         for id in 1..=texts {

@@ -29,9 +29,9 @@ use quanta_index_core::CoreError;
 use quanta_index_core::domains::generation::SealedArtifactCommitmentV1;
 use tantivy::Index;
 
+use crate::overlay_codec::OverlayFamily;
 use crate::sealed_generation::index_files::referenced_index_files;
 use crate::sealed_generation::manifest::{LexicalSealedManifest, read_bound_manifest};
-use crate::sealed_generation::overlay::OverlayFamily;
 use crate::text_authority::{
     ShardBody, TEXT_AUTHORITY_DIR_NAME, TEXT_AUTHORITY_MANIFEST_FILE_NAME, TextAuthorityManifest,
     load_shard, sha256_of_bytes, text_authority_dir,
@@ -79,7 +79,7 @@ pub(crate) fn walk_sealed_generation<V: SealedGenerationVisitor>(
     crate::sealed_generation::refuse_if_quarantined(generation_dir)?;
     let manifest = read_bound_manifest(generation_dir, &identity.manifest_digest)?;
     let _meta_bytes = read_committed(generation_dir, &manifest.index_meta)?;
-    let index = crate::open_sealed_index(generation_dir)?;
+    let index = crate::index_store::open_sealed_index(generation_dir)?;
     verify_index_segments(generation_dir, &index, &manifest.index_segments)?;
     verify_overlays(generation_dir, &manifest, visitor)?;
     verify_text_authority(generation_dir, manifest.text_authority.as_deref(), visitor)?;
@@ -94,7 +94,7 @@ fn read_committed(
     let path = generation_dir.join(&artifact.name);
     let bytes = std::fs::read(&path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
-            crate::sidecar_corrupt(generation_dir, &artifact.name, "missing")
+            crate::index_store::sidecar_corrupt(generation_dir, &artifact.name, "missing")
         } else {
             CoreError::Storage(format!(
                 "lexical: read committed file {}: {error}",
@@ -102,9 +102,9 @@ fn read_committed(
             ))
         }
     })?;
-    let length = crate::count_from_len(bytes.len())?;
+    let length = crate::channel_payloads::count_from_len(bytes.len())?;
     if length != artifact.bytes {
-        return Err(crate::sidecar_corrupt(
+        return Err(crate::index_store::sidecar_corrupt(
             generation_dir,
             &artifact.name,
             &format!("{length} bytes on disk, {} committed", artifact.bytes),
@@ -116,7 +116,7 @@ fn read_committed(
         } else {
             "content digest differs from the committed digest"
         };
-        return Err(crate::sidecar_corrupt(
+        return Err(crate::index_store::sidecar_corrupt(
             generation_dir,
             &artifact.name,
             reason,
@@ -139,7 +139,7 @@ fn verify_index_segments(
         .collect();
     for name in &referenced {
         if !listed.contains(name.as_str()) {
-            return Err(crate::sidecar_corrupt(
+            return Err(crate::index_store::sidecar_corrupt(
                 generation_dir,
                 name,
                 "referenced by the sealed commit although the seal did not commit to it",
@@ -149,7 +149,7 @@ fn verify_index_segments(
     let referenced: BTreeSet<&str> = referenced.iter().map(String::as_str).collect();
     for artifact in committed {
         if !referenced.contains(artifact.name.as_str()) {
-            return Err(crate::sidecar_corrupt(
+            return Err(crate::index_store::sidecar_corrupt(
                 generation_dir,
                 &artifact.name,
                 "committed although the sealed commit does not reference it",
@@ -158,7 +158,7 @@ fn verify_index_segments(
         let path = generation_dir.join(&artifact.name);
         let metadata = std::fs::metadata(&path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
-                crate::sidecar_corrupt(generation_dir, &artifact.name, "missing")
+                crate::index_store::sidecar_corrupt(generation_dir, &artifact.name, "missing")
             } else {
                 CoreError::Storage(format!(
                     "lexical: inspect committed segment file {}: {error}",
@@ -167,14 +167,14 @@ fn verify_index_segments(
             }
         })?;
         if !metadata.is_file() {
-            return Err(crate::sidecar_corrupt(
+            return Err(crate::index_store::sidecar_corrupt(
                 generation_dir,
                 &artifact.name,
                 "is not a regular file",
             ));
         }
         if metadata.len() != artifact.bytes {
-            return Err(crate::sidecar_corrupt(
+            return Err(crate::index_store::sidecar_corrupt(
                 generation_dir,
                 &artifact.name,
                 &format!(
@@ -199,12 +199,13 @@ fn verify_overlays<V: SealedGenerationVisitor>(
         match manifest.overlay(family) {
             Some(artifact) => {
                 let bytes = read_committed(generation_dir, artifact)?;
-                let snapshot = crate::decode_overlay(family, &bytes, generation_dir)?;
+                let snapshot =
+                    crate::overlay_codec::decode_overlay(family, &bytes, generation_dir)?;
                 visitor.overlay(snapshot)?;
             }
             None => {
                 if family.path(generation_dir).exists() {
-                    return Err(crate::sidecar_corrupt(
+                    return Err(crate::index_store::sidecar_corrupt(
                         generation_dir,
                         family.file_name(),
                         "present although the seal committed to no such overlay",
@@ -227,14 +228,14 @@ fn verify_text_authority<V: SealedGenerationVisitor>(
     let files = match (committed, dir.is_dir()) {
         (None, false) => return Ok(()),
         (None, true) => {
-            return Err(crate::sidecar_corrupt(
+            return Err(crate::index_store::sidecar_corrupt(
                 generation_dir,
                 TEXT_AUTHORITY_DIR_NAME,
                 "present although the seal committed to no text authority",
             ));
         }
         (Some(_), false) => {
-            return Err(crate::sidecar_corrupt(
+            return Err(crate::index_store::sidecar_corrupt(
                 generation_dir,
                 TEXT_AUTHORITY_DIR_NAME,
                 "missing",
@@ -246,7 +247,9 @@ fn verify_text_authority<V: SealedGenerationVisitor>(
     let manifest_commitment = files
         .iter()
         .find(|artifact| artifact.name == manifest_name)
-        .ok_or_else(|| crate::sidecar_corrupt(generation_dir, &manifest_name, "not committed"))?;
+        .ok_or_else(|| {
+            crate::index_store::sidecar_corrupt(generation_dir, &manifest_name, "not committed")
+        })?;
     let manifest_bytes = read_committed(generation_dir, manifest_commitment)?;
     let manifest = TextAuthorityManifest::decode(&manifest_bytes, generation_dir)?;
     ensure_text_authority_listing(generation_dir, &manifest, &manifest_name, files)?;
@@ -285,7 +288,7 @@ fn ensure_text_authority_listing(
         .collect();
     listed.sort();
     if expected != listed {
-        return Err(crate::sidecar_corrupt(
+        return Err(crate::index_store::sidecar_corrupt(
             generation_dir,
             manifest_name,
             "lists shards other than the ones the seal committed to",
@@ -321,7 +324,7 @@ fn ensure_text_authority_directory(
         let name = name.to_string_lossy();
         let qualified = format!("{prefix}{name}");
         if !owned.contains(name.as_ref()) {
-            return Err(crate::sidecar_corrupt(
+            return Err(crate::index_store::sidecar_corrupt(
                 generation_dir,
                 &qualified,
                 "present although the seal did not commit to it",
@@ -334,7 +337,7 @@ fn ensure_text_authority_directory(
             ))
         })?;
         if !file_type.is_file() {
-            return Err(crate::sidecar_corrupt(
+            return Err(crate::index_store::sidecar_corrupt(
                 generation_dir,
                 &qualified,
                 "is not a regular file",

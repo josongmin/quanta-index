@@ -24,8 +24,9 @@ use quanta_index_lq_trigram::{DocId as TrigramDocId, TrigramIndex, TrigramIndexB
 use sha2::{Digest as _, Sha256};
 
 use crate::normalize::{self, CaseMode, TEXT_NORMALIZER_VERSION};
+use crate::query_errors::map_positions_error;
+use crate::query_errors::map_trigram_error;
 use crate::text_authority::manifest::{SHARD_DOCS, shard_doc_range};
-use crate::{map_positions_error, map_trigram_error};
 
 /// SHA-256 of in-memory bytes: the shard's content digest as the manifest
 /// commits to it and as its file name carries it. Infallible by construction.
@@ -153,7 +154,7 @@ impl ShardBody {
             &self.positions,
             &self.positions_folded,
         );
-        crate::encode_cbor(&row, "text authority shard")
+        crate::channel_payloads::encode_cbor(&row, "text authority shard")
     }
 
     /// Decode the bytes of shard `index`, named `name` under `generation_dir`.
@@ -169,7 +170,8 @@ impl ShardBody {
         generation_dir: &Path,
         name: &str,
     ) -> Result<Self, CoreError> {
-        let corrupt = |reason: String| crate::sidecar_corrupt(generation_dir, name, &reason);
+        let corrupt =
+            |reason: String| crate::index_store::sidecar_corrupt(generation_dir, name, &reason);
         let (rows, trigram, trigram_folded, positions, positions_folded): ShardRow =
             ciborium::from_reader(bytes)
                 .map_err(|error| corrupt(format!("shard {index} does not decode: {error}")))?;

@@ -35,11 +35,11 @@ use tantivy::schema::IndexRecordOption;
 use tantivy::{Index, IndexReader, ReloadPolicy, Term};
 
 use crate::normalize::TEXT_NORMALIZER_VERSION;
+use crate::overlay_codec::OverlayFamily;
 use crate::sealed_generation::index_files::referenced_index_files;
 use crate::sealed_generation::manifest::{
     IndexSegmentVerificationV1, LexicalSealedManifest, manifest_path, read_manifest, write_manifest,
 };
-use crate::sealed_generation::overlay::OverlayFamily;
 use crate::text_authority::{
     TEXT_AUTHORITY_DIR_NAME, TEXT_AUTHORITY_MANIFEST_FILE_NAME, TextAuthorityManifest,
     finalize_for_seal,
@@ -167,7 +167,7 @@ impl Measurer {
         let path = self.generation_dir.join(name);
         let mut file = File::open(&path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
-                crate::sidecar_corrupt(&self.generation_dir, name, "missing")
+                crate::index_store::sidecar_corrupt(&self.generation_dir, name, "missing")
             } else {
                 CoreError::Storage(format!(
                     "lexical: open {} for commitment: {error}",
@@ -196,7 +196,7 @@ impl Measurer {
             })?;
             hasher.update(chunk);
             length = length
-                .checked_add(crate::count_from_len(read)?)
+                .checked_add(crate::channel_payloads::count_from_len(read)?)
                 .ok_or_else(|| {
                     CoreError::Storage(format!("lexical: {} length overflows u64", path.display()))
                 })?;
@@ -242,7 +242,7 @@ pub(crate) fn seal_generation(
             ..LexicalSealCommitmentStats::default()
         },
     };
-    let index = crate::open_sealed_index(generation_dir)?;
+    let index = crate::index_store::open_sealed_index(generation_dir)?;
     let index_meta = measurer.hash(TANTIVY_INDEX_META_FILE_NAME)?;
     let mut index_segments = Vec::new();
     for name in referenced_index_files(&index, generation_dir)? {
@@ -297,7 +297,7 @@ fn commit_text_authority(
         let name = format!("{TEXT_AUTHORITY_DIR_NAME}/{}", shard.file_name());
         let committed = measurer.commit(&name)?;
         if committed.bytes != shard.bytes || committed.sha256 != shard.sha256 {
-            return Err(crate::sidecar_corrupt(
+            return Err(crate::index_store::sidecar_corrupt(
                 &measurer.generation_dir,
                 &name,
                 "content digest differs from the digest the text-authority manifest lists",
@@ -333,7 +333,7 @@ fn remove_publish_leftovers(generation_dir: &Path) -> Result<(), CoreError> {
         let Some(name) = name.to_str() else {
             continue;
         };
-        if !crate::is_durable_write_temporary(name) {
+        if !crate::index_store::is_durable_write_temporary(name) {
             continue;
         }
         std::fs::remove_file(entry.path()).map_err(|error| {
@@ -375,7 +375,7 @@ fn live_text_doc_count(index: &Index, fields: &SchemaFields) -> Result<u64, Core
         .searcher()
         .search(&query, &Count)
         .map_err(|err| CoreError::Storage(format!("lexical: text doc count: {err}")))?;
-    crate::count_from_len(count)
+    crate::channel_payloads::count_from_len(count)
 }
 
 /// The seal's coverage proof: the text authority lists exactly as many
@@ -399,7 +399,7 @@ fn ensure_text_authority_covers_index(
             .fold(0_u64, |total, shard| total.saturating_add(shard.rows))
     });
     if live != listed {
-        return Err(crate::sidecar_corrupt(
+        return Err(crate::index_store::sidecar_corrupt(
             generation_dir,
             TEXT_AUTHORITY_DIR_NAME,
             &format!("lists {listed} documents but the index holds {live} live text documents"),

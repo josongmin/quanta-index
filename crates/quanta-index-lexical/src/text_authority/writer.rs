@@ -155,7 +155,7 @@ pub(crate) fn update(
                 continue;
             }
             if !builders.retire(*doc_id)? {
-                return Err(crate::sidecar_corrupt(
+                return Err(crate::index_store::sidecar_corrupt(
                     generation_dir,
                     &format!("{TEXT_AUTHORITY_DIR_NAME}/shard {index}"),
                     &format!(
@@ -247,7 +247,7 @@ fn publish(
         match outcome {
             ShardOutcome::Inherit(entry) => {
                 if !entry.path(generation_dir).is_file() {
-                    return Err(crate::sidecar_corrupt(
+                    return Err(crate::index_store::sidecar_corrupt(
                         generation_dir,
                         &format!("{TEXT_AUTHORITY_DIR_NAME}/{}", entry.file_name()),
                         "missing",
@@ -278,7 +278,11 @@ fn publish(
                 if already_listed {
                     inherited = inherited.saturating_add(1);
                 } else {
-                    crate::write_atomic_durable(&path, &bytes, "text authority shard")?;
+                    crate::index_store::write_atomic_durable(
+                        &path,
+                        &bytes,
+                        "text authority shard",
+                    )?;
                     written = written.saturating_add(1);
                 }
                 shards.push(entry);
@@ -287,7 +291,7 @@ fn publish(
     }
     let manifest = TextAuthorityManifest { max_doc_id, shards };
     let bytes = manifest.encode()?;
-    crate::write_atomic_durable(
+    crate::index_store::write_atomic_durable(
         &manifest_path(generation_dir),
         &bytes,
         "text authority manifest",

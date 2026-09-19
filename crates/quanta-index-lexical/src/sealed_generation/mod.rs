@@ -18,7 +18,7 @@ pub(crate) use manifest::{
     GENERATION_MANIFEST_FORMAT_UNSUPPORTED_CODE, LEXICAL_SEALED_MANIFEST_FILE_NAME, manifest_path,
     read_manifest,
 };
-pub(crate) use overlay::{OverlayFamily, persist_overlay, remove_overlay};
+pub(crate) use overlay::{persist_overlay, remove_overlay};
 pub(crate) use scrub::{
     LEXICAL_QUARANTINE_RECEIPT_FILE_NAME, LEXICAL_SCRUB_RECEIPT_FILE_NAME, last_completed_scrub,
     quarantine_content_corrupt, quarantined_by_scrub, refuse_if_quarantined, scrub_step,

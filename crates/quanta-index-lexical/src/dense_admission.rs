@@ -22,10 +22,10 @@ use tantivy::TantivyDocument;
 use tantivy::collector::TopDocs;
 
 use crate::budgeted_search::budgeted_search;
-use crate::{
-    QueryDocKind, TantivySearcher, planner_preflight_expr, rewrite_symbol_name_predicate_query,
-    stored_text,
-};
+use crate::documents::stored_text;
+use crate::searcher::planner_errors::planner_preflight_expr;
+use crate::searcher::query_rewrite::rewrite_symbol_name_predicate_query;
+use crate::{QueryDocKind, TantivySearcher};
 
 /// The budget checkpoint and collect stage this evaluation reports under.
 const ADMISSION_STAGE: &str = "lexical:admission";

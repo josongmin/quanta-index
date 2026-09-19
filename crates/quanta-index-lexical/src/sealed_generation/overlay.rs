@@ -10,67 +10,11 @@
 //! never one that was lost.
 
 use std::fs::File;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use quanta_index_core::CoreError;
 
-/// One overlay family, by the file it lives in.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) enum OverlayFamily {
-    /// The `FullBundle` repo-metadata payload (fork, archived, visibility,
-    /// contexts).
-    RepoMetadata,
-    /// Latest committer time per source repo.
-    CommitRecency,
-    /// `key:value` metadata per source repo.
-    Meta,
-    /// Topics per source repo.
-    Topic,
-    /// Description per source repo.
-    Description,
-    /// Owners per file.
-    FileOwnership,
-    /// Contributors per file.
-    Contributor,
-}
-
-impl OverlayFamily {
-    /// Every family, in manifest order.
-    pub(crate) const ALL: [Self; 7] = [
-        Self::RepoMetadata,
-        Self::CommitRecency,
-        Self::Meta,
-        Self::Topic,
-        Self::Description,
-        Self::FileOwnership,
-        Self::Contributor,
-    ];
-
-    /// The family's file name inside the generation directory.
-    pub(crate) const fn file_name(self) -> &'static str {
-        match self {
-            Self::RepoMetadata => "repo-metadata.cbor",
-            Self::CommitRecency => "repo-commit-recency.cbor",
-            Self::Meta => "repo-meta.cbor",
-            Self::Topic => "repo-topic.cbor",
-            Self::Description => "repo-description.cbor",
-            Self::FileOwnership => "file-ownership.cbor",
-            Self::Contributor => "file-contributor.cbor",
-        }
-    }
-
-    /// The family a manifest entry names, if any.
-    pub(crate) fn from_file_name(name: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|family| family.file_name() == name)
-    }
-
-    /// The family's path inside `generation_dir`.
-    pub(crate) fn path(self, generation_dir: &Path) -> PathBuf {
-        generation_dir.join(self.file_name())
-    }
-}
+use crate::overlay_codec::OverlayFamily;
 
 /// Write one family's snapshot durably: temporary file, fsync, rename,
 /// directory fsync. Creates the generation directory when this is the first
@@ -87,7 +31,11 @@ pub(crate) fn persist_overlay(
             family.file_name()
         ))
     })?;
-    crate::write_atomic_durable(&family.path(generation_dir), bytes, family.file_name())
+    crate::index_store::write_atomic_durable(
+        &family.path(generation_dir),
+        bytes,
+        family.file_name(),
+    )
 }
 
 /// Remove one family's snapshot durably; an absent file is already removed.
@@ -120,7 +68,7 @@ pub(crate) fn remove_overlay(
 
 #[cfg(test)]
 mod tests {
-    use super::OverlayFamily;
+    use crate::overlay_codec::OverlayFamily;
 
     #[test]
     fn every_family_round_trips_through_its_file_name() {

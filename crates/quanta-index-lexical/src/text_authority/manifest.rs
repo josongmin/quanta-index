@@ -188,7 +188,7 @@ fn format_unsupported(path: &Path, detail: &str) -> CoreError {
 
 /// A manifest that is structurally impossible: the sidecar is corrupt.
 fn manifest_corrupt(generation_dir: &Path, reason: &str) -> CoreError {
-    crate::sidecar_corrupt(
+    crate::index_store::sidecar_corrupt(
         generation_dir,
         &format!("{TEXT_AUTHORITY_DIR_NAME}/{TEXT_AUTHORITY_MANIFEST_FILE_NAME}"),
         reason,
@@ -217,7 +217,7 @@ impl TextAuthorityManifest {
                 })
                 .collect(),
         );
-        crate::encode_cbor(&row, "text authority manifest")
+        crate::channel_payloads::encode_cbor(&row, "text authority manifest")
     }
 
     /// Decode and validate a manifest read from `generation_dir`.
@@ -258,7 +258,9 @@ impl TextAuthorityManifest {
         }
         let normalizer = TextNormalizerVersion { major, minor };
         if normalizer != TEXT_NORMALIZER_VERSION {
-            return Err(crate::normalizer_unsupported(&path, normalizer));
+            return Err(crate::index_store::normalizer_unsupported(
+                &path, normalizer,
+            ));
         }
         if max_doc_id > MAX_DOC_ID {
             return Err(manifest_corrupt(
@@ -490,7 +492,7 @@ mod tests {
 
     /// The refusal code for a manifest row this build should not serve.
     fn refusal_for(row: &ManifestRow) -> Option<String> {
-        let bytes = crate::encode_cbor(row, "test").expect("encode");
+        let bytes = crate::channel_payloads::encode_cbor(row, "test").expect("encode");
         typed_code(TextAuthorityManifest::decode(&bytes, Path::new("/g1")))
     }
 

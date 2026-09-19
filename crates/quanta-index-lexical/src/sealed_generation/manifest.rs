@@ -41,7 +41,7 @@ use quanta_index_core::CoreError;
 use quanta_index_core::domains::generation::SealedArtifactCommitmentV1;
 
 use crate::normalize::{TEXT_NORMALIZER_VERSION, TextNormalizerVersion};
-use crate::sealed_generation::overlay::OverlayFamily;
+use crate::overlay_codec::OverlayFamily;
 use crate::text_authority::{
     TEXT_AUTHORITY_DIR_NAME, TEXT_AUTHORITY_FORMAT_UNSUPPORTED_CODE, leading_format_version,
 };
@@ -144,7 +144,7 @@ pub(crate) fn manifest_path(generation_dir: &Path) -> PathBuf {
 
 fn manifest_corrupt(path: &Path, reason: &str) -> CoreError {
     CoreError::Typed {
-        code: crate::GENERATION_SIDECAR_CORRUPT_CODE.to_string(),
+        code: quanta_index_core::GENERATION_SIDECAR_CORRUPT_CODE.to_string(),
         message: format!(
             "lexical: sealed generation manifest {} is structurally invalid: {reason}",
             path.display()
@@ -201,7 +201,7 @@ impl LexicalSealedManifest {
                 .map(|files| files.iter().map(to_commitment_row).collect()),
             self.overlays.iter().map(to_commitment_row).collect(),
         );
-        crate::encode_cbor(&row, "sealed generation manifest")
+        crate::channel_payloads::encode_cbor(&row, "sealed generation manifest")
     }
 
     /// Decode and validate a manifest read from `path`, refusing typed any
@@ -250,7 +250,7 @@ impl LexicalSealedManifest {
         })?;
         let normalizer = TextNormalizerVersion { major, minor };
         if normalizer != TEXT_NORMALIZER_VERSION {
-            return Err(crate::normalizer_unsupported(path, normalizer));
+            return Err(crate::index_store::normalizer_unsupported(path, normalizer));
         }
         let Some(index_segment_verification) =
             IndexSegmentVerificationV1::from_code(segment_verification)
@@ -414,7 +414,7 @@ pub(crate) fn write_manifest(
     manifest: &LexicalSealedManifest,
 ) -> Result<(), CoreError> {
     let bytes = manifest.encode()?;
-    crate::write_atomic_durable(
+    crate::index_store::write_atomic_durable(
         &manifest_path(generation_dir),
         &bytes,
         "sealed generation manifest",
@@ -536,7 +536,7 @@ mod tests {
             let bytes = manifest.encode().expect("encode");
             assert_eq!(
                 typed_code(LexicalSealedManifest::decode(&bytes, Path::new("/g1/m"))).as_deref(),
-                Some(crate::GENERATION_SIDECAR_CORRUPT_CODE),
+                Some(quanta_index_core::GENERATION_SIDECAR_CORRUPT_CODE),
                 "{label}"
             );
         }
@@ -560,7 +560,8 @@ mod tests {
                 None,
                 Vec::new(),
             );
-            let bytes = crate::encode_cbor(&other_format, "test").expect("encode");
+            let bytes =
+                crate::channel_payloads::encode_cbor(&other_format, "test").expect("encode");
             assert_eq!(
                 typed_code(LexicalSealedManifest::decode(&bytes, Path::new("/g1/m"))).as_deref(),
                 Some(GENERATION_MANIFEST_FORMAT_UNSUPPORTED_CODE),
@@ -577,7 +578,7 @@ mod tests {
             None,
             Vec::new(),
         );
-        let bytes = crate::encode_cbor(&other_policy, "test").expect("encode");
+        let bytes = crate::channel_payloads::encode_cbor(&other_policy, "test").expect("encode");
         assert_eq!(
             typed_code(LexicalSealedManifest::decode(&bytes, Path::new("/g1/m"))).as_deref(),
             Some(GENERATION_MANIFEST_FORMAT_UNSUPPORTED_CODE)

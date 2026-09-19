@@ -56,7 +56,7 @@ pub(crate) fn referenced_index_files(
                 })?
                 .to_string();
             if !generation_dir.join(&name).is_file() {
-                return Err(crate::sidecar_corrupt(
+                return Err(crate::index_store::sidecar_corrupt(
                     generation_dir,
                     &name,
                     "missing although the sealed commit references it",

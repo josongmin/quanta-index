@@ -252,8 +252,8 @@ pub(crate) fn quarantine_content_corrupt(
         detail.clone(),
         now_unix()?,
     );
-    let bytes = crate::encode_cbor(&row, "quarantine receipt")?;
-    crate::write_atomic_durable(
+    let bytes = crate::channel_payloads::encode_cbor(&row, "quarantine receipt")?;
+    crate::index_store::write_atomic_durable(
         &quarantine_receipt_path(generation_dir),
         &bytes,
         "quarantine receipt",
@@ -306,7 +306,7 @@ pub(crate) fn scrub_step(
     })?;
     let outcome = match step.verdict {
         TreeScrubVerdictV1::Completed => {
-            let files = crate::count_from_len(committed.len())?;
+            let files = crate::channel_payloads::count_from_len(committed.len())?;
             let bytes = committed.iter().fold(0_u64, |total, artifact| {
                 total.saturating_add(artifact.bytes)
             });
@@ -317,9 +317,9 @@ pub(crate) fn scrub_step(
                 files,
                 bytes,
             );
-            crate::write_atomic_durable(
+            crate::index_store::write_atomic_durable(
                 &scrub_receipt_path(generation_dir),
-                &crate::encode_cbor(&row, "scrub receipt")?,
+                &crate::channel_payloads::encode_cbor(&row, "scrub receipt")?,
                 "scrub receipt",
             )?;
             IntegrityScrubOutcomeV1::Completed
