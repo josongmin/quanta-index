@@ -6,21 +6,16 @@
 //! This is intentionally NOT a blocking CI rail: it is a local discriminative
 //! probe for paraphrase-quality deltas and provider request-shaping telemetry.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use anyhow::Result as AnyResult;
+use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
 use quanta_index_searchd_harness::relevance::corpus::SemanticIntentKind;
 use quanta_index_searchd_harness::relevance::report::{
-    openai_profile_from_env_for_relevance_ab, run_openai_semantic_ab_report,
-    write_openai_ab_artifacts,
+    OpenAiSemanticAbReport, openai_profile_from_env_for_relevance_ab,
+    run_openai_semantic_ab_report, write_openai_ab_artifacts,
 };
-
-fn git_rev() -> String {
-    if let Ok(rev) = std::env::var("DSL_BENCH_GIT_REV") {
-        return rev;
-    }
-    "unknown".to_string()
-}
 
 fn parse_out_dir() -> PathBuf {
     let mut args = std::env::args().skip(1);
@@ -37,6 +32,17 @@ fn intent_kind_label(kind: SemanticIntentKind) -> &'static str {
     }
 }
 
+fn run(out_dir: &Path) -> AnyResult<OpenAiSemanticAbReport> {
+    // Provenance first: a run that cannot be attributed is not started.
+    let git_head = GitHeadV1::resolve(Path::new("."))?;
+    let host = HostV1::observe()?;
+    let profile = openai_profile_from_env_for_relevance_ab()
+        .map_err(|err| anyhow::anyhow!("invalid OpenAI profile env: {err:#}"))?;
+    let report = run_openai_semantic_ab_report(profile.clone())?;
+    write_openai_ab_artifacts(&report, &profile, out_dir, git_head, host)?;
+    Ok(report)
+}
+
 #[expect(
     clippy::print_stderr,
     clippy::print_stdout,
@@ -44,30 +50,13 @@ fn intent_kind_label(kind: SemanticIntentKind) -> &'static str {
 )]
 fn main() -> ExitCode {
     let out_dir = parse_out_dir();
-    let rev = git_rev();
-    let profile = match openai_profile_from_env_for_relevance_ab() {
-        Ok(profile) => profile,
-        Err(err) => {
-            eprintln!("relevance_openai_ab: invalid OpenAI profile env: {err:#}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let report = match run_openai_semantic_ab_report(profile) {
+    let report = match run(&out_dir) {
         Ok(report) => report,
         Err(err) => {
-            eprintln!("relevance_openai_ab: capture run failed: {err:#}");
+            eprintln!("relevance_openai_ab: {err:#}");
             return ExitCode::FAILURE;
         }
     };
-
-    if let Err(err) = write_openai_ab_artifacts(&report, &out_dir, &rev) {
-        eprintln!(
-            "relevance_openai_ab: failed to write artifacts under {}: {err:#}",
-            out_dir.display()
-        );
-        return ExitCode::FAILURE;
-    }
 
     for case in &report.cases {
         println!(

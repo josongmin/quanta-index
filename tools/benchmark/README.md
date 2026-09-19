@@ -5,50 +5,97 @@ The 3-layer DSL-benchmarking model is defined in
 This directory holds the **Layer-3 (query latency)** tooling: capturing and
 gating per-scenario warm and cold query latencies for the DSL query matrix.
 
-Nothing here is "verified" until the baselines are actually captured (Phase A).
-The seed baselines ship with empty `rows` and `git_rev: "unbaselined"`.
+Nothing here is "verified" until baselines are actually captured (Phase A)
+on a quiet host at the head under test. There are no committed baselines
+right now: the previous schema-1 baselines (short `git_rev`, no corpus /
+config digest, host or resources, 200+ commits stale) were removed because
+the gate below refuses them, and a stale baseline cannot be migrated into an
+attributed one. `just rust-bench-dsl-compare` fails typed until
+`--update-baseline` records one at `HEAD`.
 
-## Artifact schema (the contract)
+## Artifact schema (the contract): `BenchArtifactV1`
 
-Both scripts read and write a single artifact shape:
+Every benchmark and relevance artifact — the DSL warm/cold matrices, the
+scale, tail and concurrency rails, the relevance rail and its OpenAI A/B
+capture, and the scan-vs-index experiment — is one `BenchArtifactV1`
+envelope, written by exactly one writer
+(`crates/quanta-index-searchd-harness/src/artifact.rs`, QI-BB-010). A
+measurement that cannot say which source, corpus, configuration, model and
+host it came from is not evidence, so the envelope is:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "dimension": "dsl-warm",
   "mode": "warm",
-  "git_rev": "abc1234",
+  "concurrency": 1,
+  "provenance": {
+    "git_head": "0123456789abcdef0123456789abcdef01234567",
+    "corpus_digest": "sha256:…",
+    "config_digest": "sha256:…",
+    "model_revision": "search-owned-hash-text-v1@fnv1a64-slots-l2unit-v1:d16"
+  },
+  "host": {
+    "os": "linux", "arch": "x86_64", "cpu_count": 8, "mem_bytes": 17179869184,
+    "hostname_hash": "sha256:…"
+  },
+  "resources": { "peak_rss_bytes": 123456789 },
+  "phases": { "build_ms": null, "update_ms": null, "gc_ms": null },
+  "disk_amplification": null,
   "rows": [
     {
       "scenario_id": "lexical.keyword.native",
       "route_family": "lexical",
       "syntax": "native",
-      "mode": "warm",
       "result_shape": "candidates",
-      "latency_p50_ms": 0.42,
-      "latency_p95_ms": 0.55,
-      "latency_p99_ms": 0.61,
-      "samples": 200,
+      "latency": { "p50_ms": 0.42, "p95_ms": 0.55, "p99_ms": 0.61, "samples": 200 },
+      "qps": null,
+      "error_count": 0,
+      "timeout_count": 0,
       "result_count": 3,
       "typed_error_code": null,
       "engine_touched": ["lexical"],
-      "early_stop_reason": null,
-      "git_rev": "abc1234"
+      "early_stop_reason": null
     }
-  ]
+  ],
+  "detail": {}
 }
 ```
 
-- `mode` — `"warm"` or `"cold"` (top-level and per-row; they match).
-- `route_family` — `lexical | history | runtime_catalog | structural`.
-- `syntax` — `native | sourcegraph`.
-- Required row keys: `scenario_id`, `route_family`, `syntax`, `mode`,
-  `result_shape`, `latency_p50_ms`, `latency_p95_ms`, `latency_p99_ms`,
-  `samples`.
-- Optional row keys (may be null/absent): `result_count`, `typed_error_code`,
-  `engine_touched`, `early_stop_reason`.
-- A row with `early_stop_reason` set (e.g. `"fixture_not_seeded"`) was **not
-  measured**: its latency fields are null. The comparator skips such rows
-  entirely — never compares, never fails on them.
+- `provenance.git_head` is the exact 40-character `git rev-parse HEAD` of a
+  **clean** worktree, resolved by the rail binary itself. A dirty tree, a
+  short SHA or an unresolvable head is a typed refusal
+  (`BENCH_WORKTREE_DIRTY`, `BENCH_GIT_HEAD_NOT_FULL`, `BENCH_GIT_UNAVAILABLE`);
+  there is no `"unknown"` and no env-supplied stamp.
+- `corpus_digest` is a framed sha256 over the exact bytes the rail ingested;
+  `config_digest` over the rail's parameters; `model_revision` names the
+  embedder the fixture was built under (`null` only when no embedding model
+  was exercised).
+- `host` records the host the number came from (the hostname is hashed);
+  `resources.peak_rss_bytes` is `getrusage(RUSAGE_SELF)` of the harness
+  process, which drives the daemon in-process.
+- `phases` carry build / one-file update / reclaim durations where the rail
+  has that phase (the scale rail); `null` is "no such phase", never "not
+  timed". `disk_amplification` is bytes written over changed bytes for a
+  rail that wrote an index.
+- `rows` carry p50/p95/p99, `qps` (the concurrency rail), and error / timeout
+  counts. A row with `early_stop_reason` set was **not measured**: its
+  `latency` is null and the comparator skips it — never compares, never
+  fails on it.
+- `detail` is the dimension's own shape (tier manifest, per-route budgets,
+  judged queries, per-client-count tallies).
+
+### Stale-artifact gate
+
+`python3 tools/ci/lint/check-bench-artifacts.py` (part of `just rust-policy`
+and the CI policy job) walks every artifact family above and refuses one
+that is not schema 2, whose head is not 40 lowercase hex, or — for a fresh
+artifact under `artifacts/` — whose head is not the checkout's `HEAD`.
+Committed baselines are held to the shape and a full head, not to head
+equality. `compare_dsl_bench.py` additionally refuses a comparison whose
+current side is not at `HEAD` or whose `config_digest` differs from the
+baseline's. Absence is reported, not refused; `--require` (the Linux perf
+evidence gate) fails when a family has no artifact.
 
 ## Producers
 
@@ -103,6 +150,7 @@ just rust-bench-dsl-warm-criterion  # exploratory criterion view -> warm-matrix.
 just rust-bench-dsl-cold 20     # cold matrix (20 samples/scenario) -> cold-matrix.json
 just rust-bench-dsl-refresh 20  # warm -> cold -> compare, serialized authority run
 just rust-bench-dsl-compare     # gate both matrices against tools/benchmark/baselines/
+just rust-verify-quality-concurrency  # 1/8/32 clients + slow client -> concurrency/latest/summary-c*.json
 ```
 
 The warm authority runner honours `$DSL_BENCH_WARM_SAMPLES` (default 100).
@@ -156,6 +204,11 @@ python3 tools/benchmark/compare_dsl_bench.py <baseline.json> <current.json> \
     [--update-baseline] [--rel-threshold F] [--abs-threshold-ms F] [--allow-missing]
 ```
 
+- Both artifacts must be schema-2 `BenchArtifactV1` with a full `git_head`;
+  the current artifact's head must be the checkout's `HEAD` (`--head`
+  overrides for tests) and both must share `config_digest`. Any of these
+  refuses the comparison with exit 2, as does a missing baseline (capture
+  one with `--update-baseline`, which itself refuses a stale current).
 - Both artifacts must share the same top-level `mode`; a mismatch exits 2.
 - Matches scenarios by `scenario_id`.
 - Blocking metric:
@@ -173,22 +226,24 @@ python3 tools/benchmark/compare_dsl_bench.py <baseline.json> <current.json> \
 
 ```
 python3 tools/benchmark/run_dsl_cold_matrix.py --samples K \
-    --out artifacts/dsl-bench/cold-matrix.json [--bin-cmd "..."] [--git-rev REV]
+    --out artifacts/dsl-bench/cold-matrix.json [--bin-cmd "..."]
 ```
 
 Builds `dsl_cold_matrix` once on the `bench-lane`, then invokes the resulting
 binary directly once per `(scenario, sample)` in a fresh process for a genuine
-cold-start. Aggregates p50/p95/p99 (nearest-rank percentile) per scenario.
-Default sample count is `20`; passing fewer samples is allowed for ad-hoc local
-inspection, but the comparator will refuse to gate cold `p95` artifacts when a
-measured row carries fewer than `20` samples.
+cold-start, and hands every sample to the same binary's `--assemble`, which
+aggregates p50/p95/p99 (nearest-rank percentile) per scenario and writes the
+`BenchArtifactV1` — the orchestrator never writes an artifact or stamps a
+head. Default sample count is `20`; passing fewer samples is allowed for
+ad-hoc local inspection, but the comparator will refuse to gate cold `p95`
+artifacts when a measured row carries fewer than `20` samples.
 
 ## Rollout: Phase A then Phase B
 
-- **Phase A — baseline capture (report-only).** Run the producers, eyeball the
-  numbers, and commit captured baselines with `--update-baseline`. No gating;
-  the comparator is informational only. The seed baselines here are empty
-  placeholders until this phase runs.
+- **Phase A — baseline capture (report-only).** Run the producers on a quiet
+  host at `HEAD`, eyeball the numbers, and commit captured baselines with
+  `--update-baseline`. No gating; the comparator is informational only. There
+  are no baselines until this phase runs.
 - **Phase B — relative regression gate.** Once baselines are trusted, wire
   `compare_dsl_bench.py` into CI as a blocking gate against the committed
   baselines. Regressions fail the build; deliberate changes are accepted by
@@ -223,7 +278,10 @@ is reported separately and amortizes over many queries).
 python3 tools/benchmark/run_scan_vs_index.py --scales 2000,20000,100000
 ```
 
-Output goes to `artifacts/experiments/scan-vs-index.md` (gitignored). This is
-never compared, gated, or written to the committed baselines. Only the lexical
-keyword surface is even comparable to grep; history / runtime-catalog /
-structural-tree queries have no text-engine equivalent.
+Output goes to `artifacts/experiments/scan-vs-index.md` plus one
+`BenchArtifactV1` per scale under `artifacts/experiments/scan-vs-index/`
+(gitignored). The binary resolves the head itself and refuses a dirty tree;
+the runner keeps the artifacts verbatim and adds only the scan timings. This
+is never compared, gated, or written to the committed baselines. Only the
+lexical keyword surface is even comparable to grep; history /
+runtime-catalog / structural-tree queries have no text-engine equivalent.

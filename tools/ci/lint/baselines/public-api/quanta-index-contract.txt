@@ -4527,7 +4527,9 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::ExplainCandidateV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ExplainCandidateV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ExplainCandidateV1
 pub enum quanta_index_contract::query::ExplainRequestPolicyErrorV1
-pub quanta_index_contract::query::ExplainRequestPolicyErrorV1::HybridCandidateWithoutQuery
+pub quanta_index_contract::query::ExplainRequestPolicyErrorV1::HybridMissingDense
+pub quanta_index_contract::query::ExplainRequestPolicyErrorV1::HybridMissingText
+pub quanta_index_contract::query::ExplainRequestPolicyErrorV1::LexicalCarriesDense
 impl core::clone::Clone for quanta_index_contract::ExplainRequestPolicyErrorV1
 pub fn quanta_index_contract::ExplainRequestPolicyErrorV1::clone(&self) -> quanta_index_contract::ExplainRequestPolicyErrorV1
 impl core::cmp::Eq for quanta_index_contract::ExplainRequestPolicyErrorV1
@@ -4858,6 +4860,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RuntimeMeta
 pub struct quanta_index_contract::query::SearchPlaneExplainQueryRequest
 pub quanta_index_contract::query::SearchPlaneExplainQueryRequest::candidate: quanta_index_contract::ExplainCandidateV1
 pub quanta_index_contract::query::SearchPlaneExplainQueryRequest::generation: quanta_index_contract_base::query::pin::GenerationPin
+pub quanta_index_contract::query::SearchPlaneExplainQueryRequest::semantic_query_text: core::option::Option<alloc::string::String>
 pub quanta_index_contract::query::SearchPlaneExplainQueryRequest::text_query: core::option::Option<quanta_index_contract_base::query::requests::TextQueryRequest>
 impl quanta_index_contract::SearchPlaneExplainQueryRequest
 pub const fn quanta_index_contract::SearchPlaneExplainQueryRequest::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::ExplainRequestPolicyErrorV1>
@@ -7096,7 +7099,9 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::ExplainCandidateV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ExplainCandidateV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ExplainCandidateV1
 pub enum quanta_index_contract::ExplainRequestPolicyErrorV1
-pub quanta_index_contract::ExplainRequestPolicyErrorV1::HybridCandidateWithoutQuery
+pub quanta_index_contract::ExplainRequestPolicyErrorV1::HybridMissingDense
+pub quanta_index_contract::ExplainRequestPolicyErrorV1::HybridMissingText
+pub quanta_index_contract::ExplainRequestPolicyErrorV1::LexicalCarriesDense
 impl core::clone::Clone for quanta_index_contract::ExplainRequestPolicyErrorV1
 pub fn quanta_index_contract::ExplainRequestPolicyErrorV1::clone(&self) -> quanta_index_contract::ExplainRequestPolicyErrorV1
 impl core::cmp::Eq for quanta_index_contract::ExplainRequestPolicyErrorV1
@@ -10883,6 +10888,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlane
 pub struct quanta_index_contract::SearchPlaneExplainQueryRequest
 pub quanta_index_contract::SearchPlaneExplainQueryRequest::candidate: quanta_index_contract::ExplainCandidateV1
 pub quanta_index_contract::SearchPlaneExplainQueryRequest::generation: quanta_index_contract_base::query::pin::GenerationPin
+pub quanta_index_contract::SearchPlaneExplainQueryRequest::semantic_query_text: core::option::Option<alloc::string::String>
 pub quanta_index_contract::SearchPlaneExplainQueryRequest::text_query: core::option::Option<quanta_index_contract_base::query::requests::TextQueryRequest>
 impl quanta_index_contract::SearchPlaneExplainQueryRequest
 pub const fn quanta_index_contract::SearchPlaneExplainQueryRequest::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::ExplainRequestPolicyErrorV1>

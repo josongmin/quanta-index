@@ -164,6 +164,7 @@ fn explain_request(
             generation: pin,
             candidate: ExplainCandidateV1::Lexical(candidate),
             text_query: None,
+            semantic_query_text: None,
         }),
     }
 }

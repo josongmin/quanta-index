@@ -13,11 +13,11 @@ use std::process::ExitCode;
 
 use quanta_index_searchd_harness::ambiguity::{run_ambiguity_report, write_artifacts};
 
-fn git_rev() -> String {
-    if let Ok(rev) = std::env::var("DSL_BENCH_GIT_REV") {
-        return rev;
-    }
-    "unknown".to_string()
+/// The exact head of a clean worktree, or a refusal: a verdict artifact
+/// that cannot say which source it judged is not written (QI-BB-010).
+fn git_head() -> Result<String, quanta_index_searchd_harness::artifact::BenchProvenanceError> {
+    quanta_index_searchd_harness::artifact::GitHeadV1::resolve(std::path::Path::new("."))
+        .map(|head| head.as_str().to_string())
 }
 
 fn parse_out_dir() -> PathBuf {
@@ -35,9 +35,16 @@ fn parse_out_dir() -> PathBuf {
 )]
 fn main() -> ExitCode {
     let out_dir = parse_out_dir();
+    let rev = match git_head() {
+        Ok(head) => head,
+        Err(err) => {
+            eprintln!("ambiguity_matrix: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
     let report = run_ambiguity_report();
 
-    if let Err(err) = write_artifacts(&report, &out_dir, &git_rev()) {
+    if let Err(err) = write_artifacts(&report, &out_dir, &rev) {
         eprintln!(
             "ambiguity_matrix: failed to write artifacts under {}: {err:#}",
             out_dir.display()

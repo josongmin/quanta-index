@@ -249,19 +249,29 @@ fn presence_is_a_typed_exact_lookup_and_a_non_match_is_not_absence() -> TestResu
     Ok(())
 }
 
-/// QI-BB-022: a hybrid row explains under its query lane by lane.
+/// QI-BB-022: a hybrid row explains under both its queries, re-derived
+/// lane by lane against the index.
 ///
-/// The lexical lane traced under the plan is the carried lexical raw score
-/// (`score_reconciled`), the dense lane is reported as carried, and the RRF
-/// of the carried ranks — recomputed here under k = 60 as the independent
-/// oracle — is the carried `fused_score` (`fused_reconciled`).
+/// The oracles are independent of the explain: the lexical page under the
+/// same query (the lexical lane's raw score), the semantic page under the
+/// same dense text (the dense lane's cosine and rank), and an RRF sum
+/// recomputed here under k = 60 over the ranks the two pages give. A row
+/// carried as the hybrid route emitted it reconciles on every axis; a row
+/// forged on one axis — even one whose fused score is exactly the RRF of
+/// the ranks it forged — fails on that axis and no other.
 #[test]
-fn a_hybrid_both_lane_candidate_explains_to_reconciled_lane_provenance() -> TestResult {
+fn a_hybrid_both_lane_candidate_is_rederived_against_the_index_on_every_axis() -> TestResult {
+    const HYBRID_TOP_K: u32 = 10;
     let mut rt = E2eRuntime::boot()?;
     ingest_fixture(&mut rt)?;
     // The same text drives both lanes, so the needle documents are seen by
     // both: the lexical lane by term, the dense lane by the hashed vector.
-    let hybrid = rt.query_hybrid(TextQuerySyntax::Sourcegraph, PLAIN_QUERY, PLAIN_QUERY, 10);
+    let hybrid = rt.query_hybrid(
+        TextQuerySyntax::Sourcegraph,
+        PLAIN_QUERY,
+        PLAIN_QUERY,
+        HYBRID_TOP_K,
+    );
     if let Some(error) = hybrid.typed_error {
         return Err(format!("hybrid query refused: {error}").into());
     }
@@ -292,8 +302,9 @@ fn a_hybrid_both_lane_candidate_explains_to_reconciled_lane_provenance() -> Test
     {
         return Err(format!("the row carries its own provenance: {row:?}").into());
     }
-    // The lexical page under the same query scores the row exactly as the
-    // lexical lane did — the raw score is a real lane score.
+    // Independent oracles: the lexical page scores the row exactly as the
+    // lexical lane did, and the semantic page ranks and scores it exactly
+    // as the dense lane did.
     let page = page(&mut rt, PLAIN_QUERY)?;
     let Some(page_row) = page
         .iter()
@@ -308,69 +319,211 @@ fn a_hybrid_both_lane_candidate_explains_to_reconciled_lane_provenance() -> Test
         )
         .into());
     }
-    let explain =
-        rt.explain_candidate_under_query(row.clone(), TextQuerySyntax::Sourcegraph, PLAIN_QUERY);
+    let semantic = rt.query_semantic(PLAIN_QUERY, 10, None);
+    if let Some(error) = semantic.typed_error {
+        return Err(format!("semantic query refused: {error}").into());
+    }
+    let Some(semantic_position) = semantic
+        .candidates
+        .iter()
+        .position(|candidate| candidate.candidate_id == row.candidate.candidate_id)
+    else {
+        return Err("the semantic page carries the row".into());
+    };
+    let Some(semantic_row) = semantic.candidates.get(semantic_position) else {
+        return Err("the semantic row".into());
+    };
+    if u32::try_from(semantic_position.saturating_add(1))? != dense.rank
+        || (semantic_row.score - dense.raw_score).abs() > 1e-4
+    {
+        return Err(format!(
+            "the dense contribution {dense:?} is the semantic page's rank {} and score {}",
+            semantic_position.saturating_add(1),
+            semantic_row.score
+        )
+        .into());
+    }
+
+    let explain = rt.explain_hybrid_candidate_under_queries(
+        row.clone(),
+        TextQuerySyntax::Sourcegraph,
+        PLAIN_QUERY,
+        PLAIN_QUERY,
+        HYBRID_TOP_K,
+    );
     if let Some(error) = explain.typed_error {
         return Err(format!("hybrid explain refused: {error}").into());
     }
     let (Some(presence), Some(explanation)) = (explain.presence, explain.explanation) else {
         return Err("a served explain carries presence and an explanation".into());
     };
+    let rederived_ranks = format!(
+        "explain.rrf_k=60; carried_ranks=lexical#{},dense#{}; rederived_ranks=lexical#{},dense#{}",
+        lexical.rank, dense.rank, lexical.rank, dense.rank
+    );
     if presence != CandidatePresenceV1::Indexed
         || explanation.strategy != "hybrid_score_trace"
         || !trace_says(&explanation, "explain.candidate_matched=true")
         || !trace_says(&explanation, "explain.score_reconciled=true")
+        || !trace_says(&explanation, "explain.dense_reconciled=true")
         || !trace_says(&explanation, "explain.fused_reconciled=true")
-        || !trace_says(
-            &explanation,
-            &format!(
-                "explain.rrf_k=60; ranks=lexical#{},dense#{}",
-                lexical.rank, dense.rank
-            ),
-        )
+        || !trace_says(&explanation, &rederived_ranks)
     {
-        return Err(format!("hybrid explain must reconcile both axes: {explanation:?}").into());
+        return Err(format!("hybrid explain must reconcile every axis: {explanation:?}").into());
     }
     let names = explanation
         .contributions
         .iter()
         .map(|entry| entry.signal_name.as_ref())
         .collect::<Vec<_>>();
-    if names != ["lexical.bm25", "dense.cosine", "hybrid.rrf"] {
-        return Err(format!("one row per lane plus the fused row: {names:?}").into());
+    if names
+        != [
+            "lexical.bm25",
+            "dense.cosine",
+            "hybrid.rrf.lexical",
+            "hybrid.rrf.dense",
+        ]
+    {
+        return Err(format!("one score row and one RRF row per lane: {names:?}").into());
     }
-    let [lexical_row, dense_row, fused_row] = explanation.contributions.as_slice() else {
-        return Err("three rows".into());
+    let [lexical_row, dense_row, rrf_lexical, rrf_dense] = explanation.contributions.as_slice()
+    else {
+        return Err("four rows".into());
     };
+    // The composition rule: the lane score rows carry the lane scores in
+    // their own units; the RRF rows sum to the fused score.
+    let rrf_sum = f64::from(rrf_lexical.contribution) + f64::from(rrf_dense.contribution);
     if (lexical_row.contribution - lexical.raw_score).abs() > SCORE_TOLERANCE
-        || dense_row.contribution.to_bits() != dense.raw_score.to_bits()
-        || (f64::from(fused_row.contribution) - expected_fused).abs() > 1e-8
+        || (dense_row.contribution - dense.raw_score).abs() > 1e-4
+        || (f64::from(rrf_lexical.contribution) - 1.0 / (60.0 + f64::from(lexical.rank))).abs()
+            > 1e-8
+        || (f64::from(rrf_dense.contribution) - 1.0 / (60.0 + f64::from(dense.rank))).abs() > 1e-8
+        || (rrf_sum - row.fused_score).abs() > 1e-8
     {
         return Err(format!(
-            "the rows carry the lane scores: {:?}",
+            "the rows carry the lane scores and the RRF terms: {:?}",
             explanation.contributions
         )
         .into());
     }
-    // The explain is honest about a row whose provenance was not this
-    // plan's: the same row carried with a stale lexical raw score is not
-    // reconciled on the lexical axis, while its RRF arithmetic still is.
-    let mut stale = row;
-    stale.candidate.score += 1.0;
-    for contribution in &mut stale.contributions {
+
+    // Forged on one axis at a time: each forgery fails its own axis and
+    // no other, because every axis is compared with the index.
+    let mut forged_lexical = row.clone();
+    forged_lexical.candidate.score += 1.0;
+    for contribution in &mut forged_lexical.contributions {
         if contribution.lane == HybridLaneV1::Lexical {
             contribution.raw_score += 1.0;
         }
     }
-    let explain =
-        rt.explain_candidate_under_query(stale, TextQuerySyntax::Sourcegraph, PLAIN_QUERY);
-    let Some(explanation) = explain.explanation else {
-        return Err(format!("stale explain: {:?}", explain.typed_error).into());
+    let mut forged_dense = row.clone();
+    for contribution in &mut forged_dense.contributions {
+        if contribution.lane == HybridLaneV1::Dense {
+            contribution.raw_score = (contribution.raw_score - 0.25).max(-1.0);
+        }
+    }
+    // The fusion forgery is self-consistent: the ranks are moved and the
+    // fused score is the RRF of the moved ranks, so a check against the
+    // payload alone would pass it.
+    let mut forged_fusion = row.clone();
+    for contribution in &mut forged_fusion.contributions {
+        if contribution.lane == HybridLaneV1::Dense {
+            contribution.rank = contribution.rank.saturating_add(5);
+        }
+    }
+    forged_fusion.fused_score = forged_fusion
+        .contributions
+        .iter()
+        .map(|contribution| 1.0 / (60.0 + f64::from(contribution.rank)))
+        .sum();
+    for (forged, expected_axes, what) in [
+        (forged_lexical, (false, true, true), "lexical"),
+        (forged_dense, (true, false, true), "dense"),
+        (forged_fusion, (true, true, false), "fusion"),
+    ] {
+        let explain = rt.explain_hybrid_candidate_under_queries(
+            forged,
+            TextQuerySyntax::Sourcegraph,
+            PLAIN_QUERY,
+            PLAIN_QUERY,
+            HYBRID_TOP_K,
+        );
+        let Some(explanation) = explain.explanation else {
+            return Err(format!("{what} forgery explain: {:?}", explain.typed_error).into());
+        };
+        let axes = (
+            trace_says(&explanation, "explain.score_reconciled=true"),
+            trace_says(&explanation, "explain.dense_reconciled=true"),
+            trace_says(&explanation, "explain.fused_reconciled=true"),
+        );
+        if axes != expected_axes {
+            return Err(format!(
+                "a {what} forgery must fail its own axis only: got {axes:?}, expected {expected_axes:?}: {explanation:?}"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// QI-BB-022: an indexed candidate the plan does not match names the
+/// plan's filter leaves, so a caller sees which filters stood between the
+/// document and the page rather than a bare "does not match".
+#[test]
+fn an_unmatched_candidate_names_the_plan_filters_that_excluded_it() -> TestResult {
+    let mut rt = E2eRuntime::boot()?;
+    ingest_fixture(&mut rt)?;
+    let candidates = page(&mut rt, PLAIN_QUERY)?;
+    let Some(sparse) = candidates
+        .iter()
+        .find(|candidate| candidate.repo_relative_path.as_str().ends_with("sparse.rs"))
+        .cloned()
+    else {
+        return Err("the sparse document is a plain hit".into());
     };
-    if !trace_says(&explanation, "explain.score_reconciled=false")
-        || !trace_says(&explanation, "explain.fused_reconciled=true")
+    // Under a file filter that names another document, the sparse hit is
+    // indexed and unmatched, and the filter is listed.
+    let filtered_query = "file:dense needle";
+    let (presence, explanation) = explained(&mut rt, sparse, filtered_query)?;
+    let filter_entries = explanation
+        .planner_trace
+        .iter()
+        .filter(|entry| entry.stage == PlannerStage::Plan)
+        .map(|entry| entry.detail.as_str())
+        .filter(|detail| detail.starts_with("explain.plan_filter"))
+        .collect::<Vec<_>>();
+    if presence != CandidatePresenceV1::Indexed
+        || !trace_says(&explanation, "explain.candidate_matched=false")
+        || !explanation.contributions.is_empty()
+        || filter_entries.first().copied() != Some("explain.plan_filters=1")
+        || !filter_entries
+            .get(1)
+            .is_some_and(|detail| detail.starts_with("explain.plan_filter[0]=File"))
+        || !explanation.summary.contains("plan filters: File")
     {
-        return Err(format!("a stale lexical lane must say so: {explanation:?}").into());
+        return Err(format!(
+            "an unmatched candidate names its plan filters: {filter_entries:?} / {explanation:?}"
+        )
+        .into());
+    }
+    // The same document under the plain query matches, and no filter is
+    // listed for a match.
+    let candidates = page(&mut rt, PLAIN_QUERY)?;
+    let Some(sparse) = candidates
+        .iter()
+        .find(|candidate| candidate.repo_relative_path.as_str().ends_with("sparse.rs"))
+        .cloned()
+    else {
+        return Err("the sparse document is a plain hit".into());
+    };
+    let (_, explanation) = explained(&mut rt, sparse, PLAIN_QUERY)?;
+    if !trace_says(&explanation, "explain.candidate_matched=true")
+        || explanation
+            .planner_trace
+            .iter()
+            .any(|entry| entry.detail.starts_with("explain.plan_filter"))
+    {
+        return Err(format!("a match lists no filters: {explanation:?}").into());
     }
     Ok(())
 }

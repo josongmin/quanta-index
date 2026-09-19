@@ -2550,6 +2550,13 @@ fn semantic_query_fails_closed_when_runtime_has_no_query_embedder() -> TestResul
     stop_runtime(shutdown, join)
 }
 
+/// QI-BB-025: `top_k = 0` is refused under one code from a typed and from a
+/// raw caller.
+///
+/// A typed hybrid request with `top_k = 0` does not even encode — the
+/// client learns the shared code before any round trip — and raw bytes
+/// carrying `top_k = 0` are answered typed by the daemon under that same
+/// code, on the same connection.
 #[test]
 fn hybrid_query_rejects_zero_top_k_with_typed_code() -> TestResult {
     let dir = quanta_index_searchd_harness::private_tempdir()?;
@@ -2569,52 +2576,112 @@ fn hybrid_query_rejects_zero_top_k_with_typed_code() -> TestResult {
         return Err("socket never appeared".into());
     }
 
-    let response = send_query_request(
-        &socket,
-        &SearchPlaneQueryIpcRequestEnvelope {
-            request_id: 44,
-            payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
-                text_query: TextQueryRequest {
-                    syntax: TextQuerySyntax::Sourcegraph,
-                    query_text: "needle".to_string(),
-                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
-                    generation: Some(GenerationPin::new(repo(), revision(), generation())),
-                    generation_selector: None,
-                    top_k: 50,
-                },
-                semantic_query_text: "needle".to_string(),
+    let hybrid = |top_k: u32| SearchPlaneQueryIpcRequestEnvelope {
+        request_id: 44,
+        payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
+                query_text: "needle".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
                 generation: Some(GenerationPin::new(repo(), revision(), generation())),
                 generation_selector: None,
-                top_k: 0,
-            }),
-        },
-    )?;
-    let err = match response.payload {
-        SearchPlaneQueryIpcResponse::Error(err) => err,
+                top_k,
+            },
+            semantic_query_text: "needle".to_string(),
+            generation: Some(GenerationPin::new(repo(), revision(), generation())),
+            generation_selector: None,
+            top_k,
+        }),
+    };
+    // The client side: the typed request refuses to encode under the code.
+    let encode_refusal = quanta_index_ipc::encode_request(&hybrid(0));
+    match encode_refusal {
+        Ok(_) => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err("a hybrid request with top_k=0 must not encode".into());
+        }
+        Err(err)
+            if err
+                .to_string()
+                .contains(quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE) => {}
+        Err(err) => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!(
+                "the encode refusal names {}: {err}",
+                quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE
+            )
+            .into());
+        }
+    }
+    // The daemon side: bytes carrying top_k=0 that no encoder produced.
+    let mut wire: ciborium::Value = {
+        let mut buf = Vec::new();
+        ciborium::into_writer(&hybrid(1), &mut buf)?;
+        ciborium::from_reader(buf.as_slice())?
+    };
+    let patched = patch_every_top_k(&mut wire, 0);
+    if patched == 0 {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("the wire carries a top_k to patch".into());
+    }
+    let refused = send_request::<ciborium::Value, SearchPlaneQueryIpcResponseEnvelope>(
+        &socket,
+        &wire,
+        quanta_index_ipc::ClientIoPolicy::default(),
+    );
+    let refused_code = match refused.map(|response| response.payload) {
+        Ok(SearchPlaneQueryIpcResponse::Error(error)) => error.code,
         other => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
-            return Err(format!("expected Error, got {other:?}").into());
+            return Err(
+                format!("raw bytes with top_k=0 must be answered typed, got {other:?}").into(),
+            );
         }
     };
-    // QI-BB-025: `top_k` is one route-independent contract; the hybrid route
-    // no longer has a private code for it.
-    if err.code != quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE {
+    if refused_code != quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(format!(
-            "expected {}, got {}",
-            quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE,
-            err.code
+            "the raw caller gets the typed client's code {}, got {refused_code}",
+            quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE
         )
         .into());
     }
 
-    shutdown.store(true, Ordering::Release);
-    match join.join() {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(e.into()),
-        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
+    stop_runtime(shutdown, join)
+}
+
+/// Replace every `top_k` entry in a decoded CBOR tree with `top_k`, so the
+/// bytes carry a value no encoder would emit.
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "ciborium::Value is #[non_exhaustive]; the leaves and any future variant carry no top_k"
+)]
+fn patch_every_top_k(value: &mut ciborium::Value, top_k: u32) -> usize {
+    match value {
+        ciborium::Value::Map(fields) => fields
+            .iter_mut()
+            .map(|(key, entry)| {
+                if matches!(key, ciborium::Value::Text(name) if name == "top_k") {
+                    *entry = ciborium::Value::Integer(top_k.into());
+                    1
+                } else {
+                    patch_every_top_k(entry, top_k)
+                }
+            })
+            .sum(),
+        ciborium::Value::Array(items) => items
+            .iter_mut()
+            .map(|item| patch_every_top_k(item, top_k))
+            .sum(),
+        // Every leaf variant, and — `ciborium::Value` being
+        // `#[non_exhaustive]` — any variant this codec version does not
+        // name, carries no `top_k`.
+        _ => 0,
     }
 }
 

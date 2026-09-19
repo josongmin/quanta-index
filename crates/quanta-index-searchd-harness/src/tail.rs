@@ -34,13 +34,20 @@ use std::time::Instant;
 use anyhow::Result as AnyResult;
 use serde_json::{Value, json};
 
-use crate::artifact::RouteFamily;
+use crate::artifact::{
+    BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, GitHeadV1, HostV1, LatencySummary,
+    PhaseDurationsV1, ResourceUsageV1, RouteFamily, config_digest, corpus_digest,
+    model_revision_of,
+};
 use crate::bench_support::{
-    QueryOutcome, ScenarioTruthMode, prepare_warm_runtime, run_scenario_query,
-    validate_scenario_outcome,
+    QueryOutcome, ScenarioTruthMode, bench_row, prepare_warm_runtime, run_scenario_query,
+    validate_scenario_outcome, warm_fixture_corpus_files,
 };
 use crate::harness::E2eRuntime;
 use crate::scenarios::{DslBenchScenario, SCENARIOS};
+
+/// The artifact dimension this rail writes.
+pub const DIMENSION: &str = "tail";
 
 /// Per-query wall-time samples collected per route for percentile estimation.
 ///
@@ -168,6 +175,9 @@ pub struct RouteTailMeasurement {
     /// Result count the representative query returned (route-local diagnostic),
     /// or `None` for a typed-error (reject) route.
     pub result_count: Option<u64>,
+    /// The artifact row for the representative scenario: the golden-validated
+    /// outcome plus the measured latency.
+    pub row: BenchRowV1,
 }
 
 /// First scenario carrying the given route family.
@@ -212,6 +222,12 @@ pub fn measure_route_tails(rt: &mut E2eRuntime) -> AnyResult<Vec<RouteTailMeasur
             samples_ms.push(elapsed_ms(started));
         }
         samples_ms.sort_by(f64::total_cmp);
+        let latency = LatencySummary::from_samples_ms(&samples_ms).ok_or_else(|| {
+            anyhow::anyhow!(
+                "tail: route `{}` collected no samples",
+                budget.route.as_str()
+            )
+        })?;
         out.push(RouteTailMeasurement {
             route: budget.route,
             scenario_id: scenario.id,
@@ -220,6 +236,7 @@ pub fn measure_route_tails(rt: &mut E2eRuntime) -> AnyResult<Vec<RouteTailMeasur
             p95_ms: percentile_ms(&samples_ms, 95),
             p99_ms: percentile_ms(&samples_ms, 99),
             result_count: truth.result_count,
+            row: bench_row(scenario, truth, Some(latency)),
         });
     }
     Ok(out)
@@ -241,16 +258,20 @@ pub struct TailReport {
     /// `true` once every budgeted route golden-validated and was measured. The
     /// latency budgets are advisory in this increment, so they do not flip this.
     pub passed: bool,
+    /// The embedder the warm fixture was built under, for the provenance.
+    pub model_revision: Option<String>,
 }
 
 /// Run the full tail rail against a freshly booted warm runtime.
 pub fn run_tail_report() -> AnyResult<TailReport> {
     let mut rt = prepare_warm_runtime()?;
+    let model_revision = model_revision_of(rt.embedder_profile());
     let measurements = measure_route_tails(&mut rt)?;
     let passed = measurements.len() == ROUTE_TAIL_BUDGETS.len();
     Ok(TailReport {
         measurements,
         passed,
+        model_revision,
     })
 }
 
@@ -306,25 +327,65 @@ fn measurement_json(measurement: &RouteTailMeasurement) -> Value {
     })
 }
 
-/// Build the tail summary value over every measured route.
+/// The dimension-specific detail of the tail artifact: every measured
+/// route against its budget, and the rail's blocking signal.
 #[must_use]
-pub fn summary_json(report: &TailReport, git_rev: &str) -> Value {
+pub fn detail_json(report: &TailReport) -> Value {
     json!({
-        "schema_version": 1,
-        "dimension": "tail",
-        "git_rev": git_rev,
-        "host_class": "macbook-advisory",
         "passed": report.passed,
         "blocking_signal": "route correctness (golden-validated before timing); latency budgets are advisory on this host this increment",
         "routes": report.measurements.iter().map(measurement_json).collect::<Vec<_>>(),
     })
 }
 
+/// The tail artifact: one `BenchArtifactV1` whose rows are the measured
+/// routes' representative scenarios and whose provenance names the head,
+/// the warm fixture corpus, the sample count and the embedder.
+pub fn artifact(
+    report: &TailReport,
+    git_head: GitHeadV1,
+    host: HostV1,
+) -> AnyResult<BenchArtifactV1> {
+    Ok(BenchArtifactV1 {
+        dimension: DIMENSION.to_string(),
+        mode: BenchMode::Warm,
+        concurrency: 1,
+        provenance: BenchProvenanceV1 {
+            git_head,
+            corpus_digest: corpus_digest(DIMENSION, &warm_fixture_corpus_files()),
+            config_digest: config_digest(
+                DIMENSION,
+                &[
+                    ("samples", TAIL_SAMPLES.to_string()),
+                    ("route_count", ROUTE_TAIL_BUDGETS.len().to_string()),
+                ],
+            ),
+            model_revision: report.model_revision.clone(),
+        },
+        host,
+        resources: ResourceUsageV1::observe_self()?,
+        phases: PhaseDurationsV1::default(),
+        disk_amplification: None,
+        rows: report
+            .measurements
+            .iter()
+            .map(|measurement| measurement.row.clone())
+            .collect(),
+        detail: detail_json(report),
+    })
+}
+
 /// Write the two canonical tail artifacts under `dir`:
-/// `route_budgets.json` and `summary.json`.
-pub fn write_artifacts(report: &TailReport, dir: &std::path::Path, git_rev: &str) -> AnyResult<()> {
+/// `route_budgets.json` (the declared manifest) and `summary.json` (the
+/// `BenchArtifactV1`).
+pub fn write_artifacts(
+    report: &TailReport,
+    dir: &std::path::Path,
+    git_head: GitHeadV1,
+    host: HostV1,
+) -> AnyResult<()> {
     crate::artifact::write_json_pretty(&dir.join("route_budgets.json"), &route_budgets_json())?;
-    crate::artifact::write_json_pretty(&dir.join("summary.json"), &summary_json(report, git_rev))?;
+    artifact(report, git_head, host)?.write_to(&dir.join("summary.json"))?;
     Ok(())
 }
 
@@ -391,9 +452,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn summary_json_records_passed_and_per_route_advisory() {
-        let report = TailReport {
+    fn sample_report() -> TailReport {
+        TailReport {
             measurements: vec![RouteTailMeasurement {
                 route: RouteFamily::Lexical,
                 scenario_id: "test.lexical",
@@ -402,16 +462,59 @@ mod tests {
                 p95_ms: 2.0,
                 p99_ms: 3.0,
                 result_count: Some(4),
+                row: BenchRowV1 {
+                    scenario_id: "test.lexical".to_string(),
+                    route_family: RouteFamily::Lexical,
+                    syntax: crate::artifact::BenchSyntax::Native,
+                    result_shape: crate::artifact::ResultShape::Candidates,
+                    latency: LatencySummary::from_samples_ms(&[1.0, 2.0, 3.0]),
+                    qps: None,
+                    error_count: 0,
+                    timeout_count: 0,
+                    result_count: Some(4),
+                    typed_error_code: None,
+                    engine_touched: vec!["Lexical".to_string()],
+                    early_stop_reason: None,
+                },
             }],
             passed: true,
-        };
-        let value = summary_json(&report, "deadbeef");
-        assert_eq!(value["dimension"], "tail");
-        assert_eq!(value["git_rev"], "deadbeef");
+            model_revision: Some("model@rev:d16".to_string()),
+        }
+    }
+
+    #[test]
+    fn detail_json_records_passed_and_per_route_advisory() {
+        let value = detail_json(&sample_report());
         assert_eq!(value["passed"], true);
         let routes = value["routes"].as_array().expect("routes array");
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0]["route"], "lexical");
         assert_eq!(routes[0]["advisory_within_budget"]["p50"], true);
+    }
+
+    #[test]
+    fn the_artifact_is_a_provenanced_envelope_over_the_route_rows() {
+        let head = GitHeadV1::parse("0123456789abcdef0123456789abcdef01234567").expect("a head");
+        let host = HostV1 {
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            cpu_count: 4,
+            mem_bytes: 1 << 30,
+            hostname_hash: "sha256:host".to_string(),
+        };
+        let artifact = artifact(&sample_report(), head, host).expect("the process is observable");
+        let value = artifact.to_json().expect("serializes");
+        assert_eq!(value["schema_version"], 2);
+        assert_eq!(value["dimension"], "tail");
+        assert_eq!(value["mode"], "warm");
+        assert_eq!(value["concurrency"], 1);
+        assert_eq!(
+            value["provenance"]["git_head"],
+            "0123456789abcdef0123456789abcdef01234567"
+        );
+        assert_eq!(value["provenance"]["model_revision"], "model@rev:d16");
+        assert_eq!(value["rows"].as_array().map(Vec::len), Some(1));
+        assert_eq!(value["rows"][0]["scenario_id"], "test.lexical");
+        assert_eq!(value["detail"]["routes"][0]["route"], "lexical");
     }
 }

@@ -1494,7 +1494,8 @@ fn search_plane_ipc_response_v2_lexical_rejects_missing_highlights() -> TestRes 
 }
 
 // QI-BB-022: the explain request carries the query it explains under (or
-// none), and the response carries a typed presence beside the explanation.
+// none), the dense query for a hybrid row, and the response carries a typed
+// presence beside the explanation.
 #[test]
 fn explain_request_round_trips_with_and_without_its_query() -> TestRes {
     use quanta_index_contract::SearchPlaneExplainQueryRequest;
@@ -1502,39 +1503,94 @@ fn explain_request_round_trips_with_and_without_its_query() -> TestRes {
         generation: generation_pin(),
         candidate: ExplainCandidateV1::Lexical(lexical_candidate()),
         text_query: None,
+        semantic_query_text: None,
     };
     roundtrip_eq(&SearchPlaneQueryIpcRequest::Explain(presence_only))?;
     let scored = SearchPlaneExplainQueryRequest {
         generation: generation_pin(),
         candidate: ExplainCandidateV1::Lexical(lexical_candidate()),
         text_query: Some(sourcegraph_text_request()),
+        semantic_query_text: None,
     };
     roundtrip_eq(&SearchPlaneQueryIpcRequest::Explain(scored))?;
     // QI-BB-022: a hybrid row explains with its lane provenance, and only
-    // under the query it was fused for.
+    // under both queries it was fused for.
     let hybrid = SearchPlaneExplainQueryRequest {
         generation: generation_pin(),
         candidate: ExplainCandidateV1::Hybrid(hybrid_candidate()),
         text_query: Some(sourcegraph_text_request()),
+        semantic_query_text: Some("needle".to_string()),
     };
     roundtrip_eq(&SearchPlaneQueryIpcRequest::Explain(hybrid.clone()))?;
-    let bytes = mutate_ipc_request_wire(&SearchPlaneQueryIpcRequest::Explain(hybrid), |wire| {
-        let request_fields = map_fields_mut(wire)?;
-        let payload = field_value_mut(request_fields, "payload")?;
-        let payload_fields = map_fields_mut(payload)?;
-        payload_fields
-            .retain(|(key, _)| !matches!(key, ciborium::Value::Text(name) if name == "text_query"));
-        Ok(())
-    })?;
-    expect_decode_error_contains::<SearchPlaneQueryIpcRequest>(&bytes, "text_query is required")?;
+    for (dropped, fragment) in [
+        ("text_query", "text_query is required"),
+        ("semantic_query_text", "semantic_query_text is required"),
+    ] {
+        let bytes = mutate_ipc_request_wire(
+            &SearchPlaneQueryIpcRequest::Explain(hybrid.clone()),
+            |wire| {
+                let request_fields = map_fields_mut(wire)?;
+                let payload = field_value_mut(request_fields, "payload")?;
+                let payload_fields = map_fields_mut(payload)?;
+                payload_fields.retain(
+                    |(key, _)| !matches!(key, ciborium::Value::Text(name) if name == dropped),
+                );
+                Ok(())
+            },
+        )?;
+        expect_decode_error_contains::<SearchPlaneQueryIpcRequest>(&bytes, fragment)?;
+    }
     let unqueried = SearchPlaneExplainQueryRequest {
         generation: generation_pin(),
         candidate: ExplainCandidateV1::Hybrid(hybrid_candidate()),
         text_query: None,
+        semantic_query_text: None,
     };
     if encode(&SearchPlaneQueryIpcRequest::Explain(unqueried)).is_ok() {
         return Err("a hybrid candidate without its query must not encode".into());
     }
+    let half_queried = SearchPlaneExplainQueryRequest {
+        generation: generation_pin(),
+        candidate: ExplainCandidateV1::Hybrid(hybrid_candidate()),
+        text_query: Some(sourcegraph_text_request()),
+        semantic_query_text: None,
+    };
+    if encode(&SearchPlaneQueryIpcRequest::Explain(half_queried)).is_ok() {
+        return Err("a hybrid candidate without its dense query must not encode".into());
+    }
+    // A lexical row has no dense lane: a dense query beside it is refused
+    // on encode and on decode.
+    let lexical_with_dense = SearchPlaneExplainQueryRequest {
+        generation: generation_pin(),
+        candidate: ExplainCandidateV1::Lexical(lexical_candidate()),
+        text_query: Some(sourcegraph_text_request()),
+        semantic_query_text: Some("needle".to_string()),
+    };
+    if encode(&SearchPlaneQueryIpcRequest::Explain(lexical_with_dense)).is_ok() {
+        return Err("a lexical candidate with a dense query must not encode".into());
+    }
+    let bytes = mutate_ipc_request_wire(&SearchPlaneQueryIpcRequest::Explain(hybrid), |wire| {
+        let request_fields = map_fields_mut(wire)?;
+        let payload = field_value_mut(request_fields, "payload")?;
+        let payload_fields = map_fields_mut(payload)?;
+        let candidate = field_value_mut(payload_fields, "candidate")?;
+        let candidate_fields = map_fields_mut(candidate)?;
+        for (key, value) in candidate_fields.iter_mut() {
+            if matches!(key, ciborium::Value::Text(name) if name == "kind") {
+                *value = ciborium::Value::Text("Lexical".to_string());
+            }
+            if matches!(key, ciborium::Value::Text(name) if name == "payload") {
+                let hybrid_fields = map_fields_mut(value)?;
+                let lexical_row = field_value_mut(hybrid_fields, "candidate")?.clone();
+                *value = lexical_row;
+            }
+        }
+        Ok(())
+    })?;
+    expect_decode_error_contains::<SearchPlaneQueryIpcRequest>(
+        &bytes,
+        "semantic_query_text must be absent",
+    )?;
     Ok(())
 }
 
@@ -2181,6 +2237,172 @@ fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
         }
         if serde_json::from_value::<SearchPlaneQueryIpcResponse>(value).is_ok() {
             return Err(format!("a structural page without `{name}` must not decode").into());
+        }
+    }
+    Ok(())
+}
+
+// QI-BB-025: `top_k` is gated at the wire on both sides. Every request
+// variant that carries one — including a `top_k` nested in a page request's
+// `text_query`, a semantic scope, or a hybrid-seed corpus budget — refuses
+// to encode out of range, and raw bytes carrying an out-of-range value that
+// no encoder would have produced are refused at decode, under the one code.
+fn top_k_bearing_requests(top_k: u32) -> Vec<(&'static str, SearchPlaneQueryIpcRequest)> {
+    let text = TextQueryRequest {
+        top_k,
+        ..lexical_request()
+    };
+    vec![
+        ("lexical", SearchPlaneQueryIpcRequest::Text(text.clone())),
+        (
+            "symbol",
+            SearchPlaneQueryIpcRequest::Symbol(quanta_index_contract::SymbolQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "symbol.has.name(needle)".to_owned(),
+                constraints: QueryConstraintSetV1::unconstrained(),
+                generation: Some(generation_pin()),
+                generation_selector: None,
+                top_k,
+            }),
+        ),
+        (
+            "semantic",
+            SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
+                top_k,
+                lexical_scope: None,
+                ..semantic_request()
+            }),
+        ),
+        (
+            "semantic-scope",
+            SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
+                lexical_scope: Some(TextQueryRequest {
+                    top_k,
+                    ..semantic_scope()
+                }),
+                ..semantic_request()
+            }),
+        ),
+        (
+            "hybrid",
+            SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+                top_k,
+                ..hybrid_request()
+            }),
+        ),
+        (
+            "hybrid-seed",
+            SearchPlaneQueryIpcRequest::HybridSeed(HybridSeedQueryRequest {
+                top_k,
+                ..hybrid_seed_request_with_corpus_budgets()
+            }),
+        ),
+        (
+            "hybrid-seed-corpus-budget",
+            SearchPlaneQueryIpcRequest::HybridSeed(HybridSeedQueryRequest {
+                dense_corpora: vec![SemanticSeedCorpusBudgetV1 {
+                    corpus_kind: SemanticCorpusKindV1::SymbolCard,
+                    top_k,
+                }],
+                ..hybrid_seed_request_with_corpus_budgets()
+            }),
+        ),
+        (
+            "history",
+            SearchPlaneQueryIpcRequest::History(quanta_index_contract::HistoryQueryRequest {
+                text_query: text.clone(),
+                order: quanta_index_contract::HistoryOrderV1::Recency,
+                cursor: None,
+            }),
+        ),
+        (
+            "runtime-metadata",
+            SearchPlaneQueryIpcRequest::RuntimeMetadata(
+                quanta_index_contract::RuntimeMetadataQueryRequest {
+                    text_query: text.clone(),
+                    cursor: None,
+                },
+            ),
+        ),
+        (
+            "structural",
+            SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
+                text_query: text,
+                cursor: None,
+            }),
+        ),
+        (
+            "repo-map",
+            SearchPlaneQueryIpcRequest::RepoMapQuery(quanta_index_contract::RepoMapQueryRequest {
+                repo_id: RepoId::new("repo-x"),
+                revision_id: RevisionId::new("rev-y"),
+                manifest_generation: ManifestGeneration::new(1),
+                query_text: "needle".to_owned(),
+                top_k,
+                token_budget: 100,
+                focus_subjects: Vec::new(),
+            }),
+        ),
+    ]
+}
+
+/// Replace every `top_k` entry in a decoded CBOR tree with `top_k`, so the
+/// bytes carry a value no encoder would emit.
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "ciborium::Value is #[non_exhaustive]; the leaves and any future variant carry no top_k"
+)]
+fn patch_every_top_k(value: &mut ciborium::Value, top_k: u32) -> usize {
+    match value {
+        ciborium::Value::Map(fields) => fields
+            .iter_mut()
+            .map(|(key, entry)| {
+                if matches!(key, ciborium::Value::Text(name) if name == "top_k") {
+                    *entry = ciborium::Value::Integer(top_k.into());
+                    1
+                } else {
+                    patch_every_top_k(entry, top_k)
+                }
+            })
+            .sum(),
+        ciborium::Value::Array(items) => items
+            .iter_mut()
+            .map(|item| patch_every_top_k(item, top_k))
+            .sum(),
+        // Every leaf variant, and — `ciborium::Value` being
+        // `#[non_exhaustive]` — any variant this codec version does not
+        // name, carries no `top_k`.
+        _ => 0,
+    }
+}
+
+/// QI-BB-025: out-of-range `top_k` does not encode, and raw bytes still decode.
+///
+/// A typed client cannot encode it on any route; raw bytes carrying one
+/// decode, so the dispatcher answers the raw caller typed under the same
+/// code instead of the connection closing.
+#[test]
+fn every_top_k_bearing_request_refuses_out_of_range_on_encode_and_decodes_it_for_the_dispatcher()
+-> TestRes {
+    let refused_values = [0, quanta_index_contract::PUBLIC_TOP_K_MAX + 1, u32::MAX];
+    for (route, in_range) in top_k_bearing_requests(1) {
+        roundtrip_eq(&in_range)?;
+        let mut wire: ciborium::Value = decode(&encode(&in_range)?)?;
+        for refused in refused_values {
+            let (name, out_of_range) = top_k_bearing_requests(refused)
+                .into_iter()
+                .find(|(name, _)| *name == route)
+                .ok_or("the route table is stable across values")?;
+            if encode(&out_of_range).is_ok() {
+                return Err(format!("{name}: top_k={refused} must not encode").into());
+            }
+            let patched = patch_every_top_k(&mut wire, refused);
+            if patched == 0 {
+                return Err(format!("{name}: the wire carries no top_k to patch").into());
+            }
+            let bytes = encode(&wire)?;
+            let _decoded: SearchPlaneQueryIpcRequest = decode(&bytes)
+                .map_err(|err| format!("{name}: top_k={refused} must decode: {err}"))?;
         }
     }
     Ok(())

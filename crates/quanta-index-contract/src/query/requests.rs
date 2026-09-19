@@ -8,21 +8,24 @@ use serde::{
 
 use crate::SemanticCorpusKindV1;
 use crate::{HybridCandidateV1, LexicalCandidate};
+use quanta_index_contract_base::query::wire_top_k;
 
 use super::{
     GenerationPin, GenerationSelector, HistoryCursor, HistoryOrderV1, QueryConstraintSetV1,
     RuntimeMetadataCursorV1, StructuralCursorV1, TextQueryRequest, TextQuerySyntax,
 };
 
-/// Semantic query request (LXE-01 §3: lexical scope unified on
-/// [`TextQueryRequest`]).
+/// Semantic query request: one dense lane over the embedded `query_text`,
+/// optionally confined to a lexical universe.
 ///
-/// `lexical_scope` carries the optional lexical pre-filter used to restrict
-/// the semantic recall set. It is the canonical `TextQueryRequest` carrier —
-/// the prior `SemanticCandidateScope` mirror has been deleted. Callers that
-/// previously passed a scope must construct a `TextQueryRequest` with the
-/// desired `syntax`, `query_text`, `generation`/`generation_selector`, and
-/// `top_k` (the candidate cap for the lexical leg).
+/// Without `lexical_scope` the dense lane ranks the whole generation under
+/// `constraints`. With it, the plane first runs the scope's lexical plan
+/// (its `top_k` is the cap of that lexical universe, gated like every
+/// `top_k`) and the dense lane ranks only the identities that plan matched:
+/// a *lexical-scoped rerank*, so a document with no lexical overlap can
+/// never enter the page however well it embeds. A caller who wants dense
+/// recall beside lexical recall uses [`HybridQueryRequest`], whose two
+/// lanes are independent and fused by RRF (QI-BB-018).
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticQueryRequest {
     pub query_text: String,
@@ -30,10 +33,10 @@ pub struct SemanticQueryRequest {
     pub constraints: QueryConstraintSetV1,
     pub generation: Option<GenerationPin>,
     pub generation_selector: Option<GenerationSelector>,
-    /// LXE-01 §3: lexical pre-filter for the semantic recall set. Replaces
-    /// the deleted `SemanticCandidateScope` dual surface. When `Some`, the
-    /// search-plane uses the `TextQueryRequest` to compute lexical
-    /// candidates that bound the semantic search.
+    /// The lexical universe the dense lane is confined to, when present:
+    /// the plan is lowered and run first, and only its matches are ranked
+    /// by the vector. Its `constraints` must equal the outer request's and
+    /// its `top_k` caps the universe; the plane refuses either drift typed.
     pub lexical_scope: Option<TextQueryRequest>,
     pub top_k: u32,
 }
@@ -76,7 +79,10 @@ macro_rules! impl_semantic_query_request_serde {
                 if let Some(lexical_scope) = &self.lexical_scope {
                     state.serialize_field("lexical_scope", lexical_scope)?;
                 }
-                state.serialize_field("top_k", &self.top_k)?;
+                state.serialize_field(
+                    "top_k",
+                    &wire_top_k(self.top_k, serde::ser::Error::custom)?,
+                )?;
                 state.end()
             }
         }
@@ -176,6 +182,21 @@ macro_rules! impl_semantic_query_request_serde {
 
 impl_semantic_query_request_serde!(SEMANTIC_QUERY_REQUEST_FIELDS, SemanticQueryRequestVisitor);
 
+/// Hybrid query request: two independent, bounded lanes fused by reciprocal
+/// rank fusion (QI-BB-018).
+///
+/// The lexical lane runs `text_query`'s lowered plan over the lexical
+/// index; the dense lane embeds `semantic_query_text` and ranks the whole
+/// semantic generation under the same pushed-down `constraints`. Neither
+/// lane sees the other's results: their union is fused, so a document the
+/// lexical lane never matched can enter the top-k on dense relevance
+/// alone. Each fused row ([`HybridCandidateV1`]) carries its RRF score and
+/// the rank and raw score every lane gave it, which is what an explain
+/// re-derives (`SearchPlaneExplainQueryRequest`).
+///
+/// `top_k` caps the fused page; the plane over-fetches each lane
+/// internally. `text_query.top_k` is not a second cap — it is gated like
+/// every `top_k` but the fused `top_k` is the one the hybrid honours.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HybridQueryRequest {
     pub text_query: TextQueryRequest,
@@ -216,7 +237,10 @@ macro_rules! impl_hybrid_query_request_serde {
                 if let Some(generation_selector) = &self.generation_selector {
                     state.serialize_field("generation_selector", generation_selector)?;
                 }
-                state.serialize_field("top_k", &self.top_k)?;
+                state.serialize_field(
+                    "top_k",
+                    &wire_top_k(self.top_k, serde::ser::Error::custom)?,
+                )?;
                 state.end()
             }
         }
@@ -321,7 +345,7 @@ impl Serialize for SemanticSeedCorpusBudgetV1 {
     {
         let mut state = serializer.serialize_struct("SemanticSeedCorpusBudgetV1", 2)?;
         state.serialize_field("corpus_kind", &self.corpus_kind)?;
-        state.serialize_field("top_k", &self.top_k)?;
+        state.serialize_field("top_k", &wire_top_k(self.top_k, serde::ser::Error::custom)?)?;
         state.end()
     }
 }
@@ -389,8 +413,16 @@ pub struct HybridSeedQueryRequest {
     pub semantic_query_text: String,
     pub generation: Option<GenerationPin>,
     pub generation_selector: Option<GenerationSelector>,
-    /// Independent storage-prefiltered dense lanes. Empty retains the legacy
-    /// global dense lane during the SCV2 migration window.
+    /// The dense lanes the seed fuses beside its lexical lane, one
+    /// independently ranked, storage-prefiltered lane per named corpus,
+    /// each bounded by its own `top_k` (QI-BB-019).
+    ///
+    /// Empty means one dense lane over the whole semantic generation,
+    /// bounded by the route's internal over-fetch of the request's `top_k`.
+    /// Both shapes are the canonical contract: the plane runs exactly one
+    /// native dense search per lane and never a second, lexical-scoped one
+    /// behind the seed list. A corpus named twice, or a lane `top_k`
+    /// outside the public range, is refused typed.
     pub dense_corpora: Vec<SemanticSeedCorpusBudgetV1>,
     pub top_k: u32,
 }
@@ -429,7 +461,10 @@ macro_rules! impl_hybrid_seed_query_request_serde {
                     state.serialize_field("generation_selector", generation_selector)?;
                 }
                 state.serialize_field("dense_corpora", &self.dense_corpora)?;
-                state.serialize_field("top_k", &self.top_k)?;
+                state.serialize_field(
+                    "top_k",
+                    &wire_top_k(self.top_k, serde::ser::Error::custom)?,
+                )?;
                 state.end()
             }
         }
@@ -576,7 +611,10 @@ macro_rules! impl_symbol_query_request_serde {
                 if let Some(generation_selector) = &self.generation_selector {
                     state.serialize_field("generation_selector", generation_selector)?;
                 }
-                state.serialize_field("top_k", &self.top_k)?;
+                state.serialize_field(
+                    "top_k",
+                    &wire_top_k(self.top_k, serde::ser::Error::custom)?,
+                )?;
                 state.end()
             }
         }
@@ -1044,32 +1082,55 @@ impl<'de> Deserialize<'de> for ExplainCandidateV1 {
 /// Without `text_query` the answer is presence only: an exact lookup of the
 /// candidate id. With it, the plane lowers the same plan the search ran and
 /// traces the score the lexical engine emits for exactly this candidate
-/// under it; for a hybrid candidate it also reconciles the carried lane
-/// provenance and the RRF score. The query's own `generation` must be
-/// absent or equal to `generation`, and it must carry no selector: the
-/// explain names its generation once. A hybrid candidate requires
-/// `text_query` (checked on encode and decode).
+/// under it. A hybrid candidate is explained under both queries it was
+/// fused for: `text_query` for the lexical lane and `semantic_query_text`
+/// for the dense lane. The plane embeds the latter through the same query
+/// embedder, scores the candidate's stored vector with the same distance,
+/// re-runs both bounded lanes under the same plan (`text_query.top_k` is
+/// the fused `top_k` the hybrid ran with) and reconciles the carried
+/// provenance against the index, never against the payload alone.
+///
+/// The query's own `generation` must be absent or equal to `generation`,
+/// and it must carry no selector: the explain names its generation once.
+/// A hybrid candidate requires both `text_query` and `semantic_query_text`;
+/// a lexical candidate must not carry `semantic_query_text` (it has no
+/// dense lane to explain). Both are checked on encode and decode.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchPlaneExplainQueryRequest {
     pub generation: GenerationPin,
     pub candidate: ExplainCandidateV1,
     pub text_query: Option<TextQueryRequest>,
+    /// The dense lane's query text, for a hybrid candidate.
+    pub semantic_query_text: Option<String>,
 }
 
-const SEARCH_PLANE_EXPLAIN_QUERY_REQUEST_FIELDS: &[&str] =
-    &["generation", "candidate", "text_query"];
+const SEARCH_PLANE_EXPLAIN_QUERY_REQUEST_FIELDS: &[&str] = &[
+    "generation",
+    "candidate",
+    "text_query",
+    "semantic_query_text",
+];
 
-/// Why an explain request is not one the plane can answer.
+/// Why an explain request is not one the plane can answer: which query a
+/// candidate kind is missing or carrying without a lane for it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExplainRequestPolicyErrorV1 {
-    HybridCandidateWithoutQuery,
+    HybridMissingText,
+    HybridMissingDense,
+    LexicalCarriesDense,
 }
 
 impl fmt::Display for ExplainRequestPolicyErrorV1 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::HybridCandidateWithoutQuery => formatter.write_str(
+            Self::HybridMissingText => formatter.write_str(
                 "a hybrid candidate is explained under the query it was fused for; text_query is required",
+            ),
+            Self::HybridMissingDense => formatter.write_str(
+                "a hybrid candidate is explained under the dense query it was fused for; semantic_query_text is required",
+            ),
+            Self::LexicalCarriesDense => formatter.write_str(
+                "a lexical candidate has no dense lane to explain; semantic_query_text must be absent",
             ),
         }
     }
@@ -1080,13 +1141,18 @@ impl std::error::Error for ExplainRequestPolicyErrorV1 {}
 impl SearchPlaneExplainQueryRequest {
     /// Check the request invariants documented on the type.
     pub const fn validate_v1(&self) -> Result<(), ExplainRequestPolicyErrorV1> {
-        match (&self.candidate, &self.text_query) {
-            (ExplainCandidateV1::Hybrid(_), None) => {
-                Err(ExplainRequestPolicyErrorV1::HybridCandidateWithoutQuery)
+        match (&self.candidate, &self.text_query, &self.semantic_query_text) {
+            (ExplainCandidateV1::Hybrid(_), None, _) => {
+                Err(ExplainRequestPolicyErrorV1::HybridMissingText)
             }
-            (ExplainCandidateV1::Lexical(_), _) | (ExplainCandidateV1::Hybrid(_), Some(_)) => {
-                Ok(())
+            (ExplainCandidateV1::Hybrid(_), Some(_), None) => {
+                Err(ExplainRequestPolicyErrorV1::HybridMissingDense)
             }
+            (ExplainCandidateV1::Lexical(_), _, Some(_)) => {
+                Err(ExplainRequestPolicyErrorV1::LexicalCarriesDense)
+            }
+            (ExplainCandidateV1::Lexical(_), _, None)
+            | (ExplainCandidateV1::Hybrid(_), Some(_), Some(_)) => Ok(()),
         }
     }
 }
@@ -1097,13 +1163,22 @@ impl Serialize for SearchPlaneExplainQueryRequest {
         S: Serializer,
     {
         self.validate_v1().map_err(serde::ser::Error::custom)?;
-        let field_count = if self.text_query.is_some() { 3 } else { 2 };
+        let mut field_count: usize = 2;
+        if self.text_query.is_some() {
+            field_count = field_count.saturating_add(1);
+        }
+        if self.semantic_query_text.is_some() {
+            field_count = field_count.saturating_add(1);
+        }
         let mut state =
             serializer.serialize_struct("SearchPlaneExplainQueryRequest", field_count)?;
         state.serialize_field("generation", &self.generation)?;
         state.serialize_field("candidate", &self.candidate)?;
         if let Some(text_query) = &self.text_query {
             state.serialize_field("text_query", text_query)?;
+        }
+        if let Some(semantic_query_text) = &self.semantic_query_text {
+            state.serialize_field("semantic_query_text", semantic_query_text)?;
         }
         state.end()
     }
@@ -1126,6 +1201,8 @@ impl<'de> Visitor<'de> for SearchPlaneExplainQueryRequestVisitor {
         let mut candidate: Option<ExplainCandidateV1> = None;
         let mut text_query: Option<TextQueryRequest> = None;
         let mut text_query_seen = false;
+        let mut semantic_query_text: Option<String> = None;
+        let mut semantic_query_text_seen = false;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "generation" => {
@@ -1147,6 +1224,13 @@ impl<'de> Visitor<'de> for SearchPlaneExplainQueryRequestVisitor {
                     text_query_seen = true;
                     text_query = map.next_value()?;
                 }
+                "semantic_query_text" => {
+                    if semantic_query_text_seen {
+                        return Err(de::Error::duplicate_field("semantic_query_text"));
+                    }
+                    semantic_query_text_seen = true;
+                    semantic_query_text = map.next_value()?;
+                }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -1159,6 +1243,7 @@ impl<'de> Visitor<'de> for SearchPlaneExplainQueryRequestVisitor {
             generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
             candidate: candidate.ok_or_else(|| de::Error::missing_field("candidate"))?,
             text_query,
+            semantic_query_text,
         };
         request.validate_v1().map_err(de::Error::custom)?;
         Ok(request)

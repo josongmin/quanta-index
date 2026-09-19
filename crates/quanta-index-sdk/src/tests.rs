@@ -4219,3 +4219,170 @@ fn structural_query_builder_carries_the_cursor_it_continues_from() {
     };
     assert_eq!(req.cursor.as_ref(), Some(&cursor));
 }
+
+/// QI-BB-018: the true-hybrid route is reachable from the SDK.
+///
+/// The builder assembles one `Hybrid` request with the text lane, the
+/// dense text, the selection and the fused `top_k` on both the outer
+/// request and the text lane, under the pushed-down constraints.
+#[test]
+fn hybrid_builder_assembles_a_hybrid_request_with_both_lanes() {
+    let rust = ok_or_fail!(LanguageCode::new("rust"));
+    let path = ok_or_fail!(ExactRepoRelativePathV1::new("src/lib.rs"));
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::Hybrid(quanta_index_contract::HybridQueryResponse {
+            generation: sample_generation_pin(),
+            results: Vec::new(),
+            window: QueryResultWindowV1::exact(0),
+            explanation: sample_explanation(),
+        }),
+    ));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let response = ok_or_fail!(
+        client
+            .search()
+            .hybrid()
+            .sourcegraph("needle")
+            .semantic_text("where the needle is kept")
+            .language_any_of([rust.clone()])
+            .exact_repo_relative_path(path.clone())
+            .pinned(sample_generation_pin())
+            .top_k(7)
+            .execute()
+    );
+    assert_eq!(response.generation, sample_generation_pin());
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::Hybrid(request) = &captured.payload
+    else {
+        panic!("expected Hybrid request, got {:?}", captured.payload);
+    };
+    assert_eq!(request.top_k, 7);
+    assert_eq!(request.text_query.top_k, 7);
+    assert_eq!(
+        request.text_query.syntax,
+        quanta_index_contract::TextQuerySyntax::Sourcegraph
+    );
+    assert_eq!(request.text_query.query_text, "needle");
+    assert_eq!(request.semantic_query_text, "where the needle is kept");
+    assert_eq!(request.generation, Some(sample_generation_pin()));
+    assert_eq!(request.generation_selector, None);
+    assert_eq!(
+        request
+            .text_query
+            .constraints
+            .repo_relative_path_exact
+            .as_ref(),
+        Some(&path)
+    );
+    assert!(
+        request
+            .text_query
+            .constraints
+            .language_any_of
+            .contains(&rust)
+    );
+}
+
+/// QI-BB-025: the hybrid builder applies the shared `top_k` gate before any
+/// round trip, under the one code every route reports.
+#[test]
+fn hybrid_builder_refuses_out_of_range_top_k_before_any_round_trip() {
+    for top_k in [0, quanta_index_contract::PUBLIC_TOP_K_MAX + 1, u32::MAX] {
+        let query = unused_query();
+        let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+        let outcome = client
+            .search()
+            .hybrid()
+            .native("needle")
+            .semantic_text("needle")
+            .active(repo_id(), revision_id())
+            .top_k(top_k)
+            .execute();
+        match outcome {
+            Err(crate::SdkError::Remote { code, .. }) => assert_eq!(
+                code,
+                quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE,
+                "top_k={top_k}"
+            ),
+            other => panic!("top_k={top_k} must be refused with the shared code, got {other:?}"),
+        }
+        let sent = ok_or_fail!(query.requests.lock()).len();
+        assert_eq!(sent, 0, "a refused top_k must not reach the transport");
+    }
+}
+
+/// QI-BB-022: a hybrid row is explained under both its queries; the SDK
+/// sends the row, the text query at the fused `top_k`, and the dense text.
+#[test]
+fn hybrid_explain_carries_the_row_and_both_queries() {
+    let row = quanta_index_contract::HybridCandidateV1 {
+        candidate: quanta_index_contract::LexicalCandidate {
+            candidate_id: "chunk://alpha".to_string(),
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            manifest_generation: ManifestGeneration::new(7),
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+            start_line: 1,
+            end_line: 2,
+            score: 1.5,
+            snippet: "needle".to_string(),
+            snippet_hit_offset: None,
+            highlights: Vec::new(),
+        },
+        fused_score: 1.0 / 61.0 + 1.0 / 62.0,
+        contributions: vec![
+            quanta_index_contract::HybridLaneContributionV1 {
+                lane: quanta_index_contract::HybridLaneV1::Lexical,
+                rank: 1,
+                raw_score: 1.5,
+            },
+            quanta_index_contract::HybridLaneContributionV1 {
+                lane: quanta_index_contract::HybridLaneV1::Dense,
+                rank: 2,
+                raw_score: 0.5,
+            },
+        ],
+    };
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::Explain(
+            quanta_index_contract::SearchPlaneExplainQueryResponse {
+                generation: sample_generation_pin(),
+                presence: quanta_index_contract::CandidatePresenceV1::Indexed,
+                explanation: sample_explanation(),
+            },
+        ),
+    ));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let text_query = quanta_index_contract::TextQueryRequest {
+        syntax: quanta_index_contract::TextQuerySyntax::Sourcegraph,
+        query_text: "needle".to_string(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+        generation: None,
+        generation_selector: None,
+        top_k: 7,
+    };
+    let response = ok_or_fail!(client.search().explain_hybrid_under_queries(
+        sample_generation_pin(),
+        row.clone(),
+        text_query.clone(),
+        "where the needle is kept",
+    ));
+    assert_eq!(
+        response.presence,
+        quanta_index_contract::CandidatePresenceV1::Indexed
+    );
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::Explain(request) = &captured.payload
+    else {
+        panic!("expected Explain request, got {:?}", captured.payload);
+    };
+    assert_eq!(
+        request.candidate,
+        quanta_index_contract::ExplainCandidateV1::Hybrid(row)
+    );
+    assert_eq!(request.text_query.as_ref(), Some(&text_query));
+    assert_eq!(
+        request.semantic_query_text.as_deref(),
+        Some("where the needle is kept")
+    );
+}

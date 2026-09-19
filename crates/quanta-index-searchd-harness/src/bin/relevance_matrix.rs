@@ -4,20 +4,20 @@
 //! ranker, scores the produced ordering (`MRR@10` / `NDCG@10` / `Recall@20`)
 //! plus blocking ordering invariants, writes the canonical artifacts under
 //! `artifacts/search-quality/relevance/latest/`, and exits non-zero on any
-//! per-query or per-route failure. This is the authority behind
+//! per-query or per-route failure. `summary.json` is the `BenchArtifactV1`
+//! (QI-BB-010): the exact head of a clean worktree, both fixtures' corpus
+//! digest, the cutoffs' config digest, the host, the process's peak RSS and
+//! the embedder the semantic gate ran on. This is the authority behind
 //! `just rust-verify-quality-relevance`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use quanta_index_searchd_harness::relevance::report::{run_relevance_report, write_artifacts};
-
-fn git_rev() -> String {
-    if let Ok(rev) = std::env::var("DSL_BENCH_GIT_REV") {
-        return rev;
-    }
-    "unknown".to_string()
-}
+use anyhow::Result as AnyResult;
+use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
+use quanta_index_searchd_harness::relevance::report::{
+    RelevanceReport, run_relevance_report, write_artifacts,
+};
 
 /// Capture date stamped on the Sourcegraph overlap rows (J7Q-01B).
 ///
@@ -39,6 +39,15 @@ fn parse_out_dir() -> PathBuf {
     }
 }
 
+fn run(out_dir: &Path, capture_date: &str) -> AnyResult<RelevanceReport> {
+    // Provenance first: a run that cannot be attributed is not started.
+    let git_head = GitHeadV1::resolve(Path::new("."))?;
+    let host = HostV1::observe()?;
+    let report = run_relevance_report()?;
+    write_artifacts(&report, out_dir, git_head, host, capture_date)?;
+    Ok(report)
+}
+
 #[expect(
     clippy::print_stderr,
     clippy::print_stdout,
@@ -46,24 +55,15 @@ fn parse_out_dir() -> PathBuf {
 )]
 fn main() -> ExitCode {
     let out_dir = parse_out_dir();
-    let rev = git_rev();
     let capture_date = capture_date();
 
-    let report = match run_relevance_report() {
+    let report = match run(&out_dir, &capture_date) {
         Ok(report) => report,
         Err(err) => {
-            eprintln!("relevance_matrix: rail run failed: {err:#}");
+            eprintln!("relevance_matrix: {err:#}");
             return ExitCode::FAILURE;
         }
     };
-
-    if let Err(err) = write_artifacts(&report, &out_dir, &rev, &capture_date) {
-        eprintln!(
-            "relevance_matrix: failed to write artifacts under {}: {err:#}",
-            out_dir.display()
-        );
-        return ExitCode::FAILURE;
-    }
 
     for route in &report.routes {
         println!(

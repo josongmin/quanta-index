@@ -398,6 +398,21 @@ pub trait SemanticSearcher: Send + Sync {
         }
     }
 
+    /// The exact cosine similarity between `query_vector` and the vector
+    /// this generation stores for `candidate_id`, or `None` when the
+    /// generation holds no vector for it (QI-BB-022).
+    ///
+    /// A direct lookup of one stored row: it bypasses any approximate
+    /// index, so an explain reconciles a carried dense score against the
+    /// stored vector itself and never against a neighbour search's recall.
+    /// Observes `budget` like every dense read.
+    fn score_candidate(
+        &self,
+        candidate_id: &str,
+        query_vector: &[f32],
+        budget: &RequestBudgetV1,
+    ) -> Result<Option<f32>, CoreError>;
+
     /// Model identity the indexed vectors were built with (from the generation's
     /// persisted manifest). The query path compares this against the query
     /// embedder's model identity and fails closed if they differ — a query

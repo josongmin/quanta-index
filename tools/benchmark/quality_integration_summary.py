@@ -44,6 +44,24 @@ def load_summary(dimension: str) -> dict | None:
         return None
 
 
+def rail_verdict(summary: dict) -> bool | None:
+    """The rail's pass/fail verdict, wherever the artifact keeps it.
+
+    A benchmark rail's ``summary.json`` is a ``BenchArtifactV1`` (schema 2,
+    QI-BB-010) whose dimension-specific verdict lives under ``detail.passed``;
+    the verdict-record rails keep ``passed`` at the top level. Neither shape
+    is defaulted: an artifact with no verdict is ``None``.
+    """
+    if isinstance(summary.get("schema_version"), int) and summary["schema_version"] >= 2:
+        detail = summary.get("detail")
+        if isinstance(detail, dict) and "passed" in detail:
+            return bool(detail["passed"])
+        return None
+    if "passed" in summary:
+        return bool(summary["passed"])
+    return None
+
+
 def build() -> tuple[dict, bool]:
     rows = []
     all_live_passed = True
@@ -66,13 +84,14 @@ def build() -> tuple[dict, bool]:
                 row["artifact"] = str(
                     (ARTIFACT_ROOT / dimension / "latest" / "summary.json").relative_to(ROOT)
                 )
-                if "passed" not in summary:
-                    # A parsed artifact without a 'passed' key is malformed: surface
-                    # it as a flagged failure rather than silently scoring it FAIL.
+                verdict = rail_verdict(summary)
+                if verdict is None:
+                    # A parsed artifact without a verdict is malformed: surface it
+                    # as a flagged failure rather than silently scoring it FAIL.
                     passed = False
-                    row["error"] = "artifact present but missing 'passed' key"
+                    row["error"] = "artifact present but missing 'passed' verdict"
                 else:
-                    passed = bool(summary["passed"])
+                    passed = verdict
                 row["passed"] = passed
                 if not passed:
                     all_live_passed = False

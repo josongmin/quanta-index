@@ -2610,15 +2610,14 @@ impl E2eRuntime {
 
     /// Presence-only explain: is the candidate in its generation's index?
     pub fn explain_candidate(&mut self, candidate: LexicalCandidate) -> E2eExplainResult {
-        self.explain_candidate_request(ExplainCandidateV1::Lexical(candidate), None)
+        self.explain_candidate_request(ExplainCandidateV1::Lexical(candidate), None, None)
     }
 
-    /// Scored explain (QI-BB-022): the candidate's score under the named
-    /// query, traced through the plan that ranked it. A hybrid row
-    /// (`HybridCandidateV1`) is reconciled against its lane provenance too.
+    /// Scored explain (QI-BB-022): a lexical row's score under the named
+    /// query, traced through the plan that ranked it.
     pub fn explain_candidate_under_query(
         &mut self,
-        candidate: impl Into<ExplainCandidateV1>,
+        candidate: LexicalCandidate,
         syntax: TextQuerySyntax,
         query_text: &str,
     ) -> E2eExplainResult {
@@ -2630,13 +2629,45 @@ impl E2eRuntime {
             generation_selector: None,
             top_k: 1,
         };
-        self.explain_candidate_request(candidate.into(), Some(text_query))
+        self.explain_candidate_request(
+            ExplainCandidateV1::Lexical(candidate),
+            Some(text_query),
+            None,
+        )
+    }
+
+    /// Hybrid explain (QI-BB-022): a hybrid row re-derived lane by lane
+    /// under both queries it was fused for. `top_k` is the fused `top_k`
+    /// the hybrid ran with, so the explain re-runs the lanes at the same
+    /// bound.
+    pub fn explain_hybrid_candidate_under_queries(
+        &mut self,
+        row: HybridCandidateV1,
+        syntax: TextQuerySyntax,
+        query_text: &str,
+        semantic_query_text: &str,
+        top_k: u32,
+    ) -> E2eExplainResult {
+        let text_query = TextQueryRequest {
+            syntax,
+            query_text: query_text.to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+            generation: None,
+            generation_selector: None,
+            top_k,
+        };
+        self.explain_candidate_request(
+            ExplainCandidateV1::Hybrid(row),
+            Some(text_query),
+            Some(semantic_query_text.to_string()),
+        )
     }
 
     fn explain_candidate_request(
         &mut self,
         candidate: ExplainCandidateV1,
         text_query: Option<TextQueryRequest>,
+        semantic_query_text: Option<String>,
     ) -> E2eExplainResult {
         let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
         let row = candidate.lexical_row();
@@ -2651,6 +2682,7 @@ impl E2eRuntime {
                 generation: pin,
                 candidate,
                 text_query,
+                semantic_query_text,
             }),
         };
         let socket = match self.ensure_driver() {

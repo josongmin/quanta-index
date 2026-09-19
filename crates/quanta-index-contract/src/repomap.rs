@@ -2803,7 +2803,10 @@ impl Serialize for RepoMapQueryRequest {
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("manifest_generation", &self.manifest_generation)?;
         state.serialize_field("query_text", &self.query_text)?;
-        state.serialize_field("top_k", &self.top_k)?;
+        state.serialize_field(
+            "top_k",
+            &quanta_index_contract_base::query::wire_top_k(self.top_k, serde::ser::Error::custom)?,
+        )?;
         state.serialize_field("token_budget", &self.token_budget)?;
         state.serialize_field("focus_subjects", &self.focus_subjects)?;
         state.end()

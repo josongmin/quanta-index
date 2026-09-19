@@ -16,12 +16,21 @@ It demonstrates: index query latency is ~flat in corpus size while a full scan
 is linear, so there is a crossover beyond which the index wins per query. The
 index's one-time build cost is reported separately (it is amortized over many
 queries; a scan pays its full cost every time).
+
+Provenance (QI-BB-010): the binary emits one ``BenchArtifactV1`` per scale —
+the exact head of a clean worktree (resolved by the binary, never passed in),
+the corpus digest over the bytes it wrote, the run configuration digest, the
+host, its peak RSS, the build phase and the index's disk amplification. This
+runner keeps every artifact verbatim under ``artifacts/experiments/scan-vs-index/``
+beside the markdown report and adds only the scan timings, so the numbers in
+the table are attributable to the head the artifacts name.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -30,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 NEEDLE = "parity_needle_alpha"
+CURRENT_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -56,6 +66,12 @@ def parse_args() -> argparse.Namespace:
         help="markdown report path (under gitignored artifacts/)",
     )
     parser.add_argument(
+        "--artifact-dir",
+        type=Path,
+        default=Path("artifacts/experiments/scan-vs-index"),
+        help="directory the per-scale BenchArtifactV1 files are kept in verbatim",
+    )
+    parser.add_argument(
         "--bin-cmd",
         default="cargo run --quiet --release -p quanta-index-scan-experiment --",
         help="command prefix that invokes the scan_vs_index binary",
@@ -65,7 +81,7 @@ def parse_args() -> argparse.Namespace:
 
 def percentile(samples_ms: list[float], pct: float) -> float:
     if not samples_ms:
-        return 0.0
+        raise ValueError("percentile requires at least one sample")
     ordered = sorted(samples_ms)
     rank = max(1, -(-pct * len(ordered) // 100))  # ceil(pct/100 * n)
     return ordered[min(len(ordered), rank) - 1]
@@ -81,13 +97,16 @@ def time_command(cmd: list[str], samples: int) -> ScanResult:
     return ScanResult(p50_ms=percentile(times, 50), p95_ms=percentile(times, 95))
 
 
-def run_index_probe(bin_cmd: list[str], out_dir: Path, args: argparse.Namespace) -> dict:
+def run_index_probe(
+    bin_cmd: list[str], out_dir: Path, chunks: int, args: argparse.Namespace
+) -> dict:
+    """One scale through the binary; the artifact it prints, checked for shape."""
     cmd = [
         *bin_cmd,
         "--out-dir",
         str(out_dir),
         "--chunks",
-        str(args.chunks),
+        str(chunks),
         "--chunk-bytes",
         str(args.chunk_bytes),
         "--needle-count",
@@ -98,16 +117,49 @@ def run_index_probe(bin_cmd: list[str], out_dir: Path, args: argparse.Namespace)
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise RuntimeError(f"scan_vs_index failed:\n{proc.stderr.strip()}")
-    return json.loads(proc.stdout.strip().splitlines()[-1])
+    artifact = json.loads(proc.stdout.strip().splitlines()[-1])
+    if artifact.get("schema_version") != CURRENT_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"scan_vs_index emitted schema_version {artifact.get('schema_version')!r}, "
+            f"expected {CURRENT_SCHEMA_VERSION}"
+        )
+    for key in ("provenance", "host", "resources", "rows", "detail"):
+        if key not in artifact:
+            raise RuntimeError(f"scan_vs_index artifact has no `{key}`")
+    return artifact
 
 
-def render_report(rows: list[dict], crossover: str) -> str:
+def table_row(artifact: dict, rg: ScanResult, grep: ScanResult) -> dict:
+    detail = artifact["detail"]
+    latency = artifact["rows"][0]["latency"]
+    return {
+        "chunks": detail["chunks"],
+        "corpus_bytes": detail["corpus_bytes"],
+        "index_bytes": detail["index_bytes"],
+        "index_build_ms": detail["index_build_ms"],
+        "index_query_p50_ms": latency["p50_ms"],
+        "index_query_p95_ms": latency["p95_ms"],
+        "index_query_p99_ms": latency["p99_ms"],
+        "rg_p50_ms": rg.p50_ms,
+        "rg_p95_ms": rg.p95_ms,
+        "grep_p50_ms": grep.p50_ms,
+        "grep_p95_ms": grep.p95_ms,
+    }
+
+
+def render_report(rows: list[dict], crossover: str, git_head: str, host: dict) -> str:
     lines = [
         "# Scan vs index — scaling experiment (NOT a benchmark gate)",
         "",
         "In-process lexical index query (no daemon/IPC) vs `rg`/`grep` full scan,",
         f"searching `{NEEDLE}` over identical corpus bytes. See the script header",
         "for why this is an experiment and not part of RFC-DSL-Benchmarking.",
+        "",
+        f"- git_head: `{git_head}`",
+        f"- host: {host['os']}/{host['arch']}, {host['cpu_count']} cpus, "
+        f"{host['mem_bytes'] / (1024**3):.1f} GiB, hostname_hash `{host['hostname_hash'][:23]}…`",
+        "- per-scale `BenchArtifactV1` files (corpus/config digests, peak RSS, disk"
+        " amplification) are beside this report",
         "",
         "| chunks | corpus MB | index build ms | index query p95 ms | rg p95 ms | grep p95 ms |",
         "| ------:| ---------:| --------------:| ------------------:| ---------:| -----------:|",
@@ -125,16 +177,23 @@ def render_report(rows: list[dict], crossover: str) -> str:
 
 def main() -> int:
     args = parse_args()
-    bin_cmd = args.bin_cmd.split()
+    bin_cmd = shlex.split(args.bin_cmd)
     scales = [int(s) for s in args.scales.split(",") if s.strip()]
 
     rows: list[dict] = []
+    heads: set[str] = set()
+    host: dict | None = None
+    args.artifact_dir.mkdir(parents=True, exist_ok=True)
     for chunks in scales:
-        args.chunks = chunks
         with tempfile.TemporaryDirectory(prefix="scan-vs-index-") as tmp:
             out_dir = Path(tmp)
             print(f"scale={chunks}: building corpus + index ...", file=sys.stderr)
-            row = run_index_probe(bin_cmd, out_dir, args)
+            artifact = run_index_probe(bin_cmd, out_dir, chunks, args)
+            heads.add(artifact["provenance"]["git_head"])
+            host = artifact["host"]
+            (args.artifact_dir / f"chunks-{chunks}.json").write_text(
+                json.dumps(artifact, indent=2) + "\n", encoding="utf-8"
+            )
             rg = time_command(
                 ["rg", "--no-messages", "-g", "*.txt", NEEDLE, str(out_dir)],
                 args.scan_samples,
@@ -143,10 +202,7 @@ def main() -> int:
                 ["grep", "-rn", "--include=*.txt", NEEDLE, str(out_dir)],
                 args.scan_samples,
             )
-            row["rg_p50_ms"] = rg.p50_ms
-            row["rg_p95_ms"] = rg.p95_ms
-            row["grep_p50_ms"] = grep.p50_ms
-            row["grep_p95_ms"] = grep.p95_ms
+            row = table_row(artifact, rg, grep)
             rows.append(row)
             print(
                 f"  corpus={row['corpus_bytes'] / 1048576:.1f}MB "
@@ -156,6 +212,12 @@ def main() -> int:
                 file=sys.stderr,
             )
 
+    if len(heads) != 1 or host is None:
+        print(
+            f"ERROR: the sweep spans more than one head or no scale ran: {sorted(heads)}",
+            file=sys.stderr,
+        )
+        return 2
     crossover = "index query p95 stayed below rg at every scale measured"
     for r in rows:
         if r["index_query_p95_ms"] < r["rg_p95_ms"]:
@@ -166,11 +228,13 @@ def main() -> int:
             )
             break
 
-    report = render_report(rows, crossover)
+    report = render_report(rows, crossover, next(iter(heads)), host)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(report + "\n", encoding="utf-8")
     print(report)
-    print(f"\nwrote {args.out}", file=sys.stderr)
+    print(
+        f"\nwrote {args.out} and {len(rows)} artifact(s) under {args.artifact_dir}", file=sys.stderr
+    )
     return 0
 
 

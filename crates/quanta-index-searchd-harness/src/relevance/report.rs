@@ -25,8 +25,17 @@ use quanta_index_embed::{
 use quanta_index_searchd::app::{SearchdConfig, SemanticEmbedderProfile};
 use serde_json::{Value, json};
 
-use crate::artifact::BenchSyntax;
+use crate::artifact::{
+    BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, BenchSyntax, GitHeadV1, HostV1,
+    PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily, config_digest, corpus_digest,
+    model_revision_of, saturating_u64,
+};
 use crate::harness::E2eRuntime;
+
+/// The artifact dimension the relevance rail writes.
+pub const DIMENSION: &str = "relevance";
+/// The artifact dimension the `OpenAI` A/B capture writes.
+pub const OPENAI_AB_DIMENSION: &str = "relevance-openai-ab";
 use crate::relevance::corpus::{
     JUDGED_QUERIES, JudgedQuery, LEXICAL_RELEVANCE_CORPUS, RELEVANCE_REPO, RelevanceRoute,
     SEMANTIC_GATED_QUERIES, SEMANTIC_JUDGED_QUERIES, SOURCEGRAPH_OVERLAP_BUCKETS,
@@ -140,6 +149,9 @@ pub struct RelevanceReport {
     pub routes: Vec<RouteSummary>,
     pub overlap: Vec<OverlapCapture>,
     pub passed: bool,
+    /// The embedder the semantic gate's fixture was built under, for the
+    /// provenance.
+    pub model_revision: Option<String>,
 }
 
 fn to_text_syntax(syntax: BenchSyntax) -> TextQuerySyntax {
@@ -500,6 +512,7 @@ pub fn run_relevance_report() -> AnyResult<RelevanceReport> {
     // here (neural-only — covered as determinism-only unit tests). This is a real
     // rail gate + artifact row, not a test-only probe.
     let mut sem_rt = prepare_semantic_relevance_runtime()?;
+    let model_revision = model_revision_of(sem_rt.embedder_profile());
     for query in SEMANTIC_GATED_QUERIES {
         let order = produced_order(&mut sem_rt, query)?;
         queries.push(score_query(query, order)?);
@@ -517,7 +530,19 @@ pub fn run_relevance_report() -> AnyResult<RelevanceReport> {
         routes,
         overlap,
         passed,
+        model_revision,
     })
+}
+
+/// The bytes both relevance fixtures ingest, in ingest order: the lexical
+/// judged corpus, then the semantic corpus with its distractors.
+#[must_use]
+pub fn relevance_corpus_files() -> Vec<(String, String)> {
+    LEXICAL_RELEVANCE_CORPUS
+        .iter()
+        .chain(semantic_fixture_docs().iter())
+        .map(|(path, content)| ((*path).to_string(), (*content).to_string()))
+        .collect()
 }
 
 #[derive(Clone, Debug)]
@@ -717,11 +742,11 @@ fn judgments_json(report: &RelevanceReport) -> Value {
     json!({ "schema_version": 1, "queries": rows })
 }
 
-fn summary_json(report: &RelevanceReport, git_rev: &str) -> Value {
+/// The relevance artifact's detail: every route and query verdict and the
+/// external floor's status.
+#[must_use]
+pub fn detail_json(report: &RelevanceReport) -> Value {
     json!({
-        "schema_version": 1,
-        "dimension": "relevance",
-        "git_rev": git_rev,
         "passed": report.passed,
         "routes": report.routes.iter().map(route_summary_json).collect::<Vec<_>>(),
         "queries": report.queries.iter().map(query_score_json).collect::<Vec<_>>(),
@@ -731,6 +756,80 @@ fn summary_json(report: &RelevanceReport, git_rev: &str) -> Value {
             "owner_ticket": "J7Q-01B",
             "note": "local Sourcegraph instance not provisioned; external lexical floor NOT met",
         },
+    })
+}
+
+/// The artifact's route family for a judged route. Both judged routes rank
+/// chunk candidates of the lexical result shape; the route itself is named
+/// in `engine_touched` and the scenario id.
+const fn relevance_route_family(route: RelevanceRoute) -> RouteFamily {
+    match route {
+        RelevanceRoute::Lexical | RelevanceRoute::Semantic => RouteFamily::Lexical,
+    }
+}
+
+/// One artifact row per judged query: no latency (the rail measures
+/// ranking, not time), the produced page's size, and a typed error count
+/// of one when the query failed its gate.
+fn query_row(score: &QueryScore) -> BenchRowV1 {
+    BenchRowV1 {
+        scenario_id: format!("relevance.{}.{}", score.route.as_str(), score.id),
+        route_family: relevance_route_family(score.route),
+        syntax: BenchSyntax::Native,
+        result_shape: if score.produced_order.is_empty() {
+            ResultShape::Empty
+        } else {
+            ResultShape::Candidates
+        },
+        latency: None,
+        qps: None,
+        error_count: u64::from(!score.passed()),
+        timeout_count: 0,
+        result_count: Some(saturating_u64(score.produced_order.len())),
+        typed_error_code: None,
+        engine_touched: vec![score.route.as_str().to_string()],
+        early_stop_reason: None,
+    }
+}
+
+/// The relevance artifact: one `BenchArtifactV1` whose rows are the judged
+/// queries.
+///
+/// Its provenance names the head, both fixtures' bytes, the thresholds'
+/// cutoffs and the embedder of the semantic gate.
+pub fn artifact(
+    report: &RelevanceReport,
+    git_head: GitHeadV1,
+    host: HostV1,
+) -> AnyResult<BenchArtifactV1> {
+    Ok(BenchArtifactV1 {
+        dimension: DIMENSION.to_string(),
+        mode: BenchMode::Warm,
+        concurrency: 1,
+        provenance: BenchProvenanceV1 {
+            git_head,
+            corpus_digest: corpus_digest(DIMENSION, &relevance_corpus_files()),
+            config_digest: config_digest(
+                DIMENSION,
+                &[
+                    ("rank_k", RANK_K.to_string()),
+                    ("recall_k", RECALL_K.to_string()),
+                    ("top_k", TOP_K.to_string()),
+                    ("judged_queries", JUDGED_QUERIES.len().to_string()),
+                    (
+                        "semantic_gated_queries",
+                        SEMANTIC_GATED_QUERIES.len().to_string(),
+                    ),
+                ],
+            ),
+            model_revision: report.model_revision.clone(),
+        },
+        host,
+        resources: ResourceUsageV1::observe_self()?,
+        phases: PhaseDurationsV1::default(),
+        disk_amplification: None,
+        rows: report.queries.iter().map(query_row).collect(),
+        detail: detail_json(report),
     })
 }
 
@@ -791,10 +890,11 @@ fn sourcegraph_overlap_json(report: &RelevanceReport, capture_date: &str) -> Val
 pub fn write_artifacts(
     report: &RelevanceReport,
     dir: &Path,
-    git_rev: &str,
+    git_head: GitHeadV1,
+    host: HostV1,
     capture_date: &str,
 ) -> AnyResult<()> {
-    crate::artifact::write_json_pretty(&dir.join("summary.json"), &summary_json(report, git_rev))?;
+    artifact(report, git_head, host)?.write_to(&dir.join("summary.json"))?;
     crate::artifact::write_json_pretty(&dir.join("query_judgments.json"), &judgments_json(report))?;
     crate::artifact::write_json_pretty(
         &dir.join("sourcegraph-overlap.json"),
@@ -890,7 +990,7 @@ fn openai_provider_stats_json(stats: &OpenAiEmbedStatsSnapshot) -> Value {
     })
 }
 
-fn openai_ab_summary_json(report: &OpenAiSemanticAbReport, git_rev: &str) -> Value {
+fn openai_ab_detail_json(report: &OpenAiSemanticAbReport) -> Value {
     let paraphrase_case_count = report
         .cases
         .iter()
@@ -926,10 +1026,7 @@ fn openai_ab_summary_json(report: &OpenAiSemanticAbReport, git_rev: &str) -> Val
         })
         .count();
     json!({
-        "schema_version": 1,
-        "dimension": "relevance-openai-ab",
         "status": "captured",
-        "git_rev": git_rev,
         "case_count": report.cases.len(),
         "paraphrase_case_count": paraphrase_case_count,
         "paraphrase_hash_top1": paraphrase_hash_top1,
@@ -946,15 +1043,77 @@ fn openai_ab_summary_json(report: &OpenAiSemanticAbReport, git_rev: &str) -> Val
     })
 }
 
+/// One artifact row per A/B case: the `OpenAI` side's produced page.
+fn openai_ab_row(case: &SemanticAbCase) -> BenchRowV1 {
+    BenchRowV1 {
+        scenario_id: format!("relevance-openai-ab.{}", case.id),
+        route_family: RouteFamily::Lexical,
+        syntax: BenchSyntax::Native,
+        result_shape: if case.openai.produced_order.is_empty() {
+            ResultShape::Empty
+        } else {
+            ResultShape::Candidates
+        },
+        latency: None,
+        qps: None,
+        error_count: 0,
+        timeout_count: 0,
+        result_count: Some(saturating_u64(case.openai.produced_order.len())),
+        typed_error_code: None,
+        engine_touched: vec!["semantic".to_string()],
+        early_stop_reason: None,
+    }
+}
+
+/// The A/B capture artifact: the semantic fixture's bytes, the `OpenAI`
+/// profile's model revision, and one row per case.
+pub fn openai_ab_artifact(
+    report: &OpenAiSemanticAbReport,
+    openai_profile: &SemanticEmbedderProfile,
+    git_head: GitHeadV1,
+    host: HostV1,
+) -> AnyResult<BenchArtifactV1> {
+    Ok(BenchArtifactV1 {
+        dimension: OPENAI_AB_DIMENSION.to_string(),
+        mode: BenchMode::Warm,
+        concurrency: 1,
+        provenance: BenchProvenanceV1 {
+            git_head,
+            corpus_digest: corpus_digest(
+                OPENAI_AB_DIMENSION,
+                &semantic_fixture_docs()
+                    .iter()
+                    .map(|(path, content)| ((*path).to_string(), (*content).to_string()))
+                    .collect::<Vec<_>>(),
+            ),
+            config_digest: config_digest(
+                OPENAI_AB_DIMENSION,
+                &[
+                    ("rank_k", RANK_K.to_string()),
+                    ("recall_k", RECALL_K.to_string()),
+                    ("cases", SEMANTIC_JUDGED_QUERIES.len().to_string()),
+                ],
+            ),
+            model_revision: model_revision_of(openai_profile),
+        },
+        host,
+        resources: ResourceUsageV1::observe_self()?,
+        phases: PhaseDurationsV1::default(),
+        disk_amplification: None,
+        rows: report.cases.iter().map(openai_ab_row).collect(),
+        detail: openai_ab_detail_json(report),
+    })
+}
+
 pub fn write_openai_ab_artifacts(
     report: &OpenAiSemanticAbReport,
+    openai_profile: &SemanticEmbedderProfile,
     dir: &Path,
-    git_rev: &str,
+    git_head: GitHeadV1,
+    host: HostV1,
 ) -> AnyResult<()> {
-    crate::artifact::write_json_pretty(
-        &dir.join("summary.json"),
-        &openai_ab_summary_json(report, git_rev),
-    )?;
+    openai_ab_artifact(report, openai_profile, git_head, host)?
+        .write_to(&dir.join("summary.json"))?;
     crate::artifact::write_json_pretty(&dir.join("cases.json"), &openai_ab_cases_json(report))?;
     crate::artifact::write_json_pretty(
         &dir.join("provider-stats.json"),
@@ -1331,6 +1490,7 @@ mod tests {
                 quanta_capture_error: None,
             }],
             passed: true,
+            model_revision: None,
         };
         let value = sourcegraph_overlap_json(&report, "2026-06-09");
         assert_eq!(value["status"], "unprovisioned");

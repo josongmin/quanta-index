@@ -22,14 +22,14 @@ use quanta_index_contract::ipc::{
 use quanta_index_contract::lex::ExplanationRow;
 use quanta_index_contract::{
     EngineTouched, ExplainCandidateV1, GenerationPin, HybridCandidateV1, HybridLaneContributionV1,
-    HybridLaneV1, HybridSeedQueryResponse, LexicalCandidate, ManifestGeneration, PlannerStage,
-    PlannerTraceEntry, QueryResultWindowV1, RepoId, RepoMapDocType, RepoMapEntryDto,
-    RepoMapExactnessSummary, RepoMapFocusSubjectDto, RepoMapGraphCoverageClass,
-    RepoMapItemIndexAvailability, RepoMapQueryResponse, RepoMapRedactionState, RepoMapSnapshotMeta,
-    RepoRelativePath, RevisionId, SearchExplanation, SearchPlaneExplainQueryResponse,
-    SearchPlaneIpcError, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
-    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope, SemanticQueryResponse,
-    TextQueryResponse, TextQuerySyntax,
+    HybridLaneV1, HybridQueryResponse, HybridSeedQueryResponse, LexicalCandidate,
+    ManifestGeneration, PlannerStage, PlannerTraceEntry, QueryResultWindowV1, RepoId,
+    RepoMapDocType, RepoMapEntryDto, RepoMapExactnessSummary, RepoMapFocusSubjectDto,
+    RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapQueryResponse,
+    RepoMapRedactionState, RepoMapSnapshotMeta, RepoRelativePath, RevisionId, SearchExplanation,
+    SearchPlaneExplainQueryResponse, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    SearchPlaneQueryIpcResponseEnvelope, SemanticQueryResponse, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_ipc::{IpcDispatcher, RequestBudgetV1, UdsServer};
 use tempfile::tempdir;
@@ -40,6 +40,7 @@ enum SmokeScenario {
     ExplainPretty,
     ExplainHybridPretty,
     SemanticJson,
+    HybridPretty,
     HybridSeedPretty,
     RepoMapPretty,
 }
@@ -61,6 +62,7 @@ impl IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse> for 
             SmokeScenario::ExplainPretty => dispatch_explain_request(request),
             SmokeScenario::ExplainHybridPretty => dispatch_explain_hybrid_request(request),
             SmokeScenario::SemanticJson => dispatch_semantic_request(request),
+            SmokeScenario::HybridPretty => dispatch_hybrid_request(request),
             SmokeScenario::HybridSeedPretty => dispatch_hybrid_seed_request(request),
             SmokeScenario::RepoMapPretty => dispatch_repomap_request(request),
         }
@@ -88,6 +90,12 @@ fn explain_hybrid_candidate_pretty_roundtrip() {
 #[test]
 fn semantic_query_text_json_roundtrip() {
     let result = semantic_query_text_json_roundtrip_impl();
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn hybrid_pretty_roundtrip() {
+    let result = hybrid_pretty_roundtrip_impl();
     assert!(result.is_ok(), "{result:?}");
 }
 
@@ -230,6 +238,10 @@ fn explain_hybrid_candidate_pretty_roundtrip_impl() -> Result<(), Box<dyn std::e
         .arg("native")
         .arg("--query-text")
         .arg("fn main")
+        .arg("--semantic-query-text")
+        .arg("where main lives")
+        .arg("--top-k")
+        .arg("7")
         .output()?;
     shutdown.trigger();
     if !output.status.success() {
@@ -241,6 +253,49 @@ fn explain_hybrid_candidate_pretty_roundtrip_impl() -> Result<(), Box<dyn std::e
         "presence: indexed",
         "summary: hybrid lane trace",
         "strategy: hybrid_score_trace",
+    ] {
+        if !stdout.contains(expected) {
+            return Err(format!("missing `{expected}` in stdout: {stdout}").into());
+        }
+    }
+    Ok(())
+}
+
+// QI-BB-018: the true-hybrid route is reachable from the CLI, with both
+// lanes' queries and the fused top_k, and its rows render with their lane
+// provenance.
+fn hybrid_pretty_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
+    let socket_path = unique_socket_path();
+    let shutdown = start_server(&socket_path, SmokeScenario::HybridPretty)?;
+    let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("hybrid")
+        .arg("--socket")
+        .arg(&socket_path)
+        .arg("--repo-id")
+        .arg("repo-1")
+        .arg("--revision-id")
+        .arg("rev-1")
+        .arg("--manifest-generation")
+        .arg("11")
+        .arg("--syntax")
+        .arg("native")
+        .arg("--query-text")
+        .arg("fn main")
+        .arg("--semantic-query-text")
+        .arg("where main lives")
+        .arg("--top-k")
+        .arg("7")
+        .output()?;
+    shutdown.trigger();
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    for expected in [
+        "kind: hybrid",
+        "summary: hybrid lanes fused",
+        "lexical#1",
+        "dense#3",
     ] {
         if !stdout.contains(expected) {
             return Err(format!("missing `{expected}` in stdout: {stdout}").into());
@@ -1274,10 +1329,22 @@ fn dispatch_explain_hybrid_request(
             "a hybrid candidate explains under its query",
         );
     };
-    if text_query.syntax != TextQuerySyntax::Native || text_query.query_text != "fn main" {
+    if text_query.syntax != TextQuerySyntax::Native
+        || text_query.query_text != "fn main"
+        || text_query.top_k != 7
+    {
         return error_response(
             "TEST_BAD_QUERY",
             format!("unexpected explain query: {text_query:?}"),
+        );
+    }
+    if payload.semantic_query_text.as_deref() != Some("where main lives") {
+        return error_response(
+            "TEST_BAD_SEMANTIC_QUERY",
+            format!(
+                "unexpected explain dense query: {:?}",
+                payload.semantic_query_text
+            ),
         );
     }
     let mut explanation = stub_explanation("hybrid lane trace", vec![EngineTouched::Lexical]);
@@ -1336,6 +1403,36 @@ fn dispatch_semantic_request(request: SearchPlaneQueryIpcRequest) -> SearchPlane
         results: vec![stub_candidate(expected_generation)],
         window: QueryResultWindowV1::exact(1),
         explanation: stub_explanation("semantic explanation", vec![EngineTouched::Semantic]),
+    })
+}
+
+fn dispatch_hybrid_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQueryIpcResponse {
+    let SearchPlaneQueryIpcRequest::Hybrid(payload) = request else {
+        return error_response(
+            "TEST_UNEXPECTED_REQUEST",
+            format!("expected hybrid request, got {request:?}"),
+        );
+    };
+    let expected_generation = stub_generation();
+    if payload.generation.as_ref() != Some(&expected_generation)
+        || payload.text_query.syntax != TextQuerySyntax::Native
+        || payload.text_query.query_text != "fn main"
+        || payload.text_query.top_k != 7
+        || payload.semantic_query_text != "where main lives"
+        || payload.top_k != 7
+    {
+        return error_response(
+            "TEST_BAD_HYBRID_REQUEST",
+            format!("unexpected hybrid request: {payload:?}"),
+        );
+    }
+    let mut explanation = stub_explanation("hybrid lanes fused", vec![EngineTouched::Lexical]);
+    explanation.engines_touched.push(EngineTouched::Semantic);
+    SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
+        generation: expected_generation.clone(),
+        results: vec![stub_hybrid_candidate(expected_generation)],
+        window: QueryResultWindowV1::exact(1),
+        explanation,
     })
 }
 

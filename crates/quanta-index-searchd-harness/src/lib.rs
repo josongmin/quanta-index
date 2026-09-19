@@ -22,6 +22,7 @@ mod harness;
 pub mod ambiguity;
 pub mod artifact;
 pub mod bench_support;
+pub mod concurrency;
 pub mod ops;
 pub mod relevance;
 pub mod scale;

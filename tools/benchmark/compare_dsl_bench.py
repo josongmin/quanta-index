@@ -2,13 +2,24 @@
 """Compare a fresh DSL query-latency artifact against a committed baseline.
 
 Layer-3 (query latency) regression gate for the DSL-benchmarking model defined
-in ``docs/plans/jun-2-dsl-hardening/RFC-DSL-Benchmarking.md``. Reads two JSON
-artifacts (see that doc / ``tools/benchmark/README.md`` for the schema): one
-baseline (checked into ``tools/benchmark/baselines/``) and one current run
-(produced by ``dsl_warm_matrix`` for warm, or by ``run_dsl_cold_matrix.py``
-for cold). Matches scenarios by ``scenario_id`` and exits non-zero if the
-mode's *blocking metric* has grown past the configured relative + absolute
+in ``docs/plans/jun-2-dsl-hardening/RFC-DSL-Benchmarking.md``. Reads two
+``BenchArtifactV1`` JSON artifacts (schema 2; see ``tools/benchmark/README.md``
+and ``crates/quanta-index-searchd-harness/src/artifact.rs``): one baseline
+(checked into ``tools/benchmark/baselines/``) and one current run (produced by
+``dsl_warm_matrix`` for warm, or by ``run_dsl_cold_matrix.py`` for cold).
+Matches scenarios by ``scenario_id`` and exits non-zero if the mode's
+*blocking metric* has grown past the configured relative + absolute
 thresholds.
+
+Provenance gate (QI-BB-010, findings §9): both artifacts must be schema 2
+and carry a full 40-character ``git_head``; the *current* artifact's head
+must be the checkout's ``HEAD`` (or ``--head``), otherwise the comparison
+measured some other source and is refused (exit 2). The baseline is a
+reference captured at an earlier head, so it is held to the shape, not to
+head equality. The two artifacts must also agree on ``config_digest``: a
+comparison across different sample counts or scenario tables is not a
+regression signal. A schema-1 baseline (short ``git_rev``, no digests) is
+refused with instructions to re-capture it.
 
 Blocking metrics:
 
@@ -24,7 +35,7 @@ relative swings; we only care about meaningful regressions, so a delta must
 exceed *both* ``--rel-threshold`` and ``--abs-threshold-ms`` to count.
 
 Rows carrying ``early_stop_reason`` (e.g. ``fixture_not_seeded``) were never
-measured — their latency fields are null. Such rows are skipped entirely: never
+measured — their latency is null. Such rows are skipped entirely: never
 compared, never failed.
 """
 
@@ -32,11 +43,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-# Mode-aware default thresholds applied to the p95 latency metric. Explicit
+CURRENT_SCHEMA_VERSION = 2
+FULL_HEAD_RE = re.compile(r"^[0-9a-f]{40}$")
+
+# Mode-aware default thresholds applied to the blocking metric. Explicit
 # --rel-threshold / --abs-threshold-ms flags override these.
 DEFAULT_REL_THRESHOLD = 0.10
 DEFAULT_ABS_THRESHOLD_MS = {"warm": 1.0, "cold": 5.0}
@@ -49,13 +65,24 @@ class ScenarioRow:
     scenario_id: str
     route_family: str
     syntax: str
-    mode: str
     result_shape: str
     latency_p50_ms: float | None
     latency_p95_ms: float | None
     latency_p99_ms: float | None
     early_stop_reason: str | None
     samples: int
+
+
+@dataclass(frozen=True)
+class Artifact:
+    mode: str
+    git_head: str
+    config_digest: str
+    rows: dict[str, ScenarioRow]
+
+
+class ArtifactRefused(Exception):
+    """The artifact is not one this gate can compare."""
 
 
 def parse_args() -> argparse.Namespace:
@@ -69,48 +96,97 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--update-baseline",
         action="store_true",
-        help="overwrite baseline with current and exit 0",
+        help="overwrite baseline with current (after the provenance gate) and exit 0",
     )
     parser.add_argument(
         "--rel-threshold",
         type=float,
         default=None,
-        help="relative p95 growth threshold (default: 0.10 = 10%%)",
+        help="relative growth threshold on the blocking metric (default: 0.10 = 10%%)",
     )
     parser.add_argument(
         "--abs-threshold-ms",
         type=float,
         default=None,
-        help="absolute p95 growth threshold in ms (default: warm 1.0ms, cold 5.0ms)",
+        help="absolute growth threshold in ms (default: warm 1.0ms, cold 5.0ms)",
     )
     parser.add_argument(
         "--allow-missing",
         action="store_true",
         help="downgrade scenarios missing from current from FAIL to a warning",
     )
+    parser.add_argument(
+        "--head",
+        default=None,
+        help="the head the current artifact must carry (default: `git rev-parse HEAD`)",
+    )
     return parser.parse_args()
 
 
-def load_artifact(path: Path) -> tuple[str, dict[str, ScenarioRow]]:
+def resolve_head(explicit: str | None) -> str:
+    """The checkout's full HEAD; refuses anything that is not one."""
+    if explicit is None:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            raise ArtifactRefused(f"git rev-parse HEAD failed: {completed.stderr.strip()}")
+        explicit = completed.stdout.strip()
+    if not FULL_HEAD_RE.match(explicit):
+        raise ArtifactRefused(f"head {explicit!r} is not 40 lowercase hex characters")
+    return explicit
+
+
+def _optional_float(row: dict, key: str) -> float | None:
+    value = row.get(key)
+    return None if value is None else float(value)
+
+
+def load_artifact(path: Path, *, role: str) -> Artifact:
+    """Decode one ``BenchArtifactV1``, refusing an old schema or a bad head."""
     payload = json.loads(path.read_text(encoding="utf-8"))
-    mode = payload.get("mode", "")
+    schema = payload.get("schema_version")
+    if schema != CURRENT_SCHEMA_VERSION:
+        raise ArtifactRefused(
+            f"{role} {path} is schema_version {schema!r}, not {CURRENT_SCHEMA_VERSION}; "
+            "re-capture it with the current rail (a schema-1 artifact carries a short "
+            "git_rev and no corpus/config digest, host or resources)"
+        )
+    provenance = payload.get("provenance")
+    if not isinstance(provenance, dict):
+        raise ArtifactRefused(f"{role} {path} has no provenance")
+    git_head = provenance.get("git_head")
+    if not isinstance(git_head, str) or not FULL_HEAD_RE.match(git_head):
+        raise ArtifactRefused(
+            f"{role} {path} git_head {git_head!r} is not 40 lowercase hex characters"
+        )
+    config_digest = provenance.get("config_digest")
+    if not isinstance(config_digest, str) or not config_digest:
+        raise ArtifactRefused(f"{role} {path} has no config_digest")
+    mode = payload.get("mode")
+    if mode not in ("warm", "cold"):
+        raise ArtifactRefused(f"{role} {path} mode {mode!r} is not warm or cold")
     rows: dict[str, ScenarioRow] = {}
     for row in payload.get("rows", []):
         scenario_id = row["scenario_id"]
-        latency = row.get("latency_p95_ms")
+        latency = row.get("latency")
+        if latency is None:
+            latency = {}
         rows[scenario_id] = ScenarioRow(
             scenario_id=scenario_id,
             route_family=row["route_family"],
             syntax=row["syntax"],
-            mode=row["mode"],
             result_shape=row["result_shape"],
-            latency_p50_ms=None if row.get("latency_p50_ms") is None else float(row["latency_p50_ms"]),
-            latency_p95_ms=None if latency is None else float(latency),
-            latency_p99_ms=None if row.get("latency_p99_ms") is None else float(row["latency_p99_ms"]),
+            latency_p50_ms=_optional_float(latency, "p50_ms"),
+            latency_p95_ms=_optional_float(latency, "p95_ms"),
+            latency_p99_ms=_optional_float(latency, "p99_ms"),
             early_stop_reason=row.get("early_stop_reason"),
-            samples=int(row.get("samples", 0)),
+            samples=int(latency.get("samples", 0)),
         )
-    return mode, rows
+    return Artifact(mode=mode, git_head=git_head, config_digest=config_digest, rows=rows)
 
 
 def is_measured(row: ScenarioRow) -> bool:
@@ -127,29 +203,58 @@ def metric_value(row: ScenarioRow, metric: str) -> float | None:
     raise ValueError(f"unknown metric: {metric}")
 
 
+def gate_provenance(baseline: Artifact, current: Artifact, head: str) -> None:
+    """Refuse a comparison the provenance does not support."""
+    if current.git_head != head:
+        raise ArtifactRefused(
+            f"current artifact git_head {current.git_head} is not HEAD {head}: "
+            "stale artifact, re-run the rail at HEAD"
+        )
+    if baseline.mode != current.mode:
+        raise ArtifactRefused(
+            f"mode mismatch: baseline mode={baseline.mode!r} current mode={current.mode!r}"
+        )
+    if baseline.config_digest != current.config_digest:
+        raise ArtifactRefused(
+            "config_digest mismatch: baseline "
+            f"{baseline.config_digest} vs current {current.config_digest}; "
+            "a comparison across different run configurations is not a regression signal"
+        )
+
+
 def main() -> int:
     args = parse_args()
 
-    if args.update_baseline:
-        args.baseline.parent.mkdir(parents=True, exist_ok=True)
-        args.baseline.write_text(
-            args.current.read_text(encoding="utf-8"),
-            encoding="utf-8",
-        )
-        print(f"updated baseline {args.baseline}")
-        return 0
-
-    base_mode, baseline = load_artifact(args.baseline)
-    cur_mode, current = load_artifact(args.current)
-
-    if base_mode != cur_mode:
+    try:
+        head = resolve_head(args.head)
+        current = load_artifact(args.current, role="current")
+        if current.git_head != head:
+            raise ArtifactRefused(
+                f"current artifact git_head {current.git_head} is not HEAD {head}: "
+                "stale artifact, re-run the rail at HEAD"
+            )
+        if args.update_baseline:
+            args.baseline.parent.mkdir(parents=True, exist_ok=True)
+            args.baseline.write_text(
+                args.current.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            print(f"updated baseline {args.baseline} at head {head}")
+            return 0
+        baseline = load_artifact(args.baseline, role="baseline")
+        gate_provenance(baseline, current, head)
+    except FileNotFoundError as exc:
         print(
-            f"ERROR: mode mismatch: baseline mode={base_mode!r} current mode={cur_mode!r}",
+            f"ERROR: {exc.filename}: no such artifact; capture one with the rail at HEAD "
+            "(`--update-baseline` records a baseline)",
             file=sys.stderr,
         )
         return 2
+    except ArtifactRefused as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
-    mode = cur_mode
+    mode = current.mode
     rel_threshold = args.rel_threshold if args.rel_threshold is not None else DEFAULT_REL_THRESHOLD
     abs_threshold_ms = (
         args.abs_threshold_ms
@@ -163,15 +268,17 @@ def main() -> int:
     insufficient_samples: list[tuple[str, str, int, int]] = []
     advisories: list[tuple[str, str, float, float, float, float]] = []
 
-    all_scenarios = sorted(set(baseline) | set(current))
+    all_scenarios = sorted(set(baseline.rows) | set(current.rows))
     print(
-        f"mode={mode}  blocking-metric={blocking_metric}  rel-threshold={rel_threshold * 100:.0f}%  abs-threshold={abs_threshold_ms:.2f}ms"
+        f"mode={mode}  blocking-metric={blocking_metric}  rel-threshold={rel_threshold * 100:.0f}%  "
+        f"abs-threshold={abs_threshold_ms:.2f}ms  baseline-head={baseline.git_head[:12]}  "
+        f"current-head={current.git_head[:12]}"
     )
     print(f"{'scenario':40s} {'baseline':>10s} {'current':>10s} {'delta':>10s} {'rel':>8s}")
     print("-" * 82)
     for scenario_id in all_scenarios:
-        base = baseline.get(scenario_id)
-        cur = current.get(scenario_id)
+        base = baseline.rows.get(scenario_id)
+        cur = current.rows.get(scenario_id)
 
         if base is None:
             # New scenario: present in current, absent from baseline. Never fails.
@@ -229,7 +336,9 @@ def main() -> int:
             advisory_rel = (
                 (advisory_delta / base_advisory)
                 if base_advisory > 0
-                else float("inf") if advisory_delta > 0 else 0.0
+                else float("inf")
+                if advisory_delta > 0
+                else 0.0
             )
             if advisory_rel > rel_threshold and advisory_delta > abs_threshold_ms:
                 advisories.append(

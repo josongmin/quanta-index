@@ -438,8 +438,10 @@ jobs:
           mkdir -p artifacts/dsl-bench
           DSL_BENCH_WARM_SAMPLES=50 \
           DSL_BENCH_WARM_OUT="$PWD/artifacts/dsl-bench/warm-matrix.json" \
-          DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD)" \
           ./scripts/cargow bench -p quanta-index-searchd-runtime --bench dsl_query_matrix --all-features --locked
+
+      - name: Fresh artifacts are attributed to this HEAD
+        run: python3 tools/ci/lint/check-bench-artifacts.py --skip-baselines
 
       - name: Cold matrix (fresh-process-per-sample)
         run: python3 tools/benchmark/run_dsl_cold_matrix.py --samples 10 --out artifacts/dsl-bench/cold-matrix.json

@@ -1250,6 +1250,49 @@ impl LoadedGeneration {
         .map(Self::map_hits_to_candidates)
     }
 
+    /// One stored row scored exactly against `query_vector` (QI-BB-022).
+    ///
+    /// An exact-lane vector query filtered to the candidate's own id: the
+    /// sealed approximate index, if any, is bypassed, so the distance is the
+    /// stored vector's own cosine and never a neighbour search's recall.
+    /// `None` when the generation stores no row under that id.
+    pub(crate) async fn score_candidate_async(
+        &self,
+        candidate_id: &str,
+        query_vector: &[f32],
+        watch: DenseLaneBudgetV1<'_>,
+    ) -> Result<Option<f32>, CoreError> {
+        self.check_query_dim(query_vector)?;
+        let mut allowed_ids = BTreeSet::new();
+        let _inserted = allowed_ids.insert(candidate_id.to_owned());
+        let query_owned: Vec<f32> = query_vector.to_vec();
+        let vector_query = self
+            .table
+            .vector_search(query_owned)
+            .map_err(|err| lancedb_err("vector_search build", err))?
+            .distance_type(DistanceType::Cosine)
+            .limit(1)
+            .bypass_vector_index()
+            .only_if(build_id_in_filter(&allowed_ids));
+        let lane = DenseLaneKindV1::Exact;
+        let hits = race_with_budget(
+            watch,
+            lane,
+            self.issue_and_read_back(vector_query, 1, watch, lane),
+        )
+        .await?;
+        let Some(hit) = hits.into_iter().next() else {
+            return Ok(None);
+        };
+        if hit.candidate.candidate_id != candidate_id {
+            return Err(CoreError::Storage(format!(
+                "semantic: exact lookup of {candidate_id} answered row {}",
+                hit.candidate.candidate_id
+            )));
+        }
+        Ok(Some(hit.candidate.score))
+    }
+
     pub(crate) async fn search_scoped_async(
         &self,
         query_vector: &[f32],
@@ -1511,6 +1554,20 @@ impl SemanticSearcher for PersistedSemanticSearcher {
             ),
         )
         .map(LoadedGeneration::map_hits_to_candidates)
+    }
+
+    fn score_candidate(
+        &self,
+        candidate_id: &str,
+        query_vector: &[f32],
+        budget: &RequestBudgetV1,
+    ) -> Result<Option<f32>, CoreError> {
+        SemanticPolicy::validate_query_vector(query_vector)?;
+        crate::run_blocking(
+            &self.runtime,
+            self.loaded
+                .score_candidate_async(candidate_id, query_vector, self.watch(budget)),
+        )
     }
 
     fn index_model_id(&self) -> &str {

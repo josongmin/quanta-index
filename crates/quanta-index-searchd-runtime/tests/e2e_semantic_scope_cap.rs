@@ -19,8 +19,12 @@ use std::collections::BTreeSet;
 use std::error::Error;
 
 use quanta_index_contract::{
-    PUBLIC_TOP_K_MAX, PlannerStage, TOP_K_OUT_OF_RANGE_CODE, TextQuerySyntax,
+    PUBLIC_TOP_K_MAX, PlannerStage, QueryConstraintSetV1, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    SearchPlaneQueryIpcResponseEnvelope, SemanticQueryRequest, TOP_K_OUT_OF_RANGE_CODE,
+    TextQueryRequest, TextQuerySyntax,
 };
+use quanta_index_ipc::{ClientIoPolicy, encode_request, send_request};
 use quanta_index_searchd_harness as e2e_harness;
 
 use e2e_harness::{E2eQueryResult, E2eRuntime};
@@ -153,33 +157,80 @@ fn a_wide_scope_fills_the_outer_top_k() -> TestResult {
     Ok(())
 }
 
-/// `scope_top_k` is a public `top_k` and shares the one gate: zero and
-/// above-maximum are refused under the shared code, the maximum is accepted.
+/// `scope_top_k` is a public `top_k` and shares the one gate.
+///
+/// Zero and above-maximum are refused under the shared code from both kinds
+/// of caller (QI-BB-025): a typed client cannot encode the request, and raw
+/// bytes whose *scope* `top_k` alone is out of range — the outer `top_k`
+/// stays valid — are answered typed by the dispatcher. The maximum is
+/// accepted.
 #[test]
 fn scope_top_k_shares_the_public_gate() -> TestResult {
     let mut rt = seeded_runtime()?;
+    let pin = rt.generation_pin();
+    let request = |scope_top_k: u32| SearchPlaneQueryIpcRequestEnvelope {
+        request_id: 7,
+        payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
+            query_text: QUERY.to_string(),
+            constraints: QueryConstraintSetV1::unconstrained(),
+            generation: Some(pin.clone()),
+            generation_selector: None,
+            lexical_scope: Some(TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: QUERY.to_string(),
+                constraints: QueryConstraintSetV1::unconstrained(),
+                generation: Some(pin.clone()),
+                generation_selector: None,
+                top_k: scope_top_k,
+            }),
+            top_k: OUTER_TOP_K,
+        }),
+    };
+    let (query_socket, _, _) = rt
+        .socket_paths()
+        .map(|(query, control, ingest)| {
+            (
+                query.to_path_buf(),
+                control.to_path_buf(),
+                ingest.to_path_buf(),
+            )
+        })
+        .ok_or("the daemon is running")?;
     for refused in [0, PUBLIC_TOP_K_MAX + 1, u32::MAX] {
-        let result = rt.query_semantic(
-            QUERY,
-            OUTER_TOP_K,
-            Some((TextQuerySyntax::Native, QUERY, refused)),
+        // The typed client: the request does not encode, under the code.
+        match encode_request(&request(refused)) {
+            Ok(_) => return Err(format!("scope_top_k={refused} encoded").into()),
+            Err(err) if err.to_string().contains(TOP_K_OUT_OF_RANGE_CODE) => {}
+            Err(err) => {
+                return Err(
+                    format!("scope_top_k={refused}: encode refusal names no code: {err}").into(),
+                );
+            }
+        }
+        // The raw caller: only the scope's `top_k` is out of range.
+        let mut wire: ciborium::Value = {
+            let mut buf = Vec::new();
+            ciborium::into_writer(&request(1), &mut buf)?;
+            ciborium::from_reader(buf.as_slice())?
+        };
+        if patch_scope_top_k(&mut wire, refused) != 1 {
+            return Err("the wire carries exactly one scope top_k".into());
+        }
+        let answer = send_request::<ciborium::Value, SearchPlaneQueryIpcResponseEnvelope>(
+            &query_socket,
+            &wire,
+            ClientIoPolicy::default(),
+        )?;
+        let refused_typed = matches!(
+            &answer.payload,
+            SearchPlaneQueryIpcResponse::Error(error) if error.code == TOP_K_OUT_OF_RANGE_CODE
         );
-        match result.typed_error {
-            Some(error) if error.code == TOP_K_OUT_OF_RANGE_CODE => {}
-            Some(error) => {
-                return Err(format!(
-                    "scope_top_k={refused} refused under `{}` instead of `{TOP_K_OUT_OF_RANGE_CODE}`",
-                    error.code
-                )
-                .into());
-            }
-            None => {
-                return Err(format!(
-                    "scope_top_k={refused} was accepted and returned {} rows",
-                    result.candidate_ids.len()
-                )
-                .into());
-            }
+        if !refused_typed {
+            return Err(format!(
+                "raw scope_top_k={refused} must be answered typed `{TOP_K_OUT_OF_RANGE_CODE}`, got {:?}",
+                answer.payload
+            )
+            .into());
         }
     }
     let at_max = rt.query_semantic(
@@ -189,4 +240,42 @@ fn scope_top_k_shares_the_public_gate() -> TestResult {
     );
     served(&at_max, "scope_top_k at the public maximum")?;
     Ok(())
+}
+
+/// Replace the `top_k` inside the `lexical_scope` map (and only there);
+/// returns how many were replaced.
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "ciborium::Value is #[non_exhaustive]; the leaves and any future variant carry no scope"
+)]
+fn patch_scope_top_k(value: &mut ciborium::Value, top_k: u32) -> usize {
+    match value {
+        ciborium::Value::Map(fields) => fields
+            .iter_mut()
+            .map(|(key, entry)| {
+                if matches!(key, ciborium::Value::Text(name) if name == "lexical_scope") {
+                    let ciborium::Value::Map(scope) = entry else {
+                        return 0;
+                    };
+                    scope
+                        .iter_mut()
+                        .filter(|(field, _)| {
+                            matches!(field, ciborium::Value::Text(name) if name == "top_k")
+                        })
+                        .map(|(_, slot)| {
+                            *slot = ciborium::Value::Integer(top_k.into());
+                            1
+                        })
+                        .sum()
+                } else {
+                    patch_scope_top_k(entry, top_k)
+                }
+            })
+            .sum(),
+        ciborium::Value::Array(items) => items
+            .iter_mut()
+            .map(|item| patch_scope_top_k(item, top_k))
+            .sum(),
+        _ => 0,
+    }
 }

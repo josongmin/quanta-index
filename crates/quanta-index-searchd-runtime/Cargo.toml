@@ -39,5 +39,6 @@ quanta-index-searchd-harness = { version = "0.1.0", path = "../quanta-index-sear
 rusqlite = { workspace = true }
 rustix = { workspace = true, features = ["process"] }
 serde = { workspace = true }
+serde_json = { workspace = true }
 tempfile.workspace = true
 toml = { workspace = true }

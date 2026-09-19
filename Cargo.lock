@@ -4429,8 +4429,8 @@ dependencies = [
  "quanta-index-contract",
  "quanta-index-core",
  "quanta-index-lexical",
+ "quanta-index-searchd-harness",
  "serde_json",
- "sha2",
 ]
 
 [[package]]
@@ -4502,15 +4502,18 @@ name = "quanta-index-searchd-harness"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "nix",
  "quanta-index-contract",
  "quanta-index-core",
  "quanta-index-embed",
  "quanta-index-ipc",
+ "quanta-index-lexical",
  "quanta-index-search-plane",
  "quanta-index-searchd",
  "quanta-index-searchd-runtime",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
 ]
 
@@ -4536,6 +4539,7 @@ dependencies = [
  "rusqlite",
  "rustix 1.1.4",
  "serde",
+ "serde_json",
  "tempfile",
  "toml",
 ]

@@ -22,5 +22,7 @@ anyhow = { workspace = true }
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 quanta-index-lexical = { version = "0.1.0", path = "../quanta-index-lexical" }
+# The one benchmark artifact envelope (`BenchArtifactV1`) and its
+# provenance (exact head, digests, host, peak RSS) live in the harness.
+quanta-index-searchd-harness = { version = "0.1.0", path = "../quanta-index-searchd-harness" }
 serde_json = { workspace = true }
-sha2 = { workspace = true }

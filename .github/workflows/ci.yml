@@ -232,6 +232,9 @@ jobs:
       - name: Wire-surface inventory (IPC opcodes + on-disk format versions)
         run: python3 tools/ci/lint/check-wire-inventory.py
 
+      - name: Benchmark artifacts are attributed to HEAD (no stale / unknown-SHA / old-schema artifact)
+        run: python3 tools/ci/lint/check-bench-artifacts.py
+
       - name: Digest fallibility (pub fn -> [u8; N] must be Result or doc'd infallible)
         run: python3 tools/ci/lint/check-digest-fallibility.py
 

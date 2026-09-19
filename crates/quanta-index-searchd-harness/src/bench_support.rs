@@ -21,7 +21,7 @@
 use anyhow::Result as AnyResult;
 use quanta_index_contract::TextQuerySyntax;
 
-use crate::artifact::{BenchSyntax, ResultShape};
+use crate::artifact::{BenchRowV1, BenchSyntax, LatencySummary, ResultShape};
 use crate::harness::{E2eHistoryResult, E2eQueryResult, E2eRuntime};
 use crate::scenarios::{DslBenchScenario, FixtureKind};
 
@@ -265,6 +265,106 @@ fn seal_and_activate(rt: &mut E2eRuntime) -> AnyResult<()> {
     rt.activate_last_sealed_generation()
 }
 
+/// The bytes one fixture family ingests, as `(path, content)` pairs in
+/// ingest order, for the artifact's corpus digest (QI-BB-010).
+///
+/// A fixture that is not a plain file (the history commit, the runtime
+/// catalog) is rendered canonically under a `fixture://` path so a change to
+/// any field it seeds changes the digest. This is the same data the
+/// `ingest_*` functions above seed; the two must move together, and the
+/// digest test in this module pins that every family is covered.
+#[must_use]
+pub fn fixture_corpus_files(kind: FixtureKind) -> Vec<(String, String)> {
+    match kind {
+        FixtureKind::LexicalCorpus => LEXICAL_CORPUS
+            .iter()
+            .map(|(path, content)| ((*path).to_string(), (*content).to_string()))
+            .collect(),
+        FixtureKind::StructuralTree => {
+            let mut files = fixture_corpus_files(FixtureKind::LexicalCorpus);
+            files.push((
+                "src/tree.rs".to_string(),
+                "fn parity_needle_alpha() {}".to_string(),
+            ));
+            files.push((
+                "fixture://structural/src/tree.rs".to_string(),
+                "function_item parity_needle_alpha".to_string(),
+            ));
+            files
+        }
+        FixtureKind::HistoryLedger => vec![
+            (
+                "src/history.rs".to_string(),
+                "history lexical proof alpha_content_needle\n".to_string(),
+            ),
+            (
+                "fixture://history/0123456789abcdef0123456789abcdef01234567".to_string(),
+                "file=src/history.rs author=alice committer=alice message=fix: sample history alpha_content_needle author_time_ms=11 committer_time_ms=12 applied_at_ms=12 ref=refs/heads/main tag=v1.0.0 added=history added line removed=history removed line touched=history touched line".to_string(),
+            ),
+        ],
+        FixtureKind::RuntimeCatalog => {
+            let mut files: Vec<(String, String)> = [
+                ("src/clean.rs", "clean scope quartz"),
+                ("src/dirty.rs", "dirty scope todo"),
+                ("src/changed.rs", "fn catalog_changed_needle() {}"),
+                ("src/stale.rs", "fn catalog_stale_needle() {}"),
+                ("src/owner.rs", "fn catalog_owner_needle() {}"),
+                ("src/service.rs", "fn catalog_service_needle() {}"),
+                ("src/layer.rs", "fn catalog_layer_needle() {}"),
+                ("src/surface.rs", "fn catalog_surface_needle() {}"),
+                ("src/snap.rs", "fn catalog_snapshot_needle() {}"),
+            ]
+            .iter()
+            .map(|(path, content)| ((*path).to_string(), (*content).to_string()))
+            .collect();
+            files.push((
+                "fixture://runtime-catalog".to_string(),
+                "dirty=src/dirty.rs@100 producer_head_applied_at_ms=100 generation_materialized_at_ms=20 changed=src/changed.rs@25,src/stale.rs@15 facets=src/owner.rs,src/service.rs,src/layer.rs,src/surface.rs:team-a/search/index/lexical snapshots=active:src/changed.rs,src/snap.rs affected=rebuild=lexical:src/changed.rs invalidated_by=rebuild=lexical:src/changed.rs".to_string(),
+            ));
+            files
+        }
+    }
+}
+
+/// Every fixture family's bytes in the order `prepare_warm_runtime` seeds
+/// them: the corpus of the warm matrix and the tail rail.
+#[must_use]
+pub fn warm_fixture_corpus_files() -> Vec<(String, String)> {
+    let mut files = fixture_corpus_files(FixtureKind::LexicalCorpus);
+    files.extend(
+        fixture_corpus_files(FixtureKind::StructuralTree)
+            .into_iter()
+            .filter(|(path, _)| path.contains("tree")),
+    );
+    files.extend(fixture_corpus_files(FixtureKind::HistoryLedger));
+    files.extend(fixture_corpus_files(FixtureKind::RuntimeCatalog));
+    files
+}
+
+/// One artifact row for a scenario from the harness's classification of
+/// its query and the caller's latency measurement.
+#[must_use]
+pub fn bench_row(
+    scenario: &DslBenchScenario,
+    outcome: QueryOutcome,
+    latency: Option<LatencySummary>,
+) -> BenchRowV1 {
+    BenchRowV1 {
+        scenario_id: scenario.id.to_string(),
+        route_family: scenario.route_family,
+        syntax: scenario.syntax,
+        result_shape: outcome.result_shape,
+        latency,
+        qps: None,
+        error_count: u64::from(outcome.typed_error_code.is_some()),
+        timeout_count: 0,
+        result_count: outcome.result_count,
+        typed_error_code: outcome.typed_error_code,
+        engine_touched: outcome.engine_touched,
+        early_stop_reason: outcome.early_stop_reason,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Preparation entry points.
 // ---------------------------------------------------------------------------
@@ -390,5 +490,38 @@ fn shape_for_count(count: u64, non_empty: ResultShape) -> ResultShape {
         ResultShape::Empty
     } else {
         non_empty
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The fixture digest inputs cover every family the runners seed.
+    use super::*;
+    use crate::artifact::corpus_digest;
+
+    #[test]
+    fn every_fixture_family_contributes_distinct_bytes_to_the_digest() {
+        let families = [
+            FixtureKind::LexicalCorpus,
+            FixtureKind::StructuralTree,
+            FixtureKind::HistoryLedger,
+            FixtureKind::RuntimeCatalog,
+        ];
+        let mut digests = std::collections::BTreeSet::new();
+        for kind in families {
+            let files = fixture_corpus_files(kind);
+            assert!(!files.is_empty(), "{kind:?} seeds something");
+            assert!(
+                digests.insert(corpus_digest("dsl-cold", &files)),
+                "{kind:?} is distinct"
+            );
+        }
+        let warm = warm_fixture_corpus_files();
+        assert_eq!(
+            warm.len(),
+            LEXICAL_CORPUS.len() + 2 + 2 + 10,
+            "the warm corpus is every family once"
+        );
+        assert!(digests.insert(corpus_digest("dsl-warm", &warm)));
     }
 }

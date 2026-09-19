@@ -1,8 +1,11 @@
 """Tests for tools/benchmark/compare_dsl_bench.py and run_dsl_cold_matrix.py.
 
-Covers the Layer-3 DSL query-latency regression gate:
+Covers the Layer-3 DSL query-latency regression gate over `BenchArtifactV1`
+(schema 2, QI-BB-010):
 
-1. percentile helper (run_dsl_cold_matrix.py, nearest-rank)
+1. the cold orchestrator collects one fresh-process sample per (scenario,
+   sample) and hands them all to the binary's `--assemble`, never writing
+   an artifact or a head itself
 2. no-regression OK case (exit 0)
 3. clear regression on the blocking metric: rel > 10% AND abs > threshold (exit 1)
 4. AND-gate: rel exceeded but abs not exceeded -> OK
@@ -13,12 +16,16 @@ Covers the Layer-3 DSL query-latency regression gate:
 9. MISSING scenario fails without --allow-missing, warns with it
 10. cold artifacts still require >=20 samples for tail advisories
 11. warm/cold p95-only drift is advisory; blocking metric is p50
+12. provenance gate: a current artifact not at HEAD, an old-schema artifact,
+    a short/unknown head, a config-digest mismatch and a missing baseline
+    are refused (exit 2), never compared
 """
 
 from __future__ import annotations
 
 import importlib.util
 import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -40,6 +47,11 @@ def _load_module(name: str, path: Path):
 COMPARE = _load_module("compare_dsl_bench", COMPARE_PATH)
 COLD_MATRIX = _load_module("run_dsl_cold_matrix", COLD_MATRIX_PATH)
 
+HEAD = "0123456789abcdef0123456789abcdef01234567"
+OTHER_HEAD = "fedcba9876543210fedcba9876543210fedcba98"
+DIGEST = "sha256:" + "ab" * 32
+OTHER_DIGEST = "sha256:" + "cd" * 32
+
 
 def _row(
     scenario_id: str,
@@ -52,18 +64,21 @@ def _row(
     early_stop_reason: str | None = None,
     samples: int = 200,
 ) -> dict:
-    p50 = None if p95 is None else p95 * 0.8
-    p99 = None if p95 is None else p95 * 1.1
+    del mode  # the mode is the envelope's, not the row's, in schema 2
+    latency = (
+        None
+        if p95 is None
+        else {"p50_ms": p95 * 0.8, "p95_ms": p95, "p99_ms": p95 * 1.1, "samples": samples}
+    )
     return {
         "scenario_id": scenario_id,
         "route_family": route_family,
         "syntax": syntax,
-        "mode": mode,
         "result_shape": result_shape,
-        "latency_p50_ms": p50,
-        "latency_p95_ms": p95,
-        "latency_p99_ms": p99,
-        "samples": samples,
+        "latency": latency,
+        "qps": None,
+        "error_count": 0,
+        "timeout_count": 0,
         "result_count": 3,
         "typed_error_code": None,
         "engine_touched": [route_family],
@@ -71,19 +86,49 @@ def _row(
     }
 
 
-def _write_artifact(path: Path, mode: str, rows: list[dict]) -> None:
-    payload = {
-        "schema_version": 1,
+def _artifact(
+    mode: str,
+    rows: list[dict],
+    *,
+    head: str = HEAD,
+    config_digest: str = DIGEST,
+    schema_version: int = 2,
+) -> dict:
+    return {
+        "schema_version": schema_version,
+        "dimension": f"dsl-{mode}",
         "mode": mode,
-        "git_rev": "deadbee",
+        "concurrency": 1,
+        "provenance": {
+            "git_head": head,
+            "corpus_digest": DIGEST,
+            "config_digest": config_digest,
+            "model_revision": None,
+        },
+        "host": {
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_count": 8,
+            "mem_bytes": 1 << 34,
+            "hostname_hash": DIGEST,
+        },
+        "resources": {"peak_rss_bytes": 1},
+        "phases": {"build_ms": None, "update_ms": None, "gc_ms": None},
+        "disk_amplification": None,
         "rows": rows,
+        "detail": {},
     }
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _write_artifact(path: Path, mode: str, rows: list[dict], **overrides) -> None:
+    path.write_text(
+        json.dumps(_artifact(mode, rows, **overrides), indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(COMPARE_PATH), *args],
+        [sys.executable, str(COMPARE_PATH), "--head", HEAD, *args],
         cwd=REPO_ROOT,
         check=False,
         capture_output=True,
@@ -92,43 +137,96 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 # ---------------------------------------------------------------------------
-# percentile helper (run_dsl_cold_matrix.py)
+# The cold orchestrator hands every sample to the binary's assembler.
 # ---------------------------------------------------------------------------
 
+FAKE_BIN = """\
+import json, sys
+args = sys.argv[1:]
+if args == ["--list"]:
+    print(json.dumps([{"scenario_id": "lexical.keyword.native", "route_family": "lexical",
+                       "syntax": "native", "expected_shape": "candidates"},
+                      {"scenario_id": "history.commit.native", "route_family": "history",
+                       "syntax": "native", "expected_shape": "commits"}]))
+elif args[0] == "--scenario":
+    scenario = args[1]
+    stopped = scenario.startswith("history")
+    print(json.dumps({"scenario_id": scenario, "route_family": scenario.split(".")[0],
+                      "syntax": "native", "mode": "cold",
+                      "result_shape": "typed_error" if stopped else "candidates",
+                      "first_query_ms": None if stopped else 1.5, "result_count": None if stopped else 3,
+                      "typed_error_code": "NOT_READY" if stopped else None, "engine_touched": [],
+                      "early_stop_reason": "fixture_unavailable" if stopped else None,
+                      "model_revision": None}))
+elif args[0] == "--assemble":
+    out = args[args.index("--out") + 1]
+    samples = json.loads(sys.stdin.read())
+    with open(out, "w") as f:
+        json.dump({"received": samples, "samples_flag": args[args.index("--samples") + 1]}, f)
+else:
+    sys.exit(2)
+"""
 
-def test_percentile_nearest_rank_basic() -> None:
-    samples = [10.0, 20.0, 30.0, 40.0, 50.0]
-    # ceil(p/100 * n) - 1
-    assert COLD_MATRIX.percentile(samples, 50) == 30.0  # ceil(2.5)-1 = 2
-    assert COLD_MATRIX.percentile(samples, 95) == 50.0  # ceil(4.75)-1 = 4
-    assert COLD_MATRIX.percentile(samples, 99) == 50.0
-    assert COLD_MATRIX.percentile(samples, 100) == 50.0
+
+def test_cold_orchestrator_collects_fresh_samples_and_assembles_through_the_binary(
+    tmp_path: Path,
+) -> None:
+    fake = tmp_path / "fake_cold_matrix.py"
+    fake.write_text(FAKE_BIN, encoding="utf-8")
+    out = tmp_path / "nested" / "cold-matrix.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(COLD_MATRIX_PATH),
+            "--samples",
+            "3",
+            "--out",
+            str(out),
+            "--bin-cmd",
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(fake))}",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written["samples_flag"] == "3"
+    received = written["received"]
+    lexical = [s for s in received if s["scenario_id"] == "lexical.keyword.native"]
+    history = [s for s in received if s["scenario_id"] == "history.commit.native"]
+    assert len(lexical) == 3, "three fresh-process samples for a measured scenario"
+    assert len(history) == 1 and history[0]["early_stop_reason"] == "fixture_unavailable"
+    assert "assembled 4 sample(s)" in result.stderr
+    # The orchestrator never stamps a head or a git_rev of its own.
+    assert "git" not in json.dumps(written)
 
 
-def test_percentile_single_sample() -> None:
-    assert COLD_MATRIX.percentile([7.5], 50) == 7.5
-    assert COLD_MATRIX.percentile([7.5], 95) == 7.5
-    assert COLD_MATRIX.percentile([7.5], 99) == 7.5
-
-
-def test_percentile_unsorted_input_is_sorted() -> None:
-    samples = [50.0, 10.0, 40.0, 20.0, 30.0]
-    assert COLD_MATRIX.percentile(samples, 50) == 30.0
-    assert COLD_MATRIX.percentile(samples, 95) == 50.0
-
-
-def test_percentile_low_pct_clamps_to_first() -> None:
-    samples = [1.0, 2.0, 3.0, 4.0]
-    # ceil(0.01) - 1 = 0
-    assert COLD_MATRIX.percentile(samples, 1) == 1.0
-
-
-def test_percentile_empty_raises() -> None:
-    try:
-        COLD_MATRIX.percentile([], 50)
-    except ValueError:
-        return
-    raise AssertionError("expected ValueError on empty samples")
+def test_cold_orchestrator_refuses_a_null_latency_without_an_early_stop(tmp_path: Path) -> None:
+    fake = tmp_path / "fake_cold_matrix.py"
+    fake.write_text(
+        FAKE_BIN.replace('"first_query_ms": None if stopped else 1.5', '"first_query_ms": None'),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(COLD_MATRIX_PATH),
+            "--samples",
+            "2",
+            "--out",
+            str(tmp_path / "cold-matrix.json"),
+            "--bin-cmd",
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(fake))}",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "null first_query_ms without early_stop_reason" in result.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -172,8 +270,8 @@ def test_warm_p95_only_drift_is_advisory(tmp_path: Path) -> None:
     current = tmp_path / "current.json"
     base = _row("lexical.keyword.native", 10.0)
     cur = _row("lexical.keyword.native", 25.0)
-    base["latency_p50_ms"] = 5.0
-    cur["latency_p50_ms"] = 5.4
+    base["latency"]["p50_ms"] = 5.0
+    cur["latency"]["p50_ms"] = 5.4
     _write_artifact(baseline, "warm", [base])
     _write_artifact(current, "warm", [cur])
     result = _run(str(baseline), str(current))
@@ -187,8 +285,8 @@ def test_cold_p95_only_drift_is_advisory(tmp_path: Path) -> None:
     current = tmp_path / "current.json"
     base = _row("history.diff_added.native", 10.0, mode="cold", samples=20)
     cur = _row("history.diff_added.native", 25.0, mode="cold", samples=20)
-    base["latency_p50_ms"] = 5.0
-    cur["latency_p50_ms"] = 5.4
+    base["latency"]["p50_ms"] = 5.0
+    cur["latency"]["p50_ms"] = 5.4
     _write_artifact(baseline, "cold", [base])
     _write_artifact(current, "cold", [cur])
     result = _run(str(baseline), str(current))
@@ -301,6 +399,97 @@ def test_mode_mismatch_exits_two(tmp_path: Path) -> None:
     result = _run(str(baseline), str(current))
     assert result.returncode == 2, result.stdout + result.stderr
     assert "mode mismatch" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Provenance gate (QI-BB-010): stale, unattributed and old-schema artifacts
+# are refused before any comparison.
+# ---------------------------------------------------------------------------
+
+
+def test_a_current_artifact_not_at_head_is_refused_as_stale(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    _write_artifact(baseline, "warm", [_row("lexical.keyword.native", 1.00)])
+    _write_artifact(current, "warm", [_row("lexical.keyword.native", 1.00)], head=OTHER_HEAD)
+    result = _run(str(baseline), str(current))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "stale artifact" in result.stderr and OTHER_HEAD in result.stderr
+    # Not even --update-baseline records a stale artifact.
+    update = _run(str(baseline), str(current), "--update-baseline")
+    assert update.returncode == 2, update.stdout + update.stderr
+    assert json.loads(baseline.read_text())["provenance"]["git_head"] == HEAD
+
+
+def test_a_baseline_at_another_head_is_compared_not_refused(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    _write_artifact(baseline, "warm", [_row("lexical.keyword.native", 1.00)], head=OTHER_HEAD)
+    _write_artifact(current, "warm", [_row("lexical.keyword.native", 1.02)])
+    result = _run(str(baseline), str(current))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "OK" in result.stdout
+
+
+def test_an_old_schema_artifact_is_refused(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    baseline.write_text(
+        json.dumps({"schema_version": 1, "mode": "warm", "git_rev": "3148c02", "rows": []}),
+        encoding="utf-8",
+    )
+    _write_artifact(current, "warm", [_row("lexical.keyword.native", 1.00)])
+    result = _run(str(baseline), str(current))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "schema_version 1, not 2" in result.stderr and "re-capture" in result.stderr
+    _write_artifact(current, "warm", [_row("lexical.keyword.native", 1.00)], schema_version=1)
+    result = _run(str(baseline), str(current))
+    assert result.returncode == 2 and "current" in result.stderr
+
+
+def test_a_short_or_unknown_head_is_refused(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    _write_artifact(baseline, "warm", [_row("lexical.keyword.native", 1.00)])
+    for bad in ("unknown", "3148c02"):
+        _write_artifact(current, "warm", [_row("lexical.keyword.native", 1.00)], head=bad)
+        result = _run(str(baseline), str(current))
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "not 40 lowercase hex" in result.stderr
+    # The checkout head itself must be a full head.
+    result = subprocess.run(
+        [sys.executable, str(COMPARE_PATH), "--head", "unknown", str(baseline), str(current)],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2 and "not 40 lowercase hex" in result.stderr
+
+
+def test_a_config_digest_mismatch_is_refused(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    _write_artifact(
+        baseline, "warm", [_row("lexical.keyword.native", 1.00)], config_digest=OTHER_DIGEST
+    )
+    _write_artifact(current, "warm", [_row("lexical.keyword.native", 1.00)])
+    result = _run(str(baseline), str(current))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "config_digest mismatch" in result.stderr
+
+
+def test_a_missing_baseline_is_a_typed_refusal(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    _write_artifact(current, "warm", [_row("lexical.keyword.native", 1.00)])
+    result = _run(str(baseline), str(current))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "no such artifact" in result.stderr and "--update-baseline" in result.stderr
+    # Recording it at HEAD makes the next comparison possible.
+    update = _run(str(baseline), str(current), "--update-baseline")
+    assert update.returncode == 0, update.stdout + update.stderr
+    assert _run(str(baseline), str(current)).returncode == 0
 
 
 def test_cold_rows_with_insufficient_samples_fail_closed(tmp_path: Path) -> None:

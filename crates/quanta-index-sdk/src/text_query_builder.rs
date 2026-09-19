@@ -4,8 +4,9 @@
 )]
 
 use quanta_index_contract::{
-    GenerationPin, GenerationSelector, HybridSeedQueryRequest, QueryConstraintSetV1,
-    SemanticQueryRequest, SemanticSeedCorpusBudgetV1, TextQueryRequest, TextQuerySyntax,
+    GenerationPin, GenerationSelector, HybridQueryRequest, HybridSeedQueryRequest,
+    QueryConstraintSetV1, SemanticQueryRequest, SemanticSeedCorpusBudgetV1, TextQueryRequest,
+    TextQuerySyntax,
 };
 
 use crate::{QuantaIndex, SdkError};
@@ -123,6 +124,39 @@ impl VectorQueryBuilderState {
             generation,
             generation_selector,
             lexical_scope,
+            top_k,
+        })
+    }
+
+    /// The hybrid request (QI-BB-018): the text lane, the dense text, the
+    /// selection and the fused `top_k`, gated once under the shared code.
+    pub(crate) fn build_hybrid_request(self) -> Result<HybridQueryRequest, SdkError> {
+        let (syntax, query_text) = self
+            .text_leg
+            .ok_or_else(|| SdkError::Usage("hybrid text query is required".to_string()))?;
+        let semantic_query_text = self
+            .semantic_query_text
+            .ok_or_else(|| SdkError::Usage("hybrid semantic query text is required".to_string()))?;
+        let selection = self.selection.ok_or_else(|| {
+            SdkError::Usage("hybrid generation selection is required".to_string())
+        })?;
+        let top_k = self
+            .top_k
+            .ok_or_else(|| SdkError::Usage("hybrid top_k is required".to_string()))?;
+        let top_k = accepted_top_k("hybrid", top_k)?;
+        let (generation, generation_selector) = Self::selection_fields(selection);
+        Ok(HybridQueryRequest {
+            text_query: TextQueryRequest {
+                syntax,
+                query_text,
+                constraints: self.constraints,
+                generation: generation.clone(),
+                generation_selector: generation_selector.clone(),
+                top_k,
+            },
+            semantic_query_text,
+            generation,
+            generation_selector,
             top_k,
         })
     }

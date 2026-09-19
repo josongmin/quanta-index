@@ -1727,6 +1727,74 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
         return Err(format!("unexpected hybrid-seed response: {hybrid:?}").into());
     }
 
+    // QI-BB-018: the true-hybrid route from the SDK builder — two
+    // independent lanes fused by RRF, every row carrying its lane
+    // provenance — and QI-BB-022: its top row explained through the SDK
+    // under both queries, re-derived against the index on every axis.
+    let true_hybrid = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .search()
+                .hybrid()
+                .sourcegraph("sphinx")
+                .semantic_text("quartz")
+                .active(repo(), revision())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin() && !response.results.is_empty(),
+    )?;
+    let true_hybrid_top = true_hybrid
+        .results
+        .first()
+        .ok_or_else(|| "missing hybrid candidate".to_string())?;
+    let true_hybrid_rrf: f64 = true_hybrid_top
+        .contributions
+        .iter()
+        .map(|contribution| 1.0 / (60.0 + f64::from(contribution.rank)))
+        .sum();
+    if true_hybrid.generation != pin()
+        || true_hybrid_top.candidate.candidate_id != "alpha"
+        || true_hybrid_top.contributions.is_empty()
+        || true_hybrid_top.fused_score.to_bits() != true_hybrid_rrf.to_bits()
+        || true_hybrid.explanation.summary.is_empty()
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected hybrid response: {true_hybrid:?}").into());
+    }
+    let hybrid_explain = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+        client.search().explain_hybrid_under_queries(
+            pin(),
+            true_hybrid_top.clone(),
+            TextQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
+                query_text: "sphinx".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: None,
+                generation_selector: None,
+                top_k: 2,
+            },
+            "quartz",
+        )
+    })?;
+    let reconciled = |axis: &str| {
+        hybrid_explain
+            .explanation
+            .planner_trace
+            .iter()
+            .any(|entry| entry.detail == format!("explain.{axis}_reconciled=true"))
+    };
+    if hybrid_explain.generation != pin()
+        || hybrid_explain.explanation.strategy != "hybrid_score_trace"
+        || !reconciled("score")
+        || !reconciled("dense")
+        || !reconciled("fused")
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected hybrid explain response: {hybrid_explain:?}").into());
+    }
+
     let repo_map = wait_for_sdk_observation(
         SOCKET_TIMEOUT,
         || client.repomap().query(repo_map_query_request()),

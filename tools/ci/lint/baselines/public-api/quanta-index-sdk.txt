@@ -25,6 +25,8 @@ pub use quanta_index_sdk::HistoryScoreV1
 pub use quanta_index_sdk::HybridCandidateV1
 pub use quanta_index_sdk::HybridLaneContributionV1
 pub use quanta_index_sdk::HybridLaneV1
+pub use quanta_index_sdk::HybridQueryRequest
+pub use quanta_index_sdk::HybridQueryResponse
 pub use quanta_index_sdk::HybridSeedQueryRequest
 pub use quanta_index_sdk::HybridSeedQueryResponse
 pub use quanta_index_sdk::IngestBatchBodyV1
@@ -446,6 +448,25 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool,
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool, const HAS_ORDER: bool> core::marker::UnsafeUnpin for quanta_index_sdk::HistoryQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K, HAS_ORDER>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool, const HAS_ORDER: bool> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::HistoryQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K, HAS_ORDER>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool, const HAS_ORDER: bool> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::HistoryQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K, HAS_ORDER>
+pub struct quanta_index_sdk::HybridQueryBuilder<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
+impl quanta_index_sdk::HybridQueryBuilder<'_, true, true, true, true>
+pub fn quanta_index_sdk::HybridQueryBuilder<'_, true, true, true, true>::execute(self) -> core::result::Result<quanta_index_contract::results::query_responses::HybridQueryResponse, quanta_index_sdk::SdkError>
+impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
+pub fn quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::active(self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId) -> quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, true, HAS_TOP_K>
+pub fn quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::exact_repo_relative_path(self, path: quanta_index_contract_base::query::constraints::ExactRepoRelativePathV1) -> Self
+pub fn quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::language_any_of(self, languages: impl core::iter::traits::collect::IntoIterator<Item = quanta_index_contract_base::query::constraints::LanguageCode>) -> Self
+pub fn quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::native(self, query_text: impl core::convert::Into<alloc::string::String>) -> quanta_index_sdk::HybridQueryBuilder<'a, true, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
+pub fn quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::pinned(self, pin: quanta_index_contract_base::query::pin::GenerationPin) -> quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, true, HAS_TOP_K>
+pub fn quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::semantic_text(self, query_text: impl core::convert::Into<alloc::string::String>) -> quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, true, HAS_SELECTION, HAS_TOP_K>
+pub fn quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::sourcegraph(self, query_text: impl core::convert::Into<alloc::string::String>) -> quanta_index_sdk::HybridQueryBuilder<'a, true, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
+pub fn quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::top_k(self, top_k: u32) -> quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, true>
+impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::Freeze for quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
+impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::Send for quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
+impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::Sync for quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
+impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::Unpin for quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
+impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::UnsafeUnpin for quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
+impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
+impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
 pub struct quanta_index_sdk::HybridSeedQueryBuilder<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 impl quanta_index_sdk::HybridSeedQueryBuilder<'_, true, true, true, true>
 pub fn quanta_index_sdk::HybridSeedQueryBuilder<'_, true, true, true, true>::execute(self) -> core::result::Result<quanta_index_contract::results::query_responses::HybridSeedQueryResponse, quanta_index_sdk::SdkError>
@@ -855,7 +876,10 @@ impl<'a> quanta_index_sdk::SearchNamespace<'a>
 pub fn quanta_index_sdk::SearchNamespace<'a>::cluster_membership_batch_read_v1(&self, request: quanta_index_contract::query::cluster_membership::ClusterMembershipBatchReadRequestV1) -> core::result::Result<quanta_index_contract::results::cluster_membership::ClusterMembershipBatchReadResponseV1, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::SearchNamespace<'a>::cluster_membership_read_v1(&self, request: quanta_index_contract::query::cluster_membership::ClusterMembershipReadRequestV1) -> core::result::Result<quanta_index_contract::results::cluster_membership::ClusterMembershipReadOutcomeV1, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::SearchNamespace<'a>::explain(&self, generation: quanta_index_contract_base::query::pin::GenerationPin, candidate: quanta_index_contract_base::results::candidates::LexicalCandidate) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneExplainQueryResponse, quanta_index_sdk::SdkError>
-pub fn quanta_index_sdk::SearchNamespace<'a>::explain_under_query(&self, generation: quanta_index_contract_base::query::pin::GenerationPin, candidate: impl core::convert::Into<quanta_index_contract::query::requests::ExplainCandidateV1>, text_query: quanta_index_contract_base::query::requests::TextQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneExplainQueryResponse, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::SearchNamespace<'a>::explain_hybrid_under_queries(&self, generation: quanta_index_contract_base::query::pin::GenerationPin, row: quanta_index_contract::results::query_responses::HybridCandidateV1, text_query: quanta_index_contract_base::query::requests::TextQueryRequest, semantic_query_text: impl core::convert::Into<alloc::string::String>) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneExplainQueryResponse, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::SearchNamespace<'a>::explain_under_query(&self, generation: quanta_index_contract_base::query::pin::GenerationPin, candidate: quanta_index_contract_base::results::candidates::LexicalCandidate, text_query: quanta_index_contract_base::query::requests::TextQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneExplainQueryResponse, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::SearchNamespace<'a>::hybrid(&self) -> quanta_index_sdk::HybridQueryBuilder<'a>
+pub fn quanta_index_sdk::SearchNamespace<'a>::hybrid_request(&self, request: quanta_index_contract::query::requests::HybridQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::HybridQueryResponse, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::SearchNamespace<'a>::hybrid_seed(&self) -> quanta_index_sdk::HybridSeedQueryBuilder<'a>
 pub fn quanta_index_sdk::SearchNamespace<'a>::hybrid_seed_request(&self, request: quanta_index_contract::query::requests::HybridSeedQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::HybridSeedQueryResponse, quanta_index_sdk::SdkError>
 impl<'a> core::marker::Freeze for quanta_index_sdk::SearchNamespace<'a>

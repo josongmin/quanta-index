@@ -108,6 +108,11 @@ pub(crate) struct RecordingSemanticState {
     pub(crate) search_hit_constraints: Vec<QueryConstraintSetV1>,
     pub(crate) corpus_constraints: Vec<QueryConstraintSetV1>,
     pub(crate) scoped_constraints: Vec<QueryConstraintSetV1>,
+    /// What `score_candidate` answers per candidate id: the exact cosine of
+    /// the stored vector, or absent for an id the generation does not store.
+    pub(crate) stored_cosines: std::collections::BTreeMap<String, f32>,
+    /// Every `score_candidate` lookup, as `(candidate_id, query_vector)`.
+    pub(crate) scored_candidates: Vec<(String, Vec<f32>)>,
     pub(crate) cluster_membership_opened_pins: Vec<(RepoId, RevisionId, ManifestGeneration)>,
     pub(crate) cluster_membership_requests: Vec<ClusterMembershipBatchReadRequestV1>,
     pub(crate) cluster_membership_response: Option<ClusterMembershipBatchReadResponseV1>,
@@ -371,6 +376,26 @@ impl SemanticSearcher for RecordingSemanticSearcher {
         }
         self.observe_budget(budget)?;
         Ok(vec![candidate("semantic-scoped", 1.0)])
+    }
+
+    fn score_candidate(
+        &self,
+        candidate_id: &str,
+        query_vector: &[f32],
+        budget: &RequestBudgetV1,
+    ) -> Result<Option<f32>, CoreError> {
+        let stored = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?;
+            state
+                .scored_candidates
+                .push((candidate_id.to_string(), query_vector.to_vec()));
+            state.stored_cosines.get(candidate_id).copied()
+        };
+        self.observe_budget(budget)?;
+        Ok(stored)
     }
 
     fn index_model_id(&self) -> &str {

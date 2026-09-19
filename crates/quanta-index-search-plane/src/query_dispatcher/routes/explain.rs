@@ -1,32 +1,51 @@
 //! Explain route: exact presence lookup and per-candidate score explanation
 //! under the plan that ranked it.
+//!
+//! A lexical row is traced through the lexical engine. A hybrid row is
+//! re-derived lane by lane against the index (QI-BB-022): the lexical lane
+//! through the engine's own trace, the dense lane by embedding the dense
+//! query and scoring the candidate's stored vector exactly, and the fusion
+//! by re-running both bounded lanes under the same plan and reciprocal
+//! rank fusion. Nothing the payload carries is used as an oracle for
+//! itself; every carried number is compared with what the index says now.
+
+use std::collections::BTreeSet;
 
 use quanta_index_contract::{
     CandidatePresenceV1, EngineTouched, ExplainCandidateV1, ExplanationRow, HybridCandidateV1,
-    HybridLaneContributionV1, HybridLaneV1, LexicalCandidate, LqOptions, LqYesNoOnly, PlannerStage,
-    PlannerTraceEntry, SearchExplanation, SearchPlaneExplainQueryRequest,
-    SearchPlaneExplainQueryResponse, TextQueryRequest,
+    HybridLaneV1, LexicalCandidate, LqOptions, LqYesNoOnly, PlannerStage, PlannerTraceEntry,
+    SearchExplanation, SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
+    TextQueryRequest,
 };
 use quanta_index_core::{
-    CoreError, ExplainQueryPort, HybridOrchestratorPolicy, LexicalCandidateExplanationV1,
-    LexicalScoreEngineV1, LexicalScoreTraceV1, QueryRouteV1, RequestBudgetV1, validate_query_top_k,
+    CoreError, ExplainQueryPort, HybridFilterPlanV1, HybridOrchestratorPolicy,
+    LexicalCandidateExplanationV1, LexicalPolicy, LexicalScoreEngineV1, LexicalScoreTraceV1,
+    LexicalSearcher, QueryRouteV1, RequestBudgetV1, SemanticSearcher, validate_query_top_k,
 };
 
+use crate::lower_lexical_text_query;
+use crate::query_dispatcher::dense_admission::admit_dense_lane_v1;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
+use crate::query_dispatcher::planning::prepare_language_query_v1;
+use crate::query_dispatcher::ranking::stabilize_ranked_candidates;
 use crate::query_dispatcher::read_view::{ReadViewRequestV1, attach_read_view_trace};
+use crate::query_dispatcher::window::hybrid_probe_top_k_v1;
 
 impl SearchPlaneDispatcher {
     /// Explain one candidate (QI-BB-022): an exact presence lookup, and when
     /// the request names the query, the score the lexical engine emits for
     /// exactly this candidate under the plan that ranked it. A hybrid
-    /// candidate is additionally reconciled against the lane provenance and
-    /// the RRF score it carries.
+    /// candidate is additionally re-derived on its dense lane and its
+    /// fusion, and every carried number is reconciled against the index.
     fn explain(
         &self,
         request: SearchPlaneExplainQueryRequest,
         budget: &RequestBudgetV1,
     ) -> Result<SearchPlaneExplainQueryResponse, CoreError> {
         budget.checkpoint("explain:entry")?;
+        request
+            .validate_v1()
+            .map_err(|err| CoreError::InvalidContract(format!("explain: {err}")))?;
         let pin = request.generation;
         let row = request.candidate.lexical_row();
         if row.manifest_generation != pin.manifest_generation {
@@ -83,60 +102,139 @@ impl SearchPlaneDispatcher {
         }
         // The query is the one the search accepted, `top_k` included; the
         // trace does not page, but it does not accept a request the search
-        // would have refused either.
-        let _accepted_top_k = validate_query_top_k(text_query.top_k)?;
+        // would have refused either. For a hybrid row this is the fused
+        // `top_k` the hybrid ran with, which sizes the lanes re-run below.
+        let accepted_top_k = validate_query_top_k(text_query.top_k)?;
         let pinned_query = TextQueryRequest {
             generation: Some(pin.clone()),
             ..text_query
         };
         budget.checkpoint("explain:plan")?;
-        let planned = self.plan_lexical_text_query(&pinned_query, QueryRouteV1::Explain, budget)?;
-        if planned.pin != pin {
-            return Err(CoreError::InvalidContract(format!(
-                "explain: the query rebinds to generation {} but the candidate is at {}",
-                planned.pin.manifest_generation.get(),
-                pin.manifest_generation.get()
-            )));
-        }
-        let view = self.acquire_read_view(
-            &ReadViewRequestV1::new("explain", &pin, planned.domains),
-            budget,
-        )?;
-        let searcher = view.lexical()?;
-        budget.checkpoint("explain:score")?;
-        let explained = if planned.force_empty {
-            match searcher.candidate_presence(candidate_id)? {
-                CandidatePresenceV1::Indexed => LexicalCandidateExplanationV1::NotMatched {
-                    reason: "the plan is a contradiction and matches nothing".to_string(),
-                },
-                CandidatePresenceV1::NotIndexed => LexicalCandidateExplanationV1::NotIndexed,
-            }
-        } else {
-            searcher.explain_candidate(
-                &planned.query,
-                &planned.constraints,
-                candidate_id,
-                budget,
-            )?
-        };
-        let presence = match explained {
-            LexicalCandidateExplanationV1::NotIndexed => CandidatePresenceV1::NotIndexed,
-            LexicalCandidateExplanationV1::NotMatched { .. }
-            | LexicalCandidateExplanationV1::Matched(_) => CandidatePresenceV1::Indexed,
-        };
-        let mut explanation = match &request.candidate {
+        let (explanation, presence) = match &request.candidate {
             ExplainCandidateV1::Lexical(candidate) => {
-                build_lexical_score_explanation(candidate, &planned.query.options, &explained)?
+                let planned =
+                    self.plan_lexical_text_query(&pinned_query, QueryRouteV1::Explain, budget)?;
+                if planned.pin != pin {
+                    return Err(CoreError::InvalidContract(format!(
+                        "explain: the query rebinds to generation {} but the candidate is at {}",
+                        planned.pin.manifest_generation.get(),
+                        pin.manifest_generation.get()
+                    )));
+                }
+                let view = self.acquire_read_view(
+                    &ReadViewRequestV1::new("explain", &pin, planned.domains),
+                    budget,
+                )?;
+                let searcher = view.lexical()?;
+                budget.checkpoint("explain:score")?;
+                let explained = trace_lexical_candidate(
+                    searcher.as_ref(),
+                    &planned.query,
+                    &planned.constraints,
+                    planned.force_empty,
+                    candidate_id,
+                    budget,
+                )?;
+                let mut explanation =
+                    build_lexical_score_explanation(candidate, &planned.query, &explained)?;
+                attach_read_view_trace(&mut explanation, view.identity());
+                (explanation, presence_of(&explained))
             }
-            ExplainCandidateV1::Hybrid(candidate) => {
-                build_hybrid_score_explanation(candidate, &planned.query.options, &explained)?
+            ExplainCandidateV1::Hybrid(hybrid) => {
+                let Some(semantic_query_text) = request.semantic_query_text.as_deref() else {
+                    return Err(CoreError::InvalidContract(
+                        "explain: a hybrid candidate is explained under the dense query it was fused for; semantic_query_text is required"
+                            .to_string(),
+                    ));
+                };
+                let lanes = HybridLanePlanV1::prepare(&pinned_query)?;
+                let view = self.acquire_read_view(
+                    &ReadViewRequestV1::declare(
+                        "explain",
+                        QueryRouteV1::Hybrid,
+                        Some(&lanes.query),
+                        &pin,
+                    ),
+                    budget,
+                )?;
+                let lex_searcher = view.lexical()?;
+                let sem_searcher = view.semantic()?;
+                budget.checkpoint("explain:score")?;
+                let explained = trace_lexical_candidate(
+                    lex_searcher.as_ref(),
+                    &lanes.query,
+                    &lanes.constraints,
+                    lanes.force_empty,
+                    candidate_id,
+                    budget,
+                )?;
+                let query_vector = self.embed_and_gate_query(
+                    semantic_query_text,
+                    sem_searcher.as_ref(),
+                    "explain",
+                    budget,
+                )?;
+                budget.checkpoint("explain:dense")?;
+                let dense_score =
+                    sem_searcher.score_candidate(candidate_id, &query_vector, budget)?;
+                let rederived = rederive_hybrid_lanes(
+                    lex_searcher.as_ref(),
+                    sem_searcher.as_ref(),
+                    &lanes,
+                    &query_vector,
+                    accepted_top_k,
+                    candidate_id,
+                    budget,
+                )?;
+                let mut explanation = build_hybrid_score_explanation(
+                    hybrid,
+                    &lanes.query,
+                    &explained,
+                    &HybridDenseDerivationV1 {
+                        cosine: dense_score,
+                        ranks: rederived,
+                    },
+                )?;
+                explanation.planner_trace.push(PlannerTraceEntry {
+                    stage: PlannerStage::Plan,
+                    detail: format!("hybrid.filters={}", lanes.filter_plan),
+                });
+                attach_read_view_trace(&mut explanation, view.identity());
+                (explanation, presence_of(&explained))
             }
         };
-        attach_read_view_trace(&mut explanation, view.identity());
         Ok(SearchPlaneExplainQueryResponse {
             generation: pin,
             presence,
             explanation,
+        })
+    }
+}
+
+/// The two lanes' plan exactly as the hybrid route prepares it.
+///
+/// See `routes/hybrid.rs`: the lowered text query, its filter
+/// classification for the dense lane, and the language-prepared query and
+/// constraints both lanes run under. Kept step for step with the route so
+/// the lanes an explain re-runs are the lanes the hybrid ran.
+struct HybridLanePlanV1 {
+    filter_plan: HybridFilterPlanV1,
+    query: quanta_index_contract::LqQuery,
+    constraints: quanta_index_contract::QueryConstraintSetV1,
+    force_empty: bool,
+}
+
+impl HybridLanePlanV1 {
+    fn prepare(text_query: &TextQueryRequest) -> Result<Self, CoreError> {
+        let lexical_query = lower_lexical_text_query(text_query)?;
+        let filter_plan = HybridFilterPlanV1::plan(&lexical_query)?;
+        let prepared = prepare_language_query_v1(lexical_query, &text_query.constraints)?;
+        LexicalPolicy::validate_query(&prepared.query)?;
+        Ok(Self {
+            filter_plan,
+            query: prepared.query,
+            constraints: prepared.constraints,
+            force_empty: prepared.force_empty,
         })
     }
 }
@@ -151,9 +249,163 @@ impl ExplainQueryPort for SearchPlaneDispatcher {
     }
 }
 
+/// The lexical engine's trace of one candidate under the plan, or its
+/// presence when the plan is a contradiction and matches nothing.
+fn trace_lexical_candidate(
+    searcher: &dyn LexicalSearcher,
+    query: &quanta_index_contract::LqQuery,
+    constraints: &quanta_index_contract::QueryConstraintSetV1,
+    force_empty: bool,
+    candidate_id: &str,
+    budget: &RequestBudgetV1,
+) -> Result<LexicalCandidateExplanationV1, CoreError> {
+    if force_empty {
+        return Ok(match searcher.candidate_presence(candidate_id)? {
+            CandidatePresenceV1::Indexed => LexicalCandidateExplanationV1::NotMatched {
+                reason: "the plan is a contradiction and matches nothing".to_string(),
+            },
+            CandidatePresenceV1::NotIndexed => LexicalCandidateExplanationV1::NotIndexed,
+        });
+    }
+    searcher.explain_candidate(query, constraints, candidate_id, budget)
+}
+
+/// The typed presence a lexical trace decides.
+const fn presence_of(explained: &LexicalCandidateExplanationV1) -> CandidatePresenceV1 {
+    match explained {
+        LexicalCandidateExplanationV1::NotIndexed => CandidatePresenceV1::NotIndexed,
+        LexicalCandidateExplanationV1::NotMatched { .. }
+        | LexicalCandidateExplanationV1::Matched(_) => CandidatePresenceV1::Indexed,
+    }
+}
+
+/// Where the two re-run lanes place the candidate.
+///
+/// Its 1-based rank among each lane's distinct identities (the rank the
+/// fusion counts), or `None` when the bounded lane did not reach it; and
+/// its position in the fused page the hybrid would serve for this `top_k`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RederivedHybridRanksV1 {
+    lexical: Option<u32>,
+    dense: Option<u32>,
+    fused_page_position: Option<u32>,
+}
+
+impl RederivedHybridRanksV1 {
+    /// The lane ranks in lane order, as the fusion sums them.
+    fn ranks_in_lane_order(self) -> impl Iterator<Item = u32> {
+        self.lexical.into_iter().chain(self.dense)
+    }
+
+    fn rank_of(self, lane: HybridLaneV1) -> Option<u32> {
+        match lane {
+            HybridLaneV1::Lexical => self.lexical,
+            HybridLaneV1::Dense => self.dense,
+        }
+    }
+}
+
+/// The dense lane and the fusion as the index re-derives them for one
+/// candidate.
+struct HybridDenseDerivationV1 {
+    /// The exact cosine of the candidate's stored vector against the
+    /// embedded dense query; `None` when the generation stores no vector
+    /// for it.
+    cosine: Option<f32>,
+    ranks: RederivedHybridRanksV1,
+}
+
+/// Re-run both bounded lanes exactly as the hybrid route runs them.
+///
+/// Same plan, same constraints, same internal over-fetch for `top_k`, same
+/// dense admission under the plan's exact filters, same budget; then place
+/// the candidate in each lane and in the fused page.
+fn rederive_hybrid_lanes(
+    lex_searcher: &dyn LexicalSearcher,
+    sem_searcher: &dyn SemanticSearcher,
+    lanes: &HybridLanePlanV1,
+    query_vector: &[f32],
+    top_k: u32,
+    candidate_id: &str,
+    budget: &RequestBudgetV1,
+) -> Result<RederivedHybridRanksV1, CoreError> {
+    if lanes.force_empty {
+        return Ok(RederivedHybridRanksV1 {
+            lexical: None,
+            dense: None,
+            fused_page_position: None,
+        });
+    }
+    let internal_top_k = hybrid_probe_top_k_v1(top_k)?;
+    budget.checkpoint("explain:lexical-lane")?;
+    let mut lex_rows = lex_searcher
+        .search_constrained(&lanes.query, &lanes.constraints, internal_top_k, budget)?
+        .candidates;
+    stabilize_ranked_candidates(&mut lex_rows);
+    let dense = admit_dense_lane_v1(
+        &lanes.filter_plan,
+        lex_searcher,
+        &lanes.constraints,
+        internal_top_k,
+        budget,
+        |candidate: &LexicalCandidate| candidate.candidate_id.as_str(),
+        |fetch_size| {
+            budget.checkpoint("explain:dense-lane")?;
+            sem_searcher.search_constrained(query_vector, &lanes.constraints, fetch_size, budget)
+        },
+    )?;
+    let mut sem_rows = dense.rows;
+    stabilize_ranked_candidates(&mut sem_rows);
+    budget.checkpoint("explain:fuse")?;
+    let fused = HybridOrchestratorPolicy::fuse_rrf_candidates(&lex_rows, &sem_rows, top_k)?;
+    let fused_page_position = fused
+        .iter()
+        .position(|row| row.candidate.candidate_id == candidate_id)
+        .map(|index| checked_rank(index, "fused page"))
+        .transpose()?;
+    Ok(RederivedHybridRanksV1 {
+        lexical: distinct_rank_of(&lex_rows, candidate_id)?,
+        dense: distinct_rank_of(&sem_rows, candidate_id)?,
+        fused_page_position,
+    })
+}
+
+/// The 1-based rank of `candidate_id` among a lane's distinct identities,
+/// which is the rank the fusion counts (a lane's repeated identities are
+/// dropped), or `None` when the lane did not reach it.
+fn distinct_rank_of(
+    rows: &[LexicalCandidate],
+    candidate_id: &str,
+) -> Result<Option<u32>, CoreError> {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for row in rows {
+        if !seen.insert(row.candidate_id.as_str()) {
+            continue;
+        }
+        if row.candidate_id == candidate_id {
+            return checked_rank(seen.len().saturating_sub(1), "lane").map(Some);
+        }
+    }
+    Ok(None)
+}
+
+/// A 0-based position as the 1-based `u32` rank a contribution carries.
+fn checked_rank(index: usize, what: &str) -> Result<u32, CoreError> {
+    u32::try_from(index.saturating_add(1)).map_err(|err| {
+        CoreError::Storage(format!(
+            "explain: {what} position does not fit a rank: {err}"
+        ))
+    })
+}
+
 /// Relative tolerance under which a candidate's carried score is the score
 /// this plan emits for it.
 const EXPLAIN_SCORE_TOLERANCE: f32 = 1e-5;
+
+/// Absolute tolerance under which a carried cosine is the stored vector's
+/// cosine: the dense lane's refine step reports the exact distance, so the
+/// two differ by float rounding only.
+const EXPLAIN_COSINE_TOLERANCE: f32 = 1e-4;
 
 /// Whether `emitted` is `carried` within [`EXPLAIN_SCORE_TOLERANCE`],
 /// relative to the carried magnitude (absolute below one).
@@ -260,6 +512,29 @@ fn scored_trace_head_v1(
     ]
 }
 
+/// The plan's filter leaves, one trace entry each, so an unmatched
+/// candidate names the filters that stood between it and the page.
+///
+/// The lexical engine reports a non-match as one fact; which leaf excluded
+/// the candidate is the plan's to list, and it is listed in plan order.
+fn plan_filter_trace_v1(query: &quanta_index_contract::LqQuery) -> Vec<PlannerTraceEntry> {
+    let mut entries = vec![PlannerTraceEntry {
+        stage: PlannerStage::Plan,
+        detail: format!("explain.plan_filters={}", query.filters.len()),
+    }];
+    entries.extend(
+        query
+            .filters
+            .iter()
+            .enumerate()
+            .map(|(index, filter)| PlannerTraceEntry {
+                stage: PlannerStage::Plan,
+                detail: format!("explain.plan_filter[{index}]={filter:?}"),
+            }),
+    );
+    entries
+}
+
 /// The one contribution row of a matched lexical trace: the engine's own
 /// score, the plan's boost as the weight, and the emitted score.
 fn lexical_trace_row_v1(
@@ -295,7 +570,7 @@ fn lexical_trace_prose_v1(trace: &LexicalScoreTraceV1) -> String {
 /// is that score.
 fn build_lexical_score_explanation(
     candidate: &LexicalCandidate,
-    options: &LqOptions,
+    query: &quanta_index_contract::LqQuery,
     explained: &LexicalCandidateExplanationV1,
 ) -> Result<SearchExplanation, CoreError> {
     let candidate_id = candidate.candidate_id.as_str();
@@ -306,12 +581,16 @@ fn build_lexical_score_explanation(
             Vec::new(),
             format!("candidate {candidate_id} is NOT present in the lexical index (exact lookup)"),
         ),
-        LexicalCandidateExplanationV1::NotMatched { reason } => (
-            Vec::new(),
-            format!(
-                "candidate {candidate_id} is present in the lexical index but the query does not match it: {reason}"
-            ),
-        ),
+        LexicalCandidateExplanationV1::NotMatched { reason } => {
+            planner_trace.extend(plan_filter_trace_v1(query));
+            (
+                Vec::new(),
+                format!(
+                    "candidate {candidate_id} is present in the lexical index but the query does not match it: {reason}{}",
+                    plan_filter_prose_v1(query)
+                ),
+            )
+        }
         LexicalCandidateExplanationV1::Matched(trace) => {
             let row = lexical_trace_row_v1(candidate_id, trace)?;
             let reconciled = scores_reconcile(trace.emitted_score, carried_score);
@@ -337,13 +616,28 @@ fn build_lexical_score_explanation(
         engines_touched: vec![EngineTouched::Lexical],
         early_stop_reason: None,
         contributions,
-        ranker_weights_hash: ranker_weights_hash_v1(options, RankerFusionV1::None),
+        ranker_weights_hash: ranker_weights_hash_v1(&query.options, RankerFusionV1::None),
         strategy: "lexical_score_trace".to_string(),
         summary,
     })
 }
 
-/// Narrow an RRF score to the `f32` an explanation row carries.
+/// The plan's filter leaves in prose, for an unmatched candidate's
+/// summary; empty when the plan has none.
+fn plan_filter_prose_v1(query: &quanta_index_contract::LqQuery) -> String {
+    if query.filters.is_empty() {
+        return String::new();
+    }
+    let leaves = query
+        .filters
+        .iter()
+        .map(|filter| format!("{filter:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(" (plan filters: {leaves})")
+}
+
+/// Narrow an RRF term or sum to the `f32` an explanation row carries.
 ///
 /// An RRF score is a sum of at most two terms `1 / (k + rank)` with `k`
 /// positive, so it lies in `(0, 2 / k]`; narrowing cannot overflow, it only
@@ -355,40 +649,6 @@ fn build_lexical_score_explanation(
 )]
 fn narrow_rrf_score(score: f64) -> f32 {
     score as f32
-}
-
-/// The RRF score recomputed from a hybrid row's carried ranks, and whether
-/// it is the row's carried `fused_score`.
-struct RrfReconciliationV1 {
-    recomputed: f64,
-    reconciled: bool,
-    /// The carried ranks as `lane#rank`, comma-separated, for the trace.
-    ranks_detail: String,
-}
-
-/// Recompute a hybrid row's RRF score from the ranks it carries.
-///
-/// The ranks are summed in lane order with the fusion's own arithmetic, so
-/// a genuine row reproduces its `fused_score` exactly; the wire carries the
-/// f64 the plane sorted by, so no tolerance is owed.
-fn rrf_reconciliation_v1(hybrid: &HybridCandidateV1) -> RrfReconciliationV1 {
-    let ranks = hybrid
-        .contributions
-        .iter()
-        .map(|contribution| contribution.rank);
-    let recomputed = HybridOrchestratorPolicy::rrf_score(ranks);
-    RrfReconciliationV1 {
-        recomputed,
-        reconciled: recomputed.total_cmp(&hybrid.fused_score).is_eq(),
-        ranks_detail: hybrid
-            .contributions
-            .iter()
-            .map(|contribution| {
-                format!("{}#{}", contribution.lane.as_code_str(), contribution.rank)
-            })
-            .collect::<Vec<_>>()
-            .join(","),
-    }
 }
 
 /// Whether the lexical lane's trace agrees with a hybrid row's provenance.
@@ -417,36 +677,78 @@ fn hybrid_lexical_lane_reconciles(
     }
 }
 
-/// The explanation of a hybrid candidate's score (QI-BB-022).
+/// Whether the dense lane's re-derivation agrees with a hybrid row's
+/// provenance.
 ///
-/// The lexical lane is traced under the plan and reconciled with the
-/// carried lexical contribution, the dense contribution is the row the
-/// fusion carried, and the RRF score is recomputed from the carried ranks
-/// against the carried `fused_score`.
+/// A carried dense contribution must be the stored vector's cosine within
+/// [`EXPLAIN_COSINE_TOLERANCE`]. A row the dense lane did not carry is
+/// consistent when the generation stores no vector for it, or when the
+/// re-run dense lane does not reach it; it is not when the re-run lane
+/// ranks it, since the lane should then have carried it.
+fn hybrid_dense_lane_reconciles(
+    hybrid: &HybridCandidateV1,
+    derived: &HybridDenseDerivationV1,
+) -> bool {
+    match (hybrid.contribution(HybridLaneV1::Dense), derived.cosine) {
+        (Some(dense), Some(cosine)) => (dense.raw_score - cosine).abs() <= EXPLAIN_COSINE_TOLERANCE,
+        (Some(_), None) => false,
+        (None, None) => true,
+        (None, Some(_)) => derived.ranks.dense.is_none(),
+    }
+}
+
+/// Whether the re-derived fusion reproduces the carried provenance.
+///
+/// Every carried lane rank is the re-run lane's rank, no re-run lane ranks
+/// a candidate that lane did not carry, and the carried `fused_score` is
+/// the RRF of the re-derived ranks.
+fn hybrid_fusion_reconciles(hybrid: &HybridCandidateV1, ranks: RederivedHybridRanksV1) -> bool {
+    let lanes_agree = [HybridLaneV1::Lexical, HybridLaneV1::Dense]
+        .into_iter()
+        .all(|lane| {
+            hybrid
+                .contribution(lane)
+                .map(|contribution| contribution.rank)
+                == ranks.rank_of(lane)
+        });
+    let rederived = HybridOrchestratorPolicy::rrf_score(ranks.ranks_in_lane_order());
+    lanes_agree && rederived.total_cmp(&hybrid.fused_score).is_eq()
+}
+
+/// The explanation of a hybrid candidate's score (QI-BB-022), re-derived
+/// against the index on every axis.
+///
+/// Three reconciliations are traced, each against what the index says
+/// now, never against the payload alone: `explain.score_reconciled` (the
+/// lexical lane's emitted score against the carried lexical raw score),
+/// `explain.dense_reconciled` (the stored vector's exact cosine against
+/// the carried dense raw score) and `explain.fused_reconciled` (the ranks
+/// of both re-run lanes and their RRF against the carried ranks and
+/// `fused_score`). A forged payload fails on the axis it forged.
 ///
 /// The rows are, in order: `lexical.<engine>` when the plan matches the
-/// candidate (its emitted score, this plane's authority), `dense.cosine`
-/// when the dense lane saw it (the carried raw score; the explain does not
-/// re-run the dense lane), and `hybrid.rrf` (the recomputed RRF score, the
-/// ranking key). Two kinds of reconciliation are traced:
-/// `explain.score_reconciled` for the lexical lane and
-/// `explain.fused_reconciled` for the RRF arithmetic.
+/// candidate (the emitted lexical score, in the engine's units),
+/// `dense.cosine` when the generation stores a vector for it (the exact
+/// cosine, re-derived), then one `hybrid.rrf.<lane>` row per re-run lane
+/// that reached it, carrying that lane's RRF term `1 / (k + rank)`. The
+/// `hybrid.rrf.*` rows sum to the re-derived fused score; the lane score
+/// rows are in their own units and are not summed — see
+/// [`ExplanationRow`].
 fn build_hybrid_score_explanation(
     hybrid: &HybridCandidateV1,
-    options: &LqOptions,
+    query: &quanta_index_contract::LqQuery,
     explained: &LexicalCandidateExplanationV1,
+    derived: &HybridDenseDerivationV1,
 ) -> Result<SearchExplanation, CoreError> {
     let mut report = HybridTraceReportV1::open(hybrid, explained);
-    report.lexical_lane(hybrid, explained)?;
-    if let Some(dense) = hybrid.contribution(HybridLaneV1::Dense) {
-        report.dense_lane(dense);
-    }
-    report.fused_score(hybrid);
-    Ok(report.close(options))
+    report.lexical_lane(hybrid, query, explained)?;
+    report.dense_lane(hybrid, derived);
+    report.fusion(hybrid, derived.ranks);
+    Ok(report.close(&query.options))
 }
 
 /// The hybrid explanation under assembly: one method per lane, then the
-/// fused row, each appending its rows, trace entries and summary fragment.
+/// fusion, each appending its rows, trace entries and summary fragment.
 struct HybridTraceReportV1 {
     planner_trace: Vec<PlannerTraceEntry>,
     contributions: Vec<ExplanationRow>,
@@ -457,7 +759,7 @@ impl HybridTraceReportV1 {
     fn open(hybrid: &HybridCandidateV1, explained: &LexicalCandidateExplanationV1) -> Self {
         Self {
             planner_trace: scored_trace_head_v1("hybrid_score_trace", explained),
-            contributions: Vec::with_capacity(3),
+            contributions: Vec::with_capacity(4),
             summary: vec![format!(
                 "hybrid candidate {}:",
                 hybrid.candidate.candidate_id
@@ -477,6 +779,7 @@ impl HybridTraceReportV1 {
     fn lexical_lane(
         &mut self,
         hybrid: &HybridCandidateV1,
+        query: &quanta_index_contract::LqQuery,
         explained: &LexicalCandidateExplanationV1,
     ) -> Result<(), CoreError> {
         let candidate_id = hybrid.candidate.candidate_id.as_str();
@@ -486,8 +789,10 @@ impl HybridTraceReportV1 {
                     .push(" NOT present in the lexical index (exact lookup)".to_string());
             }
             LexicalCandidateExplanationV1::NotMatched { reason } => {
+                self.planner_trace.extend(plan_filter_trace_v1(query));
                 self.summary.push(format!(
-                    " present in the lexical index but the query does not match it: {reason}"
+                    " present in the lexical index but the query does not match it: {reason}{}",
+                    plan_filter_prose_v1(query)
                 ));
             }
             LexicalCandidateExplanationV1::Matched(trace) => {
@@ -513,50 +818,84 @@ impl HybridTraceReportV1 {
         Ok(())
     }
 
-    /// The dense lane: the contribution as the fusion carried it. The
-    /// explain does not re-run the dense lane, and says so.
-    fn dense_lane(&mut self, dense: &HybridLaneContributionV1) {
-        self.contributions.push(ExplanationRow {
-            signal_name: "dense.cosine".into(),
-            signal_value: dense.raw_score,
-            weight: 1.0,
-            contribution: dense.raw_score,
-        });
-        self.merge_entry(format!(
-            "explain.dense_lane=carried; rank={}; raw_score={:.6}",
-            dense.rank, dense.raw_score
-        ));
-        self.summary.push(format!(
-            "; the dense lane ranked it #{} at cosine {:.6} (carried, not re-derived)",
-            dense.rank, dense.raw_score
-        ));
+    /// The dense lane: the stored vector's exact cosine against the
+    /// embedded dense query, and whether the carried dense contribution is
+    /// that cosine.
+    fn dense_lane(&mut self, hybrid: &HybridCandidateV1, derived: &HybridDenseDerivationV1) {
+        if let Some(cosine) = derived.cosine {
+            self.contributions.push(ExplanationRow {
+                signal_name: "dense.cosine".into(),
+                signal_value: cosine,
+                weight: 1.0,
+                contribution: cosine,
+            });
+            self.merge_entry(format!("explain.dense_lane=rederived; cosine={cosine:.6}"));
+            self.summary.push(format!(
+                "; its stored vector scores cosine {cosine:.6} against the dense query"
+            ));
+        } else {
+            self.merge_entry("explain.dense_lane=absent".to_string());
+            self.summary
+                .push("; the generation stores no vector for it".to_string());
+        }
+        let reconciled = hybrid_dense_lane_reconciles(hybrid, derived);
+        self.merge_entry(format!("explain.dense_reconciled={reconciled}"));
+        self.summary.push(
+            match (hybrid.contribution(HybridLaneV1::Dense), reconciled) {
+                (Some(_), true) => "; the dense lane's carried raw score is this cosine",
+                (Some(_), false) => "; the dense lane's carried raw score is NOT this cosine",
+                (None, true) => "; the dense lane did not see it, consistent with the index",
+                (None, false) => {
+                    "; the dense lane did not see it although the re-run dense lane ranks it"
+                }
+            }
+            .to_string(),
+        );
     }
 
-    /// The fused row: the RRF of the carried ranks, against the carried
-    /// fused score.
-    fn fused_score(&mut self, hybrid: &HybridCandidateV1) {
-        let rrf = rrf_reconciliation_v1(hybrid);
-        self.contributions.push(ExplanationRow {
-            signal_name: "hybrid.rrf".into(),
-            signal_value: narrow_rrf_score(rrf.recomputed),
-            weight: 1.0,
-            contribution: narrow_rrf_score(rrf.recomputed),
-        });
+    /// The fusion: the re-run lanes' ranks as RRF rows, the fused page
+    /// position, and whether the carried ranks and `fused_score` are the
+    /// re-derived ones.
+    fn fusion(&mut self, hybrid: &HybridCandidateV1, ranks: RederivedHybridRanksV1) {
+        for lane in [HybridLaneV1::Lexical, HybridLaneV1::Dense] {
+            if let Some(rank) = ranks.rank_of(lane) {
+                let term =
+                    narrow_rrf_score(HybridOrchestratorPolicy::rrf_score(std::iter::once(rank)));
+                self.contributions.push(ExplanationRow {
+                    signal_name: format!("hybrid.rrf.{}", lane.as_code_str()).into_boxed_str(),
+                    signal_value: 1.0,
+                    weight: term,
+                    contribution: term,
+                });
+            }
+        }
+        let rederived = HybridOrchestratorPolicy::rrf_score(ranks.ranks_in_lane_order());
+        let reconciled = hybrid_fusion_reconciles(hybrid, ranks);
         self.merge_entry(format!(
-            "explain.rrf_k={}; ranks={}",
+            "explain.rrf_k={}; carried_ranks={}; rederived_ranks={}",
             HybridOrchestratorPolicy::rrf_k(),
-            rrf.ranks_detail
+            carried_ranks_detail(hybrid),
+            rederived_ranks_detail(ranks)
         ));
-        self.merge_entry(format!("explain.fused_reconciled={}", rrf.reconciled));
-        self.summary.push(if rrf.reconciled {
+        self.merge_entry(format!("explain.fused_rederived={rederived:.9}"));
+        self.merge_entry(format!(
+            "explain.fused_page_position={}",
+            ranks.fused_page_position.map_or_else(
+                || "beyond_top_k".to_string(),
+                |position| position.to_string()
+            )
+        ));
+        self.merge_entry(format!("explain.fused_reconciled={reconciled}"));
+        self.summary.push(if reconciled {
             format!(
-                "; rrf over the carried ranks is {:.9}, the carried fused score",
-                rrf.recomputed
+                "; rrf over the re-run lanes is {rederived:.9}, the carried fused score at the carried ranks"
             )
         } else {
             format!(
-                "; rrf over the carried ranks is {:.9}, NOT the carried fused score {:.9}",
-                rrf.recomputed, hybrid.fused_score
+                "; rrf over the re-run lanes is {rederived:.9} at ranks {}, NOT the carried fused score {:.9} at ranks {}",
+                rederived_ranks_detail(ranks),
+                hybrid.fused_score,
+                carried_ranks_detail(hybrid)
             )
         });
     }
@@ -564,7 +903,7 @@ impl HybridTraceReportV1 {
     fn close(self, options: &LqOptions) -> SearchExplanation {
         SearchExplanation {
             planner_trace: self.planner_trace,
-            engines_touched: vec![EngineTouched::Lexical],
+            engines_touched: vec![EngineTouched::Lexical, EngineTouched::Semantic],
             early_stop_reason: None,
             contributions: self.contributions,
             ranker_weights_hash: ranker_weights_hash_v1(options, RankerFusionV1::Rrf),
@@ -572,4 +911,32 @@ impl HybridTraceReportV1 {
             summary: self.summary.concat(),
         }
     }
+}
+
+/// The carried ranks as `lane#rank`, comma-separated, for the trace.
+fn carried_ranks_detail(hybrid: &HybridCandidateV1) -> String {
+    hybrid
+        .contributions
+        .iter()
+        .map(|contribution| format!("{}#{}", contribution.lane.as_code_str(), contribution.rank))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// The re-derived ranks as `lane#rank`, comma-separated, for the trace;
+/// `lane#absent` for a lane that did not reach the candidate.
+fn rederived_ranks_detail(ranks: RederivedHybridRanksV1) -> String {
+    [HybridLaneV1::Lexical, HybridLaneV1::Dense]
+        .into_iter()
+        .map(|lane| {
+            format!(
+                "{}#{}",
+                lane.as_code_str(),
+                ranks
+                    .rank_of(lane)
+                    .map_or_else(|| "absent".to_string(), |rank| rank.to_string())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }

@@ -12,7 +12,25 @@ use serde::{
     ser::SerializeStruct,
 };
 
-use super::{GenerationPin, GenerationSelector, QueryConstraintSetV1, TextQuerySyntax};
+use super::{
+    GenerationPin, GenerationSelector, QueryConstraintSetV1, TextQuerySyntax, validate_public_top_k,
+};
+
+/// The `top_k` gate every wire request shape applies on encode (QI-BB-025).
+///
+/// A typed client cannot emit a request whose `top_k` is outside the public
+/// range: the encoder refuses under the shared [`TopKOutOfRangeV1`] code
+/// before any round trip. The decoder deliberately does not refuse the
+/// value: a raw caller's out-of-range request must come back as a typed
+/// answer carrying that same code (the dispatcher's
+/// [`validate_public_top_k`]), not as a closed connection that names no
+/// code. The SDK, the encoder and the dispatcher run the one validator, so
+/// they cannot drift on the range or on the code.
+///
+/// [`TopKOutOfRangeV1`]: super::TopKOutOfRangeV1
+pub fn wire_top_k<E>(top_k: u32, custom: impl FnOnce(String) -> E) -> Result<u32, E> {
+    validate_public_top_k(top_k).map_err(|refused| custom(format!("{}: {refused}", refused.code())))
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TextQueryRequest {
@@ -24,8 +42,11 @@ pub struct TextQueryRequest {
     pub generation: Option<GenerationPin>,
     pub generation_selector: Option<GenerationSelector>,
     /// QI-QRY-01: required result cap. Wire field is mandatory; missing
-    /// `top_k` fails-closed at deserialization via `missing_field`. No
-    /// caller-side default — the SDK builder enforces this is set.
+    /// `top_k` fails-closed at deserialization via `missing_field`. A value
+    /// outside the public range does not encode ([`wire_top_k`]) and, when
+    /// a raw caller sends one anyway, is refused typed by the dispatcher
+    /// under the same code (QI-BB-025). No caller-side default — the SDK
+    /// builder enforces this is set.
     pub top_k: u32,
 }
 
@@ -50,6 +71,7 @@ impl Serialize for TextQueryRequest {
         if self.generation_selector.is_some() {
             field_count = field_count.saturating_add(1);
         }
+        let top_k = wire_top_k(self.top_k, serde::ser::Error::custom)?;
         let mut state = serializer.serialize_struct("TextQueryRequest", field_count)?;
         state.serialize_field("syntax", &self.syntax)?;
         state.serialize_field("query_text", &self.query_text)?;
@@ -60,7 +82,7 @@ impl Serialize for TextQueryRequest {
         if let Some(generation_selector) = &self.generation_selector {
             state.serialize_field("generation_selector", generation_selector)?;
         }
-        state.serialize_field("top_k", &self.top_k)?;
+        state.serialize_field("top_k", &top_k)?;
         state.end()
     }
 }
@@ -152,5 +174,92 @@ impl<'de> Deserialize<'de> for TextQueryRequest {
             TEXT_QUERY_REQUEST_FIELDS,
             TextQueryRequestVisitor,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The wire `top_k` gate (QI-BB-025): a request outside the public range
+    //! neither encodes nor decodes, under the shared code.
+
+    use super::{TextQueryRequest, wire_top_k};
+    use crate::query::{
+        PUBLIC_TOP_K_MAX, QueryConstraintSetV1, TOP_K_OUT_OF_RANGE_CODE, TextQuerySyntax,
+    };
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn request(top_k: u32) -> TextQueryRequest {
+        TextQueryRequest {
+            syntax: TextQuerySyntax::Native,
+            query_text: "needle".to_string(),
+            constraints: QueryConstraintSetV1::unconstrained(),
+            generation: None,
+            generation_selector: None,
+            top_k,
+        }
+    }
+
+    /// The JSON of an in-range request with its `top_k` replaced by `top_k`,
+    /// so the decoder sees bytes no encoder would have produced.
+    fn raw_json_with_top_k(top_k: u32) -> Result<String, Box<dyn std::error::Error>> {
+        let mut value = serde_json::to_value(request(1))?;
+        let object = value
+            .as_object_mut()
+            .ok_or("an encoded request is a JSON object")?;
+        let _previous = object.insert("top_k".to_string(), serde_json::json!(top_k));
+        Ok(serde_json::to_string(&value)?)
+    }
+
+    #[test]
+    fn in_range_top_k_round_trips_including_the_public_maximum() -> TestResult {
+        for top_k in [1, 2, PUBLIC_TOP_K_MAX - 1, PUBLIC_TOP_K_MAX] {
+            let encoded = serde_json::to_string(&request(top_k))?;
+            let decoded: TextQueryRequest = serde_json::from_str(&encoded)?;
+            if decoded != request(top_k) {
+                return Err(format!("top_k={top_k} did not round-trip: {decoded:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn out_of_range_top_k_is_refused_on_encode_with_the_shared_code() -> TestResult {
+        for top_k in [0, PUBLIC_TOP_K_MAX + 1, u32::MAX] {
+            let Err(error) = serde_json::to_string(&request(top_k)) else {
+                return Err(format!("top_k={top_k} must not encode").into());
+            };
+            let message = error.to_string();
+            if !message.contains(TOP_K_OUT_OF_RANGE_CODE) {
+                return Err(format!("top_k={top_k}: {message}").into());
+            }
+        }
+        Ok(())
+    }
+
+    /// Decode does not gate the range: the value reaches the dispatcher,
+    /// which answers the raw caller typed under the same code the encoder
+    /// and the SDK name.
+    #[test]
+    fn out_of_range_top_k_decodes_so_the_dispatcher_can_answer_it_typed() -> TestResult {
+        for top_k in [0, PUBLIC_TOP_K_MAX + 1, u32::MAX] {
+            let raw = raw_json_with_top_k(top_k)?;
+            let decoded = serde_json::from_str::<TextQueryRequest>(&raw)?;
+            if decoded.top_k != top_k {
+                return Err(format!("top_k={top_k} decoded as {}", decoded.top_k).into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_gate_names_the_code_and_the_value() {
+        assert_eq!(
+            wire_top_k(0, |message| message),
+            Err(format!(
+                "{TOP_K_OUT_OF_RANGE_CODE}: top_k must be within 1..={PUBLIC_TOP_K_MAX}, got 0"
+            ))
+        );
+        assert_eq!(wire_top_k(7, |message| message), Ok(7));
     }
 }

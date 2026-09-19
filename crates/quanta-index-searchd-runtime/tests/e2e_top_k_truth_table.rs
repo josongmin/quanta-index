@@ -2,15 +2,22 @@
 //! front door.
 //!
 //! The public range is `1..=10_000`. Every route must refuse `0`, `10_001`
-//! and `u32::MAX` with the shared `QUERY_TOP_K_OUT_OF_RANGE` code, and must
-//! accept `1`, `9_999` and `10_000` — the last of which the continuation
-//! probe used to refuse while the domain policies accepted it.
+//! and `u32::MAX`, and must accept `1`, `9_999` and `10_000` — the last of
+//! which the continuation probe used to refuse while the domain policies
+//! accepted it.
+//!
+//! The refusal is one policy applied at three gates that share
+//! `validate_public_top_k` and the `QUERY_TOP_K_OUT_OF_RANGE` code: the SDK
+//! builder refuses before any round trip (pinned in the SDK crate against a
+//! stub transport), the wire codec refuses on encode and on decode (pinned
+//! here: a typed request does not encode, and raw bytes carrying the value
+//! are refused at the daemon's decode — counted as a decode failure and
+//! never dispatched to a route), and the dispatcher refuses an in-process
+//! caller typed (pinned in the search-plane crate).
 //!
 //! All eight routes are driven through the harness's route-agnostic raw IPC
 //! probe so the assertion is on wire behavior and no route gets a private
-//! code path in the test. The SDK builder's local refusal, which must carry
-//! the same code, is pinned in the SDK crate's own tests against a stub
-//! transport.
+//! code path in the test.
 //!
 //! Acceptance is stronger than "not refused for `top_k`": the fixture seeds
 //! every authority, so each route must *serve* an in-range request with no
@@ -30,6 +37,7 @@ use quanta_index_contract::{
     StructuralQueryRequest, SymbolQueryRequest, TOP_K_OUT_OF_RANGE_CODE, TextQueryRequest,
     TextQuerySyntax,
 };
+use quanta_index_ipc::{ClientIoPolicy, encode_request, send_request};
 use quanta_index_searchd_harness as e2e_harness;
 
 use e2e_harness::{E2eRoutePage, E2eRouteWindowProbe, E2eRuntime};
@@ -461,30 +469,150 @@ fn window_contradiction(
     }
 }
 
-/// Every route refuses an out-of-range `top_k` with the one shared code.
+/// Replace every `top_k` entry in a decoded CBOR tree with `top_k`, so the
+/// bytes carry a value no encoder would emit.
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "ciborium::Value is #[non_exhaustive]; the leaves and any future variant carry no top_k"
+)]
+fn patch_every_top_k(value: &mut ciborium::Value, top_k: u32) -> usize {
+    match value {
+        ciborium::Value::Map(fields) => fields
+            .iter_mut()
+            .map(|(key, entry)| {
+                if matches!(key, ciborium::Value::Text(name) if name == "top_k") {
+                    *entry = ciborium::Value::Integer(top_k.into());
+                    1
+                } else {
+                    patch_every_top_k(entry, top_k)
+                }
+            })
+            .sum(),
+        ciborium::Value::Array(items) => items
+            .iter_mut()
+            .map(|item| patch_every_top_k(item, top_k))
+            .sum(),
+        // Every leaf variant, and — `ciborium::Value` being
+        // `#[non_exhaustive]` — any variant this codec version does not
+        // name, carries no `top_k`.
+        _ => 0,
+    }
+}
+
+/// The daemon's query-plane decode-failure and dispatch counters, from the
+/// control scrape: the oracle that a request was refused at decode and
+/// never reached a route.
+fn ipc_query_counters(rt: &mut E2eRuntime) -> Result<(u64, u64), Box<dyn Error>> {
+    let snapshot = rt.metrics_snapshot()?;
+    let counter = |name: &str| -> Result<u64, Box<dyn Error>> {
+        snapshot
+            .counters
+            .iter()
+            .find(|counter| counter.name == name)
+            .map(|counter| counter.value)
+            .ok_or_else(|| format!("counter `{name}` is in the scrape").into())
+    };
+    Ok((
+        counter("ipc_query_request_decode_failures_total")?,
+        counter("ipc_query_requests_dispatched_total")?,
+    ))
+}
+
+/// Every route refuses an out-of-range `top_k` under one code, from the
+/// typed client and from raw bytes alike (QI-BB-025 완료 기준: the SDK and
+/// raw IPC return the same error code).
+///
+/// The typed request does not encode, under the shared code; raw bytes
+/// carrying the value decode, are dispatched once, and come back as a typed
+/// answer with that same code — never served, never a decode failure, never
+/// a closed connection that names nothing.
 #[test]
-fn every_route_refuses_out_of_range_top_k_with_the_shared_code() -> TestResult {
+fn every_route_refuses_out_of_range_top_k_with_one_code_from_typed_and_raw_callers() -> TestResult {
     let mut rt = seeded_runtime()?;
+    // Prime the route once so the pin and the sockets exist and the
+    // counters are live before the refusals are counted.
+    let lexical = route_named("lexical")?;
+    let primed = probe(&mut rt, lexical, 1)?;
+    if primed.typed_error.is_some() {
+        return Err(format!(
+            "the fixture serves before refusals: {:?}",
+            primed.typed_error
+        )
+        .into());
+    }
+    let Some((query_socket, _, _)) = rt
+        .socket_paths()
+        .map(|(q, c, i)| (q.to_path_buf(), c.to_path_buf(), i.to_path_buf()))
+    else {
+        return Err("the daemon is running after a served probe".into());
+    };
+    let pin = rt.generation_pin();
     let mut failures: Vec<String> = Vec::new();
     for route in &ROUTES {
         for top_k in REFUSED {
-            let observed = match probe(&mut rt, route, top_k) {
-                Ok(observed) => observed,
-                Err(failure) => {
-                    failures.push(failure);
-                    continue;
-                }
+            // The client side: the typed request refuses to encode under
+            // the shared code, so no SDK or harness caller can emit it.
+            let typed = quanta_index_contract::SearchPlaneQueryIpcRequestEnvelope {
+                request_id: 1,
+                payload: (route.build)(Some(pin.clone()), top_k),
             };
-            match observed.typed_error {
-                Some(error) if error.code == TOP_K_OUT_OF_RANGE_CODE => {}
-                Some(error) => failures.push(format!(
-                    "{}: top_k={top_k} refused with `{}` instead of `{TOP_K_OUT_OF_RANGE_CODE}` ({})",
-                    route.name, error.code, error.message
+            match encode_request(&typed) {
+                Ok(_) => failures.push(format!(
+                    "{}: top_k={top_k} encoded although it is out of range",
+                    route.name
                 )),
-                None => failures.push(format!(
-                    "{}: top_k={top_k} was not refused (returned {} rows)",
-                    route.name, observed.returned_rows
+                Err(err) if err.to_string().contains(TOP_K_OUT_OF_RANGE_CODE) => {}
+                Err(err) => failures.push(format!(
+                    "{}: top_k={top_k} encode refusal does not name {TOP_K_OUT_OF_RANGE_CODE}: {err}",
+                    route.name
                 )),
+            }
+            // The daemon side: bytes no encoder produced, carrying the
+            // value in every `top_k` position the route has.
+            let in_range = quanta_index_contract::SearchPlaneQueryIpcRequestEnvelope {
+                request_id: 1,
+                payload: (route.build)(Some(pin.clone()), 1),
+            };
+            let mut wire: ciborium::Value = {
+                let mut buf = Vec::new();
+                ciborium::into_writer(&in_range, &mut buf)?;
+                ciborium::from_reader(buf.as_slice())?
+            };
+            if patch_every_top_k(&mut wire, top_k) == 0 {
+                failures.push(format!("{}: the wire carries no top_k", route.name));
+                continue;
+            }
+            let (failures_before, dispatched_before) = ipc_query_counters(&mut rt)?;
+            let answer = send_request::<
+                ciborium::Value,
+                quanta_index_contract::SearchPlaneQueryIpcResponseEnvelope,
+            >(&query_socket, &wire, ClientIoPolicy::default());
+            match answer.map(|response| response.payload) {
+                Ok(quanta_index_contract::SearchPlaneQueryIpcResponse::Error(error))
+                    if error.code == TOP_K_OUT_OF_RANGE_CODE => {}
+                Ok(other) => failures.push(format!(
+                    "{}: top_k={top_k} raw bytes must be answered typed {TOP_K_OUT_OF_RANGE_CODE}, got {other:?}",
+                    route.name
+                )),
+                Err(err) => failures.push(format!(
+                    "{}: top_k={top_k} raw bytes must be answered, not dropped: {err}",
+                    route.name
+                )),
+            }
+            // Decoded and dispatched: the refusal is the dispatcher's, the
+            // same validator the encoder and the SDK run.
+            let (failures_after, dispatched_after) = ipc_query_counters(&mut rt)?;
+            if failures_after != failures_before {
+                failures.push(format!(
+                    "{}: top_k={top_k} must not be a decode failure: {failures_before} -> {failures_after}",
+                    route.name
+                ));
+            }
+            if dispatched_after != dispatched_before.saturating_add(1) {
+                failures.push(format!(
+                    "{}: top_k={top_k} must be dispatched exactly once: {dispatched_before} -> {dispatched_after}",
+                    route.name
+                ));
             }
         }
     }

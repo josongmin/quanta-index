@@ -23,11 +23,14 @@
 //! path never writes a sealed generation identity, so the produced generation
 //! was not openable for query (QI-BB-010).
 //!
-//! Every emitted row carries the caller-supplied `--source-fingerprint`. A
-//! measurement that cannot name the source it came from is not evidence, so the
-//! flag is required rather than defaulted.
+//! The one JSON document on stdout (and, with `--artifact-out`, on disk) is a
+//! `BenchArtifactV1` (QI-BB-010): the exact 40-character head of a clean
+//! worktree, the corpus digest over the exact bytes written, the run
+//! configuration digest, the host, the process's peak RSS, the build phase and
+//! the index's disk amplification. The experiment resolves the head itself; a
+//! dirty tree or an unresolvable head is a refusal, never an `unknown` stamp
+//! and never a caller-supplied label.
 
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
@@ -41,7 +44,13 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{LexicalIndexOpenPort, RequestBudgetV1, SearchCorpusBatchBuildPort};
 use quanta_index_lexical::LexicalAdapter;
-use sha2::{Digest as _, Sha256};
+use quanta_index_searchd_harness::artifact::{
+    BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, BenchSyntax, DiskAmplificationV1,
+    GitHeadV1, HostV1, LatencySummary, PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily,
+    config_digest, corpus_digest, directory_bytes, framed_digest,
+};
+
+const DIMENSION: &str = "scan-vs-index";
 
 const NEEDLE: &str = "parity_needle_alpha";
 const RECORDS_PER_FILE: usize = 1_000;
@@ -70,34 +79,12 @@ fn emit_stderr(message: &str) {
 struct Args {
     out_dir: PathBuf,
     index_dir: PathBuf,
+    /// Where to also write the artifact; stdout always carries it.
+    artifact_out: Option<PathBuf>,
     chunks: usize,
     chunk_bytes: usize,
     needle_count: usize,
     samples: usize,
-    source_fingerprint: String,
-}
-
-/// Nearest-rank p50/p95/p99 (ms) over the collected samples; zeros if empty.
-fn percentiles(samples_ms: &[f64]) -> (f64, f64, f64) {
-    if samples_ms.is_empty() {
-        return (0.0, 0.0, 0.0);
-    }
-    let mut ordered = samples_ms.to_vec();
-    ordered.sort_by(f64::total_cmp);
-    (
-        nearest_rank(&ordered, 50),
-        nearest_rank(&ordered, 95),
-        nearest_rank(&ordered, 99),
-    )
-}
-
-fn nearest_rank(ordered: &[f64], pct: usize) -> f64 {
-    let rank = pct.saturating_mul(ordered.len()).div_ceil(100).max(1);
-    let idx = rank.min(ordered.len()).saturating_sub(1);
-    if let Some(value) = ordered.get(idx) {
-        return *value;
-    }
-    0.0
 }
 
 fn parse_usize(value: Option<String>, flag: &str) -> Result<usize> {
@@ -115,20 +102,10 @@ fn parse_path(value: Option<String>, flag: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(raw))
 }
 
-fn parse_string(value: Option<String>, flag: &str) -> Result<String> {
-    let Some(raw) = value else {
-        bail!("{flag} requires a value");
-    };
-    if raw.trim().is_empty() {
-        bail!("{flag} must not be blank");
-    }
-    Ok(raw)
-}
-
 fn parse_args() -> Result<Args> {
     let mut out_dir: Option<PathBuf> = None;
     let mut index_dir: Option<PathBuf> = None;
-    let mut source_fingerprint: Option<String> = None;
+    let mut artifact_out: Option<PathBuf> = None;
     let mut chunks = 10_000_usize;
     let mut chunk_bytes = 512_usize;
     let mut needle_count = 10_usize;
@@ -138,9 +115,7 @@ fn parse_args() -> Result<Args> {
         match flag.as_str() {
             "--out-dir" => out_dir = Some(parse_path(it.next(), "--out-dir")?),
             "--index-dir" => index_dir = Some(parse_path(it.next(), "--index-dir")?),
-            "--source-fingerprint" => {
-                source_fingerprint = Some(parse_string(it.next(), "--source-fingerprint")?);
-            }
+            "--artifact-out" => artifact_out = Some(parse_path(it.next(), "--artifact-out")?),
             "--chunks" => chunks = parse_usize(it.next(), "--chunks")?,
             "--chunk-bytes" => chunk_bytes = parse_usize(it.next(), "--chunk-bytes")?,
             "--needle-count" => needle_count = parse_usize(it.next(), "--needle-count")?,
@@ -151,9 +126,12 @@ fn parse_args() -> Result<Args> {
     let Some(out_dir) = out_dir else {
         bail!("--out-dir is required");
     };
-    let Some(source_fingerprint) = source_fingerprint else {
-        bail!("--source-fingerprint is required: an unattributed measurement is not evidence");
-    };
+    if chunks == 0 || chunk_bytes == 0 || samples == 0 {
+        bail!("--chunks, --chunk-bytes and --samples must be at least 1");
+    }
+    if needle_count > chunks {
+        bail!("--needle-count {needle_count} exceeds --chunks {chunks}");
+    }
     // Default the index beside the corpus, never inside it: `rg`/`grep` would
     // otherwise walk index files and the scan side of the comparison would grow
     // with index size instead of corpus size.
@@ -161,11 +139,11 @@ fn parse_args() -> Result<Args> {
     Ok(Args {
         out_dir,
         index_dir,
+        artifact_out,
         chunks,
         chunk_bytes,
-        needle_count: needle_count.min(chunks),
-        samples: samples.max(1),
-        source_fingerprint,
+        needle_count,
+        samples,
     })
 }
 
@@ -196,33 +174,6 @@ fn saturating_u32(n: usize) -> u32 {
 
 fn elapsed_ms(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
-}
-
-/// Canonical `sha256:`-prefixed digest over length-framed parts.
-///
-/// Mirrors the framing the contract crate uses for content digests, so the
-/// experiment's manifest/scope digests are reproducible for identical
-/// parameters instead of being fabricated label strings.
-fn framed_digest(domain: &str, parts: &[&[u8]]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(domain.as_bytes());
-    hasher.update([0]);
-    for part in parts {
-        hasher.update(part.len().to_string().as_bytes());
-        hasher.update([0]);
-        hasher.update(part);
-    }
-    let digest = hasher.finalize();
-    let mut encoded = String::with_capacity(
-        "sha256:"
-            .len()
-            .saturating_add(digest.len().saturating_mul(2)),
-    );
-    encoded.push_str("sha256:");
-    for byte in digest {
-        let _written = write!(&mut encoded, "{byte:02x}");
-    }
-    encoded
 }
 
 /// One deterministic corpus record of roughly `target_bytes`, optionally seeded
@@ -383,32 +334,8 @@ fn make_query() -> LqQuery {
     }
 }
 
-/// Recursive on-disk byte total under `root`; the index's physical footprint.
-fn directory_bytes(root: &Path) -> Result<u64> {
-    let mut total = 0_u64;
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(dir) = pending.pop() {
-        let entries =
-            std::fs::read_dir(&dir).map_err(|err| anyhow!("read dir {}: {err}", dir.display()))?;
-        for entry in entries {
-            let entry = entry.map_err(|err| anyhow!("read dir entry {}: {err}", dir.display()))?;
-            let metadata = entry
-                .metadata()
-                .map_err(|err| anyhow!("stat {}: {err}", entry.path().display()))?;
-            if metadata.is_dir() {
-                pending.push(entry.path());
-            } else {
-                total = total.saturating_add(metadata.len());
-            }
-        }
-    }
-    Ok(total)
-}
-
 struct QueryMeasurement {
-    p50_ms: f64,
-    p95_ms: f64,
-    p99_ms: f64,
+    latency: LatencySummary,
     hits: usize,
 }
 
@@ -425,17 +352,100 @@ fn measure_query(
         collected.push(elapsed_ms(started));
         hits = result.len();
     }
-    let (p50_ms, p95_ms, p99_ms) = percentiles(&collected);
-    Ok(QueryMeasurement {
-        p50_ms,
-        p95_ms,
-        p99_ms,
-        hits,
+    let latency = LatencySummary::from_samples_ms(&collected)
+        .ok_or_else(|| anyhow!("no query samples were collected"))?;
+    Ok(QueryMeasurement { latency, hits })
+}
+
+/// The experiment's artifact: the in-process index query as its one row,
+/// the build as its build phase, and the index bytes over the corpus bytes
+/// as its disk amplification.
+fn artifact(
+    args: &Args,
+    corpus: &Corpus,
+    git_head: GitHeadV1,
+    host: HostV1,
+    build_ms: f64,
+    index_bytes: u64,
+    measurement: &QueryMeasurement,
+) -> Result<BenchArtifactV1> {
+    let corpus_files: Vec<(String, String)> = corpus
+        .files
+        .iter()
+        .map(|file| (file.scan_file_name.clone(), file.body.clone()))
+        .collect();
+    let corpus_bytes = saturating_u64(corpus.bytes);
+    Ok(BenchArtifactV1 {
+        dimension: DIMENSION.to_string(),
+        mode: BenchMode::Warm,
+        concurrency: 1,
+        provenance: BenchProvenanceV1 {
+            git_head,
+            corpus_digest: corpus_digest(DIMENSION, &corpus_files),
+            config_digest: config_digest(
+                DIMENSION,
+                &[
+                    ("chunks", args.chunks.to_string()),
+                    ("chunk_bytes", args.chunk_bytes.to_string()),
+                    ("needle_count", args.needle_count.to_string()),
+                    ("samples", args.samples.to_string()),
+                    ("records_per_file", RECORDS_PER_FILE.to_string()),
+                    ("top_k", "64".to_string()),
+                ],
+            ),
+            // The experiment drives the lexical adapter alone: no embedding
+            // model is exercised.
+            model_revision: None,
+        },
+        host,
+        resources: ResourceUsageV1::observe_self()?,
+        phases: PhaseDurationsV1 {
+            build_ms: Some(build_ms),
+            update_ms: None,
+            gc_ms: None,
+        },
+        disk_amplification: Some(DiskAmplificationV1 {
+            bytes_written: index_bytes,
+            changed_bytes: corpus_bytes,
+        }),
+        rows: vec![BenchRowV1 {
+            scenario_id: format!("scan-vs-index.chunks{}.index_query", args.chunks),
+            route_family: RouteFamily::Lexical,
+            syntax: BenchSyntax::Native,
+            result_shape: if measurement.hits == 0 {
+                ResultShape::Empty
+            } else {
+                ResultShape::Candidates
+            },
+            latency: Some(measurement.latency),
+            qps: None,
+            error_count: 0,
+            timeout_count: 0,
+            result_count: Some(saturating_u64(measurement.hits)),
+            typed_error_code: None,
+            engine_touched: vec!["lexical-adapter-in-process".to_string()],
+            early_stop_reason: None,
+        }],
+        detail: serde_json::json!({
+            "needle": NEEDLE,
+            "chunks": saturating_u64(args.chunks),
+            "needle_count": saturating_u64(args.needle_count),
+            "corpus_bytes": corpus_bytes,
+            "files": saturating_u64(corpus.files.len()),
+            "index_bytes": index_bytes,
+            "index_build_ms": build_ms,
+            "index_query_samples": saturating_u64(args.samples),
+            "index_hits": saturating_u64(measurement.hits),
+            "scan_corpus_dir": args.out_dir.display().to_string(),
+        }),
     })
 }
 
-fn run() -> Result<serde_json::Value> {
+fn run() -> Result<BenchArtifactV1> {
     let args = parse_args()?;
+    // Provenance first: a run that cannot be attributed is not started.
+    let git_head = GitHeadV1::resolve(Path::new("."))?;
+    let host = HostV1::observe()?;
     let corpus = generate_corpus(&args)?;
     write_scan_corpus(&args.out_dir, &corpus)?;
 
@@ -453,24 +463,23 @@ fn run() -> Result<serde_json::Value> {
     let searcher = adapter.open(&repo, &revision, generation)?;
     let measurement = measure_query(searcher.as_ref(), args.samples)?;
 
-    Ok(serde_json::json!({
-        "source_fingerprint": args.source_fingerprint,
-        "chunks": saturating_u64(args.chunks),
-        "needle_count": saturating_u64(args.needle_count),
-        "corpus_bytes": saturating_u64(corpus.bytes),
-        "files": saturating_u64(corpus.files.len()),
-        "index_bytes": index_bytes,
-        "index_build_ms": build_ms,
-        "index_query_p50_ms": measurement.p50_ms,
-        "index_query_p95_ms": measurement.p95_ms,
-        "index_query_p99_ms": measurement.p99_ms,
-        "index_query_samples": saturating_u64(args.samples),
-        "index_hits": saturating_u64(measurement.hits),
-    }))
+    let artifact = artifact(
+        &args,
+        &corpus,
+        git_head,
+        host,
+        build_ms,
+        index_bytes,
+        &measurement,
+    )?;
+    if let Some(out) = &args.artifact_out {
+        artifact.write_to(out)?;
+    }
+    Ok(artifact)
 }
 
 fn main() -> ExitCode {
-    match run() {
+    match run().and_then(|artifact| artifact.to_json().map_err(anyhow::Error::from)) {
         Ok(value) => {
             emit_stdout(&value);
             ExitCode::SUCCESS

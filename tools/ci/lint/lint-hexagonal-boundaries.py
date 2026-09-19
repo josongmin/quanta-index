@@ -68,9 +68,7 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     # publishes the canonical `LqQuery` carrier in the contract crate, at
     # which point this crate will start depending on quanta-index-contract.
     # The DSL maps its `case:` option onto the text normalizer's mode.
-    "quanta-index-lq-norm": frozenset(
-        {"quanta-index-contract", "quanta-index-lq-text-normalizer"}
-    ),
+    "quanta-index-lq-norm": frozenset({"quanta-index-contract", "quanta-index-lq-text-normalizer"}),
     # The one Unicode text normalization contract (QI-BB-011): a leaf crate
     # shared by the DSL, the lexical adapter and the search plane.
     "quanta-index-lq-text-normalizer": frozenset(),
@@ -95,13 +93,17 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     "quanta-index-catalog": frozenset(
         {"quanta-index-contract", "quanta-index-core", "quanta-index-ipc"}
     ),
-    # Non-production benchmark driver. It may drive the lexical adapter
-    # directly, but must not depend on runtime/searchd orchestration.
+    # Non-production benchmark driver. It drives the lexical adapter
+    # directly (in-process, no daemon) and writes the one benchmark artifact
+    # envelope the harness owns (`BenchArtifactV1`, QI-BB-010), so it may
+    # depend on the harness crate for that model; it must not orchestrate
+    # the runtime itself.
     "quanta-index-scan-experiment": frozenset(
         {
             "quanta-index-contract",
             "quanta-index-core",
             "quanta-index-lexical",
+            "quanta-index-searchd-harness",
         }
     ),
     "quanta-index-searchd": frozenset(
@@ -130,13 +132,16 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
         }
     ),
     # Black-box runtime/quality harness. Its dependency fan-in is intentional:
-    # production crates must never depend back on this crate.
+    # production crates must never depend back on this crate. The lexical
+    # adapter is a direct dependency so the scale rail can time the sealed
+    # generation's adapter-only open/plan/execute beside the daemon's.
     "quanta-index-searchd-harness": frozenset(
         {
             "quanta-index-contract",
             "quanta-index-core",
             "quanta-index-embed",
             "quanta-index-ipc",
+            "quanta-index-lexical",
             "quanta-index-search-plane",
             "quanta-index-searchd",
             "quanta-index-searchd-runtime",

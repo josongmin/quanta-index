@@ -301,12 +301,12 @@ rust-bench-build:
 rust-bench-dsl-warm:
     mkdir -p artifacts/dsl-bench
     env CARGO_NET_OFFLINE=true {{cargo}} --lane bench-lane build -p quanta-index-searchd-harness --bin dsl_warm_matrix --profile bench --quiet --locked
-    env QUANTA_INDEX_BUILD_LANE=bench-lane QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS=1 DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/release/dsl_warm_matrix" && test -x "$BIN" && "$BIN" --out "$(pwd)/artifacts/dsl-bench/warm-matrix.json"'
+    env QUANTA_INDEX_BUILD_LANE=bench-lane QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS=1 bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/release/dsl_warm_matrix" && test -x "$BIN" && "$BIN" --out "$(pwd)/artifacts/dsl-bench/warm-matrix.json"'
 
 # Exploratory criterion view for warm scenarios. Not gate authority.
 rust-bench-dsl-warm-criterion:
     mkdir -p artifacts/dsl-bench
-    env DSL_BENCH_WARM_OUT="$(pwd)/artifacts/dsl-bench/warm-matrix.criterion.json" DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" \
+    env DSL_BENCH_WARM_OUT="$(pwd)/artifacts/dsl-bench/warm-matrix.criterion.json" \
       {{cargo}} --lane bench-lane bench -p quanta-index-searchd-runtime --bench dsl_query_matrix --all-features --locked
 
 rust-bench-dsl-cold samples="20":
@@ -346,7 +346,7 @@ rust-verify-quality-relevance:
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib relevance:: --all-features --locked -- --nocapture
     mkdir -p artifacts/search-quality/relevance/latest
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin relevance_matrix --all-features --locked
-    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" QUANTA_QUALITY_CAPTURE_DATE="$(date -u +%Y-%m-%d)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/relevance_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/relevance/latest"'
+    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane QUANTA_QUALITY_CAPTURE_DATE="$(date -u +%Y-%m-%d)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/relevance_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/relevance/latest"'
 
 # Local semantic A/B capture. Advisory only: compares deterministic Hash against
 # env-resolved OpenAI on the semantic judged fixture and writes delta artifacts
@@ -361,7 +361,7 @@ rust-capture-quality-relevance-openai-ab:
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib relevance:: --all-features --locked -- --nocapture
     mkdir -p artifacts/search-quality/relevance/openai-ab/latest
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin relevance_openai_ab --all-features --locked
-    env QUANTA_INDEX_EMBEDDER=openai QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/relevance_openai_ab" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/relevance/openai-ab/latest"'
+    env QUANTA_INDEX_EMBEDDER=openai QUANTA_INDEX_BUILD_LANE=test-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/relevance_openai_ab" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/relevance/openai-ab/latest"'
 
 # Ambiguity / repairability rail (J7Q-06). Blocking dimension: ambiguity.
 # Proves: typed repair-payload invariants — repairable bridge codes carry
@@ -373,7 +373,7 @@ rust-verify-quality-ambiguity:
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib ambiguity:: --all-features --locked -- --nocapture
     mkdir -p artifacts/search-quality/ambiguity/latest
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin ambiguity_matrix --all-features --locked
-    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/ambiguity_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/ambiguity/latest"'
+    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/ambiguity_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/ambiguity/latest"'
 
 # Snippet quality rail (J7Q-02). Blocking dimension: snippet.
 # Proves: pure window-oracle unit tests + adversarial gate tests (the gate can go
@@ -386,7 +386,7 @@ rust-verify-quality-snippet:
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib snippet:: --all-features --locked -- --nocapture
     mkdir -p artifacts/search-quality/snippet/latest
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin snippet_matrix --all-features --locked
-    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/snippet_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/snippet/latest"'
+    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/snippet_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/snippet/latest"'
 
 # Scale-tier rail (J7Q-03). Blocking dimension: scale.
 # Proves: deterministic seeded-corpus generator + tier-manifest invariants, then
@@ -400,7 +400,7 @@ rust-verify-quality-scale:
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib scale:: --all-features --locked -- --nocapture
     mkdir -p artifacts/search-quality/scale/latest
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin scale_matrix --all-features --locked
-    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/scale_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/scale/latest"'
+    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/scale_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/scale/latest"'
 
 # Latency-tail rail (J7Q-04). Blocking dimension: tail (correctness-gated).
 # Proves: route-aware p50/p95/p99 budget manifest + percentile invariants, then
@@ -414,7 +414,22 @@ rust-verify-quality-tail:
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib tail:: --all-features --locked -- --nocapture
     mkdir -p artifacts/search-quality/tail/latest
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin tail_matrix --all-features --locked
-    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/tail_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/tail/latest"'
+    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/tail_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/tail/latest"'
+
+# Concurrency rail (QI-BB-010 #4). Blocking signal: every request answered,
+# no timeouts; latency advisory on this host.
+# Proves: the concurrency module's tally/row invariants, then serves one sealed
+# generation of the seeded medium corpus and runs 1/8/32 clients over the mixed
+# lexical/semantic/hybrid/count route set with a slow page-maximum client mixed
+# in above one client, writing one provenanced BenchArtifactV1 per client count
+# (p50/p95/p99, QPS, error/timeout counts, head-of-line ratio). Small on this
+# host by default (`requests` per client); the Linux perf runner raises it.
+# Artifacts: artifacts/search-quality/concurrency/latest/summary-c{1,8,32}.json
+rust-verify-quality-concurrency requests="16":
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib concurrency:: --all-features --locked -- --nocapture
+    mkdir -p artifacts/search-quality/concurrency/latest
+    {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin concurrency_matrix --all-features --locked
+    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/concurrency_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/concurrency/latest" --requests-per-client {{requests}}'
 
 # Operator-ergonomics rail (J7Q-05). Blocking dimension: ops.
 # Proves: read-only operator-diagnosis surfaces are machine-readable and preserve
@@ -428,7 +443,7 @@ rust-verify-quality-ops:
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib ops:: --all-features --locked -- --nocapture
     mkdir -p artifacts/search-quality/ops/latest
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin ops_matrix --all-features --locked
-    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/ops_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/ops/latest"'
+    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/ops_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/ops/latest"'
 
 # UI/UX contract rail (J7Q-07). Blocking dimension: ui.
 # Proves: the typed `LexicalCandidate::snippet_hit_offset` highlight anchor is
@@ -441,7 +456,7 @@ rust-verify-quality-ui:
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib ui:: --all-features --locked -- --nocapture
     mkdir -p artifacts/search-quality/ui/latest
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin ui_matrix --all-features --locked
-    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/ui_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/ui/latest"'
+    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/ui_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/ui/latest"'
 
 # Aggregate quality gate (J7Q-08). Orchestrates the LIVE per-dimension rails
 # (relevance, ambiguity, snippet, scale, tail, ops, ui) and records an
@@ -519,6 +534,12 @@ rust-ignored-test-policy:
 rust-wire-inventory:
     python3 tools/ci/lint/check-wire-inventory.py
 
+# Stale-artifact gate (QI-BB-010, findings §9): every benchmark/relevance
+# artifact on disk must be a schema-2 BenchArtifactV1 whose git_head is the
+# checkout's HEAD (baselines: a full head). Absence passes; staleness fails.
+rust-bench-artifacts:
+    python3 tools/ci/lint/check-bench-artifacts.py
+
 rust-cargo-modules:
     python3 tools/ci/lint/check-cargo-modules-snapshot.py
 
@@ -566,6 +587,7 @@ rust-policy:
     @just rust-test-authority
     @just rust-ignored-test-policy
     @just rust-wire-inventory
+    @just rust-bench-artifacts
     @just rust-deny
 
 verify-rust:

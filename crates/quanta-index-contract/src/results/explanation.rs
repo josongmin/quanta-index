@@ -23,6 +23,30 @@ use serde::{
 /// `contribution` is producer-supplied (ranker-side) rather than recomputed
 /// here; the ranker is the authority for the final number. This matches the
 /// "no heuristic authority" rule in `CLAUDE.md`.
+///
+/// # Composition rule (QI-BB-022)
+///
+/// Rows are grouped by the namespace of `signal_name`, and each namespace
+/// carries one unit:
+///
+/// - `lexical.<engine>` — the lexical lane's score in the engine's units
+///   (BM25 for `lexical.bm25`): `signal_value` is the engine score,
+///   `weight` the plan's boost factor, `contribution` the emitted lexical
+///   score. A lexical explanation has exactly this row when the plan
+///   matches the candidate, and its `contribution` is the emitted score.
+/// - `dense.cosine` — the dense lane's score, a cosine similarity in
+///   `[-1, 1]` re-derived from the candidate's stored vector: `weight` is
+///   `1.0` and `contribution` equals `signal_value`.
+/// - `hybrid.rrf.<lane>` — one row per lane whose re-run ranked the
+///   candidate, carrying that lane's reciprocal-rank term
+///   `1 / (k + rank)` (dimensionless): `signal_value` is `1.0` (the lane
+///   saw it), `weight` and `contribution` are the term. The sum of the
+///   `hybrid.rrf.*` rows is the fused RRF score the hybrid route ranks by,
+///   to within `f32` rounding of each term.
+///
+/// Rows of different namespaces are never summed together: a lane score
+/// row and an RRF row are in different units. A hybrid explanation's
+/// fused score is `Σ hybrid.rrf.*`, not the sum of every row.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExplanationRow {
     pub signal_name: Box<str>,

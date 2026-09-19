@@ -45,7 +45,7 @@ pub use quanta_index_ipc::{IngestBatchBodyV1, canonical_batch_digest_v1, stamp_b
 pub use quarantine::QuarantineNamespace;
 pub use repomap::RepoMapNamespace;
 pub use runtime::{DirtyBatch, DirtyBatchMutation, RuntimeNamespace, RuntimeQueryBuilder};
-pub use search::{HybridSeedQueryBuilder, SearchNamespace};
+pub use search::{HybridQueryBuilder, HybridSeedQueryBuilder, SearchNamespace};
 pub use semantic::{SemanticNamespace, SemanticQueryBuilder};
 pub use structural::{StructuralBatch, StructuralNamespace, StructuralQueryBuilder};
 pub use symbol::{SymbolNamespace, SymbolQueryBuilder};
@@ -65,10 +65,10 @@ pub use quanta_index_contract::{
     ExactRepoRelativePathV1, ExplainCandidateV1, GenerationPin, GenerationSelector,
     GenerationSnapshot, GenerationStatusReport, HistoryCursor, HistoryCursorOrderV1,
     HistoryOrderV1, HistoryScoreV1, HybridCandidateV1, HybridLaneContributionV1, HybridLaneV1,
-    HybridSeedQueryRequest, HybridSeedQueryResponse, IngestOperationKindV1, LexicalCandidate,
-    ManifestGeneration, MetricBucketV1, MetricCounterV1, MetricGaugeV1, MetricHistogramV1,
-    MetricsDiagnosticsV1, MetricsSnapshotV1, OwnerDocKind, QuarantineDiscardAck,
-    QuarantineDiscardOutcomeDtoV1, QuarantineInventoryV1, QuarantineTargetV1,
+    HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest, HybridSeedQueryResponse,
+    IngestOperationKindV1, LexicalCandidate, ManifestGeneration, MetricBucketV1, MetricCounterV1,
+    MetricGaugeV1, MetricHistogramV1, MetricsDiagnosticsV1, MetricsSnapshotV1, OwnerDocKind,
+    QuarantineDiscardAck, QuarantineDiscardOutcomeDtoV1, QuarantineInventoryV1, QuarantineTargetV1,
     QuarantinedGenerationEntryV1, QuarantinedRepoMapFileEntryV1, RepoId,
     RepoMapActivateGenerationRequest, RepoMapCallEdge, RepoMapChunkNode, RepoMapContainsEdge,
     RepoMapDependsOnEdge, RepoMapEdge, RepoMapFileNode, RepoMapGraphCoverage, RepoMapImportEdge,

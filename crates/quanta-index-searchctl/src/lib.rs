@@ -12,11 +12,11 @@ use std::process::ExitCode;
 
 use quanta_index_contract::{
     AuxEpochV1, EarlyStopReason, EngineTouched, ExplainCandidateV1, GenerationPin, HistoryCursor,
-    HistoryOrderV1, HistoryQueryRequest, HybridCandidateV1, HybridQueryResponse,
-    HybridSeedQueryRequest, HybridSeedQueryResponse, LexicalCandidate, ManifestGeneration,
-    PlannerTraceEntry, QueryConstraintSetV1, QueryErrorRepair, QueryResultWindowV1, RepoId,
-    RepoMapDocType, RepoMapFocusSubjectDto, RepoMapQueryRequest, RevisionId,
-    RuntimeMetadataCursorV1, RuntimeMetadataQueryRequest, SearchExplanation,
+    HistoryOrderV1, HistoryQueryRequest, HybridCandidateV1, HybridQueryRequest,
+    HybridQueryResponse, HybridSeedQueryRequest, HybridSeedQueryResponse, LexicalCandidate,
+    ManifestGeneration, PlannerTraceEntry, QueryConstraintSetV1, QueryErrorRepair,
+    QueryResultWindowV1, RepoId, RepoMapDocType, RepoMapFocusSubjectDto, RepoMapQueryRequest,
+    RevisionId, RuntimeMetadataCursorV1, RuntimeMetadataQueryRequest, SearchExplanation,
     SearchPlaneHistoryQueryResponse, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRuntimeMetadataQueryResponse,
     SearchPlaneStructuralQueryResponse, SemanticQueryRequest, StructuralCursorV1,
@@ -119,6 +119,7 @@ where
         query_request @ (CliRequest::Lexical(_)
         | CliRequest::Symbol(_)
         | CliRequest::Semantic(_)
+        | CliRequest::Hybrid(_)
         | CliRequest::HybridSeed(_)
         | CliRequest::Explain { .. }
         | CliRequest::RepoMap(_)
@@ -180,6 +181,7 @@ enum CommandKind {
     Lexical,
     Symbol,
     Semantic,
+    Hybrid,
     HybridSeed,
     Explain,
     RepoMap,
@@ -250,11 +252,15 @@ enum CliRequest {
     Lexical(TextQueryRequest),
     Symbol(SymbolQueryRequest),
     Semantic(SemanticQueryRequest),
+    /// QI-BB-018: two independent lanes fused by RRF.
+    Hybrid(HybridQueryRequest),
     HybridSeed(HybridSeedQueryRequest),
     Explain {
         generation: GenerationPin,
         candidate: ExplainCandidateV1,
         text_query: Option<TextQueryRequest>,
+        /// QI-BB-022: the dense query a hybrid row is re-derived under.
+        semantic_query_text: Option<String>,
     },
     RepoMap(RepoMapQueryRequest),
     RuntimeMetadata(RuntimeMetadataQueryRequest),
@@ -311,12 +317,7 @@ impl ParsedCommand {
                 CommandKind::Semantic,
                 parse_semantic(&mut common, &mut rest)?,
             ),
-            "hybrid" => {
-                return Err(CliError::usage(
-                    "subcommand `hybrid` was retired; use `hybrid-seed` or the Semantica hybrid rerank surface"
-                        .to_string(),
-                ));
-            }
+            "hybrid" => (CommandKind::Hybrid, parse_hybrid(&mut common, &mut rest)?),
             "hybrid-seed" => (
                 CommandKind::HybridSeed,
                 parse_hybrid_seed(&mut common, &mut rest)?,
@@ -346,7 +347,7 @@ impl ParsedCommand {
             ),
             other => {
                 return Err(CliError::usage(format!(
-                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid-seed|explain|repomap|runtime-metadata|history|structural|readiness|doctor|metrics|quarantine"
+                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid|hybrid-seed|explain|repomap|runtime-metadata|history|structural|readiness|doctor|metrics|quarantine"
                 )));
             }
         };
@@ -922,6 +923,64 @@ fn parse_semantic(
     }))
 }
 
+/// `hybrid` (QI-BB-018): the lexical lane's query and syntax, the dense
+/// lane's text, and the fused `top_k`.
+///
+/// The two lanes run independently over the pinned generation and their
+/// union is fused by RRF; a document with no lexical overlap can enter the
+/// page on dense relevance alone.
+fn parse_hybrid(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
+    let mut generation_args = PinnedGenerationArgs::default();
+    let mut query_text: Option<String> = None;
+    let mut syntax: Option<TextQuerySyntax> = None;
+    let mut semantic_query_text: Option<String> = None;
+    let mut top_k: Option<u32> = None;
+    parse_query_command_flags(
+        common,
+        &mut generation_args,
+        rest,
+        "hybrid",
+        |current, rest| match current {
+            "--query-text" => {
+                query_text = Some(take_value(rest, "--query-text")?);
+                Ok(true)
+            }
+            "--syntax" => {
+                syntax = Some(parse_syntax(&take_value(rest, "--syntax")?)?);
+                Ok(true)
+            }
+            "--semantic-query-text" => {
+                semantic_query_text = Some(take_value(rest, "--semantic-query-text")?);
+                Ok(true)
+            }
+            "--top-k" => {
+                top_k = Some(parse_u32_flag(rest, "--top-k")?);
+                Ok(true)
+            }
+            _ => Ok(false),
+        },
+    )?;
+    let generation = generation_args.into_generation_pin()?;
+    let top_k = top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?;
+    let text_query = TextQueryRequest {
+        syntax: syntax.ok_or_else(|| CliError::usage("missing --syntax".to_string()))?,
+        query_text: query_text
+            .ok_or_else(|| CliError::usage("missing --query-text".to_string()))?,
+        constraints: QueryConstraintSetV1::unconstrained(),
+        generation: Some(generation.clone()),
+        generation_selector: None,
+        top_k,
+    };
+    Ok(CliRequest::Hybrid(HybridQueryRequest {
+        text_query,
+        semantic_query_text: semantic_query_text
+            .ok_or_else(|| CliError::usage("missing --semantic-query-text".to_string()))?,
+        generation: Some(generation),
+        generation_selector: None,
+        top_k,
+    }))
+}
+
 fn parse_hybrid_seed(
     common: &mut CommonOptions,
     rest: &mut VecDeque<String>,
@@ -985,6 +1044,8 @@ fn parse_explain(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
     let mut hybrid_candidate_json: Option<String> = None;
     let mut syntax: Option<TextQuerySyntax> = None;
     let mut query_text: Option<String> = None;
+    let mut semantic_query_text: Option<String> = None;
+    let mut top_k: Option<u32> = None;
     parse_query_command_flags(
         common,
         &mut generation_args,
@@ -1005,6 +1066,14 @@ fn parse_explain(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
             }
             "--query-text" => {
                 query_text = Some(take_value(rest, "--query-text")?);
+                Ok(true)
+            }
+            "--semantic-query-text" => {
+                semantic_query_text = Some(take_value(rest, "--semantic-query-text")?);
+                Ok(true)
+            }
+            "--top-k" => {
+                top_k = Some(parse_u32_flag(rest, "--top-k")?);
                 Ok(true)
             }
             _ => Ok(false),
@@ -1029,6 +1098,26 @@ fn parse_explain(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
     };
     // `--syntax` and `--query-text` name the query the candidate came from;
     // both or neither, since a query without its syntax cannot be lowered.
+    // A lexical explain does not page, so its `top_k` is the smallest
+    // accepted value; a hybrid explain re-runs the lanes at the fused
+    // `top_k` the hybrid ran with, which the caller must name.
+    let is_hybrid = matches!(candidate, ExplainCandidateV1::Hybrid(_));
+    let text_query_top_k = match (is_hybrid, top_k) {
+        (true, Some(top_k)) => top_k,
+        (true, None) => {
+            return Err(CliError::usage(
+                "--hybrid-candidate-json re-runs both lanes at the hybrid's fused top_k; pass --top-k"
+                    .to_string(),
+            ));
+        }
+        (false, None) => 1,
+        (false, Some(_)) => {
+            return Err(CliError::usage(
+                "--top-k applies to --hybrid-candidate-json only; a lexical explain does not page"
+                    .to_string(),
+            ));
+        }
+    };
     let text_query = match (syntax, query_text) {
         (Some(syntax), Some(query_text)) => Some(TextQueryRequest {
             syntax,
@@ -1036,7 +1125,7 @@ fn parse_explain(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
             constraints: QueryConstraintSetV1::unconstrained(),
             generation: Some(generation.clone()),
             generation_selector: None,
-            top_k: 1,
+            top_k: text_query_top_k,
         }),
         (None, None) => None,
         (Some(_), None) => {
@@ -1050,16 +1139,32 @@ fn parse_explain(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
             ));
         }
     };
-    if matches!(candidate, ExplainCandidateV1::Hybrid(_)) && text_query.is_none() {
-        return Err(CliError::usage(
-            "--hybrid-candidate-json explains under the query it was fused for; pass --syntax and --query-text"
-                .to_string(),
-        ));
+    match (is_hybrid, &text_query, &semantic_query_text) {
+        (true, None, _) => {
+            return Err(CliError::usage(
+                "--hybrid-candidate-json explains under the query it was fused for; pass --syntax and --query-text"
+                    .to_string(),
+            ));
+        }
+        (true, Some(_), None) => {
+            return Err(CliError::usage(
+                "--hybrid-candidate-json re-derives the dense lane under the query it was fused for; pass --semantic-query-text"
+                    .to_string(),
+            ));
+        }
+        (false, _, Some(_)) => {
+            return Err(CliError::usage(
+                "--semantic-query-text applies to --hybrid-candidate-json only; a lexical candidate has no dense lane"
+                    .to_string(),
+            ));
+        }
+        (true, Some(_), Some(_)) | (false, _, None) => {}
     }
     Ok(CliRequest::Explain {
         generation,
         candidate,
         text_query,
+        semantic_query_text,
     })
 }
 
@@ -1162,6 +1267,12 @@ fn dispatch_query_request(
                 .query_request(semantic)
                 .map_err(map_sdk_error)?,
         ),
+        CliRequest::Hybrid(hybrid) => SearchPlaneQueryIpcResponse::Hybrid(
+            client
+                .search()
+                .hybrid_request(hybrid)
+                .map_err(map_sdk_error)?,
+        ),
         CliRequest::HybridSeed(hybrid) => SearchPlaneQueryIpcResponse::HybridSeed(
             client
                 .search()
@@ -1181,17 +1292,32 @@ fn dispatch_query_request(
             generation,
             candidate,
             text_query,
+            semantic_query_text,
         } => SearchPlaneQueryIpcResponse::Explain(
-            match (candidate, text_query) {
-                (candidate, Some(text_query)) => client
+            match (candidate, text_query, semantic_query_text) {
+                (ExplainCandidateV1::Lexical(candidate), Some(text_query), None) => client
                     .search()
                     .explain_under_query(generation, candidate, text_query),
-                (ExplainCandidateV1::Lexical(candidate), None) => {
+                (ExplainCandidateV1::Lexical(candidate), None, None) => {
                     client.search().explain(generation, candidate)
                 }
-                (ExplainCandidateV1::Hybrid(_), None) => {
+                (ExplainCandidateV1::Hybrid(row), Some(text_query), Some(semantic_query_text)) => {
+                    client.search().explain_hybrid_under_queries(
+                        generation,
+                        row,
+                        text_query,
+                        semantic_query_text,
+                    )
+                }
+                (ExplainCandidateV1::Hybrid(_), _, _) => {
                     return Err(CliError::usage(
-                        "a hybrid candidate explains under its query; pass --syntax and --query-text"
+                        "a hybrid candidate explains under both its queries; pass --syntax, --query-text and --semantic-query-text"
+                            .to_string(),
+                    ));
+                }
+                (ExplainCandidateV1::Lexical(_), _, Some(_)) => {
+                    return Err(CliError::usage(
+                        "a lexical candidate has no dense lane; drop --semantic-query-text"
                             .to_string(),
                     ));
                 }
@@ -1341,6 +1467,7 @@ fn validate_response_kind(
         (CommandKind::Lexical, SearchPlaneQueryIpcResponse::Text(_))
         | (CommandKind::Symbol, SearchPlaneQueryIpcResponse::Symbol(_))
         | (CommandKind::Semantic, SearchPlaneQueryIpcResponse::Semantic(_))
+        | (CommandKind::Hybrid, SearchPlaneQueryIpcResponse::Hybrid(_))
         | (CommandKind::HybridSeed, SearchPlaneQueryIpcResponse::HybridSeed(_))
         | (CommandKind::Explain, SearchPlaneQueryIpcResponse::Explain(_))
         | (CommandKind::RepoMap, SearchPlaneQueryIpcResponse::RepoMapQuery(_))
@@ -2450,6 +2577,7 @@ fn command_kind_name(kind: CommandKind) -> &'static str {
         CommandKind::Lexical => "lexical",
         CommandKind::Symbol => "symbol",
         CommandKind::Semantic => "semantic",
+        CommandKind::Hybrid => "hybrid",
         CommandKind::HybridSeed => "hybrid-seed",
         CommandKind::Explain => "explain",
         CommandKind::RepoMap => "repomap",
@@ -2561,8 +2689,10 @@ Read-only subcommands:
   lexical          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
   symbol           --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
   semantic         --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N [--scope-query TEXT --scope-syntax native|sourcegraph --scope-top-k N]
+  hybrid           --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --semantic-query-text TEXT --top-k N
   hybrid-seed      --repo-id ID --revision-id REV --manifest-generation N --lexical-query TEXT --lexical-syntax native|sourcegraph --semantic-query TEXT --top-k N
-  explain          --repo-id ID --revision-id REV --manifest-generation N (--candidate-json PATH|- | --hybrid-candidate-json PATH|-) [--syntax native|sourcegraph --query-text TEXT]
+  explain          --repo-id ID --revision-id REV --manifest-generation N --candidate-json PATH|- [--syntax native|sourcegraph --query-text TEXT]
+  explain          --repo-id ID --revision-id REV --manifest-generation N --hybrid-candidate-json PATH|- --syntax native|sourcegraph --query-text TEXT --semantic-query-text TEXT --top-k N
   repomap          --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N --token-budget N [--focus-subject subject_identity:subject_doc_type]
     history          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N --order recency|relevance, history          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-], runtime-metadata --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N, runtime-metadata --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-], structural       --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N, structural       --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-],
   readiness        --repo-id ID --revision-id REV
@@ -2571,6 +2701,24 @@ Read-only subcommands:
   quarantine       list
   quarantine       discard --track lexical|semantic --path PATH --reason CODE [--detail TEXT]
   quarantine       discard --repomap-file NAME --reason TEXT
+
+`hybrid` runs two independent, bounded lanes over the pinned generation — the
+lexical lane over `--query-text` and the dense lane over the embedded
+`--semantic-query-text` — and fuses their union by reciprocal rank fusion, so a
+document with no lexical overlap can enter the page on dense relevance alone.
+Each row carries its fused score and the rank and raw score every lane gave it.
+`semantic --scope-query` is the other shape: the dense lane is confined to the
+lexical universe the scope query matches (a lexical-scoped rerank), so a
+document the scope does not match can never enter its page.
+
+`explain --hybrid-candidate-json` re-derives a hybrid row against the index
+under both queries it was fused for: the lexical lane through the engine's own
+score trace, the dense lane by scoring the row's stored vector against the
+embedded `--semantic-query-text`, and the fusion by re-running both lanes at
+`--top-k` (the hybrid's fused top_k). The trace reports
+`explain.score_reconciled`, `explain.dense_reconciled` and
+`explain.fused_reconciled`; a row whose carried provenance the index does not
+reproduce fails on that axis.
 
 `doctor` is the composite read-only diagnosis: it fuses the activation-catalog
 listing with per-track serve-time resolution and reports a machine-readable
@@ -2814,8 +2962,10 @@ mod tests {
         assert!(error.message.contains("--semantic-vector-handle"));
     }
 
+    // QI-BB-018: the true-hybrid route is reachable from the operator
+    // surface, with the two lanes' queries and the fused top_k.
     #[test]
-    fn rejects_retired_hybrid_subcommand() {
+    fn parses_hybrid_subcommand_into_a_hybrid_request() {
         let parsed = ParsedCommand::parse([
             "hybrid",
             "--repo-id",
@@ -2824,21 +2974,99 @@ mod tests {
             "rev",
             "--manifest-generation",
             "7",
-            "--lexical-query",
+            "--syntax",
+            "sourcegraph",
+            "--query-text",
             "needle",
-            "--lexical-syntax",
-            "native",
-            "--semantic-query",
-            "1 0 2.5",
+            "--semantic-query-text",
+            "where the needle is kept",
             "--top-k",
             "5",
         ]);
-        assert!(parsed.is_err());
-        let Err(error) = parsed else {
+        assert!(parsed.is_ok(), "{parsed:?}");
+        let Ok(parsed) = parsed else {
             return;
         };
-        assert_eq!(error.exit_code, EXIT_USAGE);
-        assert!(error.message.contains("retired"));
+        assert_eq!(parsed.kind, CommandKind::Hybrid);
+        let CliRequest::Hybrid(request) = parsed.request else {
+            panic!("expected hybrid payload");
+        };
+        assert_eq!(request.text_query.syntax, TextQuerySyntax::Sourcegraph);
+        assert_eq!(request.text_query.query_text, "needle");
+        assert_eq!(request.semantic_query_text, "where the needle is kept");
+        assert_eq!(request.top_k, 5);
+        assert_eq!(request.text_query.top_k, 5);
+        assert_eq!(
+            request.generation,
+            Some(GenerationPin::new(
+                RepoId::new("repo"),
+                RevisionId::new("rev"),
+                ManifestGeneration::new(7)
+            ))
+        );
+        for (missing, flag) in [
+            (
+                vec![
+                    "--syntax",
+                    "native",
+                    "--query-text",
+                    "needle",
+                    "--top-k",
+                    "5",
+                ],
+                "--semantic-query-text",
+            ),
+            (
+                vec![
+                    "--syntax",
+                    "native",
+                    "--semantic-query-text",
+                    "x",
+                    "--top-k",
+                    "5",
+                ],
+                "--query-text",
+            ),
+            (
+                vec![
+                    "--query-text",
+                    "needle",
+                    "--semantic-query-text",
+                    "x",
+                    "--top-k",
+                    "5",
+                ],
+                "--syntax",
+            ),
+            (
+                vec![
+                    "--syntax",
+                    "native",
+                    "--query-text",
+                    "needle",
+                    "--semantic-query-text",
+                    "x",
+                ],
+                "--top-k",
+            ),
+        ] {
+            let mut args = vec![
+                "hybrid",
+                "--repo-id",
+                "repo",
+                "--revision-id",
+                "rev",
+                "--manifest-generation",
+                "7",
+            ];
+            args.extend(missing);
+            let refused = ParsedCommand::parse(args);
+            let Err(error) = refused else {
+                panic!("hybrid without {flag} must be refused");
+            };
+            assert_eq!(error.exit_code, EXIT_USAGE);
+            assert!(error.message.contains(flag), "{}", error.message);
+        }
     }
 
     #[test]
@@ -4201,6 +4429,10 @@ mod tests {
             "native",
             "--query-text",
             "needle",
+            "--semantic-query-text",
+            "where the needle is kept",
+            "--top-k",
+            "10",
         ]);
         assert!(parsed.is_ok(), "{parsed:?}");
         let Ok(parsed) = parsed else {
@@ -4209,6 +4441,7 @@ mod tests {
         let CliRequest::Explain {
             candidate,
             text_query,
+            semantic_query_text,
             ..
         } = parsed.request
         else {
@@ -4218,26 +4451,66 @@ mod tests {
             candidate,
             ExplainCandidateV1::Hybrid(sample_hybrid_candidate())
         );
+        let Some(text_query) = text_query else {
+            panic!("a hybrid explain carries its text query");
+        };
+        assert_eq!(text_query.query_text, "needle");
         assert_eq!(
-            text_query.map(|query| query.query_text),
-            Some("needle".to_string())
+            text_query.top_k, 10,
+            "the fused top_k sizes the re-run lanes"
+        );
+        assert_eq!(
+            semantic_query_text.as_deref(),
+            Some("where the needle is kept")
         );
 
-        let unqueried = ParsedCommand::parse([
-            "explain",
-            "--repo-id",
-            "repo",
-            "--revision-id",
-            "rev",
-            "--manifest-generation",
-            "7",
-            "--hybrid-candidate-json",
-            path.as_str(),
-        ]);
-        assert!(unqueried.is_err());
-        if let Err(error) = unqueried {
+        // Each of the three hybrid requirements is refused by name.
+        for (dropped, flag) in [
+            (
+                vec!["--semantic-query-text", "x", "--top-k", "10"],
+                "--query-text",
+            ),
+            (
+                vec![
+                    "--syntax",
+                    "native",
+                    "--query-text",
+                    "needle",
+                    "--top-k",
+                    "10",
+                ],
+                "--semantic-query-text",
+            ),
+            (
+                vec![
+                    "--syntax",
+                    "native",
+                    "--query-text",
+                    "needle",
+                    "--semantic-query-text",
+                    "x",
+                ],
+                "--top-k",
+            ),
+        ] {
+            let mut args = vec![
+                "explain",
+                "--repo-id",
+                "repo",
+                "--revision-id",
+                "rev",
+                "--manifest-generation",
+                "7",
+                "--hybrid-candidate-json",
+                path.as_str(),
+            ];
+            args.extend(dropped);
+            let refused = ParsedCommand::parse(args);
+            let Err(error) = refused else {
+                panic!("a hybrid explain without {flag} must be refused");
+            };
             assert_eq!(error.exit_code, EXIT_USAGE);
-            assert!(error.message.contains("--query-text"), "{}", error.message);
+            assert!(error.message.contains(flag), "{}", error.message);
         }
 
         let both = ParsedCommand::parse([

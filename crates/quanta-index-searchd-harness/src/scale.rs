@@ -14,24 +14,44 @@
 //!   yields different output. That reproducibility is what lets a perf number be
 //!   attributed to a known corpus instead of a one-off random draw;
 //! - a **measured run of the SMALL tier only** — `measure_small_tier` boots one
-//!   [`E2eRuntime`], ingests the seeded small corpus, seals, activates, and runs
-//!   one query, capturing ingest / open / query wall-times into a
-//!   [`TierMeasurement`]. Medium/large/xlarge are emitted as
-//!   `declared-advisory`: the canonical Linux perf runner owns the *blocking*
-//!   timing; a macbook number here would be advisory noise, so the rail records
-//!   the declared shape without fabricating a latency for those tiers.
+//!   [`E2eRuntime`], ingests the seeded small corpus, seals, activates, queries
+//!   cold and warm across the socket, opens the same sealed generation through
+//!   the lexical adapter in-process, then applies a one-file delta and
+//!   reclaims the predecessor — capturing every phase on its own into a
+//!   [`TierMeasurement`] (QI-BB-010 #2): build, activation, the daemon's own
+//!   cold-open and route timings from its metrics scrape, the adapter-only
+//!   open / plan / execute, the delta update and the reclaim, each against
+//!   the state root's byte count where bytes are what is measured.
+//!   Medium/large/xlarge are emitted as `declared-advisory`: the canonical
+//!   Linux perf runner owns the *blocking* timing; a number from a
+//!   contended host would be advisory noise, so the rail records the
+//!   declared shape without fabricating a latency for those tiers.
 //!
 //! Fail-closed posture: a query that the runtime rejects on the small tier is a
-//! rail error (typed error -> `Err`), never a zero-latency "pass".
+//! rail error (typed error -> `Err`), never a zero-latency "pass"; a phase the
+//! daemon did not record is a rail error, never a fabricated time.
 
 use std::path::Path;
 use std::time::Instant;
 
 use anyhow::Result as AnyResult;
-use quanta_index_contract::TextQuerySyntax;
+use quanta_index_contract::{
+    ManifestGeneration, MetricsSnapshotV1, QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax,
+};
+use quanta_index_core::{LexicalIndexOpenPort as _, RequestBudgetV1};
+use quanta_index_lexical::LexicalAdapter;
+use quanta_index_search_plane::lower_lexical_text_query;
 use serde_json::{Value, json};
 
+use crate::artifact::{
+    BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, BenchSyntax, DiskAmplificationV1,
+    GitHeadV1, HostV1, LatencySummary, PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily,
+    config_digest, corpus_digest, directory_bytes, model_revision_of, saturating_u64,
+};
 use crate::harness::E2eRuntime;
+
+/// The artifact dimension this rail writes.
+pub const DIMENSION: &str = "scale";
 
 /// Repo id used for every generated scale corpus.
 const SCALE_REPO: &str = "repo-scale";
@@ -310,32 +330,94 @@ fn generate_file(
 // Small-tier measurement (the only end-to-end timed tier here).
 // ---------------------------------------------------------------------------
 
-/// Captured wall-times for one measured tier run.
+/// Result cap and repetition of the warm and adapter-only query loops.
+const WARM_QUERY_SAMPLES: usize = 32;
+
+/// The daemon's own timing of the phases a query passes through, read from
+/// its metrics scrape as before/after deltas.
+///
+/// Every value is what the daemon measured of itself at whole-millisecond
+/// resolution (its histograms carry integer milliseconds), never a wall
+/// clock read across the socket.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "each field names the millisecond metric it was read from"
+)]
+pub struct DaemonPhaseTimingV1 {
+    /// `lq_snapshot_lexical_cold_open_ms`: the lexical generation's cold
+    /// open, which the first query after activation pays.
+    pub cold_open_ms: f64,
+    /// `lq_route_lexical_latency_ms` of the first query: open + plan +
+    /// execute inside the dispatcher.
+    pub first_route_ms: f64,
+    /// Mean `lq_route_lexical_latency_ms` over the warm queries: plan +
+    /// execute inside the dispatcher, no open.
+    pub warm_route_mean_ms: f64,
+}
+
+/// The same generation opened and queried in-process through the lexical
+/// adapter, beside the daemon: the adapter-only cost with no socket, no
+/// dispatcher and no read view.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "every phase is timed in milliseconds and the artifact names the unit"
+)]
+pub struct AdapterPhaseTimingV1 {
+    /// `LexicalAdapter::open` of the sealed generation.
+    pub open_ms: f64,
+    /// Median of lowering the text query to its plan (the same lowering the
+    /// dispatcher runs).
+    pub plan_ms: f64,
+    /// Median of `search_constrained` on the opened searcher: execution
+    /// alone.
+    pub execute_ms: f64,
+}
+
+/// One delta step: one file changed, ingested and sealed as a delta
+/// generation, then activated (which reclaims the predecessor under the
+/// rail's retention of one generation).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeltaMeasurementV1 {
+    /// Ingest of the one changed file through seal.
+    pub update_ms: f64,
+    /// Bytes of the changed file.
+    pub changed_bytes: u64,
+    /// Bytes the state root grew by during the delta build.
+    pub bytes_written: u64,
+    /// Activation of the delta generation, which retires and reclaims the
+    /// predecessor: the reclaim runs inside it, so this is the reclaim's
+    /// upper bound.
+    pub activation_with_reclaim_ms: f64,
+    /// Bytes the state root shrank by across that activation: the reclaimed
+    /// predecessor.
+    pub reclaimed_bytes: u64,
+}
+
+/// Captured measurements for one measured tier run.
 #[derive(Clone, Debug)]
 pub struct TierMeasurement {
     pub tier: ScaleTier,
     pub seed: u64,
     pub file_count: usize,
-    pub ingest_ms: f64,
-    pub open_ms: f64,
-    pub query_ms: f64,
+    /// Bytes of every generated file.
+    pub corpus_bytes: u64,
+    /// Ingest of every file through seal.
+    pub build_ms: f64,
+    /// Bytes the state root grew by during the full build.
+    pub build_bytes_written: u64,
+    /// Activation of the freshly sealed generation (no reclaim).
+    pub activation_ms: f64,
+    /// Wall time of the first query after activation, across the socket.
+    pub first_query_ms: f64,
+    /// Wall time of the warm queries after it, across the socket.
+    pub warm_query: LatencySummary,
+    pub daemon: DaemonPhaseTimingV1,
+    pub adapter: AdapterPhaseTimingV1,
+    pub delta: DeltaMeasurementV1,
     pub result_count: usize,
-}
-
-/// Lossless-in-practice `usize -> f64` for small corpus counts.
-///
-/// File and result counts in this rail are far below `2^53`, so the precision
-/// loss the workspace denies cannot occur; the localized `expect` documents that
-/// invariant instead of hiding it behind an `as` cast.
-#[cfg(test)]
-#[must_use]
-#[expect(
-    clippy::cast_precision_loss,
-    clippy::as_conversions,
-    reason = "scale corpus file/result counts are far below 2^53, so usize->f64 is exact on these values"
-)]
-fn usize_to_f64(n: usize) -> f64 {
-    n as f64
+    pub model_revision: Option<String>,
 }
 
 /// Convert an elapsed `Instant` span to milliseconds.
@@ -343,32 +425,58 @@ fn elapsed_ms(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
 }
 
-/// Boot, seed the SMALL tier, seal, activate, run one query — capturing
-/// ingest / open / query wall-times.
-///
-/// Fail-closed: a typed error on the measured query is a rail error, never a
-/// zero-latency pass over an empty result.
-pub fn measure_small_tier(seed: u64) -> AnyResult<TierMeasurement> {
-    let corpus = generate_corpus(ScaleTier::Small, seed);
-    let file_count = corpus.len();
+/// `count` and `sum` of one histogram in the daemon's scrape; a histogram
+/// the daemon has not emitted yet reads as zero of each.
+fn histogram_totals(snapshot: &MetricsSnapshotV1, name: &str) -> (u64, f64) {
+    snapshot
+        .histograms
+        .iter()
+        .find(|histogram| histogram.name == name)
+        .map_or((0, 0.0), |histogram| (histogram.count, histogram.sum))
+}
 
-    let mut rt = E2eRuntime::boot()?;
-
-    let ingest_started = Instant::now();
-    for (path, content) in &corpus {
-        rt.ingest_text(SCALE_REPO, path, content)?;
+/// The daemon's timing of a query window as the delta of its histograms
+/// between two scrapes, requiring exactly `expected_count` samples in it.
+fn histogram_window(
+    before: &MetricsSnapshotV1,
+    after: &MetricsSnapshotV1,
+    name: &str,
+    expected_count: u64,
+) -> AnyResult<f64> {
+    let (count_before, sum_before) = histogram_totals(before, name);
+    let (count_after, sum_after) = histogram_totals(after, name);
+    let observed = count_after.saturating_sub(count_before);
+    if observed != expected_count {
+        return Err(anyhow::anyhow!(
+            "scale: `{name}` recorded {observed} samples in the window, expected {expected_count}"
+        ));
     }
-    let _generation = rt.seal()?;
-    let ingest_ms = elapsed_ms(ingest_started);
+    Ok(sum_after - sum_before)
+}
 
-    let open_started = Instant::now();
-    rt.activate_last_sealed_generation()?;
-    let open_ms = elapsed_ms(open_started);
+fn median_ms(samples: &mut [f64]) -> AnyResult<f64> {
+    samples.sort_by(f64::total_cmp);
+    LatencySummary::from_samples_ms(samples)
+        .map(|summary| summary.p50_ms)
+        .ok_or_else(|| anyhow::anyhow!("scale: no samples to take a median of"))
+}
 
-    let query_started = Instant::now();
+/// The one query every timed loop issues, as the daemon receives it.
+fn scale_query() -> TextQueryRequest {
+    TextQueryRequest {
+        syntax: TextQuerySyntax::Native,
+        query_text: SCALE_QUERY_TOKEN.to_string(),
+        constraints: QueryConstraintSetV1::unconstrained(),
+        generation: None,
+        generation_selector: None,
+        top_k: SCALE_TOP_K,
+    }
+}
+
+/// Issue the scale query once across the socket and require a served,
+/// non-empty page.
+fn served_query(rt: &mut E2eRuntime) -> AnyResult<usize> {
     let result = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
-    let query_ms = elapsed_ms(query_started);
-
     if let Some(error) = result.typed_error {
         return Err(anyhow::anyhow!(
             "scale small-tier query returned typed error {}: {}",
@@ -376,26 +484,182 @@ pub fn measure_small_tier(seed: u64) -> AnyResult<TierMeasurement> {
             error.message
         ));
     }
-    let result_count = result.candidates.len();
-    if result_count == 0 {
+    if result.candidates.is_empty() {
         return Err(anyhow::anyhow!(
             "scale small-tier query returned an empty ordering; planted `{SCALE_QUERY_TOKEN}` was not retrievable"
         ));
     }
+    Ok(result.candidates.len())
+}
+
+/// Open the sealed generation the daemon serves through the lexical
+/// adapter in-process and time open, plan and execute on their own.
+fn measure_adapter_phases(rt: &E2eRuntime) -> AnyResult<AdapterPhaseTimingV1> {
+    let adapter = LexicalAdapter::with_state_root(rt.state_root().join("indexes/lexical"));
+    let sealed = ManifestGeneration::new(rt.current_generation().get().saturating_sub(1));
+    let open_started = Instant::now();
+    let searcher = adapter.open(&rt.repo(), &rt.revision(), sealed)?;
+    let open_ms = elapsed_ms(open_started);
+    let request = scale_query();
+    let mut plan_samples = Vec::with_capacity(WARM_QUERY_SAMPLES);
+    let mut query = None;
+    for _ in 0..WARM_QUERY_SAMPLES {
+        let started = Instant::now();
+        query = Some(lower_lexical_text_query(&request)?);
+        plan_samples.push(elapsed_ms(started));
+    }
+    let Some(query) = query else {
+        return Err(anyhow::anyhow!("scale: the plan loop produced no plan"));
+    };
+    let constraints = QueryConstraintSetV1::unconstrained();
+    let mut execute_samples = Vec::with_capacity(WARM_QUERY_SAMPLES);
+    for _ in 0..WARM_QUERY_SAMPLES {
+        let started = Instant::now();
+        let page = searcher.search_constrained(
+            &query,
+            &constraints,
+            SCALE_TOP_K,
+            &RequestBudgetV1::unbounded(),
+        )?;
+        execute_samples.push(elapsed_ms(started));
+        if page.candidates.is_empty() {
+            return Err(anyhow::anyhow!(
+                "scale: the adapter-only query returned an empty page"
+            ));
+        }
+    }
+    Ok(AdapterPhaseTimingV1 {
+        open_ms,
+        plan_ms: median_ms(&mut plan_samples)?,
+        execute_ms: median_ms(&mut execute_samples)?,
+    })
+}
+
+/// Change one file, ingest and seal it as a delta, activate (reclaiming the
+/// predecessor), and measure each step against the byte oracle.
+fn measure_delta(rt: &mut E2eRuntime, seed: u64) -> AnyResult<DeltaMeasurementV1> {
+    let corpus = generate_corpus(ScaleTier::Small, seed);
+    let Some((path, original)) = corpus.first() else {
+        return Err(anyhow::anyhow!("scale: the corpus has no file to change"));
+    };
+    let changed = format!("{original}// delta {SCALE_QUERY_TOKEN} touched\n");
+    let changed_bytes = u64::try_from(changed.len())?;
+    let before_build = directory_bytes(rt.state_root())?;
+    let update_started = Instant::now();
+    rt.ingest_text(SCALE_REPO, path, &changed)?;
+    let _generation = rt.seal()?;
+    let update_ms = elapsed_ms(update_started);
+    let after_build = directory_bytes(rt.state_root())?;
+    let activation_started = Instant::now();
+    rt.activate_last_sealed_generation()?;
+    let activation_with_reclaim_ms = elapsed_ms(activation_started);
+    let after_activation = directory_bytes(rt.state_root())?;
+    Ok(DeltaMeasurementV1 {
+        update_ms,
+        changed_bytes,
+        bytes_written: after_build.saturating_sub(before_build),
+        activation_with_reclaim_ms,
+        reclaimed_bytes: after_build.saturating_sub(after_activation),
+    })
+}
+
+/// Measure the SMALL tier phase by phase.
+///
+/// Boot, seed, seal, activate, query cold and warm, open the generation
+/// through the adapter beside the daemon, then apply a one-file delta and
+/// reclaim the predecessor — capturing each phase on its own.
+///
+/// Fail-closed: a typed error on any measured query is a rail error, never
+/// a zero-latency pass over an empty result; a daemon histogram that does
+/// not show the expected samples in a window is a rail error, never a
+/// fabricated phase time.
+pub fn measure_small_tier(seed: u64) -> AnyResult<TierMeasurement> {
+    let corpus = generate_corpus(ScaleTier::Small, seed);
+    let file_count = corpus.len();
+    let corpus_bytes = corpus
+        .iter()
+        .try_fold(0_u64, |total, (_, content)| -> AnyResult<u64> {
+            Ok(total.saturating_add(u64::try_from(content.len())?))
+        })?;
+
+    // Retain one generation so the delta's activation reclaims the base.
+    let mut rt = E2eRuntime::boot_with_history_max_generations(1)?;
+    let model_revision = model_revision_of(rt.embedder_profile());
+
+    let before_build = directory_bytes(rt.state_root())?;
+    let build_started = Instant::now();
+    for (path, content) in &corpus {
+        rt.ingest_text(SCALE_REPO, path, content)?;
+    }
+    let _generation = rt.seal()?;
+    let build_ms = elapsed_ms(build_started);
+    let build_bytes_written = directory_bytes(rt.state_root())?.saturating_sub(before_build);
+
+    let activation_started = Instant::now();
+    rt.activate_last_sealed_generation()?;
+    let activation_ms = elapsed_ms(activation_started);
+
+    let scrape_before_first = rt.metrics_snapshot()?;
+    let first_started = Instant::now();
+    let result_count = served_query(&mut rt)?;
+    let first_query_ms = elapsed_ms(first_started);
+    let scrape_after_first = rt.metrics_snapshot()?;
+    let cold_open_ms = histogram_window(
+        &scrape_before_first,
+        &scrape_after_first,
+        "lq_snapshot_lexical_cold_open_ms",
+        1,
+    )?;
+    let first_route_ms = histogram_window(
+        &scrape_before_first,
+        &scrape_after_first,
+        "lq_route_lexical_latency_ms",
+        1,
+    )?;
+
+    let mut warm_samples = Vec::with_capacity(WARM_QUERY_SAMPLES);
+    for _ in 0..WARM_QUERY_SAMPLES {
+        let started = Instant::now();
+        let _count = served_query(&mut rt)?;
+        warm_samples.push(elapsed_ms(started));
+    }
+    let scrape_after_warm = rt.metrics_snapshot()?;
+    let warm_route_total_ms = histogram_window(
+        &scrape_after_first,
+        &scrape_after_warm,
+        "lq_route_lexical_latency_ms",
+        u64::try_from(WARM_QUERY_SAMPLES)?,
+    )?;
+    let warm_query = LatencySummary::from_samples_ms(&warm_samples)
+        .ok_or_else(|| anyhow::anyhow!("scale: no warm samples"))?;
+
+    let adapter = measure_adapter_phases(&rt)?;
+    let delta = measure_delta(&mut rt, seed)?;
 
     Ok(TierMeasurement {
         tier: ScaleTier::Small,
         seed,
         file_count,
-        ingest_ms,
-        open_ms,
-        query_ms,
+        corpus_bytes,
+        build_ms,
+        build_bytes_written,
+        activation_ms,
+        first_query_ms,
+        warm_query,
+        daemon: DaemonPhaseTimingV1 {
+            cold_open_ms,
+            first_route_ms,
+            warm_route_mean_ms: warm_route_total_ms / f64::from(u32::try_from(WARM_QUERY_SAMPLES)?),
+        },
+        adapter,
+        delta,
         result_count,
+        model_revision,
     })
 }
 
 // ---------------------------------------------------------------------------
-// Artifact emission (manual json!, mirrors relevance/ambiguity rails).
+// Artifact emission (BenchArtifactV1; the tier manifest is a plain record).
 // ---------------------------------------------------------------------------
 
 fn tier_params_json(params: &TierParams) -> Value {
@@ -409,7 +673,7 @@ fn tier_params_json(params: &TierParams) -> Value {
         "total_files": params.total_files(),
         "measured_here": params.tier.is_measured_here(),
         "measurement_owner": if params.tier.is_measured_here() {
-            "macbook-advisory-and-linux-blocking"
+            "this-host-and-linux-blocking"
         } else {
             "linux-perf-runner-blocking"
         },
@@ -427,16 +691,44 @@ pub fn tier_manifest_json() -> Value {
     })
 }
 
+/// The measured tier as the artifact's detail: every phase on its own,
+/// named for what measured it.
 fn measurement_json(measurement: &TierMeasurement) -> Value {
     json!({
         "tier": measurement.tier.as_str(),
         "seed": measurement.seed,
         "file_count": measurement.file_count,
-        "ingest_ms": measurement.ingest_ms,
-        "open_ms": measurement.open_ms,
-        "query_ms": measurement.query_ms,
-        "result_count": measurement.result_count,
+        "corpus_bytes": measurement.corpus_bytes,
         "status": "measured",
+        "build": {
+            "build_ms": measurement.build_ms,
+            "bytes_written": measurement.build_bytes_written,
+        },
+        "activation_ms": measurement.activation_ms,
+        "wall_across_socket": {
+            "first_query_ms": measurement.first_query_ms,
+            "warm_query": measurement.warm_query,
+        },
+        "daemon_phases_ms": {
+            "source": "daemon metrics scrape deltas (whole-millisecond histograms)",
+            "cold_open_ms": measurement.daemon.cold_open_ms,
+            "first_route_ms": measurement.daemon.first_route_ms,
+            "warm_route_mean_ms": measurement.daemon.warm_route_mean_ms,
+        },
+        "adapter_only_phases_ms": {
+            "source": "the sealed generation opened in-process through the lexical adapter",
+            "open_ms": measurement.adapter.open_ms,
+            "plan_ms": measurement.adapter.plan_ms,
+            "execute_ms": measurement.adapter.execute_ms,
+        },
+        "delta": {
+            "update_ms": measurement.delta.update_ms,
+            "changed_bytes": measurement.delta.changed_bytes,
+            "bytes_written": measurement.delta.bytes_written,
+            "activation_with_reclaim_ms": measurement.delta.activation_with_reclaim_ms,
+            "reclaimed_bytes": measurement.delta.reclaimed_bytes,
+        },
+        "result_count": measurement.result_count,
     })
 }
 
@@ -450,20 +742,16 @@ fn declared_advisory_json(params: &TierParams) -> Value {
     })
 }
 
-/// Build the scale summary value over the one measured tier plus the advisory
+/// The scale artifact's detail: the one measured tier plus the advisory
 /// declared tiers.
 #[must_use]
-pub fn summary_json(measurement: &TierMeasurement, git_rev: &str) -> Value {
+pub fn detail_json(measurement: &TierMeasurement) -> Value {
     let advisory: Vec<Value> = TIER_MANIFEST
         .iter()
         .filter(|p| !p.tier.is_measured_here())
         .map(declared_advisory_json)
         .collect();
     json!({
-        "schema_version": 1,
-        "dimension": "scale",
-        "git_rev": git_rev,
-        "host_class": "macbook-advisory",
         // Rail pass condition: the measured small-tier query retrieved the planted
         // token (an empty ordering is a rail error upstream, never written here).
         // Surfaced as a top-level flag so the J7Q-08 integration summary can treat
@@ -471,18 +759,100 @@ pub fn summary_json(measurement: &TierMeasurement, git_rev: &str) -> Value {
         "passed": measurement.result_count > 0,
         "measured_tiers": [measurement_json(measurement)],
         "declared_advisory_tiers": advisory,
-        "blocking_note": "only the small tier is measured end-to-end here and on advisory terms; medium/large/xlarge blocking latency is owned by the Linux perf runner",
+        "blocking_note": "only the small tier is measured end-to-end here; medium/large/xlarge blocking latency is owned by the Linux perf runner",
+    })
+}
+
+/// The one artifact row: the warm scale query across the socket.
+fn warm_query_row(measurement: &TierMeasurement) -> BenchRowV1 {
+    BenchRowV1 {
+        scenario_id: format!("scale.{}.warm_query", measurement.tier.as_str()),
+        route_family: RouteFamily::Lexical,
+        syntax: BenchSyntax::Native,
+        result_shape: ResultShape::Candidates,
+        latency: Some(measurement.warm_query),
+        qps: None,
+        error_count: 0,
+        timeout_count: 0,
+        result_count: Some(saturating_u64(measurement.result_count)),
+        typed_error_code: None,
+        engine_touched: vec!["Lexical".to_string()],
+        early_stop_reason: None,
+    }
+}
+
+/// The scale artifact: one `BenchArtifactV1` for the measured tier.
+///
+/// Its provenance names the head, the generated corpus (by its exact
+/// bytes) and the tier parameters; its phases are the build, the one-file
+/// delta and the reclaim; its disk amplification is the full build's.
+pub fn artifact(
+    measurement: &TierMeasurement,
+    git_head: GitHeadV1,
+    host: HostV1,
+) -> AnyResult<BenchArtifactV1> {
+    let params = params_for(measurement.tier);
+    Ok(BenchArtifactV1 {
+        dimension: DIMENSION.to_string(),
+        mode: BenchMode::Cold,
+        concurrency: 1,
+        provenance: BenchProvenanceV1 {
+            git_head,
+            corpus_digest: corpus_digest(
+                DIMENSION,
+                &generate_corpus(measurement.tier, measurement.seed),
+            ),
+            config_digest: config_digest(
+                DIMENSION,
+                &[
+                    ("tier", params.tier.as_str().to_string()),
+                    ("seed", measurement.seed.to_string()),
+                    ("repo_count", params.repo_count.to_string()),
+                    ("files_per_repo", params.files_per_repo.to_string()),
+                    ("avg_file_lines", params.avg_file_lines.to_string()),
+                    (
+                        "hit_density_per_mille",
+                        params.hit_density_per_mille.to_string(),
+                    ),
+                    (
+                        "symbol_density_per_mille",
+                        params.symbol_density_per_mille.to_string(),
+                    ),
+                    ("top_k", SCALE_TOP_K.to_string()),
+                    ("warm_query_samples", WARM_QUERY_SAMPLES.to_string()),
+                    ("history_max_generations", "1".to_string()),
+                ],
+            ),
+            model_revision: measurement.model_revision.clone(),
+        },
+        host,
+        resources: ResourceUsageV1::observe_self()?,
+        phases: PhaseDurationsV1 {
+            build_ms: Some(measurement.build_ms),
+            update_ms: Some(measurement.delta.update_ms),
+            // The reclaim runs inside the delta's activation: this is its
+            // upper bound, see `DeltaMeasurementV1::activation_with_reclaim_ms`.
+            gc_ms: Some(measurement.delta.activation_with_reclaim_ms),
+        },
+        disk_amplification: Some(DiskAmplificationV1 {
+            bytes_written: measurement.build_bytes_written,
+            changed_bytes: measurement.corpus_bytes,
+        }),
+        rows: vec![warm_query_row(measurement)],
+        detail: detail_json(measurement),
     })
 }
 
 /// Write the two canonical scale artifacts under `dir`:
-/// `tier_manifest.json` and `summary.json`.
-pub fn write_artifacts(measurement: &TierMeasurement, dir: &Path, git_rev: &str) -> AnyResult<()> {
+/// `tier_manifest.json` and `summary.json` (the `BenchArtifactV1`).
+pub fn write_artifacts(
+    measurement: &TierMeasurement,
+    dir: &Path,
+    git_head: GitHeadV1,
+    host: HostV1,
+) -> AnyResult<()> {
     crate::artifact::write_json_pretty(&dir.join("tier_manifest.json"), &tier_manifest_json())?;
-    crate::artifact::write_json_pretty(
-        &dir.join("summary.json"),
-        &summary_json(measurement, git_rev),
-    )?;
+    artifact(measurement, git_head, host)?.write_to(&dir.join("summary.json"))?;
     Ok(())
 }
 
@@ -623,28 +993,61 @@ mod tests {
         assert_eq!(measured[0]["tier"], "small");
     }
 
-    #[test]
-    fn summary_json_records_measured_and_advisory_split() {
-        let measurement = TierMeasurement {
+    fn sample_measurement() -> TierMeasurement {
+        TierMeasurement {
             tier: ScaleTier::Small,
             seed: 3,
             file_count: 16,
-            ingest_ms: 1.5,
-            open_ms: 0.5,
-            query_ms: 0.25,
+            corpus_bytes: 4_096,
+            build_ms: 1.5,
+            build_bytes_written: 8_192,
+            activation_ms: 0.5,
+            first_query_ms: 0.75,
+            warm_query: LatencySummary::from_samples_ms(&[0.2, 0.25, 0.3]).expect("samples"),
+            daemon: DaemonPhaseTimingV1 {
+                cold_open_ms: 1.0,
+                first_route_ms: 1.0,
+                warm_route_mean_ms: 0.0,
+            },
+            adapter: AdapterPhaseTimingV1 {
+                open_ms: 0.4,
+                plan_ms: 0.01,
+                execute_ms: 0.05,
+            },
+            delta: DeltaMeasurementV1 {
+                update_ms: 0.9,
+                changed_bytes: 300,
+                bytes_written: 900,
+                activation_with_reclaim_ms: 0.6,
+                reclaimed_bytes: 8_000,
+            },
             result_count: 10,
-        };
-        let value = summary_json(&measurement, "deadbeef");
-        assert_eq!(value["dimension"], "scale");
-        assert_eq!(value["git_rev"], "deadbeef");
+            model_revision: Some("model@rev:d16".to_string()),
+        }
+    }
+
+    #[test]
+    fn detail_json_records_every_phase_and_the_advisory_split() {
+        let value = detail_json(&sample_measurement());
         assert_eq!(
             value["passed"], true,
             "a measured run with retrieved hits must record passed=true"
         );
         let measured = value["measured_tiers"].as_array().expect("measured array");
         assert_eq!(measured.len(), 1);
-        assert_eq!(measured[0]["tier"], "small");
-        assert_eq!(measured[0]["status"], "measured");
+        let tier = &measured[0];
+        assert_eq!(tier["tier"], "small");
+        assert_eq!(tier["status"], "measured");
+        assert_eq!(tier["build"]["build_ms"], 1.5);
+        assert_eq!(tier["activation_ms"], 0.5);
+        assert_eq!(tier["wall_across_socket"]["first_query_ms"], 0.75);
+        assert_eq!(tier["daemon_phases_ms"]["cold_open_ms"], 1.0);
+        assert_eq!(tier["adapter_only_phases_ms"]["execute_ms"], 0.05);
+        assert_eq!(tier["delta"]["reclaimed_bytes"], 8_000);
+        assert!(
+            tier.get("open_ms").is_none(),
+            "the misnamed activation field is gone"
+        );
         let advisory = value["declared_advisory_tiers"]
             .as_array()
             .expect("advisory array");
@@ -655,8 +1058,34 @@ mod tests {
     }
 
     #[test]
-    fn usize_to_f64_is_exact_on_small_counts() {
-        assert!((usize_to_f64(0) - 0.0).abs() < f64::EPSILON);
-        assert!((usize_to_f64(16) - 16.0).abs() < f64::EPSILON);
+    fn the_artifact_carries_the_phases_the_amplification_and_the_corpus_digest() {
+        let head = GitHeadV1::parse("0123456789abcdef0123456789abcdef01234567").expect("a head");
+        let host = HostV1 {
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            cpu_count: 4,
+            mem_bytes: 1 << 30,
+            hostname_hash: "sha256:host".to_string(),
+        };
+        let artifact = artifact(&sample_measurement(), head, host).expect("observable");
+        let value = artifact.to_json().expect("serializes");
+        assert_eq!(value["dimension"], "scale");
+        assert_eq!(value["phases"]["build_ms"], 1.5);
+        assert_eq!(value["phases"]["update_ms"], 0.9);
+        assert_eq!(value["phases"]["gc_ms"], 0.6);
+        assert_eq!(value["disk_amplification"]["bytes_written"], 8_192);
+        assert_eq!(value["disk_amplification"]["changed_bytes"], 4_096);
+        assert_eq!(value["disk_amplification"]["ratio"], 2.0);
+        assert_eq!(
+            value["provenance"]["corpus_digest"],
+            corpus_digest(DIMENSION, &generate_corpus(ScaleTier::Small, 3))
+        );
+        assert_ne!(
+            value["provenance"]["corpus_digest"],
+            corpus_digest(DIMENSION, &generate_corpus(ScaleTier::Small, 4)),
+            "the corpus digest follows the seed"
+        );
+        assert_eq!(value["rows"][0]["scenario_id"], "scale.small.warm_query");
+        assert_eq!(value["rows"][0]["latency"]["samples"], 3);
     }
 }
