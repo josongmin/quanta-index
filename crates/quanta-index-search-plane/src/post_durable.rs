@@ -15,12 +15,5 @@ use quanta_index_core::CoreError;
 /// `Ok` when `error` is the storage's, so the step can wait for the next
 /// pass; the error itself when it is a refusal.
 pub(crate) fn defer_storage_failure(error: CoreError) -> Result<(), CoreError> {
-    match error {
-        CoreError::Storage(_) => Ok(()),
-        refusal @ (CoreError::InvalidContract(_)
-        | CoreError::Typed { .. }
-        | CoreError::NotReady(_)
-        | CoreError::NotImplemented(_)
-        | CoreError::NotFound(_)) => Err(refusal),
-    }
+    error.into_storage_failure().map(|_message| ())
 }

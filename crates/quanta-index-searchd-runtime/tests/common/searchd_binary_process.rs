@@ -29,43 +29,11 @@ impl SearchdBinaryProcess {
         max_generations: usize,
     ) -> Result<Self, Box<dyn Error>> {
         let mut child = searchd_command(state_root, max_generations).spawn()?;
-        let sockets = [
-            state_root.join("search-plane/query.sock"),
-            state_root.join("search-plane/control.sock"),
-            state_root.join("search-plane/ingest.sock"),
-        ];
-        let start = Instant::now();
-        while start.elapsed() < SOCKET_TIMEOUT {
-            if sockets
-                .iter()
-                .all(|socket| socket_accepts_connection(socket))
-            {
-                return Ok(Self {
-                    state_root: state_root.to_path_buf(),
-                    child: Some(child),
-                });
-            }
-            if let Some(status) = child.try_wait()? {
-                return match remove_socket_files(state_root) {
-                    Ok(()) => Err(format!(
-                        "searchd binary exited before opening sockets: {status}"
-                    )
-                    .into()),
-                    Err(cleanup_error) => Err(format!(
-                        "searchd binary exited before opening sockets: {status}; \
-                         partial socket cleanup failed: {cleanup_error}"
-                    )
-                    .into()),
-                };
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-        terminate_child(&mut child)?;
-        remove_socket_files(state_root)?;
-        Err(format!(
-            "searchd binary did not open query/control/ingest sockets within {SOCKET_TIMEOUT:?}"
-        )
-        .into())
+        wait_for_sockets(state_root, &mut child)?;
+        Ok(Self {
+            state_root: state_root.to_path_buf(),
+            child: Some(child),
+        })
     }
 
     pub(super) fn connect(&self) -> Result<QuantaIndex, Box<dyn Error>> {
@@ -90,6 +58,44 @@ impl Drop for SearchdBinaryProcess {
         }
         let _cleanup = remove_socket_files(&self.state_root);
     }
+}
+
+/// Wait until `child`, a daemon over `state_root`, accepts on all three
+/// sockets; on an exit or a timeout first, clean its sockets up and fail.
+pub(super) fn wait_for_sockets(state_root: &Path, child: &mut Child) -> Result<(), Box<dyn Error>> {
+    let sockets = [
+        state_root.join("search-plane/query.sock"),
+        state_root.join("search-plane/control.sock"),
+        state_root.join("search-plane/ingest.sock"),
+    ];
+    let start = Instant::now();
+    while start.elapsed() < SOCKET_TIMEOUT {
+        if sockets
+            .iter()
+            .all(|socket| socket_accepts_connection(socket))
+        {
+            return Ok(());
+        }
+        if let Some(status) = child.try_wait()? {
+            return match remove_socket_files(state_root) {
+                Ok(()) => {
+                    Err(format!("searchd binary exited before opening sockets: {status}").into())
+                }
+                Err(cleanup_error) => Err(format!(
+                    "searchd binary exited before opening sockets: {status}; \
+                     partial socket cleanup failed: {cleanup_error}"
+                )
+                .into()),
+            };
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    terminate_child(child)?;
+    remove_socket_files(state_root)?;
+    Err(format!(
+        "searchd binary did not open query/control/ingest sockets within {SOCKET_TIMEOUT:?}"
+    )
+    .into())
 }
 
 pub(super) fn terminate_child(child: &mut Child) -> Result<(), Box<dyn Error>> {
@@ -147,7 +153,7 @@ pub(super) fn searchd_command(state_root: &Path, max_generations: usize) -> Comm
     command
 }
 
-fn remove_socket_files(state_root: &Path) -> std::io::Result<()> {
+pub(super) fn remove_socket_files(state_root: &Path) -> std::io::Result<()> {
     for socket in [
         state_root.join("search-plane/query.sock"),
         state_root.join("search-plane/control.sock"),

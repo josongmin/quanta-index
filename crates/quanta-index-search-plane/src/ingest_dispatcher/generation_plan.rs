@@ -8,9 +8,10 @@ use quanta_index_contract::{
     SearchCorpusIngestBatch, SearchPlaneTrackKind,
 };
 use quanta_index_core::{
-    CoreError, GenerationIdentityValidatePort, IncompleteGenerationDiscardOutcomeV1,
-    IncompleteGenerationDiscardPort, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
-    SemanticIngestHeaderV1, SemanticStreamTallyV1,
+    CoreError, FinishedReclaims, GenerationIdentityValidatePort,
+    IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort,
+    SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, SemanticIngestHeaderV1,
+    SemanticStreamTallyV1,
 };
 
 use crate::ingest_dispatcher::errors::{
@@ -29,6 +30,10 @@ pub(super) struct SearchCorpusPhysicalReclaimReceiptV1 {
     /// generation is no longer a whole sealed pair on disk (QI-BB-032
     /// retention), with how many records each forget dropped.
     pub(crate) forgotten_records: BTreeMap<ManifestGeneration, u64>,
+    /// What each track's reclaim area held when the pass began: the rest of
+    /// reclaims a crash or a failed removal interrupted, now removed
+    /// (QI-BB-003).
+    pub(crate) finished_interrupted: BTreeMap<SearchPlaneTrackKind, FinishedReclaims>,
     /// The steps this pass could not complete (QI-BB-020).
     pub(crate) deferred: BTreeSet<DeferredGcStep>,
 }
@@ -42,6 +47,9 @@ pub(super) struct SearchCorpusPhysicalReclaimReceiptV1 {
 /// A refusal is never deferred ([`crate::post_durable`]).
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum DeferredGcStep {
+    /// A track's interrupted reclaims could not be finished; they stay in
+    /// its reclaim area.
+    FinishInterrupted(SearchPlaneTrackKind),
     /// A track's sealed generations could not be listed.
     ListSealed(SearchPlaneTrackKind),
     /// A retired generation could not be reclaimed; it is still on disk.

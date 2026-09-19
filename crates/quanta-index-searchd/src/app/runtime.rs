@@ -1137,6 +1137,20 @@ impl SearchdRuntime {
                 .restore_into(&mut guard)
                 .map_err(anyhow::Error::from)?;
         }
+        // Reclaims a crash cut short are finished before any inventory
+        // (QI-BB-003): each is out of the generation namespace already.
+        let lexical_interrupted =
+            boot_inventory::finish_interrupted_reclaims(lexical_sealed_reclaim.as_ref())?;
+        let semantic_interrupted =
+            boot_inventory::finish_interrupted_reclaims(semantic_sealed_reclaim.as_ref())?;
+        boot_notices.extend(
+            [
+                lexical_interrupted.boot_notice(SearchPlaneTrackKind::Lexical),
+                semantic_interrupted.boot_notice(SearchPlaneTrackKind::Semantic),
+            ]
+            .into_iter()
+            .flatten(),
+        );
         // Boot inventory (QI-BB-026): identities only, per track; nothing is
         // opened or hashed until the active pairs are proven below.
         let lexical_inventory = boot_inventory::seed_track_readiness(
@@ -1212,8 +1226,12 @@ impl SearchdRuntime {
             boot_inventory::half_sealed_pairs(&lexical_inventory, &semantic_inventory);
         boot_notices.extend(half_sealed_pairs.iter().map(HalfSealedPair::boot_notice));
         let boot_inventory = BootInventoryReportV1 {
-            lexical: lexical_inventory.with_scrub(lexical_scrub),
-            semantic: semantic_inventory.with_scrub(semantic_scrub),
+            lexical: lexical_inventory
+                .with_scrub(lexical_scrub)
+                .with_interrupted_reclaims(lexical_interrupted),
+            semantic: semantic_inventory
+                .with_scrub(semantic_scrub)
+                .with_interrupted_reclaims(semantic_interrupted),
             active_pairs_validated,
             half_sealed_pairs,
             auxiliary_migration,

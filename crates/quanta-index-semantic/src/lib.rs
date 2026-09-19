@@ -64,10 +64,10 @@ use quanta_index_contract::{
     SemanticContentRootsV1,
 };
 use quanta_index_core::{
-    CoreError, GenerationIdentityValidatePort, MetricPointV1, MetricSourcePort,
-    SealedGenerationScanPort, SemanticIndexOpenPort, SemanticIngestHeaderV1, SemanticScopeSource,
-    SemanticScopeStreamBuildPort, SemanticStreamTallyV1, SemanticStreamWindowPolicy,
-    TrackDiskUsagePort,
+    CoreError, FinishedReclaims, GenerationIdentityValidatePort, MetricPointV1, MetricSourcePort,
+    RECLAIM_AREA_DIR_NAME, SealedGenerationScanPort, SemanticIndexOpenPort, SemanticIngestHeaderV1,
+    SemanticScopeSource, SemanticScopeStreamBuildPort, SemanticStreamTallyV1,
+    SemanticStreamWindowPolicy, TrackDiskUsagePort,
     domains::generation::{
         GenerationQuarantineReasonV1, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
         IncompleteGenerationDiscardPort, InventoriedSealedGenerationV1,
@@ -77,6 +77,7 @@ use quanta_index_core::{
         unique_inode_tree_bytes,
     },
     domains::semantic::{SemanticContentRootsPort, SemanticSearcher},
+    reclaim_directory,
 };
 
 use crate::budget::DenseLaneTalliesV1;
@@ -609,23 +610,21 @@ impl SealedGenerationReclaimPort for SemanticAdapter {
             return Err(generation_digest_mismatch(retired, "manifest"));
         }
         let bytes = crate::search::dataset_tree_bytes(&generation_dir)?;
-        std::fs::remove_dir_all(&generation_dir).map_err(|error| {
-            CoreError::Storage(format!(
-                "semantic: reclaim sealed generation {}: {error}",
-                generation_dir.display()
-            ))
-        })?;
-        if let Some(parent) = generation_dir.parent() {
-            File::open(parent)
-                .and_then(|directory| directory.sync_all())
-                .map_err(|error| {
-                    CoreError::Storage(format!(
-                        "semantic: fsync pair directory {} after reclaim: {error}",
-                        parent.display()
-                    ))
-                })?;
-        }
+        // Out of the generation namespace by one durable rename, then
+        // removed: a crash leaves a reclaim-area entry, never a partial tree
+        // that would read as an unsealed build (QI-BB-003).
+        reclaim_directory(
+            &self.state_root,
+            &generation_dir,
+            &GenerationStorageKeyV1::for_repo_revision(&retired.repo_id, &retired.revision_id)
+                .reclaim_entry_name(retired.manifest_generation),
+        )?;
         Ok(SealedGenerationReclaimOutcomeV1::Reclaimed { bytes })
+    }
+
+    fn finish_interrupted_reclaims(&self) -> Result<FinishedReclaims, CoreError> {
+        let _lifecycle = self.directory_lifecycle_guard()?;
+        quanta_index_core::finish_interrupted_reclaims(&self.state_root)
     }
 
     fn sealed_generations_for_pair(
@@ -896,6 +895,10 @@ pub fn inventory_persisted_generations(
             continue;
         }
         let family_name = family_entry.file_name();
+        // Reclaims in progress, finished by the reclaim port (QI-BB-003).
+        if family_name == RECLAIM_AREA_DIR_NAME {
+            continue;
+        }
         if !family_name
             .to_str()
             .is_some_and(GenerationStorageKeyV1::is_canonical_name)

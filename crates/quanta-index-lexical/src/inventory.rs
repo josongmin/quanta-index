@@ -15,6 +15,7 @@ use quanta_index_core::domains::generation::{
 };
 use quanta_index_core::{
     CoreError, QUARANTINE_TARGET_NOT_QUARANTINED_CODE, QuarantineDiscardOutcomeV1,
+    RECLAIM_AREA_DIR_NAME,
 };
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -55,6 +56,10 @@ pub fn inventory_sealed_generations(
             continue;
         }
         let family_name = family_entry.file_name();
+        // Reclaims in progress, finished by the reclaim port (QI-BB-003).
+        if family_name == RECLAIM_AREA_DIR_NAME {
+            continue;
+        }
         if !family_name
             .to_str()
             .is_some_and(GenerationStorageKeyV1::is_canonical_name)

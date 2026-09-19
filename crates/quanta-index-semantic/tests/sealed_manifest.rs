@@ -34,11 +34,12 @@ use quanta_index_contract::{
     SearchPlaneTrackKind,
 };
 use quanta_index_core::{
-    CoreError, DoorFindingOutcome, DoorFindingQuarantinePort, GenerationIdentityValidatePort,
-    GenerationQuarantineReasonV1, GenerationStorageKeyV1, IntegrityScrubBudgetV1,
-    IntegrityScrubCursorV1, IntegrityScrubOutcomeV1, IntegrityScrubPort, MetricSourcePort,
-    MetricValueV1, QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort, RequestBudgetV1,
-    SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, SemanticIndexOpenPort,
+    CoreError, DoorFindingOutcome, DoorFindingQuarantinePort, FinishedReclaims,
+    GenerationIdentityValidatePort, GenerationQuarantineReasonV1, GenerationStorageKeyV1,
+    IntegrityScrubBudgetV1, IntegrityScrubCursorV1, IntegrityScrubOutcomeV1, IntegrityScrubPort,
+    MetricSourcePort, MetricValueV1, QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort,
+    RECLAIM_AREA_DIR_NAME, RequestBudgetV1, SealedGenerationReclaimOutcomeV1,
+    SealedGenerationReclaimPort, SemanticIndexOpenPort,
 };
 use quanta_index_semantic::{
     SemanticAdapter, build_resident_batch_v1, inventory_persisted_generations,
@@ -733,6 +734,85 @@ fn a_scrub_resumed_over_a_reclaimed_generation_is_refused_not_quarantined() -> T
     }
     if !adapter.scrub_candidates()?.is_empty() {
         return Err("a reclaimed generation is no scrub candidate".into());
+    }
+    Ok(())
+}
+
+/// The length of every regular file under `dir`, summed by the test's own
+/// walk (a generation sealed whole, not by delta, holds no hard links).
+fn tree_file_bytes(dir: &Path) -> Result<u64, Box<dyn Error>> {
+    let mut total = 0_u64;
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        for entry in std::fs::read_dir(&next)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else if file_type.is_file() {
+                total = total
+                    .checked_add(entry.metadata()?.len())
+                    .ok_or("tree bytes overflow")?;
+            }
+        }
+    }
+    Ok(total)
+}
+
+/// A reclaim is crash-atomic (QI-BB-003 보완 #3, #4).
+///
+/// A whole reclaim leaves neither the generation nor a reclaim-area entry.
+/// What a crash between the move and the removal leaves — the whole
+/// generation under the reclaim area — is out of the generation namespace:
+/// not listed, not quarantined, no scrub candidate, and a retried reclaim
+/// finds it `Absent`. Finishing the interrupted reclaims removes it and
+/// reports exactly its bytes, once.
+#[test]
+fn an_interrupted_reclaim_is_out_of_the_namespace_and_finished_once() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let (first, second) = (ManifestGeneration::new(1), ManifestGeneration::new(2));
+    seal(&adapter, first)?;
+    seal(&adapter, second)?;
+    let reclaimed = adapter.reclaim_sealed_generation(&identity(first))?;
+    if !matches!(
+        reclaimed,
+        SealedGenerationReclaimOutcomeV1::Reclaimed { .. }
+    ) {
+        return Err(format!("the first generation is reclaimed: {reclaimed:?}").into());
+    }
+    let area = root.join(RECLAIM_AREA_DIR_NAME);
+    if generation_dir(&root, first).exists() || std::fs::read_dir(&area)?.next().is_some() {
+        return Err("a whole reclaim leaves neither the generation nor an area entry".into());
+    }
+    // The crash: the second generation moved into the area, never removed.
+    let entry = area.join(
+        GenerationStorageKeyV1::for_repo_revision(&repo(), &revision()).reclaim_entry_name(second),
+    );
+    let left_bytes = tree_file_bytes(&generation_dir(&root, second))?;
+    std::fs::rename(generation_dir(&root, second), &entry)?;
+    let inventory = inventory_persisted_generations(&root)?;
+    if !inventory.sealed.is_empty() || !inventory.quarantined.is_empty() {
+        return Err(format!("the reclaim area is not a generation family: {inventory:?}").into());
+    }
+    if !adapter.scrub_candidates()?.is_empty() {
+        return Err("an interrupted reclaim is no scrub candidate".into());
+    }
+    let retried = adapter.reclaim_sealed_generation(&identity(second))?;
+    if retried != SealedGenerationReclaimOutcomeV1::Absent {
+        return Err(format!("a retried reclaim finds the generation gone: {retried:?}").into());
+    }
+    let finished = adapter.finish_interrupted_reclaims()?;
+    let expected = FinishedReclaims {
+        entries: 1,
+        bytes: left_bytes,
+    };
+    if finished != expected || entry.exists() {
+        return Err(format!("finishing removes the entry, {expected:?}: {finished:?}").into());
+    }
+    if adapter.finish_interrupted_reclaims()? != FinishedReclaims::default() {
+        return Err("a second finish has nothing to do".into());
     }
     Ok(())
 }

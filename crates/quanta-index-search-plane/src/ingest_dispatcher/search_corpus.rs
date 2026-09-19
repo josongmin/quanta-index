@@ -19,6 +19,7 @@ use quanta_index_core::{
 };
 
 use crate::auxiliary_authority::{structural_chunks_delta_rows, structural_chunks_transition};
+use crate::gc_crash_point::{self, crash_point};
 use crate::history_text::HistoryTextIndexParts;
 use crate::ingest_dispatcher::auxiliary::AuxiliaryMutationCoordinator;
 use crate::ingest_dispatcher::errors::{
@@ -123,6 +124,10 @@ pub struct SearchCorpusGcStats {
     /// Reclaim-pass steps that failed after the seal they follow was
     /// durable; each is found again by the next pass (QI-BB-020).
     pub failures: u64,
+    /// Reclaims a crash or a failed removal had interrupted, finished from
+    /// a track's reclaim area; their bytes and generations are counted
+    /// with the track's reclaimed ones (QI-BB-003).
+    pub interrupted_reclaims_finished: u64,
     /// The index bytes the retained generations of every pair this
     /// process sealed occupy on disk, as retention last measured each
     /// pair: the number `max_bytes` is enforced against.
@@ -139,21 +144,13 @@ impl SearchCorpusGcStats {
 
     fn record(&mut self, receipt: &SearchCorpusPhysicalReclaimReceiptV1) {
         for ((track, _generation), bytes) in &receipt.reclaimed {
-            match track {
-                SearchPlaneTrackKind::Lexical => {
-                    self.lexical_reclaimed_bytes =
-                        self.lexical_reclaimed_bytes.saturating_add(*bytes);
-                    self.lexical_reclaimed_generations =
-                        self.lexical_reclaimed_generations.saturating_add(1);
-                }
-                SearchPlaneTrackKind::Semantic => {
-                    self.semantic_reclaimed_bytes =
-                        self.semantic_reclaimed_bytes.saturating_add(*bytes);
-                    self.semantic_reclaimed_generations =
-                        self.semantic_reclaimed_generations.saturating_add(1);
-                }
-                SearchPlaneTrackKind::Structural => {}
-            }
+            self.count_reclaimed(*track, 1, *bytes);
+        }
+        for (track, finished) in &receipt.finished_interrupted {
+            self.count_reclaimed(*track, finished.entries, finished.bytes);
+            self.interrupted_reclaims_finished = self
+                .interrupted_reclaims_finished
+                .saturating_add(finished.entries);
         }
         self.deferred_pinned = self
             .deferred_pinned
@@ -161,6 +158,24 @@ impl SearchCorpusGcStats {
         self.failures = self
             .failures
             .saturating_add(count_from_usize(receipt.deferred.len()));
+    }
+
+    /// Count `generations` directories and their `bytes` as reclaimed on
+    /// `track`.
+    fn count_reclaimed(&mut self, track: SearchPlaneTrackKind, generations: u64, bytes: u64) {
+        let (counted_bytes, counted_generations) = match track {
+            SearchPlaneTrackKind::Lexical => (
+                &mut self.lexical_reclaimed_bytes,
+                &mut self.lexical_reclaimed_generations,
+            ),
+            SearchPlaneTrackKind::Semantic => (
+                &mut self.semantic_reclaimed_bytes,
+                &mut self.semantic_reclaimed_generations,
+            ),
+            SearchPlaneTrackKind::Structural => return,
+        };
+        *counted_bytes = counted_bytes.saturating_add(bytes);
+        *counted_generations = counted_generations.saturating_add(generations);
     }
 
     /// Bytes reclaimed on both tracks together.
@@ -370,6 +385,10 @@ impl MetricSourcePort for DirectSearchCorpusMaterializer {
             ),
             MetricPointV1::counter("search_corpus_gc_deferred_pinned_total", gc.deferred_pinned),
             MetricPointV1::counter("search_corpus_gc_failures_total", gc.failures),
+            MetricPointV1::counter(
+                "search_corpus_gc_interrupted_reclaims_finished_total",
+                gc.interrupted_reclaims_finished,
+            ),
             MetricPointV1::counter(
                 "search_corpus_gc_lexical_reclaimed_bytes_total",
                 gc.lexical_reclaimed_bytes,
@@ -742,6 +761,7 @@ impl DirectSearchCorpusMaterializer {
                 return Err(error);
             }
         };
+        crash_point(gc_crash_point::AFTER_RETENTION_RECEIPT);
         self.finalize_generation_v1(batch, Some(&retention))
     }
 
@@ -808,6 +828,9 @@ impl DirectSearchCorpusMaterializer {
             })
         }));
         let _durable = self.auxiliary_catalog.apply(&delta)?;
+        if retention.is_some() {
+            crash_point(gc_crash_point::AFTER_CATALOG_TRANSACTION);
+        }
         {
             let mut guard = self.ledger.write().map_err(|err| {
                 CoreError::Storage(format!(
@@ -849,6 +872,9 @@ impl DirectSearchCorpusMaterializer {
                 guard.forget_auxiliary_generation(&batch.repo_id, &batch.revision_id, *generation);
             }
         }
+        if retention.is_some() {
+            crash_point(gc_crash_point::AFTER_LEDGER_RECONCILE);
+        }
         // Forgotten generations' text indexes go with their rows, swept
         // from the disk against the generations the ledger still knows, so
         // one a reader still holds, or whose discard failed, is found again
@@ -883,25 +909,27 @@ impl DirectSearchCorpusMaterializer {
     ///
     /// Runs only after the durable authority has been reaped and the ledger
     /// reconciled from the receipt, so no query can resolve or pin a retired
-    /// generation any more (`UNKNOWN_GENERATION`). For each track, every
-    /// sealed generation on disk that the receipt does not retain and that
-    /// is older than the one being sealed is an orphan of this or an earlier
-    /// retention pass; it is fenced out of the snapshot registry first — a
-    /// resident handle dropped, an open in flight fenced and waited for so
-    /// its handle is refused rather than admitted — and reclaimed only if
-    /// nothing still holds its handle. A pinned generation is deferred, not
-    /// deleted under a reader; the next pass will find it again, and boot
-    /// lists it as an orphan meanwhile. Sweeping from the filesystem rather
-    /// than from the receipt's reaped set is what makes a crash between
-    /// reap and reclaim recoverable — and a reclaim that fails recoverable
-    /// the same way: the seal it follows is durable and stands, so a
-    /// listing or reclaim the storage failed is recorded on the receipt as
-    /// a [`DeferredGcStep`], counted (`search_corpus_gc_failures_total`)
-    /// and found again by the next pass (QI-BB-020). What fails closed: a
-    /// refusal — a directory whose identity contradicts its path is a
-    /// finding a retry would only repeat (§3.49) — and process state, a
-    /// poisoned snapshot registry or a fence that cannot settle. The receipt is kept: its bytes and counts
-    /// feed the `search_corpus_gc_…` metrics.
+    /// generation any more (`UNKNOWN_GENERATION`). For each track, the
+    /// reclaims a crash or a failed removal left in its reclaim area are
+    /// finished first; then every sealed generation on disk that the receipt
+    /// does not retain and that is older than the one being sealed is an
+    /// orphan of this or an earlier retention pass; it is fenced out of the
+    /// snapshot registry first — a resident handle dropped, an open in flight
+    /// fenced and waited for so its handle is refused rather than admitted —
+    /// and reclaimed only if nothing still holds its handle. A pinned
+    /// generation is deferred, not deleted under a reader; the next pass will
+    /// find it again, and boot lists it as an orphan meanwhile. Sweeping from
+    /// the filesystem rather than from the receipt's reaped set is what makes
+    /// a crash between reap and reclaim recoverable — and a reclaim that
+    /// fails recoverable the same way: the seal it follows is durable and
+    /// stands, so a listing or reclaim the storage failed is recorded on the
+    /// receipt as a [`DeferredGcStep`], counted
+    /// (`search_corpus_gc_failures_total`) and found again by the next pass
+    /// (QI-BB-020). What fails closed: a refusal — a directory whose identity
+    /// contradicts its path is a finding a retry would only repeat (§3.49) —
+    /// and process state, a poisoned snapshot registry or a fence that cannot
+    /// settle. The receipt is kept: its bytes and counts feed the
+    /// `search_corpus_gc_…` metrics.
     pub(super) fn reclaim_retired_generations_v1(
         &self,
         batch: &SearchCorpusIngestBatch,
@@ -909,6 +937,25 @@ impl DirectSearchCorpusMaterializer {
     ) -> Result<SearchCorpusPhysicalReclaimReceiptV1, CoreError> {
         let mut receipt = SearchCorpusPhysicalReclaimReceiptV1::default();
         for (port, track) in self.reclaim_tracks() {
+            if track == SearchPlaneTrackKind::Semantic {
+                crash_point(gc_crash_point::BETWEEN_TRACK_RECLAIMS);
+            }
+            // What a crash or a failed removal left in the track's reclaim
+            // area goes first: it is out of every namespace already, and
+            // nothing else ever finds it (QI-BB-003).
+            match port.finish_interrupted_reclaims() {
+                Ok(finished) => {
+                    if finished.entries > 0 {
+                        let _prior = receipt.finished_interrupted.insert(track, finished);
+                    }
+                }
+                Err(error) => {
+                    defer_storage_failure(error)?;
+                    let _new = receipt
+                        .deferred
+                        .insert(DeferredGcStep::FinishInterrupted(track));
+                }
+            }
             let sealed = match port.sealed_generations_for_pair(&batch.repo_id, &batch.revision_id)
             {
                 Ok(sealed) => sealed,
@@ -938,6 +985,7 @@ impl DirectSearchCorpusMaterializer {
                     let _deferred = receipt.deferred_pinned.insert((track, generation, holders));
                     continue;
                 }
+                crash_point(gc_crash_point::AFTER_FENCE);
                 match port.reclaim_sealed_generation(&retired) {
                     Ok(SealedGenerationReclaimOutcomeV1::Absent) => {}
                     Ok(SealedGenerationReclaimOutcomeV1::Reclaimed { bytes }) => {
@@ -952,6 +1000,7 @@ impl DirectSearchCorpusMaterializer {
                 }
             }
         }
+        crash_point(gc_crash_point::BEFORE_RECORD_FORGET);
         self.forget_broken_pair_records_v1(batch, &mut receipt)?;
         Ok(receipt)
     }

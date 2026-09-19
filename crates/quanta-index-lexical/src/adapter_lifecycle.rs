@@ -21,13 +21,13 @@ use quanta_index_core::domains::generation::{
     SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, unique_inode_tree_bytes,
 };
 use quanta_index_core::{
-    CoreError, DoorFindingOutcome, DoorFindingQuarantinePort, GENERATION_SIDECAR_CORRUPT_CODE,
-    GenerationIdentityValidatePort, IntegrityScrubBudgetV1, IntegrityScrubCandidateV1,
-    IntegrityScrubCursorV1, IntegrityScrubPort, IntegrityScrubReportV1, QuarantineDiscardOutcomeV1,
-    QuarantinedGenerationDiscardPort, SealedGenerationScanPort,
+    CoreError, DoorFindingOutcome, DoorFindingQuarantinePort, FinishedReclaims,
+    GENERATION_SIDECAR_CORRUPT_CODE, GenerationIdentityValidatePort, IntegrityScrubBudgetV1,
+    IntegrityScrubCandidateV1, IntegrityScrubCursorV1, IntegrityScrubPort, IntegrityScrubReportV1,
+    QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort, SealedGenerationScanPort,
+    reclaim_directory,
 };
 use std::collections::BTreeSet;
-use std::fs::File;
 
 impl GenerationIdentityValidatePort for LexicalAdapter {
     fn validate_generation_identity(
@@ -227,24 +227,22 @@ impl SealedGenerationReclaimPort for LexicalAdapter {
                 .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?;
             let _stale_writer = writers.remove(&key);
         }
-        std::fs::remove_dir_all(&generation_dir).map_err(|error| {
-            CoreError::Storage(format!(
-                "lexical: reclaim sealed generation {}: {error}",
-                generation_dir.display()
-            ))
-        })?;
-        if let Some(parent) = generation_dir.parent() {
-            File::open(parent)
-                .and_then(|directory| directory.sync_all())
-                .map_err(|error| {
-                    CoreError::Storage(format!(
-                        "lexical: fsync pair directory {} after reclaim: {error}",
-                        parent.display()
-                    ))
-                })?;
-        }
+        // Out of the generation namespace by one durable rename, then
+        // removed: a crash leaves a reclaim-area entry, never a partial tree
+        // that would read as an unsealed build (QI-BB-003).
+        reclaim_directory(
+            &self.state_root,
+            &generation_dir,
+            &GenerationStorageKeyV1::for_repo_revision(&key.repo_id, &key.revision_id)
+                .reclaim_entry_name(key.generation),
+        )?;
         self.invalidate_regex_match_cache_generation(&key)?;
         Ok(SealedGenerationReclaimOutcomeV1::Reclaimed { bytes })
+    }
+
+    fn finish_interrupted_reclaims(&self) -> Result<FinishedReclaims, CoreError> {
+        let _lifecycle = self.directory_lifecycle_guard()?;
+        quanta_index_core::finish_interrupted_reclaims(&self.state_root)
     }
 
     fn sealed_generations_for_pair(

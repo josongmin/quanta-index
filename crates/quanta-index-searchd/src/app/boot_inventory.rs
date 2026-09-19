@@ -24,8 +24,9 @@ use std::sync::{Arc, RwLock};
 use anyhow::Result;
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind};
 use quanta_index_core::{
-    CoreError, IntegrityScrubPort, MetricPointV1, MetricSourcePort, QuarantinedGenerationV1,
-    RepoMapOpenReportV1, SealedGenerationScanPort, count_from_usize,
+    CoreError, FinishedReclaims, IntegrityScrubPort, MetricPointV1, MetricSourcePort,
+    QuarantinedGenerationV1, RepoMapOpenReportV1, SealedGenerationReclaimPort,
+    SealedGenerationScanPort, count_from_usize,
 };
 use quanta_index_ipc::SocketAccessPolicy;
 use quanta_index_search_plane::{
@@ -61,6 +62,63 @@ pub struct TrackInventoryReportV1 {
     /// by the pair generation it belongs to: what the other track's
     /// inventory is measured against for half-sealed pairs.
     pub sealed_directories: BTreeMap<SealedGenerationKey, SealedDirectory>,
+    /// What finishing the track's interrupted reclaims did before the
+    /// inventory (QI-BB-003).
+    pub interrupted_reclaims: InterruptedReclaimsAtBoot,
+}
+
+/// The reclaims a crash cut short, as boot found them (QI-BB-003).
+///
+/// Each was a sealed generation already out of the generation namespace
+/// and committed to deletion, so boot finishes it before the inventory.
+/// A storage failure does not refuse boot: the entries stay in the track's
+/// reclaim area, out of every namespace, and the next reclaim pass of any
+/// pair retries them; boot says so in a notice and a gauge.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InterruptedReclaimsAtBoot {
+    /// Finished: how many entries, and their bytes.
+    Finished(FinishedReclaims),
+    /// The storage failed finishing them; its message.
+    Unfinished(String),
+}
+
+impl Default for InterruptedReclaimsAtBoot {
+    fn default() -> Self {
+        Self::Finished(FinishedReclaims::default())
+    }
+}
+
+impl InterruptedReclaimsAtBoot {
+    /// The boot notice this outcome warrants, if any.
+    #[must_use]
+    pub fn boot_notice(&self, track: SearchPlaneTrackKind) -> Option<String> {
+        match self {
+            Self::Finished(finished) if finished.entries == 0 => None,
+            Self::Finished(finished) => Some(format!(
+                "finished {} interrupted {track:?} reclaims ({} bytes) left by a crash",
+                finished.entries, finished.bytes
+            )),
+            Self::Unfinished(message) => Some(format!(
+                "could not finish the interrupted {track:?} reclaims: {message}; they stay in the track's reclaim area, out of every namespace, and the next reclaim pass retries them"
+            )),
+        }
+    }
+}
+
+/// Finish the interrupted reclaims of one track at boot (QI-BB-003).
+///
+/// A refusal fails boot closed like any other inventory refusal; only the
+/// storage's failure is reported and left for the next reclaim pass.
+pub(super) fn finish_interrupted_reclaims(
+    reclaim: &dyn SealedGenerationReclaimPort,
+) -> Result<InterruptedReclaimsAtBoot> {
+    match reclaim.finish_interrupted_reclaims() {
+        Ok(finished) => Ok(InterruptedReclaimsAtBoot::Finished(finished)),
+        Err(error) => error
+            .into_storage_failure()
+            .map(InterruptedReclaimsAtBoot::Unfinished)
+            .map_err(anyhow::Error::from),
+    }
 }
 
 /// The pair generation a sealed directory belongs to.
@@ -236,6 +294,12 @@ impl TrackInventoryReportV1 {
         self
     }
 
+    #[must_use]
+    pub fn with_interrupted_reclaims(mut self, interrupted: InterruptedReclaimsAtBoot) -> Self {
+        self.interrupted_reclaims = interrupted;
+        self
+    }
+
     fn metric_points(&self, track: &str) -> Vec<MetricPointV1> {
         let mut points = vec![
             MetricPointV1::gauge_count(
@@ -251,6 +315,18 @@ impl TrackInventoryReportV1 {
                 count_from_usize(self.orphaned.len()),
             ),
         ];
+        let (finished, unfinished) = match &self.interrupted_reclaims {
+            InterruptedReclaimsAtBoot::Finished(finished) => (finished.entries, 0),
+            InterruptedReclaimsAtBoot::Unfinished(_message) => (0, 1),
+        };
+        points.push(MetricPointV1::gauge_count(
+            format!("boot_{track}_interrupted_reclaims_finished"),
+            finished,
+        ));
+        points.push(MetricPointV1::gauge_count(
+            format!("boot_{track}_interrupted_reclaims_unfinished"),
+            unfinished,
+        ));
         if let Some(scrub) = self.scrub {
             points.push(MetricPointV1::gauge_count(
                 format!("boot_{track}_never_scrubbed_generations"),
@@ -454,11 +530,13 @@ pub(super) fn seed_track_readiness(
             .collect(),
         scrub: None,
         sealed_directories,
+        interrupted_reclaims: InterruptedReclaimsAtBoot::default(),
     })
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::path::PathBuf;
     use std::sync::{Arc, RwLock};
 
@@ -466,12 +544,17 @@ mod tests {
         GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
     };
     use quanta_index_core::{
-        CoreError, GenerationQuarantineReasonV1, InventoriedSealedGenerationV1,
-        QuarantinedGenerationV1, SealedGenerationInventoryV1, SealedGenerationScanPort,
+        CoreError, FinishedReclaims, GenerationQuarantineReasonV1, InventoriedSealedGenerationV1,
+        MetricValueV1, QuarantinedGenerationV1, SealedGenerationBytesV1,
+        SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
+        SealedGenerationScanPort,
     };
     use quanta_index_search_plane::Ledger;
 
-    use super::{HalfSealedPair, SealedGenerationKey, half_sealed_pairs, seed_track_readiness};
+    use super::{
+        HalfSealedPair, InterruptedReclaimsAtBoot, SealedGenerationKey, TrackInventoryReportV1,
+        finish_interrupted_reclaims, half_sealed_pairs, seed_track_readiness,
+    };
 
     struct ScriptedInventory(SealedGenerationInventoryV1);
 
@@ -679,5 +762,131 @@ mod tests {
         let error = seed_track_readiness(&ledger, SearchPlaneTrackKind::Lexical, &scanner)
             .expect_err("cross-track inventory must fail");
         assert!(error.to_string().contains("Semantic"), "{error}");
+    }
+
+    /// A reclaim port that only finishes interrupted reclaims, answering
+    /// the scripted outcome.
+    struct ScriptedFinish(Result<FinishedReclaims, CoreError>);
+
+    impl SealedGenerationReclaimPort for ScriptedFinish {
+        fn reclaim_sealed_generation(
+            &self,
+            _retired: &GenerationSnapshot,
+        ) -> Result<SealedGenerationReclaimOutcomeV1, CoreError> {
+            Err(CoreError::NotImplemented(
+                "boot reclaims nothing".to_string(),
+            ))
+        }
+
+        fn sealed_generations_for_pair(
+            &self,
+            _repo_id: &RepoId,
+            _revision_id: &RevisionId,
+        ) -> Result<Vec<GenerationSnapshot>, CoreError> {
+            Err(CoreError::NotImplemented("boot lists no pair".to_string()))
+        }
+
+        fn measure_sealed_generations(
+            &self,
+            _repo_id: &RepoId,
+            _revision_id: &RevisionId,
+            _generations: &BTreeSet<ManifestGeneration>,
+        ) -> Result<SealedGenerationBytesV1, CoreError> {
+            Err(CoreError::NotImplemented(
+                "boot measures no pair".to_string(),
+            ))
+        }
+
+        fn finish_interrupted_reclaims(&self) -> Result<FinishedReclaims, CoreError> {
+            self.0.clone()
+        }
+    }
+
+    /// The two boot gauges of one track's interrupted reclaims:
+    /// (finished, unfinished).
+    fn interrupted_gauges(report: &TrackInventoryReportV1) -> (MetricValueV1, MetricValueV1) {
+        let gauge = |name: &str| {
+            report
+                .metric_points("lexical")
+                .into_iter()
+                .find(|point| point.name == name)
+                .map(|point| point.value)
+                .expect("the gauge is always reported")
+        };
+        (
+            gauge("boot_lexical_interrupted_reclaims_finished"),
+            gauge("boot_lexical_interrupted_reclaims_unfinished"),
+        )
+    }
+
+    /// Boot finishes what interrupted reclaims left (QI-BB-003).
+    ///
+    /// Finished entries are reported with their bytes; nothing to finish
+    /// is no notice. The storage failing does not refuse boot — the entries
+    /// stay for the next reclaim pass, and the notice and the unfinished
+    /// gauge say so. A refusal fails boot with the refusal itself.
+    #[test]
+    fn boot_finishes_interrupted_reclaims_and_reports_what_it_could_not() {
+        let finished = FinishedReclaims {
+            entries: 2,
+            bytes: 40,
+        };
+        let outcome =
+            finish_interrupted_reclaims(&ScriptedFinish(Ok(finished))).expect("finishing succeeds");
+        assert_eq!(outcome, InterruptedReclaimsAtBoot::Finished(finished));
+        let notice = outcome
+            .boot_notice(SearchPlaneTrackKind::Lexical)
+            .expect("finished entries warrant a notice");
+        assert!(
+            notice.contains("finished 2 interrupted Lexical reclaims (40 bytes)"),
+            "{notice}"
+        );
+        assert_eq!(
+            interrupted_gauges(
+                &TrackInventoryReportV1::default().with_interrupted_reclaims(outcome)
+            ),
+            (MetricValueV1::Gauge(2.0), MetricValueV1::Gauge(0.0))
+        );
+        let nothing = finish_interrupted_reclaims(&ScriptedFinish(Ok(FinishedReclaims::default())))
+            .expect("an empty area finishes");
+        assert_eq!(nothing.boot_notice(SearchPlaneTrackKind::Lexical), None);
+
+        let unfinished = finish_interrupted_reclaims(&ScriptedFinish(Err(CoreError::Storage(
+            "reclaim: remove /state/.reclaim/x.g2: permission denied".to_string(),
+        ))))
+        .expect("the storage failing does not refuse boot");
+        assert_eq!(
+            unfinished,
+            InterruptedReclaimsAtBoot::Unfinished(
+                "reclaim: remove /state/.reclaim/x.g2: permission denied".to_string()
+            )
+        );
+        let notice = unfinished
+            .boot_notice(SearchPlaneTrackKind::Lexical)
+            .expect("an unfinished area warrants a notice");
+        assert!(
+            notice.contains("permission denied")
+                && notice.contains("the next reclaim pass retries them"),
+            "{notice}"
+        );
+        assert_eq!(
+            interrupted_gauges(
+                &TrackInventoryReportV1::default().with_interrupted_reclaims(unfinished)
+            ),
+            (MetricValueV1::Gauge(0.0), MetricValueV1::Gauge(1.0))
+        );
+
+        let refused = finish_interrupted_reclaims(&ScriptedFinish(Err(CoreError::Typed {
+            code: "GENERATION_IDENTITY_SCOPE_MISMATCH".to_string(),
+            message: "not a reclaim entry".to_string(),
+        })))
+        .expect_err("a refusal fails boot");
+        assert!(
+            matches!(
+                refused.downcast_ref::<CoreError>(),
+                Some(CoreError::Typed { code, .. }) if code == "GENERATION_IDENTITY_SCOPE_MISMATCH"
+            ),
+            "{refused:?}"
+        );
     }
 }

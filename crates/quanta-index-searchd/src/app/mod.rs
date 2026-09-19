@@ -15,8 +15,8 @@ pub mod socket_access;
 pub mod umask;
 
 pub use boot_inventory::{
-    BootInventoryReportV1, HalfSealedPair, SealedDirectory, SealedGenerationKey,
-    TrackInventoryReportV1, half_sealed_pairs,
+    BootInventoryReportV1, HalfSealedPair, InterruptedReclaimsAtBoot, SealedDirectory,
+    SealedGenerationKey, TrackInventoryReportV1, half_sealed_pairs,
 };
 pub use config::{
     ALLOW_DEV_EMBEDDER_ENV, DEV_HASH_EMBEDDER_SELECTOR, MaintenancePolicy, ProcessMemoryCeilings,

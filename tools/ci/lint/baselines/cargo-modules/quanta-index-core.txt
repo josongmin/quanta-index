@@ -13,6 +13,7 @@ crate quanta_index_core
 │   │   ├── struct AuxiliaryRowV1: pub
 │   │   └── struct AuxiliaryTrackRowV1: pub
 │   ├── mod generation: pub
+│   │   ├── struct FinishedReclaims: pub
 │   │   ├── trait GenerationIdentityValidatePort: pub
 │   │   ├── enum GenerationQuarantineReasonV1: pub
 │   │   ├── struct GenerationStorageKeyV1: pub
@@ -138,6 +139,7 @@ crate quanta_index_core
 │   │       ├── enum LexicalPredicateAliasV1: pub
 │   │       ├── enum LexicalPredicateFamilyV1: pub
 │   │       └── enum LexicalPredicateV1: pub
+│   ├── mod reclaim_area: pub
 │   ├── mod repomap: pub
 │   │   ├── mod inbound: pub(self)
 │   │   │   └── trait RepoMapQueryPort: pub

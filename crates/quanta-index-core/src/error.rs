@@ -21,6 +21,27 @@ pub enum CoreError {
     Storage(String),
 }
 
+impl CoreError {
+    /// The storage's own failure message, or the error itself when it is
+    /// anything else.
+    ///
+    /// Only the storage failing is worth waiting out: every other variant
+    /// is a refusal about the request or about the state it found, and a
+    /// retry would meet it again. Callers that may leave a step for a later
+    /// pass (QI-BB-020, QI-BB-003) classify through this one match, which
+    /// names every variant so a new one must be classified here.
+    pub fn into_storage_failure(self) -> Result<String, Self> {
+        match self {
+            Self::Storage(message) => Ok(message),
+            refusal @ (Self::InvalidContract(_)
+            | Self::Typed { .. }
+            | Self::NotReady(_)
+            | Self::NotImplemented(_)
+            | Self::NotFound(_)) => Err(refusal),
+        }
+    }
+}
+
 impl From<quanta_index_contract::TopKOutOfRangeV1> for CoreError {
     /// A refused `top_k` is the same typed failure on every query route.
     fn from(refused: quanta_index_contract::TopKOutOfRangeV1) -> Self {

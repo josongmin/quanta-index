@@ -31,8 +31,8 @@ pub use domains::auxiliary::{
     AuxiliaryRowMutationV1, AuxiliaryRowV1, AuxiliaryTrackRowV1,
 };
 pub use domains::generation::{
-    GenerationIdentityValidatePort, GenerationQuarantineReasonV1, GenerationStorageKeyV1,
-    IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort,
+    FinishedReclaims, GenerationIdentityValidatePort, GenerationQuarantineReasonV1,
+    GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort,
     InventoriedSealedGenerationV1, PinnedGenerationReadinessV1,
     QUARANTINE_TARGET_NOT_QUARANTINED_CODE, QuarantineDiscardOutcomeV1,
     QuarantinedGenerationDiscardPort, QuarantinedGenerationV1, SealedArtifactCommitmentV1,
@@ -91,6 +91,9 @@ pub use domains::read_view::{
     ReadIdentityV1, ReadViewRefusedError, RepoMetadataAuthoritiesV1, RepoMetadataAuthorityV1,
     RequiredDomainsV1, SemanticProfileV1, TextNormalizerVersionV1, declare_required_domains_v1,
     lexical_predicate_v1,
+};
+pub use domains::reclaim_area::{
+    RECLAIM_AREA_DIR_NAME, finish_interrupted_reclaims, reclaim_area, reclaim_directory,
 };
 pub use domains::repomap::{
     QuarantinedRepoMapFileV1, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,

@@ -343,6 +343,81 @@ fn a_refusal_met_by_the_reclaim_pass_fails_it_closed() -> TestRes {
     Ok(())
 }
 
+/// Every reclaim pass first finishes what interrupted reclaims left in each
+/// track's reclaim area (QI-BB-003 보완 #3, #4).
+///
+/// Nothing is retired — both tracks hold only the retained 3 and 4 — but
+/// the lexical area holds two interrupted reclaims and the semantic one.
+///
+/// 1. The lexical finish fails: the seal stands, the failure is counted
+///    once, the semantic entry is finished, and the lexical entries stay
+///    for the next pass.
+/// 2. Nothing fails: the lexical entries are finished too.
+///
+/// Every finished entry counts with its track's reclaimed generations and
+/// bytes, exactly once, and no retained generation is touched.
+#[test]
+fn every_pass_first_finishes_what_interrupted_reclaims_left() -> TestRes {
+    // (failures, finished, lexical (generations, bytes), semantic
+    // (generations, bytes), entries left (lexical, semantic))
+    type Tally = (u64, u64, (u64, u64), (u64, u64), (u64, u64));
+    let lexical_reclaim = ScriptedSealedReclaim::new(SearchPlaneTrackKind::Lexical, &[3, 4]);
+    let semantic_reclaim = ScriptedSealedReclaim::new(SearchPlaneTrackKind::Semantic, &[3, 4]);
+    let idempotency = memory_catalog();
+    let materializer = reclaim_materializer(&lexical_reclaim, &semantic_reclaim, &idempotency);
+    let mut batch = fixture_search_corpus_batch()?;
+    batch.generation = ManifestGeneration::new(4);
+    let retention = SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
+        &batch.repo_id,
+        &batch.revision_id,
+        [ManifestGeneration::new(3), ManifestGeneration::new(4)],
+    );
+    lexical_reclaim.leave_interrupted(2);
+    semantic_reclaim.leave_interrupted(1);
+    // The scripted reclaim reports 10 bytes per finished entry.
+    let pass = |step: &str, expected: Tally| -> TestRes {
+        materializer.finalize_generation_v1(&batch, Some(&retention))?;
+        let gc = materializer.gc_stats()?;
+        let observed: Tally = (
+            gc.failures,
+            gc.interrupted_reclaims_finished,
+            (gc.lexical_reclaimed_generations, gc.lexical_reclaimed_bytes),
+            (
+                gc.semantic_reclaimed_generations,
+                gc.semantic_reclaimed_bytes,
+            ),
+            (
+                lexical_reclaim.interrupted_left(),
+                semantic_reclaim.interrupted_left(),
+            ),
+        );
+        if observed != expected {
+            return Err(format!("{step}: {observed:?}, expected {expected:?}").into());
+        }
+        Ok(())
+    };
+
+    lexical_reclaim.fail_next_finish();
+    pass(
+        "a lexical finish the storage failed",
+        (1, 1, (0, 0), (1, 10), (2, 0)),
+    )?;
+    pass(
+        "the next pass finishes the rest",
+        (1, 3, (2, 20), (1, 10), (0, 0)),
+    )?;
+    let untouched = (
+        lexical_reclaim.remaining(),
+        semantic_reclaim.remaining(),
+        lexical_reclaim.reclaimed(),
+        semantic_reclaim.reclaimed(),
+    );
+    if untouched != (vec![3, 4], vec![3, 4], Vec::new(), Vec::new()) {
+        return Err(format!("the retained generations are untouched: {untouched:?}").into());
+    }
+    Ok(())
+}
+
 /// The physical reclaim protocol under pins and orphans, and the
 /// idempotency records that live and die with each generation.
 ///

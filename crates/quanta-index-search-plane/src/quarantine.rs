@@ -532,6 +532,12 @@ pub(crate) mod tests {
                 absent: BTreeSet::new(),
             })
         }
+
+        fn finish_interrupted_reclaims(
+            &self,
+        ) -> Result<quanta_index_core::FinishedReclaims, CoreError> {
+            Ok(quanta_index_core::FinishedReclaims::default())
+        }
     }
 
     struct ScriptedRepoMap(Vec<QuarantinedRepoMapFileV1>);

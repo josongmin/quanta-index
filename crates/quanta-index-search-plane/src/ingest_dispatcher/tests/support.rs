@@ -2,7 +2,7 @@
 //! catalogs, port doubles, and batch builders.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use quanta_index_contract::{
@@ -15,12 +15,12 @@ use quanta_index_contract::{
     SourceRoleV1,
 };
 use quanta_index_core::{
-    CoreError, GenerationIdentityValidatePort, IdempotencyBeginV1, IdempotencyCatalogPort,
-    IdempotencyKeyV1, IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort,
-    IngestResourcePolicy, RequestBudgetV1, SealedGenerationBytesV1,
-    SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, SemanticIngestHeaderV1,
-    SemanticIngestPort, SemanticScopeSource, SemanticScopeStreamBuildPort, SemanticStreamTallyV1,
-    SemanticStreamWindowPolicy, TextEmbeddingProvider,
+    CoreError, FinishedReclaims, GenerationIdentityValidatePort, IdempotencyBeginV1,
+    IdempotencyCatalogPort, IdempotencyKeyV1, IncompleteGenerationDiscardOutcomeV1,
+    IncompleteGenerationDiscardPort, IngestResourcePolicy, RequestBudgetV1,
+    SealedGenerationBytesV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
+    SemanticIngestHeaderV1, SemanticIngestPort, SemanticScopeSource, SemanticScopeStreamBuildPort,
+    SemanticStreamTallyV1, SemanticStreamWindowPolicy, TextEmbeddingProvider,
 };
 
 use quanta_index_ipc::stamp_batch_digest_v1;
@@ -515,6 +515,10 @@ impl SealedGenerationReclaimPort for NoStorageSealedReclaim {
             absent: generations.clone(),
         })
     }
+
+    fn finish_interrupted_reclaims(&self) -> Result<FinishedReclaims, CoreError> {
+        Ok(FinishedReclaims::default())
+    }
 }
 
 pub(super) fn no_storage_sealed_reclaim() -> Arc<dyn SealedGenerationReclaimPort + Send + Sync> {
@@ -534,6 +538,10 @@ pub(super) struct ScriptedSealedReclaim {
     /// When set, the next listing is refused typed, as a directory whose
     /// identity contradicts its path is.
     pub(super) refuse_next_listing: AtomicBool,
+    /// Entries an interrupted reclaim left in the reclaim area.
+    pub(super) interrupted: AtomicU64,
+    /// When set, the next finish of interrupted reclaims fails.
+    pub(super) fail_next_finish: AtomicBool,
 }
 
 impl ScriptedSealedReclaim {
@@ -551,7 +559,24 @@ impl ScriptedSealedReclaim {
             fail_next: Mutex::new(None),
             failing_listings: AtomicUsize::new(0),
             refuse_next_listing: AtomicBool::new(false),
+            interrupted: AtomicU64::new(0),
+            fail_next_finish: AtomicBool::new(false),
         })
+    }
+
+    /// Leave `entries` interrupted reclaims in the reclaim area, as a crash
+    /// between the move and the removal would.
+    pub(super) fn leave_interrupted(&self, entries: u64) {
+        self.interrupted.store(entries, Ordering::SeqCst);
+    }
+
+    pub(super) fn fail_next_finish(&self) {
+        self.fail_next_finish.store(true, Ordering::SeqCst);
+    }
+
+    /// Interrupted reclaims still in the reclaim area.
+    pub(super) fn interrupted_left(&self) -> u64 {
+        self.interrupted.load(Ordering::SeqCst)
     }
 
     pub(super) fn refuse_next_listing(&self) {
@@ -687,6 +712,19 @@ impl SealedGenerationReclaimPort for ScriptedSealedReclaim {
         let bytes = u64::try_from(generations.len().saturating_sub(absent.len()))
             .map_or(u64::MAX, |present| present);
         Ok(SealedGenerationBytesV1 { bytes, absent })
+    }
+
+    fn finish_interrupted_reclaims(&self) -> Result<FinishedReclaims, CoreError> {
+        if self.fail_next_finish.swap(false, Ordering::SeqCst) {
+            return Err(CoreError::Storage(
+                "scripted reclaim: injected failure finishing interrupted reclaims".to_string(),
+            ));
+        }
+        let entries = self.interrupted.swap(0, Ordering::SeqCst);
+        Ok(FinishedReclaims {
+            entries,
+            bytes: entries.saturating_mul(10),
+        })
     }
 }
 

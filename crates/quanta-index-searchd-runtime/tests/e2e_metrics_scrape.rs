@@ -348,7 +348,17 @@ fn boot_gauges_match_the_boot_inventory_and_the_writer_envelope_reflects_the_sea
         .ok_or("the harness holds the boot inventory while the driver runs")?
         .clone();
 
-    let expected_boot: [(&str, u64); 13] = [
+    let interrupted = |report: &quanta_index_searchd::app::TrackInventoryReportV1| match &report
+        .interrupted_reclaims
+    {
+        quanta_index_searchd::app::InterruptedReclaimsAtBoot::Finished(finished) => {
+            (finished.entries, 0_u64)
+        }
+        quanta_index_searchd::app::InterruptedReclaimsAtBoot::Unfinished(_message) => (0, 1),
+    };
+    let (lexical_finished, lexical_unfinished) = interrupted(&inventory.lexical);
+    let (semantic_finished, semantic_unfinished) = interrupted(&inventory.semantic);
+    let expected_boot: [(&str, u64); 17] = [
         (
             "boot_lexical_sealed_generations",
             u64::try_from(inventory.lexical.sealed_generations)?,
@@ -364,6 +374,22 @@ fn boot_gauges_match_the_boot_inventory_and_the_writer_envelope_reflects_the_sea
         (
             "boot_semantic_quarantined_generations",
             u64::try_from(inventory.semantic.quarantined.len())?,
+        ),
+        (
+            "boot_lexical_interrupted_reclaims_finished",
+            lexical_finished,
+        ),
+        (
+            "boot_lexical_interrupted_reclaims_unfinished",
+            lexical_unfinished,
+        ),
+        (
+            "boot_semantic_interrupted_reclaims_finished",
+            semantic_finished,
+        ),
+        (
+            "boot_semantic_interrupted_reclaims_unfinished",
+            semantic_unfinished,
         ),
         (
             "boot_active_pairs_validated",

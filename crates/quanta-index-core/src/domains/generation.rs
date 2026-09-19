@@ -291,6 +291,15 @@ impl GenerationStorageKeyV1 {
             .join(format!("g{}", generation.get()))
     }
 
+    /// The name `generation` of this family takes in the reclaim area of
+    /// its track while its removal is in progress
+    /// ([`crate::domains::reclaim_area::reclaim_directory`]): unique per family and
+    /// generation, and never a canonical family or generation name.
+    #[must_use]
+    pub fn reclaim_entry_name(&self, generation: ManifestGeneration) -> String {
+        format!("{}.g{}", self.as_str(), generation.get())
+    }
+
     /// The generation a directory named by [`Self::generation_dir`]
     /// denotes: `g<N>` in its one canonical spelling. `None` for any other
     /// name, including another spelling of a number (`g01`, `g+1`).
@@ -389,7 +398,12 @@ pub struct SealedGenerationBytesV1 {
 /// files and no open in flight can admit one), then reclaim. A crash between
 /// reap and reclaim leaves an orphan that the next sweep finds through
 /// [`Self::sealed_generations_for_pair`] and that boot reports as
-/// quarantined under [`GenerationQuarantineReasonV1::Orphaned`].
+/// quarantined under [`GenerationQuarantineReasonV1::Orphaned`]. The
+/// reclaim itself is crash-atomic ([`crate::domains::reclaim_area`]): the directory leaves
+/// the generation namespace by one durable rename before it is removed, so
+/// a crash or a failed removal leaves an entry in the track's reclaim area
+/// that [`Self::finish_interrupted_reclaims`] removes, never a half-removed
+/// generation.
 pub trait SealedGenerationReclaimPort: Send + Sync {
     fn reclaim_sealed_generation(
         &self,
@@ -416,6 +430,21 @@ pub trait SealedGenerationReclaimPort: Send + Sync {
         revision_id: &RevisionId,
         generations: &BTreeSet<ManifestGeneration>,
     ) -> Result<SealedGenerationBytesV1, CoreError>;
+
+    /// Remove what interrupted reclaims left in this track's reclaim area:
+    /// generations already out of the generation namespace whose removal a
+    /// crash or a failed removal cut short. Idempotent.
+    fn finish_interrupted_reclaims(&self) -> Result<FinishedReclaims, CoreError>;
+}
+
+/// What finishing the interrupted reclaims of a track did
+/// ([`SealedGenerationReclaimPort::finish_interrupted_reclaims`]).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FinishedReclaims {
+    /// Entries removed from the reclaim area.
+    pub entries: u64,
+    /// Bytes those entries occupied, each inode counted once.
+    pub bytes: u64,
 }
 
 /// Bytes of every regular file under `roots`, each inode counted once.
