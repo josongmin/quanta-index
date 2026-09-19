@@ -2934,6 +2934,50 @@ tests:
 
 **검증(coordinator, 97b1c80 위, 순차)**: fmt, check, 정책 lint 11종 + bench gate + CI pytest **227**, semgrep 0, workspace clippy keep-going 0, cargo-modules + public-api 일치(core baseline 2줄 순증), `just rust-doc`, unit 11 crate **1,503/0**(+8), searchd-runtime e2e **301/0**(+8: matrix 6, boot 마무리 1, 새 binary에 포함된 공용 harness test 1). 게이트 전에 고친 것: 공개 `reclaim_directory`가 받던 삭제 closure가 higher-ranked lifetime 오류를 냄 → seam을 test 전용 private 함수로 내림; lexical의 unused `File` import; e2e의 needless borrow 2건과 첫 doc 문단 길이 1건; 첫 e2e 실행에서 state root를 0755로 만들어 daemon이 `STATE_ROOT_INSECURE`로 거부 → harness `private_tempdir`(0700). lint가 잡은 구조 두 가지: hexagonal lint가 `domains/generation/` directory를 legacy로 거부 → 형제 module; test-authority가 catalog에 없는 새 target을 거부.
 
+## 3.66 QI-BB-029 완료 기준 #2 — crash 뒤 재시도된 seal이 pair의 두 track을 모두 기록해, 수렴한 generation이 activation된다; crash matrix가 seal까지 덮는다 (wave B13, 3f0596b)
+
+§3.50은 완료 기준 #2를 "plan 수준 MET, adapter 내부 failpoint BLOCKED"로 남겼다. fake 위의 plan test만 있었다. B12의 daemon crash
+matrix를 seal 경로로 넓히자 **실제 결함**이 드러났다.
+
+- **결함**: pair의 두 track이 ledger에서 주인이 달랐다.
+  - lexical track은 finalize가 기록했다.
+  - semantic track은 semantic materializer가 **자기가 build할 때만** 기록했다.
+  - seal과 authority 기록 사이에서 crash가 나면, restart한 daemon은 authority가 기록하지 않은 generation을 seed하지 않는다.
+  - 재시도된 seal은 disk에서 봉인된 semantic track을 찾고, 옳게도 다시 build하지 않는다. 그래서 아무도 그 track을 기록하지 않았다.
+  - 결과: seal은 ack되지만 그 generation의 activation이 거부된다(`candidate is not the currently sealed track identity … track=Semantic`,
+    observed generation 1). 수렴하지 않은 것이다.
+- **수정**: finalize가 **유일한 주인**이다. pair가 durable해지는 시점에 두 track을 모두 기록하며, batch가 그 track을 build했든 봉인된 채로
+  찾았든 같다. semantic materializer는 build·tally 검사·seal receipt만 하고 ledger를 들지 않는다(생성자에서 ledger 인자 삭제).
+
+**crash point**: GC 전용 module이던 것을 `search_plane::crash_point`(`QUANTA_INDEX_CRASH_POINT`, exit 86)로 옮기고, protocol 순서
+전체를 `ALL`로 선언한다. seal에 두 point를 추가했다.
+
+1. semantic seal 뒤 — lexical track은 build 전.
+2. authority 기록 전 — 두 track 모두 봉인·증명됨.
+
+`e2e_gc_crash_matrix`는 `e2e_crash_matrix`가 되었다. protocol마다 case 표가 있고, 각 case는 crash 직후 disk 상태를 기대값으로 갖는다.
+그 상태가 crash가 이름대로의 지점에서 났다는 증명이다. coverage test가 표를 `crash_point::ALL`에 묶어, case 없는 새 point는 착지할 수 없다.
+
+**티켓 완료 기준 대조(코드 기준)**
+
+| 티켓 bullet | 판정 | 근거 |
+| --- | --- | --- |
+| QI-BB-029 완료 기준 #2 lexical seal 직후~semantic seal/authority commit 각 failpoint에서 재시도가 같은 generation으로 수렴 | **MET**(§3.50의 plan 수준 → 실제 daemon) | e2e `every_seal_crash_converges_on_the_same_generation` 3 case(active 1 위에서 2를 seal): semantic seal 뒤 / authority 기록 전 / lexical seal 내부. 셋째는 authority 기록 전 crash 뒤 lexical sealed identity를 지워 만든다 — lexical seal은 identity를 마지막에 쓰므로("manifest first, identity last") crash가 lexical seal 안에서 남기는 상태와 정확히 같다. 각 case의 검증: (1) restart 뒤 2의 pin은 두 route 모두 not ready — lexical `NOT_READY`, semantic은 자기 exact code `SEMANTIC_GENERATION_NOT_MATERIALIZED`(core pin 정책 그대로: materialized head 너머는 serveable해질 수 있음). (2) boot가 외톨이 봉인 track의 half-sealed pair를 gauge로 보고(1/0/1). (3) 재시도 seal이 ack되고 2가 1 위로 activation, 두 generation이 두 route에서 응답. (4) crash가 봉인해 둔 track의 모든 파일은 inode·mtime이 같고, 봉인 안 된 track은 새로 쓰인다. 수정 전: 세 case 모두 activation 거부로 FAIL. 수정 후: PASS |
+| (§3.50 표기) adapter 내부 failpoint **BLOCKED** | **해소** | lexical seal 내부 상태는 위 셋째 case로 실제 daemon 위에서 증명. semantic promotion 경계는 기존 adapter subprocess crash test(`PRE_DATASET_PROMOTION`, `POST_DATASET_PRE_CONTRACT_PROMOTION`)가 덮는다 |
+
+tests:
+
+- e2e는 위 3 seal case, B12의 6 GC case(내용 불변), boot 마무리 1, coverage 1.
+- unit — plan 수준 retry test 셋이 restart 뒤처럼 **새 ledger**를 쓰고, 두 track이 batch의 generation·digest로 sealed이며 semantic
+  generation state도 sealed임을 요구한다(`pair_sealed_in_ledger`). 셋은 다음과 같다:
+  - 두 track 모두 봉인되어 있음
+  - lexical 봉인·semantic 부재
+  - lexical incomplete·semantic 봉인
+- semantic materializer test는 ledger 단언을 뺐다(ledger를 쓰지 않으므로).
+- Control Plane 문서(prompt-manager source; sync·lint·test)가 바뀐 module·변수 이름을 명시한다.
+
+**검증(coordinator, 03946bb 위, 순차)**: fmt, check, 정책 lint 11종 + bench gate + CI pytest **227**, semgrep 0, workspace clippy keep-going 0, cargo-modules + public-api 일치(변경 없음), `just rust-doc`, unit 11 crate **1,503/0**(수 불변: test를 더하지 않고 단언을 강화하고 이름을 바꿈), searchd-runtime e2e **298/0**(crash matrix의 test 함수가 8개에서 표 기반 5개로: 301 − 8 + 5). 게이트 전과 중에 고친 것: e2e의 첫 기대값 `UNKNOWN_GENERATION`이 core pin 정책과 달랐다(materialized head 너머의 pin은 not ready이고, semantic route는 자기 exact code) → 정책을 따르도록 수정; 첫 gate가 새 retry test doc 3개의 첫 문단 길이를 잡음 → 요약 한 줄과 본문으로 나눔. **fail-before**: 수정 전 tree에서 같은 e2e의 seal 3 case가 모두 activation 거부로 FAIL(log 보존).
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -2974,7 +3018,7 @@ tests:
 | QI-BB-026 | P1 | §3.13/§3.31/§3.53/§3.56 | gaps → **MET(A4, B3 c8121df)** | scrub이 찾은 손상(§3.53) + 문이 찾은 비활성 손상은 그 generation을 고르는 gate(activation·rollback)가 소유 adapter의 재증명으로 격리(문은 읽기로 남음, restart는 fail-closed); semantic active 손상 boot e2e(§3.56) | — |
 | QI-BB-027 | P2 | §3.23/§3.35/§3.53/§3.58 | gaps(**WRONG**) → **MET(A4, B5 9027b73)** | 형식 하나·segment 실제 build 파라미터(§3.53); recall@k·p95/p99·build time·index bytes를 current-HEAD artifact로(§3.58, 실측 기록) | — |
 | QI-BB-028 | P1 | §3.15/§3.53 | gaps → **MET(A4+coordinator)** | activation identity·sealed receipt·status가 row/membership root를 싣고, activation·rollback·restart가 proven open 안에서 대조, 불일치는 `SEMANTIC_ROW_ROOT_MISMATCH`로 승격 0(§3.53) | — |
-| QI-BB-029 | P1 | §3.11/§3.50/§3.56 | gaps(**WRONG**) → **MET(A5 0917d82, B3 c8121df)** 단 adapter 내부 crash failpoint **BLOCKED** | validate→intent 순서, raw IPC 7 + SDK fault matrix, corrupt half pair typed repair(§3.50); boot가 half-sealed pair를 report·gauge·log 한 줄로 이름(§3.56) | — |
+| QI-BB-029 | P1 | §3.11/§3.50/§3.56/§3.66 | gaps(**WRONG**) → **MET(A5 0917d82, B3 c8121df)** → 완료 기준 #2 실제 daemon crash matrix **MET(B13)** — matrix가 찾은 결함(재시도 seal 뒤 semantic track 미기록 → activation 거부)을 수정 | validate→intent 순서, raw IPC 7 + SDK fault matrix, corrupt half pair typed repair(§3.50); boot가 half-sealed pair를 report·gauge·log 한 줄로 이름(§3.56); finalize가 pair 두 track의 유일한 ledger 주인, seal crash 3 case(semantic seal 뒤 / authority 기록 전 / lexical seal 내부) 수렴·activation·파일 보존(§3.66) | — |
 | QI-BB-030 | P1 | §3.10/§3.48/§3.49 | **closed(A3 f0cf9c9 + A2 87d4450)** | manifest v4가 overlay·segment·text-authority 전부 commit, sealed generation 불변, 문 세 개(validator/open/proven open) 한 walk; activation 후 재open 없음(§3.49) | — |
 | QI-BB-031 | P2 | §3.15/§3.57/§3.58 | gaps → **MET(B4 1d56a71, B5 9027b73)** | query vector도 generation의 normalization 계약(`SEM_INVALID_VECTOR`); `L2Unit` generation의 모든 persisted row가 unit; cache hit/miss 혼합 batch = uncached batch bit 단위; raw norm drift metric(§3.57); artifact에 normalization policy(§3.58) | — |
 | QI-BB-032 | P2 | §3.16/§3.50 | gaps(**WRONG**) → **MET(A5)** 단 unsealed apply→finalize crash 창 재embed **BLOCKED**(track format) | canonical body digest + `BATCH_DIGEST_MISMATCH`, pair-bound record forget(pin 분리·never-sealed 포함), 1/8/32 동시 중복 1 apply(§3.50) | — |
@@ -3052,3 +3096,4 @@ tests:
 | 2026-09-18 | worktree 011 (7a5ce5e→034c4fd rebase) | agent: workspace clippy(0) + lexical 15 target·lq-norm 88·search-plane 285 + e2e text_route_hellgate 8·perf_chaos 43·dsl_scenarios 8·lexical_full_fidelity 1·dual_syntax_parity 4·full_corpus 4 + harness 77 + hexagonal/semgrep/module/error-shape/cargo-toml/derive/test-authority/deny; rebase 후 lexical carryforward 6 + goldens 8 | 전부 green (§3.33) |
 | 2026-09-20 | 97b1c80 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,565 passed / 0 failed / 2 ignored (B3–B10 + 후속 chain; fmt·check·workspace clippy·정책 lint 13종(module-cycles 포함)·deny·machete·bench build·workspace test·doc) |
 | 2026-09-20 | 97b1c80 | `just rust-fuzz-smoke` | 4 target × 61s 각각 완주, crash 0 |
+| 2026-09-20 | 03946bb | `just rust-profile verify-rust` | **INVALID** — 2,581 passed / 0 failed까지 진행한 뒤 catalog doctest가 `E0463 can't find crate`로 중단. 원인: coordinator가 같은 `test-workspace-lane`에서 B13 build를 동시에 돌렸다(자체 절차 위반). 같은 doctest(`cargow test -p quanta-index-catalog --doc`)를 단독으로 다시 돌리면 통과. 최종 HEAD에서 동시 build 없이 재검증한다 |
