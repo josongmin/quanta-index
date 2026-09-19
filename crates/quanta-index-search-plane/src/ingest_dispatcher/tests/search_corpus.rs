@@ -191,6 +191,158 @@ fn seed_records(
     Ok(())
 }
 
+/// A search-corpus materializer over fakes whose sealed-generation
+/// reclaim and idempotency catalog are the given scripted ones.
+fn reclaim_materializer(
+    lexical_reclaim: &Arc<ScriptedSealedReclaim>,
+    semantic_reclaim: &Arc<ScriptedSealedReclaim>,
+    idempotency: &Arc<MemoryIdempotencyCatalog>,
+) -> DirectSearchCorpusMaterializer {
+    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
+        Arc::new(DirectSemanticMaterializer::new(
+            Arc::new(FakeSemanticBuilder::default()),
+            Arc::new(RwLock::new(Ledger::new())),
+        ));
+    DirectSearchCorpusMaterializer::new_with_search_owned_semantics(SearchCorpusMaterializerParts {
+        builder: Arc::new(FakeSearchCorpusBuilder::default()),
+        ledger: Arc::new(RwLock::new(Ledger::new())),
+        semantic_ingest: semantic_materializer,
+        semantic_embedder: Arc::new(crate::HashingQueryTextEmbedder::new(
+            SEARCH_OWNED_SEMANTIC_DIMENSION,
+        )),
+        authority: Arc::new(RecordingSearchCorpusAuthority::default()),
+        lexical_generation_validator: always_valid_generation(),
+        semantic_generation_validator: always_valid_generation(),
+        semantic_content_roots: crate::content_roots_test_support::generation_keyed_content_roots(),
+        lexical_incomplete_discard: test_incomplete_generation_discard(),
+        semantic_incomplete_discard: test_incomplete_generation_discard(),
+        lexical_reclaim: lexical_reclaim.clone(),
+        semantic_reclaim: semantic_reclaim.clone(),
+        snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+        idempotency: idempotency.clone(),
+        resource_policy: IngestResourcePolicy::DEFAULT,
+        semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
+        auxiliary_catalog: memory_aux_catalog(),
+        auxiliary_coordinator: AuxiliaryMutationCoordinator::shared(),
+    })
+}
+
+/// Every step of a physical reclaim pass that fails after the seal is
+/// durable fails nothing, is counted once, and is redone by the next pass
+/// (QI-BB-020).
+///
+/// Both tracks hold sealed generations 1–4 and the catalog holds records
+/// for 1–3; every pass seals 4 retaining 3 and 4, so 1 and 2 are retired.
+///
+/// 1. The lexical reclaim of 1 fails, and the semantic listing fails in
+///    both of the pass's listings: lexical 2 is reclaimed, semantic
+///    nothing, and only 2's records go — the lexical listing proves 2
+///    broken, while 1, still held by lexical, proves nothing without the
+///    semantic listing.
+/// 2. The record forget fails: both tracks reclaim what is left of 1 and
+///    2, and 1's records stay.
+/// 3. The record listing fails: 1's records still stay.
+/// 4. Nothing fails: 1's records go.
+///
+/// Every seal succeeds, and the failure counter moves by exactly the
+/// steps each pass deferred: 2, 1, 1, then 0.
+#[test]
+fn a_reclaim_pass_step_failing_after_the_seal_is_durable_is_counted_and_redone() -> TestRes {
+    let lexical_reclaim = ScriptedSealedReclaim::new(SearchPlaneTrackKind::Lexical, &[1, 2, 3, 4]);
+    let semantic_reclaim =
+        ScriptedSealedReclaim::new(SearchPlaneTrackKind::Semantic, &[1, 2, 3, 4]);
+    let idempotency = memory_catalog();
+    let materializer = reclaim_materializer(&lexical_reclaim, &semantic_reclaim, &idempotency);
+    let mut batch = fixture_search_corpus_batch()?;
+    batch.generation = ManifestGeneration::new(4);
+    seed_records(&idempotency, &batch.repo_id, &batch.revision_id, &[1, 2, 3])?;
+    let retention = SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
+        &batch.repo_id,
+        &batch.revision_id,
+        [ManifestGeneration::new(3), ManifestGeneration::new(4)],
+    );
+    // (failures, lexical on disk, semantic on disk, generations with records)
+    let pass = |step: &str, expected: (u64, &[u64], &[u64], &[u64])| -> TestRes {
+        materializer.finalize_generation_v1(&batch, Some(&retention))?;
+        let failures = materializer.gc_stats()?.failures;
+        let lexical = lexical_reclaim.remaining();
+        let semantic = semantic_reclaim.remaining();
+        let records = idempotency.generations_with_records();
+        if (
+            failures,
+            lexical.as_slice(),
+            semantic.as_slice(),
+            records.as_slice(),
+        ) != expected
+        {
+            return Err(format!(
+                "{step}: failures={failures} lexical={lexical:?} semantic={semantic:?} records={records:?}, expected {expected:?}"
+            )
+            .into());
+        }
+        Ok(())
+    };
+
+    lexical_reclaim.fail_next_reclaim_of(1)?;
+    semantic_reclaim.fail_next_listings(2);
+    pass(
+        "a failed reclaim and a track that cannot be listed",
+        (2, &[1, 3, 4], &[1, 2, 3, 4], &[1, 3]),
+    )?;
+    idempotency.fail_next_forget();
+    pass("a failed record forget", (3, &[3, 4], &[3, 4], &[1, 3]))?;
+    idempotency.fail_next_listing();
+    pass("a failed record listing", (4, &[3, 4], &[3, 4], &[1, 3]))?;
+    pass(
+        "a clean pass redoes what is left",
+        (4, &[3, 4], &[3, 4], &[3]),
+    )?;
+    Ok(())
+}
+
+/// A refusal the reclaim pass meets is a finding, never a deferred step
+/// (QI-BB-020, §3.49).
+///
+/// The same pair as above, with the lexical listing refused as a directory
+/// whose identity contradicts its path is: the pass fails closed with the
+/// refusal's code, reclaims and forgets nothing, and counts no failure.
+#[test]
+fn a_refusal_met_by_the_reclaim_pass_fails_it_closed() -> TestRes {
+    let lexical_reclaim = ScriptedSealedReclaim::new(SearchPlaneTrackKind::Lexical, &[1, 2, 3, 4]);
+    let semantic_reclaim =
+        ScriptedSealedReclaim::new(SearchPlaneTrackKind::Semantic, &[1, 2, 3, 4]);
+    let idempotency = memory_catalog();
+    let materializer = reclaim_materializer(&lexical_reclaim, &semantic_reclaim, &idempotency);
+    let mut batch = fixture_search_corpus_batch()?;
+    batch.generation = ManifestGeneration::new(4);
+    seed_records(&idempotency, &batch.repo_id, &batch.revision_id, &[1, 2, 3])?;
+    let retention = SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
+        &batch.repo_id,
+        &batch.revision_id,
+        [ManifestGeneration::new(3), ManifestGeneration::new(4)],
+    );
+
+    lexical_reclaim.refuse_next_listing();
+    let refused = materializer.finalize_generation_v1(&batch, Some(&retention));
+    if !matches!(&refused, Err(CoreError::Typed { code, .. }) if code == "GENERATION_IDENTITY_SCOPE_MISMATCH")
+    {
+        return Err(format!("the refusal fails the pass closed, got {refused:?}").into());
+    }
+    let failures = materializer.gc_stats()?.failures;
+    let untouched = (
+        lexical_reclaim.remaining(),
+        semantic_reclaim.remaining(),
+        idempotency.generations_with_records(),
+    );
+    if failures != 0 || untouched != (vec![1, 2, 3, 4], vec![1, 2, 3, 4], vec![1, 2, 3]) {
+        return Err(format!(
+            "a refused pass defers, reclaims and forgets nothing: failures={failures} {untouched:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
 /// The physical reclaim protocol under pins and orphans, and the
 /// idempotency records that live and die with each generation.
 ///

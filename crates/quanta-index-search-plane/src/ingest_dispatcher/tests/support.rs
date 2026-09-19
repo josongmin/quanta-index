@@ -2,7 +2,7 @@
 //! catalogs, port doubles, and batch builders.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use quanta_index_contract::{
@@ -57,9 +57,36 @@ pub(crate) struct MemoryIdempotencyCatalog {
     /// Every `forget_generation` call, in order, with how many records it
     /// dropped: the oracle for "forgotten once, idempotently".
     forgets: Mutex<Vec<(ManifestGeneration, u64)>>,
+    /// The next `generations_for_pair` fails, as an I/O error would.
+    fail_next_listing: AtomicBool,
+    /// The next `forget_generation` fails before forgetting anything.
+    fail_next_forget: AtomicBool,
 }
 
 impl MemoryIdempotencyCatalog {
+    pub(crate) fn fail_next_listing(&self) {
+        self.fail_next_listing.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn fail_next_forget(&self) {
+        self.fail_next_forget.store(true, Ordering::SeqCst);
+    }
+
+    /// The generations that still hold a record, across pairs and routes.
+    pub(crate) fn generations_with_records(&self) -> Vec<u64> {
+        self.records.lock().map_or_else(
+            |_poisoned| Vec::new(),
+            |records| {
+                records
+                    .keys()
+                    .map(|key| key.generation.get())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect()
+            },
+        )
+    }
+
     pub(crate) fn records(&self) -> usize {
         self.records.lock().map_or(0, |records| records.len())
     }
@@ -171,6 +198,11 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
         repo_id: &RepoId,
         revision_id: &RevisionId,
     ) -> Result<Vec<ManifestGeneration>, CoreError> {
+        if self.fail_next_listing.swap(false, Ordering::SeqCst) {
+            return Err(CoreError::Storage(
+                "memory idempotency catalog: injected listing failure".to_string(),
+            ));
+        }
         let records = self
             .records
             .lock()
@@ -190,6 +222,11 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
         revision_id: &RevisionId,
         generation: ManifestGeneration,
     ) -> Result<u64, CoreError> {
+        if self.fail_next_forget.swap(false, Ordering::SeqCst) {
+            return Err(CoreError::Storage(
+                "memory idempotency catalog: injected forget failure".to_string(),
+            ));
+        }
         let mut records = self
             .records
             .lock()
@@ -490,6 +527,13 @@ pub(super) struct ScriptedSealedReclaim {
     pub(super) track: SearchPlaneTrackKind,
     pub(super) on_disk: Mutex<Vec<ManifestGeneration>>,
     pub(super) reclaimed: Mutex<Vec<ManifestGeneration>>,
+    /// The generation whose next reclaim fails, as an I/O error would.
+    pub(super) fail_next: Mutex<Option<ManifestGeneration>>,
+    /// How many of the next listings fail.
+    pub(super) failing_listings: AtomicUsize,
+    /// When set, the next listing is refused typed, as a directory whose
+    /// identity contradicts its path is.
+    pub(super) refuse_next_listing: AtomicBool,
 }
 
 impl ScriptedSealedReclaim {
@@ -504,7 +548,29 @@ impl ScriptedSealedReclaim {
                     .collect(),
             ),
             reclaimed: Mutex::new(Vec::new()),
+            fail_next: Mutex::new(None),
+            failing_listings: AtomicUsize::new(0),
+            refuse_next_listing: AtomicBool::new(false),
         })
+    }
+
+    pub(super) fn refuse_next_listing(&self) {
+        self.refuse_next_listing.store(true, Ordering::SeqCst);
+    }
+
+    /// Make the next `count` listings of the pair's sealed generations fail.
+    pub(super) fn fail_next_listings(&self, count: usize) {
+        self.failing_listings.store(count, Ordering::SeqCst);
+    }
+
+    /// Make the next reclaim of `generation` fail before removing anything.
+    pub(super) fn fail_next_reclaim_of(&self, generation: u64) -> Result<(), CoreError> {
+        *self
+            .fail_next
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("scripted reclaim poisoned: {err}")))? =
+            Some(ManifestGeneration::new(generation));
+        Ok(())
     }
 
     pub(super) fn reclaimed(&self) -> Vec<u64> {
@@ -535,6 +601,18 @@ impl SealedGenerationReclaimPort for ScriptedSealedReclaim {
         &self,
         retired: &GenerationSnapshot,
     ) -> Result<SealedGenerationReclaimOutcomeV1, CoreError> {
+        let mut fail_next = self
+            .fail_next
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("scripted reclaim poisoned: {err}")))?;
+        if *fail_next == Some(retired.manifest_generation) {
+            *fail_next = None;
+            return Err(CoreError::Storage(format!(
+                "scripted reclaim: injected failure removing generation {}",
+                retired.manifest_generation.get()
+            )));
+        }
+        drop(fail_next);
         let mut on_disk = self
             .on_disk
             .lock()
@@ -559,6 +637,22 @@ impl SealedGenerationReclaimPort for ScriptedSealedReclaim {
         repo_id: &RepoId,
         revision_id: &RevisionId,
     ) -> Result<Vec<GenerationSnapshot>, CoreError> {
+        if self.refuse_next_listing.swap(false, Ordering::SeqCst) {
+            return Err(CoreError::Typed {
+                code: "GENERATION_IDENTITY_SCOPE_MISMATCH".to_string(),
+                message: "scripted reclaim: injected identity contradicting its path".to_string(),
+            });
+        }
+        let failing =
+            self.failing_listings
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                });
+        if failing.is_ok() {
+            return Err(CoreError::Storage(
+                "scripted reclaim: injected listing failure".to_string(),
+            ));
+        }
         Ok(self
             .on_disk
             .lock()

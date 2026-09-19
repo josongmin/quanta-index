@@ -29,6 +29,29 @@ pub(super) struct SearchCorpusPhysicalReclaimReceiptV1 {
     /// generation is no longer a whole sealed pair on disk (QI-BB-032
     /// retention), with how many records each forget dropped.
     pub(crate) forgotten_records: BTreeMap<ManifestGeneration, u64>,
+    /// The steps this pass could not complete (QI-BB-020).
+    pub(crate) deferred: BTreeSet<DeferredGcStep>,
+}
+
+/// One step of a physical reclaim pass the storage failed after the seal it
+/// follows was durable (QI-BB-020).
+///
+/// The seal stands. Every step's input is still on disk or in the
+/// catalog, and the pass derives its work from the disk and the catalog,
+/// never from an earlier pass, so the next pass of the pair finds it again.
+/// A refusal is never deferred ([`crate::post_durable`]).
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum DeferredGcStep {
+    /// A track's sealed generations could not be listed.
+    ListSealed(SearchPlaneTrackKind),
+    /// A retired generation could not be reclaimed; it is still on disk.
+    Reclaim(SearchPlaneTrackKind, ManifestGeneration),
+    /// The generations the pair holds idempotency records for could not be
+    /// listed.
+    ListRecords,
+    /// The records of a generation that is no longer whole could not be
+    /// forgotten.
+    ForgetRecords(ManifestGeneration),
 }
 
 pub(super) fn generation_pair_from_batch_v1(

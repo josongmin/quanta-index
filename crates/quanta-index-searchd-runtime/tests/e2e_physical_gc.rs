@@ -388,6 +388,9 @@ fn gc_metrics_report_reclaimed_and_retained_bytes_that_match_the_disk() -> TestR
     if after.counter("search_corpus_gc_deferred_pinned_total")? != 0 {
         return Err("nothing held the reaped generation; nothing is deferred".into());
     }
+    if after.counter("search_corpus_gc_failures_total")? != 0 {
+        return Err("a clean pass records no reclaim failure (QI-BB-020)".into());
+    }
     let per_track = after
         .counter("search_corpus_gc_lexical_reclaimed_bytes_total")?
         .saturating_add(after.counter("search_corpus_gc_semantic_reclaimed_bytes_total")?);

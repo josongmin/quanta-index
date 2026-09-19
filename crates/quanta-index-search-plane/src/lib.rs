@@ -19,6 +19,7 @@ mod history_text;
 mod ingest_dispatcher;
 mod lowering;
 mod observability;
+mod post_durable;
 mod quarantine;
 mod query_dispatcher;
 mod query_embedder;

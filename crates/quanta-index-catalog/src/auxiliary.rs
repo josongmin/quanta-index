@@ -178,6 +178,24 @@ fn clear_family(
         .map_err(|error| engine_error("clear auxiliary family", path, &error))
 }
 
+fn forget_generation(
+    connection: &Connection,
+    path: &Path,
+    generation: &AuxiliaryGenerationKeyV1,
+) -> Result<usize, CoreError> {
+    connection
+        .execute(
+            "DELETE FROM auxiliary_rows_v1
+             WHERE repo_id = ?1 AND revision_id = ?2 AND generation = ?3",
+            params![
+                generation.repo_id.as_str(),
+                generation.revision_id.as_str(),
+                generation_i64(generation.generation)?,
+            ],
+        )
+        .map_err(|error| engine_error("forget auxiliary generation", path, &error))
+}
+
 fn upsert_track(
     connection: &Connection,
     path: &Path,
@@ -371,6 +389,10 @@ impl AuxiliaryAuthorityCatalogPort for SqliteCatalog {
                         *family,
                     )?);
                 }
+                AuxiliaryRowMutationV1::ForgetGeneration(generation) => {
+                    deleted =
+                        deleted.saturating_add(forget_generation(&transaction, &path, generation)?);
+                }
             }
         }
         for track in &batch.tracks {
@@ -402,27 +424,5 @@ impl AuxiliaryAuthorityCatalogPort for SqliteCatalog {
         let outcome = scan_tracks(&connection, &self.path);
         drop(connection);
         outcome
-    }
-
-    fn forget_generation(
-        &self,
-        repo_id: &RepoId,
-        revision_id: &RevisionId,
-        generation: ManifestGeneration,
-    ) -> Result<u64, CoreError> {
-        let connection = self.lock()?;
-        let removed = connection
-            .execute(
-                "DELETE FROM auxiliary_rows_v1
-                 WHERE repo_id = ?1 AND revision_id = ?2 AND generation = ?3",
-                params![
-                    repo_id.as_str(),
-                    revision_id.as_str(),
-                    generation_i64(generation)?
-                ],
-            )
-            .map_err(|error| engine_error("forget auxiliary generation", &self.path, &error))?;
-        drop(connection);
-        count_u64("removed-row", removed)
     }
 }

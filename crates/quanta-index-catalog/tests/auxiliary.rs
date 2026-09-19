@@ -9,8 +9,10 @@
 //!    every other row byte-identical.
 //! 4. A row whose stored bytes no longer match its digest is a typed
 //!    `CATALOG_ROW_CORRUPT` on scan, never served.
-//! 5. Forgetting a generation removes exactly its rows, across domains, and
-//!    leaves track rows alone.
+//! 5. A generation forget removes exactly that generation's rows, across
+//!    domains, in the same transaction as the batch's other rows, leaves
+//!    track rows alone, and in a batch that cannot be written removes
+//!    nothing.
 //! 6. Track rows round-trip and are verified.
 
 #![forbid(unsafe_code)]
@@ -23,8 +25,9 @@ use quanta_index_catalog::{CATALOG_FILE_NAME, SqliteCatalog, catalog_dir};
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind};
 use quanta_index_core::{
     AuxiliaryAuthorityCatalogPort, AuxiliaryDomainV1, AuxiliaryGenerationKeyV1,
-    AuxiliaryMutationBatchV1, AuxiliaryRowFamilyV1, AuxiliaryRowKeyV1, AuxiliaryRowMutationV1,
-    AuxiliaryRowV1, AuxiliaryTrackRowV1, CATALOG_ROW_CORRUPT_CODE, CoreError,
+    AuxiliaryMutationBatchV1, AuxiliaryMutationReceiptV1, AuxiliaryRowFamilyV1, AuxiliaryRowKeyV1,
+    AuxiliaryRowMutationV1, AuxiliaryRowV1, AuxiliaryTrackRowV1, CATALOG_ROW_CORRUPT_CODE,
+    CoreError,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -61,6 +64,20 @@ fn row(
     AuxiliaryRowV1 {
         key: key(domain, generation_number, family, row_key),
         value: value.as_bytes().to_vec(),
+    }
+}
+
+/// A row under a generation past the engine's integer column: any batch
+/// carrying it is refused.
+fn unwritable_row() -> AuxiliaryRowV1 {
+    AuxiliaryRowV1 {
+        key: AuxiliaryRowKeyV1 {
+            domain: AuxiliaryDomainV1::History,
+            generation: generation(u64::MAX),
+            family: AuxiliaryRowFamilyV1::Commit,
+            row_key: b"z".to_vec(),
+        },
+        value: b"never".to_vec(),
     }
 }
 
@@ -191,19 +208,6 @@ fn a_batch_applies_in_order_and_reads_back_verified_in_key_order() -> TestResult
 fn a_batch_that_cannot_be_written_writes_nothing() -> TestResult {
     let temp = tempfile::tempdir()?;
     let catalog = open(temp.path())?;
-    let unwritable = AuxiliaryRowV1 {
-        key: AuxiliaryRowKeyV1 {
-            domain: AuxiliaryDomainV1::History,
-            generation: AuxiliaryGenerationKeyV1 {
-                repo_id: RepoId::new("repo-aux"),
-                revision_id: RevisionId::new("rev-aux"),
-                generation: ManifestGeneration::new(u64::MAX),
-            },
-            family: AuxiliaryRowFamilyV1::Commit,
-            row_key: b"z".to_vec(),
-        },
-        value: b"never".to_vec(),
-    };
     let refused = catalog
         .apply(&AuxiliaryMutationBatchV1 {
             rows: vec![
@@ -214,7 +218,7 @@ fn a_batch_that_cannot_be_written_writes_nothing() -> TestResult {
                     "a",
                     "commit-a",
                 )),
-                AuxiliaryRowMutationV1::Upsert(unwritable),
+                AuxiliaryRowMutationV1::Upsert(unwritable_row()),
             ],
             tracks: Vec::new(),
         })
@@ -364,6 +368,8 @@ fn a_row_that_does_not_match_its_digest_is_refused_typed() -> TestResult {
     Ok(())
 }
 
+/// A generation forget is one more mutation of the batch it rides in: it
+/// lands with the batch's other rows or not at all.
 #[test]
 fn forgetting_a_generation_drops_exactly_its_rows_across_domains() -> TestResult {
     let temp = tempfile::tempdir()?;
@@ -406,25 +412,61 @@ fn forgetting_a_generation_drops_exactly_its_rows_across_domains() -> TestResult
             value: b"track".to_vec(),
         }],
     })?;
-    let removed = catalog.forget_generation(
-        &RepoId::new("repo-aux"),
-        &RevisionId::new("rev-aux"),
-        ManifestGeneration::new(1),
-    )?;
-    if removed != 3 {
-        return Err(format!("expected 3 rows forgotten, got {removed}").into());
+    let refused = catalog.apply(&AuxiliaryMutationBatchV1 {
+        rows: vec![
+            AuxiliaryRowMutationV1::ForgetGeneration(generation(1)),
+            AuxiliaryRowMutationV1::Upsert(unwritable_row()),
+        ],
+        tracks: Vec::new(),
+    });
+    if !matches!(refused, Err(CoreError::InvalidContract(_))) {
+        return Err(format!("the unwritable batch must be refused, got {refused:?}").into());
+    }
+    if all_rows(&catalog)?.len() != 4 {
+        return Err("a refused batch must forget nothing".into());
+    }
+    let receipt = catalog.apply(&AuxiliaryMutationBatchV1 {
+        rows: vec![
+            AuxiliaryRowMutationV1::Upsert(row(
+                AuxiliaryDomainV1::Structural,
+                3,
+                AuxiliaryRowFamilyV1::Chunk,
+                "c",
+                "g3",
+            )),
+            AuxiliaryRowMutationV1::ForgetGeneration(generation(1)),
+        ],
+        tracks: Vec::new(),
+    })?;
+    let expected = AuxiliaryMutationReceiptV1 {
+        rows_written: 1,
+        rows_deleted: 3,
+    };
+    if receipt != expected {
+        return Err(format!(
+            "the receipt counts one write and generation 1's three rows, got {receipt:?}"
+        )
+        .into());
     }
     let rows = all_rows(&catalog)?;
-    if rows
-        != vec![row(
+    let survivors = vec![
+        row(
             AuxiliaryDomainV1::History,
             2,
             AuxiliaryRowFamilyV1::Commit,
             "a",
             "g2",
-        )]
-    {
-        return Err(format!("another generation's rows must survive: {rows:?}").into());
+        ),
+        row(
+            AuxiliaryDomainV1::Structural,
+            3,
+            AuxiliaryRowFamilyV1::Chunk,
+            "c",
+            "g3",
+        ),
+    ];
+    if rows != survivors {
+        return Err(format!("only generation 1's rows may go: {rows:?}").into());
     }
     let tracks = catalog.track_rows()?;
     if tracks.len() != 1 || tracks.first().map(|track| track.value.as_slice()) != Some(b"track") {

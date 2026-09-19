@@ -1250,7 +1250,7 @@ pub(crate) mod testing {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Mutex;
 
-    use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind};
+    use quanta_index_contract::{RepoId, RevisionId, SearchPlaneTrackKind};
     use quanta_index_core::CoreError;
 
     /// An in-memory auxiliary row catalog with the port's transaction
@@ -1350,6 +1350,15 @@ pub(crate) mod testing {
                             })?,
                         );
                     }
+                    quanta_index_core::AuxiliaryRowMutationV1::ForgetGeneration(generation) => {
+                        let before = rows.len();
+                        rows.retain(|key, _value| key.generation != *generation);
+                        deleted = deleted.saturating_add(
+                            u64::try_from(before.saturating_sub(rows.len())).map_err(|err| {
+                                CoreError::Storage(format!("count overflow: {err}"))
+                            })?,
+                        );
+                    }
                 }
             }
             drop(rows);
@@ -1416,26 +1425,6 @@ pub(crate) mod testing {
                     }
                 })
                 .collect())
-        }
-
-        fn forget_generation(
-            &self,
-            repo_id: &RepoId,
-            revision_id: &RevisionId,
-            generation: ManifestGeneration,
-        ) -> Result<u64, CoreError> {
-            let mut rows = self
-                .rows
-                .lock()
-                .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
-            let before = rows.len();
-            rows.retain(|key, _value| {
-                !(key.generation.repo_id == *repo_id
-                    && key.generation.revision_id == *revision_id
-                    && key.generation.generation == generation)
-            });
-            u64::try_from(before.saturating_sub(rows.len()))
-                .map_err(|err| CoreError::Storage(format!("count overflow: {err}")))
         }
     }
 }

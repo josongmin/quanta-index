@@ -289,9 +289,10 @@ impl HistoryIngestPort for DirectHistoryMaterializer {
                     ))
                 })?;
             // The delta is durable and served from here on: epochs still
-            // held by a reader, and any discard that fails, are left to the
-            // next mutation of the generation, which reconciles again.
-            parts.reconcile_after_durable(&delta.generation, &retained);
+            // held by a reader, and any discard the storage fails, are left
+            // to the next mutation of the generation, which reconciles
+            // again; a refusal fails closed.
+            parts.reconcile_after_durable(&delta.generation, &retained)?;
         }
         let mut receipt = BatchPublishReceipt::empty_for(
             batch.generation,

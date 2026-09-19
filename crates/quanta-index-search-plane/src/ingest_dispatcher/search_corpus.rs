@@ -10,11 +10,11 @@ use quanta_index_contract::{
     SearchCorpusIngestBatch, SearchPlaneTrackKind,
 };
 use quanta_index_core::{
-    AuxiliaryAuthorityCatalogPort, CoreError, GenerationIdentityValidatePort,
-    IdempotencyCatalogPort, IncompleteGenerationDiscardPort, IngestBatchFootprint,
-    IngestResourcePolicy, MetricPointV1, MetricSourcePort, SealedGenerationReclaimOutcomeV1,
-    SealedGenerationReclaimPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
-    SemanticContentRootsPort, SemanticIngestPort, SemanticScopeSource as _,
+    AuxiliaryAuthorityCatalogPort, AuxiliaryGenerationKeyV1, AuxiliaryRowMutationV1, CoreError,
+    GenerationIdentityValidatePort, IdempotencyCatalogPort, IncompleteGenerationDiscardPort,
+    IngestBatchFootprint, IngestResourcePolicy, MetricPointV1, MetricSourcePort,
+    SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, SearchCorpusBatchBuildPort,
+    SearchCorpusIngestPort, SemanticContentRootsPort, SemanticIngestPort, SemanticScopeSource as _,
     SemanticStreamWindowPolicy, TextEmbeddingProvider, count_from_usize,
 };
 
@@ -26,11 +26,13 @@ use crate::ingest_dispatcher::errors::{
     ERR_SEARCH_CORPUS_GENERATION_CONFLICT,
 };
 use crate::ingest_dispatcher::generation_plan::{
-    SealedGenerationBuildPlanV1, SearchCorpusPhysicalReclaimReceiptV1, batch_publish_receipt_v1,
-    ensure_generation_is_mutable_v1, generation_pair_from_batch_v1, inspect_physical_generation_v1,
-    validate_delta_base_v1, validate_physical_generation_v1, validate_semantic_publish_receipt_v1,
+    DeferredGcStep, SealedGenerationBuildPlanV1, SearchCorpusPhysicalReclaimReceiptV1,
+    batch_publish_receipt_v1, ensure_generation_is_mutable_v1, generation_pair_from_batch_v1,
+    inspect_physical_generation_v1, validate_delta_base_v1, validate_physical_generation_v1,
+    validate_semantic_publish_receipt_v1,
 };
 use crate::ingest_dispatcher::ports::SearchCorpusAuthorityWritePort;
+use crate::post_durable::defer_storage_failure;
 use crate::readiness::{
     SEARCH_CORPUS_LOCK_STRIPES_V1, SearchCorpusHistoryRetentionReceiptV1,
     search_corpus_lock_stripe_v1,
@@ -118,6 +120,9 @@ pub struct SearchCorpusGcStats {
     /// Retired generations left on disk for a later pass because a
     /// resident handle still had holders.
     pub deferred_pinned: u64,
+    /// Reclaim-pass steps that failed after the seal they follow was
+    /// durable; each is found again by the next pass (QI-BB-020).
+    pub failures: u64,
     /// The index bytes the retained generations of every pair this
     /// process sealed occupy on disk, as retention last measured each
     /// pair: the number `max_bytes` is enforced against.
@@ -153,6 +158,9 @@ impl SearchCorpusGcStats {
         self.deferred_pinned = self
             .deferred_pinned
             .saturating_add(count_from_usize(receipt.deferred_pinned.len()));
+        self.failures = self
+            .failures
+            .saturating_add(count_from_usize(receipt.deferred.len()));
     }
 
     /// Bytes reclaimed on both tracks together.
@@ -361,6 +369,7 @@ impl MetricSourcePort for DirectSearchCorpusMaterializer {
                 gc.reclaimed_generations(),
             ),
             MetricPointV1::counter("search_corpus_gc_deferred_pinned_total", gc.deferred_pinned),
+            MetricPointV1::counter("search_corpus_gc_failures_total", gc.failures),
             MetricPointV1::counter(
                 "search_corpus_gc_lexical_reclaimed_bytes_total",
                 gc.lexical_reclaimed_bytes,
@@ -742,11 +751,22 @@ impl DirectSearchCorpusMaterializer {
         retention: Option<&SearchCorpusHistoryRetentionReceiptV1>,
     ) -> Result<(), CoreError> {
         const WHAT: &str = "direct search-corpus materialize";
-        // The chunk universe is durable before the generation is visible
-        // (QI-BB-020): validated against the ledger, written to the catalog,
-        // then applied under the write lock with the track bookkeeping.
+        if batch.seal && retention.is_none() {
+            return Err(CoreError::InvalidContract(
+                "direct search-corpus materialize: sealed generation requires durable retention receipt"
+                    .to_string(),
+            ));
+        }
+        // The chunk universe and the reap of the auxiliary generations the
+        // retention receipt retired are one durable transaction before the
+        // generation is visible (QI-BB-020): validated against the ledger,
+        // written to the catalog together, then applied under the write
+        // lock with the track bookkeeping. A failed transaction leaves the
+        // catalog and the ledger as they were, the retried seal redoes it.
+        // The coordinator serializes every auxiliary mutation, so the set
+        // read here is the set the write lock forgets.
         let _serial = self.auxiliary_coordinator.lock()?;
-        let chunks = {
+        let (chunks, reaped_auxiliary) = {
             let guard = self.ledger.read().map_err(|err| {
                 CoreError::Storage(format!(
                     "{WHAT}: ledger poisoned while finalizing generation: {err}"
@@ -757,16 +777,38 @@ impl DirectSearchCorpusMaterializer {
                 &batch.revision_id,
                 batch.generation,
             )?;
-            structural_chunks_transition(
+            let chunks = structural_chunks_transition(
                 guard.structural_state(&batch.repo_id, &batch.revision_id, batch.generation),
                 epoch,
                 batch,
-            )
+            );
+            // Auxiliary generations older than the one being sealed that the
+            // retention receipt does not retain go with it; a newer
+            // generation still being staged is never touched.
+            let reaped: Vec<ManifestGeneration> = retention.map_or_else(Vec::new, |retention| {
+                guard
+                    .auxiliary_generations_older_than(
+                        &batch.repo_id,
+                        &batch.revision_id,
+                        batch.generation,
+                    )
+                    .into_iter()
+                    .filter(|generation| !retention.retains(*generation))
+                    .collect()
+            });
+            drop(guard);
+            (chunks, reaped)
         };
-        let _durable = self
-            .auxiliary_catalog
-            .apply(&structural_chunks_delta_rows(&chunks)?)?;
-        let reaped_auxiliary = {
+        let mut delta = structural_chunks_delta_rows(&chunks)?;
+        delta.rows.extend(reaped_auxiliary.iter().map(|generation| {
+            AuxiliaryRowMutationV1::ForgetGeneration(AuxiliaryGenerationKeyV1 {
+                repo_id: batch.repo_id.clone(),
+                revision_id: batch.revision_id.clone(),
+                generation: *generation,
+            })
+        }));
+        let _durable = self.auxiliary_catalog.apply(&delta)?;
+        {
             let mut guard = self.ledger.write().map_err(|err| {
                 CoreError::Storage(format!(
                     "{WHAT}: ledger poisoned while finalizing generation: {err}"
@@ -779,11 +821,6 @@ impl DirectSearchCorpusMaterializer {
                     batch.generation,
                     retention,
                 )?;
-            } else if batch.seal {
-                return Err(CoreError::InvalidContract(
-                    "direct search-corpus materialize: sealed generation requires durable retention receipt"
-                        .to_string(),
-                ));
             }
             guard.apply_structural_chunks_delta(&chunks, std::time::Instant::now())?;
             guard.materialize_track(
@@ -808,31 +845,9 @@ impl DirectSearchCorpusMaterializer {
                     batch.manifest_digest.as_str(),
                 );
             }
-            // Auxiliary generations older than the one just sealed that the
-            // retention receipt does not retain go with it; a newer
-            // generation still being staged is never touched.
-            let reaped: Vec<ManifestGeneration> = retention.map_or_else(Vec::new, |retention| {
-                guard
-                    .auxiliary_generations_older_than(
-                        &batch.repo_id,
-                        &batch.revision_id,
-                        batch.generation,
-                    )
-                    .into_iter()
-                    .filter(|generation| !retention.retains(*generation))
-                    .collect()
-            });
-            for generation in &reaped {
+            for generation in &reaped_auxiliary {
                 guard.forget_auxiliary_generation(&batch.repo_id, &batch.revision_id, *generation);
             }
-            reaped
-        };
-        for generation in reaped_auxiliary {
-            let _removed = self.auxiliary_catalog.forget_generation(
-                &batch.repo_id,
-                &batch.revision_id,
-                generation,
-            )?;
         }
         // Forgotten generations' text indexes go with their rows, swept
         // from the disk against the generations the ledger still knows, so
@@ -855,7 +870,7 @@ impl DirectSearchCorpusMaterializer {
                 &batch.revision_id,
                 batch.generation,
                 &known,
-            );
+            )?;
         }
         if let Some(retention) = retention {
             let receipt = self.reclaim_retired_generations_v1(batch, retention)?;
@@ -878,23 +893,32 @@ impl DirectSearchCorpusMaterializer {
     /// deleted under a reader; the next pass will find it again, and boot
     /// lists it as an orphan meanwhile. Sweeping from the filesystem rather
     /// than from the receipt's reaped set is what makes a crash between
-    /// reap and reclaim recoverable. The receipt is kept: its bytes and
-    /// counts feed the `search_corpus_gc_…` metrics.
+    /// reap and reclaim recoverable — and a reclaim that fails recoverable
+    /// the same way: the seal it follows is durable and stands, so a
+    /// listing or reclaim the storage failed is recorded on the receipt as
+    /// a [`DeferredGcStep`], counted (`search_corpus_gc_failures_total`)
+    /// and found again by the next pass (QI-BB-020). What fails closed: a
+    /// refusal — a directory whose identity contradicts its path is a
+    /// finding a retry would only repeat (§3.49) — and process state, a
+    /// poisoned snapshot registry or a fence that cannot settle. The receipt is kept: its bytes and counts
+    /// feed the `search_corpus_gc_…` metrics.
     pub(super) fn reclaim_retired_generations_v1(
         &self,
         batch: &SearchCorpusIngestBatch,
         retention: &SearchCorpusHistoryRetentionReceiptV1,
     ) -> Result<SearchCorpusPhysicalReclaimReceiptV1, CoreError> {
         let mut receipt = SearchCorpusPhysicalReclaimReceiptV1::default();
-        let tracks: [(
-            &Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
-            SearchPlaneTrackKind,
-        ); 2] = [
-            (&self.lexical_reclaim, SearchPlaneTrackKind::Lexical),
-            (&self.semantic_reclaim, SearchPlaneTrackKind::Semantic),
-        ];
-        for (port, track) in tracks {
-            for retired in port.sealed_generations_for_pair(&batch.repo_id, &batch.revision_id)? {
+        for (port, track) in self.reclaim_tracks() {
+            let sealed = match port.sealed_generations_for_pair(&batch.repo_id, &batch.revision_id)
+            {
+                Ok(sealed) => sealed,
+                Err(error) => {
+                    defer_storage_failure(error)?;
+                    let _new = receipt.deferred.insert(DeferredGcStep::ListSealed(track));
+                    continue;
+                }
+            };
+            for retired in sealed {
                 let generation = retired.manifest_generation;
                 if retention.retains(generation) || generation >= batch.generation {
                     continue;
@@ -914,16 +938,35 @@ impl DirectSearchCorpusMaterializer {
                     let _deferred = receipt.deferred_pinned.insert((track, generation, holders));
                     continue;
                 }
-                match port.reclaim_sealed_generation(&retired)? {
-                    SealedGenerationReclaimOutcomeV1::Absent => {}
-                    SealedGenerationReclaimOutcomeV1::Reclaimed { bytes } => {
+                match port.reclaim_sealed_generation(&retired) {
+                    Ok(SealedGenerationReclaimOutcomeV1::Absent) => {}
+                    Ok(SealedGenerationReclaimOutcomeV1::Reclaimed { bytes }) => {
                         let _prior = receipt.reclaimed.insert((track, generation), bytes);
+                    }
+                    Err(error) => {
+                        defer_storage_failure(error)?;
+                        let _new = receipt
+                            .deferred
+                            .insert(DeferredGcStep::Reclaim(track, generation));
                     }
                 }
             }
         }
-        receipt.forgotten_records = self.forget_broken_pair_records_v1(batch)?;
+        self.forget_broken_pair_records_v1(batch, &mut receipt)?;
         Ok(receipt)
+    }
+
+    /// Both search-corpus tracks' reclaim ports, lexical first.
+    fn reclaim_tracks(
+        &self,
+    ) -> [(
+        &Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
+        SearchPlaneTrackKind,
+    ); 2] {
+        [
+            (&self.lexical_reclaim, SearchPlaneTrackKind::Lexical),
+            (&self.semantic_reclaim, SearchPlaneTrackKind::Semantic),
+        ]
     }
 
     /// Idempotency records live and die with their generation (QI-BB-032
@@ -941,48 +984,72 @@ impl DirectSearchCorpusMaterializer {
     /// afresh instead of being acked from a record that describes nothing.
     /// A track deferred under a pin still holds the generation, so its
     /// records survive until the pass that reclaims it. Forgetting is
-    /// idempotent; a crash between reclaim and forget is repaired by the
-    /// next pass.
+    /// idempotent; a crash between reclaim and forget, and a listing or
+    /// forget the storage failed (recorded on the receipt as a
+    /// [`DeferredGcStep`]), are repaired by the next pass (QI-BB-020); a
+    /// refusal fails closed.
     fn forget_broken_pair_records_v1(
         &self,
         batch: &SearchCorpusIngestBatch,
-    ) -> Result<BTreeMap<ManifestGeneration, u64>, CoreError> {
-        let mut whole: BTreeMap<ManifestGeneration, BTreeSet<SearchPlaneTrackKind>> =
+        receipt: &mut SearchCorpusPhysicalReclaimReceiptV1,
+    ) -> Result<(), CoreError> {
+        let mut held: BTreeMap<SearchPlaneTrackKind, BTreeSet<ManifestGeneration>> =
             BTreeMap::new();
-        let tracks: [(
-            &Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
-            SearchPlaneTrackKind,
-        ); 2] = [
-            (&self.lexical_reclaim, SearchPlaneTrackKind::Lexical),
-            (&self.semantic_reclaim, SearchPlaneTrackKind::Semantic),
-        ];
-        for (port, track) in tracks {
-            for sealed in port.sealed_generations_for_pair(&batch.repo_id, &batch.revision_id)? {
-                let _new = whole
-                    .entry(sealed.manifest_generation)
-                    .or_default()
-                    .insert(track);
+        for (port, track) in self.reclaim_tracks() {
+            match port.sealed_generations_for_pair(&batch.repo_id, &batch.revision_id) {
+                Ok(sealed) => {
+                    let _prior = held.insert(
+                        track,
+                        sealed
+                            .iter()
+                            .map(|sealed| sealed.manifest_generation)
+                            .collect(),
+                    );
+                }
+                Err(error) => {
+                    defer_storage_failure(error)?;
+                    let _new = receipt.deferred.insert(DeferredGcStep::ListSealed(track));
+                }
             }
         }
-        let mut forgotten = BTreeMap::new();
-        for generation in self
+        let generations = match self
             .idempotency
-            .generations_for_pair(&batch.repo_id, &batch.revision_id)?
+            .generations_for_pair(&batch.repo_id, &batch.revision_id)
         {
+            Ok(generations) => generations,
+            Err(error) => {
+                defer_storage_failure(error)?;
+                let _new = receipt.deferred.insert(DeferredGcStep::ListRecords);
+                return Ok(());
+            }
+        };
+        for generation in generations {
             if generation >= batch.generation {
                 continue;
             }
-            let held_on_both_tracks = whole.get(&generation).is_some_and(|held| held.len() == 2);
-            if held_on_both_tracks {
+            // One listed track lacking the generation proves it broken; a
+            // track that could not be listed proves nothing, so a
+            // generation every listed track holds waits for a pass that
+            // lists both.
+            let broken = held.values().any(|sealed| !sealed.contains(&generation));
+            if !broken {
                 continue;
             }
-            let records = self.idempotency.forget_generation(
-                &batch.repo_id,
-                &batch.revision_id,
-                generation,
-            )?;
-            let _prior = forgotten.insert(generation, records);
+            match self
+                .idempotency
+                .forget_generation(&batch.repo_id, &batch.revision_id, generation)
+            {
+                Ok(records) => {
+                    let _prior = receipt.forgotten_records.insert(generation, records);
+                }
+                Err(error) => {
+                    defer_storage_failure(error)?;
+                    let _new = receipt
+                        .deferred
+                        .insert(DeferredGcStep::ForgetRecords(generation));
+                }
+            }
         }
-        Ok(forgotten)
+        Ok(())
     }
 }

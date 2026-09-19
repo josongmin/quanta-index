@@ -216,6 +216,11 @@ pub enum AuxiliaryRowMutationV1 {
         generation: AuxiliaryGenerationKeyV1,
         family: AuxiliaryRowFamilyV1,
     },
+    /// Remove every row of every domain under one generation: the reap of
+    /// a generation retention retired, applied in the same transaction as
+    /// the rows of the seal that retired it (QI-BB-020), so the catalog
+    /// never holds the seal without the reap or the reap without the seal.
+    ForgetGeneration(AuxiliaryGenerationKeyV1),
 }
 
 /// The row changes one accepted batch amounts to, applied as one
@@ -239,7 +244,7 @@ impl AuxiliaryMutationBatchV1 {
 pub struct AuxiliaryMutationReceiptV1 {
     /// Rows written (inserted or replaced), track rows included.
     pub rows_written: u64,
-    /// Rows removed by deletes and family clears.
+    /// Rows removed by deletes, family clears and generation forgets.
     pub rows_deleted: u64,
 }
 
@@ -264,13 +269,4 @@ pub trait AuxiliaryAuthorityCatalogPort: Send + Sync {
 
     /// Every stored track row, verified.
     fn track_rows(&self) -> Result<Vec<AuxiliaryTrackRowV1>, CoreError>;
-
-    /// Remove every row of every domain under one generation; returns how
-    /// many rows went.
-    fn forget_generation(
-        &self,
-        repo_id: &RepoId,
-        revision_id: &RevisionId,
-        generation: ManifestGeneration,
-    ) -> Result<u64, CoreError>;
 }

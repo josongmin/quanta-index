@@ -36,6 +36,7 @@ use quanta_index_core::{
     HistoryTextSearcher, MetricPointV1, MetricSourcePort, RequestBudgetV1,
 };
 
+use crate::post_durable::defer_storage_failure;
 use crate::single_flight::{AwaitFlightFailure, Flight};
 use crate::snapshot_registry::SnapshotRetireOutcome;
 
@@ -70,16 +71,17 @@ impl HistoryTextIndexParts {
     ///
     /// The mutation stands whatever the discard does: its receipt answers
     /// for rows that are durable and served, and failing it would tell the
-    /// caller the opposite. A failed discard is counted
+    /// caller the opposite. A discard the storage failed is counted
     /// (`history_text_gc_failures_total`) and left where the next pass
     /// finds it: the next mutation of the generation reconciles its
-    /// durable epochs again.
+    /// durable epochs again. A refusal is a finding about the index on
+    /// disk, not a retry, and fails closed.
     pub fn reconcile_after_durable(
         &self,
         generation: &AuxiliaryGenerationKeyV1,
         retained: &[AuxEpochV1],
-    ) {
-        self.settle_gc(&self.reconcile_generation(generation, retained));
+    ) -> Result<(), CoreError> {
+        self.settle_gc(self.reconcile_generation(generation, retained))
     }
 
     /// Discard the indexes of every generation of the pair older than
@@ -89,7 +91,7 @@ impl HistoryTextIndexParts {
     /// Measured against the disk, not against the generations this pass
     /// forgot, so a generation whose discard failed on an earlier pass is
     /// found again here. A generation a reader still holds is deferred to
-    /// the next pass; a failed discard is counted like
+    /// the next pass; a failed listing or discard is settled like
     /// [`Self::reconcile_after_durable`]'s.
     pub fn sweep_forgotten_after_durable(
         &self,
@@ -97,32 +99,34 @@ impl HistoryTextIndexParts {
         revision_id: &RevisionId,
         below: ManifestGeneration,
         known: &BTreeSet<ManifestGeneration>,
-    ) {
+    ) -> Result<(), CoreError> {
         let durable = match self.port.durable_generations(repo_id, revision_id) {
             Ok(durable) => durable,
-            Err(error) => {
-                self.settle_gc::<()>(&Err(error));
-                return;
-            }
+            Err(error) => return self.settle_gc::<()>(Err(error)),
         };
         for generation in durable {
             if generation >= below || known.contains(&generation) {
                 continue;
             }
             self.settle_gc(
-                &self.retire_and_discard_generation(&AuxiliaryGenerationKeyV1 {
+                self.retire_and_discard_generation(&AuxiliaryGenerationKeyV1 {
                     repo_id: repo_id.clone(),
                     revision_id: revision_id.clone(),
                     generation,
                 }),
-            );
+            )?;
         }
+        Ok(())
     }
 
-    fn settle_gc<T>(&self, outcome: &Result<T, CoreError>) {
-        if outcome.is_err() {
+    /// Count a GC step the storage failed and let it wait for the next
+    /// pass; fail closed on a refusal.
+    fn settle_gc<T>(&self, outcome: Result<T, CoreError>) -> Result<(), CoreError> {
+        if let Err(error) = outcome {
+            defer_storage_failure(error)?;
             let _prior = self.gc_failures.fetch_add(1, Ordering::Relaxed);
         }
+        Ok(())
     }
 
     /// Claim the handle of `epoch`: a lookup, run under the ledger's read

@@ -39,6 +39,9 @@ pub(crate) struct MemoryHistoryTextIndex {
     fail_next_publish: std::sync::atomic::AtomicBool,
     /// When set, the next discard fails before removing anything.
     fail_next_discard: std::sync::atomic::AtomicBool,
+    /// When set, the next listing of a pair's generations is refused typed,
+    /// as the adapter refuses an entry that is not a generation.
+    refuse_next_listing: std::sync::atomic::AtomicBool,
 }
 
 impl MemoryHistoryTextIndex {
@@ -77,6 +80,11 @@ impl MemoryHistoryTextIndex {
     /// removing anything, as an I/O error would.
     pub(crate) fn fail_next_discard(&self) {
         self.fail_next_discard
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn refuse_next_listing(&self) {
+        self.refuse_next_listing
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
@@ -187,6 +195,15 @@ impl HistoryTextIndexPort for MemoryHistoryTextIndex {
         repo_id: &RepoId,
         revision_id: &RevisionId,
     ) -> Result<Vec<ManifestGeneration>, CoreError> {
+        if self
+            .refuse_next_listing
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(CoreError::Typed {
+                code: "HISTORY_TEXT_INDEX_FOREIGN_ENTRY".to_string(),
+                message: "memory history text index: injected foreign entry".to_string(),
+            });
+        }
         let generations: std::collections::BTreeSet<ManifestGeneration> =
             Self::lock(&self.epochs, "epochs")?
                 .keys()

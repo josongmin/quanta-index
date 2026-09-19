@@ -11,7 +11,8 @@ use quanta_index_core::{
 };
 
 use crate::ingest_dispatcher::auxiliary::{
-    DirectHistoryMaterializer, DirectRuntimeMetadataMaterializer, dirty_publish_receipt_v1,
+    AuxiliaryMaterializerParts, DirectHistoryMaterializer, DirectRuntimeMetadataMaterializer,
+    dirty_publish_receipt_v1,
 };
 use crate::ingest_dispatcher::ports::{HistoryIngestPort, RuntimeMetadataIngestPort};
 use crate::ingest_dispatcher::search_corpus::{
@@ -227,6 +228,42 @@ fn a_reader_holding_a_snapshot_neither_blocks_nor_sees_a_mutation() -> TestRes {
     Ok(())
 }
 
+/// A search-corpus materializer over fakes that shares `ledger` and the
+/// auxiliary catalog and coordinator of `aux`, for the seal's auxiliary
+/// bookkeeping.
+fn sealing_materializer(
+    ledger: &Arc<RwLock<Ledger>>,
+    aux: &AuxiliaryMaterializerParts,
+) -> DirectSearchCorpusMaterializer {
+    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
+        Arc::new(DirectSemanticMaterializer::new(
+            Arc::new(FakeSemanticBuilder::default()),
+            Arc::new(RwLock::new(Ledger::new())),
+        ));
+    DirectSearchCorpusMaterializer::new_with_search_owned_semantics(SearchCorpusMaterializerParts {
+        builder: Arc::new(FakeSearchCorpusBuilder::default()),
+        ledger: Arc::clone(ledger),
+        semantic_ingest: semantic_materializer,
+        semantic_embedder: Arc::new(crate::HashingQueryTextEmbedder::new(
+            SEARCH_OWNED_SEMANTIC_DIMENSION,
+        )),
+        authority: recording_search_corpus_authority(),
+        lexical_generation_validator: always_valid_generation(),
+        semantic_generation_validator: always_valid_generation(),
+        semantic_content_roots: crate::content_roots_test_support::generation_keyed_content_roots(),
+        lexical_incomplete_discard: test_incomplete_generation_discard(),
+        semantic_incomplete_discard: test_incomplete_generation_discard(),
+        lexical_reclaim: no_storage_sealed_reclaim(),
+        semantic_reclaim: no_storage_sealed_reclaim(),
+        snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+        idempotency: memory_catalog(),
+        resource_policy: IngestResourcePolicy::DEFAULT,
+        semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
+        auxiliary_catalog: aux.catalog.clone(),
+        auxiliary_coordinator: Arc::clone(&aux.coordinator),
+    })
+}
+
 /// QI-BB-020: retention forgets unretained auxiliary generations.
 ///
 /// Sealing a generation under a retention receipt forgets the
@@ -244,36 +281,7 @@ fn retention_forgets_auxiliary_generations_the_receipt_does_not_retain() -> Test
             vec![fixture_commit(1, &[])],
         ))?;
     }
-    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
-        Arc::new(DirectSemanticMaterializer::new(
-            Arc::new(FakeSemanticBuilder::default()),
-            Arc::new(RwLock::new(Ledger::new())),
-        ));
-    let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
-        SearchCorpusMaterializerParts {
-            builder: Arc::new(FakeSearchCorpusBuilder::default()),
-            ledger: Arc::clone(&ledger),
-            semantic_ingest: semantic_materializer,
-            semantic_embedder: Arc::new(crate::HashingQueryTextEmbedder::new(
-                SEARCH_OWNED_SEMANTIC_DIMENSION,
-            )),
-            authority: recording_search_corpus_authority(),
-            lexical_generation_validator: always_valid_generation(),
-            semantic_generation_validator: always_valid_generation(),
-            semantic_content_roots:
-                crate::content_roots_test_support::generation_keyed_content_roots(),
-            lexical_incomplete_discard: test_incomplete_generation_discard(),
-            semantic_incomplete_discard: test_incomplete_generation_discard(),
-            lexical_reclaim: no_storage_sealed_reclaim(),
-            semantic_reclaim: no_storage_sealed_reclaim(),
-            snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
-            idempotency: memory_catalog(),
-            resource_policy: IngestResourcePolicy::DEFAULT,
-            semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
-            auxiliary_catalog: catalog.clone(),
-            auxiliary_coordinator: aux.coordinator,
-        },
-    );
+    let materializer = sealing_materializer(&ledger, &aux);
     let mut batch = fixture_search_corpus_batch()?;
     batch.generation = ManifestGeneration::new(5);
     let receipt = SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
@@ -318,6 +326,83 @@ fn retention_forgets_auxiliary_generations_the_receipt_does_not_retain() -> Test
     if generations != BTreeSet::from([4, 5]) {
         return Err(format!(
             "catalog must hold exactly the retained generations, holds {generations:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// What the reap test observes: the catalog's generations, whether the
+/// ledger still holds generation 3's history, and the ledger's chunk count
+/// for generation 5.
+type ReapObservation = (BTreeSet<u64>, bool, Option<usize>);
+
+/// The reap of retired auxiliary generations and the sealed generation's
+/// chunk universe are one catalog transaction (QI-BB-020 보완 #4).
+///
+/// Generations 3 and 4 carry history; sealing 5 while retaining 4 and 5
+/// with the catalog's transaction failing is refused, and leaves the
+/// catalog and the ledger exactly as they were: 3 still in both, 5's
+/// chunks in neither. The retried seal reaps 3 and lands 5 in both, with
+/// one catalog transaction.
+#[test]
+fn a_seal_whose_reap_transaction_fails_changes_neither_catalog_nor_ledger() -> TestRes {
+    let ledger = Arc::new(RwLock::new(Ledger::new()));
+    let (aux, catalog) = aux_parts(Arc::clone(&ledger));
+    let history = DirectHistoryMaterializer::new(aux.clone());
+    for generation in [3, 4] {
+        let _receipt = history.publish_batch(&fixture_history_batch(
+            generation,
+            vec![fixture_commit(1, &[])],
+        ))?;
+    }
+    let materializer = sealing_materializer(&ledger, &aux);
+    let mut batch = fixture_search_corpus_batch()?;
+    batch.generation = ManifestGeneration::new(5);
+    let receipt = SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
+        &batch.repo_id,
+        &batch.revision_id,
+        [ManifestGeneration::new(4), ManifestGeneration::new(5)],
+    );
+    let observed = || -> Result<ReapObservation, Box<dyn std::error::Error>> {
+        let guard = ledger
+            .read()
+            .map_err(|err| format!("ledger poisoned: {err}"))?;
+        let holds_3 = guard
+            .history_state(
+                &batch.repo_id,
+                &batch.revision_id,
+                ManifestGeneration::new(3),
+            )
+            .is_some();
+        let chunks_5 = guard
+            .structural_state(
+                &batch.repo_id,
+                &batch.revision_id,
+                ManifestGeneration::new(5),
+            )
+            .map(|state| state.chunks().len());
+        drop(guard);
+        Ok((catalog.generations(), holds_3, chunks_5))
+    };
+
+    catalog.fail_next_apply();
+    let refused = materializer.finalize_generation_v1(&batch, Some(&receipt));
+    if !matches!(refused, Err(CoreError::Storage(_))) {
+        return Err(format!("the failed transaction refuses the seal, got {refused:?}").into());
+    }
+    let after_refusal = observed()?;
+    if after_refusal != (BTreeSet::from([3, 4]), true, None) {
+        return Err(format!("a refused seal changed state: {after_refusal:?}").into());
+    }
+
+    let applies = catalog.applies();
+    materializer.finalize_generation_v1(&batch, Some(&receipt))?;
+    let after_retry = observed()?;
+    let transactions = catalog.applies().saturating_sub(applies);
+    if after_retry != (BTreeSet::from([4, 5]), false, Some(1)) || transactions != 1 {
+        return Err(format!(
+            "the retried seal reaps 3 and lands 5 in one transaction: {after_retry:?} in {transactions}"
         )
         .into());
     }
@@ -375,37 +460,7 @@ fn forgotten_generations_text_indexes_are_swept_and_a_failed_discard_is_retried(
         AuxEpochV1::new(1),
         HistoryTextBuildV1::Full { docs: Vec::new() },
     )?;
-    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
-        Arc::new(DirectSemanticMaterializer::new(
-            Arc::new(FakeSemanticBuilder::default()),
-            Arc::new(RwLock::new(Ledger::new())),
-        ));
-    let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
-        SearchCorpusMaterializerParts {
-            builder: Arc::new(FakeSearchCorpusBuilder::default()),
-            ledger: Arc::clone(&ledger),
-            semantic_ingest: semantic_materializer,
-            semantic_embedder: Arc::new(crate::HashingQueryTextEmbedder::new(
-                SEARCH_OWNED_SEMANTIC_DIMENSION,
-            )),
-            authority: recording_search_corpus_authority(),
-            lexical_generation_validator: always_valid_generation(),
-            semantic_generation_validator: always_valid_generation(),
-            semantic_content_roots:
-                crate::content_roots_test_support::generation_keyed_content_roots(),
-            lexical_incomplete_discard: test_incomplete_generation_discard(),
-            semantic_incomplete_discard: test_incomplete_generation_discard(),
-            lexical_reclaim: no_storage_sealed_reclaim(),
-            semantic_reclaim: no_storage_sealed_reclaim(),
-            snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
-            idempotency: memory_catalog(),
-            resource_policy: IngestResourcePolicy::DEFAULT,
-            semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
-            auxiliary_catalog: catalog.clone(),
-            auxiliary_coordinator: aux.coordinator,
-        },
-    )
-    .with_history_text(history_text.clone());
+    let materializer = sealing_materializer(&ledger, &aux).with_history_text(history_text.clone());
     let durable = |generation: u64| -> Result<bool, Box<dyn std::error::Error>> {
         Ok(!index.durable_epochs(&key(generation))?.is_empty())
     };
@@ -448,6 +503,53 @@ fn forgotten_generations_text_indexes_are_swept_and_a_failed_discard_is_retried(
             durable(4)?
         )
         .into());
+    }
+    Ok(())
+}
+
+/// A refusal the history text sweep meets fails the seal closed rather
+/// than being counted as a deferred discard (QI-BB-020, §3.49).
+///
+/// Generations 3 and 4 carry text indexes; sealing 5 while retaining 4 and
+/// 5 with the index refusing its listing (as an entry that is not a
+/// generation is refused): the seal answers the refusal's code, counts no
+/// GC failure, and generation 3's index stays where it is.
+#[test]
+fn a_refused_history_text_listing_fails_the_seal_closed() -> TestRes {
+    let ledger = Arc::new(RwLock::new(Ledger::new()));
+    let (aux, _catalog) = aux_parts(Arc::clone(&ledger));
+    let index = MemoryHistoryTextIndex::shared();
+    let history_text = HistoryTextIndexParts::new(index.clone());
+    let history =
+        DirectHistoryMaterializer::new(aux.clone()).with_history_text(history_text.clone());
+    for generation in [3, 4] {
+        let _receipt = history.publish_batch(&fixture_history_batch(
+            generation,
+            vec![fixture_commit(1, &[])],
+        ))?;
+    }
+    let materializer = sealing_materializer(&ledger, &aux).with_history_text(history_text.clone());
+    let mut batch = fixture_search_corpus_batch()?;
+    batch.generation = ManifestGeneration::new(5);
+    let receipt = SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
+        &batch.repo_id,
+        &batch.revision_id,
+        [ManifestGeneration::new(4), ManifestGeneration::new(5)],
+    );
+
+    index.refuse_next_listing();
+    let refused = materializer.finalize_generation_v1(&batch, Some(&receipt));
+    if !matches!(&refused, Err(CoreError::Typed { code, .. }) if code == "HISTORY_TEXT_INDEX_FOREIGN_ENTRY")
+    {
+        return Err(format!("the refusal fails the seal closed, got {refused:?}").into());
+    }
+    let generation_3 = AuxiliaryGenerationKeyV1 {
+        repo_id: batch.repo_id.clone(),
+        revision_id: batch.revision_id,
+        generation: ManifestGeneration::new(3),
+    };
+    if gc_failures(&history_text)? != 0 || index.durable_epochs(&generation_3)?.is_empty() {
+        return Err("a refused sweep counts nothing and discards nothing".into());
     }
     Ok(())
 }
