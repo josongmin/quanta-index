@@ -19,8 +19,9 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, ExplainQueryPort, HybridFilterPlanV1, HybridOrchestratorPolicy,
-    LexicalCandidateExplanationV1, LexicalPolicy, LexicalScoreEngineV1, LexicalScoreTraceV1,
-    LexicalSearcher, QueryRouteV1, RequestBudgetV1, SemanticSearcher, validate_query_top_k,
+    LexicalCandidateExplanationV1, LexicalPageSpecV1, LexicalPolicy, LexicalScoreEngineV1,
+    LexicalScoreTraceV1, LexicalSearcher, QueryRouteV1, RequestBudgetV1, SemanticSearcher,
+    validate_query_top_k,
 };
 
 use crate::lower_lexical_text_query;
@@ -339,7 +340,12 @@ fn rederive_hybrid_lanes(
     let internal_top_k = hybrid_probe_top_k_v1(top_k)?;
     budget.checkpoint("explain:lexical-lane")?;
     let mut lex_rows = lex_searcher
-        .search_constrained(&lanes.query, &lanes.constraints, internal_top_k, budget)?
+        .search_constrained(
+            &lanes.query,
+            &lanes.constraints,
+            &LexicalPageSpecV1::first(internal_top_k),
+            budget,
+        )?
         .candidates;
     stabilize_ranked_candidates(&mut lex_rows);
     let dense = admit_dense_lane_v1(

@@ -331,6 +331,7 @@ fn lexical_request(
             generation: Some(pin()),
             generation_selector: None,
             top_k: 50,
+            cursor: None,
         }),
     }
 }
@@ -839,6 +840,7 @@ fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scop
                 generation: Some(pin()),
                 generation_selector: None,
                 top_k: 2,
+                cursor: None,
             }),
             top_k: 2,
         }),
@@ -957,6 +959,7 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
                 generation: Some(pin()),
                 generation_selector: None,
                 top_k: 50,
+                cursor: None,
             },
             semantic_query_text: "scope".to_string(),
             generation: Some(pin()),
@@ -1083,6 +1086,7 @@ fn hybrid_query_surfaces_truthful_count_reached_early_stop() -> TestResult {
                 generation: Some(pin()),
                 generation_selector: None,
                 top_k: 50,
+                cursor: None,
             },
             semantic_query_text: "scope".to_string(),
             generation: Some(pin()),

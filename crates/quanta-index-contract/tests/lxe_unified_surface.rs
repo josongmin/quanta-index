@@ -60,6 +60,7 @@ fn lexical_scope_text_query() -> TextQueryRequest {
         generation: Some(generation_pin()),
         generation_selector: None,
         top_k: 64,
+        cursor: None,
     }
 }
 

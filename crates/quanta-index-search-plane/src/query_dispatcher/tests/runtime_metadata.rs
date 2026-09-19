@@ -47,6 +47,7 @@ fn runtime_metadata_dispatch_not_ready_emits_closed_obs_metric() -> TestResult {
                 generation: Some(ready_pin()),
                 generation_selector: None,
                 top_k: 5,
+                cursor: None,
             },
             cursor: None,
         }),
@@ -251,6 +252,7 @@ fn lowered(query_text: &str) -> Result<LqQuery, CoreError> {
         generation: Some(ready_pin()),
         generation_selector: None,
         top_k: 5,
+        cursor: None,
     })
 }
 

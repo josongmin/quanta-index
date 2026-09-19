@@ -61,6 +61,7 @@ fn lexical_dispatch_rebinds_rev_at_time_to_reachable_ancestor() -> TestResult {
             )),
             generation_selector: None,
             top_k: 5,
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -146,6 +147,7 @@ fn lexical_dispatch_rejects_rev_at_time_invalid_timeref() -> TestResult {
             )),
             generation_selector: None,
             top_k: 5,
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -187,6 +189,7 @@ fn lexical_dispatch_rejects_rev_at_time_when_rebound_generation_is_unactivated()
             )),
             generation_selector: None,
             top_k: 5,
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );

@@ -169,6 +169,7 @@ fn request(
             generation: Some(ready_pin()),
             generation_selector: None,
             top_k,
+            cursor: None,
         },
         order,
         cursor,

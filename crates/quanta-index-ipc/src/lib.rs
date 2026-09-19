@@ -18,8 +18,8 @@ pub use batch_digest::{
     BatchDigestVerdictV1, canonical_batch_digest_v1, stamp_batch_digest_v1, verify_batch_digest_v1,
 };
 pub use codec::{
-    IpcError, IpcIoOperation, MAX_FRAME_BODY_BYTES, decode_cbor_payload, decode_request,
-    decode_response, encode_cbor_payload, encode_request, encode_response,
+    IpcError, IpcIoOperation, MAX_FRAME_BODY_BYTES, cbor_payload_len, decode_cbor_payload,
+    decode_request, decode_response, encode_cbor_payload, encode_request, encode_response,
 };
 pub use counters::{IpcServerCounters, IpcServerCountersSnapshot};
 pub use peer_credentials::{KernelPeerCredentials, PeerCredentialsSource};

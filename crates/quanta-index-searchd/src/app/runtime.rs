@@ -1347,7 +1347,8 @@ impl SearchdRuntime {
                 query_text_embedder,
                 query_obs_sink,
             )
-            .with_history_text(history_text),
+            .with_history_text(history_text)
+            .with_response_budget(config.query_response_budget()),
         );
         let quarantine = QuarantineService::new(QuarantineServiceParts {
             lexical_scanner: Arc::clone(&lexical_generation_scanner),

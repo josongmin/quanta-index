@@ -8,20 +8,28 @@ use serde::{
 
 use crate::{
     AuxEpochV1, CommitCandidate, DiffCandidate, GenerationPin, HistoryCursor, HistoryOrderV1,
-    LexicalCandidate, ManifestGeneration, OwnerDocKind, QueryResultWindowV1, RepoId,
-    RepoRelativePath, RevisionId, RuntimeMetadataCursorV1, SemanticCorpusKindV1,
-    StructuralCandidate, StructuralCursorV1,
+    LexicalCandidate, LexicalCursorV1, LexicalRowOrderKeyV1, ManifestGeneration, OwnerDocKind,
+    QueryResultWindowV1, RepoId, RepoRelativePath, RevisionId, RuntimeMetadataCursorV1,
+    SemanticCorpusKindV1, StructuralCandidate, StructuralCursorV1,
     lex::{SymbolKindCode, SymbolKindFamily},
+    validate_lexical_page_v1,
 };
 
 use super::{CandidatePresenceV1, SearchExplanation};
 
+/// One ranked page of text rows.
+///
+/// The rows are in the ranked lexical order ([`LexicalRowOrderKeyV1`]);
+/// when the window says more rows exist, `next_cursor` names the last row
+/// and a request carrying it continues strictly after it (QI-BB-005
+/// 보완 #4). The decoder holds a page to that fail-closed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextQueryResponse {
     pub generation: GenerationPin,
     pub results: Vec<LexicalCandidate>,
     pub window: QueryResultWindowV1,
     pub file_owner_rows: Option<Vec<FileOwnerProjectionRow>>,
+    pub next_cursor: Option<LexicalCursorV1>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -216,16 +224,39 @@ macro_rules! impl_symbol_candidate_serde {
 
 impl_symbol_candidate_serde!(SYMBOL_CANDIDATE_FIELDS, SymbolCandidateVisitor);
 
+impl SymbolCandidate {
+    /// This row's position in the ranked lexical page order.
+    #[must_use]
+    pub fn order_key(&self) -> LexicalRowOrderKeyV1<'_> {
+        LexicalRowOrderKeyV1 {
+            score: self.score,
+            repo_relative_path: self.repo_relative_path.as_str(),
+            start_line: self.start_line,
+            end_line: self.end_line,
+            candidate_id: self.candidate_id.as_str(),
+        }
+    }
+}
+
+/// One ranked page of symbol rows, under the same order and continuation
+/// rule as [`TextQueryResponse`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct SymbolQueryResponse {
     pub generation: GenerationPin,
     pub results: Vec<SymbolCandidate>,
     pub window: QueryResultWindowV1,
+    pub next_cursor: Option<LexicalCursorV1>,
 }
 
-const SYMBOL_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "window"];
+const SYMBOL_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "window", "next_cursor"];
 
-const TEXT_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "window", "file_owner_rows"];
+const TEXT_QUERY_RESPONSE_FIELDS: &[&str] = &[
+    "generation",
+    "results",
+    "window",
+    "file_owner_rows",
+    "next_cursor",
+];
 const FILE_OWNER_PROJECTION_ROW_FIELDS: &[&str] = &[
     "candidate_id",
     "repo_id",
@@ -914,18 +945,24 @@ impl<'de> Deserialize<'de> for SearchPlaneHistoryQueryResponse {
     }
 }
 
-/// Manual serde for a `{ generation, results, window }` response.
-macro_rules! impl_generation_results_response_serde {
+/// Manual serde for a ranked lexical page without projection rows:
+/// `{ generation, results, window, next_cursor? }`, held to the ranked
+/// order and its continuation rule by [`validate_lexical_page_v1`].
+macro_rules! impl_ranked_lexical_page_serde {
     ($ty:ident, $fields:ident, $visitor:ident, $result_ty:ty) => {
         impl Serialize for $ty {
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
                 S: Serializer,
             {
-                let mut state = serializer.serialize_struct(stringify!($ty), $fields.len())?;
+                let field_count = if self.next_cursor.is_some() { 4 } else { 3 };
+                let mut state = serializer.serialize_struct(stringify!($ty), field_count)?;
                 state.serialize_field("generation", &self.generation)?;
                 state.serialize_field("results", &self.results)?;
                 state.serialize_field("window", &self.window)?;
+                if let Some(next_cursor) = &self.next_cursor {
+                    state.serialize_field("next_cursor", next_cursor)?;
+                }
                 state.end()
             }
         }
@@ -946,6 +983,8 @@ macro_rules! impl_generation_results_response_serde {
                 let mut generation: Option<GenerationPin> = None;
                 let mut results: Option<Vec<$result_ty>> = None;
                 let mut window: Option<QueryResultWindowV1> = None;
+                let mut next_cursor: Option<LexicalCursorV1> = None;
+                let mut next_cursor_seen = false;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "generation" => {
@@ -966,27 +1005,35 @@ macro_rules! impl_generation_results_response_serde {
                             }
                             window = Some(map.next_value()?);
                         }
+                        "next_cursor" => {
+                            if next_cursor_seen {
+                                return Err(de::Error::duplicate_field("next_cursor"));
+                            }
+                            next_cursor_seen = true;
+                            next_cursor = Some(map.next_value()?);
+                        }
                         other => {
                             return Err(de::Error::unknown_field(other, $fields));
                         }
                     }
                 }
+                let generation =
+                    generation.ok_or_else(|| de::Error::missing_field("generation"))?;
                 let results = results.ok_or_else(|| de::Error::missing_field("results"))?;
                 let window = window.ok_or_else(|| de::Error::missing_field("window"))?;
-                let returned = usize::try_from(window.returned()).map_err(|error| {
-                    de::Error::custom(format!(
-                        "query result window returned count cannot fit usize: {error}"
-                    ))
-                })?;
-                if returned != results.len() {
-                    return Err(de::Error::custom(
-                        "query result window returned count does not match results length",
-                    ));
-                }
+                check_ranked_lexical_page(
+                    &window,
+                    results.len(),
+                    results.iter().map(<$result_ty>::order_key),
+                    &generation,
+                    next_cursor.as_ref(),
+                )
+                .map_err(de::Error::custom)?;
                 Ok($ty {
-                    generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+                    generation,
                     results,
                     window,
+                    next_cursor,
                 })
             }
         }
@@ -1410,6 +1457,24 @@ impl<'de> Deserialize<'de> for FileOwnerProjectionRow {
     }
 }
 
+/// The checks every ranked lexical page shares: the window counts the
+/// rows, and the rows and continuation obey [`validate_lexical_page_v1`].
+fn check_ranked_lexical_page<'a>(
+    window: &QueryResultWindowV1,
+    rows: usize,
+    keys: impl IntoIterator<Item = LexicalRowOrderKeyV1<'a>>,
+    generation: &GenerationPin,
+    next_cursor: Option<&LexicalCursorV1>,
+) -> Result<(), String> {
+    let returned = usize::try_from(window.returned())
+        .map_err(|error| format!("query result window returned count cannot fit usize: {error}"))?;
+    if returned != rows {
+        return Err("query result window returned count does not match results length".to_string());
+    }
+    validate_lexical_page_v1(window, keys, generation.manifest_generation, next_cursor)
+        .map_err(str::to_string)
+}
+
 impl Serialize for TextQueryResponse {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -1419,12 +1484,18 @@ impl Serialize for TextQueryResponse {
         if self.file_owner_rows.is_some() {
             field_count = field_count.saturating_add(1);
         }
+        if self.next_cursor.is_some() {
+            field_count = field_count.saturating_add(1);
+        }
         let mut state = serializer.serialize_struct("TextQueryResponse", field_count)?;
         state.serialize_field("generation", &self.generation)?;
         state.serialize_field("results", &self.results)?;
         state.serialize_field("window", &self.window)?;
         if let Some(file_owner_rows) = &self.file_owner_rows {
             state.serialize_field("file_owner_rows", file_owner_rows)?;
+        }
+        if let Some(next_cursor) = &self.next_cursor {
+            state.serialize_field("next_cursor", next_cursor)?;
         }
         state.end()
     }
@@ -1448,6 +1519,8 @@ impl<'de> Visitor<'de> for TextQueryResponseVisitor {
         let mut window: Option<QueryResultWindowV1> = None;
         let mut file_owner_rows: Option<Vec<FileOwnerProjectionRow>> = None;
         let mut file_owner_rows_seen = false;
+        let mut next_cursor: Option<LexicalCursorV1> = None;
+        let mut next_cursor_seen = false;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "generation" => {
@@ -1475,28 +1548,42 @@ impl<'de> Visitor<'de> for TextQueryResponseVisitor {
                     file_owner_rows_seen = true;
                     file_owner_rows = Some(map.next_value()?);
                 }
+                "next_cursor" => {
+                    if next_cursor_seen {
+                        return Err(de::Error::duplicate_field("next_cursor"));
+                    }
+                    next_cursor_seen = true;
+                    next_cursor = Some(map.next_value()?);
+                }
                 other => {
                     return Err(de::Error::unknown_field(other, TEXT_QUERY_RESPONSE_FIELDS));
                 }
             }
         }
+        let generation = generation.ok_or_else(|| de::Error::missing_field("generation"))?;
         let results = results.ok_or_else(|| de::Error::missing_field("results"))?;
         let window = window.ok_or_else(|| de::Error::missing_field("window"))?;
-        let returned = usize::try_from(window.returned()).map_err(|error| {
-            de::Error::custom(format!(
-                "query result window returned count cannot fit usize: {error}"
-            ))
-        })?;
-        if returned != results.len() {
+        check_ranked_lexical_page(
+            &window,
+            results.len(),
+            results.iter().map(LexicalCandidate::order_key),
+            &generation,
+            next_cursor.as_ref(),
+        )
+        .map_err(de::Error::custom)?;
+        if let Some(rows) = &file_owner_rows
+            && rows.len() != results.len()
+        {
             return Err(de::Error::custom(
-                "query result window returned count does not match results length",
+                "file owner projection rows do not pair one to one with the results",
             ));
         }
         Ok(TextQueryResponse {
-            generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            generation,
             results,
             window,
             file_owner_rows,
+            next_cursor,
         })
     }
 }
@@ -1514,7 +1601,7 @@ impl<'de> Deserialize<'de> for TextQueryResponse {
     }
 }
 
-impl_generation_results_response_serde!(
+impl_ranked_lexical_page_serde!(
     SymbolQueryResponse,
     SYMBOL_QUERY_RESPONSE_FIELDS,
     SymbolQueryResponseVisitor,

@@ -9,6 +9,7 @@ mod hybrid;
 mod hybrid_filters;
 mod hybrid_seed;
 mod lexical;
+mod lexical_pages;
 mod metrics;
 mod planning;
 mod read_view;

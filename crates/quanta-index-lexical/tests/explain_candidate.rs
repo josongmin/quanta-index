@@ -19,8 +19,8 @@ use quanta_index_contract::{
     RepoRelativePath, RevisionId, SearchCorpusIngestBatch, UpsertChunk,
 };
 use quanta_index_core::{
-    CoreError, LexicalCandidateExplanationV1, LexicalIndexOpenPort, LexicalScoreEngineV1,
-    LexicalScoreTraceV1, RequestBudgetV1, SearchCorpusBatchBuildPort,
+    CoreError, LexicalCandidateExplanationV1, LexicalIndexOpenPort, LexicalPageSpecV1,
+    LexicalScoreEngineV1, LexicalScoreTraceV1, RequestBudgetV1, SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 
@@ -152,8 +152,12 @@ fn every_ranked_candidate_explains_to_exactly_its_emitted_score_in_rank_order() 
     let searcher = adapter.open(&repo(), &revision(), generation())?;
     let constraints = QueryConstraintSetV1::unconstrained();
     let query = keyword_query(&["needle"]);
-    let page =
-        searcher.search_constrained(&query, &constraints, 10, &RequestBudgetV1::unbounded())?;
+    let page = searcher.search_constrained(
+        &query,
+        &constraints,
+        &LexicalPageSpecV1::first(10),
+        &RequestBudgetV1::unbounded(),
+    )?;
     if page.candidates.len() != 3 {
         return Err(format!("three documents contain the needle: {:?}", page.candidates).into());
     }
@@ -258,8 +262,12 @@ fn a_boost_in_the_plan_is_the_weight_and_scales_the_emitted_score() -> TestResul
     }
     // And the page agrees: the emitted score under the boosted plan is what
     // the boosted search returns.
-    let page =
-        searcher.search_constrained(&boosted, &constraints, 10, &RequestBudgetV1::unbounded())?;
+    let page = searcher.search_constrained(
+        &boosted,
+        &constraints,
+        &LexicalPageSpecV1::first(10),
+        &RequestBudgetV1::unbounded(),
+    )?;
     let Some(top) = page
         .candidates
         .iter()
@@ -293,8 +301,12 @@ fn presence_is_an_exact_lookup_independent_of_the_corpus_around_the_candidate() 
     let searcher = adapter.open(&repo(), &revision(), generation())?;
     let constraints = QueryConstraintSetV1::unconstrained();
     let query = keyword_query(&["needle"]);
-    let page =
-        searcher.search_constrained(&query, &constraints, 50, &RequestBudgetV1::unbounded())?;
+    let page = searcher.search_constrained(
+        &query,
+        &constraints,
+        &LexicalPageSpecV1::first(50),
+        &RequestBudgetV1::unbounded(),
+    )?;
     if page
         .candidates
         .iter()
@@ -347,8 +359,12 @@ fn an_unindexed_scan_explains_through_the_same_per_document_matcher() -> TestRes
     let mut query = keyword_query(&["needle"]);
     query.options.index_mode = Some(LqYesNoOnly::No);
     query.options.boost_millis = Some(3_000);
-    let page =
-        searcher.search_constrained(&query, &constraints, 10, &RequestBudgetV1::unbounded())?;
+    let page = searcher.search_constrained(
+        &query,
+        &constraints,
+        &LexicalPageSpecV1::first(10),
+        &RequestBudgetV1::unbounded(),
+    )?;
     let Some(hit) = page
         .candidates
         .iter()

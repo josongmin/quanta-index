@@ -4,7 +4,7 @@
 )]
 
 use quanta_index_contract::{
-    GenerationPin, GenerationSelector, HybridQueryRequest, HybridSeedQueryRequest,
+    GenerationPin, GenerationSelector, HybridQueryRequest, HybridSeedQueryRequest, LexicalCursorV1,
     QueryConstraintSetV1, SemanticQueryRequest, SemanticSeedCorpusBudgetV1, TextQueryRequest,
     TextQuerySyntax,
 };
@@ -17,6 +17,9 @@ pub(crate) struct TextQueryBuilderState {
     pub(crate) constraints: QueryConstraintSetV1,
     pub(crate) selection: Option<GenerationSelector>,
     pub(crate) top_k: Option<u32>,
+    /// The last row of the previous ranked page, for a text or symbol
+    /// continuation; routes that do not page refuse one typed.
+    pub(crate) after: Option<LexicalCursorV1>,
 }
 
 impl TextQueryBuilderState {
@@ -27,6 +30,7 @@ impl TextQueryBuilderState {
             constraints: QueryConstraintSetV1::unconstrained(),
             selection: None,
             top_k: None,
+            after: None,
         }
     }
 
@@ -49,6 +53,7 @@ impl TextQueryBuilderState {
             generation,
             generation_selector,
             top_k,
+            cursor: self.after,
         })
     }
 }
@@ -99,6 +104,7 @@ impl VectorQueryBuilderState {
                 constraints: constraints.clone(),
                 generation: generation.clone(),
                 generation_selector: generation_selector.clone(),
+                cursor: None,
             }),
             (Some(_), None) => {
                 return Err(SdkError::Usage(
@@ -153,6 +159,7 @@ impl VectorQueryBuilderState {
                 generation: generation.clone(),
                 generation_selector: generation_selector.clone(),
                 top_k,
+                cursor: None,
             },
             semantic_query_text,
             generation,
@@ -184,6 +191,7 @@ impl VectorQueryBuilderState {
                 generation: generation.clone(),
                 generation_selector: generation_selector.clone(),
                 top_k,
+                cursor: None,
             },
             semantic_query_text,
             generation,

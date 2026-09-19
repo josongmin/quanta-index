@@ -22,13 +22,17 @@
 //!   carries, hashed as a door decodes it. A family not listed is one the
 //!   generation does not carry; a file that appears anyway is refused.
 //!
-//! Format 5 is this shape over an index whose text documents carry their
+//! Format 6 is this shape over an index whose text documents carry their
 //! text-authority doc id indexed and as a fast column, so a derived match
-//! set restricts a query as one bitmap (QI-BB-024). Formats 1–4 described
+//! set restricts a query as one bitmap (QI-BB-024), and whose documents
+//! carry the ranked page order's columns — candidate id, path, start and
+//! end line — as fast columns, so pages are ranked, cut and grouped
+//! without reading stored documents (QI-BB-005). Formats 1–5 described
 //! earlier layouts (no normalizer stamp; the whole-corpus text authority;
 //! the sharded text authority without index-segment or overlay
-//! commitments; the doc id stored only) and are refused typed: the
-//! migration is a rebuild, never a reinterpretation.
+//! commitments; the doc id stored only; the order columns stored only) and
+//! are refused typed: the migration is a rebuild, never a
+//! reinterpretation.
 
 use std::path::{Path, PathBuf};
 
@@ -46,7 +50,7 @@ use crate::text_authority::{
 pub(crate) const LEXICAL_SEALED_MANIFEST_FILE_NAME: &str = "search-corpus-generation-manifest.cbor";
 /// The manifest format this build writes and serves; see the module
 /// documentation for what each earlier format lacked.
-pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 5;
+pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 6;
 /// The format-2 layout: whole-corpus text-authority sidecars beside the
 /// index, no doc ids in the index. Refused by that name so the operator
 /// learns why a rebuild is needed.
@@ -224,7 +228,7 @@ impl LexicalSealedManifest {
             return Err(CoreError::Typed {
                 code: GENERATION_MANIFEST_FORMAT_UNSUPPORTED_CODE.to_string(),
                 message: format!(
-                    "lexical: sealed generation manifest {} has format {format_version} (this build serves {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION}: index-segment and overlay commitments over an index whose text documents carry their text-authority doc id indexed); the generation must be rebuilt",
+                    "lexical: sealed generation manifest {} has format {format_version} (this build serves {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION}: index-segment and overlay commitments over an index carrying the text-authority doc id and the ranked page order as fast columns); the generation must be rebuilt",
                     path.display()
                 ),
             });
@@ -538,12 +542,14 @@ mod tests {
         }
     }
 
-    /// Every format but the served one is refused by name — the earlier
-    /// layouts (format 4: the doc id stored but not indexed) and a later
-    /// one alike — never read under this build's layout.
+    /// Every format but the served one is refused by name.
+    ///
+    /// The earlier layouts (format 4: the doc id stored but not indexed;
+    /// format 5: the page order stored but not a fast column) and a later
+    /// one alike are never read under this build's layout.
     #[test]
     fn another_format_or_policy_is_refused_by_name() {
-        for format in [1, 3, 4, LEXICAL_SEALED_MANIFEST_FORMAT_VERSION + 1] {
+        for format in [1, 3, 4, 5, LEXICAL_SEALED_MANIFEST_FORMAT_VERSION + 1] {
             let other_format: SealedManifestRow = (
                 format,
                 "digest".to_string(),

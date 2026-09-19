@@ -47,8 +47,8 @@ pub use quarantine::{
     QuarantineServiceParts, partition_sealed_inventory_v1,
 };
 pub use query_dispatcher::{
-    SearchPlaneDispatcher, SearchPlaneQueryDispatcher, SearchPlaneQueryService, make_pin,
-    repair_for_code,
+    RESPONSE_ENVELOPE_RESERVE_BYTES, ResponsePayloadBudgetV1, SearchPlaneDispatcher,
+    SearchPlaneQueryDispatcher, SearchPlaneQueryService, make_pin, repair_for_code,
 };
 pub use query_embedder::{
     HashingQueryTextEmbedder, QueryTextEmbedderPort, SEARCH_OWNED_SEMANTIC_DIMENSION,

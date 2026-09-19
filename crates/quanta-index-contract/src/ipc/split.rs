@@ -1139,6 +1139,7 @@ mod tests {
                 generation: None,
                 generation_selector: None,
                 top_k: 5,
+                cursor: None,
             }),
         };
         let value = match serde_json::to_value(&envelope) {

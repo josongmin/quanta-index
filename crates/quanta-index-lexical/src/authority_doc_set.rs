@@ -503,10 +503,10 @@ mod tests {
         let fields = SchemaFields::build();
         let index = Index::create_in_ram(fields.schema.clone());
         let searcher = searcher(&index);
-        let refused =
-            AuthorityDocSetQuery::new(fields.candidate_id, Arc::new(RoaringBitmap::new())).weight(
-                tantivy::query::EnableScoring::disabled_from_searcher(&searcher),
-            );
+        let refused = AuthorityDocSetQuery::new(fields.doc_kind, Arc::new(RoaringBitmap::new()))
+            .weight(tantivy::query::EnableScoring::disabled_from_searcher(
+                &searcher,
+            ));
         assert!(refused.is_err());
     }
 }

@@ -149,6 +149,34 @@ pub fn encode_cbor_payload<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, Ip
     Ok(body)
 }
 
+/// Counts what an encoder writes without keeping it.
+struct EncodedLength(u64);
+
+impl std::io::Write for EncodedLength {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let written = u64::try_from(bytes.len())
+            .map_err(|err| std::io::Error::other(format!("encoded length overflow: {err}")))?;
+        self.0 = self
+            .0
+            .checked_add(written)
+            .ok_or_else(|| std::io::Error::other("encoded length overflows u64".to_string()))?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The bytes [`encode_cbor_payload`] would produce for `value`, counted
+/// without allocating them: what a page costs in a frame before it is
+/// encoded (QI-BB-005 보완 #5).
+pub fn cbor_payload_len<T: serde::Serialize>(value: &T) -> Result<u64, IpcError> {
+    let mut counter = EncodedLength(0);
+    ciborium::into_writer(value, &mut counter).map_err(|err| IpcError::Encode(err.to_string()))?;
+    Ok(counter.0)
+}
+
 pub fn decode_request<T, R>(reader: &mut R) -> Result<T, IpcError>
 where
     T: serde::de::DeserializeOwned,

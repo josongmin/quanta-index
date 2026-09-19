@@ -113,6 +113,7 @@ fn pinned_text(pin: GenerationPin, needle: &str) -> SearchPlaneQueryIpcRequest {
         generation: Some(pin),
         generation_selector: None,
         top_k: 5,
+        cursor: None,
     })
 }
 

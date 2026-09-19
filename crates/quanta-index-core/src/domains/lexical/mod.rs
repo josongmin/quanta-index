@@ -15,10 +15,10 @@ pub use history_text::{
 pub use inbound::LexicalQueryPort;
 pub use outbound::{
     FileContributorIngestPort, FileOwnershipIngestPort, LexicalCandidateExplanationV1,
-    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalReadiness, LexicalScoreEngineV1,
-    LexicalScoreTraceV1, LexicalSearchPageV1, LexicalSearcher, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, SearchCorpusBatchBuildPort,
-    SearchCorpusIngestPort,
+    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPageSpecV1, LexicalReadiness,
+    LexicalScoreEngineV1, LexicalScoreTraceV1, LexicalSearchPageV1, LexicalSearcher,
+    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMetaIngestPort,
+    RepoTopicIngestPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
 };
 pub use service::{
     LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE, LEXICAL_WRITER_HEAP_BYTES_MAX,

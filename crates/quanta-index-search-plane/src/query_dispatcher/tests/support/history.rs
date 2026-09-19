@@ -65,6 +65,7 @@ pub(crate) fn history_query_request(query_text: &str) -> SearchPlaneQueryIpcRequ
             generation: Some(ready_pin()),
             generation_selector: None,
             top_k: 5,
+            cursor: None,
         },
         order: HistoryOrderV1::Recency,
         cursor: None,

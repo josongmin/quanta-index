@@ -150,6 +150,7 @@ fn lex_query(needle: &str, pin: GenerationPin) -> SearchPlaneQueryIpcRequestEnve
             generation: Some(pin),
             generation_selector: None,
             top_k: 50,
+            cursor: None,
         }),
     }
 }

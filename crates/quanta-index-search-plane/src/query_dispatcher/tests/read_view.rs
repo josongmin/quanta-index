@@ -70,6 +70,7 @@ fn text_request(query_text: &str, pin: GenerationPin) -> TextQueryRequest {
         generation: Some(pin),
         generation_selector: None,
         top_k: 5,
+        cursor: None,
     }
 }
 

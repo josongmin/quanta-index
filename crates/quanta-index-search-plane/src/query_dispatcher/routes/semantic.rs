@@ -6,8 +6,8 @@ use quanta_index_contract::{
     EarlyStopReason, QueryConstraintSetV1, SemanticQueryRequest, SemanticQueryResponse,
 };
 use quanta_index_core::{
-    CoreError, LexicalPolicy, QueryRouteV1, RequestBudgetV1, SemanticPolicy, SemanticQueryPort,
-    SemanticSearcher, validate_query_top_k,
+    CoreError, LexicalPageSpecV1, LexicalPolicy, QueryRouteV1, RequestBudgetV1, SemanticPolicy,
+    SemanticQueryPort, SemanticSearcher, validate_query_top_k,
 };
 
 use crate::lower_lexical_text_query;
@@ -99,7 +99,7 @@ impl SearchPlaneDispatcher {
                         .search_constrained(
                             &plan.prepared.query,
                             &plan.prepared.constraints,
-                            plan.cap,
+                            &LexicalPageSpecV1::first(plan.cap),
                             budget,
                         )?
                         .candidates

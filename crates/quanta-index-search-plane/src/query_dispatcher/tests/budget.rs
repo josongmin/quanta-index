@@ -41,6 +41,7 @@ fn every_route_refuses_an_interrupted_budget_at_entry_without_opening() -> TestR
         generation: Some(ready_pin()),
         generation_selector: None,
         top_k: 10,
+        cursor: None,
     };
     let routes: Vec<(&str, SearchPlaneQueryIpcRequest)> = vec![
         ("lexical:entry", SearchPlaneQueryIpcRequest::Text(text())),
@@ -53,6 +54,7 @@ fn every_route_refuses_an_interrupted_budget_at_entry_without_opening() -> TestR
                 generation: Some(ready_pin()),
                 generation_selector: None,
                 top_k: 10,
+                cursor: None,
             }),
         ),
         (
@@ -151,6 +153,7 @@ fn the_request_budget_reaches_the_dense_lane_on_every_dense_route() -> TestResul
         generation: Some(ready_pin()),
         generation_selector: None,
         top_k: 3,
+        cursor: None,
     };
     let routes: Vec<(&str, SearchPlaneQueryIpcRequest)> = vec![
         (

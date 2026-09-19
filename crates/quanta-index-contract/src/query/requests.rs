@@ -11,8 +11,9 @@ use crate::{HybridCandidateV1, LexicalCandidate};
 use quanta_index_contract_base::query::wire_top_k;
 
 use super::{
-    GenerationPin, GenerationSelector, HistoryCursor, HistoryOrderV1, QueryConstraintSetV1,
-    RuntimeMetadataCursorV1, StructuralCursorV1, TextQueryRequest, TextQuerySyntax,
+    GenerationPin, GenerationSelector, HistoryCursor, HistoryOrderV1, LexicalCursorV1,
+    QueryConstraintSetV1, RuntimeMetadataCursorV1, StructuralCursorV1, TextQueryRequest,
+    TextQuerySyntax,
 };
 
 /// Semantic query request: one dense lane over the embedded `query_text`,
@@ -565,6 +566,13 @@ impl_hybrid_seed_query_request_serde!(
     HybridSeedQueryRequestVisitor
 );
 
+/// A symbol query: the text query's shape, answered over symbol
+/// documents.
+///
+/// The two requests carry the same fields under the same wire rules, so
+/// the symbol request is encoded as, and decoded from, the text request's
+/// wire shape — one encoder, one decoder, one set of refusals (the
+/// `top_k` gate, duplicate and unknown fields, the cursor).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SymbolQueryRequest {
     pub syntax: TextQuerySyntax,
@@ -576,139 +584,55 @@ pub struct SymbolQueryRequest {
     /// `top_k` fails-closed at deserialization via `missing_field`. No
     /// caller-side default — the SDK builder enforces this is set.
     pub top_k: u32,
+    /// Continue after this row of an earlier page, as for text queries.
+    pub cursor: Option<LexicalCursorV1>,
 }
 
-const SYMBOL_QUERY_REQUEST_FIELDS: &[&str] = &[
-    "syntax",
-    "query_text",
-    "constraints",
-    "generation",
-    "generation_selector",
-    "top_k",
-];
-
-macro_rules! impl_symbol_query_request_serde {
-    ($fields:ident, $visitor:ident) => {
-        impl Serialize for SymbolQueryRequest {
-            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: Serializer,
-            {
-                let mut field_count: usize = 4;
-                if self.generation.is_some() {
-                    field_count = field_count.saturating_add(1);
-                }
-                if self.generation_selector.is_some() {
-                    field_count = field_count.saturating_add(1);
-                }
-                let mut state = serializer.serialize_struct("SymbolQueryRequest", field_count)?;
-                state.serialize_field("syntax", &self.syntax)?;
-                state.serialize_field("query_text", &self.query_text)?;
-                state.serialize_field("constraints", &self.constraints)?;
-                if let Some(generation) = &self.generation {
-                    state.serialize_field("generation", generation)?;
-                }
-                if let Some(generation_selector) = &self.generation_selector {
-                    state.serialize_field("generation_selector", generation_selector)?;
-                }
-                state.serialize_field(
-                    "top_k",
-                    &wire_top_k(self.top_k, serde::ser::Error::custom)?,
-                )?;
-                state.end()
-            }
+impl From<SymbolQueryRequest> for TextQueryRequest {
+    fn from(request: SymbolQueryRequest) -> Self {
+        Self {
+            syntax: request.syntax,
+            query_text: request.query_text,
+            constraints: request.constraints,
+            generation: request.generation,
+            generation_selector: request.generation_selector,
+            top_k: request.top_k,
+            cursor: request.cursor,
         }
-
-        struct $visitor;
-
-        impl<'de> Visitor<'de> for $visitor {
-            type Value = SymbolQueryRequest;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a SymbolQueryRequest map")
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: MapAccess<'de>,
-            {
-                let mut syntax: Option<TextQuerySyntax> = None;
-                let mut query_text: Option<String> = None;
-                let mut constraints: Option<QueryConstraintSetV1> = None;
-                let mut generation: Option<GenerationPin> = None;
-                let mut generation_seen = false;
-                let mut generation_selector: Option<GenerationSelector> = None;
-                let mut generation_selector_seen = false;
-                let mut top_k: Option<u32> = None;
-                while let Some(key) = map.next_key::<String>()? {
-                    match key.as_str() {
-                        "syntax" => {
-                            if syntax.is_some() {
-                                return Err(de::Error::duplicate_field("syntax"));
-                            }
-                            syntax = Some(map.next_value()?);
-                        }
-                        "query_text" => {
-                            if query_text.is_some() {
-                                return Err(de::Error::duplicate_field("query_text"));
-                            }
-                            query_text = Some(map.next_value()?);
-                        }
-                        "constraints" => {
-                            if constraints.is_some() {
-                                return Err(de::Error::duplicate_field("constraints"));
-                            }
-                            constraints = Some(map.next_value()?);
-                        }
-                        "generation" => {
-                            if generation_seen {
-                                return Err(de::Error::duplicate_field("generation"));
-                            }
-                            generation_seen = true;
-                            generation = Some(map.next_value()?);
-                        }
-                        "generation_selector" => {
-                            if generation_selector_seen {
-                                return Err(de::Error::duplicate_field("generation_selector"));
-                            }
-                            generation_selector_seen = true;
-                            generation_selector = Some(map.next_value()?);
-                        }
-                        "top_k" => {
-                            if top_k.is_some() {
-                                return Err(de::Error::duplicate_field("top_k"));
-                            }
-                            top_k = Some(map.next_value()?);
-                        }
-                        other => {
-                            return Err(de::Error::unknown_field(other, $fields));
-                        }
-                    }
-                }
-                Ok(SymbolQueryRequest {
-                    syntax: syntax.ok_or_else(|| de::Error::missing_field("syntax"))?,
-                    query_text: query_text.ok_or_else(|| de::Error::missing_field("query_text"))?,
-                    constraints: constraints
-                        .ok_or_else(|| de::Error::missing_field("constraints"))?,
-                    generation,
-                    generation_selector,
-                    top_k: top_k.ok_or_else(|| de::Error::missing_field("top_k"))?,
-                })
-            }
-        }
-
-        impl<'de> Deserialize<'de> for SymbolQueryRequest {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: Deserializer<'de>,
-            {
-                deserializer.deserialize_struct("SymbolQueryRequest", $fields, $visitor)
-            }
-        }
-    };
+    }
 }
 
-impl_symbol_query_request_serde!(SYMBOL_QUERY_REQUEST_FIELDS, SymbolQueryRequestVisitor);
+impl From<TextQueryRequest> for SymbolQueryRequest {
+    fn from(request: TextQueryRequest) -> Self {
+        Self {
+            syntax: request.syntax,
+            query_text: request.query_text,
+            constraints: request.constraints,
+            generation: request.generation,
+            generation_selector: request.generation_selector,
+            top_k: request.top_k,
+            cursor: request.cursor,
+        }
+    }
+}
+
+impl Serialize for SymbolQueryRequest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        TextQueryRequest::from(self.clone()).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SymbolQueryRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        TextQueryRequest::deserialize(deserializer).map(Self::from)
+    }
+}
 
 /// A history query: the text query, the order its pages are in, and, for
 /// every page after the first, the cursor the previous page returned

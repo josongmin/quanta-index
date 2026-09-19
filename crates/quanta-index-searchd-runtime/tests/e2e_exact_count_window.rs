@@ -57,6 +57,7 @@ fn text_query(
             generation: pin,
             generation_selector: None,
             top_k,
+            cursor: None,
         })
     })?;
     if let Some(error) = probe.typed_error {

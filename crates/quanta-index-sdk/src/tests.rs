@@ -665,6 +665,7 @@ fn unused_query() -> Arc<StubQueryTransport> {
             results: vec![],
             window: QueryResultWindowV1::exact(0),
             file_owner_rows: None,
+            next_cursor: None,
         },
     )))
 }
@@ -1158,6 +1159,7 @@ fn lexical_query_builder_carries_top_k_to_wire_contract() {
             results: vec![sample_hit()],
             window: QueryResultWindowV1::exact(1),
             file_owner_rows: None,
+            next_cursor: None,
         },
     )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -1196,6 +1198,7 @@ fn lexical_constraint_setters_preserve_path_and_language_axes_v1() {
             results: Vec::new(),
             window: QueryResultWindowV1::exact(0),
             file_owner_rows: None,
+            next_cursor: None,
         },
     )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -1340,6 +1343,7 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
             generation: sample_generation_pin(),
             results: Vec::new(),
             window: QueryResultWindowV1::exact(0),
+            next_cursor: None,
         }),
     ));
     let symbol_client =
@@ -1379,6 +1383,7 @@ fn lexical_query_request_forwards_contract_dto_unchanged() {
             results: vec![sample_hit()],
             window: QueryResultWindowV1::exact(1),
             file_owner_rows: None,
+            next_cursor: None,
         },
     )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -1392,6 +1397,7 @@ fn lexical_query_request_forwards_contract_dto_unchanged() {
             revision_id: revision_id(),
         }),
         top_k: 13,
+        cursor: None,
     };
     let _response = ok_or_fail!(client.lexical().query_request(request.clone()));
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
@@ -1408,6 +1414,7 @@ fn symbol_query_request_forwards_contract_dto_unchanged() {
             generation: sample_generation_pin(),
             results: vec![sample_symbol_hit()],
             window: QueryResultWindowV1::exact(1),
+            next_cursor: None,
         }),
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -1418,6 +1425,7 @@ fn symbol_query_request_forwards_contract_dto_unchanged() {
         generation: Some(sample_generation_pin()),
         generation_selector: None,
         top_k: 9,
+        cursor: None,
     };
     let response = ok_or_fail!(client.symbol().query_request(request.clone()));
     assert_eq!(response.results.len(), 1);
@@ -1516,6 +1524,7 @@ fn semantic_query_request_forwards_contract_dto_unchanged() {
             generation: Some(sample_generation_pin()),
             generation_selector: None,
             top_k: 4,
+            cursor: None,
         }),
         top_k: 6,
     };
@@ -1547,6 +1556,7 @@ fn hybrid_seed_request_forwards_contract_dto_unchanged() {
             generation: Some(sample_generation_pin()),
             generation_selector: None,
             top_k: 11,
+            cursor: None,
         },
         semantic_query_text: "legacy hybrid semantic".to_string(),
         generation: None,
@@ -1573,6 +1583,7 @@ fn lexical_sourcegraph_query_builder_dispatches_text_query_request() {
             results: vec![sample_hit()],
             window: QueryResultWindowV1::exact(1),
             file_owner_rows: None,
+            next_cursor: None,
         },
     )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -1983,6 +1994,7 @@ fn reader_client_routes_lexical_query_surface() {
             results: vec![sample_hit()],
             window: QueryResultWindowV1::exact(1),
             file_owner_rows: None,
+            next_cursor: None,
         },
     )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -3179,6 +3191,7 @@ fn history_query_request_forwards_contract_dto_unchanged() {
                 revision_id: revision_id(),
             }),
             top_k: 5,
+            cursor: None,
         },
         order: quanta_index_contract::HistoryOrderV1::Relevance,
         cursor: None,
@@ -3256,6 +3269,7 @@ fn runtime_query_request_forwards_contract_dto_unchanged() {
             generation: Some(sample_generation_pin()),
             generation_selector: None,
             top_k: 3,
+            cursor: None,
         },
         cursor: None,
     };
@@ -3330,6 +3344,7 @@ fn structural_query_request_forwards_contract_dto_unchanged() {
                 revision_id: revision_id(),
             }),
             top_k: 4,
+            cursor: None,
         },
         cursor: None,
     };
@@ -4446,6 +4461,7 @@ fn hybrid_explain_carries_the_row_and_both_queries() {
         generation: None,
         generation_selector: None,
         top_k: 7,
+        cursor: None,
     };
     let response = ok_or_fail!(client.search().explain_hybrid_under_queries(
         sample_generation_pin(),

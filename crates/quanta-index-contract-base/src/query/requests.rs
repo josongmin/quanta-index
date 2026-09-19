@@ -13,7 +13,8 @@ use serde::{
 };
 
 use super::{
-    GenerationPin, GenerationSelector, QueryConstraintSetV1, TextQuerySyntax, validate_public_top_k,
+    GenerationPin, GenerationSelector, LexicalCursorV1, QueryConstraintSetV1, TextQuerySyntax,
+    validate_public_top_k,
 };
 
 /// The `top_k` gate every wire request shape applies on encode (QI-BB-025).
@@ -48,6 +49,10 @@ pub struct TextQueryRequest {
     /// under the same code (QI-BB-025). No caller-side default — the SDK
     /// builder enforces this is set.
     pub top_k: u32,
+    /// Continue after this row of an earlier page (QI-BB-005 보완 #4): the
+    /// page holds the rows strictly after it in the ranked order, in the
+    /// generation it names. Absent on the wire for a first page.
+    pub cursor: Option<LexicalCursorV1>,
 }
 
 const TEXT_QUERY_REQUEST_FIELDS: &[&str] = &[
@@ -57,6 +62,7 @@ const TEXT_QUERY_REQUEST_FIELDS: &[&str] = &[
     "generation",
     "generation_selector",
     "top_k",
+    "cursor",
 ];
 
 impl Serialize for TextQueryRequest {
@@ -71,6 +77,9 @@ impl Serialize for TextQueryRequest {
         if self.generation_selector.is_some() {
             field_count = field_count.saturating_add(1);
         }
+        if self.cursor.is_some() {
+            field_count = field_count.saturating_add(1);
+        }
         let top_k = wire_top_k(self.top_k, serde::ser::Error::custom)?;
         let mut state = serializer.serialize_struct("TextQueryRequest", field_count)?;
         state.serialize_field("syntax", &self.syntax)?;
@@ -83,6 +92,9 @@ impl Serialize for TextQueryRequest {
             state.serialize_field("generation_selector", generation_selector)?;
         }
         state.serialize_field("top_k", &top_k)?;
+        if let Some(cursor) = &self.cursor {
+            state.serialize_field("cursor", cursor)?;
+        }
         state.end()
     }
 }
@@ -108,6 +120,8 @@ impl<'de> Visitor<'de> for TextQueryRequestVisitor {
         let mut generation_selector: Option<GenerationSelector> = None;
         let mut generation_selector_seen = false;
         let mut top_k: Option<u32> = None;
+        let mut cursor: Option<LexicalCursorV1> = None;
+        let mut cursor_seen = false;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "syntax" => {
@@ -148,6 +162,13 @@ impl<'de> Visitor<'de> for TextQueryRequestVisitor {
                     }
                     top_k = Some(map.next_value()?);
                 }
+                "cursor" => {
+                    if cursor_seen {
+                        return Err(de::Error::duplicate_field("cursor"));
+                    }
+                    cursor_seen = true;
+                    cursor = Some(map.next_value()?);
+                }
                 other => {
                     return Err(de::Error::unknown_field(other, TEXT_QUERY_REQUEST_FIELDS));
                 }
@@ -160,6 +181,7 @@ impl<'de> Visitor<'de> for TextQueryRequestVisitor {
             generation,
             generation_selector,
             top_k: top_k.ok_or_else(|| de::Error::missing_field("top_k"))?,
+            cursor,
         })
     }
 }
@@ -197,6 +219,7 @@ mod tests {
             generation: None,
             generation_selector: None,
             top_k,
+            cursor: None,
         }
     }
 

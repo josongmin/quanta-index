@@ -91,6 +91,7 @@ fn pinned_meta_query(pin: GenerationPin, value: &str) -> SearchPlaneQueryIpcRequ
         generation: Some(pin),
         generation_selector: None,
         top_k: 5,
+        cursor: None,
     })
 }
 

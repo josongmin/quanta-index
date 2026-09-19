@@ -30,12 +30,13 @@ use quanta_index_contract::{
     CurrentGenerationRequest, EngineTouched, ExplainCandidateV1, FileOwnerProjectionRow,
     GenerationPin, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
     HistoryCursor, HistoryOrderV1, HistoryQueryRequest, HistoryScoreV1, HybridCandidateV1,
-    HybridQueryRequest, LexicalCandidate, ManifestGeneration, MetricsSnapshotRequest,
-    MetricsSnapshotV1, OwnerDocKind, QuarantineDiscardAck, QuarantineDiscardRequest,
-    QuarantineInventoryRequest, QuarantineInventoryV1, QuarantineTargetV1, QueryResultWindowV1,
-    RawFallbackReasonV1, RepoId, RepoRelativePath, RevisionId, RuntimeMetadataCursorV1,
-    RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchCorpusTombstoneScope, SearchExplanation,
+    HybridQueryRequest, LexicalCandidate, LexicalCursorV1, ManifestGeneration,
+    MetricsSnapshotRequest, MetricsSnapshotV1, OwnerDocKind, QuarantineDiscardAck,
+    QuarantineDiscardRequest, QuarantineInventoryRequest, QuarantineInventoryV1,
+    QuarantineTargetV1, QueryResultWindowV1, RawFallbackReasonV1, RepoId, RepoRelativePath,
+    RevisionId, RuntimeMetadataCursorV1, RuntimeMetadataQueryRequest,
+    SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
+    SearchCorpusTombstoneScope, SearchExplanation,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
     SearchPlaneControlIpcResponseEnvelope, SearchPlaneExplainQueryRequest,
@@ -47,7 +48,7 @@ use quanta_index_contract::{
     SemanticCorpusKindV1, SemanticQueryRequest, SemanticSourceRecordV1,
     SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourceRoleV1, StructuralCandidate,
     StructuralCursorV1, StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope,
-    StructuralTreeRecord, SymbolId, TextQueryRequest, TextQuerySyntax,
+    StructuralTreeRecord, SymbolId, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_core::{
     IngestResourcePolicy, IntegrityScrubPolicyV1, LexicalWriterPolicy, ProcessMemoryProbePort,
@@ -56,7 +57,9 @@ use quanta_index_core::{
 use quanta_index_ipc::{
     ClientIoPolicy, IpcError, ServerAdmissionPolicy, send_request, stamp_batch_digest_v1,
 };
-use quanta_index_search_plane::{BoundedQueryObsStore, MetricSample, ObsError};
+use quanta_index_search_plane::{
+    BoundedQueryObsStore, MetricSample, ObsError, ResponsePayloadBudgetV1,
+};
 use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd::app::{
     BootInventoryReportV1, KernelResidentMemoryProbe, MaintenancePolicy, ProcessMemoryCeilings,
@@ -141,6 +144,8 @@ struct DriverSpec<'a> {
     maintenance_policy: MaintenancePolicy,
     /// How the integrity scrub is paced (QI-BB-017).
     integrity_scrub_policy: IntegrityScrubPolicyV1,
+    /// How many encoded bytes one ranked page may take (QI-BB-005).
+    query_response_budget: ResponsePayloadBudgetV1,
     socket_access: &'a SocketAccessPolicies,
     /// Where the three sockets go: a fresh, unique directory the daemon
     /// creates under `/tmp` when any socket is shared (so the peers the
@@ -215,6 +220,9 @@ pub struct E2eRuntime {
     /// so a test that injects faults into generation directories never
     /// races a scrub writing its receipt into them.
     integrity_scrub_policy: IntegrityScrubPolicyV1,
+    /// The ranked page byte budget the daemon boots with: a frame's worth
+    /// unless set through [`Self::boot_with_query_response_budget`].
+    query_response_budget: ResponsePayloadBudgetV1,
     /// The query socket's admission limits (QI-BB-002). The production
     /// default's twenty-second dispatch budget never expires on a fixture;
     /// budget tests shorten it through
@@ -487,6 +495,14 @@ impl E2eRuntime {
         Ok(runtime)
     }
 
+    /// Like [`Self::boot`] but cuts ranked pages at `budget` encoded bytes,
+    /// so a byte-cut page can be driven with a small fixture (QI-BB-005).
+    pub fn boot_with_query_response_budget(budget: ResponsePayloadBudgetV1) -> AnyResult<Self> {
+        let mut runtime = Self::boot()?;
+        runtime.query_response_budget = budget;
+        Ok(runtime)
+    }
+
     /// Like [`Self::boot`] but paces the integrity scrub under `policy`, so
     /// a scrub can complete inside a test without touching process-global
     /// env (QI-BB-017).
@@ -550,6 +566,7 @@ impl E2eRuntime {
                 HARNESS_DORMANT_SCRUB_INTERVAL_MILLIS,
                 IntegrityScrubPolicyV1::DEFAULT.max_bytes_per_step,
             )?,
+            query_response_budget: ResponsePayloadBudgetV1::DEFAULT,
             query_admission_policy: ServerAdmissionPolicy::DEFAULT,
             lexical_writer_policy: LexicalWriterPolicy::DEFAULT,
             process_memory_ceilings: ProcessMemoryCeilings::DEFAULT,
@@ -676,6 +693,7 @@ impl E2eRuntime {
                 memory_probe: &self.memory_probe,
                 maintenance_policy: self.maintenance_policy,
                 integrity_scrub_policy: self.integrity_scrub_policy,
+                query_response_budget: self.query_response_budget,
                 socket_access: &self.socket_access,
                 socket_directory: self.socket_directory.as_deref(),
             })?;
@@ -1993,6 +2011,7 @@ impl E2eRuntime {
                     generation: self.last_sealed_pin(),
                     generation_selector: None,
                     top_k,
+                    cursor: None,
                 },
                 order,
                 cursor,
@@ -2142,6 +2161,7 @@ impl E2eRuntime {
                     generation: pin,
                     generation_selector: None,
                     top_k,
+                    cursor: None,
                 },
                 cursor,
             }),
@@ -2158,6 +2178,43 @@ impl E2eRuntime {
                 | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
                 | SearchPlaneQueryIpcResponse::Explain(_)
                 | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+                | SearchPlaneQueryIpcResponse::Error(_)) => Err(query_response_kind(&other)),
+            },
+        )
+    }
+
+    /// One ranked text page after `cursor` (QI-BB-005), pinned to `pin`.
+    pub fn query_text_page(
+        &mut self,
+        syntax: TextQuerySyntax,
+        query_text: &str,
+        top_k: u32,
+        pin: Option<GenerationPin>,
+        cursor: Option<LexicalCursorV1>,
+    ) -> AnyResult<E2eRoutePage<TextQueryResponse>> {
+        self.keyset_page_query(
+            SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                syntax,
+                query_text: query_text.to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: pin,
+                generation_selector: None,
+                top_k,
+                cursor,
+            }),
+            query_response_ready,
+            |payload| match payload {
+                SearchPlaneQueryIpcResponse::Text(page) => Ok(page),
+                other @ (SearchPlaneQueryIpcResponse::Symbol(_)
+                | SearchPlaneQueryIpcResponse::Semantic(_)
+                | SearchPlaneQueryIpcResponse::Hybrid(_)
+                | SearchPlaneQueryIpcResponse::HybridSeed(_)
+                | SearchPlaneQueryIpcResponse::History(_)
+                | SearchPlaneQueryIpcResponse::Structural(_)
+                | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+                | SearchPlaneQueryIpcResponse::Explain(_)
+                | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+                | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
                 | SearchPlaneQueryIpcResponse::Error(_)) => Err(query_response_kind(&other)),
             },
         )
@@ -2193,6 +2250,7 @@ impl E2eRuntime {
                     generation: pin,
                     generation_selector: None,
                     top_k,
+                    cursor: None,
                 },
                 cursor,
             }),
@@ -2284,6 +2342,7 @@ impl E2eRuntime {
                 generation: pin,
                 generation_selector: None,
                 top_k,
+                cursor: None,
             }),
         };
         let socket = match self.ensure_driver() {
@@ -2432,6 +2491,7 @@ impl E2eRuntime {
                 generation: pin.clone(),
                 generation_selector: None,
                 top_k: scope_top_k,
+                cursor: None,
             });
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
             request_id,
@@ -2532,6 +2592,7 @@ impl E2eRuntime {
                     generation: pin.clone(),
                     generation_selector: None,
                     top_k: 50,
+                    cursor: None,
                 },
                 semantic_query_text: semantic_query_text.to_string(),
                 generation: pin,
@@ -2740,6 +2801,7 @@ impl E2eRuntime {
             generation: None,
             generation_selector: None,
             top_k: 1,
+            cursor: None,
         };
         self.explain_candidate_request(
             ExplainCandidateV1::Lexical(candidate),
@@ -2767,6 +2829,7 @@ impl E2eRuntime {
             generation: None,
             generation_selector: None,
             top_k,
+            cursor: None,
         };
         self.explain_candidate_request(
             ExplainCandidateV1::Hybrid(row),
@@ -3269,6 +3332,7 @@ fn build_config(spec: &DriverSpec<'_>) -> AnyResult<SearchdConfig> {
         .with_ingest_resource_policy(spec.ingest_resource_policy)
         .with_semantic_stream_window_policy(spec.semantic_stream_window_policy)
         .with_integrity_scrub_policy(spec.integrity_scrub_policy)
+        .with_query_response_budget(spec.query_response_budget)
         .with_query_admission_policy(spec.query_admission_policy)
         .with_lexical_writer_policy(spec.lexical_writer_policy)
         .with_process_memory_ceilings(spec.process_memory_ceilings)

@@ -114,6 +114,7 @@ fn text_request(pin: &GenerationPin, query_text: &str, top_k: u32) -> TextQueryR
         generation: Some(pin.clone()),
         generation_selector: None,
         top_k,
+        cursor: None,
     }
 }
 

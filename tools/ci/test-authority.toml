@@ -76,6 +76,12 @@ owner = "quanta-index-contract"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "contract-lexical-cursor"
+path = "crates/quanta-index-contract/tests/lexical_cursor_contract.rs"
+owner = "quanta-index-contract"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "contract-lex-property-roundtrip"
 path = "crates/quanta-index-contract/tests/lex_property_roundtrip.rs"
 owner = "quanta-index-contract"
@@ -192,6 +198,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "lexical-regex-cache-bounds"
 path = "crates/quanta-index-lexical/tests/regex_cache_bounds.rs"
+owner = "quanta-index-lexical"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lexical-ranked-pages"
+path = "crates/quanta-index-lexical/tests/ranked_pages.rs"
 owner = "quanta-index-lexical"
 rail = "pr-workspace-nextest"
 
@@ -673,6 +685,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "searchd-runtime-e2e-keyset-cursors"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_keyset_cursors.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-e2e-ranked-pages"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_ranked_pages.rs"
 owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 

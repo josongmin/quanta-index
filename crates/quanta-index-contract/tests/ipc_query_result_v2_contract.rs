@@ -180,6 +180,7 @@ fn lexical_request() -> TextQueryRequest {
         generation: Some(generation_pin()),
         generation_selector: None,
         top_k: 50,
+        cursor: None,
     }
 }
 
@@ -193,6 +194,7 @@ fn semantic_scope() -> TextQueryRequest {
         // LXE-01 §3: lexical scope unified on TextQueryRequest. The lexical
         // candidate cap for the semantic pre-filter; tests use a tight cap.
         top_k: 50,
+        cursor: None,
     }
 }
 
@@ -322,6 +324,7 @@ fn sourcegraph_text_request() -> TextQueryRequest {
         generation: Some(generation_pin()),
         generation_selector: None,
         top_k: 25,
+        cursor: None,
     }
 }
 
@@ -335,6 +338,7 @@ fn sourcegraph_structural_request() -> StructuralQueryRequest {
             generation: Some(generation_pin()),
             generation_selector: None,
             top_k: 25,
+            cursor: None,
         },
         cursor: None,
     }
@@ -807,6 +811,7 @@ fn search_plane_ipc_response_v2_symbol_roundtrips_kind_truth() -> TestRes {
             generation: generation_pin(),
             results: vec![symbol_candidate()?],
             window: QueryResultWindowV1::exact(1),
+            next_cursor: None,
         });
 
     roundtrip_eq(&response)?;
@@ -840,6 +845,7 @@ fn search_plane_ipc_response_v2_sourcegraph_roundtrips_text_candidates() -> Test
         results: vec![lexical_candidate()],
         window: QueryResultWindowV1::exact(1),
         file_owner_rows: None,
+        next_cursor: None,
     });
 
     roundtrip_eq(&response)?;
@@ -1136,6 +1142,7 @@ fn search_plane_ipc_v2_history_relevance_pages_and_requests_round_trip() -> Test
                 generation: Some(generation_pin()),
                 generation_selector: None,
                 top_k: 5,
+                cursor: None,
             },
             order,
             cursor: None,
@@ -1259,6 +1266,7 @@ fn search_plane_ipc_response_v2_lexical_rejects_duplicate_results() -> TestRes {
         results: vec![lexical_candidate()],
         window: QueryResultWindowV1::exact(1),
         file_owner_rows: None,
+        next_cursor: None,
     });
     let bytes = mutate_ipc_response_wire(&response, |wire| {
         let response_fields = map_fields_mut(wire)?;
@@ -1311,6 +1319,7 @@ fn search_plane_ipc_response_v2_roundtrips_file_owner_projection_rows() -> TestR
             repo_relative_path: RepoRelativePath::new("src/lib.rs"),
             owners: vec!["@alice".to_string(), "@acme/platform".to_string()],
         }]),
+        next_cursor: None,
     });
 
     roundtrip_eq(&response)?;
@@ -1342,6 +1351,7 @@ fn search_plane_ipc_response_v2_symbol_rejects_duplicate_symbol_kind() -> TestRe
             generation: generation_pin(),
             results: vec![symbol_candidate()?],
             window: QueryResultWindowV1::exact(1),
+            next_cursor: None,
         });
     let bytes = mutate_ipc_response_wire(&response, |wire| {
         let response_fields = map_fields_mut(wire)?;
@@ -1426,6 +1436,7 @@ fn text_response_with_lexical_candidate() -> SearchPlaneQueryIpcResponse {
         results: vec![lexical_candidate()],
         window: QueryResultWindowV1::exact(1),
         file_owner_rows: None,
+        next_cursor: None,
     })
 }
 
@@ -2263,6 +2274,7 @@ fn top_k_bearing_requests(top_k: u32) -> Vec<(&'static str, SearchPlaneQueryIpcR
                 generation: Some(generation_pin()),
                 generation_selector: None,
                 top_k,
+                cursor: None,
             }),
         ),
         (

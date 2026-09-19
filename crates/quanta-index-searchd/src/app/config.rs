@@ -14,7 +14,9 @@ use quanta_index_embed::{
 };
 use quanta_index_ipc::ServerAdmissionPolicy;
 use quanta_index_search_plane::readiness::SearchCorpusHistoryRetentionPolicyV1;
-use quanta_index_search_plane::{SEARCH_OWNED_SEMANTIC_DIMENSION, SnapshotRegistryPolicy};
+use quanta_index_search_plane::{
+    ResponsePayloadBudgetV1, SEARCH_OWNED_SEMANTIC_DIMENSION, SnapshotRegistryPolicy,
+};
 
 use crate::app::socket_access::SocketAccessPolicies;
 
@@ -312,6 +314,9 @@ pub struct SearchdConfig {
     process_memory_ceilings: ProcessMemoryCeilings,
     /// The maintenance timer's cadence (QI-BB-016, QI-BB-015).
     maintenance_policy: MaintenancePolicy,
+    /// How many encoded bytes one ranked lexical page may take before it
+    /// is cut and continued by its cursor (QI-BB-005 보완 #5).
+    query_response_budget: ResponsePayloadBudgetV1,
     /// How the integrity scrub is paced as maintenance (QI-BB-017): at most
     /// one bounded step per interval, on the maintenance timer.
     integrity_scrub_policy: IntegrityScrubPolicyV1,
@@ -485,6 +490,13 @@ pub(crate) const ENV_POLICY_FAMILIES: &[EnvPolicyFamily] = &[
         },
     },
     EnvPolicyFamily {
+        name: "query response budget",
+        env_vars: &["QUANTA_INDEX_QUERY_RESPONSE_MAX_BYTES"],
+        apply: |config, lookup| {
+            Ok(config.with_query_response_budget(query_response_budget_from_lookup(lookup)?))
+        },
+    },
+    EnvPolicyFamily {
         name: "integrity scrub",
         env_vars: &[
             "QUANTA_INDEX_INTEGRITY_SCRUB_INTERVAL_MS",
@@ -521,6 +533,7 @@ impl SearchdConfig {
             socket_access_policies: SocketAccessPolicies::PRIVATE,
             process_memory_ceilings: ProcessMemoryCeilings::DEFAULT,
             maintenance_policy: MaintenancePolicy::DEFAULT,
+            query_response_budget: ResponsePayloadBudgetV1::DEFAULT,
             integrity_scrub_policy: IntegrityScrubPolicyV1::DEFAULT,
         }
     }
@@ -703,6 +716,17 @@ impl SearchdConfig {
     #[must_use]
     pub const fn with_maintenance_policy(mut self, policy: MaintenancePolicy) -> Self {
         self.maintenance_policy = policy;
+        self
+    }
+
+    #[must_use]
+    pub const fn query_response_budget(&self) -> ResponsePayloadBudgetV1 {
+        self.query_response_budget
+    }
+
+    #[must_use]
+    pub const fn with_query_response_budget(mut self, budget: ResponsePayloadBudgetV1) -> Self {
+        self.query_response_budget = budget;
         self
     }
 
@@ -1185,6 +1209,20 @@ fn maintenance_policy_from_lookup(lookup: &EnvLookup<'_>) -> Result<MaintenanceP
     }
 }
 
+/// Resolve the ranked page byte budget from env (QI-BB-005 보완 #5).
+///
+/// `QUANTA_INDEX_QUERY_RESPONSE_MAX_BYTES` unset selects
+/// [`ResponsePayloadBudgetV1::DEFAULT`] (a frame less the envelope
+/// reserve); zero or more than that is refused.
+fn query_response_budget_from_lookup(lookup: &EnvLookup<'_>) -> Result<ResponsePayloadBudgetV1> {
+    const BYTES: &str = "QUANTA_INDEX_QUERY_RESPONSE_MAX_BYTES";
+    match lookup(BYTES)? {
+        None => Ok(ResponsePayloadBudgetV1::DEFAULT),
+        Some(raw) => ResponsePayloadBudgetV1::new(required_positive_raw_u64(BYTES, Some(raw))?)
+            .map_err(anyhow::Error::from),
+    }
+}
+
 /// Resolve the integrity scrub pacing from env (QI-BB-017).
 ///
 /// `QUANTA_INDEX_INTEGRITY_SCRUB_INTERVAL_MS` and
@@ -1571,6 +1609,7 @@ mod tests {
             ("QUANTA_INDEX_PROCESS_MEMORY_CEILING_BYTES", "3221225472"),
             ("QUANTA_INDEX_PROCESS_RSS_CEILING_BYTES", "4294967296"),
             ("QUANTA_INDEX_MAINTENANCE_TICK_MS", "1500"),
+            ("QUANTA_INDEX_QUERY_RESPONSE_MAX_BYTES", "1048576"),
             ("QUANTA_INDEX_INTEGRITY_SCRUB_INTERVAL_MS", "750"),
             ("QUANTA_INDEX_INTEGRITY_SCRUB_MAX_BYTES_PER_STEP", "4096"),
         ])
@@ -1721,6 +1760,10 @@ mod tests {
             with_state_root.maintenance_policy().tick(),
             Duration::from_millis(1500)
         );
+        assert_eq!(
+            with_state_root.query_response_budget().max_payload_bytes(),
+            1_048_576
+        );
         let SemanticEmbedderProfile::OpenAi {
             model,
             model_revision,
@@ -1740,6 +1783,35 @@ mod tests {
             Duration::from_secs(3600)
         );
         assert_eq!(tuning.cache_retention.max_total_bytes(), 8192);
+    }
+
+    /// The ranked page byte budget: unset is a frame less the envelope
+    /// reserve, and a budget of zero or more than that is refused.
+    #[test]
+    fn the_query_response_budget_is_bounded_by_the_frame() {
+        const BYTES: &str = "QUANTA_INDEX_QUERY_RESPONSE_MAX_BYTES";
+        assert_eq!(
+            query_response_budget_from_lookup(&|_name| Ok(None)).expect("unset"),
+            ResponsePayloadBudgetV1::DEFAULT
+        );
+        let at_default = ResponsePayloadBudgetV1::DEFAULT
+            .max_payload_bytes()
+            .to_string();
+        for (raw, admitted) in [
+            ("1", true),
+            (at_default.as_str(), true),
+            ("0", false),
+            ("16777216", false),
+        ] {
+            let lookup = |name: &str| -> Result<Option<String>> {
+                Ok((name == BYTES).then(|| raw.to_string()))
+            };
+            assert_eq!(
+                query_response_budget_from_lookup(&lookup).is_ok(),
+                admitted,
+                "{BYTES}={raw}"
+            );
+        }
     }
 
     /// The development label (QI-BB-007): an unset selector is refused

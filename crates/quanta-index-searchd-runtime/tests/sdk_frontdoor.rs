@@ -1790,6 +1790,7 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
                 generation: None,
                 generation_selector: None,
                 top_k: 2,
+                cursor: None,
             },
             "quartz",
         )
@@ -3600,6 +3601,7 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
         generation: None,
         generation_selector: Some(pinned_selector(pin())),
         top_k: 2,
+        cursor: None,
     };
     let lexical = wait_for_sdk_observation(
         SOCKET_TIMEOUT,
@@ -3625,6 +3627,7 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
         generation: None,
         generation_selector: Some(pinned_selector(pin())),
         top_k: 3,
+        cursor: None,
     };
     let symbol = wait_for_symbol_query(SOCKET_TIMEOUT, || {
         client.symbol().query_request(symbol_request.clone())
@@ -3639,6 +3642,7 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
             generation: None,
             generation_selector: Some(pinned_selector(pin())),
             top_k: 5,
+            cursor: None,
         },
         order: HistoryOrderV1::Recency,
         cursor: None,
@@ -3668,6 +3672,7 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
             generation: None,
             generation_selector: Some(pinned_selector(pin())),
             top_k: 3,
+            cursor: None,
         },
         cursor: None,
     };
@@ -3695,6 +3700,7 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
             generation: None,
             generation_selector: Some(pinned_selector(pin())),
             top_k: 2,
+            cursor: None,
         },
         cursor: None,
     };
@@ -3739,6 +3745,7 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
             generation: None,
             generation_selector: Some(pinned_selector(pin())),
             top_k: 2,
+            cursor: None,
         }),
         top_k: 2,
     };
@@ -3767,6 +3774,7 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
             generation: None,
             generation_selector: Some(pinned_selector(pin())),
             top_k: 2,
+            cursor: None,
         },
         semantic_query_text: "quartz".to_string(),
         generation: None,

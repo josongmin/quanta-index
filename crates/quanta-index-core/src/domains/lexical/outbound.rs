@@ -3,10 +3,10 @@ use std::collections::BTreeSet;
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::{
     BatchPublishReceipt, CandidatePresenceV1, FileContributorIngestBatch, FileOwnerProjectionRow,
-    FileOwnershipIngestBatch, GenerationSnapshot, LexicalCandidate, LqQuery, ManifestGeneration,
-    QueryConstraintSetV1, RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId,
-    RepoMetaIngestBatch, RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch,
-    SymbolCandidate,
+    FileOwnershipIngestBatch, GenerationSnapshot, LexicalCandidate, LexicalCursorV1, LqQuery,
+    ManifestGeneration, QueryConstraintSetV1, RepoCommitRecencyIngestBatch,
+    RepoDescriptionIngestBatch, RepoId, RepoMetaIngestBatch, RepoTopicIngestBatch, RevisionId,
+    SearchCorpusIngestBatch, SymbolCandidate,
 };
 
 use crate::domains::read_view::LexicalArtifactIdentityV1;
@@ -186,6 +186,28 @@ pub struct LexicalSearchPageV1 {
     pub exact_total: Option<u64>,
 }
 
+/// What one ranked lexical page asks the engine for (QI-BB-005 보완 #4).
+///
+/// Rows come in the ranked lexical order (`LexicalRowOrderKeyV1`); with a
+/// boundary, only the rows strictly after it, and an exact total counts
+/// only those.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LexicalPageSpecV1 {
+    /// Rows to return: the page, plus one continuation probe row when the
+    /// caller derives its window from one.
+    pub fetch: u32,
+    /// The last row of the previous page, in the generation it names.
+    pub after: Option<LexicalCursorV1>,
+}
+
+impl LexicalPageSpecV1 {
+    /// The first page of `fetch` rows.
+    #[must_use]
+    pub const fn first(fetch: u32) -> Self {
+        Self { fetch, after: None }
+    }
+}
+
 /// What the lexical engine emits for one candidate under one plan
 /// (QI-BB-022).
 #[derive(Clone, Debug, PartialEq)]
@@ -269,18 +291,25 @@ pub trait LexicalSearcher: Send + Sync {
         top_k: u32,
         budget: &RequestBudgetV1,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
-        self.search_constrained(query, &QueryConstraintSetV1::unconstrained(), top_k, budget)
-            .map(|page| page.candidates)
+        self.search_constrained(
+            query,
+            &QueryConstraintSetV1::unconstrained(),
+            &LexicalPageSpecV1::first(top_k),
+            budget,
+        )
+        .map(|page| page.candidates)
     }
 
     /// Search with candidate-generation constraints applied before ranking and
-    /// `top_k`. Adapters that do not own native constraint pushdown must fail
-    /// closed for non-empty constraints instead of post-filtering results.
+    /// the page cut. Adapters that do not own native constraint pushdown must
+    /// fail closed for non-empty constraints instead of post-filtering results,
+    /// and one that cannot continue after a boundary must refuse a page that
+    /// names one.
     fn search_constrained(
         &self,
         query: &LqQuery,
         constraints: &QueryConstraintSetV1,
-        top_k: u32,
+        page: &LexicalPageSpecV1,
         budget: &RequestBudgetV1,
     ) -> Result<LexicalSearchPageV1, CoreError>;
 
@@ -303,20 +332,26 @@ pub trait LexicalSearcher: Send + Sync {
         budget: &RequestBudgetV1,
     ) -> Result<Vec<SymbolCandidate>, CoreError>;
 
+    /// Symbol matches under constraints, one ranked page after an optional
+    /// boundary.
     fn search_symbols_constrained(
         &self,
         query: &LqQuery,
         constraints: &QueryConstraintSetV1,
-        top_k: u32,
+        page: &LexicalPageSpecV1,
         budget: &RequestBudgetV1,
     ) -> Result<Vec<SymbolCandidate>, CoreError> {
-        if constraints.is_unconstrained() {
-            self.search_symbols(query, top_k, budget)
-        } else {
-            Err(CoreError::NotImplemented(
+        if !constraints.is_unconstrained() {
+            return Err(CoreError::NotImplemented(
                 "symbol searcher does not provide native query-constraint pushdown".to_string(),
-            ))
+            ));
         }
+        if page.after.is_some() {
+            return Err(CoreError::NotImplemented(
+                "symbol searcher does not continue a page after a cursor".to_string(),
+            ));
+        }
+        self.search_symbols(query, page.fetch, budget)
     }
 
     /// Return every symbol-domain match for the query within the opened

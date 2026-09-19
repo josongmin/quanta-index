@@ -47,6 +47,7 @@ pub(crate) fn runtime_query_request(
             generation: Some(ready_pin()),
             generation_selector: None,
             top_k: 5,
+            cursor: None,
         },
         cursor: None,
     })

@@ -14,7 +14,7 @@ use quanta_index_contract::{
     AuxEpochV1, EarlyStopReason, EngineTouched, ExplainCandidateV1, GenerationPin, HistoryCursor,
     HistoryOrderV1, HistoryQueryRequest, HybridCandidateV1, HybridQueryRequest,
     HybridQueryResponse, HybridSeedQueryRequest, HybridSeedQueryResponse, LexicalCandidate,
-    ManifestGeneration, PlannerTraceEntry, QueryConstraintSetV1, QueryErrorRepair,
+    LexicalCursorV1, ManifestGeneration, PlannerTraceEntry, QueryConstraintSetV1, QueryErrorRepair,
     QueryResultWindowV1, RepoId, RepoMapDocType, RepoMapFocusSubjectDto, RepoMapQueryRequest,
     RevisionId, RuntimeMetadataCursorV1, RuntimeMetadataQueryRequest, SearchExplanation,
     SearchPlaneHistoryQueryResponse, SearchPlaneQueryIpcResponse,
@@ -425,85 +425,23 @@ fn parse_query_command_flags(
 }
 
 fn parse_lexical(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
-    let mut generation_args = PinnedGenerationArgs::default();
-    let mut syntax: Option<TextQuerySyntax> = None;
-    let mut query_text: Option<String> = None;
-    let mut top_k: Option<u32> = None;
-    parse_query_command_flags(
-        common,
-        &mut generation_args,
-        rest,
-        "lexical",
-        |current, rest| match current {
-            "--syntax" => {
-                syntax = Some(parse_syntax(&take_value(rest, "--syntax")?)?);
-                Ok(true)
-            }
-            "--query-text" => {
-                query_text = Some(take_value(rest, "--query-text")?);
-                Ok(true)
-            }
-            "--top-k" => {
-                top_k = Some(parse_u32_flag(rest, "--top-k")?);
-                Ok(true)
-            }
-            _ => Ok(false),
-        },
-    )?;
-    let generation = generation_args.into_generation_pin()?;
-    let syntax = syntax.ok_or_else(|| CliError::usage("missing --syntax".to_string()))?;
-    let query_text =
-        query_text.ok_or_else(|| CliError::usage("missing --query-text".to_string()))?;
-    let top_k = top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?;
+    let page = parse_keyset_page_query(common, rest, "lexical")?;
+    let cursor = page.cursor::<LexicalCursorV1>()?;
     Ok(CliRequest::Lexical(TextQueryRequest {
-        syntax,
-        query_text,
-        constraints: QueryConstraintSetV1::unconstrained(),
-        generation: Some(generation),
-        generation_selector: None,
-        top_k,
+        cursor,
+        ..page.text_query
     }))
 }
 
 fn parse_symbol(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
-    let mut generation_args = PinnedGenerationArgs::default();
-    let mut syntax: Option<TextQuerySyntax> = None;
-    let mut query_text: Option<String> = None;
-    let mut top_k: Option<u32> = None;
-    parse_query_command_flags(
-        common,
-        &mut generation_args,
-        rest,
-        "symbol",
-        |current, rest| match current {
-            "--syntax" => {
-                syntax = Some(parse_syntax(&take_value(rest, "--syntax")?)?);
-                Ok(true)
-            }
-            "--query-text" => {
-                query_text = Some(take_value(rest, "--query-text")?);
-                Ok(true)
-            }
-            "--top-k" => {
-                top_k = Some(parse_u32_flag(rest, "--top-k")?);
-                Ok(true)
-            }
-            _ => Ok(false),
+    let page = parse_keyset_page_query(common, rest, "symbol")?;
+    let cursor = page.cursor::<LexicalCursorV1>()?;
+    Ok(CliRequest::Symbol(SymbolQueryRequest::from(
+        TextQueryRequest {
+            cursor,
+            ..page.text_query
         },
-    )?;
-    let generation = generation_args.into_generation_pin()?;
-    let syntax = syntax.ok_or_else(|| CliError::usage("missing --syntax".to_string()))?;
-    let query_text =
-        query_text.ok_or_else(|| CliError::usage("missing --query-text".to_string()))?;
-    let top_k = top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?;
-    Ok(CliRequest::Symbol(SymbolQueryRequest {
-        syntax,
-        query_text,
-        constraints: QueryConstraintSetV1::unconstrained(),
-        generation: Some(generation),
-        generation_selector: None,
-        top_k,
-    }))
+    )))
 }
 
 fn parse_runtime_metadata(
@@ -548,8 +486,8 @@ impl KeysetPageQueryArgs {
 }
 
 /// Parse `<command> --syntax --query-text --top-k [--cursor-json PATH|-]`
-/// with the pinned-generation flags: the shape of the runtime-metadata,
-/// history and structural routes.
+/// with the pinned-generation flags: the shape of the lexical, symbol,
+/// runtime-metadata, history and structural routes.
 fn parse_keyset_page_query(
     common: &mut CommonOptions,
     rest: &mut VecDeque<String>,
@@ -609,6 +547,7 @@ fn parse_keyset_page_query_with(
             generation: Some(generation),
             generation_selector: None,
             top_k,
+            cursor: None,
         },
         cursor_json: cursor_json.map(|path| (path, command)),
     })
@@ -899,6 +838,7 @@ fn parse_semantic(
                 generation: Some(generation.clone()),
                 generation_selector: None,
                 top_k: scope_top_k,
+                cursor: None,
             })
         }
         (Some(_), None) => {
@@ -970,6 +910,7 @@ fn parse_hybrid(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliR
         generation: Some(generation.clone()),
         generation_selector: None,
         top_k,
+        cursor: None,
     };
     Ok(CliRequest::Hybrid(HybridQueryRequest {
         text_query,
@@ -1026,6 +967,7 @@ fn parse_hybrid_seed(
         generation: Some(generation.clone()),
         generation_selector: None,
         top_k: text_query_top_k,
+        cursor: None,
     };
     Ok(CliRequest::HybridSeed(HybridSeedQueryRequest {
         text_query,
@@ -1126,6 +1068,7 @@ fn parse_explain(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
             generation: Some(generation.clone()),
             generation_selector: None,
             top_k: text_query_top_k,
+            cursor: None,
         }),
         (None, None) => None,
         (Some(_), None) => {
@@ -1998,6 +1941,7 @@ fn render_pretty(
                 results: payload.results.clone(),
                 window: payload.window,
                 file_owner_rows: None,
+                next_cursor: None,
             },
             Some(&payload.explanation),
             rendered,
@@ -2418,6 +2362,7 @@ fn render_lexical_payload(
             ))?;
         }
     }
+    render_lexical_cursor(payload.next_cursor.as_ref(), rendered)?;
     if let Some(explanation) = explanation {
         render_explanation(explanation, rendered)?;
     }
@@ -2433,6 +2378,16 @@ fn render_symbol_payload(payload: &SymbolQueryResponse, rendered: &mut String) -
             .checked_add(1)
             .ok_or_else(|| CliError::protocol("symbol candidate index overflow".to_string()))?;
         render_symbol_candidate(display_index, candidate, rendered)?;
+    }
+    render_lexical_cursor(payload.next_cursor.as_ref(), rendered)
+}
+
+/// The continuation of a ranked page, as `--cursor-json` takes it back.
+fn render_lexical_cursor(cursor: Option<&LexicalCursorV1>, rendered: &mut String) -> CliResult<()> {
+    if let Some(cursor) = cursor {
+        let json = serde_json::to_string(cursor)
+            .map_err(|err| CliError::protocol(format!("encode next_cursor: {err}")))?;
+        fmt_ok(writeln!(rendered, "next_cursor: {json}"))?;
     }
     Ok(())
 }
@@ -2696,8 +2651,8 @@ Global flags:
   --output pretty|json|prometheus   (prometheus: `metrics` only)
 
 Read-only subcommands:
-  lexical          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
-  symbol           --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
+  lexical          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-]
+  symbol           --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-]
   semantic         --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N [--scope-query TEXT --scope-syntax native|sourcegraph --scope-top-k N]
   hybrid           --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --semantic-query-text TEXT --top-k N
   hybrid-seed      --repo-id ID --revision-id REV --manifest-generation N --lexical-query TEXT --lexical-syntax native|sourcegraph --semantic-query TEXT --top-k N
@@ -3279,6 +3234,7 @@ mod tests {
                     symbol_kind_family: Some(SymbolKindFamily::Callable),
                 }],
                 window: QueryResultWindowV1::exact(1),
+                next_cursor: None,
             }),
         };
         let mut stdout = Vec::new();
@@ -3396,6 +3352,7 @@ mod tests {
                     repo_relative_path: quanta_index_contract::RepoRelativePath::new("src/lib.rs"),
                     owners: vec!["@alice".to_string(), "@acme/platform".to_string()],
                 }]),
+                next_cursor: None,
             }),
         };
         let mut stdout = Vec::new();

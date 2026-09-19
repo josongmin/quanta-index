@@ -182,6 +182,7 @@ fn text_query(request_id: u64, repo: &str) -> SearchPlaneQueryIpcRequestEnvelope
             )),
             generation_selector: None,
             top_k: 10,
+            cursor: None,
         }),
     }
 }

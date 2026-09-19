@@ -1,7 +1,8 @@
 use quanta_index_contract::{
     LqExpr, LqLeaf, LqMetaVar, LqPatternType, LqQuery, LqStructuralBlock, LqStructuralConstraint,
     LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleMultiplicity,
-    LqStructuralHoleRef, LqStructuralNode, TextQueryRequest, TextQuerySyntax,
+    LqStructuralHoleRef, LqStructuralNode, QUERY_CURSOR_UNSUPPORTED_CODE, TextQueryRequest,
+    TextQuerySyntax,
 };
 use quanta_index_lq_bridge::{
     BridgeError, BridgeErrorCode, SgFilter, SgQuery, SourcegraphVersionTag, parse_sourcegraph,
@@ -14,7 +15,21 @@ use quanta_index_lq_regex::RegexExecutor;
 
 use quanta_index_core::CoreError;
 
+/// Lower a text request's query to the one executable query.
+///
+/// Only a ranked text or symbol page continues after a cursor, and those
+/// routes take the cursor off the request before lowering it. A cursor
+/// that reaches this point rode on a text request whose route cannot
+/// honour it (a semantic scope, a hybrid lane, an explain, a structural or
+/// runtime text leaf) and is refused typed rather than ignored.
 pub fn lower_lexical_text_query(request: &TextQueryRequest) -> Result<LqQuery, CoreError> {
+    if request.cursor.is_some() {
+        return Err(CoreError::Typed {
+            code: QUERY_CURSOR_UNSUPPORTED_CODE.to_string(),
+            message: "a cursor continues only a text or symbol page; this route ranks no pages to continue"
+                .to_string(),
+        });
+    }
     match request.syntax {
         TextQuerySyntax::Native => lower_lq_query_text(&request.query_text),
         TextQuerySyntax::Sourcegraph => lower_sourcegraph_query_text(&request.query_text),

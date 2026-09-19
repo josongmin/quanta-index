@@ -503,6 +503,7 @@ impl quanta_index_sdk::LexicalQueryBuilder<'_, true, true, true>
 pub fn quanta_index_sdk::LexicalQueryBuilder<'_, true, true, true>::execute(self) -> core::result::Result<quanta_index_contract::results::query_responses::TextQueryResponse, quanta_index_sdk::SdkError>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
 pub fn quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::active(self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId) -> quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, true, HAS_TOP_K>
+pub fn quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::after(self, cursor: quanta_index_contract_base::query::lexical_cursor::LexicalCursorV1) -> Self
 pub fn quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::exact_repo_relative_path(self, path: quanta_index_contract_base::query::constraints::ExactRepoRelativePathV1) -> Self
 pub fn quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::language_any_of(self, languages: impl core::iter::traits::collect::IntoIterator<Item = quanta_index_contract_base::query::constraints::LanguageCode>) -> Self
 pub fn quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::native(self, query_text: impl core::convert::Into<alloc::string::String>) -> quanta_index_sdk::LexicalQueryBuilder<'a, true, HAS_SELECTION, HAS_TOP_K>
@@ -1000,6 +1001,7 @@ impl quanta_index_sdk::SymbolQueryBuilder<'_, true, true, true>
 pub fn quanta_index_sdk::SymbolQueryBuilder<'_, true, true, true>::execute(self) -> core::result::Result<quanta_index_contract::results::query_responses::SymbolQueryResponse, quanta_index_sdk::SdkError>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> quanta_index_sdk::SymbolQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
 pub fn quanta_index_sdk::SymbolQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::active(self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId) -> quanta_index_sdk::SymbolQueryBuilder<'a, HAS_TEXT, true, HAS_TOP_K>
+pub fn quanta_index_sdk::SymbolQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::after(self, cursor: quanta_index_contract_base::query::lexical_cursor::LexicalCursorV1) -> Self
 pub fn quanta_index_sdk::SymbolQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::exact_repo_relative_path(self, path: quanta_index_contract_base::query::constraints::ExactRepoRelativePathV1) -> Self
 pub fn quanta_index_sdk::SymbolQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::language_any_of(self, languages: impl core::iter::traits::collect::IntoIterator<Item = quanta_index_contract_base::query::constraints::LanguageCode>) -> Self
 pub fn quanta_index_sdk::SymbolQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::native(self, query_text: impl core::convert::Into<alloc::string::String>) -> quanta_index_sdk::SymbolQueryBuilder<'a, true, HAS_SELECTION, HAS_TOP_K>

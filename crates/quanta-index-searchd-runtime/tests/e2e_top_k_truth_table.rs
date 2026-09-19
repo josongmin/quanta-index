@@ -83,6 +83,7 @@ fn text_request(
         generation: pin,
         generation_selector: None,
         top_k,
+        cursor: None,
     }
 }
 
@@ -102,6 +103,7 @@ fn symbol(pin: Option<GenerationPin>, top_k: u32) -> SearchPlaneQueryIpcRequest 
         generation: pin,
         generation_selector: None,
         top_k,
+        cursor: None,
     })
 }
 

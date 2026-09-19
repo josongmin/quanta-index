@@ -182,6 +182,7 @@ fn scope_top_k_shares_the_public_gate() -> TestResult {
                 generation: Some(pin.clone()),
                 generation_selector: None,
                 top_k: scope_top_k,
+                cursor: None,
             }),
             top_k: OUTER_TOP_K,
         }),

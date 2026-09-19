@@ -38,7 +38,8 @@ use quanta_index_contract::{
     SearchScopeKey, SearchScopeSurface,
 };
 use quanta_index_core::{
-    CoreError, LexicalIndexOpenPort, LexicalSearcher, RequestBudgetV1, SearchCorpusBatchBuildPort,
+    CoreError, LexicalIndexOpenPort, LexicalPageSpecV1, LexicalSearcher, RequestBudgetV1,
+    SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 
@@ -833,7 +834,7 @@ fn candidate_ids(
     let page = searcher.search_constrained(
         query,
         &QueryConstraintSetV1::unconstrained(),
-        TOP_K,
+        &LexicalPageSpecV1::first(TOP_K),
         &RequestBudgetV1::unbounded(),
     )?;
     Ok(page
@@ -1181,22 +1182,22 @@ fn as_format_one(current: &[ciborium::Value]) -> Vec<ciborium::Value> {
     legacy
 }
 
-/// The format-5 manifest row's element count: format version, identity
+/// The current manifest row's element count: format version, identity
 /// digest, normalizer stamp, index meta, segment verification policy,
 /// index segments, text authority, overlays.
 const MANIFEST_ROW_LEN: usize = 8;
-/// Position of the normalizer stamp in a format-5 manifest row.
+/// Position of the normalizer stamp in the current manifest row.
 const MANIFEST_NORMALIZER_INDEX: usize = 2;
 /// The manifest format this build seals.
-const CURRENT_FORMAT: u32 = 5;
+const CURRENT_FORMAT: u32 = 6;
 
 /// Generations sealed under earlier manifest formats are refused typed by
 /// both doors.
 ///
-/// Format 1 is the pre-normalizer layout (no normalizer stamp); format 4 is
-/// this row shape over an index that stored the text-authority doc id but
-/// did not index it, so a derived match set could not restrict it. The
-/// validator and the query open both answer
+/// Format 1 is the pre-normalizer layout (no normalizer stamp); formats 4
+/// and 5 are this row shape over indexes that lacked a fast column this
+/// build ranks or restricts by (the text-authority doc id; the page order).
+/// The validator and the query open both answer
 /// `GENERATION_MANIFEST_FORMAT_UNSUPPORTED` for each, and the intact
 /// current manifest is admitted again once restored.
 #[test]
@@ -1213,17 +1214,19 @@ fn a_generation_sealed_under_the_previous_format_is_refused_typed() -> TestResul
         return Err(format!("unexpected current manifest row shape: {current:?}").into());
     }
 
-    let mut format_four = current.clone();
-    if let Some(version) = format_four.first_mut() {
-        *version = ciborium::Value::from(4_u32);
+    for earlier in [4_u32, 5] {
+        let mut downgraded = current.clone();
+        if let Some(version) = downgraded.first_mut() {
+            *version = ciborium::Value::from(earlier);
+        }
+        write_manifest_row(&manifest, downgraded)?;
+        expect_both_doors(
+            &adapter,
+            generation(),
+            &format!("format {earlier} manifest"),
+            FORMAT_UNSUPPORTED,
+        )?;
     }
-    write_manifest_row(&manifest, format_four)?;
-    expect_both_doors(
-        &adapter,
-        generation(),
-        "format 4 manifest",
-        FORMAT_UNSUPPORTED,
-    )?;
 
     write_manifest_row(&manifest, as_format_one(&current))?;
     expect_both_doors(

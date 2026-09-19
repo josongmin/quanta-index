@@ -47,6 +47,7 @@ fn lexical_dispatch_fail_closed_when_generation_is_not_ready() -> TestResult {
             )),
             generation_selector: None,
             top_k: 50,
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     ) {
@@ -109,6 +110,7 @@ fn the_request_budget_reaches_the_lexical_searcher() -> TestResult {
             generation: Some(pin),
             generation_selector: None,
             top_k: 2,
+            cursor: None,
         }),
         &budget,
     );
@@ -152,6 +154,7 @@ fn sourcegraph_text_syntax_dispatch_returns_text_payload() -> TestResult {
             generation: Some(pin.clone()),
             generation_selector: None,
             top_k: 2,
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -220,6 +223,7 @@ fn symbol_dispatch_admits_only_typed_exact_path_as_constraint_only_authority_v1(
             generation: Some(ready_pin()),
             generation_selector: None,
             top_k: 3,
+            cursor: None,
         },
         &RequestBudgetV1::unbounded(),
     )?;
@@ -250,6 +254,7 @@ fn symbol_dispatch_admits_only_typed_exact_path_as_constraint_only_authority_v1(
             generation: Some(ready_pin()),
             generation_selector: None,
             top_k: 3,
+            cursor: None,
         },
         &RequestBudgetV1::unbounded(),
     ) {
@@ -304,6 +309,7 @@ fn lexical_dispatch_stabilizes_tied_text_results() -> TestResult {
             generation: Some(ready_pin()),
             generation_selector: None,
             top_k: 10,
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -363,6 +369,7 @@ fn sourcegraph_dispatch_rejects_structural_pattern_type_before_lexical_execution
             generation: Some(ready_pin()),
             generation_selector: None,
             top_k: 2,
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -404,6 +411,7 @@ fn text_dispatch_parse_error_emits_closed_obs_metric() -> TestResult {
             generation: Some(ready_pin()),
             generation_selector: None,
             top_k: 10,
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -460,6 +468,7 @@ fn lexical_dispatch_returns_typed_when_filter_is_fork_only() -> TestResult {
             generation: Some(ready_pin()),
             generation_selector: None,
             top_k: 5,
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -528,6 +537,7 @@ fn lexical_dispatch_returns_typed_when_filter_is_rev() -> TestResult {
             generation: Some(ready_pin()),
             generation_selector: None,
             top_k: 5,
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -570,6 +580,7 @@ fn lexical_dispatch_passes_through_when_no_unavailable_filters() -> TestResult {
             generation: Some(ready_pin()),
             generation_selector: None,
             top_k: 5,
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );
@@ -638,6 +649,7 @@ fn symbol_dispatch_returns_symbol_candidates_with_kind_truth() -> TestResult {
             generation: Some(ready_pin()),
             generation_selector: None,
             top_k: 3,
+            cursor: None,
         }),
         &RequestBudgetV1::unbounded(),
     );

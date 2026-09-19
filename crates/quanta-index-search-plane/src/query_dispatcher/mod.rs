@@ -24,9 +24,9 @@
 //!   over-fetch / admit / refill loop the `hybrid` and `hybrid_seed` routes
 //!   share (QI-BB-018 보완 #3). Depends only on core.
 //! - support: `selection`, `window`, `keyset_page`, `ranking`, `rev_at_time`,
-//!   `text_plane`, `timeref`, `errors`, `metrics`. `rev_at_time` and
-//!   `text_plane` depend on `timeref` / `errors`; the rest depend only on
-//!   `errors`.
+//!   `text_plane`, `timeref`, `errors`, `metrics`, `response_budget` (the
+//!   ranked lexical page's byte budget). `rev_at_time` and `text_plane`
+//!   depend on `timeref` / `errors`; the rest depend only on `errors`.
 
 mod dense_admission;
 mod dispatcher;
@@ -36,6 +36,7 @@ mod metrics;
 mod planning;
 mod ranking;
 mod read_view;
+mod response_budget;
 mod rev_at_time;
 mod routes;
 mod selection;
@@ -46,6 +47,7 @@ mod window;
 
 pub use dispatcher::{SearchPlaneDispatcher, SearchPlaneQueryDispatcher, SearchPlaneQueryService};
 pub use errors::repair_for_code;
+pub use response_budget::{RESPONSE_ENVELOPE_RESERVE_BYTES, ResponsePayloadBudgetV1};
 pub use selection::make_pin;
 
 #[cfg(test)]

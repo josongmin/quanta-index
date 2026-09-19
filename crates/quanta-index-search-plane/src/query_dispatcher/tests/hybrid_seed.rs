@@ -58,6 +58,7 @@ fn hybrid_seed_dispatch_includes_dense_only_entity_in_the_seed_set() -> TestResu
                 generation: Some(pin.clone()),
                 generation_selector: None,
                 top_k: 3,
+                cursor: None,
             },
             semantic_query_text: "scope alpha".to_string(),
             generation: Some(pin),

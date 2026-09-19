@@ -19,8 +19,10 @@ pub use history_cursor::*;
 pub use history_order::*;
 pub use options::*;
 pub use quanta_index_contract_base::query::{
-    ExactRepoRelativePathV1, GenerationPin, GenerationSelector, QueryConstraintIntersectionV1,
-    QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax,
+    ExactRepoRelativePathV1, GenerationPin, GenerationSelector, LexicalCursorV1,
+    LexicalRowOrderKeyV1, QUERY_CURSOR_GENERATION_MISMATCH_CODE, QUERY_CURSOR_UNSUPPORTED_CODE,
+    QueryConstraintIntersectionV1, QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax,
+    validate_lexical_page_v1,
 };
 pub use requests::*;
 pub use runtime_metadata_cursor::*;

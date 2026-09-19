@@ -76,6 +76,7 @@ fn query() -> TextQueryRequest {
         generation: None,
         generation_selector: None,
         top_k: 1,
+        cursor: None,
     }
 }
 

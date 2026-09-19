@@ -1,5 +1,5 @@
 use quanta_index_contract::{
-    GenerationSelector, RepoId, RevisionId, SymbolQueryResponse, TextQuerySyntax,
+    GenerationSelector, LexicalCursorV1, RepoId, RevisionId, SymbolQueryResponse, TextQuerySyntax,
 };
 
 use crate::text_query_builder::TextQueryBuilderState;
@@ -138,6 +138,15 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
             state.top_k = Some(top_k);
         })
     }
+
+    /// Continue after the last row of a previous page: pass that page's
+    /// `next_cursor` and pin its generation (QI-BB-005).
+    #[must_use]
+    pub fn after(self, cursor: LexicalCursorV1) -> Self {
+        self.transition(|state| {
+            state.after = Some(cursor);
+        })
+    }
 }
 
 impl SymbolQueryBuilder<'_, true, true, true> {
@@ -145,14 +154,7 @@ impl SymbolQueryBuilder<'_, true, true, true> {
         let request = self.state.build_request("symbol")?;
         dispatch_symbol_query_request_v1(
             self.client,
-            quanta_index_contract::SymbolQueryRequest {
-                syntax: request.syntax,
-                query_text: request.query_text,
-                constraints: request.constraints,
-                generation: request.generation,
-                generation_selector: request.generation_selector,
-                top_k: request.top_k,
-            },
+            quanta_index_contract::SymbolQueryRequest::from(request),
         )
     }
 }

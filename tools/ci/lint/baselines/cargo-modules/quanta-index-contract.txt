@@ -444,9 +444,7 @@ crate quanta_index_contract
 │   │   ├── struct StructuralQueryRequest: pub
 │   │   ├── struct StructuralQueryRequestVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
-│   │   ├── struct SymbolQueryRequest: pub
-│   │   └── struct SymbolQueryRequestVisitor: pub(self)
-│   │       └── type Value: pub(self)
+│   │   └── struct SymbolQueryRequest: pub
 │   ├── mod runtime_metadata_cursor: pub(self)
 │   │   ├── struct RuntimeMetadataCursorV1: pub
 │   │   └── struct RuntimeMetadataCursorV1Visitor: pub(self)

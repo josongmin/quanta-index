@@ -1288,6 +1288,7 @@ fn dispatch_lexical_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQ
         results: vec![stub_candidate(generation)],
         window: QueryResultWindowV1::exact(1),
         file_owner_rows: None,
+        next_cursor: None,
     })
 }
 

@@ -9,8 +9,8 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, LexicalArtifactIdentityV1, LexicalCandidateExplanationV1, LexicalIndexOpenPort,
-    LexicalScoreEngineV1, LexicalSearchPageV1, LexicalSearcher, RepoMetadataAuthoritiesV1,
-    RequestBudgetV1, TextNormalizerVersionV1,
+    LexicalPageSpecV1, LexicalScoreEngineV1, LexicalSearchPageV1, LexicalSearcher,
+    RepoMetadataAuthoritiesV1, RequestBudgetV1, TextNormalizerVersionV1,
 };
 
 use crate::query_dispatcher::tests::support::common::symbol_candidate;
@@ -80,11 +80,11 @@ impl LexicalSearcher for StubLexicalSearcher {
         &self,
         _query: &quanta_index_contract::LqQuery,
         _constraints: &QueryConstraintSetV1,
-        _top_k: u32,
+        page: &LexicalPageSpecV1,
         _budget: &RequestBudgetV1,
     ) -> Result<LexicalSearchPageV1, CoreError> {
         Ok(LexicalSearchPageV1 {
-            candidates: self.results.clone(),
+            candidates: ranked_page(&self.results, page),
             exact_total: None,
         })
     }
@@ -211,6 +211,8 @@ impl LexicalIndexOpenPort for StubLexicalOpener {
 #[derive(Default)]
 pub(crate) struct RecordingLexicalState {
     pub(crate) search_top_ks: Vec<u32>,
+    /// The boundary every text page was asked to continue after.
+    pub(crate) search_afters: Vec<Option<quanta_index_contract::LexicalCursorV1>>,
     pub(crate) symbol_top_ks: Vec<u32>,
     pub(crate) opened_pins: Vec<(RepoId, RevisionId, ManifestGeneration)>,
     pub(crate) searched_queries: Vec<LqQuery>,
@@ -262,14 +264,15 @@ impl LexicalSearcher for RecordingLexicalSearcher {
         &self,
         query: &quanta_index_contract::LqQuery,
         constraints: &QueryConstraintSetV1,
-        top_k: u32,
+        page: &LexicalPageSpecV1,
         budget: &RequestBudgetV1,
     ) -> Result<LexicalSearchPageV1, CoreError> {
         let mut guard = self
             .state
             .lock()
             .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?;
-        guard.search_top_ks.push(top_k);
+        guard.search_top_ks.push(page.fetch);
+        guard.search_afters.push(page.after.clone());
         guard.searched_queries.push(query.clone());
         guard.searched_constraints.push(constraints.clone());
         let cancel_inside_search = guard.cancel_inside_search;
@@ -279,7 +282,7 @@ impl LexicalSearcher for RecordingLexicalSearcher {
             budget.checkpoint("stub:collect")?;
         }
         Ok(LexicalSearchPageV1 {
-            candidates: self.results.clone(),
+            candidates: ranked_page(&self.results, page),
             exact_total: None,
         })
     }
@@ -323,21 +326,29 @@ impl LexicalSearcher for RecordingLexicalSearcher {
         &self,
         _query: &quanta_index_contract::LqQuery,
         constraints: &QueryConstraintSetV1,
-        top_k: u32,
+        page: &LexicalPageSpecV1,
         _budget: &RequestBudgetV1,
     ) -> Result<Vec<SymbolCandidate>, CoreError> {
         let mut guard = self
             .state
             .lock()
             .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?;
-        guard.symbol_top_ks.push(top_k);
+        guard.symbol_top_ks.push(page.fetch);
         guard.symbol_constraints.push(constraints.clone());
         drop(guard);
-        Ok(self
+        let mut rows: Vec<SymbolCandidate> = self
             .results
             .iter()
             .map(|candidate| symbol_candidate(candidate.candidate_id.as_str(), candidate.score))
-            .collect())
+            .filter(|row| {
+                page.after
+                    .as_ref()
+                    .is_none_or(|cursor| cursor.admits(&row.order_key()))
+            })
+            .collect();
+        rows.sort_by(|left, right| left.order_key().order(&right.order_key()));
+        rows.truncate(usize::try_from(page.fetch).map_or(usize::MAX, |fetch| fetch));
+        Ok(rows)
     }
 
     fn search_all(
@@ -458,4 +469,24 @@ pub(crate) fn recording_lexical_candidate(candidate_id: &str) -> LexicalCandidat
         snippet_hit_offset: None,
         highlights: Vec::new(),
     }
+}
+
+/// What a real adapter returns for `page` over `results`: the rows after
+/// the boundary, in page order, at most the fetch.
+pub(crate) fn ranked_page(
+    results: &[LexicalCandidate],
+    page: &LexicalPageSpecV1,
+) -> Vec<LexicalCandidate> {
+    let mut rows: Vec<LexicalCandidate> = results
+        .iter()
+        .filter(|row| {
+            page.after
+                .as_ref()
+                .is_none_or(|cursor| cursor.admits(&row.order_key()))
+        })
+        .cloned()
+        .collect();
+    rows.sort_by(|left, right| left.order_key().order(&right.order_key()));
+    rows.truncate(usize::try_from(page.fetch).map_or(usize::MAX, |fetch| fetch));
+    rows
 }
