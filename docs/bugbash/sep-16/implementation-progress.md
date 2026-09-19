@@ -2438,6 +2438,43 @@ unit 11 crate **1,404/0**(82 binary), searchd-runtime e2e **전체** **272 passe
 `needle` ≠ `alpha_content_needle`)과 `semantic_boot_report`(A2 이후 authority 기록 없는 generation은 seed가 아니라 orphan). 둘 다 새 계약이 맞으므로 테스트를
 새 계약으로 고친 별도 commit `fa8fd4c`로 해소, 두 suite 7/7 + runtime crate clippy 0. **이후 모든 착지는 runtime e2e 전체를 돈다.**
 
+## 3.51 QI-BB-014/016/002/015/009 — config chain 하나, repo별 admission, budget 아래의 embed 호출, process memory envelope, private state root (fix wave A7, a8b4ac5)
+
+§4 감사가 지적한 것: `--state-root`가 retention+embedder env만 적용(8 family silent drop, `cli/command.rs:48-62` b0485b5); 기존 dir/root `0755` 허용·umask test 없음;
+writer heap만의 envelope(process envelope 아님)·RSS 미관측·idle sweep이 ingest 없이는 안 돎; queue/in-flight·examined·response bytes·disk bytes·provider
+failure metric 없음·scrape 경로 미문서화; pipelined 후 hang-up 미감지; embed HTTP가 budget 밖; embed cache에 age/global cap 없음.
+
+**티켓 완료 기준 대조(코드 기준)**
+
+| 티켓 bullet | 판정 | 근거 |
+| --- | --- | --- |
+| (감사 WRONG) `--state-root`가 env family를 버림 | **MET** | `cli/command.rs` → `SearchdConfig::from_env_with_state_root` → `from_lookup`가 `ENV_POLICY_FAMILIES`(12) 순회 — `from_env`와 같은 함수. test `every_env_knob_belongs_to_one_family_and_both_entry_points_apply_every_family`(source fence + family별 비기본값 적용 + 두 entry point 동일 정책; family에서 knob 하나 빼면 fail) |
+| QI-BB-014 #1 private mode: dir `0700`, socket `0600`, owner | **MET**(wrong-owner test는 두 번째 uid 필요 **BLOCKED**) | `runtime.rs` `StateRootAccessV1`(생성 root 정확히 `0700`, 더 넓은 기존 root는 socket 전 `STATE_ROOT_INSECURE`), ipc `server.rs`(기존 socket dir이 정책 mode 밖 bit를 가지면 거부), daemon entry `umask 077`. tests `a_created_state_root_is_0700_and_any_wider_existing_root_is_refused`(11행 mode table), e2e `e2e_umask_hardening::a_permissive_umask_leaves_every_daemon_owned_path_private`(실제 binary를 `umask 000`으로; `stat` oracle; `harden_umask` 없으면 fail), `…::a_world_writable_pre_created_state_root_is_refused_typed_before_any_socket` |
+| QI-BB-016 "writer/cache/concurrency를 하나의 process memory envelope에" | **MET** | core `ProcessMemoryEnvelopeV1`(writer + registry + regex cache + embed-cache ledger + stream window + ingest의 합, 천장 초과 시 `PROCESS_MEMORY_ENVELOPE_EXCEEDED`)를 config chain과 adapter 생성 전에 검증. e2e `e2e_process_envelope::an_envelope_over_its_ceiling_refuses_boot_typed_before_any_socket` |
+| "active writer·RSS pressure 관측, idle writer 안전 해제" | **MET**(Tantivy `IndexWriter` 할당 byte 관측은 API 없음 **BLOCKED** — 필드는 부여 budget이라고 doc에 명시) | `process_resident_bytes`(Linux `VmRSS`, Darwin `ru_maxrss` peak), `ResidentMemoryWriterAdmission` → `PROCESS_RSS_CEILING_EXCEEDED`, composition-root `MaintenanceTimer`의 idle sweep. e2e `a_new_writer_is_refused_typed_above_the_rss_ceiling_and_admitted_below_it`, `an_idle_writer_is_released_by_the_daemons_timer_without_another_batch`(scrape 값 bounded poll, sleep-then-assert 아님) |
+| QI-BB-002 #1 slowloris + long + normal query → normal은 자기 SLO | **MET** | ipc `repo_admission_and_slowloris.rs::a_stalled_half_frame_a_held_slot_and_a_normal_query_do_not_block_each_other`(server counter oracle, sleep 없음) |
+| #2 client disconnect → deadline 안에 dispatch 중단 | **MET(구멍 해소)** | peer watch가 pipelined frame 뒤에도 probe 지속. `a_peer_that_pipelines_then_hangs_up_still_cancels_the_running_dispatch`(옛 early return 복원 시 `observed 0`로 fail). embed HTTP도 budget 관측: `embed_batch_within`, attempt timeout = min(설정, 남은 budget), backoff 중 deadline도 typed(`a_cancelled_budget_abandons_the_attempt_in_flight` 등 3) |
+| #3 queue full/timeout/cancel이 별개 code·metric | **MET** | `lq_typed_error_{deadline_exceeded,cancelled}_total` + route별, `ipc_<plane>_requests_overloaded{,_repo}_total` |
+| 보완 #2 repo별 cap | **MET** | `max_in_flight_per_repo`(기본 4 slot 중 3, env knob) → repo 이름을 담은 `SERVER_OVERLOADED`. unit + e2e(barrier dispatcher) |
+| QI-BB-015 보완 #2 scrape endpoint 문서화, #3 필수 metric | **MET** | `searchctl` usage(주기적 `searchctl metrics --output prometheus` → textfile collector); queue wait/in-flight/response bytes/repo overload, route별 examined, track별 generation disk bytes(maintenance tick마다 adapter walker), provider HTTP/retry/failure, embed-cache expiration/open, maintenance, RSS gate — 전부 `e2e_metrics_scrape.rs`에서 단언 |
+| QI-BB-009 보완 #1 namespace별 age + global cap, #2 manifest + bounded open | **MET** | `EmbeddingCacheRetentionPolicy { max_entry_age, max_total_bytes }`(기본 30일 / 4 GiB), `cache/manifest.rs`(`QIEM` v1, atomic write; wire inventory 등록). tests: age 만료(주입 clock), open 시 만료, 전체 root byte oracle로 global cap, manifest가 덮는 entry는 stat 안 함(stat 횟수 oracle) |
+| QI-BB-007 보완 #1 dev 라벨 | **MET** | selector `hash-dev`, unset은 `QUANTA_INDEX_ALLOW_DEV_EMBEDDER=1` 없으면 거부, boot warning + `boot_semantic_profile_is_dev` gauge. production provider 결정 자체는 **BLOCKED(product/M4)** |
+
+**Coordinator 수정**: rebase 충돌 2(harness/runtime import union); A5가 없앤 `text_search_corpus_batch`의 digest 인자를 A7 e2e 2곳에서 제거(두 번째 publish가
+이제 문자 그대로 같은 body — 첫 publish는 apply 단계 writer admission에서 거부돼 record가 finalize되지 않으므로 재시도로 적용, 테스트 의도와 일치).
+
+**검증(coordinator, main adbb6d9 위 rebase, 순차)**: fmt, check, 정책 lint 8종, workspace clippy keep-going 0, cargo-modules + public-api 일치, `just rust-doc`,
+unit 11 crate **1,426/0**(83 binary), searchd-runtime e2e **전체** **281/0**(49 binary).
+
+**Coordinator 수정(착지 gate에서 드러난 것, A7이 돌리지 않은 suite)**: (1) searchctl `cli_smoke` 10건 — mock control server가 umask 기본 권한 tempdir에 bind해
+새 socket dir 정책에 거부 → `0700` dir. (2) `e2e_perf_chaos` 26건 — A7의 새 route metric 접미사(`examined_candidates_total`, `deadline_exceeded_total`,
+`cancelled_total`)가 "닫힌 metric 이름 집합"에 없음 → 집합에 추가(여전히 route 이름만 label, 쿼리 유출 없음). (3) A5×A7: A5의 SDK preflight e2e가 text byte
+한도를 `u64::MAX`로 둬 process memory envelope가 boot 거부 → A7이 자기 테스트에 쓴 것과 같은 기본값. (4) **disk gauge walker 경합(제품 결함)**: maintenance
+tick의 track disk walk가 seal 임시 파일·merge된 segment·reclaim된 generation처럼 **걷는 도중 사라진 항목**을 오류로 세어 `disk_refresh_failures` 증가 →
+core `unique_inode_tree_bytes`가 root 아래에서 사라진 항목(NotFound)만 "디스크에 없음"으로 건너뛰고(root 부재·다른 I/O 오류는 그대로 오류), lexical/semantic
+`track_disk_bytes`가 이 core walker 하나를 쓰도록 변경(hard link 1회 계산; e2e oracle도 inode 기준으로). 3회 반복 실행 green. (5) A7이 runtime 테스트에 복붙한
+"tempdir 0700" 6줄 × **68곳**을 harness `private_tempdir()` 하나로 정리.
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -2451,26 +2488,26 @@ unit 11 crate **1,404/0**(82 binary), searchd-runtime e2e **전체** **272 passe
 | ID | 등급 | 구현 절 | 판정 | 남은 것(감사 근거) | 수정 wave |
 | --- | --- | --- | --- | --- | --- |
 | QI-BB-001 | P1 | §3.2/§3.49 | gaps → **MET(A2)** 단 real-size latency/RSS **BLOCKED(host)** | single-flight 실패 typed 공유, budgeted wait, retire fence, resident byte 실측, invalidate는 GC/repair뿐, activation·restart가 증명한 handle 승격(§3.49) | — |
-| QI-BB-002 | P1 | §3.12/§3.29/§3.43 | gaps | deadline vs cancel metric 공유; per-repo cap 없음; cold open·embed HTTP·`await_flight` budget 미관측; pipelined peer hang-up 감지 중단; slowloris 3-way test 없음 | A2(registry), A7 |
+| QI-BB-002 | P1 | §3.12/§3.29/§3.43/§3.49/§3.51 | gaps → **MET(A7, A2)** | deadline/cancel metric 분리, repo별 cap, embed HTTP budget, `await_flight` budget(A2), pipelined hang-up 감지, slowloris 3-way test(§3.51) | — |
 | QI-BB-003 | P1 | §3.9/§3.49 | not closed → **MET(A2)** 단 crash-point matrix·durable GC-intent·pair retirement **BLOCKED** | reap된 pin `UNKNOWN_GENERATION`, GC receipt scrape, retention = 디스크 index byte(inode), orphan list/discard(§3.49) | — |
 | QI-BB-004 | P1 | §3.6 | closed | contradiction code가 generic `ERR_INVALID`; chunked join 미구현(≤10k라 실효 낮음) | — |
 | QI-BB-005 | P1 | §3.8 | gaps | projection은 budget까지 full collect(streaming 없음); text/symbol/semantic cursor 없음; `RESULT_TOO_LARGE` 사후 거부; perf blocked | wave B |
 | QI-BB-006 | P2 | §3.4/§3.4.1/§3.4.2/§3.38/§3.48 | gaps → **lexical 증분 commitment MET(A3)** | lexical seal은 inode 상속으로 바뀐 byte만 해시, open은 segment 길이만(§3.48). 남은 것: semantic 측(A4), 100 GB 실측(host) | A4 |
-| QI-BB-007 | P1* | (M4) | blocked | judged corpus/real-provider gate는 M4·credential 의존; 단 M4가 약속한 dev/test 라벨 미구현(default `Hash` 무경고) | A7(라벨) |
+| QI-BB-007 | P1* | (M4)/§3.51 | blocked(M4) — **dev 라벨 MET(A7)** | `hash-dev` selector, unset 거부(`QUANTA_INDEX_ALLOW_DEV_EMBEDDER`), boot notice + gauge(§3.51). judged corpus/real provider는 M4 | — |
 | QI-BB-008 | P2 | §3.25 | closed | activation record 무digest, same-pair retention만, legacy bare-JSON read shim(one-shot) | — |
-| QI-BB-009 | P2 | §3.18 | gaps | age cap·global byte cap 없음(좁힌 정책이 retained namespace에 소급 안 됨); open이 entry당 `metadata()`; provider failure counter 미scrape | A7 |
+| QI-BB-009 | P2 | §3.18/§3.51 | gaps → **MET(A7)** | age cap + global byte cap(retained namespace 소급), manifest 기반 bounded open, provider failure scrape(§3.51) | — |
 | QI-BB-010 | P2 | §3.1 | **not closed** | runner가 HEAD에서 깨짐(`--source-fingerprint` 미전달); `git rev-parse --short \|\| unknown` default 치환; artifact 스키마에 QPS/RSS/disk/GC 없음; stale gate 없음; 측정 자체는 host blocked | A8 |
 | QI-BB-011 | P2 | §3.33/§3.47 | **closed(A6, efeea9a)** | ~~두 번째 fold~~ → normalizer crate 하나, DSL은 fold 안 함, `(?i)`+`case:yes` typed 거부; DSL 경로 golden e2e 29 row(8 spelling fail-before). 남은 것: Sourcegraph route의 `(?i)`는 fail-closed 유지(후속 a) | — |
 | QI-BB-012 | P2 | (다른 세션) | **not closed** | README `:28/:172-175`, ssot `channel-architecture.md:85,340`이 구현과 정면 모순 | 다른 세션 |
 | QI-BB-013 | P3 | §3.32 | gaps | search-plane만 분할; `lexical/src/lib.rs` 8,311→10,363줄, `semantic/build.rs` 증가; compile-time 측정 없음; `too_many_lines = allow` | wave B |
-| QI-BB-014 | P2 | §3.27/§3.40 | gaps | 기존 dir/root 0755 허용(0700 강제 아님); umask test 없음; `--state-root`가 socket-access env silent drop | A7 |
-| QI-BB-015 | P2 | §3.28 | gaps | queue/in-flight·examined·response bytes·generation disk bytes·GC·provider failure metric 없음; 운영 scrape 경로 미문서화 | A7, A2(GC) |
-| QI-BB-016 | P3 | §3.26 | gaps | writer heap만의 envelope(process envelope 아님); RSS 미관측; idle sweep이 ingest 없이는 안 돎; `--state-root` env drop | A7 |
+| QI-BB-014 | P2 | §3.27/§3.40/§3.51 | gaps → **MET(A7)** 단 wrong-owner test **BLOCKED**(두 번째 uid) | root 정확히 `0700`, 넓은 기존 root typed 거부, umask 077 + 실제 binary umask e2e, `--state-root` 단일 chain(§3.51) | — |
+| QI-BB-015 | P2 | §3.28/§3.49/§3.51 | gaps → **MET(A7, A2)** | queue/in-flight·examined·response bytes·track disk bytes·provider failure(A7), GC reclaimed/retained bytes(A2), scrape 경로 문서화(§3.49/§3.51) | — |
+| QI-BB-016 | P3 | §3.26/§3.51 | gaps → **MET(A7)** 단 Tantivy writer 할당 byte 관측 **BLOCKED**(API 없음) | `ProcessMemoryEnvelopeV1` 합산·천장, RSS 관측 + writer admission gate, timer 기반 idle sweep(§3.51) | — |
 | QI-BB-017 | P1 | §3.14/§3.48/§3.49 | gaps → **lexical 측 + 검증 handle 승격 MET(A3, A2)** | lexical open은 manifest+길이, scrub port+receipt(§3.48); activation·restart는 한 번의 proven open 승격(§3.49). 남은 것: semantic cheap open·scrub 스케줄러·legacy v2–v8·scrub port 통합(A4), 10M row budget(host) | A4 |
 | QI-BB-018 | P2 | §3.22/§3.36/§3.46 | gaps → **filter 결속 MET(A1, 1894583)** | ~~dense lane이 DSL filter 무시~~ → 전 variant class 분류 + admission/refill(§3.46, e2e 5 fail-before/pass-after); 남은 것: route가 SDK/CLI에 없음(A8); judged corpus blocked(M4) | A8 |
 | QI-BB-019 | P2 | §3.21 | gaps | `dense_corpora` doc이 "legacy/migration window" 주장; empty=global 이중 의미 | A8 |
 | QI-BB-020 | P1 | §3.19/§3.37/§3.49 | gaps(**WRONG**) → **activation guard 밖 증명 MET(A2)** | activation은 짧은 read guard + guard 밖 한 번의 proven open + durable 재확인 후 CAS(§3.49). 남은 것: history-text cold open under lock, reconcile-fail-after-durable, I/O fault injection, latency 실측(host) | wave B |
-| QI-BB-021 | P2 | §3.18/§3.41 | gaps | process envelope 미선언·RSS 미측정; 정책 3분할 | A7 |
+| QI-BB-021 | P2 | §3.18/§3.41/§3.51 | gaps → **envelope 선언 MET(A7)**, RSS 실측 **BLOCKED(host)** | stream window가 process envelope의 한 성분(§3.51) | — |
 | QI-BB-022 | P2 | §3.24/§3.36 | gaps(**WRONG**) | hybrid explain의 dense/RRF 축이 client payload 자기일관성 검사; hybrid 합성 규칙 미정의; filter/projection 기여 없음 | A8 |
 | QI-BB-023 | P2 | §3.20/§3.37/§3.42/§3.47 | gaps → **predicate 동일·score 결정성 MET(A6)** | ~~두 order가 filter를 다른 의미로~~ → 한 predicate(e2e 8 query × 2 order 동일); ~~score가 ingest 이력 의존~~ → publish compaction으로 live-row 통계(bit-identical test). 남은 것: author/committer 색인(보완 #1, §3.42(b) 결정), latency/RSS budget(host) | — |
 | QI-BB-024 | P2 | §3.17 | gaps | broad regex의 per-query `BTreeSet<String>` + match당 TermQuery(RSS unbounded); bitmap 없음 | wave B |
