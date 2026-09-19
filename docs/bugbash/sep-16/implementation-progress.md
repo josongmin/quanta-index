@@ -2862,6 +2862,78 @@ clippy keep-going 0(게이트가 잡은 고유 finding — lexical `searcher/mod
 남긴 unfulfilled `redundant_pub_crate` expectation 3 → 제거), cargo-modules + public-api 일치(갱신 baseline 포함), `just rust-doc`, unit 11 crate
 **1,495/0**, searchd-runtime e2e **293/0**.
 
+## 3.65 QI-BB-003 완료 기준 #2 + 보완 #3/#4 — reclaim은 한 번의 durable rename으로 namespace를 떠난 뒤 삭제되고, boot와 매 pass가 crash가 끊은 것을 마무리하며, daemon crash matrix가 모든 GC 단계에서 보존 generation을 증명한다 (wave B12, 9034dfe)
+
+§3.49가 BLOCKED로 남긴 두 가지:
+
+- 완료 기준 #2의 crash-point matrix: GC 단계에서 daemon을 죽여 본 test가 없었다.
+- 보완 #3/#4의 crash-safe 삭제: reclaim이 generation directory에 제자리 `remove_dir_all`을 했다. 도중의 crash나 삭제 실패가
+  generation namespace에 부분 tree를 남길 수 있었고, sealed identity가 먼저 지워진 부분 tree는 unsealed build로 읽혀 어떤
+  sealed reclaim도 다시 지우지 않았다.
+
+**crash-atomic reclaim** (core `domains::reclaim_area`):
+
+- retired generation은 먼저 track root의 예약 영역 `.reclaim/<family>.g<N>`으로 rename 한 번에 namespace를 떠난다.
+- parent와 영역 directory를 sync해 그 rename을 durable하게 만든 뒤에만 삭제한다. namespace에는 온전한 sealed generation이
+  있거나 아무것도 없다.
+- 두 adapter가 이 helper로 reclaim하고, 두 inventory는 영역을 건너뛴다(generation family도 quarantine finding도 아님).
+
+**마무리** `SealedGenerationReclaimPort::finish_interrupted_reclaims`: 영역의 항목은 모두 이미 retire·fence·삭제 확정된
+generation이라, 지우는 것은 그 삭제의 나머지일 뿐이다. entry 수와 unique-inode byte를 보고한다. 호출처는 둘이다.
+
+- boot가 inventory 전에 두 track을 마무리한다. storage 실패는 boot를 거부하지 않는다 — 항목은 모든 namespace 밖에서 다음
+  pass를 기다리고, notice와 gauge `boot_{track}_interrupted_reclaims_{finished,unfinished}`가 그 사실을 알린다. refusal은
+  boot를 fail-closed로 막는다.
+- 매 reclaim pass가 track마다 영역을 먼저 마무리한다. storage 실패는 `DeferredGcStep::FinishInterrupted`로 계수되고 다음
+  pass가 다시 한다. 마무리한 항목은 track의 reclaimed generation·byte와
+  `search_corpus_gc_interrupted_reclaims_finished_total`에 계수한다.
+
+storage 실패와 refusal을 가르는 규칙은 `CoreError::into_storage_failure`의 exhaustive match 하나로 모았고, post-durable GC
+정산(§3.61)과 boot가 함께 쓴다. track별 reclaim 계수도 helper 하나(mirror 제거).
+
+**crash point** (`search_plane::gc_crash_point`): test·debug build에만 compile되고, release에는 point도 environment 읽기도 없다.
+`QUANTA_INDEX_GC_CRASH_POINT`가 가리키는 지점에서 daemon이 unwinding 없이 exit 86 한다. protocol 순서의 6개 지점:
+
+1. retention receipt 뒤
+2. catalog transaction 뒤
+3. ledger reconcile 뒤
+4. fence 뒤
+5. 두 track reclaim 사이
+6. record forget 전
+
+**티켓 완료 기준 대조(코드 기준)**
+
+| 티켓 bullet | 판정 | 근거 |
+| --- | --- | --- |
+| QI-BB-003 완료 기준 #2 active/candidate/predecessor는 어떤 crash point에서도 삭제 안 됨 | **MET** | e2e `e2e_gc_crash_matrix` 6 case(point마다 실제 binary)의 순서: (1) 1·2·3을 차례로 seal+activate. (2) cap 3에서 candidate 4를 seal해 1을 retire하며 crash — exit 86, 4의 seal ack 없음. (3) restart — predecessor 2·active 3·candidate 4가 두 track에 온전하고(fs oracle) pinned lexical·semantic query에 응답, 1은 `UNKNOWN_GENERATION`. (4) 4의 seal retry — ack, 1은 두 track에서 사라지고 두 reclaim 영역이 비며, 2–4 계속 응답, active 3이 predecessor 2로 rollback CAS 성공 |
+| 보완 #3 crash-recoverable 순서(durable GC intent → pin 확인 → cache fence → physical delete → parent fsync → authority 완료) | **MET** | 설계: durable intent는 retention receipt다. 삭제 전에 retained set이 durable해지고, 삭제 대상은 "retain되지 않았고 seal 중인 generation보다 오래된 disk 위 sealed generation"으로 durable 상태에서 완전히 도출된다. 별도 intent record는 두 번째 진실 원천이 되므로 두지 않는다. 순서: receipt → ledger reconcile(새 pin 불가) → snapshot fence(`StillReferenced`면 연기) → rename + parent·영역 sync → 삭제 → 영역 sync → record forget. 각 단계 사이의 crash가 matrix의 6 point |
+| 보완 #4 부분 삭제·restart의 멱등 복구 | **MET**(§3.49 판정 보강) | 부분 삭제는 이제 reclaim 영역에만 남는다. boot와 모든 pass가 마무리한다. 같은 generation의 잔재는 다음 reclaim이 교체한다. 영역 밖(namespace)의 retired generation은 기존 sweep이 다시 찾는다 |
+
+tests:
+
+- core 4: 온전한 reclaim은 아무것도 남기지 않는다. move 뒤 삭제 실패는 tree 전체를 영역에 남기고 namespace에는 남기지 않으며,
+  마무리가 정확한 byte로 한 번 지운다. 같은 generation 잔재는 교체된다. 영역이 없으면 할 일이 없다.
+- lexical·semantic adapter 각 1: 실제 reclaim은 영역 항목을 남기지 않는다. 영역으로 옮긴 sealed generation은 list·quarantine·scrub
+  후보 어디에도 없다. 재시도 reclaim은 `Absent`를 받고, 마무리는 test 자체 walk가 잰 byte를 정확히 한 번 보고한다.
+- search-plane 1: lexical 마무리 실패는 한 단계를 연기하면서도 semantic 영역은 마무리하고, 다음 pass가 나머지를 한다. 항목마다
+  track의 generation·byte에 정확히 한 번 계수되고, retained generation은 건드리지 않는다.
+- searchd boot 1: 마무리된 항목은 notice와 gauge를 낸다. storage 실패는 notice와 unfinished gauge가 붙은 `Unfinished`이고,
+  refusal은 그 refusal 자체로 boot를 실패시킨다.
+- e2e 7: matrix 6 + boot 마무리 1. 후자는 daemon이 내려간 동안 retired lexical generation을 영역으로 옮긴다. boot가 이를
+  마무리하고(gauge finished=1, unfinished=0), 영역은 비며, quarantine inventory에 나오지 않고, 2–4는 응답하고 1은 unknown이다.
+- metrics scrape e2e는 새 boot gauge 4개를 기대한다.
+
+구조 변경:
+
+- core `domains::reclaim_area`는 `generation`에만 의존하는 leaf이고, `FinishedReclaims`는 port 옆에 둔다.
+  - hexagonal lint가 legacy `domains/generation/` directory를 금지해 형제 module로 두었다.
+  - cycle lint가 `generation` ↔ `reclaim_area` 양방향을 막는다.
+- cargo-modules core baseline에 두 줄이 순증한다: `mod reclaim_area`, `struct FinishedReclaims`.
+- test-authority catalog에 새 e2e target을 추가했다.
+- Control Plane 문서(prompt-manager source; sync·lint·test)에 reclaim 영역과 crash point 한 줄을 추가했다.
+
+**검증(coordinator, 97b1c80 위, 순차)**: fmt, check, 정책 lint 11종 + bench gate + CI pytest **227**, semgrep 0, workspace clippy keep-going 0, cargo-modules + public-api 일치(core baseline 2줄 순증), `just rust-doc`, unit 11 crate **1,503/0**(+8), searchd-runtime e2e **301/0**(+8: matrix 6, boot 마무리 1, 새 binary에 포함된 공용 harness test 1). 게이트 전에 고친 것: 공개 `reclaim_directory`가 받던 삭제 closure가 higher-ranked lifetime 오류를 냄 → seam을 test 전용 private 함수로 내림; lexical의 unused `File` import; e2e의 needless borrow 2건과 첫 doc 문단 길이 1건; 첫 e2e 실행에서 state root를 0755로 만들어 daemon이 `STATE_ROOT_INSECURE`로 거부 → harness `private_tempdir`(0700). lint가 잡은 구조 두 가지: hexagonal lint가 `domains/generation/` directory를 legacy로 거부 → 형제 module; test-authority가 catalog에 없는 새 target을 거부.
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -2876,7 +2948,7 @@ clippy keep-going 0(게이트가 잡은 고유 finding — lexical `searcher/mod
 | --- | --- | --- | --- | --- | --- |
 | QI-BB-001 | P1 | §3.2/§3.49 | gaps → **MET(A2)** 단 real-size latency/RSS **BLOCKED(host)** | single-flight 실패 typed 공유, budgeted wait, retire fence, resident byte 실측, invalidate는 GC/repair뿐, activation·restart가 증명한 handle 승격(§3.49) | — |
 | QI-BB-002 | P1 | §3.12/§3.29/§3.43/§3.49/§3.51 | gaps → **MET(A7, A2)** | deadline/cancel metric 분리, repo별 cap, embed HTTP budget, `await_flight` budget(A2), pipelined hang-up 감지, slowloris 3-way test(§3.51) | — |
-| QI-BB-003 | P1 | §3.9/§3.49 | not closed → **MET(A2)** 단 crash-point matrix·durable GC-intent·pair retirement **BLOCKED** | reap된 pin `UNKNOWN_GENERATION`, GC receipt scrape, retention = 디스크 index byte(inode), orphan list/discard(§3.49) | — |
+| QI-BB-003 | P1 | §3.9/§3.49/§3.65 | not closed → **MET(A2)** → crash-point matrix·durable GC-intent 순서·crash-atomic 부분 삭제 복구 **MET(B12)**; 단 pair retirement **BLOCKED**(product-active pin authority 부재 — 제품 결정 필요) | reap된 pin `UNKNOWN_GENERATION`, GC receipt scrape, retention = 디스크 index byte(inode), orphan list/discard(§3.49); reclaim 영역 rename→sync→삭제, boot·매 pass 마무리, 6-point daemon crash matrix + predecessor rollback(§3.65) | — |
 | QI-BB-004 | P1 | §3.6 | closed | contradiction code가 generic `ERR_INVALID`; chunked join 미구현(≤10k라 실효 낮음) | — |
 | QI-BB-005 | P1 | §3.8/§3.55 | gaps → **보완 #1–#5·완료 기준 #2 MET(B2, 370b06f)** | 한 전체 순서(score desc, path, start, end, id)의 ranked page + generation에 묶인 keyset cursor(text·symbol), group만 모으는 projection collector, 응답 byte 예산 안에서 명시적 연속으로 자르기·첫 행 초과 `RESULT_TOO_LARGE`(§3.55). semantic cursor는 설계상 해당 없음(ANN top-k). 남은 것: 1M doc RSS/wall time 실측 **BLOCKED(host)** | — |
 | QI-BB-006 | P2 | §3.4/§3.4.1/§3.4.2/§3.38/§3.48/§3.53 | gaps → **MET(A3+A4)** 단 100 GB 실측 **BLOCKED(host)** | lexical seal은 inode 상속으로 바뀐 byte만 해시(§3.48), semantic delta seal도 base inode 공유 파일은 digest 상속(§3.53) | — |
@@ -2978,3 +3050,5 @@ clippy keep-going 0(게이트가 잡은 고유 finding — lexical `searcher/mod
 | 2026-09-18 | 4b9d6ee | `python3 -m pytest tools/ci/tests -q` | 196 passed (static fence 9개 retarget 후) |
 | 2026-09-18 | 344aad2 | `just rust-profile verify-rust` (nohup) | **GREEN** — exit 0, **2,358 passed / 0 failed** (§3.31–§3.45 전부 통합: quarantine surface, split, normalizer, ANN append, hybrid provenance, aux epoch, sharded sidecar, keyset cursor, shared socket, streamed embed, history relevance, dense budget, read view, W7 audit + wire inventory gate; clippy·semgrep·deny·machete·bench-build·doc·policy(+wire-inventory)·public-api·hexagonal·test-authority 포함) |
 | 2026-09-18 | worktree 011 (7a5ce5e→034c4fd rebase) | agent: workspace clippy(0) + lexical 15 target·lq-norm 88·search-plane 285 + e2e text_route_hellgate 8·perf_chaos 43·dsl_scenarios 8·lexical_full_fidelity 1·dual_syntax_parity 4·full_corpus 4 + harness 77 + hexagonal/semgrep/module/error-shape/cargo-toml/derive/test-authority/deny; rebase 후 lexical carryforward 6 + goldens 8 | 전부 green (§3.33) |
+| 2026-09-20 | 97b1c80 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,565 passed / 0 failed / 2 ignored (B3–B10 + 후속 chain; fmt·check·workspace clippy·정책 lint 13종(module-cycles 포함)·deny·machete·bench build·workspace test·doc) |
+| 2026-09-20 | 97b1c80 | `just rust-fuzz-smoke` | 4 target × 61s 각각 완주, crash 0 |
