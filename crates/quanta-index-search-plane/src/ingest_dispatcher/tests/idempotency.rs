@@ -229,10 +229,7 @@ fn search_corpus_materializer(
         exact: authority_exact,
     });
     let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
-        Arc::new(DirectSemanticMaterializer::new(
-            semantic_builder.clone(),
-            Arc::new(RwLock::new(Ledger::new())),
-        ));
+        Arc::new(DirectSemanticMaterializer::new(semantic_builder.clone()));
     let embedder_port: Arc<dyn TextEmbeddingProvider + Send + Sync> = embedder.clone();
     let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
         SearchCorpusMaterializerParts {

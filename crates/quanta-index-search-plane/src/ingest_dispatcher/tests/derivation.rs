@@ -76,10 +76,8 @@ fn corpus_derivation_batches_all_scopes_into_one_embed_call() -> TestRes {
         calls: Mutex::new(0),
     });
     let semantic_builder = Arc::new(FakeSemanticBuilder::default());
-    let semantic_ledger = Arc::new(RwLock::new(Ledger::new()));
-    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
-        DirectSemanticMaterializer::new(semantic_builder.clone(), Arc::clone(&semantic_ledger)),
-    );
+    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
+        Arc::new(DirectSemanticMaterializer::new(semantic_builder.clone()));
     let search_corpus_builder = Arc::new(FakeSearchCorpusBuilder::default());
     let lexical_ledger = Arc::new(RwLock::new(Ledger::new()));
     let materializer = search_corpus_materializer!(
@@ -190,9 +188,8 @@ fn corpus_derivation_embeds_one_window_per_provider_call_under_a_narrow_window()
         semantic_builder: Arc<FakeSemanticBuilder>,
         lexical_builder: Arc<FakeSearchCorpusBuilder>,
     ) -> DirectSearchCorpusMaterializer {
-        let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
-            DirectSemanticMaterializer::new(semantic_builder, Arc::new(RwLock::new(Ledger::new()))),
-        );
+        let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
+            Arc::new(DirectSemanticMaterializer::new(semantic_builder));
         DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
             SearchCorpusMaterializerParts {
                 builder: lexical_builder,

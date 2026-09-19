@@ -19,7 +19,7 @@ use quanta_index_core::{
 };
 
 use crate::auxiliary_authority::{structural_chunks_delta_rows, structural_chunks_transition};
-use crate::gc_crash_point::{self, crash_point};
+use crate::crash_point;
 use crate::history_text::HistoryTextIndexParts;
 use crate::ingest_dispatcher::auxiliary::AuxiliaryMutationCoordinator;
 use crate::ingest_dispatcher::errors::{
@@ -565,6 +565,9 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
                 derived.source.tally(),
                 &semantic_receipt,
             )?;
+            if batch.seal {
+                crash_point::reached(crash_point::AFTER_SEMANTIC_SEAL);
+            }
         }
         if build_lexical {
             self.builder.build_batch(batch)?;
@@ -581,6 +584,7 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
                 &semantic,
                 "semantic post-build",
             )?;
+            crash_point::reached(crash_point::BEFORE_AUTHORITY_RECORD);
             self.finalize_sealed_generation_v1(batch)?;
             return self.sealed_receipt_v1(batch);
         }
@@ -761,7 +765,7 @@ impl DirectSearchCorpusMaterializer {
                 return Err(error);
             }
         };
-        crash_point(gc_crash_point::AFTER_RETENTION_RECEIPT);
+        crash_point::reached(crash_point::AFTER_RETENTION_RECEIPT);
         self.finalize_generation_v1(batch, Some(&retention))
     }
 
@@ -829,7 +833,7 @@ impl DirectSearchCorpusMaterializer {
         }));
         let _durable = self.auxiliary_catalog.apply(&delta)?;
         if retention.is_some() {
-            crash_point(gc_crash_point::AFTER_CATALOG_TRANSACTION);
+            crash_point::reached(crash_point::AFTER_CATALOG_TRANSACTION);
         }
         {
             let mut guard = self.ledger.write().map_err(|err| {
@@ -846,21 +850,34 @@ impl DirectSearchCorpusMaterializer {
                 )?;
             }
             guard.apply_structural_chunks_delta(&chunks, std::time::Instant::now())?;
-            guard.materialize_track(
-                &batch.repo_id,
-                &batch.revision_id,
+            // Both tracks of the pair are recorded here and only here,
+            // whether this batch built them or found them sealed on disk: a
+            // seal retried after a crash does not rebuild a track the crash
+            // left sealed, and a restarted daemon never seeded one the
+            // authority had not recorded, so this record is what makes it
+            // the track's identity (QI-BB-029).
+            for track in [
                 SearchPlaneTrackKind::Lexical,
-                batch.generation,
-                Some(batch.manifest_digest.as_str()),
-            );
-            if batch.seal {
-                guard.seal_track_with_digest(
+                SearchPlaneTrackKind::Semantic,
+            ] {
+                guard.materialize_track(
                     &batch.repo_id,
                     &batch.revision_id,
-                    SearchPlaneTrackKind::Lexical,
+                    track,
                     batch.generation,
-                    batch.manifest_digest.as_str(),
+                    Some(batch.manifest_digest.as_str()),
                 );
+                if batch.seal {
+                    guard.seal_track_with_digest(
+                        &batch.repo_id,
+                        &batch.revision_id,
+                        track,
+                        batch.generation,
+                        batch.manifest_digest.as_str(),
+                    );
+                }
+            }
+            if batch.seal {
                 guard.record_historically_sealed_search_corpus(
                     &batch.repo_id,
                     &batch.revision_id,
@@ -873,7 +890,7 @@ impl DirectSearchCorpusMaterializer {
             }
         }
         if retention.is_some() {
-            crash_point(gc_crash_point::AFTER_LEDGER_RECONCILE);
+            crash_point::reached(crash_point::AFTER_LEDGER_RECONCILE);
         }
         // Forgotten generations' text indexes go with their rows, swept
         // from the disk against the generations the ledger still knows, so
@@ -938,7 +955,7 @@ impl DirectSearchCorpusMaterializer {
         let mut receipt = SearchCorpusPhysicalReclaimReceiptV1::default();
         for (port, track) in self.reclaim_tracks() {
             if track == SearchPlaneTrackKind::Semantic {
-                crash_point(gc_crash_point::BETWEEN_TRACK_RECLAIMS);
+                crash_point::reached(crash_point::BETWEEN_TRACK_RECLAIMS);
             }
             // What a crash or a failed removal left in the track's reclaim
             // area goes first: it is out of every namespace already, and
@@ -985,7 +1002,7 @@ impl DirectSearchCorpusMaterializer {
                     let _deferred = receipt.deferred_pinned.insert((track, generation, holders));
                     continue;
                 }
-                crash_point(gc_crash_point::AFTER_FENCE);
+                crash_point::reached(crash_point::AFTER_FENCE);
                 match port.reclaim_sealed_generation(&retired) {
                     Ok(SealedGenerationReclaimOutcomeV1::Absent) => {}
                     Ok(SealedGenerationReclaimOutcomeV1::Reclaimed { bytes }) => {
@@ -1000,7 +1017,7 @@ impl DirectSearchCorpusMaterializer {
                 }
             }
         }
-        crash_point(gc_crash_point::BEFORE_RECORD_FORGET);
+        crash_point::reached(crash_point::BEFORE_RECORD_FORGET);
         self.forget_broken_pair_records_v1(batch, &mut receipt)?;
         Ok(receipt)
     }

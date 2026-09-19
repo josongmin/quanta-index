@@ -13,9 +13,9 @@ mod auxiliary_authority;
 #[cfg(test)]
 mod content_roots_test_support;
 mod control_dispatcher;
+pub mod crash_point;
 #[cfg(test)]
 mod door_findings_test_support;
-pub mod gc_crash_point;
 mod history_text;
 mod ingest_dispatcher;
 mod lowering;

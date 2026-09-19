@@ -1,30 +1,29 @@
 //! `DirectSemanticMaterializer`: semantic-only ingest into a staged generation.
 
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
-use quanta_index_contract::{BatchPublishReceipt, GenerationPin, SearchPlaneTrackKind};
+use quanta_index_contract::{BatchPublishReceipt, GenerationPin};
 use quanta_index_core::{
     CoreError, MetricPointV1, MetricSourcePort, SemanticIngestHeaderV1, SemanticIngestPort,
     SemanticScopeSource, SemanticScopeStreamBuildPort, SemanticStreamTallyV1,
 };
 
-use crate::Ledger;
-
 /// Direct semantic batch materializer.
 ///
 /// Drives the durable, generation-scoped semantic adapter through its
 /// streamed build port (rows window by window on every batch; graph +
-/// manifest + seal on `seal`), then updates the readiness ledger. Durability
-/// lives entirely in the adapter's generation directories; there is no
-/// journal write here. A failed durable write leaves no SEALED marker and
-/// does not touch the ledger, so readiness cannot go falsely ready.
+/// manifest + seal on `seal`). Durability lives entirely in the adapter's
+/// generation directories; there is no journal write here, and a failed
+/// durable write leaves no SEALED marker. The readiness ledger is not this
+/// materializer's to write: the search-corpus finalize records both tracks
+/// of the pair once the pair is durable, whether this batch built the
+/// semantic track or found it sealed on disk (QI-BB-029).
 ///
 /// The tally the build returns is compared with the source's own: the two
 /// are counted on opposite sides of the stream, so a window the build did
 /// not append, or appended twice, is refused typed and never acknowledged.
 pub struct DirectSemanticMaterializer {
     builder: Arc<dyn SemanticScopeStreamBuildPort + Send + Sync>,
-    ledger: Arc<RwLock<Ledger>>,
     stream_stats: Mutex<SemanticIngestStreamStats>,
 }
 
@@ -65,13 +64,9 @@ impl SemanticIngestStreamStats {
 
 impl DirectSemanticMaterializer {
     #[must_use]
-    pub fn new(
-        builder: Arc<dyn SemanticScopeStreamBuildPort + Send + Sync>,
-        ledger: Arc<RwLock<Ledger>>,
-    ) -> Self {
+    pub fn new(builder: Arc<dyn SemanticScopeStreamBuildPort + Send + Sync>) -> Self {
         Self {
             builder,
-            ledger,
             stream_stats: Mutex::new(SemanticIngestStreamStats::default()),
         }
     }
@@ -135,28 +130,6 @@ impl SemanticIngestPort for DirectSemanticMaterializer {
             )));
         }
         self.record_stream(&header.pin, appended)?;
-        let mut guard = self.ledger.write().map_err(|err| {
-            CoreError::Storage(format!(
-                "direct semantic materialize: ledger poisoned: {err}"
-            ))
-        })?;
-        guard.materialize_track(
-            &header.pin.repo_id,
-            &header.pin.revision_id,
-            SearchPlaneTrackKind::Semantic,
-            header.pin.manifest_generation,
-            Some(header.batch.manifest_digest.as_str()),
-        );
-        if header.batch.seal {
-            guard.seal_track_with_digest(
-                &header.pin.repo_id,
-                &header.pin.revision_id,
-                SearchPlaneTrackKind::Semantic,
-                header.pin.manifest_generation,
-                header.batch.manifest_digest.as_str(),
-            );
-        }
-        drop(guard);
         let mut receipt = BatchPublishReceipt::empty_for(
             header.pin.manifest_generation,
             Some(header.batch.manifest_digest.clone()),

@@ -831,10 +831,7 @@ impl ZeroMutationProbe {
         let authority = Arc::new(RecordingSearchCorpusAuthority::default());
         let ledger = Arc::new(RwLock::new(Ledger::new()));
         let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
-            Arc::new(DirectSemanticMaterializer::new(
-                semantic_builder.clone(),
-                Arc::new(RwLock::new(Ledger::new())),
-            ));
+            Arc::new(DirectSemanticMaterializer::new(semantic_builder.clone()));
         let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
             SearchCorpusMaterializerParts {
                 builder: lexical_builder.clone(),
@@ -1263,10 +1260,8 @@ pub(super) fn materializer_with_embedder(
     embedder: Arc<dyn TextEmbeddingProvider + Send + Sync>,
 ) -> DirectSearchCorpusMaterializer {
     let semantic_builder = Arc::new(FakeSemanticBuilder::default());
-    let semantic_ledger = Arc::new(RwLock::new(Ledger::new()));
-    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
-        DirectSemanticMaterializer::new(semantic_builder, Arc::clone(&semantic_ledger)),
-    );
+    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
+        Arc::new(DirectSemanticMaterializer::new(semantic_builder));
     let search_corpus_builder = Arc::new(FakeSearchCorpusBuilder::default());
     let lexical_ledger = Arc::new(RwLock::new(Ledger::new()));
     search_corpus_materializer!(

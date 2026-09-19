@@ -235,11 +235,9 @@ fn sealing_materializer(
     ledger: &Arc<RwLock<Ledger>>,
     aux: &AuxiliaryMaterializerParts,
 ) -> DirectSearchCorpusMaterializer {
-    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
-        Arc::new(DirectSemanticMaterializer::new(
-            Arc::new(FakeSemanticBuilder::default()),
-            Arc::new(RwLock::new(Ledger::new())),
-        ));
+    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
+        DirectSemanticMaterializer::new(Arc::new(FakeSemanticBuilder::default())),
+    );
     DirectSearchCorpusMaterializer::new_with_search_owned_semantics(SearchCorpusMaterializerParts {
         builder: Arc::new(FakeSearchCorpusBuilder::default()),
         ledger: Arc::clone(ledger),

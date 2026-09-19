@@ -1,23 +1,24 @@
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
-use quanta_index_contract::{ManifestGeneration, SearchPlaneTrackKind};
+use quanta_index_contract::ManifestGeneration;
 use quanta_index_core::{
     CoreError, MetricSourcePort, MetricValueV1, ResidentScopeSource, SemanticIngestHeaderV1,
     SemanticIngestPort, SemanticScopeSource, SemanticScopeStreamBuildPort, SemanticStreamTallyV1,
     SemanticStreamWindowPolicy,
 };
 
-use crate::Ledger;
 use crate::ingest_dispatcher::semantic::DirectSemanticMaterializer;
 use crate::ingest_dispatcher::tests::support::{
     FakeSemanticBuilder, TestRes, fixture_semantic_batch,
 };
 
+/// The materializer builds through the durable adapter and receipts the
+/// seal; the readiness ledger is the search-corpus finalize's to write (the
+/// retry tests in `search_corpus` hold it to both tracks).
 #[test]
-fn direct_semantic_materializer_builds_durably_and_marks_ledger() -> TestRes {
+fn direct_semantic_materializer_builds_durably_and_receipts_the_seal() -> TestRes {
     let builder = Arc::new(FakeSemanticBuilder::default());
-    let ledger = Arc::new(RwLock::new(Ledger::new()));
-    let materializer = DirectSemanticMaterializer::new(builder.clone(), Arc::clone(&ledger));
+    let materializer = DirectSemanticMaterializer::new(builder.clone());
     let batch = fixture_semantic_batch()?;
     let header = SemanticIngestHeaderV1::of_batch(&batch);
     let mut source =
@@ -30,31 +31,9 @@ fn direct_semantic_materializer_builds_durably_and_marks_ledger() -> TestRes {
 
     // The durable builder received the batch (durability lives in the adapter).
     let built = builder.take()?;
-    if built.as_slice() != [batch.clone()] {
+    if built.as_slice() != [batch] {
         return Err(format!("durable builder did not receive batch: {built:?}").into());
     }
-
-    // Readiness reflects the durable seal, not a journal write.
-    let guard = ledger
-        .read()
-        .map_err(|err| format!("ledger poisoned: {err}"))?;
-    if guard.track_sealed(
-        &batch.repo_id,
-        &batch.revision_id,
-        SearchPlaneTrackKind::Semantic,
-    ) != Some(batch.generation)
-    {
-        return Err("publish did not record sealed generation".into());
-    }
-    if guard.track_manifest_digest(
-        &batch.repo_id,
-        &batch.revision_id,
-        SearchPlaneTrackKind::Semantic,
-    ) != Some(batch.manifest_digest.as_str())
-    {
-        return Err("publish did not preserve manifest digest".into());
-    }
-    drop(guard);
     Ok(())
 }
 
@@ -80,12 +59,10 @@ impl SemanticScopeStreamBuildPort for UndercountingBuilder {
 
 // CASE-COVERS (QI-BB-021 follow-up #2): the build's tally and the source's
 // are counted on opposite sides of the stream; a build that does not add up
-// to what the source issued is refused typed and the ledger is untouched.
+// to what the source issued is refused typed and counted nowhere.
 #[test]
-fn a_build_whose_tally_disagrees_with_the_source_is_refused_and_marks_nothing() -> TestRes {
-    let ledger = Arc::new(RwLock::new(Ledger::new()));
-    let materializer =
-        DirectSemanticMaterializer::new(Arc::new(UndercountingBuilder), Arc::clone(&ledger));
+fn a_build_whose_tally_disagrees_with_the_source_is_refused_and_counts_nothing() -> TestRes {
+    let materializer = DirectSemanticMaterializer::new(Arc::new(UndercountingBuilder));
     let batch = fixture_semantic_batch()?;
     let header = SemanticIngestHeaderV1::of_batch(&batch);
     let mut source =
@@ -94,20 +71,6 @@ fn a_build_whose_tally_disagrees_with_the_source_is_refused_and_marks_nothing() 
         Err(CoreError::InvalidContract(message)) if message.contains("source issued") => {}
         other => return Err(format!("a tally mismatch is refused typed, got {other:?}").into()),
     }
-    let guard = ledger
-        .read()
-        .map_err(|err| format!("ledger poisoned: {err}"))?;
-    if guard
-        .track_sealed(
-            &batch.repo_id,
-            &batch.revision_id,
-            SearchPlaneTrackKind::Semantic,
-        )
-        .is_some()
-    {
-        return Err("a refused build must not seal the track".into());
-    }
-    drop(guard);
     if materializer.stream_stats()?.windows_total != 0 {
         return Err("a refused build is not counted".into());
     }
@@ -151,8 +114,7 @@ fn scrape_of(
 #[test]
 fn stream_metrics_count_windows_and_reset_the_peak_per_generation() -> TestRes {
     let builder = Arc::new(FakeSemanticBuilder::default());
-    let materializer =
-        DirectSemanticMaterializer::new(builder, Arc::new(RwLock::new(Ledger::new())));
+    let materializer = DirectSemanticMaterializer::new(builder);
     let one_row = SemanticStreamWindowPolicy::vector_bytes(1, 3)?;
     let one_row_window = SemanticStreamWindowPolicy::new(1, one_row)?;
 

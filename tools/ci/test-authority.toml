@@ -599,8 +599,8 @@ owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
-id = "searchd-runtime-e2e-gc-crash-matrix"
-path = "crates/quanta-index-searchd-runtime/tests/e2e_gc_crash_matrix.rs"
+id = "searchd-runtime-e2e-crash-matrix"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_crash_matrix.rs"
 owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 

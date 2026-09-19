@@ -198,11 +198,9 @@ fn reclaim_materializer(
     semantic_reclaim: &Arc<ScriptedSealedReclaim>,
     idempotency: &Arc<MemoryIdempotencyCatalog>,
 ) -> DirectSearchCorpusMaterializer {
-    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
-        Arc::new(DirectSemanticMaterializer::new(
-            Arc::new(FakeSemanticBuilder::default()),
-            Arc::new(RwLock::new(Ledger::new())),
-        ));
+    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
+        DirectSemanticMaterializer::new(Arc::new(FakeSemanticBuilder::default())),
+    );
     DirectSearchCorpusMaterializer::new_with_search_owned_semantics(SearchCorpusMaterializerParts {
         builder: Arc::new(FakeSearchCorpusBuilder::default()),
         ledger: Arc::new(RwLock::new(Ledger::new())),
@@ -440,11 +438,9 @@ fn reclaim_sweeps_orphans_and_defers_pinned_generations() -> TestRes {
     let snapshots = SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT);
     let catalog = memory_catalog();
     let lexical_ledger = Arc::new(RwLock::new(Ledger::new()));
-    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
-        Arc::new(DirectSemanticMaterializer::new(
-            Arc::new(FakeSemanticBuilder::default()),
-            Arc::new(RwLock::new(Ledger::new())),
-        ));
+    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
+        DirectSemanticMaterializer::new(Arc::new(FakeSemanticBuilder::default())),
+    );
     let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
         SearchCorpusMaterializerParts {
             builder: Arc::new(FakeSearchCorpusBuilder::default()),
@@ -594,10 +590,9 @@ fn a_retained_half_pair_loses_its_records() -> TestRes {
         SearchCorpusMaterializerParts {
             builder: Arc::new(FakeSearchCorpusBuilder::default()),
             ledger: Arc::new(RwLock::new(Ledger::new())),
-            semantic_ingest: Arc::new(DirectSemanticMaterializer::new(
-                Arc::new(FakeSemanticBuilder::default()),
-                Arc::new(RwLock::new(Ledger::new())),
-            )),
+            semantic_ingest: Arc::new(DirectSemanticMaterializer::new(Arc::new(
+                FakeSemanticBuilder::default(),
+            ))),
             semantic_embedder: Arc::new(crate::HashingQueryTextEmbedder::new(
                 SEARCH_OWNED_SEMANTIC_DIMENSION,
             )),
@@ -699,10 +694,7 @@ fn a_sealed_but_corrupt_track_is_rebuilt_by_a_replace_seal_and_refused_for_a_del
         SearchCorpusMaterializerParts {
             builder: lexical_builder.clone(),
             ledger: Arc::clone(&ledger),
-            semantic_ingest: Arc::new(DirectSemanticMaterializer::new(
-                semantic_builder.clone(),
-                Arc::new(RwLock::new(Ledger::new())),
-            )),
+            semantic_ingest: Arc::new(DirectSemanticMaterializer::new(semantic_builder.clone())),
             semantic_embedder: Arc::new(crate::HashingQueryTextEmbedder::new(
                 SEARCH_OWNED_SEMANTIC_DIMENSION,
             )),
@@ -824,10 +816,8 @@ fn a_delta_over_a_corrupt_base_is_refused_with_the_repair() -> TestRes {
 #[test]
 fn search_corpus_materializer_derives_search_owned_semantic_batch() -> TestRes {
     let semantic_builder = Arc::new(FakeSemanticBuilder::default());
-    let semantic_ledger = Arc::new(RwLock::new(Ledger::new()));
-    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
-        DirectSemanticMaterializer::new(semantic_builder.clone(), Arc::clone(&semantic_ledger)),
-    );
+    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
+        Arc::new(DirectSemanticMaterializer::new(semantic_builder.clone()));
     let search_corpus_builder = Arc::new(FakeSearchCorpusBuilder::default());
     let lexical_ledger = Arc::new(RwLock::new(Ledger::new()));
     let authority = Arc::new(RecordingSearchCorpusAuthority::default());
@@ -915,14 +905,53 @@ fn search_corpus_materializer_derives_search_owned_semantic_batch() -> TestRes {
     Ok(())
 }
 
+/// Both tracks of `batch`'s pair are sealed in `ledger`.
+///
+/// At the batch's generation and digest — what activation reads as each
+/// track's current sealed identity — whether the batch built them or found
+/// them sealed.
+fn pair_sealed_in_ledger(
+    ledger: &RwLock<Ledger>,
+    batch: &quanta_index_contract::SearchCorpusIngestBatch,
+) -> TestRes {
+    let guard = ledger
+        .read()
+        .map_err(|err| format!("ledger poisoned: {err}"))?;
+    for track in [
+        SearchPlaneTrackKind::Lexical,
+        SearchPlaneTrackKind::Semantic,
+    ] {
+        let sealed = guard.track_sealed(&batch.repo_id, &batch.revision_id, track);
+        let digest = guard.track_manifest_digest(&batch.repo_id, &batch.revision_id, track);
+        if sealed != Some(batch.generation) || digest != Some(batch.manifest_digest.as_str()) {
+            return Err(format!(
+                "the ledger holds the {track:?} track sealed at {sealed:?} with {digest:?}"
+            )
+            .into());
+        }
+    }
+    guard.validate_semantic_generation(
+        &batch.repo_id,
+        &batch.revision_id,
+        batch.generation,
+        Some(batch.manifest_digest.as_str()),
+        true,
+        "retried seal",
+    )?;
+    drop(guard);
+    Ok(())
+}
+
+/// A seal that finds both tracks sealed exact only records.
+///
+/// The retry after a crash between the seals and the authority record
+/// (QI-BB-029 완료 기준 #2) records the authority, and both tracks in a
+/// ledger that, like a restarted daemon's, knew neither.
 #[test]
 fn sealed_exact_retry_repairs_authority_without_rebuilding_tracks() -> TestRes {
     let semantic_builder = Arc::new(FakeSemanticBuilder::default());
     let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
-        Arc::new(DirectSemanticMaterializer::new(
-            semantic_builder.clone(),
-            Arc::new(RwLock::new(Ledger::new())),
-        ));
+        Arc::new(DirectSemanticMaterializer::new(semantic_builder.clone()));
     let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
     let authority = Arc::new(RecordingSearchCorpusAuthority {
         identities: Mutex::new(Vec::new()),
@@ -969,7 +998,7 @@ fn sealed_exact_retry_repairs_authority_without_rebuilding_tracks() -> TestRes {
         "test exact retry",
     )?;
     drop(guard);
-    Ok(())
+    pair_sealed_in_ledger(&ledger, &batch)
 }
 
 #[test]
@@ -988,10 +1017,9 @@ fn durable_retention_error_fences_same_process_rollback_authority() -> TestRes {
     let materializer = search_corpus_materializer!(
         Arc::new(FakeSearchCorpusBuilder::default()),
         Arc::clone(&ledger),
-        Arc::new(DirectSemanticMaterializer::new(
-            Arc::new(FakeSemanticBuilder::default()),
-            Arc::new(RwLock::new(Ledger::new())),
-        )),
+        Arc::new(DirectSemanticMaterializer::new(Arc::new(
+            FakeSemanticBuilder::default()
+        ))),
         Arc::new(crate::HashingQueryTextEmbedder::new(
             SEARCH_OWNED_SEMANTIC_DIMENSION,
         )),
@@ -1020,10 +1048,7 @@ fn durable_retention_error_fences_same_process_rollback_authority() -> TestRes {
 fn non_seal_batch_cannot_mutate_an_already_sealed_generation() -> TestRes {
     let semantic_builder = Arc::new(FakeSemanticBuilder::default());
     let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
-        Arc::new(DirectSemanticMaterializer::new(
-            semantic_builder.clone(),
-            Arc::new(RwLock::new(Ledger::new())),
-        ));
+        Arc::new(DirectSemanticMaterializer::new(semantic_builder.clone()));
     let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
     let materializer = search_corpus_materializer!(
         lexical_builder.clone(),
@@ -1056,18 +1081,19 @@ fn non_seal_batch_cannot_mutate_an_already_sealed_generation() -> TestRes {
     Ok(())
 }
 
+/// A lexical track sealed exact and a semantic one missing: the retry
+/// builds only the semantic track, and the ledger — fresh, like a
+/// restarted daemon's — holds both.
 #[test]
 fn exact_lexical_missing_semantic_retry_builds_only_missing_track() -> TestRes {
     let semantic_builder = Arc::new(FakeSemanticBuilder::default());
     let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
-        Arc::new(DirectSemanticMaterializer::new(
-            semantic_builder.clone(),
-            Arc::new(RwLock::new(Ledger::new())),
-        ));
+        Arc::new(DirectSemanticMaterializer::new(semantic_builder.clone()));
     let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
+    let ledger = Arc::new(RwLock::new(Ledger::new()));
     let materializer = search_corpus_materializer!(
         lexical_builder.clone(),
-        Arc::new(RwLock::new(Ledger::new())),
+        Arc::clone(&ledger),
         semantic_materializer,
         Arc::new(crate::HashingQueryTextEmbedder::new(
             SEARCH_OWNED_SEMANTIC_DIMENSION,
@@ -1078,7 +1104,8 @@ fn exact_lexical_missing_semantic_retry_builds_only_missing_track() -> TestRes {
         test_incomplete_generation_discard(),
         test_incomplete_generation_discard(),
     );
-    let receipt = materializer.publish_batch(&fixture_search_corpus_batch()?)?;
+    let batch = fixture_search_corpus_batch()?;
+    let receipt = materializer.publish_batch(&batch)?;
     assert!(receipt.sealed);
     assert!(
         lexical_builder
@@ -1088,22 +1115,25 @@ fn exact_lexical_missing_semantic_retry_builds_only_missing_track() -> TestRes {
             .is_empty()
     );
     assert_eq!(semantic_builder.take()?.len(), 1);
-    Ok(())
+    pair_sealed_in_ledger(&ledger, &batch)
 }
 
+/// An incomplete lexical track is rebuilt; a semantic one sealed exact is kept.
+///
+/// The retry after a crash inside the lexical seal discards and rebuilds
+/// the lexical track, only records the semantic one, and the ledger —
+/// fresh, like a restarted daemon's — holds both.
 #[test]
 fn incomplete_lexical_exact_semantic_retry_discards_and_rebuilds_only_lexical() -> TestRes {
     let semantic_builder = Arc::new(FakeSemanticBuilder::default());
     let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
-        Arc::new(DirectSemanticMaterializer::new(
-            semantic_builder.clone(),
-            Arc::new(RwLock::new(Ledger::new())),
-        ));
+        Arc::new(DirectSemanticMaterializer::new(semantic_builder.clone()));
     let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
     let lexical_discard = Arc::new(RecordingIncompleteGenerationDiscard::default());
+    let ledger = Arc::new(RwLock::new(Ledger::new()));
     let materializer = search_corpus_materializer!(
         lexical_builder.clone(),
-        Arc::new(RwLock::new(Ledger::new())),
+        Arc::clone(&ledger),
         semantic_materializer,
         Arc::new(crate::HashingQueryTextEmbedder::new(
             SEARCH_OWNED_SEMANTIC_DIMENSION,
@@ -1115,7 +1145,8 @@ fn incomplete_lexical_exact_semantic_retry_discards_and_rebuilds_only_lexical() 
         test_incomplete_generation_discard(),
     );
 
-    let receipt = materializer.publish_batch(&fixture_search_corpus_batch()?)?;
+    let batch = fixture_search_corpus_batch()?;
+    let receipt = materializer.publish_batch(&batch)?;
     assert!(receipt.sealed);
     assert_eq!(lexical_discard.calls.load(Ordering::SeqCst), 1);
     assert_eq!(
@@ -1127,17 +1158,14 @@ fn incomplete_lexical_exact_semantic_retry_discards_and_rebuilds_only_lexical() 
         1
     );
     assert!(semantic_builder.take()?.is_empty());
-    Ok(())
+    pair_sealed_in_ledger(&ledger, &batch)
 }
 
 #[test]
 fn jointly_incomplete_tracks_keep_staged_data_for_normal_seal() -> TestRes {
     let semantic_builder = Arc::new(FakeSemanticBuilder::default());
     let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
-        Arc::new(DirectSemanticMaterializer::new(
-            semantic_builder.clone(),
-            Arc::new(RwLock::new(Ledger::new())),
-        ));
+        Arc::new(DirectSemanticMaterializer::new(semantic_builder.clone()));
     let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
     let lexical_discard = Arc::new(RecordingIncompleteGenerationDiscard::default());
     let semantic_discard = Arc::new(RecordingIncompleteGenerationDiscard::default());

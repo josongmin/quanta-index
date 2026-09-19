@@ -1254,10 +1254,8 @@ impl SearchdRuntime {
             metric_sources: embedder_metric_sources,
         } = build_semantic_embedders(config.semantic_embedder_profile(), &leased_state_root)
             .map_err(anyhow::Error::from)?;
-        let semantic_materializer = Arc::new(DirectSemanticMaterializer::new(
-            Arc::clone(&sem_build_port),
-            Arc::clone(&ledger),
-        ));
+        let semantic_materializer =
+            Arc::new(DirectSemanticMaterializer::new(Arc::clone(&sem_build_port)));
         let direct_sem_ingest_port: Arc<dyn SemanticIngestPort + Send + Sync> =
             semantic_materializer.clone();
         let authority_write_port: Arc<dyn SearchCorpusAuthorityWritePort + Send + Sync> =
