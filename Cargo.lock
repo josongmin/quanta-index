@@ -4320,6 +4320,8 @@ dependencies = [
  "quanta-index-lq-regex",
  "quanta-index-lq-text-normalizer",
  "quanta-index-lq-trigram",
+ "regex",
+ "roaring",
  "serde",
  "serde_json",
  "sha2",

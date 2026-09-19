@@ -156,11 +156,11 @@ id = "lexical-sealed-manifest"
 owner = "quanta-index-lexical"
 path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/search-corpus-generation-manifest.cbor"
 reproduction = "producer-rebuild"
-notes = "Seal commitment (QI-BB-030): identity digest, normalizer stamp, Tantivy meta.json (length + sha256), every segment component file the commit references (length + sha256; content proved at seal and by scrub, length at the doors), the text-authority tree, and every repo-metadata overlay present. Formats 1-3 are refused typed (2 by the text-authority format code); rebuild is the migration."
+notes = "Seal commitment (QI-BB-030): identity digest, normalizer stamp, Tantivy meta.json (length + sha256), every segment component file the commit references (length + sha256; content proved at seal and by scrub, length at the doors), the text-authority tree, and every repo-metadata overlay present. Format 5 also means the index stores each text document's text-authority doc id indexed and as a fast column (the bitmap restriction of QI-BB-024), which format 4 indexes lack. Formats 1-4 are refused typed (2 by the text-authority format code); rebuild is the migration."
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/sealed_generation/manifest.rs"
 name = "LEXICAL_SEALED_MANIFEST_FORMAT_VERSION"
-value = 4
+value = 5
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/sealed_generation/manifest.rs"
 name = "LEXICAL_SEALED_MANIFEST_WHOLE_CORPUS_TEXT_AUTHORITY_VERSION"
@@ -193,7 +193,7 @@ id = "lexical-tantivy-index"
 owner = "quanta-index-lexical"
 path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/{meta.json,.managed.json,<segment>.*}"
 reproduction = "vendor-native"
-notes = "Tantivy 0.22 segment files (immutable, hard-linked across delta generations) plus the two generation-local files Tantivy rewrites in place. `meta.json` and every segment component file it references are committed by the sealed manifest (length + sha256); `.managed.json` and lock files are Tantivy bookkeeping a query never decodes and are not committed."
+notes = "Tantivy 0.22 segment files (immutable, hard-linked across delta generations) plus the two generation-local files Tantivy rewrites in place. `meta.json` and every segment component file it references are committed by the sealed manifest (length + sha256); `.managed.json` and lock files are Tantivy bookkeeping a query never decodes and are not committed. The schema lives in `meta.json`; every door refuses an index whose schema is not the one the running build writes (from sealed-manifest format 5, `text_authority_doc_id` is indexed and a fast column)."
 
 [[artifact]]
 id = "lexical-text-authority"

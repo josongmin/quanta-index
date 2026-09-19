@@ -468,9 +468,10 @@ mod tests {
 ///
 /// The cache used to be bounded by entry count alone, so 128 broad regexes
 /// over a large corpus could own 128 copies of the corpus's candidate ids.
-/// Now it is bounded by resident bytes and by the cardinality of one entry,
-/// and every bound is a refusal or an eviction the stats report, never a
-/// silent growth. Fields are private so every policy is valid.
+/// An entry is now a compressed bitmap of text-authority doc ids, and the
+/// cache is bounded by the bytes its entries occupy and by the cardinality
+/// of one entry; every bound is a refusal or an eviction the stats report,
+/// never a silent growth. Fields are private so every policy is valid.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RegexMatchCachePolicy {
     entries: usize,
@@ -659,6 +660,10 @@ pub struct TextAuthorityUpdateStats {
 }
 
 /// What the regex match cache did so far, for operators and tests.
+///
+/// A hit hands out the resident set itself, so there is no clone traffic
+/// to report; what a query allocates is the set it builds on a miss, which
+/// the `built` counters account whether or not the set is then cached.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RegexMatchCacheStats {
     pub hits: u64,
@@ -667,9 +672,15 @@ pub struct RegexMatchCacheStats {
     pub resident_bytes: u64,
     /// Entries evicted to make room under the entry or byte bound.
     pub evictions: u64,
-    /// Results not cached because they matched more candidates than one
+    /// Results not cached because they matched more documents than one
     /// entry may hold.
     pub refused_cardinality: u64,
     /// Results not cached because they alone would exceed the byte bound.
     pub refused_bytes: u64,
+    /// Match sets computed, cached or not.
+    pub sets_built: u64,
+    /// Documents those sets matched, summed: the match cardinality served.
+    pub members_built: u64,
+    /// Bytes those sets occupied when built, summed.
+    pub bytes_built: u64,
 }

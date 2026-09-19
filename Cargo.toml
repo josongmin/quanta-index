@@ -146,6 +146,10 @@ regex-syntax = "0.8"
 # deny.toml bans) + webpki roots; reuses the reqwest 0.12 / rustls 0.23 already
 # in-tree via lancedb, so no new TLS stack or duplicate version is introduced.
 reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+# Compressed doc-id bitmaps for the lexical adapter's derived restriction
+# sets (QI-BB-024); the same locked crate the lance dataset engine already
+# builds, so no new code enters the graph.
+roaring = "0.11.4"
 serde = { version = "1.0", default-features = false, features = ["std"] }
 serde_json = "1.0"
 rusqlite = { version = "0.40", default-features = false, features = ["bundled", "backup"] }

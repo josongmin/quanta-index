@@ -1181,18 +1181,24 @@ fn as_format_one(current: &[ciborium::Value]) -> Vec<ciborium::Value> {
     legacy
 }
 
-/// The format-4 manifest row's element count: format version, identity
+/// The format-5 manifest row's element count: format version, identity
 /// digest, normalizer stamp, index meta, segment verification policy,
 /// index segments, text authority, overlays.
 const MANIFEST_ROW_LEN: usize = 8;
-/// Position of the normalizer stamp in a format-4 manifest row.
+/// Position of the normalizer stamp in a format-5 manifest row.
 const MANIFEST_NORMALIZER_INDEX: usize = 2;
+/// The manifest format this build seals.
+const CURRENT_FORMAT: u32 = 5;
 
-/// A generation sealed under manifest format 1 is refused typed by both doors.
+/// Generations sealed under earlier manifest formats are refused typed by
+/// both doors.
 ///
-/// Format 1 is the pre-normalizer layout (no normalizer stamp). The validator
-/// and the query open both answer `GENERATION_MANIFEST_FORMAT_UNSUPPORTED`,
-/// and the intact format-4 manifest is admitted again once restored.
+/// Format 1 is the pre-normalizer layout (no normalizer stamp); format 4 is
+/// this row shape over an index that stored the text-authority doc id but
+/// did not index it, so a derived match set could not restrict it. The
+/// validator and the query open both answer
+/// `GENERATION_MANIFEST_FORMAT_UNSUPPORTED` for each, and the intact
+/// current manifest is admitted again once restored.
 #[test]
 fn a_generation_sealed_under_the_previous_format_is_refused_typed() -> TestResult {
     let dir = tempfile::tempdir()?;
@@ -1201,9 +1207,23 @@ fn a_generation_sealed_under_the_previous_format_is_refused_typed() -> TestResul
     let manifest = generation_dir(dir.path(), generation()).join(MANIFEST_FILE);
     let original = std::fs::read(&manifest)?;
     let current = read_manifest_row(&manifest)?;
-    if current.len() != MANIFEST_ROW_LEN || current.first() != Some(&ciborium::Value::from(4_u32)) {
+    if current.len() != MANIFEST_ROW_LEN
+        || current.first() != Some(&ciborium::Value::from(CURRENT_FORMAT))
+    {
         return Err(format!("unexpected current manifest row shape: {current:?}").into());
     }
+
+    let mut format_four = current.clone();
+    if let Some(version) = format_four.first_mut() {
+        *version = ciborium::Value::from(4_u32);
+    }
+    write_manifest_row(&manifest, format_four)?;
+    expect_both_doors(
+        &adapter,
+        generation(),
+        "format 4 manifest",
+        FORMAT_UNSUPPORTED,
+    )?;
 
     write_manifest_row(&manifest, as_format_one(&current))?;
     expect_both_doors(
@@ -1224,7 +1244,7 @@ fn a_generation_sealed_under_the_previous_format_is_refused_typed() -> TestResul
     Ok(())
 }
 
-/// A format-4 manifest that names another normalizer version is refused
+/// A current manifest that names another normalizer version is refused
 /// under `GENERATION_NORMALIZER_UNSUPPORTED` by both doors.
 #[test]
 fn a_generation_stamped_with_another_normalizer_is_refused_typed() -> TestResult {

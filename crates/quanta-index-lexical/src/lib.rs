@@ -53,6 +53,7 @@
 )]
 
 mod analyzer;
+mod authority_doc_set;
 mod budgeted_search;
 mod dense_admission;
 pub mod filters;
@@ -62,6 +63,7 @@ pub mod plan;
 pub mod planner;
 mod predicate_registry;
 pub mod regex;
+mod regex_match_cache;
 mod sealed_generation;
 pub mod symbol;
 mod text_authority;
@@ -142,6 +144,7 @@ use quanta_index_lq_trigram::{
 };
 
 use crate::analyzer::{NormalizingTokenizer, tokenizer_name};
+use crate::authority_doc_set::AuthorityDocSetQuery;
 use crate::budgeted_search::{BudgetProbe, budgeted_search};
 use crate::normalize::{CaseMode, TEXT_NORMALIZER_VERSION, TextNormalizerVersion, TextQueryError};
 use crate::phrase::{PhraseField, PhrasePlannerError, PhrasePolicy, plan_phrase};
@@ -157,6 +160,7 @@ use crate::predicate_registry::{
     parse_repo_meta_arg, parse_repo_topic_arg, parse_timeref_scalar_arg, unimplemented_predicate,
 };
 use crate::regex::RegexPolicy;
+use crate::regex_match_cache::{RegexMatchCache, RegexMatchCacheKey, RegexMatchCacheRefusal};
 use crate::sealed_generation::{
     DiscardingVisitor, LEXICAL_QUARANTINE_RECEIPT_FILE_NAME, LEXICAL_SCRUB_RECEIPT_FILE_NAME,
     LEXICAL_SEALED_MANIFEST_FILE_NAME, OverlayFamily, SealedGenerationVisitor,
@@ -167,13 +171,14 @@ use crate::text_authority::{
     AddedTextDoc, ShardBody, ShardedTextAuthority, TEXT_AUTHORITY_DIR_NAME, TextAuthorityManifest,
     TextAuthorityWriteReceipt, shard_index_of,
 };
+use roaring::RoaringBitmap;
 use tantivy::DocSet as _;
 use tantivy::collector::{Count, TopDocs};
 use tantivy::query::{
     AllQuery, BooleanQuery, EnableScoring, Occur, PhraseQuery, Query, RegexQuery, TermQuery,
 };
 use tantivy::schema::{
-    Field, IndexRecordOption, OwnedValue, STORED, STRING, Schema, TantivyDocument,
+    FAST, Field, INDEXED, IndexRecordOption, OwnedValue, STORED, STRING, Schema, TantivyDocument,
     TextFieldIndexing, TextOptions, Value,
 };
 use tantivy::tokenizer::TextAnalyzer;
@@ -229,7 +234,9 @@ struct SchemaFields {
     /// The text-authority doc id of a text document (absent on symbols):
     /// the shard-addressing key the sidecar and the index share, assigned
     /// once when the document is written and never reused within the
-    /// generation's chain.
+    /// generation's chain. Indexed and a fast column too, so a set of doc
+    /// ids restricts a query without naming a single candidate
+    /// (`authority_doc_set`).
     text_authority_doc_id: Field,
 }
 
@@ -264,7 +271,8 @@ impl SchemaFields {
         );
         let symbol_kind = builder.add_text_field("symbol_kind", STRING | STORED);
         let symbol_kind_family = builder.add_text_field("symbol_kind_family", STRING | STORED);
-        let text_authority_doc_id = builder.add_u64_field("text_authority_doc_id", STORED);
+        let text_authority_doc_id =
+            builder.add_u64_field("text_authority_doc_id", STORED | INDEXED | FAST);
         let schema = builder.build();
         Self {
             schema,
@@ -568,162 +576,6 @@ fn writer_threads_for_heap(heap_bytes: usize) -> usize {
     by_heap.min(by_machine).min(WRITER_THREADS_MAX)
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct RegexMatchCacheKey {
-    generation: GenKey,
-    normalized_source: String,
-}
-
-/// Why a computed match set was not cached.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RegexMatchCacheRefusal {
-    Cardinality { matches: usize },
-    Bytes { bytes: u64 },
-}
-
-/// Per-entry accounting overhead beyond the candidate id bytes: the
-/// `String` header and the tree node, rounded generously so the byte bound
-/// errs on the side of counting more.
-const REGEX_MATCH_CACHE_ENTRY_OVERHEAD: u64 = 64;
-
-/// Bytes one match set holds resident: every candidate id's bytes plus the
-/// per-id overhead.
-fn regex_match_set_bytes(matches: &BTreeSet<String>) -> u64 {
-    matches.iter().fold(0_u64, |total, id| {
-        total
-            .saturating_add(u64::try_from(id.len()).map_or(u64::MAX, |len| len))
-            .saturating_add(REGEX_MATCH_CACHE_ENTRY_OVERHEAD)
-    })
-}
-
-/// Byte-weighted LRU of regex match sets, shared by `Arc` (QI-BB-024).
-///
-/// A hit hands out the shared set — never a deep clone of every candidate
-/// id — and an insert evicts least-recently-used entries until both the
-/// entry and the byte bound hold. A result wider than one entry may be is
-/// refused rather than cached, so a run of broad regexes cannot turn the
-/// cache into copies of the corpus.
-struct RegexMatchCache {
-    entries: BTreeMap<RegexMatchCacheKey, Arc<BTreeSet<String>>>,
-    order: VecDeque<RegexMatchCacheKey>,
-    policy: RegexMatchCachePolicy,
-    resident_bytes: u64,
-    hits: u64,
-    misses: u64,
-    evictions: u64,
-    refused_cardinality: u64,
-    refused_bytes: u64,
-}
-
-impl RegexMatchCache {
-    fn new(policy: RegexMatchCachePolicy) -> Self {
-        Self {
-            entries: BTreeMap::new(),
-            order: VecDeque::new(),
-            policy,
-            resident_bytes: 0,
-            hits: 0,
-            misses: 0,
-            evictions: 0,
-            refused_cardinality: 0,
-            refused_bytes: 0,
-        }
-    }
-
-    fn touch(&mut self, key: &RegexMatchCacheKey) {
-        if let Some(position) = self.order.iter().position(|candidate| candidate == key) {
-            let removed = self.order.remove(position);
-            if let Some(key) = removed {
-                self.order.push_back(key);
-            }
-        }
-    }
-
-    fn get(&mut self, key: &RegexMatchCacheKey) -> Option<Arc<BTreeSet<String>>> {
-        let Some(cached) = self.entries.get(key).map(Arc::clone) else {
-            self.misses = self.misses.saturating_add(1);
-            return None;
-        };
-        self.hits = self.hits.saturating_add(1);
-        self.touch(key);
-        Some(cached)
-    }
-
-    fn remove_entry(&mut self, key: &RegexMatchCacheKey) {
-        if let Some(removed) = self.entries.remove(key) {
-            self.resident_bytes = self
-                .resident_bytes
-                .saturating_sub(regex_match_set_bytes(&removed));
-        }
-    }
-
-    fn insert(
-        &mut self,
-        key: RegexMatchCacheKey,
-        matches: Arc<BTreeSet<String>>,
-    ) -> Result<(), RegexMatchCacheRefusal> {
-        if matches.len() > self.policy.max_matches_per_entry() {
-            self.refused_cardinality = self.refused_cardinality.saturating_add(1);
-            return Err(RegexMatchCacheRefusal::Cardinality {
-                matches: matches.len(),
-            });
-        }
-        let bytes = regex_match_set_bytes(&matches);
-        if bytes > self.policy.max_resident_bytes() {
-            self.refused_bytes = self.refused_bytes.saturating_add(1);
-            return Err(RegexMatchCacheRefusal::Bytes { bytes });
-        }
-        if self.entries.contains_key(&key) {
-            self.remove_entry(&key);
-            self.order.retain(|candidate| candidate != &key);
-        }
-        while !self.entries.is_empty()
-            && (self.entries.len() >= self.policy.max_entries()
-                || self.resident_bytes.saturating_add(bytes) > self.policy.max_resident_bytes())
-        {
-            let Some(evicted) = self.order.pop_front() else {
-                break;
-            };
-            self.remove_entry(&evicted);
-            self.evictions = self.evictions.saturating_add(1);
-        }
-        self.order.push_back(key.clone());
-        self.resident_bytes = self.resident_bytes.saturating_add(bytes);
-        let _inserted = self.entries.insert(key, matches);
-        Ok(())
-    }
-
-    fn invalidate_generation(&mut self, generation: &GenKey) {
-        let stale: Vec<RegexMatchCacheKey> = self
-            .entries
-            .keys()
-            .filter(|key| &key.generation == generation)
-            .cloned()
-            .collect();
-        for key in &stale {
-            self.remove_entry(key);
-        }
-        self.order.retain(|key| &key.generation != generation);
-    }
-
-    fn stats(&self) -> RegexMatchCacheStats {
-        RegexMatchCacheStats {
-            hits: self.hits,
-            misses: self.misses,
-            entries: self.entries.len(),
-            resident_bytes: self.resident_bytes,
-            evictions: self.evictions,
-            refused_cardinality: self.refused_cardinality,
-            refused_bytes: self.refused_bytes,
-        }
-    }
-
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.entries.len()
-    }
-}
-
 fn decode_chunk_payload(bytes: &[u8]) -> Result<ChunkRecord, CoreError> {
     ciborium::from_reader::<ChunkRecord, _>(bytes)
         .map_err(|err| CoreError::InvalidContract(format!("lexical: chunk payload decode: {err}")))
@@ -746,7 +598,10 @@ fn count_from_len(value: usize) -> Result<u64, CoreError> {
 ///
 /// A cached writer handle could survive deletion or corruption of the
 /// backing files, so every door bypasses that cache and opens the durable
-/// directory.
+/// directory. The committed schema must be the one this build writes: an
+/// index written under another — a field no longer indexed, a column this
+/// build restricts through missing — is refused typed, never served with
+/// queries it cannot answer.
 fn open_sealed_index(generation_dir: &Path) -> Result<Index, CoreError> {
     let index = Index::open_in_dir(generation_dir).map_err(|error| {
         CoreError::Storage(format!(
@@ -754,6 +609,15 @@ fn open_sealed_index(generation_dir: &Path) -> Result<Index, CoreError> {
             generation_dir.display()
         ))
     })?;
+    if index.schema() != SchemaFields::build().schema {
+        return Err(CoreError::Typed {
+            code: sealed_generation::GENERATION_MANIFEST_FORMAT_UNSUPPORTED_CODE.to_string(),
+            message: format!(
+                "lexical: generation {} was indexed under a schema this build does not write; it must be rebuilt",
+                generation_dir.display()
+            ),
+        });
+    }
     register_index_tokenizers(&index);
     Ok(index)
 }
@@ -2765,6 +2629,30 @@ fn stored_text_authority_doc_id(
         })
 }
 
+/// A text-authority doc id as a restriction member.
+///
+/// The authority allocates ids in `1..=MAX_DOC_ID`, the 32-bit range, so an
+/// id outside it is a corrupt authority, refused rather than dropped.
+fn authority_member(doc_id: u64, surface: &str) -> Result<u32, CoreError> {
+    u32::try_from(doc_id).map_err(|err| {
+        CoreError::Storage(format!(
+            "lexical: {surface} names text-authority doc id {doc_id} outside the 32-bit id space: {err}"
+        ))
+    })
+}
+
+/// Text-authority doc ids as the restriction set they form.
+fn authority_member_set(
+    doc_ids: impl IntoIterator<Item = u64>,
+    surface: &str,
+) -> Result<RoaringBitmap, CoreError> {
+    let mut members = RoaringBitmap::new();
+    for doc_id in doc_ids {
+        let _inserted: bool = members.insert(authority_member(doc_id, surface)?);
+    }
+    Ok(members)
+}
+
 /// The text documents currently indexed under one path, with their doc ids.
 ///
 /// Read from the committed index before a scope mutation is applied, so an
@@ -4056,6 +3944,15 @@ impl MetricSourcePort for LexicalAdapter {
             MetricPointV1::counter(
                 "lexical_regex_cache_refused_bytes_total",
                 regex.refused_bytes,
+            ),
+            MetricPointV1::counter("lexical_regex_match_sets_built_total", regex.sets_built),
+            MetricPointV1::counter(
+                "lexical_regex_match_set_members_built_total",
+                regex.members_built,
+            ),
+            MetricPointV1::counter(
+                "lexical_regex_match_set_bytes_built_total",
+                regex.bytes_built,
             ),
         ])
     }
@@ -6490,6 +6387,23 @@ impl TantivySearcher {
         ))
     }
 
+    /// The text documents whose text-authority doc id is a member of
+    /// `members`: one query over the shared set, nothing built per member
+    /// (QI-BB-024). An empty set matches nothing.
+    fn authority_restriction_query(&self, members: Arc<RoaringBitmap>) -> Box<dyn Query> {
+        if members.is_empty() {
+            return self.match_none_query();
+        }
+        Box::new(AuthorityDocSetQuery::new(
+            self.fields.text_authority_doc_id,
+            members,
+        ))
+    }
+
+    /// The documents of candidates named from outside the index: the dense
+    /// lane's candidates at admission, as many as the dense top-k, text or
+    /// symbol. Every set the index derives itself restricts through
+    /// [`Self::authority_restriction_query`] instead.
     fn candidate_restriction_query(&self, candidate_ids: &BTreeSet<String>) -> Box<dyn Query> {
         if candidate_ids.len() == 1
             && let Some(candidate_id) = candidate_ids.iter().next()
@@ -6667,6 +6581,21 @@ impl TantivySearcher {
         })
     }
 
+    /// A stored text document's text-authority doc id as a restriction
+    /// member; a text document without one is refused typed (the
+    /// generation predates the id and must be rebuilt).
+    fn stored_text_member(
+        &self,
+        doc: &TantivyDocument,
+        candidate_id: &str,
+        surface: &str,
+    ) -> Result<u32, CoreError> {
+        authority_member(
+            stored_text_authority_doc_id(doc, &self.fields, candidate_id)?,
+            surface,
+        )
+    }
+
     fn file_ownership_authority(&self) -> Result<&FileOwnershipShard, CoreError> {
         self.file_ownership.as_ref().ok_or_else(|| CoreError::Typed {
             code: RepoMetadataAuthorityV1::FileOwnership
@@ -6685,11 +6614,16 @@ impl TantivySearcher {
         })
     }
 
-    fn collect_matching_candidate_ids_for_raw_substring(
+    /// The text documents containing `needle` as bytes, as authority doc
+    /// ids.
+    ///
+    /// The verify pass resolves every candidate through the authority and
+    /// refuses one it cannot resolve, so every id here names a document.
+    fn raw_substring_match_set(
         &self,
         needle: &str,
         options: &LqOptions,
-    ) -> Result<BTreeSet<String>, CoreError> {
+    ) -> Result<RoaringBitmap, CoreError> {
         let authority = self.text_authority("LEX_RAW_SUBSTRING")?;
         let folded = !Self::is_case_sensitive(options);
         let trigram_index = authority.trigram_index(folded);
@@ -6711,17 +6645,10 @@ impl TantivySearcher {
                     map_trigram_error("raw substring prefilter", &err)
                 }
             })?;
-        let mut out: BTreeSet<String> = BTreeSet::new();
-        for doc_id in verified_doc_ids {
-            let Some(doc) = authority.doc(doc_id.0) else {
-                return Err(CoreError::Storage(format!(
-                    "lexical: raw substring resolver missing doc {}",
-                    doc_id.0
-                )));
-            };
-            let _inserted: bool = out.insert(doc.candidate_id.clone());
-        }
-        Ok(out)
+        authority_member_set(
+            verified_doc_ids.iter().map(|doc_id| doc_id.0),
+            "raw substring",
+        )
     }
 
     /// The regex source as executed.
@@ -6751,12 +6678,19 @@ impl TantivySearcher {
         }
     }
 
-    fn collect_matching_candidate_ids_for_regex(
+    /// The text documents `source` matches, as authority doc ids, from the
+    /// match cache when the regex carries no timeout.
+    ///
+    /// The verify pass resolves every prefiltered candidate through the
+    /// authority and refuses one it cannot resolve, so every id here names
+    /// a document. A set computed here is accounted in the cache's stats
+    /// whether or not it is then kept.
+    fn regex_match_set(
         &self,
         source: &str,
         options: &LqOptions,
         budget: &RequestBudgetV1,
-    ) -> Result<Arc<BTreeSet<String>>, CoreError> {
+    ) -> Result<Arc<RoaringBitmap>, CoreError> {
         let normalized_source = Self::regex_source_for_options(source, options);
         let cache_key = options
             .timeout_ms
@@ -6844,34 +6778,35 @@ impl TantivySearcher {
                     message: format!("lexical: regex verify failed: {err}"),
                 },
             })?;
-        let mut out: BTreeSet<String> = BTreeSet::new();
-        for doc_id in verified_doc_ids {
-            let Some(doc) = authority.doc(doc_id.0) else {
-                return Err(CoreError::Storage(format!(
-                    "lexical: regex resolver missing doc {}",
-                    doc_id.0
-                )));
-            };
-            let _inserted: bool = out.insert(doc.candidate_id.clone());
-        }
-        let out = Arc::new(out);
+        let out = Arc::new(authority_member_set(
+            verified_doc_ids.iter().map(|doc_id| doc_id.0),
+            "regex",
+        )?);
+        let mut cache = self
+            .regex_match_cache
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("lexical regex cache poisoned: {err}")))?;
+        cache.record_built(&out);
         if let Some(cache_key) = cache_key {
-            let mut cache = self.regex_match_cache.lock().map_err(|err| {
-                CoreError::Storage(format!("lexical regex cache poisoned: {err}"))
-            })?;
             // A result too wide for one entry is served but not kept; the
             // refusal is counted in the stats rather than logged.
             let _kept: Result<(), RegexMatchCacheRefusal> =
                 cache.insert(cache_key, Arc::clone(&out));
         }
+        drop(cache);
         Ok(out)
     }
 
-    fn collect_matching_candidate_ids_for_phrase(
+    /// The text documents holding the phrase, as authority doc ids.
+    ///
+    /// The phrase is matched on token positions alone, so each matched id
+    /// is checked against the authority's doc table: an id the positions
+    /// name but the table does not hold is a corrupt authority.
+    fn phrase_match_set(
         &self,
         text: &str,
         options: &LqOptions,
-    ) -> Result<BTreeSet<String>, CoreError> {
+    ) -> Result<RoaringBitmap, CoreError> {
         let authority = self.text_authority("LEX_PHRASE_POSITIONS")?;
         let plan = plan_phrase(
             text,
@@ -6884,17 +6819,23 @@ impl TantivySearcher {
         let terms = plan.tokens.iter().map(String::as_str).collect::<Vec<_>>();
         let matches = query_phrase(&positions_index, &terms)
             .map_err(|err| map_positions_error("phrase query", &err))?;
-        let mut out: BTreeSet<String> = BTreeSet::new();
-        for phrase_match in matches.matches {
-            let Some(doc) = authority.doc(phrase_match.doc_id.0) else {
-                return Err(CoreError::Storage(format!(
-                    "lexical: phrase resolver missing doc {}",
-                    phrase_match.doc_id.0
-                )));
-            };
-            let _inserted: bool = out.insert(doc.candidate_id.clone());
+        if let Some(unheld) = matches
+            .matches
+            .iter()
+            .find(|phrase_match| authority.doc(phrase_match.doc_id.0).is_none())
+        {
+            return Err(CoreError::Storage(format!(
+                "lexical: phrase resolver missing doc {}",
+                unheld.doc_id.0
+            )));
         }
-        Ok(out)
+        authority_member_set(
+            matches
+                .matches
+                .iter()
+                .map(|phrase_match| phrase_match.doc_id.0),
+            "phrase",
+        )
     }
 
     fn repo_has_file_path_query(
@@ -7327,11 +7268,13 @@ impl TantivySearcher {
             })
     }
 
-    fn collect_candidate_ids_for_file_has_owner(
+    /// The text documents whose file has an owner matching `arg`, as
+    /// authority doc ids.
+    fn file_owner_match_set(
         &self,
         arg: &FileOwnerArg,
         budget: &RequestBudgetV1,
-    ) -> Result<BTreeSet<String>, CoreError> {
+    ) -> Result<RoaringBitmap, CoreError> {
         let authority = self.file_ownership_authority()?;
         let searcher = self.reader.searcher();
         let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
@@ -7339,8 +7282,9 @@ impl TantivySearcher {
                 "lexical: num_docs overflow while collecting file ownership candidates: {err}"
             ))
         })?;
+        let mut out = RoaringBitmap::new();
         if limit == 0 {
-            return Ok(BTreeSet::new());
+            return Ok(out);
         }
         let hits = budgeted_search(
             &searcher,
@@ -7349,7 +7293,6 @@ impl TantivySearcher {
             budget,
             "lexical:authority-scan",
         )?;
-        let mut out: BTreeSet<String> = BTreeSet::new();
         for (_score, doc_address) in hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
@@ -7378,7 +7321,8 @@ impl TantivySearcher {
                 .as_ref()
                 .map_or(!owners.is_empty(), |owner| owners.contains(owner));
             if matches {
-                let _inserted = out.insert(candidate_id);
+                let _inserted: bool =
+                    out.insert(self.stored_text_member(&doc, &candidate_id, "file.has.owner")?);
             }
         }
         Ok(out)
@@ -7416,11 +7360,13 @@ impl TantivySearcher {
             })
     }
 
-    fn collect_candidate_ids_for_file_has_contributor(
+    /// The text documents whose file has a contributor matching `arg`, as
+    /// authority doc ids.
+    fn file_contributor_match_set(
         &self,
         arg: &FileContributorArg,
         budget: &RequestBudgetV1,
-    ) -> Result<BTreeSet<String>, CoreError> {
+    ) -> Result<RoaringBitmap, CoreError> {
         let authority = self.file_contributor_authority()?;
         let searcher = self.reader.searcher();
         let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
@@ -7428,8 +7374,9 @@ impl TantivySearcher {
                 "lexical: num_docs overflow while collecting file contributor candidates: {err}"
             ))
         })?;
+        let mut out = RoaringBitmap::new();
         if limit == 0 {
-            return Ok(BTreeSet::new());
+            return Ok(out);
         }
         let contributor_regex = match &arg.contributor {
             ContributorPattern::Regex(source) => Some(RegexExecutor::compile(source).map_err(
@@ -7449,7 +7396,6 @@ impl TantivySearcher {
             budget,
             "lexical:authority-scan",
         )?;
-        let mut out: BTreeSet<String> = BTreeSet::new();
         for (_score, doc_address) in hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
@@ -7497,7 +7443,11 @@ impl TantivySearcher {
                 }
             };
             if matches {
-                let _inserted = out.insert(candidate_id);
+                let _inserted: bool = out.insert(self.stored_text_member(
+                    &doc,
+                    &candidate_id,
+                    "file.has.contributor",
+                )?);
             }
         }
         Ok(out)
@@ -7563,13 +7513,15 @@ impl TantivySearcher {
         Ok(Some(out))
     }
 
-    fn collect_candidate_ids_for_paths(
+    /// The text documents at `paths`, as authority doc ids.
+    fn path_match_set(
         &self,
         paths: &BTreeSet<String>,
         budget: &RequestBudgetV1,
-    ) -> Result<BTreeSet<String>, CoreError> {
+    ) -> Result<RoaringBitmap, CoreError> {
+        let mut out = RoaringBitmap::new();
         if paths.is_empty() {
-            return Ok(BTreeSet::new());
+            return Ok(out);
         }
         let compiled = self.with_doc_kind(self.path_restriction_query(paths), TEXT_DOC_KIND);
         let searcher = self.reader.searcher();
@@ -7579,7 +7531,7 @@ impl TantivySearcher {
             ))
         })?;
         if limit == 0 {
-            return Ok(BTreeSet::new());
+            return Ok(out);
         }
         let hits = budgeted_search(
             &searcher,
@@ -7588,14 +7540,17 @@ impl TantivySearcher {
             budget,
             "lexical:content-scope",
         )?;
-        let mut out: BTreeSet<String> = BTreeSet::new();
         for (_, doc_address) in hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
-            if let Some(candidate_id) = stored_text(&doc, self.fields.candidate_id) {
-                let _inserted = out.insert(candidate_id);
-            }
+            let Some(candidate_id) = stored_text(&doc, self.fields.candidate_id) else {
+                return Err(CoreError::Storage(format!(
+                    "lexical: content scope matched text document {doc_address:?} without a candidate id"
+                )));
+            };
+            let _inserted: bool =
+                out.insert(self.stored_text_member(&doc, &candidate_id, "content scope")?);
         }
         Ok(out)
     }
@@ -7615,13 +7570,15 @@ impl TantivySearcher {
         Ok(content_paths.intersection(&scope_paths).cloned().collect())
     }
 
-    fn allowed_candidate_ids_for_content_predicate(
+    /// The text documents a scoped content predicate admits, as authority
+    /// doc ids.
+    fn content_predicate_match_set(
         &self,
         constraint: &ContentPredicateConstraint,
         budget: &RequestBudgetV1,
-    ) -> Result<BTreeSet<String>, CoreError> {
+    ) -> Result<RoaringBitmap, CoreError> {
         let allowed_paths = self.allowed_paths_for_content_predicate(constraint, budget)?;
-        self.collect_candidate_ids_for_paths(&allowed_paths, budget)
+        self.path_match_set(&allowed_paths, budget)
     }
 
     fn repo_has_file_constraint(
@@ -7720,7 +7677,7 @@ impl TantivySearcher {
             Some(PredicateKind::ContentLeaf) => {
                 let constraint =
                     self.content_predicate_constraint(&canonical_name, &canonical_args)?;
-                drop(self.allowed_candidate_ids_for_content_predicate(&constraint, budget)?);
+                drop(self.content_predicate_match_set(&constraint, budget)?);
                 Ok(LqExpr::Leaf(LqLeaf::Predicate {
                     name: canonical_name,
                     args: canonical_args,
@@ -8490,8 +8447,10 @@ impl TantivySearcher {
     ///    `regex_prefilter`, falling back to whole-corpus exact verify only
     ///    when the regex exposes no mandatory literals.
     /// 3. exact-verify every prefiltered authority doc via
-    ///    `quanta-index-lq-regex::RegexExecutor`, then lower the verified
-    ///    ids to a candidate restriction query over the active generation.
+    ///    `quanta-index-lq-regex::RegexExecutor`; the verified doc ids are
+    ///    the match set (shared through the match cache when the regex has
+    ///    no timeout), and the index is restricted to them through one
+    ///    bitmap query, nothing built per match.
     ///
     /// Vendor tokens (`RegexExecutor`, Tantivy scan) are kept inside this
     /// method; callers see only typed `CoreError`s and `Box<dyn Query>`.
@@ -8501,12 +8460,8 @@ impl TantivySearcher {
         options: &LqOptions,
         budget: &RequestBudgetV1,
     ) -> Result<Box<dyn Query>, CoreError> {
-        let candidate_ids =
-            self.collect_matching_candidate_ids_for_regex(source, options, budget)?;
-        if candidate_ids.is_empty() {
-            return Ok(self.match_none_query());
-        }
-        Ok(self.candidate_restriction_query(&candidate_ids))
+        let members = self.regex_match_set(source, options, budget)?;
+        Ok(self.authority_restriction_query(members))
     }
 
     fn compile_leaf(
@@ -8527,22 +8482,14 @@ impl TantivySearcher {
                     return self.compile_regex_content_leaf(text, options, budget);
                 }
                 if matches!(leaf, LqLeaf::RawString(_)) {
-                    let candidate_ids =
-                        self.collect_matching_candidate_ids_for_raw_substring(text, options)?;
-                    if candidate_ids.is_empty() {
-                        return Ok(self.match_none_query());
-                    }
-                    return Ok(self.candidate_restriction_query(&candidate_ids));
+                    let members = self.raw_substring_match_set(text, options)?;
+                    return Ok(self.authority_restriction_query(Arc::new(members)));
                 }
                 self.compile_keyword_leaf(text, options, include_path_terms)
             }
             LqLeaf::Phrase(text) => {
-                let candidate_ids =
-                    self.collect_matching_candidate_ids_for_phrase(text, options)?;
-                if candidate_ids.is_empty() {
-                    return Ok(self.match_none_query());
-                }
-                Ok(self.candidate_restriction_query(&candidate_ids))
+                let members = self.phrase_match_set(text, options)?;
+                Ok(self.authority_restriction_query(Arc::new(members)))
             }
             LqLeaf::Regex(text) => self.compile_regex_content_leaf(text, options, budget),
             LqLeaf::StructuralBlock(_) => Err(CoreError::Typed {
@@ -8624,12 +8571,8 @@ impl TantivySearcher {
                         )));
                     };
                     let arg = self.file_owner_constraint(&canonical_name, &canonical_args)?;
-                    let candidate_ids =
-                        self.collect_candidate_ids_for_file_has_owner(&arg, budget)?;
-                    if candidate_ids.is_empty() {
-                        return Ok(self.match_none_query());
-                    }
-                    Ok(self.candidate_restriction_query(&candidate_ids))
+                    let members = self.file_owner_match_set(&arg, budget)?;
+                    Ok(self.authority_restriction_query(Arc::new(members)))
                 }
                 Some(PredicateKind::FileContributorGate) => {
                     let Some((canonical_name, canonical_args)) =
@@ -8640,12 +8583,8 @@ impl TantivySearcher {
                         )));
                     };
                     let arg = self.file_contributor_constraint(&canonical_name, &canonical_args)?;
-                    let candidate_ids =
-                        self.collect_candidate_ids_for_file_has_contributor(&arg, budget)?;
-                    if candidate_ids.is_empty() {
-                        return Ok(self.match_none_query());
-                    }
-                    Ok(self.candidate_restriction_query(&candidate_ids))
+                    let members = self.file_contributor_match_set(&arg, budget)?;
+                    Ok(self.authority_restriction_query(Arc::new(members)))
                 }
                 Some(PredicateKind::RepoTopicGate) => {
                     let Some((canonical_name, canonical_args)) =
@@ -8688,12 +8627,8 @@ impl TantivySearcher {
                     let constraint =
                         self.content_predicate_constraint(&canonical_name, &canonical_args)?;
                     if constraint.has_scopes() {
-                        let candidate_ids =
-                            self.allowed_candidate_ids_for_content_predicate(&constraint, budget)?;
-                        if candidate_ids.is_empty() {
-                            return Ok(self.match_none_query());
-                        }
-                        return Ok(self.candidate_restriction_query(&candidate_ids));
+                        let members = self.content_predicate_match_set(&constraint, budget)?;
+                        return Ok(self.authority_restriction_query(Arc::new(members)));
                     }
                     let lowered = self.predicate_content_leaf_from_constraint(&constraint);
                     self.compile_leaf(&lowered, options, false, budget)
@@ -9826,20 +9761,8 @@ impl LexicalSearcher for TantivySearcher {
 }
 
 #[cfg(test)]
-mod regex_match_cache_tests {
+mod adapter_tests {
     use super::*;
-
-    fn sample_generation(generation: u64) -> GenKey {
-        GenKey {
-            repo_id: RepoId::new("repo-alpha"),
-            revision_id: RevisionId::new("rev-alpha"),
-            generation: ManifestGeneration::new(generation),
-        }
-    }
-
-    fn sample_matches(candidate_id: &str) -> BTreeSet<String> {
-        std::iter::once(candidate_id.to_string()).collect()
-    }
 
     fn sample_identity(generation: u64, digest: &str) -> GenerationSnapshot {
         GenerationSnapshot {
@@ -9851,115 +9774,39 @@ mod regex_match_cache_tests {
         }
     }
 
+    /// The door refuses an index committed under a schema this build does
+    /// not write — here the schema before the text-authority doc id was
+    /// indexed and a fast column — typed, before any query runs over it.
     #[test]
-    fn regex_match_cache_invalidates_only_target_generation() {
-        let generation_one = sample_generation(7);
-        let generation_two = sample_generation(8);
-        let key_one = RegexMatchCacheKey {
-            generation: generation_one.clone(),
-            normalized_source: "foo".to_string(),
-        };
-        let key_two = RegexMatchCacheKey {
-            generation: generation_one.clone(),
-            normalized_source: "bar".to_string(),
-        };
-        let key_three = RegexMatchCacheKey {
-            generation: generation_two,
-            normalized_source: "foo".to_string(),
-        };
-        let mut cache = RegexMatchCache::new(RegexMatchCachePolicy::DEFAULT);
-        cache
-            .insert(key_one.clone(), Arc::new(sample_matches("cand-1")))
-            .expect("fits");
-        cache
-            .insert(key_two.clone(), Arc::new(sample_matches("cand-2")))
-            .expect("fits");
-        cache
-            .insert(key_three.clone(), Arc::new(sample_matches("cand-3")))
-            .expect("fits");
-        assert_eq!(cache.len(), 3);
-
-        cache.invalidate_generation(&generation_one);
-
-        assert_eq!(cache.len(), 1);
-        assert!(cache.get(&key_one).is_none());
-        assert!(cache.get(&key_two).is_none());
-        assert_eq!(
-            cache.get(&key_three).as_deref(),
-            Some(&sample_matches("cand-3"))
+    fn the_door_refuses_an_index_under_another_schema() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut builder = Schema::builder();
+        let _candidate_id = builder.add_text_field("candidate_id", STRING | STORED);
+        let _doc_id = builder.add_u64_field("text_authority_doc_id", STORED);
+        let index = Index::create_in_dir(temp.path(), builder.build()).expect("create");
+        let mut writer: IndexWriter = index.writer(15_000_000).expect("writer");
+        let _opstamp = writer.commit().expect("commit");
+        drop(writer);
+        let refused = open_sealed_index(temp.path()).expect_err("another schema is refused");
+        assert!(
+            matches!(
+                refused,
+                CoreError::Typed { ref code, .. }
+                    if code == sealed_generation::GENERATION_MANIFEST_FORMAT_UNSUPPORTED_CODE
+            ),
+            "{refused:?}"
         );
-        assert_eq!(
-            cache.stats().resident_bytes,
-            regex_match_set_bytes(&sample_matches("cand-3")),
-            "invalidation gives back the evicted generation's bytes"
+
+        let current = tempfile::tempdir().expect("tempdir");
+        let index =
+            Index::create_in_dir(current.path(), SchemaFields::build().schema).expect("create");
+        let mut writer: IndexWriter = index.writer(15_000_000).expect("writer");
+        let _opstamp = writer.commit().expect("commit");
+        drop(writer);
+        assert!(
+            open_sealed_index(current.path()).is_ok(),
+            "this build's schema opens"
         );
-    }
-
-    /// The cache is bounded by bytes and cardinality, not entries alone.
-    ///
-    /// A set wider than the policy is refused and counted, inserts evict
-    /// least-recently-used entries until the byte bound holds, and a hit is
-    /// the shared set rather than a copy (QI-BB-024).
-    #[test]
-    fn regex_match_cache_is_byte_bounded_and_shares_hits() {
-        let generation = sample_generation(1);
-        let key = |name: &str| RegexMatchCacheKey {
-            generation: generation.clone(),
-            normalized_source: name.to_string(),
-        };
-        let set = |ids: &[&str]| -> Arc<BTreeSet<String>> {
-            Arc::new(ids.iter().map(|id| (*id).to_string()).collect())
-        };
-        let one_entry_bytes = regex_match_set_bytes(&set(&["cand-1"]));
-        let policy =
-            RegexMatchCachePolicy::new(8, one_entry_bytes.saturating_mul(2).saturating_add(1), 2)
-                .expect("valid policy");
-        let mut cache = RegexMatchCache::new(policy);
-
-        // Too many matches for one entry: refused, counted, not resident.
-        assert_eq!(
-            cache.insert(key("broad"), set(&["cand-1", "cand-2", "cand-3"])),
-            Err(RegexMatchCacheRefusal::Cardinality { matches: 3 })
-        );
-        assert_eq!(cache.stats().refused_cardinality, 1);
-        assert_eq!(cache.stats().resident_bytes, 0);
-
-        // Two single-candidate entries fit under the byte bound.
-        cache.insert(key("a"), set(&["cand-1"])).expect("fits");
-        cache.insert(key("b"), set(&["cand-2"])).expect("fits");
-        assert_eq!(cache.stats().entries, 2);
-        assert_eq!(cache.stats().evictions, 0);
-
-        // A third does not: the least recently used ("a") goes.
-        cache
-            .insert(key("c"), set(&["cand-3"]))
-            .expect("fits after eviction");
-        let stats = cache.stats();
-        assert_eq!(stats.entries, 2);
-        assert_eq!(stats.evictions, 1);
-        assert!(stats.resident_bytes <= policy.max_resident_bytes());
-        assert!(cache.get(&key("a")).is_none());
-        assert_eq!(cache.stats().misses, 1);
-
-        // A hit is the same allocation the cache holds.
-        let first = cache.get(&key("b")).expect("b is resident");
-        let second = cache.get(&key("b")).expect("b is still resident");
-        assert!(Arc::ptr_eq(&first, &second), "a hit must share, not clone");
-        assert_eq!(cache.stats().hits, 2);
-
-        // A single set wider than the whole byte bound is refused on bytes.
-        let wide = set(&["cand-x", "cand-y"]);
-        assert!(regex_match_set_bytes(&wide) <= policy.max_resident_bytes());
-        let mut tiny = RegexMatchCache::new(
-            RegexMatchCachePolicy::new(8, one_entry_bytes.saturating_sub(1), 8).expect("policy"),
-        );
-        assert_eq!(
-            tiny.insert(key("z"), set(&["cand-1"])),
-            Err(RegexMatchCacheRefusal::Bytes {
-                bytes: one_entry_bytes
-            })
-        );
-        assert_eq!(tiny.stats().refused_bytes, 1);
     }
 
     #[test]

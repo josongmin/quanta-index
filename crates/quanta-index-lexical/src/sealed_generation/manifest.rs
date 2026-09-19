@@ -22,10 +22,13 @@
 //!   carries, hashed as a door decodes it. A family not listed is one the
 //!   generation does not carry; a file that appears anyway is refused.
 //!
-//! Format 4 is this shape. Formats 1–3 described earlier layouts (no
-//! normalizer stamp; the whole-corpus text authority; the sharded text
-//! authority without index-segment or overlay commitments) and are refused
-//! typed: the migration is a rebuild, never a reinterpretation.
+//! Format 5 is this shape over an index whose text documents carry their
+//! text-authority doc id indexed and as a fast column, so a derived match
+//! set restricts a query as one bitmap (QI-BB-024). Formats 1–4 described
+//! earlier layouts (no normalizer stamp; the whole-corpus text authority;
+//! the sharded text authority without index-segment or overlay
+//! commitments; the doc id stored only) and are refused typed: the
+//! migration is a rebuild, never a reinterpretation.
 
 use std::path::{Path, PathBuf};
 
@@ -43,7 +46,7 @@ use crate::text_authority::{
 pub(crate) const LEXICAL_SEALED_MANIFEST_FILE_NAME: &str = "search-corpus-generation-manifest.cbor";
 /// The manifest format this build writes and serves; see the module
 /// documentation for what each earlier format lacked.
-pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 4;
+pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 5;
 /// The format-2 layout: whole-corpus text-authority sidecars beside the
 /// index, no doc ids in the index. Refused by that name so the operator
 /// learns why a rebuild is needed.
@@ -221,7 +224,7 @@ impl LexicalSealedManifest {
             return Err(CoreError::Typed {
                 code: GENERATION_MANIFEST_FORMAT_UNSUPPORTED_CODE.to_string(),
                 message: format!(
-                    "lexical: sealed generation manifest {} has format {format_version} (this build serves {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION}); the generation predates the index-segment and overlay commitments and must be rebuilt",
+                    "lexical: sealed generation manifest {} has format {format_version} (this build serves {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION}: index-segment and overlay commitments over an index whose text documents carry their text-authority doc id indexed); the generation must be rebuilt",
                     path.display()
                 ),
             });
@@ -535,23 +538,29 @@ mod tests {
         }
     }
 
+    /// Every format but the served one is refused by name — the earlier
+    /// layouts (format 4: the doc id stored but not indexed) and a later
+    /// one alike — never read under this build's layout.
     #[test]
     fn another_format_or_policy_is_refused_by_name() {
-        let other_format: SealedManifestRow = (
-            LEXICAL_SEALED_MANIFEST_FORMAT_VERSION + 1,
-            "digest".to_string(),
-            (TEXT_NORMALIZER_VERSION.major, TEXT_NORMALIZER_VERSION.minor),
-            ("meta.json".to_string(), 1, [0; 32]),
-            1,
-            Vec::new(),
-            None,
-            Vec::new(),
-        );
-        let bytes = crate::encode_cbor(&other_format, "test").expect("encode");
-        assert_eq!(
-            typed_code(LexicalSealedManifest::decode(&bytes, Path::new("/g1/m"))).as_deref(),
-            Some(GENERATION_MANIFEST_FORMAT_UNSUPPORTED_CODE)
-        );
+        for format in [1, 3, 4, LEXICAL_SEALED_MANIFEST_FORMAT_VERSION + 1] {
+            let other_format: SealedManifestRow = (
+                format,
+                "digest".to_string(),
+                (TEXT_NORMALIZER_VERSION.major, TEXT_NORMALIZER_VERSION.minor),
+                ("meta.json".to_string(), 1, [0; 32]),
+                1,
+                Vec::new(),
+                None,
+                Vec::new(),
+            );
+            let bytes = crate::encode_cbor(&other_format, "test").expect("encode");
+            assert_eq!(
+                typed_code(LexicalSealedManifest::decode(&bytes, Path::new("/g1/m"))).as_deref(),
+                Some(GENERATION_MANIFEST_FORMAT_UNSUPPORTED_CODE),
+                "format {format}"
+            );
+        }
         let other_policy: SealedManifestRow = (
             LEXICAL_SEALED_MANIFEST_FORMAT_VERSION,
             "digest".to_string(),

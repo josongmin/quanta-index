@@ -20,10 +20,12 @@ quanta-index-lq-positions = { version = "0.1.0", path = "../quanta-index-lq-posi
 quanta-index-lq-regex = { version = "0.1.0", path = "../quanta-index-lq-regex" }
 quanta-index-lq-text-normalizer = { version = "0.1.0", path = "../quanta-index-lq-text-normalizer" }
 quanta-index-lq-trigram = { version = "0.1.0", path = "../quanta-index-lq-trigram" }
+roaring = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tantivy = { workspace = true }
 
 [dev-dependencies]
+regex = { workspace = true }
 tempfile = { workspace = true }

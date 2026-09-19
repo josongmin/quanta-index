@@ -590,3 +590,78 @@ fn the_provider_and_cache_open_metrics_are_scraped_under_the_openai_profile() ->
     )?;
     Ok(())
 }
+
+/// The regex match cache's tallies reach the scrape and move by exactly
+/// the regex traffic sent (QI-BB-024 보완 #4).
+///
+/// The first regex query builds one match set holding the one document it
+/// matches and keeps it; its repeat is a hit that builds nothing and
+/// leaves the resident bytes where they were; nothing is refused or
+/// evicted.
+#[test]
+fn regex_match_cache_tallies_move_by_exactly_the_regex_traffic() -> TestResult {
+    const REGEX: &str = "patterntype:regexp alph[a-z]";
+    let mut rt = E2eRuntime::boot()?;
+    seed(&mut rt)?;
+    let before = Scrape::take(&mut rt)?;
+    let serve = |rt: &mut E2eRuntime| -> TestResult {
+        let result = rt.query_text(TextQuerySyntax::Sourcegraph, REGEX, 10);
+        if let Some(error) = result.typed_error {
+            return Err(format!("the regex query failed typed: {error:?}").into());
+        }
+        if result.candidate_ids.len() != 1 {
+            return Err(format!("only alpha matches: {:?}", result.candidate_ids).into());
+        }
+        Ok(())
+    };
+
+    serve(&mut rt)?;
+    let first = Scrape::take(&mut rt)?;
+    for (name, expected) in [
+        ("lexical_regex_cache_misses_total", 1),
+        ("lexical_regex_cache_hits_total", 0),
+        ("lexical_regex_match_sets_built_total", 1),
+        ("lexical_regex_match_set_members_built_total", 1),
+        ("lexical_regex_cache_evictions_total", 0),
+        ("lexical_regex_cache_refused_cardinality_total", 0),
+        ("lexical_regex_cache_refused_bytes_total", 0),
+    ] {
+        expect_eq(name, &first.counter_delta(&before, name)?, &expected)?;
+    }
+    if first.counter_delta(&before, "lexical_regex_match_set_bytes_built_total")? == 0 {
+        return Err("a built set occupies bytes".into());
+    }
+    // The seed ran no regex, so the cache held nothing before.
+    expect_eq(
+        "entries before",
+        &before.gauge("lexical_regex_cache_entries")?,
+        &0.0,
+    )?;
+    expect_eq(
+        "entries",
+        &first.gauge("lexical_regex_cache_entries")?,
+        &1.0,
+    )?;
+    let resident = first.gauge("lexical_regex_cache_resident_bytes")?;
+    if resident <= before.gauge("lexical_regex_cache_resident_bytes")? {
+        return Err("the kept set is resident".into());
+    }
+
+    serve(&mut rt)?;
+    let repeat = Scrape::take(&mut rt)?;
+    for (name, expected) in [
+        ("lexical_regex_cache_misses_total", 0),
+        ("lexical_regex_cache_hits_total", 1),
+        ("lexical_regex_match_sets_built_total", 0),
+        ("lexical_regex_match_set_members_built_total", 0),
+        ("lexical_regex_match_set_bytes_built_total", 0),
+    ] {
+        expect_eq(name, &repeat.counter_delta(&first, name)?, &expected)?;
+    }
+    expect_eq(
+        "resident bytes after a hit",
+        &repeat.gauge("lexical_regex_cache_resident_bytes")?,
+        &resident,
+    )?;
+    Ok(())
+}
