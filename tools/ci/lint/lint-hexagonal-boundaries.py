@@ -35,9 +35,22 @@ FORBIDDEN_VENDOR_DEPS = frozenset({"rusqlite", "tantivy", "lancedb", "lance"})
 
 _ADAPTER_CRATE_DEPS = frozenset({"quanta-index-contract", "quanta-index-core"})
 
+# Crates a `[dev-dependencies]` table may name on top of the crate's own
+# allowlist: a test drives a daemon or a corpus through them the way a
+# client does. A `[dependencies]` table still needs its own allowlist entry
+# to name one (the CLI's on the SDK, the benchmark driver's on the harness).
+TEST_SUPPORT_CRATES = frozenset(
+    {
+        "quanta-index-corpus-smoke",
+        "quanta-index-sdk",
+        "quanta-index-searchd-harness",
+    }
+)
+
 ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     "quanta-index-contract-base": frozenset(),
-    "quanta-index-contract": frozenset({"quanta-index-lq-norm"}),
+    # The contract re-exports the base DTOs it is split from.
+    "quanta-index-contract": frozenset({"quanta-index-contract-base", "quanta-index-lq-norm"}),
     "quanta-index-core": frozenset({"quanta-index-contract"}),
     # The lexical adapter also uses the lq-* index primitives and the shared
     # text normalizer (one Unicode contract for index, sidecars and query).
@@ -54,12 +67,19 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     # Embedding adapter: implements core outbound ports from contract DTOs.
     "quanta-index-embed": _ADAPTER_CRATE_DEPS,
     "quanta-index-ipc": _ADAPTER_CRATE_DEPS,
+    # The search plane uses the transport crate for exactly its codec: the
+    # CBOR payload encoding the authority snapshots persist in and the
+    # canonical batch digest idempotency verifies (the wire encoding is the
+    # transport's, and no vendor codec token leaves it). lq-obs is the
+    # metric primitive library the plane's scrape is built from.
     "quanta-index-search-plane": frozenset(
         {
             "quanta-index-contract",
             "quanta-index-core",
+            "quanta-index-ipc",
             "quanta-index-lq-bridge",
             "quanta-index-lq-norm",
+            "quanta-index-lq-obs",
             "quanta-index-lq-regex",
             "quanta-index-lq-text-normalizer",
         }
@@ -76,12 +96,13 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     "quanta-index-lq-trigram": frozenset({"quanta-index-contract"}),
     # LQ positional index (in-progress). Peer of the lq-* family.
     "quanta-index-lq-positions": frozenset({"quanta-index-contract"}),
-    # LQ regex matcher (in-progress). Peer of the lq-* family.
-    "quanta-index-lq-regex": frozenset({"quanta-index-contract"}),
+    # LQ regex matcher: verifies over the trigram family's doc resolver.
+    "quanta-index-lq-regex": frozenset({"quanta-index-contract", "quanta-index-lq-trigram"}),
     # LQ ranker (in-progress). Peer of the lq-* family.
     # LQ runtime (in-progress). Peer of the lq-* family.
     # LQ structural index (in-progress). Peer of the lq-* family.
-    "quanta-index-lq-structural": frozenset({"quanta-index-contract"}),
+    # Structural matching runs its regex predicates through the lq regex.
+    "quanta-index-lq-structural": frozenset({"quanta-index-contract", "quanta-index-lq-regex"}),
     # LQ history index (in-progress). Peer of the lq-* family.
     # RepoMap projection / query store (in-progress). Consumed by searchd.
     "quanta-index-repomap": frozenset({"quanta-index-contract", "quanta-index-core"}),
@@ -106,11 +127,15 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
             "quanta-index-searchd-harness",
         }
     ),
+    # The composition root: the one crate that names concrete adapters,
+    # the embedding provider and the structural matcher included.
     "quanta-index-searchd": frozenset(
         {
             "quanta-index-contract",
             "quanta-index-core",
+            "quanta-index-embed",
             "quanta-index-lexical",
+            "quanta-index-lq-structural",
             "quanta-index-semantic",
             "quanta-index-ipc",
             "quanta-index-repomap",
@@ -153,7 +178,10 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
             "quanta-index-ipc",
         }
     ),
-    "quanta-index-searchctl": frozenset({"quanta-index-contract", "quanta-index-ipc"}),
+    # The operator CLI is a client of the SDK.
+    "quanta-index-searchctl": frozenset(
+        {"quanta-index-contract", "quanta-index-ipc", "quanta-index-sdk"}
+    ),
 }
 
 _ADAPTER_CRATES = frozenset(
@@ -186,22 +214,35 @@ def crate_name(cargo_toml: Path) -> str:
     return name
 
 
-def path_dependencies(cargo_toml: Path) -> set[str]:
+PRODUCTION_SECTIONS = ("dependencies", "build-dependencies")
+DEV_SECTIONS = ("dev-dependencies",)
+
+
+def path_dependencies(
+    cargo_toml: Path,
+    sections: tuple[str, ...] = PRODUCTION_SECTIONS + DEV_SECTIONS,
+) -> set[str]:
+    """The package names of every path dependency in `sections`, as Cargo
+    names them.
+
+    A dependency's package is its table key unless `package = "..."`
+    renames it; the path's directory name is never the authority. (Deriving
+    the name from the path, underscored, once made every internal
+    dependency invisible to the `quanta-index-` allowlist check.)
+    """
     data = tomllib.loads(cargo_toml.read_text(encoding="utf-8"))
     deps: set[str] = set()
-    for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+    for section in sections:
         block = data.get(section, {})
         if not isinstance(block, dict):
             continue
-        for value in block.values():
-            if not isinstance(value, dict):
+        for key, value in block.items():
+            if not isinstance(value, dict) or value.get("path") is None:
                 continue
-            dep_name = value.get("package") or value.get("name")
-            path = value.get("path")
-            if path is not None and isinstance(dep_name, str):
-                deps.add(dep_name)
-            elif path is not None:
-                deps.add(Path(str(path)).name.replace("-", "_"))
+            package = value.get("package", key)
+            if not isinstance(package, str):
+                raise ValueError(f"non-string package name for {key!r} in {cargo_toml}")
+            deps.add(package)
     return deps
 
 
@@ -226,12 +267,21 @@ def check_crate_dependency_matrix() -> list[Violation]:
                 )
                 continue
 
-        for dep in sorted(path_dependencies(cargo_toml)):
+        for dep in sorted(path_dependencies(cargo_toml, PRODUCTION_SECTIONS)):
             if dep.startswith("quanta-index-") and dep not in allowed:
                 violations.append(
                     Violation(
                         cargo_toml,
                         f"{name} must not depend on {dep} (allowed: {sorted(allowed)})",
+                    )
+                )
+        dev_allowed = allowed | TEST_SUPPORT_CRATES
+        for dep in sorted(path_dependencies(cargo_toml, DEV_SECTIONS)):
+            if dep.startswith("quanta-index-") and dep not in dev_allowed and dep != name:
+                violations.append(
+                    Violation(
+                        cargo_toml,
+                        f"{name} must not dev-depend on {dep} (allowed: {sorted(dev_allowed)})",
                     )
                 )
 
