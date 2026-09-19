@@ -2635,6 +2635,157 @@ search-plane `lib.rs`, contract public-api baseline)이 B2와 겹침. 각 file�
 겹치는 4 file만 tag stash → ff-merge → SHA로 apply → 결과가 dry-run merge와 byte 동일·conflict marker 0 확인 → stash drop. 그 세션의 변경은
 그대로 working tree에 남아 있다(커밋하지 않음).
 
+## 3.56 QI-BB-026/029 — 문이 찾은 비활성 손상은 그 generation을 고르는 gate가 소유 adapter의 재증명으로 격리하고, boot는 반쪽 봉인 pair를 이름한다 (wave B3, c8121df)
+
+§4 감사·§3.53 이후 남은 것: QI-BB-026 — (a) 문(gate)이 찾은 비활성 손상의 quarantine 기록 없음(scrub만 receipt를 남김: rollback이 손상된
+predecessor를 만나면 typed 거부만 하고 다음 rollback도 같은 증명을 반복, 목록·discard 대상 아님), (b) semantic active 손상 boot e2e 없음;
+QI-BB-029 — (c) 중간 실패로 남은 half-sealed pair를 boot가 보고하지 않음(orphan 목록에 섞여 pair 결함으로 이름되지 않음).
+
+**설계 결정 — 문은 읽기로 남는다**: 처음엔 문(`open_sealed`/semantic cold open) 안에서 `GENERATION_SIDECAR_CORRUPT`를 곧바로 receipt로
+기록하는 안을 구현했다가 되돌렸다 — query 경로의 read가 durable state를 쓰게 되고, pinned query 하나가 generation을 격리한다. 채택안:
+문은 판정만 하고(쓰기 0), **serve head가 아닌 generation을 고르는 gate(activation·rollback)**가 그 판정을 소유 track의 새 core port
+`DoorFindingQuarantinePort`에 넘긴다. adapter는 caller를 믿지 않는다 — directory lifecycle lock 아래에서 자기 문 증명을 다시 돌려
+(lexical: sealed walk, semantic: 판정을 낼 수 있는 유일한 부분인 sealed manifest layout 증명) **같은 판정일 때만** scrub과 같은
+content-corrupt receipt를 쓴다. 온전하면 `NotReproduced`, 이미 receipt가 있으면 그 entry, identity 불일치·디렉터리 부재·I/O는 오류(기록 0).
+restart(serve head)는 fail-closed — 기록하지 않으므로 bytes 복원 후 다시 boot된다. 
+
+**티켓 완료 기준 대조(코드 기준)**
+
+| 티켓 bullet | 판정 | 근거 |
+| --- | --- | --- |
+| QI-BB-026 보완 #2 비활성 손상은 경로·reason을 quarantine inventory에 기록, 그 generation만 serving/rollback 대상에서 제외 | **MET**(scrub §3.53 + gate 이번) | `ActivationPromotionParts.{lexical,semantic}_door_findings`; `ProofGate { error_code, operation, findings: Quarantine \| FailClosed }` — activation·rollback은 `Quarantine`, restart rehydrate는 `FailClosed`. 거부 코드는 gate의 것 그대로(`ACTIVATION_/ROLLBACK_TARGET_UNOPENABLE`)에 "; quarantined as … at …" / "re-proof admitted …" / "not recorded: …" 부기. `GENERATION_SIDECAR_CORRUPT_CODE`는 core 상수 하나(adapter 사본 2개 삭제), semantic scrub과 재증명은 sealed-directory resolver 하나 공유 |
+| 완료 기준 #1 손상된 비활성 old generation이 있어도 정상 active로 boot/query 성공 + quarantine receipt | **MET** | e2e `a_rollback_that_proves_inactive_damage_quarantines_it`: 3 generation, g1 lexical·g2 semantic 손상 → pinned query는 typed `GENERATION_SIDECAR_CORRUPT`이고 목록 비어 있음(문은 안 씀) → g1·g2 rollback이 각각 typed 거부 + 정확히 그 track만 receipt → 목록이 정확히 두 entry(ContentCorrupt, 경로) → bytes 복원해도 rollback·pinned query는 `GENERATION_QUARANTINED` → active pair 불변(status의 두 track·content roots) → reboot 성공, boot report가 두 entry 나열 → 목록대로 discard |
+| 완료 기준 #2 손상된 active는 socket bind 전 typed 실패 | **MET(양 track)** | lexical e2e에 "기록 0" 확인 추가(bytes 복원 → 같은 active로 boot·serve), 새 e2e `damage_to_the_active_semantic_generation_refuses_to_boot_and_records_nothing`(`ACTIVATION_TARGET_UNOPENABLE`+`GENERATION_SIDECAR_CORRUPT`+`track=Semantic`+manifest 이름, boot inventory 없음, 복원 후 boot·serve·목록 비어 있음) |
+| QI-BB-029 보완 #4 half-sealed pair를 exact receipt에 따라 quarantine/repair | **MET**(repair §3.50 + boot 보고 이번) | boot inventory가 pair generation별 sealed 디렉터리를 보존, `half_sealed_pairs`: **orphan이면서 다른 track에 sealed 디렉터리가 없는** generation. `BootInventoryReportV1.half_sealed_pairs`, gauge `boot_half_sealed_pairs`, boot log 한 줄(두 repair: 그 generation의 ReplaceGeneration seal batch, 또는 목록의 orphan을 `quarantine discard`) |
+
+**tests**: adapter(lexical·semantic 각 1, 두 손상 종류 — decoded sidecar와 segment/dataset 파일): 문은 거부하고 쓰지 않음(복원하면 inventory가
+sealed로 나열·admit), 재증명은 온전하면 `NotReproduced`, 다른 identity 거부, 손상은 receipt → 모든 문 `GENERATION_QUARANTINED`(복원 후에도),
+재질의는 같은 entry, discard로 제거. lifecycle unit 3: track별 content 판정이 activation·rollback에서 그 track port에만 감(다른 track 0),
+restart와 non-content 거부(missing·이미 quarantined)는 어느 port도 부르지 않음, 기록 안 된 경우의 부기 문구. boot unit: retained(한쪽 사라짐
+포함)·whole orphan·한쪽 orphan 조합에서 half-sealed 집합 + notice 문구. e2e: 위 3건 + `a_generation_sealed_on_one_track_only_is_named_at_boot`
+(멈춘 daemon의 state root에 lexical adapter로 g7 lexical만 seal → report·gauge 1·목록 orphan → discard → reboot 후 0), metrics 닫힌 집합에
+`boot_half_sealed_pairs` 추가.
+
+**검증**: §3.62 끝의 chain 검증.
+
+## 3.57 QI-BB-031 — query vector도 generation의 normalization 계약을 받고, 혼합 cache batch는 uncached batch와 bit 단위로 같으며, wrapper가 raw norm drift를 보고한다 (wave B4, 1d56a71)
+
+§4 감사가 지적한 것: "adapter 경계 validator가 norm 무관(상류 의존); 혼합 batch 값 동일성·artifact 미증명". 코드로 확인: ingest row는
+§3.15부터 batch 계약(`validate_embedding_vector_v1`)을 받았지만 **query 쪽 문은** `SemanticPolicy::validate_query_vector`(finite·nonzero만)였고,
+finding이 지적한 `[1.0, 0.0, 2.0]` valid pin test가 그대로 남아 있었다.
+
+**티켓 완료 기준 대조(코드 기준)**
+
+| 티켓 bullet | 판정 | 근거 |
+| --- | --- | --- |
+| 완료 기준 #1 norm 0·NaN/Inf·0.5·2.0 fake provider에서 corpus/query 동일 동작 | **MET** | provider 경계는 §3.15(같은 wrapper). adapter 경계: open이 봉인 normalization을 읽고(`SemanticManifest::normalization_contract`, 이 adapter가 쓰지 않는 token은 validation에서 거부 — "none"으로 읽지 않음) loaded generation의 `validate_query_vector` 하나가 모든 query 입구(search·hits·scoped·score)를 dimension(`SEM_DIM_MISMATCH`) → `validate_embedding_vector_v1`(row가 받은 바로 그 validator, `SEM_INVALID_VECTOR`)로. norm-blind validator와 호출 9곳 삭제. test `query_vectors_are_held_to_the_generations_normalization`: 같은 5 vector를 query(3 입구)와 ingest row 양쪽에서 같은 코드로 거부 |
+| 완료 기준 #2 `L2Unit` generation의 모든 persisted row가 tolerance 안 + manifest policy 일치 | **MET** | test `every_persisted_row_of_an_l2_unit_generation_is_unit`: 모든 scale의 방향 40 row를 봉인 후 dataset을 library로 직접 읽어(adapter 우회) 전부 `|norm-1| ≤ 1e-3`, scope manifest 자기 bytes의 `normalization == "l2_unit"` |
+| 완료 기준 #3 cache hit/fresh miss 혼합 batch 동일 결과 | **MET**(값) + artifact는 §3.58 | test `a_mixed_hit_and_miss_batch_is_the_uncached_batch_bit_for_bit`: production 형태(cache ∘ L2Unit ∘ raw)에 2 text warm 후 hit·miss·반복 혼합 batch가 uncached wrapper 결과와 `to_bits` 동일, provider에는 miss 2개만, 모든 vector가 unit — memory와 file cache(디스크 왕복) 둘 다 |
+| 보완 #4 모든 ingest vector streaming validation + norm deviation metric | **MET** | streaming validation은 §3.15(`validate_replace_scope` 전 row). `L2UnitEmbeddingProvider`가 반환한 batch의 raw vector마다 normalized·off-unit(tolerance 밖)·최대 `|norm-1|`을 집계(거부한 batch는 0 기록), composition root가 OpenAI profile에서 scrape에 등록: `semantic_embedding_raw_vectors_{normalized,off_unit}_total`, gauge `semantic_embedding_raw_norm_deviation_max`. test(집계·최대 유지·거부 batch 무기록) + e2e scrape가 boot부터 세 point 존재 |
+
+L2Unit generation을 non-unit 방향으로 query하던 fixture 5곳은 같은 방향의 unit 벡터로 교정(순위 불변 — cosine은 크기 불변).
+
+## 3.58 QI-BB-027 완료 기준 #3 + QI-BB-031 보완 #3 — ANN rail이 recall@k·latency·build time·index bytes·normalization policy를 current-HEAD artifact로 쓴다 (wave B5, 9027b73)
+
+seal-time recall gate(§3.23)는 수치를 stdout에만 남겼다. `ann` rail(`harness::ann`, bin `ann_matrix`, `just rust-verify-quality-ann`)이 gate와
+같은 tier — 같은 xorshift walk의 64차원 unit 방향 4,096개 — 를 semantic adapter의 production build·seal·open으로 private state root에 봉인하고,
+64개 이웃 질의(절반은 row 근처, 절반은 새 방향)를 라이브러리 없이 계산한 전수 cosine oracle과 대조해 `artifacts/search-quality/ann/latest/summary.json`에
+쓴다: `BenchArtifactV1` envelope 하나(정확한 head, corpus·config digest, host, peak RSS, build phase, p50/p95/p99 row)와 `detail`에 recall@k 대
+floor, 반환 score가 모두 정확한 cosine인지, short page 수, open이 증명한 dense lane(index 종류·partition·effort·lineage·segment), index·generation
+bytes, row와 query가 받은 normalization policy(QI-BB-031 #3). recall < 0.95·부정확 score·short page는 artifact를 쓴 뒤 rail을 실패시킨다.
+`check-bench-artifacts.py`가 `ann` family를 다른 fresh family처럼 HEAD에 묶는다. harness의 semantic adapter 의존은 hexagonal allowlist에 이유와
+함께 등록. seal-time gate test는 floor와 정확 score를 유지하고 stdout 측정 줄은 삭제(수치는 rail 소유).
+
+| 티켓 bullet | 판정 | 근거 |
+| --- | --- | --- |
+| QI-BB-027 완료 기준 #3 recall@k·p95/p99·build time·index bytes를 current HEAD artifact로 | **MET** | 실측(HEAD `f77c42bf3d3a`, debug build, 부하 공유 host): 4,096 row × 64차원, 질의 64: recall@10 **0.9859**(floor 0.95), latency p50 **26.0 ms** / p95 **85.3 ms** / p99 **117.3 ms**, build **62.8 s**, index **1,162,713 B**(generation 10,490,493 B), 정확 score, short page 0, peak RSS 163 MB, dense lane `ivf_hnsw_sq`(partition 1, m 20, ef_construction 300), normalization `l2_unit`; `check-bench-artifacts.py` "1 artifact attributed to HEAD". artifact의 `route_family`는 relevance rail과 같은 관례(결과 shape = chunk candidate), engine은 `engine_touched = [semantic, dense]` |
+| QI-BB-031 보완 #3 artifact에 normalization policy | **MET** | `detail.normalization = "l2_unit"`, 모든 row·query가 그 policy로 검증됨 |
+
+tests: walk는 결정적·unit; oracle은 cosine 순위·id tie-break; 300-row tier(index floor 위)가 ANN index를 거쳐 정확 score·full page·질의당 latency
+하나·`l2_unit` policy, artifact는 schema 2·family·build phase·모든 latency key·sha256 digest.
+
+## 3.59 QI-BB-025 — 공개 최대값에서 10,001 row 위의 continuation을 end-to-end로, 그리고 approximate page는 scope가 더 가졌는데 짧아지지 않는다 (wave B6, 01c5a4c)
+
+남은 것이었던 `has_more=true` 분기(10,001+ row fixture) e2e를 만들자 **실제 결함**이 드러났다: 10,001 row에서 `top_k = 10_000`(probe fetch
+10,001)의 semantic route가 **9,695 row**와 "더 없음" window를 반환했다. 봉인 effort(`ef = 40,000`)로도 approximate lane의 graph walk가 모든
+row에 닿지 못했고, 짧은 답을 scope 전체로 읽었다(window가 거짓).
+
+**수정**: semantic adapter의 모든 dense query는 `min(top_k, scope의 row 수)` row를 반환한다. approximate pass가 요청보다 적게 돌려주면 같은
+prefilter의 scope 자신의 수(`count_rows`)로 판정하고, scope가 더 가졌으면 exact lane — index가 근사하는 권위 있는 답 — 이 같은 query에 답한다.
+count와 exact pass도 첫 pass처럼 request budget 아래에서 돌고, completion마다 `semantic_dense_exact_completions_total`. harness:
+`boot_with_client_request_timeout`(모든 send가 runtime의 client policy), `with_history_max_bytes`(retention byte cap이 literal이었음).
+
+| 티켓 bullet | 판정 | 근거 |
+| --- | --- | --- |
+| 완료 기준 #3 허용 최대값에서 `returned <= top_k`와 `has_more/candidate_count` invariant | **MET(has_more 분기 포함)** | e2e `the_public_maximum_reports_the_continuation_over_ten_thousand_and_one_rows`: 11 file 10,001 needle row, lexical·semantic route가 `top_k = 10_000`에서 각각 정확히 10,000 row + "더 있음" window(자기모순 없음), lexical cursor walk가 같은 `top_k`로 2 page에 10,001 row를 정확히 한 번씩, 마지막 page는 has_more=false·cursor 없음. 수정 전 semantic 절반이 9,695 row로 fail. adapter test `an_approximate_page_is_never_short_while_the_scope_holds_more`(600 row index, top_k 1–1,000 모두 `min(top_k,600)` distinct, 50-row allowlist는 top_k와 무관하게 정확히 50) |
+
+**비용**: debug build(의존성 opt-level 0)에서 이 e2e는 ~2분(ingest 10,001 record + 10,001-row index seal). 측정 없이 줄이지 않았다 — lexical·semantic의
+internal fetch 10,001이 daemon 끝까지 동작함을 증명하는 것이 이 항목의 목적.
+
+## 3.60 QI-BB-020 — history text의 cold open은 ledger lock 밖에서, durable 뒤의 discard 실패는 아무것도 실패시키지 않고 다시 발견된다 (wave B7, d49ce40)
+
+§4 감사가 남긴 것: (a) history-text cold open이 **ledger read lock 아래에서, 모든 repo 공통의 registry mutex 하나로 직렬화**돼 돌았다(모든
+writer와 다른 epoch의 open이 뒤에서 대기), (b) history delta나 seal이 durable한 뒤의 discard 실패가 그 mutation의 receipt를 error로
+만들었다(완료 기준 #4 "성공 receipt와 durable state 일치" 위반), (c) forget된 generation의 text index discard가 실패하면 다시 찾을 방법이
+없어 **영구 누수**(seal 경로는 이번 pass에 reap한 generation만 봤다).
+
+| 티켓 bullet | 판정 | 근거 |
+| --- | --- | --- |
+| 보완 #2 query scan/text matching과 disk I/O는 global lock 밖 | **MET(history text open 포함)** | read view가 guard 아래에서 `HistoryTextClaim`(map lookup: handle 발견 / 진행 중 open 합류 / open 예약)만 잡고 guard 해제 후 lexical·semantic acquire 옆에서 land — open은 어떤 lock 아래서도 돌지 않고, 같은 epoch의 동시 claim은 그 open 하나를 공유, 대기자는 자기 budget 아래. open 진행 중 epoch retire는 보유 handle과 똑같이 discard를 defer하므로 lock이 막던 prune→discard race는 계속 닫혀 있다. flight와 budget-sliced wait는 snapshot registry의 것을 `single_flight`로 들어 두 registry가 공유(mirror 없음) |
+| 완료 기준 #4 각 failure point에서 성공 receipt와 durable state 일치 | **MET(history text GC 지점)**; sealed physical reclaim·auxiliary reap은 §3.61(B9) | history delta의 reconcile과 seal의 forgotten-generation discard가 `reconcile_after_durable`/`sweep_forgotten_after_durable`로 정산: receipt는 durable mutation에 답하고 실패한 discard는 `history_text_gc_failures_total`(scrape 등록)로 세고 다음 pass가 찾게 남긴다. seal은 이제 **disk에서 sweep** — 새 `HistoryTextIndexPort::durable_generations`가 pair의 index generation을 나열하고, sealed generation보다 오래됐고 ledger가 더 이상 모르는 것을 전부 discard. 동일 패턴의 남은 지점: search-corpus sealed physical reclaim(`reclaim_retired_generations_v1`)의 I/O 실패는 여전히 seal receipt 경로의 error(재시도 수렴) — 다음 wave의 named follow-up |
+| 보완 #1/#3/#5, 완료 기준 #1–#3 | 기존(§3.19/§3.37/§3.49) + 완료 기준 #1 latency 실측 **BLOCKED(host)** | |
+
+**부수 정리**: `GenerationStorageKeyV1::generation_of_dir_name`이 canonical `g<N>` parser 하나(lexical·semantic inventory의 복사본 제거).
+
+**tests**: registry unit 4(claim은 아무것도 열지 않음; epoch 1 open을 멈춰 둔 채 epoch 2가 claim·land — registry가 open 동안 lock을 쥐었다면
+영원히 막힘 — 대기자는 그 open 하나를 공유, land된 handle은 resident; open 중 retire는 handle 해제까지 discard defer; 실패한 open은 모든 대기자에게
+값으로, 보존 안 됨; 만료 budget 대기자는 typed interruption), history route(epoch 1을 prune하는 discard 실패 → 모든 receipt 성공·실패 1 계수·
+미보존 index가 disk에 남음 → 다음 mutation이 제거, durable == retained), seal(ledger가 모르던 stale index와 forget된 generation index를 sweep,
+주입 실패는 계수 후 다음 seal이 재시도), adapter(pair의 generation 오름차순·다른 pair 제외·discard 후 빠짐·`g07` 같은 non-canonical 항목 typed 거부).
+
+## 3.61 QI-BB-020 완료 기준 #4 — seal의 reap은 chunk와 한 catalog transaction, durable seal 뒤 storage가 실패시킨 GC 단계는 다음 pass로, refusal은 fail-closed (wave B9, c0cad48)
+
+B7이 history text index를 고친 뒤에도 durable seal이 error로 응답되는 지점이 둘 남아 있었다.
+
+1. **auxiliary reap이 두 번째 write였다.** ledger에서 retired generation을 forget한 뒤 catalog `forget_generation`을 별도로 호출했다 — 실패하면
+   ledger는 이미 진행됐는데 seal은 error, catalog row는 restart 전까지 아무도 재시도하지 않았다. 이제 reap은
+   `AuxiliaryRowMutationV1::ForgetGeneration`으로 sealed generation의 chunk universe와 **같은 transaction**에 들어간다(보완 #4
+   "transactionally prune"): 대상 집합은 모든 auxiliary mutation을 직렬화하는 coordinator 아래에서 읽고, chunk와 함께 commit한 뒤에만 ledger에
+   반영한다. transaction 실패 = catalog·ledger 둘 다 불변, forget은 idempotent라 retry가 수렴한다. port의 `forget_generation`은 삭제(단일 write
+   경로). retention receipt 없는 sealed batch의 거절은 모든 durable write 앞으로 이동.
+2. **physical reclaim pass가 listing·reclaim·idempotency forget 실패를 `?`로 전파했다.** pass는 이전 pass가 아니라 disk와 catalog에서 일을 도출하므로
+   storage가 실패시킨 단계가 남긴 것은 다음 pass가 다시 찾는다. 각 storage 실패는 receipt에 typed `DeferredGcStep`(ListSealed / Reclaim / ListRecords /
+   ForgetRecords)으로 기록되고 `search_corpus_gc_failures_total`로 계수되며 seal은 유효. record forget은 부분 증거로 동작한다 — listing된 한 track에
+   없으면 broken이 증명되고, listing 못 한 track은 아무것도 증명하지 못하므로 listing된 모든 track이 보유한 generation의 record는 양 track을 listing하는
+   pass까지 대기.
+**미루는 것은 storage 실패뿐**(`post_durable::defer_storage_failure`, `CoreError`의 exhaustive match 하나): refusal은 disk 상태에 대한 finding —
+경로와 모순되는 sealed identity(§3.49), generation이 아닌 index 항목 — 이고 retry는 같은 것을 다시 찾을 뿐이므로 seal을 fail-closed로 실패시킨다(기존
+설계 유지; 게이트 e2e `a_directory_whose_identity_contradicts_its_path_fails_closed`가 첫 구현의 전면 유예를 잡아냈다). B7의 history text GC도 같은
+규칙으로 정산 — listing·discard refusal은 계수 대신 fail-closed. process 상태(poisoned snapshot registry, settle하지 못하는 fence)도 fail-closed.
+
+tests: catalog transaction이 실패한 seal → catalog·ledger 불변(3 잔류, 5의 chunk 없음), retry가 한 transaction으로 3 reap + 5 land; SQLite에서
+`ForgetGeneration`이 newer generation row와 같은 batch에서 정확히 자기 generation row만(domain 횡단, receipt 계수 정확) 지우고, 쓸 수 없는 batch 안에서는
+아무것도 지우지 않음; 1–4 보유·record 1–3인 track에서 매 pass 4를 seal(3·4 retain)하는 4-pass test가 모든 deferred 단계를 덮음 — reclaim 실패 +
+listing 불가 track(listed track이 broken을 증명한 generation만 record 삭제) → record forget 실패 → record listing 실패 → clean pass가 잔여 처리,
+counter는 2, 1, 1, 0씩 증가; reclaim pass가 만난 refusal(경로와 모순되는 identity로 listing 거부)은 그 code로 pass를 실패시키고 reclaim·forget·계수 0; history text listing refusal도 seal을 같은 방식으로 실패시키고 discard 0. physical-GC e2e가 모순 디렉터리를 end-to-end로 계속 증명하고 clean pass 뒤 counter 0을 명시.
+
+## 3.62 V1 접미사 제거 (f77c42b)
+
+B2–B7이 새로 만든 타입 14개가 `V1` 접미사를 달고 있었다 — 저장소는 하나의 live surface를 제자리에서 진화시키므로 접미사는 존재하지 않을 두 번째 shape을
+약속한다. B3–B7의 9개(`DoorFindingOutcome`, `RawNormTallies`, `ScriptedFinding`, `HistoryTextClaim`, `AnnRailConfig`, `AnnReport`,
+`SealedGenerationKey`, `SealedDirectory`, `HalfSealedPair`)는 landing 전이라 각 커밋 tree에서 직접 개명(커밋별 diff는 이름 외 동일, 공백·trailing
+comma 무시 비교로 20개 파일 전수 증명), B2의 5개(`LexicalCursor`, `LexicalRowOrderKey`, `LexicalPageSpec`, `ManualPage`, `ResponsePayloadBudget`)는
+별도 커밋. 바뀐 것은 이름뿐 — cursor serde impl이 넘기는 struct 이름도 바뀌었으나 frame codec(ciborium 0.2.2)은 그 이름을 버리고 CBOR map을 쓰므로
+cursor byte·frame은 동일. contract·SDK public-api baseline과 core module-tree snapshot이 함께 이동.
+
+**B3–B9 + §3.62 chain 검증(coordinator, c3a4ba0 위, 순차)**: fmt, check, 정책 lint 8종 + bench gate + CI pytest, workspace clippy keep-going 0(게이트가 잡은
+체인 고유 finding — clippy: B4·B7 doc 문단 각 1, B5 `ann.rs` 5(수동 `is_multiple_of`, 0으로 나눌 수 있던 `%` → `checked_rem`, redundant clone,
+doc 문단 2; 무음 기본값이던 `map_or(0.0)`도 정확한 byte 추출로 교체), B9 4(unused import, guard 조기 drop, 복잡 type, redundant clone); rustdoc: B6·B9
+public doc의 private link 각 1; fmt: B9 1 → 모두 수정), cargo-modules + public-api 일치(갱신 baseline 포함),
+`just rust-doc`, unit 11 crate **1,495/0**, searchd-runtime e2e **293/0**. 첫 e2e 실행이 B9의 결함 1건을 잡았다 —
+`a_directory_whose_identity_contradicts_its_path_fails_closed`: 모든 listing 실패를 유예하던 첫 구현이 경로와 모순되는 identity(무결성 finding)까지
+삼켰다 → storage 실패만 유예하고 refusal은 fail-closed로 분류(§3.61), 두 refusal test 추가 후 재게이트.
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -2666,18 +2817,18 @@ search-plane `lib.rs`, contract public-api baseline)이 B2와 겹침. 각 file�
 | QI-BB-017 | P1 | §3.14/§3.48/§3.49/§3.53 | gaps → **MET(A3+A2+A4)** 단 10M row budget·RSS **BLOCKED(host)** | 두 track 문은 layout만(semantic dataset byte 0), 한 scrub port가 두 track을 maintenance timer에서 bounded·resumable로(receipt·quarantine·retire), scrub과 디렉터리 제거 직렬화, legacy v2–v8 삭제(§3.53) | — |
 | QI-BB-018 | P2 | §3.22/§3.36/§3.46/§3.52 | **MET(A1+A8)** 단 judged corpus **BLOCKED(M4)** | dense lane filter 결속(§3.46), SDK `HybridQueryBuilder` + `searchctl hybrid` + 문서 동일 표현(§3.52) | — |
 | QI-BB-019 | P2 | §3.21/§3.52 | **MET(A8)** | `dense_corpora` doc: empty = generation 전체 한 lane, 두 모양 canonical, migration window 없음(§3.52) | — |
-| QI-BB-020 | P1 | §3.19/§3.37/§3.49 | gaps(**WRONG**) → **activation guard 밖 증명 MET(A2)** | activation은 짧은 read guard + guard 밖 한 번의 proven open + durable 재확인 후 CAS(§3.49). 남은 것: history-text cold open under lock, reconcile-fail-after-durable, I/O fault injection, latency 실측(host) | wave B |
+| QI-BB-020 | P1 | §3.19/§3.37/§3.49/§3.60/§3.61 | gaps(**WRONG**) → **보완 #2·#4·완료 기준 #4 MET(A2, B7 d49ce40, B9 c0cad48)** 단 완료 기준 #1 latency 실측 **BLOCKED(host)** | activation은 guard 밖 한 번의 proven open(§3.49); history-text cold open은 어떤 lock 아래서도 돌지 않고(claim → guard 해제 → land, 같은 epoch는 single-flight, §3.60); durable 뒤 GC는 storage 실패를 계수해 다음 pass가 disk·catalog에서 재발견하고 refusal은 fail-closed(§3.60/§3.61); seal의 auxiliary reap은 sealed generation의 chunk universe와 한 catalog transaction(§3.61) | — |
 | QI-BB-021 | P2 | §3.18/§3.41/§3.51 | gaps → **envelope 선언 MET(A7)**, RSS 실측 **BLOCKED(host)** | stream window가 process envelope의 한 성분(§3.51) | — |
 | QI-BB-022 | P2 | §3.24/§3.36/§3.52 | gaps(**WRONG**) → **MET(A8)** 단 보완 #1/#4(저장된 provenance ID·retention) **미구현(설계 선택)** | hybrid explain이 route 자신의 filter plan·dense admission·RRF로 index 대비 재도출·대조, 합성 규칙 문서화, dense presence exact(§3.52) | — |
 | QI-BB-023 | P2 | §3.20/§3.37/§3.42/§3.47 | gaps → **predicate 동일·score 결정성 MET(A6)** | ~~두 order가 filter를 다른 의미로~~ → 한 predicate(e2e 8 query × 2 order 동일); ~~score가 ingest 이력 의존~~ → publish compaction으로 live-row 통계(bit-identical test). 남은 것: author/committer 색인(보완 #1, §3.42(b) 결정), latency/RSS budget(host) | — |
 | QI-BB-024 | P2 | §3.17/§3.54 | gaps → **MET(B1)** 단 1M doc RSS 실측 **BLOCKED(host)** | match set = text-authority doc id roaring bitmap(`Arc` 공유), 모든 파생 제한(regex·phrase·raw·owner·contributor·content scope)이 bitmap query 하나(lookup/scan 선택, member당 할당 0), byte-weighted O(log n) LRU, build 통계 scrape, 1M×128 cap·보유 set 생존 test(§3.54) | — |
-| QI-BB-025 | P1 | §3.5/§3.30/§3.39/§3.52 | gaps → **한 코드 MET(A8+coordinator)** | SDK·encoder·dispatcher가 같은 validator, raw bytes도 같은 코드의 typed 응답(모든 route e2e), 최대값에서 window 무모순 e2e(§3.52). 남은 것: `has_more=true` 분기(10,001+ row fixture) e2e | — |
-| QI-BB-026 | P1 | §3.13/§3.31/§3.53 | gaps | scrub이 찾은 content 손상은 durable quarantine receipt·list·모든 문 거부로 rollback에서 제외(§3.53). 남은 것: 문(gate)이 찾은 비활성 손상의 quarantine 기록, semantic active 손상 boot e2e, HalfSealedPair boot 보고(QI-BB-029) | wave B |
-| QI-BB-027 | P2 | §3.23/§3.35/§3.53 | gaps(**WRONG**) → **legacy·segment 정직성 MET(A4)** | ~~legacy ≤v8 silent exact fallback~~ → 형식 하나, 나머지 typed 거부·`FORMAT_UNSUPPORTED` 격리; append segment 실제 build 파라미터 기록·거짓 주장 거부(§3.53). 남은 것: recall@k·p95/p99·build time·index bytes의 HEAD artifact(완료 기준 #3) | wave B |
+| QI-BB-025 | P1 | §3.5/§3.30/§3.39/§3.52/§3.59 | gaps → **MET(A8+coordinator, B6 01c5a4c)** | SDK·encoder·dispatcher가 같은 validator, raw bytes도 같은 코드(§3.52); 공개 최대값에서 10,001-row `has_more=true` 분기 e2e(§3.59) — 이 e2e가 semantic approximate page가 scope보다 짧아지는(9,695 row) 실제 결함을 드러냈고, scope가 더 가졌으면 exact lane이 완성 | — |
+| QI-BB-026 | P1 | §3.13/§3.31/§3.53/§3.56 | gaps → **MET(A4, B3 c8121df)** | scrub이 찾은 손상(§3.53) + 문이 찾은 비활성 손상은 그 generation을 고르는 gate(activation·rollback)가 소유 adapter의 재증명으로 격리(문은 읽기로 남음, restart는 fail-closed); semantic active 손상 boot e2e(§3.56) | — |
+| QI-BB-027 | P2 | §3.23/§3.35/§3.53/§3.58 | gaps(**WRONG**) → **MET(A4, B5 9027b73)** | 형식 하나·segment 실제 build 파라미터(§3.53); recall@k·p95/p99·build time·index bytes를 current-HEAD artifact로(§3.58, 실측 기록) | — |
 | QI-BB-028 | P1 | §3.15/§3.53 | gaps → **MET(A4+coordinator)** | activation identity·sealed receipt·status가 row/membership root를 싣고, activation·rollback·restart가 proven open 안에서 대조, 불일치는 `SEMANTIC_ROW_ROOT_MISMATCH`로 승격 0(§3.53) | — |
-| QI-BB-029 | P1 | §3.11/§3.50 | gaps(**WRONG**) → **MET(A5, 0917d82)** 단 adapter 내부 crash failpoint **BLOCKED**, boot `HalfSealedPair` 보고는 B3 | validate→intent 순서, raw IPC 7 + SDK fault matrix(SQLite·state-root oracle), corrupt half pair typed repair(§3.50) | B3 |
+| QI-BB-029 | P1 | §3.11/§3.50/§3.56 | gaps(**WRONG**) → **MET(A5 0917d82, B3 c8121df)** 단 adapter 내부 crash failpoint **BLOCKED** | validate→intent 순서, raw IPC 7 + SDK fault matrix, corrupt half pair typed repair(§3.50); boot가 half-sealed pair를 report·gauge·log 한 줄로 이름(§3.56) | — |
 | QI-BB-030 | P1 | §3.10/§3.48/§3.49 | **closed(A3 f0cf9c9 + A2 87d4450)** | manifest v4가 overlay·segment·text-authority 전부 commit, sealed generation 불변, 문 세 개(validator/open/proven open) 한 walk; activation 후 재open 없음(§3.49) | — |
-| QI-BB-031 | P2 | §3.15 | gaps | adapter 경계 validator가 norm 무관(상류 의존); 혼합 batch 값 동일성·artifact 미증명 — A4 배정이었으나 미착수(§3.53) | wave B |
+| QI-BB-031 | P2 | §3.15/§3.57/§3.58 | gaps → **MET(B4 1d56a71, B5 9027b73)** | query vector도 generation의 normalization 계약(`SEM_INVALID_VECTOR`); `L2Unit` generation의 모든 persisted row가 unit; cache hit/miss 혼합 batch = uncached batch bit 단위; raw norm drift metric(§3.57); artifact에 normalization policy(§3.58) | — |
 | QI-BB-032 | P2 | §3.16/§3.50 | gaps(**WRONG**) → **MET(A5)** 단 unsealed apply→finalize crash 창 재embed **BLOCKED**(track format) | canonical body digest + `BATCH_DIGEST_MISMATCH`, pair-bound record forget(pin 분리·never-sealed 포함), 1/8/32 동시 중복 1 apply(§3.50) | — |
 
 **§3.x 과장 정정(감사가 지적, 이 table이 우선)**: §3.7 "typed 실패 공유"(coalesced는 `ERR_INTERNAL`), §3.9 "어떤 query도 pin 못 함"·"receipt에 싣는다",
