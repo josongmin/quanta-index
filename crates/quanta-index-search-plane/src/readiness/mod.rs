@@ -77,12 +77,18 @@ pub(crate) use errors::{
 pub(crate) use errors::{
     ERR_RUNTIME_CATALOG_CHUNK_UNIVERSE_UNAVAILABLE, ERR_SEARCH_TRACK_GENERATION_NOT_SEALED,
 };
-pub(crate) use history_state::{HistoryStateMeta, history_diff_search_text};
+pub(crate) use history_state::{
+    HistoryDelta, HistoryStateMeta, RefChange, history_diff_search_text,
+};
 pub(crate) use pair_digest::{SEARCH_CORPUS_LOCK_STRIPES_V1, search_corpus_lock_stripe_v1};
 pub(crate) use runtime_state::{
-    RuntimeStateMeta, enforce_runtime_catalog_batch_order, validate_runtime_catalog_doc_ids,
+    RuntimeCatalogDelta, RuntimeDirtyDelta, RuntimeStateMeta, enforce_runtime_catalog_batch_order,
+    validate_runtime_catalog_doc_ids,
 };
-pub(crate) use structural_state::{StructuralStateMeta, verify_parse_tree_against_chunk_map};
+pub(crate) use structural_state::{
+    StructuralChunksDelta, StructuralStateMeta, StructuralTreesDelta,
+    verify_parse_tree_against_chunk_map,
+};
 pub(crate) use track_state::TrackAuthorityState;
 
 #[cfg(test)]

@@ -9,13 +9,13 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use imbl::OrdMap;
+use quanta_index_contract::AuxEpochV1;
 use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord};
-use quanta_index_core::CoreError;
+use quanta_index_core::{AuxiliaryGenerationKeyV1, CoreError};
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
-use crate::auxiliary_authority::{HistoryDelta, RefChange};
 use crate::readiness::keys::AuthorityKey;
 use crate::readiness::serde_support::impl_struct_serde;
 
@@ -267,3 +267,25 @@ impl_struct_serde!(HistoryDiffKey {
 impl_struct_serde!(HistoryAuthoritySnapshot {
     entries: BTreeMap<AuthorityKey, HistoryAuthorityState>,
 });
+
+/// One ref or tag change.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RefChange {
+    Upsert(Box<str>, CommitSha),
+    Delete(Box<str>),
+}
+
+/// What one history batch changes, validated against the state it will
+/// apply to.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct HistoryDelta {
+    pub(crate) generation: AuxiliaryGenerationKeyV1,
+    /// The epoch the snapshot after this delta has.
+    pub(crate) epoch: AuxEpochV1,
+    pub(crate) commits: Vec<CommitRecord>,
+    pub(crate) refs: Vec<RefChange>,
+    pub(crate) tags: Vec<RefChange>,
+    pub(crate) diff_hunks: Vec<(HistoryDiffKey, DiffHunkRecord)>,
+    /// The materialization flags after the batch.
+    pub(crate) meta: HistoryStateMeta,
+}

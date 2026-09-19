@@ -26,10 +26,10 @@ use std::collections::BTreeSet;
 
 use imbl::OrdMap;
 use quanta_index_contract::{
-    AuxEpochV1, ChunkId, ChunkRecord, DirtyIngestBatch, DirtyMutation, HistoryIngestBatch,
-    HistoryRefMutation, ManifestGeneration, RepoId, RevisionId, RuntimeCatalogIngestBatch,
-    SearchCorpusIngestBatch, SearchPlaneTrackKind, SearchScopeSurface, StructuralIngestBatch,
-    lex::{CommitRecord, CommitSha, DiffHunkRecord, ParseTreeRecord},
+    AuxEpochV1, ChunkId, DirtyIngestBatch, DirtyMutation, HistoryIngestBatch, HistoryRefMutation,
+    ManifestGeneration, RepoId, RevisionId, RuntimeCatalogIngestBatch, SearchCorpusIngestBatch,
+    SearchPlaneTrackKind, SearchScopeSurface, StructuralIngestBatch,
+    lex::{CommitRecord, CommitSha, DiffHunkRecord},
 };
 use quanta_index_core::{
     AuxiliaryDomainV1, AuxiliaryGenerationKeyV1, AuxiliaryMutationBatchV1, AuxiliaryRowFamilyV1,
@@ -40,8 +40,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::readiness::{
     AuxDomainState, ChangedDocState, DirtyDocState, DocFacetState, HistoryAuthorityState,
-    HistoryDiffKey, HistoryStateMeta, Ledger, RuntimeMetadataState, RuntimeStateMeta,
-    StructuralAuthorityState, StructuralStateMeta, TrackAuthorityState,
+    HistoryDelta, HistoryDiffKey, HistoryStateMeta, Ledger, RefChange, RuntimeCatalogDelta,
+    RuntimeDirtyDelta, RuntimeMetadataState, RuntimeStateMeta, StructuralAuthorityState,
+    StructuralChunksDelta, StructuralStateMeta, StructuralTreesDelta, TrackAuthorityState,
     enforce_runtime_catalog_batch_order, validate_runtime_catalog_doc_ids,
     verify_parse_tree_against_chunk_map,
 };
@@ -182,96 +183,6 @@ fn utf8_key<'a>(label: &str, bytes: &'a [u8]) -> Result<&'a str, CoreError> {
             "auxiliary authority: {label} row key is not UTF-8: {err}"
         ))
     })
-}
-
-// ---------------------------------------------------------------------------
-// Deltas
-// ---------------------------------------------------------------------------
-
-/// One ref or tag change.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum RefChange {
-    Upsert(Box<str>, CommitSha),
-    Delete(Box<str>),
-}
-
-/// What one history batch changes, validated against the state it will
-/// apply to.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct HistoryDelta {
-    pub(crate) generation: AuxiliaryGenerationKeyV1,
-    /// The epoch the snapshot after this delta has.
-    pub(crate) epoch: AuxEpochV1,
-    pub(crate) commits: Vec<CommitRecord>,
-    pub(crate) refs: Vec<RefChange>,
-    pub(crate) tags: Vec<RefChange>,
-    pub(crate) diff_hunks: Vec<(HistoryDiffKey, DiffHunkRecord)>,
-    /// The materialization flags after the batch.
-    pub(crate) meta: HistoryStateMeta,
-}
-
-/// What one dirty-overlay batch changes.
-///
-/// The generation's meta is carried unchanged so the generation exists in
-/// the catalog even when the batch nets to zero dirty docs: a published
-/// empty overlay is materialized, an absent one is not.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct RuntimeDirtyDelta {
-    pub(crate) generation: AuxiliaryGenerationKeyV1,
-    /// The epoch the snapshot after this delta has.
-    pub(crate) epoch: AuxEpochV1,
-    pub(crate) upserts: Vec<(ChunkId, DirtyDocState)>,
-    pub(crate) deletes: Vec<ChunkId>,
-    pub(crate) meta: RuntimeStateMeta,
-}
-
-/// What one runtime catalog batch changes: the whole catalog of the
-/// generation, replaced, plus its meta.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct RuntimeCatalogDelta {
-    pub(crate) generation: AuxiliaryGenerationKeyV1,
-    /// The epoch the snapshot after this delta has.
-    pub(crate) epoch: AuxEpochV1,
-    pub(crate) meta: RuntimeStateMeta,
-    pub(crate) changed_docs: OrdMap<ChunkId, ChangedDocState>,
-    pub(crate) doc_facets: OrdMap<ChunkId, DocFacetState>,
-    pub(crate) snapshots: OrdMap<Box<str>, BTreeSet<ChunkId>>,
-    pub(crate) affected_docs: OrdMap<Box<str>, BTreeSet<ChunkId>>,
-    pub(crate) invalidated_by_docs: OrdMap<Box<str>, BTreeSet<ChunkId>>,
-}
-
-/// What one structural batch changes: parse trees removed and written,
-/// the seal request after the batch, and the structural track's state
-/// after the batch.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct StructuralTreesDelta {
-    pub(crate) generation: AuxiliaryGenerationKeyV1,
-    /// The epoch the snapshot after this delta has.
-    pub(crate) epoch: AuxEpochV1,
-    pub(crate) removed: BTreeSet<ChunkId>,
-    pub(crate) upserts: Vec<(ChunkId, ParseTreeRecord)>,
-    pub(crate) seal_requested: bool,
-    pub(crate) track: TrackAuthorityState,
-    /// Whether the track sealed in this batch (the seal was requested and
-    /// trees exist), which the caller reports on its receipt.
-    pub(crate) sealed_track: bool,
-}
-
-/// What one search-corpus batch changes in the structural chunk universe.
-///
-/// The generation's meta is carried unchanged so the generation exists in
-/// the catalog even for a batch without chunks: a published empty chunk
-/// universe is materialized, an absent one is not.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct StructuralChunksDelta {
-    pub(crate) generation: AuxiliaryGenerationKeyV1,
-    /// The epoch the snapshot after this delta has.
-    pub(crate) epoch: AuxEpochV1,
-    /// Every chunk goes before the upserts (a `Chunk` surface clear).
-    pub(crate) clear: bool,
-    pub(crate) removed: BTreeSet<ChunkId>,
-    pub(crate) upserts: Vec<ChunkRecord>,
-    pub(crate) meta: StructuralStateMeta,
 }
 
 fn history_typed(code: &str, message: String) -> CoreError {

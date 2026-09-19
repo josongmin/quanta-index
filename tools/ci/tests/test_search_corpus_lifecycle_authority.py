@@ -6,6 +6,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 PLANE = ROOT / "crates/quanta-index-search-plane/src"
 LIFECYCLE = PLANE / "search_corpus_lifecycle.rs"
+# The lifecycle owns its pair lock in a child module the stores can name
+# without depending on the service (QI-BB-013 보완 #2); the fence reads the
+# module's files as one text.
+LIFECYCLE_DIR = PLANE / "search_corpus_lifecycle"
 # The readiness module is a directory since the QI-BB-013 split; the fence
 # reads every production file of it as one text.
 READINESS_DIR = PLANE / "readiness"
@@ -23,6 +27,12 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def read_lifecycle() -> str:
+    """The lifecycle module: its file and every file under its directory."""
+    files = [LIFECYCLE, *sorted(LIFECYCLE_DIR.rglob("*.rs"))]
+    return "\n".join(read(path) for path in files)
+
+
 def read_readiness() -> str:
     """Every file of the readiness module, production and tests, as one text."""
     files = sorted(READINESS_DIR.rglob("*.rs"))
@@ -31,7 +41,7 @@ def read_readiness() -> str:
 
 
 def test_one_pair_mutation_coordinator_owns_catalog_and_retention_v1() -> None:
-    lifecycle = read(LIFECYCLE)
+    lifecycle = read_lifecycle()
     plane_lib = read(PLANE_LIB)
     readiness = read_readiness()
 
@@ -56,7 +66,7 @@ def test_one_pair_mutation_coordinator_owns_catalog_and_retention_v1() -> None:
 
 
 def test_lifecycle_owner_derives_mutable_roots_from_one_state_root_v1() -> None:
-    lifecycle = read(LIFECYCLE)
+    lifecycle = read_lifecycle()
     runtime = read(RUNTIME)
     app_runtime = read(APP_RUNTIME)
 
@@ -102,7 +112,7 @@ def test_control_dispatcher_delegates_composite_mutations_v1() -> None:
 
 
 def test_retention_requires_active_pin_and_shared_guard_v1() -> None:
-    lifecycle = read(LIFECYCLE)
+    lifecycle = read_lifecycle()
     readiness = read_readiness()
     retention = read(RETENTION)
 
@@ -139,7 +149,7 @@ def test_startup_accepts_the_canonical_uppercase_pair_digest_v1() -> None:
 
 
 def test_restart_revalidates_active_composite_before_socket_bind_v1() -> None:
-    lifecycle = read(LIFECYCLE)
+    lifecycle = read_lifecycle()
     app_runtime = read(APP_RUNTIME)
 
     assert "validate_rehydrated_active_generations_v1" in lifecycle
@@ -214,7 +224,7 @@ def require_fault_matrix_surface_v1(readiness: str) -> None:
 
 def test_retention_and_composite_fault_matrix_is_owner_local_v1() -> None:
     readiness = read_readiness()
-    lifecycle = read(LIFECYCLE)
+    lifecycle = read_lifecycle()
 
     require_fault_matrix_surface_v1(readiness)
     record_body = readiness[

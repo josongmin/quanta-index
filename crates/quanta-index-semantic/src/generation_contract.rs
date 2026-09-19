@@ -11,22 +11,21 @@
     reason = "module is intentionally crate-internal; pub(crate) is the deliberate visibility — clippy normalizes to redundant but workspace `unreachable_pub = deny` blocks the alternate `pub` form"
 )]
 
-use quanta_index_contract::{BatchIngestMode, ManifestGeneration};
+use quanta_index_contract::{
+    BatchIngestMode, EmbeddingDistanceMetric, EmbeddingNormalization, ManifestGeneration,
+};
 use quanta_index_core::{CoreError, SemanticGenerationContractV1};
 
-use crate::codec::{self, cbor_serde};
-use crate::manifest::{
-    SemanticManifest, decode_current_format, distance_metric_token, format_unsupported,
-    normalization_token,
-};
+use crate::codec::{self, cbor_serde, decode_current_format, format_unsupported};
 
 pub(crate) const GENERATION_CONTRACT_VERSION: u32 = 2;
 
 /// Return `Err($variant(format!(...)))` when two contract fields disagree.
 ///
-/// Both validation paths (`merge_batch`, `validate_manifest`) are a run of
-/// field-equality guards that differ only in the `CoreError` variant and the
-/// message wording — this keeps each guard a single, uniform line.
+/// Both validation paths (`GenerationContract::merge_batch`,
+/// `SemanticManifest::validate_against`) are a run of field-equality guards
+/// that differ only in the `CoreError` variant and the message wording —
+/// this keeps each guard a single, uniform line.
 macro_rules! ensure_field_eq {
     ($variant:expr, $lhs:expr, $rhs:expr, $fmt:literal) => {
         if $lhs != $rhs {
@@ -34,6 +33,8 @@ macro_rules! ensure_field_eq {
         }
     };
 }
+
+pub(crate) use ensure_field_eq;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct GenerationContract {
@@ -198,54 +199,8 @@ impl GenerationContract {
         })
     }
 
-    pub(crate) fn validate_manifest(&self, manifest: &SemanticManifest) -> Result<(), CoreError> {
-        self.validate_format()?;
-        ensure_field_eq!(
-            CoreError::Storage,
-            manifest.model_id,
-            self.model_id,
-            "semantic: manifest model_id `{}` does not match sealed build contract `{}`"
-        );
-        ensure_field_eq!(
-            CoreError::Storage,
-            manifest.model_version,
-            self.model_version,
-            "semantic: manifest model_version {:?} does not match sealed build contract {:?}"
-        );
-        ensure_field_eq!(
-            CoreError::Storage,
-            manifest.dimension,
-            self.dimension,
-            "semantic: manifest dimension {} does not match sealed build contract {}"
-        );
-        ensure_field_eq!(
-            CoreError::Storage,
-            manifest.distance_metric,
-            self.distance_metric,
-            "semantic: manifest distance_metric `{}` does not match sealed build contract `{}`"
-        );
-        ensure_field_eq!(
-            CoreError::Storage,
-            manifest.normalization,
-            self.normalization,
-            "semantic: manifest normalization `{}` does not match sealed build contract `{}`"
-        );
-        ensure_field_eq!(
-            CoreError::Storage,
-            manifest.required_corpora,
-            self.required_corpora,
-            "semantic: manifest required_corpora {:?} does not match sealed build contract {:?}"
-        );
-        ensure_field_eq!(
-            CoreError::Storage,
-            manifest.corpus_policy_digest,
-            self.corpus_policy_digest,
-            "semantic: manifest corpus_policy_digest {:?} does not match sealed build contract {:?}"
-        );
-        Ok(())
-    }
-
-    fn validate_format(&self) -> Result<(), CoreError> {
+    /// Refuse a contract written under any format but the served one.
+    pub(crate) fn validate_format(&self) -> Result<(), CoreError> {
         if self.format_version != GENERATION_CONTRACT_VERSION {
             return Err(format_unsupported(
                 "semantic generation contract",
@@ -254,6 +209,23 @@ impl GenerationContract {
             ));
         }
         Ok(())
+    }
+}
+
+#[must_use]
+pub(crate) fn distance_metric_token(metric: EmbeddingDistanceMetric) -> &'static str {
+    match metric {
+        EmbeddingDistanceMetric::Cosine => "cosine",
+        EmbeddingDistanceMetric::Dot => "dot",
+        EmbeddingDistanceMetric::Euclidean => "euclidean",
+    }
+}
+
+#[must_use]
+pub(crate) fn normalization_token(normalization: EmbeddingNormalization) -> &'static str {
+    match normalization {
+        EmbeddingNormalization::None => "none",
+        EmbeddingNormalization::L2Unit => "l2_unit",
     }
 }
 
@@ -267,7 +239,7 @@ mod tests {
     use quanta_index_core::CoreError;
 
     use super::{GENERATION_CONTRACT_VERSION, GenerationContract};
-    use crate::manifest::FORMAT_UNSUPPORTED_CODE;
+    use crate::codec::FORMAT_UNSUPPORTED_CODE;
 
     /// The shape build contract format 1 wrote: no corpus fields. It is
     /// refused typed, never decoded with fabricated corpus policy.

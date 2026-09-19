@@ -48,10 +48,10 @@ use super::{
     control::SemanticContentRootsV1,
     error::SearchPlaneIpcError,
     semantic_source::{
-        ClusterMembershipReplaceV1, SemanticCorpusKindV1, SemanticSourceReplaceScopeV1,
-        SemanticSourceScopeKeyV1,
+        ClusterMembershipReplaceV1, SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1,
     },
 };
+use crate::semantic_kinds::SemanticCorpusKindV1;
 
 // =============================================================================
 // Batch mode

@@ -3,7 +3,8 @@
 //! One file under `state_root/catalog/`, opened once per process, with the
 //! pragmas the G0-C gate requires read back rather than assumed: `WAL`,
 //! `synchronous=FULL`, `fullfsync=ON`. Every table's schema is created
-//! here so a catalog is whole from its first open. One connection behind a
+//! when the catalog opens (`open`), so a catalog is whole from its first
+//! open. One connection behind a
 //! mutex is deliberate: the ingest socket dispatches serially, so a second
 //! connection would only add lock contention.
 
@@ -85,63 +86,56 @@ pub(crate) fn count_u64(label: &str, count: usize) -> Result<u64, CoreError> {
         .map_err(|error| CoreError::Storage(format!("catalog: {label} count overflow: {error}")))
 }
 
-impl SqliteCatalog {
-    /// Open (creating if needed) the catalog under `state_root/catalog/`.
-    ///
-    /// `busy_timeout` is how long a write waits on a held lock before it is
-    /// answered typed; the caller maps it from its own deadline.
-    pub fn open(state_root: &Path, busy_timeout: Duration) -> Result<Self, CoreError> {
-        let directory = catalog_dir(state_root);
-        std::fs::create_dir_all(&directory)
-            .map_err(|error| storage("create directory", &directory, &error))?;
-        let path = directory.join(CATALOG_FILE_NAME);
-        let connection = Connection::open_with_flags(
-            &path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
-        )
-        .map_err(|error| engine_error("open", &path, &error))?;
-        // Each pragma is read back rather than assumed: `journal_mode` is a
-        // request the engine may decline, and a catalog that silently ran
-        // under `NORMAL` would ack work the engine can forget (G0-C).
-        connection
-            .pragma_update(None, "journal_mode", "WAL")
-            .map_err(|error| engine_error("set journal_mode", &path, &error))?;
-        connection
-            .pragma_update(None, "synchronous", "FULL")
-            .map_err(|error| engine_error("set synchronous", &path, &error))?;
-        connection
-            .pragma_update(None, "fullfsync", "ON")
-            .map_err(|error| engine_error("set fullfsync", &path, &error))?;
-        connection
-            .pragma_update(None, "foreign_keys", "ON")
-            .map_err(|error| engine_error("set foreign_keys", &path, &error))?;
-        connection
-            .busy_timeout(busy_timeout)
-            .map_err(|error| engine_error("set busy_timeout", &path, &error))?;
-        let journal_mode: String = connection
-            .pragma_query_value(None, "journal_mode", |row| row.get(0))
-            .map_err(|error| engine_error("read journal_mode", &path, &error))?;
-        let synchronous: i64 = connection
-            .pragma_query_value(None, "synchronous", |row| row.get(0))
-            .map_err(|error| engine_error("read synchronous", &path, &error))?;
-        if !journal_mode.eq_ignore_ascii_case("wal") || synchronous != 2 {
-            return Err(CoreError::Storage(format!(
-                "catalog: {} runs journal_mode={journal_mode} synchronous={synchronous}; the catalog requires wal/FULL",
-                path.display()
-            )));
-        }
-        connection
-            .execute_batch(crate::idempotency::SCHEMA)
-            .map_err(|error| engine_error("create idempotency schema", &path, &error))?;
-        connection
-            .execute_batch(crate::auxiliary::SCHEMA)
-            .map_err(|error| engine_error("create auxiliary schema", &path, &error))?;
-        Ok(Self {
-            connection: Mutex::new(connection),
-            path,
-        })
+/// Open (creating if needed) the catalog file under `state_root/catalog/`
+/// with the pragmas the G0-C gate requires, each read back; returns the
+/// connection and the file's path.
+pub(crate) fn open_connection(
+    state_root: &Path,
+    busy_timeout: Duration,
+) -> Result<(Connection, PathBuf), CoreError> {
+    let directory = catalog_dir(state_root);
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| storage("create directory", &directory, &error))?;
+    let path = directory.join(CATALOG_FILE_NAME);
+    let connection = Connection::open_with_flags(
+        &path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
+    )
+    .map_err(|error| engine_error("open", &path, &error))?;
+    // Each pragma is read back rather than assumed: `journal_mode` is a
+    // request the engine may decline, and a catalog that silently ran
+    // under `NORMAL` would ack work the engine can forget (G0-C).
+    connection
+        .pragma_update(None, "journal_mode", "WAL")
+        .map_err(|error| engine_error("set journal_mode", &path, &error))?;
+    connection
+        .pragma_update(None, "synchronous", "FULL")
+        .map_err(|error| engine_error("set synchronous", &path, &error))?;
+    connection
+        .pragma_update(None, "fullfsync", "ON")
+        .map_err(|error| engine_error("set fullfsync", &path, &error))?;
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .map_err(|error| engine_error("set foreign_keys", &path, &error))?;
+    connection
+        .busy_timeout(busy_timeout)
+        .map_err(|error| engine_error("set busy_timeout", &path, &error))?;
+    let journal_mode: String = connection
+        .pragma_query_value(None, "journal_mode", |row| row.get(0))
+        .map_err(|error| engine_error("read journal_mode", &path, &error))?;
+    let synchronous: i64 = connection
+        .pragma_query_value(None, "synchronous", |row| row.get(0))
+        .map_err(|error| engine_error("read synchronous", &path, &error))?;
+    if !journal_mode.eq_ignore_ascii_case("wal") || synchronous != 2 {
+        return Err(CoreError::Storage(format!(
+            "catalog: {} runs journal_mode={journal_mode} synchronous={synchronous}; the catalog requires wal/FULL",
+            path.display()
+        )));
     }
+    Ok((connection, path))
+}
 
+impl SqliteCatalog {
     /// The database file.
     #[must_use]
     pub fn path(&self) -> &Path {

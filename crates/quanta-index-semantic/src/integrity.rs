@@ -37,10 +37,10 @@ use quanta_index_core::{
 };
 
 use crate::SemanticAdapter;
-use crate::build::write_atomic;
+use crate::codec::decode_current_format;
 use crate::codec::{self, cbor_serde};
+use crate::durable_write::write_atomic;
 use crate::layout;
-use crate::manifest::decode_current_format;
 use crate::sealed_manifest::{
     SealedManifestScrubV1, SealedManifestScrubVerdictV1, scrub_sealed_manifest,
     verify_sealed_manifest,

@@ -1,6 +1,5 @@
 //! The ingest ports: search-corpus batches, repo-metadata overlays, the writer sweep and the metrics scrape.
 
-
 use crate::adapter::legacy_ops_for_batch;
 use crate::generation_dir::{ensure_unsealed, is_writer_lock_entry, read_lexical_delta_base};
 use crate::index_store::{lexical_sealed_identity_path, persist_lexical_sealed_identity};

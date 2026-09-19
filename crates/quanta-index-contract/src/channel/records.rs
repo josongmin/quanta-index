@@ -5,6 +5,7 @@ use serde::{
 };
 
 use crate::lex::{LanguageCode, SymbolKindCode};
+use crate::semantic_kinds::OwnerDocKind;
 use crate::{
     CapabilityStatusV1, ChunkId, EmbeddingId, RepoId, RepoRelativePath, SemanticCorpusKindV1,
     SourceRoleV1,
@@ -337,134 +338,6 @@ impl ChunkRecord {
     #[must_use]
     pub fn searchable_repo_id<'a>(&'a self, batch_repo_id: &'a RepoId) -> &'a RepoId {
         self.source_repo_id.as_ref().unwrap_or(batch_repo_id)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum OwnerDocKind {
-    File,
-    Module,
-    Symbol,
-    Chunk,
-    Callsite,
-    GraphEdge,
-    Dataflow,
-    Risk,
-    Test,
-    RepoMap,
-    ServiceMap,
-    OwnerMap,
-}
-
-impl OwnerDocKind {
-    pub const ALL: &'static [Self] = &[
-        Self::File,
-        Self::Module,
-        Self::Symbol,
-        Self::Chunk,
-        Self::Callsite,
-        Self::GraphEdge,
-        Self::Dataflow,
-        Self::Risk,
-        Self::Test,
-        Self::RepoMap,
-        Self::ServiceMap,
-        Self::OwnerMap,
-    ];
-
-    #[must_use]
-    pub const fn as_code_str(self) -> &'static str {
-        match self {
-            Self::File => "File",
-            Self::Module => "Module",
-            Self::Symbol => "Symbol",
-            Self::Chunk => "Chunk",
-            Self::Callsite => "Callsite",
-            Self::GraphEdge => "GraphEdge",
-            Self::Dataflow => "Dataflow",
-            Self::Risk => "Risk",
-            Self::Test => "Test",
-            Self::RepoMap => "RepoMap",
-            Self::ServiceMap => "ServiceMap",
-            Self::OwnerMap => "OwnerMap",
-        }
-    }
-
-    #[must_use]
-    pub fn from_code_str(value: &str) -> Option<Self> {
-        match value {
-            "File" => Some(Self::File),
-            "Module" => Some(Self::Module),
-            "Symbol" => Some(Self::Symbol),
-            "Chunk" => Some(Self::Chunk),
-            "Callsite" => Some(Self::Callsite),
-            "GraphEdge" => Some(Self::GraphEdge),
-            "Dataflow" => Some(Self::Dataflow),
-            "Risk" => Some(Self::Risk),
-            "Test" => Some(Self::Test),
-            "RepoMap" => Some(Self::RepoMap),
-            "ServiceMap" => Some(Self::ServiceMap),
-            "OwnerMap" => Some(Self::OwnerMap),
-            _ => None,
-        }
-    }
-}
-
-const OWNER_DOC_KIND_VARIANTS: &[&str] = &[
-    "File",
-    "Module",
-    "Symbol",
-    "Chunk",
-    "Callsite",
-    "GraphEdge",
-    "Dataflow",
-    "Risk",
-    "Test",
-    "RepoMap",
-    "ServiceMap",
-    "OwnerMap",
-];
-
-impl Serialize for OwnerDocKind {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_code_str())
-    }
-}
-
-struct OwnerDocKindVisitor;
-
-impl Visitor<'_> for OwnerDocKindVisitor {
-    type Value = OwnerDocKind;
-
-    fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.write_str("an OwnerDocKind code string")
-    }
-
-    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        OwnerDocKind::from_code_str(value)
-            .ok_or_else(|| de::Error::unknown_variant(value, OWNER_DOC_KIND_VARIANTS))
-    }
-
-    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        self.visit_str(value.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for OwnerDocKind {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_str(OwnerDocKindVisitor)
     }
 }
 
@@ -853,8 +726,9 @@ impl<'de> Deserialize<'de> for EmbeddingRecord {
 mod tests {
     use ciborium::Value;
 
-    use super::{ChunkRecord, ChunkStructuralMetadata, EmbeddingRecord, OwnerDocKind};
+    use super::{ChunkRecord, ChunkStructuralMetadata, EmbeddingRecord};
     use crate::lex::LanguageCode;
+    use crate::semantic_kinds::OwnerDocKind;
     use crate::{
         CapabilityStatusV1, ChunkId, EmbeddingId, RepoRelativePath, SemanticCorpusKindV1,
         SourceRoleV1,

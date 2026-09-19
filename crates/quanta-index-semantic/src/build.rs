@@ -23,12 +23,9 @@
 )]
 
 use std::collections::BTreeSet;
-use std::ffi::OsString;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::fs::{self};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use arrow_array::{
@@ -49,6 +46,7 @@ use quanta_index_core::{
     SemanticStreamTallyV1, SemanticStreamWindowPolicy, owner_key_v1,
 };
 
+use crate::durable_write::write_atomic;
 use crate::errors::{arrow_err, fs_err, lancedb_err};
 use crate::generation_contract::GenerationContract;
 use crate::integrity::SealTalliesV1;
@@ -110,9 +108,6 @@ mod failpoint {
     use std::collections::BTreeSet;
     use std::sync::{Mutex, OnceLock};
 
-    #[cfg(test)]
-    static ATOMIC_WRITE_FAIL_BEFORE_RENAME_ACTION: OnceLock<Mutex<Option<String>>> =
-        OnceLock::new();
     static CONTRACT_PROMOTION_FAIL_DIR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
     thread_local! {
@@ -161,26 +156,6 @@ mod failpoint {
     pub(super) fn should_fail_contract_promotion(path: &str) -> bool {
         lock_contract_promotion_slot().as_deref() == Some(path)
     }
-
-    #[cfg(test)]
-    pub(super) fn set_atomic_write_fail_before_rename_action(action: Option<&str>) {
-        let slot = ATOMIC_WRITE_FAIL_BEFORE_RENAME_ACTION.get_or_init(|| Mutex::new(None));
-        let mut guard = match slot.lock() {
-            Ok(guard) => guard,
-            Err(err) => err.into_inner(),
-        };
-        *guard = action.map(str::to_owned);
-    }
-
-    #[cfg(test)]
-    pub(super) fn should_fail_atomic_write_before_rename(action: &str) -> bool {
-        let slot = ATOMIC_WRITE_FAIL_BEFORE_RENAME_ACTION.get_or_init(|| Mutex::new(None));
-        let guard = match slot.lock() {
-            Ok(guard) => guard,
-            Err(err) => err.into_inner(),
-        };
-        guard.as_deref() == Some(action)
-    }
 }
 
 #[cfg(not(any(test, debug_assertions)))]
@@ -201,83 +176,6 @@ pub(crate) fn set_append_fail_path_for_debug(path: Option<&str>) {
 
 #[cfg(any(test, debug_assertions))]
 const _: fn(Option<&str>) = set_append_fail_path_for_debug;
-
-static ATOMIC_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-/// Crash-atomic and crash-durable file replacement for generation sidecars.
-///
-/// The file payload is synced before rename and the parent directory is synced
-/// after rename. Pre-rename failures remove the unique temporary file so a
-/// failed build cannot accumulate or later promote stale staging artifacts.
-pub(crate) fn write_atomic(path: &Path, bytes: &[u8], action: &str) -> Result<(), CoreError> {
-    let parent = path.parent().ok_or_else(|| {
-        CoreError::Storage(format!(
-            "semantic: {action} target has no parent: {}",
-            path.display()
-        ))
-    })?;
-    let file_name = path.file_name().ok_or_else(|| {
-        CoreError::Storage(format!(
-            "semantic: {action} target has no file name: {}",
-            path.display()
-        ))
-    })?;
-    let sequence = ATOMIC_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let mut staging_name = OsString::from(".");
-    staging_name.push(file_name);
-    staging_name.push(format!(".tmp-{}-{sequence}", std::process::id()));
-    let staging = parent.join(staging_name);
-
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&staging)
-        .map_err(|err| fs_err(action, &staging, &err))?;
-    if let Err(err) = file.write_all(bytes) {
-        drop(file);
-        return Err(cleanup_atomic_temporary(
-            &staging,
-            fs_err(action, &staging, &err),
-        ));
-    }
-    if let Err(err) = file.sync_all() {
-        drop(file);
-        return Err(cleanup_atomic_temporary(
-            &staging,
-            fs_err(action, &staging, &err),
-        ));
-    }
-    drop(file);
-
-    #[cfg(test)]
-    if failpoint::should_fail_atomic_write_before_rename(action) {
-        return Err(cleanup_atomic_temporary(
-            &staging,
-            CoreError::Storage(format!("semantic: injected {action} failure before rename")),
-        ));
-    }
-
-    if let Err(err) = fs::rename(&staging, path) {
-        return Err(cleanup_atomic_temporary(
-            &staging,
-            fs_err(action, path, &err),
-        ));
-    }
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|err| fs_err(action, parent, &err))
-}
-
-fn cleanup_atomic_temporary(staging: &Path, primary: CoreError) -> CoreError {
-    match fs::remove_file(staging) {
-        Ok(()) => primary,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => primary,
-        Err(cleanup) => CoreError::Storage(format!(
-            "semantic: {primary}; additionally failed to remove atomic temporary {}: {cleanup}",
-            staging.display()
-        )),
-    }
-}
 
 /// The one dataset file `LanceDB` rewrites on every commit.
 ///

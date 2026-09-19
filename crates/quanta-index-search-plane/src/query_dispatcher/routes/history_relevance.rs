@@ -26,7 +26,7 @@ use quanta_index_core::{
 };
 
 use crate::query_dispatcher::errors::history_cursor_order_mismatch;
-use crate::query_dispatcher::routes::history::{
+use crate::query_dispatcher::routes::history_records::{
     HistoryPage, HistoryQueryKind, commit_candidate_from_record, diff_candidate_from_record,
     ensure_cursor_kind, history_commit_matches, history_diff_matches, resolve_history_query_kind,
 };

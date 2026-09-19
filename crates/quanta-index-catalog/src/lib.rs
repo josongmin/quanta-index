@@ -24,5 +24,6 @@
 mod auxiliary;
 mod connection;
 mod idempotency;
+mod open;
 
 pub use connection::{CATALOG_FILE_NAME, SqliteCatalog, catalog_dir};

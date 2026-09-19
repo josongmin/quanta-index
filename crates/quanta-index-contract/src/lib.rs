@@ -21,6 +21,7 @@
 mod macros;
 mod bounded_cluster_members;
 pub mod canonical_order;
+mod semantic_kinds;
 
 /// Internal legacy channel surface used by `searchd` composition-root,
 /// replay, and restart recovery paths.

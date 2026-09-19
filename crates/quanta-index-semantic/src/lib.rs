@@ -34,6 +34,7 @@
 mod budget;
 mod build;
 mod codec;
+mod durable_write;
 mod errors;
 mod generation_contract;
 mod integrity;
@@ -79,8 +80,9 @@ use quanta_index_core::{
 };
 
 use crate::budget::DenseLaneTalliesV1;
+use crate::codec::FORMAT_UNSUPPORTED_CODE;
 use crate::integrity::{SealTalliesV1, read_quarantine_receipt};
-use crate::manifest::{FORMAT_UNSUPPORTED_CODE, SemanticManifest};
+use crate::manifest::SemanticManifest;
 use crate::search::{LoadedGeneration, PersistedSemanticSearcher, open_generation};
 
 #[cfg(debug_assertions)]

@@ -17,15 +17,15 @@ use quanta_index_core::{
 
 use crate::Ledger;
 use crate::auxiliary_authority::{
-    HistoryDelta, history_delta_rows, history_transition, runtime_catalog_delta_rows,
-    runtime_catalog_transition, runtime_dirty_delta_rows, runtime_dirty_transition,
-    structural_delta_rows, structural_transition,
+    history_delta_rows, history_transition, runtime_catalog_delta_rows, runtime_catalog_transition,
+    runtime_dirty_delta_rows, runtime_dirty_transition, structural_delta_rows,
+    structural_transition,
 };
 use crate::history_text::HistoryTextIndexParts;
 use crate::ingest_dispatcher::ports::{
     HistoryIngestPort, RuntimeMetadataIngestPort, StructuralIngestPort,
 };
-use crate::readiness::{HistoryAuthorityState, history_diff_search_text};
+use crate::readiness::{HistoryAuthorityState, HistoryDelta, history_diff_search_text};
 
 /// Serializes the validate → persist → apply protocol of every auxiliary
 /// mutation (QI-BB-020).

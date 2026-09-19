@@ -34,10 +34,7 @@ crate quanta_index_contract
 │       ├── struct ChunkStructuralMetadataVisitor: pub(self)
 │       │   └── type Value: pub(self)
 │       ├── struct EmbeddingRecord: pub
-│       ├── struct EmbeddingRecordVisitor: pub(self)
-│       │   └── type Value: pub(self)
-│       ├── enum OwnerDocKind: pub
-│       └── struct OwnerDocKindVisitor: pub(self)
+│       └── struct EmbeddingRecordVisitor: pub(self)
 │           └── type Value: pub(self)
 ├── mod ipc: pub
 │   ├── mod batch_body: pub(self)
@@ -285,17 +282,11 @@ crate quanta_index_contract
 │   │   └── struct QuarantinedRepoMapFileEntryVisitor: pub(self)
 │   │       └── type Value: pub(self)
 │   ├── mod semantic_source: pub(self)
-│   │   ├── enum CapabilityStatusV1: pub
-│   │   ├── struct CapabilityStatusV1Visitor: pub(self)
-│   │   │   └── type Value: pub(self)
 │   │   ├── struct ClusterMembershipReplaceV1: pub
 │   │   ├── struct ClusterMembershipReplaceV1Visitor: pub(self)
 │   │   │   └── type Value: pub(self)
 │   │   ├── enum RawFallbackReasonV1: pub
 │   │   ├── struct RawFallbackReasonV1Visitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── enum SemanticCorpusKindV1: pub
-│   │   ├── struct SemanticCorpusKindV1Visitor: pub(self)
 │   │   │   └── type Value: pub(self)
 │   │   ├── struct SemanticSourceRecordV1: pub
 │   │   ├── struct SemanticSourceRecordV1Visitor: pub(self)
@@ -304,10 +295,7 @@ crate quanta_index_contract
 │   │   ├── struct SemanticSourceReplaceScopeV1Visitor: pub(self)
 │   │   │   └── type Value: pub(self)
 │   │   ├── struct SemanticSourceScopeKeyV1: pub
-│   │   ├── struct SemanticSourceScopeKeyV1Visitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── enum SourceRoleV1: pub
-│   │   └── struct SourceRoleV1Visitor: pub(self)
+│   │   └── struct SemanticSourceScopeKeyV1Visitor: pub(self)
 │   │       └── type Value: pub(self)
 │   └── mod split: pub(self)
 │       ├── enum SearchPlaneControlIpcRequest: pub
@@ -525,103 +513,116 @@ crate quanta_index_contract
 │   ├── struct RepoMapSymbolNode: pub
 │   └── struct RepoMapSymbolNodeVisitor: pub(self)
 │       └── type Value: pub(self)
-└── mod results: pub
-    ├── mod cluster_membership: pub(self)
-    │   ├── struct ClusterMembershipBatchReadResponseV1: pub
-    │   ├── struct ClusterMembershipBatchReadResponseV1Visitor: pub(self)
-    │   │   └── type Value: pub(self)
-    │   ├── enum ClusterMembershipCompletenessV1: pub
-    │   ├── struct ClusterMembershipOutcomePayloadBufferV1: pub(self)
-    │   ├── struct ClusterMembershipOutcomePayloadBufferV1Visitor: pub(self)
-    │   │   └── type Value: pub(self)
-    │   ├── enum ClusterMembershipReadFailureV1: pub
-    │   ├── enum ClusterMembershipReadOutcomeV1: pub
-    │   ├── struct ClusterMembershipReadOutcomeV1Visitor: pub(self)
-    │   │   └── type Value: pub(self)
-    │   ├── struct ClusterMembershipReadRejectionV1: pub
-    │   ├── struct ClusterMembershipReadRejectionV1Visitor: pub(self)
-    │   │   └── type Value: pub(self)
-    │   ├── struct ClusterMembershipSnapshotV1: pub
-    │   ├── struct ClusterMembershipSnapshotV1Visitor: pub(self)
-    │   │   └── type Value: pub(self)
-    │   ├── struct ClusterMembershipUnavailableV1: pub
-    │   └── struct ClusterMembershipUnavailableV1Visitor: pub(self)
-    │       └── type Value: pub(self)
-    ├── mod commit_candidate: pub(self)
-    │   ├── struct CommitCandidate: pub
-    │   └── struct CommitCandidateVisitor: pub(self)
-    │       └── type Value: pub(self)
-    ├── mod explanation: pub(self)
-    │   ├── enum CandidatePresenceV1: pub
-    │   ├── struct CandidatePresenceVisitor: pub(self)
-    │   │   └── type Value: pub(self)
-    │   ├── enum EarlyStopReason: pub
-    │   ├── struct EarlyStopReasonVisitor: pub(self)
-    │   │   └── type Value: pub(self)
-    │   ├── enum EngineTouched: pub
-    │   ├── struct EngineTouchedVisitor: pub(self)
-    │   │   └── type Value: pub(self)
-    │   ├── struct ExplanationRow: pub
-    │   ├── struct ExplanationRowVisitor: pub(self)
-    │   │   └── type Value: pub(self)
-    │   ├── enum PlannerStage: pub
-    │   ├── struct PlannerStageVisitor: pub(self)
-    │   │   └── type Value: pub(self)
-    │   ├── struct PlannerTraceEntry: pub
-    │   ├── struct PlannerTraceEntryVisitor: pub(self)
-    │   │   └── type Value: pub(self)
-    │   ├── struct SearchExplanation: pub
-    │   ├── struct SearchExplanationBuilder: pub
-    │   ├── struct SearchExplanationVisitor: pub(self)
-    │   │   └── type Value: pub(self)
-    │   └── struct WeightsHashError: pub
-    └── mod query_responses: pub(self)
-        ├── struct FileOwnerProjectionRow: pub
-        ├── struct FileOwnerProjectionRowVisitor: pub(self)
-        │   └── type Value: pub(self)
-        ├── enum HybridCandidatePolicyErrorV1: pub
-        ├── struct HybridCandidateV1: pub
-        ├── struct HybridCandidateV1Visitor: pub(self)
-        │   └── type Value: pub(self)
-        ├── struct HybridLaneContributionV1: pub
-        ├── struct HybridLaneContributionV1Visitor: pub(self)
-        │   └── type Value: pub(self)
-        ├── enum HybridLaneV1: pub
-        ├── struct HybridQueryResponse: pub
-        ├── struct HybridQueryResponseVisitor: pub(self)
-        │   └── type Value: pub(self)
-        ├── struct HybridSeedQueryResponse: pub
-        ├── struct HybridSeedQueryResponseVisitor: pub(self)
-        │   └── type Value: pub(self)
-        ├── struct SearchPlaneExplainQueryResponse: pub
-        ├── struct SearchPlaneExplainQueryResponseVisitor: pub(self)
-        │   └── type Value: pub(self)
-        ├── struct SearchPlaneHistoryQueryResponse: pub
-        ├── struct SearchPlaneHistoryQueryResponseVisitor: pub(self)
-        │   └── type Value: pub(self)
-        ├── struct SearchPlaneRuntimeMetadataQueryResponse: pub
-        ├── struct SearchPlaneRuntimeMetadataQueryResponseVisitor: pub(self)
-        │   └── type Value: pub(self)
-        ├── struct SearchPlaneStructuralQueryResponse: pub
-        ├── struct SearchPlaneStructuralQueryResponseVisitor: pub(self)
-        │   └── type Value: pub(self)
-        ├── struct SeedCandidate: pub
-        ├── struct SeedCandidateVisitor: pub(self)
-        │   └── type Value: pub(self)
-        ├── struct SeedContribution: pub
-        ├── struct SeedContributionVisitor: pub(self)
-        │   └── type Value: pub(self)
-        ├── struct SeedFusionIdentity: pub
-        ├── enum SeedLane: pub
-        ├── struct SemanticQueryResponse: pub
-        ├── struct SemanticQueryResponseVisitor: pub(self)
-        │   └── type Value: pub(self)
-        ├── struct SymbolCandidate: pub
-        ├── struct SymbolCandidateVisitor: pub(self)
-        │   └── type Value: pub(self)
-        ├── struct SymbolQueryResponse: pub
-        ├── struct SymbolQueryResponseVisitor: pub(self)
-        │   └── type Value: pub(self)
-        ├── struct TextQueryResponse: pub
-        └── struct TextQueryResponseVisitor: pub(self)
-            └── type Value: pub(self)
+├── mod results: pub
+│   ├── mod cluster_membership: pub(self)
+│   │   ├── struct ClusterMembershipBatchReadResponseV1: pub
+│   │   ├── struct ClusterMembershipBatchReadResponseV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── enum ClusterMembershipCompletenessV1: pub
+│   │   ├── struct ClusterMembershipOutcomePayloadBufferV1: pub(self)
+│   │   ├── struct ClusterMembershipOutcomePayloadBufferV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── enum ClusterMembershipReadFailureV1: pub
+│   │   ├── enum ClusterMembershipReadOutcomeV1: pub
+│   │   ├── struct ClusterMembershipReadOutcomeV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct ClusterMembershipReadRejectionV1: pub
+│   │   ├── struct ClusterMembershipReadRejectionV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct ClusterMembershipSnapshotV1: pub
+│   │   ├── struct ClusterMembershipSnapshotV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct ClusterMembershipUnavailableV1: pub
+│   │   └── struct ClusterMembershipUnavailableV1Visitor: pub(self)
+│   │       └── type Value: pub(self)
+│   ├── mod commit_candidate: pub(self)
+│   │   ├── struct CommitCandidate: pub
+│   │   └── struct CommitCandidateVisitor: pub(self)
+│   │       └── type Value: pub(self)
+│   ├── mod explanation: pub(self)
+│   │   ├── enum CandidatePresenceV1: pub
+│   │   ├── struct CandidatePresenceVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── enum EarlyStopReason: pub
+│   │   ├── struct EarlyStopReasonVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── enum EngineTouched: pub
+│   │   ├── struct EngineTouchedVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct ExplanationRow: pub
+│   │   ├── struct ExplanationRowVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── enum PlannerStage: pub
+│   │   ├── struct PlannerStageVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct PlannerTraceEntry: pub
+│   │   ├── struct PlannerTraceEntryVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct SearchExplanation: pub
+│   │   ├── struct SearchExplanationBuilder: pub
+│   │   ├── struct SearchExplanationVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   └── struct WeightsHashError: pub
+│   └── mod query_responses: pub(self)
+│       ├── struct FileOwnerProjectionRow: pub
+│       ├── struct FileOwnerProjectionRowVisitor: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── enum HybridCandidatePolicyErrorV1: pub
+│       ├── struct HybridCandidateV1: pub
+│       ├── struct HybridCandidateV1Visitor: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct HybridLaneContributionV1: pub
+│       ├── struct HybridLaneContributionV1Visitor: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── enum HybridLaneV1: pub
+│       ├── struct HybridQueryResponse: pub
+│       ├── struct HybridQueryResponseVisitor: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct HybridSeedQueryResponse: pub
+│       ├── struct HybridSeedQueryResponseVisitor: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct SearchPlaneExplainQueryResponse: pub
+│       ├── struct SearchPlaneExplainQueryResponseVisitor: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct SearchPlaneHistoryQueryResponse: pub
+│       ├── struct SearchPlaneHistoryQueryResponseVisitor: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct SearchPlaneRuntimeMetadataQueryResponse: pub
+│       ├── struct SearchPlaneRuntimeMetadataQueryResponseVisitor: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct SearchPlaneStructuralQueryResponse: pub
+│       ├── struct SearchPlaneStructuralQueryResponseVisitor: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct SeedCandidate: pub
+│       ├── struct SeedCandidateVisitor: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct SeedContribution: pub
+│       ├── struct SeedContributionVisitor: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct SeedFusionIdentity: pub
+│       ├── enum SeedLane: pub
+│       ├── struct SemanticQueryResponse: pub
+│       ├── struct SemanticQueryResponseVisitor: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct SymbolCandidate: pub
+│       ├── struct SymbolCandidateVisitor: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct SymbolQueryResponse: pub
+│       ├── struct SymbolQueryResponseVisitor: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct TextQueryResponse: pub
+│       └── struct TextQueryResponseVisitor: pub(self)
+│           └── type Value: pub(self)
+└── mod semantic_kinds: pub(crate)
+    ├── enum CapabilityStatusV1: pub
+    ├── struct CapabilityStatusV1Visitor: pub(self)
+    │   └── type Value: pub(self)
+    ├── enum OwnerDocKind: pub
+    ├── struct OwnerDocKindVisitor: pub(self)
+    │   └── type Value: pub(self)
+    ├── enum SemanticCorpusKindV1: pub
+    ├── struct SemanticCorpusKindV1Visitor: pub(self)
+    │   └── type Value: pub(self)
+    ├── enum SourceRoleV1: pub
+    └── struct SourceRoleV1Visitor: pub(self)
+        └── type Value: pub(self)

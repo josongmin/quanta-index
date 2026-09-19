@@ -531,6 +531,9 @@ rust-cargo-toml-hygiene:
 rust-module-discipline:
     python3 tools/ci/lint/check-module-discipline.py
 
+rust-module-cycles:
+    python3 tools/ci/lint/check-module-cycles.py
+
 rust-error-shape:
     python3 tools/ci/lint/check-error-shape.py
 
@@ -596,6 +599,7 @@ rust-policy:
     @just rust-derive-allowlist
     @just rust-cargo-toml-hygiene
     @just rust-module-discipline
+    @just rust-module-cycles
     @just rust-error-shape
     @just rust-digest-fallibility
     @just rust-test-authority

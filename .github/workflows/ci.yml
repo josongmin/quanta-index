@@ -226,6 +226,9 @@ jobs:
       - name: Module discipline (mod.rs / contract lib.rs facade-only)
         run: python3 tools/ci/lint/check-module-discipline.py
 
+      - name: Module cycles (every crate's module graph points one way)
+        run: python3 tools/ci/lint/check-module-cycles.py
+
       - name: Error shape (pub *Error must implement std::error::Error)
         run: python3 tools/ci/lint/check-error-shape.py
 

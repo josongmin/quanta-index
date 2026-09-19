@@ -9,13 +9,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use imbl::OrdMap;
+use quanta_index_contract::AuxEpochV1;
 use quanta_index_contract::{ChunkId, RuntimeCatalogIngestBatch};
-use quanta_index_core::CoreError;
+use quanta_index_core::{AuxiliaryGenerationKeyV1, CoreError};
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
-use crate::auxiliary_authority::{RuntimeCatalogDelta, RuntimeDirtyDelta};
 use crate::readiness::errors::{
     ERR_RUNTIME_CATALOG_CONFLICTING_BATCH, ERR_RUNTIME_CATALOG_STALE_BATCH,
     ERR_RUNTIME_CATALOG_UNKNOWN_DOC_ID,
@@ -403,3 +403,33 @@ impl_struct_serde!(RuntimeMetadataState {
 impl_struct_serde!(RuntimeAuthoritySnapshot {
     entries: BTreeMap<AuthorityKey, RuntimeMetadataState>,
 });
+
+/// What one dirty-overlay batch changes.
+///
+/// The generation's meta is carried unchanged so the generation exists in
+/// the catalog even when the batch nets to zero dirty docs: a published
+/// empty overlay is materialized, an absent one is not.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RuntimeDirtyDelta {
+    pub(crate) generation: AuxiliaryGenerationKeyV1,
+    /// The epoch the snapshot after this delta has.
+    pub(crate) epoch: AuxEpochV1,
+    pub(crate) upserts: Vec<(ChunkId, DirtyDocState)>,
+    pub(crate) deletes: Vec<ChunkId>,
+    pub(crate) meta: RuntimeStateMeta,
+}
+
+/// What one runtime catalog batch changes: the whole catalog of the
+/// generation, replaced, plus its meta.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RuntimeCatalogDelta {
+    pub(crate) generation: AuxiliaryGenerationKeyV1,
+    /// The epoch the snapshot after this delta has.
+    pub(crate) epoch: AuxEpochV1,
+    pub(crate) meta: RuntimeStateMeta,
+    pub(crate) changed_docs: OrdMap<ChunkId, ChangedDocState>,
+    pub(crate) doc_facets: OrdMap<ChunkId, DocFacetState>,
+    pub(crate) snapshots: OrdMap<Box<str>, BTreeSet<ChunkId>>,
+    pub(crate) affected_docs: OrdMap<Box<str>, BTreeSet<ChunkId>>,
+    pub(crate) invalidated_by_docs: OrdMap<Box<str>, BTreeSet<ChunkId>>,
+}

@@ -8,14 +8,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use imbl::OrdMap;
+use quanta_index_contract::AuxEpochV1;
 use quanta_index_contract::lex::{ParseTreeRecord, compute_parse_tree_source_hash};
 use quanta_index_contract::{ChunkId, ChunkRecord};
-use quanta_index_core::CoreError;
+use quanta_index_core::{AuxiliaryGenerationKeyV1, CoreError};
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
-use crate::auxiliary_authority::{StructuralChunksDelta, StructuralTreesDelta};
 use crate::readiness::keys::{AuthorityKey, TrackAuthorityKey};
 use crate::readiness::serde_support::impl_struct_serde;
 use crate::readiness::track_state::TrackAuthorityState;
@@ -230,3 +230,37 @@ impl_struct_serde!(StructuralAuthoritySnapshot {
     entries: BTreeMap<AuthorityKey, StructuralAuthorityState>,
     tracks: BTreeMap<TrackAuthorityKey, TrackAuthorityState>,
 });
+
+/// What one structural batch changes: parse trees removed and written,
+/// the seal request after the batch, and the structural track's state
+/// after the batch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StructuralTreesDelta {
+    pub(crate) generation: AuxiliaryGenerationKeyV1,
+    /// The epoch the snapshot after this delta has.
+    pub(crate) epoch: AuxEpochV1,
+    pub(crate) removed: BTreeSet<ChunkId>,
+    pub(crate) upserts: Vec<(ChunkId, ParseTreeRecord)>,
+    pub(crate) seal_requested: bool,
+    pub(crate) track: TrackAuthorityState,
+    /// Whether the track sealed in this batch (the seal was requested and
+    /// trees exist), which the caller reports on its receipt.
+    pub(crate) sealed_track: bool,
+}
+
+/// What one search-corpus batch changes in the structural chunk universe.
+///
+/// The generation's meta is carried unchanged so the generation exists in
+/// the catalog even for a batch without chunks: a published empty chunk
+/// universe is materialized, an absent one is not.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StructuralChunksDelta {
+    pub(crate) generation: AuxiliaryGenerationKeyV1,
+    /// The epoch the snapshot after this delta has.
+    pub(crate) epoch: AuxEpochV1,
+    /// Every chunk goes before the upserts (a `Chunk` surface clear).
+    pub(crate) clear: bool,
+    pub(crate) removed: BTreeSet<ChunkId>,
+    pub(crate) upserts: Vec<ChunkRecord>,
+    pub(crate) meta: StructuralStateMeta,
+}

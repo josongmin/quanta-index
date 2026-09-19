@@ -25,10 +25,14 @@ use quanta_index_core::CoreError;
 use quanta_index_ipc::decode_cbor_payload;
 
 use crate::auxiliary_authority;
-use crate::readiness::history_state::HistoryAuthorityState;
+use crate::readiness::history_state::{HistoryAuthorityState, HistoryDelta};
 use crate::readiness::ledger::{AuxDomainState, Ledger};
-use crate::readiness::runtime_state::RuntimeMetadataState;
-use crate::readiness::structural_state::StructuralAuthorityState;
+use crate::readiness::runtime_state::{
+    RuntimeCatalogDelta, RuntimeDirtyDelta, RuntimeMetadataState,
+};
+use crate::readiness::structural_state::{
+    StructuralAuthorityState, StructuralChunksDelta, StructuralTreesDelta,
+};
 
 impl Ledger {
     /// Validate and apply a history batch in memory, without the durable
@@ -87,7 +91,7 @@ impl Ledger {
     /// stamped with.
     pub(crate) fn apply_history_delta(
         &mut self,
-        delta: &auxiliary_authority::HistoryDelta,
+        delta: &HistoryDelta,
         now: Instant,
     ) -> Result<(), CoreError> {
         self.aux_advance::<HistoryAuthorityState>(
@@ -107,7 +111,7 @@ impl Ledger {
     /// stamped with.
     pub(crate) fn apply_runtime_dirty_delta(
         &mut self,
-        delta: &auxiliary_authority::RuntimeDirtyDelta,
+        delta: &RuntimeDirtyDelta,
         now: Instant,
     ) -> Result<(), CoreError> {
         self.aux_advance::<RuntimeMetadataState>(
@@ -127,7 +131,7 @@ impl Ledger {
     /// rows were stamped with: the generation's catalog is replaced whole.
     pub(crate) fn apply_runtime_catalog_delta(
         &mut self,
-        delta: &auxiliary_authority::RuntimeCatalogDelta,
+        delta: &RuntimeCatalogDelta,
         now: Instant,
     ) -> Result<(), CoreError> {
         self.aux_advance::<RuntimeMetadataState>(
@@ -148,7 +152,7 @@ impl Ledger {
     /// structural track's state.
     pub(crate) fn apply_structural_trees_delta(
         &mut self,
-        delta: &auxiliary_authority::StructuralTreesDelta,
+        delta: &StructuralTreesDelta,
         now: Instant,
     ) -> Result<(), CoreError> {
         self.aux_advance::<StructuralAuthorityState>(
@@ -175,7 +179,7 @@ impl Ledger {
     /// stamped with.
     pub(crate) fn apply_structural_chunks_delta(
         &mut self,
-        delta: &auxiliary_authority::StructuralChunksDelta,
+        delta: &StructuralChunksDelta,
         now: Instant,
     ) -> Result<(), CoreError> {
         self.aux_advance::<StructuralAuthorityState>(

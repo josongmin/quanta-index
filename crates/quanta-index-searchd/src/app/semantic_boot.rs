@@ -13,9 +13,7 @@
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
-use quanta_index_contract::{
-    OwnerDocKind, SearchPlaneTrackKind, SemanticCorpusKindV1, SemanticIngestBatch,
-};
+use quanta_index_contract::SearchPlaneTrackKind;
 use quanta_index_core::{
     CoreError, SealedGenerationScanPort, SemanticScopeStreamBuildPort, SemanticStreamWindowPolicy,
 };
@@ -25,16 +23,7 @@ use super::boot_inventory::{TrackInventoryReportV1, seed_track_readiness};
 
 use super::LegacySemanticJournalStore;
 
-/// Outcome of the one-shot legacy semantic journal migration.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SemanticMigrationOutcome {
-    /// No legacy `journal.cbor` present; nothing to migrate.
-    NoLegacyJournal,
-    /// Completion marker already present; migration skipped.
-    AlreadyMigrated,
-    /// Migration ran and applied `imported` batches into durable generations.
-    Migrated { imported: usize },
-}
+pub use super::legacy_semantic_migration::SemanticMigrationOutcome;
 
 /// Report of durable semantic readiness seeding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -76,25 +65,6 @@ pub struct SemanticBootReport {
     pub seed: SemanticSeedReport,
     /// Wall-clock cost of `seed_persisted_semantic_readiness`.
     pub seed_micros: u128,
-}
-
-pub(super) fn normalize_legacy_semantic_batch_v1(
-    batch: &SemanticIngestBatch,
-) -> SemanticIngestBatch {
-    let mut normalized = batch.clone();
-    for scope in &mut normalized.replace_scopes {
-        let legacy_owner_id =
-            format!("legacy-path:{}", scope.scope.repo_relative_path.as_str()).into_boxed_str();
-        for embedding in &mut scope.embeddings {
-            if embedding.owner_kind == OwnerDocKind::Chunk
-                && embedding.corpus_kind == SemanticCorpusKindV1::RawCodeFallback
-            {
-                embedding.owner_id = legacy_owner_id.clone();
-                embedding.parent_owner_id = Some(legacy_owner_id.clone());
-            }
-        }
-    }
-    normalized
 }
 
 /// Migrate the legacy semantic journal into durable generations exactly once.
@@ -159,8 +129,9 @@ mod tests {
     use super::{
         Arc, Ledger, LegacySemanticJournalStore, RwLock, SearchPlaneTrackKind,
         SemanticMigrationOutcome, migrate_legacy_semantic_journal,
-        normalize_legacy_semantic_batch_v1, seed_persisted_semantic_readiness,
+        seed_persisted_semantic_readiness,
     };
+    use crate::app::legacy_semantic_migration::normalize_legacy_semantic_batch_v1;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
     type GenerationKey = (RepoId, RevisionId, ManifestGeneration);

@@ -2,14 +2,16 @@
 //!
 //! Physical publication may span a wider ingest operation, but every durable
 //! history-retention and composite activation mutation for one repo/revision
-//! pair is serialized here.  Lower storage owners must not introduce another
+//! pair is serialized here, under the pair's stripe of the
+//! [`SearchCorpusPairMutationCoordinator`] (`pair_lock`, the leaf the stores
+//! check guards against).  Lower storage owners must not introduce another
 //! pair-local mutation lock.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, RwLock};
 
 use quanta_index_contract::{
-    GenerationSnapshot, RepoId, RevisionId, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
+    GenerationSnapshot, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
     SearchPlaneSearchCorpusRollbackCasAck, SearchPlaneTrackKind,
 };
 use quanta_index_core::{
@@ -19,10 +21,7 @@ use quanta_index_core::{
 };
 
 use crate::ingest_dispatcher::SearchCorpusAuthorityInspectPort;
-use crate::readiness::{
-    ERR_SEARCH_TRACK_GENERATION_NOT_SEALED, SEARCH_CORPUS_LOCK_STRIPES_V1,
-    search_corpus_lock_stripe_v1,
-};
+use crate::readiness::ERR_SEARCH_TRACK_GENERATION_NOT_SEALED;
 use crate::search_corpus_retention::SearchCorpusIndexBytesPort;
 use crate::{
     ActivationCatalog, AuxiliaryAuthorityStore, Ledger, OpenedSnapshot,
@@ -30,88 +29,15 @@ use crate::{
     SearchCorpusGenerationActivationV1, SearchCorpusGenerationV1, SnapshotKey, SnapshotRegistries,
 };
 
+mod pair_lock;
+
+pub(crate) use pair_lock::{
+    ActiveSearchCorpusPinReadPort, SearchCorpusPairMutationCoordinator,
+    SearchCorpusPairMutationGuard,
+};
+
 pub(crate) const ERR_ACTIVATION_TARGET_UNOPENABLE: &str = "ACTIVATION_TARGET_UNOPENABLE";
 const ERR_ROLLBACK_TARGET_UNOPENABLE: &str = "ROLLBACK_TARGET_UNOPENABLE";
-
-#[derive(Debug)]
-pub(crate) struct SearchCorpusPairMutationCoordinator {
-    pair_locks: [Mutex<()>; SEARCH_CORPUS_LOCK_STRIPES_V1],
-}
-
-impl SearchCorpusPairMutationCoordinator {
-    #[must_use]
-    pub(crate) fn shared() -> Arc<Self> {
-        Arc::new(Self {
-            pair_locks: std::array::from_fn(|_index| Mutex::new(())),
-        })
-    }
-
-    pub(crate) fn lock_pair<'a>(
-        &'a self,
-        repo_id: &RepoId,
-        revision_id: &RevisionId,
-    ) -> Result<SearchCorpusPairMutationGuard<'a>, CoreError> {
-        let stripe = search_corpus_lock_stripe_v1(repo_id, revision_id);
-        let lock = self.pair_locks.get(stripe).ok_or_else(|| {
-            CoreError::Storage(format!(
-                "search-corpus lifecycle: computed pair-lock stripe {stripe} outside configured range"
-            ))
-        })?;
-        let guard = lock.lock().map_err(|error| {
-            CoreError::Storage(format!(
-                "search-corpus lifecycle: pair-lock stripe {stripe} poisoned: {error}"
-            ))
-        })?;
-        Ok(SearchCorpusPairMutationGuard {
-            coordinator: self,
-            stripe,
-            repo_id: repo_id.clone(),
-            revision_id: revision_id.clone(),
-            _guard: guard,
-        })
-    }
-}
-
-pub(crate) struct SearchCorpusPairMutationGuard<'a> {
-    coordinator: &'a SearchCorpusPairMutationCoordinator,
-    stripe: usize,
-    repo_id: RepoId,
-    revision_id: RevisionId,
-    _guard: MutexGuard<'a, ()>,
-}
-
-impl SearchCorpusPairMutationGuard<'_> {
-    pub(crate) fn require_pair_v1(
-        &self,
-        expected: &SearchCorpusPairMutationCoordinator,
-        repo_id: &RepoId,
-        revision_id: &RevisionId,
-    ) -> Result<(), CoreError> {
-        if !std::ptr::eq(self.coordinator, expected) {
-            return Err(CoreError::Storage(
-                "search-corpus lifecycle: mutation guard belongs to a different coordinator"
-                    .to_string(),
-            ));
-        }
-        if self.repo_id != *repo_id || self.revision_id != *revision_id {
-            return Err(CoreError::Storage(format!(
-                "search-corpus lifecycle: mutation guard pair identity mismatch: protected repo={} revision={}, requested repo={} revision={}",
-                self.repo_id.as_str(),
-                self.revision_id.as_str(),
-                repo_id.as_str(),
-                revision_id.as_str(),
-            )));
-        }
-        let expected_stripe = search_corpus_lock_stripe_v1(repo_id, revision_id);
-        if self.stripe != expected_stripe {
-            return Err(CoreError::Storage(format!(
-                "search-corpus lifecycle: mutation guard stripe {} does not protect requested stripe {expected_stripe}",
-                self.stripe,
-            )));
-        }
-        Ok(())
-    }
-}
 
 /// Opens the activation and rollback-history authorities as one lifecycle
 /// unit.  Production composition must use this owner rather than opening either
@@ -211,19 +137,6 @@ impl SearchCorpusLifecycleOwner {
         }
         Ok(active_pairs.len())
     }
-}
-
-pub(crate) trait ActiveSearchCorpusPinReadPort: std::fmt::Debug + Send + Sync {
-    fn active_search_corpus_under_guard_v1(
-        &self,
-        guard: &SearchCorpusPairMutationGuard<'_>,
-        repo_id: &RepoId,
-        revision_id: &RevisionId,
-    ) -> Result<Option<SearchCorpusGenerationV1>, CoreError>;
-
-    fn all_active_search_corpora_for_bootstrap_v1(
-        &self,
-    ) -> Result<Vec<SearchCorpusGenerationV1>, CoreError>;
 }
 
 /// Where an activation, a rollback or a restart proves a pair and puts the

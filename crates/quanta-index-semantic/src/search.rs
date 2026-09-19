@@ -251,7 +251,7 @@ pub(crate) async fn open_generation(
             ),
         });
     }
-    load_generation_contract(&generation_dir)?.validate_manifest(&manifest)?;
+    manifest.validate_against(&load_generation_contract(&generation_dir)?)?;
     let normalization = manifest.normalization_contract()?;
 
     let dimension = usize::try_from(manifest.dimension).map_err(|err| {

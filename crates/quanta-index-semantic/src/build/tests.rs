@@ -27,9 +27,10 @@ use super::{
     PROMOTION_CRASH_BOUNDARY_ENV, PROMOTION_CRASH_EXIT_CODE, STAGING_DIR_NAME,
     StreamScopeAuthorityV1, build_stream, column_as, ensure_generation_contract, failpoint,
     open_connection, persist_generation_contract, recover_dataset_artifacts,
-    stage_generation_contract, write_atomic,
+    stage_generation_contract,
 };
 use crate::budget::{DenseLaneBudgetV1, DenseLaneTalliesV1};
+use crate::durable_write::{set_atomic_write_fail_before_rename_action, write_atomic};
 use crate::generation_contract::GenerationContract;
 use crate::integrity::SealTalliesV1;
 use crate::layout::{
@@ -432,9 +433,9 @@ fn atomic_sidecar_write_cleans_staging_on_pre_rename_failure() -> TestResult {
 
     let temp = tempdir()?;
     let target = temp.path().join("manifest.cbor");
-    failpoint::set_atomic_write_fail_before_rename_action(Some(ACTION));
+    set_atomic_write_fail_before_rename_action(Some(ACTION));
     let result = write_atomic(&target, b"must-not-promote", ACTION);
-    failpoint::set_atomic_write_fail_before_rename_action(None);
+    set_atomic_write_fail_before_rename_action(None);
 
     assert!(result.is_err());
     assert!(!target.exists());

@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use fs2::FileExt as _;
-use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SemanticIngestBatch};
+use quanta_index_contract::{
+    ManifestGeneration, OwnerDocKind, RepoId, RevisionId, SemanticCorpusKindV1, SemanticIngestBatch,
+};
 use quanta_index_core::{
     CoreError, SemanticScopeStreamBuildPort, SemanticStreamWindowPolicy,
     build_resident_semantic_batch_v1,
@@ -19,7 +21,35 @@ use quanta_index_semantic::{
 };
 use sha2::{Digest as _, Sha256};
 
-use super::semantic_boot::{SemanticMigrationOutcome, normalize_legacy_semantic_batch_v1};
+/// Outcome of the one-shot legacy semantic journal migration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SemanticMigrationOutcome {
+    /// No legacy `journal.cbor` present; nothing to migrate.
+    NoLegacyJournal,
+    /// Completion marker already present; migration skipped.
+    AlreadyMigrated,
+    /// Migration ran and applied `imported` batches into durable generations.
+    Migrated { imported: usize },
+}
+
+pub(super) fn normalize_legacy_semantic_batch_v1(
+    batch: &SemanticIngestBatch,
+) -> SemanticIngestBatch {
+    let mut normalized = batch.clone();
+    for scope in &mut normalized.replace_scopes {
+        let legacy_owner_id =
+            format!("legacy-path:{}", scope.scope.repo_relative_path.as_str()).into_boxed_str();
+        for embedding in &mut scope.embeddings {
+            if embedding.owner_kind == OwnerDocKind::Chunk
+                && embedding.corpus_kind == SemanticCorpusKindV1::RawCodeFallback
+            {
+                embedding.owner_id = legacy_owner_id.clone();
+                embedding.parent_owner_id = Some(legacy_owner_id.clone());
+            }
+        }
+    }
+    normalized
+}
 
 const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_RECEIPT_BYTES: u64 = 4 * 1024 * 1024;

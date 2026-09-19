@@ -30,8 +30,8 @@ use quanta_index_core::{
     commit_tree_inheriting_v1, scrub_tree_commitment_v1, sha256_of_file, verify_tree_layout_v1,
 };
 
+use crate::codec::format_unsupported;
 use crate::layout::{self, BUILD_CONTRACT_FILE_NAME, DATASET_DIR_NAME, MANIFEST_FILE_NAME};
-use crate::manifest::format_unsupported;
 
 pub(crate) const SEALED_MANIFEST_FILE_NAME: &str = "semantic-sealed-manifest.cbor";
 const SEALED_MANIFEST_FORMAT_VERSION: u32 = 1;

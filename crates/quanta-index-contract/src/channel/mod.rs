@@ -10,10 +10,11 @@ mod ids;
 mod ops;
 mod records;
 
+pub use crate::semantic_kinds::OwnerDocKind;
 pub use ids::{ChannelSeq, ChunkId, EmbeddingId, SymbolId};
 pub use ops::{
     ClearLexicalSurface, LexicalChannelOp, LexicalFullBundle, LexicalSeal, ReplaceLexicalScope,
     ReplaceStructuralScope, TombstoneLexicalScope, UpsertChunk, UpsertCommit, UpsertParseTree,
     UpsertRef, UpsertSymbol,
 };
-pub use records::{ChunkRecord, ChunkStructuralMetadata, EmbeddingRecord, OwnerDocKind};
+pub use records::{ChunkRecord, ChunkStructuralMetadata, EmbeddingRecord};

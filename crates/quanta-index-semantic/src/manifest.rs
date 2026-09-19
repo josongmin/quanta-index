@@ -18,13 +18,13 @@
 use std::collections::BTreeSet;
 
 use quanta_index_contract::{
-    EmbeddingDistanceMetric, EmbeddingNormalization, GenerationPin, ManifestGeneration, RepoId,
-    RevisionId,
+    EmbeddingNormalization, GenerationPin, ManifestGeneration, RepoId, RevisionId,
 };
 use quanta_index_core::CoreError;
 
 use crate::codec::{self, cbor_serde};
-use crate::generation_contract::GenerationContract;
+use crate::codec::{decode_current_format, format_unsupported};
+use crate::generation_contract::{GenerationContract, ensure_field_eq, normalization_token};
 
 /// Distance metric the lancedb adapter actually serves at query time.
 ///
@@ -51,81 +51,6 @@ fn is_canonical_sha256_v1(value: &str) -> bool {
 /// from the library, so an appended segment is never claimed to carry the
 /// trained recipe.
 pub(crate) const FORMAT_VERSION: u32 = 10;
-
-/// Wire code for a manifest, contract or sealed manifest written under a
-/// format this adapter does not serve.
-pub(crate) const FORMAT_UNSUPPORTED_CODE: &str = "GENERATION_MANIFEST_FORMAT_UNSUPPORTED";
-
-/// The typed refusal for `format_version` of `what`.
-pub(crate) fn format_unsupported(what: &str, format_version: u32, supported: u32) -> CoreError {
-    CoreError::Typed {
-        code: FORMAT_UNSUPPORTED_CODE.to_string(),
-        message: format!(
-            "semantic: {what} has format version {format_version}; this adapter serves format {supported} only — rebuild the generation from its producer"
-        ),
-    }
-}
-
-/// The `format_version` of a manifest-shaped CBOR map, read without
-/// decoding the rest, so a foreign format is named typed rather than as a
-/// decode failure of the current shape.
-struct FormatVersionProbe(u32);
-
-impl<'de> serde::Deserialize<'de> for FormatVersionProbe {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct ProbeVisitor;
-
-        impl<'de> serde::de::Visitor<'de> for ProbeVisitor {
-            type Value = FormatVersionProbe;
-
-            fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                formatter.write_str("a map carrying `format_version`")
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: serde::de::MapAccess<'de>,
-            {
-                let mut format_version: Option<u32> = None;
-                while let Some(key) = map.next_key::<String>()? {
-                    if key == "format_version" {
-                        if format_version.is_some() {
-                            return Err(serde::de::Error::duplicate_field("format_version"));
-                        }
-                        format_version = Some(map.next_value()?);
-                    } else {
-                        let _ignored: serde::de::IgnoredAny = map.next_value()?;
-                    }
-                }
-                format_version
-                    .map(FormatVersionProbe)
-                    .ok_or_else(|| serde::de::Error::missing_field("format_version"))
-            }
-        }
-
-        deserializer.deserialize_map(ProbeVisitor)
-    }
-}
-
-/// Decode `bytes` as the current `what`, refusing any other format typed.
-///
-/// The format is probed first: bytes that decode as a map naming another
-/// `format_version` are refused as [`FORMAT_UNSUPPORTED_CODE`]; bytes that
-/// name the current format but do not decode as its shape are corrupt.
-pub(crate) fn decode_current_format<T: serde::de::DeserializeOwned>(
-    bytes: &[u8],
-    what: &str,
-    supported: u32,
-) -> Result<T, CoreError> {
-    let FormatVersionProbe(format_version) = codec::decode(bytes, what)?;
-    if format_version != supported {
-        return Err(format_unsupported(what, format_version, supported));
-    }
-    codec::decode(bytes, what)
-}
 
 /// The dense lane's index contract, sealed with the generation (QI-BB-027).
 ///
@@ -528,23 +453,6 @@ cbor_serde!(SemanticManifest {
     vector_index: VectorIndexSealV1,
 });
 
-#[must_use]
-pub(crate) fn distance_metric_token(metric: EmbeddingDistanceMetric) -> &'static str {
-    match metric {
-        EmbeddingDistanceMetric::Cosine => "cosine",
-        EmbeddingDistanceMetric::Dot => "dot",
-        EmbeddingDistanceMetric::Euclidean => "euclidean",
-    }
-}
-
-#[must_use]
-pub(crate) fn normalization_token(normalization: EmbeddingNormalization) -> &'static str {
-    match normalization {
-        EmbeddingNormalization::None => "none",
-        EmbeddingNormalization::L2Unit => "l2_unit",
-    }
-}
-
 /// What the main semantic table committed to at seal time.
 pub(crate) struct SemanticRowSealV1 {
     pub(crate) row_count: u64,
@@ -569,6 +477,55 @@ pub(crate) struct ClusterMembershipSealV1 {
 }
 
 impl SemanticManifest {
+    /// Refuse a manifest that disagrees with the generation's durable build
+    /// contract, or a contract under a format this adapter does not serve.
+    pub(crate) fn validate_against(&self, contract: &GenerationContract) -> Result<(), CoreError> {
+        contract.validate_format()?;
+        ensure_field_eq!(
+            CoreError::Storage,
+            self.model_id,
+            contract.model_id,
+            "semantic: manifest model_id `{}` does not match sealed build contract `{}`"
+        );
+        ensure_field_eq!(
+            CoreError::Storage,
+            self.model_version,
+            contract.model_version,
+            "semantic: manifest model_version {:?} does not match sealed build contract {:?}"
+        );
+        ensure_field_eq!(
+            CoreError::Storage,
+            self.dimension,
+            contract.dimension,
+            "semantic: manifest dimension {} does not match sealed build contract {}"
+        );
+        ensure_field_eq!(
+            CoreError::Storage,
+            self.distance_metric,
+            contract.distance_metric,
+            "semantic: manifest distance_metric `{}` does not match sealed build contract `{}`"
+        );
+        ensure_field_eq!(
+            CoreError::Storage,
+            self.normalization,
+            contract.normalization,
+            "semantic: manifest normalization `{}` does not match sealed build contract `{}`"
+        );
+        ensure_field_eq!(
+            CoreError::Storage,
+            self.required_corpora,
+            contract.required_corpora,
+            "semantic: manifest required_corpora {:?} does not match sealed build contract {:?}"
+        );
+        ensure_field_eq!(
+            CoreError::Storage,
+            self.corpus_policy_digest,
+            contract.corpus_policy_digest,
+            "semantic: manifest corpus_policy_digest {:?} does not match sealed build contract {:?}"
+        );
+        Ok(())
+    }
+
     /// Assemble a manifest from the generation contract plus the four
     /// commitment groups sealed alongside it.
     ///
@@ -740,6 +697,7 @@ impl SemanticManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::FORMAT_UNSUPPORTED_CODE;
 
     /// The generation the fixtures seal; lineage records name it.
     const GENERATION: u64 = 7;

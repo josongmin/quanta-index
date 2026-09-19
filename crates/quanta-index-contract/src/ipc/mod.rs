@@ -7,6 +7,7 @@ mod quarantine;
 mod semantic_source;
 mod split;
 
+pub use crate::semantic_kinds::{CapabilityStatusV1, SemanticCorpusKindV1, SourceRoleV1};
 pub use batch_body::*;
 pub use control::*;
 pub use error::*;

@@ -1,0 +1,12 @@
+# Module dependency cycles `check-module-cycles.py` still tolerates
+# (QI-BB-013 보완 #2), one per line: `<crate>: <module>, <module>, ...`.
+# Every other cycle fails the lint, and so does a line here whose cycle
+# grew, shrank or went away: this list changes only by a reviewed edit.
+#
+# quanta-index-sdk — the client/builder shape: `ReaderClient` (and the
+# producer and control clients) hand out one builder per domain module,
+# and every builder borrows its client back to send the request. Breaking
+# it means the builders depend on a request-transport port below the
+# clients, which reshapes the SDK's public builder types; deferred while
+# the SDK surface is under concurrent change.
+quanta-index-sdk: client, generations, history, lexical, namespace, observability, quarantine, repomap, runtime, search, semantic, structural, symbol, text_query_builder

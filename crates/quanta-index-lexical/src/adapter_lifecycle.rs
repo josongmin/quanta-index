@@ -1,6 +1,5 @@
 //! A sealed generation's lifecycle ports: validation, scrub, quarantine, discard and reclaim.
 
-
 use crate::generation_dir::{
     generation_tree_bytes, is_writer_lock_entry, sync_generation_directory,
 };

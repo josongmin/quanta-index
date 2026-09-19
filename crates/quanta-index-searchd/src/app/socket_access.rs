@@ -136,7 +136,7 @@ impl PrincipalResolver for SystemPrincipals {
 /// resolver. Every knob is independent; an unset knob is `private`. The
 /// config chain applies it on both entry points.
 pub(crate) fn socket_access_policies_from_lookup(
-    lookup: &super::config::EnvLookup<'_>,
+    lookup: &dyn Fn(&str) -> Result<Option<String>>,
     principals: &dyn PrincipalResolver,
 ) -> Result<SocketAccessPolicies> {
     let mut policies = [
