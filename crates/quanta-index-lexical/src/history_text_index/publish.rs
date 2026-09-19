@@ -32,9 +32,10 @@ use quanta_index_core::{
 };
 use tantivy::{Index, IndexWriter, TantivyDocument};
 
+use crate::analyzer::register_analyzers;
 use crate::history_text_index::layout::{epoch_dir, fsync_parent, kind_dir, staging_dir};
 use crate::history_text_index::manifest::{self, HistoryTextManifest};
-use crate::history_text_index::schema::{KindSchema, doc_key_text, register_tokenizers};
+use crate::history_text_index::schema::{KindSchema, doc_key_text};
 
 /// The engine's commit file, rewritten in place on every commit.
 const INDEX_COMMIT_FILE_NAME: &str = "meta.json";
@@ -182,7 +183,7 @@ fn open_or_create_kind_index(schema: &KindSchema, dir: &Path) -> Result<Index, C
                 schema.kind.as_str()
             ))
         })?;
-    register_tokenizers(&index);
+    register_analyzers(&index);
     Ok(index)
 }
 

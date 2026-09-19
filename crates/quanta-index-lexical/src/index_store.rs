@@ -5,8 +5,8 @@
     reason = "the module is private to the crate; `pub(crate)` is the visibility its items need across the crate's modules, and the workspace's `unreachable_pub = deny` forbids the bare `pub`"
 )]
 
-use crate::analyzer::{NormalizingTokenizer, tokenizer_name};
-use crate::normalize::{CaseMode, TEXT_NORMALIZER_VERSION, TextNormalizerVersion};
+use crate::analyzer::register_analyzers;
+use crate::normalize::{TEXT_NORMALIZER_VERSION, TextNormalizerVersion};
 use crate::{
     DURABLE_WRITE_TEMPORARY_MARKER, LEXICAL_SEALED_IDENTITY_FILE_NAME, SchemaFields,
     sealed_generation,
@@ -18,7 +18,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tantivy::Index;
-use tantivy::tokenizer::TextAnalyzer;
 
 /// Open an existing generation's index strictly, never creating or
 /// repairing one, with the tokenizers registered.
@@ -45,7 +44,7 @@ pub(crate) fn open_sealed_index(generation_dir: &Path) -> Result<Index, CoreErro
             ),
         });
     }
-    register_index_tokenizers(&index);
+    register_analyzers(&index);
     Ok(index)
 }
 
@@ -53,20 +52,6 @@ pub(crate) fn open_sealed_index(generation_dir: &Path) -> Result<Index, CoreErro
 /// (`.<file>.tmp-<pid>-<n>`), which only a crash leaves behind.
 pub(crate) fn is_durable_write_temporary(name: &str) -> bool {
     name.starts_with('.') && name.contains(DURABLE_WRITE_TEMPORARY_MARKER)
-}
-
-/// Register the two analyzers every text field names.
-///
-/// Both are the shared normalizer; they differ only in case mode. No
-/// filter is chained after it: the normalizer already owns boundaries,
-/// folding, and the term-length cap.
-pub(crate) fn register_index_tokenizers(index: &Index) {
-    for case in [CaseMode::Folded, CaseMode::Sensitive] {
-        index.tokenizers().register(
-            tokenizer_name(case),
-            TextAnalyzer::from(NormalizingTokenizer::new(case)),
-        );
-    }
 }
 
 /// Open or create the Tantivy index at `path` under the adapter's schema.
@@ -91,7 +76,7 @@ pub(crate) fn open_or_create_index(fields: &SchemaFields, path: &Path) -> Result
         .schema(fields.schema.clone())
         .open_or_create(directory)
         .map_err(|err| CoreError::Storage(format!("lexical: open generation index: {err}")))?;
-    register_index_tokenizers(&index);
+    register_analyzers(&index);
     Ok(index)
 }
 

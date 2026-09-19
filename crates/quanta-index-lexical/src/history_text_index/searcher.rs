@@ -10,11 +10,12 @@ use quanta_index_core::{
 };
 use tantivy::{Index, IndexReader, ReloadPolicy};
 
+use crate::analyzer::register_analyzers;
 use crate::budgeted_search::budgeted_search;
 use crate::history_text_index::collector::RelevanceCollector;
 use crate::history_text_index::layout::{kind_dir, tree_bytes};
 use crate::history_text_index::query;
-use crate::history_text_index::schema::{KindSchema, register_tokenizers};
+use crate::history_text_index::schema::KindSchema;
 
 /// One kind's opened index.
 struct KindHandle {
@@ -32,7 +33,7 @@ impl KindHandle {
                 dir.display()
             ))
         })?;
-        register_tokenizers(&index);
+        register_analyzers(&index);
         // The epoch is immutable: there is nothing to reload.
         let reader = index
             .reader_builder()

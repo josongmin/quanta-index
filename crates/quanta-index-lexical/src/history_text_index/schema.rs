@@ -11,13 +11,12 @@
 //! epoch's snapshot, never from the index.
 
 use quanta_index_core::{CoreError, HistoryTextDocKeyV1, HistoryTextDocV1, HistoryTextKindV1};
+use tantivy::Term;
 use tantivy::schema::{
     FAST, Field, IndexRecordOption, STRING, Schema, TantivyDocument, TextFieldIndexing, TextOptions,
 };
-use tantivy::tokenizer::TextAnalyzer;
-use tantivy::{Index, Term};
 
-use crate::analyzer::{NormalizingTokenizer, tokenizer_name};
+use crate::analyzer::tokenizer_name;
 use crate::normalize::{self, CaseMode};
 
 const DOC_KEY_FIELD: &str = "doc_key";
@@ -152,16 +151,4 @@ pub(super) fn doc_key_text(key: &HistoryTextDocKeyV1) -> String {
         text.push_str(path);
     }
     text
-}
-
-/// Register the two analyzers the text fields name on an opened index.
-///
-/// Both are the shared normalizer; they differ only in case mode.
-pub(super) fn register_tokenizers(index: &Index) {
-    for case in [CaseMode::Folded, CaseMode::Sensitive] {
-        index.tokenizers().register(
-            tokenizer_name(case),
-            TextAnalyzer::from(NormalizingTokenizer::new(case)),
-        );
-    }
 }

@@ -5,7 +5,8 @@
 //! (over-long runs are skipped but still consume their position). Nothing
 //! here decides what a token is; that contract lives in one place.
 
-use tantivy::tokenizer::{Token as IndexToken, TokenStream, Tokenizer};
+use tantivy::Index;
+use tantivy::tokenizer::{TextAnalyzer, Token as IndexToken, TokenStream, Tokenizer};
 
 use crate::normalize::{self, CaseMode, Token};
 
@@ -88,6 +89,21 @@ impl TokenStream for NormalizedTokenStream<'_> {
 
     fn token_mut(&mut self) -> &mut IndexToken {
         self.token
+    }
+}
+
+/// Register the two analyzers every text field names, on the corpus index
+/// and on the history text index alike.
+///
+/// Both are the shared normalizer; they differ only in case mode. No
+/// filter is chained after it: the normalizer already owns boundaries,
+/// folding, and the term-length cap.
+pub(crate) fn register_analyzers(index: &Index) {
+    for case in [CaseMode::Folded, CaseMode::Sensitive] {
+        index.tokenizers().register(
+            tokenizer_name(case),
+            TextAnalyzer::from(NormalizingTokenizer::new(case)),
+        );
     }
 }
 
