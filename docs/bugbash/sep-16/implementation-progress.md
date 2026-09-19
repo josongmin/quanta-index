@@ -2475,6 +2475,43 @@ core `unique_inode_tree_bytes`가 root 아래에서 사라진 항목(NotFound)�
 `track_disk_bytes`가 이 core walker 하나를 쓰도록 변경(hard link 1회 계산; e2e oracle도 inode 기준으로). 3회 반복 실행 green. (5) A7이 runtime 테스트에 복붙한
 "tempdir 0700" 6줄 × **68곳**을 harness `private_tempdir()` 하나로 정리.
 
+## 3.52 QI-BB-010/022/018/019/025 — 귀속 가능한 bench artifact와 stale gate, index 대비 재도출하는 explain, hybrid front door, 모든 caller에 같은 top_k 코드 (fix wave A8, e61f909)
+
+§4 감사가 지적한 것: QI-BB-010 **not closed**(runner가 HEAD에서 깨짐 — `--source-fingerprint` 미전달, `git rev-parse --short || unknown` default 치환,
+artifact에 QPS/RSS/disk/GC 없음, stale gate 없음); QI-BB-022 **WRONG**(hybrid explain의 dense/RRF 축이 client payload 자기일관성 검사, 합성 규칙 미정의);
+QI-BB-018 route가 SDK/CLI에 없음; QI-BB-019 `dense_corpora` doc이 "migration window" 주장; QI-BB-025 wire decode가 range 미검증.
+
+**티켓 완료 기준 대조(코드 기준)**
+
+| 티켓 bullet | 판정 | 근거 |
+| --- | --- | --- |
+| QI-BB-010 완료 기준 #1 current HEAD + digest 일치 **Linux** artifact | **BLOCKED(host)** | Linux perf runner 없음. writer가 `git_head`/`corpus_digest`/`config_digest`/`model_revision`을 찍고 `check-bench-artifacts.py`가 head≠HEAD를 거부하므로 artifact는 release HEAD의 Linux rail이 생산해야 함 |
+| #2 p50/p95/p99, QPS, error/timeout, peak RSS, disk amplification, build/update/GC 시간 | **MET(schema·writer)** | harness `artifact.rs` `BenchArtifactV1`/`BenchRowV1`(단일 writer); tests `the_envelope_carries_every_gate_required_field`, pytest `test_missing_fields_are_named` |
+| #3 clean checkout에서 재현 가능한 명령 | **MET** | `GitHeadV1::resolve`(dirty tree·non-repo는 typed `BENCH_WORKTREE_DIRTY`/`BENCH_GIT_UNAVAILABLE`), runner가 없는 flag를 더 이상 넘기지 않음(`test_the_runner_refuses_a_binary_that_demands_a_fingerprint`가 옛 실패 재현) |
+| 보완 #2 adapter-only/daemon warm/cold/IPC/open/plan/execute 분리 | **MET** | `scale.rs` `DaemonPhaseTimingV1`(scrape한 cold-open·route latency) + `AdapterPhaseTimingV1`(in-process open/plan/execute) |
+| 보완 #4 1/8/32 client, slow client, 혼합 route, count/projection worst case | **rail MET**, Linux 실측 **BLOCKED** | `concurrency.rs` |
+| 보완 #5 stale artifact를 release gate에서 거부 | **gate MET**, idle-host A/B **BLOCKED** | `check-bench-artifacts.py`(schema 2만, 40-hex head, fresh family는 HEAD), `rust-policy`·CI 연결; provenance 없는 schema-1 baseline 삭제 → `compare_dsl_bench.py`는 HEAD 재기준 전까지 typed 실패 |
+| QI-BB-022 완료 기준 #1 score/boost/engine 입력 변경 시 기여·순위 함께 변함 | **MET** | `routes/explain.rs` `rederive_hybrid_lanes`: lexical lane(`hybrid_probe_top_k_v1`), dense lane은 route 자신의 `HybridFilterPlanV1` + `admit_dense_lane_v1`(A1 경로), `fuse_rrf_candidates`. tests `a_both_lane_hybrid_row_reconciles_every_axis_against_the_index`, `a_self_consistent_forged_rank_is_not_reconciled_on_the_fusion_axis`(변경 전 explain에서 fail) |
+| #2 합성 규칙이 emit된 score와 정의된 tolerance 안에서 일치 | **MET** | contract `results/explanation.rs` 규칙 문서화(`lexical.<engine>`, `dense.cosine`, `hybrid.rrf.<lane>` 합 = fused), cosine tolerance 1e-4, lexical bit 동일, RRF는 재도출 순위로 재계산 |
+| #3 presence는 corpus 크기 무관 exact | **MET** | lexical `candidate_presence`(기존), dense `SemanticSearcher::score_candidate`(exact lane, id filter, limit 1). `score_candidate.rs` 2 test |
+| 보완 #1/#4 immutable provenance ID·retention | **미구현(설계 선택)** | explain은 요청이 실어 온 두 쿼리로 재도출; 저장된 실행 기록 없음 → retention surface 없음 |
+| QI-BB-018 완료 기준 #2 API/SDK/CLI 이름·explanation·문서 동일 | **MET** | SDK `HybridQueryBuilder`(type-state), `searchctl hybrid`, contract doc(`lexical_scope` = scoped rerank vs `HybridQueryRequest`) |
+| QI-BB-019 `dense_corpora` doc | **MET** | empty = generation 전체 한 dense lane, 두 모양 모두 canonical, migration window 없음 |
+| QI-BB-025 보완 #1 공유 validator(wire·SDK·dispatcher·adapter) / 완료 기준 "SDK와 raw IPC가 같은 error code" | **MET(coordinator 보정)** | A8 원안은 **decode에서 range 거부 → raw caller는 코드 없이 연결 종료**(완료 기준 위반). coordinator가 decode gate 7곳 제거: SDK(`accepted_top_k`)·encoder(`wire_top_k`)·dispatcher가 같은 `validate_public_top_k`, raw bytes는 decode 후 dispatcher가 typed `QUERY_TOP_K_OUT_OF_RANGE`. tests: contract `every_top_k_bearing_request_refuses_out_of_range_on_encode_and_decodes_it_for_the_dispatcher`(11 route shape), e2e `every_route_refuses_out_of_range_top_k_with_one_code_from_typed_and_raw_callers`(모든 route: raw bytes → 같은 코드, decode 실패 0, dispatch 1), `hybrid_query_rejects_zero_top_k_with_typed_code` |
+
+**Coordinator 수정**: rebase 충돌 3(SDK import union, explain.rs는 A8 구조를 취하고 A2의 budget 인자·A7의 `embed_and_gate_query(…, budget)` 시그니처로 갱신,
+end_to_end는 main의 test 이름·`private_tempdir` 유지); 위 top_k 보정. 별도 commit으로 **A2 착지 때 놓친 CI static fence 3건**(`tools/ci/tests` pytest가 착지
+gate에 없었음)을 현재 boot 순서(history 복원 < inventory seed < active pair 증명 < bind)·단일 proven open·grouped re-export로 retarget + 기존 ruff import 정렬 1건.
+착지 gate lint 단계에 `tools/ci/tests` pytest(215)와 `check-bench-artifacts.py` 추가.
+
+**검증(coordinator, main e3ace23 위 rebase, 순차)**: fmt, check, 정책 lint 8종 + bench-artifact gate + CI pytest 215/215, workspace clippy keep-going 0,
+cargo-modules + public-api 일치, `just rust-doc`, unit 11 crate **1,438/0**(84 binary), searchd-runtime e2e **전체** **281/0 + 1**: 유일한 실패 `e2e_semantic_scope_cap::scope_top_k_shares_the_public_gate`는 harness(typed
+client)가 encode 거부에 걸려 요청을 못 보내고 `IPC_TRANSPORT`로 보고하던 것 — typed encode 거부가 공유 코드를 담는지 + scope `top_k`만 바꾼 raw bytes에 daemon이
+같은 코드로 typed 응답하는지로 재작성(3/3). **A8 clippy**: 에이전트가 clippy를 끝까지 못 돌리고 죽어 30건 이상 남아 있었음(harness 테스트의
+`panic_in_result_fn`/인덱싱 → repo 관례대로 `#[expect(..., reason)]`, `ms` 접미사 필드 → `struct_field_names` expect, wildcard/산술/redundant clone,
+`format!` push → `write!`, 그리고 rail binary 2개에서 A8이 `#[expect(print_*)]`와 `fn main` 사이에 `fn run`을 끼워 속성이 엉뚱한 함수에 붙은 것) — 전부 수정,
+workspace clippy EXIT=0.
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -2496,7 +2533,7 @@ core `unique_inode_tree_bytes`가 root 아래에서 사라진 항목(NotFound)�
 | QI-BB-007 | P1* | (M4)/§3.51 | blocked(M4) — **dev 라벨 MET(A7)** | `hash-dev` selector, unset 거부(`QUANTA_INDEX_ALLOW_DEV_EMBEDDER`), boot notice + gauge(§3.51). judged corpus/real provider는 M4 | — |
 | QI-BB-008 | P2 | §3.25 | closed | activation record 무digest, same-pair retention만, legacy bare-JSON read shim(one-shot) | — |
 | QI-BB-009 | P2 | §3.18/§3.51 | gaps → **MET(A7)** | age cap + global byte cap(retained namespace 소급), manifest 기반 bounded open, provider failure scrape(§3.51) | — |
-| QI-BB-010 | P2 | §3.1 | **not closed** | runner가 HEAD에서 깨짐(`--source-fingerprint` 미전달); `git rev-parse --short \|\| unknown` default 치환; artifact 스키마에 QPS/RSS/disk/GC 없음; stale gate 없음; 측정 자체는 host blocked | A8 |
+| QI-BB-010 | P2 | §3.1/§3.52 | not closed → **tooling MET(A8)**, 측정 **BLOCKED(Linux host)** | `BenchArtifactV1`(40-hex head·digest·host·RSS·QPS·phase), runner 수리, stale-artifact gate(`rust-policy`), schema-1 baseline 삭제, scale 단계 분리, 1/8/32 concurrency rail(§3.52). 남은 것: release HEAD의 Linux artifact 생산 | — |
 | QI-BB-011 | P2 | §3.33/§3.47 | **closed(A6, efeea9a)** | ~~두 번째 fold~~ → normalizer crate 하나, DSL은 fold 안 함, `(?i)`+`case:yes` typed 거부; DSL 경로 golden e2e 29 row(8 spelling fail-before). 남은 것: Sourcegraph route의 `(?i)`는 fail-closed 유지(후속 a) | — |
 | QI-BB-012 | P2 | (다른 세션) | **not closed** | README `:28/:172-175`, ssot `channel-architecture.md:85,340`이 구현과 정면 모순 | 다른 세션 |
 | QI-BB-013 | P3 | §3.32 | gaps | search-plane만 분할; `lexical/src/lib.rs` 8,311→10,363줄, `semantic/build.rs` 증가; compile-time 측정 없음; `too_many_lines = allow` | wave B |
@@ -2504,14 +2541,14 @@ core `unique_inode_tree_bytes`가 root 아래에서 사라진 항목(NotFound)�
 | QI-BB-015 | P2 | §3.28/§3.49/§3.51 | gaps → **MET(A7, A2)** | queue/in-flight·examined·response bytes·track disk bytes·provider failure(A7), GC reclaimed/retained bytes(A2), scrape 경로 문서화(§3.49/§3.51) | — |
 | QI-BB-016 | P3 | §3.26/§3.51 | gaps → **MET(A7)** 단 Tantivy writer 할당 byte 관측 **BLOCKED**(API 없음) | `ProcessMemoryEnvelopeV1` 합산·천장, RSS 관측 + writer admission gate, timer 기반 idle sweep(§3.51) | — |
 | QI-BB-017 | P1 | §3.14/§3.48/§3.49 | gaps → **lexical 측 + 검증 handle 승격 MET(A3, A2)** | lexical open은 manifest+길이, scrub port+receipt(§3.48); activation·restart는 한 번의 proven open 승격(§3.49). 남은 것: semantic cheap open·scrub 스케줄러·legacy v2–v8·scrub port 통합(A4), 10M row budget(host) | A4 |
-| QI-BB-018 | P2 | §3.22/§3.36/§3.46 | gaps → **filter 결속 MET(A1, 1894583)** | ~~dense lane이 DSL filter 무시~~ → 전 variant class 분류 + admission/refill(§3.46, e2e 5 fail-before/pass-after); 남은 것: route가 SDK/CLI에 없음(A8); judged corpus blocked(M4) | A8 |
-| QI-BB-019 | P2 | §3.21 | gaps | `dense_corpora` doc이 "legacy/migration window" 주장; empty=global 이중 의미 | A8 |
+| QI-BB-018 | P2 | §3.22/§3.36/§3.46/§3.52 | **MET(A1+A8)** 단 judged corpus **BLOCKED(M4)** | dense lane filter 결속(§3.46), SDK `HybridQueryBuilder` + `searchctl hybrid` + 문서 동일 표현(§3.52) | — |
+| QI-BB-019 | P2 | §3.21/§3.52 | **MET(A8)** | `dense_corpora` doc: empty = generation 전체 한 lane, 두 모양 canonical, migration window 없음(§3.52) | — |
 | QI-BB-020 | P1 | §3.19/§3.37/§3.49 | gaps(**WRONG**) → **activation guard 밖 증명 MET(A2)** | activation은 짧은 read guard + guard 밖 한 번의 proven open + durable 재확인 후 CAS(§3.49). 남은 것: history-text cold open under lock, reconcile-fail-after-durable, I/O fault injection, latency 실측(host) | wave B |
 | QI-BB-021 | P2 | §3.18/§3.41/§3.51 | gaps → **envelope 선언 MET(A7)**, RSS 실측 **BLOCKED(host)** | stream window가 process envelope의 한 성분(§3.51) | — |
-| QI-BB-022 | P2 | §3.24/§3.36 | gaps(**WRONG**) | hybrid explain의 dense/RRF 축이 client payload 자기일관성 검사; hybrid 합성 규칙 미정의; filter/projection 기여 없음 | A8 |
+| QI-BB-022 | P2 | §3.24/§3.36/§3.52 | gaps(**WRONG**) → **MET(A8)** 단 보완 #1/#4(저장된 provenance ID·retention) **미구현(설계 선택)** | hybrid explain이 route 자신의 filter plan·dense admission·RRF로 index 대비 재도출·대조, 합성 규칙 문서화, dense presence exact(§3.52) | — |
 | QI-BB-023 | P2 | §3.20/§3.37/§3.42/§3.47 | gaps → **predicate 동일·score 결정성 MET(A6)** | ~~두 order가 filter를 다른 의미로~~ → 한 predicate(e2e 8 query × 2 order 동일); ~~score가 ingest 이력 의존~~ → publish compaction으로 live-row 통계(bit-identical test). 남은 것: author/committer 색인(보완 #1, §3.42(b) 결정), latency/RSS budget(host) | — |
 | QI-BB-024 | P2 | §3.17 | gaps | broad regex의 per-query `BTreeSet<String>` + match당 TermQuery(RSS unbounded); bitmap 없음 | wave B |
-| QI-BB-025 | P1 | §3.5/§3.30/§3.39 | gaps | wire decode가 range 미검증(dispatcher 의존); 최대값 `has_more` 분기 e2e 미실행; SDK seed-budget 미게이트 | A8 |
+| QI-BB-025 | P1 | §3.5/§3.30/§3.39/§3.52 | gaps → **한 코드 MET(A8+coordinator)** | SDK·encoder·dispatcher가 같은 validator, raw bytes도 같은 코드의 typed 응답(모든 route e2e), 최대값에서 window 무모순 e2e(§3.52). 남은 것: `has_more=true` 분기(10,001+ row fixture) e2e | — |
 | QI-BB-026 | P1 | §3.13/§3.31 | gaps | content-손상 비활성 generation이 quarantine receipt/list에 없고 rollback 대상에서 제외 안 됨; semantic active 손상 boot e2e 없음 | A2(orphan), wave B |
 | QI-BB-027 | P2 | §3.23/§3.35 | gaps(**WRONG**) | legacy ≤v7/v8 generation은 ANN 누락을 silent exact fallback으로 서비스; append segment ef_construction≠manifest; recall artifact에 HEAD 없음 | A4, A8 |
 | QI-BB-028 | P1 | §3.15 | gaps | semantic row-root attestation(완료 기준 #5) 미구현 | A4 |
