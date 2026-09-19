@@ -3097,3 +3097,4 @@ tests:
 | 2026-09-20 | 97b1c80 | `just rust-profile verify-rust` | **GREEN** — exit 0, 2,565 passed / 0 failed / 2 ignored (B3–B10 + 후속 chain; fmt·check·workspace clippy·정책 lint 13종(module-cycles 포함)·deny·machete·bench build·workspace test·doc) |
 | 2026-09-20 | 97b1c80 | `just rust-fuzz-smoke` | 4 target × 61s 각각 완주, crash 0 |
 | 2026-09-20 | 03946bb | `just rust-profile verify-rust` | **INVALID** — 2,581 passed / 0 failed까지 진행한 뒤 catalog doctest가 `E0463 can't find crate`로 중단. 원인: coordinator가 같은 `test-workspace-lane`에서 B13 build를 동시에 돌렸다(자체 절차 위반). 같은 doctest(`cargow test -p quanta-index-catalog --doc`)를 단독으로 다시 돌리면 통과. 최종 HEAD에서 동시 build 없이 재검증한다 |
+| 2026-09-20 | 87afd08 | `just rust-profile verify-rust` (clean worktree, 동시 build 없음) | **GREEN** — exit 0, 2,578 passed / 0 failed / 2 ignored (B12 + B13 포함; 03946bb의 INVALID run을 대체) |
