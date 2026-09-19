@@ -91,7 +91,7 @@ use quanta_index_contract::lex::{
 use quanta_index_contract::{
     BatchIngestMode, CandidatePresenceV1, ChunkRecord, ClearLexicalSurface,
     FileContributorIdentityEntry, FileContributorIngestBatch, FileOwnerProjectionRow,
-    FileOwnershipIngestBatch, GenerationSnapshot, HighlightSpan, LexicalCandidate, LexicalCursorV1,
+    FileOwnershipIngestBatch, GenerationSnapshot, HighlightSpan, LexicalCandidate, LexicalCursor,
     LexicalFullBundle, LexicalSeal, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions,
     LqPatternType, LqPredicateArg, LqQuery, LqSelect, LqType, LqVisibility, LqYesNoOnly,
     ManifestGeneration, QUERY_CURSOR_GENERATION_MISMATCH_CODE, QueryConstraintSetV1,
@@ -112,7 +112,7 @@ use quanta_index_core::{
     IntegrityScrubBudgetV1, IntegrityScrubCandidateV1, IntegrityScrubCursorV1, IntegrityScrubPort,
     IntegrityScrubReportV1, LEXICAL_WRITER_HEAP_BYTES_MIN, LexicalArtifactIdentityV1,
     LexicalCandidateExplanationV1, LexicalExecutionBudgetV1, LexicalIndexBuildPort,
-    LexicalIndexOpenPort, LexicalPageSpecV1, LexicalPredicateV1, LexicalScoreEngineV1,
+    LexicalIndexOpenPort, LexicalPageSpec, LexicalPredicateV1, LexicalScoreEngineV1,
     LexicalScoreTraceV1, LexicalSearchPageV1, LexicalSearcher, LexicalWriterCacheStats,
     LexicalWriterPolicy, MetricPointV1, MetricSourcePort, QUARANTINE_TARGET_NOT_QUARANTINED_CODE,
     QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort, RegexMatchCachePolicy,
@@ -5153,9 +5153,9 @@ struct PreparedPredicatePlan {
 
 /// What an `index:no` text scan returns: at most `limit` rows after the
 /// boundary, projected when asked.
-struct ManualPageV1<'a> {
+struct ManualPage<'a> {
     limit: usize,
-    after: Option<&'a LexicalCursorV1>,
+    after: Option<&'a LexicalCursor>,
     group: Option<ProjectionGroup>,
 }
 
@@ -5298,8 +5298,8 @@ impl TantivySearcher {
     /// generation: a score only compares within the ranking that made it.
     fn page_boundary(
         &self,
-        page: &LexicalPageSpecV1,
-    ) -> Result<Option<Arc<LexicalCursorV1>>, CoreError> {
+        page: &LexicalPageSpec,
+    ) -> Result<Option<Arc<LexicalCursor>>, CoreError> {
         match &page.after {
             None => Ok(None),
             Some(cursor) if cursor.manifest_generation == self.generation => {
@@ -5330,7 +5330,7 @@ impl TantivySearcher {
         searcher: &tantivy::Searcher,
         compiled: &dyn Query,
         limit: usize,
-        after: Option<Arc<LexicalCursorV1>>,
+        after: Option<Arc<LexicalCursor>>,
         boost: f32,
         count: bool,
         surface: &str,
@@ -5386,7 +5386,7 @@ impl TantivySearcher {
         searcher: &tantivy::Searcher,
         compiled: &dyn Query,
         group: ProjectionGroup,
-        after: Option<&LexicalCursorV1>,
+        after: Option<&LexicalCursor>,
         boost: f32,
         limit: usize,
         surface: &str,
@@ -5991,7 +5991,7 @@ impl TantivySearcher {
         query: &LqQuery,
         prepared: &PreparedExecutableQuery,
         constraints: &QueryConstraintSetV1,
-        page: &ManualPageV1<'_>,
+        page: &ManualPage<'_>,
         budget: &RequestBudgetV1,
     ) -> Result<LexicalSearchPageV1, CoreError> {
         let searcher = self.reader.searcher();
@@ -9155,7 +9155,7 @@ impl LexicalSearcher for TantivySearcher {
         &self,
         query: &LqQuery,
         constraints: &QueryConstraintSetV1,
-        page: &LexicalPageSpecV1,
+        page: &LexicalPageSpec,
         budget: &RequestBudgetV1,
     ) -> Result<LexicalSearchPageV1, CoreError> {
         // This is the single text-query execution path. The unconstrained
@@ -9195,7 +9195,7 @@ impl LexicalSearcher for TantivySearcher {
                 &effective_query,
                 &prepared_query,
                 constraints,
-                &ManualPageV1 {
+                &ManualPage {
                     limit,
                     after: after.as_deref(),
                     group,
@@ -9329,7 +9329,7 @@ impl LexicalSearcher for TantivySearcher {
         self.search_symbols_constrained(
             query,
             &QueryConstraintSetV1::unconstrained(),
-            &LexicalPageSpecV1::first(top_k),
+            &LexicalPageSpec::first(top_k),
             budget,
         )
     }
@@ -9338,7 +9338,7 @@ impl LexicalSearcher for TantivySearcher {
         &self,
         query: &LqQuery,
         constraints: &QueryConstraintSetV1,
-        page: &LexicalPageSpecV1,
+        page: &LexicalPageSpec,
         budget: &RequestBudgetV1,
     ) -> Result<Vec<SymbolCandidate>, CoreError> {
         // Single symbol-query execution path; the unconstrained entrypoint
@@ -9507,7 +9507,7 @@ impl LexicalSearcher for TantivySearcher {
                 query,
                 &prepared_query,
                 constraints,
-                &ManualPageV1 {
+                &ManualPage {
                     limit,
                     after: None,
                     group: repo_only.then_some(ProjectionGroup::Repo),

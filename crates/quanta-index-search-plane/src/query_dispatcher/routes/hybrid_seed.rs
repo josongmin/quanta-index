@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use quanta_index_contract::{EarlyStopReason, HybridSeedQueryRequest, HybridSeedQueryResponse};
 use quanta_index_core::{
-    CoreError, HybridFilterPlanV1, HybridOrchestratorPolicy, LexicalPageSpecV1, LexicalPolicy,
+    CoreError, HybridFilterPlanV1, HybridOrchestratorPolicy, LexicalPageSpec, LexicalPolicy,
     QueryRouteV1, RequestBudgetV1, SemanticSearchHitV1,
 };
 
@@ -69,7 +69,7 @@ impl SearchPlaneDispatcher {
                 .search_constrained(
                     &prepared_language.query,
                     &prepared_language.constraints,
-                    &LexicalPageSpecV1::first(internal_top_k),
+                    &LexicalPageSpec::first(internal_top_k),
                     budget,
                 )?
                 .candidates

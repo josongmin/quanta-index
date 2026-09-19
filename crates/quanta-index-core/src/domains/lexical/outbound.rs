@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::{
     BatchPublishReceipt, CandidatePresenceV1, FileContributorIngestBatch, FileOwnerProjectionRow,
-    FileOwnershipIngestBatch, GenerationSnapshot, LexicalCandidate, LexicalCursorV1, LqQuery,
+    FileOwnershipIngestBatch, GenerationSnapshot, LexicalCandidate, LexicalCursor, LqQuery,
     ManifestGeneration, QueryConstraintSetV1, RepoCommitRecencyIngestBatch,
     RepoDescriptionIngestBatch, RepoId, RepoMetaIngestBatch, RepoTopicIngestBatch, RevisionId,
     SearchCorpusIngestBatch, SymbolCandidate,
@@ -188,19 +188,19 @@ pub struct LexicalSearchPageV1 {
 
 /// What one ranked lexical page asks the engine for (QI-BB-005 보완 #4).
 ///
-/// Rows come in the ranked lexical order (`LexicalRowOrderKeyV1`); with a
+/// Rows come in the ranked lexical order (`LexicalRowOrderKey`); with a
 /// boundary, only the rows strictly after it, and an exact total counts
 /// only those.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LexicalPageSpecV1 {
+pub struct LexicalPageSpec {
     /// Rows to return: the page, plus one continuation probe row when the
     /// caller derives its window from one.
     pub fetch: u32,
     /// The last row of the previous page, in the generation it names.
-    pub after: Option<LexicalCursorV1>,
+    pub after: Option<LexicalCursor>,
 }
 
-impl LexicalPageSpecV1 {
+impl LexicalPageSpec {
     /// The first page of `fetch` rows.
     #[must_use]
     pub const fn first(fetch: u32) -> Self {
@@ -294,7 +294,7 @@ pub trait LexicalSearcher: Send + Sync {
         self.search_constrained(
             query,
             &QueryConstraintSetV1::unconstrained(),
-            &LexicalPageSpecV1::first(top_k),
+            &LexicalPageSpec::first(top_k),
             budget,
         )
         .map(|page| page.candidates)
@@ -309,7 +309,7 @@ pub trait LexicalSearcher: Send + Sync {
         &self,
         query: &LqQuery,
         constraints: &QueryConstraintSetV1,
-        page: &LexicalPageSpecV1,
+        page: &LexicalPageSpec,
         budget: &RequestBudgetV1,
     ) -> Result<LexicalSearchPageV1, CoreError>;
 
@@ -338,7 +338,7 @@ pub trait LexicalSearcher: Send + Sync {
         &self,
         query: &LqQuery,
         constraints: &QueryConstraintSetV1,
-        page: &LexicalPageSpecV1,
+        page: &LexicalPageSpec,
         budget: &RequestBudgetV1,
     ) -> Result<Vec<SymbolCandidate>, CoreError> {
         if !constraints.is_unconstrained() {

@@ -19,7 +19,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, ExplainQueryPort, HybridFilterPlanV1, HybridOrchestratorPolicy,
-    LexicalCandidateExplanationV1, LexicalPageSpecV1, LexicalPolicy, LexicalScoreEngineV1,
+    LexicalCandidateExplanationV1, LexicalPageSpec, LexicalPolicy, LexicalScoreEngineV1,
     LexicalScoreTraceV1, LexicalSearcher, QueryRouteV1, RequestBudgetV1, SemanticSearcher,
     validate_query_top_k,
 };
@@ -343,7 +343,7 @@ fn rederive_hybrid_lanes(
         .search_constrained(
             &lanes.query,
             &lanes.constraints,
-            &LexicalPageSpecV1::first(internal_top_k),
+            &LexicalPageSpec::first(internal_top_k),
             budget,
         )?
         .candidates;

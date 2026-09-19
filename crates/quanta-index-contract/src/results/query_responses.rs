@@ -8,7 +8,7 @@ use serde::{
 
 use crate::{
     AuxEpochV1, CommitCandidate, DiffCandidate, GenerationPin, HistoryCursor, HistoryOrderV1,
-    LexicalCandidate, LexicalCursorV1, LexicalRowOrderKeyV1, ManifestGeneration, OwnerDocKind,
+    LexicalCandidate, LexicalCursor, LexicalRowOrderKey, ManifestGeneration, OwnerDocKind,
     QueryResultWindowV1, RepoId, RepoRelativePath, RevisionId, RuntimeMetadataCursorV1,
     SemanticCorpusKindV1, StructuralCandidate, StructuralCursorV1,
     lex::{SymbolKindCode, SymbolKindFamily},
@@ -19,7 +19,7 @@ use super::{CandidatePresenceV1, SearchExplanation};
 
 /// One ranked page of text rows.
 ///
-/// The rows are in the ranked lexical order ([`LexicalRowOrderKeyV1`]);
+/// The rows are in the ranked lexical order ([`LexicalRowOrderKey`]);
 /// when the window says more rows exist, `next_cursor` names the last row
 /// and a request carrying it continues strictly after it (QI-BB-005
 /// 보완 #4). The decoder holds a page to that fail-closed.
@@ -29,7 +29,7 @@ pub struct TextQueryResponse {
     pub results: Vec<LexicalCandidate>,
     pub window: QueryResultWindowV1,
     pub file_owner_rows: Option<Vec<FileOwnerProjectionRow>>,
-    pub next_cursor: Option<LexicalCursorV1>,
+    pub next_cursor: Option<LexicalCursor>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -227,8 +227,8 @@ impl_symbol_candidate_serde!(SYMBOL_CANDIDATE_FIELDS, SymbolCandidateVisitor);
 impl SymbolCandidate {
     /// This row's position in the ranked lexical page order.
     #[must_use]
-    pub fn order_key(&self) -> LexicalRowOrderKeyV1<'_> {
-        LexicalRowOrderKeyV1 {
+    pub fn order_key(&self) -> LexicalRowOrderKey<'_> {
+        LexicalRowOrderKey {
             score: self.score,
             repo_relative_path: self.repo_relative_path.as_str(),
             start_line: self.start_line,
@@ -245,7 +245,7 @@ pub struct SymbolQueryResponse {
     pub generation: GenerationPin,
     pub results: Vec<SymbolCandidate>,
     pub window: QueryResultWindowV1,
-    pub next_cursor: Option<LexicalCursorV1>,
+    pub next_cursor: Option<LexicalCursor>,
 }
 
 const SYMBOL_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "window", "next_cursor"];
@@ -983,7 +983,7 @@ macro_rules! impl_ranked_lexical_page_serde {
                 let mut generation: Option<GenerationPin> = None;
                 let mut results: Option<Vec<$result_ty>> = None;
                 let mut window: Option<QueryResultWindowV1> = None;
-                let mut next_cursor: Option<LexicalCursorV1> = None;
+                let mut next_cursor: Option<LexicalCursor> = None;
                 let mut next_cursor_seen = false;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
@@ -1462,9 +1462,9 @@ impl<'de> Deserialize<'de> for FileOwnerProjectionRow {
 fn check_ranked_lexical_page<'a>(
     window: &QueryResultWindowV1,
     rows: usize,
-    keys: impl IntoIterator<Item = LexicalRowOrderKeyV1<'a>>,
+    keys: impl IntoIterator<Item = LexicalRowOrderKey<'a>>,
     generation: &GenerationPin,
-    next_cursor: Option<&LexicalCursorV1>,
+    next_cursor: Option<&LexicalCursor>,
 ) -> Result<(), String> {
     let returned = usize::try_from(window.returned())
         .map_err(|error| format!("query result window returned count cannot fit usize: {error}"))?;
@@ -1519,7 +1519,7 @@ impl<'de> Visitor<'de> for TextQueryResponseVisitor {
         let mut window: Option<QueryResultWindowV1> = None;
         let mut file_owner_rows: Option<Vec<FileOwnerProjectionRow>> = None;
         let mut file_owner_rows_seen = false;
-        let mut next_cursor: Option<LexicalCursorV1> = None;
+        let mut next_cursor: Option<LexicalCursor> = None;
         let mut next_cursor_seen = false;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {

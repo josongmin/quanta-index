@@ -14,7 +14,7 @@ use quanta_index_contract::{
     AuxEpochV1, EarlyStopReason, EngineTouched, ExplainCandidateV1, GenerationPin, HistoryCursor,
     HistoryOrderV1, HistoryQueryRequest, HybridCandidateV1, HybridQueryRequest,
     HybridQueryResponse, HybridSeedQueryRequest, HybridSeedQueryResponse, LexicalCandidate,
-    LexicalCursorV1, ManifestGeneration, PlannerTraceEntry, QueryConstraintSetV1, QueryErrorRepair,
+    LexicalCursor, ManifestGeneration, PlannerTraceEntry, QueryConstraintSetV1, QueryErrorRepair,
     QueryResultWindowV1, RepoId, RepoMapDocType, RepoMapFocusSubjectDto, RepoMapQueryRequest,
     RevisionId, RuntimeMetadataCursorV1, RuntimeMetadataQueryRequest, SearchExplanation,
     SearchPlaneHistoryQueryResponse, SearchPlaneQueryIpcResponse,
@@ -426,7 +426,7 @@ fn parse_query_command_flags(
 
 fn parse_lexical(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
     let page = parse_keyset_page_query(common, rest, "lexical")?;
-    let cursor = page.cursor::<LexicalCursorV1>()?;
+    let cursor = page.cursor::<LexicalCursor>()?;
     Ok(CliRequest::Lexical(TextQueryRequest {
         cursor,
         ..page.text_query
@@ -435,7 +435,7 @@ fn parse_lexical(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
 
 fn parse_symbol(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
     let page = parse_keyset_page_query(common, rest, "symbol")?;
-    let cursor = page.cursor::<LexicalCursorV1>()?;
+    let cursor = page.cursor::<LexicalCursor>()?;
     Ok(CliRequest::Symbol(SymbolQueryRequest::from(
         TextQueryRequest {
             cursor,
@@ -2383,7 +2383,7 @@ fn render_symbol_payload(payload: &SymbolQueryResponse, rendered: &mut String) -
 }
 
 /// The continuation of a ranked page, as `--cursor-json` takes it back.
-fn render_lexical_cursor(cursor: Option<&LexicalCursorV1>, rendered: &mut String) -> CliResult<()> {
+fn render_lexical_cursor(cursor: Option<&LexicalCursor>, rendered: &mut String) -> CliResult<()> {
     if let Some(cursor) = cursor {
         let json = serde_json::to_string(cursor)
             .map_err(|err| CliError::protocol(format!("encode next_cursor: {err}")))?;

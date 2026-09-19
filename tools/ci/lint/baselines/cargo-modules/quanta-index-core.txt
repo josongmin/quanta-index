@@ -87,7 +87,7 @@ crate quanta_index_core
 │   │   │   ├── enum LexicalCandidateExplanationV1: pub
 │   │   │   ├── trait LexicalIndexBuildPort: pub
 │   │   │   ├── trait LexicalIndexOpenPort: pub
-│   │   │   ├── struct LexicalPageSpecV1: pub
+│   │   │   ├── struct LexicalPageSpec: pub
 │   │   │   ├── struct LexicalReadiness: pub
 │   │   │   ├── enum LexicalScoreEngineV1: pub
 │   │   │   ├── struct LexicalScoreTraceV1: pub

@@ -1,5 +1,5 @@
 use quanta_index_contract::{
-    GenerationSelector, LexicalCursorV1, RepoId, RevisionId, SymbolQueryResponse, TextQuerySyntax,
+    GenerationSelector, LexicalCursor, RepoId, RevisionId, SymbolQueryResponse, TextQuerySyntax,
 };
 
 use crate::text_query_builder::TextQueryBuilderState;
@@ -142,7 +142,7 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
     /// Continue after the last row of a previous page: pass that page's
     /// `next_cursor` and pin its generation (QI-BB-005).
     #[must_use]
-    pub fn after(self, cursor: LexicalCursorV1) -> Self {
+    pub fn after(self, cursor: LexicalCursor) -> Self {
         self.transition(|state| {
             state.after = Some(cursor);
         })

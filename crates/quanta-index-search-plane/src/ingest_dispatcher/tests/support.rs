@@ -711,7 +711,7 @@ impl quanta_index_core::LexicalSearcher for PinnedLexicalHandle {
         &self,
         _query: &quanta_index_contract::LqQuery,
         _constraints: &quanta_index_contract::QueryConstraintSetV1,
-        _page: &quanta_index_core::LexicalPageSpecV1,
+        _page: &quanta_index_core::LexicalPageSpec,
         _budget: &RequestBudgetV1,
     ) -> Result<quanta_index_core::LexicalSearchPageV1, CoreError> {
         Err(CoreError::NotImplemented("pin-only handle".to_string()))

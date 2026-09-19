@@ -2,11 +2,11 @@
 //!
 //! Text and symbol rows are ranked. A page is ordered by score descending,
 //! then repo-relative path, start line, end line and candidate id
-//! ascending (strings byte-wise) — [`LexicalRowOrderKeyV1::order`]. Within
+//! ascending (strings byte-wise) — [`LexicalRowOrderKey::order`]. Within
 //! one sealed generation that is a total order over the rows: the scores
 //! are a pure function of the sealed index and the candidate id is unique.
 //!
-//! A [`LexicalCursorV1`] names the last row a page returned under that
+//! A [`LexicalCursor`] names the last row a page returned under that
 //! order; the next page holds the rows strictly after it. It is a boundary,
 //! not a lookup: a key that names no row still positions the page. Scores
 //! are only comparable within the generation that produced them, so the
@@ -37,7 +37,7 @@ pub const QUERY_CURSOR_UNSUPPORTED_CODE: &str = "QUERY_CURSOR_UNSUPPORTED";
 
 /// One ranked lexical row's position in the page order.
 #[derive(Clone, Copy, Debug)]
-pub struct LexicalRowOrderKeyV1<'a> {
+pub struct LexicalRowOrderKey<'a> {
     pub score: f32,
     pub repo_relative_path: &'a str,
     pub start_line: u32,
@@ -45,11 +45,11 @@ pub struct LexicalRowOrderKeyV1<'a> {
     pub candidate_id: &'a str,
 }
 
-impl LexicalRowOrderKeyV1<'_> {
+impl LexicalRowOrderKey<'_> {
     /// `Less` when `self` comes first in a page: the higher score, then
     /// the lower path, start line, end line and candidate id.
     #[must_use]
-    pub fn order(&self, other: &LexicalRowOrderKeyV1<'_>) -> Ordering {
+    pub fn order(&self, other: &LexicalRowOrderKey<'_>) -> Ordering {
         other
             .score
             .total_cmp(&self.score)
@@ -63,8 +63,8 @@ impl LexicalRowOrderKeyV1<'_> {
 impl LexicalCandidate {
     /// This row's position in the ranked lexical page order.
     #[must_use]
-    pub fn order_key(&self) -> LexicalRowOrderKeyV1<'_> {
-        LexicalRowOrderKeyV1 {
+    pub fn order_key(&self) -> LexicalRowOrderKey<'_> {
+        LexicalRowOrderKey {
             score: self.score,
             repo_relative_path: self.repo_relative_path.as_str(),
             start_line: self.start_line,
@@ -80,7 +80,7 @@ impl LexicalCandidate {
 /// Equality compares the score by its bits, so it is reflexive for every
 /// value and the cursor is `Eq`.
 #[derive(Clone, Debug)]
-pub struct LexicalCursorV1 {
+pub struct LexicalCursor {
     /// The generation the page was cut from; only its scores compare.
     pub manifest_generation: ManifestGeneration,
     /// The row's score, finite.
@@ -91,7 +91,7 @@ pub struct LexicalCursorV1 {
     pub candidate_id: String,
 }
 
-impl PartialEq for LexicalCursorV1 {
+impl PartialEq for LexicalCursor {
     fn eq(&self, other: &Self) -> bool {
         self.manifest_generation == other.manifest_generation
             && self.score.to_bits() == other.score.to_bits()
@@ -102,12 +102,12 @@ impl PartialEq for LexicalCursorV1 {
     }
 }
 
-impl Eq for LexicalCursorV1 {}
+impl Eq for LexicalCursor {}
 
-impl LexicalCursorV1 {
+impl LexicalCursor {
     /// The cursor naming `key` in `manifest_generation`.
     #[must_use]
-    pub fn at(manifest_generation: ManifestGeneration, key: LexicalRowOrderKeyV1<'_>) -> Self {
+    pub fn at(manifest_generation: ManifestGeneration, key: LexicalRowOrderKey<'_>) -> Self {
         Self {
             manifest_generation,
             score: key.score,
@@ -120,8 +120,8 @@ impl LexicalCursorV1 {
 
     /// The boundary's position in the page order.
     #[must_use]
-    pub fn order_key(&self) -> LexicalRowOrderKeyV1<'_> {
-        LexicalRowOrderKeyV1 {
+    pub fn order_key(&self) -> LexicalRowOrderKey<'_> {
+        LexicalRowOrderKey {
             score: self.score,
             repo_relative_path: self.repo_relative_path.as_str(),
             start_line: self.start_line,
@@ -132,7 +132,7 @@ impl LexicalCursorV1 {
 
     /// Whether `key` lies strictly after this boundary.
     #[must_use]
-    pub fn admits(&self, key: &LexicalRowOrderKeyV1<'_>) -> bool {
+    pub fn admits(&self, key: &LexicalRowOrderKey<'_>) -> bool {
         self.order_key().order(key) == Ordering::Less
     }
 }
@@ -146,11 +146,11 @@ impl LexicalCursorV1 {
 /// or repeat rows.
 pub fn validate_lexical_page_v1<'a>(
     window: &QueryResultWindowV1,
-    rows: impl IntoIterator<Item = LexicalRowOrderKeyV1<'a>>,
+    rows: impl IntoIterator<Item = LexicalRowOrderKey<'a>>,
     manifest_generation: ManifestGeneration,
-    next_cursor: Option<&LexicalCursorV1>,
+    next_cursor: Option<&LexicalCursor>,
 ) -> Result<(), &'static str> {
-    let mut last: Option<LexicalRowOrderKeyV1<'a>> = None;
+    let mut last: Option<LexicalRowOrderKey<'a>> = None;
     for row in rows {
         if !row.score.is_finite() {
             return Err("a ranked lexical row carries a non-finite score");
@@ -186,7 +186,7 @@ const LEXICAL_CURSOR_V1_FIELDS: &[&str] = &[
     "candidate_id",
 ];
 
-impl Serialize for LexicalCursorV1 {
+impl Serialize for LexicalCursor {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -196,7 +196,7 @@ impl Serialize for LexicalCursorV1 {
                 "a lexical cursor score must be finite",
             ));
         }
-        let mut state = serializer.serialize_struct("LexicalCursorV1", 6)?;
+        let mut state = serializer.serialize_struct("LexicalCursor", 6)?;
         state.serialize_field("manifest_generation", &self.manifest_generation)?;
         state.serialize_field("score", &self.score)?;
         state.serialize_field("repo_relative_path", &self.repo_relative_path)?;
@@ -210,10 +210,10 @@ impl Serialize for LexicalCursorV1 {
 struct LexicalCursorV1Visitor;
 
 impl<'de> Visitor<'de> for LexicalCursorV1Visitor {
-    type Value = LexicalCursorV1;
+    type Value = LexicalCursor;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a LexicalCursorV1 map")
+        formatter.write_str("a LexicalCursor map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -273,7 +273,7 @@ impl<'de> Visitor<'de> for LexicalCursorV1Visitor {
         if !score.is_finite() {
             return Err(de::Error::custom("a lexical cursor score must be finite"));
         }
-        Ok(LexicalCursorV1 {
+        Ok(LexicalCursor {
             manifest_generation: manifest_generation
                 .ok_or_else(|| de::Error::missing_field("manifest_generation"))?,
             score,
@@ -286,13 +286,13 @@ impl<'de> Visitor<'de> for LexicalCursorV1Visitor {
     }
 }
 
-impl<'de> Deserialize<'de> for LexicalCursorV1 {
+impl<'de> Deserialize<'de> for LexicalCursor {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "LexicalCursorV1",
+            "LexicalCursor",
             LEXICAL_CURSOR_V1_FIELDS,
             LexicalCursorV1Visitor,
         )

@@ -9,7 +9,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, LexicalArtifactIdentityV1, LexicalCandidateExplanationV1, LexicalIndexOpenPort,
-    LexicalPageSpecV1, LexicalScoreEngineV1, LexicalSearchPageV1, LexicalSearcher,
+    LexicalPageSpec, LexicalScoreEngineV1, LexicalSearchPageV1, LexicalSearcher,
     RepoMetadataAuthoritiesV1, RequestBudgetV1, TextNormalizerVersionV1,
 };
 
@@ -80,7 +80,7 @@ impl LexicalSearcher for StubLexicalSearcher {
         &self,
         _query: &quanta_index_contract::LqQuery,
         _constraints: &QueryConstraintSetV1,
-        page: &LexicalPageSpecV1,
+        page: &LexicalPageSpec,
         _budget: &RequestBudgetV1,
     ) -> Result<LexicalSearchPageV1, CoreError> {
         Ok(LexicalSearchPageV1 {
@@ -212,7 +212,7 @@ impl LexicalIndexOpenPort for StubLexicalOpener {
 pub(crate) struct RecordingLexicalState {
     pub(crate) search_top_ks: Vec<u32>,
     /// The boundary every text page was asked to continue after.
-    pub(crate) search_afters: Vec<Option<quanta_index_contract::LexicalCursorV1>>,
+    pub(crate) search_afters: Vec<Option<quanta_index_contract::LexicalCursor>>,
     pub(crate) symbol_top_ks: Vec<u32>,
     pub(crate) opened_pins: Vec<(RepoId, RevisionId, ManifestGeneration)>,
     pub(crate) searched_queries: Vec<LqQuery>,
@@ -264,7 +264,7 @@ impl LexicalSearcher for RecordingLexicalSearcher {
         &self,
         query: &quanta_index_contract::LqQuery,
         constraints: &QueryConstraintSetV1,
-        page: &LexicalPageSpecV1,
+        page: &LexicalPageSpec,
         budget: &RequestBudgetV1,
     ) -> Result<LexicalSearchPageV1, CoreError> {
         let mut guard = self
@@ -326,7 +326,7 @@ impl LexicalSearcher for RecordingLexicalSearcher {
         &self,
         _query: &quanta_index_contract::LqQuery,
         constraints: &QueryConstraintSetV1,
-        page: &LexicalPageSpecV1,
+        page: &LexicalPageSpec,
         _budget: &RequestBudgetV1,
     ) -> Result<Vec<SymbolCandidate>, CoreError> {
         let mut guard = self
@@ -475,7 +475,7 @@ pub(crate) fn recording_lexical_candidate(candidate_id: &str) -> LexicalCandidat
 /// the boundary, in page order, at most the fetch.
 pub(crate) fn ranked_page(
     results: &[LexicalCandidate],
-    page: &LexicalPageSpecV1,
+    page: &LexicalPageSpec,
 ) -> Vec<LexicalCandidate> {
     let mut rows: Vec<LexicalCandidate> = results
         .iter()

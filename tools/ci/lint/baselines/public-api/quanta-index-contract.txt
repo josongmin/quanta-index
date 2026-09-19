@@ -15,8 +15,8 @@ pub use quanta_index_contract::INTERNAL_FETCH_OUT_OF_RANGE_CODE
 pub use quanta_index_contract::InternalFetchOutOfRangeV1
 pub use quanta_index_contract::LQ_VERSION_TAG
 pub use quanta_index_contract::LexicalCandidate
-pub use quanta_index_contract::LexicalCursorV1
-pub use quanta_index_contract::LexicalRowOrderKeyV1
+pub use quanta_index_contract::LexicalCursor
+pub use quanta_index_contract::LexicalRowOrderKey
 pub use quanta_index_contract::LqCase
 pub use quanta_index_contract::LqCountBound
 pub use quanta_index_contract::LqDirective
@@ -4473,8 +4473,8 @@ pub use quanta_index_contract::query::ExactRepoRelativePathV1
 pub use quanta_index_contract::query::GenerationPin
 pub use quanta_index_contract::query::GenerationSelector
 pub use quanta_index_contract::query::LQ_VERSION_TAG
-pub use quanta_index_contract::query::LexicalCursorV1
-pub use quanta_index_contract::query::LexicalRowOrderKeyV1
+pub use quanta_index_contract::query::LexicalCursor
+pub use quanta_index_contract::query::LexicalRowOrderKey
 pub use quanta_index_contract::query::LqCase
 pub use quanta_index_contract::query::LqCountBound
 pub use quanta_index_contract::query::LqDirective
@@ -5016,7 +5016,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::Structur
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::StructuralQueryRequest
 pub struct quanta_index_contract::query::SymbolQueryRequest
 pub quanta_index_contract::query::SymbolQueryRequest::constraints: quanta_index_contract_base::query::constraints::QueryConstraintSetV1
-pub quanta_index_contract::query::SymbolQueryRequest::cursor: core::option::Option<quanta_index_contract_base::query::lexical_cursor::LexicalCursorV1>
+pub quanta_index_contract::query::SymbolQueryRequest::cursor: core::option::Option<quanta_index_contract_base::query::lexical_cursor::LexicalCursor>
 pub quanta_index_contract::query::SymbolQueryRequest::generation: core::option::Option<quanta_index_contract_base::query::pin::GenerationPin>
 pub quanta_index_contract::query::SymbolQueryRequest::generation_selector: core::option::Option<quanta_index_contract_base::query::pin::GenerationSelector>
 pub quanta_index_contract::query::SymbolQueryRequest::query_text: alloc::string::String
@@ -6707,7 +6707,7 @@ pub quanta_index_contract::results::SymbolCandidate::start_line: u32
 pub quanta_index_contract::results::SymbolCandidate::symbol_kind: quanta_index_contract::lex::symbol::SymbolKindCode
 pub quanta_index_contract::results::SymbolCandidate::symbol_kind_family: core::option::Option<quanta_index_contract::lex::symbol::SymbolKindFamily>
 impl quanta_index_contract::SymbolCandidate
-pub fn quanta_index_contract::SymbolCandidate::order_key(&self) -> quanta_index_contract_base::query::lexical_cursor::LexicalRowOrderKeyV1<'_>
+pub fn quanta_index_contract::SymbolCandidate::order_key(&self) -> quanta_index_contract_base::query::lexical_cursor::LexicalRowOrderKey<'_>
 impl core::clone::Clone for quanta_index_contract::SymbolCandidate
 pub fn quanta_index_contract::SymbolCandidate::clone(&self) -> quanta_index_contract::SymbolCandidate
 impl core::cmp::PartialEq for quanta_index_contract::SymbolCandidate
@@ -6728,7 +6728,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SymbolCa
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SymbolCandidate
 pub struct quanta_index_contract::results::SymbolQueryResponse
 pub quanta_index_contract::results::SymbolQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
-pub quanta_index_contract::results::SymbolQueryResponse::next_cursor: core::option::Option<quanta_index_contract_base::query::lexical_cursor::LexicalCursorV1>
+pub quanta_index_contract::results::SymbolQueryResponse::next_cursor: core::option::Option<quanta_index_contract_base::query::lexical_cursor::LexicalCursor>
 pub quanta_index_contract::results::SymbolQueryResponse::results: alloc::vec::Vec<quanta_index_contract::SymbolCandidate>
 pub quanta_index_contract::results::SymbolQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV1
 impl core::clone::Clone for quanta_index_contract::SymbolQueryResponse
@@ -6752,7 +6752,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SymbolQuery
 pub struct quanta_index_contract::results::TextQueryResponse
 pub quanta_index_contract::results::TextQueryResponse::file_owner_rows: core::option::Option<alloc::vec::Vec<quanta_index_contract::FileOwnerProjectionRow>>
 pub quanta_index_contract::results::TextQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
-pub quanta_index_contract::results::TextQueryResponse::next_cursor: core::option::Option<quanta_index_contract_base::query::lexical_cursor::LexicalCursorV1>
+pub quanta_index_contract::results::TextQueryResponse::next_cursor: core::option::Option<quanta_index_contract_base::query::lexical_cursor::LexicalCursor>
 pub quanta_index_contract::results::TextQueryResponse::results: alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>
 pub quanta_index_contract::results::TextQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV1
 impl core::clone::Clone for quanta_index_contract::TextQueryResponse
@@ -11765,7 +11765,7 @@ pub quanta_index_contract::SymbolCandidate::start_line: u32
 pub quanta_index_contract::SymbolCandidate::symbol_kind: quanta_index_contract::lex::symbol::SymbolKindCode
 pub quanta_index_contract::SymbolCandidate::symbol_kind_family: core::option::Option<quanta_index_contract::lex::symbol::SymbolKindFamily>
 impl quanta_index_contract::SymbolCandidate
-pub fn quanta_index_contract::SymbolCandidate::order_key(&self) -> quanta_index_contract_base::query::lexical_cursor::LexicalRowOrderKeyV1<'_>
+pub fn quanta_index_contract::SymbolCandidate::order_key(&self) -> quanta_index_contract_base::query::lexical_cursor::LexicalRowOrderKey<'_>
 impl core::clone::Clone for quanta_index_contract::SymbolCandidate
 pub fn quanta_index_contract::SymbolCandidate::clone(&self) -> quanta_index_contract::SymbolCandidate
 impl core::cmp::PartialEq for quanta_index_contract::SymbolCandidate
@@ -11816,7 +11816,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SymbolId
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SymbolId
 pub struct quanta_index_contract::SymbolQueryRequest
 pub quanta_index_contract::SymbolQueryRequest::constraints: quanta_index_contract_base::query::constraints::QueryConstraintSetV1
-pub quanta_index_contract::SymbolQueryRequest::cursor: core::option::Option<quanta_index_contract_base::query::lexical_cursor::LexicalCursorV1>
+pub quanta_index_contract::SymbolQueryRequest::cursor: core::option::Option<quanta_index_contract_base::query::lexical_cursor::LexicalCursor>
 pub quanta_index_contract::SymbolQueryRequest::generation: core::option::Option<quanta_index_contract_base::query::pin::GenerationPin>
 pub quanta_index_contract::SymbolQueryRequest::generation_selector: core::option::Option<quanta_index_contract_base::query::pin::GenerationSelector>
 pub quanta_index_contract::SymbolQueryRequest::query_text: alloc::string::String
@@ -11847,7 +11847,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SymbolQu
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SymbolQueryRequest
 pub struct quanta_index_contract::SymbolQueryResponse
 pub quanta_index_contract::SymbolQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
-pub quanta_index_contract::SymbolQueryResponse::next_cursor: core::option::Option<quanta_index_contract_base::query::lexical_cursor::LexicalCursorV1>
+pub quanta_index_contract::SymbolQueryResponse::next_cursor: core::option::Option<quanta_index_contract_base::query::lexical_cursor::LexicalCursor>
 pub quanta_index_contract::SymbolQueryResponse::results: alloc::vec::Vec<quanta_index_contract::SymbolCandidate>
 pub quanta_index_contract::SymbolQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV1
 impl core::clone::Clone for quanta_index_contract::SymbolQueryResponse
@@ -11871,7 +11871,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SymbolQuery
 pub struct quanta_index_contract::TextQueryResponse
 pub quanta_index_contract::TextQueryResponse::file_owner_rows: core::option::Option<alloc::vec::Vec<quanta_index_contract::FileOwnerProjectionRow>>
 pub quanta_index_contract::TextQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
-pub quanta_index_contract::TextQueryResponse::next_cursor: core::option::Option<quanta_index_contract_base::query::lexical_cursor::LexicalCursorV1>
+pub quanta_index_contract::TextQueryResponse::next_cursor: core::option::Option<quanta_index_contract_base::query::lexical_cursor::LexicalCursor>
 pub quanta_index_contract::TextQueryResponse::results: alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>
 pub quanta_index_contract::TextQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV1
 impl core::clone::Clone for quanta_index_contract::TextQueryResponse

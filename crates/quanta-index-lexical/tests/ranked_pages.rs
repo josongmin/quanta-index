@@ -21,14 +21,14 @@ use std::error::Error;
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LexicalCandidate, LexicalCursorV1,
+    BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LexicalCandidate, LexicalCursor,
     LqCountBound, LqExpr, LqFilter, LqLeaf, LqOptions, LqQuery, LqSelect, LqSpan,
     ManifestGeneration, QUERY_CURSOR_GENERATION_MISMATCH_CODE, QueryConstraintSetV1, RepoId,
     RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
     SearchScopeKey, SearchScopeSurface,
 };
 use quanta_index_core::{
-    CoreError, LexicalIndexOpenPort, LexicalPageSpecV1, LexicalSearcher, RequestBudgetV1,
+    CoreError, LexicalIndexOpenPort, LexicalPageSpec, LexicalSearcher, RequestBudgetV1,
     SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
@@ -147,12 +147,12 @@ fn page(
     searcher: &dyn LexicalSearcher,
     query: &LqQuery,
     fetch: u32,
-    after: Option<LexicalCursorV1>,
+    after: Option<LexicalCursor>,
 ) -> Result<quanta_index_core::LexicalSearchPageV1, CoreError> {
     searcher.search_constrained(
         query,
         &QueryConstraintSetV1::unconstrained(),
-        &LexicalPageSpecV1 { fetch, after },
+        &LexicalPageSpec { fetch, after },
         &RequestBudgetV1::unbounded(),
     )
 }
@@ -161,8 +161,8 @@ fn ids(rows: &[LexicalCandidate]) -> Vec<String> {
     rows.iter().map(|row| row.candidate_id.clone()).collect()
 }
 
-fn cursor_at(row: &LexicalCandidate) -> LexicalCursorV1 {
-    LexicalCursorV1::at(generation(), row.order_key())
+fn cursor_at(row: &LexicalCandidate) -> LexicalCursor {
+    LexicalCursor::at(generation(), row.order_key())
 }
 
 /// Walk every page of `size` rows through the cursors, collecting rows.
@@ -172,7 +172,7 @@ fn walk(
     size: u32,
 ) -> Result<Vec<LexicalCandidate>, Box<dyn Error>> {
     let mut rows: Vec<LexicalCandidate> = Vec::new();
-    let mut after: Option<LexicalCursorV1> = None;
+    let mut after: Option<LexicalCursor> = None;
     loop {
         let next = page(searcher, query, size, after.clone())?.candidates;
         let Some(last) = next.last() else {

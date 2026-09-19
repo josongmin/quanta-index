@@ -30,7 +30,7 @@ use quanta_index_contract::{
     CurrentGenerationRequest, EngineTouched, ExplainCandidateV1, FileOwnerProjectionRow,
     GenerationPin, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
     HistoryCursor, HistoryOrderV1, HistoryQueryRequest, HistoryScoreV1, HybridCandidateV1,
-    HybridQueryRequest, LexicalCandidate, LexicalCursorV1, ManifestGeneration,
+    HybridQueryRequest, LexicalCandidate, LexicalCursor, ManifestGeneration,
     MetricsSnapshotRequest, MetricsSnapshotV1, OwnerDocKind, QuarantineDiscardAck,
     QuarantineDiscardRequest, QuarantineInventoryRequest, QuarantineInventoryV1,
     QuarantineTargetV1, QueryResultWindowV1, RawFallbackReasonV1, RepoId, RepoRelativePath,
@@ -59,7 +59,7 @@ use quanta_index_ipc::{
     ClientIoPolicy, IpcError, ServerAdmissionPolicy, send_request, stamp_batch_digest_v1,
 };
 use quanta_index_search_plane::{
-    BoundedQueryObsStore, MetricSample, ObsError, ResponsePayloadBudgetV1,
+    BoundedQueryObsStore, MetricSample, ObsError, ResponsePayloadBudget,
 };
 use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd::app::{
@@ -147,7 +147,7 @@ struct DriverSpec<'a> {
     /// How the integrity scrub is paced (QI-BB-017).
     integrity_scrub_policy: IntegrityScrubPolicyV1,
     /// How many encoded bytes one ranked page may take (QI-BB-005).
-    query_response_budget: ResponsePayloadBudgetV1,
+    query_response_budget: ResponsePayloadBudget,
     socket_access: &'a SocketAccessPolicies,
     /// Where the three sockets go: a fresh, unique directory the daemon
     /// creates under `/tmp` when any socket is shared (so the peers the
@@ -228,7 +228,7 @@ pub struct E2eRuntime {
     integrity_scrub_policy: IntegrityScrubPolicyV1,
     /// The ranked page byte budget the daemon boots with: a frame's worth
     /// unless set through [`Self::boot_with_query_response_budget`].
-    query_response_budget: ResponsePayloadBudgetV1,
+    query_response_budget: ResponsePayloadBudget,
     /// How long the harness waits for each answer: the client default
     /// unless set through [`Self::boot_with_client_request_timeout`], for a
     /// fixture whose seal outlasts it in a debug build.
@@ -517,7 +517,7 @@ impl E2eRuntime {
 
     /// Like [`Self::boot`] but cuts ranked pages at `budget` encoded bytes,
     /// so a byte-cut page can be driven with a small fixture (QI-BB-005).
-    pub fn boot_with_query_response_budget(budget: ResponsePayloadBudgetV1) -> AnyResult<Self> {
+    pub fn boot_with_query_response_budget(budget: ResponsePayloadBudget) -> AnyResult<Self> {
         let mut runtime = Self::boot()?;
         runtime.query_response_budget = budget;
         Ok(runtime)
@@ -597,7 +597,7 @@ impl E2eRuntime {
                 HARNESS_DORMANT_SCRUB_INTERVAL_MILLIS,
                 IntegrityScrubPolicyV1::DEFAULT.max_bytes_per_step,
             )?,
-            query_response_budget: ResponsePayloadBudgetV1::DEFAULT,
+            query_response_budget: ResponsePayloadBudget::DEFAULT,
             client_io: ClientIoPolicy::default(),
             query_admission_policy: ServerAdmissionPolicy::DEFAULT,
             lexical_writer_policy: LexicalWriterPolicy::DEFAULT,
@@ -2235,7 +2235,7 @@ impl E2eRuntime {
         query_text: &str,
         top_k: u32,
         pin: Option<GenerationPin>,
-        cursor: Option<LexicalCursorV1>,
+        cursor: Option<LexicalCursor>,
     ) -> AnyResult<E2eRoutePage<TextQueryResponse>> {
         self.keyset_page_query(
             SearchPlaneQueryIpcRequest::Text(TextQueryRequest {

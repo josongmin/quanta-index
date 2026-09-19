@@ -1,12 +1,12 @@
 //! Lexical text and symbol query routes.
 
 use quanta_index_contract::{
-    GenerationPin, LexicalCursorV1, LexicalRowOrderKeyV1, QUERY_CURSOR_GENERATION_MISMATCH_CODE,
+    GenerationPin, LexicalCursor, LexicalRowOrderKey, QUERY_CURSOR_GENERATION_MISMATCH_CODE,
     QueryResultWindowV1, SearchPlaneTrackKind, SymbolQueryRequest, SymbolQueryResponse,
     TextQueryRequest, TextQueryResponse, validate_lexical_page_v1,
 };
 use quanta_index_core::{
-    CoreError, LexicalPageSpecV1, LexicalPolicy, LexicalQueryPort, QueryRouteV1, RequestBudgetV1,
+    CoreError, LexicalPageSpec, LexicalPolicy, LexicalQueryPort, QueryRouteV1, RequestBudgetV1,
     validate_query_top_k,
 };
 
@@ -58,7 +58,7 @@ impl SearchPlaneDispatcher {
         let mut page = searcher.search_constrained(
             &planned.query,
             &planned.constraints,
-            &LexicalPageSpecV1 {
+            &LexicalPageSpec {
                 fetch: fetch_top_k,
                 after: continuation(request.cursor.as_ref(), &planned.pin)?,
             },
@@ -145,7 +145,7 @@ impl SearchPlaneDispatcher {
         let mut results = searcher.search_symbols_constrained(
             &prepared_language.query,
             &prepared_language.constraints,
-            &LexicalPageSpecV1 {
+            &LexicalPageSpec {
                 fetch: probe_top_k_v1(lexical_request.top_k)?,
                 after,
             },
@@ -175,9 +175,9 @@ impl SearchPlaneDispatcher {
 /// from another generation than the one the request resolved to: a score
 /// only compares within the ranking that made it.
 fn continuation(
-    cursor: Option<&LexicalCursorV1>,
+    cursor: Option<&LexicalCursor>,
     pin: &GenerationPin,
-) -> Result<Option<LexicalCursorV1>, CoreError> {
+) -> Result<Option<LexicalCursor>, CoreError> {
     match cursor {
         None => Ok(None),
         Some(cursor) if cursor.manifest_generation == pin.manifest_generation => {
@@ -200,13 +200,13 @@ fn continuation(
 fn next_cursor<'a>(
     window: &QueryResultWindowV1,
     pin: &GenerationPin,
-    rows: impl Iterator<Item = LexicalRowOrderKeyV1<'a>> + Clone,
-) -> Result<Option<LexicalCursorV1>, CoreError> {
+    rows: impl Iterator<Item = LexicalRowOrderKey<'a>> + Clone,
+) -> Result<Option<LexicalCursor>, CoreError> {
     let cursor = window
         .has_more()
         .then(|| rows.clone().last())
         .flatten()
-        .map(|last| LexicalCursorV1::at(pin.manifest_generation, last));
+        .map(|last| LexicalCursor::at(pin.manifest_generation, last));
     validate_lexical_page_v1(window, rows, pin.manifest_generation, cursor.as_ref()).map_err(
         |defect| CoreError::InvalidContract(format!("lexical page from the adapter: {defect}")),
     )?;

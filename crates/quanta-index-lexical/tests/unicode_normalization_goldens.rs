@@ -38,7 +38,7 @@ use quanta_index_contract::{
     SearchScopeKey, SearchScopeSurface,
 };
 use quanta_index_core::{
-    CoreError, LexicalIndexOpenPort, LexicalPageSpecV1, LexicalSearcher, RequestBudgetV1,
+    CoreError, LexicalIndexOpenPort, LexicalPageSpec, LexicalSearcher, RequestBudgetV1,
     SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
@@ -834,7 +834,7 @@ fn candidate_ids(
     let page = searcher.search_constrained(
         query,
         &QueryConstraintSetV1::unconstrained(),
-        &LexicalPageSpecV1::first(TOP_K),
+        &LexicalPageSpec::first(TOP_K),
         &RequestBudgetV1::unbounded(),
     )?;
     Ok(page

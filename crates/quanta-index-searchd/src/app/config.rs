@@ -15,7 +15,7 @@ use quanta_index_embed::{
 use quanta_index_ipc::ServerAdmissionPolicy;
 use quanta_index_search_plane::readiness::SearchCorpusHistoryRetentionPolicyV1;
 use quanta_index_search_plane::{
-    ResponsePayloadBudgetV1, SEARCH_OWNED_SEMANTIC_DIMENSION, SnapshotRegistryPolicy,
+    ResponsePayloadBudget, SEARCH_OWNED_SEMANTIC_DIMENSION, SnapshotRegistryPolicy,
 };
 
 use crate::app::socket_access::SocketAccessPolicies;
@@ -316,7 +316,7 @@ pub struct SearchdConfig {
     maintenance_policy: MaintenancePolicy,
     /// How many encoded bytes one ranked lexical page may take before it
     /// is cut and continued by its cursor (QI-BB-005 보완 #5).
-    query_response_budget: ResponsePayloadBudgetV1,
+    query_response_budget: ResponsePayloadBudget,
     /// How the integrity scrub is paced as maintenance (QI-BB-017): at most
     /// one bounded step per interval, on the maintenance timer.
     integrity_scrub_policy: IntegrityScrubPolicyV1,
@@ -533,7 +533,7 @@ impl SearchdConfig {
             socket_access_policies: SocketAccessPolicies::PRIVATE,
             process_memory_ceilings: ProcessMemoryCeilings::DEFAULT,
             maintenance_policy: MaintenancePolicy::DEFAULT,
-            query_response_budget: ResponsePayloadBudgetV1::DEFAULT,
+            query_response_budget: ResponsePayloadBudget::DEFAULT,
             integrity_scrub_policy: IntegrityScrubPolicyV1::DEFAULT,
         }
     }
@@ -720,12 +720,12 @@ impl SearchdConfig {
     }
 
     #[must_use]
-    pub const fn query_response_budget(&self) -> ResponsePayloadBudgetV1 {
+    pub const fn query_response_budget(&self) -> ResponsePayloadBudget {
         self.query_response_budget
     }
 
     #[must_use]
-    pub const fn with_query_response_budget(mut self, budget: ResponsePayloadBudgetV1) -> Self {
+    pub const fn with_query_response_budget(mut self, budget: ResponsePayloadBudget) -> Self {
         self.query_response_budget = budget;
         self
     }
@@ -1212,13 +1212,13 @@ fn maintenance_policy_from_lookup(lookup: &EnvLookup<'_>) -> Result<MaintenanceP
 /// Resolve the ranked page byte budget from env (QI-BB-005 보완 #5).
 ///
 /// `QUANTA_INDEX_QUERY_RESPONSE_MAX_BYTES` unset selects
-/// [`ResponsePayloadBudgetV1::DEFAULT`] (a frame less the envelope
+/// [`ResponsePayloadBudget::DEFAULT`] (a frame less the envelope
 /// reserve); zero or more than that is refused.
-fn query_response_budget_from_lookup(lookup: &EnvLookup<'_>) -> Result<ResponsePayloadBudgetV1> {
+fn query_response_budget_from_lookup(lookup: &EnvLookup<'_>) -> Result<ResponsePayloadBudget> {
     const BYTES: &str = "QUANTA_INDEX_QUERY_RESPONSE_MAX_BYTES";
     match lookup(BYTES)? {
-        None => Ok(ResponsePayloadBudgetV1::DEFAULT),
-        Some(raw) => ResponsePayloadBudgetV1::new(required_positive_raw_u64(BYTES, Some(raw))?)
+        None => Ok(ResponsePayloadBudget::DEFAULT),
+        Some(raw) => ResponsePayloadBudget::new(required_positive_raw_u64(BYTES, Some(raw))?)
             .map_err(anyhow::Error::from),
     }
 }
@@ -1792,9 +1792,9 @@ mod tests {
         const BYTES: &str = "QUANTA_INDEX_QUERY_RESPONSE_MAX_BYTES";
         assert_eq!(
             query_response_budget_from_lookup(&|_name| Ok(None)).expect("unset"),
-            ResponsePayloadBudgetV1::DEFAULT
+            ResponsePayloadBudget::DEFAULT
         );
-        let at_default = ResponsePayloadBudgetV1::DEFAULT
+        let at_default = ResponsePayloadBudget::DEFAULT
             .max_payload_bytes()
             .to_string();
         for (raw, admitted) in [

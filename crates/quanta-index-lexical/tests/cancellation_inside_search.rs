@@ -21,7 +21,7 @@ use quanta_index_contract::{
     SearchScopeSurface,
 };
 use quanta_index_core::{
-    CoreError, LexicalExecutionBudgetV1, LexicalIndexOpenPort, LexicalPageSpecV1,
+    CoreError, LexicalExecutionBudgetV1, LexicalIndexOpenPort, LexicalPageSpec,
     LexicalWriterPolicy, REQUEST_CANCELLED_CODE, REQUEST_DEADLINE_EXCEEDED_CODE,
     RegexMatchCachePolicy, RequestBudgetV1, SearchCorpusBatchBuildPort,
 };
@@ -186,7 +186,7 @@ fn a_cancelled_or_expired_budget_is_observed_inside_the_native_collect() -> Test
     let served = searcher.search_constrained(
         &keyword_query(),
         &unconstrained,
-        &LexicalPageSpecV1::first(10),
+        &LexicalPageSpec::first(10),
         &RequestBudgetV1::unbounded(),
     )?;
     if served.candidates.len() != 10 {
@@ -201,7 +201,7 @@ fn a_cancelled_or_expired_budget_is_observed_inside_the_native_collect() -> Test
             .search_constrained(
                 &keyword_query(),
                 &unconstrained,
-                &LexicalPageSpecV1::first(10),
+                &LexicalPageSpec::first(10),
                 &cancelled_budget(),
             )
             .map(|page| page.candidates.len()),
@@ -213,7 +213,7 @@ fn a_cancelled_or_expired_budget_is_observed_inside_the_native_collect() -> Test
             .search_constrained(
                 &keyword_query(),
                 &unconstrained,
-                &LexicalPageSpecV1::first(10),
+                &LexicalPageSpec::first(10),
                 &passed_deadline_budget()?,
             )
             .map(|page| page.candidates.len()),
@@ -241,7 +241,7 @@ fn a_cancelled_budget_is_observed_inside_regex_verification() -> TestResult {
             .search_constrained(
                 &regex_query(),
                 &unconstrained,
-                &LexicalPageSpecV1::first(10),
+                &LexicalPageSpec::first(10),
                 &cancelled_budget(),
             )
             .map(|page| page.candidates.len()),
@@ -251,7 +251,7 @@ fn a_cancelled_budget_is_observed_inside_regex_verification() -> TestResult {
     let served = searcher.search_constrained(
         &regex_query(),
         &unconstrained,
-        &LexicalPageSpecV1::first(10),
+        &LexicalPageSpec::first(10),
         &RequestBudgetV1::unbounded(),
     )?;
     if served.candidates.len() != 10 {
@@ -268,7 +268,7 @@ fn a_cancelled_budget_is_observed_inside_regex_verification() -> TestResult {
             .search_constrained(
                 &regex_query(),
                 &unconstrained,
-                &LexicalPageSpecV1::first(10),
+                &LexicalPageSpec::first(10),
                 &cancelled_budget(),
             )
             .map(|page| page.candidates.len()),
@@ -288,7 +288,7 @@ fn a_cancelled_budget_is_observed_inside_the_unindexed_scan() -> TestResult {
     let served = searcher.search_constrained(
         &unindexed_query(),
         &unconstrained,
-        &LexicalPageSpecV1::first(10),
+        &LexicalPageSpec::first(10),
         &RequestBudgetV1::unbounded(),
     )?;
     if served.candidates.len() != 10 || served.exact_total != Some(u64::from(DOCS)) {
@@ -304,7 +304,7 @@ fn a_cancelled_budget_is_observed_inside_the_unindexed_scan() -> TestResult {
             .search_constrained(
                 &unindexed_query(),
                 &unconstrained,
-                &LexicalPageSpecV1::first(10),
+                &LexicalPageSpec::first(10),
                 &cancelled_budget(),
             )
             .map(|page| page.candidates.len()),

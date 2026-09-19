@@ -26,7 +26,7 @@ use quanta_index_contract::{
     SearchCorpusIngestBatch, SearchScopeSurface, SymbolId, UpsertChunk, UpsertSymbol,
 };
 use quanta_index_core::{
-    CoreError, LexicalIndexOpenPort, LexicalPageSpecV1, RequestBudgetV1, SearchCorpusBatchBuildPort,
+    CoreError, LexicalIndexOpenPort, LexicalPageSpec, RequestBudgetV1, SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 
@@ -550,7 +550,7 @@ fn language_constraint_is_pushed_into_one_pre_limit_candidate_query_v1() -> Test
         .search_constrained(
             &query,
             &rust_only,
-            &LexicalPageSpecV1::first(1),
+            &LexicalPageSpec::first(1),
             &RequestBudgetV1::unbounded(),
         )?
         .candidates;
@@ -571,7 +571,7 @@ fn language_constraint_is_pushed_into_one_pre_limit_candidate_query_v1() -> Test
         .search_constrained(
             &query,
             &either,
-            &LexicalPageSpecV1::first(10),
+            &LexicalPageSpec::first(10),
             &RequestBudgetV1::unbounded(),
         )?
         .candidates;
@@ -612,7 +612,7 @@ fn exact_path_constraint_is_applied_before_limit_and_on_index_no_scan_v1() -> Te
         .search_constrained(
             &query,
             &constraints,
-            &LexicalPageSpecV1::first(1),
+            &LexicalPageSpec::first(1),
             &RequestBudgetV1::unbounded(),
         )?
         .candidates;
@@ -628,7 +628,7 @@ fn exact_path_constraint_is_applied_before_limit_and_on_index_no_scan_v1() -> Te
     let symbols = searcher.search_symbols_constrained(
         &query,
         &constraints,
-        &LexicalPageSpecV1::first(1),
+        &LexicalPageSpec::first(1),
         &RequestBudgetV1::unbounded(),
     )?;
     assert_eq!(
@@ -644,7 +644,7 @@ fn exact_path_constraint_is_applied_before_limit_and_on_index_no_scan_v1() -> Te
         .search_constrained(
             &query,
             &constraints,
-            &LexicalPageSpecV1::first(16),
+            &LexicalPageSpec::first(16),
             &RequestBudgetV1::unbounded(),
         )?
         .candidates;
@@ -663,7 +663,7 @@ fn exact_path_constraint_is_applied_before_limit_and_on_index_no_scan_v1() -> Te
         .search_constrained(
             &unindexed,
             &constraints,
-            &LexicalPageSpecV1::first(10),
+            &LexicalPageSpec::first(10),
             &RequestBudgetV1::unbounded(),
         )?
         .candidates;
@@ -680,7 +680,7 @@ fn exact_path_constraint_is_applied_before_limit_and_on_index_no_scan_v1() -> Te
         .search_constrained(
             &unindexed,
             &QueryConstraintSetV1::from_languages([language_code("rust")?]),
-            &LexicalPageSpecV1::first(10),
+            &LexicalPageSpec::first(10),
             &RequestBudgetV1::unbounded(),
         )
         .expect_err("index:no must not infer typed language authority from a path extension");
@@ -712,7 +712,7 @@ fn exact_path_constraint_only_query_treats_dsl_metacharacters_as_literal_v1() ->
     let symbols = searcher.search_symbols_constrained(
         &constraint_only,
         &constraints,
-        &LexicalPageSpecV1::first(10),
+        &LexicalPageSpec::first(10),
         &RequestBudgetV1::unbounded(),
     )?;
     assert_eq!(
@@ -727,7 +727,7 @@ fn exact_path_constraint_only_query_treats_dsl_metacharacters_as_literal_v1() ->
         .search_constrained(
             &constraint_only,
             &constraints,
-            &LexicalPageSpecV1::first(10),
+            &LexicalPageSpec::first(10),
             &RequestBudgetV1::unbounded(),
         )?
         .candidates;
@@ -744,7 +744,7 @@ fn exact_path_constraint_only_query_treats_dsl_metacharacters_as_literal_v1() ->
             .search_symbols_constrained(
                 &constraint_only,
                 &QueryConstraintSetV1::unconstrained(),
-                &LexicalPageSpecV1::first(10),
+                &LexicalPageSpec::first(10),
                 &RequestBudgetV1::unbounded(),
             )
             .expect_err("empty unconstrained symbol query must remain rejected"),
@@ -752,7 +752,7 @@ fn exact_path_constraint_only_query_treats_dsl_metacharacters_as_literal_v1() ->
             .search_constrained(
                 &constraint_only,
                 &QueryConstraintSetV1::unconstrained(),
-                &LexicalPageSpecV1::first(10),
+                &LexicalPageSpec::first(10),
                 &RequestBudgetV1::unbounded(),
             )
             .expect_err("empty unconstrained text query must remain rejected"),
@@ -1567,7 +1567,7 @@ fn tantivy_count_all_keeps_the_page_and_reports_the_exact_total() -> TestResult 
     let page = searcher.search_constrained(
         &query,
         &QueryConstraintSetV1::unconstrained(),
-        &LexicalPageSpecV1::first(1),
+        &LexicalPageSpec::first(1),
         &RequestBudgetV1::unbounded(),
     )?;
     let ids = page
@@ -1592,7 +1592,7 @@ fn tantivy_count_all_keeps_the_page_and_reports_the_exact_total() -> TestResult 
     let plain = searcher.search_constrained(
         &query,
         &QueryConstraintSetV1::unconstrained(),
-        &LexicalPageSpecV1::first(2),
+        &LexicalPageSpec::first(2),
         &RequestBudgetV1::unbounded(),
     )?;
     if plain.candidates.len() != 2 || plain.exact_total.is_some() {
@@ -1609,7 +1609,7 @@ fn tantivy_count_all_keeps_the_page_and_reports_the_exact_total() -> TestResult 
     let bounded = searcher.search_constrained(
         &query,
         &QueryConstraintSetV1::unconstrained(),
-        &LexicalPageSpecV1::first(5),
+        &LexicalPageSpec::first(5),
         &RequestBudgetV1::unbounded(),
     )?;
     if bounded.candidates.len() != 2 || bounded.exact_total != Some(3) {

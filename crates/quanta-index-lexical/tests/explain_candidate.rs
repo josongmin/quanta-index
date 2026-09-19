@@ -19,7 +19,7 @@ use quanta_index_contract::{
     RepoRelativePath, RevisionId, SearchCorpusIngestBatch, UpsertChunk,
 };
 use quanta_index_core::{
-    CoreError, LexicalCandidateExplanationV1, LexicalIndexOpenPort, LexicalPageSpecV1,
+    CoreError, LexicalCandidateExplanationV1, LexicalIndexOpenPort, LexicalPageSpec,
     LexicalScoreEngineV1, LexicalScoreTraceV1, RequestBudgetV1, SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
@@ -155,7 +155,7 @@ fn every_ranked_candidate_explains_to_exactly_its_emitted_score_in_rank_order() 
     let page = searcher.search_constrained(
         &query,
         &constraints,
-        &LexicalPageSpecV1::first(10),
+        &LexicalPageSpec::first(10),
         &RequestBudgetV1::unbounded(),
     )?;
     if page.candidates.len() != 3 {
@@ -265,7 +265,7 @@ fn a_boost_in_the_plan_is_the_weight_and_scales_the_emitted_score() -> TestResul
     let page = searcher.search_constrained(
         &boosted,
         &constraints,
-        &LexicalPageSpecV1::first(10),
+        &LexicalPageSpec::first(10),
         &RequestBudgetV1::unbounded(),
     )?;
     let Some(top) = page
@@ -304,7 +304,7 @@ fn presence_is_an_exact_lookup_independent_of_the_corpus_around_the_candidate() 
     let page = searcher.search_constrained(
         &query,
         &constraints,
-        &LexicalPageSpecV1::first(50),
+        &LexicalPageSpec::first(50),
         &RequestBudgetV1::unbounded(),
     )?;
     if page
@@ -362,7 +362,7 @@ fn an_unindexed_scan_explains_through_the_same_per_document_matcher() -> TestRes
     let page = searcher.search_constrained(
         &query,
         &constraints,
-        &LexicalPageSpecV1::first(10),
+        &LexicalPageSpec::first(10),
         &RequestBudgetV1::unbounded(),
     )?;
     let Some(hit) = page

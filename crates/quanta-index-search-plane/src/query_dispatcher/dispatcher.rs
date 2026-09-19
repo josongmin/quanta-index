@@ -25,7 +25,7 @@ use crate::query_dispatcher::metrics::{
     QueryRoute, classify_error_metric_name, elapsed_millis_metric, examined_candidates_metric,
     interruption_route_suffix, metric_count_value,
 };
-use crate::query_dispatcher::response_budget::ResponsePayloadBudgetV1;
+use crate::query_dispatcher::response_budget::ResponsePayloadBudget;
 use crate::query_embedder::{HashingQueryTextEmbedder, QueryTextEmbedderPort};
 use crate::{
     ActivationCatalog, Ledger, SEARCH_OWNED_SEMANTIC_DIMENSION, SnapshotRegistries,
@@ -53,7 +53,7 @@ pub struct SearchPlaneDispatcher {
     pub(super) history_text: Option<HistoryTextIndexParts>,
     /// How many encoded bytes one ranked lexical page may take before it
     /// is cut and continued by its cursor (QI-BB-005 보완 #5).
-    pub(super) response_budget: ResponsePayloadBudgetV1,
+    pub(super) response_budget: ResponsePayloadBudget,
 }
 
 pub type SearchPlaneQueryService = SearchPlaneDispatcher;
@@ -110,7 +110,7 @@ impl SearchPlaneDispatcher {
             query_embedder,
             obs_sink,
             history_text: None,
-            response_budget: ResponsePayloadBudgetV1::DEFAULT,
+            response_budget: ResponsePayloadBudget::DEFAULT,
         }
     }
 
@@ -124,7 +124,7 @@ impl SearchPlaneDispatcher {
     /// Cut ranked lexical pages at `budget` encoded bytes instead of the
     /// frame's capacity.
     #[must_use]
-    pub const fn with_response_budget(mut self, budget: ResponsePayloadBudgetV1) -> Self {
+    pub const fn with_response_budget(mut self, budget: ResponsePayloadBudget) -> Self {
         self.response_budget = budget;
         self
     }

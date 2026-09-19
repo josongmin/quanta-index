@@ -68,12 +68,12 @@ pub use domains::lexical::{
     HistoryTextPageV1, HistoryTextQueryV1, HistoryTextSearcher,
     LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE, LEXICAL_WRITER_HEAP_BYTES_MAX,
     LEXICAL_WRITER_HEAP_BYTES_MIN, LexicalCandidateExplanationV1, LexicalExecutionBudgetV1,
-    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPageSpecV1, LexicalPolicy,
-    LexicalQueryPort, LexicalReadiness, LexicalScoreEngineV1, LexicalScoreTraceV1,
-    LexicalSearchPageV1, LexicalSearcher, LexicalWriterCacheStats, LexicalWriterPolicy,
-    RegexMatchCachePolicy, RegexMatchCacheStats, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, SearchCorpusBatchBuildPort,
-    SearchCorpusIngestPort, TextAuthorityUpdateStats,
+    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPageSpec, LexicalPolicy, LexicalQueryPort,
+    LexicalReadiness, LexicalScoreEngineV1, LexicalScoreTraceV1, LexicalSearchPageV1,
+    LexicalSearcher, LexicalWriterCacheStats, LexicalWriterPolicy, RegexMatchCachePolicy,
+    RegexMatchCacheStats, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
+    RepoMetaIngestPort, RepoTopicIngestPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
+    TextAuthorityUpdateStats,
 };
 pub use domains::observability::{
     EMBEDDING_CACHE_LEDGER_BYTES_PER_ENTRY, MetricPointV1, MetricSourcePort, MetricValueV1,

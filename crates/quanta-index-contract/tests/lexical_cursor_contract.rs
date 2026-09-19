@@ -14,7 +14,7 @@ use std::error::Error;
 
 use quanta_index_contract::lex::SymbolKindCode;
 use quanta_index_contract::{
-    CandidateCountV1, FileOwnerProjectionRow, GenerationPin, LexicalCandidate, LexicalCursorV1,
+    CandidateCountV1, FileOwnerProjectionRow, GenerationPin, LexicalCandidate, LexicalCursor,
     ManifestGeneration, QueryConstraintSetV1, QueryResultWindowV1, RepoId, RepoRelativePath,
     RevisionId, SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest,
     TextQueryResponse, TextQuerySyntax,
@@ -55,8 +55,8 @@ fn rows() -> Vec<LexicalCandidate> {
     ]
 }
 
-fn cursor_at(row: &LexicalCandidate) -> LexicalCursorV1 {
-    LexicalCursorV1::at(ManifestGeneration::new(7), row.order_key())
+fn cursor_at(row: &LexicalCandidate) -> LexicalCursor {
+    LexicalCursor::at(ManifestGeneration::new(7), row.order_key())
 }
 
 fn continued(results: Vec<LexicalCandidate>) -> Result<TextQueryResponse, Box<dyn Error>> {
@@ -169,7 +169,7 @@ fn a_cursor_score_must_be_finite_on_both_sides() -> TestResult {
     }
     let mut raw = Vec::new();
     ciborium::into_writer(&value, &mut raw)?;
-    ciborium::from_reader::<LexicalCursorV1, _>(raw.as_slice()).map_or_else(
+    ciborium::from_reader::<LexicalCursor, _>(raw.as_slice()).map_or_else(
         |_refused| Ok(()),
         |decoded| Err(format!("an infinite score decoded: {decoded:?}").into()),
     )

@@ -38,7 +38,7 @@ use anyhow::Result as AnyResult;
 use quanta_index_contract::{
     ManifestGeneration, MetricsSnapshotV1, QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax,
 };
-use quanta_index_core::{LexicalIndexOpenPort as _, LexicalPageSpecV1, RequestBudgetV1};
+use quanta_index_core::{LexicalIndexOpenPort as _, LexicalPageSpec, RequestBudgetV1};
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_search_plane::lower_lexical_text_query;
 use serde_json::{Value, json};
@@ -519,7 +519,7 @@ fn measure_adapter_phases(rt: &E2eRuntime) -> AnyResult<AdapterPhaseTimingV1> {
         let page = searcher.search_constrained(
             &query,
             &constraints,
-            &LexicalPageSpecV1::first(SCALE_TOP_K),
+            &LexicalPageSpec::first(SCALE_TOP_K),
             &RequestBudgetV1::unbounded(),
         )?;
         execute_samples.push(elapsed_ms(started));

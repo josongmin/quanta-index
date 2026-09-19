@@ -2,7 +2,7 @@
 //!
 //! A text or symbol page is ordered by score descending, then repo-relative
 //! path, start line, end line and candidate id ascending
-//! ([`LexicalRowOrderKeyV1::order`]). Every column of that key is a fast
+//! ([`LexicalRowOrderKey::order`]). Every column of that key is a fast
 //! column of the index, so the collectors here rank, cut and group rows
 //! without reading a stored document: a stored document is fetched only
 //! for a row a page returns.
@@ -25,9 +25,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap};
 use std::sync::Arc;
 
-use quanta_index_contract::{
-    LexicalCandidate, LexicalCursorV1, LexicalRowOrderKeyV1, SymbolCandidate,
-};
+use quanta_index_contract::{LexicalCandidate, LexicalCursor, LexicalRowOrderKey, SymbolCandidate};
 use tantivy::collector::{Collector, SegmentCollector};
 use tantivy::columnar::StrColumn;
 use tantivy::fastfield::Column;
@@ -51,8 +49,8 @@ pub(crate) struct RankedRowKey {
 }
 
 impl RankedRowKey {
-    pub(crate) fn order_key(&self) -> LexicalRowOrderKeyV1<'_> {
-        LexicalRowOrderKeyV1 {
+    pub(crate) fn order_key(&self) -> LexicalRowOrderKey<'_> {
+        LexicalRowOrderKey {
             score: self.score,
             repo_relative_path: &self.repo_relative_path,
             start_line: self.start_line,
@@ -180,7 +178,7 @@ enum ScorePosition {
     Tied,
 }
 
-fn score_position(after: Option<&LexicalCursorV1>, score: f32) -> ScorePosition {
+fn score_position(after: Option<&LexicalCursor>, score: f32) -> ScorePosition {
     match after.map(|cursor| score.total_cmp(&cursor.score)) {
         None | Some(Ordering::Less) => ScorePosition::After,
         Some(Ordering::Greater) => ScorePosition::Before,
@@ -200,7 +198,7 @@ pub(crate) struct RankedPageFruit {
 /// The first `limit` rows strictly after `after`, in exact page order.
 pub(crate) struct RankedPageCollector {
     limit: usize,
-    after: Option<Arc<LexicalCursorV1>>,
+    after: Option<Arc<LexicalCursor>>,
     boost: f32,
     count: bool,
 }
@@ -208,7 +206,7 @@ pub(crate) struct RankedPageCollector {
 impl RankedPageCollector {
     pub(crate) const fn new(
         limit: usize,
-        after: Option<Arc<LexicalCursorV1>>,
+        after: Option<Arc<LexicalCursor>>,
         boost: f32,
         count: bool,
     ) -> Self {
@@ -232,7 +230,7 @@ pub(crate) struct RankedPageSegment {
     columns: RankedRowColumns,
     segment_ord: SegmentOrdinal,
     limit: usize,
-    after: Option<Arc<LexicalCursorV1>>,
+    after: Option<Arc<LexicalCursor>>,
     boost: f32,
     heap: BinaryHeap<Latest>,
     matched: u64,
@@ -604,17 +602,17 @@ impl Collector for GroupedPageCollector {
 
 /// A row the adapter returns, positioned in the ranked page order.
 pub(crate) trait RankedRowView {
-    fn ranked_key(&self) -> LexicalRowOrderKeyV1<'_>;
+    fn ranked_key(&self) -> LexicalRowOrderKey<'_>;
 }
 
 impl RankedRowView for LexicalCandidate {
-    fn ranked_key(&self) -> LexicalRowOrderKeyV1<'_> {
+    fn ranked_key(&self) -> LexicalRowOrderKey<'_> {
         self.order_key()
     }
 }
 
 impl RankedRowView for SymbolCandidate {
-    fn ranked_key(&self) -> LexicalRowOrderKeyV1<'_> {
+    fn ranked_key(&self) -> LexicalRowOrderKey<'_> {
         self.order_key()
     }
 }
@@ -623,7 +621,7 @@ impl RankedRowView for SymbolCandidate {
 /// for rows the unindexed scan matched in memory.
 pub(crate) fn rank_in_memory<T: RankedRowView>(
     rows: Vec<T>,
-    after: Option<&LexicalCursorV1>,
+    after: Option<&LexicalCursor>,
 ) -> Vec<T> {
     let mut rows: Vec<T> = rows
         .into_iter()

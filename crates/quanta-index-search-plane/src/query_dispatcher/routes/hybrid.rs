@@ -6,7 +6,7 @@ use quanta_index_contract::{
     EarlyStopReason, HybridQueryRequest, HybridQueryResponse, LexicalCandidate, TextQueryRequest,
 };
 use quanta_index_core::{
-    CoreError, HybridFilterPlanV1, HybridOrchestratorPolicy, HybridQueryPort, LexicalPageSpecV1,
+    CoreError, HybridFilterPlanV1, HybridOrchestratorPolicy, HybridQueryPort, LexicalPageSpec,
     LexicalPolicy, QueryRouteV1, RequestBudgetV1,
 };
 
@@ -77,7 +77,7 @@ impl SearchPlaneDispatcher {
                 .search_constrained(
                     &prepared_language.query,
                     &prepared_language.constraints,
-                    &LexicalPageSpecV1::first(internal_top_k),
+                    &LexicalPageSpec::first(internal_top_k),
                     budget,
                 )?
                 .candidates

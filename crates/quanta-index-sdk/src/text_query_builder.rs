@@ -4,7 +4,7 @@
 )]
 
 use quanta_index_contract::{
-    GenerationPin, GenerationSelector, HybridQueryRequest, HybridSeedQueryRequest, LexicalCursorV1,
+    GenerationPin, GenerationSelector, HybridQueryRequest, HybridSeedQueryRequest, LexicalCursor,
     QueryConstraintSetV1, SemanticQueryRequest, SemanticSeedCorpusBudgetV1, TextQueryRequest,
     TextQuerySyntax,
 };
@@ -19,7 +19,7 @@ pub(crate) struct TextQueryBuilderState {
     pub(crate) top_k: Option<u32>,
     /// The last row of the previous ranked page, for a text or symbol
     /// continuation; routes that do not page refuse one typed.
-    pub(crate) after: Option<LexicalCursorV1>,
+    pub(crate) after: Option<LexicalCursor>,
 }
 
 impl TextQueryBuilderState {

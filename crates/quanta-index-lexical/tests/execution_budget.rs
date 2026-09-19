@@ -24,7 +24,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE, LexicalExecutionBudgetV1,
-    LexicalIndexOpenPort, LexicalPageSpecV1, LexicalWriterPolicy, RegexMatchCachePolicy,
+    LexicalIndexOpenPort, LexicalPageSpec, LexicalWriterPolicy, RegexMatchCachePolicy,
     RequestBudgetV1, SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
@@ -152,7 +152,7 @@ fn exact_set_executions_over_the_budget_are_refused_but_pages_serve() -> TestRes
     let page = searcher.search_constrained(
         &query(needle(), Vec::new()),
         &unconstrained,
-        &LexicalPageSpecV1::first(2),
+        &LexicalPageSpec::first(2),
         &RequestBudgetV1::unbounded(),
     )?;
     if page.candidates.len() != 2 || page.exact_total.is_some() {
@@ -170,7 +170,7 @@ fn exact_set_executions_over_the_budget_are_refused_but_pages_serve() -> TestRes
     let counted_page = searcher.search_constrained(
         &counted,
         &unconstrained,
-        &LexicalPageSpecV1::first(2),
+        &LexicalPageSpec::first(2),
         &RequestBudgetV1::unbounded(),
     )?;
     if counted_page.candidates.len() != 2 || counted_page.exact_total != Some(u64::from(DOCS)) {
@@ -192,7 +192,7 @@ fn exact_set_executions_over_the_budget_are_refused_but_pages_serve() -> TestRes
     match searcher.search_constrained(
         &projected,
         &unconstrained,
-        &LexicalPageSpecV1::first(2),
+        &LexicalPageSpec::first(2),
         &RequestBudgetV1::unbounded(),
     ) {
         Err(err) if is_budget_refusal(&err) => {}
@@ -214,7 +214,7 @@ fn exact_set_executions_over_the_budget_are_refused_but_pages_serve() -> TestRes
     let bounded_page = searcher.search_constrained(
         &bounded,
         &unconstrained,
-        &LexicalPageSpecV1::first(3),
+        &LexicalPageSpec::first(3),
         &RequestBudgetV1::unbounded(),
     )?;
     if bounded_page.candidates.len() != 2 || bounded_page.exact_total != Some(u64::from(DOCS)) {
@@ -245,7 +245,7 @@ fn exact_set_executions_within_the_budget_serve_with_exact_totals() -> TestResul
     let page = searcher.search_constrained(
         &projected,
         &unconstrained,
-        &LexicalPageSpecV1::first(2),
+        &LexicalPageSpec::first(2),
         &RequestBudgetV1::unbounded(),
     )?;
     if page.candidates.len() != 2 || page.exact_total != Some(u64::from(DOCS)) {
@@ -262,7 +262,7 @@ fn exact_set_executions_within_the_budget_serve_with_exact_totals() -> TestResul
     let page = searcher.search_constrained(
         &bounded,
         &unconstrained,
-        &LexicalPageSpecV1::first(10),
+        &LexicalPageSpec::first(10),
         &RequestBudgetV1::unbounded(),
     )?;
     if page.candidates.len() != 3 || page.exact_total != Some(u64::from(DOCS)) {
@@ -287,7 +287,7 @@ fn unindexed_scans_over_the_budget_are_refused_before_scanning() -> TestResult {
     match searcher.search_constrained(
         &scan,
         &QueryConstraintSetV1::unconstrained(),
-        &LexicalPageSpecV1::first(2),
+        &LexicalPageSpec::first(2),
         &RequestBudgetV1::unbounded(),
     ) {
         Err(err) if is_budget_refusal(&err) => {}
@@ -312,7 +312,7 @@ fn unindexed_scans_over_the_budget_are_refused_before_scanning() -> TestResult {
     match searcher.search_symbols_constrained(
         &symbol_scan,
         &QueryConstraintSetV1::unconstrained(),
-        &LexicalPageSpecV1::first(2),
+        &LexicalPageSpec::first(2),
         &RequestBudgetV1::unbounded(),
     ) {
         Err(err) if is_budget_refusal(&err) => Ok(()),

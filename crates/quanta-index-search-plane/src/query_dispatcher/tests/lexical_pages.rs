@@ -10,7 +10,7 @@
 use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::{
-    ERR_RESULT_TOO_LARGE, LexicalCandidate, LexicalCursorV1, ManifestGeneration,
+    ERR_RESULT_TOO_LARGE, LexicalCandidate, LexicalCursor, ManifestGeneration,
     QUERY_CURSOR_GENERATION_MISMATCH_CODE, QueryConstraintSetV1, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
@@ -18,7 +18,7 @@ use quanta_index_core::RequestBudgetV1;
 
 use crate::observability::NoopQueryObsSink;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
-use crate::query_dispatcher::response_budget::ResponsePayloadBudgetV1;
+use crate::query_dispatcher::response_budget::ResponsePayloadBudget;
 use crate::query_dispatcher::tests::support::common::{
     TestResult, candidate, dispatcher_with_obs, ipc_error_from, ready_pin,
 };
@@ -38,7 +38,7 @@ fn rows(count: usize, snippet_bytes: usize) -> Vec<LexicalCandidate> {
         .collect()
 }
 
-fn request(top_k: u32, cursor: Option<LexicalCursorV1>) -> SearchPlaneQueryIpcRequest {
+fn request(top_k: u32, cursor: Option<LexicalCursor>) -> SearchPlaneQueryIpcRequest {
     SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
         syntax: TextQuerySyntax::Native,
         query_text: "needle".to_string(),
@@ -89,7 +89,7 @@ fn walk(
     top_k: u32,
 ) -> Result<Vec<Vec<String>>, Box<dyn std::error::Error>> {
     let mut pages: Vec<Vec<String>> = Vec::new();
-    let mut cursor: Option<LexicalCursorV1> = None;
+    let mut cursor: Option<LexicalCursor> = None;
     for _ in 0..64 {
         let page = text(dispatcher.dispatch(
             request(top_k, cursor.clone()),
@@ -101,7 +101,7 @@ fn walk(
             .has_more()
             .then(|| page.results.last())
             .flatten()
-            .map(|last| LexicalCursorV1::at(ManifestGeneration::new(9), last.order_key()));
+            .map(|last| LexicalCursor::at(ManifestGeneration::new(9), last.order_key()));
         if page.next_cursor != expected {
             return Err(format!(
                 "the continuation must be the last row exactly when more exist: {:?} vs {expected:?}",
@@ -144,7 +144,7 @@ fn the_cursor_reaches_the_searcher_and_another_generations_is_refused_first() ->
         Arc::new(NoopQueryObsSink),
     )?;
     let row = rows(1, 8).into_iter().next().ok_or("a row")?;
-    let cursor = LexicalCursorV1::at(ManifestGeneration::new(9), row.order_key());
+    let cursor = LexicalCursor::at(ManifestGeneration::new(9), row.order_key());
     let _page = text(dispatcher.dispatch(
         request(2, Some(cursor.clone())),
         &RequestBudgetV1::unbounded(),
@@ -183,7 +183,7 @@ fn the_cursor_reaches_the_searcher_and_another_generations_is_refused_first() ->
 #[test]
 fn a_page_past_the_byte_budget_is_cut_and_continued() -> TestResult {
     let all = rows(6, 1_000);
-    let budget = ResponsePayloadBudgetV1::new(3_500)?;
+    let budget = ResponsePayloadBudget::new(3_500)?;
     let dispatcher = stub_dispatcher(all.clone())?.with_response_budget(budget);
     let first = text(dispatcher.dispatch(request(6, None), &RequestBudgetV1::unbounded()))?;
     let encoded = quanta_index_ipc::cbor_payload_len(&first)?;
@@ -209,7 +209,7 @@ fn a_page_past_the_byte_budget_is_cut_and_continued() -> TestResult {
 #[test]
 fn a_first_row_larger_than_the_budget_is_refused_typed() -> TestResult {
     let dispatcher =
-        stub_dispatcher(rows(2, 1_000))?.with_response_budget(ResponsePayloadBudgetV1::new(200)?);
+        stub_dispatcher(rows(2, 1_000))?.with_response_budget(ResponsePayloadBudget::new(200)?);
     let (code, _message) =
         ipc_error_from(dispatcher.dispatch(request(2, None), &RequestBudgetV1::unbounded()))?;
     if code != ERR_RESULT_TOO_LARGE {
@@ -234,7 +234,7 @@ fn a_cursor_on_a_route_that_does_not_page_is_refused() -> TestResult {
     else {
         return Err("the helper builds a runtime-metadata request".into());
     };
-    runtime.text_query.cursor = Some(LexicalCursorV1::at(
+    runtime.text_query.cursor = Some(LexicalCursor::at(
         ManifestGeneration::new(9),
         row.order_key(),
     ));

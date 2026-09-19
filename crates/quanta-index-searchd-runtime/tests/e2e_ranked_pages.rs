@@ -14,10 +14,10 @@
 use std::error::Error;
 
 use quanta_index_contract::{
-    GenerationPin, LexicalCursorV1, ManifestGeneration, QUERY_CURSOR_GENERATION_MISMATCH_CODE,
+    GenerationPin, LexicalCursor, ManifestGeneration, QUERY_CURSOR_GENERATION_MISMATCH_CODE,
     TextQueryResponse, TextQuerySyntax,
 };
-use quanta_index_search_plane::ResponsePayloadBudgetV1;
+use quanta_index_search_plane::ResponsePayloadBudget;
 use quanta_index_searchd_harness as e2e_harness;
 
 use e2e_harness::{E2eRoutePage, E2eRuntime};
@@ -66,7 +66,7 @@ fn walk(
 ) -> Result<(Vec<String>, usize), Box<dyn Error>> {
     let mut rows: Vec<String> = Vec::new();
     let mut pages = 0_usize;
-    let mut cursor: Option<LexicalCursorV1> = None;
+    let mut cursor: Option<LexicalCursor> = None;
     loop {
         let page = served(rt.query_text_page(
             TextQuerySyntax::Native,
@@ -129,7 +129,7 @@ fn a_tied_corpus_walks_page_by_page_in_path_order() -> TestResult {
 /// cursor walk still returns every row once in order.
 #[test]
 fn a_byte_budget_cuts_pages_with_an_explicit_continuation() -> TestResult {
-    let budget = ResponsePayloadBudgetV1::new(1_200)?;
+    let budget = ResponsePayloadBudget::new(1_200)?;
     let (mut rt, pin) = seeded(E2eRuntime::boot_with_query_response_budget(budget)?)?;
     let first = served(rt.query_text_page(
         TextQuerySyntax::Native,

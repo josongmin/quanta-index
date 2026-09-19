@@ -11,7 +11,7 @@ use crate::{HybridCandidateV1, LexicalCandidate};
 use quanta_index_contract_base::query::wire_top_k;
 
 use super::{
-    GenerationPin, GenerationSelector, HistoryCursor, HistoryOrderV1, LexicalCursorV1,
+    GenerationPin, GenerationSelector, HistoryCursor, HistoryOrderV1, LexicalCursor,
     QueryConstraintSetV1, RuntimeMetadataCursorV1, StructuralCursorV1, TextQueryRequest,
     TextQuerySyntax,
 };
@@ -585,7 +585,7 @@ pub struct SymbolQueryRequest {
     /// caller-side default — the SDK builder enforces this is set.
     pub top_k: u32,
     /// Continue after this row of an earlier page, as for text queries.
-    pub cursor: Option<LexicalCursorV1>,
+    pub cursor: Option<LexicalCursor>,
 }
 
 impl From<SymbolQueryRequest> for TextQueryRequest {

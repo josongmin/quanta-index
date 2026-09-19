@@ -11,8 +11,8 @@
 //! continuation keep the transport's typed refusal as their bound.
 
 use quanta_index_contract::{
-    CandidateCountV1, ERR_RESULT_TOO_LARGE, LexicalCursorV1, LexicalRowOrderKeyV1,
-    QueryResultWindowV1, SymbolCandidate, SymbolQueryResponse, TextQueryResponse,
+    CandidateCountV1, ERR_RESULT_TOO_LARGE, LexicalCursor, LexicalRowOrderKey, QueryResultWindowV1,
+    SymbolCandidate, SymbolQueryResponse, TextQueryResponse,
 };
 use quanta_index_core::CoreError;
 use quanta_index_ipc::{MAX_FRAME_BODY_BYTES, cbor_payload_len};
@@ -24,11 +24,11 @@ pub const RESPONSE_ENVELOPE_RESERVE_BYTES: u64 = 4_096;
 
 /// How many encoded bytes one ranked page may take.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ResponsePayloadBudgetV1 {
+pub struct ResponsePayloadBudget {
     max_payload_bytes: u64,
 }
 
-impl ResponsePayloadBudgetV1 {
+impl ResponsePayloadBudget {
     /// Everything a frame holds beside the envelope reserve.
     pub const DEFAULT: Self = Self {
         max_payload_bytes: frame_payload_bytes(),
@@ -73,12 +73,12 @@ pub(super) trait RankedPage: Serialize + Clone {
 
     fn window(&self) -> QueryResultWindowV1;
 
-    fn last_key(&self, returned: usize) -> Option<LexicalRowOrderKeyV1<'_>>;
+    fn last_key(&self, returned: usize) -> Option<LexicalRowOrderKey<'_>>;
 
     fn generation(&self) -> quanta_index_contract::ManifestGeneration;
 
     /// Keep the first `returned` rows under `window`, continued by `cursor`.
-    fn cut(self, returned: usize, window: QueryResultWindowV1, cursor: LexicalCursorV1) -> Self;
+    fn cut(self, returned: usize, window: QueryResultWindowV1, cursor: LexicalCursor) -> Self;
 }
 
 fn encoded_len<T: Serialize>(value: &T, what: &str) -> Result<u64, CoreError> {
@@ -110,7 +110,7 @@ fn cut_window(
 /// measuring the page it produces, so the answer never exceeds the budget.
 pub(super) fn fit_ranked_page<P: RankedPage>(
     page: P,
-    budget: ResponsePayloadBudgetV1,
+    budget: ResponsePayloadBudget,
 ) -> Result<P, CoreError> {
     let limit = budget.max_payload_bytes();
     let whole = encoded_len(&page, "ranked page")?;
@@ -149,7 +149,7 @@ pub(super) fn fit_ranked_page<P: RankedPage>(
                 "ranked page has no row {last} to continue from"
             )));
         };
-        let cursor = LexicalCursorV1::at(generation, key);
+        let cursor = LexicalCursor::at(generation, key);
         let cut = page
             .clone()
             .cut(returned, cut_window(window, returned)?, cursor);
@@ -187,7 +187,7 @@ impl RankedPage for TextQueryResponse {
         self.window
     }
 
-    fn last_key(&self, returned: usize) -> Option<LexicalRowOrderKeyV1<'_>> {
+    fn last_key(&self, returned: usize) -> Option<LexicalRowOrderKey<'_>> {
         returned
             .checked_sub(1)
             .and_then(|last| self.results.get(last))
@@ -198,12 +198,7 @@ impl RankedPage for TextQueryResponse {
         self.generation.manifest_generation
     }
 
-    fn cut(
-        mut self,
-        returned: usize,
-        window: QueryResultWindowV1,
-        cursor: LexicalCursorV1,
-    ) -> Self {
+    fn cut(mut self, returned: usize, window: QueryResultWindowV1, cursor: LexicalCursor) -> Self {
         self.results.truncate(returned);
         if let Some(rows) = self.file_owner_rows.as_mut() {
             rows.truncate(returned);
@@ -229,7 +224,7 @@ impl RankedPage for SymbolQueryResponse {
         self.window
     }
 
-    fn last_key(&self, returned: usize) -> Option<LexicalRowOrderKeyV1<'_>> {
+    fn last_key(&self, returned: usize) -> Option<LexicalRowOrderKey<'_>> {
         returned
             .checked_sub(1)
             .and_then(|last| self.results.get(last))
@@ -240,12 +235,7 @@ impl RankedPage for SymbolQueryResponse {
         self.generation.manifest_generation
     }
 
-    fn cut(
-        mut self,
-        returned: usize,
-        window: QueryResultWindowV1,
-        cursor: LexicalCursorV1,
-    ) -> Self {
+    fn cut(mut self, returned: usize, window: QueryResultWindowV1, cursor: LexicalCursor) -> Self {
         self.results.truncate(returned);
         self.window = window;
         self.next_cursor = Some(cursor);
