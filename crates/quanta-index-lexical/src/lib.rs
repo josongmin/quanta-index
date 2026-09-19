@@ -5060,11 +5060,7 @@ fn inventory_generation_dir(
             "generation directory name is not UTF-8".to_string(),
         ));
     };
-    let canonical_generation_name = generation_name.strip_prefix('g').is_some_and(|raw| {
-        raw.parse::<u64>()
-            .is_ok_and(|generation| format!("g{generation}") == generation_name)
-    });
-    if !canonical_generation_name {
+    if GenerationStorageKeyV1::generation_of_dir_name(generation_name).is_none() {
         return Err(quarantine(
             generation_dir.to_path_buf(),
             GenerationQuarantineReasonV1::NonCanonicalLayout,

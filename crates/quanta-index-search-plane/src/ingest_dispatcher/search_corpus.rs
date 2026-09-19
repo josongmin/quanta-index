@@ -10,11 +10,11 @@ use quanta_index_contract::{
     SearchCorpusIngestBatch, SearchPlaneTrackKind,
 };
 use quanta_index_core::{
-    AuxiliaryAuthorityCatalogPort, AuxiliaryGenerationKeyV1, CoreError,
-    GenerationIdentityValidatePort, IdempotencyCatalogPort, IncompleteGenerationDiscardPort,
-    IngestBatchFootprint, IngestResourcePolicy, MetricPointV1, MetricSourcePort,
-    SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, SearchCorpusBatchBuildPort,
-    SearchCorpusIngestPort, SemanticContentRootsPort, SemanticIngestPort, SemanticScopeSource as _,
+    AuxiliaryAuthorityCatalogPort, CoreError, GenerationIdentityValidatePort,
+    IdempotencyCatalogPort, IncompleteGenerationDiscardPort, IngestBatchFootprint,
+    IngestResourcePolicy, MetricPointV1, MetricSourcePort, SealedGenerationReclaimOutcomeV1,
+    SealedGenerationReclaimPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
+    SemanticContentRootsPort, SemanticIngestPort, SemanticScopeSource as _,
     SemanticStreamWindowPolicy, TextEmbeddingProvider, count_from_usize,
 };
 
@@ -833,18 +833,29 @@ impl DirectSearchCorpusMaterializer {
                 &batch.revision_id,
                 generation,
             )?;
-            // A forgotten generation's text indexes go with its rows; one
-            // still held by a reader is deferred to the next pass over
-            // the generation's history mutations (there are none, so to
-            // the next seal of the pair).
-            if let Some(history_text) = &self.history_text {
-                let _deferred =
-                    history_text.retire_and_discard_generation(&AuxiliaryGenerationKeyV1 {
-                        repo_id: batch.repo_id.clone(),
-                        revision_id: batch.revision_id.clone(),
-                        generation,
-                    })?;
-            }
+        }
+        // Forgotten generations' text indexes go with their rows, swept
+        // from the disk against the generations the ledger still knows, so
+        // one a reader still holds, or whose discard failed, is found again
+        // by the next seal of the pair.
+        if let Some(history_text) = &self.history_text {
+            let known: BTreeSet<ManifestGeneration> = self
+                .ledger
+                .read()
+                .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?
+                .auxiliary_generations_older_than(
+                    &batch.repo_id,
+                    &batch.revision_id,
+                    batch.generation,
+                )
+                .into_iter()
+                .collect();
+            history_text.sweep_forgotten_after_durable(
+                &batch.repo_id,
+                &batch.revision_id,
+                batch.generation,
+                &known,
+            );
         }
         if let Some(retention) = retention {
             let receipt = self.reclaim_retired_generations_v1(batch, retention)?;

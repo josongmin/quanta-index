@@ -26,6 +26,7 @@ pub mod readiness;
 mod search_corpus_lifecycle;
 mod search_corpus_retention;
 mod semantic_derive;
+mod single_flight;
 mod snapshot_registry;
 
 pub use control_dispatcher::{SearchPlaneControlDispatcher, SearchPlaneControlDispatcherParts};

@@ -44,6 +44,7 @@ use quanta_index_core::{
 };
 
 use crate::Ledger;
+use crate::history_text::HistoryTextClaim;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::errors::{history_absent_error, history_relevance_unavailable};
 use crate::readiness::{
@@ -139,7 +140,9 @@ impl<'a> ReadViewRequestV1<'a> {
 struct LedgerParts {
     semantic_manifest_digest: Option<String>,
     history: Option<AuxRead<HistoryAuthorityState>>,
-    history_text: Option<Arc<dyn HistoryTextSearcher>>,
+    /// The epoch's text index, claimed under the guard and landed after
+    /// it (QI-BB-020): no open runs under the ledger lock.
+    history_text: Option<HistoryTextClaim>,
     runtime: Option<AuxRead<RuntimeMetadataState>>,
     structural: Option<AuxRead<StructuralAuthorityState>>,
 }
@@ -233,6 +236,7 @@ impl QueryReadViewV1 {
     fn assemble(
         request: &ReadViewRequestV1<'_>,
         parts: LedgerParts,
+        history_text: Option<Arc<dyn HistoryTextSearcher>>,
         lexical: Option<Arc<dyn LexicalSearcher>>,
         semantic: Option<Arc<dyn SemanticSearcher>>,
     ) -> Result<Self, CoreError> {
@@ -286,7 +290,7 @@ impl QueryReadViewV1 {
             lexical,
             semantic,
             history: parts.history,
-            history_text: parts.history_text,
+            history_text,
             runtime: parts.runtime,
             structural: parts.structural,
         })
@@ -345,13 +349,18 @@ impl SearchPlaneDispatcher {
         request: &ReadViewRequestV1<'_>,
         budget: &RequestBudgetV1,
     ) -> Result<QueryReadViewV1, CoreError> {
-        let parts = {
+        let mut parts = {
             let guard = self
                 .ledger
                 .read()
                 .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
             self.ledger_parts(&guard, request, Instant::now())?
         };
+        let history_text = parts
+            .history_text
+            .take()
+            .map(|claim| self.land_history_text(claim, budget))
+            .transpose()?;
         let pin = request.pin;
         let lexical = if request.domains.contains(ReadDomainV1::LexicalTrack) {
             Some(self.acquire_lexical(
@@ -373,7 +382,7 @@ impl SearchPlaneDispatcher {
         } else {
             None
         };
-        QueryReadViewV1::assemble(request, parts, lexical, semantic)
+        QueryReadViewV1::assemble(request, parts, history_text, lexical, semantic)
     }
 
     /// The history snapshot of `pin` at `epoch` (current when `None`);
@@ -450,7 +459,7 @@ impl SearchPlaneDispatcher {
             None
         };
         let history_text = match (&history, request.history_text) {
-            (Some(read), true) => Some(self.acquire_history_text(pin, read.epoch)?),
+            (Some(read), true) => Some(self.claim_history_text(pin, read.epoch)?),
             (Some(_) | None, false) => None,
             (None, true) => {
                 return Err(ReadViewRefusedError::DomainUndeclared {
@@ -545,23 +554,24 @@ impl SearchPlaneDispatcher {
         }
     }
 
-    /// The epoch's text index handle, from the registry the composition
+    /// Claim the epoch's text index from the registry the composition
     /// root wired; refused typed when it wired none.
     ///
     /// Called under the ledger read guard so a mutation pruning the epoch
-    /// — which takes the write lock only after this read releases —
-    /// cannot discard the index between the read that found the epoch
-    /// retained and the open.
-    fn acquire_history_text(
+    /// — which takes the write lock only after this read releases — finds
+    /// the claim and defers the discard instead of removing the index
+    /// between the read that found the epoch retained and the open. The
+    /// claim is a lookup; the open runs in [`Self::land_history_text`].
+    fn claim_history_text(
         &self,
         pin: &GenerationPin,
         epoch: AuxEpochV1,
-    ) -> Result<Arc<dyn HistoryTextSearcher>, CoreError> {
+    ) -> Result<HistoryTextClaim, CoreError> {
         let parts = self
             .history_text
             .as_ref()
             .ok_or_else(history_relevance_unavailable)?;
-        parts.acquire(
+        parts.claim(
             &AuxiliaryGenerationKeyV1 {
                 repo_id: pin.repo_id.clone(),
                 revision_id: pin.revision_id.clone(),
@@ -569,6 +579,19 @@ impl SearchPlaneDispatcher {
             },
             epoch,
         )
+    }
+
+    /// Land a history text claim after the ledger guard is released: the
+    /// cold open, if the claim reserved one, runs here under `budget`.
+    fn land_history_text(
+        &self,
+        claim: HistoryTextClaim,
+        budget: &RequestBudgetV1,
+    ) -> Result<Arc<dyn HistoryTextSearcher>, CoreError> {
+        self.history_text
+            .as_ref()
+            .ok_or_else(history_relevance_unavailable)?
+            .land(claim, budget)
     }
 }
 
@@ -589,6 +612,7 @@ pub(crate) fn assemble_for_test(
             runtime,
             structural,
         },
+        None,
         lexical,
         None,
     )

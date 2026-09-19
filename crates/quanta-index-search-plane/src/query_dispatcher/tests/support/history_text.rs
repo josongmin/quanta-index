@@ -11,7 +11,9 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use quanta_index_contract::{AuxEpochV1, HistoryScoreV1, LqExpr, LqLeaf};
+use quanta_index_contract::{
+    AuxEpochV1, HistoryScoreV1, LqExpr, LqLeaf, ManifestGeneration, RepoId, RevisionId,
+};
 use quanta_index_core::{
     AuxiliaryGenerationKeyV1, CoreError, HISTORY_TEXT_INDEX_NOT_READY_CODE,
     HISTORY_TEXT_QUERY_UNSCORABLE_CODE, HistoryTextAdmitFn, HistoryTextBuildV1,
@@ -35,6 +37,8 @@ pub(crate) struct MemoryHistoryTextIndex {
     builds: Mutex<Vec<(AuxEpochV1, &'static str)>>,
     /// When set, the next publish fails typed before writing anything.
     fail_next_publish: std::sync::atomic::AtomicBool,
+    /// When set, the next discard fails before removing anything.
+    fail_next_discard: std::sync::atomic::AtomicBool,
 }
 
 impl MemoryHistoryTextIndex {
@@ -67,6 +71,25 @@ impl MemoryHistoryTextIndex {
     pub(crate) fn fail_next_publish(&self) {
         self.fail_next_publish
             .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Make the next `discard_epoch` or `discard_generation` fail before
+    /// removing anything, as an I/O error would.
+    pub(crate) fn fail_next_discard(&self) {
+        self.fail_next_discard
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn take_injected_discard_failure(&self) -> Result<(), CoreError> {
+        if self
+            .fail_next_discard
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(CoreError::Storage(
+                "memory history text index: injected discard failure".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// The epochs currently durable for `generation`.
@@ -159,11 +182,26 @@ impl HistoryTextIndexPort for MemoryHistoryTextIndex {
             .collect())
     }
 
+    fn durable_generations(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) -> Result<Vec<ManifestGeneration>, CoreError> {
+        let generations: std::collections::BTreeSet<ManifestGeneration> =
+            Self::lock(&self.epochs, "epochs")?
+                .keys()
+                .filter(|(key, _epoch)| key.repo_id == *repo_id && key.revision_id == *revision_id)
+                .map(|(key, _epoch)| key.generation)
+                .collect();
+        Ok(generations.into_iter().collect())
+    }
+
     fn discard_epoch(
         &self,
         generation: &AuxiliaryGenerationKeyV1,
         epoch: AuxEpochV1,
     ) -> Result<HistoryTextDiscardOutcomeV1, CoreError> {
+        self.take_injected_discard_failure()?;
         let removed = Self::lock(&self.epochs, "epochs")?.remove(&(generation.clone(), epoch));
         Ok(match removed {
             None => HistoryTextDiscardOutcomeV1::Absent,
@@ -181,6 +219,7 @@ impl HistoryTextIndexPort for MemoryHistoryTextIndex {
         &self,
         generation: &AuxiliaryGenerationKeyV1,
     ) -> Result<HistoryTextDiscardOutcomeV1, CoreError> {
+        self.take_injected_discard_failure()?;
         let epochs = self.durable_epochs(generation)?;
         let mut bytes = 0_u64;
         let mut any = false;

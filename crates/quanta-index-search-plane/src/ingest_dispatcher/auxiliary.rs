@@ -288,10 +288,10 @@ impl HistoryIngestPort for DirectHistoryMaterializer {
                         delta.generation.generation.get()
                     ))
                 })?;
-            // Epochs still held by a reader are deferred to the next
-            // mutation of the generation, which reconciles again.
-            let _deferred: Vec<AuxEpochV1> =
-                parts.reconcile_generation(&delta.generation, &retained)?;
+            // The delta is durable and served from here on: epochs still
+            // held by a reader, and any discard that fails, are left to the
+            // next mutation of the generation, which reconciles again.
+            parts.reconcile_after_durable(&delta.generation, &retained);
         }
         let mut receipt = BatchPublishReceipt::empty_for(
             batch.generation,

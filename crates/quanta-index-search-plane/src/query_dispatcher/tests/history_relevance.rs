@@ -119,6 +119,7 @@ struct Plane {
     ledger: Arc<RwLock<Ledger>>,
     materializer: DirectHistoryMaterializer,
     index: Arc<MemoryHistoryTextIndex>,
+    history_text: HistoryTextIndexParts,
     dispatcher: SearchPlaneDispatcher,
 }
 
@@ -133,11 +134,12 @@ fn plane() -> Result<Plane, Box<dyn std::error::Error>> {
     };
     let materializer =
         DirectHistoryMaterializer::new(parts).with_history_text(history_text.clone());
-    let dispatcher = dispatcher_over(Arc::clone(&ledger))?.with_history_text(history_text);
+    let dispatcher = dispatcher_over(Arc::clone(&ledger))?.with_history_text(history_text.clone());
     Ok(Plane {
         ledger,
         materializer,
         index,
+        history_text,
         dispatcher,
     })
 }
@@ -533,6 +535,90 @@ fn relevance_pages_partition_the_ranking_and_a_pruned_epoch_is_expired() -> Test
     if durable != retained {
         return Err(format!(
             "the durable epoch indexes are exactly the retained epochs: durable {durable:?} retained {retained:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// A discard that fails after the delta is durable fails nothing and is
+/// retried by the next mutation (QI-BB-020).
+///
+/// The first discard of the generation — the one that prunes epoch 1 —
+/// fails as an I/O error would. Every receipt still answers success, the
+/// ledger reads the newest epoch, the failure is counted, and epoch 1's
+/// index stays on disk though it is no longer retained; the next mutation
+/// reconciles again and removes it, so the durable indexes are exactly the
+/// retained epochs, and nothing more is counted.
+#[test]
+fn a_discard_that_fails_after_the_delta_is_durable_is_counted_and_retried() -> TestResult {
+    use quanta_index_core::{MetricSourcePort, MetricValueV1};
+    let plane = plane()?;
+    let failures = |plane: &Plane| -> Result<u64, Box<dyn std::error::Error>> {
+        match plane
+            .history_text
+            .scrape()?
+            .into_iter()
+            .find(|point| point.name == "history_text_gc_failures_total")
+            .map(|point| point.value)
+        {
+            Some(MetricValueV1::Counter(count)) => Ok(count),
+            other => Err(format!("the gc failure counter: {other:?}").into()),
+        }
+    };
+    let generation = generation_key();
+    let retained_and_durable = |plane: &Plane| -> Result<
+        (BTreeSet<AuxEpochV1>, BTreeSet<AuxEpochV1>),
+        Box<dyn std::error::Error>,
+    > {
+        let retained: BTreeSet<AuxEpochV1> = plane
+            .ledger
+            .read()
+            .map_err(|err| format!("ledger poisoned: {err}"))?
+            .history_retained_epochs(
+                &generation.repo_id,
+                &generation.revision_id,
+                generation.generation,
+            )
+            .ok_or("the generation exists")?
+            .into_iter()
+            .collect();
+        let durable: BTreeSet<AuxEpochV1> =
+            plane.index.epochs_of(&generation)?.into_iter().collect();
+        Ok((retained, durable))
+    };
+    let _receipt = plane
+        .materializer
+        .publish_batch(&batch("fixture", fixture()))?;
+    plane.index.fail_next_discard();
+    for step in 0..=AUX_EPOCH_RETAIN {
+        let byte = u8::try_from(step.saturating_add(20))?;
+        let _receipt = plane.materializer.publish_batch(&batch(
+            &format!("more-{step}"),
+            vec![commit(byte, 1_000, "dave", "unrelated")],
+        ))?;
+    }
+    let (retained, durable) = retained_and_durable(&plane)?;
+    if failures(&plane)? != 1
+        || retained.contains(&AuxEpochV1::new(1))
+        || !durable.contains(&AuxEpochV1::new(1))
+    {
+        return Err(format!(
+            "the failed discard is counted and epoch 1 stays on disk unretained: failures={} retained={retained:?} durable={durable:?}",
+            failures(&plane)?
+        )
+        .into());
+    }
+
+    let _receipt = plane.materializer.publish_batch(&batch(
+        "after",
+        vec![commit(99, 2_000, "erin", "unrelated")],
+    ))?;
+    let (retained, durable) = retained_and_durable(&plane)?;
+    if failures(&plane)? != 1 || retained != durable {
+        return Err(format!(
+            "the next mutation removes the leftover: failures={} retained={retained:?} durable={durable:?}",
+            failures(&plane)?
         )
         .into());
     }

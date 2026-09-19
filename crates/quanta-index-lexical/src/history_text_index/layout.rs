@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use quanta_index_contract::AuxEpochV1;
+use quanta_index_contract::{AuxEpochV1, ManifestGeneration, RepoId, RevisionId};
 use quanta_index_core::{
     AuxiliaryGenerationKeyV1, CoreError, GenerationStorageKeyV1, HISTORY_TEXT_INDEX_CORRUPT_CODE,
     HistoryTextKindV1,
@@ -86,6 +86,50 @@ fn parse_epoch_dir_name(name: &str) -> Result<Option<AuxEpochV1>, CoreError> {
         message: format!("history text index: entry `{name}` is not an epoch directory: {err}"),
     })?;
     Ok(Some(AuxEpochV1::new(epoch)))
+}
+
+/// Every generation of the pair with a directory, ascending; none when the
+/// pair has no directory. Any other entry is foreign and is reported as
+/// such rather than skipped.
+pub(super) fn list_generations(
+    root: &Path,
+    repo_id: &RepoId,
+    revision_id: &RevisionId,
+) -> Result<Vec<ManifestGeneration>, CoreError> {
+    let dir = root.join(GenerationStorageKeyV1::for_repo_revision(repo_id, revision_id).as_str());
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let entries = std::fs::read_dir(&dir).map_err(|err| {
+        CoreError::Storage(format!(
+            "history text index: list pair directory {}: {err}",
+            dir.display()
+        ))
+    })?;
+    let mut generations = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|err| {
+            CoreError::Storage(format!(
+                "history text index: read pair directory entry {}: {err}",
+                dir.display()
+            ))
+        })?;
+        let name = entry.file_name();
+        let generation = name
+            .to_str()
+            .and_then(GenerationStorageKeyV1::generation_of_dir_name)
+            .ok_or_else(|| CoreError::Typed {
+                code: HISTORY_TEXT_INDEX_CORRUPT_CODE.to_string(),
+                message: format!(
+                    "history text index: foreign entry {} in the pair directory {}",
+                    name.to_string_lossy(),
+                    dir.display()
+                ),
+            })?;
+        generations.push(generation);
+    }
+    generations.sort_unstable();
+    Ok(generations)
 }
 
 /// Every published epoch of one generation, ascending; none when the

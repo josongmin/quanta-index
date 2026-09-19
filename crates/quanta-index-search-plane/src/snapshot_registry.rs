@@ -47,22 +47,18 @@
 //! hit, not a second full open.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Instant;
 
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
 use quanta_index_core::domains::lexical::LexicalSearcher;
 use quanta_index_core::domains::semantic::SemanticSearcher;
+
+use crate::single_flight::{AwaitFlightFailure, Flight};
 use quanta_index_core::{
     CoreError, MetricPointV1, MetricSourcePort, RequestBudgetV1, UNKNOWN_GENERATION_CODE,
     count_from_usize,
 };
-
-/// How often a coalesced waiter wakes to observe its budget while the
-/// flight is still open: cancellation does not signal the flight's
-/// condvar, so the wait is sliced.
-const AWAIT_FLIGHT_POLL: Duration = Duration::from_millis(20);
 
 /// The checkpoint name a waiter's typed interruption carries.
 const AWAIT_FLIGHT_CHECKPOINT: &str = "snapshot-registry:await-flight";
@@ -218,54 +214,6 @@ struct Entry<H: ?Sized> {
     handle: Arc<H>,
     resident_bytes: u64,
     last_use: u64,
-}
-
-/// How a flight settled: the handle, or the opener's failure by value.
-type FlightOutcome<H> = Option<Result<Arc<H>, CoreError>>;
-
-/// One in-progress cold open that concurrent acquires can wait on.
-///
-/// `fenced` is set by [`SnapshotRegistry::retire`]: a flight that lands
-/// fenced admits nothing and settles with the retirement refusal.
-struct Flight<H: ?Sized> {
-    outcome: Mutex<FlightOutcome<H>>,
-    ready: Condvar,
-    fenced: AtomicBool,
-}
-
-impl<H: ?Sized> Flight<H> {
-    fn new() -> Self {
-        Self {
-            outcome: Mutex::new(None),
-            ready: Condvar::new(),
-            fenced: AtomicBool::new(false),
-        }
-    }
-
-    fn lock_outcome(&self) -> Result<MutexGuard<'_, FlightOutcome<H>>, CoreError> {
-        self.outcome
-            .lock()
-            .map_err(|err| CoreError::Storage(format!("snapshot registry flight poisoned: {err}")))
-    }
-
-    fn settle(&self, outcome: Result<Arc<H>, CoreError>) -> Result<(), CoreError> {
-        *self.lock_outcome()? = Some(outcome);
-        self.ready.notify_all();
-        Ok(())
-    }
-
-    /// Block until the flight settles, with no budget: for the retirement
-    /// path, whose wait is bounded by the one open already running.
-    fn wait_settled(&self) -> Result<(), CoreError> {
-        let mut outcome = self.lock_outcome()?;
-        while outcome.is_none() {
-            outcome = self.ready.wait(outcome).map_err(|err| {
-                CoreError::Storage(format!("snapshot registry flight poisoned: {err}"))
-            })?;
-        }
-        drop(outcome);
-        Ok(())
-    }
 }
 
 struct RegistryState<H: ?Sized> {
@@ -433,7 +381,7 @@ impl<H: ?Sized + Send + Sync> SnapshotRegistry<H> {
             if let Some(flight) = state.in_flight.get(key).map(Arc::clone) {
                 state.stats.coalesced = state.stats.coalesced.saturating_add(1);
                 drop(state);
-                return match Self::await_flight(&flight, budget) {
+                return match flight.await_outcome(budget, AWAIT_FLIGHT_CHECKPOINT) {
                     Ok(handle) => Ok(SnapshotAcquired {
                         handle,
                         outcome: SnapshotAcquireOutcome::Coalesced,
@@ -462,7 +410,7 @@ impl<H: ?Sized + Send + Sync> SnapshotRegistry<H> {
                 let _removed = state.in_flight.remove(key);
                 state.stats.cold_open_nanos = state.stats.cold_open_nanos.saturating_add(elapsed);
                 match opened {
-                    Ok(_) if flight.fenced.load(Ordering::Acquire) => Err(retired_in_flight(key)),
+                    Ok(_) if flight.is_fenced() => Err(retired_in_flight(key)),
                     Ok(opened) => {
                         let _retained = state.admit(self.policy, key.clone(), &opened);
                         Ok(opened.handle)
@@ -490,33 +438,6 @@ impl<H: ?Sized + Send + Sync> SnapshotRegistry<H> {
         state.stats.await_interruptions = state.stats.await_interruptions.saturating_add(1);
         drop(state);
         Ok(())
-    }
-
-    /// Wait for `flight` under `budget`.
-    ///
-    /// The flight's condvar wakes the waiter when the opener settles; the
-    /// budget is observed on every wake and at least every
-    /// [`AWAIT_FLIGHT_POLL`], since a cancelled peer signals nothing here.
-    fn await_flight(
-        flight: &Flight<H>,
-        budget: &RequestBudgetV1,
-    ) -> Result<Arc<H>, AwaitFlightFailure> {
-        let mut outcome = flight.lock_outcome().map_err(AwaitFlightFailure::Flight)?;
-        loop {
-            if let Some(settled) = outcome.as_ref() {
-                return settled.clone().map_err(AwaitFlightFailure::Flight);
-            }
-            if let Some(interruption) = budget.interrupted_at(AWAIT_FLIGHT_CHECKPOINT) {
-                return Err(AwaitFlightFailure::Interrupted(interruption));
-            }
-            let slice = budget.remaining().min(AWAIT_FLIGHT_POLL);
-            let (guard, _timed_out) = flight.ready.wait_timeout(outcome, slice).map_err(|err| {
-                AwaitFlightFailure::Flight(CoreError::Storage(format!(
-                    "snapshot registry flight poisoned: {err}"
-                )))
-            })?;
-            outcome = guard;
-        }
     }
 
     /// Retain a handle the caller proved outside the registry (activation,
@@ -574,7 +495,7 @@ impl<H: ?Sized + Send + Sync> SnapshotRegistry<H> {
         let removed = state.remove(key);
         let fenced = state.in_flight.get(key).map(Arc::clone);
         if let Some(flight) = &fenced {
-            flight.fenced.store(true, Ordering::Release);
+            flight.fence();
             state.stats.fenced_in_flight = state.stats.fenced_in_flight.saturating_add(1);
         }
         drop(state);
@@ -584,14 +505,6 @@ impl<H: ?Sized + Send + Sync> SnapshotRegistry<H> {
     pub fn stats(&self) -> Result<SnapshotRegistryStats, CoreError> {
         Ok(self.lock()?.stats)
     }
-}
-
-/// Why a coalesced wait ended without the flight's outcome.
-enum AwaitFlightFailure {
-    /// The flight settled with the opener's failure, shared by value.
-    Flight(CoreError),
-    /// The waiter's own budget interrupted it; the flight is still landing.
-    Interrupted(CoreError),
 }
 
 /// The refusal a flight lands with when its key was retired while it ran.

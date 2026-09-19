@@ -20,7 +20,9 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use quanta_index_contract::lex::CommitSha;
-use quanta_index_contract::{AuxEpochV1, HistoryScoreV1, LqExpr, LqOptions};
+use quanta_index_contract::{
+    AuxEpochV1, HistoryScoreV1, LqExpr, LqOptions, ManifestGeneration, RepoId, RevisionId,
+};
 
 use crate::domains::auxiliary::AuxiliaryGenerationKeyV1;
 use crate::error::CoreError;
@@ -315,6 +317,15 @@ pub trait HistoryTextIndexPort: Send + Sync {
         &self,
         generation: &AuxiliaryGenerationKeyV1,
     ) -> Result<Vec<AuxEpochV1>, CoreError>;
+
+    /// Every generation of the pair with an index directory on disk,
+    /// ascending: what a sweep measures the retained generations against,
+    /// so a generation forgotten while its discard failed is found again.
+    fn durable_generations(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) -> Result<Vec<ManifestGeneration>, CoreError>;
 
     /// Remove the index of `epoch`. The caller has proven no reader holds
     /// it and no continuation can name it.

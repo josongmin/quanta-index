@@ -290,6 +290,19 @@ impl GenerationStorageKeyV1 {
         root.join(self.as_str())
             .join(format!("g{}", generation.get()))
     }
+
+    /// The generation a directory named by [`Self::generation_dir`]
+    /// denotes: `g<N>` in its one canonical spelling. `None` for any other
+    /// name, including another spelling of a number (`g01`, `g+1`).
+    #[must_use]
+    pub fn generation_of_dir_name(name: &str) -> Option<ManifestGeneration> {
+        let digits = name.strip_prefix('g')?;
+        digits
+            .parse::<u64>()
+            .into_iter()
+            .find(|generation| format!("g{generation}") == name)
+            .map(ManifestGeneration::new)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

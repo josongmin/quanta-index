@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use quanta_index_contract::AuxEpochV1;
+use quanta_index_contract::{AuxEpochV1, ManifestGeneration, RepoId, RevisionId};
 use quanta_index_core::{
     AuxiliaryGenerationKeyV1, CoreError, HISTORY_TEXT_INDEX_NORMALIZER_UNSUPPORTED_CODE,
     HISTORY_TEXT_INDEX_NOT_READY_CODE, HistoryTextBuildV1, HistoryTextDiscardOutcomeV1,
@@ -11,7 +11,7 @@ use quanta_index_core::{
 };
 
 use crate::history_text_index::layout::{
-    epoch_dir, fsync_parent, generation_dir, list_epochs, tree_bytes,
+    epoch_dir, fsync_parent, generation_dir, list_epochs, list_generations, tree_bytes,
 };
 use crate::history_text_index::manifest;
 use crate::history_text_index::publish;
@@ -113,6 +113,14 @@ impl HistoryTextIndexPort for HistoryTextIndexAdapter {
         generation: &AuxiliaryGenerationKeyV1,
     ) -> Result<Vec<AuxEpochV1>, CoreError> {
         list_epochs(&self.root, generation)
+    }
+
+    fn durable_generations(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) -> Result<Vec<ManifestGeneration>, CoreError> {
+        list_generations(&self.root, repo_id, revision_id)
     }
 
     fn discard_epoch(

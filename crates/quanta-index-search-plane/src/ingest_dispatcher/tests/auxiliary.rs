@@ -2,10 +2,12 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, RwLock};
 
 use quanta_index_contract::{
-    ChunkId, DirtyIngestBatch, DirtyMutation, ManifestGeneration, RepoId, RevisionId,
+    AuxEpochV1, ChunkId, DirtyIngestBatch, DirtyMutation, ManifestGeneration, RepoId, RevisionId,
 };
 use quanta_index_core::{
-    CoreError, IngestResourcePolicy, SemanticIngestPort, SemanticStreamWindowPolicy,
+    AuxiliaryGenerationKeyV1, CoreError, HistoryTextBuildV1, HistoryTextIndexPort,
+    IngestResourcePolicy, MetricSourcePort, MetricValueV1, SemanticIngestPort,
+    SemanticStreamWindowPolicy,
 };
 
 use crate::ingest_dispatcher::auxiliary::{
@@ -22,8 +24,9 @@ use crate::ingest_dispatcher::tests::support::{
     memory_catalog, no_storage_sealed_reclaim, recording_search_corpus_authority,
     test_incomplete_generation_discard,
 };
+use crate::query_dispatcher::tests::support::history_text::MemoryHistoryTextIndex;
 use crate::readiness::SearchCorpusHistoryRetentionReceiptV1;
-use crate::{Ledger, SEARCH_OWNED_SEMANTIC_DIMENSION, SnapshotRegistries};
+use crate::{HistoryTextIndexParts, Ledger, SEARCH_OWNED_SEMANTIC_DIMENSION, SnapshotRegistries};
 
 #[test]
 fn dirty_publish_receipt_binds_exact_auxiliary_batch_without_sealing_v1() {
@@ -315,6 +318,134 @@ fn retention_forgets_auxiliary_generations_the_receipt_does_not_retain() -> Test
     if generations != BTreeSet::from([4, 5]) {
         return Err(format!(
             "catalog must hold exactly the retained generations, holds {generations:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// `history_text_gc_failures_total` as the history text parts scrape it.
+fn gc_failures(history_text: &HistoryTextIndexParts) -> Result<u64, Box<dyn std::error::Error>> {
+    match history_text
+        .scrape()?
+        .into_iter()
+        .find(|point| point.name == "history_text_gc_failures_total")
+        .map(|point| point.value)
+    {
+        Some(MetricValueV1::Counter(count)) => Ok(count),
+        other => Err(format!("the parts scrape the gc failure counter: {other:?}").into()),
+    }
+}
+
+/// Forgotten generations' text indexes are swept from the disk, and a
+/// discard that fails after the seal is durable fails nothing and is
+/// retried (QI-BB-020).
+///
+/// Generations 3 and 4 carry history, and so text indexes; generation 2
+/// has an index on disk the ledger never knew, as a discard that failed on
+/// an earlier pass leaves one. Sealing 5 while retaining 4 and 5, with the
+/// index's next discard failing: the seal succeeds and generation 3's rows
+/// are forgotten; the sweep's first discard (generation 2's, the lowest)
+/// fails and is counted and its index stays, while generation 3's is
+/// swept and the retained 4's is kept. Sealing 6 while retaining 5 and 6
+/// sweeps the leftover 2 and the newly forgotten 4, and counts nothing
+/// more.
+#[test]
+fn forgotten_generations_text_indexes_are_swept_and_a_failed_discard_is_retried() -> TestRes {
+    let ledger = Arc::new(RwLock::new(Ledger::new()));
+    let (aux, catalog) = aux_parts(Arc::clone(&ledger));
+    let index = MemoryHistoryTextIndex::shared();
+    let history_text = HistoryTextIndexParts::new(index.clone());
+    let history =
+        DirectHistoryMaterializer::new(aux.clone()).with_history_text(history_text.clone());
+    for generation in [3, 4] {
+        let _receipt = history.publish_batch(&fixture_history_batch(
+            generation,
+            vec![fixture_commit(1, &[])],
+        ))?;
+    }
+    let mut batch = fixture_search_corpus_batch()?;
+    let key = |generation: u64| AuxiliaryGenerationKeyV1 {
+        repo_id: batch.repo_id.clone(),
+        revision_id: batch.revision_id.clone(),
+        generation: ManifestGeneration::new(generation),
+    };
+    let _left_behind = index.publish_epoch(
+        &key(2),
+        AuxEpochV1::new(1),
+        HistoryTextBuildV1::Full { docs: Vec::new() },
+    )?;
+    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
+        Arc::new(DirectSemanticMaterializer::new(
+            Arc::new(FakeSemanticBuilder::default()),
+            Arc::new(RwLock::new(Ledger::new())),
+        ));
+    let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
+        SearchCorpusMaterializerParts {
+            builder: Arc::new(FakeSearchCorpusBuilder::default()),
+            ledger: Arc::clone(&ledger),
+            semantic_ingest: semantic_materializer,
+            semantic_embedder: Arc::new(crate::HashingQueryTextEmbedder::new(
+                SEARCH_OWNED_SEMANTIC_DIMENSION,
+            )),
+            authority: recording_search_corpus_authority(),
+            lexical_generation_validator: always_valid_generation(),
+            semantic_generation_validator: always_valid_generation(),
+            semantic_content_roots:
+                crate::content_roots_test_support::generation_keyed_content_roots(),
+            lexical_incomplete_discard: test_incomplete_generation_discard(),
+            semantic_incomplete_discard: test_incomplete_generation_discard(),
+            lexical_reclaim: no_storage_sealed_reclaim(),
+            semantic_reclaim: no_storage_sealed_reclaim(),
+            snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+            idempotency: memory_catalog(),
+            resource_policy: IngestResourcePolicy::DEFAULT,
+            semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
+            auxiliary_catalog: catalog.clone(),
+            auxiliary_coordinator: aux.coordinator,
+        },
+    )
+    .with_history_text(history_text.clone());
+    let durable = |generation: u64| -> Result<bool, Box<dyn std::error::Error>> {
+        Ok(!index.durable_epochs(&key(generation))?.is_empty())
+    };
+
+    batch.generation = ManifestGeneration::new(5);
+    index.fail_next_discard();
+    let receipt = SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
+        &batch.repo_id,
+        &batch.revision_id,
+        [ManifestGeneration::new(4), ManifestGeneration::new(5)],
+    );
+    materializer.finalize_generation_v1(&batch, Some(&receipt))?;
+    if catalog.generations() != BTreeSet::from([4, 5]) {
+        return Err(format!("generation 3 is forgotten: {:?}", catalog.generations()).into());
+    }
+    if gc_failures(&history_text)? != 1 || !durable(2)? || durable(3)? || !durable(4)? {
+        return Err(format!(
+            "one failed discard is counted and only its index stays: failures={} 2={} 3={} 4={}",
+            gc_failures(&history_text)?,
+            durable(2)?,
+            durable(3)?,
+            durable(4)?
+        )
+        .into());
+    }
+
+    batch.generation = ManifestGeneration::new(6);
+    let receipt = SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
+        &batch.repo_id,
+        &batch.revision_id,
+        [ManifestGeneration::new(5), ManifestGeneration::new(6)],
+    );
+    materializer.finalize_generation_v1(&batch, Some(&receipt))?;
+    if gc_failures(&history_text)? != 1 || durable(2)? || durable(3)? || durable(4)? {
+        return Err(format!(
+            "the sweep removes every index the ledger no longer knows: failures={} 2={} 3={} 4={}",
+            gc_failures(&history_text)?,
+            durable(2)?,
+            durable(3)?,
+            durable(4)?
         )
         .into());
     }

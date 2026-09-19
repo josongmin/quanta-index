@@ -1306,6 +1306,10 @@ impl SearchdRuntime {
         }
         let snapshot_source: Arc<dyn MetricSourcePort> = Arc::new(snapshots.clone());
         metric_sources.push(snapshot_source);
+        // History text discards that failed after their mutation was
+        // durable (QI-BB-020), each left for the next pass.
+        let history_text_source: Arc<dyn MetricSourcePort> = Arc::new(history_text.clone());
+        metric_sources.push(history_text_source);
         let ingest_source: Arc<dyn MetricSourcePort> = search_corpus_materializer;
         metric_sources.push(ingest_source);
         let semantic_ingest_source: Arc<dyn MetricSourcePort> = semantic_materializer;

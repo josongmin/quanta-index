@@ -1051,6 +1051,60 @@ fn a_raw_string_beside_a_scored_clause_is_enumerated_and_scored_by_the_clause() 
     Ok(())
 }
 
+/// A pair's durable index generations are listed ascending, and no other pair's.
+///
+/// A discarded generation drops out (QI-BB-020: what the seal's sweep
+/// measures the ledger against), and an entry in the pair directory that
+/// is not a `g<N>` generation is refused typed rather than skipped.
+#[test]
+fn durable_generations_list_the_pairs_index_directories_and_refuse_a_foreign_entry() -> TestRes {
+    let root = tempfile::tempdir()?;
+    let port = adapter(root.path())?;
+    let key = |repo: &str, generation: u64| AuxiliaryGenerationKeyV1 {
+        repo_id: RepoId::new(repo),
+        revision_id: RevisionId::new("rev"),
+        generation: ManifestGeneration::new(generation),
+    };
+    for (repo, generation) in [("repo", 7), ("repo", 2), ("repo", 11), ("other", 5)] {
+        let _receipt = port.publish_epoch(
+            &key(repo, generation),
+            AuxEpochV1::new(1),
+            HistoryTextBuildV1::Full {
+                docs: vec![commit_doc(1, 1, "needle")],
+            },
+        )?;
+    }
+    let listed = port.durable_generations(&RepoId::new("repo"), &RevisionId::new("rev"))?;
+    if listed != [2, 7, 11].map(ManifestGeneration::new) {
+        return Err(format!("the pair's generations ascending: {listed:?}").into());
+    }
+    if !port
+        .durable_generations(&RepoId::new("absent"), &RevisionId::new("rev"))?
+        .is_empty()
+    {
+        return Err("a pair with no directory lists nothing".into());
+    }
+    let _discarded = port.discard_generation(&key("repo", 7))?;
+    let listed = port.durable_generations(&RepoId::new("repo"), &RevisionId::new("rev"))?;
+    if listed != [2, 11].map(ManifestGeneration::new) {
+        return Err(format!("the discarded generation drops out: {listed:?}").into());
+    }
+    let pair_dir = epoch_dir(root.path(), &key("repo", 2), AuxEpochV1::new(1))
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("the pair directory")?
+        .to_path_buf();
+    std::fs::create_dir(pair_dir.join("g07"))?;
+    match port.durable_generations(&RepoId::new("repo"), &RevisionId::new("rev")) {
+        Err(CoreError::Typed { code, message })
+            if code == HISTORY_TEXT_INDEX_CORRUPT_CODE && message.contains("g07") =>
+        {
+            Ok(())
+        }
+        other => Err(format!("a non-canonical entry is refused typed: {other:?}").into()),
+    }
+}
+
 #[test]
 fn discarding_epochs_and_generations_reclaims_bytes_and_is_idempotent() -> TestRes {
     let root = tempfile::tempdir()?;
