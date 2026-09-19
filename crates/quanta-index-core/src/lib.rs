@@ -54,7 +54,8 @@ pub use domains::idempotency::{
 };
 pub use domains::ingest_body::IngestBatchBodyV1;
 pub use domains::integrity::{
-    GENERATION_QUARANTINED_CODE, IntegrityScrubBudgetV1, IntegrityScrubCandidateV1,
+    DoorFindingOutcome, DoorFindingQuarantinePort, GENERATION_QUARANTINED_CODE,
+    GENERATION_SIDECAR_CORRUPT_CODE, IntegrityScrubBudgetV1, IntegrityScrubCandidateV1,
     IntegrityScrubCursorV1, IntegrityScrubOutcomeV1, IntegrityScrubPolicyV1, IntegrityScrubPort,
     IntegrityScrubReportV1,
 };

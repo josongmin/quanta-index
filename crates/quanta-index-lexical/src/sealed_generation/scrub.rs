@@ -233,8 +233,19 @@ fn quarantine(
     generation_dir: &Path,
     mismatch: &TreeCommitmentMismatchV1,
 ) -> Result<QuarantinedGenerationV1, CoreError> {
+    quarantine_content_corrupt(generation_dir, format!("scrub found {mismatch}"))
+}
+
+/// Record that `generation_dir`'s content no longer matches its seal.
+///
+/// The receipt the inventory lists as content-corrupt and every door
+/// refuses by. The scrub writes it, and so does the re-proof of a door's
+/// finding (QI-BB-017, QI-BB-026).
+pub(crate) fn quarantine_content_corrupt(
+    generation_dir: &Path,
+    detail: String,
+) -> Result<QuarantinedGenerationV1, CoreError> {
     let reason = GenerationQuarantineReasonV1::ContentCorrupt;
-    let detail = format!("scrub found {mismatch}");
     let row: QuarantineReceiptRow = (
         LEXICAL_QUARANTINE_RECEIPT_FORMAT_VERSION,
         reason.as_code_str().to_string(),

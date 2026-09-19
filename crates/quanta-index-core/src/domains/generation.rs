@@ -116,11 +116,13 @@ pub trait GenerationIdentityValidatePort: Send + Sync {
 /// (QI-BB-026).
 ///
 /// Each reason is something the inventory can see without reading content:
-/// the sealed identity, its format, and the receipt a scrub left behind.
+/// the sealed identity, its format, and a quarantine receipt left behind.
 /// The inventory never hashes a dataset itself; a content defect enters
-/// here only when the integrity scrub (QI-BB-017) proved it and recorded a
-/// durable quarantine receipt beside the generation, and every door that
-/// serves or mutates a generation still verifies what it opens for itself.
+/// here only once it was proved and a durable quarantine receipt recorded
+/// beside the generation — by the integrity scrub (QI-BB-017), or by the
+/// owning adapter re-proving what a door found at activation or rollback —
+/// and every door that serves or mutates a generation still verifies what
+/// it opens for itself.
 /// [`Self::Orphaned`] is the search plane's: it compares the adapter's
 /// inventory with the durable search-corpus authority and sets aside every
 /// sealed directory the authority does not retain.
@@ -146,9 +148,12 @@ pub enum GenerationQuarantineReasonV1 {
     /// The sealed identity decodes but was written in a format this adapter
     /// no longer serves; the generation must be rebuilt from its producer.
     FormatUnsupported,
-    /// The integrity scrub proved a committed file no longer matches the
-    /// seal and left its receipt; nothing serves the generation until it
-    /// is discarded or rebuilt.
+    /// A committed file no longer matches the seal (missing, resized,
+    /// rewritten, or a file the seal never listed), proved by the integrity
+    /// scrub or by the adapter re-proving a door's finding at activation or
+    /// rollback, and the receipt was left; nothing serves the generation,
+    /// and no activation or rollback picks it, until it is discarded or
+    /// rebuilt.
     ContentCorrupt,
 }
 

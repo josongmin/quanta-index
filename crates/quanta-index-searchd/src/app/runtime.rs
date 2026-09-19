@@ -28,13 +28,14 @@ use quanta_index_core::domains::structural::{
 };
 use quanta_index_core::{
     AUX_EPOCH_EXPIRED_CODE, AUX_EPOCH_UNKNOWN_CODE, AuxiliaryAuthorityCatalogPort, CoreError,
-    FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
-    HistoryTextIndexPort, IdempotencyCatalogPort, IncompleteGenerationDiscardPort,
-    IntegrityScrubPort, L2UnitEmbeddingProvider, LexicalIndexOpenPort, MetricSourcePort,
-    ProcessMemoryProbePort, QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
-    RepoMapOpenReportV1, RepoMapQuarantinePort, RepoMapQueryPort, RepoMetaIngestPort,
-    RepoTopicIngestPort, RequestBudgetV1, SealedGenerationReclaimPort, SealedGenerationScanPort,
+    DoorFindingQuarantinePort, FileContributorIngestPort, FileOwnershipIngestPort,
+    GenerationIdentityValidatePort, HistoryTextIndexPort, IdempotencyCatalogPort,
+    IncompleteGenerationDiscardPort, IntegrityScrubPort, L2UnitEmbeddingProvider,
+    LexicalIndexOpenPort, MetricSourcePort, ProcessMemoryProbePort,
+    QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
+    RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapOpenReportV1,
+    RepoMapQuarantinePort, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
+    RequestBudgetV1, SealedGenerationReclaimPort, SealedGenerationScanPort,
     SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticContentRootsPort,
     SemanticIndexOpenPort, SemanticIngestPort, SemanticScopeStreamBuildPort, StructuralError,
     StructuralMatchBinding, StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider,
@@ -66,7 +67,7 @@ use quanta_index_search_plane::{
 };
 use regex::Regex;
 
-use crate::app::boot_inventory::{self, BootInventoryReportV1};
+use crate::app::boot_inventory::{self, BootInventoryReportV1, HalfSealedPair};
 use crate::app::config::{SearchdConfig, SemanticEmbedderProfile};
 use crate::app::integrity_scrub::{PacedIntegrityScrubV1, ScrubSchedulerV1, ScrubTalliesV1};
 use crate::app::ipc_dispatcher::{
@@ -111,6 +112,11 @@ pub struct SearchdRuntimeParts {
     /// generation track, and the `RepoMap` store's own list-and-discard.
     pub lexical_quarantine_discard: Arc<dyn QuarantinedGenerationDiscardPort + Send + Sync>,
     pub semantic_quarantine_discard: Arc<dyn QuarantinedGenerationDiscardPort + Send + Sync>,
+    /// Where activation and rollback record a content defect a door
+    /// proved on the generation they picked (QI-BB-026): each track's
+    /// adapter re-proves it and writes the quarantine receipt.
+    pub lexical_door_findings: Arc<dyn DoorFindingQuarantinePort + Send + Sync>,
+    pub semantic_door_findings: Arc<dyn DoorFindingQuarantinePort + Send + Sync>,
     pub repo_map_quarantine: Arc<dyn RepoMapQuarantinePort + Send + Sync>,
     /// What the `RepoMap` store found on disk when the composition root
     /// opened it (QI-BB-008); surfaced through the boot inventory.
@@ -1063,6 +1069,8 @@ impl SearchdRuntime {
             repo_map_generation_activate_port,
             lexical_quarantine_discard,
             semantic_quarantine_discard,
+            lexical_door_findings,
+            semantic_door_findings,
             repo_map_quarantine,
             repo_map_open_report,
             search_corpus_lifecycle,
@@ -1164,6 +1172,8 @@ impl SearchdRuntime {
             lexical_open: Arc::clone(&lex_open_port),
             semantic_open: Arc::clone(&sem_open_port),
             semantic_content_roots: Arc::clone(&semantic_content_roots),
+            lexical_door_findings,
+            semantic_door_findings,
             snapshots: snapshots.clone(),
         };
         let active_pairs_validated = search_corpus_lifecycle
@@ -1195,10 +1205,14 @@ impl SearchdRuntime {
             SearchPlaneTrackKind::Semantic,
             &integrity_scrub_ports,
         )?;
+        let half_sealed_pairs =
+            boot_inventory::half_sealed_pairs(&lexical_inventory, &semantic_inventory);
+        boot_notices.extend(half_sealed_pairs.iter().map(HalfSealedPair::boot_notice));
         let boot_inventory = BootInventoryReportV1 {
             lexical: lexical_inventory.with_scrub(lexical_scrub),
             semantic: semantic_inventory.with_scrub(semantic_scrub),
             active_pairs_validated,
+            half_sealed_pairs,
             auxiliary_migration,
             auxiliary_rows_restored,
             repo_map: repo_map_open_report,

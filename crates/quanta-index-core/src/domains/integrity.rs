@@ -7,7 +7,9 @@
 //! runs as quota'd maintenance: bounded bytes per step, a cursor to resume
 //! from, and a typed outcome. A generation the scrub finds corrupt is
 //! quarantined through the QI-BB-026 surface, durably, so the boot
-//! inventory keeps it out of readiness and every door refuses it typed.
+//! inventory keeps it out of readiness and every door refuses it typed. A
+//! defect a door proves while activation or rollback picks a generation is
+//! recorded the same way, by the owning adapter re-proving it.
 
 use quanta_index_contract::GenerationSnapshot;
 
@@ -65,6 +67,15 @@ pub struct IntegrityScrubCandidateV1 {
 /// Wire code for a door that meets a generation the scrub quarantined.
 pub const GENERATION_QUARANTINED_CODE: &str = "GENERATION_QUARANTINED";
 
+/// Wire code for a door that proved a sealed generation is not what its
+/// seal committed to.
+///
+/// A committed file missing, resized or rewritten, a sidecar that does not
+/// hash to its commitment, a file the seal never listed: a verdict about
+/// content, never an I/O failure, answered by every adapter's door under
+/// this one code.
+pub const GENERATION_SIDECAR_CORRUPT_CODE: &str = "GENERATION_SIDECAR_CORRUPT";
+
 /// How the composition root paces the scrub as quota'd maintenance: one
 /// step every `interval_millis`, each reading at most `max_bytes_per_step`
 /// (plus the one file that crosses the budget).
@@ -105,6 +116,43 @@ impl IntegrityScrubPolicyV1 {
             max_bytes: self.max_bytes_per_step,
         }
     }
+}
+
+/// What re-proving a door's finding did (QI-BB-026).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DoorFindingOutcome {
+    /// The generation carries a content-corrupt quarantine receipt — the
+    /// re-proof wrote it, or the scrub had — and this is the entry the
+    /// inventory lists.
+    Quarantined {
+        quarantined: QuarantinedGenerationV1,
+    },
+    /// The re-proof admitted the generation: the finding did not reproduce
+    /// and nothing was recorded.
+    NotReproduced,
+}
+
+/// Records a content defect a door proved on a sealed generation
+/// (QI-BB-026).
+///
+/// A door answers [`GENERATION_SIDECAR_CORRUPT_CODE`] and leaves the disk
+/// as it found it: a read never writes. The gates that pick a generation
+/// that is not the serve head — activation and rollback — hand the finding
+/// here, and the owning adapter proves it again under its directory
+/// lifecycle lock, so a scrub or a discard cannot interleave. The caller is
+/// never trusted: the receipt is written only when the adapter's own door
+/// proof fails with [`GENERATION_SIDECAR_CORRUPT_CODE`]; any other failure
+/// (the directory gone, an identity that no longer names it, an I/O error)
+/// is returned and records nothing. The receipt is the scrub's, so the
+/// inventory lists the generation as
+/// [`GenerationQuarantineReasonV1::ContentCorrupt`](super::generation::GenerationQuarantineReasonV1::ContentCorrupt),
+/// every door refuses it [`GENERATION_QUARANTINED_CODE`], and no later
+/// activation or rollback picks it until it is discarded or rebuilt.
+pub trait DoorFindingQuarantinePort: Send + Sync {
+    fn quarantine_door_finding(
+        &self,
+        generation: &GenerationSnapshot,
+    ) -> Result<DoorFindingOutcome, CoreError>;
 }
 
 /// Deep, bounded, resumable integrity verification of one adapter's sealed

@@ -34,10 +34,10 @@ use quanta_index_contract::{
     SearchPlaneTrackKind,
 };
 use quanta_index_core::{
-    CoreError, GenerationIdentityValidatePort, GenerationQuarantineReasonV1,
-    GenerationStorageKeyV1, IntegrityScrubBudgetV1, IntegrityScrubCursorV1,
-    IntegrityScrubOutcomeV1, IntegrityScrubPort, MetricSourcePort, MetricValueV1,
-    QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort, RequestBudgetV1,
+    CoreError, DoorFindingOutcome, DoorFindingQuarantinePort, GenerationIdentityValidatePort,
+    GenerationQuarantineReasonV1, GenerationStorageKeyV1, IntegrityScrubBudgetV1,
+    IntegrityScrubCursorV1, IntegrityScrubOutcomeV1, IntegrityScrubPort, MetricSourcePort,
+    MetricValueV1, QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort, RequestBudgetV1,
     SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, SemanticIndexOpenPort,
 };
 use quanta_index_semantic::{
@@ -46,6 +46,9 @@ use quanta_index_semantic::{
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
+
+/// Where, inside a generation directory, a test damages a file.
+type LocateFile = fn(&Path) -> Result<PathBuf, Box<dyn Error>>;
 
 const SEALED_MANIFEST: &str = "semantic-sealed-manifest.cbor";
 const SCOPE_MANIFEST: &str = "semantic-manifest.cbor";
@@ -512,6 +515,140 @@ fn both_doors_refuse_forged_or_missing_sidecars() -> TestResult {
     )?;
     std::fs::write(&sealed_manifest, &original)?;
     expect_admitted(&knock(&adapter, generation), "sealed manifest restored")
+}
+
+/// A door's content verdict is recorded only by the adapter's re-proof
+/// (QI-BB-026).
+///
+/// The doors are reads. A sidecar rewritten or a dataset file cut short is
+/// refused `GENERATION_SIDECAR_CORRUPT` by every door, and no door writes:
+/// the inventory still lists the generation sealed, and restoring the file
+/// admits it again. The re-proof activation and rollback ask for admits an
+/// intact generation and records nothing, refuses an identity the sealed
+/// marker does not carry, and on a damaged generation writes the
+/// content-corrupt receipt: the inventory lists it quarantined at its own
+/// directory, every door refuses it `GENERATION_QUARANTINED` once the bytes
+/// are restored, asking again answers the same entry, and the quarantine
+/// discard removes it.
+#[test]
+fn a_door_finding_is_quarantined_only_by_the_adapters_re_proof() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let generation = ManifestGeneration::new(4);
+    let dir = generation_dir(&root, generation);
+    let damaged_files: [LocateFile; 2] = [
+        |dir| Ok(dir.join(SCOPE_MANIFEST)),
+        |dir| {
+            dataset_files(dir)?
+                .into_iter()
+                .find(|file| std::fs::metadata(file).is_ok_and(|meta| meta.len() > 0))
+                .ok_or_else(|| "a sealed dataset has a non-empty file".into())
+        },
+    ];
+    for damaged_file in damaged_files {
+        seal(&adapter, generation)?;
+        let file = damaged_file(&dir)?;
+        let what = file.display().to_string();
+        let damage = |file: &Path| -> Result<Vec<u8>, Box<dyn Error>> {
+            let original = std::fs::read(file)?;
+            if file.starts_with(dir.join(DATASET)) {
+                let mut short = original.clone();
+                let _dropped = short.pop().ok_or("empty dataset file")?;
+                std::fs::write(file, short)?;
+            } else {
+                flip_last_byte(file)?;
+            }
+            Ok(original)
+        };
+
+        match adapter.quarantine_door_finding(&identity(generation))? {
+            DoorFindingOutcome::NotReproduced => {}
+            other @ DoorFindingOutcome::Quarantined { .. } => {
+                return Err(
+                    format!("{what}: an intact generation was quarantined: {other:?}").into(),
+                );
+            }
+        }
+        let mut foreign = identity(generation);
+        foreign.manifest_digest = "manifest:another-seal".to_string();
+        match adapter.quarantine_door_finding(&foreign) {
+            Err(CoreError::Typed { code, .. }) if code == "GENERATION_IDENTITY_DIGEST_MISMATCH" => {
+            }
+            other => {
+                return Err(format!("{what}: a foreign identity answered {other:?}").into());
+            }
+        }
+        expect_admitted(&knock(&adapter, generation), &format!("{what}: intact"))?;
+
+        let original = damage(&file)?;
+        expect_refused(
+            &knock(&adapter, generation),
+            &format!("{what}: damaged"),
+            "GENERATION_SIDECAR_CORRUPT",
+        )?;
+        // No door wrote: once the bytes are back the generation is sealed
+        // and admitted, which a receipt would forbid.
+        std::fs::write(&file, &original)?;
+        let inventory = inventory_persisted_generations(&root)?;
+        if inventory.sealed.len() != 1 || !inventory.quarantined.is_empty() {
+            return Err(format!("{what}: a door wrote to the inventory: {inventory:?}").into());
+        }
+        expect_admitted(&knock(&adapter, generation), &format!("{what}: restored"))?;
+
+        let _original = damage(&file)?;
+        let DoorFindingOutcome::Quarantined { quarantined } =
+            adapter.quarantine_door_finding(&identity(generation))?
+        else {
+            return Err(format!("{what}: the re-proof admitted a damaged generation").into());
+        };
+        if quarantined.reason != GenerationQuarantineReasonV1::ContentCorrupt
+            || quarantined.track != SearchPlaneTrackKind::Semantic
+            || quarantined.path != dir
+            || !quarantined.detail.starts_with("a door found ")
+        {
+            return Err(
+                format!("{what}: the quarantine names the wrong entry: {quarantined:?}").into(),
+            );
+        }
+        std::fs::write(&file, &original)?;
+        expect_refused(
+            &knock(&adapter, generation),
+            &format!("{what}: quarantined, bytes restored"),
+            "GENERATION_QUARANTINED",
+        )?;
+        let inventory = inventory_persisted_generations(&root)?;
+        let [entry] = inventory.quarantined.as_slice() else {
+            return Err(
+                format!("{what}: the inventory lists one quarantine: {inventory:?}").into(),
+            );
+        };
+        if !inventory.sealed.is_empty()
+            || entry.path != dir
+            || entry.reason != GenerationQuarantineReasonV1::ContentCorrupt
+        {
+            return Err(
+                format!("{what}: the inventory did not quarantine it: {inventory:?}").into(),
+            );
+        }
+        match adapter.quarantine_door_finding(&identity(generation))? {
+            DoorFindingOutcome::Quarantined { quarantined: again }
+                if again.path == dir
+                    && again.reason == GenerationQuarantineReasonV1::ContentCorrupt => {}
+            other
+            @ (DoorFindingOutcome::Quarantined { .. } | DoorFindingOutcome::NotReproduced) => {
+                return Err(format!("{what}: asking again answered {other:?}").into());
+            }
+        }
+        match adapter.discard_quarantined_generation(entry)? {
+            QuarantineDiscardOutcomeV1::Discarded { .. } if !dir.exists() => {}
+            other @ (QuarantineDiscardOutcomeV1::Discarded { .. }
+            | QuarantineDiscardOutcomeV1::Absent) => {
+                return Err(format!("{what}: the discard answered {other:?}").into());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A sealed manifest copied from another generation binds to that

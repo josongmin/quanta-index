@@ -14,6 +14,13 @@
 //! The follow-up adds the operator's side: what boot set aside is listed
 //! live over the control socket and discarded exactly as listed, never a
 //! sealed generation and never a stale listing.
+//!
+//! Wave B closes the rest. A query door is a read and records nothing; a
+//! rollback that proves inactive damage has the owning adapter re-prove it
+//! and leave a content-corrupt receipt, listed and discarded like any
+//! other; damage to the active semantic generation refuses to boot
+//! without recording anything; and a generation sealed on one track only
+//! is named by the boot report (QI-BB-029).
 
 #![forbid(unsafe_code)]
 
@@ -21,11 +28,18 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use quanta_index_contract::{
-    GenerationPin, ManifestGeneration, QuarantineDiscardOutcomeDtoV1, QuarantineTargetV1,
-    QuarantinedGenerationEntryV1, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
+    BatchIngestMode, GenerationPin, ManifestGeneration, QuarantineDiscardOutcomeDtoV1,
+    QuarantineTargetV1, QuarantinedGenerationEntryV1, SearchCorpusGenerationIdentityV1,
+    SearchCorpusIngestBatch, SearchPlaneControlIpcResponse, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcResponse, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
     SearchPlaneTrackKind, SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
-use quanta_index_core::{GenerationQuarantineReasonV1, GenerationStorageKeyV1};
+use quanta_index_core::{
+    GenerationQuarantineReasonV1, GenerationStorageKeyV1, QuarantinedGenerationV1,
+    SearchCorpusBatchBuildPort,
+};
+use quanta_index_lexical::LexicalAdapter;
+use quanta_index_searchd::app::{HalfSealedPair, SealedGenerationKey};
 use quanta_index_searchd_harness as e2e_harness;
 
 use e2e_harness::E2eRuntime;
@@ -271,34 +285,49 @@ fn damage_to_an_inactive_generation_does_not_stop_the_daemon() -> TestResult {
 /// The same damage on the active generation refuses to boot.
 ///
 /// The refusal carries the typed activation cause and is raised before any
-/// socket binds.
+/// socket binds. Nothing is recorded: once the bytes are restored the
+/// daemon starts on the same active generation, which a quarantine would
+/// forbid.
 #[test]
 fn damage_to_the_active_generation_refuses_to_boot() -> TestResult {
     let mut rt = E2eRuntime::boot()?;
     let (_inactive, active) = seal_two_generations(&mut rt)?;
     let mut rt = rt.reopen();
-    flip_last_byte(
-        &generation_dir(&rt, "indexes/lexical", active)?.join(LEXICAL_TEXT_AUTHORITY_MANIFEST),
-    )?;
+    let damaged =
+        generation_dir(&rt, "indexes/lexical", active)?.join(LEXICAL_TEXT_AUTHORITY_MANIFEST);
+    let original = std::fs::read(&damaged)?;
+    flip_last_byte(&damaged)?;
 
     match rt.start() {
-        Ok(()) => Err("the daemon started on a damaged active generation".into()),
+        Ok(()) => return Err("the daemon started on a damaged active generation".into()),
         Err(error) => {
             let rendered = format!("{error:#}");
             if !rendered.contains("ACTIVATION_TARGET_UNOPENABLE")
                 || !rendered.contains("GENERATION_SIDECAR_CORRUPT")
+                || rendered.contains("; quarantined as")
             {
                 return Err(format!(
-                    "boot must refuse with the typed activation cause and the sidecar code: {rendered}"
+                    "boot must refuse with the typed activation cause and the sidecar code, recording nothing: {rendered}"
                 )
                 .into());
             }
             if rt.boot_inventory().is_some() {
                 return Err("a refused boot must not expose a boot inventory".into());
             }
-            Ok(())
         }
     }
+
+    std::fs::write(&damaged, &original)?;
+    rt.start()?;
+    let served = rt.query_text(TextQuerySyntax::Native, "needle_second", 5);
+    if served.typed_error.is_some() || served.candidate_ids.len() != 1 {
+        return Err(format!(
+            "the restored active generation must serve its one row: {:?}",
+            served.typed_error
+        )
+        .into());
+    }
+    Ok(())
 }
 
 /// The quarantine control surface (QI-BB-026 follow-up) lists what boot
@@ -510,6 +539,410 @@ fn quarantine_is_listed_discarded_as_named_and_gone_after_a_reboot() -> TestResu
     }
     if report.lexical.sealed_generations != 2 || report.semantic.sealed_generations != 2 {
         return Err("the sealed generations survived the discards".into());
+    }
+    Ok(())
+}
+
+/// Three sealed and activated generations, each as its sealed receipt
+/// attested it, oldest first; the last is active.
+fn seal_three_identities(
+    rt: &mut E2eRuntime,
+) -> Result<Vec<SearchCorpusGenerationIdentityV1>, Box<dyn Error>> {
+    let mut identities = Vec::new();
+    for (path, body) in [
+        ("src/first.rs", "fn first() { needle_first }"),
+        ("src/second.rs", "fn second() { needle_second }"),
+        ("src/third.rs", "fn third() { needle_third }"),
+    ] {
+        rt.ingest_text("repo", path, body)?;
+        let _sealed = rt.seal()?;
+        identities.push(
+            rt.last_sealed_search_corpus_identity()
+                .ok_or("a sealed receipt names its composite identity")?,
+        );
+        rt.activate_last_sealed_generation()?;
+    }
+    Ok(identities)
+}
+
+fn control_refusal(response: &SearchPlaneControlIpcResponse) -> Option<(String, String)> {
+    match response {
+        SearchPlaneControlIpcResponse::Error(error) => {
+            Some((error.code.clone(), error.message.clone()))
+        }
+        SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+        | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+        | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+        | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
+        | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+        | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
+        | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+        | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_) => None,
+    }
+}
+
+fn rollback_to(
+    rt: &mut E2eRuntime,
+    active: &SearchCorpusGenerationIdentityV1,
+    target: &SearchCorpusGenerationIdentityV1,
+) -> Result<Option<(String, String)>, Box<dyn Error>> {
+    let answer =
+        rt.rollback_search_corpus_cas_raw(SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+            expected_active: active.clone(),
+            target: target.clone(),
+        })?;
+    Ok(control_refusal(&answer))
+}
+
+/// The daemon's active pair is exactly `active`: both tracks and the
+/// semantic content roots.
+fn expect_active(rt: &mut E2eRuntime, active: &SearchCorpusGenerationIdentityV1) -> TestResult {
+    let status = rt.generation_status()?;
+    for expected in [&active.lexical, &active.semantic] {
+        let observed = status
+            .tracks
+            .iter()
+            .find(|record| record.track == expected.track)
+            .ok_or_else(|| format!("no active {:?} track: {status:?}", expected.track))?;
+        if observed.manifest_generation != expected.manifest_generation
+            || observed.manifest_digest != expected.manifest_digest
+        {
+            return Err(format!("the active {:?} track moved: {status:?}", expected.track).into());
+        }
+    }
+    if status.semantic_content.as_ref() != Some(&active.semantic_content) {
+        return Err(format!("the active content roots moved: {status:?}").into());
+    }
+    Ok(())
+}
+
+fn listed(entries: &[QuarantinedGenerationEntryV1]) -> Vec<(String, String)> {
+    entries
+        .iter()
+        .map(|entry| (entry.path.clone(), entry.reason.clone()))
+        .collect()
+}
+
+fn content_corrupt_at(dir: &Path) -> (String, String) {
+    (
+        dir.display().to_string(),
+        GenerationQuarantineReasonV1::ContentCorrupt
+            .as_code_str()
+            .to_string(),
+    )
+}
+
+fn boot_listed(
+    entries: &[QuarantinedGenerationV1],
+) -> Vec<(PathBuf, GenerationQuarantineReasonV1)> {
+    entries
+        .iter()
+        .map(|entry| (entry.path.clone(), entry.reason))
+        .collect()
+}
+
+/// A rollback that proves inactive damage quarantines what it proved
+/// (QI-BB-026 보완 #2).
+///
+/// A query door that meets the damage answers typed and records nothing.
+/// A rollback to the damaged generation is refused typed, and the adapter
+/// that owns the damaged track re-proves it and leaves a content-corrupt
+/// receipt — the lexical track of one generation, the semantic track of
+/// another. From then on the live listing names exactly those two; the
+/// bytes coming back lifts nothing, so the rollback and a pinned query are
+/// refused as quarantined; the active pair never moves, and a reboot
+/// starts on it and lists both; each is discarded exactly as listed.
+#[test]
+fn a_rollback_that_proves_inactive_damage_quarantines_it() -> TestResult {
+    let mut rt = E2eRuntime::boot()?;
+    let identities = seal_three_identities(&mut rt)?;
+    let [first, second, active] = identities.as_slice() else {
+        return Err("three generations were sealed".into());
+    };
+    let mut rt = rt.reopen();
+    let lexical_first = generation_dir(&rt, "indexes/lexical", first.lexical.manifest_generation)?;
+    let semantic_second =
+        generation_dir(&rt, "indexes/semantic", second.semantic.manifest_generation)?;
+    let lexical_file = lexical_first.join(LEXICAL_TEXT_AUTHORITY_MANIFEST);
+    let semantic_file = semantic_second.join(SEMANTIC_MANIFEST);
+    let lexical_bytes = std::fs::read(&lexical_file)?;
+    let semantic_bytes = std::fs::read(&semantic_file)?;
+    flip_last_byte(&lexical_file)?;
+    tamper_semantic_row_count(&semantic_file)?;
+    rt.start()?;
+
+    // A query door meets the damage, answers typed, and records nothing.
+    let first_pin = GenerationPin::new(rt.repo(), rt.revision(), first.lexical.manifest_generation);
+    match typed_code(&rt.query_once(|_| pinned_text(first_pin.clone(), "needle_first"))?) {
+        Some((code, _)) if code == "GENERATION_SIDECAR_CORRUPT" => {}
+        other => {
+            return Err(
+                format!("the pinned query must meet the damage typed, got {other:?}").into(),
+            );
+        }
+    }
+    let before = rt.quarantine_inventory()?;
+    if !(before.lexical.is_empty() && before.semantic.is_empty()) {
+        return Err(format!("a query door recorded a quarantine: {before:?}").into());
+    }
+
+    // Each rollback proves its target's damaged track, is refused, and
+    // the owning adapter records what it proved.
+    for (target, damaged) in [(first, &lexical_first), (second, &semantic_second)] {
+        let recorded = format!(
+            "; quarantined as GENERATION_QUARANTINE_CONTENT_CORRUPT at {}",
+            damaged.display()
+        );
+        match rollback_to(&mut rt, active, target)? {
+            Some((code, message))
+                if code == "ROLLBACK_TARGET_UNOPENABLE"
+                    && message.contains("GENERATION_SIDECAR_CORRUPT")
+                    && message.contains(&recorded) => {}
+            other => {
+                return Err(format!(
+                    "the rollback to generation {} must be refused and recorded, got {other:?}",
+                    target.lexical.manifest_generation.get()
+                )
+                .into());
+            }
+        }
+    }
+    let after = rt.quarantine_inventory()?;
+    if listed(&after.lexical) != vec![content_corrupt_at(&lexical_first)]
+        || listed(&after.semantic) != vec![content_corrupt_at(&semantic_second)]
+    {
+        return Err(format!("the listing must name exactly what was proved: {after:?}").into());
+    }
+
+    // The receipts are durable: the bytes coming back lifts nothing.
+    std::fs::write(&lexical_file, &lexical_bytes)?;
+    std::fs::write(&semantic_file, &semantic_bytes)?;
+    for target in [first, second] {
+        match rollback_to(&mut rt, active, target)? {
+            Some((code, message))
+                if code == "ROLLBACK_TARGET_UNOPENABLE"
+                    && message.contains("GENERATION_QUARANTINED")
+                    && !message.contains("; quarantined as") => {}
+            other => {
+                return Err(format!(
+                    "a quarantined target must be refused as quarantined, got {other:?}"
+                )
+                .into());
+            }
+        }
+    }
+    match typed_code(&rt.query_once(|_| pinned_text(first_pin.clone(), "needle_first"))?) {
+        Some((code, _)) if code == "GENERATION_QUARANTINED" => {}
+        other => {
+            return Err(
+                format!("a pinned query must be refused as quarantined, got {other:?}").into(),
+            );
+        }
+    }
+    expect_active(&mut rt, active)?;
+
+    // A reboot starts on the active pair and lists both.
+    let mut rt = rt.reopen();
+    rt.start()?;
+    let report = rt
+        .boot_inventory()
+        .ok_or("the running daemon must expose its boot inventory")?
+        .clone();
+    if report.active_pairs_validated != 1
+        || boot_listed(&report.lexical.quarantined)
+            != vec![(
+                lexical_first.clone(),
+                GenerationQuarantineReasonV1::ContentCorrupt,
+            )]
+        || boot_listed(&report.semantic.quarantined)
+            != vec![(
+                semantic_second.clone(),
+                GenerationQuarantineReasonV1::ContentCorrupt,
+            )]
+    {
+        return Err(format!("the reboot must prove one pair and list both: {report:?}").into());
+    }
+    expect_active(&mut rt, active)?;
+
+    // Each is discarded exactly as listed.
+    let listing = rt.quarantine_inventory()?;
+    for entry in listing.lexical.iter().chain(listing.semantic.iter()) {
+        match rt.discard_quarantined(QuarantineTargetV1::Generation(entry.clone()))? {
+            Ok(ack) if matches!(ack.outcome, QuarantineDiscardOutcomeDtoV1::Discarded { .. }) => {}
+            other => return Err(format!("discard {}: {other:?}", entry.path).into()),
+        }
+    }
+    let emptied = rt.quarantine_inventory()?;
+    if !(emptied.lexical.is_empty() && emptied.semantic.is_empty())
+        || lexical_first.exists()
+        || semantic_second.exists()
+    {
+        return Err(format!("the discards must remove both: {emptied:?}").into());
+    }
+    Ok(())
+}
+
+/// Damage to the active semantic generation refuses to boot and records
+/// nothing (QI-BB-026).
+///
+/// The serve head fails closed before any socket binds, naming the
+/// activation cause, the track and the semantic manifest. No receipt is
+/// left: once the bytes are restored the daemon starts and serves the same
+/// active pair, which a quarantine would forbid.
+#[test]
+fn damage_to_the_active_semantic_generation_refuses_to_boot_and_records_nothing() -> TestResult {
+    let mut rt = E2eRuntime::boot()?;
+    let (_inactive, active) = seal_two_generations(&mut rt)?;
+    let mut rt = rt.reopen();
+    let manifest = generation_dir(&rt, "indexes/semantic", active)?.join(SEMANTIC_MANIFEST);
+    let original = std::fs::read(&manifest)?;
+    tamper_semantic_row_count(&manifest)?;
+
+    match rt.start() {
+        Ok(()) => return Err("the daemon started on a damaged active semantic generation".into()),
+        Err(error) => {
+            let rendered = format!("{error:#}");
+            if !(rendered.contains("ACTIVATION_TARGET_UNOPENABLE")
+                && rendered.contains("GENERATION_SIDECAR_CORRUPT")
+                && rendered.contains("track=Semantic")
+                && rendered.contains(SEMANTIC_MANIFEST))
+                || rendered.contains("; quarantined as")
+            {
+                return Err(format!(
+                    "boot must refuse with the typed activation cause on the semantic track and record nothing: {rendered}"
+                )
+                .into());
+            }
+            if rt.boot_inventory().is_some() {
+                return Err("a refused boot must not expose a boot inventory".into());
+            }
+        }
+    }
+
+    std::fs::write(&manifest, &original)?;
+    rt.start()?;
+    let served = rt.query_text(TextQuerySyntax::Native, "needle_second", 5);
+    if let Some(error) = served.typed_error {
+        return Err(format!("the restored active generation does not serve: {error}").into());
+    }
+    if served.candidate_ids.len() != 1 {
+        return Err(format!(
+            "the active generation served {} rows",
+            served.candidate_ids.len()
+        )
+        .into());
+    }
+    let listing = rt.quarantine_inventory()?;
+    if !(listing.lexical.is_empty() && listing.semantic.is_empty()) {
+        return Err(format!("a refused boot recorded a quarantine: {listing:?}").into());
+    }
+    Ok(())
+}
+
+/// A lexical-only seal of `generation` for the harness's pair: what a crash
+/// between the two tracks' seals leaves behind.
+fn lexical_half(rt: &E2eRuntime, generation: ManifestGeneration) -> SearchCorpusIngestBatch {
+    SearchCorpusIngestBatch {
+        repo_id: rt.repo(),
+        revision_id: rt.revision(),
+        generation,
+        base_generation: None,
+        manifest_digest: format!("lex-seal:{}", generation.get()),
+        batch_digest: String::new(),
+        mode: BatchIngestMode::ReplaceGeneration,
+        bundle_payload: None,
+        clear_surfaces: Vec::new(),
+        replace_scopes: Vec::new(),
+        tombstone_scopes: Vec::new(),
+        semantic_replace_scopes: Vec::new(),
+        semantic_tombstone_scopes: Vec::new(),
+        seal: true,
+    }
+}
+
+/// A generation sealed on one track only is named at boot (QI-BB-029
+/// 보완 #4).
+///
+/// A crash between the two tracks' seals leaves a generation's lexical
+/// track sealed, its semantic track without it, and no authority record;
+/// the fixture is that state, sealed by the lexical adapter itself on the
+/// stopped daemon's state root. Boot starts on the active pair, the report
+/// names the half — pair generation, sealed track, path — and the gauge
+/// counts it, the live listing offers the sealed half as an orphan, and
+/// once it is discarded as listed the next boot finds no half-sealed pair.
+#[test]
+fn a_generation_sealed_on_one_track_only_is_named_at_boot() -> TestResult {
+    let mut rt = E2eRuntime::boot()?;
+    rt.ingest_text("repo", "src/first.rs", "fn first() { needle_first }")?;
+    let _first = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    let mut rt = rt.reopen();
+    let half = ManifestGeneration::new(7);
+    let lexical_root = std::fs::canonicalize(rt.state_root())?.join("indexes/lexical");
+    LexicalAdapter::with_state_root(lexical_root).build_batch(&lexical_half(&rt, half))?;
+    let half_dir = generation_dir(&rt, "indexes/lexical", half)?;
+    if !half_dir.is_dir() || generation_dir(&rt, "indexes/semantic", half)?.exists() {
+        return Err("the fixture seals the lexical half only".into());
+    }
+
+    rt.start()?;
+    let report = rt
+        .boot_inventory()
+        .ok_or("the running daemon must expose its boot inventory")?
+        .clone();
+    let expected = vec![HalfSealedPair {
+        key: SealedGenerationKey {
+            repo_id: rt.repo(),
+            revision_id: rt.revision(),
+            generation: half,
+        },
+        sealed_track: SearchPlaneTrackKind::Lexical,
+        path: half_dir.clone(),
+    }];
+    if report.half_sealed_pairs != expected || report.active_pairs_validated != 1 {
+        return Err(format!("the boot report must name the half: {report:?}").into());
+    }
+    let gauge = |rt: &mut E2eRuntime| -> Result<f64, Box<dyn Error>> {
+        rt.metrics_snapshot()?
+            .gauges
+            .iter()
+            .find(|gauge| gauge.name == "boot_half_sealed_pairs")
+            .map(|gauge| gauge.value)
+            .ok_or_else(|| "the scrape carries boot_half_sealed_pairs".into())
+    };
+    if (gauge(&mut rt)? - 1.0).abs() > f64::EPSILON {
+        return Err("the gauge counts the one half-sealed pair".into());
+    }
+    let listing = rt.quarantine_inventory()?;
+    let orphan = (
+        half_dir.display().to_string(),
+        GenerationQuarantineReasonV1::Orphaned
+            .as_code_str()
+            .to_string(),
+    );
+    if listed(&listing.lexical) != vec![orphan] || !listing.semantic.is_empty() {
+        return Err(format!("the listing must offer the sealed half: {listing:?}").into());
+    }
+    let entry = listing
+        .lexical
+        .first()
+        .cloned()
+        .ok_or("the half is listed")?;
+    match rt.discard_quarantined(QuarantineTargetV1::Generation(entry))? {
+        Ok(ack) if matches!(ack.outcome, QuarantineDiscardOutcomeDtoV1::Discarded { .. }) => {}
+        other => return Err(format!("discard the half: {other:?}").into()),
+    }
+
+    let mut rt = rt.reopen();
+    rt.start()?;
+    let report = rt
+        .boot_inventory()
+        .ok_or("the running daemon must expose its boot inventory")?;
+    if !report.half_sealed_pairs.is_empty() || half_dir.exists() {
+        return Err(format!("no half-sealed pair is left: {report:?}").into());
+    }
+    if gauge(&mut rt)?.abs() > f64::EPSILON {
+        return Err("the gauge reads zero once the half is gone".into());
     }
     Ok(())
 }

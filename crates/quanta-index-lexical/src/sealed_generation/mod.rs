@@ -21,7 +21,7 @@ pub(crate) use manifest::{
 pub(crate) use overlay::{OverlayFamily, persist_overlay, remove_overlay};
 pub(crate) use scrub::{
     LEXICAL_QUARANTINE_RECEIPT_FILE_NAME, LEXICAL_SCRUB_RECEIPT_FILE_NAME, last_completed_scrub,
-    quarantined_by_scrub, refuse_if_quarantined, scrub_step,
+    quarantine_content_corrupt, quarantined_by_scrub, refuse_if_quarantined, scrub_step,
 };
 pub(crate) use seal::seal_generation;
 pub(crate) use verify::{DiscardingVisitor, SealedGenerationVisitor, walk_sealed_generation};

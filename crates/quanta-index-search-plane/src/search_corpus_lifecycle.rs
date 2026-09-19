@@ -10,10 +10,11 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use quanta_index_contract::{
     GenerationSnapshot, RepoId, RevisionId, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
-    SearchPlaneSearchCorpusRollbackCasAck,
+    SearchPlaneSearchCorpusRollbackCasAck, SearchPlaneTrackKind,
 };
 use quanta_index_core::{
-    CoreError, LexicalIndexOpenPort, LexicalSearcher, SEMANTIC_ROW_ROOT_MISMATCH_CODE,
+    CoreError, DoorFindingOutcome, DoorFindingQuarantinePort, GENERATION_SIDECAR_CORRUPT_CODE,
+    LexicalIndexOpenPort, LexicalSearcher, SEMANTIC_ROW_ROOT_MISMATCH_CODE,
     SemanticContentRootsPort, SemanticIndexOpenPort, SemanticSearcher,
 };
 
@@ -201,8 +202,11 @@ impl SearchCorpusLifecycleOwner {
         for active in &active_pairs {
             promotion.prove_and_promote_pair(
                 active,
-                ERR_ACTIVATION_TARGET_UNOPENABLE,
-                "restart rehydrate",
+                ProofGate {
+                    error_code: ERR_ACTIVATION_TARGET_UNOPENABLE,
+                    operation: "restart rehydrate",
+                    findings: DoorFindingPolicy::FailClosed,
+                },
             )?;
         }
         Ok(active_pairs.len())
@@ -231,13 +235,40 @@ pub(crate) trait ActiveSearchCorpusPinReadPort: std::fmt::Debug + Send + Sync {
 /// as the activation validator would and return the handle that proof
 /// opened, so each track is walked once and the first query is a registry
 /// hit, not a second full open. The semantic generation's sealed content
-/// roots must also be exactly the ones the candidate names (QI-BB-028).
+/// roots must also be exactly the ones the candidate names (QI-BB-028). A
+/// content defect a door proves while activation or rollback picks a
+/// generation is recorded through each track's [`DoorFindingQuarantinePort`]
+/// (QI-BB-026).
 #[derive(Clone)]
 pub struct ActivationPromotionParts {
     pub lexical_open: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
     pub semantic_open: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
     pub semantic_content_roots: Arc<dyn SemanticContentRootsPort + Send + Sync>,
+    pub lexical_door_findings: Arc<dyn DoorFindingQuarantinePort + Send + Sync>,
+    pub semantic_door_findings: Arc<dyn DoorFindingQuarantinePort + Send + Sync>,
     pub snapshots: SnapshotRegistries,
+}
+
+/// What a gate does with a door's content-defect verdict (QI-BB-026).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DoorFindingPolicy {
+    /// Activation and rollback pick a generation that is not the serve
+    /// head. The verdict is re-proved and recorded as a quarantine, so the
+    /// inventory lists the generation and no later activation or rollback
+    /// picks it.
+    Quarantine,
+    /// Restart proves the serve head. A defect fails boot typed before any
+    /// socket binds, and the disk is left as it was found.
+    FailClosed,
+}
+
+/// The gate a pair proof runs for: the code a refusal carries, the
+/// operation it names, and what a door's content defect leads to.
+#[derive(Clone, Copy, Debug)]
+struct ProofGate<'a> {
+    error_code: &'a str,
+    operation: &'a str,
+    findings: DoorFindingPolicy,
 }
 
 impl ActivationPromotionParts {
@@ -247,17 +278,23 @@ impl ActivationPromotionParts {
     ///
     /// Runs outside every ledger guard: the opens hash the generation's
     /// decoded bytes, and nothing else in the process should wait on that.
-    /// A track that does not prove is refused typed under `error_code`, a
-    /// semantic generation that sealed other content roots than the
-    /// candidate names is refused `SEMANTIC_ROW_ROOT_MISMATCH` — the same
-    /// source digest built in another state root does not pass as this one
-    /// — and in either case nothing is promoted for the pair.
+    /// A track that does not prove is refused typed under the gate's error
+    /// code — after its content defect, under
+    /// [`DoorFindingPolicy::Quarantine`], was recorded by the track's
+    /// adapter — a semantic generation that sealed other content roots than
+    /// the candidate names is refused `SEMANTIC_ROW_ROOT_MISMATCH` — the
+    /// same source digest built in another state root does not pass as this
+    /// one — and in either case nothing is promoted for the pair.
     fn prove_and_promote_pair(
         &self,
         candidate: &SearchCorpusGenerationV1,
-        error_code: &str,
-        operation: &str,
+        gate: ProofGate<'_>,
     ) -> Result<(), CoreError> {
+        let ProofGate {
+            error_code,
+            operation,
+            findings: _,
+        } = gate;
         let key = SnapshotKey::new(
             candidate.repo_id(),
             candidate.revision_id(),
@@ -266,26 +303,12 @@ impl ActivationPromotionParts {
         let lexical: Arc<dyn LexicalSearcher> = Arc::from(
             self.lexical_open
                 .open_proven(candidate.lexical())
-                .map_err(|source| {
-                    generation_target_unopenable(
-                        candidate.lexical(),
-                        operation,
-                        error_code,
-                        &source,
-                    )
-                })?,
+                .map_err(|source| self.refuse_unproven(candidate.lexical(), gate, &source))?,
         );
         let semantic: Arc<dyn SemanticSearcher> = Arc::from(
             self.semantic_open
                 .open_proven(candidate.semantic())
-                .map_err(|source| {
-                    generation_target_unopenable(
-                        candidate.semantic(),
-                        operation,
-                        error_code,
-                        &source,
-                    )
-                })?,
+                .map_err(|source| self.refuse_unproven(candidate.semantic(), gate, &source))?,
         );
         let sealed = self
             .semantic_content_roots
@@ -325,6 +348,56 @@ impl ActivationPromotionParts {
             },
         )?;
         Ok(())
+    }
+
+    /// The typed refusal for a track whose door did not admit `target`.
+    ///
+    /// Under [`DoorFindingPolicy::Quarantine`], a content-defect verdict is
+    /// handed to the track's adapter, which re-proves it and records the
+    /// quarantine; the refusal then says what was recorded — the receipt,
+    /// that the re-proof admitted the generation, or why nothing could be
+    /// written. The refusal is the same typed failure either way.
+    fn refuse_unproven(
+        &self,
+        target: &GenerationSnapshot,
+        gate: ProofGate<'_>,
+        source: &CoreError,
+    ) -> CoreError {
+        let is_content_defect = matches!(
+            source,
+            CoreError::Typed { code, .. } if code == GENERATION_SIDECAR_CORRUPT_CODE
+        );
+        if gate.findings == DoorFindingPolicy::FailClosed || !is_content_defect {
+            return generation_target_unopenable(target, gate.operation, gate.error_code, source);
+        }
+        let door_findings = match target.track {
+            SearchPlaneTrackKind::Lexical => &self.lexical_door_findings,
+            SearchPlaneTrackKind::Semantic => &self.semantic_door_findings,
+            SearchPlaneTrackKind::Structural => {
+                return CoreError::InvalidContract(format!(
+                    "search-corpus {}: a structural generation is not a search-corpus track, yet its door answered: {source}",
+                    gate.operation
+                ));
+            }
+        };
+        let recorded = match door_findings.quarantine_door_finding(target) {
+            Ok(DoorFindingOutcome::Quarantined { quarantined }) => format!(
+                "quarantined as {} at {}",
+                quarantined.reason,
+                quarantined.path.display()
+            ),
+            Ok(DoorFindingOutcome::NotReproduced) => {
+                "the re-proof admitted the generation; nothing was quarantined".to_string()
+            }
+            Err(error) => format!("the quarantine was not recorded: {error}"),
+        };
+        CoreError::Typed {
+            code: gate.error_code.to_string(),
+            message: format!(
+                "{}; {recorded}",
+                target_unopenable_message(target, gate.operation, source)
+            ),
+        }
     }
 }
 
@@ -384,7 +457,14 @@ impl SearchCorpusLifecycleService {
             .coordinator
             .lock_pair(candidate.repo_id(), candidate.revision_id())?;
         self.check_activation_preconditions_v1(candidate)?;
-        self.prove_and_promote_v1(candidate, ERR_ACTIVATION_TARGET_UNOPENABLE, "activation")?;
+        self.prove_and_promote_v1(
+            candidate,
+            ProofGate {
+                error_code: ERR_ACTIVATION_TARGET_UNOPENABLE,
+                operation: "activation",
+                findings: DoorFindingPolicy::Quarantine,
+            },
+        )?;
         self.check_activation_preconditions_v1(candidate)?;
         self.require_durably_sealed_v1(candidate, "activation")?;
         self.activation_catalog
@@ -402,7 +482,14 @@ impl SearchCorpusLifecycleService {
             .coordinator
             .lock_pair(target.repo_id(), target.revision_id())?;
         self.check_rollback_preconditions_v1(target)?;
-        self.prove_and_promote_v1(target, ERR_ROLLBACK_TARGET_UNOPENABLE, "rollback")?;
+        self.prove_and_promote_v1(
+            target,
+            ProofGate {
+                error_code: ERR_ROLLBACK_TARGET_UNOPENABLE,
+                operation: "rollback",
+                findings: DoorFindingPolicy::Quarantine,
+            },
+        )?;
         self.check_rollback_preconditions_v1(target)?;
         self.require_durably_sealed_v1(target, "rollback")?;
         self.activation_catalog
@@ -483,11 +570,9 @@ impl SearchCorpusLifecycleService {
     fn prove_and_promote_v1(
         &self,
         candidate: &SearchCorpusGenerationV1,
-        error_code: &str,
-        operation: &str,
+        gate: ProofGate<'_>,
     ) -> Result<(), CoreError> {
-        self.promotion
-            .prove_and_promote_pair(candidate, error_code, operation)
+        self.promotion.prove_and_promote_pair(candidate, gate)
     }
 }
 
@@ -533,14 +618,22 @@ fn generation_target_unopenable(
 ) -> CoreError {
     CoreError::Typed {
         code: error_code.to_string(),
-        message: format!(
-            "search-corpus {operation}: target is not physically valid for repo={} revision={} track={:?} generation={}: {source:?}",
-            candidate.repo_id.as_str(),
-            candidate.revision_id.as_str(),
-            candidate.track,
-            candidate.manifest_generation.get(),
-        ),
+        message: target_unopenable_message(candidate, operation, source),
     }
+}
+
+fn target_unopenable_message(
+    candidate: &GenerationSnapshot,
+    operation: &str,
+    source: &CoreError,
+) -> String {
+    format!(
+        "search-corpus {operation}: target is not physically valid for repo={} revision={} track={:?} generation={}: {source:?}",
+        candidate.repo_id.as_str(),
+        candidate.revision_id.as_str(),
+        candidate.track,
+        candidate.manifest_generation.get(),
+    )
 }
 
 #[cfg(test)]
@@ -561,10 +654,14 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::{
-        ActivationPromotionParts, ActiveSearchCorpusPinReadPort, ERR_ACTIVATION_TARGET_UNOPENABLE,
+        ActivationPromotionParts, ActiveSearchCorpusPinReadPort, DoorFindingPolicy,
+        ERR_ACTIVATION_TARGET_UNOPENABLE, ERR_ROLLBACK_TARGET_UNOPENABLE, ProofGate,
         SearchCorpusLifecycleOwner, SearchCorpusPairMutationCoordinator,
     };
     use crate::content_roots_test_support::{generation_keyed_content_roots, roots_for_generation};
+    use crate::door_findings_test_support::{
+        RecordingDoorFindings, ScriptedFinding, scripted_quarantine_path,
+    };
     use crate::query_dispatcher::tests::support::lexical::StubLexicalSearcher;
     use crate::query_dispatcher::tests::support::semantic::{
         RecordingSemanticOpener, RecordingSemanticState,
@@ -582,15 +679,41 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    /// Openers whose handles prove the digest the rehydrate fixture seals
-    /// under, `manifest-rehydrate-<generation>`; `open_proven` refuses the
-    /// rejected track the way a missing generation would.
-    struct EchoLexicalOpener {
-        reject: bool,
+    /// How an echo opener's `open_proven` refuses, if it does.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum DoorRefusal {
+        /// The generation is not on disk.
+        Missing,
+        /// The door proved a committed file does not match the seal.
+        ContentDefect,
+        /// The generation already carries a quarantine receipt.
+        Quarantined,
     }
 
-    fn injected_missing(candidate: &GenerationSnapshot) -> CoreError {
-        CoreError::NotFound(format!("injected missing {:?} generation", candidate.track))
+    impl DoorRefusal {
+        fn error(self, candidate: &GenerationSnapshot) -> CoreError {
+            match self {
+                Self::Missing => CoreError::NotFound(format!(
+                    "injected missing {:?} generation",
+                    candidate.track
+                )),
+                Self::ContentDefect => CoreError::Typed {
+                    code: "GENERATION_SIDECAR_CORRUPT".to_string(),
+                    message: format!("injected content defect on {:?}", candidate.track),
+                },
+                Self::Quarantined => CoreError::Typed {
+                    code: "GENERATION_QUARANTINED".to_string(),
+                    message: format!("injected quarantine on {:?}", candidate.track),
+                },
+            }
+        }
+    }
+
+    /// Openers whose handles prove the digest the rehydrate fixture seals
+    /// under, `manifest-rehydrate-<generation>`; `open_proven` refuses as
+    /// scripted.
+    struct EchoLexicalOpener {
+        refusal: Option<DoorRefusal>,
     }
 
     impl LexicalIndexOpenPort for EchoLexicalOpener {
@@ -610,8 +733,8 @@ mod tests {
             &self,
             candidate: &GenerationSnapshot,
         ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
-            if self.reject {
-                return Err(injected_missing(candidate));
+            if let Some(refusal) = self.refusal {
+                return Err(refusal.error(candidate));
             }
             self.open(
                 &candidate.repo_id,
@@ -622,7 +745,7 @@ mod tests {
     }
 
     struct EchoSemanticOpener {
-        reject: bool,
+        refusal: Option<DoorRefusal>,
     }
 
     impl SemanticIndexOpenPort for EchoSemanticOpener {
@@ -643,8 +766,8 @@ mod tests {
             &self,
             candidate: &GenerationSnapshot,
         ) -> Result<Box<dyn SemanticSearcher>, CoreError> {
-            if self.reject {
-                return Err(injected_missing(candidate));
+            if let Some(refusal) = self.refusal {
+                return Err(refusal.error(candidate));
             }
             self.open(
                 &candidate.repo_id,
@@ -654,21 +777,88 @@ mod tests {
         }
     }
 
-    /// Promotion over the echo openers, refusing `rejected_track`'s proof;
-    /// the sealed content roots are the fixtures' (keyed on the generation).
+    /// Promotion over the echo openers, refusing `rejected_track`'s proof
+    /// as a missing generation; the sealed content roots are the fixtures'
+    /// (keyed on the generation).
     fn promotion_rejecting(
         rejected_track: Option<SearchPlaneTrackKind>,
     ) -> ActivationPromotionParts {
-        ActivationPromotionParts {
+        let refusal = rejected_track.map(|track| (track, DoorRefusal::Missing));
+        let (promotion, _lexical, _semantic) =
+            promotion_refusing(refusal, ScriptedFinding::Quarantines);
+        promotion
+    }
+
+    /// Promotion whose `refusal.0` track's door refuses as `refusal.1`,
+    /// with both tracks' door-finding doubles answering `findings`.
+    fn promotion_refusing(
+        refusal: Option<(SearchPlaneTrackKind, DoorRefusal)>,
+        findings: ScriptedFinding,
+    ) -> (
+        ActivationPromotionParts,
+        Arc<RecordingDoorFindings>,
+        Arc<RecordingDoorFindings>,
+    ) {
+        let refusal_on = |track| {
+            refusal
+                .filter(|(refused, _how)| *refused == track)
+                .map(|(_refused, how)| how)
+        };
+        let lexical_findings = Arc::new(RecordingDoorFindings::new(findings));
+        let semantic_findings = Arc::new(RecordingDoorFindings::new(findings));
+        let promotion = ActivationPromotionParts {
             lexical_open: Arc::new(EchoLexicalOpener {
-                reject: rejected_track == Some(SearchPlaneTrackKind::Lexical),
+                refusal: refusal_on(SearchPlaneTrackKind::Lexical),
             }),
             semantic_open: Arc::new(EchoSemanticOpener {
-                reject: rejected_track == Some(SearchPlaneTrackKind::Semantic),
+                refusal: refusal_on(SearchPlaneTrackKind::Semantic),
             }),
             semantic_content_roots: generation_keyed_content_roots(),
+            lexical_door_findings: Arc::<RecordingDoorFindings>::clone(&lexical_findings),
+            semantic_door_findings: Arc::<RecordingDoorFindings>::clone(&semantic_findings),
             snapshots: SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
+        };
+        (promotion, lexical_findings, semantic_findings)
+    }
+
+    const ACTIVATION_GATE: ProofGate<'static> = ProofGate {
+        error_code: ERR_ACTIVATION_TARGET_UNOPENABLE,
+        operation: "activation",
+        findings: DoorFindingPolicy::Quarantine,
+    };
+
+    const ROLLBACK_GATE: ProofGate<'static> = ProofGate {
+        error_code: ERR_ROLLBACK_TARGET_UNOPENABLE,
+        operation: "rollback",
+        findings: DoorFindingPolicy::Quarantine,
+    };
+
+    const RESTART_GATE: ProofGate<'static> = ProofGate {
+        error_code: ERR_ACTIVATION_TARGET_UNOPENABLE,
+        operation: "restart rehydrate",
+        findings: DoorFindingPolicy::FailClosed,
+    };
+
+    /// The typed refusal a proof under `gate` answers; nothing promoted.
+    fn refused_proof(
+        promotion: &ActivationPromotionParts,
+        gate: ProofGate<'_>,
+    ) -> Result<(String, String), Box<dyn std::error::Error>> {
+        let candidate = active_generation()?;
+        let Err(CoreError::Typed { code, message }) =
+            promotion.prove_and_promote_pair(&candidate, gate)
+        else {
+            return Err(format!("the {} proof must be refused typed", gate.operation).into());
+        };
+        for stats in [
+            promotion.snapshots.lexical.stats()?,
+            promotion.snapshots.semantic.stats()?,
+        ] {
+            if stats.entries != 0 {
+                return Err(format!("a refused proof promoted a handle: {stats:?}").into());
+            }
         }
+        Ok((code, message))
     }
 
     fn retention() -> Result<SearchCorpusHistoryRetentionPolicyV1, CoreError> {
@@ -933,6 +1123,111 @@ mod tests {
         let stats = promotion.snapshots.lexical.stats()?;
         if stats.promotions != 1 || stats.misses != 0 || stats.hits != 1 {
             return Err(format!("restart promotion stats drifted: {stats:?}").into());
+        }
+        Ok(())
+    }
+
+    /// A content defect a door proves while activation or rollback picks
+    /// a generation is handed to that track's adapter and to no other
+    /// (QI-BB-026).
+    ///
+    /// The refusal keeps its gate's code, carries the door's verdict, and
+    /// says where the adapter recorded the quarantine; nothing is promoted.
+    #[test]
+    fn activation_and_rollback_hand_a_content_defect_to_the_owning_track() -> TestResult {
+        let candidate = active_generation()?;
+        for gate in [ACTIVATION_GATE, ROLLBACK_GATE] {
+            for (track, target) in [
+                (SearchPlaneTrackKind::Lexical, candidate.lexical()),
+                (SearchPlaneTrackKind::Semantic, candidate.semantic()),
+            ] {
+                let (promotion, lexical, semantic) = promotion_refusing(
+                    Some((track, DoorRefusal::ContentDefect)),
+                    ScriptedFinding::Quarantines,
+                );
+                let (code, message) = refused_proof(&promotion, gate)?;
+                assert_eq!(code, gate.error_code);
+                let (owner, other) = if track == SearchPlaneTrackKind::Lexical {
+                    (lexical.asked()?, semantic.asked()?)
+                } else {
+                    (semantic.asked()?, lexical.asked()?)
+                };
+                assert_eq!(owner, vec![target.clone()], "{} {track:?}", gate.operation);
+                assert!(other.is_empty(), "the other track was asked: {other:?}");
+                let recorded = format!(
+                    "; quarantined as GENERATION_QUARANTINE_CONTENT_CORRUPT at {}",
+                    scripted_quarantine_path(target).display()
+                );
+                assert!(
+                    message.contains("GENERATION_SIDECAR_CORRUPT")
+                        && message.contains(gate.operation)
+                        && message.contains(&recorded),
+                    "{message}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Restart proves the serve head and fails closed.
+    ///
+    /// Its content defect is refused without asking any adapter to record
+    /// it. A door that refused for another reason — the generation missing,
+    /// or quarantined already — gave no content verdict, and no gate records
+    /// one.
+    #[test]
+    fn restart_and_refusals_that_are_no_content_verdict_record_nothing() -> TestResult {
+        for (gate, refusal) in [
+            (RESTART_GATE, DoorRefusal::ContentDefect),
+            (ACTIVATION_GATE, DoorRefusal::Missing),
+            (ROLLBACK_GATE, DoorRefusal::Quarantined),
+        ] {
+            for track in [
+                SearchPlaneTrackKind::Lexical,
+                SearchPlaneTrackKind::Semantic,
+            ] {
+                let (promotion, lexical, semantic) =
+                    promotion_refusing(Some((track, refusal)), ScriptedFinding::Quarantines);
+                let (code, message) = refused_proof(&promotion, gate)?;
+                assert_eq!(code, gate.error_code);
+                assert!(
+                    lexical.asked()?.is_empty() && semantic.asked()?.is_empty(),
+                    "{} over {refusal:?} on {track:?} asked an adapter to record it",
+                    gate.operation
+                );
+                assert!(!message.contains("; quarantined as"), "{message}");
+            }
+        }
+        Ok(())
+    }
+
+    /// The refusal says what the adapter's re-proof did when it recorded
+    /// nothing: the finding did not reproduce, or the re-proof failed. The
+    /// gate is refused the same way either way.
+    #[test]
+    fn a_refusal_says_what_the_re_proof_did() -> TestResult {
+        for (findings, says) in [
+            (
+                ScriptedFinding::DoesNotReproduce,
+                "the re-proof admitted the generation; nothing was quarantined",
+            ),
+            (
+                ScriptedFinding::Fails,
+                "the quarantine was not recorded: not found: scripted: the generation directory is gone",
+            ),
+        ] {
+            let (promotion, lexical, semantic) = promotion_refusing(
+                Some((SearchPlaneTrackKind::Lexical, DoorRefusal::ContentDefect)),
+                findings,
+            );
+            let (code, message) = refused_proof(&promotion, ROLLBACK_GATE)?;
+            assert_eq!(code, ERR_ROLLBACK_TARGET_UNOPENABLE);
+            assert!(
+                message.contains("GENERATION_SIDECAR_CORRUPT") && message.contains(says),
+                "{message}"
+            );
+            assert_eq!(lexical.asked()?.len(), 1);
+            assert!(semantic.asked()?.is_empty());
         }
         Ok(())
     }

@@ -13,6 +13,8 @@ mod auxiliary_authority;
 #[cfg(test)]
 mod content_roots_test_support;
 mod control_dispatcher;
+#[cfg(test)]
+mod door_findings_test_support;
 mod history_text;
 mod ingest_dispatcher;
 mod lowering;

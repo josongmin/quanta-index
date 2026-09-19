@@ -55,6 +55,8 @@ crate quanta_index_core
 │   ├── mod ingest_body: pub
 │   │   └── trait IngestBatchBodyV1: pub
 │   ├── mod integrity: pub
+│   │   ├── enum DoorFindingOutcome: pub
+│   │   ├── trait DoorFindingQuarantinePort: pub
 │   │   ├── struct IntegrityScrubBudgetV1: pub
 │   │   ├── struct IntegrityScrubCandidateV1: pub
 │   │   ├── struct IntegrityScrubCursorV1: pub

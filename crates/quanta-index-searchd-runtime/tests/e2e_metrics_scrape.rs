@@ -348,7 +348,7 @@ fn boot_gauges_match_the_boot_inventory_and_the_writer_envelope_reflects_the_sea
         .ok_or("the harness holds the boot inventory while the driver runs")?
         .clone();
 
-    let expected_boot: [(&str, u64); 12] = [
+    let expected_boot: [(&str, u64); 13] = [
         (
             "boot_lexical_sealed_generations",
             u64::try_from(inventory.lexical.sealed_generations)?,
@@ -368,6 +368,10 @@ fn boot_gauges_match_the_boot_inventory_and_the_writer_envelope_reflects_the_sea
         (
             "boot_active_pairs_validated",
             u64::try_from(inventory.active_pairs_validated)?,
+        ),
+        (
+            "boot_half_sealed_pairs",
+            u64::try_from(inventory.half_sealed_pairs.len())?,
         ),
         (
             "boot_auxiliary_rows_restored",

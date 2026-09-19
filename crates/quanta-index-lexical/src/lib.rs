@@ -107,7 +107,8 @@ use quanta_index_core::domains::generation::{
     SealedGenerationReclaimPort, unique_inode_tree_bytes,
 };
 use quanta_index_core::{
-    CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
+    CoreError, DoorFindingOutcome, DoorFindingQuarantinePort, FileContributorIngestPort,
+    FileOwnershipIngestPort, GENERATION_SIDECAR_CORRUPT_CODE, GenerationIdentityValidatePort,
     IntegrityScrubBudgetV1, IntegrityScrubCandidateV1, IntegrityScrubCursorV1, IntegrityScrubPort,
     IntegrityScrubReportV1, LEXICAL_WRITER_HEAP_BYTES_MIN, LexicalArtifactIdentityV1,
     LexicalCandidateExplanationV1, LexicalExecutionBudgetV1, LexicalIndexBuildPort,
@@ -170,8 +171,8 @@ use crate::regex_match_cache::{RegexMatchCache, RegexMatchCacheKey, RegexMatchCa
 use crate::sealed_generation::{
     DiscardingVisitor, LEXICAL_QUARANTINE_RECEIPT_FILE_NAME, LEXICAL_SCRUB_RECEIPT_FILE_NAME,
     LEXICAL_SEALED_MANIFEST_FILE_NAME, OverlayFamily, SealedGenerationVisitor,
-    last_completed_scrub, persist_overlay, quarantined_by_scrub, remove_overlay, scrub_step,
-    seal_generation, walk_sealed_generation,
+    last_completed_scrub, persist_overlay, quarantine_content_corrupt, quarantined_by_scrub,
+    remove_overlay, scrub_step, seal_generation, walk_sealed_generation,
 };
 use crate::text_authority::{
     AddedTextDoc, ShardBody, ShardedTextAuthority, TEXT_AUTHORITY_DIR_NAME, TextAuthorityManifest,
@@ -192,10 +193,6 @@ use tantivy::{DocAddress, Index, IndexReader, IndexWriter, ReloadPolicy, Term};
 
 const TEXT_DOC_KIND: &str = "text";
 const SYMBOL_DOC_KIND: &str = "symbol";
-/// Typed refusal for a sealed generation whose bytes are not what its
-/// manifest committed to: a file missing, truncated, rewritten, stale, or
-/// present although the seal never listed it.
-const GENERATION_SIDECAR_CORRUPT_CODE: &str = "GENERATION_SIDECAR_CORRUPT";
 /// Typed refusal for anything that would change a sealed generation.
 const GENERATION_IMMUTABLE_CODE: &str = "GENERATION_IMMUTABLE";
 /// Marker inside the name of a durable write's temporary file.
@@ -4565,6 +4562,32 @@ impl IntegrityScrubPort for LexicalAdapter {
         let _lifecycle = self.directory_lifecycle_guard()?;
         let (generation_dir, observed) = self.sealed_generation_dir_for(generation, "scrub")?;
         scrub_step(&generation_dir, &observed, cursor, budget)
+    }
+}
+
+impl DoorFindingQuarantinePort for LexicalAdapter {
+    /// Walk the generation again, as every door does, under the directory
+    /// lifecycle lock; quarantine it only if that walk proves its content
+    /// does not match the seal.
+    fn quarantine_door_finding(
+        &self,
+        generation: &GenerationSnapshot,
+    ) -> Result<DoorFindingOutcome, CoreError> {
+        let _lifecycle = self.directory_lifecycle_guard()?;
+        let (generation_dir, observed) =
+            self.sealed_generation_dir_for(generation, "door-finding quarantine")?;
+        if let Some(quarantined) = quarantined_by_scrub(&generation_dir)? {
+            return Ok(DoorFindingOutcome::Quarantined { quarantined });
+        }
+        match walk_sealed_generation(&generation_dir, &observed, &mut DiscardingVisitor) {
+            Ok(_verified) => Ok(DoorFindingOutcome::NotReproduced),
+            Err(CoreError::Typed { code, message }) if code == GENERATION_SIDECAR_CORRUPT_CODE => {
+                let quarantined =
+                    quarantine_content_corrupt(&generation_dir, format!("a door found {message}"))?;
+                Ok(DoorFindingOutcome::Quarantined { quarantined })
+            }
+            Err(other) => Err(other),
+        }
     }
 }
 

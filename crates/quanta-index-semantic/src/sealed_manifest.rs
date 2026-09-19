@@ -26,8 +26,8 @@
 use std::path::{Path, PathBuf};
 
 use quanta_index_core::{
-    CoreError, SealedArtifactCommitmentV1, TreeScrubVerdictV1, commit_tree_inheriting_v1,
-    scrub_tree_commitment_v1, sha256_of_file, verify_tree_layout_v1,
+    CoreError, GENERATION_SIDECAR_CORRUPT_CODE, SealedArtifactCommitmentV1, TreeScrubVerdictV1,
+    commit_tree_inheriting_v1, scrub_tree_commitment_v1, sha256_of_file, verify_tree_layout_v1,
 };
 
 use crate::layout::{self, BUILD_CONTRACT_FILE_NAME, DATASET_DIR_NAME, MANIFEST_FILE_NAME};
@@ -250,7 +250,7 @@ fn read_sealed_manifest(generation_dir: &Path) -> Result<SemanticSealedManifestV
 
 fn sidecar_corrupt(generation_dir: &Path, detail: &str) -> CoreError {
     CoreError::Typed {
-        code: "GENERATION_SIDECAR_CORRUPT".to_string(),
+        code: GENERATION_SIDECAR_CORRUPT_CODE.to_string(),
         message: format!(
             "semantic: sealed generation {} does not match its manifest: {detail}",
             generation_dir.display()
@@ -388,7 +388,7 @@ pub(crate) fn scrub_sealed_manifest(
     let manifest = read_bound_sealed_manifest(generation_dir, manifest_digest)?;
     match verify_sidecars(generation_dir, &manifest) {
         Ok(()) => {}
-        Err(CoreError::Typed { code, message }) if code == "GENERATION_SIDECAR_CORRUPT" => {
+        Err(CoreError::Typed { code, message }) if code == GENERATION_SIDECAR_CORRUPT_CODE => {
             return Ok(SealedManifestScrubV1 {
                 files_verified: 0,
                 bytes_read: 0,

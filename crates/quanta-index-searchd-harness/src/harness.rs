@@ -43,12 +43,13 @@ use quanta_index_contract::{
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRuntimeMetadataQueryResponse,
-    SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind, SemanticContentRootsV1,
-    SemanticCorpusKindV1, SemanticQueryRequest, SemanticSourceRecordV1,
-    SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourceRoleV1, StructuralCandidate,
-    StructuralCursorV1, StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope,
-    StructuralTreeRecord, SymbolId, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
+    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
+    SearchPlaneTrackKind, SemanticContentRootsV1, SemanticCorpusKindV1, SemanticQueryRequest,
+    SemanticSourceRecordV1, SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourceRoleV1,
+    StructuralCandidate, StructuralCursorV1, StructuralIngestBatch, StructuralQueryRequest,
+    StructuralReplaceScope, StructuralTreeRecord, SymbolId, TextQueryRequest, TextQueryResponse,
+    TextQuerySyntax,
 };
 use quanta_index_core::{
     IngestResourcePolicy, IntegrityScrubPolicyV1, LexicalWriterPolicy, ProcessMemoryProbePort,
@@ -909,6 +910,18 @@ impl E2eRuntime {
     ) -> AnyResult<SearchPlaneControlIpcResponse> {
         self.dispatch_control_response_v1(
             SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(request),
+        )
+    }
+
+    /// Send one rollback CAS as given and return the daemon's answer
+    /// untouched, typed refusals included, for tests that probe the
+    /// rollback gate (QI-BB-026).
+    pub fn rollback_search_corpus_cas_raw(
+        &mut self,
+        request: SearchPlaneRollbackSearchCorpusGenerationCasRequest,
+    ) -> AnyResult<SearchPlaneControlIpcResponse> {
+        self.dispatch_control_response_v1(
+            SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(request),
         )
     }
 

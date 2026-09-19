@@ -16,16 +16,16 @@ use std::time::Duration;
 use anyhow::Result;
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_core::{
-    AuxiliaryAuthorityCatalogPort, FileContributorIngestPort, FileOwnershipIngestPort,
-    GenerationIdentityValidatePort, HistoryTextIndexPort, IdempotencyCatalogPort,
-    IncompleteGenerationDiscardPort, IntegrityScrubPort, LexicalIndexOpenPort, MetricSourcePort,
-    ProcessMemoryProbePort, QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
-    RepoMapQuarantinePort, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
-    ResidentMemoryWriterAdmission, SealedGenerationReclaimPort, SealedGenerationScanPort,
-    SearchCorpusBatchBuildPort, SemanticContentRootsPort, SemanticIndexOpenPort,
-    SemanticScopeStreamBuildPort, TrackDiskUsagePort, UnboundedWriterAdmission,
-    WriterAdmissionPort, WriterIdleSweepPort,
+    AuxiliaryAuthorityCatalogPort, DoorFindingQuarantinePort, FileContributorIngestPort,
+    FileOwnershipIngestPort, GenerationIdentityValidatePort, HistoryTextIndexPort,
+    IdempotencyCatalogPort, IncompleteGenerationDiscardPort, IntegrityScrubPort,
+    LexicalIndexOpenPort, MetricSourcePort, ProcessMemoryProbePort,
+    QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
+    RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapQuarantinePort,
+    RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort, ResidentMemoryWriterAdmission,
+    SealedGenerationReclaimPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
+    SemanticContentRootsPort, SemanticIndexOpenPort, SemanticScopeStreamBuildPort,
+    TrackDiskUsagePort, UnboundedWriterAdmission, WriterAdmissionPort, WriterIdleSweepPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_lexical::history_text_index::HistoryTextIndexAdapter;
@@ -148,6 +148,8 @@ pub fn build_runtime_with_memory_probe(
     let repo_meta_ingest_port: Arc<dyn RepoMetaIngestPort + Send + Sync> = lex_adapter.clone();
     let lexical_quarantine_discard: Arc<dyn QuarantinedGenerationDiscardPort + Send + Sync> =
         lex_adapter.clone();
+    let lexical_door_findings: Arc<dyn DoorFindingQuarantinePort + Send + Sync> =
+        lex_adapter.clone();
     // The lexical adapter keeps the writer envelope and regex cache tallies,
     // the semantic adapter the dense lanes' query and budget-interruption
     // tallies (QI-BB-015); the writer gate keeps its refusals. The
@@ -170,6 +172,8 @@ pub fn build_runtime_with_memory_probe(
     let semantic_sealed_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync> =
         sem_adapter.clone();
     let semantic_quarantine_discard: Arc<dyn QuarantinedGenerationDiscardPort + Send + Sync> =
+        sem_adapter.clone();
+    let semantic_door_findings: Arc<dyn DoorFindingQuarantinePort + Send + Sync> =
         sem_adapter.clone();
     // Both adapters prove their sealed generations' bytes as maintenance
     // (QI-BB-017), through the one scrub port.
@@ -210,6 +214,8 @@ pub fn build_runtime_with_memory_probe(
             repo_map_generation_activate_port,
             lexical_quarantine_discard,
             semantic_quarantine_discard,
+            lexical_door_findings,
+            semantic_door_findings,
             repo_map_quarantine,
             repo_map_open_report,
             search_corpus_lifecycle,

@@ -10,8 +10,9 @@
 //!
 //! Two kinds of entry are listed under each track. The adapter's own —
 //! a directory whose identity is unreadable, names another scope, or
-//! disagrees with its manifest — is discarded by the adapter's quarantine
-//! port. The search plane's — an **orphan**, a sealed directory whose
+//! disagrees with its manifest, or a generation whose content the scrub or
+//! a gate's re-proof found corrupt — is discarded by the adapter's
+//! quarantine port. The search plane's — an **orphan**, a sealed directory whose
 //! exact identity the durable search-corpus authority does not retain
 //! (reaped and left behind by a crash before reclaim, or sealed before its
 //! authority record was written) — is computed here by comparing the

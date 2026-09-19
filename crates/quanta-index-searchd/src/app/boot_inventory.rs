@@ -17,10 +17,12 @@
 //! either track is inventoried: the retained identities are what the
 //! inventory is measured against.
 
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use anyhow::Result;
-use quanta_index_contract::{ManifestGeneration, SearchPlaneTrackKind};
+use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind};
 use quanta_index_core::{
     CoreError, IntegrityScrubPort, MetricPointV1, MetricSourcePort, QuarantinedGenerationV1,
     RepoMapOpenReportV1, SealedGenerationScanPort, count_from_usize,
@@ -55,6 +57,91 @@ pub struct TrackInventoryReportV1 {
     /// The scrub receipts found beside the sealed generations; `None` when
     /// no adapter scrubs this track.
     pub scrub: Option<TrackScrubInventoryV1>,
+    /// Every sealed directory the inventory found, retained or orphaned,
+    /// by the pair generation it belongs to: what the other track's
+    /// inventory is measured against for half-sealed pairs.
+    pub sealed_directories: BTreeMap<SealedGenerationKey, SealedDirectory>,
+}
+
+/// The pair generation a sealed directory belongs to.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct SealedGenerationKey {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+}
+
+/// One sealed directory as the inventory found it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SealedDirectory {
+    pub path: PathBuf,
+    /// Whether the durable search-corpus authority retains it.
+    pub retained: bool,
+}
+
+/// A generation sealed on one track only (QI-BB-029 보완 #4).
+///
+/// A crash between the two tracks' seals, or before the pair's authority
+/// record, leaves one track's generation sealed and the other track with
+/// none. The authority never recorded the pair, so the sealed half is
+/// also an orphan — never served, listed and discardable by the
+/// quarantine surface. The boot report names it as the pair defect it is,
+/// with its repair: a `ReplaceGeneration` seal batch for the same
+/// generation rebuilds the missing half (the ingest route's typed repair),
+/// or `quarantine discard` removes the sealed half.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HalfSealedPair {
+    pub key: SealedGenerationKey,
+    /// The track whose half is sealed.
+    pub sealed_track: SearchPlaneTrackKind,
+    pub path: PathBuf,
+}
+
+impl HalfSealedPair {
+    /// The boot-log line that names the half and both repairs.
+    #[must_use]
+    pub fn boot_notice(&self) -> String {
+        format!(
+            "half-sealed pair: repo={} revision={} generation={} is sealed on the {:?} track only, at {}; publish a ReplaceGeneration seal batch for generation {} to rebuild the missing half, or discard the sealed half through `quarantine discard` (it is listed as an orphan)",
+            self.key.repo_id.as_str(),
+            self.key.revision_id.as_str(),
+            self.key.generation.get(),
+            self.sealed_track,
+            self.path.display(),
+            self.key.generation.get(),
+        )
+    }
+}
+
+/// The half-sealed pairs two track inventories reveal: an orphaned sealed
+/// directory whose generation has no sealed directory on the other track.
+///
+/// Only orphans are half-sealed here. A retained generation was recorded
+/// by the authority only once both halves sealed; if one half has gone
+/// since (discarded as quarantined), the gate that picks the pair refuses
+/// it typed. An orphan whose other half is sealed too is a whole pair the
+/// authority dropped, listed as two orphans.
+#[must_use]
+pub fn half_sealed_pairs(
+    lexical: &TrackInventoryReportV1,
+    semantic: &TrackInventoryReportV1,
+) -> Vec<HalfSealedPair> {
+    let mut pairs = Vec::new();
+    for (track, own, other) in [
+        (SearchPlaneTrackKind::Lexical, lexical, semantic),
+        (SearchPlaneTrackKind::Semantic, semantic, lexical),
+    ] {
+        for (key, directory) in &own.sealed_directories {
+            if !directory.retained && !other.sealed_directories.contains_key(key) {
+                pairs.push(HalfSealedPair {
+                    key: key.clone(),
+                    sealed_track: track,
+                    path: directory.path.clone(),
+                });
+            }
+        }
+    }
+    pairs
 }
 
 /// What the scrub receipts beside one track's sealed generations said at
@@ -130,6 +217,9 @@ pub struct BootInventoryReportV1 {
     /// The effective access policy each socket was bound under
     /// (QI-BB-014): private, or shared with a group and/or listed users.
     pub socket_access: SocketAccessPolicies,
+    /// Generations sealed on one track only (QI-BB-029), each also listed
+    /// as an orphan of its track.
+    pub half_sealed_pairs: Vec<HalfSealedPair>,
     /// Whether the semantic embedder this daemon serves under is a
     /// development/test profile (QI-BB-007).
     ///
@@ -209,12 +299,16 @@ fn socket_access_points(role: SocketRole, policy: &SocketAccessPolicy) -> Vec<Me
 /// `boot_…` (QI-BB-015).
 impl MetricSourcePort for BootInventoryReportV1 {
     fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
-        let mut points = Vec::with_capacity(23);
+        let mut points = Vec::with_capacity(24);
         points.extend(self.lexical.metric_points("lexical"));
         points.extend(self.semantic.metric_points("semantic"));
         points.push(MetricPointV1::gauge_count(
             "boot_active_pairs_validated",
             count_from_usize(self.active_pairs_validated),
+        ));
+        points.push(MetricPointV1::gauge_count(
+            "boot_half_sealed_pairs",
+            count_from_usize(self.half_sealed_pairs.len()),
         ));
         points.push(MetricPointV1::gauge_count(
             "boot_auxiliary_rows_restored",
@@ -288,6 +382,25 @@ pub(super) fn seed_track_readiness(
     })?;
     let (retained, orphaned) = partition_sealed_inventory_v1(&guard, &inventory.sealed);
     let retained: Vec<_> = retained.into_iter().cloned().collect();
+    let key_of = |identity: &quanta_index_contract::GenerationSnapshot| SealedGenerationKey {
+        repo_id: identity.repo_id.clone(),
+        revision_id: identity.revision_id.clone(),
+        generation: identity.manifest_generation,
+    };
+    let sealed_directories: BTreeMap<SealedGenerationKey, SealedDirectory> = retained
+        .iter()
+        .map(|entry| (entry, true))
+        .chain(orphaned.iter().map(|orphan| (&orphan.entry, false)))
+        .map(|(entry, retained)| {
+            (
+                key_of(&entry.identity),
+                SealedDirectory {
+                    path: entry.path.clone(),
+                    retained,
+                },
+            )
+        })
+        .collect();
     let mut highest: Option<(ManifestGeneration, String)> = None;
     for candidate in &retained {
         let identity = &candidate.identity;
@@ -340,6 +453,7 @@ pub(super) fn seed_track_readiness(
             .map(OrphanedSealedGenerationV1::quarantined)
             .collect(),
         scrub: None,
+        sealed_directories,
     })
 }
 
@@ -357,7 +471,7 @@ mod tests {
     };
     use quanta_index_search_plane::Ledger;
 
-    use super::seed_track_readiness;
+    use super::{HalfSealedPair, SealedGenerationKey, half_sealed_pairs, seed_track_readiness};
 
     struct ScriptedInventory(SealedGenerationInventoryV1);
 
@@ -444,6 +558,66 @@ mod tests {
         assert_eq!(sealed_head, Some(ManifestGeneration::new(3)));
         assert_eq!(head_digest.as_deref(), Some("digest-3"));
         assert_eq!(legacy_head, Some(ManifestGeneration::new(3)));
+    }
+
+    fn sealed_on(track: SearchPlaneTrackKind, generation: u64) -> InventoriedSealedGenerationV1 {
+        let mut sealed = snapshot(track, generation);
+        sealed.path = PathBuf::from(format!("/state/{track:?}/g{generation}"));
+        sealed
+    }
+
+    /// A half-sealed pair is an orphan whose generation has no sealed
+    /// directory on the other track (QI-BB-029 보완 #4).
+    ///
+    /// Over one ledger retaining g1 and g2: g1 is whole; g2 is retained
+    /// though its semantic half is gone, which is the gate's to refuse, not
+    /// a half-sealed pair; g3 is sealed on lexical only and g5 on semantic
+    /// only, with no record — the two half-sealed pairs; g4 is sealed on
+    /// both tracks with no record, a whole pair the authority dropped.
+    #[test]
+    fn a_half_sealed_pair_is_an_orphan_without_a_sealed_partner() {
+        let ledger = ledger_retaining(&[1, 2]);
+        let lexical = ScriptedInventory(SealedGenerationInventoryV1 {
+            sealed: [1, 2, 3, 4]
+                .map(|generation| sealed_on(SearchPlaneTrackKind::Lexical, generation))
+                .to_vec(),
+            quarantined: Vec::new(),
+        });
+        let semantic = ScriptedInventory(SealedGenerationInventoryV1 {
+            sealed: [1, 4, 5]
+                .map(|generation| sealed_on(SearchPlaneTrackKind::Semantic, generation))
+                .to_vec(),
+            quarantined: Vec::new(),
+        });
+        let lexical = seed_track_readiness(&ledger, SearchPlaneTrackKind::Lexical, &lexical)
+            .expect("the lexical inventory seeds");
+        let semantic = seed_track_readiness(&ledger, SearchPlaneTrackKind::Semantic, &semantic)
+            .expect("the semantic inventory seeds");
+        let half = |track: SearchPlaneTrackKind, generation: u64| HalfSealedPair {
+            key: SealedGenerationKey {
+                repo_id: RepoId::new("repo"),
+                revision_id: RevisionId::new("rev"),
+                generation: ManifestGeneration::new(generation),
+            },
+            sealed_track: track,
+            path: PathBuf::from(format!("/state/{track:?}/g{generation}")),
+        };
+        assert_eq!(
+            half_sealed_pairs(&lexical, &semantic),
+            vec![
+                half(SearchPlaneTrackKind::Lexical, 3),
+                half(SearchPlaneTrackKind::Semantic, 5),
+            ]
+        );
+        assert_eq!(
+            (lexical.orphaned.len(), semantic.orphaned.len()),
+            (2, 2),
+            "g3 and g4 are lexical orphans, g4 and g5 semantic ones"
+        );
+        assert_eq!(
+            half(SearchPlaneTrackKind::Semantic, 5).boot_notice(),
+            "half-sealed pair: repo=repo revision=rev generation=5 is sealed on the Semantic track only, at /state/Semantic/g5; publish a ReplaceGeneration seal batch for generation 5 to rebuild the missing half, or discard the sealed half through `quarantine discard` (it is listed as an orphan)"
+        );
     }
 
     /// A sealed directory the authority does not retain — by generation, or

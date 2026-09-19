@@ -334,6 +334,7 @@ mod tests {
     };
 
     use crate::content_roots_test_support::{generation_keyed_content_roots, roots_for_generation};
+    use crate::door_findings_test_support::{RecordingDoorFindings, ScriptedFinding};
     use crate::ingest_dispatcher::SearchCorpusAuthorityInspectPort;
     use crate::observability::{BoundedQueryObsStore, ObservabilityScrape, QueryObsSink};
     use crate::quarantine::QuarantineService;
@@ -504,6 +505,12 @@ mod tests {
                     lexical_open: Arc::new(EchoLexicalOpener),
                     semantic_open: Arc::new(EchoSemanticOpener),
                     semantic_content_roots: generation_keyed_content_roots(),
+                    lexical_door_findings: Arc::new(RecordingDoorFindings::new(
+                        ScriptedFinding::Quarantines,
+                    )),
+                    semantic_door_findings: Arc::new(RecordingDoorFindings::new(
+                        ScriptedFinding::Quarantines,
+                    )),
                     snapshots: snapshots.clone(),
                 },
             },

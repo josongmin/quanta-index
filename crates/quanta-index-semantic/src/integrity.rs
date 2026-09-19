@@ -30,7 +30,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use quanta_index_contract::{GenerationSnapshot, SearchPlaneTrackKind};
 use quanta_index_core::{
-    CoreError, GENERATION_QUARANTINED_CODE, GenerationQuarantineReasonV1, IntegrityScrubBudgetV1,
+    CoreError, DoorFindingOutcome, DoorFindingQuarantinePort, GENERATION_QUARANTINED_CODE,
+    GENERATION_SIDECAR_CORRUPT_CODE, GenerationQuarantineReasonV1, IntegrityScrubBudgetV1,
     IntegrityScrubCandidateV1, IntegrityScrubCursorV1, IntegrityScrubOutcomeV1, IntegrityScrubPort,
     IntegrityScrubReportV1, MetricPointV1, QuarantinedGenerationV1,
 };
@@ -42,6 +43,7 @@ use crate::layout;
 use crate::manifest::decode_current_format;
 use crate::sealed_manifest::{
     SealedManifestScrubV1, SealedManifestScrubVerdictV1, scrub_sealed_manifest,
+    verify_sealed_manifest,
 };
 
 const SCRUB_RECEIPT_FORMAT_VERSION: u32 = 1;
@@ -160,6 +162,9 @@ pub(crate) fn refuse_if_quarantined(generation_dir: &Path) -> Result<(), CoreErr
 }
 
 /// Write the quarantine receipt the inventory and every door will read.
+///
+/// The scrub writes it, and so does the re-proof of a door's finding
+/// (QI-BB-017, QI-BB-026).
 fn quarantine(generation_dir: &Path, detail: String) -> Result<QuarantinedGenerationV1, CoreError> {
     let receipt = QuarantineReceiptV1 {
         format_version: QUARANTINE_RECEIPT_FORMAT_VERSION,
@@ -255,44 +260,9 @@ impl IntegrityScrubPort for SemanticAdapter {
         cursor: Option<IntegrityScrubCursorV1>,
         budget: IntegrityScrubBudgetV1,
     ) -> Result<IntegrityScrubReportV1, CoreError> {
-        if generation.track != SearchPlaneTrackKind::Semantic {
-            return Err(CoreError::InvalidContract(format!(
-                "semantic integrity scrub received {:?} track",
-                generation.track
-            )));
-        }
-        let generation_dir = layout::generation_dir(
-            self.state_root(),
-            &generation.repo_id,
-            &generation.revision_id,
-            generation.manifest_generation,
-        );
         let _lifecycle = self.directory_lifecycle_guard()?;
+        let (generation_dir, sealed_digest) = self.sealed_generation_dir(generation, "scrub")?;
         refuse_if_quarantined(&generation_dir)?;
-        let marker_path = layout::sealed_marker_path(&generation_dir);
-        let sealed_digest = std::fs::read_to_string(&marker_path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                CoreError::NotReady(format!(
-                    "semantic: generation {} is not sealed; nothing to scrub",
-                    generation.manifest_generation.get()
-                ))
-            } else {
-                CoreError::Storage(format!(
-                    "semantic: read sealed marker {}: {error}",
-                    marker_path.display()
-                ))
-            }
-        })?;
-        if sealed_digest != generation.manifest_digest {
-            return Err(CoreError::Typed {
-                code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
-                message: format!(
-                    "semantic: sealed marker says {sealed_digest} but the scrub target says {} for generation {}",
-                    generation.manifest_digest,
-                    generation.manifest_generation.get()
-                ),
-            });
-        }
         let start = cursor.map_or(0, |cursor| cursor.next_artifact);
         let SealedManifestScrubV1 {
             files_verified,
@@ -329,5 +299,85 @@ impl IntegrityScrubPort for SemanticAdapter {
             bytes_read,
             outcome,
         })
+    }
+}
+
+impl DoorFindingQuarantinePort for SemanticAdapter {
+    /// Prove the sealed manifest's layout again — the part of every door
+    /// that can find a content defect — under the directory lifecycle lock;
+    /// quarantine the generation only if that proof fails with one.
+    fn quarantine_door_finding(
+        &self,
+        generation: &GenerationSnapshot,
+    ) -> Result<DoorFindingOutcome, CoreError> {
+        let _lifecycle = self.directory_lifecycle_guard()?;
+        let (generation_dir, sealed_digest) =
+            self.sealed_generation_dir(generation, "door-finding quarantine")?;
+        if let Some(receipt) = read_quarantine_receipt(&generation_dir)? {
+            return Ok(DoorFindingOutcome::Quarantined {
+                quarantined: QuarantinedGenerationV1 {
+                    track: SearchPlaneTrackKind::Semantic,
+                    path: generation_dir,
+                    reason: GenerationQuarantineReasonV1::ContentCorrupt,
+                    detail: receipt.detail,
+                },
+            });
+        }
+        match verify_sealed_manifest(&generation_dir, &sealed_digest) {
+            Ok(_manifest) => Ok(DoorFindingOutcome::NotReproduced),
+            Err(CoreError::Typed { code, message }) if code == GENERATION_SIDECAR_CORRUPT_CODE => {
+                let quarantined = quarantine(&generation_dir, format!("a door found {message}"))?;
+                Ok(DoorFindingOutcome::Quarantined { quarantined })
+            }
+            Err(other) => Err(other),
+        }
+    }
+}
+
+impl SemanticAdapter {
+    /// The directory of the sealed generation `generation` names and the
+    /// digest its sealed marker carries, which must be the one named.
+    fn sealed_generation_dir(
+        &self,
+        generation: &GenerationSnapshot,
+        what: &str,
+    ) -> Result<(std::path::PathBuf, String), CoreError> {
+        if generation.track != SearchPlaneTrackKind::Semantic {
+            return Err(CoreError::InvalidContract(format!(
+                "semantic {what} received {:?} track",
+                generation.track
+            )));
+        }
+        let generation_dir = layout::generation_dir(
+            self.state_root(),
+            &generation.repo_id,
+            &generation.revision_id,
+            generation.manifest_generation,
+        );
+        let marker_path = layout::sealed_marker_path(&generation_dir);
+        let sealed_digest = std::fs::read_to_string(&marker_path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                CoreError::NotReady(format!(
+                    "semantic {what}: generation {} is not sealed",
+                    generation.manifest_generation.get()
+                ))
+            } else {
+                CoreError::Storage(format!(
+                    "semantic: read sealed marker {}: {error}",
+                    marker_path.display()
+                ))
+            }
+        })?;
+        if sealed_digest != generation.manifest_digest {
+            return Err(CoreError::Typed {
+                code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
+                message: format!(
+                    "semantic {what}: sealed marker says {sealed_digest} but the target names {} for generation {}",
+                    generation.manifest_digest,
+                    generation.manifest_generation.get()
+                ),
+            });
+        }
+        Ok((generation_dir, sealed_digest))
     }
 }
