@@ -40,7 +40,7 @@ use quanta_index_contract::{
 use quanta_index_ipc::{ClientIoPolicy, encode_request, send_request};
 use quanta_index_searchd_harness as e2e_harness;
 
-use e2e_harness::{E2eRoutePage, E2eRouteWindowProbe, E2eRuntime};
+use e2e_harness::{E2eRoutePage, E2eRouteWindowProbe, E2eRuntime, E2eTextChunkSpec};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -726,6 +726,142 @@ fn fixture_gives_every_route_at_least_one_row() -> TestResult {
         .ok_or("lexical route answered without a wire window")?;
     if !window.has_more() {
         return Err("two-hit fixture at top_k=1 must report has_more".into());
+    }
+    Ok(())
+}
+
+/// Rows holding the needle beyond the public maximum: one more than a page
+/// at `top_k = 10_000` can hold.
+const OVER_MAXIMUM_ROWS: u32 = PUBLIC_TOP_K_MAX + 1;
+
+/// Rows per file of the over-maximum fixture: eleven files hold them all.
+const OVER_MAXIMUM_ROWS_PER_FILE: usize = 910;
+
+/// A generation of [`OVER_MAXIMUM_ROWS`] chunks, each holding the needle
+/// once, in eleven files of one batch.
+///
+/// Every row is a record the lexical and semantic tracks each index, and
+/// the seal trains the dense index over all of them, which in a debug
+/// build outlasts the client's default wait (the harness waits ten
+/// minutes) and the harness's retention byte cap (widened to 256 MiB).
+fn over_maximum_runtime() -> Result<(E2eRuntime, GenerationPin), Box<dyn Error>> {
+    let mut rt = E2eRuntime::boot_with_client_request_timeout(std::time::Duration::from_secs(600))?
+        .with_history_max_bytes(256 * 1024 * 1024);
+    let contents: Vec<String> = (0..OVER_MAXIMUM_ROWS)
+        .map(|index| format!("let row_{index} = {index}; // needle"))
+        .collect();
+    let specs: Vec<Vec<E2eTextChunkSpec<'_>>> = contents
+        .chunks(OVER_MAXIMUM_ROWS_PER_FILE)
+        .map(|file| {
+            (1_u32..)
+                .zip(file)
+                .map(|(line, content)| E2eTextChunkSpec {
+                    content,
+                    start_line: line,
+                    end_line: line,
+                    source_repo_id: None,
+                })
+                .collect()
+        })
+        .collect();
+    let paths: Vec<String> = (0..specs.len())
+        .map(|file| format!("src/needles_{file:02}.rs"))
+        .collect();
+    let files: Vec<(&str, &[E2eTextChunkSpec<'_>])> = paths
+        .iter()
+        .zip(&specs)
+        .map(|(path, chunks)| (path.as_str(), chunks.as_slice()))
+        .collect();
+    let _ids = rt.ingest_text_files_one_batch(&files)?;
+    let generation = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    let pin = GenerationPin::new(rt.repo(), rt.revision(), generation);
+    Ok((rt, pin))
+}
+
+/// At the public maximum over more rows than a page holds, the page says
+/// more exist and the continuation reaches every row (QI-BB-025 완료 기준
+/// #3, the `has_more` branch).
+///
+/// Over 10,001 rows holding the needle, the lexical and semantic routes
+/// at `top_k = 10_000` each return exactly 10,000 rows with a window that
+/// says more exist and agrees with itself. Walking the lexical cursors at
+/// the same `top_k` visits every one of the 10,001 rows exactly once, every
+/// page within `top_k` and consistent with its window, and the last page
+/// says nothing more exists and names no cursor.
+#[test]
+fn the_public_maximum_reports_the_continuation_over_ten_thousand_and_one_rows() -> TestResult {
+    let (mut rt, pin) = over_maximum_runtime()?;
+    let rows = usize::try_from(OVER_MAXIMUM_ROWS)?;
+    let maximum = usize::try_from(PUBLIC_TOP_K_MAX)?;
+    for route in ROUTES
+        .iter()
+        .filter(|route| matches!(route.name, "lexical" | "semantic"))
+    {
+        let observed = probe(&mut rt, route, PUBLIC_TOP_K_MAX)?;
+        if let Some(error) = observed.typed_error {
+            return Err(format!("{} at the maximum did not serve: {error}", route.name).into());
+        }
+        let window = observed
+            .window
+            .ok_or_else(|| format!("{} answered without a window", route.name))?;
+        if observed.returned_rows != maximum || !window.has_more() {
+            return Err(format!(
+                "{} returned {} rows with has_more={} over {rows} matching rows",
+                route.name,
+                observed.returned_rows,
+                window.has_more()
+            )
+            .into());
+        }
+        if let Some(contradiction) =
+            window_contradiction(window, observed.returned_rows, PUBLIC_TOP_K_MAX)
+        {
+            return Err(format!("{}: {contradiction}", route.name).into());
+        }
+    }
+
+    let mut seen = std::collections::BTreeSet::new();
+    let mut cursor = None;
+    let mut pages = 0_u32;
+    loop {
+        let page = rt
+            .query_text_page(
+                TextQuerySyntax::Native,
+                LEXICAL_QUERY,
+                PUBLIC_TOP_K_MAX,
+                Some(pin.clone()),
+                cursor,
+            )?
+            .served("the lexical walk")?;
+        pages = pages.saturating_add(1);
+        if let Some(contradiction) =
+            window_contradiction(page.window, page.results.len(), PUBLIC_TOP_K_MAX)
+        {
+            return Err(format!("page {pages}: {contradiction}").into());
+        }
+        for row in &page.results {
+            if !seen.insert(row.candidate_id.clone()) {
+                return Err(format!("page {pages} repeats {}", row.candidate_id).into());
+            }
+        }
+        match (page.window.has_more(), page.next_cursor) {
+            (true, Some(next)) => cursor = Some(next),
+            (false, None) => break,
+            (has_more, next) => {
+                return Err(format!(
+                    "page {pages}: has_more={has_more} but the cursor is {next:?}"
+                )
+                .into());
+            }
+        }
+    }
+    if seen.len() != rows || pages != 2 {
+        return Err(format!(
+            "the walk visited {} of {rows} rows over {pages} pages",
+            seen.len()
+        )
+        .into());
     }
     Ok(())
 }

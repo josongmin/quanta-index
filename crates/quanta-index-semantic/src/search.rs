@@ -857,6 +857,16 @@ impl LoadedGeneration {
     /// (W5 phase 3): refused before issue, dropped in flight, or stopped
     /// between rows, whichever the budget reaches first — see
     /// [`crate::budget`].
+    /// The top `top_k` rows of the scope `filter` names, nearest first:
+    /// always `min(top_k, rows in scope)` of them.
+    ///
+    /// An approximate pass that returns fewer rows than asked proves
+    /// nothing about the rows it did not return — a graph walk can leave
+    /// rows unreached, however large its effort. The scope's own count
+    /// decides: if it holds more than the pass returned, the exact lane,
+    /// the answer the index approximates, answers the same query
+    /// (QI-BB-025: a page at `top_k = 10_000` over 10,001 rows came back
+    /// 9,695 rows long and was read as the whole scope).
     async fn run_vector_query(
         &self,
         query_vector: &[f32],
@@ -865,18 +875,48 @@ impl LoadedGeneration {
         watch: DenseLaneBudgetV1<'_>,
     ) -> Result<Vec<SemanticSearchHit>, CoreError> {
         let lane = self.vector_index.lane_kind();
-        let query_owned: Vec<f32> = query_vector.to_vec();
-        // The sealed effort is the only effort: an approximate lane probes,
-        // walks and refines exactly as its seal recorded, and an exact lane
-        // bypasses every index (QI-BB-027).
-        let mut vector_query = self.vector_index.apply(
+        let hits = self
+            .run_lane(query_vector, top_k, filter.clone(), watch, lane)
+            .await?;
+        if lane == DenseLaneKindV1::Exact || hits.len() >= top_k {
+            return Ok(hits);
+        }
+        let in_scope = race_with_budget(watch, lane, async {
             self.table
-                .vector_search(query_owned)
-                .map_err(|err| lancedb_err("vector_search build", err))?
-                .distance_type(DistanceType::Cosine)
-                .limit(top_k),
-            top_k,
-        )?;
+                .count_rows(filter.clone())
+                .await
+                .map_err(|err| lancedb_err("count rows in scope", err))
+        })
+        .await?;
+        if hits.len() >= in_scope.min(top_k) {
+            return Ok(hits);
+        }
+        watch.tallies.count_exact_completion();
+        self.run_lane(query_vector, top_k, filter, watch, DenseLaneKindV1::Exact)
+            .await
+    }
+
+    /// One pass through `lane`: the sealed effort pinned for the approximate
+    /// lane — it probes, walks and refines exactly as its seal recorded —
+    /// or every index bypassed for the exact lane (QI-BB-027).
+    async fn run_lane(
+        &self,
+        query_vector: &[f32],
+        top_k: usize,
+        filter: Option<String>,
+        watch: DenseLaneBudgetV1<'_>,
+        lane: DenseLaneKindV1,
+    ) -> Result<Vec<SemanticSearchHit>, CoreError> {
+        let query = self
+            .table
+            .vector_search(query_vector.to_vec())
+            .map_err(|err| lancedb_err("vector_search build", err))?
+            .distance_type(DistanceType::Cosine)
+            .limit(top_k);
+        let mut vector_query = match lane {
+            DenseLaneKindV1::Approximate => self.vector_index.apply(query, top_k)?,
+            DenseLaneKindV1::Exact => query.bypass_vector_index(),
+        };
         if let Some(predicate) = filter {
             vector_query = vector_query.only_if(predicate);
         }

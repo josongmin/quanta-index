@@ -280,7 +280,9 @@ impl TrackDiskUsagePort for SemanticAdapter {
 /// The dense lanes' tallies as scrape points, `semantic_dense_queries_…`
 /// and `semantic_budget_interruptions_…` (QI-BB-015, W5 phase 3): the
 /// queries each lane handed to the library and the request interruptions
-/// it observed inside, across every searcher this adapter opened; and the
+/// it observed inside, across every searcher this adapter opened, and
+/// `semantic_dense_exact_completions_total`, the short approximate passes
+/// the exact lane answered (QI-BB-025); and the
 /// seal tallies, `semantic_seal_…` (QI-BB-006 #4): the bytes every seal
 /// hashed itself against what it inherited from its base.
 impl MetricSourcePort for SemanticAdapter {

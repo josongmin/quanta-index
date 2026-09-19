@@ -11,7 +11,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
@@ -1060,6 +1060,61 @@ fn exact_top_k(rows: &[(String, Vec<f32>)], query: &[f32], k: usize) -> Vec<(Str
     });
     scored.truncate(k);
     scored
+}
+
+/// An approximate page is never short while its scope holds more rows
+/// (QI-BB-025).
+///
+/// Over 600 rows sealed through the index, every `top_k` from one to past
+/// the row count returns exactly `min(top_k, 600)` distinct rows, and a
+/// scoped search over an allowlist of 50 of them returns exactly those 50
+/// however large `top_k` is. The pages past the row count and past the
+/// allowlist come back short of `top_k`, and the scope's own count proves
+/// them complete; a pass the count proves short is answered by the exact
+/// lane, which `e2e_top_k_truth_table` drives over 10,001 rows, where the
+/// graph walk reaches only part of them.
+#[test]
+fn an_approximate_page_is_never_short_while_the_scope_holds_more() -> TestResult {
+    const ROWS: u64 = 600;
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let generation = ManifestGeneration::new(1);
+    seal_rows(&adapter, generation, ROWS)?;
+    let searcher = adapter.open(&repo(), &revision(), generation)?;
+    if searcher.dense_lane() != sealed_ann_lane(trained_at(1, ROWS)) {
+        return Err(format!("600 rows must seal the index: {:?}", searcher.dense_lane()).into());
+    }
+    let query = unit_vector(9_999, DIMENSION);
+    let unbounded = RequestBudgetV1::unbounded();
+    for top_k in [1_u32, 10, 300, 599, 600, 601, 1_000] {
+        let hits = searcher.search(&query, top_k, &unbounded)?;
+        let distinct: BTreeSet<&str> = hits.iter().map(|hit| hit.candidate_id.as_str()).collect();
+        let expected = usize::try_from(u64::from(top_k).min(ROWS))?;
+        if hits.len() != expected || distinct.len() != expected {
+            return Err(format!(
+                "top_k={top_k} returned {} rows ({} distinct), expected {expected}",
+                hits.len(),
+                distinct.len()
+            )
+            .into());
+        }
+    }
+    let allowed: BTreeSet<String> = (0..50_u64)
+        .map(|seed| format!("row-{}", seed * 7))
+        .collect();
+    for top_k in [10_u32, 50, 51, 1_000] {
+        let hits = searcher.search_scoped(&query, &allowed, top_k, &unbounded)?;
+        let returned: BTreeSet<String> = hits.into_iter().map(|hit| hit.candidate_id).collect();
+        let expected = usize::try_from(top_k.min(50))?;
+        if returned.len() != expected || !returned.is_subset(&allowed) {
+            return Err(format!(
+                "a scoped top_k={top_k} returned {} rows, expected {expected} from the allowlist",
+                returned.len()
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 /// The seal-time recall floor: the sealed effort keeps recall@10 at or

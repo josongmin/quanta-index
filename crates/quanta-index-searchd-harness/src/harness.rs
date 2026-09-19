@@ -129,6 +129,7 @@ struct DriverSpec<'a> {
     state_root: &'a Path,
     embedder_profile: &'a SemanticEmbedderProfile,
     history_max_generations: usize,
+    history_max_bytes: u64,
     ingest_resource_policy: IngestResourcePolicy,
     /// The semantic track's stream window (QI-BB-021).
     semantic_stream_window_policy: SemanticStreamWindowPolicy,
@@ -197,6 +198,10 @@ pub struct E2eRuntime {
     /// harness default (8) is wide enough that ordinary tests never reap;
     /// GC tests narrow it through [`Self::boot_with_history_max_generations`].
     history_max_generations: usize,
+    /// Index bytes the retained generations of a pair may hold together:
+    /// [`HARNESS_HISTORY_MAX_BYTES`] unless a fixture larger than it widens
+    /// it through [`Self::with_history_max_bytes`].
+    history_max_bytes: u64,
     /// The resource envelope one search-corpus batch may ask the daemon to
     /// hold (QI-BB-021). The production default is far wider than any
     /// fixture; envelope tests tighten it through
@@ -224,6 +229,10 @@ pub struct E2eRuntime {
     /// The ranked page byte budget the daemon boots with: a frame's worth
     /// unless set through [`Self::boot_with_query_response_budget`].
     query_response_budget: ResponsePayloadBudgetV1,
+    /// How long the harness waits for each answer: the client default
+    /// unless set through [`Self::boot_with_client_request_timeout`], for a
+    /// fixture whose seal outlasts it in a debug build.
+    client_io: ClientIoPolicy,
     /// The query socket's admission limits (QI-BB-002). The production
     /// default's twenty-second dispatch budget never expires on a fixture;
     /// budget tests shorten it through
@@ -431,6 +440,16 @@ impl E2eRuntime {
         self
     }
 
+    /// Change the index bytes the retained generations of a pair may hold
+    /// together, for the next daemon start: a fixture whose one generation
+    /// is larger than the harness default (16 MiB) would otherwise have its
+    /// seal refused by retention.
+    #[must_use]
+    pub const fn with_history_max_bytes(mut self, max_bytes: u64) -> Self {
+        self.history_max_bytes = max_bytes;
+        self
+    }
+
     /// Like [`Self::boot`] but runs the daemon under `policy` as its ingest
     /// resource envelope, so an envelope refusal can be provoked with a
     /// small batch instead of a hundred-thousand-record one.
@@ -504,6 +523,16 @@ impl E2eRuntime {
         Ok(runtime)
     }
 
+    /// Like [`Self::boot`] but waits up to `timeout` for every answer: for a
+    /// fixture large enough that its seal outlasts the client default in a
+    /// debug build.
+    pub fn boot_with_client_request_timeout(timeout: Duration) -> AnyResult<Self> {
+        let mut runtime = Self::boot()?;
+        runtime.client_io = ClientIoPolicy::try_new(timeout)
+            .map_err(|error| anyhow::anyhow!("e2e-harness: client timeout: {error}"))?;
+        Ok(runtime)
+    }
+
     /// Like [`Self::boot`] but paces the integrity scrub under `policy`, so
     /// a scrub can complete inside a test without touching process-global
     /// env (QI-BB-017).
@@ -559,6 +588,7 @@ impl E2eRuntime {
             state_root,
             embedder_profile: profile,
             history_max_generations,
+            history_max_bytes: HARNESS_HISTORY_MAX_BYTES,
             ingest_resource_policy: IngestResourcePolicy::DEFAULT,
             socket_access: SocketAccessPolicies::PRIVATE,
             socket_directory: None,
@@ -568,6 +598,7 @@ impl E2eRuntime {
                 IntegrityScrubPolicyV1::DEFAULT.max_bytes_per_step,
             )?,
             query_response_budget: ResponsePayloadBudgetV1::DEFAULT,
+            client_io: ClientIoPolicy::default(),
             query_admission_policy: ServerAdmissionPolicy::DEFAULT,
             lexical_writer_policy: LexicalWriterPolicy::DEFAULT,
             process_memory_ceilings: ProcessMemoryCeilings::DEFAULT,
@@ -686,6 +717,7 @@ impl E2eRuntime {
                 state_root: &self.state_root,
                 embedder_profile: &self.embedder_profile,
                 history_max_generations: self.history_max_generations,
+                history_max_bytes: self.history_max_bytes,
                 ingest_resource_policy: self.ingest_resource_policy,
                 semantic_stream_window_policy: self.semantic_stream_window_policy,
                 query_admission_policy: self.query_admission_policy,
@@ -2050,7 +2082,7 @@ impl E2eRuntime {
             }
         };
         let (readiness_reached, response) =
-            wait_for_query_response(&socket, &envelope, query_response_ready);
+            wait_for_query_response(&socket, &envelope, self.client_io, query_response_ready);
         let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
             Err(err) => {
@@ -2300,7 +2332,8 @@ impl E2eRuntime {
             payload,
         };
         let socket = self.ensure_driver()?;
-        let (readiness_reached, response) = wait_for_query_response(&socket, &envelope, ready);
+        let (readiness_reached, response) =
+            wait_for_query_response(&socket, &envelope, self.client_io, ready);
         let response = match response {
             Ok(response) => response,
             Err(err) => {
@@ -2384,6 +2417,7 @@ impl E2eRuntime {
         let (readiness_reached, response) = wait_for_query_response(
             &socket,
             &envelope,
+            self.client_io,
             query_response_ready_allow_structural_not_ready,
         );
         let response: SearchPlaneQueryIpcResponseEnvelope = match response {
@@ -2536,7 +2570,7 @@ impl E2eRuntime {
             }
         };
         let (readiness_reached, response) =
-            wait_for_query_response(&socket, &envelope, query_response_ready);
+            wait_for_query_response(&socket, &envelope, self.client_io, query_response_ready);
         let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
             Err(err) => return self.semantic_transport_error(readiness_reached, err),
@@ -2632,7 +2666,7 @@ impl E2eRuntime {
             }
         };
         let (readiness_reached, response) =
-            wait_for_query_response(&socket, &envelope, query_response_ready);
+            wait_for_query_response(&socket, &envelope, self.client_io, query_response_ready);
         let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
             Err(err) => return self.semantic_transport_error(readiness_reached, err),
@@ -2706,7 +2740,7 @@ impl E2eRuntime {
         };
         let socket = self.ensure_driver()?;
         let (readiness_reached, response) =
-            wait_for_query_response(&socket, &envelope, query_response_ready);
+            wait_for_query_response(&socket, &envelope, self.client_io, query_response_ready);
         let response = match response {
             Ok(response) => response,
             Err(err) => {
@@ -2740,7 +2774,7 @@ impl E2eRuntime {
         let response = send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(
             &socket,
             &envelope,
-            ClientIoPolicy::default(),
+            self.client_io,
         )?;
         Ok(response.payload)
     }
@@ -2887,7 +2921,7 @@ impl E2eRuntime {
             }
         };
         let (readiness_reached, response) =
-            wait_for_query_response(&socket, &envelope, query_response_ready);
+            wait_for_query_response(&socket, &envelope, self.client_io, query_response_ready);
         let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
             Err(err) => return explain_transport_error(readiness_reached, err),
@@ -3001,7 +3035,7 @@ impl E2eRuntime {
             payload,
         };
         let response: SearchPlaneIngestIpcResponseEnvelope =
-            send_request(&socket, &envelope, ClientIoPolicy::default())?;
+            send_request(&socket, &envelope, self.client_io)?;
         Ok(response.payload)
     }
 
@@ -3076,7 +3110,7 @@ impl E2eRuntime {
             payload,
         };
         let response: SearchPlaneIngestIpcResponseEnvelope =
-            send_request(&socket, &envelope, ClientIoPolicy::default())?;
+            send_request(&socket, &envelope, self.client_io)?;
         if response.request_id != request_id {
             return Err(anyhow::anyhow!(
                 "e2e-harness ingest response request_id {} differs from request {request_id}",
@@ -3119,7 +3153,7 @@ impl E2eRuntime {
             payload,
         };
         let response: SearchPlaneControlIpcResponseEnvelope =
-            send_request(&socket, &envelope, ClientIoPolicy::default())?;
+            send_request(&socket, &envelope, self.client_io)?;
         if response.request_id != request_id {
             return Err(anyhow::anyhow!(
                 "e2e-harness control response request_id {} differs from request {request_id}",
@@ -3219,6 +3253,7 @@ fn query_response_ready_allow_structural_not_ready(
 fn wait_for_query_response(
     socket: &Path,
     envelope: &SearchPlaneQueryIpcRequestEnvelope,
+    client_io: ClientIoPolicy,
     ready: impl Fn(&SearchPlaneQueryIpcResponseEnvelope) -> bool,
 ) -> (bool, Result<SearchPlaneQueryIpcResponseEnvelope, IpcError>) {
     let mut cached_response: Option<SearchPlaneQueryIpcResponseEnvelope> = None;
@@ -3227,9 +3262,7 @@ fn wait_for_query_response(
             READINESS_TIMEOUT,
             READINESS_POLL_INTERVAL,
             || match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(
-                socket,
-                envelope,
-                ClientIoPolicy::default(),
+                socket, envelope, client_io,
             ) {
                 Ok(response) => {
                     if ready(&response) {
@@ -3244,10 +3277,7 @@ fn wait_for_query_response(
     if let Some(response) = cached_response {
         return (readiness_reached, Ok(response));
     }
-    (
-        readiness_reached,
-        send_request(socket, envelope, ClientIoPolicy::default()),
-    )
+    (readiness_reached, send_request(socket, envelope, client_io))
 }
 
 fn explain_transport_error(
@@ -3314,6 +3344,9 @@ fn start_driver(spec: &DriverSpec<'_>) -> AnyResult<DriverHandles> {
 }
 
 const DEFAULT_HISTORY_MAX_GENERATIONS: usize = 8;
+/// Index bytes the retained generations of a pair may hold together in a
+/// harness daemon unless a test widens it.
+const HARNESS_HISTORY_MAX_BYTES: u64 = 16 * 1024 * 1024;
 /// The maintenance tick every harness daemon runs on: short enough that
 /// an idle sweep or disk refresh lands within a test's bounded wait.
 const HARNESS_MAINTENANCE_TICK: Duration = Duration::from_millis(50);
@@ -3325,7 +3358,7 @@ fn build_config(spec: &DriverSpec<'_>) -> AnyResult<SearchdConfig> {
     let mut cfg = SearchdConfig::from_state_root(spec.state_root.to_path_buf())
         .try_with_search_corpus_history_retention_limits(
             spec.history_max_generations,
-            16 * 1024 * 1024,
+            spec.history_max_bytes,
             128,
             256 * 1024 * 1024,
         )?;

@@ -34,7 +34,11 @@
 //!
 //! There is no refill or rerank stage in this adapter: a filtered query is
 //! prefiltered inside one plan, and an approximate lane's refinement is
-//! part of that plan, so the only Rust-side loop is the row read-back.
+//! part of that plan, so the only Rust-side loop is the row read-back. The
+//! one second pass is completion: an approximate pass that returns fewer
+//! rows than asked while its scope holds more is answered again by the
+//! exact lane, and that count and that pass observe the budget like the
+//! first.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -104,8 +108,11 @@ impl LaneTallyV1 {
     }
 }
 
-/// What the dense lanes did since process start, per lane: queries issued
-/// to the library and budget interruptions observed inside the lane.
+/// What the dense lanes did since process start.
+///
+/// Per lane, the queries issued to the library and the budget
+/// interruptions observed inside it; and how many short approximate passes
+/// the exact lane completed.
 ///
 /// One instance per adapter, shared by every searcher it opens; the
 /// adapter reports it to the metrics scrape (QI-BB-015).
@@ -113,6 +120,9 @@ impl LaneTallyV1 {
 pub(crate) struct DenseLaneTalliesV1 {
     approximate: LaneTallyV1,
     exact: LaneTallyV1,
+    /// Approximate passes that returned fewer rows than asked while the
+    /// scope held more, and were answered by the exact lane instead.
+    exact_completions: AtomicU64,
 }
 
 impl Default for DenseLaneTalliesV1 {
@@ -130,6 +140,7 @@ impl DenseLaneTalliesV1 {
         Self {
             approximate: LaneTallyV1::new(),
             exact: LaneTallyV1::new(),
+            exact_completions: AtomicU64::new(0),
         }
     }
 
@@ -138,6 +149,11 @@ impl DenseLaneTalliesV1 {
             DenseLaneKindV1::Approximate => &self.approximate,
             DenseLaneKindV1::Exact => &self.exact,
         }
+    }
+
+    /// One short approximate pass was answered by the exact lane.
+    pub(crate) fn count_exact_completion(&self) {
+        let _prior = self.exact_completions.fetch_add(1, Ordering::Relaxed);
     }
 
     /// One vector query was handed to the library.
@@ -165,13 +181,19 @@ impl DenseLaneTalliesV1 {
 
     /// The tallies as scrape points: `semantic_dense_queries_<lane>_total`
     /// and `semantic_budget_interruptions_<lane>_total`, one pair per
-    /// lane, the lane in the name as the repo's route counters carry theirs.
+    /// lane, the lane in the name as the repo's route counters carry theirs,
+    /// and `semantic_dense_exact_completions_total`.
     pub(crate) fn scrape(&self) -> Vec<MetricPointV1> {
         let mut points = Vec::with_capacity(
             DenseLaneKindV1::ALL
                 .len()
-                .saturating_mul(Self::POINTS_PER_LANE),
+                .saturating_mul(Self::POINTS_PER_LANE)
+                .saturating_add(1),
         );
+        points.push(MetricPointV1::counter(
+            "semantic_dense_exact_completions_total",
+            self.exact_completions.load(Ordering::Relaxed),
+        ));
         for lane in DenseLaneKindV1::ALL {
             points.push(MetricPointV1::counter(
                 format!("semantic_dense_queries_{}_total", lane.metric_infix()),
@@ -530,6 +552,7 @@ mod tests {
         tallies.count_query(DenseLaneKindV1::Approximate);
         tallies.count_query(DenseLaneKindV1::Exact);
         tallies.count_interruption(DenseLaneKindV1::Exact);
+        tallies.count_exact_completion();
         let points: Vec<(String, MetricValueV1)> = tallies
             .scrape()
             .into_iter()
@@ -538,6 +561,10 @@ mod tests {
         assert_eq!(
             points,
             vec![
+                (
+                    "semantic_dense_exact_completions_total".to_string(),
+                    MetricValueV1::Counter(1)
+                ),
                 (
                     "semantic_dense_queries_ann_total".to_string(),
                     MetricValueV1::Counter(2)
