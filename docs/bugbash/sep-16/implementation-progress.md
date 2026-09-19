@@ -2557,6 +2557,46 @@ reclaim → typed 거부, 디렉터리 재생성·quarantine·후보 없음), `t
 **검증(coordinator, main 951f97f 위 rebase, 순차)**: fmt, check, 정책 lint 8종 + bench gate + CI pytest, workspace clippy keep-going 0, cargo-modules + public-api 일치,
 `just rust-doc`, unit 11 crate **1,448/0**, searchd-runtime e2e **전체 285/0**(수정 후 `e2e_integrity_scrub` 4회·`e2e_snapshot_registry` 3회 반복 green).
 
+## 3.54 QI-BB-024 — regex·phrase·raw-string·gate 제한은 text-authority doc id bitmap 하나로, cache는 그 bitmap을 공유한다 (wave B1, cbfae39)
+
+§4 감사가 지적한 것: §3.17 이후에도 broad regex는 query마다 match 전체를 `BTreeSet<String>`(candidate id 문자열)으로 만들고, 제한은
+match마다 `TermQuery` 하나를 `BooleanQuery`에 넣었다 — cache는 bounded여도 per-query RSS·allocation은 match 수에 비례해 unbounded,
+보완 #2(compact doc-id bitmap) 미구현.
+
+**티켓 완료 기준 대조(코드 기준)**
+
+| 티켓 bullet | 판정 | 근거 |
+| --- | --- | --- |
+| 보완 #1 byte-weighted LRU + process-global budget | **MET** | LRU를 `VecDeque` 선형 touch → stamp `BTreeMap`(O(log n))로; entry bytes = bitmap container(용량 기준, sparse는 2배로 높게 셈) + key 문자열×2 + overhead, insert 때 고정해 evict가 정확히 반환. process envelope 성분은 §3.51(`regex_match_cache_bytes`) |
+| 보완 #2 candidate string 대신 generation-local compact doc id bitmap을 `Arc`로 | **MET** | match set = `Arc<RoaringBitmap>`(text-authority doc id, 32-bit); regex·raw string·phrase·`file.has.owner`·`file.has.contributor`·scoped content 제한이 전부 `AuthorityDocSetQuery` 하나 — segment마다 set 크기 대 segment 크기로 posting lookup(작은 set) 또는 doc-id fast column lazy scan(큰 set) 선택, member당 할당 0, constant score. per-member `TermQuery` 경로는 외부에서 온 bounded id 목록(dense admission)에만 남음 |
+| 보완 #3 최대 cached match count 초과 broad regex는 cache 안 함 + reason metric | 기존(§3.17) + scrape(§3.51) | |
+| 보완 #4 hit/miss/entry bytes/match cardinality/clone bytes 관찰 | **MET** | 기존 scrape에 `lexical_regex_match_sets_built_total`·`_members_built_total`(match cardinality)·`_bytes_built_total` 추가(cache 여부 무관, miss가 만든 set). hit은 `Arc` 공유라 clone bytes는 구조적으로 0 — 별도 metric 대신 `Arc::ptr_eq` test. e2e가 scrape delta를 정확값으로 대조 |
+| 완료 기준 #1 1M doc match × 128 regex 반복 시 cache가 선언 byte cap 이하 | **MET(cache 수준)**, RSS 실측 **미실행** | 1M-member bitmap 128개 × 2 round, cap 4 MiB: 매 insert 후 resident ≤ cap, resident == Σ(잔류 entry의 산정 bytes), `members_built == sets_built × 1M`. 산정 bytes ≥ bitmap 자신의 serialized size(독립 하한 oracle) |
+| 완료 기준 #2 hit이 match set deep clone 안 함 | **MET** | `Arc::ptr_eq`(unit) + e2e repeat가 `sets_built`/`bytes_built` 불변·resident 불변 |
+| 완료 기준 #3 eviction·generation GC가 in-flight query를 깨지 않음 | **MET** | cache unit: 보유한 set이 evict·invalidate 뒤에도 그대로; adapter 통합: searcher 보유 → set evict → generation reclaim(디렉터리 삭제 + cache invalidate) → 같은 searcher의 같은 regex가 동일 답 |
+
+**형식**: text 문서의 `text_authority_doc_id`가 이제 indexed + fast column → lexical sealed manifest **format 5**(4 이하는 typed
+`GENERATION_MANIFEST_FORMAT_UNSUPPORTED`, rebuild가 migration). 더해 모든 문(`open_sealed_index`)이 committed schema ≠ 이 build의
+schema면 typed 거부 — 형식 번호와 독립된 직접 증명. wire inventory 두 row 갱신.
+
+**점수 의미 변화(의도)**: 제한 leaf는 이제 boost(기본 1.0) 상수 점수 — tantivy의 match-only query(regex/range/exists)와 같은 규약.
+이전 점수는 unique candidate term의 BM25(= corpus 크기에 따라 변하는 상수)였다. 제한만 있는 query·AND 조합의 순위는 불변, OR 조합에서
+제한 leaf의 가중치는 corpus 크기와 무관해짐.
+
+**Hexagonal lint 결함 수정(같은 wave, af34423)**: `lint-hexagonal-boundaries.py`가 `{version, path}` 의존성을 경로 basename을 `_`로 바꾼
+이름(`quanta_index_core`)으로 기록해 `quanta-index-` 접두 검사에 한 번도 걸리지 않았다 — 내부 의존성 allowlist가 **전혀 강제되지 않았음**(A6
+보고가 지적). 이제 Cargo가 부르는 이름(표 key 또는 `package`)으로 기록. 실제로 강제하자 11개 간선이 드러났고 각각 코드로 판정해 전부
+설계상 정당(contract→contract-base 재수출, lq-regex→lq-trigram resolver, lq-structural→lq-regex, search-plane→ipc는 codec(CBOR payload·batch
+digest)만, search-plane→lq-obs, 조립 루트 searchd→embed·lq-structural, searchctl→sdk)으로 근거와 함께 등재. `[dev-dependencies]`는 분리해
+test-support crate(harness·corpus-smoke·sdk)만 추가 허용. pytest: 합성 manifest의 이름 도출(key·`package`)·section 분리, 미등재 production
+간선 검출과 test-support dev 간선 허용 — 둘 다 수정 전 코드로는 실패.
+
+**검증(coordinator, main f029a55 위, 순차)**: fmt, check, 정책 lint 8종 + bench gate + CI pytest, workspace clippy keep-going 0(첫 gate에서
+7건 → 수정), cargo-modules + public-api 일치, `just rust-doc`, unit 11 crate **1,459/0**, searchd-runtime e2e **전체 286/0**. 새 test:
+lexical unit(두 walk 대 저장 필드 oracle·query 경유 live member·seek/explain·walk 선택·필드 거부, cache 산정 하한·LRU·1M-member×128 cap·보유
+set 생존·문 schema 검사), 통합 3(독립 regex 엔진 oracle, eviction+reclaim 중 보유 searcher, build 통계), golden(형식 4/5 양 문 거부),
+e2e scrape delta 1.
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -2592,7 +2632,7 @@ reclaim → typed 거부, 디렉터리 재생성·quarantine·후보 없음), `t
 | QI-BB-021 | P2 | §3.18/§3.41/§3.51 | gaps → **envelope 선언 MET(A7)**, RSS 실측 **BLOCKED(host)** | stream window가 process envelope의 한 성분(§3.51) | — |
 | QI-BB-022 | P2 | §3.24/§3.36/§3.52 | gaps(**WRONG**) → **MET(A8)** 단 보완 #1/#4(저장된 provenance ID·retention) **미구현(설계 선택)** | hybrid explain이 route 자신의 filter plan·dense admission·RRF로 index 대비 재도출·대조, 합성 규칙 문서화, dense presence exact(§3.52) | — |
 | QI-BB-023 | P2 | §3.20/§3.37/§3.42/§3.47 | gaps → **predicate 동일·score 결정성 MET(A6)** | ~~두 order가 filter를 다른 의미로~~ → 한 predicate(e2e 8 query × 2 order 동일); ~~score가 ingest 이력 의존~~ → publish compaction으로 live-row 통계(bit-identical test). 남은 것: author/committer 색인(보완 #1, §3.42(b) 결정), latency/RSS budget(host) | — |
-| QI-BB-024 | P2 | §3.17 | gaps | broad regex의 per-query `BTreeSet<String>` + match당 TermQuery(RSS unbounded); bitmap 없음 | wave B |
+| QI-BB-024 | P2 | §3.17/§3.54 | gaps → **MET(B1)** 단 1M doc RSS 실측 **BLOCKED(host)** | match set = text-authority doc id roaring bitmap(`Arc` 공유), 모든 파생 제한(regex·phrase·raw·owner·contributor·content scope)이 bitmap query 하나(lookup/scan 선택, member당 할당 0), byte-weighted O(log n) LRU, build 통계 scrape, 1M×128 cap·보유 set 생존 test(§3.54) | — |
 | QI-BB-025 | P1 | §3.5/§3.30/§3.39/§3.52 | gaps → **한 코드 MET(A8+coordinator)** | SDK·encoder·dispatcher가 같은 validator, raw bytes도 같은 코드의 typed 응답(모든 route e2e), 최대값에서 window 무모순 e2e(§3.52). 남은 것: `has_more=true` 분기(10,001+ row fixture) e2e | — |
 | QI-BB-026 | P1 | §3.13/§3.31/§3.53 | gaps | scrub이 찾은 content 손상은 durable quarantine receipt·list·모든 문 거부로 rollback에서 제외(§3.53). 남은 것: 문(gate)이 찾은 비활성 손상의 quarantine 기록, semantic active 손상 boot e2e, HalfSealedPair boot 보고(QI-BB-029) | wave B |
 | QI-BB-027 | P2 | §3.23/§3.35/§3.53 | gaps(**WRONG**) → **legacy·segment 정직성 MET(A4)** | ~~legacy ≤v8 silent exact fallback~~ → 형식 하나, 나머지 typed 거부·`FORMAT_UNSUPPORTED` 격리; append segment 실제 build 파라미터 기록·거짓 주장 거부(§3.53). 남은 것: recall@k·p95/p99·build time·index bytes의 HEAD artifact(완료 기준 #3) | wave B |
