@@ -2597,6 +2597,44 @@ lexical unit(두 walk 대 저장 필드 oracle·query 경유 live member·seek/e
 set 생존·문 schema 검사), 통합 3(독립 regex 엔진 oracle, eviction+reclaim 중 보유 searcher, build 통계), golden(형식 4/5 양 문 거부),
 e2e scrape delta 1.
 
+## 3.55 QI-BB-005 — ranked page는 하나의 전체 순서로 잘리고 cursor로 이어지며, projection은 문서가 아니라 group을 모으고, page는 응답 byte 예산에 맞춰 잘린다 (wave B2, 370b06f)
+
+§4 감사가 지적한 것: projection은 budget까지 **전체 match를 문서로 materialize**(stored doc fetch + snippet 생성)한 뒤 collapse; text/symbol/semantic
+cursor 없음; `RESULT_TOO_LARGE`는 계산을 다 끝낸 뒤 encode 단계에서만 거부; perf 미측정. 더해 이번에 확인한 결함: page 경계의 score 동점을
+`TopDocs`가 **index 순서**로 골랐다(§3.8 한계로 문서화돼 있던 것) — cursor 연속이라면 동점 행을 건너뛰거나 반복한다.
+
+**티켓 완료 기준 대조(코드 기준)**
+
+| 티켓 bullet | 판정 | 근거 |
+| --- | --- | --- |
+| 보완 #1 examined/rows/response bytes/wall time policy | 기존(§3.8) + **response bytes MET** | `ResponsePayloadBudgetV1`(frame − 4 KiB envelope reserve, env `QUANTA_INDEX_QUERY_RESPONSE_MAX_BYTES`, 0·frame 초과 거부, config fence 등록). wall time은 request budget(§3.29/§3.51) |
+| 보완 #2 `count:all`을 row 반환과 분리 | 기존(§3.8) + **`count:N`도 분리** | 이제 `count:N`은 counted page: ranked collector가 정확한 순서로 자르고 같은 pass에서 cursor 뒤 행을 센다 — whole-set 수집·budget 거부 없음(test가 budget보다 큰 match 집합에서 serve를 고정) |
+| 보완 #3 projection을 streaming/grouped top-k collector로 | **MET** | `GroupedPageCollector`: segment-local ordinal로 group별 대표만 유지(메모리 = group 수), group·대표 문자열은 group당 한 번; stored doc은 반환 행만 fetch. mirror collapse 3개(`collapse_{path,file,repo}_projection`)·whole-set `collect_bounded` 삭제. `select:file.owners`도 이제 path group(이전엔 page 위에서만 collapse) |
+| 보완 #4 full result surface에 pagination/cursor | **MET(text·symbol)**, semantic **해당 없음(설계)** | `LexicalCursorV1`(generation + row key) → `TextQueryRequest.cursor`/`SymbolQueryRequest.cursor`, 응답 `next_cursor`. 순서 = score desc, path, start, end, id(`LexicalRowOrderKeyV1`, fast column만으로 판정). 다른 generation cursor는 dispatcher·engine 둘 다 `QUERY_CURSOR_GENERATION_MISMATCH`; page가 없는 route(semantic scope·hybrid·explain·structural/runtime text leaf)의 cursor는 lowering 한 곳에서 `QUERY_CURSOR_UNSUPPORTED`(무시 안 함). semantic은 ANN top-k라 search-after가 정의되지 않음 — page를 잇는 대신 top_k로 한정되고 byte 초과는 transport의 typed 거부 |
+| 보완 #5 frame 초과를 dispatch 중 예측, typed `RESULT_TOO_LARGE` | **MET(text·symbol)** | dispatcher가 응답 직전 encode 크기를 할당 없이 측정(`cbor_payload_len`), 넘으면 맞는 마지막 행에서 자르고 `has_more` + 그 행의 cursor(연속이 명시적), 첫 행만으로 넘으면 encode 전에 `RESULT_TOO_LARGE`. 잘린 page는 다시 측정해 예산 이하를 증명 |
+| 완료 기준 #1 1M doc에서 top_k=10·projection·count:all의 RSS/wall time | **BLOCKED(host)** | 메모리 bound는 구조로(page = k+1 heap, projection = group 수, count = 계수) |
+| 완료 기준 #2 cap/pagination으로 잘리면 exact/continuation 의미를 응답에 명시 | **MET** | window(`has_more`, Exact/AtLeast) + `next_cursor`; decoder가 순서 위반·cursor 없는 연속·마지막 page의 cursor·마지막 행이 아닌 cursor·다른 generation cursor·owner 행 불일치를 거부 |
+
+**구현 요점**: order column(candidate_id, path, start/end line)이 fast column → lexical sealed manifest **format 6**(5 이하 typed 거부).
+`RankedPageCollector`는 cursor 뒤 첫 `limit`행을 정확한 순서로(경계 동점을 key로), page 경계 score보다 낮은 행은 문자열 없이 거부,
+unboosted면 block-WAND pruning(threshold = 경계 score의 한 ulp 아래라 동점도 도착). stored doc과 order column이 다르면 Storage 오류.
+examined budget보다 넓은 page는 조용히 짧아지지 않고 거부. symbol 요청 serde는 text 요청 wire shape로 위임(mirror serde 삭제).
+SDK `after(cursor)`, searchctl `lexical`/`symbol --cursor-json`(복사된 parser 2개를 keyset parser 하나로), harness `query_text_page`·
+`boot_with_query_response_budget`.
+
+**검증(coordinator, main 8182e7e 위, 순차)**: fmt, check, 정책 lint 8종 + bench gate + CI pytest 217/217, workspace clippy keep-going 0(앞선 gate들에서
+B2 고유 7건 — `map_or_else` 3, wildcard 2, doc 문단 1, `single_match_else` 1 → 수정), cargo-modules + public-api 일치(갱신 baseline 포함), `just rust-doc`,
+unit 11 crate **1,474/0**, searchd-runtime e2e **전체 289/0**(1 ignored), `just rust-fuzz-smoke` 4 target 각 61초 완주 crash 0(decoder 변경). 새 test:
+lexical `ranked_pages`(역순 경로로 쓴 동점 corpus에서 모든 page 크기가 전체 순위의 prefix, cursor walk 재현, count page, boost 순서, projection
+page·total, 다른 generation cursor), contract `lexical_cursor_contract`(건너뛰기·반복이 될 모든 page를 decoder가 거부), search-plane `lexical_pages` 5
+(byte cut이 예산 이하이고 walk가 모든 행을 한 번, 첫 행 초과 typed, page 없는 route의 cursor 거부), e2e `e2e_ranked_pages`(동점 행 walk, 1200 byte
+예산 walk, 다른 generation cursor), `execution_budget`(`count:N`이 match 집합보다 작은 budget에서 serve).
+
+**착지**: main working tree에 다른 세션의 미커밋 변경 8 file(publish receipt의 semantic scope 수)이 있었고 그중 4 file(sdk `lexical.rs`·`tests.rs`,
+search-plane `lib.rs`, contract public-api baseline)이 B2와 겹침. 각 file을 base(8182e7e)/B2/working tree로 3-way dry-run해 충돌 0을 확인한 뒤,
+겹치는 4 file만 tag stash → ff-merge → SHA로 apply → 결과가 dry-run merge와 byte 동일·conflict marker 0 확인 → stash drop. 그 세션의 변경은
+그대로 working tree에 남아 있다(커밋하지 않음).
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -2613,7 +2651,7 @@ e2e scrape delta 1.
 | QI-BB-002 | P1 | §3.12/§3.29/§3.43/§3.49/§3.51 | gaps → **MET(A7, A2)** | deadline/cancel metric 분리, repo별 cap, embed HTTP budget, `await_flight` budget(A2), pipelined hang-up 감지, slowloris 3-way test(§3.51) | — |
 | QI-BB-003 | P1 | §3.9/§3.49 | not closed → **MET(A2)** 단 crash-point matrix·durable GC-intent·pair retirement **BLOCKED** | reap된 pin `UNKNOWN_GENERATION`, GC receipt scrape, retention = 디스크 index byte(inode), orphan list/discard(§3.49) | — |
 | QI-BB-004 | P1 | §3.6 | closed | contradiction code가 generic `ERR_INVALID`; chunked join 미구현(≤10k라 실효 낮음) | — |
-| QI-BB-005 | P1 | §3.8 | gaps | projection은 budget까지 full collect(streaming 없음); text/symbol/semantic cursor 없음; `RESULT_TOO_LARGE` 사후 거부; perf blocked | wave B |
+| QI-BB-005 | P1 | §3.8/§3.55 | gaps → **보완 #1–#5·완료 기준 #2 MET(B2, 370b06f)** | 한 전체 순서(score desc, path, start, end, id)의 ranked page + generation에 묶인 keyset cursor(text·symbol), group만 모으는 projection collector, 응답 byte 예산 안에서 명시적 연속으로 자르기·첫 행 초과 `RESULT_TOO_LARGE`(§3.55). semantic cursor는 설계상 해당 없음(ANN top-k). 남은 것: 1M doc RSS/wall time 실측 **BLOCKED(host)** | — |
 | QI-BB-006 | P2 | §3.4/§3.4.1/§3.4.2/§3.38/§3.48/§3.53 | gaps → **MET(A3+A4)** 단 100 GB 실측 **BLOCKED(host)** | lexical seal은 inode 상속으로 바뀐 byte만 해시(§3.48), semantic delta seal도 base inode 공유 파일은 digest 상속(§3.53) | — |
 | QI-BB-007 | P1* | (M4)/§3.51 | blocked(M4) — **dev 라벨 MET(A7)** | `hash-dev` selector, unset 거부(`QUANTA_INDEX_ALLOW_DEV_EMBEDDER`), boot notice + gauge(§3.51). judged corpus/real provider는 M4 | — |
 | QI-BB-008 | P2 | §3.25 | closed | activation record 무digest, same-pair retention만, legacy bare-JSON read shim(one-shot) | — |
