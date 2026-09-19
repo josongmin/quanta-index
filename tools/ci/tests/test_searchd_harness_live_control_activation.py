@@ -5,9 +5,8 @@ contract as production.  A direct ``ActivationCatalog`` mutation would make
 daemon tests green while bypassing ledger readiness and transport validation.
 """
 
-from pathlib import Path
 import re
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 HARNESS = ROOT / "crates/quanta-index-searchd-harness/src/harness.rs"

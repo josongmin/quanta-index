@@ -1,5 +1,6 @@
 """Static architecture fence for the canonical search-corpus lifecycle owner."""
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -48,7 +49,9 @@ def test_one_pair_mutation_coordinator_owns_catalog_and_retention_v1() -> None:
     assert "search_corpus_write_locks" not in readiness
     assert "lifecycle_coordinator" in readiness
     assert "pub(crate) struct SearchCorpusPairMutationCoordinator" in lifecycle
-    assert "pub use search_corpus_lifecycle::SearchCorpusLifecycleOwner;" in plane_lib
+    assert re.search(
+        r"pub use search_corpus_lifecycle::\{[^}]*\bSearchCorpusLifecycleOwner\b", plane_lib
+    )
     assert "SearchCorpusPairMutationCoordinator" not in plane_lib
 
 
@@ -141,17 +144,26 @@ def test_restart_revalidates_active_composite_before_socket_bind_v1() -> None:
 
     assert "validate_rehydrated_active_generations_v1" in lifecycle
     assert "all_active_search_corpora_for_bootstrap_v1" in lifecycle
-    assert "lexical_generation_validator" in lifecycle
-    assert "semantic_generation_validator" in lifecycle
+    # The restart proof is the open whose handles are promoted: one proven
+    # open per track, no separate validator walk (QI-BB-017 보완 #4).
+    assert "fn prove_and_promote_pair(" in lifecycle
+    assert "open_proven(candidate.lexical())" in lifecycle
+    assert "open_proven(candidate.semantic())" in lifecycle
+    assert "lexical_generation_validator" not in lifecycle
     assert "restart_rehydrate_rejects_missing_active_lexical_generation_v1" in lifecycle
     assert "restart_rehydrate_rejects_missing_active_semantic_generation_v1" in lifecycle
     assert "separate_state_roots_rehydrate_same_repo_without_cross_root_aliasing_v1" in lifecycle
+    # Boot order (QI-BB-003/026): the durable search-corpus history is
+    # restored first — it is the serving boundary the inventory measures
+    # orphans against — then the inventory seeds, then the active pairs are
+    # proven, and only then does any socket bind.
     restore = app_runtime.index(".restore_into(&mut guard)")
+    seed = app_runtime.index("boot_inventory::seed_track_readiness(")
     revalidate = app_runtime.index(".validate_rehydrated_active_generations_v1(")
     query_bind = app_runtime.index("SearchPlaneQueryServer::bind(")
     control_bind = app_runtime.index("SearchPlaneControlServer::bind(")
     ingest_bind = app_runtime.index("SearchPlaneIngestServer::bind(")
-    assert revalidate < restore < query_bind
+    assert restore < seed < revalidate < query_bind
     assert revalidate < control_bind
     assert revalidate < ingest_bind
 
@@ -220,7 +232,7 @@ def test_retention_and_composite_fault_matrix_is_owner_local_v1() -> None:
     assert "persist_new_search_corpus_record_v1" in readiness
     rollback_body = lifecycle[
         lifecycle.index("pub(crate) fn rollback_v1(") : lifecycle.index(
-            "fn validate_physical_pair_v1("
+            "fn check_activation_preconditions_v1("
         )
     ]
     assert rollback_body.count(".lock_pair(") == 1
