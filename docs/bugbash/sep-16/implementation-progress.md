@@ -2786,6 +2786,82 @@ public doc의 private link 각 1; fmt: B9 1 → 모두 수정), cargo-modules + 
 `a_directory_whose_identity_contradicts_its_path_fails_closed`: 모든 listing 실패를 유예하던 첫 구현이 경로와 모순되는 identity(무결성 finding)까지
 삼켰다 → storage 실패만 유예하고 refusal은 fail-closed로 분류(§3.61), 두 refusal test 추가 후 재게이트.
 
+## 3.63 QI-BB-013 — lexical `lib.rs`를 책임 module로, 하나의 의존 방향으로 나눴다; semantic build test는 자기 파일로 (wave B8, 033cb7c)
+
+§4 감사: "search-plane만 분할; `lexical/src/lib.rs` 8,311→10,363줄, `semantic/build.rs` 증가; compile-time 측정 없음". 9,762줄 `lib.rs`(schema, writer
+cache, overlay codec 7종, sealed identity durability, text-authority planning, adapter와 모든 port, boot inventory, 3,588줄 searcher impl)가 31개
+module로: adapter(`adapter`·`adapter_ingest`·`adapter_open`·`adapter_lifecycle`·`inventory`), storage·codec(`schema`·`writer_cache`·
+`channel_payloads`·`index_store`·`overlay_codec`·`metadata_normalize`·`documents`·`query_errors`·`text_docs`·`text_authority_plan`·
+`generation_dir`), `searcher/`(facade + 14). `lib.rs`는 type 정의·상수·module 선언·`const fn` 2개(710줄). `semantic/build.rs`의 2,053줄 test module은
+`build/tests.rs`로(같은 module path·test 이름), production 1,940줄.
+
+**의존 방향 먼저(보완 #2)**: crate의 35 module이 하나의 비순환 code graph, leaf codec(`analyzer`·`channel_payloads`·`phrase`…)부터
+`adapter_ingest`·`adapter_lifecycle`까지 7층. 첫 분할에 cycle 3개 — 각각 잘못된 층의 helper 하나가 닫고 있었다 — 를 helper를 주제 소유 층으로 통째로
+옮겨 해소: stored-field reader → `documents`, sealed-write 거부·디렉터리 durability·크기 → `generation_dir`, resident-bytes 추정 → `adapter_open`,
+`OverlayFamily` → sealed format에서 sealed walk가 decode에 쓰는 overlay codec으로. crate root의 private import로 helper에 닿던 기존 module들은 정의
+module에서 import(root는 자기 정의가 쓰는 것 + public re-export 하나만).
+
+**동작 불변(기계 검증)**: 옛 `lib.rs`의 item·searcher method 317개가 새 tree에 verbatim(이동 fn의 `pub(crate)`·rustfmt 재배치 제외; root test module은
+import만 추가), 기존 module은 item을 부르는 path(import·qualified call)만 변경(enum 하나의 통째 이동 제외), test 이름 불변, 옮겨진 public path 하나
+(`inventory_sealed_generations`)는 re-export. lexical·semantic test **396/0**.
+
+**compile 시간(보완 #3)**: 교차 쌍 측정(공유 host, load average 13–37; 의존성 선빌드된 전용 lane; wall과 rustc CPU(user+sys, 경합에 덜 민감) 기록):
+
+| 단계(dev profile) | 분할 전 wall / CPU | 분할 후 wall / CPU |
+| --- | --- | --- |
+| lib clean build (3회 중앙값) | 2.9 s / 4.2 s | 2.7 s / 4.5 s |
+| 함수 하나 수정 후 rebuild (3회) | 1.3 s / 1.6 s | 1.0 s / 1.2 s |
+| lib + test target build (3회) | 4.8 s / 19.9 s | 4.2 s / 18.5 s |
+| lib clippy (2쌍, CPU) | 1,716 s / 1,431 s | 1,563 s / 1,379 s |
+
+rustc build는 어느 쪽이든 초 단위이고 차이는 noise 안이다. 비용은 lint pass — 24–29 CPU분 — 이고 분할은 두 쌍에서 각각 8.9%·3.7% 줄였다. crate는
+나누지 않았으므로 새 link·crate graph 비용 없음.
+
+| 보완 | 판정 | 근거 |
+| --- | --- | --- |
+| #1 lexical open/build/sidecar/query/projection 분리 | **MET** | 위 31 module; search-plane dispatcher route family·authority persistence는 §3.32 |
+| #2 파일 길이보다 의존 방향·state owner 먼저 | **MET(lexical)** → workspace는 §3.64 | lexical 35 module 비순환 |
+| #3 분리 전후 compile/link/test 시간 측정, crate 과분할 회피 | **MET** | 위 측정; crate 분할 없음(module 분할만) |
+
+## 3.64 QI-BB-013 보완 #2 — SDK의 cycle 하나를 이유와 함께 남기고 모든 crate의 module graph가 한 방향을 가리키며, lint가 그것을 지킨다 (wave B10, 3a56270)
+
+`tools/ci/lint/check-module-cycles.py`: workspace crate마다 production module graph — module 파일당 node, 다른 module의 item을 부르는
+`crate::`/`super::`/`self::` path(use tree 전개, facade re-export는 정의 module로 해석)당 edge; crate root, module 자신의 subtree,
+`#[cfg(test)]` 코드, 주석, 문자열 제외(주석·literal을 공백으로 지우는 lexing pass 하나 위에서 brace matching·path 추출) — 를 만들고 cycle마다 실패.
+`just rust-module-cycles`·`rust-policy`·pre-push hook·CI에 연결, rule catalog 문서화(prompt-manager source, sync·lint·test).
+
+찾은 cycle과 해소(모두 item을 소유 층으로 통째 이동):
+
+| crate | cycle | 해소 |
+| --- | --- | --- |
+| search-plane | readiness state ↔ auxiliary authority | transition이 만드는 delta type 6개를 자기가 바꾸는 state 옆으로 — state가 delta를 소유 |
+| search-plane | lifecycle ↔ storage(activation catalog·auxiliary store) ↔ ingest port | pair-local mutation lock(coordinator·guard·active-pin port)을 lifecycle의 자식 module `pair_lock`으로 — store가 참조하는 leaf, lock 소유는 여전히 lifecycle(architecture fence가 lifecycle module 파일을 한 text로 읽도록) |
+| search-plane | history recency route ↔ relevance route | 두 order가 공유하는 predicate·record kind·cursor-kind 검사·candidate projection을 `routes::history_records`로 |
+| semantic | manifest ↔ generation contract | one-format decode를 `codec`으로, metric·normalization token은 contract로, manifest가 contract에 대해 자신을 검증(`validate_against`, 같은 guard·메시지) |
+| semantic | build ↔ integrity | atomic write를 `durable_write`로(test failpoint 포함) |
+| catalog | connection ↔ domain schemas | connection은 pragma로 파일만 열고 `open`이 schema를 같은 순서로 합성 |
+| searchd | config ↔ socket access; semantic boot ↔ legacy migration | socket policy가 env-lookup alias 대신 필요한 lookup을 명시; migration outcome·batch normalization을 migration으로(`semantic_boot`가 public path에서 re-export) |
+| contract | channel records ↔ semantic source DTO | `semantic_kinds`가 공유 kind 4개(serde impl 포함, verbatim); `channel`·`ipc` facade re-export로 public path·wire encoding 불변 |
+
+**baseline으로 이름 붙여 남긴 것 하나**: SDK의 client/builder 구조(각 domain builder가 client를 빌려 전송) — 끊으려면 SDK의 public builder type을
+request-transport port 위로 재구성해야 하고 SDK surface가 동시 변경 중. `baselines/module-cycles.txt`에 이유와 함께 기록, lint는 그 cycle이 커지거나
+줄거나 사라지면 baseline 수정 없이는 실패(ratchet).
+
+동작 불변: 모든 이동은 item 통째·verbatim, 호출부는 path만 변경(`validate_manifest` → `validate_against`: 같은 guard·순서·메시지; socket policy parameter는
+alias를 풀어 쓴 같은 type). public-api: contract 불변, SDK는 foreign type 렌더링 경로 한 줄(`ipc::semantic_source::SemanticCorpusKindV1` →
+`semantic_kinds::SemanticCorpusKindV1`, 같은 type); cargo-modules: contract에 `mod semantic_kinds` 한 줄 순증(나머지는 이동). tests: lint 10(temp dir
+crate shape: 단방향·양방향·`super::` edge·test/주석/문자열 제외·facade 해석·nested use tree·subtree 소유·baseline exact/new/stale/grown/update), unit
+11 crate **1,493/0**.
+
+**후속 두 commit**: §3.42 후속 (d) — history text index가 corpus index와 똑같은 tokenizer 등록 함수를 따로 갖던 mirror를 `analyzer::register_analyzers`
+하나로(067155e); ANN artifact row가 따르는 route family 관례(결과 shape, engine은 `engine_touched`)를 코드에 명시(df4f636).
+
+**B8 + B10 + 후속 검증(coordinator, d956b77 위, 순차)**: fmt, check, 정책 lint(새 `check-module-cycles.py` 포함) + bench gate + CI pytest **227**, workspace
+clippy keep-going 0(게이트가 잡은 고유 finding — lexical `searcher/mod.rs`의 여러 줄 attribute를 module discipline이 거부 → expectation을 `mod searcher;`
+선언으로; 분할 뒤 scope 밖이 된 intra-doc link 3개(`LexicalIndexBuildPort`·`LexicalIndexOpenPort`·`WriterIdleSweepPort`)를 full path로; 옮긴 helper가
+남긴 unfulfilled `redundant_pub_crate` expectation 3 → 제거), cargo-modules + public-api 일치(갱신 baseline 포함), `just rust-doc`, unit 11 crate
+**1,495/0**, searchd-runtime e2e **293/0**.
+
 ## 4. Finding 상태 (QI-BB-001–032)
 
 초기값은 findings.md 확정 상태 그대로이며 owner 배정만 기록한다.
@@ -2810,7 +2886,7 @@ public doc의 private link 각 1; fmt: B9 1 → 모두 수정), cargo-modules + 
 | QI-BB-010 | P2 | §3.1/§3.52 | not closed → **tooling MET(A8)**, 측정 **BLOCKED(Linux host)** | `BenchArtifactV1`(40-hex head·digest·host·RSS·QPS·phase), runner 수리, stale-artifact gate(`rust-policy`), schema-1 baseline 삭제, scale 단계 분리, 1/8/32 concurrency rail(§3.52). 남은 것: release HEAD의 Linux artifact 생산 | — |
 | QI-BB-011 | P2 | §3.33/§3.47 | **closed(A6, efeea9a)** | ~~두 번째 fold~~ → normalizer crate 하나, DSL은 fold 안 함, `(?i)`+`case:yes` typed 거부; DSL 경로 golden e2e 29 row(8 spelling fail-before). 남은 것: Sourcegraph route의 `(?i)`는 fail-closed 유지(후속 a) | — |
 | QI-BB-012 | P2 | (다른 세션) | **not closed** | README `:28/:172-175`, ssot `channel-architecture.md:85,340`이 구현과 정면 모순 | 다른 세션 |
-| QI-BB-013 | P3 | §3.32 | gaps | search-plane만 분할; `lexical/src/lib.rs` 8,311→10,363줄, `semantic/build.rs` 증가; compile-time 측정 없음; `too_many_lines = allow` | wave B |
+| QI-BB-013 | P3 | §3.32/§3.63/§3.64 | gaps → **보완 #1–#3 MET(B8 033cb7c, B10 3a56270)** | lexical `lib.rs` 9,762줄 → 31 module(root 702줄), 35 module 비순환(§3.63); workspace 25 crate의 module graph 비순환 + `check-module-cycles.py`(pre-push·CI), SDK client/builder cycle 하나만 이유와 함께 ratchet baseline(§3.64); 분리 전후 compile 시간 교차 측정(§3.63). `too_many_lines = allow`는 유지(증거 항목, 보완 요구 아님) | — |
 | QI-BB-014 | P2 | §3.27/§3.40/§3.51 | gaps → **MET(A7)** 단 wrong-owner test **BLOCKED**(두 번째 uid) | root 정확히 `0700`, 넓은 기존 root typed 거부, umask 077 + 실제 binary umask e2e, `--state-root` 단일 chain(§3.51) | — |
 | QI-BB-015 | P2 | §3.28/§3.49/§3.51 | gaps → **MET(A7, A2)** | queue/in-flight·examined·response bytes·track disk bytes·provider failure(A7), GC reclaimed/retained bytes(A2), scrape 경로 문서화(§3.49/§3.51) | — |
 | QI-BB-016 | P3 | §3.26/§3.51 | gaps → **MET(A7)** 단 Tantivy writer 할당 byte 관측 **BLOCKED**(API 없음) | `ProcessMemoryEnvelopeV1` 합산·천장, RSS 관측 + writer admission gate, timer 기반 idle sweep(§3.51) | — |
