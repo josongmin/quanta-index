@@ -416,6 +416,20 @@ rust-verify-quality-tail:
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin tail_matrix --all-features --locked
     env QUANTA_INDEX_BUILD_LANE=test-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/tail_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/tail/latest"'
 
+# ANN rail (QI-BB-027 #3). Blocking signal: recall@10 at or above the floor,
+# every returned score the exact cosine, every page full.
+# Proves: the rail's direction walk and exhaustive cosine oracle, then seals the
+# 4,096 × 64 tier through the semantic adapter in a private state root, asks 64
+# neighbour queries and writes one provenanced BenchArtifactV1 carrying recall@k,
+# p50/p95/p99, build time, index bytes, the dense lane the seal proved and the
+# normalization policy. Latency advisory on this host.
+# Artifacts: artifacts/search-quality/ann/latest/summary.json
+rust-verify-quality-ann:
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib ann:: --all-features --locked -- --nocapture
+    mkdir -p artifacts/search-quality/ann/latest
+    {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin ann_matrix --all-features --locked
+    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/ann_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/ann/latest"'
+
 # Concurrency rail (QI-BB-010 #4). Blocking signal: every request answered,
 # no timeouts; latency advisory on this host.
 # Proves: the concurrency module's tally/row invariants, then serves one sealed

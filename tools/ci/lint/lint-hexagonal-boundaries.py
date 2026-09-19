@@ -159,7 +159,9 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     # Black-box runtime/quality harness. Its dependency fan-in is intentional:
     # production crates must never depend back on this crate. The lexical
     # adapter is a direct dependency so the scale rail can time the sealed
-    # generation's adapter-only open/plan/execute beside the daemon's.
+    # generation's adapter-only open/plan/execute beside the daemon's; the
+    # semantic adapter so the ANN rail can seal and query a generation
+    # through the production build, seal and open path (QI-BB-027).
     "quanta-index-searchd-harness": frozenset(
         {
             "quanta-index-contract",
@@ -170,6 +172,7 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
             "quanta-index-search-plane",
             "quanta-index-searchd",
             "quanta-index-searchd-runtime",
+            "quanta-index-semantic",
         }
     ),
     "quanta-index-sdk": frozenset(

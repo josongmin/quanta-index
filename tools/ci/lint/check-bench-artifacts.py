@@ -53,6 +53,7 @@ FRESH_FAMILIES: tuple[tuple[str, str], ...] = (
     ("dsl-cold", "artifacts/dsl-bench/cold-matrix.json"),
     ("scale", "artifacts/search-quality/scale/latest/summary.json"),
     ("tail", "artifacts/search-quality/tail/latest/summary.json"),
+    ("ann", "artifacts/search-quality/ann/latest/summary.json"),
     ("relevance", "artifacts/search-quality/relevance/latest/summary.json"),
     ("relevance-openai-ab", "artifacts/search-quality/relevance/openai-ab/latest/summary.json"),
     ("concurrency", "artifacts/search-quality/concurrency/latest/summary-c*.json"),

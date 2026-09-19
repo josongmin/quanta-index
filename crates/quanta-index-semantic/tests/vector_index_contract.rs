@@ -15,7 +15,6 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 use quanta_index_contract::{
     BatchIngestMode, EmbeddingRecord, GenerationSnapshot, ManifestGeneration, RepoId, RevisionId,
@@ -1063,11 +1062,14 @@ fn exact_top_k(rows: &[(String, Vec<f32>)], query: &[f32], k: usize) -> Vec<(Str
     scored
 }
 
+/// The seal-time recall floor: the sealed effort keeps recall@10 at or
+/// above 0.95 against an exhaustive oracle and returns exact cosine scores.
+///
+/// The measurement itself — recall, latency percentiles, build time, index
+/// bytes — is the ANN rail's current-head artifact
+/// (`just rust-verify-quality-ann`, QI-BB-027 #3); this gate holds the floor
+/// on every run.
 #[test]
-#[expect(
-    clippy::print_stdout,
-    reason = "the QI-BB-027-EVIDENCE line is the measurement the ledger cites; it must land in the run log"
-)]
 fn the_sealed_effort_keeps_recall_against_an_exact_oracle_and_returns_exact_scores() -> TestResult {
     // A wider space than the other fixtures: random directions in 64
     // dimensions have no cluster structure for the graph to exploit, which
@@ -1097,15 +1099,7 @@ fn the_sealed_effort_keeps_recall_against_an_exact_oracle_and_returns_exact_scor
         u32::try_from(WIDE)?,
     );
     batch.manifest_digest = format!("manifest:{}", generation.get());
-    let build_started = Instant::now();
     build_resident_batch_v1(&adapter, &batch)?;
-    let build_millis = build_started.elapsed().as_millis();
-    let index_bytes: u64 = index_files(&generation_dir(temp.path(), generation))?
-        .iter()
-        .map(|file| std::fs::metadata(file).map(|meta| meta.len()))
-        .collect::<Result<Vec<u64>, _>>()?
-        .iter()
-        .sum();
 
     let searcher = adapter.open(&repo(), &revision(), generation)?;
     if searcher.dense_lane() != sealed_ann_lane(trained_at(1, ROWS)) {
@@ -1116,7 +1110,6 @@ fn the_sealed_effort_keeps_recall_against_an_exact_oracle_and_returns_exact_scor
         .into());
     }
     let mut recall_sum = 0.0_f64;
-    let mut latencies_micros = Vec::with_capacity(usize::try_from(QUERIES)?);
     for query_seed in 0..QUERIES {
         // Half the queries sit near a row (a paraphrase), half are fresh.
         let query = if query_seed % 2 == 0 {
@@ -1133,9 +1126,7 @@ fn the_sealed_effort_keeps_recall_against_an_exact_oracle_and_returns_exact_scor
             unit_vector(2_000_000 + query_seed, WIDE)
         };
         let expected = exact_top_k(&rows, &query, K);
-        let started = Instant::now();
         let hits = searcher.search(&query, u32::try_from(K)?, &RequestBudgetV1::unbounded())?;
-        latencies_micros.push(started.elapsed().as_micros());
         if hits.len() != K {
             return Err(format!("query {query_seed} returned {} of {K} hits", hits.len()).into());
         }
@@ -1171,19 +1162,6 @@ fn the_sealed_effort_keeps_recall_against_an_exact_oracle_and_returns_exact_scor
         recall_sum += f64::from(u32::try_from(found)?) / f64::from(u32::try_from(K)?);
     }
     let recall = recall_sum / f64::from(u32::try_from(QUERIES)?);
-    latencies_micros.sort_unstable();
-    let percentile = |percent: usize| -> Option<u128> {
-        let last = latencies_micros.len().checked_sub(1)?;
-        latencies_micros
-            .get(last.checked_mul(percent)?.checked_div(100)?)
-            .copied()
-    };
-    println!(
-        "QI-BB-027-EVIDENCE rows={ROWS} dim={WIDE} queries={QUERIES} k={K} recall_at_k={recall:.4} p50_us={:?} p95_us={:?} p99_us={:?} build_ms={build_millis} index_bytes={index_bytes}",
-        percentile(50),
-        percentile(95),
-        percentile(99)
-    );
     if recall < RECALL_FLOOR {
         return Err(format!("recall@{K} {recall:.4} fell below the floor {RECALL_FLOOR}").into());
     }

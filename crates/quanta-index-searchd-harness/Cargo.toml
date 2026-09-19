@@ -28,6 +28,9 @@ quanta-index-lexical = { version = "0.1.0", path = "../quanta-index-lexical" }
 quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane" }
 quanta-index-searchd = { version = "0.1.0", path = "../quanta-index-searchd" }
 quanta-index-searchd-runtime = { version = "0.1.0", path = "../quanta-index-searchd-runtime" }
+# The ANN rail seals and queries a semantic generation through the adapter
+# itself: the production build, seal and open, with no daemon between.
+quanta-index-semantic = { version = "0.1.0", path = "../quanta-index-semantic" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

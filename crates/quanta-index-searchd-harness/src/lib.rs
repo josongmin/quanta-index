@@ -20,6 +20,7 @@
 mod harness;
 
 pub mod ambiguity;
+pub mod ann;
 pub mod artifact;
 pub mod bench_support;
 pub mod concurrency;

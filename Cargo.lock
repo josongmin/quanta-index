@@ -4513,6 +4513,7 @@ dependencies = [
  "quanta-index-search-plane",
  "quanta-index-searchd",
  "quanta-index-searchd-runtime",
+ "quanta-index-semantic",
  "serde",
  "serde_json",
  "sha2",
