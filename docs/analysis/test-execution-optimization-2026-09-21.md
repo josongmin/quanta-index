@@ -66,7 +66,7 @@ files as 49 Cargo test binaries. Each binary linked nearly the complete daemon
 graph and measured about 330 MiB in the current lane. The sources now compile as
 modules of three explicit targets:
 
-- `runtime_fast_suite`: 9 source files, 49 runnable tests plus one ignored test;
+- `runtime_fast_suite`: 9 source files, 45 runnable tests plus one ignored test;
 - `runtime_risk_suite`: 21 source files, 168 tests;
 - `runtime_extended_suite`: 19 source files, 48 tests.
 
@@ -140,9 +140,16 @@ wiring. This exposed 52 runnable entry points plus one ignored network test.
 
 A fourth pass folded three more read-only empty-runtime gates into that group:
 history generation-not-ready, hybrid joint-materialization readiness, and
-semantic materialization readiness. The current suite exposes 49 runnable
-entry points plus one ignored network test. In total, 30 redundant fixture or
-daemon lifecycles were removed from the original 79 runnable entry points.
+semantic materialization readiness. This exposed 49 runnable entry points plus
+one ignored network test.
+
+A fifth pass consolidated five read-only queries over one sealed default
+runtime and a non-overlapping corpus: global semantic nearest-hit, unindexed
+lexical scope, empty semantic query refusal, search-owned text derivation, and
+history producer-unavailable without lexical fallback. The current suite
+exposes 45 runnable entry points plus one ignored network test. In total, 34
+redundant fixture or daemon lifecycles were removed from the original 79
+runnable entry points.
 
 Local `sccache` is enabled only when installed and uses a repository-derived
 server port. It caches non-incremental compilations after a lane is cleaned or
@@ -216,6 +223,11 @@ an overridden run is not clean performance evidence.
   read-only validation/readiness scenarios on one empty runtime; suite compile
   PASS. A quiet-host 49/49 rerun remains required because host load was still
   above 300 during this pass
+- fifth-pass default indexed-query group: clean detached-main compile PASS and
+  1/1 PASS in 2.009s, covering all five named query scenarios on one runtime.
+  The host still had foreign Rust builds, so this proves correctness of the
+  consolidated group but is not clean performance evidence; a quiet-host 45/45
+  rerun remains required
 - daemon-fast before DSL-truth separation: 84/84 PASS, one ignored, two
   binaries; 193.157s nextest execution under the same non-authoritative class
   of host contention
