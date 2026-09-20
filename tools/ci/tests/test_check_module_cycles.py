@@ -200,4 +200,3 @@ def test_update_baseline_keeps_the_header(tmp_path: Path):
     MODULE.update_baseline([root], baseline)
     assert baseline.read_text(encoding="utf-8") == "# header line\n#\n# why a and b\ndemo: a, b\n"
     assert MODULE.check([root], baseline) == []
-

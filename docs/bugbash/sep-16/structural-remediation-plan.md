@@ -29,7 +29,7 @@
 
 | 항목 | 현재 코드에 대한 정확한 해석 | 설계에 주는 제약 |
 | --- | --- | --- |
-| QI-BB-029 | [ingest_dispatcher.rs](../../../crates/quanta-index-search-plane/src/ingest_dispatcher.rs)의 `preflight_sealed_generation_v1`과 `discard_incomplete_v1`에 비대칭 복구가 이미 있음 | “복구 부재”가 아니라 **공통 사전 검증과 durable operation 상태 부재**를 해결. 두 track 모두 InProgress인 정상 다중 batch 상태를 지우면 안 됨 |
+| QI-BB-029 | [ingest_dispatcher.rs](https://github.com/josongmin/quanta-index/blob/ec0e83d7a09409ecdaeb7eef1089b2bbf94133b5/crates/quanta-index-search-plane/src/ingest_dispatcher.rs)의 `preflight_sealed_generation_v1`과 `discard_incomplete_v1`에 비대칭 복구가 이미 있음 | “복구 부재”가 아니라 **공통 사전 검증과 durable operation 상태 부재**를 해결. 두 track 모두 InProgress인 정상 다중 batch 상태를 지우면 안 됨 |
 | QI-BB-032 | 양쪽 physical state가 Exact면 `finalize_only`로 build를 생략함. batch 단위 body 결속·durable replay receipt는 없음 | generation replay와 batch replay를 구분. 외부 embedding 호출의 exactly-once까지 약속하지 않음 |
 | QI-BB-017/030 | seal 증명과 query 준비가 불일치하며 deep validation이 반복됨 | 검증을 생략하는 캐시가 아니라 **검증 수준과 검증된 handle의 수명**을 정의 |
 | QI-BB-031 | `L2Unit` 계약 불일치는 확정. cosine에서 non-unit만으로 순위 오류가 발생했다고 증명되지는 않음 | 정규화·공간 identity를 고정하되 ranking 개선 수치는 별도 평가 |
@@ -83,10 +83,10 @@ flowchart TD
 | Owner | 구현 책임 | 현재 이동 원천 / 배치안 |
 | --- | --- | --- |
 | contract-base/contract/core | base identity, wire DTO, capability, validated plan/budget, backend-neutral ports | [contract-base](../../../crates/quanta-index-contract-base/src), [contract](../../../crates/quanta-index-contract/src), [core domains](../../../crates/quanta-index-core/src/domains) |
-| 신설 `quanta-index-storage` adapter | catalog transaction, operation receipt, artifact reference, auxiliary row persistence, crash-safe file primitive | [readiness.rs](../../../crates/quanta-index-search-plane/src/readiness.rs)의 persistence/activation authority 추출. SQLite는 이 adapter 안에만 위치 |
+| 신설 `quanta-index-storage` adapter | catalog transaction, operation receipt, artifact reference, auxiliary row persistence, crash-safe file primitive | [readiness.rs](https://github.com/josongmin/quanta-index/blob/f4e1da1f50aa3238c179e410820a029b1837ba5b/crates/quanta-index-search-plane/src/readiness.rs)의 persistence/activation authority 추출. SQLite는 이 adapter 안에만 위치 |
 | lexical/semantic adapters | native artifact format, prepare/open/verify, immutable object inventory, backend-specific deletion | [lexical](../../../crates/quanta-index-lexical/src), [semantic](../../../crates/quanta-index-semantic/src) |
-| search-plane lifecycle | ingest state machine, publish/activate/retire orchestration, snapshot registry | [ingest_dispatcher.rs](../../../crates/quanta-index-search-plane/src/ingest_dispatcher.rs), [search_corpus_lifecycle.rs](../../../crates/quanta-index-search-plane/src/search_corpus_lifecycle.rs), [search_corpus_retention.rs](../../../crates/quanta-index-search-plane/src/search_corpus_retention.rs) |
-| search-plane query | common lowering/plan, bounded execution, ranking/trace, read-view acquisition | [query_dispatcher.rs](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs), [semantic_query.rs](../../../crates/quanta-index-search-plane/src/query_dispatcher/semantic_query.rs) |
+| search-plane lifecycle | ingest state machine, publish/activate/retire orchestration, snapshot registry | [ingest_dispatcher.rs](https://github.com/josongmin/quanta-index/blob/ec0e83d7a09409ecdaeb7eef1089b2bbf94133b5/crates/quanta-index-search-plane/src/ingest_dispatcher.rs), [search_corpus_lifecycle.rs](../../../crates/quanta-index-search-plane/src/search_corpus_lifecycle.rs), [search_corpus_retention.rs](../../../crates/quanta-index-search-plane/src/search_corpus_retention.rs) |
+| search-plane query | common lowering/plan, bounded execution, ranking/trace, read-view acquisition | [query_dispatcher.rs](https://github.com/josongmin/quanta-index/blob/48759d8a29f57c2e818970f22e760307603be786/crates/quanta-index-search-plane/src/query_dispatcher.rs), [semantic_query.rs](../../../crates/quanta-index-search-plane/src/query_dispatcher/semantic_query.rs) |
 | IPC/searchd | transport, scheduling, shared runtime, configured process envelope, composition | [IPC server](../../../crates/quanta-index-ipc/src/server.rs), [runtime](../../../crates/quanta-index-searchd/src/app/runtime.rs), [searchd](../../../crates/quanta-index-searchd/src/app/searchd.rs) |
 | domain query services | text semantics, history/RepoMap/structural semantics, embedding profile/ranker | 기존 domain crate 및 [query_embedder.rs](../../../crates/quanta-index-search-plane/src/query_embedder.rs) |
 | harness/benchmark | fault/replay/quality/load 증거와 exact-source artifact | [runtime tests](../../../crates/quanta-index-searchd-runtime/tests), [benchmark](../../../tools/benchmark) |
@@ -185,7 +185,7 @@ DB 자체가 열리지 않으면 catalog authority를 복원할 수 없으므로
 
 ### 5.6 Auxiliary read dependency
 
-현재 [query dispatcher](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs)의 history/runtime/structural 경로는 서로 다른 authority를 읽으며 runtime query는 structural chunk universe도 필요하다. 모든 domain을 corpus seal의 필수 track으로 바꾸지 않는다.
+현재 [query dispatcher](https://github.com/josongmin/quanta-index/blob/48759d8a29f57c2e818970f22e760307603be786/crates/quanta-index-search-plane/src/query_dispatcher.rs)의 history/runtime/structural 경로는 서로 다른 authority를 읽으며 runtime query는 structural chunk universe도 필요하다. 모든 domain을 corpus seal의 필수 track으로 바꾸지 않는다.
 
 W1에서 route×predicate별 `RequiredDomains`를 고정한다. plain lexical은 lexical 및 요청 predicate의 authority만, dense/hybrid는 선언된 semantic profile/roots, runtime predicate는 호환 overlay와 chunk universe, history는 해당 history generation을 요구한다. 기존 generation-scoped history를 근거 없이 repo-wide latest로 바꾸지 않는다.
 

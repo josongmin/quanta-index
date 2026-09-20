@@ -23,10 +23,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Python tooling
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .[dev]
+      - name: Install pre-commit hook dependencies
+        run: python -m pip install -e . 'pre-commit>=4.0.0' 'ruff==0.16.8'
 
       - name: Run pre-commit
         env:
@@ -201,10 +199,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Python tooling
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .[dev]
+      - name: Install policy and test dependencies
+        run: python -m pip install -e . 'pytest>=8.3.0'
 
       - name: Ensure all workspace crates inherit lints
         run: python3 scripts/check_workspace_lints.py
@@ -277,10 +273,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Python tooling
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .[dev]
+      - name: Install proof-authority dependencies
+        run: python -m pip install -e .
 
       - name: Install just
         uses: taiki-e/install-action@just
@@ -383,10 +377,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Python tooling
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .[dev]
+      - name: Install agent-output dependencies
+        run: python -m pip install -e .
 
       - name: Identify changed agent output JSONs
         id: changed
@@ -424,10 +416,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Python tooling
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .[dev]
+      - name: Install semgrep
+        run: python -m pip install 'semgrep>=1.76.0'
 
       - name: Run semgrep
         run: bash scripts/run-semgrep.sh
@@ -442,10 +432,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Python tooling
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .[dev]
+      - name: Install pre-commit
+        run: python -m pip install 'pre-commit>=4.0.0'
 
       - name: actionlint
         run: bash scripts/run-actionlint.sh

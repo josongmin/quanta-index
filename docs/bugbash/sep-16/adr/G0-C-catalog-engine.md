@@ -6,7 +6,7 @@ evidence, not on preference.**
 
 - Decided: 2026-09-16
 - Gate owner: W0, blocking W2 (catalog/lifecycle), C1, and QI-BB-020/026/029/032
-- Probes: [`crates/quanta-index-catalog-probe/tests/g0c_sqlite_catalog_probe.rs`](../../../../crates/quanta-index-catalog-probe/tests/g0c_sqlite_catalog_probe.rs), [`crates/quanta-index-catalog-probe/tests/g0c_redb_alternative_probe.rs`](../../../../crates/quanta-index-catalog-probe/tests/g0c_redb_alternative_probe.rs)
+- Probes: [`crates/quanta-index-catalog-probe/tests/g0c_sqlite_catalog_probe.rs`](https://github.com/josongmin/quanta-index/blob/7bcea4555ac6e4cb5c784b7e32110eb273a1e3cb/crates/quanta-index-catalog-probe/tests/g0c_sqlite_catalog_probe.rs), [`crates/quanta-index-catalog-probe/tests/g0c_redb_alternative_probe.rs`](https://github.com/josongmin/quanta-index/blob/7bcea4555ac6e4cb5c784b7e32110eb273a1e3cb/crates/quanta-index-catalog-probe/tests/g0c_redb_alternative_probe.rs)
 - Command: `just rust-w0-storage-gates`, or `./scripts/cargow --lane test-integration-lane test --all-features --locked -p quanta-index-catalog-probe -- --nocapture --test-threads=1`
 - Engines: `rusqlite 0.40.2` / `libsqlite3-sys 0.38.2` (bundled, links **SQLite 3.53.2**, features `bundled`, `backup`); `redb 4.3.0`
 - Host: macOS 24.6.0, 16 cores, **loadavg 11–16 during every measurement** (other agents' builds running). Latency figures are shapes, not budgets.

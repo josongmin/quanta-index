@@ -29,4 +29,3 @@
 - do not introduce heuristic success paths when an authoritative path is missing
 - do not replace errors with defaults, placeholders, or best-effort continuation on production paths
 - prefer explicit `NotImplemented`, typed failure, or blocked cutover over partial silent behavior
-

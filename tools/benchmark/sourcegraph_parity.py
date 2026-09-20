@@ -33,9 +33,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SYNTAX_RS = REPO_ROOT / "crates/quanta-index-lq-bridge/src/syntax.rs"
 TRANSLATOR_RS = REPO_ROOT / "crates/quanta-index-lq-bridge/src/translator.rs"
-PREDICATE_REGISTRY_RS = (
-    REPO_ROOT / "crates/quanta-index-lexical/src/predicate_registry.rs"
-)
+PREDICATE_REGISTRY_RS = REPO_ROOT / "crates/quanta-index-lexical/src/predicate_registry.rs"
 PARITY_RS = (
     REPO_ROOT / "crates/quanta-index-searchd-runtime/tests/e2e_dual_syntax_lowering_parity.rs"
 )
@@ -271,10 +269,7 @@ def decode_literal_query(raw: str) -> str:
 
 def rust_string_literals(body: str, prefix_pattern: str) -> list[str]:
     queries = re.findall(prefix_pattern + r'\s*"(.*?)"', body)
-    queries += [
-        query
-        for _, query in re.findall(prefix_pattern + r'\s*r(#+)"(.*?)"\1', body)
-    ]
+    queries += [query for _, query in re.findall(prefix_pattern + r'\s*r(#+)"(.*?)"\1', body)]
     return queries
 
 
@@ -463,12 +458,8 @@ def scan_filter_exec(
     # Lexical queries pass the literal directly to `query_text(...)`; history
     # queries route through a helper but always carry the `type:commit` /
     # `type:diff` discriminator, so match those literals wherever they appear.
-    queries = rust_string_literals(
-        body, r"query_text\(\s*TextQuerySyntax::\w+,"
-    )
-    queries += rust_string_literals(
-        body, r"query_text_with_pin\(\s*TextQuerySyntax::\w+,"
-    )
+    queries = rust_string_literals(body, r"query_text\(\s*TextQuerySyntax::\w+,")
+    queries += rust_string_literals(body, r"query_text_with_pin\(\s*TextQuerySyntax::\w+,")
     # Some negative rails batch Sourcegraph literals through `for query in [...]`
     # loops before calling `query_text(...)`; scan only those loop-local literal
     # blocks instead of every string in the file to keep evidence fail-closed.
@@ -565,9 +556,7 @@ def scan_lowering_owner_local_demotions(
 def ours_predicates() -> tuple[list[str], list[str], list[str]]:
     registry_body = read(PREDICATE_REGISTRY_RS)
     translator_body = read(TRANSLATOR_RS) + read(SYNTAX_RS)
-    canonical = set(
-        re.findall(r'PredicateSpec\s*\{\s*name:\s*"([^"]+)"', registry_body)
-    )
+    canonical = set(re.findall(r'PredicateSpec\s*\{\s*name:\s*"([^"]+)"', registry_body))
     aliases = set(re.findall(r'alias:\s*"([^"]+)"', registry_body))
     aliases.update(
         re.findall(
@@ -691,8 +680,7 @@ def build_report(
     )
     lines.append("")
     lines.append(
-        "**Sourcegraph-only bridge aliases:** "
-        + (", ".join(f"`{p}`" for p in aliases) or "none")
+        "**Sourcegraph-only bridge aliases:** " + (", ".join(f"`{p}`" for p in aliases) or "none")
     )
     lines.append("")
     lines.append(
@@ -748,7 +736,7 @@ def build_report(
             lines.append(f"| `{surface_id}` | `{display}` | {evid} | {reason} |")
         lines.append("")
 
-    return "\n".join(lines) + "\n", untested, unverified_surfaces
+    return "\n".join(lines).rstrip("\n") + "\n", untested, unverified_surfaces
 
 
 def parse_args() -> argparse.Namespace:
@@ -854,9 +842,7 @@ def main() -> int:
                 print(f"  - {surface}", file=sys.stderr)
             problems += len(implemented_unsupported)
         waived = [
-            item
-            for item in untested_filters
-            if item.split(" ")[0] in EXECUTION_UNVERIFIED_WAIVER
+            item for item in untested_filters if item.split(" ")[0] in EXECUTION_UNVERIFIED_WAIVER
         ]
         if waived:
             print(

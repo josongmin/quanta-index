@@ -23,4 +23,3 @@ Conflict rule:
 Language:
 - 응답은 한국어
 - 코드/주석/커밋 메시지 본문은 영어 우선
-

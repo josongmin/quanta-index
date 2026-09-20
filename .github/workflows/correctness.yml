@@ -64,10 +64,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Python tooling
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .[dev]
+      - name: Install proof-authority dependencies
+        run: python -m pip install -e .
 
       - name: Install just
         uses: taiki-e/install-action@just
@@ -311,11 +309,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Python tooling
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .[dev]
-
       - name: Install cargo-llvm-lines
         uses: taiki-e/install-action@cargo-llvm-lines
 
@@ -390,11 +383,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Python tooling
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .[dev]
-
       - name: Install cargo-modules
         uses: taiki-e/install-action@cargo-modules
 
@@ -461,10 +449,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Python tooling
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .[dev]
+      - name: Install coverage contract test dependency
+        run: python -m pip install 'pytest>=8.3.0'
 
       - name: Check changed-line coverage gate contracts
         run: python3 -m pytest tools/ci/tests/test_check_changed_line_coverage.py -q

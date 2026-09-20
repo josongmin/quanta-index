@@ -42,9 +42,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 
-PREDICATE_REGISTRY_RS = (
-    ROOT / "crates" / "quanta-index-lexical" / "src" / "predicate_registry.rs"
-)
+PREDICATE_REGISTRY_RS = ROOT / "crates" / "quanta-index-lexical" / "src" / "predicate_registry.rs"
 LOWERING_RS = ROOT / "crates" / "quanta-index-search-plane" / "src" / "lowering.rs"
 GARGOW = ROOT / "scripts" / "cargow"
 CAPABILITY_MATRIX_MD = (
@@ -182,9 +180,7 @@ def extract_structural_verdicts(rust_src: str) -> dict:
     overwrite an earlier one.
     """
     body = _slice_fn(rust_src, "fn structural_leaf_verdict")
-    tokens = [
-        (m.start(), "leaf", m.group(1)) for m in re.finditer(r"LqLeaf::(\w+)", body)
-    ] + [
+    tokens = [(m.start(), "leaf", m.group(1)) for m in re.finditer(r"LqLeaf::(\w+)", body)] + [
         (m.start(), "verdict", m.group(1))
         for m in re.finditer(r"StructuralLeafVerdict::(\w+)", body)
     ]
@@ -239,9 +235,7 @@ def run_json_dump(package: str, bin_name: str) -> dict:
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"{package}:{bin_name} emitted invalid JSON: {exc}"
-        ) from exc
+        raise RuntimeError(f"{package}:{bin_name} emitted invalid JSON: {exc}") from exc
 
 
 def load_predicate_capabilities() -> tuple[set[str], dict[str, str]]:
@@ -378,9 +372,7 @@ def main() -> int:
         violations += check_structural_legality(verdicts)
 
     for ticket in sorted(ADV_TICKETS_DIR.glob("ADV-*.md")):
-        violations += advanced_claim_violations(
-            ticket.name, ticket.read_text(encoding="utf-8")
-        )
+        violations += advanced_claim_violations(ticket.name, ticket.read_text(encoding="utf-8"))
 
     if violations:
         sys.stderr.write("\nDSL capability truth drift detected:\n")

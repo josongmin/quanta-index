@@ -89,7 +89,7 @@
 
 **증거**
 
-- text query가 매번 `lex_opener.open(...)`을 호출한다: [query_dispatcher.rs](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs):428-439.
+- text query가 매번 `lex_opener.open(...)`을 호출한다: [query_dispatcher.rs](https://github.com/josongmin/quanta-index/blob/48759d8a29f57c2e818970f22e760307603be786/crates/quanta-index-search-plane/src/query_dispatcher.rs):428-439.
 - symbol, hybrid, semantic lexical scope, hybrid seed, explain도 같은 opener를 호출한다: 동일 파일 489-491, 548-550, 643-645, 732-734, 983-985.
 - `LexicalAdapter::open`은 호출마다 sealed identity 확인, `Index::open_in_dir`, tokenizer 등록, repo metadata load, `IndexReader` 생성/reload, text authority sidecar와 모든 metadata snapshot load를 수행한다: [lib.rs](../../../crates/quanta-index-lexical/src/lib.rs):3682-3760.
 - semantic adapter에는 exact generation key 기반 bounded open cache(8)가 있다: [semantic/lib.rs](../../../crates/quanta-index-semantic/src/lib.rs):76-125, 180-240. lexical에는 동등한 read cache가 없다.
@@ -148,9 +148,9 @@
 
 **증거**
 
-- retention의 `encoded_len`은 search-corpus authority CBOR record의 길이다: [readiness.rs](../../../crates/quanta-index-search-plane/src/readiness.rs):2515-2546.
+- retention의 `encoded_len`은 search-corpus authority CBOR record의 길이다: [readiness.rs](https://github.com/josongmin/quanta-index/blob/f4e1da1f50aa3238c179e410820a029b1837ba5b/crates/quanta-index-search-plane/src/readiness.rs):2515-2546.
 - byte cap은 이 record 길이 합으로 계산된다: [search_corpus_retention.rs](../../../crates/quanta-index-search-plane/src/search_corpus_retention.rs):105-175.
-- GC는 reaped authority record file만 `remove_file`한다: [readiness.rs](../../../crates/quanta-index-search-plane/src/readiness.rs):2874-2927.
+- GC는 reaped authority record file만 `remove_file`한다: [readiness.rs](https://github.com/josongmin/quanta-index/blob/f4e1da1f50aa3238c179e410820a029b1837ba5b/crates/quanta-index-search-plane/src/readiness.rs):2874-2927.
 - core의 destructive port는 incomplete generation 전용이며 sealed exact identity 삭제를 거부해야 한다: [generation.rs](../../../crates/quanta-index-core/src/domains/generation.rs):70-84.
 - lexical/semantic의 `remove_dir_all` 구현은 incomplete generation discard/recovery에만 있다: [lexical/lib.rs](../../../crates/quanta-index-lexical/src/lib.rs):3826-3875, [semantic/lib.rs](../../../crates/quanta-index-semantic/src/lib.rs):344-430.
 
@@ -181,7 +181,7 @@
 
 - contract는 scope `TextQueryRequest.top_k`를 lexical candidate cap으로 정의한다: [requests.rs](../../../crates/quanta-index-contract/src/query/requests.rs):16-35.
 - SDK도 `scope_top_k`와 outer `top_k`가 별도 의미라고 명시한다: [semantic.rs](../../../crates/quanta-index-sdk/src/semantic.rs):182-196.
-- dispatcher는 scope의 `top_k`를 읽지 않고 `search_all_constrained`를 호출한 뒤 전체 candidate ID를 `BTreeSet`으로 만든다: [query_dispatcher.rs](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs):619-679.
+- dispatcher는 scope의 `top_k`를 읽지 않고 `search_all_constrained`를 호출한 뒤 전체 candidate ID를 `BTreeSet`으로 만든다: [query_dispatcher.rs](https://github.com/josongmin/quanta-index/blob/48759d8a29f57c2e818970f22e760307603be786/crates/quanta-index-search-plane/src/query_dispatcher.rs):619-679.
 - lexical `search_all_constrained`는 `num_docs` 기반 full-recall limit를 사용한다: [lexical/lib.rs](../../../crates/quanta-index-lexical/src/lib.rs):8109-8170.
 - semantic filter는 ID 전체를 하나의 `embedding_id IN (...)` 문자열로 만든다: [sql.rs](../../../crates/quanta-index-semantic/src/sql.rs):23-36.
 - SDK frontdoor test는 `scope_top_k(2)`를 전달하지만 결과가 non-empty인지만 검사한다: [sdk_frontdoor.rs](../../../crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs):3961-3971.
@@ -207,7 +207,7 @@
 
 **증거**
 
-- 일반 query는 continuation 확인용 `top_k + 1`과 semantic max top-k를 적용하지만 `count:all`은 probe를 우회한다: [query_dispatcher.rs](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs):120-142.
+- 일반 query는 continuation 확인용 `top_k + 1`과 semantic max top-k를 적용하지만 `count:all`은 probe를 우회한다: [query_dispatcher.rs](https://github.com/josongmin/quanta-index/blob/48759d8a29f57c2e818970f22e760307603be786/crates/quanta-index-search-plane/src/query_dispatcher.rs):120-142.
 - lexical policy에는 query 의미 검증은 있으나 절대 top-k/candidate byte cap이 없다: [lexical service.rs](../../../crates/quanta-index-core/src/domains/lexical/service.rs):13-55.
 - `full_recall_limit`은 requested/limit/`num_docs` 중 최댓값이다. repo/path/file projection과 bounded count도 full recall collect를 선택한다: [lexical/lib.rs](../../../crates/quanta-index-lexical/src/lib.rs):4127-4162.
 - Tantivy `TopDocs`에 이 collect limit가 전달된다: 동일 파일 7815-7875.
@@ -475,7 +475,7 @@ plan prose may still exist outside the touched files.
 
 **증거**
 
-- query samples는 process-local `BoundedQueryObsStore`의 최대 4,096개 ring으로 보관된다: [query_dispatcher.rs](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs):213-255.
+- query samples는 process-local `BoundedQueryObsStore`의 최대 4,096개 ring으로 보관된다: [query_dispatcher.rs](https://github.com/josongmin/quanta-index/blob/48759d8a29f57c2e818970f22e760307603be786/crates/quanta-index-search-plane/src/query_dispatcher.rs):213-255.
 - 같은 store의 `errors: Vec<ObsError>`는 cap 없이 push한다: 동일 파일 216-235.
 - embedding telemetry는 cross-process completeness를 보장하지 않는 local diagnostic이라고 명시하고 request sample은 unbounded `Vec`다: [telemetry.rs](../../../crates/quanta-index-embed/src/telemetry.rs):11-37, 69-77.
 - daemon은 store를 dispatcher에 연결하지만 production exporter/endpoint는 없다: [runtime.rs](../../../crates/quanta-index-searchd/src/app/runtime.rs):850-865.
@@ -513,7 +513,7 @@ plan prose may still exist outside the touched files.
 - 같은 open에서 cluster-membership table도 열고 commitment를 다시 검증한다: 동일 파일 342-383.
 - membership 검증은 committed row 수만큼 `Vec`을 예약하고 모든 문자열 field를 복제한 뒤 root를 계산한다: 동일 파일 425-517.
 - `validate_generation_identity`는 stale cache를 신뢰하지 않기 위해 query cache를 우회하고 `open_generation`을 호출한다: [semantic/lib.rs](../../../crates/quanta-index-semantic/src/lib.rs):244-340.
-- sealed ingest 직후 physical validation, activation/rollback, restart rehydrate가 이 validator를 호출한다: [ingest_dispatcher.rs](../../../crates/quanta-index-search-plane/src/ingest_dispatcher.rs):269-280, [search_corpus_lifecycle.rs](../../../crates/quanta-index-search-plane/src/search_corpus_lifecycle.rs):176-190, 239-291.
+- sealed ingest 직후 physical validation, activation/rollback, restart rehydrate가 이 validator를 호출한다: [ingest_dispatcher.rs](https://github.com/josongmin/quanta-index/blob/ec0e83d7a09409ecdaeb7eef1089b2bbf94133b5/crates/quanta-index-search-plane/src/ingest_dispatcher.rs):269-280, [search_corpus_lifecycle.rs](../../../crates/quanta-index-search-plane/src/search_corpus_lifecycle.rs):176-190, 239-291.
 - daemon boot의 semantic scanner는 state root의 모든 sealed generation을 순회해 `open_generation`을 실행한다: [semantic/lib.rs](../../../crates/quanta-index-semantic/src/lib.rs):537-659. scanner 결과를 ledger에 넣은 뒤 active generation은 lifecycle rehydrate에서 다시 validate한다: [runtime.rs](../../../crates/quanta-index-searchd/src/app/runtime.rs):783-806, [semantic_boot.rs](../../../crates/quanta-index-searchd/src/app/semantic_boot.rs):99-145.
 - validation 결과는 query open cache에 넣지 않는다. 따라서 activation 뒤 첫 query 또는 8-entry cache miss가 동일 generation을 다시 full-scan한다: [semantic/lib.rs](../../../crates/quanta-index-semantic/src/lib.rs):76-125, 180-240.
 
@@ -545,10 +545,10 @@ plan prose may still exist outside the touched files.
 
 **증거**
 
-- hybrid는 lexical search를 먼저 실행하고 그 결과 ID 집합만 `search_scoped_constrained`에 넘긴다: [query_dispatcher.rs](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs):531-610.
+- hybrid는 lexical search를 먼저 실행하고 그 결과 ID 집합만 `search_scoped_constrained`에 넘긴다: [query_dispatcher.rs](https://github.com/josongmin/quanta-index/blob/48759d8a29f57c2e818970f22e760307603be786/crates/quanta-index-search-plane/src/query_dispatcher.rs):531-610.
 - explanation builder도 semantic lane이 lexical universe에 제한되어 semantic-only hit를 절대 만들 수 없다고 명시한다: [semantic_query.rs](../../../crates/quanta-index-search-plane/src/query_dispatcher/semantic_query.rs):800-856.
 - runtime test는 lexical outsider가 semantic query와 더 잘 맞아도 hybrid 결과에서 제외되는 동작을 고정한다: [end_to_end.rs](../../../crates/quanta-index-searchd-runtime/tests/end_to_end.rs):2631-2705.
-- 반면 HybridSeed v2는 별도 dense lane을 실행해 dense-only entity를 허용한다: [query_dispatcher.rs](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs):778-831.
+- 반면 HybridSeed v2는 별도 dense lane을 실행해 dense-only entity를 허용한다: [query_dispatcher.rs](https://github.com/josongmin/quanta-index/blob/48759d8a29f57c2e818970f22e760307603be786/crates/quanta-index-search-plane/src/query_dispatcher.rs):778-831.
 
 **도달 영향**
 
@@ -572,11 +572,11 @@ plan prose may still exist outside the touched files.
 
 **증거**
 
-- HybridSeed는 lexical-scoped semantic search로 legacy `seed_candidates`를 먼저 만든다: [query_dispatcher.rs](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs):721-777.
+- HybridSeed는 lexical-scoped semantic search로 legacy `seed_candidates`를 먼저 만든다: [query_dispatcher.rs](https://github.com/josongmin/quanta-index/blob/48759d8a29f57c2e818970f22e760307603be786/crates/quanta-index-search-plane/src/query_dispatcher.rs):721-777.
 - 바로 이어서 global 또는 corpus별 semantic search를 다시 실행해 v2 lane과 `seed_candidates_v2`를 만든다: 동일 파일 778-831.
 - response는 legacy와 v2 candidate list를 모두 직렬화한다: [query_responses.rs](../../../crates/quanta-index-contract/src/results/query_responses.rs):428-445, 1588-1606.
 - wire decode와 `window.returned` 검증은 v2가 있으면 v2 길이를 active result로 사용한다: 동일 파일 1680-1691.
-- dispatcher의 `lq_merge_result_count`는 active v2가 아니라 legacy `seed_candidates.len()`을 기록한다: [query_dispatcher.rs](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs):1255-1273.
+- dispatcher의 `lq_merge_result_count`는 active v2가 아니라 legacy `seed_candidates.len()`을 기록한다: [query_dispatcher.rs](https://github.com/josongmin/quanta-index/blob/48759d8a29f57c2e818970f22e760307603be786/crates/quanta-index-search-plane/src/query_dispatcher.rs):1255-1273.
 - request contract는 empty `dense_corpora`를 SCV2 migration window의 legacy global dense lane이라고 명시한다: [requests.rs](../../../crates/quanta-index-contract/src/query/requests.rs):386-395.
 
 **도달 영향**
@@ -603,11 +603,11 @@ plan prose may still exist outside the touched files.
 
 **증거**
 
-- history/runtime/structural authority는 모든 repo/revision/generation을 한 `Arc<RwLock<Ledger>>` 안의 `BTreeMap`으로 보관한다: [readiness.rs](../../../crates/quanta-index-search-plane/src/readiness.rs):255-268, 1503-1847.
-- history와 runtime query는 global read guard를 잡은 채 filter evaluation과 `top_k` scan을 수행한다: [query_dispatcher.rs](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs):863-946, 3241-3306.
-- history/runtime/structural ingest는 global write guard 아래 state를 변경하고 durable persistence까지 수행한다: [ingest_dispatcher.rs](../../../crates/quanta-index-search-plane/src/ingest_dispatcher.rs):713-868.
+- history/runtime/structural authority는 모든 repo/revision/generation을 한 `Arc<RwLock<Ledger>>` 안의 `BTreeMap`으로 보관한다: [readiness.rs](https://github.com/josongmin/quanta-index/blob/f4e1da1f50aa3238c179e410820a029b1837ba5b/crates/quanta-index-search-plane/src/readiness.rs):255-268, 1503-1847.
+- history와 runtime query는 global read guard를 잡은 채 filter evaluation과 `top_k` scan을 수행한다: [query_dispatcher.rs](https://github.com/josongmin/quanta-index/blob/48759d8a29f57c2e818970f22e760307603be786/crates/quanta-index-search-plane/src/query_dispatcher.rs):863-946, 3241-3306.
+- history/runtime/structural ingest는 global write guard 아래 state를 변경하고 durable persistence까지 수행한다: [ingest_dispatcher.rs](https://github.com/josongmin/quanta-index/blob/ec0e83d7a09409ecdaeb7eef1089b2bbf94133b5/crates/quanta-index-search-plane/src/ingest_dispatcher.rs):713-868.
 - activation/rollback은 global ledger read guard를 physical pair validation과 durable CAS가 끝날 때까지 의도적으로 유지한다. QI-BB-017의 semantic full scan도 이 guard 안에서 실행된다: [search_corpus_lifecycle.rs](../../../crates/quanta-index-search-plane/src/search_corpus_lifecycle.rs):239-291.
-- `persist_from_ledger`는 mutation 종류와 무관하게 history, runtime, structural 전체 map을 각각 clone하고 세 CBOR file을 모두 다시 쓴다: [readiness.rs](../../../crates/quanta-index-search-plane/src/readiness.rs):2930-2955.
+- `persist_from_ledger`는 mutation 종류와 무관하게 history, runtime, structural 전체 map을 각각 clone하고 세 CBOR file을 모두 다시 쓴다: [readiness.rs](https://github.com/josongmin/quanta-index/blob/f4e1da1f50aa3238c179e410820a029b1837ba5b/crates/quanta-index-search-plane/src/readiness.rs):2930-2955.
 - search-corpus retention receipt는 sealed lexical/semantic identity만 prune한다. history/runtime/structural generation map은 제거하지 않는다: 동일 파일 423-469.
 - state는 persistence 전에 in-memory ledger에 적용된다. 세 file write도 개별 atomic replace일 뿐 하나의 transaction이 아니어서, 앞 file이 durable한 뒤 뒤 file이 실패하면 caller는 error를 받지만 memory와 일부 disk state는 이미 변경돼 있다.
 
@@ -667,7 +667,7 @@ plan prose may still exist outside the touched files.
 **증거**
 
 - explain request는 generation과 이미 반환된 candidate만 받고 원 질의, lowered plan, ranker provenance를 받지 않는다: [requests.rs](../../../crates/quanta-index-contract/src/query/requests.rs):840-852.
-- 실행은 candidate snippet 또는 candidate ID로 새 probe query를 만들고 기본 top-50 결과에 candidate가 있는지만 검사한다: [query_dispatcher.rs](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs):962-1012.
+- 실행은 candidate snippet 또는 candidate ID로 새 probe query를 만들고 기본 top-50 결과에 candidate가 있는지만 검사한다: [query_dispatcher.rs](https://github.com/josongmin/quanta-index/blob/48759d8a29f57c2e818970f22e760307603be786/crates/quanta-index-search-plane/src/query_dispatcher.rs):962-1012.
 - response의 `contributions`는 비어 있고 `ranker_weights_hash`는 zero이며 strategy는 `presence_probe`다: 동일 파일 1013-1033.
 - direct candidate-ID lookup이 아니라 top-50 재검색이므로 실제 index에 있는 candidate도 probe 결과 상위 50개 밖이면 `NOT present`로 보고할 수 있다.
 - 현재 search-product-quality RFC도 explanation fidelity를 미완성 영역으로 두고 synthetic post-hoc text가 아니라 실제 planner/runtime provenance를 요구한다: [rfc.md](../../../docs/plans/jun-7-search-product-quality/rfc.md):64-86, 221-249.
@@ -695,9 +695,9 @@ plan prose may still exist outside the touched files.
 
 **증거**
 
-- commit authority는 `BTreeMap<CommitSha, CommitRecord>`, diff authority는 `BTreeMap<HistoryDiffKey, ...>`다: [readiness.rs](../../../crates/quanta-index-search-plane/src/readiness.rs):1503-1548, 1573-1588.
+- commit authority는 `BTreeMap<CommitSha, CommitRecord>`, diff authority는 `BTreeMap<HistoryDiffKey, ...>`다: [readiness.rs](https://github.com/josongmin/quanta-index/blob/f4e1da1f50aa3238c179e410820a029b1837ba5b/crates/quanta-index-search-plane/src/readiness.rs):1503-1548, 1573-1588.
 - `CommitSha`는 raw 20-byte lexicographic `Ord`를 derive한다: [history.rs](../../../crates/quanta-index-contract/src/lex/history.rs):51-58.
-- executor는 map 순서로 match를 scan하다 `top_k`개가 차면 즉시 멈추며 score/recency sort를 하지 않는다: [query_dispatcher.rs](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs):3241-3278.
+- executor는 map 순서로 match를 scan하다 `top_k`개가 차면 즉시 멈추며 score/recency sort를 하지 않는다: [query_dispatcher.rs](https://github.com/josongmin/quanta-index/blob/48759d8a29f57c2e818970f22e760307603be786/crates/quanta-index-search-plane/src/query_dispatcher.rs):3241-3278.
 - current `CommitCandidate`에는 score가 없고 시간은 output field일 뿐 selection/order에 쓰이지 않는다: [commit_candidate.rs](../../../crates/quanta-index-contract/src/results/commit_candidate.rs):10-30.
 
 **도달 영향**
@@ -752,10 +752,10 @@ plan prose may still exist outside the touched files.
 
 - semantic 정책은 `1..=10_000`을 유효 범위로 선언하고 경계값 10,000을 받아들이는 unit test까지 둔다: [service.rs](../../../crates/quanta-index-core/src/domains/semantic/service.rs):9-34, 122-130.
 - hybrid 정책도 같은 10,000 경계값을 허용한다: [hybrid/service.rs](../../../crates/quanta-index-core/src/domains/hybrid/service.rs):14-26, 198-202.
-- dispatcher의 continuation probe는 `top_k + 1 <= 10_000`을 요구해 10,000을 거부한다. 같은 파일의 test도 9,999 성공과 10,000 실패를 고정한다: [query_dispatcher.rs](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs):120-130, 4762-4786.
+- dispatcher의 continuation probe는 `top_k + 1 <= 10_000`을 요구해 10,000을 거부한다. 같은 파일의 test도 9,999 성공과 10,000 실패를 고정한다: [query_dispatcher.rs](https://github.com/josongmin/quanta-index/blob/48759d8a29f57c2e818970f22e760307603be786/crates/quanta-index-search-plane/src/query_dispatcher.rs):120-130, 4762-4786.
 - semantic은 정책 검증을 통과한 뒤 이 probe에서 실패하고, hybrid/hybrid-seed도 같은 probe를 사용한다: 동일 파일 162-164, 619-679, 702-742.
 - 공용 text request와 SDK builder는 `top_k`가 존재하는지만 확인하고 0/상한을 검증하지 않는다: [requests.rs](../../../crates/quanta-index-contract-base/src/query/requests.rs):18-29, [text_query_builder.rs](../../../crates/quanta-index-sdk/src/text_query_builder.rs):32-50.
-- `top_k=0`은 semantic/hybrid에서는 거부되지만 lexical/symbol은 한 건을 probe한 뒤 0건으로 자르고, history/runtime은 첫 match를 push한 후 `len >= 0`에서 break해 **1건을 반환**한다: [query_dispatcher.rs](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs):405-498, 863-955, 3241-3306, 4013-4015.
+- `top_k=0`은 semantic/hybrid에서는 거부되지만 lexical/symbol은 한 건을 probe한 뒤 0건으로 자르고, history/runtime은 첫 match를 push한 후 `len >= 0`에서 break해 **1건을 반환**한다: [query_dispatcher.rs](https://github.com/josongmin/quanta-index/blob/48759d8a29f57c2e818970f22e760307603be786/crates/quanta-index-search-plane/src/query_dispatcher.rs):405-498, 863-955, 3241-3306, 4013-4015.
 
 **도달 영향**
 
@@ -844,7 +844,7 @@ plan prose may still exist outside the touched files.
 - `CachingEmbeddingProvider`는 inner `model_version()`을 외부에 그대로 노출하므로 version 개념 자체는 contract에 존재한다: 동일 파일 114-123.
 - OpenAI provider는 configured model name을 `model_id`로 쓰면서 `model_version()`은 항상 `None`을 반환한다: [openai.rs](../../../crates/quanta-index-embed/src/openai.rs):411-443.
 - searchd의 OpenAI profile은 같은 persistent cache wrapper를 corpus와 query embedding 양쪽에 사용한다: [runtime.rs](../../../crates/quanta-index-searchd/src/app/runtime.rs):311-361.
-- query/index gate는 model ID와 optional version만 비교한다. 양쪽이 같은 model name과 `None`이면 통과한다: [query_dispatcher.rs](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs):515-527.
+- query/index gate는 model ID와 optional version만 비교한다. 양쪽이 같은 model name과 `None`이면 통과한다: [query_dispatcher.rs](https://github.com/josongmin/quanta-index/blob/48759d8a29f57c2e818970f22e760307603be786/crates/quanta-index-search-plane/src/query_dispatcher.rs):515-527.
 - file cache entry는 raw little-endian `f32` 배열뿐이다. read는 byte 수가 4의 배수인지만 검사하고 dimension, finite 값, checksum을 확인하지 않으며 write도 direct best-effort overwrite다: [cache.rs](../../../crates/quanta-index-embed/src/cache.rs):215-265.
 - sealed semantic manifest 내부에는 실제 vector를 포함한 row root가 있지만 public/activation `GenerationSnapshot`은 source `manifest_digest`만 운반한다: [semantic_row_integrity_v1.rs](../../../crates/quanta-index-semantic/src/semantic_row_integrity_v1.rs):170-255, [control.rs](../../../crates/quanta-index-contract/src/ipc/control.rs):800-817.
 
@@ -874,11 +874,11 @@ plan prose may still exist outside the touched files.
 
 **증거**
 
-- direct materializer 진입점은 surface mutation 충돌만 검증한 뒤 target state를 검사하고 semantic derivation → lexical build → semantic publish 순서로 실행한다: [ingest_dispatcher.rs](../../../crates/quanta-index-search-plane/src/ingest_dispatcher.rs):189-285.
+- direct materializer 진입점은 surface mutation 충돌만 검증한 뒤 target state를 검사하고 semantic derivation → lexical build → semantic publish 순서로 실행한다: [ingest_dispatcher.rs](https://github.com/josongmin/quanta-index/blob/ec0e83d7a09409ecdaeb7eef1089b2bbf94133b5/crates/quanta-index-search-plane/src/ingest_dispatcher.rs):189-285.
 - semantic generation contract는 `ReplaceGeneration`에 `base_generation`이 있으면 거부한다: [generation_contract.rs](../../../crates/quanta-index-semantic/src/generation_contract.rs):141-152. 이 검증은 semantic build 안의 `ensure_generation_contract`에서 뒤늦게 실행된다: [build.rs](../../../crates/quanta-index-semantic/src/build.rs):1360-1380, 1616-1622.
 - lexical은 `Delta + base_generation 없음`만 거부하고 `ReplaceGeneration + base_generation 있음`은 허용한다. mode와 무관하게 base가 있으면 directory 전체를 복사하고, seal batch면 lexical sealed identity까지 기록한다: [lexical/lib.rs](../../../crates/quanta-index-lexical/src/lib.rs):3043-3095, 3320-3428.
 - lexical base clone은 directory 존재만 확인한다. semantic base clone은 sealed marker를 요구한다: [lexical/lib.rs](../../../crates/quanta-index-lexical/src/lib.rs):2873-2910, [build.rs](../../../crates/quanta-index-semantic/src/build.rs):1424-1458.
-- 빈 `manifest_digest`도 ingest DTO/authority record에서 선검증되지 않지만 composite activation identity는 이를 거부한다: [ingest.rs](../../../crates/quanta-index-contract/src/ipc/ingest.rs):502-521, 724-735, [readiness.rs](../../../crates/quanta-index-search-plane/src/readiness.rs):1933-1973, 3192-3220.
+- 빈 `manifest_digest`도 ingest DTO/authority record에서 선검증되지 않지만 composite activation identity는 이를 거부한다: [ingest.rs](../../../crates/quanta-index-contract/src/ipc/ingest.rs):502-521, 724-735, [readiness.rs](https://github.com/josongmin/quanta-index/blob/f4e1da1f50aa3238c179e410820a029b1837ba5b/crates/quanta-index-search-plane/src/readiness.rs):1933-1973, 3192-3220.
 
 **도달 영향**
 
@@ -968,9 +968,9 @@ plan prose may still exist outside the touched files.
 
 - 역사 계획 문맥의 SDK cutover 문서는 quanta-index가 “idempotency-keyed, replay-safe batch publish”를 보장한다고 명시한다. 현재 authoritative product contract인지 여부는 별도 확인이 필요하지만 public SDK가 `batch_digest`를 필수로 받는 배경 증거다: [may-25-sdk-cutover-wave-plan.md](../../plans/may-25-sdk-cutover-wave-plan.md):286-299.
 - search-corpus wire DTO는 `batch_digest`를 필수 문자열로 운반하지만, 공개 validator는 surface mutation의 중복/충돌만 검사한다. digest 형식, payload와의 일치, 과거 digest 충돌은 검증하지 않는다: [ingest.rs](../../../crates/quanta-index-contract/src/ipc/ingest.rs):502-529, 724-735.
-- direct materializer는 per-repo/revision stripe lock 아래 body를 derive/build한 뒤 generation authority를 갱신한다. `batch_digest` 조회·저장·duplicate short-circuit가 없다: [ingest_dispatcher.rs](../../../crates/quanta-index-search-plane/src/ingest_dispatcher.rs):189-285.
+- direct materializer는 per-repo/revision stripe lock 아래 body를 derive/build한 뒤 generation authority를 갱신한다. `batch_digest` 조회·저장·duplicate short-circuit가 없다: [ingest_dispatcher.rs](https://github.com/josongmin/quanta-index/blob/ec0e83d7a09409ecdaeb7eef1089b2bbf94133b5/crates/quanta-index-search-plane/src/ingest_dispatcher.rs):189-285.
 - search-corpus receipt는 `batch_digest`가 아니라 `manifest_digest`만 반환하고 SDK도 generation/manifest/count/seal만 대조한다: 동일 파일 592-607, [lexical.rs](../../../crates/quanta-index-sdk/src/lexical.rs):567-605.
-- 반대로 repo metadata/dirty 같은 auxiliary receipt는 `BatchPublishReceipt.manifest_digest` 필드에 `batch_digest`를 넣는다. 같은 receipt field가 route별로 다른 identity를 뜻한다: [lib.rs](../../../crates/quanta-index-lexical/src/lib.rs):3432-3515, [ingest_dispatcher.rs](../../../crates/quanta-index-search-plane/src/ingest_dispatcher.rs):776-805.
+- 반대로 repo metadata/dirty 같은 auxiliary receipt는 `BatchPublishReceipt.manifest_digest` 필드에 `batch_digest`를 넣는다. 같은 receipt field가 route별로 다른 identity를 뜻한다: [lib.rs](../../../crates/quanta-index-lexical/src/lib.rs):3432-3515, [ingest_dispatcher.rs](https://github.com/josongmin/quanta-index/blob/ec0e83d7a09409ecdaeb7eef1089b2bbf94133b5/crates/quanta-index-search-plane/src/ingest_dispatcher.rs):776-805.
 
 **도달 영향**
 

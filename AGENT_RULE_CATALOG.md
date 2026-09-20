@@ -166,4 +166,3 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 - Module-tree snapshot: `python3 tools/ci/lint/check-cargo-modules-snapshot.py`
 - IPC decoder fuzz build: `just rust-fuzz-build`
 - IPC decoder fuzz smoke (60s each): `just rust-fuzz-smoke`
-

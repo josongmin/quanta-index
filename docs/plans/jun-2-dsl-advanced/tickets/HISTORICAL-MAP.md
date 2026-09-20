@@ -31,4 +31,3 @@ For cold-start execution order, use:
 5. `ADV-02` `Predicate` sibling
 6. `ADV-03`
 7. `ADV-04`
-

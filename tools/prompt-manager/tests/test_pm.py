@@ -49,6 +49,7 @@ def test_preview_agents_mentions_core_docs():
     assert "AGENT_PLAYBOOK.md" in result.stdout
     assert "AGENT_REFERENCE.md" in result.stdout
     assert "AGENT_RULE_CATALOG.md" in result.stdout
+    assert result.stdout.endswith("\n") and not result.stdout.endswith("\n\n")
 
 
 def test_preview_agent_core_mentions_prompt_manager():

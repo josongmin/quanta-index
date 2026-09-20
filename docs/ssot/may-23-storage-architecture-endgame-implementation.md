@@ -189,7 +189,7 @@ Planned crates (not in workspace yet):
 
 ### Adapter crate naming (decided)
 
-**crate 이름에 vendor/DB 이름을 넣지 않는다** (`tantivy`, `lance`, `lancedb` 등).  
+**crate 이름에 vendor/DB 이름을 넣지 않는다** (`tantivy`, `lance`, `lancedb` 등).
 crate는 capability 기준(`artifact`, `lexical`, `semantic`, `ipc`)이고, 구체 엔진은 **crate 내부 구현**으로 숨긴다.
 
 ### Adapter crate split: lexical vs semantic (decided)

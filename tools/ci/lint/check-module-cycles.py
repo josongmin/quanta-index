@@ -52,9 +52,7 @@ DEFINITION_RE = re.compile(
     re.M,
 )
 MACRO_RE = re.compile(r"^\s*macro_rules!\s+(" + IDENT + r")", re.M)
-MOD_DECL_RE = re.compile(
-    r"^[ \t]*(?:pub(?:\([a-z ]+\))?\s+)?mod\s+(" + IDENT + r")\s*;", re.M
-)
+MOD_DECL_RE = re.compile(r"^[ \t]*(?:pub(?:\([a-z ]+\))?\s+)?mod\s+(" + IDENT + r")\s*;", re.M)
 
 
 def blank_non_code(text: str) -> str:
@@ -116,7 +114,9 @@ def blank_non_code(text: str) -> str:
             continue
         if c == "'":
             # a char literal ('x', '\n', '\u{1F600}', 'é') or a lifetime ('a)
-            lit = re.match(r"'(?:\\(?:u\{[0-9A-Fa-f]+\}|x[0-9A-Fa-f]{2}|.)|[^\\'\n])'", text[i : i + 14])
+            lit = re.match(
+                r"'(?:\\(?:u\{[0-9A-Fa-f]+\}|x[0-9A-Fa-f]{2}|.)|[^\\'\n])'", text[i : i + 14]
+            )
             if lit:
                 blank(i, i + lit.end())
                 i += lit.end()

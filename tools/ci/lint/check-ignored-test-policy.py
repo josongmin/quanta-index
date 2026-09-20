@@ -30,8 +30,11 @@ def _ignored_tests(root: Path) -> set[tuple[str, str, str]]:
             if match is None:
                 continue
             function = next(
-                (candidate.group(1) for candidate_line in lines[index + 1 : index + 10]
-                 if (candidate := FUNCTION.search(candidate_line))),
+                (
+                    candidate.group(1)
+                    for candidate_line in lines[index + 1 : index + 10]
+                    if (candidate := FUNCTION.search(candidate_line))
+                ),
                 None,
             )
             if function is None:
@@ -69,7 +72,9 @@ def audit(root: Path = ROOT, policy_path: Path = DEFAULT_POLICY) -> list[str]:
             errors.append(f"{policy_path}: exceptions[{index}].review_by must be ISO date")
         else:
             if review_date < dt.date.today():
-                errors.append(f"{policy_path}: exceptions[{index}] review_by is expired: {review_by}")
+                errors.append(
+                    f"{policy_path}: exceptions[{index}] review_by is expired: {review_by}"
+                )
         entry = values  # type: ignore[assignment]
         if entry in declared:
             errors.append(f"{policy_path}: duplicate exception: {entry[0]}::{entry[1]}")

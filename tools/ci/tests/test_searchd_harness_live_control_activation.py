@@ -103,9 +103,7 @@ def test_sealed_ingest_receipt_identity_reaches_composite_cas_v1() -> None:
 def test_control_response_and_composite_activation_ack_are_request_bound_v1() -> None:
     source = read_harness()
     dispatch_control = rust_item_body(source, "fn dispatch_control(")
-    dispatch_control_response = rust_item_body(
-        source, "fn dispatch_control_response_v1("
-    )
+    dispatch_control_response = rust_item_body(source, "fn dispatch_control_response_v1(")
     activate = rust_item_body(source, "activate_last_sealed_generation(")
 
     assert "response.request_id != request_id" in dispatch_control_response

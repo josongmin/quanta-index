@@ -113,7 +113,7 @@ def render(target: Target) -> str:
     tmpl = env.get_template(target.template.name)
     body = tmpl.render(sections=sections, target=target)
 
-    return GENERATED_BANNER + body
+    return (GENERATED_BANNER + body).rstrip("\n") + "\n"
 
 
 # ---------------------------------------------------------------------------

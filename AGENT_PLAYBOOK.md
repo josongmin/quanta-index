@@ -208,4 +208,3 @@ Rule:
 - local `sccache` uses a repository-derived server port and a 10 GiB maximum;
   inspect with `just rust-sccache-stats`, disable with `QUANTA_INDEX_SCCACHE=0`
 - large bundle/vector payloads belong in artifact stores, not git
-

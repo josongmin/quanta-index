@@ -50,4 +50,3 @@ Every verification closeout must report:
 - excluded surface or remaining seam
 - final status
 - failure class if failed
-

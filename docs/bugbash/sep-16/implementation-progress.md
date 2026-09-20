@@ -678,7 +678,7 @@ projection / `count:N` / tie-boundary 재조회는 `collect_limit = num_docs`로
 **새 계약 표면**:
 - `LexicalSearchPageV1 { candidates, exact_total: Option<u64> }` — `LexicalSearcher::search_constrained`
   반환형. `search`는 port default(`.candidates`)로 위임. `search_all_constrained`는 이전 커밋에서 삭제.
-- `LexicalExecutionBudgetV1` (core; private field, 0 거부, DEFAULT 250,000) + 
+- `LexicalExecutionBudgetV1` (core; private field, 0 거부, DEFAULT 250,000) +
   `LEXICAL_EXAMINED_BUDGET_EXCEEDED` typed code. adapter는 `collect_bounded` **하나**로 4개
   실행 경로(text/symbol constrained, `search_all`, `search_symbols_all`)를 돌린다 —
   whole-set 실행은 `min(num_docs, budget+1)`을 수집해 초과가 관측 가능하고, count collector는
@@ -2647,7 +2647,7 @@ QI-BB-029 — (c) 중간 실패로 남은 half-sealed pair를 boot가 보고하�
 `DoorFindingQuarantinePort`에 넘긴다. adapter는 caller를 믿지 않는다 — directory lifecycle lock 아래에서 자기 문 증명을 다시 돌려
 (lexical: sealed walk, semantic: 판정을 낼 수 있는 유일한 부분인 sealed manifest layout 증명) **같은 판정일 때만** scrub과 같은
 content-corrupt receipt를 쓴다. 온전하면 `NotReproduced`, 이미 receipt가 있으면 그 entry, identity 불일치·디렉터리 부재·I/O는 오류(기록 0).
-restart(serve head)는 fail-closed — 기록하지 않으므로 bytes 복원 후 다시 boot된다. 
+restart(serve head)는 fail-closed — 기록하지 않으므로 bytes 복원 후 다시 boot된다.
 
 **티켓 완료 기준 대조(코드 기준)**
 
