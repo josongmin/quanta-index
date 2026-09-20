@@ -979,30 +979,15 @@ fn sourcegraph_path_and_lang_filters_execute_against_indexed_metadata() -> TestR
     stop_runtime(shutdown, join)
 }
 
-#[test]
-fn history_query_returns_typed_generation_not_ready_error() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, _ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-history-generation-not-ready-test")?;
-
-    let err = wait_for_typed_error(
-        &socket,
-        &history_query("type:commit fix"),
-        READINESS_TIMEOUT,
-    )?;
+fn verify_history_generation_not_ready(socket: &Path) -> TestResult {
+    let err = wait_for_typed_error(socket, &history_query("type:commit fix"), READINESS_TIMEOUT)?;
     if err.code != "HISTORY_GENERATION_NOT_READY" {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected HISTORY_GENERATION_NOT_READY, got {}", err.code).into());
     }
     if !err.message.contains("not yet materialized") {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("unexpected generation-not-ready message: {}", err.message).into());
     }
-
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
 #[test]
@@ -1372,13 +1357,7 @@ fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> Tes
     stop_runtime(shutdown, join)
 }
 
-#[test]
-fn hybrid_query_requires_joint_materialization() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "searchd-test-driver")?;
-    drop(ingest_socket);
-
+fn verify_hybrid_requires_joint_materialization(socket: &Path) -> TestResult {
     // Hybrid query still fails on the lexical gate first when neither lexical
     // nor semantic generation has materialized yet.
     let hybrid_req = SearchPlaneQueryIpcRequestEnvelope {
@@ -1399,22 +1378,15 @@ fn hybrid_query_requires_joint_materialization() -> TestResult {
             top_k: 5,
         }),
     };
-    let response = send_query_request(&socket, &hybrid_req)?;
+    let response = send_query_request(socket, &hybrid_req)?;
     let err = match response.payload {
         SearchPlaneQueryIpcResponse::Error(err) => err,
-        other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
-            return Err(format!("expected Error, got {other:?}").into());
-        }
+        other => return Err(format!("expected Error, got {other:?}").into()),
     };
     if err.code != "NOT_READY" {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected NOT_READY, got {}", err.code).into());
     }
-
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
 #[test]
@@ -1675,25 +1647,7 @@ fn repo_metadata_filters_share_one_indexed_fixture() -> TestResult {
     shutdown_result
 }
 
-#[test]
-fn semantic_only_query_requires_semantic_materialization() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let config = build_config(state_root);
-    let runtime = build_runtime(config)?;
-    let socket = runtime.query_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name("searchd-test-driver".into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-
-    if !wait_until(Duration::from_secs(2), || socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("socket never appeared".into());
-    }
-
+fn verify_semantic_requires_materialization(socket: &Path) -> TestResult {
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 0,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
@@ -1705,31 +1659,19 @@ fn semantic_only_query_requires_semantic_materialization() -> TestResult {
             top_k: 3,
         }),
     };
-    let response = send_query_request(&socket, &req)?;
+    let response = send_query_request(socket, &req)?;
     let err = match response.payload {
         SearchPlaneQueryIpcResponse::Error(e) => e,
-        other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
-            return Err(format!("expected Error, got {other:?}").into());
-        }
+        other => return Err(format!("expected Error, got {other:?}").into()),
     };
     if err.code != "SEMANTIC_GENERATION_NOT_MATERIALIZED" {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!(
             "expected SEMANTIC_GENERATION_NOT_MATERIALIZED, got {}",
             err.code
         )
         .into());
     }
-
-    shutdown.store(true, Ordering::Release);
-    match join.join() {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(e.into()),
-        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
-    }
+    Ok(())
 }
 
 #[test]
@@ -3443,8 +3385,20 @@ fn request_validation_refusals_share_one_runtime() -> TestResult {
     let verification: TestResult = (|| {
         for (name, verify) in [
             (
+                "history_generation_not_ready",
+                verify_history_generation_not_ready as fn(&Path) -> TestResult,
+            ),
+            (
+                "hybrid_requires_joint_materialization",
+                verify_hybrid_requires_joint_materialization,
+            ),
+            (
+                "semantic_requires_materialization",
+                verify_semantic_requires_materialization,
+            ),
+            (
                 "hybrid_generation_pin_mismatch",
-                verify_hybrid_generation_pin_mismatch as fn(&Path) -> TestResult,
+                verify_hybrid_generation_pin_mismatch,
             ),
             (
                 "semantic_generation_pin_mismatch",

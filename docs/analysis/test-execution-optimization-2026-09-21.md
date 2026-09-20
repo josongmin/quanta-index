@@ -3,7 +3,7 @@
 ## Source snapshot
 
 - Audit-start HEAD: `3ad279a08879de35fa96a5495a3382af28f095d0`
-- Final verification HEAD: `a11085b7af1152df40983ac2c69c53befc8266f6`.
+- Initial topology-verification HEAD: `a11085b7af1152df40983ac2c69c53befc8266f6`.
   The shared checkout advanced through `49204a8` and `a11085b` while this work
   was running; validation was repeated after that advance.
 - The checkout already contained user-owned contract, SDK, search-plane, and
@@ -66,7 +66,7 @@ files as 49 Cargo test binaries. Each binary linked nearly the complete daemon
 graph and measured about 330 MiB in the current lane. The sources now compile as
 modules of three explicit targets:
 
-- `runtime_fast_suite`: 9 source files, 52 runnable tests plus one ignored test;
+- `runtime_fast_suite`: 9 source files, 49 runnable tests plus one ignored test;
 - `runtime_risk_suite`: 21 source files, 168 tests;
 - `runtime_extended_suite`: 19 source files, 48 tests.
 
@@ -136,9 +136,13 @@ test while retaining the original query cases and assertions.
 A third pass folded five more read-only validation scenarios into the existing
 empty-runtime refusal group: hybrid and semantic generation-pin mismatch,
 hybrid zero `top_k`, structural generation-not-ready, and structural composition
-wiring. The current suite exposes 52 runnable entry points plus one ignored
-network test. In total, 27 redundant fixture or daemon lifecycles were removed
-from the original 79 runnable entry points.
+wiring. This exposed 52 runnable entry points plus one ignored network test.
+
+A fourth pass folded three more read-only empty-runtime gates into that group:
+history generation-not-ready, hybrid joint-materialization readiness, and
+semantic materialization readiness. The current suite exposes 49 runnable
+entry points plus one ignored network test. In total, 30 redundant fixture or
+daemon lifecycles were removed from the original 79 runnable entry points.
 
 Local `sccache` is enabled only when installed and uses a repository-derived
 server port. It caches non-incremental compilations after a lane is cleaned or
@@ -208,6 +212,10 @@ an overridden run is not clean performance evidence.
   32 foreign Rust processes and load averages above 400, four unrelated tests
   hit the 30-second IPC read timeout; fail-fast stopped the run after 17/52
   tests. A quiet-host 52/52 rerun remains required
+- fourth-pass shared refusal group: 1/1 PASS in 0.780s, covering all eleven
+  read-only validation/readiness scenarios on one empty runtime; suite compile
+  PASS. A quiet-host 49/49 rerun remains required because host load was still
+  above 300 during this pass
 - daemon-fast before DSL-truth separation: 84/84 PASS, one ignored, two
   binaries; 193.157s nextest execution under the same non-authoritative class
   of host contention
