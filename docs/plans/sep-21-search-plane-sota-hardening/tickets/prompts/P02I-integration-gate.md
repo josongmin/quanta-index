@@ -1,25 +1,30 @@
 # Copy/paste prompt — P02I M1 Integration Gate
 
-당신은 P02A/P02B integration owner다. 먼저 repo root 기준
-`docs/plans/sep-21-search-plane-sota-hardening/tickets/prompts/COMMON-EXECUTION-CONTRACT.md`와 같은 디렉터리의
-`README.md`를 읽고 그대로 적용한다.
+당신은 P02A/P02B integration owner다. repo root 기준 prompts의 `COMMON-EXECUTION-CONTRACT.md`와 `README.md`를
+먼저 읽고 적용한다. P01A의 동일 result SHA에서 나온 P02A/P02B checkpoint commit, handoff, proof manifest가 모두
+있을 때만 시작한다. 격리 integration branch에 두 commit을 순서대로 통합한다. semantic conflict를 임의 adapter로
+병합하지 말고 `BLOCKED`로 종료한다.
 
-P01이 고정한 동일 base SHA에서 나온 P02A/P02B checkpoint commit과 handoff가 모두 있을 때만 시작한다. 두 lane
-commit을 격리 integration branch에 순서대로 통합한다. conflict가 semantic owner 결정을 요구하면 임의 병합하지
-말고 `BLOCKED`로 종료한다.
+## 필수 작업
 
-필수 작업:
+1. 두 handoff schema, commit ancestry/base SHA, exact write set, proof manifest digest와 P01A error-table digest를 검증한다.
+2. P01A가 live persistence/activation/quarantine를 수정하지 않았고 P02A가 durable mutation을 하지 않았는지 확인한다.
+3. P02B가 closed event kind만 받고 allocator/event/domain row를 한 transaction에 묶으며 rollback/restore-max proof를
+   가졌는지 확인한다.
+4. P02A output이 P01A canonical identity/commitment/resource receipt를 완전하게 보존하고 raw bundle 재해석을
+   downstream에 허용하지 않는지 확인한다.
+5. P02A/B가 추가한 모든 refusal이 `SearchPlaneErrorCodeV2` variant인지 확인한다. production source의
+   `CoreError::Typed code:String`, `SearchPlaneIpcError code:String`, dynamic error-code `format!`, `&str` pass-through,
+   substring/equality classification, unknown decoder success는 0이어야 한다.
+6. shared contract/public API baseline/wire inventory/generated docs delta는 이 lane에서 한 번만 통합한다.
+7. merged clean HEAD에서 `p02a-repomap-compiler`, `p02b-operation-journal`, public API, wire inventory, static gates를
+   실행하고 두 proof manifest를 `--bind-source`로 검증한다.
+8. enum `ALL` wire uniqueness, accepted-code cardinality/table digest, compiler/journal API, global sequence event-kind
+   digest, mutation coordinator 경계를 amended ADR과 교차 검토한다.
+9. `artifacts/sep-21/handoffs/P02I.json`에 exact integration commit, fresh manifest digests, P03 소비 API/fixture를 남긴다.
 
-1. P02A/P02B handoff schema, commit ancestry, exact write set, proof manifest digest를 검증한다.
-2. shared contract/public API baseline/wire inventory/generated docs는 이 lane에서만 통합한다.
-3. merged clean HEAD에서 `p02a-repomap-compiler`와 `p02b-operation-journal` registered command를 모두 재실행한다.
-4. 두 manifest를 current integration HEAD에 `--bind-source`로 검증한다.
-5. exported compiler/journal types, refusal codes, sequence scope, mutation coordinator 경계가 Accepted ADR과 일치하는지
-   정적으로 교차 검토한다.
-6. `artifacts/sep-21/handoffs/P02I.json`을 만들고 exact integration commit 및 두 fresh manifest digest를 downstream에 넘긴다.
+금지: branch별 과거 proof 재사용, shim/optional field conflict 봉합, 한 lane failure 상쇄, unrelated dirty 포함,
+P03 live layout/quarantine/activation cutover 선행 구현.
 
-금지: branch별 과거 proof 재사용, conflict를 shim/optional field로 봉합, 한 lane failure를 다른 lane success로
-상쇄, unrelated dirty 변경 포함.
-
-P03은 `P02I.json`과 양쪽 fresh proof가 동일 integration HEAD에 결속될 때만 시작할 수 있다. explicit owned path만
-stage하여 integration checkpoint commit을 만들고 push는 별도 요청이 있을 때만 한다.
+P03은 P02I handoff와 양쪽 fresh proof가 동일 clean integration HEAD에 결속될 때만 시작한다. explicit owned path만
+stage해 integration checkpoint commit을 만들고 push는 별도 요청 시에만 한다.

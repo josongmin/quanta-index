@@ -40,9 +40,11 @@ write scope:
 - non-empty `focus_subjects`는 전부 strict resolve하고 하나라도 없으면 `FOCUS_SUBJECT_NOT_FOUND`; global fallback 0
 - compiled output에 graph/content/schema/profile commitments와 resource receipt 포함
 - raw bundle을 S21-02가 재해석할 수 없도록 API 경계 설정
+- P01A canonical candidate envelope를 채울 완전한 `CompiledRepoMapCandidateV1`를 반환하되 object store,
+  catalog, activation, quarantine, global sequence를 호출하지 않음
 
 금지: invalid entry `continue`, last-write-wins, infallible partial output, input 순서/map iteration에 따라 변하는
-commitment, route-local tokenizer.
+commitment, route-local tokenizer, persistence/open/quarantine/catalog mutation.
 
 DoD:
 

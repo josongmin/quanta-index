@@ -25,11 +25,16 @@ owner path가 시작 시 이미 dirty이거나 다른 lane이 소유하면 수�
 끝낸다. 대화의 `DONE` 문구는 gate가 아니다. predecessor commit과 source-bound handoff/proof가 current source와
 일치해야 한다.
 
+ticket 전체 closure와 intermediate checkpoint를 혼동하지 않는다. `P01A`는 S21-01 전체 closure가 아니며 `P02I`는
+두 병렬 lane의 same-HEAD integration checkpoint다. S21-01/S21-02 closure는 P03 handoff와 proof가 current source에
+결속된 뒤에만 선언한다.
+
 ## 3. Write and integration discipline
 
 - 한 lane은 명시한 owner allowlist만 수정한다. 추가 owner가 필요하면 먼저 범위와 충돌을 보고하고 중단한다.
 - `git add -A`, stash, reset, unrelated formatting/cleanup, 다른 owner의 dirty 수정은 금지한다.
 - P02A/P02B만 병렬이다. 동일 P01 base SHA의 별도 worktree/branch에서 수행한다.
+- P00, P01A, P02I, P03~P12는 순차다. predecessor가 실행 중이면 다음 lane을 선행 구현하지 않는다.
 - shared contract, public API baseline, wire inventory, generated docs는 integration owner 단일 writer다.
 - 병렬 lane 결과는 각각 한 checkpoint commit으로 인계한다. integration owner가 두 commit을 합친 뒤 동일 clean
   integration HEAD에서 양쪽 proof를 재실행하고 `P02I` integration handoff를 만든다.

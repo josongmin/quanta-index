@@ -1,57 +1,75 @@
-# Copy/paste prompt — P01 Canonical Identity and Layout
+# Copy/paste prompt — P01A Canonical Identity, Codec and Error Authority
 
-당신은 S21-01 owner다. 먼저 repo root 기준 `docs/plans/sep-21-search-plane-sota-hardening/tickets/prompts/`
-아래 `COMMON-EXECUTION-CONTRACT.md`와 `README.md`를 읽고 그대로 적용한다. P00 handoff와
-`p00-authority-freeze` manifest가 현재 source에 결속될 때만 시작한다. 없으면 우회하지
-말고 `BLOCKED`와 missing artifact를 보고하라.
+당신은 S21-01 phase A owner다. 먼저 repo root 기준
+`docs/plans/sep-21-search-plane-sota-hardening/tickets/prompts/COMMON-EXECUTION-CONTRACT.md`와 같은 디렉터리의
+`README.md`를 읽고 그대로 적용한다. corrected P00 checkpoint, handoff, `p00-authority-freeze` manifest가 모두 current
+source에 결속되고 P01A를 명시적으로 허용할 때만 시작한다. 하나라도 없으면 `BLOCKED`다.
 
-repo instructions와 아래 문서를 전부 읽어라.
+repo instructions, FINAL-AUDIT, INDEX, S21-01, amended SEP-21-001/decision registry, P00 handoff를 전부 읽는다. 시작 시
+exact HEAD/dirty digest/owner paths, P00 accepted-code table digest와 canonical golden-vector IDs를 freeze한다.
 
-- `docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-AUDIT.md`
-- `docs/plans/sep-21-search-plane-sota-hardening/tickets/INDEX.md`
-- `docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-01-canonical-identity-and-layout-v3.md`
-- P00이 만든 identity/format ADR와 wire inventory
+## 목표
 
-시작 시 exact HEAD/dirty digest/owner paths를 freeze하고 기존 dirty 파일과 충돌 여부를 먼저 보고하라.
+logical/content/physical identity를 분리하는 pure contract/codec foundation과 closed error authority를 만든다. 이
+lane은 live persistence를 바꾸지 않으며 S21-01 전체 closure가 아니다.
 
-목표: logical identity, content identity, physical storage address를 분리하고 separator-join collision과
-filename authority를 제거한다.
+## owner scope
 
-owner files/symbols:
+- `crates/quanta-index-contract-base/{Cargo.toml,src/macros.rs,src/ids.rs}`와 identity property tests
+- `crates/quanta-index-contract/{Cargo.toml,src/ipc/error.rs,src/repomap.rs}`의 allocated canonical schema/error section
+- `crates/quanta-index-core/src/{error.rs,domains/generation.rs}`
+- query/ingest/control error converter, query repair/metrics classification
+- `crates/quanta-index-sdk/src/{error.rs,client.rs}`
+- production `CoreError::Typed` producer sites와 dynamic error-code helper. preflight에서 exact generated allowlist를
+  만들고 8 producer crate의 path를 기록한다. allowlist 밖 owner 변경이 필요하면 패치 전에 `BLOCKED`다.
+- 신규 pure `crates/quanta-index-repomap/src/layout_v3.rs`와 lib export
+- Cargo manifests/lockfile, identity/error/layout owner tests, dedicated Just/profile/test-authority/proof registry delta
+- shared public API baseline/wire inventory는 P02I single writer가 적용할 exact delta만 handoff한다.
 
-- `crates/quanta-index-contract-base/src/macros.rs::string_newtype`
-- `crates/quanta-index-contract-base/src/ids.rs::{RepoId,RevisionId}`
-- `crates/quanta-index-contract/src/ipc/error.rs::SearchPlaneErrorCodeV2`
-- `crates/quanta-index-repomap/src/persistence.rs::{snapshot_file_name_for,activation_file_name,encode_component}`
-- `crates/quanta-index-repomap/src/store.rs::RepoMapStoreKeyV1`
-- `crates/quanta-index-repomap/src/model.rs::RepoMapSnapshot`
-- `crates/quanta-index-repomap/src/persistence.rs` quarantine object layout/codec section
-- integration owner에게 넘길 persisted/wire inventory와 public API baseline delta
+## 구현 순서
 
-구현 순서:
+1. `RepoId`/`RevisionId`의 public unchecked construction과 serde bypass를 제거한다. 하나의 validator를
+   constructor/TryFrom/FromStr/serde가 공유하고 decode 후 normalize하지 않는다.
+2. `RepositoryRevisionIdentityV1`, `LogicalGenerationIdentityV1`, `ArtifactIdentityV1`를 amended ADR의 exact distinct
+   domain framing으로 구현한다. 기존 `GenerationStorageKeyV1` duplicate authority는 delegate/remove한다.
+3. `CandidateCommitmentV1`, `CandidateObjectDigestV1`, `CandidateObjectAddressV1`, canonical candidate envelope와 fixed
+   fanout grammar를 pure type/codec/path function으로 구현한다. human identity는 path component가 아니다.
+4. `QuarantineIncidentV1` codec/address 함수를 구현한다. caller-supplied positive state-root-global sequence가
+   mandatory다. sequence 생성/저장과 filesystem publish는 하지 않는다.
+5. lstat/no-follow/fstat, inode/device, regular-file, expected uid, exact mode, `nlink == 1`을 표현하는 immutable
+   `StateRootSecurityContextV1`/verification primitive를 제공하되 live store에 wiring하지 않는다.
+6. `SearchPlaneErrorCodeV2` closed enum/table을 구현한다. `ALL`, `as_wire_str`, exact `from_wire_str`, manual serde와
+   wire-string uniqueness를 제공한다. 기존 `LexicalErrorCode`는 nested variant로 재사용하되 wire는 flat exact string이다.
+7. `SearchPlaneIpcError.code`와 `CoreError::Typed.code`를 enum으로 바꾸고 producer → core → query/ingest/control → IPC →
+   SDK를 한 번에 타입화한다. generic CoreError mapping은 단일 exhaustive owner로 모은다.
+8. dynamic `format!` code, `&str` pass-through, code substring/string-equality classification을 lower-domain enum과
+   exhaustive mapping으로 교체한다. boundary에서 string을 enum으로 parse하는 봉합은 금지한다.
+9. stale/unknown `BAD_REQUEST` decode는 실패하도록 historical fixture를 전환한다. fuzz/public/wire fixtures를 갱신한다.
 
-1. ADR의 raw/canonical policy를 fallible type validation과 하나의 canonical tuple encoder로 구현한다.
-2. field order, integer width, Unicode policy, domain tags가 고정된 golden bytes/digests를 만든다.
-3. P00이 고정한 exact path grammar와 fanout으로 candidate object address를 변경하고 human identity는 payload에만 둔다.
-4. logical generation key와 physical content digest를 별도 타입으로 분리한다. catalog UNIQUE/CAS constraint는
-   P03 owner에게 넘기고 이 lane에서 선점하지 않는다.
-5. open에서 lstat/fstat, regular-file, uid/mode, `nlink == 1`, payload/address digest를 검증한다.
-6. quarantine는 incident ID, observed-at, original path, size, payload/address digest, reason, sequence를 append-only 저장한다.
-7. legacy parser는 offline importer 전용으로 격리하고 runtime dual-read/write를 제거한다.
-8. closed `SearchPlaneErrorCodeV2`와 stable wire representation/exhaustive mapping을 구현한다.
+## 금지
 
-금지: separator escape 보강, version prefix만 추가, silent normalization, filename을 payload identity보다 신뢰,
-activation filesystem authority 재도입.
+- `persistence.rs`, `store.rs`, live `model.rs`, activation filename/codec, runtime boot/open, catalog schema 수정
+- object/quarantine filesystem write, legacy reader 제거, filesystem activation 제거
+- local/timestamp/random incident sequence, temporary hashed activation pointer
+- separator escape 보강, version prefix만 추가, silent normalization, compatibility constructor
+- `Unknown(String)`, `Other(String)`, free-form code wrapper, unknown/stale decoder success
 
-DoD/proof:
+## DoD/proof
 
-- tuple injectivity/roundtrip property 및 frozen collision fixture
-- composed/decomposed Unicode, case folding, `%` `/` NUL, dot segment, max length/fanout
-- symlink/hardlink/payload-address mismatch/duplicate physical address refusal
-- repeated quarantine basename가 이전 evidence를 덮지 않음
-- public API/wire inventory/owner tests가 같은 source를 가리킴
-- unknown/stale error code와 free-form code success path 0
+- empty/over-limit/control/non-NFC refusal; `%`, `/`, dot sequence policy; case sensitivity; serde/constructor parity
+- tuple injectivity/roundtrip, frozen separator collision, distinct repository/logical domains, exact golden bytes/digests
+- fixed-length address/fanout and security primitive negative matrix
+- sequence 0이면 incident encode 불가; same canonical envelope는 same incident address
+- `SearchPlaneIpcError.code: String`, `CoreError::Typed.code: String`, production code `format!`, `&str` pass-through,
+  substring/string-equality classification, unknown decoder success가 0
+- enum `ALL` wire uniqueness, accepted-code cardinality/table digest, stale `BAD_REQUEST` negative fixture
+- production RepoMap filesystem mutation 0; live cutover symbols는 의도적으로 P03에 남음
+- `rust-public-api`, wire inventory, fuzz smoke와 owner-local tests가 same source를 가리킴
 
-proof node는 `p01-canonical-identity`, canonical release command는 registry의 현재 값을 사용한다. 최종 보고에 공통
-상태, source freeze, 변경 파일/타입, format bump, 실행 proof counts, NOT_RUN, P02A/P02B에 제공할 frozen identity
-API와 `artifacts/sep-21/handoffs/P01.json`을 포함하라. explicit owner path만 checkpoint commit하고 push는 별도 요청 시에만 한다.
+proof node는 `p01-canonical-identity`다. corrected P00이 등록한 dedicated recipe와 non-empty test-authority targets를
+사용한다. generic `test-fast`나 compile-only를 OWNER_PROOF_GREEN으로 승격하지 않는다.
+
+최종 보고에는 공통 status, exact source/dirty ownership, exact write set, identity/codec/error table, accepted-code
+cardinality/digest, raw-string static search, golden vectors, command별 counts, NOT_RUN, 의도적으로 남긴 live-cutover
+work, P02A/P02B가 소비할 frozen API와 `artifacts/sep-21/handoffs/P01.json`을 포함한다. S21-01을 done으로 바꾸지
+않는다. explicit owner path만 checkpoint commit하고 push는 별도 요청 시에만 한다.
