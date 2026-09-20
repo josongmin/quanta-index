@@ -66,7 +66,7 @@ files as 49 Cargo test binaries. Each binary linked nearly the complete daemon
 graph and measured about 330 MiB in the current lane. The sources now compile as
 modules of three explicit targets:
 
-- `runtime_fast_suite`: 9 source files, 57 runnable tests plus one ignored test;
+- `runtime_fast_suite`: 9 source files, 52 runnable tests plus one ignored test;
 - `runtime_risk_suite`: 21 source files, 168 tests;
 - `runtime_extended_suite`: 19 source files, 48 tests.
 
@@ -130,10 +130,15 @@ A second consolidation pass removed ten more identical read-only lifecycles:
 - the two sealed-track read-view checks share one fixture;
 - two structural file-query checks share one indexed fixture.
 
-The current fast suite exposes 57 runnable test entry points plus one ignored
-network test while retaining the original query cases and assertions. In total,
-22 redundant fixture or daemon lifecycles were removed from the original 79
-runnable entry points.
+The second pass exposed 57 runnable test entry points plus one ignored network
+test while retaining the original query cases and assertions.
+
+A third pass folded five more read-only validation scenarios into the existing
+empty-runtime refusal group: hybrid and semantic generation-pin mismatch,
+hybrid zero `top_k`, structural generation-not-ready, and structural composition
+wiring. The current suite exposes 52 runnable entry points plus one ignored
+network test. In total, 27 redundant fixture or daemon lifecycles were removed
+from the original 79 runnable entry points.
 
 Local `sccache` is enabled only when installed and uses a repository-derived
 server port. It caches non-incremental compilations after a lane is cleaned or
@@ -197,6 +202,12 @@ an overridden run is not clean performance evidence.
 - daemon-fast after the second fixture consolidation: 57/57 PASS, one ignored,
   in 32.367s with a 0.94s cached compile. The host was still shared, so this is
   diagnostic rather than a clean performance receipt
+- third-pass shared refusal group: 1/1 PASS in 0.843s, covering all eight
+  validation/refusal scenarios on one empty runtime
+- third-pass full daemon-fast attempt: INFRA RED, not a semantic failure. With
+  32 foreign Rust processes and load averages above 400, four unrelated tests
+  hit the 30-second IPC read timeout; fail-fast stopped the run after 17/52
+  tests. A quiet-host 52/52 rerun remains required
 - daemon-fast before DSL-truth separation: 84/84 PASS, one ignored, two
   binaries; 193.157s nextest execution under the same non-authoritative class
   of host contention

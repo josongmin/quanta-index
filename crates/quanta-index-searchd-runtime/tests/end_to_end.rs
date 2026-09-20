@@ -1503,27 +1503,9 @@ fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
     stop_runtime(shutdown, join)
 }
 
-#[test]
-fn hybrid_query_rejects_generation_pin_mismatch() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let config = build_config(state_root);
-    let runtime = build_runtime(config)?;
-    let socket = runtime.query_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name("searchd-hybrid-pin-mismatch-test".into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-
-    if !wait_until(Duration::from_secs(2), || socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("socket never appeared".into());
-    }
-
+fn verify_hybrid_generation_pin_mismatch(socket: &Path) -> TestResult {
     let response = send_query_request(
-        &socket,
+        socket,
         &SearchPlaneQueryIpcRequestEnvelope {
             request_id: 40,
             payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
@@ -1549,32 +1531,18 @@ fn hybrid_query_rejects_generation_pin_mismatch() -> TestResult {
     )?;
     let err = match response.payload {
         SearchPlaneQueryIpcResponse::Error(err) => err,
-        other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
-            return Err(format!("expected Error, got {other:?}").into());
-        }
+        other => return Err(format!("expected Error, got {other:?}").into()),
     };
     if err.code != "INVALID_REQUEST" {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected INVALID_REQUEST, got {}", err.code).into());
     }
     if !err
         .message
         .contains("hybrid: lexical generation does not match semantic generation")
     {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("unexpected mismatch message: {}", err.message).into());
     }
-
-    shutdown.store(true, Ordering::Release);
-    match join.join() {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(e.into()),
-        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
-    }
+    Ok(())
 }
 
 fn verify_sourcegraph_context_filter(socket: &Path) -> TestResult {
@@ -2108,27 +2076,9 @@ fn semantic_query_uses_search_owned_text_derivation_with_explicit_hash_profile()
     stop_runtime(shutdown, join)
 }
 
-#[test]
-fn semantic_query_rejects_generation_pin_mismatch_with_lexical_scope() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let config = build_config(state_root);
-    let runtime = build_runtime(config)?;
-    let socket = runtime.query_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name("searchd-semantic-pin-mismatch-test".into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-
-    if !wait_until(Duration::from_secs(2), || socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("socket never appeared".into());
-    }
-
+fn verify_semantic_generation_pin_mismatch(socket: &Path) -> TestResult {
     let response = send_query_request(
-        &socket,
+        socket,
         &SearchPlaneQueryIpcRequestEnvelope {
             request_id: 43,
             payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
@@ -2155,32 +2105,18 @@ fn semantic_query_rejects_generation_pin_mismatch_with_lexical_scope() -> TestRe
     )?;
     let err = match response.payload {
         SearchPlaneQueryIpcResponse::Error(err) => err,
-        other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
-            return Err(format!("expected Error, got {other:?}").into());
-        }
+        other => return Err(format!("expected Error, got {other:?}").into()),
     };
     if err.code != "INVALID_REQUEST" {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected INVALID_REQUEST, got {}", err.code).into());
     }
     if !err
         .message
         .contains("semantic: scope generation does not match semantic request generation")
     {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("unexpected mismatch message: {}", err.message).into());
     }
-
-    shutdown.store(true, Ordering::Release);
-    match join.join() {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(e.into()),
-        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
-    }
+    Ok(())
 }
 
 #[test]
@@ -2525,25 +2461,7 @@ fn semantic_query_fails_closed_when_runtime_has_no_query_embedder() -> TestResul
 /// client learns the shared code before any round trip — and raw bytes
 /// carrying `top_k = 0` are answered typed by the daemon under that same
 /// code, on the same connection.
-#[test]
-fn hybrid_query_rejects_zero_top_k_with_typed_code() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let config = build_config(state_root);
-    let runtime = build_runtime(config)?;
-    let socket = runtime.query_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name("searchd-hybrid-top-k-test".into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-
-    if !wait_until(Duration::from_secs(2), || socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("socket never appeared".into());
-    }
-
+fn verify_hybrid_zero_top_k_refusal(socket: &Path) -> TestResult {
     let hybrid = |top_k: u32| SearchPlaneQueryIpcRequestEnvelope {
         request_id: 44,
         payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
@@ -2565,18 +2483,12 @@ fn hybrid_query_rejects_zero_top_k_with_typed_code() -> TestResult {
     // The client side: the typed request refuses to encode under the code.
     let encode_refusal = quanta_index_ipc::encode_request(&hybrid(0));
     match encode_refusal {
-        Ok(_) => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
-            return Err("a hybrid request with top_k=0 must not encode".into());
-        }
+        Ok(_) => return Err("a hybrid request with top_k=0 must not encode".into()),
         Err(err)
             if err
                 .to_string()
                 .contains(quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE) => {}
         Err(err) => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
             return Err(format!(
                 "the encode refusal names {}: {err}",
                 quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE
@@ -2592,36 +2504,29 @@ fn hybrid_query_rejects_zero_top_k_with_typed_code() -> TestResult {
     };
     let patched = patch_every_top_k(&mut wire, 0);
     if patched == 0 {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("the wire carries a top_k to patch".into());
     }
     let refused = send_request::<ciborium::Value, SearchPlaneQueryIpcResponseEnvelope>(
-        &socket,
+        socket,
         &wire,
         quanta_index_ipc::ClientIoPolicy::default(),
     );
     let refused_code = match refused.map(|response| response.payload) {
         Ok(SearchPlaneQueryIpcResponse::Error(error)) => error.code,
         other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
             return Err(
                 format!("raw bytes with top_k=0 must be answered typed, got {other:?}").into(),
             );
         }
     };
     if refused_code != quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!(
             "the raw caller gets the typed client's code {}, got {refused_code}",
             quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE
         )
         .into());
     }
-
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
 /// Replace every `top_k` entry in a decoded CBOR tree with `top_k`, so the
@@ -2882,27 +2787,9 @@ fn hybrid_query_repeated_tied_scope_query_keeps_stable_order() -> TestResult {
     stop_runtime(shutdown, join)
 }
 
-#[test]
-fn structural_query_returns_typed_generation_not_ready_error() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let config = build_config(state_root);
-    let runtime = build_runtime(config)?;
-    let socket = runtime.query_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name("searchd-structural-test".into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-
-    if !wait_until(Duration::from_secs(2), || socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("socket never appeared".into());
-    }
-
+fn verify_structural_generation_not_ready(socket: &Path) -> TestResult {
     let response = send_query_request(
-        &socket,
+        socket,
         &SearchPlaneQueryIpcRequestEnvelope {
             request_id: 42,
             payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
@@ -2921,33 +2808,19 @@ fn structural_query_returns_typed_generation_not_ready_error() -> TestResult {
     )?;
     let err = match response.payload {
         SearchPlaneQueryIpcResponse::Error(err) => err,
-        other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
-            return Err(format!("expected Error, got {other:?}").into());
-        }
+        other => return Err(format!("expected Error, got {other:?}").into()),
     };
     if err.code != "STR_GENERATION_NOT_READY" {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected STR_GENERATION_NOT_READY, got {}", err.code).into());
     }
     if !err.message.contains("not yet materialized") {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!(
             "expected generation-not-ready structural message, got {}",
             err.message
         )
         .into());
     }
-
-    shutdown.store(true, Ordering::Release);
-    match join.join() {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(e.into()),
-        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
-    }
+    Ok(())
 }
 
 #[test]
@@ -3060,30 +2933,12 @@ fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
 /// current live producer adapter should return a typed readiness error when
 /// no structural generation has been materialized yet.
 /// The strict-code assertion lives in
-/// `structural_query_returns_typed_generation_not_ready_error` above and
+/// `verify_structural_generation_not_ready` above and
 /// this looser wiring check ensures the composition root still emits a
 /// typed structural code rather than panicking or returning a payload.
-#[test]
-fn structural_query_composition_wiring_emits_typed_error() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let config = build_config(state_root);
-    let runtime = build_runtime(config)?;
-    let socket = runtime.query_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name("searchd-structural-wiring-test".into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-
-    if !wait_until(Duration::from_secs(2), || socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("socket never appeared".into());
-    }
-
+fn verify_structural_composition_wiring(socket: &Path) -> TestResult {
     let response = send_query_request(
-        &socket,
+        socket,
         &SearchPlaneQueryIpcRequestEnvelope {
             request_id: 43,
             payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
@@ -3130,8 +2985,6 @@ fn structural_query_composition_wiring_emits_typed_error() -> TestResult {
         )),
     };
 
-    shutdown.store(true, Ordering::Release);
-    drop(join.join());
     result.map_err(Into::into)
 }
 
@@ -3581,17 +3434,34 @@ fn verify_structural_typed_hole_kind_refusal(socket: &Path) -> TestResult {
 }
 
 #[test]
-fn structural_request_refusals_share_one_runtime() -> TestResult {
+fn request_validation_refusals_share_one_runtime() -> TestResult {
     let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, _ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-structural-refusals-shared-test")?;
+        start_runtime(state_root, "searchd-request-refusals-shared-test")?;
 
     let verification: TestResult = (|| {
         for (name, verify) in [
             (
+                "hybrid_generation_pin_mismatch",
+                verify_hybrid_generation_pin_mismatch as fn(&Path) -> TestResult,
+            ),
+            (
+                "semantic_generation_pin_mismatch",
+                verify_semantic_generation_pin_mismatch,
+            ),
+            ("hybrid_zero_top_k", verify_hybrid_zero_top_k_refusal),
+            (
+                "structural_generation_not_ready",
+                verify_structural_generation_not_ready,
+            ),
+            (
+                "structural_composition_wiring",
+                verify_structural_composition_wiring,
+            ),
+            (
                 "pattern_type_required",
-                verify_structural_pattern_type_required as fn(&Path) -> TestResult,
+                verify_structural_pattern_type_required,
             ),
             ("timeout_refusal", verify_structural_timeout_refusal),
             (
