@@ -11,6 +11,9 @@
 #     (`*FORMAT_VERSION*`, `*_SCHEMA_V<n>`, `*CONTRACT_VERSION`,
 #     `RECEIPT_FORMAT`, plus the text normalizer stamp) must be named by
 #     exactly one `[[artifact]]` with the value the code declares.
+#   * every `[[tool_artifact]]` must name its owner, producer, consumers,
+#     decoder, compatibility rule and JSON schema; the registered version
+#     must equal that schema's `schema_version` constant.
 #
 # The `reproduction` field is the cutover classification plan §11 asks for:
 #

@@ -15,6 +15,8 @@ that drifts from the code is worse than none, so this gate fails when:
      exactly one `[[artifact]]`, or is named with a value other than the
      one the code declares (a bump without an inventory update fails);
   4. an inventory constant does not exist in the code at the named file.
+  5. a tools-owned JSON artifact has no owner/producer/consumer/schema mapping,
+     or its registered version disagrees with the schema's version constant.
 
 The Rust is read with regexes over the known files rather than parsed:
 the enums are flat newtype-variant lists and the constants are one-line
