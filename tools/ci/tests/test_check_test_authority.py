@@ -280,10 +280,22 @@ def test_grouped_integration_sources_require_manifest_and_launcher_binding(tmp_p
 
     assert module.audit_catalog(tmp_path, catalog) == []
 
-    (tests / "fast_suite.rs").write_text("", encoding="utf-8")
-    violations = module.audit_catalog(tmp_path, catalog)
+    for launcher in (
+        "",
+        '// #[path = "case.rs"]\n// mod case;\n',
+        '/*\n#[path = "case.rs"]\nmod case;\n*/\n',
+        'const _: &str = r#"\n#[path = "case.rs"]\nmod case;\n"#;\n',
+        '#[path = "case.rs"]\nfn case() {}\n',
+        '#[cfg(feature = "never")]\n#[path = "case.rs"]\nmod case;\n',
+    ):
+        (tests / "fast_suite.rs").write_text(launcher, encoding="utf-8")
+        violations = module.audit_catalog(tmp_path, catalog)
 
-    assert any("omits cataloged source case.rs" in violation.message for violation in violations)
+        assert violations, launcher
+        if not launcher.startswith(("/*", "const", "#[cfg")):
+            assert any(
+                "omits cataloged source case.rs" in violation.message for violation in violations
+            )
 
 
 def test_local_scope_rejects_unknown_target(tmp_path: Path):

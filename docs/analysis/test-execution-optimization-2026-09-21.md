@@ -74,9 +74,10 @@ modules of three explicit targets:
 files as standalone binaries. Source-level rows remain in
 `tools/ci/test-authority.toml`, with `target` pointing to the owning suite. The
 authority checker requires exactly one launcher, an explicit manifest `[[test]]`
-entry, `autotests = false`, and a matching `#[path = ...]` module declaration
-for every mapped source. This prevents consolidation from silently dropping
-coverage.
+entry, `autotests = false`, and an unconditional `#[path = ...]` / `mod` pair
+for every mapped source. It rejects unsupported launcher syntax rather than
+counting commented-out or conditional declarations as coverage. This prevents
+consolidation from silently dropping source modules.
 
 The three suite binaries are 337 MiB, 340 MiB, and 336 MiB in the observed
 lane. The old fast prototype had three surviving standalone binaries totaling
@@ -366,6 +367,25 @@ sample was not produced under the current foreign Rust build contention;
 GitHub CI still cannot run while the account billing/spending-limit issue
 persists. Thus the stronger writer is locally contract-tested but not yet
 CI-qualified at this HEAD.
+
+## Grouped-suite coverage guard hardening
+
+The grouped-suite authority check previously searched launcher text for any
+`#[path = ...]` substring. A cataloged module could be commented out, put in a
+raw string, or left without its `mod` declaration while the guard still found
+the path. Because `autotests = false`, Cargo would not discover that source as
+a separate test target. This was a static P1 coverage hole, not evidence that
+the current launchers had dropped a module.
+
+The guard now accepts only the launchers' deliberately narrow form: a path
+attribute immediately followed by an unconditional module declaration. Blank
+lines, line comments, the unsafe-code crate attribute, and the harness alias
+are allowed; all other syntax fails closed. Contract tests cover commented,
+raw-string, detached, and conditional declarations. Existing launchers pass
+the real catalog check. The `tools/ci/tests` suite passed 315/315, alongside
+scoped Ruff and the real authority lint. This is local static coverage proof,
+not a full Rust suite run or CI qualification; GitHub CI is still blocked by
+account billing.
 
 ## Remaining measurement
 

@@ -389,7 +389,36 @@ def _validate_grouped_integration_targets(
         except OSError as error:
             violations.append(_violation(launcher, f"cannot read grouped test launcher: {error}"))
             continue
-        declared_modules = set(re.findall(r'#\s*\[\s*path\s*=\s*"([^"]+)"\s*\]', launcher_text))
+        declared_modules: set[str] = set()
+        launcher_lines = launcher_text.splitlines()
+        line_index = 0
+        while line_index < len(launcher_lines):
+            line = launcher_lines[line_index].strip()
+            if (
+                not line
+                or line.startswith("//")
+                or line == "#![forbid(unsafe_code)]"
+                or re.fullmatch(r"use\s+[A-Za-z_][\w:]*\s+as\s+[A-Za-z_]\w*;", line)
+            ):
+                line_index += 1
+                continue
+            path_match = re.fullmatch(r'#\[\s*path\s*=\s*"([A-Za-z0-9_./-]+)"\s*\]', line)
+            next_line = (
+                launcher_lines[line_index + 1].strip()
+                if line_index + 1 < len(launcher_lines)
+                else ""
+            )
+            if path_match and re.fullmatch(r"mod\s+[A-Za-z_]\w*;", next_line):
+                declared_modules.add(path_match.group(1))
+                line_index += 2
+                continue
+            violations.append(
+                _violation(
+                    launcher,
+                    f"grouped test {owner}:{cargo_target} has unsupported launcher syntax on line {line_index + 1}",
+                )
+            )
+            line_index += 1
         for member in source_members:
             member_path = PurePosixPath(member["path"])
             try:
