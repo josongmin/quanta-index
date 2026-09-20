@@ -2,7 +2,7 @@
 
 Status: `planned`
 
-Depends on: S21-00; readiness integration additionally depends on S21-09
+Depends on: S21-00, S21-04, S21-09
 
 ## Goal
 

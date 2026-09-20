@@ -16,7 +16,9 @@
 5. P02A/B가 추가한 모든 refusal이 `SearchPlaneErrorCodeV2` variant인지 확인한다. production source의
    `CoreError::Typed code:String`, `SearchPlaneIpcError code:String`, dynamic error-code `format!`, `&str` pass-through,
    substring/equality classification, unknown decoder success는 0이어야 한다.
-6. shared contract/public API baseline/wire inventory/generated docs delta는 이 lane에서 한 번만 통합한다.
+6. P02A의 `contract/src/repomap.rs` compiler DTO와 P02B의 `contract/src/ipc/ingest.rs` journal DTO가 배정 밖 symbol을
+   건드리지 않았는지 확인한다. SDK facade/public re-export/public API baseline/wire inventory/generated docs delta는
+   이 lane에서 한 번만 통합한다.
 7. merged clean HEAD에서 `p02a-repomap-compiler`, `p02b-operation-journal`, public API, wire inventory, static gates를
    실행하고 두 proof manifest를 `--bind-source`로 검증한다.
 8. enum `ALL` wire uniqueness, accepted-code cardinality/table digest, compiler/journal API, global sequence event-kind
@@ -27,4 +29,4 @@
 P03 live layout/quarantine/activation cutover 선행 구현.
 
 P03은 P02I handoff와 양쪽 fresh proof가 동일 clean integration HEAD에 결속될 때만 시작한다. explicit owned path만
-stage해 integration checkpoint commit을 만들고 push는 별도 요청 시에만 한다.
+stage해 integration checkpoint commit을 만들고 current integration branch에 non-force push한다.

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -31,11 +32,84 @@ SCHEMA_PATH = ROOT / "tools/ci/proof-manifest.schema.json"
 FAMILIES = frozenset("SUADPFQX")
 CHECKPOINTS = ("M0", "M1", "M2", "M3", "M4", "M5")
 GATES = frozenset(("pr", "merge", "correctness", "release"))
+AUTHORITY_STATES = frozenset(("executable", "staged"))
+EXECUTION_MODES = frozenset(("test-authority", "non-test-assertion", "aggregate"))
+VERDICTS = frozenset(("CODE_QUALIFIED", "DEPLOYED", "ACTIVATED", "ROLLBACK_PROVEN"))
 PROOF_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]+$")
 TICKET_RE = re.compile(r"^S21-(?:0[0-9]|1[0-3])$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 PAIRED_REPOSITORY = "github:josongmin/semantica-codegraph-v2"
 PAIRED_DEPENDENCY_LOCK = "Cargo.lock"
+EXPECTED_PROOF_DEPENDENCIES: dict[str, list[str]] = {
+    "p00-authority-freeze": [],
+    "p01-canonical-identity": ["p00-authority-freeze"],
+    "p02a-repomap-compiler": ["p01-canonical-identity"],
+    "p02b-operation-journal": ["p01-canonical-identity"],
+    "p03-candidate-activation": ["p02a-repomap-compiler", "p02b-operation-journal"],
+    "p04-read-view-lifetime": ["p03-candidate-activation", "p02b-operation-journal"],
+    "p05-query-truth": ["p04-read-view-lifetime"],
+    "p06-sdk-binding": [
+        "p03-candidate-activation",
+        "p02b-operation-journal",
+        "p05-query-truth",
+    ],
+    "p07-provider-boundary": ["p06-sdk-binding"],
+    "p08-runtime-supervisor": ["p07-provider-boundary"],
+    "p09-control-readiness": ["p08-runtime-supervisor", "p02b-operation-journal"],
+    "p10-state-migration": [
+        "p01-canonical-identity",
+        "p03-candidate-activation",
+        "p02b-operation-journal",
+        "p08-runtime-supervisor",
+        "p09-control-readiness",
+    ],
+    "p11-cross-repo-cutover": [
+        "p03-candidate-activation",
+        "p02b-operation-journal",
+        "p06-sdk-binding",
+        "p10-state-migration",
+    ],
+    "p11-deployment": ["p11-cross-repo-cutover"],
+    "p11-activation": ["p11-deployment"],
+    "p11-rollback": ["p10-state-migration", "p11-activation"],
+    "p12-final-qualification": [
+        "p01-canonical-identity",
+        "p02a-repomap-compiler",
+        "p02b-operation-journal",
+        "p03-candidate-activation",
+        "p04-read-view-lifetime",
+        "p05-query-truth",
+        "p06-sdk-binding",
+        "p07-provider-boundary",
+        "p08-runtime-supervisor",
+        "p09-control-readiness",
+        "p10-state-migration",
+        "p11-cross-repo-cutover",
+        "p11-deployment",
+        "p11-activation",
+        "p11-rollback",
+    ],
+}
+EXPECTED_VERDICT_PROOFS: dict[str, list[str]] = {
+    "CODE_QUALIFIED": [
+        "p00-authority-freeze",
+        "p01-canonical-identity",
+        "p02a-repomap-compiler",
+        "p02b-operation-journal",
+        "p03-candidate-activation",
+        "p04-read-view-lifetime",
+        "p05-query-truth",
+        "p06-sdk-binding",
+        "p07-provider-boundary",
+        "p08-runtime-supervisor",
+        "p09-control-readiness",
+        "p10-state-migration",
+        "p11-cross-repo-cutover",
+    ],
+    "DEPLOYED": ["p11-deployment"],
+    "ACTIVATED": ["p11-activation"],
+    "ROLLBACK_PROVEN": ["p10-state-migration", "p11-rollback"],
+}
 
 
 @dataclass(frozen=True)
@@ -59,10 +133,24 @@ def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _just_recipe_body(root: Path, recipe: str) -> str | None:
+    lines = (root / "Justfile").read_text(encoding="utf-8").splitlines()
+    header = re.compile(rf"^{re.escape(recipe)}(?:\s+[^:]*)?:\s*(?:#.*)?$")
+    for index, line in enumerate(lines):
+        if header.fullmatch(line):
+            body: list[str] = []
+            for candidate in lines[index + 1 :]:
+                if candidate and not candidate[0].isspace():
+                    break
+                body.append(candidate.strip())
+            return "\n".join(body)
+    return None
+
+
 def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Finding]:
     findings: list[Finding] = []
-    if data.get("schema") != 1:
-        findings.append(Finding(path, "`schema` must be 1"))
+    if data.get("schema") != 2:
+        findings.append(Finding(path, "`schema` must be 2"))
 
     families = data.get("families")
     if not isinstance(families, dict):
@@ -94,9 +182,35 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
             for target in test_authority.get(section, [])
             if isinstance(target, dict) and isinstance(target.get("id"), str)
         }
+        target_owners = {
+            target["id"]: target.get("owner")
+            for target in test_authority.get("integration_targets", [])
+            if isinstance(target, dict) and isinstance(target.get("id"), str)
+        }
+        local_scopes = test_authority.get("local_scopes", {})
+        if not isinstance(local_scopes, dict):
+            local_scopes = {}
     except (OSError, ValueError, tomllib.TOMLDecodeError) as error:
         findings.append(Finding(test_authority_path, f"cannot load test authority: {error}"))
         known_test_targets = set()
+        target_owners = {}
+        local_scopes = {}
+
+    def expand_scope(scope_id: str, active: set[str] | None = None) -> set[str]:
+        active = set() if active is None else set(active)
+        if scope_id in active:
+            return set()
+        active.add(scope_id)
+        scope = local_scopes.get(scope_id)
+        if not isinstance(scope, dict):
+            return set()
+        expanded = {target for target in scope.get("targets", []) if isinstance(target, str)}
+        owners = {owner for owner in scope.get("owners", []) if isinstance(owner, str)}
+        expanded.update(target_id for target_id, owner in target_owners.items() if owner in owners)
+        for included in scope.get("includes", []):
+            if isinstance(included, str):
+                expanded.update(expand_scope(included, active))
+        return expanded
 
     seen_ids: set[str] = set()
     seen_artifacts: set[str] = set()
@@ -109,6 +223,8 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
             continue
         for field in (
             "id",
+            "authority_state",
+            "execution_mode",
             "ticket",
             "family",
             "checkpoint",
@@ -135,6 +251,20 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
             if proof_id in seen_ids:
                 findings.append(Finding(path, f"duplicate proof id {proof_id!r}"))
             seen_ids.add(proof_id)
+        authority_state = proof.get("authority_state")
+        execution_mode = proof.get("execution_mode")
+        if authority_state not in AUTHORITY_STATES:
+            findings.append(Finding(path, f"{where}.authority_state is not registered"))
+        if execution_mode not in EXECUTION_MODES:
+            findings.append(Finding(path, f"{where}.execution_mode is not registered"))
+        staged_reason = proof.get("staged_reason")
+        if authority_state == "staged":
+            if not isinstance(staged_reason, str) or not staged_reason.strip():
+                findings.append(
+                    Finding(path, f"{where}.staged_reason must explain the missing authority")
+                )
+        elif "staged_reason" in proof:
+            findings.append(Finding(path, f"{where}.staged_reason is forbidden when executable"))
         ticket = proof.get("ticket")
         if isinstance(ticket, str):
             if not TICKET_RE.fullmatch(ticket):
@@ -220,6 +350,126 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                             f"{where} names unknown test-authority target {target_id!r}",
                         )
                     )
+            if (
+                authority_state == "executable"
+                and execution_mode == "test-authority"
+                and not test_targets
+            ):
+                findings.append(
+                    Finding(
+                        path,
+                        f"{where} executable test-authority proof requires at least one target",
+                    )
+                )
+            if authority_state == "executable" and execution_mode == "test-authority":
+                scopes = proof.get("test_authority_scopes")
+                if (
+                    not isinstance(scopes, list)
+                    or not scopes
+                    or any(not isinstance(scope, str) or not scope for scope in scopes)
+                ):
+                    findings.append(
+                        Finding(
+                            path,
+                            f"{where} executable test-authority proof requires non-empty test_authority_scopes",
+                        )
+                    )
+                else:
+                    unknown_scopes = set(scopes) - set(local_scopes)
+                    if unknown_scopes:
+                        findings.append(
+                            Finding(
+                                path,
+                                f"{where} names unknown local scopes {sorted(unknown_scopes)}",
+                            )
+                        )
+                    expanded_targets: set[str] = set()
+                    for scope in scopes:
+                        expanded_targets.update(expand_scope(scope))
+                    uncovered = set(test_targets) - expanded_targets
+                    if uncovered:
+                        findings.append(
+                            Finding(
+                                path,
+                                f"{where} targets are not selected by declared scopes: {sorted(uncovered)}",
+                            )
+                        )
+                command = proof.get("command")
+                profile = proof.get("profile")
+                profile_match = (
+                    re.fullmatch(r"just rust-profile ([a-z0-9-]+)", command)
+                    if isinstance(command, str)
+                    else None
+                )
+                if profile_match is not None:
+                    command_profile = profile_match.group(1)
+                    expected_scope = command_profile.removeprefix("test-")
+                    if profile != command_profile:
+                        findings.append(Finding(path, f"{where} command/profile binding differs"))
+                    if not isinstance(scopes, list) or expected_scope not in scopes:
+                        findings.append(
+                            Finding(
+                                path,
+                                f"{where} rust profile does not name its local scope {expected_scope!r}",
+                            )
+                        )
+                elif not isinstance(command, str) or not command.startswith("just proof-"):
+                    findings.append(
+                        Finding(
+                            path,
+                            f"{where} executable test authority requires a canonical rust profile or dedicated proof recipe",
+                        )
+                    )
+                else:
+                    recipe = command.removeprefix("just ")
+                    try:
+                        recipe_body = _just_recipe_body(root, recipe)
+                    except OSError as error:
+                        findings.append(Finding(path, f"cannot read Justfile: {error}"))
+                        recipe_body = None
+                    if recipe_body is None:
+                        findings.append(
+                            Finding(
+                                path, f"{where} dedicated proof recipe does not exist: {recipe}"
+                            )
+                        )
+                    elif isinstance(scopes, list):
+                        missing_scope_calls = [
+                            scope
+                            for scope in scopes
+                            if not any(
+                                re.fullmatch(
+                                    rf"@?just rust-profile test-{re.escape(scope)}",
+                                    line,
+                                )
+                                for line in recipe_body.splitlines()
+                            )
+                        ]
+                        if missing_scope_calls:
+                            findings.append(
+                                Finding(
+                                    path,
+                                    f"{where} dedicated proof recipe does not execute scopes {missing_scope_calls}",
+                                )
+                            )
+            if execution_mode in {"non-test-assertion", "aggregate"} and test_targets:
+                findings.append(
+                    Finding(path, f"{where} {execution_mode} proof cannot name test targets")
+                )
+        if execution_mode == "non-test-assertion" and proof_id != "p00-authority-freeze":
+            findings.append(Finding(path, f"{where} non-test-assertion is reserved for P00"))
+        if (
+            proof_id == "p00-authority-freeze"
+            and proof.get("command") != "just proof-p00-authority-freeze"
+        ):
+            findings.append(Finding(path, f"{where} must use the composite P00 authority recipe"))
+        if execution_mode == "aggregate" and proof_id != "p12-final-qualification":
+            findings.append(Finding(path, f"{where} aggregate execution is reserved for P12"))
+        if (
+            proof_id == "p12-final-qualification"
+            and proof.get("command") != "just proof-authority-final-qualification"
+        ):
+            findings.append(Finding(path, f"{where} must use the canonical P12 aggregate recipe"))
         dependencies = proof.get("dependencies")
         if not isinstance(dependencies, list) or any(
             not isinstance(item, str) for item in dependencies
@@ -227,6 +477,26 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
             findings.append(Finding(path, f"{where}.dependencies must be an array of proof IDs"))
 
     expected_tickets = {f"S21-{index:02d}" for index in range(14)}
+    if seen_ids != set(EXPECTED_PROOF_DEPENDENCIES):
+        findings.append(
+            Finding(
+                path,
+                "proof IDs differ from canonical SEP-21 graph: "
+                f"missing={sorted(set(EXPECTED_PROOF_DEPENDENCIES) - seen_ids)} "
+                f"extra={sorted(seen_ids - set(EXPECTED_PROOF_DEPENDENCIES))}",
+            )
+        )
+    for index, proof in enumerate(proofs):
+        if not isinstance(proof, dict) or not isinstance(proof.get("id"), str):
+            continue
+        expected_dependencies = EXPECTED_PROOF_DEPENDENCIES.get(proof["id"])
+        if expected_dependencies is not None and proof.get("dependencies") != expected_dependencies:
+            findings.append(
+                Finding(
+                    path,
+                    f"proofs[{index}].dependencies differ from canonical SEP-21 graph",
+                )
+            )
     if tickets != expected_tickets:
         findings.append(
             Finding(
@@ -271,6 +541,92 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
 
     for proof_id in proof_by_id:
         visit(proof_id)
+
+    aggregate = data.get("aggregate")
+    if not isinstance(aggregate, dict):
+        findings.append(Finding(path, "`aggregate` must be a table"))
+    else:
+        expected = {"id", "target_proof", "schema", "artifact", "verdicts"}
+        if set(aggregate) != expected:
+            findings.append(
+                Finding(path, "aggregate keys must be id,target_proof,schema,artifact,verdicts")
+            )
+        if aggregate.get("id") != "p12-release-aggregate":
+            findings.append(Finding(path, "aggregate.id must be p12-release-aggregate"))
+        if aggregate.get("target_proof") != "p12-final-qualification":
+            findings.append(Finding(path, "aggregate.target_proof must be p12-final-qualification"))
+        aggregate_schema = aggregate.get("schema")
+        if isinstance(aggregate_schema, str):
+            schema_path, schema_error = _payload_repo_file(
+                root, aggregate_schema, label="aggregate schema"
+            )
+            if schema_error is not None:
+                findings.append(Finding(path, schema_error))
+            elif schema_path is None or not schema_path.is_file():
+                findings.append(
+                    Finding(path, f"aggregate.schema does not exist: {aggregate_schema}")
+                )
+        aggregate_artifact = aggregate.get("artifact")
+        if isinstance(aggregate_artifact, str):
+            artifact_relative = PurePosixPath(aggregate_artifact)
+            if (
+                not aggregate_artifact
+                or "\\" in aggregate_artifact
+                or artifact_relative.is_absolute()
+                or ".." in artifact_relative.parts
+                or artifact_relative.as_posix() != aggregate_artifact
+                or aggregate_artifact in seen_artifacts
+            ):
+                findings.append(
+                    Finding(path, "aggregate.artifact must be unique canonical repo-relative")
+                )
+        target_proof = proof_by_id.get(aggregate.get("target_proof"))
+        if target_proof is not None and target_proof.get("execution_mode") != "aggregate":
+            findings.append(
+                Finding(path, "aggregate target proof must use aggregate execution mode")
+            )
+        verdicts = aggregate.get("verdicts")
+        if not isinstance(verdicts, dict) or set(verdicts) != VERDICTS:
+            findings.append(Finding(path, f"aggregate verdicts must be exactly {sorted(VERDICTS)}"))
+        else:
+            if verdicts != EXPECTED_VERDICT_PROOFS:
+                findings.append(
+                    Finding(
+                        path, "aggregate verdict proof sets differ from canonical SEP-21 meanings"
+                    )
+                )
+            closure = set()
+            try:
+                closure = set(dependency_closure(proof_by_id, "p12-final-qualification"))
+            except ValueError as error:
+                findings.append(Finding(path, str(error)))
+            covered: set[str] = set()
+            for verdict, requirements in verdicts.items():
+                if (
+                    not isinstance(requirements, list)
+                    or not requirements
+                    or any(not isinstance(item, str) for item in requirements)
+                ):
+                    findings.append(
+                        Finding(path, f"aggregate verdict {verdict} requires proof IDs")
+                    )
+                    continue
+                unknown = set(requirements) - closure
+                if unknown:
+                    findings.append(
+                        Finding(
+                            path,
+                            f"aggregate verdict {verdict} has non-dependencies {sorted(unknown)}",
+                        )
+                    )
+                covered.update(requirements)
+            if closure and covered != closure:
+                findings.append(
+                    Finding(
+                        path,
+                        f"aggregate verdict requirements must cover dependency closure; missing={sorted(closure - covered)}",
+                    )
+                )
     return findings
 
 
@@ -587,6 +943,10 @@ def check_manifest(
         return findings
     if payload["proof_id"] != proof["id"]:
         findings.append(Finding(manifest_path, f"proof_id is not registry id {proof['id']!r}"))
+    if proof.get("authority_state") != "executable":
+        findings.append(
+            Finding(manifest_path, "staged proof cannot be authoritative or issue a manifest")
+        )
     if payload["family"] != proof["family"]:
         findings.append(
             Finding(manifest_path, f"family is not registry family {proof['family']!r}")
@@ -846,6 +1206,307 @@ def check_aggregate(
                 "aggregate release-daemon proofs do not share one daemon path and digest",
             )
         )
+    paired_sources = {
+        json.dumps(payload["source_pair"], sort_keys=True, separators=(",", ":"))
+        for proof_id, payload in payload_by_id.items()
+        if proof_by_id[proof_id]["source_binding"] == "exact-pair"
+        and isinstance(payload["source_pair"], dict)
+    }
+    if len(paired_sources) > 1:
+        findings.append(
+            Finding(path, "aggregate exact-pair manifests do not share one paired source identity")
+        )
+    release_hosts = {
+        (
+            payload["environment"]["host"]["profile"],
+            payload["environment"]["host"]["identity_digest"],
+        )
+        for proof_id, payload in payload_by_id.items()
+        if proof_by_id[proof_id]["binary_binding"] == "release-daemon"
+    }
+    if len(release_hosts) > 1:
+        findings.append(
+            Finding(path, "aggregate release-daemon proofs do not share one host identity")
+        )
+    state_root_formats = {
+        payload["state_root_format"]
+        for proof_id, payload in payload_by_id.items()
+        if proof_by_id[proof_id]["binary_binding"] == "release-daemon"
+    }
+    if len(state_root_formats) > 1:
+        findings.append(
+            Finding(path, "aggregate release-daemon proofs do not share one state-root format")
+        )
+    return findings
+
+
+def check_aggregate_receipt(
+    payload: Any,
+    *,
+    receipt_path: Path,
+    registry: dict[str, Any],
+    registry_path: Path,
+    schema: dict[str, Any],
+    root: Path,
+    bind_source: bool,
+    paired_checkouts: dict[str, Path] | None = None,
+    require_ready: bool = False,
+) -> list[Finding]:
+    """Validate a truthful diagnostic or release-ready P12 aggregate receipt."""
+
+    findings: list[Finding] = []
+    validator = jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker())
+    for error in sorted(validator.iter_errors(payload), key=lambda item: list(item.path)):
+        location = ".".join(str(part) for part in error.path) or "root"
+        findings.append(Finding(receipt_path, f"schema {location}: {error.message}"))
+    if not isinstance(payload, dict) or findings:
+        return findings
+
+    aggregate = registry.get("aggregate")
+    if not isinstance(aggregate, dict):
+        return [Finding(receipt_path, "registry has no aggregate authority")]
+    proof_by_id = {
+        proof["id"]: proof
+        for proof in registry.get("proofs", [])
+        if isinstance(proof, dict) and isinstance(proof.get("id"), str)
+    }
+    target_id = aggregate.get("target_proof")
+    if not isinstance(target_id, str):
+        return [Finding(receipt_path, "registry aggregate has no target proof")]
+    try:
+        dependency_ids = dependency_closure(proof_by_id, target_id)
+    except ValueError as error:
+        return [Finding(receipt_path, str(error))]
+
+    if payload.get("aggregate_id") != aggregate.get("id"):
+        findings.append(Finding(receipt_path, "aggregate_id differs from registry authority"))
+    if payload.get("target_proof_id") != target_id:
+        findings.append(Finding(receipt_path, "target_proof_id differs from registry authority"))
+    if payload.get("registry_sha256") != _sha256(registry_path):
+        findings.append(Finding(receipt_path, "registry_sha256 is not the current registry"))
+
+    receipts = payload.get("dependency_receipts")
+    if not isinstance(receipts, list):
+        return findings
+    receipt_ids = [item.get("proof_id") for item in receipts if isinstance(item, dict)]
+    if receipt_ids != dependency_ids:
+        findings.append(
+            Finding(
+                receipt_path, "aggregate dependency receipts are not the ordered target closure"
+            )
+        )
+
+    target_proof = proof_by_id[target_id]
+    excluded_pair_paths = tuple((paired_checkouts or {}).values())
+    current_source = proof_source_snapshot(
+        root,
+        manifest_path=receipt_path,
+        proof=target_proof,
+        excluded_paths=excluded_pair_paths,
+    )
+    if payload.get("source") != current_source:
+        findings.append(Finding(receipt_path, "aggregate source is not current source"))
+
+    expected_pair: dict[str, Any] | None = None
+    repository = target_proof.get("paired_repository")
+    checkout = (paired_checkouts or {}).get(repository) if isinstance(repository, str) else None
+    if bind_source:
+        if checkout is None:
+            findings.append(
+                Finding(receipt_path, f"aggregate requires paired checkout for {repository!r}")
+            )
+        else:
+            try:
+                expected_pair = paired_source_snapshot(
+                    checkout,
+                    repository=repository,
+                    dependency_lock=Path(target_proof["paired_dependency_lock"]),
+                )
+            except (OSError, RuntimeError, ValueError) as error:
+                findings.append(
+                    Finding(receipt_path, f"cannot bind aggregate source_pair: {error}")
+                )
+            else:
+                if payload.get("source_pair") != expected_pair:
+                    findings.append(
+                        Finding(receipt_path, "aggregate source_pair is not current paired source")
+                    )
+
+    payload_by_id: dict[str, dict[str, Any]] = {}
+    dependency_statuses: dict[str, str] = {}
+    for proof_id in dependency_ids:
+        proof = proof_by_id[proof_id]
+        matching = [
+            item for item in receipts if isinstance(item, dict) and item.get("proof_id") == proof_id
+        ]
+        if len(matching) != 1:
+            findings.append(
+                Finding(receipt_path, f"aggregate requires exactly one receipt for {proof_id!r}")
+            )
+            continue
+        receipt = matching[0]
+        if receipt.get("path") != proof["artifact"]:
+            findings.append(
+                Finding(receipt_path, f"aggregate receipt path differs for {proof_id!r}")
+            )
+            continue
+        manifest_path, path_error = _payload_repo_file(
+            root,
+            proof["artifact"],
+            label=f"aggregate dependency {proof_id!r}",
+        )
+        if path_error is not None:
+            findings.append(Finding(receipt_path, path_error))
+            continue
+        assert manifest_path is not None
+        expected_status = "NOT_RUN"
+        expected_sha256: str | None = None
+        manifest_findings: list[Finding] = []
+        manifest: Any = None
+        if proof.get("authority_state") != "executable":
+            expected_status = "BLOCKED"
+        elif not manifest_path.is_file():
+            expected_status = "NOT_RUN"
+        else:
+            expected_sha256 = _sha256(manifest_path)
+            try:
+                manifest = _read_json(manifest_path)
+                manifest_findings = check_manifest(
+                    manifest,
+                    manifest_path=manifest_path,
+                    proof=proof,
+                    schema=_read_json(root / proof["artifact_schema"]),
+                    root=root,
+                    bind_source=bind_source,
+                    allow_non_passed=True,
+                    paired_checkouts=paired_checkouts,
+                    proof_by_id=proof_by_id,
+                )
+            except (OSError, json.JSONDecodeError) as error:
+                manifest_findings = [
+                    Finding(manifest_path, f"aggregate dependency is unreadable: {error}")
+                ]
+            if manifest_findings:
+                expected_status = "FAILED"
+            elif isinstance(manifest, dict):
+                expected_status = {
+                    "passed": "PASSED",
+                    "failed": "FAILED",
+                    "blocked": "BLOCKED",
+                    "not_run": "NOT_RUN",
+                }[manifest["status"]]
+                if expected_status == "PASSED":
+                    payload_by_id[proof_id] = manifest
+
+        dependency_statuses[proof_id] = expected_status
+        if receipt.get("sha256") != expected_sha256:
+            findings.append(
+                Finding(receipt_path, f"aggregate dependency digest mismatch: {proof_id!r}")
+            )
+        if receipt.get("status") != expected_status:
+            findings.append(
+                Finding(
+                    receipt_path,
+                    f"aggregate dependency status differs for {proof_id!r}: expected {expected_status}",
+                )
+            )
+        if require_ready and expected_status != "PASSED":
+            findings.extend(manifest_findings)
+            findings.append(
+                Finding(receipt_path, f"release aggregate dependency is not PASSED: {proof_id!r}")
+            )
+
+    consistency_findings = check_aggregate(
+        payload_by_id, proof_by_id=proof_by_id, path=receipt_path
+    )
+    if require_ready:
+        findings.extend(consistency_findings)
+    all_dependencies_passed = len(dependency_statuses) == len(dependency_ids) and all(
+        status == "PASSED" for status in dependency_statuses.values()
+    )
+    release_ready_inputs = all_dependencies_passed and not consistency_findings
+    expected_daemon: dict[str, str] | None = None
+    expected_host: dict[str, str] | None = None
+    expected_state_root: str | None = None
+    if release_ready_inputs:
+        daemon_values = {
+            (manifest["daemon_binary"]["path"], manifest["daemon_binary"]["sha256"])
+            for proof_id, manifest in payload_by_id.items()
+            if proof_by_id[proof_id]["binary_binding"] == "release-daemon"
+        }
+        host_values = {
+            (
+                manifest["environment"]["host"]["profile"],
+                manifest["environment"]["host"]["identity_digest"],
+            )
+            for proof_id, manifest in payload_by_id.items()
+            if proof_by_id[proof_id]["binary_binding"] == "release-daemon"
+        }
+        root_values = {
+            manifest["state_root_format"]
+            for proof_id, manifest in payload_by_id.items()
+            if proof_by_id[proof_id]["binary_binding"] == "release-daemon"
+        }
+        if len(daemon_values) == 1:
+            daemon_path, daemon_sha = next(iter(daemon_values))
+            expected_daemon = {"path": daemon_path, "sha256": daemon_sha}
+        if len(host_values) == 1:
+            host_profile, host_digest = next(iter(host_values))
+            expected_host = {"profile": host_profile, "identity_digest": host_digest}
+        if len(root_values) == 1:
+            expected_state_root = next(iter(root_values))
+    if payload.get("daemon_binary") != expected_daemon:
+        findings.append(Finding(receipt_path, "aggregate daemon_binary is not derived authority"))
+    if payload.get("release_host") != expected_host:
+        findings.append(Finding(receipt_path, "aggregate release_host is not derived authority"))
+    if payload.get("state_root_format") != expected_state_root:
+        findings.append(
+            Finding(receipt_path, "aggregate state_root_format is not derived authority")
+        )
+
+    verdicts = payload.get("verdicts")
+    registered_verdicts = aggregate.get("verdicts")
+    expected_verdict_statuses: dict[str, str] = {}
+    if isinstance(verdicts, dict) and isinstance(registered_verdicts, dict):
+        for verdict in sorted(VERDICTS):
+            actual = verdicts.get(verdict)
+            expected_proofs = registered_verdicts.get(verdict)
+            if not isinstance(actual, dict):
+                continue
+            if actual.get("required_proofs") != expected_proofs:
+                findings.append(
+                    Finding(receipt_path, f"aggregate verdict proof set differs for {verdict}")
+                )
+            required_statuses = [
+                dependency_statuses.get(proof_id, "FAILED") for proof_id in expected_proofs
+            ]
+            if consistency_findings and all(status == "PASSED" for status in required_statuses):
+                expected_status = "FAILED"
+            elif "FAILED" in required_statuses:
+                expected_status = "FAILED"
+            elif "BLOCKED" in required_statuses:
+                expected_status = "BLOCKED"
+            elif "NOT_RUN" in required_statuses:
+                expected_status = "NOT_RUN"
+            else:
+                expected_status = "PASSED"
+            expected_verdict_statuses[verdict] = expected_status
+            if actual.get("status") != expected_status:
+                findings.append(
+                    Finding(
+                        receipt_path,
+                        f"aggregate verdict status differs for {verdict}: expected {expected_status}",
+                    )
+                )
+    expected_ready = (
+        set(expected_verdict_statuses) == VERDICTS
+        and all(status == "PASSED" for status in expected_verdict_statuses.values())
+        and release_ready_inputs
+    )
+    if payload.get("production_ready") is not expected_ready:
+        findings.append(Finding(receipt_path, "aggregate production_ready is not derived verdict"))
+    if require_ready and not expected_ready:
+        findings.append(Finding(receipt_path, "aggregate is not production ready"))
     return findings
 
 
@@ -883,7 +1544,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main_locked(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     root = args.root.resolve()
     registry_path = (args.registry or root / "tools/ci/proof-authority.toml").resolve()
@@ -1001,6 +1662,41 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
 
+    if args.require_all:
+        aggregate = registry.get("aggregate")
+        if isinstance(aggregate, dict):
+            aggregate_path, path_error = _payload_repo_file(
+                root,
+                aggregate.get("artifact"),
+                label="registered aggregate artifact",
+            )
+            if path_error is not None:
+                findings.append(Finding(registry_path, path_error))
+            elif aggregate_path is None or not aggregate_path.is_file():
+                findings.append(Finding(registry_path, "registered aggregate artifact is missing"))
+            else:
+                try:
+                    aggregate_payload = _read_json(aggregate_path)
+                    aggregate_schema = _read_json(root / aggregate["schema"])
+                except (OSError, json.JSONDecodeError) as error:
+                    findings.append(
+                        Finding(aggregate_path, f"unreadable aggregate artifact: {error}")
+                    )
+                else:
+                    findings.extend(
+                        check_aggregate_receipt(
+                            aggregate_payload,
+                            receipt_path=aggregate_path,
+                            registry=registry,
+                            registry_path=registry_path,
+                            schema=aggregate_schema,
+                            root=root,
+                            bind_source=True,
+                            paired_checkouts=paired_checkouts,
+                            require_ready=True,
+                        )
+                    )
+
     if findings:
         for finding in findings:
             print(f"REFUSED {finding.render()}", file=sys.stderr)
@@ -1008,6 +1704,30 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(f"OK: {len(proof_by_id)} registered proof(s); {len(seen_proofs)} manifest(s) validated")
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    root = args.root.resolve()
+    completed = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--git-path", "quanta-proof-authority.lock"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        print(
+            f"ERROR: {completed.stderr.strip() or 'cannot resolve proof lock path'}",
+            file=sys.stderr,
+        )
+        return 2
+    lock_path = Path(completed.stdout.strip())
+    if not lock_path.is_absolute():
+        lock_path = root / lock_path
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_SH)
+        return _main_locked(argv)
 
 
 if __name__ == "__main__":

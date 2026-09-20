@@ -100,6 +100,18 @@ Producer source identity
 - restart/replay and aggregate closeout
 - `just rust-verify-hellgate-cross-repo <producer_root>` 또는 후속 canonical profile
 
+P11은 한 통과로 deploy/activate/rollback을 동시 암시하지 않고 독립 proof manifest 네 개를 발급한다.
+
+| Proof ID | Meaning | Dependency |
+|---|---|---|
+| `p11-cross-repo-cutover` | exact source-pair protocol/wire/replay qualification | P03/P02B/P06/P10 |
+| `p11-deployment` | attested release daemon deployment receipt | cross-repo qualification |
+| `p11-activation` | deployed binary/config의 production activation receipt | deployment |
+| `p11-rollback` | activated deployment의 rollback drill receipt | activation + P10 restore proof |
+
+앞 proof의 pass는 뒤 proof를 암시하지 않는다. 승인이 없거나 실행하지 않은 deployment/activation/rollback은
+각각 `NOT_RUN`으로 남고 P12 `production_ready=false`다.
+
 ## Stop conditions
 
 - Semantica owner가 payload manifest/terminal receipt schema를 수용하지 않음

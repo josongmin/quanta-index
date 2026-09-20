@@ -10,13 +10,16 @@ full semantics.
 | ID | Frozen value | Owner | Blocking consumers |
 |---|---|---|---|
 | D-ID-01 | UTF-8 already-NFC, case-sensitive, 1..=512 bytes, controls rejected | contract-base IDs | S21-01 |
-| D-ID-02 | length-delimited BE canonical tuples; domain-separated SHA-256 | contract-base digest owner | S21-01/02/06/12 |
+| D-ID-02 | `u32_be(domain byte length) || domain || payload`; distinct repository/logical domains; typed 32-byte SHA-256 | contract-base digest owner | S21-01/02/06/12 |
+| D-ID-03 | `%`, `/`, `.` and dot-sequence identifiers are valid logical bytes but never path components | contract-base IDs | S21-01/11 |
+| D-CAND-01 | exact integer-key `ArtifactIdentityV1`/candidate envelope; commitment is domain-framed envelope digest, object address is raw-byte digest | contract/RepoMap | S21-01/02/03/12 |
+| D-QUAR-01 | exact integer-key incident envelope; P02B global sequence; P03 catalog-first projection/unlink crash protocol | catalog/RepoMap | S21-01/02/04/11 |
 | D-LAYOUT-01 | `objects/sha256/aa/bb/<60hex>.cbor`; 0700 dirs, 0600 files, effective-UID/no-follow/inode/mode/nlink checks | RepoMap/runtime | S21-01/09/11 |
 | D-AUTH-01 | SQLite candidate/activation ledger is sole RepoMap visibility authority | catalog | S21-02/05/11 |
 | D-AUTH-02 | process-global `MutationCoordinatorV1`, prepared plan and fence | core/catalog/runtime | S21-04/09 |
 | D-REC-01 | `OperationTerminalResultV2`, canonical CBOR v2, immutable replay bytes | contract/catalog | S21-04/11/12 |
 | D-REC-02 | replay floor 1; terminal retention for root lifetime; offline floor advance only | catalog/migration | S21-04/11 |
-| D-SEQ-01 | one state-root-global positive sequence from transactional `catalog_sequence_v2` | catalog | S21-02/04/11 |
+| D-SEQ-01 | one state-root-global `1..=i64::MAX` sequence plus generic `catalog_sequence_event_v2`; allocator/event/domain row commit atomically; exhaustion refuses | catalog | S21-02/04/11 |
 | D-READ-01 | one domain evidence each; handles held by `QueryReadViewV2` | search-plane/core | S21-05/06 |
 | D-QUERY-01 | explicit exact/lower-bound/capped/interrupted/approximate outcomes | contract/core | S21-06/07 |
 | D-CURSOR-01 | signed stateless HMAC cursor, 15m default/1h max, no unsigned decoder | contract/runtime | S21-06/07/11 |
@@ -27,6 +30,9 @@ full semantics.
 | D-ROOT-01 | state-root format 2; offline-only migration; manifest-last atomic cutover | runtime/migration | S21-11 |
 | D-XREPO-01 | protocol v2+contract digest handshake; breaking producer cutover | contract/deployment | S21-12 |
 | D-PROOF-01 | strict registered proof graph, same binary/host/source binding | CI/release | S21-13 |
+| D-LANE-01 | `P00 → P01A → (P02A ∥ P02B) → P02I → P03 → P04…P12`; no other implementation parallelism | plan owner | all |
+| D-HANDOFF-01 | each lane validates its immediate predecessor; P02I validates both parallel parents; P12 validates the transitive chain | plan/release | all |
+| D-AGG-01 | P12 has a registered aggregate receipt schema, producer/writer, validator and final recipe; dependency validation alone cannot issue P12 proof | CI/release | S21-13 |
 
 ## Canonical type names
 
@@ -48,10 +54,49 @@ full semantics.
 
 ## Stable error-code authority
 
-S21-01 introduces closed `SearchPlaneErrorCodeV2`; messages are non-authoritative. Mandatory new codes:
+P00 freezes the migration structure and a source-bound baseline inventory, not a fictional final table while current
+production producers remain free-form. Earlier static review observed 245 `CoreError::Typed` constructors across 75
+files and 8 crates, 141 code-expression shapes, 88 existing `LexicalErrorCode` variants, at least 12 dynamic
+synthesis/pass-through sites, 13 query-metric substring classifications, three dispatcher pass-throughs and stale
+`BAD_REQUEST` decoder success; those numbers are discovery context, not frozen authority.
+
+The reproducible P00 discovery baseline is `ErrorAuthorityInventoryV1`:
+
+- schema: `tools/ci/error-authority-inventory.schema.json`;
+- writer: `python3 tools/ci/write-error-authority-inventory.py` or `just proof-error-authority-inventory`;
+- artifact: `artifacts/sep-21/p00/error-authority-inventory.json`;
+- source scope: every `crates/*/src/**/*.rs` byte, sorted by repo-relative path;
+- source digest: general SEP-21 framing with domain `quanta-index/error-authority-source/v1`; payload is, for each
+  sorted file, `u32_be(path_len) || path_utf8 || u64_be(content_len) || raw_content`;
+- regex matches are candidate discovery only and can never issue semantic closure.
+
+P00 handoff records the artifact SHA-256, source digest, category counts and mandatory `closed=false`. The staged
+`just proof-error-authority-closed` command deliberately fails. P01A must replace that rail with executable
+enum/table/mapping/SDK validators plus registered owner-local tests; it must not turn regex counts into authority.
+
+P01A owns the one-time migration to closed `SearchPlaneErrorCodeV2`: `ALL`, unique `as_wire_str`, exact
+`from_wire_str`, manual serde, an exhaustive generic-core mapping and SDK preservation. Existing
+`LexicalErrorCode` is a nested variant rendered as its existing flat wire code. `Unknown(String)`, `Other(String)`,
+dynamic code synthesis, `&str` pass-through, substring/equality classification and unknown decoder success are
+forbidden. P01A must generate and commit the complete accepted-code table artifact, cardinality and digest from the
+migrated source. The schema is `tools/ci/search-plane-error-code-table.schema.json`; the committed artifact is
+`tools/ci/inventory/search-plane-error-codes.json`; its file SHA-256 is the canonical table digest. `codes` is sorted
+by wire bytes and `cardinality == len(codes)`. `enum_source_path` is exactly
+`crates/quanta-index-contract/src/ipc/error.rs`. `enum_source_digest` uses the general framing with domain
+`quanta-index/search-plane-error-enum-source/v2` and payload
+`u32_be(path_len) || path_utf8 || u64_be(content_len) || raw_file_bytes`. P01A's validator must recompute that digest,
+enforce sort/cardinality/table↔`ALL` equality, and run the exhaustive mapping/serde/SDK tests. Its handoff is invalid
+while any free-form production path remains.
+
+After P01A handoff, downstream lanes cannot add or change a wire error code. A newly discovered code requirement is
+`BLOCKED` and returns to the P01A/P02I contract owner; P03-P12 may only consume the frozen table and digest.
+
+Mandatory reserved/new codes include:
 
 - `IDENTITY_NON_CANONICAL`
+- `IDENTITY_EMPTY`
 - `IDENTITY_TOO_LONG`
+- `SEQUENCE_EXHAUSTED`
 - `CANDIDATE_COMMITMENT_CONFLICT`
 - `ACTIVATION_CAS_CONFLICT`
 - `ACTIVATION_TARGET_NOT_SEALED`

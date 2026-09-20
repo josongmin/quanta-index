@@ -4,16 +4,16 @@ Status: implementation checklist; no item is complete from this document alone.
 
 Copy/paste execution prompts: [prompt runbook](prompts/README.md)
 
-Execution rule: respect the wave order in [INDEX.md](INDEX.md). Parallel work is allowed only where the table says
-so and only after shared DTO/schema owners are frozen. A checked item requires code plus the listed DoD evidence.
+Execution rule: `P00 → P01A → (P02A ∥ P02B) → P02I → P03 → P04 → … → P12`. Only P02A/P02B may run in
+parallel. A checked item requires code plus the listed DoD evidence.
 
 ## W0 — authority and proof freeze
 
 ### S21-00
 
-- [x] Purpose: remove semantic drift before code changes.
-- [x] Files: `docs/adr/`, `tools/ci/inventory/wire-surface.toml`, proof authority, this packet.
-- [x] Logic: freeze canonical identity, catalog state machines, receipt versions, refusal codes, migration and
+- [ ] Purpose: remove semantic drift before code changes; corrected current-source P00 receipt still pending.
+- [ ] Files: `docs/adr/`, `tools/ci/inventory/wire-surface.toml`, proof authority, this packet.
+- [ ] Logic: freeze canonical identity, catalog state machines, receipt versions, error migration, migration and
   shutdown/cursor/provider decisions.
 - [x] DoD: no ownerless/TBD decision; old/new matrices and fixture names exist; no compatibility shim design.
 
@@ -34,18 +34,16 @@ the normalized paired repository identity, its current Git state and registered 
 must add their owner-local `test-authority` targets and evidence in the owning lane; this checkbox does not qualify
 those unimplemented product surfaces.
 
-## W1a — canonical identity/layout
+## W1a — P01A pure canonical foundation
 
 ### S21-01
 
-- [ ] Purpose: eliminate tuple aliasing and product-identity-by-filename.
-- [ ] Files/symbols: `contract-base/src/macros.rs::string_newtype`, `contract-base/src/ids.rs::{RepoId,RevisionId}`,
-  `repomap/src/persistence.rs::{snapshot_file_name_for,activation_file_name,encode_component}`,
-  `repomap/src/store.rs::RepoMapStoreKeyV1`, `repomap/src/model.rs::RepoMapSnapshot`.
-- [ ] Logic: one canonical tuple encoder; domain-separated content address; separate logical key/content digest;
-  payload/address verification; append-only quarantine incidents.
-- [ ] DoD: injectivity/property/golden vectors; Unicode/case/path-length/symlink/hardlink negative fixtures;
-  runtime legacy dual-read/write 0.
+- [ ] Purpose: eliminate unchecked identity/error authority and freeze pure candidate/quarantine codecs.
+- [ ] Files/symbols: contract-base IDs/macros, contract/core/SDK error owners, pure `repomap/src/layout_v3.rs`.
+- [ ] Logic: exact domain framing and integer-key codecs; typed addresses/security primitive; migrate every reachable
+  free-form code to closed `SearchPlaneErrorCodeV2` and emit complete table cardinality/digest.
+- [ ] DoD: injectivity/goldens and security negatives; production free-form error path 0; live persistence/catalog/
+  quarantine/activation mutation 0. S21-01 remains open for P03 phase B.
 
 ## W1b — parallel compiler and journal
 
@@ -65,7 +63,7 @@ those unimplemented product surfaces.
 - [ ] Files/symbols: `core/src/domains/idempotency.rs`, `catalog/src/{idempotency,open,auxiliary}.rs`,
   `search-plane/src/ingest_dispatcher/dispatcher.rs`, operation status contract/SDK.
 - [ ] Logic: `inspect → prepare → record_refused|claim_prepared → apply → commit/recover`; owner lease/fence;
-  terminal receipt/row digest; positive unique sequence; replay floor.
+  terminal receipt/row digest; generic `catalog_sequence_event_v2`; positive globally unique sequence; replay floor.
 - [ ] DoD: replay precedes mutable preflight; stale worker cannot commit; restore high-water reconciles;
   terminal replay does not call storage/provider; effective SQLite durability settings are read back.
 
@@ -82,7 +80,8 @@ before S21-02 starts.
 - [ ] Files: `repomap/src/{materializer,model,persistence,store}.rs`, catalog candidate/activation schema,
   `searchd/src/app/runtime.rs`, search-plane control/ingest owners, contract/SDK RepoMap surfaces.
 - [ ] Logic: seal compiled candidate object; catalog candidate+activation CAS; publish registry after commit;
-  durable invalidation; exact content-bound ACK/replay; delete activation-file runtime authority.
+  durable invalidation; catalog-first quarantine projection/unlink; exact content-bound ACK/replay; delete
+  activation-file runtime authority without touching legacy bytes.
 - [ ] DoD: publish never activates; same generation/different content conflicts; crash converges to one committed
   activation; missing/corrupt object invalidates and cannot resurrect; runtime activation file readers/writers 0.
 
@@ -104,7 +103,8 @@ before S21-02 starts.
 
 - [ ] Purpose: report pagination, coverage, ranking and availability without inference from row count.
 - [ ] Files: `contract-base/src/results/query_window.rs`, core semantic/hybrid domains,
-  `query_dispatcher/{dense_admission,window,hybrid,hybrid_seed,semantic_query}.rs`, cursor/explain/harness owners.
+  `query_dispatcher/{dense_admission,window,semantic_query}.rs`, `query_dispatcher/routes/{hybrid,hybrid_seed}.rs`,
+  cursor/explain/harness owners.
 - [ ] Logic: `ExecutionOutcomeV2`; route capability matrix; canonical continuation digest; typed candidate identity;
   compact post-dedup rank shared by RRF/provenance; execution vs contribution metrics.
 - [ ] DoD: no capped/partial-to-exact promotion; `has_more=false` requires exhaustion proof; independent RRF/window
@@ -120,8 +120,8 @@ before S21-02 starts.
 - [ ] DoD: every public method exhaustively mapped; wrong-but-same-variant matrix rejected; active epoch mismatch
   rejected; query-only client does not require control/ingest sockets.
 
-W3 sequencing: freeze S21-06 outcome/cursor schema first. S21-05 resource work and S21-07 validator plumbing may
-then proceed on disjoint files, but the final merge unit closes all three together.
+W3 sequencing: S21-05 read-view checkpoint, S21-06 outcome/cursor checkpoint, S21-07 validator/SDK checkpoint를 순차로
+수행한다. P02A/P02B 외 기본 병렬 lane은 허용하지 않는다.
 
 ## W4 — provider, process and control boundary
 
@@ -155,8 +155,8 @@ then proceed on disjoint files, but the final merge unit closes all three togeth
 - [ ] DoD: unauthorized mutation 0; unknown principal default deny; kill each required component makes global
   ready false; request correlation contains no high-cardinality metric labels or secrets.
 
-W4 parallel boundary: S21-08 owns admission/reservation interfaces, S21-09 owns executor lifetime, S21-10 owns
-principal/capability/readiness DTOs. Provider enrollment and readiness integration close atomically.
+W4 sequencing: S21-08 admission/reservation interface, S21-09 executor/supervisor lifetime, S21-10
+principal/capability/readiness를 순차로 수행한다. Shared runtime composition을 선행 구현하거나 병렬 수정하지 않는다.
 
 ## W5 — state and producer cutover
 
@@ -166,7 +166,8 @@ principal/capability/readiness DTOs. Provider enrollment and readiness integrati
 - [ ] Files: searchd CLI `command.rs`, runtime `StateRootLease`, `legacy_semantic_migration.rs`, `semantic_boot.rs`,
   catalog connection/open/idempotency/auxiliary, persisted adapters, wire inventory, operator docs.
 - [ ] Logic: offline exclusive lease; SQLite backup API; immutable object inventory; staging deep scrub;
-  manifest-last fsync; same-filesystem atomic cutover; forward-only recovery after first new-format mutation.
+  manifest-last fsync; same-filesystem atomic cutover; legacy filename/`activations/` parse-transform-delete only here;
+  forward-only recovery after first new-format mutation.
 - [ ] DoD: source root unchanged; partial staging never opens ready; old/new pairs explicitly refuse; restored
   identities/receipts/replay floor/high-water match manifest; production boot legacy migration/decoder 0.
 
@@ -188,7 +189,8 @@ principal/capability/readiness DTOs. Provider enrollment and readiness integrati
 - [ ] Files: proof authority, test authority/lints, Justfile profiles, CI workflows, benchmark/quality tooling,
   receipt writer, checklist and closeout report.
 - [ ] Logic: aggregate static, owner, adapter, UDS, process, fault/concurrency, quality/ANN/performance, provider,
-  migration and cross-repo families from one final source and attested binary.
+  migration and cross-repo families from one final source and attested binary; registered aggregate schema/writer/
+  validator/final recipe produces the aggregate receipt and P12 manifest after validating the transitive handoff DAG.
 - [ ] DoD: all mandatory nodes pass; no `NOT_RUN`/`BLOCKED` P0/P1; Linux production-like host and real-provider
   opt-in proof present; verdicts separately state code qualified, deployed, activated and rollback proven.
 

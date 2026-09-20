@@ -7,8 +7,8 @@ Audit type: static source and plan review only
 Snapshot note: this verdict describes the pre-implementation audit at the recorded source/digests. Current gate status
 is owned by [INDEX.md](INDEX.md) and source-bound proof manifests; this snapshot is not a live completion signal.
 
-Verdict: `PLAN_READY_WITH_GATE`; implementation is `BLOCKED` until S21-00 decisions and S21-13 phase A proof
-authority are frozen.
+Verdict: `PLAN_READY_WITH_GATE`; M0 proof machinery exists, but implementation remains `BLOCKED` until the amended
+S21-00 contract has a corrected current-source manifest/handoff.
 
 ## 1. Scope and evidence boundary
 
@@ -69,9 +69,9 @@ Required structural correction:
 S21-02 previously depended only on identity/layout. That allowed activation machinery to land before graph
 validation and the operation protocol.
 
-Required structural correction: S21-01 lands first; S21-03 compiler and S21-04 journal may land in parallel;
-S21-02 consumes only `CompiledRepoMapCandidateV1` and the frozen journal API. The dependency graph and execution
-waves now encode this order.
+Required structural correction: S21-01A pure contract lands first; S21-03 compiler and S21-04 journal may land in
+parallel; P02I joins them; P03 closes S21-01B and S21-02 while consuming only `CompiledRepoMapCandidateV1` and the
+frozen journal API. The dependency graph and execution waves encode this order.
 
 ### FA-04 — P1 operation protocol conflated inspection, mutable claim and semantic refusal
 
@@ -152,6 +152,11 @@ Required structural correction:
 | metrics carry request correlation | bounded trace/diagnostic sink carries correlation; metrics stay low-cardinality |
 | migration may occur during boot | v1 migration is offline-only; production boot has no legacy reader/migrator |
 | release qualification is one boolean | code/deploy/activate/rollback verdicts are independent |
+| P01 owns live layout and quarantine | P01A owns pure codec/error/security only; P03 owns S21-01B live cutover |
+| quarantine can mint a local incident ID | P02B global event sequence plus P03 catalog-first crash protocol |
+| runtime removes legacy activation bytes | P03 refuses without mutation; P10 offline importer alone transforms/deletes |
+| every lane validates all old handoffs | immediate predecessor only; P02I validates fork; P12 validates transitive DAG |
+| dependency validation is P12 evidence | registered aggregate writer/verdict producer must emit receipt plus P12 manifest |
 
 ## 4. Coverage judgment
 
@@ -164,9 +169,21 @@ Required structural correction:
 No ticket may be marked done from static review alone. Closing evidence must include its named negative, recovery,
 consumer and process/external proofs on a re-frozen final source.
 
-## 5. Remaining blocking decisions
+## 5. Contract-repair resolution and remaining gate
 
-S21-00 must freeze, at minimum:
+The amended ADR/registry now freezes:
+
+- exact digest framing and distinct repository/logical domains;
+- exact candidate/artifact/quarantine integer-key schemas and digest inputs;
+- `%`/slash/dot logical-byte policy with zero path projection;
+- P01A/P03/P10 ownership, generic global event ledger and quarantine crash order;
+- only-P02A/P02B parallelism, immediate/transitive handoff validation and a real P12 aggregate producer.
+
+P00 does not falsely claim a final error-code table while source remains free-form. It freezes a source-bound baseline
+inventory and the migration rules. P01A owns the final closed table/cardinality/digest and cannot hand off until
+free-form paths are zero.
+
+The following product decisions were already frozen by the original S21-00 packet:
 
 1. identifier normalization/rejection and canonical byte encoding;
 2. persisted receipt version and old/new compatibility refusal;
@@ -178,5 +195,5 @@ S21-00 must freeze, at minimum:
 8. tenant/source/query provider egress policy;
 9. process readiness versus repository readiness semantics.
 
-Until these values and S21-13 phase A proof registry are merged, downstream product implementation remains
-`BLOCKED`, not merely “planned in parallel.”
+The remaining gate is operational evidence: regenerate and validate the corrected P00 manifest/handoff on one clean
+current source. Until it explicitly permits P01A, downstream product implementation is `BLOCKED`.

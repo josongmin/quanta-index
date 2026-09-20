@@ -4,16 +4,20 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import importlib.util
 import json
 import os
 import platform
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+
+import jsonschema
 
 try:
     import tomllib
@@ -26,6 +30,9 @@ CHECKER_PATH = ROOT / "tools/ci/lint/check-proof-authority.py"
 REGISTRY_PATH = ROOT / "tools/ci/proof-authority.toml"
 SCHEMA_PATH = ROOT / "tools/ci/proof-manifest.schema.json"
 INPUT_NAMES = frozenset(("fixture", "corpus", "config", "model", "provider"))
+ERROR_INVENTORY_PATH = "artifacts/sep-21/p00/error-authority-inventory.json"
+ERROR_INVENTORY_WRITER = ROOT / "tools/ci/write-error-authority-inventory.py"
+ERROR_INVENTORY_SCHEMA = ROOT / "tools/ci/error-authority-inventory.schema.json"
 
 
 class ManifestRefused(ValueError):
@@ -36,6 +43,16 @@ def _load_checker(path: Path = CHECKER_PATH) -> ModuleType:
     spec = importlib.util.spec_from_file_location("quanta_check_proof_authority", path)
     if spec is None or spec.loader is None:
         raise ManifestRefused(f"cannot load semantic validator: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_module(name: str, path: Path) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ManifestRefused(f"cannot load authority module: {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -352,7 +369,124 @@ def build_manifest(
     return payload, output_path
 
 
-def publish_manifest(
+def _validate_aggregate_issuance(
+    *,
+    root: Path,
+    registry: dict[str, Any],
+    registry_path: Path,
+    proof: dict[str, Any],
+    payload: dict[str, Any],
+    checker: ModuleType,
+    paired_checkout: Path | None,
+) -> None:
+    if proof.get("execution_mode") != "aggregate":
+        return
+    aggregate = registry.get("aggregate")
+    if not isinstance(aggregate, dict) or aggregate.get("target_proof") != proof["id"]:
+        raise ManifestRefused("aggregate proof has no registered aggregate authority")
+    if payload["status"] != "passed" or payload["counts"] != {
+        "selected": 1,
+        "executed": 1,
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+    }:
+        raise ManifestRefused("aggregate proof requires derived passed counts 1/1/1/0/0")
+    aggregate_path = aggregate.get("artifact")
+    aggregate_artifact = next(
+        (artifact for artifact in payload["artifacts"] if artifact["path"] == aggregate_path),
+        None,
+    )
+    if aggregate_artifact is None:
+        raise ManifestRefused("aggregate proof must attest the registered aggregate artifact")
+    if not isinstance(aggregate_path, str):
+        raise ManifestRefused("registered aggregate artifact path is invalid")
+    aggregate_file = root / aggregate_path
+    try:
+        aggregate_payload = _read_json_object(aggregate_file, label="aggregate receipt")
+        aggregate_schema = _read_json_object(root / aggregate["schema"], label="aggregate schema")
+    except (OSError, json.JSONDecodeError) as error:
+        raise ManifestRefused(f"cannot load registered aggregate receipt: {error}") from error
+    paired_checkouts = None
+    if paired_checkout is not None:
+        paired_checkouts = {proof["paired_repository"]: paired_checkout}
+    findings = checker.check_aggregate_receipt(
+        aggregate_payload,
+        receipt_path=aggregate_file,
+        registry=registry,
+        registry_path=registry_path,
+        schema=aggregate_schema,
+        root=root,
+        bind_source=True,
+        paired_checkouts=paired_checkouts,
+        require_ready=True,
+    )
+    if findings:
+        rendered = "; ".join(finding.render() for finding in findings)
+        raise ManifestRefused(f"aggregate receipt is not authoritative: {rendered}")
+    if aggregate_artifact["sha256"] != _sha256(aggregate_file):
+        raise ManifestRefused("aggregate artifact changed during P12 issuance")
+    if payload["source"] != aggregate_payload["source"]:
+        raise ManifestRefused("P12 source differs from aggregate source")
+    if payload["source_pair"] != aggregate_payload["source_pair"]:
+        raise ManifestRefused("P12 source pair differs from aggregate source pair")
+    if payload["daemon_binary"] != aggregate_payload["daemon_binary"]:
+        raise ManifestRefused("P12 daemon binary differs from aggregate daemon binary")
+    if payload["environment"]["host"]["profile"] != aggregate_payload["release_host"]["profile"]:
+        raise ManifestRefused("P12 host profile differs from aggregate release host")
+    if (
+        payload["environment"]["host"]["identity_digest"]
+        != aggregate_payload["release_host"]["identity_digest"]
+    ):
+        raise ManifestRefused("P12 host identity differs from aggregate release host")
+    if payload["state_root_format"] != aggregate_payload["state_root_format"]:
+        raise ManifestRefused("P12 state-root format differs from aggregate authority")
+
+
+def _validate_p00_issuance(
+    *,
+    root: Path,
+    proof: dict[str, Any],
+    payload: dict[str, Any],
+) -> None:
+    if proof.get("id") != "p00-authority-freeze":
+        return
+    inventory_artifact = next(
+        (item for item in payload["artifacts"] if item["path"] == ERROR_INVENTORY_PATH),
+        None,
+    )
+    if inventory_artifact is None:
+        raise ManifestRefused("P00 proof must attest the registered error-authority inventory")
+    inventory_path = root / ERROR_INVENTORY_PATH
+    inventory = _read_json_object(inventory_path, label="error-authority inventory")
+    schema = _read_json_object(ERROR_INVENTORY_SCHEMA, label="error-authority schema")
+    try:
+        jsonschema.Draft202012Validator(schema).validate(inventory)
+    except jsonschema.ValidationError as error:
+        raise ManifestRefused(f"error-authority inventory is invalid: {error.message}") from error
+    writer = _load_module("quanta_error_authority_inventory", ERROR_INVENTORY_WRITER)
+    if inventory != writer.build_inventory(root):
+        raise ManifestRefused(
+            "error-authority inventory is not current source-bound discovery evidence"
+        )
+    if inventory.get("closed") is not False:
+        raise ManifestRefused("P00 discovery inventory cannot claim semantic closure")
+    if inventory_artifact["sha256"] != _sha256(inventory_path):
+        raise ManifestRefused("error-authority inventory changed during P00 issuance")
+
+
+def _proof_lock_path(root: Path) -> Path:
+    completed = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--git-path", "quanta-proof-authority.lock"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    path = Path(completed.stdout.strip())
+    return path if path.is_absolute() else root / path
+
+
+def _publish_manifest_locked(
     *,
     root: Path,
     registry_path: Path,
@@ -381,6 +515,10 @@ def publish_manifest(
     proof = proof_by_id.get(proof_id)
     if proof is None:
         raise ManifestRefused(f"proof_id {proof_id!r} is not registered")
+    if proof.get("authority_state") != "executable":
+        raise ManifestRefused(
+            f"proof_id {proof_id!r} is staged and cannot issue an authoritative manifest"
+        )
     expected_schema_path = (root / proof["artifact_schema"]).resolve()
     if schema_path != expected_schema_path:
         raise ManifestRefused(f"schema override is forbidden: expected {expected_schema_path}")
@@ -394,6 +532,16 @@ def publish_manifest(
         checker=checker,
         paired_checkout=paired_checkout,
     )
+    _validate_aggregate_issuance(
+        root=root,
+        registry=registry,
+        registry_path=registry_path,
+        proof=proof,
+        payload=payload,
+        checker=checker,
+        paired_checkout=paired_checkout,
+    )
+    _validate_p00_issuance(root=root, proof=proof, payload=payload)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     serialized = (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode()
     temporary_path: Path | None = None
@@ -433,8 +581,59 @@ def publish_manifest(
             excluded_paths=(paired_checkout,) if paired_checkout is not None else (),
         ):
             raise ManifestRefused("source changed while proof manifest was being prepared")
+        _validate_aggregate_issuance(
+            root=root,
+            registry=registry,
+            registry_path=registry_path,
+            proof=proof,
+            payload=payload,
+            checker=checker,
+            paired_checkout=paired_checkout,
+        )
+        _validate_p00_issuance(root=root, proof=proof, payload=payload)
+        final_findings = checker.check_manifest(
+            payload,
+            manifest_path=temporary_path,
+            proof=proof,
+            schema=schema,
+            root=root,
+            bind_source=True,
+            allow_non_passed=True,
+            paired_checkouts=(
+                {proof["paired_repository"]: paired_checkout}
+                if paired_checkout is not None
+                else None
+            ),
+            proof_by_id=proof_by_id,
+        )
+        if final_findings:
+            rendered = "; ".join(finding.render() for finding in final_findings)
+            raise ManifestRefused(f"proof inputs changed before manifest publication: {rendered}")
         os.replace(temporary_path, output_path)
         temporary_path = None
+        installed_payload = _read_json_object(output_path, label="published proof manifest")
+        if installed_payload != payload:
+            output_path.unlink(missing_ok=True)
+            raise ManifestRefused("published proof manifest bytes differ from validated payload")
+        published_findings = checker.check_manifest(
+            installed_payload,
+            manifest_path=output_path,
+            proof=proof,
+            schema=schema,
+            root=root,
+            bind_source=True,
+            allow_non_passed=True,
+            paired_checkouts=(
+                {proof["paired_repository"]: paired_checkout}
+                if paired_checkout is not None
+                else None
+            ),
+            proof_by_id=proof_by_id,
+        )
+        if published_findings:
+            output_path.unlink(missing_ok=True)
+            rendered = "; ".join(finding.render() for finding in published_findings)
+            raise ManifestRefused(f"proof inputs changed at publication: {rendered}")
         directory_fd = os.open(output_path.parent, os.O_RDONLY)
         try:
             os.fsync(directory_fd)
@@ -444,6 +643,30 @@ def publish_manifest(
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
     return output_path, _sha256(output_path), payload["status"]
+
+
+def publish_manifest(
+    *,
+    root: Path,
+    registry_path: Path,
+    schema_path: Path,
+    proof_id: str,
+    terminal_input_path: Path,
+    paired_checkout: Path | None = None,
+) -> tuple[Path, str, str]:
+    root = root.resolve()
+    lock_path = _proof_lock_path(root)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        return _publish_manifest_locked(
+            root=root,
+            registry_path=registry_path,
+            schema_path=schema_path,
+            proof_id=proof_id,
+            terminal_input_path=terminal_input_path,
+            paired_checkout=paired_checkout,
+        )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

@@ -36,10 +36,18 @@ Depends on: S21-00, S21-01
 
 ## Sequence authority
 
-- positive monotonic sequence with DB CHECK
-- unique committed sequence within declared stream/session scope
+- one positive monotonic state-root-global sequence in exact issued range `1..=i64::MAX` with DB CHECK; issuing max
+  atomically stores explicit `next=NULL, exhausted=1`; no per-domain stream, wrap or signed/unsigned cast. Later
+  allocation refuses `SEQUENCE_EXHAUSTED` before mutation.
+- `catalog_sequence_event_v2(sequence, event_kind, identity_digest, payload_digest, event_commitment, row_digest)` is
+  the generic ledger; commitment and row-digest canonical maps/domains are owned by SEP-21-002
+- allocator update + generic event + owning domain row commit in one SQLite transaction
+- closed event kinds include operation terminal, candidate sealed, activate, rollback, invalidate, quarantine record
+  and quarantine discard
 - versioned/self-digested allocator metadata
-- open/import: `next > MAX(all stored terminal sequences)` reconciliation
+- open/import derives only from generic ledger: empty → `(next=1, exhausted=0)`; max below `i64::MAX` →
+  `(next=max+1, exhausted=0)`; max equal to `i64::MAX` → `(next=NULL, exhausted=1)`. A separate full event↔domain-row
+  integrity pass rejects missing/mismatched pairs and never repairs from domain maxima.
 - regression/duplicate/corruption은 startup refusal 또는 explicit repair mode
 - receipt pruning과 replay floor/expired semantics
 
@@ -95,7 +103,8 @@ refusal/lease/sequence recovery까지 하나의 protocol로 구현한다.
 |---|---|---|
 | `crates/quanta-index-core/src/domains/idempotency.rs` | `begin/finalize`를 `inspect`, `claim_prepared`, `record_refused`, `commit`, `recover`로 교체 | replay 조회는 mutable preflight보다 먼저 |
 | `crates/quanta-index-catalog/src/idempotency.rs` | boolean applied row를 typed state, owner, lease, fence, result/receipt digest, row digest로 교체 | stale owner terminal commit 불가 |
-| `crates/quanta-index-catalog/src/open.rs` | sequence `CHECK (>0)`, stream-scope `UNIQUE`, `next > MAX(terminal)` reconciliation | restore 후 sequence 회귀 불가 |
+| `crates/quanta-index-catalog/src/open.rs` | sequence range/digest-length CHECK, allocator row digest, `next > MAX(catalog_sequence_event_v2.sequence)` reconciliation | restore 후 sequence 회귀/overflow 불가 |
+| catalog sequence-event owner | generic event table, closed kind, commitment/row digest, event↔domain-row integrity | P03가 별도 quarantine/activation counter를 만들 수 없음 |
 | `crates/quanta-index-catalog/src/auxiliary.rs` | validator가 `PreparedMutationV1` 또는 typed rejection을 생성 | invalid intent/in-progress row 0 |
 | `crates/quanta-index-search-plane/src/ingest_dispatcher/dispatcher.rs` | body digest → inspect/replay/conflict → prepare → claim → apply → commit | ACK loss가 storage/provider work 반복 안 함 |
 | operation status contract/SDK | terminal/non-terminal state와 authorization-aware lookup | string parsing 없이 recovery 관찰 |
@@ -108,3 +117,4 @@ refusal/lease/sequence recovery까지 하나의 protocol로 구현한다.
 - serial-ingest 결정이면 admission cap과 runtime worker topology가 이를 machine-enforce한다.
 - retention은 replay floor 아래 key에 `OPERATION_REPLAY_FLOOR`를 반환하며 신규 작업으로 오인하지 않는다.
 - SQLite `fullfsync`/durability 설정은 set 호출뿐 아니라 read-back 및 crash fixture로 증명한다.
+- mixed event-kind concurrency/rollback/restore에서 positive global uniqueness와 high-water reconciliation을 증명한다.

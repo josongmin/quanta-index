@@ -23,6 +23,7 @@ owner files:
 - `crates/quanta-index-embed/src/{cache,telemetry,lib}.rs`와 `openai/{batching,retry}.rs`
 - `crates/quanta-index-searchd/src/app/{config,runtime}.rs` 중 provider composition section
 - provider/egress config, secret owner, audit telemetry
+- provider owner-local tests/suite module, `tools/ci/{test-authority,proof-authority}.toml`, required Just recipe
 
 구현 순서:
 
@@ -35,8 +36,8 @@ owner files:
    통과하게 한다.
 5. `EmbeddingOutcomeV1`에 declared/observed model, dimension, finite/norm, usage/cost/outcome을 담는다.
 6. OpenAI adapter의 payload, timeout/retry, validation, secret-safe error를 한 boundary에 둔다.
-7. executor pool 내부 task registry/reservation/settlement와 supervisor-enrollment handle을 구현한다. P08은 이
-   handle을 process child registry에 등록해 drain/join/escalation한다.
+7. reservation/settlement API와 ownership-bearing supervisor-enrollment handle 생성까지만 구현한다. actual
+   spawn/register/cancel/join/escalation과 terminal result 수집은 P08 owner다.
 
 금지: route-local empty check, detached OS thread, semaphore로 unowned work를 감싸기, policy 후 provider call,
 raw source/query/credential을 log/metric/cache key/receipt에 기록, provider retry를 operation replay로 오인.
@@ -51,8 +52,10 @@ DoD:
 - controlled HTTP spy와 budgeted opt-in real-provider proof는 구분 기록
 - provider network/credential/cost 승인이 없으면 real-provider proof는 NOT_RUN이며 hash/stub evidence로 대체 금지
 
-proof node는 `p07-provider-boundary`, canonical release command는 `just rust-profile test-integration-semantic`이며
+proof node는 `p07-provider-boundary`다. `test_authority_targets`가 비어 있거나 mandatory admission/egress/reservation/
+settlement/leak scenario를 선택하지 않으면 패치 전에 `BLOCKED`다. canonical release command는
+`just rust-profile test-integration-semantic`이며
 Linux production-like/release-daemon/승인된 real-provider proof가 필요하다. 최종 handoff
 `artifacts/sep-21/handoffs/P07.json`에 source freeze, admission order, reservation/executor API, config caps, egress matrix,
 commands/counts, NOT_RUN real-provider proof, P08 lifecycle invariants를 남겨라. explicit owner path만 checkpoint
-commit하고 push는 별도 요청 시에만 한다.
+commit하고 current lane branch에 non-force push한다.

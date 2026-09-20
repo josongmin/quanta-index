@@ -102,6 +102,12 @@ target before claiming its proof. Empty future target lists are not evidence and
 - mandatory family 전부와 deployment/activation/rollback evidence를 aggregate하고 누락/실패/skipped/stale를
   success로 계산하지 않는다.
 - verdict를 `CODE_QUALIFIED`, `DEPLOYED`, `ACTIVATED`, `ROLLBACK_PROVEN`으로 분리한다.
+- registered `AggregateQualificationReceiptV1` schema, registry-derived writer, validator and canonical final Just
+  recipe가 dependency manifest validation → four-verdict calculation → atomic aggregate artifact publication → P12
+  proof-manifest issuance를 수행한다. 기존 dependency manifests를 검사만 하고 새 aggregate artifact를 만들지 않는
+  command는 P12 producer가 아니며 final proof를 발행할 수 없다.
+- aggregate receipt는 P11 immediate handoff뿐 아니라 P00→P12 transitive handoff chain, P02A/P02B/P02I fork/join,
+  exact source pair, attested binary와 모든 mandatory artifact digest를 검증한다.
 
 ## Owner files
 
@@ -109,6 +115,7 @@ target before claiming its proof. Empty future target lists are not evidence and
 - `tools/ci/lint/check-test-authority.py`
 - `tools/ci/lint/check-bench-artifacts.py`
 - verification receipt writer/schema
+- aggregate qualification receipt schema/writer/validator and canonical producer recipe
 - `.github/workflows/ci.yml`
 - `.github/workflows/correctness.yml`
 - `Justfile`
@@ -151,6 +158,7 @@ target before claiming its proof. Empty future target lists are not evidence and
 - independent quality oracle does not derive expected output from SUT output
 - checklist mandatory P0/P1 rows are all `PASS`; runtime/external rows are not static-pass
 - final report separates code completion, test proof, deployment, and activation
+- final recipe가 새 aggregate receipt와 P12 manifest를 실제 생성하고 둘의 digest/source binding을 재검증한다.
 
 ## Final release gate
 

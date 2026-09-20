@@ -18,6 +18,8 @@ WRITER_PATH = REPO_ROOT / "tools/ci/write-proof-manifest.py"
 CHECKER_PATH = REPO_ROOT / "tools/ci/lint/check-proof-authority.py"
 REGISTRY_PATH = REPO_ROOT / "tools/ci/proof-authority.toml"
 SCHEMA_PATH = REPO_ROOT / "tools/ci/proof-manifest.schema.json"
+AGGREGATE_SCHEMA_PATH = REPO_ROOT / "tools/ci/proof-aggregate.schema.json"
+ERROR_INVENTORY_WRITER_PATH = REPO_ROOT / "tools/ci/write-error-authority-inventory.py"
 
 
 def _load_module(name: str, path: Path):
@@ -31,6 +33,9 @@ def _load_module(name: str, path: Path):
 
 WRITER = _load_module("write_proof_manifest", WRITER_PATH)
 CHECKER = _load_module("write_proof_manifest_checker", CHECKER_PATH)
+ERROR_INVENTORY_WRITER = _load_module(
+    "write_proof_manifest_error_inventory", ERROR_INVENTORY_WRITER_PATH
+)
 
 
 def _run(root: Path, *args: str) -> None:
@@ -45,13 +50,15 @@ def _fixture_root(tmp_path: Path) -> tuple[Path, dict]:
     registry_path.parent.mkdir(parents=True)
     shutil.copyfile(REGISTRY_PATH, registry_path)
     shutil.copyfile(SCHEMA_PATH, root / "tools/ci/proof-manifest.schema.json")
+    shutil.copyfile(AGGREGATE_SCHEMA_PATH, root / "tools/ci/proof-aggregate.schema.json")
 
     target_ids = sorted(
         {target for proof in registry["proofs"] for target in proof["test_authority_targets"]}
     )
     test_authority = root / "tools/ci/test-authority.toml"
     test_authority.write_text(
-        "".join(f'[[integration_targets]]\nid = "{target}"\n' for target in target_ids),
+        '[local_scopes.integration-fast]\ntargets = ["catalog-idempotency"]\n\n'
+        + "".join(f'[[integration_targets]]\nid = "{target}"\n' for target in target_ids),
         encoding="utf-8",
     )
     for proof in registry["proofs"]:
@@ -72,6 +79,12 @@ def _terminal(root: Path) -> tuple[Path, dict]:
     proof_dir.mkdir(parents=True, exist_ok=True)
     evidence = proof_dir / "p00.log"
     evidence.write_text("proof authority: passed\n", encoding="utf-8")
+    inventory = root / "artifacts/sep-21/p00/error-authority-inventory.json"
+    inventory.parent.mkdir(parents=True, exist_ok=True)
+    inventory.write_text(
+        json.dumps(ERROR_INVENTORY_WRITER.build_inventory(root), sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
     terminal = {
         "status": "passed",
         "counts": {"selected": 1, "executed": 1, "passed": 1, "failed": 0, "ignored": 0},
@@ -98,7 +111,10 @@ def _terminal(root: Path) -> tuple[Path, dict]:
         },
         "started_at": "2026-09-21T00:00:00Z",
         "ended_at": "2026-09-21T00:00:01Z",
-        "artifacts": ["artifacts/proof-authority/raw/p00.log"],
+        "artifacts": [
+            "artifacts/proof-authority/raw/p00.log",
+            "artifacts/sep-21/p00/error-authority-inventory.json",
+        ],
     }
     terminal_path = proof_dir / "terminal.json"
     terminal_path.write_text(json.dumps(terminal), encoding="utf-8")
@@ -168,6 +184,16 @@ def test_writer_resolves_registry_source_and_null_binary_then_semantically_valid
         )
         == []
     )
+
+
+def test_p00_manifest_refuses_missing_error_inventory_attestation(tmp_path: Path) -> None:
+    root, _ = _fixture_root(tmp_path)
+    terminal_path, terminal = _terminal(root)
+    terminal["artifacts"] = ["artifacts/proof-authority/raw/p00.log"]
+    terminal_path.write_text(json.dumps(terminal), encoding="utf-8")
+
+    with pytest.raises(WRITER.ManifestRefused, match="must attest.*error-authority inventory"):
+        _publish(root, terminal_path)
 
 
 @pytest.mark.parametrize("terminal_status", ["failed", "blocked", "not_run"])
@@ -308,6 +334,32 @@ def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root, registry = _fixture_root(tmp_path)
+    registry_path = root / "tools/ci/proof-authority.toml"
+    registry_text = (
+        registry_path.read_text(encoding="utf-8")
+        .replace(
+            'id = "p11-cross-repo-cutover"\nauthority_state = "staged"\nexecution_mode = "test-authority"\nstaged_reason = "P11 must land the exact-pair producer protocol and cross-repository terminal receipt rail."',
+            'id = "p11-cross-repo-cutover"\nauthority_state = "executable"\nexecution_mode = "test-authority"',
+        )
+        .replace(
+            'target = "semantica-terminal-receipt"\nfilter = "none"\nsource_binding = "exact-pair"',
+            'target = "semantica-terminal-receipt"\nfilter = "none"\nsource_binding = "exact-pair"',
+        )
+        .replace(
+            'test_authority_targets = []\ndependencies = ["p03-candidate-activation", "p02b-operation-journal", "p06-sdk-binding", "p10-state-migration"]',
+            'test_authority_targets = ["catalog-idempotency"]\ntest_authority_scopes = ["integration-fast"]\ndependencies = ["p03-candidate-activation", "p02b-operation-journal", "p06-sdk-binding", "p10-state-migration"]',
+        )
+        .replace(
+            'command = "just rust-verify-hellgate-cross-repo"',
+            'command = "just proof-p11-cross-repo-cutover"',
+        )
+    )
+    registry_path.write_text(registry_text, encoding="utf-8")
+    (root / "Justfile").write_text(
+        "proof-p11-cross-repo-cutover:\n    @just rust-profile test-integration-fast\n",
+        encoding="utf-8",
+    )
+    registry = CHECKER._read_toml(registry_path)
     checkout = _paired_checkout(tmp_path)
     terminal_path, terminal = _terminal(root)
     proof = next(proof for proof in registry["proofs"] if proof["id"] == "p11-cross-repo-cutover")

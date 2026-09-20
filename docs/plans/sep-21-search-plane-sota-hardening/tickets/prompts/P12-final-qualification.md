@@ -51,7 +51,8 @@ proof rules:
 - final validator는 `--require-all --bind-source`로 manifest 0/missing/stale를 실패시키고 dependency receipt도 같은
   source pair/daemon binary/required host에 결속한다.
 - final qualification command는 `verify-rust` 단독이 아니라 모든 registered proof 실행/수집과 aggregate receipt
-  schema validation을 포함해야 한다. canonical aggregate recipe가 없으면 `BLOCKED`다.
+  schema validation을 포함해야 한다. dependency validation 뒤 four-verdict 계산, aggregate artifact 작성,
+  `p12-final-qualification` manifest 발급까지 하는 schema/writer/producer가 없으면 `BLOCKED`다.
 
 canonical escalation은 `Justfile`과 `./scripts/cargow`를 사용하고 current profile registry로 실제 coverage를
 확인하라. raw command 성공만으로 product GREEN을 주장하지 마라.
@@ -69,5 +70,8 @@ migration/rollback/cross-repo/Linux/승인된 real-provider proof pass, unresolv
 
 proof node는 `p12-final-qualification`이다. 최종 보고에는 exact source pair, registry/plan/aggregate manifest digest,
 daemon binary, 모든 proof ID/family result/counts/artifact path, failed/skipped/not-run ledger, 네 verdict와 근거,
-unresolved risks와 `artifacts/sep-21/handoffs/P12.json`을 포함하라. proof execution은 code 수정과 분리한다. commit/push,
-provider egress, deploy, activate, rollback은 각각 별도 명시 요청 없이는 수행하지 않는다.
+unresolved risks와 `artifacts/sep-21/handoffs/P12.json`을 포함하라. 이 lane은 product code나 proof registry를 고치지
+않는다. aggregate recipe/target/dependency가 빠졌으면 owning lane으로 되돌리고 `BLOCKED`다. proof execution은 code 수정과
+분리한다. tracked qualification artifact/index 변경이 있을 때만 explicit path를 commit하고 current lane branch에
+non-force push하며 empty commit은 만들지 않는다. provider egress, deploy, activate, rollback은 각각 별도 명시
+요청 없이는 수행하지 않는다.

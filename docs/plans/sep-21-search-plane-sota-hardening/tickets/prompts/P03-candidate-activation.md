@@ -46,8 +46,8 @@ SQLite catalog를 visibility와 incident-event의 sole authority로 만들고 fi
     envelope/time/sequence를 재사용하고 새 sequence/time을 만들지 않는다.
 12. projection failure를 open success로 삼키지 않는다. invalidation은 durable하므로 serve할 수 없다. online discard는
     incident/event를 삭제하지 않고 journaled tombstone 뒤 payload만 회수할 수 있다.
-13. 새 error code가 필요하면 같은 commit에서 canonical enum, exhaustive class/repair/SDK/fixture/inventory를 갱신한다.
-    ad-hoc const/string code는 금지한다.
+13. P01A accepted-code table에 없는 error code가 필요하면 이 lane에서 enum/string을 추가하지 말고
+    `BLOCKED`로 종료해 P01A/P02I contract owner로 되돌린다.
 
 ## 금지
 
@@ -74,4 +74,5 @@ S21-01/S21-02 closure가 아니다. Linux production-like host/release daemon bi
 
 최종 보고에는 source freeze, exact write set, state table, fault/sequence/quarantine matrix, removed legacy runtime symbol
 inventory, proof command/counts/host/binary, NOT_RUN, S21-01B+S21-02 M1 closure와
-`artifacts/sep-21/handoffs/P03.json`을 남긴다. explicit owner path만 checkpoint commit하고 push는 별도 요청 시에만 한다.
+`artifacts/sep-21/handoffs/P03.json`을 남긴다. explicit owner path만 checkpoint commit하고 current lane branch에
+non-force push한다.

@@ -3,7 +3,8 @@
 당신은 S21-07 owner다. 먼저 repo root 기준 `docs/plans/sep-21-search-plane-sota-hardening/tickets/prompts/`
 아래 `COMMON-EXECUTION-CONTRACT.md`와 `README.md`를 읽고 그대로 적용한다. P03/P02B/P05 checkpoint와 handoff가
 current M2 stack에 있을 때 시작한다. 이 lane은 P05 public schema를
-소비자 쪽에서 닫으며 schema 재설계가 필요하면 수정하지 말고 P05 owner로 되돌린다.
+소비자 쪽에서 닫으며 schema 재설계가 필요하면 수정하지 말고 P05 owner로 되돌린다. immediate P05
+checkpoint/handoff/proof binding이 없거나 current source와 다르면 `BLOCKED`로 종료한다.
 
 읽을 문서: repo instructions, `docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-AUDIT.md`,
 `docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-07-sdk-wire-response-binding.md`,
@@ -48,8 +49,9 @@ DoD:
 - exported public method 전수와 coverage table exact match; contextual validator 없는 same-variant success path 0
 - query-only profile은 dummy control/ingest transport를 만들지 않음
 
-proof node는 `p06-sdk-binding`, canonical release command는 `just rust-profile test-daemon`이며 Linux
-production-like/release-daemon proof가 필요하다. 최종 보고에 method coverage table, source freeze,
+proof node는 `p06-sdk-binding`, canonical release process command는 `just rust-profile test-daemon`이다. public
+contract/SDK/wire 변경에는 `just rust-public-api`, `just rust-wire-inventory`, `just rust-fuzz-smoke`를 같은 source에서
+실행한다. Linux production-like/release-daemon proof가 필요하다. 최종 보고에 method coverage table, source freeze,
 schema/baseline changes, negative matrix counts, NOT_RUN, P07/P08 request context와 `artifacts/sep-21/handoffs/P06.json`을
 남겨라. 이 checkpoint에서 M2의 S21-05/06/07을 함께 닫을 수 있는지 판정한다. explicit owner path만 checkpoint
-commit하고 push는 별도 요청 시에만 한다.
+commit하고 current lane branch에 non-force push한다.

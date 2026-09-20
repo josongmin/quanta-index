@@ -90,6 +90,25 @@ REPRODUCTION_CLASSES: frozenset[str] = frozenset(
     }
 )
 
+TOOL_MIGRATION_FIXTURES = {
+    "proof_manifest_v0_refused": (
+        "tools/ci/tests/test_check_proof_authority.py",
+        "test_manifest_v0_is_refused",
+    ),
+    "proof_aggregate_missing_or_not_ready_refused": (
+        "tools/ci/tests/test_write_proof_aggregate.py",
+        "test_p12_guard_refuses_registered_not_ready_aggregate",
+    ),
+    "error_authority_inventory_source_digest_changes": (
+        "tools/ci/tests/test_write_error_authority_inventory.py",
+        "test_inventory_source_digest_changes_with_raw_source_bytes",
+    ),
+    "verification_receipt_v1_not_release_authority": (
+        "tools/ci/tests/test_check_proof_authority.py",
+        "test_legacy_verification_receipt_is_not_proof_manifest",
+    ),
+}
+
 
 def check_tool_artifacts(inventory: dict, root: Path = ROOT) -> list[Finding]:
     """Validate tools-owned JSON formats that do not have Rust constants."""
@@ -127,6 +146,32 @@ def check_tool_artifacts(inventory: dict, root: Path = ROOT) -> list[Finding]:
         version = row.get("version")
         if not isinstance(version, int) or isinstance(version, bool) or version < 1:
             findings.append(Finding(where, "`version` must be a positive integer"))
+        migration_fixture = row.get("migration_fixture")
+        if migration_fixture not in TOOL_MIGRATION_FIXTURES:
+            findings.append(
+                Finding(
+                    where,
+                    f"`migration_fixture` is not an executable registered fixture ID: {migration_fixture!r}",
+                )
+            )
+        else:
+            fixture_file, fixture_function = TOOL_MIGRATION_FIXTURES[migration_fixture]
+            fixture_path = root / fixture_file
+            try:
+                fixture_source = fixture_path.read_text(encoding="utf-8")
+            except OSError as error:
+                findings.append(Finding(where, f"cannot read fixture file {fixture_file}: {error}"))
+            else:
+                if (
+                    re.search(rf"^def {re.escape(fixture_function)}\s*\(", fixture_source, re.M)
+                    is None
+                ):
+                    findings.append(
+                        Finding(
+                            where,
+                            f"registered fixture function is missing: {fixture_file}::{fixture_function}",
+                        )
+                    )
         owner = row.get("owner")
         if isinstance(owner, str) and not (root / owner).is_file():
             findings.append(Finding(where, f"owner file does not exist: {owner}"))

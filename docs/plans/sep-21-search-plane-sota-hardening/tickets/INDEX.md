@@ -1,8 +1,8 @@
 # SEP-21 Search Plane SOTA Hardening — Ticket Index
 
-Status: `in progress`; S21-00 decisions and the M0/P00 current-source fail-closed proof gate are implemented.
-P01 is the next permitted lane. S21-13 Phase B and every product/runtime proof remain open until their owning lanes
-produce same-source receipts.
+Status: `in progress`; M0 proof infrastructure exists, but the corrected semantic contract needs a new current-source
+P00 manifest/handoff. P01A is blocked until that receipt explicitly permits it. S21-13 Phase B and every
+product/runtime proof remain open until their owning lanes produce same-source receipts.
 
 Authority inputs:
 
@@ -199,7 +199,7 @@ Authority rules:
 | Merge unit | Tickets | Atomic closure |
 |---|---|---|
 | M0 Contract/proof freeze | S21-00, S21-13A | ADR, identity/state/error schema, proof manifest skeleton, migration and compatibility decision |
-| M1 Durable authority | S21-01, 03, 04, 02 | compiler와 journal이 먼저 고정된 뒤 candidate/activation cutover; legacy activation file 삭제 |
+| M1 Durable authority | S21-01A, 03, 04, 01B+02 | pure contract first, compiler/journal fork-join, then one live layout/quarantine/activation cutover; legacy handled only offline |
 | M2 Query truth | S21-05, 06, 07 | real handles, continuation/completeness, provenance, response binding이 한 contract로 연결 |
 | M3 Runtime boundary | S21-08, 09, 10 | provider admission과 supervisor/auth/readiness가 global resource model로 연결 |
 | M4 External cutover | S21-11, 12 | backup/restore와 producer terminal receipt가 exact binary/source와 연결 |
@@ -221,17 +221,17 @@ Authority rules:
 | Ticket | Owner outcome | Depends on |
 |---|---|---|
 | [S21-00](S21-00-authority-freeze-and-cutover-contract.md) | authority/ADR/schema/cutover freeze | none |
-| [S21-01](S21-01-canonical-identity-and-layout-v3.md) | canonical identities and collision-free durable layout | 00 |
+| [S21-01](S21-01-canonical-identity-and-layout-v3.md) | P01A pure identity/codec/error primitives; P03 live layout/quarantine closure | 00; live phase also 03, 04 |
 | [S21-02](S21-02-sealed-candidate-activation-and-recovery.md) | immutable RepoMap candidate, content-bound activation, recovery reconciliation | 00, 01, 03, 04 |
 | [S21-03](S21-03-repomap-graph-compiler-and-resource-envelope.md) | validated typed graph compiler and bounded materialization | 00, 01 |
 | [S21-04](S21-04-operation-journal-and-sequence-authority.md) | replay-first durable operation state machine and sequence authority | 00, 01 |
 | [S21-05](S21-05-read-view-v2-and-snapshot-lifetime.md) | actual immutable handle pinning for every declared domain | 00, 02, 04 |
 | [S21-06](S21-06-query-completeness-continuation-and-provenance.md) | canonical cursor, completeness, ranking and explain truth | 00, 05 |
 | [S21-07](S21-07-sdk-wire-response-binding.md) | shared request/response/receipt semantic validators | 00, 01, 02, 04, 06 |
-| [S21-08](S21-08-semantic-admission-and-provider-boundary.md) | pre-I/O model/input gate, bounded provider work, egress policy | 00, 04, 06 |
+| [S21-08](S21-08-semantic-admission-and-provider-boundary.md) | pre-I/O model/input gate, bounded provider work, egress policy | 00, 04, 06, 07 |
 | [S21-09](S21-09-supervised-runtime-and-bounded-shutdown.md) | signal-aware supervisor, runtime-guard ownership, rollback, RAII, hard drain | 00, 04; provider enrollment closes atomically with 08 |
-| [S21-10](S21-10-control-authorization-readiness-and-observability.md) | capability control plane and all-plane health truth | auth: 00; readiness: 09 |
-| [S21-11](S21-11-state-migration-backup-and-restore.md) | offline migration and executable state lifecycle | 01, 02, 04, 09 |
+| [S21-10](S21-10-control-authorization-readiness-and-observability.md) | capability control plane and all-plane health truth | 00, 04, 09 |
+| [S21-11](S21-11-state-migration-backup-and-restore.md) | offline migration and executable state lifecycle | 01, 02, 04, 09, 10 |
 | [S21-12](S21-12-cross-repo-terminal-receipt-cutover.md) | exact Semantica/SDK/daemon terminal receipt and breaking cutover | 02, 04, 07, 11 |
 | [S21-13](S21-13-release-evidence-and-sota-qualification.md) | early proof infrastructure plus final source-bound closeout | phase A: 00; phase B: all |
 
@@ -240,9 +240,9 @@ Authority rules:
 | Wave | Tickets | Exit gate |
 |---|---|---|
 | W0 | 00, 13A | unresolved product decisions 0; exact owner/write set/frozen schemas; blocking proof skeleton |
-| W1a | 01 | canonical identity/layout frozen |
+| W1a | 01A | pure canonical identity/codec/error/security primitives; no live layout closure |
 | W1b | 03, 04 | isolated lane commits plus same-HEAD P02I integration proof/handoff |
-| W2 | 02 | compiler output과 operation journal을 소비하는 immutable publish/activate/recover |
+| W2 | 01B, 02 | compiler/journal을 소비하는 live layout/quarantine/publish/activate/recover one-time cutover |
 | W3 | 05, 06, 07 | all query routes use one pinned view and bound response semantics |
 | W4 | 08, 09, 10 | provider/process/control resources supervised and bounded |
 | W5 | 11, 12 | frozen-state migration plus external producer cutover receipt |
@@ -250,12 +250,16 @@ Authority rules:
 
 Parallelism:
 
-- W1a identity/layout freeze 후 W1b를 시작한다. S21-01과 S21-04의 동시 구현은 금지한다.
-- W1b의 graph compiler와 operation journal만 기본 병렬 가능하다. 서로 다른 worktree/branch에서 같은 P01 base를
-  사용하며 S21-02는 P02I same-HEAD 통합 proof 이후 시작한다.
+- 전체 graph는 `P00 → P01A → (P02A ∥ P02B) → P02I → P03 → P04 → … → P12`이다.
+- 오직 P02A graph compiler와 P02B operation/global-event journal만 병렬 가능하다. 서로 다른 worktree/branch에서
+  같은 P01A base를 사용하며 P03은 P02I same-HEAD 통합 proof 이후 시작한다.
 - W3는 P04→P05→P06 순차 stack이다. P06은 P05 public schema를 재설계하지 않는다.
 - W4는 P07→P08→P09 순차 stack이다. provider executor enrollment는 P08에서 lifecycle closure한다.
-- 같은 contract DTO/baseline 파일을 동시에 수정하는 병렬 작업은 금지
+- 같은 contract DTO/baseline 파일을 동시에 수정하는 병렬 작업과 그 밖의 병렬 lane은 금지한다.
+
+Handoff rule: 각 순차 lane은 immediate predecessor handoff만 직접 검증한다. P02I는 P02A/P02B 두 handoff와 proof를
+동일 HEAD에서 검증한다. 이 규칙은 transitive provenance를 버린다는 뜻이 아니다. P12 aggregate producer가 P00부터
+P12까지 전 체인과 fork/join을 재검증한다. 매 lane이 모든 과거 artifact를 재검증하는 방식은 금지한다.
 
 ## 7. Finding coverage
 

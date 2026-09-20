@@ -16,9 +16,11 @@ owner files:
 - `crates/quanta-index-contract-base/src/results/query_window.rs`
 - contract cursor/result/explanation DTOs
 - `crates/quanta-index-core/src/domains/{semantic,hybrid}/`
-- `crates/quanta-index-search-plane/src/query_dispatcher/{dense_admission,window,hybrid,hybrid_seed,semantic_query}.rs`
+- `crates/quanta-index-search-plane/src/query_dispatcher/{dense_admission,window,semantic_query}.rs`
+- `crates/quanta-index-search-plane/src/query_dispatcher/routes/{hybrid,hybrid_seed}.rs`
 - cursor key owner, all cursor codecs/validators, response budget/keyset page/ranking, explain route,
   `crates/quanta-index-contract/src/results/query_responses.rs`, searchctl/harness renderers
+- owner-local keyset/runtime/oracle tests, suite modules, `tools/ci/{test-authority,proof-authority}.toml`, Just recipe
 
 구현 요구:
 
@@ -51,7 +53,11 @@ DoD:
 - available-empty, filtered-empty, zero-hit executed는 서로 다른 provenance; unavailable는 typed refusal
 - explain mismatch는 typed fail-closed
 
-proof node는 `p05-query-truth`, canonical release command는 `just rust-verify-quality-all`이며 Linux
-production-like/release-daemon proof가 필요하다. 최종 보고에 source freeze, route capability matrix, schema bump,
-oracle independence, commands/counts, NOT_RUN, P06 expected response context inputs와 `artifacts/sep-21/handoffs/P05.json`을
-남겨라. explicit owner path만 checkpoint commit하고 push는 별도 요청 시에만 한다.
+proof node는 `p05-query-truth`다. registry command가 `searchd-runtime-e2e-keyset-cursors`, independent RRF/window
+oracle/cursor negative targets와 `just rust-verify-quality-all`을 모두 실행하는 composite recipe여야 한다. 현재 command가
+quality rail만 실행하면 구현 전에 recipe/registry를 이 lane에서 고치고 source-bound proof를 다시 만든다. target이
+비어 있거나 실제 선택되지 않으면 `BLOCKED`다. public DTO/decoder 변경에는 `just rust-public-api`,
+`just rust-wire-inventory`, `just rust-fuzz-smoke`를 추가한다. Linux production-like/release-daemon proof가 필요하다.
+최종 보고에 source freeze, route capability matrix, schema bump, oracle independence, command별 covered/excluded surface와
+counts, NOT_RUN, P06 expected response context inputs와 `artifacts/sep-21/handoffs/P05.json`을 남겨라. explicit owner
+path만 checkpoint commit하고 current lane branch에 non-force push한다.

@@ -1,9 +1,10 @@
 # Copy/paste prompt — P10 State Migration, Backup and Restore
 
 당신은 S21-11 owner다. 먼저 repo root 기준 `docs/plans/sep-21-search-plane-sota-hardening/tickets/prompts/`
-아래 `COMMON-EXECUTION-CONTRACT.md`와 `README.md`를 읽고 그대로 적용한다. P01/P03/P02B/P08 source-bound
-handoff와 new state-root format, catalog authority, state-root lease가 current
-source에 존재할 때만 시작한다.
+아래 `COMMON-EXECUTION-CONTRACT.md`와 `README.md`를 읽고 그대로 적용한다. immediate P09 handoff/result SHA가 start
+HEAD와 exact match하고 current tracked source의 state-root/catalog/sequence/lease contract digest를 freeze한 뒤 시작한다.
+closed S21-01/S21-02 new state-root format, catalog authority, state-root lease가 없으면
+`BLOCKED`다.
 
 읽을 문서: repo instructions, `docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-AUDIT.md`,
 `docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-11-state-migration-backup-and-restore.md`,
@@ -20,6 +21,10 @@ owner files:
 - `crates/quanta-index-catalog/src/{connection,open,idempotency,auxiliary}.rs`
 - RepoMap/lexical/semantic persistence and importer modules
 - wire/persisted inventory and operator docs
+- disposable migration/backup/restore fault tests and suite modules, `tools/ci/{test-authority,proof-authority}.toml`, Just recipe
+
+위 symbolic owner group은 wildcard write 권한이 아니다. preflight에서 실제 수정할 exact file/symbol manifest를
+handoff에 고정하고 추가 owner가 발견되면 패치 전에 `BLOCKED`다.
 
 workflow:
 
@@ -36,7 +41,7 @@ workflow:
 재사용하고 product boot path에 legacy decoder/migrator를 남기지 않는다.
 
 금지: live source mutation, runtime dual reader/writer, raw DB/WAL copy, incomplete staging ready, collision/ambiguity
-winner selection, verification 전 cutover.
+winner selection, verification 전 cutover, migration 편의를 위한 P02B/P03 runtime authority 의미 변경.
 
 DoD fixtures:
 
@@ -52,8 +57,11 @@ DoD fixtures:
 - non-empty destination, symlink/path traversal, wrong owner/mode, disk-full, fsync/rename crash를 fail-closed
 - broad/root/home/unresolved target과 source=destination destructive operation을 mutation 전에 거부
 
-proof node는 `p10-state-migration`, canonical release command는 `just rust-profile test-daemon-all`이며 Linux
+proof node는 `p10-state-migration`이다. `test_authority_targets`가 비어 있거나 disposable migration/backup/restore/
+rollback/corruption scenarios를 선택하지 않으면 패치 전에 `BLOCKED`다. canonical release command는
+`release-daemon-fresh`의 exact path/hash로 reopen/process proof를 실행하는 dedicated recipe여야 한다. registry의
+`just rust-profile test-daemon-all`이 Cargo test binary만 실행하면 recipe/registry를 먼저 고친다. Linux
 production-like/release-daemon proof가 필요하다. 모든 drill은 disposable state root에서 수행한다. 실제/공유 state
 root cutover는 별도 명시 승인 없이는 NOT_RUN이다. 최종 보고에 source freeze, CLI surface, root/backup manifest
 schema, rollback cutoff, fixture results/counts, NOT_RUN, P11 migration receipt와 `artifacts/sep-21/handoffs/P10.json`을
-남겨라. explicit owner path만 checkpoint commit하고 push는 별도 요청 시에만 한다.
+남겨라. explicit owner path만 checkpoint commit하고 current lane branch에 non-force push한다.

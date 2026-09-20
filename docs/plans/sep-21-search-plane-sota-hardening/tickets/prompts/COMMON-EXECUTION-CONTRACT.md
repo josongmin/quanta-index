@@ -25,6 +25,10 @@ owner path가 시작 시 이미 dirty이거나 다른 lane이 소유하면 수�
 끝낸다. 대화의 `DONE` 문구는 gate가 아니다. predecessor commit과 source-bound handoff/proof가 current source와
 일치해야 한다.
 
+`main`, `master`, remote default/protected branch에서는 source를 수정하거나 push하지 않는다. task가 이미 격리
+worktree/branch를 받지 않았다면 패치 전 exact start HEAD에서 `codex/sep21-<lane>` branch를 만들고
+upstream을 그 branch로만 설정한다. default branch에 direct commit/push를 요구하는 환경이면 `BLOCKED`다.
+
 ticket 전체 closure와 intermediate checkpoint를 혼동하지 않는다. `P01A`는 S21-01 전체 closure가 아니며 `P02I`는
 두 병렬 lane의 same-HEAD integration checkpoint다. S21-01/S21-02 closure는 P03 handoff와 proof가 current source에
 결속된 뒤에만 선언한다.
@@ -33,9 +37,12 @@ ticket 전체 closure와 intermediate checkpoint를 혼동하지 않는다. `P01
 
 - 한 lane은 명시한 owner allowlist만 수정한다. 추가 owner가 필요하면 먼저 범위와 충돌을 보고하고 중단한다.
 - `git add -A`, stash, reset, unrelated formatting/cleanup, 다른 owner의 dirty 수정은 금지한다.
-- P02A/P02B만 병렬이다. 동일 P01 base SHA의 별도 worktree/branch에서 수행한다.
+- P02A/P02B만 병렬이다. 동일 P01A result SHA의 별도 worktree/branch에서 수행한다.
 - P00, P01A, P02I, P03~P12는 순차다. predecessor가 실행 중이면 다음 lane을 선행 구현하지 않는다.
-- shared contract, public API baseline, wire inventory, generated docs는 integration owner 단일 writer다.
+- P02A/P02B는 P01 handoff/runbook이 미리 배정한 disjoint contract files/symbols만 수정할 수 있다. P02A는
+  `contract/src/repomap.rs` compiler DTO section, P02B는 `contract/src/ipc/ingest.rs` operation journal/status section이다.
+  public re-export, SDK facade, public API baseline, wire inventory, generated docs와 배정 밖 shared symbol은 P02I
+  integration owner 단일 writer다.
 - 병렬 lane 결과는 각각 한 checkpoint commit으로 인계한다. integration owner가 두 commit을 합친 뒤 동일 clean
   integration HEAD에서 양쪽 proof를 재실행하고 `P02I` integration handoff를 만든다.
 - P04→P05→P06과 P07→P08은 같은 stack의 순차 checkpoint다. predecessor schema를 downstream이 재설계하지 않는다.
@@ -46,7 +53,10 @@ ticket 전체 closure와 intermediate checkpoint를 혼동하지 않는다. `P01
 `docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/lane-handoff.schema.json`에 맞춰 남긴다. tracked
 source 안에 result commit SHA를 자기참조로 기록하지 않는다. 최소 내용은 base/result SHA, dirty digest, exact write set,
 exported API/schema, proof ID별 manifest digest, 실행 counts, NOT_RUN, blockers다. 병렬 통합은 별도로
-`artifacts/sep-21/handoffs/P02I.json`을 남긴다. handoff와 proof source가 current HEAD와 다르면 downstream 시작을 금지한다.
+`artifacts/sep-21/handoffs/P02I.json`을 남긴다. immediate predecessor handoff의 result SHA는 lane start HEAD와 exact
+match해야 한다. 이전 ancestor의 commit ancestry는 유지되어야 하지만 매 lane이 과거 handoff/proof artifact를 다시
+검증하지 않는다. downstream이 필요한 transitive contract는 current tracked path/schema digest로 소비한다. P12만
+complete transitive handoff/proof DAG를 final HEAD/source pair에 다시 결속한다.
 
 상태는 다음 네 값만 사용한다.
 
@@ -83,8 +93,9 @@ mandatory proof가 NOT_RUN이면 ticket을 `done`으로 바꾸지 않는다.
 ## 7. Checkpoint and report
 
 proof 직전과 commit 직전에 owner path와 HEAD drift를 재확인한다. explicit owner paths만 stage하고 cached diff를
-검토한 뒤 lane checkpoint commit을 만든다. push는 별도 명시 요청이 있을 때만 수행한다. 최종 보고는 다음을
-포함한다.
+검토한 뒤 lane checkpoint commit을 만든다. 현재 lane branch에 upstream을 명시해 non-force push한다. remote
+drift/rejection은 rebase/force-push로 숨기지 말고 `BLOCKED`로 보고한다. P12 qualification-only task에 tracked 변경이
+없으면 empty commit은 만들지 않는다. 최종 보고는 다음을 포함한다.
 
 - 상태 값과 exact base/result commit
 - dirty ownership과 exact write set

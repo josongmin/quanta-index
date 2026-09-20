@@ -2,7 +2,7 @@
 
 Status: `planned`
 
-Depends on: S21-00, S21-04, S21-06
+Depends on: S21-00, S21-04, S21-06, S21-07
 
 ## Goal
 

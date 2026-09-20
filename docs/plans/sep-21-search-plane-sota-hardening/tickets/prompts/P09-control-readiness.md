@@ -1,12 +1,12 @@
 # Copy/paste prompt — P09 Control Authorization, Readiness and Observability
 
 당신은 S21-10 owner다. 먼저 repo root 기준 `docs/plans/sep-21-search-plane-sota-hardening/tickets/prompts/`
-아래 `COMMON-EXECUTION-CONTRACT.md`와 `README.md`를 읽고 그대로 적용한다. P08 supervisor handoff와 P02B
-operation-status handoff가 current source에 결속될 때만 시작한다.
+아래 `COMMON-EXECUTION-CONTRACT.md`와 `README.md`를 읽고 그대로 적용한다. immediate P08 supervisor handoff가 start
+HEAD와 exact match하고 P02B operation-status contract/schema가 current tracked source에 보존될 때만 시작한다.
 
 읽을 문서: repo instructions, `docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-AUDIT.md`,
 `docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-10-control-authorization-readiness-and-observability.md`,
-P02B/P08 handoff.
+P08 handoff와 current P02B operation-status contract/schema.
 
 목표: kernel-derived principal을 operation capability에 default-deny로 결속하고 process readiness와 bounded request
 diagnostics를 구현한다.
@@ -16,7 +16,11 @@ owner files:
 - `crates/quanta-index-ipc/src/{socket_access,server}.rs`
 - `crates/quanta-index-search-plane/src/control_dispatcher.rs`
 - `crates/quanta-index-searchd/src/app/{socket_access,runtime}.rs`
-- control/readiness/status contract, SDK, searchctl, config and metrics/diagnostics owners
+- `crates/quanta-index-contract/src/ipc/{control,metrics}.rs`
+- `crates/quanta-index-sdk/src/{client,config,observability,runtime}.rs`
+- `crates/quanta-index-searchctl/src/{lib,main}.rs`
+- `crates/quanta-index-search-plane/src/readiness/`와 bounded diagnostics/metrics owner
+- control/readiness/process negative tests and suite modules, `tools/ci/{test-authority,proof-authority}.toml`, Just recipe
 
 구현 요구:
 
@@ -46,9 +50,14 @@ DoD:
 - payload가 principal/UID/capability를 spoof해도 kernel-derived principal만 authority
 - control opcode registry와 exhaustive capability mapping/wire inventory가 양방향 exact
 - provider profile의 required/degraded/disabled 상태별 readiness truth table과 supervisor state 일치
+- active repository 0개이고 required process/provider가 healthy이면 `ready=true`; candidate integrity gate는 active
+  candidate가 있을 때만 적용
 
-proof node는 `p09-control-readiness`, canonical release command는 `just rust-profile test-daemon`이며 Linux
+proof node는 `p09-control-readiness`다. `test_authority_targets`가 비어 있거나 capability/readiness/credential-spoof/
+component-kill scenarios를 선택하지 않으면 패치 전에 `BLOCKED`다. canonical release command는
+Cargo test binary가 아니라 `release-daemon-fresh`의 exact path/hash를 process harness에 주입하는 dedicated recipe여야
+한다. registry의 `just rust-profile test-daemon`이 이를 보장하지 않으면 recipe/registry를 먼저 고친다. Linux
 production-like/release-daemon proof가 필요하다. component kill/corruption은 disposable local process/state-root에서만
 수행하고 shared daemon kill은 별도 승인이 필요하다. 최종 보고에 source freeze, capability table, readiness truth
 table, diagnostic bounds, proof counts, NOT_RUN, M3 residual risk와 `artifacts/sep-21/handoffs/P09.json`을 남겨라. explicit
-owner path만 checkpoint commit하고 push는 별도 요청 시에만 한다.
+owner path만 checkpoint commit하고 current lane branch에 non-force push한다.

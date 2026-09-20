@@ -612,14 +612,34 @@ proof-authority-current-gate:
         --manifest artifacts/proof-authority/p00-authority-freeze.json \
         --bind-source
 
+proof-error-authority-inventory:
+    python3 tools/ci/write-error-authority-inventory.py
+
+# Intentionally fail closed until P01A replaces this staged rail with the
+# enum/table/mapping/SDK semantic validators and registered owner-local tests.
+proof-error-authority-closed:
+    @echo "REFUSED: P01A semantic error-authority closure rail is not implemented" >&2
+    @exit 1
+
+proof-p00-authority-freeze:
+    python3 tools/ci/write-error-authority-inventory.py
+    python3 tools/ci/lint/check-proof-authority.py
+
 # P12 records this dependency aggregate as its own terminal evidence. It must
 # exclude p12-final-qualification itself; the release gate below validates the
 # resulting P12 receipt together with every dependency and therefore is not
 # self-validating.
 proof-authority-final-qualification:
     @test -n "${SEMANTICA_CHECKOUT:-}" || { echo "SEMANTICA_CHECKOUT is required" >&2; exit 2; }
+    @test -n "${P12_TERMINAL_INPUT:-}" || { echo "P12_TERMINAL_INPUT is required" >&2; exit 2; }
+    python3 tools/ci/write-proof-aggregate.py \
+        --paired-checkout "${SEMANTICA_CHECKOUT}"
+    python3 tools/ci/write-proof-manifest.py \
+        --proof-id p12-final-qualification \
+        --terminal-input "${P12_TERMINAL_INPUT}" \
+        --paired-checkout "${SEMANTICA_CHECKOUT}"
     python3 tools/ci/lint/check-proof-authority.py \
-        --dependencies-of p12-final-qualification \
+        --require-all \
         --paired-checkout "github:josongmin/semantica-codegraph-v2=${SEMANTICA_CHECKOUT}" \
         --bind-source
 

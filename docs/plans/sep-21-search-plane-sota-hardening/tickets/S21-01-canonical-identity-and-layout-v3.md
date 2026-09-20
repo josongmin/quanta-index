@@ -25,22 +25,31 @@ escape와 tuple framing이 없어 다른 tuple이 같은 주소에 수렴한다.
 - directory entry를 decode해 payload identity와 filename digest를 exact compare
 - percent/separator escaping 같은 가변 문자열 convention 금지
 
+## Ownership split
+
+S21-01 closes in two sequential phases; P01A does not close this ticket.
+
+- P01A: validated IDs, exact candidate/incident codecs and addresses, security-verification primitives, and complete
+  closed `SearchPlaneErrorCodeV2` migration. It does not edit live `persistence.rs`/`store.rs`, publish quarantine
+  files, delete activation paths or mutate catalog/runtime state.
+- P03/S21-01B: live object layout and quarantine cutover together with S21-02. It consumes the P01A pure primitives
+  and P02B global event authority. It owns filesystem mutation, catalog incidents and activation-path deletion.
+
 ## Work items
 
 1. identity types와 fallible canonical digest owner를 contract-base/core에 추가
-2. RepoMap candidate object와 quarantine incident path를 layout v3로 전환하고 activation identity는
-   S21-02 catalog schema의 canonical key로만 저장
+2. P01A에서 candidate/quarantine pure codec/address를 만들고 P03에서 live layout을 한 번에 전환한다.
 3. filename/payload mismatch와 duplicate physical address를 typed corruption으로 분류
-4. unique quarantine incident ID를 사용해 반복 격리가 이전 evidence를 덮지 않게 함
+4. P03가 P02B sequence와 exact incident envelope를 catalog에 먼저 commit해 반복 격리가 evidence를 덮지 않게 함
    - observed-at, original path, size, payload digest, reason, incident sequence를 보존
 5. path length와 directory fanout 정책 고정
-6. old layout reader를 runtime에서 제거하고 importer 전용 parser로 이동
+6. P03가 old layout runtime reader를 제거한다. legacy parsing/transform/delete는 P10 offline importer만 소유한다.
 7. wire/persisted inventory와 format version 갱신
 
 ## Negative cases
 
 - `("a--b", "c")` vs `("a", "b--c")`
-- `%`, `/`, NUL 거부, dot segments, mixed normalization form
+- `%`, `/`, dot sequences exact roundtrip; NUL/control/mixed normalization refusal; logical text의 path projection 0
 - 대소문자 민감/비민감 filesystem
 - 최대 길이 repo/revision과 digest fanout
 - payload identity와 filename digest 불일치
@@ -50,8 +59,8 @@ escape와 tuple framing이 없어 다른 tuple이 같은 주소에 수렴한다.
 
 - `crates/quanta-index-contract-base/src/ids.rs`
 - `crates/quanta-index-contract-base/src/macros.rs`
-- `crates/quanta-index-repomap/src/persistence.rs`
-- `crates/quanta-index-repomap/src/model.rs`
+- P01A: 신규 pure `crates/quanta-index-repomap/src/layout_v3.rs`
+- P03: `crates/quanta-index-repomap/src/{persistence,model,store}.rs` 및 catalog/runtime quarantine owner
 - `tools/ci/inventory/wire-surface.toml`
 
 ## Tests and proof
@@ -82,10 +91,10 @@ identity tuple framing과 payload verification을 같은 변경에서 끝낸다.
 |---|---|---|
 | `crates/quanta-index-contract-base/src/macros.rs::string_newtype` | raw/canonical representation과 fallible validation 경계를 분리 | decode 후 묵시적 normalization 제거 |
 | `crates/quanta-index-contract-base/src/ids.rs::{RepoId,RevisionId}` | 허용 byte/Unicode/length 정책과 canonical encoder를 단일 owner로 구현 | wire, digest, storage의 동일 identity 보장 |
-| `crates/quanta-index-repomap/src/persistence.rs::{snapshot_file_name_for,activation_file_name,encode_component}` | separator join을 domain-separated canonical tuple digest + fanout으로 교체 | tuple collision 제거 |
-| `crates/quanta-index-repomap/src/store.rs::RepoMapStoreKeyV1` | logical key와 physical artifact digest를 별도 필드/타입으로 분리 | same generation/different content 검출 |
-| `crates/quanta-index-repomap/src/model.rs::RepoMapSnapshot` | payload 안에 canonical logical identity, content digest, schema/profile commitment 저장 | filename을 authority로 사용하지 않음 |
-| quarantine owner in `persistence.rs` | incident ID, observed-at, original path, size, payload/address digest, reason, sequence를 append-only 저장 | 반복 basename 격리의 evidence overwrite 방지 |
+| P01A `layout_v3.rs` | exact candidate/incident codec, typed address and security primitives only | live mutation 없이 golden vectors 고정 |
+| P03 `persistence.rs::{snapshot_file_name_for,activation_file_name,encode_component}` | separator/activation paths를 삭제하고 typed content address로 live cutover | tuple collision과 file activation authority 제거 |
+| P03 `store.rs::RepoMapStoreKeyV1` / `model.rs` | logical key, candidate commitment, physical digest를 분리하고 exact envelope 보존 | same generation/different content 검출 |
+| P03 catalog/quarantine owner | global event와 exact envelope commit 후 immutable projection/fsync/unlink | crash retry가 동일 sequence/time/evidence 재사용 |
 
 ### DoD additions
 
@@ -93,3 +102,4 @@ identity tuple framing과 payload verification을 같은 변경에서 끝낸다.
 - logical generation uniqueness는 DB `UNIQUE`로, physical bytes는 content address로 각각 강제한다.
 - open은 `lstat/fstat`, regular-file, owner/mode, `nlink == 1`, payload/address digest를 검증한다.
 - symlink/hardlink, case-folding, decomposed Unicode, 최대 길이 fixture가 typed refusal 또는 exact roundtrip을 증명한다.
+- S21-01은 P03 proof가 live layout/quarantine targets를 닫기 전 `done`이 아니다.

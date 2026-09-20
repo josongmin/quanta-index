@@ -51,6 +51,32 @@ migration_fixture = "proof_manifest_v0_refused"
 notes = "Source, dirty tree, command/profile/target/filter, counts, host, daemon binary, dependency receipts and raw artifacts are independently re-hashed before a passed proof is admitted."
 
 [[tool_artifact]]
+id = "proof-aggregate-v1"
+owner = "tools/ci/proof-authority.toml"
+path = "artifacts/proof-authority/p12-release-aggregate.json"
+producer = "tools/ci/write-proof-aggregate.py"
+consumers = ["tools/ci/lint/check-proof-authority.py", "tools/ci/write-proof-manifest.py"]
+version = 1
+schema_file = "tools/ci/proof-aggregate.schema.json"
+decoder = "tools/ci/lint/check-proof-authority.py"
+compatibility = "Only schema 1 is accepted. The receipt is regenerated from the complete registered dependency closure; missing, diagnostic, stale or source-divergent receipts cannot issue P12."
+migration_fixture = "proof_aggregate_missing_or_not_ready_refused"
+notes = "Carries independent CODE_QUALIFIED, DEPLOYED, ACTIVATED and ROLLBACK_PROVEN verdicts plus exact source-pair, release daemon, host and state-root bindings."
+
+[[tool_artifact]]
+id = "error-authority-inventory-v1"
+owner = "tools/ci/write-error-authority-inventory.py"
+path = "artifacts/sep-21/p00/error-authority-inventory.json"
+producer = "tools/ci/write-error-authority-inventory.py"
+consumers = ["P00 handoff", "P01A error-code migration discovery input"]
+version = 1
+schema_file = "tools/ci/error-authority-inventory.schema.json"
+decoder = "tools/ci/write-error-authority-inventory.py"
+compatibility = "Only schema 1 is accepted. The artifact is regenerated from every crates/*/src/**/*.rs byte and is never reused across a different source head or source digest."
+migration_fixture = "error_authority_inventory_source_digest_changes"
+notes = "Source-bound discovery inventory only. It always records closed=false; regex matches cannot become semantic completion authority. P01A must land independent enum/table/mapping/SDK validators and owner proof."
+
+[[tool_artifact]]
 id = "verification-receipt-v1-legacy"
 owner = "tools/ci/write-verification-receipt.py"
 path = "artifacts/test-authority/receipt.json"

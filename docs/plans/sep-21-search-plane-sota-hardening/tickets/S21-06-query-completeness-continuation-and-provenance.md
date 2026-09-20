@@ -103,7 +103,8 @@ schema를 공통 contract로 바꾼다.
   exhaustion proof, continuation invariants.
 - `crates/quanta-index-core/src/domains/semantic/dense_admission.rs`: admission outcome과 examined/refill ceiling 보존.
 - `crates/quanta-index-core/src/domains/hybrid/`: typed candidate identity와 compact post-dedup rank를 RRF/trace가 공유.
-- `crates/quanta-index-search-plane/src/query_dispatcher/{dense_admission,window,hybrid,hybrid_seed,semantic_query}.rs`:
+- `crates/quanta-index-search-plane/src/query_dispatcher/{dense_admission,window,semantic_query}.rs`와
+  `crates/quanta-index-search-plane/src/query_dispatcher/routes/{hybrid,hybrid_seed}.rs`:
   cap/partial 상태를 window까지 손실 없이 전달.
 - 모든 cursor codec/validator: route, full pin, normalized query/constraints/order/cap, aux epochs, read identity,
   expiry/version/integrity proof를 digest에 포함.

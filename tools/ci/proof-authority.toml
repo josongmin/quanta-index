@@ -1,6 +1,24 @@
 # SEP-21 proof authority. The registry is declarative; evidence is valid only
 # when a strict ProofManifestV1 names one of these nodes and passes the checker.
-schema = 1
+schema = 2
+
+# A staged proof is a declared future owner, not executable release authority.
+# The manifest writer and validator refuse staged proofs even when a file is
+# present at the registered artifact path. Moving a proof to `executable`
+# requires its concrete test-authority targets (or the two closed non-test
+# modes below) to be in place first.
+
+[aggregate]
+id = "p12-release-aggregate"
+target_proof = "p12-final-qualification"
+schema = "tools/ci/proof-aggregate.schema.json"
+artifact = "artifacts/proof-authority/p12-release-aggregate.json"
+
+[aggregate.verdicts]
+CODE_QUALIFIED = ["p00-authority-freeze", "p01-canonical-identity", "p02a-repomap-compiler", "p02b-operation-journal", "p03-candidate-activation", "p04-read-view-lifetime", "p05-query-truth", "p06-sdk-binding", "p07-provider-boundary", "p08-runtime-supervisor", "p09-control-readiness", "p10-state-migration", "p11-cross-repo-cutover"]
+DEPLOYED = ["p11-deployment"]
+ACTIVATED = ["p11-activation"]
+ROLLBACK_PROVEN = ["p10-state-migration", "p11-rollback"]
 
 [families.S]
 name = "static-policy"
@@ -36,11 +54,13 @@ description = "External producer, provider, migration or deployment proof."
 
 [[proofs]]
 id = "p00-authority-freeze"
+authority_state = "executable"
+execution_mode = "non-test-assertion"
 ticket = "S21-00"
 family = "S"
 checkpoint = "M0"
 owner = "docs/adr/SEP-21-DECISION-REGISTRY.md"
-command = "just proof-authority-lint"
+command = "just proof-p00-authority-freeze"
 gate = "pr"
 profile = "none"
 target = "proof-authority"
@@ -55,6 +75,9 @@ required_host = "any"
 
 [[proofs]]
 id = "p01-canonical-identity"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P01A must land canonical identity/error-code owners and a dedicated executable test-authority scope."
 ticket = "S21-01"
 family = "U"
 checkpoint = "M1"
@@ -74,6 +97,9 @@ required_host = "any"
 
 [[proofs]]
 id = "p02a-repomap-compiler"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P02A must land the final compiler owner and bind its completed owner-local target set."
 ticket = "S21-03"
 family = "A"
 checkpoint = "M1"
@@ -93,6 +119,9 @@ required_host = "any"
 
 [[proofs]]
 id = "p02b-operation-journal"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P02B must land the global sequence/journal owner and its recovery/concurrency targets."
 ticket = "S21-04"
 family = "F"
 checkpoint = "M1"
@@ -112,6 +141,9 @@ required_host = "any"
 
 [[proofs]]
 id = "p03-candidate-activation"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P03 must land the one-time live authority cutover and final activation/recovery targets."
 ticket = "S21-02"
 family = "F"
 checkpoint = "M1"
@@ -131,6 +163,9 @@ required_host = "linux-production-like"
 
 [[proofs]]
 id = "p04-read-view-lifetime"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P04 must land the final read-view lifetime owner and negative/concurrency targets."
 ticket = "S21-05"
 family = "F"
 checkpoint = "M2"
@@ -150,6 +185,9 @@ required_host = "linux-production-like"
 
 [[proofs]]
 id = "p05-query-truth"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P05 must land the independent query-truth oracle and quality authority targets."
 ticket = "S21-06"
 family = "Q"
 checkpoint = "M2"
@@ -169,6 +207,9 @@ required_host = "linux-production-like"
 
 [[proofs]]
 id = "p06-sdk-binding"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P06 must land the daemon-bound SDK surface and complete front-door targets."
 ticket = "S21-07"
 family = "D"
 checkpoint = "M2"
@@ -188,6 +229,9 @@ required_host = "linux-production-like"
 
 [[proofs]]
 id = "p07-provider-boundary"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P07 must land provider admission/cancellation authority and real-provider evidence targets."
 ticket = "S21-08"
 family = "X"
 checkpoint = "M3"
@@ -207,6 +251,9 @@ required_host = "linux-production-like"
 
 [[proofs]]
 id = "p08-runtime-supervisor"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P08 must land process supervision ownership and process/fault targets."
 ticket = "S21-09"
 family = "P"
 checkpoint = "M3"
@@ -226,6 +273,9 @@ required_host = "linux-production-like"
 
 [[proofs]]
 id = "p09-control-readiness"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P09 must land control authorization/readiness owners and their daemon targets."
 ticket = "S21-10"
 family = "P"
 checkpoint = "M3"
@@ -245,6 +295,9 @@ required_host = "linux-production-like"
 
 [[proofs]]
 id = "p10-state-migration"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P10 must land offline migration/backup/restore/rollback targets after P09."
 ticket = "S21-11"
 family = "X"
 checkpoint = "M4"
@@ -258,12 +311,15 @@ source_binding = "exact"
 binary_binding = "release-daemon"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
 test_authority_targets = []
-dependencies = ["p01-canonical-identity", "p03-candidate-activation", "p02b-operation-journal", "p08-runtime-supervisor"]
+dependencies = ["p01-canonical-identity", "p03-candidate-activation", "p02b-operation-journal", "p08-runtime-supervisor", "p09-control-readiness"]
 artifact = "artifacts/proof-authority/p10-state-migration.json"
 required_host = "linux-production-like"
 
 [[proofs]]
 id = "p11-cross-repo-cutover"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P11 must land the exact-pair producer protocol and cross-repository terminal receipt rail."
 ticket = "S21-12"
 family = "X"
 checkpoint = "M4"
@@ -284,7 +340,81 @@ artifact = "artifacts/proof-authority/p11-cross-repo-cutover.json"
 required_host = "linux-production-like"
 
 [[proofs]]
+id = "p11-deployment"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P11 must land an independently issuable deployment receipt bound to the attested source pair and daemon binary."
+ticket = "S21-12"
+family = "X"
+checkpoint = "M4"
+owner = "docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-12-cross-repo-terminal-receipt-cutover.md"
+command = "just proof-p11-deployment"
+gate = "release"
+profile = "cross-repo-deployment"
+target = "deployment-receipt"
+filter = "none"
+source_binding = "exact-pair"
+paired_repository = "github:josongmin/semantica-codegraph-v2"
+paired_dependency_lock = "Cargo.lock"
+binary_binding = "release-daemon"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = []
+dependencies = ["p11-cross-repo-cutover"]
+artifact = "artifacts/proof-authority/p11-deployment.json"
+required_host = "linux-production-like"
+
+[[proofs]]
+id = "p11-activation"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P11 must land an independently issuable activation receipt that cannot be implied by deployment."
+ticket = "S21-12"
+family = "X"
+checkpoint = "M4"
+owner = "docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-12-cross-repo-terminal-receipt-cutover.md"
+command = "just proof-p11-activation"
+gate = "release"
+profile = "cross-repo-activation"
+target = "activation-receipt"
+filter = "none"
+source_binding = "exact-pair"
+paired_repository = "github:josongmin/semantica-codegraph-v2"
+paired_dependency_lock = "Cargo.lock"
+binary_binding = "release-daemon"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = []
+dependencies = ["p11-deployment"]
+artifact = "artifacts/proof-authority/p11-activation.json"
+required_host = "linux-production-like"
+
+[[proofs]]
+id = "p11-rollback"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P11 must land an independently issuable rollback drill receipt after activation."
+ticket = "S21-12"
+family = "X"
+checkpoint = "M4"
+owner = "docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-12-cross-repo-terminal-receipt-cutover.md"
+command = "just proof-p11-rollback"
+gate = "release"
+profile = "cross-repo-rollback"
+target = "rollback-receipt"
+filter = "none"
+source_binding = "exact-pair"
+paired_repository = "github:josongmin/semantica-codegraph-v2"
+paired_dependency_lock = "Cargo.lock"
+binary_binding = "release-daemon"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = []
+dependencies = ["p10-state-migration", "p11-activation"]
+artifact = "artifacts/proof-authority/p11-rollback.json"
+required_host = "linux-production-like"
+
+[[proofs]]
 id = "p12-final-qualification"
+authority_state = "executable"
+execution_mode = "aggregate"
 ticket = "S21-13"
 family = "S"
 checkpoint = "M5"
@@ -300,6 +430,6 @@ paired_dependency_lock = "Cargo.lock"
 binary_binding = "release-daemon"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
 test_authority_targets = []
-dependencies = ["p01-canonical-identity", "p02a-repomap-compiler", "p02b-operation-journal", "p03-candidate-activation", "p04-read-view-lifetime", "p05-query-truth", "p06-sdk-binding", "p07-provider-boundary", "p08-runtime-supervisor", "p09-control-readiness", "p10-state-migration", "p11-cross-repo-cutover"]
+dependencies = ["p01-canonical-identity", "p02a-repomap-compiler", "p02b-operation-journal", "p03-candidate-activation", "p04-read-view-lifetime", "p05-query-truth", "p06-sdk-binding", "p07-provider-boundary", "p08-runtime-supervisor", "p09-control-readiness", "p10-state-migration", "p11-cross-repo-cutover", "p11-deployment", "p11-activation", "p11-rollback"]
 artifact = "artifacts/proof-authority/p12-final-qualification.json"
 required_host = "linux-production-like"

@@ -19,19 +19,30 @@
 | 6 | S21-07 | [P06](P06-sdk-binding.md) | P05 stack SHA | M2 consumer closure / `p06-sdk-binding` |
 | 7 | S21-08 | [P07](P07-provider-boundary.md) | M2 handoff | M3 interface checkpoint / `p07-provider-boundary` |
 | 8 | S21-09 | [P08](P08-runtime-supervisor.md) | P07 stack SHA | M3 lifecycle checkpoint / `p08-runtime-supervisor` |
-| 9 | S21-10 | [P09](P09-control-readiness.md) | P08 + P02B handoffs | M3 closure / `p09-control-readiness` |
-| 10 | S21-11 | [P10](P10-state-migration.md) | P03 + P08 lease authority | M4 state workflow / `p10-state-migration` |
-| 11 | S21-12 | [P11](P11-cross-repo-cutover.md) | P10 + M2 receipts | M4 source-pair handoff / `p11-cross-repo-cutover` |
+| 9 | S21-10 | [P09](P09-control-readiness.md) | P08 exact handoff; current journal contract | M3 closure / `p09-control-readiness` |
+| 10 | S21-11 | [P10](P10-state-migration.md) | P09 exact handoff; current state-root contracts | M4 state workflow / `p10-state-migration` |
+| 11 | S21-12 | [P11](P11-cross-repo-cutover.md) | P10 exact handoff; current SDK/receipt contracts | M4 source-pair handoff / four independent P11 proofs |
 | 12 | S21-13B | [P12](P12-final-qualification.md) | all current handoffs | M5 aggregate / `p12-final-qualification` |
 
-## 복붙 방법
+## 복붙 큐
 
 각 새 task에는 해당 step의 prompt 파일 전체를 그대로 붙여넣는다. 여러 lane prompt를 한 task에 합치지 않는다.
-P02A/P02B만 동일 P01A result SHA의 별도 worktree에서 동시에 시작한다. 그 외 step은 predecessor checkpoint,
-handoff JSON, proof manifest가 current source에 결속됐음을 확인한 뒤 하나씩 시작한다.
+다음 큐 순서를 바꾸지 않는다.
 
-현재 source에서는 P01A를 먼저 실행하면 안 된다. P00이 canonical encoding, closed error-code set, phase ownership,
-quarantine sequence source와 proof selector를 corrected handoff로 재동결해야 한다.
+1. P00을 붙여넣고 checkpoint commit, source-bound proof, handoff, lane branch push를 받는다.
+2. P00 result SHA에서 P01A를 실행하고 같은 산출물을 받는다.
+3. P01A result SHA를 exact base로 두 개의 격리 worktree/task에 P02A와 P02B를 동시에 붙여넣는다.
+4. 두 task가 모두 끝난 뒤 P02I를 새 integration task에 붙여넣는다.
+5. P02I 이후는 P03, P04, P05, P06, P07, P08, P09, P10, P11, P12를 한 번에 하나씩
+   순차 실행한다.
+
+각 다음 task는 immediate predecessor의 checkpoint commit, handoff JSON, proof manifest digest와 push 결과를
+입력으로 받아야 한다. 산출물이 없거나 current source binding이 틀리면 시작하지 않고 `BLOCKED`로
+종료한다.
+
+현재 source에서는 P01A를 먼저 실행하면 안 된다. P00이 canonical encoding, current free-form error
+authority inventory/digest, 닫힌 enum으로의 migration rule, phase ownership, quarantine sequence source와 proof selector를
+corrected handoff로 재동결해야 한다. final accepted error-code table/cardinality/digest의 owner는 P01A다.
 
 ## 구조적 경계
 
@@ -56,6 +67,11 @@ quarantine sequence source와 proof selector를 corrected handoff로 재동결�
   각각 별도 명시 승인이 필요하다.
 
 ## 병렬 lane handoff
+
+P01A handoff는 병렬 lane의 shared contract allocation을 동결한다. P02A는
+`crates/quanta-index-contract/src/repomap.rs` compiler DTO section, P02B는
+`crates/quanta-index-contract/src/ipc/ingest.rs` operation journal/status section만 소유한다. SDK facade, public
+re-export/baseline, wire inventory, generated docs는 P02I 단일 writer다.
 
 P02A와 P02B는 각각 exact source SHA/dirty digest, 변경 파일과 owner symbol, frozen types/invariants, command와
 selected/executed/passed/failed/ignored counts, NOT_RUN/blocker, P03 소비 API/fixture를 남긴다. P02I가 두 checkpoint를

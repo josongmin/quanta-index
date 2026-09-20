@@ -19,12 +19,15 @@
 
 시작 시 full HEAD, branch/upstream/merge-base, tracked/untracked dirty paths와 deterministic dirty digest, owner path의
 base blobs, 기존 `p00-authority-freeze` manifest/handoff digest를 기록한다. 기존 dirty 변경을 덮어쓰지 않는다.
+owner overlap, unresolved accepted-decision conflict, 또는 proof authority를 fail-closed로 만들 수 없는 결손이 있으면
+편의성 fallback을 만들지 말고 exact blocker를 남겨 `BLOCKED`로 종료한다.
 
 ## 목표
 
 1. blocking decision을 구현자가 추측할 수 없는 exact byte/schema/ownership 수준으로 재동결한다.
 2. P01A와 P03 사이의 live-layout/quarantine/activation ownership 충돌을 제거한다.
-3. runtime error code authority를 closed typed set으로 만들 수 있는 완전한 migration scope를 고정한다.
+3. runtime error code authority를 closed typed set으로 만들 수 있도록 current free-form source discovery inventory와
+   semantic completion requirements를 고정한다. final enum/table/validator는 P01A가 소유한다.
 4. proof registry를 실제 owner-local selector와 target에 결속한다.
 5. corrected P00 proof/handoff가 current source에 결속될 때만 P01A를 허용한다.
 
@@ -56,8 +59,15 @@ inventory한다.
   unknown decoder success는 금지한다.
 - generic `CoreError` → wire mapping은 단일 exhaustive owner를 가진다. SDK도 enum을 보존한다.
 - stale `BAD_REQUEST` historical fixture는 V2 success compatibility가 아니라 typed unknown refusal fixture가 된다.
-- mandatory-new-code 목록이 아니라 현재 reachable live code 전체와 후속 reserved code를 freeze한다. accepted-code
-  cardinality와 canonical table digest를 proof artifact에 기록한다.
+- mandatory-new-code 목록만 적지 말고 현재 reachable producer/converter/classifier/decoder 전체를 source-bound
+  discovery inventory로 freeze한다. P00 artifact는 inventory cardinality/digest와 P01A semantic completion
+  requirements를 기록하고,
+  final accepted-code cardinality/canonical table digest를 발급하거나 추정하지 않는다.
+- canonical inventory command는 `just proof-error-authority-inventory`, schema는
+  `tools/ci/error-authority-inventory.schema.json`, artifact는
+  `artifacts/sep-21/p00/error-authority-inventory.json`이다. 이 artifact는 항상 `closed=false`이며 regex를 semantic
+  proof로 승격하지 않는다. `just proof-error-authority-closed`는 P01A가 exact enum/table/mapping/SDK validator와
+  owner-local tests를 구현할 때까지 fail-closed staged command다.
 
 ## lane ownership과 실행 graph
 
@@ -69,7 +79,8 @@ inventory한다.
   live `persistence.rs`/`store.rs`, activation/quarantine filesystem mutation은 금지한다.
 - P02A: whole-bundle graph compiler. durable mutation 금지.
 - P02B: `catalog_sequence_v2`, `catalog_sequence_event_v2`, operation journal. RepoMap filesystem 수정 금지.
-- P02I: 두 lane same-HEAD integration과 shared contract/baseline/inventory single writer.
+- P02I: 두 lane same-HEAD integration과 public re-export/SDK facade/baseline/inventory single writer. P02A/P02B의
+  disjoint preallocated contract sections는 예외다.
 - P03: live layout/object store, quarantine projection, catalog candidate/activation/invalidation, filesystem activation
   authority 제거를 한 번에 수행한다.
 - legacy `activations/` directory 변환/삭제는 P10 offline importer owner다. P03 runtime은 old root를 mutation 전에
@@ -85,14 +96,17 @@ inventory한다.
 
 ## proof authority DoD
 
-- P01 proof는 dedicated recipe와 non-empty targets에 결속한다: canonical identity/codec, typed error authority,
-  layout/security primitives. generic `test-fast`/compile-only는 OWNER_PROOF_GREEN이 아니다.
+- P01 staged row는 P01A가 dedicated recipe와 non-empty targets를 구현해 executable로 전환해야 한다: canonical
+  identity/codec, typed error authority, layout/security primitives. 현재 generic command/empty target을 proof로
+  해석하지 않으며 generic `test-fast`/compile-only는 OWNER_PROOF_GREEN이 아니다.
 - P02B proof는 mixed event global uniqueness, transaction rollback, generic-ledger restore reconciliation을 선택한다.
 - P03 proof는 live layout/quarantine/activation crash targets를 선택하고 S21-01B/S21-02 closure를 함께 판정한다.
 - missing/stale/short-SHA/wrong-binary/zero-execution/ignored-only/unregistered proof가 validator와 blocking CI에서 실패한다.
 - source digest는 staged+unstaged+scoped untracked bytes를 포함하고 proof output은 제외한다.
 - registry 기반 writer만 terminal manifest를 만들며 자유입력 command/profile/target은 authority가 아니다.
 - public/persisted format별 producer/consumer/version/decoder/migration fixture가 inventory에 있다.
+- aggregate receipt schema/writer와 canonical final recipe가 dependency validation → four-verdict calculation → aggregate
+  artifact → P12 manifest issuance를 수행한다. dependency manifest 검증만 하는 recipe는 P12 proof가 아니다.
 
 ## 금지
 
@@ -106,6 +120,7 @@ inventory한다.
 않는다. proof node는 `p00-authority-freeze`다. current clean checkpoint에서 manifest와
 `artifacts/sep-21/handoffs/P00.json`을 재생성·검증한다.
 
-최종 보고에는 status, exact source/dirty ownership, amended decision 표, full error-code inventory cardinality/digest,
+최종 보고에는 status, exact source/dirty ownership, amended decision 표, source-bound error-authority inventory
+cardinality/digest와 P01A semantic completion requirements,
 lane owner matrix, proof negative matrix, command/counts, NOT_RUN, handoff path/digest, P01A 허용/차단 근거를 포함한다.
-explicit owner path만 checkpoint commit하고 push는 별도 요청 시에만 수행한다.
+explicit owner path만 checkpoint commit하고 current lane branch에 non-force push한다.

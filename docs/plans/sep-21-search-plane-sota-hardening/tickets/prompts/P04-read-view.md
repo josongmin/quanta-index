@@ -1,9 +1,11 @@
 # Copy/paste prompt — P04 QueryReadView V2
 
 당신은 S21-05 owner다. 먼저 repo root 기준 `docs/plans/sep-21-search-plane-sota-hardening/tickets/prompts/`
-아래 `COMMON-EXECUTION-CONTRACT.md`와 `README.md`를 읽고 그대로 적용한다. P03/P02B checkpoint와 source-bound
-handoff가 current stack에 있고 catalog-backed RepoMap acquire API가
-존재할 때만 시작한다. 이 lane은 M2 stacked checkpoint A이며 S21-05를 단독 `done`으로 닫지 않는다.
+아래 `COMMON-EXECUTION-CONTRACT.md`와 `README.md`를 읽고 그대로 적용한다. P03가 S21-01B/S21-02를 닫은
+checkpoint/handoff와 catalog candidate/activation authority API가 current stack에 있을 때만 시작한다. pinned RepoMap
+acquire API의 분리/구현은 이 lane의 산출물이지 선행조건이 아니다. 이 lane은 M2 stacked checkpoint A이며 S21-05를
+단독 `done`으로 닫지 않는다. P03 checkpoint/handoff/proof binding이 없거나 current source와 다르면
+`BLOCKED`로 종료한다.
 
 읽을 문서: repo instructions, `docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-AUDIT.md`,
 `docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-05-read-view-v2-and-snapshot-lifetime.md`,
@@ -52,4 +54,4 @@ proof node는 `p04-read-view-lifetime`, canonical release command는 `just rust-
 production-like/release-daemon proof가 없으면 `RELEASE_PROOF_PENDING`이다. 최종 보고에 source/dirty freeze, 변경
 route/handles, lock order, proof counts, NOT_RUN, P05가 소비할 internal read identity와
 `artifacts/sep-21/handoffs/P04.json`을 남겨라. public cursor schema는 P05 owner다. explicit owner path만 checkpoint commit하고
-push는 별도 요청 시에만 한다.
+current lane branch에 non-force push한다.

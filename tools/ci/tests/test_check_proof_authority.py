@@ -35,6 +35,8 @@ def _sha(path: Path) -> str:
 def _proof(root: Path) -> dict:
     return {
         "id": "fixture-proof",
+        "authority_state": "executable",
+        "execution_mode": "non-test-assertion",
         "ticket": "S21-00",
         "family": "S",
         "checkpoint": "M0",
@@ -158,6 +160,52 @@ def test_valid_manifest_binds_files_and_counts(tmp_path: Path) -> None:
         )
         == []
     )
+
+
+def test_manifest_v0_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "owner.md").write_text("owner\n", encoding="utf-8")
+    proof = _proof(tmp_path)
+    payload = _manifest(tmp_path, proof)
+    payload["schema_version"] = 0
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    messages = _messages(
+        MODULE.check_manifest(
+            payload,
+            manifest_path=tmp_path / "proof.json",
+            proof=proof,
+            schema=schema,
+            root=tmp_path,
+            bind_source=False,
+        )
+    )
+
+    assert any("schema" in message for message in messages)
+
+
+def test_legacy_verification_receipt_is_not_proof_manifest(tmp_path: Path) -> None:
+    (tmp_path / "owner.md").write_text("owner\n", encoding="utf-8")
+    proof = _proof(tmp_path)
+    legacy_receipt = {
+        "schema_version": 1,
+        "revision": "a" * 40,
+        "evidence_digest": "b" * 64,
+        "test_count": 1,
+    }
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    messages = _messages(
+        MODULE.check_manifest(
+            legacy_receipt,
+            manifest_path=tmp_path / "proof.json",
+            proof=proof,
+            schema=schema,
+            root=tmp_path,
+            bind_source=False,
+        )
+    )
+
+    assert any("schema" in message for message in messages)
 
 
 def test_nonpassing_terminal_manifest_is_not_authoritative(tmp_path: Path) -> None:
@@ -550,9 +598,62 @@ def test_dependency_closure_is_registry_driven_and_excludes_target() -> None:
     registry = MODULE._read_toml(REGISTRY_PATH)
     proof_by_id = {proof["id"]: proof for proof in registry["proofs"]}
     closure = MODULE.dependency_closure(proof_by_id, "p12-final-qualification")
-    assert closure[-1] == "p11-cross-repo-cutover"
+    assert closure[-1] == "p11-rollback"
     assert set(closure) == set(proof_by_id) - {"p12-final-qualification"}
     assert len(closure) == len(set(closure))
+
+
+def test_registry_refuses_proof_set_or_edge_drift_from_canonical_graph() -> None:
+    registry = MODULE._read_toml(REGISTRY_PATH)
+    extra = copy.deepcopy(registry["proofs"][1])
+    extra["id"] = "p01-shadow"
+    extra["artifact"] = "artifacts/proof-authority/p01-shadow.json"
+    registry["proofs"].append(extra)
+    messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
+    assert any("proof IDs differ from canonical SEP-21 graph" in message for message in messages)
+
+    registry = MODULE._read_toml(REGISTRY_PATH)
+    p10 = next(proof for proof in registry["proofs"] if proof["id"] == "p10-state-migration")
+    p10["dependencies"].remove("p09-control-readiness")
+    messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
+    assert any("dependencies differ from canonical SEP-21 graph" in message for message in messages)
+
+
+def test_registry_refuses_verdict_meaning_drift() -> None:
+    registry = MODULE._read_toml(REGISTRY_PATH)
+    registry["aggregate"]["verdicts"]["DEPLOYED"] = ["p00-authority-freeze"]
+
+    messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
+
+    assert any("verdict proof sets differ from canonical" in message for message in messages)
+
+
+def test_executable_test_proof_requires_scope_that_selects_registered_targets() -> None:
+    registry = MODULE._read_toml(REGISTRY_PATH)
+    proof = next(proof for proof in registry["proofs"] if proof["id"] == "p02b-operation-journal")
+    proof["authority_state"] = "executable"
+    proof.pop("staged_reason")
+
+    messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
+    assert any("requires non-empty test_authority_scopes" in message for message in messages)
+
+    proof["test_authority_scopes"] = ["integration-fast"]
+    messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
+    assert not any("test_authority_scopes" in message for message in messages)
+    assert not any("targets are not selected" in message for message in messages)
+    assert not any("command/profile binding differs" in message for message in messages)
+
+
+def test_executable_dedicated_proof_requires_existing_scope_bound_recipe() -> None:
+    registry = MODULE._read_toml(REGISTRY_PATH)
+    proof = next(proof for proof in registry["proofs"] if proof["id"] == "p02b-operation-journal")
+    proof["authority_state"] = "executable"
+    proof.pop("staged_reason")
+    proof["test_authority_scopes"] = ["integration-fast"]
+    proof["command"] = "just proof-does-not-exist"
+
+    messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
+    assert any("dedicated proof recipe does not exist" in message for message in messages)
 
 
 def test_aggregate_refuses_source_and_release_daemon_identity_drift(tmp_path: Path) -> None:

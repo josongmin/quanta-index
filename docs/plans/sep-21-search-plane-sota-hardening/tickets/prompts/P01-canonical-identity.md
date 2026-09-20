@@ -6,7 +6,9 @@
 source에 결속되고 P01A를 명시적으로 허용할 때만 시작한다. 하나라도 없으면 `BLOCKED`다.
 
 repo instructions, FINAL-AUDIT, INDEX, S21-01, amended SEP-21-001/decision registry, P00 handoff를 전부 읽는다. 시작 시
-exact HEAD/dirty digest/owner paths, P00 accepted-code table digest와 canonical golden-vector IDs를 freeze한다.
+exact HEAD/dirty digest/owner paths, P00 source-bound error-authority discovery inventory digest/semantic requirements와 canonical
+golden-vector IDs를 freeze한다. final accepted-code table을 P00에서 가져오지 말고 이 lane에서 생성한다.
+P00 artifact를 `just proof-error-authority-inventory`로 exact reproduction한 뒤 migration을 시작한다.
 
 ## 목표
 
@@ -24,6 +26,8 @@ lane은 live persistence를 바꾸지 않으며 S21-01 전체 closure가 아니�
   만들고 8 producer crate의 path를 기록한다. allowlist 밖 owner 변경이 필요하면 패치 전에 `BLOCKED`다.
 - 신규 pure `crates/quanta-index-repomap/src/layout_v3.rs`와 lib export
 - Cargo manifests/lockfile, identity/error/layout owner tests, dedicated Just/profile/test-authority/proof registry delta
+- `tools/ci/search-plane-error-code-table.schema.json` 규약에 따른 committed
+  `tools/ci/inventory/search-plane-error-codes.json` producer/validator
 - shared public API baseline/wire inventory는 P02I single writer가 적용할 exact delta만 handoff한다.
 
 ## 구현 순서
@@ -63,13 +67,18 @@ lane은 live persistence를 바꾸지 않으며 S21-01 전체 closure가 아니�
 - `SearchPlaneIpcError.code: String`, `CoreError::Typed.code: String`, production code `format!`, `&str` pass-through,
   substring/string-equality classification, unknown decoder success가 0
 - enum `ALL` wire uniqueness, accepted-code cardinality/table digest, stale `BAD_REQUEST` negative fixture
+- P00 discovery regex를 closure로 재사용하지 않는다. 이 lane이 `just proof-error-authority-closed`를 exact
+  enum-source/table validator + exhaustive mapping/serde/SDK owner tests로 구현하고 성공시킨다.
 - production RepoMap filesystem mutation 0; live cutover symbols는 의도적으로 P03에 남음
 - `rust-public-api`, wire inventory, fuzz smoke와 owner-local tests가 same source를 가리킴
 
-proof node는 `p01-canonical-identity`다. corrected P00이 등록한 dedicated recipe와 non-empty test-authority targets를
-사용한다. generic `test-fast`나 compile-only를 OWNER_PROOF_GREEN으로 승격하지 않는다.
+proof node는 `p01-canonical-identity`다. 현재 staged row를 이 lane이 dedicated recipe와 non-empty
+test-authority scope/targets로 교체하고 executable로 전환한다. generic `test-fast`나 compile-only를
+OWNER_PROOF_GREEN으로 승격하지 않는다.
 
 최종 보고에는 공통 status, exact source/dirty ownership, exact write set, identity/codec/error table, accepted-code
 cardinality/digest, raw-string static search, golden vectors, command별 counts, NOT_RUN, 의도적으로 남긴 live-cutover
-work, P02A/P02B가 소비할 frozen API와 `artifacts/sep-21/handoffs/P01.json`을 포함한다. S21-01을 done으로 바꾸지
-않는다. explicit owner path만 checkpoint commit하고 push는 별도 요청 시에만 한다.
+work, P02A의 `contract/src/repomap.rs` compiler DTO section과 P02B의 `contract/src/ipc/ingest.rs` journal DTO
+section이라는 disjoint allocation, 두 lane이 소비할 frozen API와 `artifacts/sep-21/handoffs/P01.json`을 포함한다.
+S21-01을 done으로 바꾸지
+않는다. explicit owner path만 checkpoint commit하고 current lane branch에 non-force push한다.

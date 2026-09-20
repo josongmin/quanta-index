@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Quanta Index AggregateQualificationReceiptV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "aggregate_id",
+    "target_proof_id",
+    "registry_sha256",
+    "source",
+    "source_pair",
+    "daemon_binary",
+    "release_host",
+    "state_root_format",
+    "generated_at",
+    "dependency_receipts",
+    "verdicts",
+    "production_ready"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "aggregate_id": {"const": "p12-release-aggregate"},
+    "target_proof_id": {"const": "p12-final-qualification"},
+    "registry_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source": {"$ref": "#/$defs/source"},
+    "source_pair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "remote_identity_digest", "source", "dependency_lock"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "remote_identity_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "source": {"$ref": "#/$defs/source"},
+        "dependency_lock": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "sha256"],
+          "properties": {
+            "path": {"type": "string", "minLength": 1},
+            "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          }
+        }
+      }
+    },
+    "daemon_binary": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "sha256"],
+          "properties": {
+            "path": {"type": "string", "minLength": 1},
+            "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          }
+        }
+      ]
+    },
+    "release_host": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["profile", "identity_digest"],
+          "properties": {
+            "profile": {"const": "linux-production-like"},
+            "identity_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+          }
+        }
+      ]
+    },
+    "state_root_format": {"type": ["string", "null"], "minLength": 1},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "dependency_receipts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["proof_id", "path", "sha256", "status"],
+        "properties": {
+          "proof_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]+$"},
+          "path": {"type": "string", "minLength": 1},
+          "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+          "status": {"enum": ["PASSED", "FAILED", "BLOCKED", "NOT_RUN"]}
+        }
+      }
+    },
+    "verdicts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["CODE_QUALIFIED", "DEPLOYED", "ACTIVATED", "ROLLBACK_PROVEN"],
+      "properties": {
+        "CODE_QUALIFIED": {"$ref": "#/$defs/verdict"},
+        "DEPLOYED": {"$ref": "#/$defs/verdict"},
+        "ACTIVATED": {"$ref": "#/$defs/verdict"},
+        "ROLLBACK_PROVEN": {"$ref": "#/$defs/verdict"}
+      }
+    },
+    "production_ready": {"type": "boolean"}
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["head", "dirty_digest", "branch", "upstream", "merge_base"],
+      "properties": {
+        "head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "dirty_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "branch": {"type": ["string", "null"], "minLength": 1},
+        "upstream": {"type": ["string", "null"], "minLength": 1},
+        "merge_base": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "required_proofs"],
+      "properties": {
+        "status": {"enum": ["PASSED", "FAILED", "BLOCKED", "NOT_RUN"]},
+        "required_proofs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]+$"}
+        }
+      }
+    }
+  }
+}

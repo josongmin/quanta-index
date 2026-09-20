@@ -1,6 +1,6 @@
 # S21-00 — Authority Freeze and Cutover Contract
 
-Status: `done` — decisions frozen in `docs/adr/SEP-21-001..004` and `SEP-21-DECISION-REGISTRY.md`
+Status: `in progress` — semantic repair is documented; corrected current-source P00 proof/handoff is still required
 
 Depends on: none
 
@@ -37,7 +37,8 @@ Depends on: none
 - ADR: process supervision and shutdown semantics
 - wire/persisted consumer inventory update proposal
 - legacy state inventory with importer/rebuild/discard class
-- exact error code table; string parsing 금지
+- source-bound free-form error inventory와 closed-table migration contract. Final exact accepted-code table은 P01A가
+  free-form production path를 0으로 만든 뒤 생성하며 P00이 존재하지 않는 table을 허위로 동결하지 않음
 - finding-to-ticket-to-proof ledger
 
 Canonical accepted artifacts:
@@ -50,6 +51,8 @@ Canonical accepted artifacts:
 - `tools/ci/proof-authority.toml`
 - `tools/ci/proof-manifest.schema.json`
 - `tools/ci/lint/check-proof-authority.py`
+- `tools/ci/error-authority-inventory.schema.json`
+- `tools/ci/write-error-authority-inventory.py`
 
 ## Owner files
 
@@ -108,6 +111,11 @@ ADR와 breaking cutover contract가 frozen된 뒤 owner implementation을 시작
 | raw identifier policy | already-NFC UTF-8, case-sensitive, 1..=512 bytes, controls rejected, no silent normalization | S21-01 |
 | physical layout/security | `objects/sha256/aa/bb/<60hex>.cbor`; effective-UID, exact mode, no-follow, inode and nlink checks | S21-01, S21-09, S21-11 |
 | terminal sequence scope | one positive state-root-global transactional `catalog_sequence_v2` stream | S21-02, S21-04, S21-11 |
+| generic event authority | allocator + `catalog_sequence_event_v2` + domain row가 one transaction; restore는 모든 event/domain high-water를 reconcile | S21-02, S21-04, S21-11 |
+| quarantine crash protocol | P03 catalog-first exact-envelope commit → immutable projections/fsync → unlink/source-dir fsync; retry는 time/sequence 재사용 | S21-01B, S21-02 |
+| lane split | P01A pure identity/codec/error/security; P03 live layout/quarantine/activation; P10 legacy-only importer | S21-01, S21-02, S21-11 |
+| handoff validation | immediate predecessor만 매 lane validate; P02I는 P02A/P02B 둘; P12가 complete transitive chain validate | P01-P12 |
+| aggregate receipt | P12 schema/writer/verdict producer/final recipe가 aggregate artifact를 발행; dependency checker alone 불충분 | S21-13B |
 | shutdown escalation | cooperative deadline 뒤 process abort/non-zero exit 여부; kill 불가능한 Rust thread를 graceful로 표기 금지 | S21-09 |
 | provider policy | tenant/source/query classification별 egress consent, region, retention, budget owner | S21-08 |
 | active selector binding | resolution epoch/read identity로 검증; 원 요청 selector와 resolved pin의 단순 equality 금지 | S21-07 |
@@ -125,3 +133,8 @@ ADR와 breaking cutover contract가 frozen된 뒤 owner implementation을 시작
 - 표의 모든 decision에 owner, frozen value, decision artifact, deadline이 있다.
 - `TBD`, optional compatibility field, zero-digest sentinel, dual live decoder가 없다.
 - persisted receipt와 state-root format의 이전/이후 compatibility matrix가 executable fixture 이름까지 가진다.
+- P00 handoff에는 `just proof-error-authority-inventory` artifact/source digest와 category count가 있고,
+  P01A start gate는 이 digest를 소비한다. 이 inventory는 항상 `closed=false`다. P01A closure는 이 lane이 새로
+  구현하는 exact enum/table/mapping/SDK validator, dedicated test-authority proof와
+  `just proof-error-authority-closed` 성공을 모두 요구한다.
+- corrected P00 manifest/handoff가 current clean source에 결속되기 전에는 P01A를 허용하지 않는다.

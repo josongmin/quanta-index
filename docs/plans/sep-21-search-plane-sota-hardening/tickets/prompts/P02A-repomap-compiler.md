@@ -1,7 +1,7 @@
 # Copy/paste prompt — P02A RepoMap Compiler Lane
 
 당신은 S21-03 lane owner다. 먼저 repo root 기준 `docs/plans/sep-21-search-plane-sota-hardening/tickets/prompts/`
-아래 `COMMON-EXECUTION-CONTRACT.md`와 `README.md`를 읽고 그대로 적용한다. P01 checkpoint commit과 source-bound
+아래 `COMMON-EXECUTION-CONTRACT.md`와 `README.md`를 읽고 그대로 적용한다. P01A checkpoint commit과 source-bound
 handoff를 exact base로 별도 worktree/branch에서 작업한다. P02B와
 병렬 실행하되 shared contract/baseline/inventory/generated docs는 수정하지 않고 P02I integration owner에게 delta만
 넘긴다.
@@ -11,7 +11,7 @@ handoff를 exact base로 별도 worktree/branch에서 작업한다. P02B와
 - repo instructions
 - `docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-AUDIT.md`
 - `docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-03-repomap-graph-compiler-and-resource-envelope.md`
-- S21-00 identity/resource decisions와 S21-01 handoff
+- S21-00 identity/resource decisions와 P01A handoff
 
 목표: RepoMap materializer를 permissive transformer에서 whole-bundle validated, typed, bounded compiler로 교체한다.
 
@@ -27,7 +27,8 @@ write scope:
 - `crates/quanta-index-core/src/domains/repomap/`
 - `crates/quanta-index-repomap/src/{materializer,model,query}.rs`
 - `crates/quanta-index-repomap/tests/`
-- `crates/quanta-index-contract/src/repomap.rs`는 P02I가 배정한 compiler DTO section만; 배정이 없으면 `BLOCKED`
+- `crates/quanta-index-contract/src/repomap.rs`의 compiler DTO section만: `RepoMapCompileRefusalV1`,
+  `CompiledRepoMapCandidateV1` 및 이 둘만의 private helpers. `lib.rs` re-export/public baseline/wire inventory는 P02I owner다.
 
 구현 요구:
 
@@ -57,4 +58,4 @@ DoD:
 
 proof node는 `p02a-repomap-compiler`다. 최종 handoff `artifacts/sep-21/handoffs/P02A.json`에 source/dirty digest, 변경 파일,
 frozen compiler API, commitment inputs, refusal codes, resource limits, command/counts, NOT_RUN, P03 소비 fixture를
-남겨라. explicit owner path만 단일 checkpoint commit으로 만들고 push는 별도 요청 시에만 한다.
+남겨라. explicit owner path만 단일 checkpoint commit으로 만들고 current lane branch에 non-force push한다.

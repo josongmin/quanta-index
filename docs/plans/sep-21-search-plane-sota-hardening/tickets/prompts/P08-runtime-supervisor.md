@@ -23,6 +23,7 @@ owner files:
 - `crates/quanta-index-ipc/src/{server,counters}.rs`
 - P07 provider executor integration
 - runtime/process test helpers
+- supervisor/process suite module과 exact test files, `tools/ci/{test-authority,proof-authority}.toml`, required Just recipe
 
 구현 요구:
 
@@ -51,10 +52,12 @@ mandatory proofs:
 - connection panic/cancel/slowloris join과 exact counters
 - real two-process state-root exclusion: 첫 process serving 전체 동안 둘째 refusal, all-child 종료 뒤 획득
 - before/after FD/thread/socket inode/lease/residual provider task accounting
-- live work가 남은 상태의 정상 `drive` return 0; child 종료 전 lease drop 0
+- live work가 남은 상태에서 graceful `drive` return 발생 건수 = 0; child 종료 전 lease drop 발생 건수 = 0
 
-proof node는 `p08-runtime-supervisor`, canonical release command는 `just rust-profile test-daemon-all`이다. macOS
-focused proof를 Linux production proof로 승격하지 마라. 최종 보고에 source freeze, lifecycle diagram, owned
+proof node는 `p08-runtime-supervisor`다. `test_authority_targets`가 비어 있거나 mandatory process/signal/rollback/
+lease scenario를 선택하지 않으면 패치 전에 `BLOCKED`다. canonical release command는
+`just rust-profile test-daemon-all`이다. facade/re-export 변경에는 `just rust-hexagonal`, `just rust-cargo-modules`,
+`just rust-public-api`를 추가한다. macOS focused proof를 Linux production proof로 승격하지 마라. 최종 보고에 source freeze, lifecycle diagram, owned
 resource inventory, exit semantics, command/counts, platform별 NOT_RUN, P09 readiness events와
 `artifacts/sep-21/handoffs/P08.json`을 남겨라. 이 checkpoint에서 S21-08/09의 M3 lifecycle closure를 함께 판정한다. explicit
-owner path만 checkpoint commit하고 push는 별도 요청 시에만 한다.
+owner path만 checkpoint commit하고 current lane branch에 non-force push한다.
