@@ -2,8 +2,9 @@
 
 Status: `planned`
 
-Phase A status: `done`; proof registry/schema/semantic validator and blocking CI policy check are implemented.
-Phase B remains `planned` and depends on S21-01 through S21-12.
+Phase A status: `partial`; registry/schema/static validator and CI policy check exist, but current-source manifest
+production, staged+unstaged source binding, conditional non-binary proof semantics and fail-closed aggregate artifact
+requirements are not closed. Phase B remains `planned` and depends on S21-01 through S21-12.
 
 Depends on: phase A depends on S21-00; phase B depends on S21-01 through S21-12
 
@@ -35,15 +36,9 @@ release proof graph를 만든다.
 
 ## Mandatory proof families
 
-1. static architecture/public API/wire/module/policy guards
-2. owner-local positive/negative/recovery tests
-3. real SQLite/Tantivy/Lance/RepoMap adapter integration
-4. in-process SDK/UDS route matrix
-5. real child-process signal/crash/restart/lease/readiness
-6. corruption/failpoint/concurrency/cancellation
-7. fixed-corpus relevance, ANN recall, latency, RSS/FD/disk/WAL/QPS
-8. external Semantica producer and real-provider opt-in rail
-9. migration/backup/restore/rollback drill
+Canonical family IDs and semantics are owned by `tools/ci/proof-authority.toml`: `S/U/A/D/P/F/Q/X`. Coverage such as
+migration, provider and cross-repo cutover is represented by registered proof nodes in those families, not by a second
+human-maintained family enum. Final qualification requires every registered release proof and its dependency DAG.
 
 ## Threshold freeze
 
@@ -88,6 +83,14 @@ Implemented owners:
 - `tools/ci/lint/check-proof-authority.py`
 - `.pre-commit-config.yaml` `proof-authority` hook
 - `.github/workflows/ci.yml` blocking proof-authority step
+
+Open Phase A owners:
+
+- source digest semantics that include staged+unstaged changes and exclude proof output
+- registry-driven terminal manifest writer
+- conditional `binary_binding=none` and upstream-less worktree schema/validator semantics
+- blocking current-gate manifest validation and final `--require-all --bind-source` aggregate gate
+- S21 proof node to concrete `test-authority` target cross-links
 
 ### Phase B — final aggregate
 

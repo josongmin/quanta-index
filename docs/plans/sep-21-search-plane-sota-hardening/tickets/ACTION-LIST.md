@@ -19,13 +19,17 @@ so and only after shared DTO/schema owners are frozen. A checked item requires c
 
 ### S21-13A
 
-- [x] Purpose: make required evidence absent/stale/zero-execution fail before implementation starts.
-- [x] Files: `tools/ci/proof-authority.toml`, proof schema/validator, CI/pre-commit wiring,
+- [ ] Purpose: make required evidence absent/stale/zero-execution fail before implementation starts.
+- [ ] Files: `tools/ci/proof-authority.toml`, proof schema/validator, CI/pre-commit wiring,
   `tools/ci/lint/check-test-authority.py`, receipt schema/writer, CI workflow skeleton.
-- [x] Logic: strict manifest validation for full SHA, dirty digest, binary, host, feature/toolchain, counts and
+- [ ] Logic: strict manifest validation for full SHA, dirty digest, binary, host, feature/toolchain, counts and
   artifact digests; register every mandatory family.
-- [x] DoD: missing artifact, short SHA, dirty mismatch, selected/executed 0, ignored-only, wrong binary and
+- [ ] DoD: missing artifact, short SHA, dirty mismatch, selected/executed 0, ignored-only, wrong binary and
   unregistered proof all fail locally and in blocking CI.
+
+Open blockers: blocking CI currently validates registry/schema only; final artifact absence requires an explicit
+`--require-all --bind-source` aggregate gate. Dirty digest must include staged changes while excluding proof output,
+and `binary_binding=none`/upstream-less worktrees need conditional schema semantics.
 
 ## W1a — canonical identity/layout
 
@@ -63,7 +67,9 @@ so and only after shared DTO/schema owners are frozen. A checked item requires c
   terminal replay does not call storage/provider; effective SQLite durability settings are read back.
 
 Parallel boundary: S21-03 owns RepoMap compiler DTO/output. S21-04 owns operation protocol/schema. Shared contract
-files are assigned to one integrator; the lanes do not both edit the same DTO or baseline concurrently.
+files are assigned to P02I; the lanes do not both edit the same DTO or baseline concurrently. P02I must integrate both
+checkpoint commits, rerun both registered proofs on the same clean HEAD and emit the source-bound integration handoff
+before S21-02 starts.
 
 ## W2 — sole durable candidate/activation authority
 
@@ -83,7 +89,8 @@ files are assigned to one integrator; the lanes do not both edit the same DTO or
 
 - [ ] Purpose: bind a request to actual immutable resources for its full lifetime.
 - [ ] Files/symbols: `core/src/domains/repomap/inbound.rs::RepoMapQueryPort`,
-  `query_dispatcher/read_view/{view,identity}.rs`, `query_dispatcher/routes/repo_map.rs`,
+  `core/src/domains/read_view/{identity,domain,errors}.rs`,
+  `query_dispatcher/read_view/{view,snapshots}.rs`, `query_dispatcher/routes/repo_map.rs`,
   `repomap/src/{store,reader}.rs`.
 - [ ] Logic: acquire active identity+`Arc` atomically; store `DomainReadEvidenceV2`; execute only via view;
   RAII pin release; GC respects pins.
@@ -93,7 +100,7 @@ files are assigned to one integrator; the lanes do not both edit the same DTO or
 ### S21-06
 
 - [ ] Purpose: report pagination, coverage, ranking and availability without inference from row count.
-- [ ] Files: `contract-base/src/query_window.rs`, core semantic/hybrid domains,
+- [ ] Files: `contract-base/src/results/query_window.rs`, core semantic/hybrid domains,
   `query_dispatcher/{dense_admission,window,hybrid,hybrid_seed,semantic_query}.rs`, cursor/explain/harness owners.
 - [ ] Logic: `ExecutionOutcomeV2`; route capability matrix; canonical continuation digest; typed candidate identity;
   compact post-dedup rank shared by RRF/provenance; execution vs contribution metrics.
@@ -103,7 +110,7 @@ files are assigned to one integrator; the lanes do not both edit the same DTO or
 ### S21-07
 
 - [ ] Purpose: reject syntactically valid responses that do not answer the original request/authority.
-- [ ] Files: `sdk/src/client.rs`, query/control/ingest SDK modules, `contract/src/ipc/query_responses.rs`,
+- [ ] Files: `sdk/src/client.rs`, query/control/ingest SDK modules, `contract/src/results/query_responses.rs`,
   `contract/src/repomap.rs`, cursor validators, `sdk/src/config.rs`.
 - [ ] Logic: closed expected-response enums built before payload move; intrinsic then contextual validation;
   active selector resolution proof; query-only endpoint profile.

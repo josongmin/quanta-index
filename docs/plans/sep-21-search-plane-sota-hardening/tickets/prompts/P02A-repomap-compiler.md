@@ -1,8 +1,10 @@
 # Copy/paste prompt — P02A RepoMap Compiler Lane
 
-당신은 S21-03 lane owner다. P01이 DONE이고 canonical identity API가 merge된 source에서 작업한다. P02B와 병렬
-실행 가능하지만 시작 전에 shared contract/baseline 파일의 단일 writer를 합의하라. 충돌 가능 파일을 양쪽에서
-동시에 수정하지 마라.
+당신은 S21-03 lane owner다. 먼저 repo root 기준 `docs/plans/sep-21-search-plane-sota-hardening/tickets/prompts/`
+아래 `COMMON-EXECUTION-CONTRACT.md`와 `README.md`를 읽고 그대로 적용한다. P01 checkpoint commit과 source-bound
+handoff를 exact base로 별도 worktree/branch에서 작업한다. P02B와
+병렬 실행하되 shared contract/baseline/inventory/generated docs는 수정하지 않고 P02I integration owner에게 delta만
+넘긴다.
 
 읽을 문서:
 
@@ -22,10 +24,10 @@ RepoMapGraphCompiler::compile(bundle)
 
 write scope:
 
-- `crates/quanta-index-contract/src/repomap.rs` 중 사전 배정받은 compiler DTO section
 - `crates/quanta-index-core/src/domains/repomap/`
 - `crates/quanta-index-repomap/src/{materializer,model,query}.rs`
 - `crates/quanta-index-repomap/tests/`
+- `crates/quanta-index-contract/src/repomap.rs`는 P02I가 배정한 compiler DTO section만; 배정이 없으면 `BLOCKED`
 
 구현 요구:
 
@@ -35,7 +37,7 @@ write scope:
 - deterministic canonical normalization과 commitment
 - unbounded owner symbol clone/join 제거
 - 공통 Unicode tokenizer; normalized tokenless input은 typed refusal
-- `focus_subjects` frozen strict/hint semantics를 정확히 구현
+- non-empty `focus_subjects`는 전부 strict resolve하고 하나라도 없으면 `FOCUS_SUBJECT_NOT_FOUND`; global fallback 0
 - compiled output에 graph/content/schema/profile commitments와 resource receipt 포함
 - raw bundle을 S21-02가 재해석할 수 없도록 API 경계 설정
 
@@ -51,5 +53,6 @@ DoD:
 - configured cap이 materialized bytes/work/RSS upper bound를 설명
 - independent golden/property/allocation proof와 owning integration proof
 
-최종 handoff에 source/dirty digest, 변경 파일, frozen compiler API, commitment inputs, refusal codes, resource
-limits, command/counts, NOT_RUN, P03 소비 fixture를 남겨라. commit/push는 요청 시에만 한다.
+proof node는 `p02a-repomap-compiler`다. 최종 handoff `docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/P02A.json`에 source/dirty digest, 변경 파일,
+frozen compiler API, commitment inputs, refusal codes, resource limits, command/counts, NOT_RUN, P03 소비 fixture를
+남겨라. explicit owner path만 단일 checkpoint commit으로 만들고 push는 별도 요청 시에만 한다.

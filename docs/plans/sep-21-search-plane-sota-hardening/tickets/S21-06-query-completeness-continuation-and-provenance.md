@@ -24,7 +24,9 @@ query 결과의 pagination, completeness, ranking, explain, availability가 실�
 
 - `CanonicalRequestIdentityV1`: route + full generation pin + normalized query/constraints/order/cap + aux epochs
 - `ContinuationTokenV2`: canonical request digest + read identity + last typed ordering key + expiry/version + integrity proof
-- `ExecutionOutcomeV2`: `Exact`, `LowerBound`, `CappedUnknown`, `InterruptedPartial`, `Approximate`, `Unsupported`, `Unavailable`
+- `ExecutionOutcomeV2`: `ExactExhausted`, `LowerBound { continuation }`, `CappedUnknown { cap }`,
+  `InterruptedPartial { reason }`, `Approximate { method, quality_contract }`
+- unsupported/unavailable/not-ready는 success outcome이 아니라 stable typed refusal
 - `CoverageV1`: examined universe, lower bound, exhaustion proof, backend coverage
 - `LaneTraceV1`: executed, contributed, filtered, candidate count, cost, model/profile
 - `ContributionTraceV1`: typed candidate identity + compact lane rank + score inputs
@@ -97,7 +99,7 @@ schema를 공통 contract로 바꾼다.
 
 ### File-level action list
 
-- `crates/quanta-index-contract-base/src/query_window.rs`: `QueryResultWindowV2`, mandatory completeness,
+- `crates/quanta-index-contract-base/src/results/query_window.rs`: `QueryResultWindowV2`, mandatory completeness,
   exhaustion proof, continuation invariants.
 - `crates/quanta-index-core/src/domains/semantic/dense_admission.rs`: admission outcome과 examined/refill ceiling 보존.
 - `crates/quanta-index-core/src/domains/hybrid/`: typed candidate identity와 compact post-dedup rank를 RRF/trace가 공유.

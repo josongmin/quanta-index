@@ -83,7 +83,7 @@ validator registry를 공통 client architecture로 만든다.
 
 - `crates/quanta-index-sdk/src/client.rs::{dispatch_query,dispatch_control,dispatch_ingest}`: payload move 전에
   expected enum 생성, request ID 확인 뒤 intrinsic decoder → contextual binding 순으로 실행한다.
-- `crates/quanta-index-contract/src/ipc/query_responses.rs`: success variant의 intrinsic schema/key/order/cardinality validator.
+- `crates/quanta-index-contract/src/results/query_responses.rs`: success variant의 intrinsic schema/key/order/cardinality validator.
 - `crates/quanta-index-contract/src/repomap.rs`: candidate commitment, activation epoch, prior/new identity의 mandatory validator.
 - cursor intrinsic validator: version/integrity/typed key 형상만 contract가 검증하고 original request 결속은 SDK가 검증한다.
 - SDK error: route, expected/actual mismatch axis, stable code를 typed하게 노출하고 source/query payload는 숨긴다.

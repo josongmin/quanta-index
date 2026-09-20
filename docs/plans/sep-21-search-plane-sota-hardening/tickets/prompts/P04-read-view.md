@@ -1,7 +1,9 @@
 # Copy/paste prompt — P04 QueryReadView V2
 
-당신은 S21-05 owner다. S21-02와 S21-04가 current source에서 DONE이고 catalog-backed RepoMap acquire API가
-존재할 때만 시작한다.
+당신은 S21-05 owner다. 먼저 repo root 기준 `docs/plans/sep-21-search-plane-sota-hardening/tickets/prompts/`
+아래 `COMMON-EXECUTION-CONTRACT.md`와 `README.md`를 읽고 그대로 적용한다. P03/P02B checkpoint와 source-bound
+handoff가 current stack에 있고 catalog-backed RepoMap acquire API가
+존재할 때만 시작한다. 이 lane은 M2 stacked checkpoint A이며 S21-05를 단독 `done`으로 닫지 않는다.
 
 읽을 문서: repo instructions, `docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-AUDIT.md`,
 `docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-05-read-view-v2-and-snapshot-lifetime.md`,
@@ -13,8 +15,9 @@ store/ledger latest read와 activation/GC TOCTOU를 제거한다.
 owner files/symbols:
 
 - `crates/quanta-index-core/src/domains/repomap/inbound.rs::RepoMapQueryPort`
-- `crates/quanta-index-search-plane/src/query_dispatcher/read_view/{view,identity}.rs`
-- `crates/quanta-index-search-plane/src/query_dispatcher/routes/`
+- `crates/quanta-index-core/src/domains/read_view/{identity,domain,errors}.rs`
+- `crates/quanta-index-search-plane/src/query_dispatcher/read_view/{view,snapshots}.rs`
+- `crates/quanta-index-search-plane/src/query_dispatcher/{dispatcher,routes/repo_map}.rs`
 - `crates/quanta-index-repomap/src/{store,reader}.rs`
 - lexical/semantic/auxiliary snapshot registries and retention owners
 
@@ -42,6 +45,11 @@ DoD:
 - cancel/panic 뒤 pin/reference count baseline 및 GC progress
 - shared physical handle fixture의 evidence cardinality
 - 모든 route에서 undeclared accessor refusal과 ambient lookup 0을 정적으로 검증
+- production `QueryReadViewV1`/`ReadIdentityV1` live path 0; adapter concrete type의 core import 0
+- catalog lock을 잡은 채 disk open/query 0; lock order는 하나의 canonical owner에 고정
 
-최종 보고에 source/dirty freeze, 변경 route/handles, lock order, proof counts, NOT_RUN, P05가 소비할 read identity를
-남겨라. commit/push는 요청 시에만 한다.
+proof node는 `p04-read-view-lifetime`, canonical release command는 `just rust-profile test-daemon`이며 Linux
+production-like/release-daemon proof가 없으면 `RELEASE_PROOF_PENDING`이다. 최종 보고에 source/dirty freeze, 변경
+route/handles, lock order, proof counts, NOT_RUN, P05가 소비할 internal read identity와
+`docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/P04.json`을 남겨라. public cursor schema는 P05 owner다. explicit owner path만 checkpoint commit하고
+push는 별도 요청 시에만 한다.

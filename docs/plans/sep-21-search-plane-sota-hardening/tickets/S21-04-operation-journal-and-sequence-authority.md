@@ -106,5 +106,5 @@ refusal/lease/sequence recovery까지 하나의 protocol로 구현한다.
 - same-key/different-body는 apply/preflight/provider 호출 없이 conflict다.
 - `PreparedMutationV1`은 검증한 epoch/input commitment를 가지며 apply는 그것을 재검증하고 drift면 typed abort한다.
 - serial-ingest 결정이면 admission cap과 runtime worker topology가 이를 machine-enforce한다.
-- retention은 replay floor 아래 key에 `REPLAY_EXPIRED`를 반환하며 신규 작업으로 오인하지 않는다.
+- retention은 replay floor 아래 key에 `OPERATION_REPLAY_FLOOR`를 반환하며 신규 작업으로 오인하지 않는다.
 - SQLite `fullfsync`/durability 설정은 set 호출뿐 아니라 read-back 및 crash fixture로 증명한다.

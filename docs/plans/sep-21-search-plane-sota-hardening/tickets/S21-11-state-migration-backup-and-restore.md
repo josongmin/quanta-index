@@ -104,7 +104,7 @@ open path에 legacy decoder fallback을 넣지 않는다. offline importer가 �
 
 ### File-level action list
 
-- `crates/quanta-index-searchd/src/app/command.rs`: offline `migrate-state`, `backup-state`, `restore-state`, `verify-state` 명령의 유일 UX owner.
+- `crates/quanta-index-searchd/src/cli/command.rs`: offline `migrate-state`, `backup-state`, `restore-state`, `verify-state` 명령의 유일 UX owner.
 - `crates/quanta-index-searchd/src/app/runtime.rs`의 `StateRootLease`: daemon과 offline CLI가 같은 lease/check를 공유.
 - `crates/quanta-index-searchd/src/app/legacy_semantic_migration.rs` 및 `semantic_boot.rs`: 최종 cutover에서 boot-time live legacy migration 제거.
 - `crates/quanta-index-catalog/src/{connection,open,idempotency,auxiliary}.rs`: backup API, schema migration,

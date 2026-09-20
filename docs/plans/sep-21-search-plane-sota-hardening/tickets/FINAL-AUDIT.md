@@ -4,6 +4,9 @@ Audit date: 2026-09-21
 
 Audit type: static source and plan review only
 
+Snapshot note: this verdict describes the pre-implementation audit at the recorded source/digests. Current gate status
+is owned by [INDEX.md](INDEX.md) and source-bound proof manifests; this snapshot is not a live completion signal.
+
 Verdict: `PLAN_READY_WITH_GATE`; implementation is `BLOCKED` until S21-00 decisions and S21-13 phase A proof
 authority are frozen.
 

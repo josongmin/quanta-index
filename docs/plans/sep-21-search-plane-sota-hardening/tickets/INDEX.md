@@ -1,6 +1,7 @@
 # SEP-21 Search Plane SOTA Hardening — Ticket Index
 
-Status: `in progress`; S21-00/S21-13A complete, next gate is S21-01
+Status: `in progress`; S21-00 decisions are frozen, but S21-13A source-binding/fail-closed proof gate remains open.
+P01 is blocked until P00 current-checkpoint verification closes that gap.
 
 Authority inputs:
 
@@ -239,7 +240,7 @@ Authority rules:
 |---|---|---|
 | W0 | 00, 13A | unresolved product decisions 0; exact owner/write set/frozen schemas; blocking proof skeleton |
 | W1a | 01 | canonical identity/layout frozen |
-| W1b | 03, 04 | compiled RepoMap candidate and operation journal owner-local negative/recovery proof |
+| W1b | 03, 04 | isolated lane commits plus same-HEAD P02I integration proof/handoff |
 | W2 | 02 | compiler output과 operation journal을 소비하는 immutable publish/activate/recover |
 | W3 | 05, 06, 07 | all query routes use one pinned view and bound response semantics |
 | W4 | 08, 09, 10 | provider/process/control resources supervised and bounded |
@@ -249,9 +250,10 @@ Authority rules:
 Parallelism:
 
 - W1a identity/layout freeze 후 W1b를 시작한다. S21-01과 S21-04의 동시 구현은 금지한다.
-- W1b의 graph compiler와 operation journal은 병렬 가능하지만 S21-02는 둘의 frozen output 이후 시작
-- W3에서 query outcome contract를 먼저 고정한 뒤 SDK validator 구현은 병렬 가능
-- W4에서 supervisor core와 control capability DTO는 owner 분리 후 병렬 가능
+- W1b의 graph compiler와 operation journal만 기본 병렬 가능하다. 서로 다른 worktree/branch에서 같은 P01 base를
+  사용하며 S21-02는 P02I same-HEAD 통합 proof 이후 시작한다.
+- W3는 P04→P05→P06 순차 stack이다. P06은 P05 public schema를 재설계하지 않는다.
+- W4는 P07→P08→P09 순차 stack이다. provider executor enrollment는 P08에서 lifecycle closure한다.
 - 같은 contract DTO/baseline 파일을 동시에 수정하는 병렬 작업은 금지
 
 ## 7. Finding coverage

@@ -1,7 +1,9 @@
 # Copy/paste prompt — P10 State Migration, Backup and Restore
 
-당신은 S21-11 owner다. S21-01/02/04/09가 DONE이고 new state-root format, catalog authority, state-root lease가
-current source에 존재할 때만 시작한다.
+당신은 S21-11 owner다. 먼저 repo root 기준 `docs/plans/sep-21-search-plane-sota-hardening/tickets/prompts/`
+아래 `COMMON-EXECUTION-CONTRACT.md`와 `README.md`를 읽고 그대로 적용한다. P01/P03/P02B/P08 source-bound
+handoff와 new state-root format, catalog authority, state-root lease가 current
+source에 존재할 때만 시작한다.
 
 읽을 문서: repo instructions, `docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-AUDIT.md`,
 `docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-11-state-migration-backup-and-restore.md`,
@@ -12,7 +14,7 @@ workflow를 제공한다.
 
 owner files:
 
-- `crates/quanta-index-searchd/src/app/command.rs`
+- `crates/quanta-index-searchd/src/cli/command.rs`
 - runtime `StateRootLease`
 - `crates/quanta-index-searchd/src/app/{legacy_semantic_migration,semantic_boot}.rs`
 - `crates/quanta-index-catalog/src/{connection,open,idempotency,auxiliary}.rs`
@@ -45,6 +47,13 @@ DoD fixtures:
 - source inode/mtime/content unchanged
 - restored active identities/object inventory/terminal receipts/replay floor/high-water exact manifest match
 - production boot legacy readers/migrators count 0
+- interrupted migration/restore는 incomplete staging을 authority로 만들지 않고 idempotent resume/retry 또는 typed
+  cleanup으로 수렴
+- non-empty destination, symlink/path traversal, wrong owner/mode, disk-full, fsync/rename crash를 fail-closed
+- broad/root/home/unresolved target과 source=destination destructive operation을 mutation 전에 거부
 
-최종 보고에 source freeze, CLI surface, root/backup manifest schema, rollback cutoff, fixture results/counts, NOT_RUN,
-P11이 사용할 migration receipt를 남겨라. commit/push는 요청 시에만 한다.
+proof node는 `p10-state-migration`, canonical release command는 `just rust-profile test-daemon-all`이며 Linux
+production-like/release-daemon proof가 필요하다. 모든 drill은 disposable state root에서 수행한다. 실제/공유 state
+root cutover는 별도 명시 승인 없이는 NOT_RUN이다. 최종 보고에 source freeze, CLI surface, root/backup manifest
+schema, rollback cutoff, fixture results/counts, NOT_RUN, P11 migration receipt와 `docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/P10.json`을
+남겨라. explicit owner path만 checkpoint commit하고 push는 별도 요청 시에만 한다.

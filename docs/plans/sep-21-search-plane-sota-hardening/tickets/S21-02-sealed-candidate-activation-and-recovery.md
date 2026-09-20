@@ -41,7 +41,7 @@ ActivationInvalidated --publish only--> SealedCandidate (never Activated)
 1. materializer output에 manifest/authority/content commitments를 보존
 2. same logical generation publish:
    - exact same commitment: stored receipt replay
-   - different commitment: `GENERATION_CONTENT_CONFLICT`
+   - different commitment: `CANDIDATE_COMMITMENT_CONFLICT`
 3. activation은 candidate exact commitment와 request를 compare
 4. durable activation commit 후에만 memory snapshot registry publish
 5. candidate corruption/missing 발견 시 activation을 durable invalidation
@@ -116,6 +116,6 @@ candidate commitment, pointer envelope, state machine, recovery oracle을 한 me
 ### DoD additions
 
 - S21-03 compiler refusal이면 object/catalog/registry mutation이 모두 0이다.
-- same logical generation/different commitment는 `GENERATION_CONTENT_CONFLICT`; same commitment는 원 receipt replay다.
+- same logical generation/different commitment는 `CANDIDATE_COMMITMENT_CONFLICT`; same commitment는 원 receipt replay다.
 - candidate object loss/corruption은 durable `ActivationInvalidated`가 되고 파일 재등장만으로 재활성화되지 않는다.
 - fault matrix 각 지점에서 restart 후 old 또는 new committed activation 하나만 관찰된다.

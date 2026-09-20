@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quanta-index.local/schemas/sep-21-lane-handoff-v1.json",
+  "title": "SEP-21 Lane Handoff V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "lane",
+    "ticket",
+    "status",
+    "base_sha",
+    "result_sha",
+    "dirty_digest",
+    "write_set",
+    "exported_contracts",
+    "proofs",
+    "not_run",
+    "blockers"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "lane": { "type": "string", "pattern": "^P(?:0[013-9]|02[ABI]|1[0-2])$" },
+    "ticket": { "type": "string", "pattern": "^(?:S21-(?:0[0-9]|1[0-3])|S21-00\\+S21-13A|S21-03\\+S21-04)$" },
+    "status": {
+      "enum": ["IMPLEMENTATION_DONE", "OWNER_PROOF_GREEN", "RELEASE_PROOF_PENDING", "BLOCKED"]
+    },
+    "base_sha": { "$ref": "#/$defs/sha" },
+    "result_sha": { "$ref": "#/$defs/sha" },
+    "dirty_digest": { "$ref": "#/$defs/digest" },
+    "write_set": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "exported_contracts": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "proofs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "status", "manifest", "manifest_sha256", "command", "required_host", "selected", "executed", "passed", "failed", "ignored"],
+          "properties": {
+            "id": { "type": "string", "minLength": 1 },
+            "status": { "const": "RECORDED" },
+            "manifest": { "type": "string", "minLength": 1 },
+            "manifest_sha256": { "$ref": "#/$defs/digest" },
+            "command": { "type": "string", "minLength": 1 },
+            "required_host": { "type": "string", "minLength": 1 },
+            "selected": { "type": "integer", "minimum": 0 },
+            "executed": { "type": "integer", "minimum": 0 },
+            "passed": { "type": "integer", "minimum": 0 },
+            "failed": { "type": "integer", "minimum": 0 },
+            "ignored": { "type": "integer", "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "status", "reason"],
+          "properties": {
+            "id": { "type": "string", "minLength": 1 },
+            "status": { "const": "NOT_RUN" },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        }
+        ]
+      }
+    },
+    "not_run": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "blockers": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+  },
+  "$defs": {
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}
