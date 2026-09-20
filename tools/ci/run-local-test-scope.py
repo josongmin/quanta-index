@@ -18,6 +18,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 
 ROOT = Path(__file__).resolve().parents[2]
 CATALOG = ROOT / "tools" / "ci" / "test-authority.toml"
+TEST_THREADS_OVERRIDE = "QUANTA_INDEX_TEST_THREADS"
 
 
 def load_catalog(path: Path = CATALOG) -> dict[str, Any]:
@@ -196,6 +197,20 @@ def build_command(
     return command
 
 
+def effective_test_threads(declared: int, override: str | None) -> int:
+    """Allow an explicit local reduction without exceeding catalog authority."""
+    if override is None:
+        return declared
+    if not override.isascii() or not override.isdecimal():
+        raise ValueError(f"{TEST_THREADS_OVERRIDE} must be a positive decimal integer")
+    requested = int(override)
+    if not 1 <= requested <= declared:
+        raise ValueError(
+            f"{TEST_THREADS_OVERRIDE} must be between 1 and the declared cap {declared}"
+        )
+    return requested
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("scopes", nargs="+", help="local scope names from test-authority.toml")
@@ -206,6 +221,7 @@ def main(argv: list[str] | None = None) -> int:
         default_lane, test_threads, include_lib, extra_packages, targets = resolve_targets(
             load_catalog(), args.scopes
         )
+        test_threads = effective_test_threads(test_threads, os.environ.get(TEST_THREADS_OVERRIDE))
         command = build_command(
             args.lane or default_lane,
             test_threads,
@@ -222,7 +238,8 @@ def main(argv: list[str] | None = None) -> int:
         f"local test scopes: {','.join(args.scopes)}; "
         f"catalog_rows={len(targets)}; cargo_test_binaries={cargo_test_binaries}; "
         f"cargo_processes=1; test_threads={test_threads}; "
-        f"lane={args.lane or default_lane}"
+        f"lane={args.lane or default_lane}",
+        flush=True,
     )
     if args.dry_run:
         print(shlex.join(command))

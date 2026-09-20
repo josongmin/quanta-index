@@ -151,6 +151,16 @@ exposes 45 runnable entry points plus one ignored network test. In total, 34
 redundant fixture or daemon lifecycles were removed from the original 79
 runnable entry points.
 
+The local scope runner now accepts `QUANTA_INDEX_TEST_THREADS` as an explicit
+lower cap, never above the catalog's declared cap. The normal daemon-fast rail
+still uses four threads. On a contended development host,
+`QUANTA_INDEX_TEST_THREADS=1 just rust-profile test-daemon-fast` executes the
+same catalog-selected suite with one concurrent test. This avoids retrying the
+known four-way IPC timeout pattern; it does not turn a contended run into clean
+performance evidence. Invalid or cap-exceeding overrides fail before Cargo.
+The runner flushes the selected scope, binary count, and effective thread cap
+before replacing itself with Cargo, so execution logs show the actual mode.
+
 Local `sccache` is enabled only when installed and uses a repository-derived
 server port. It caches non-incremental compilations after a lane is cleaned or
 recreated while preserving Cargo incremental compilation for workspace crates.
@@ -232,6 +242,14 @@ an overridden run is not clean performance evidence.
   selection under contention without the four IPC timeouts seen at concurrency
   four. It is correctness evidence only; a quiet-host four-thread rerun remains
   required for a comparable performance baseline
+- local thread-cap override: runner unit tests 10/10 PASS; default daemon-fast
+  dry-run retains four threads, explicit `QUANTA_INDEX_TEST_THREADS=1` dry-run
+  selects one thread, invalid/above-cap inputs fail before execution, and
+  selection output is flushed before Cargo starts; all `tools/ci/tests` 304 PASS
+- `QUANTA_INDEX_TEST_THREADS=1 just rust-profile test-daemon-fast`: 45/45 PASS,
+  one ignored, in 70.479s nextest time with a 0.77s cached compile. The host
+  still had foreign Rust builds, so this is a functional front-door proof and
+  not a clean performance measurement
 - daemon-fast before DSL-truth separation: 84/84 PASS, one ignored, two
   binaries; 193.157s nextest execution under the same non-authoritative class
   of host contention

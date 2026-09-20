@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import sys
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = REPO_ROOT / "tools" / "ci" / "run-local-test-scope.py"
@@ -170,3 +173,63 @@ def test_multiple_source_rows_can_share_one_cargo_test_target(tmp_path: Path, mo
 
     assert command.count("--test") == 1
     assert command[command.index("--test") + 1] == "grouped-suite"
+
+
+def test_local_thread_override_only_reduces_catalog_cap() -> None:
+    assert MODULE.effective_test_threads(4, None) == 4
+    assert MODULE.effective_test_threads(4, "1") == 1
+    assert MODULE.effective_test_threads(4, "4") == 4
+    for invalid in ("", "0", "5", "-1", "1.0", " 1", "1 ", "１"):
+        with pytest.raises(ValueError, match="QUANTA_INDEX_TEST_THREADS"):
+            MODULE.effective_test_threads(4, invalid)
+
+
+def test_local_thread_override_reaches_dry_run(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(MODULE, "ROOT", tmp_path)
+    monkeypatch.setattr(MODULE, "load_catalog", lambda: _catalog(tmp_path))
+    monkeypatch.setenv("QUANTA_INDEX_TEST_THREADS", "1")
+
+    assert MODULE.main(["one", "--dry-run"]) == 0
+    output = capsys.readouterr().out
+    assert "test_threads=1" in output
+    assert "--test-threads 1" in output
+
+
+def test_local_thread_override_rejects_raise_before_execution(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(MODULE, "ROOT", tmp_path)
+    monkeypatch.setattr(MODULE, "load_catalog", lambda: _catalog(tmp_path))
+    monkeypatch.setenv("QUANTA_INDEX_TEST_THREADS", "3")
+
+    assert MODULE.main(["one", "--dry-run"]) == 2
+    assert "declared cap 2" in capsys.readouterr().err
+
+
+def test_local_scope_flushes_selection_before_exec(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(MODULE, "ROOT", tmp_path)
+    monkeypatch.setattr(MODULE, "load_catalog", lambda: _catalog(tmp_path))
+    monkeypatch.setenv("QUANTA_INDEX_TEST_THREADS", "1")
+    monkeypatch.setattr(MODULE.os, "chdir", lambda _path: None)
+
+    class ObservedStdout(io.StringIO):
+        flushed = False
+
+        def flush(self) -> None:
+            self.flushed = True
+            super().flush()
+
+    output = ObservedStdout()
+    monkeypatch.setattr(sys, "stdout", output)
+
+    class ObservedExec(Exception):
+        pass
+
+    def observe_exec(_path: str, _command: list[str]) -> None:
+        assert output.flushed
+        assert "test_threads=1" in output.getvalue()
+        raise ObservedExec
+
+    monkeypatch.setattr(MODULE.os, "execv", observe_exec)
+    with pytest.raises(ObservedExec):
+        MODULE.main(["one"])
