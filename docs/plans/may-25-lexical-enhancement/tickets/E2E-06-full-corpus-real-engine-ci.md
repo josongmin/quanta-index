@@ -26,7 +26,8 @@ separate lower gate.
   - `deferred_external_producer`: 0 rows
 - local/CI command surface exists as `just rust-test-full-corpus`.
 - the current tree also wires the rail into
-  `.github/workflows/correctness.yml` as `rust-full-corpus`.
+  `.github/workflows/correctness.yml` as `rust-full-corpus` for nightly/manual
+  diagnosis. PR workspace nextest runs the same source module.
 
 ## Owner files
 
@@ -89,11 +90,10 @@ rails instead of this file.
 - runtime corpus pass count is reported separately from parser-only pass count.
 - no unsupported row is silently dropped from CI.
 
-Current proving commands:
+Current proving commands (the source is a module of `runtime_risk_suite`):
 
-- `cargo test -p quanta-index-searchd-runtime --test e2e_full_corpus -- --nocapture`
-- `cargo test -p quanta-index-searchd-runtime --test e2e_matrix_inventory -- --nocapture`
 - `just rust-test-full-corpus`
+- `./scripts/cargow nextest run -p quanta-index-searchd-runtime --test runtime_fast_suite --all-features --locked -E 'test(/^e2e_matrix_inventory::/)'`
 
 ## Failure modes
 

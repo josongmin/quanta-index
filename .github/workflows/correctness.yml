@@ -326,6 +326,9 @@ jobs:
 
   rust-full-corpus:
     name: rust-full-corpus (real-engine corpus)
+    # PR workspace nextest already runs this module; retain the isolated
+    # diagnostic rail for nightly and explicit runs without a second PR build.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -335,15 +338,19 @@ jobs:
         with:
           toolchain: 1.92.0
 
-      - name: cargo test e2e_full_corpus
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Run full-corpus module from runtime_risk_suite
         run: |
-          source scripts/quanta-index-env.sh
-          cargo test \
+          ./scripts/cargow nextest run \
             -p quanta-index-searchd-runtime \
-            --test e2e_full_corpus \
+            --test runtime_risk_suite \
             --all-features \
             --locked \
-            -- --nocapture
+            -E 'test(/^e2e_full_corpus::/)' \
+            --no-tests fail \
+            --success-output final
 
   rust-public-api:
     name: rust-public-api (contract surface diff)

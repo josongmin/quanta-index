@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = REPO_ROOT / "tools" / "ci" / "lint" / "check-test-authority.py"
@@ -280,6 +281,25 @@ def test_grouped_integration_sources_require_manifest_and_launcher_binding(tmp_p
 
     assert module.audit_catalog(tmp_path, catalog) == []
 
+    workflow = tmp_path / ".github" / "workflows" / "grouped.yml"
+    for selector in ("--test case", "--test=case"):
+        workflow.write_text(
+            "jobs:\n  grouped:\n    steps:\n      - name: run\n"
+            f"        run: ./scripts/cargow test -p demo {selector}\n",
+            encoding="utf-8",
+        )
+        violations = module.audit_catalog(tmp_path, catalog)
+        assert any(
+            "selects unknown Cargo test target demo:case" in violation.message
+            for violation in violations
+        )
+    workflow.write_text(
+        "jobs:\n  grouped:\n    steps:\n      - name: run\n"
+        "        run: ./scripts/cargow test -p demo --test fast_suite\n",
+        encoding="utf-8",
+    )
+    assert module.audit_catalog(tmp_path, catalog) == []
+
     for launcher in (
         "",
         '// #[path = "case.rs"]\n// mod case;\n',
@@ -296,6 +316,25 @@ def test_grouped_integration_sources_require_manifest_and_launcher_binding(tmp_p
             assert any(
                 "omits cataloged source case.rs" in violation.message for violation in violations
             )
+
+
+def test_full_corpus_diagnostic_job_does_not_duplicate_pr_workspace_rail():
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github" / "workflows" / "correctness.yml").read_text(encoding="utf-8")
+    )
+    job = workflow["jobs"]["rust-full-corpus"]
+    assert job["if"] == (
+        "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
+    )
+    assert any(
+        step.get("uses") == "taiki-e/install-action@nextest"
+        for step in job["steps"]
+        if isinstance(step, dict)
+    )
+    run = next(step["run"] for step in job["steps"] if isinstance(step, dict) and "run" in step)
+    assert "--test runtime_risk_suite" in run
+    assert "test(/^e2e_full_corpus::/)" in run
+    assert "--no-tests fail" in run
 
 
 def test_local_scope_rejects_unknown_target(tmp_path: Path):

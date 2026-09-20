@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -475,6 +476,89 @@ def _validate_grouped_integration_targets(
             )
 
 
+def _validate_workflow_test_selectors(
+    *, root: Path, catalog: Path, targets: dict[str, dict[str, str]], violations: list[Violation]
+) -> None:
+    """Reject explicit CI --test selectors that no longer name Cargo targets."""
+
+    def flag_values(words: list[str], names: set[str]) -> list[str]:
+        values: list[str] = []
+        for index, word in enumerate(words):
+            if word in names and index + 1 < len(words):
+                values.append(words[index + 1])
+            else:
+                values.extend(
+                    word[len(name) + 1 :] for name in names if word.startswith(name + "=")
+                )
+        return values
+
+    valid_pairs = {(target["owner"], target["target"]) for target in targets.values()}
+    workflows = sorted((root / ".github" / "workflows").glob("*.yml"))
+    workflows += sorted((root / ".github" / "workflows").glob("*.yaml"))
+    for workflow_path in workflows:
+        workflow = _load_workflow(
+            root=root,
+            catalog=catalog,
+            workflow_path=workflow_path.relative_to(root).as_posix(),
+            violations=violations,
+        )
+        if workflow is None:
+            continue
+        jobs = workflow.get("jobs", {})
+        if not isinstance(jobs, dict):
+            continue
+        for job_id, job in jobs.items():
+            if not isinstance(job, dict):
+                continue
+            steps = job.get("steps", [])
+            if not isinstance(steps, list):
+                continue
+            for step in steps:
+                if not isinstance(step, dict) or not isinstance(step.get("run"), str):
+                    continue
+                run = re.sub(r"\\\r?\n[ \t]*", " ", step["run"])
+                for raw_line in run.splitlines():
+                    if "--test" not in raw_line or raw_line.lstrip().startswith("#"):
+                        continue
+                    try:
+                        words = shlex.split(raw_line, comments=True)
+                    except ValueError as error:
+                        violations.append(
+                            _violation(
+                                workflow_path, f"job {job_id} has invalid test command: {error}"
+                            )
+                        )
+                        continue
+                    if "--" in words:
+                        words = words[: words.index("--")]
+                    packages = flag_values(words, {"-p", "--package"})
+                    test_names = flag_values(words, {"--test"})
+                    if not test_names:
+                        if "--test" in words:
+                            violations.append(
+                                _violation(
+                                    workflow_path, f"job {job_id} has --test without a target"
+                                )
+                            )
+                        continue
+                    if not packages:
+                        violations.append(
+                            _violation(
+                                workflow_path,
+                                f"job {job_id} explicit --test requires -p package binding",
+                            )
+                        )
+                    for package in packages:
+                        for test_name in test_names:
+                            if (package, test_name) not in valid_pairs:
+                                violations.append(
+                                    _violation(
+                                        workflow_path,
+                                        f"job {job_id} selects unknown Cargo test target {package}:{test_name}",
+                                    )
+                                )
+
+
 def _validate_fuzz_manifest_bindings(
     *,
     root: Path,
@@ -873,6 +957,12 @@ def audit_catalog(root: Path = ROOT, catalog: Path = DEFAULT_CATALOG) -> list[Vi
         violations=violations,
     )
     _validate_grouped_integration_targets(
+        root=root,
+        catalog=catalog,
+        targets=targets,
+        violations=violations,
+    )
+    _validate_workflow_test_selectors(
         root=root,
         catalog=catalog,
         targets=targets,

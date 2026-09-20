@@ -387,6 +387,24 @@ scoped Ruff and the real authority lint. This is local static coverage proof,
 not a full Rust suite run or CI qualification; GitHub CI is still blocked by
 account billing.
 
+## Full-corpus correctness rail repair and PR deduplication
+
+The correctness workflow still invoked `cargo test --test e2e_full_corpus`
+after that source became a module of `runtime_risk_suite` with
+`autotests = false`. A local `--no-run` probe confirmed Cargo exits 101 with
+"no test target named `e2e_full_corpus`" before compiling. The dedicated
+workflow job now selects `runtime_risk_suite` with a module filter, the same
+test surface as the local `just rust-test-full-corpus` rail. It runs on schedule or explicit
+dispatch, not on every PR: PR workspace nextest already executes the same
+module, so a second cold runtime build added no PR coverage. The catalog lint
+now validates every explicit workflow `--test` selector against cataloged
+Cargo target names; regression tests cover both split and equals syntax.
+The focused checker tests (13/13), real catalog lint, Ruff, actionlint, and
+diff check passed. The corrected CI command has not run at this HEAD: the
+host had 70 Cargo/rustc processes during the audit, and jobs on the previous
+published HEAD failed before startup on account billing. This is a structural PR job
+reduction, not a measured wall-clock speedup.
+
 ## Remaining measurement
 
 On a quiet host, run:
