@@ -226,8 +226,12 @@ an overridden run is not clean performance evidence.
 - fifth-pass default indexed-query group: clean detached-main compile PASS and
   1/1 PASS in 2.009s, covering all five named query scenarios on one runtime.
   The host still had foreign Rust builds, so this proves correctness of the
-  consolidated group but is not clean performance evidence; a quiet-host 45/45
-  rerun remains required
+  consolidated group but is not clean performance evidence
+- fifth-pass full daemon-fast correctness run: clean detached-main 45/45 PASS,
+  one ignored, in 102.652s with `--test-threads 1`. This closes the optimized
+  selection under contention without the four IPC timeouts seen at concurrency
+  four. It is correctness evidence only; a quiet-host four-thread rerun remains
+  required for a comparable performance baseline
 - daemon-fast before DSL-truth separation: 84/84 PASS, one ignored, two
   binaries; 193.157s nextest execution under the same non-authoritative class
   of host contention
