@@ -2,7 +2,7 @@
 
 당신은 S21-02 owner다. 먼저 repo root 기준 `docs/plans/sep-21-search-plane-sota-hardening/tickets/prompts/`
 아래 `COMMON-EXECUTION-CONTRACT.md`와 `README.md`를 읽고 그대로 적용한다. P02I integration commit,
-`docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/P02I.json`, 동일 clean HEAD에서 재생성한 P02A/P02B proof가
+`artifacts/sep-21/handoffs/P02I.json`, 동일 clean HEAD에서 재생성한 P02A/P02B proof가
 모두 일치할 때만 시작한다. 하나라도 없으면 adapter/shim을 만들지 말고 `BLOCKED`로 종료한다.
 
 읽을 문서: repo instructions, `docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-AUDIT.md`,
@@ -50,5 +50,5 @@ DoD:
 proof node는 `p03-candidate-activation`; release proof는 registry가 요구하는 Linux production-like host와 release
 daemon binding 없이는 GREEN이 아니다. canonical verification과 허용된 disposable filesystem fault/restart/SDK
 consumer proof를 실행하고 count를 남겨라. 최종 보고에 공통 상태, source freeze, authority deletion evidence,
-schema/state table, commands/counts, NOT_RUN, P04 입력 API와 `docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/P03.json`을 포함하라. explicit owner
+schema/state table, commands/counts, NOT_RUN, P04 입력 API와 `artifacts/sep-21/handoffs/P03.json`을 포함하라. explicit owner
 path만 checkpoint commit하고 push는 별도 요청 시에만 한다.

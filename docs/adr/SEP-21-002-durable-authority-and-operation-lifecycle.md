@@ -63,7 +63,10 @@ deadline, cancellation, busy and provider transport failures are not terminally 
 
 ## Sequence, retention and recovery
 
-- terminal sequence is positive and unique in its declared stream;
+- terminal sequence is positive and unique in one state-root-global stream identified by the root UUID;
+- `catalog_sequence_v2(id = 1, next)` is the sole allocator. Every terminal operation result and every
+  activation/rollback/invalidation event allocates from it inside the same SQLite transaction that makes the event
+  durable. There is no per-repository, per-plane or per-operation sequence stream;
 - open/restore reconciles `next > MAX(all terminal sequences)`;
 - initial `replay_floor` is 1;
 - committed/refused terminal records are retained for the state-root lifetime;

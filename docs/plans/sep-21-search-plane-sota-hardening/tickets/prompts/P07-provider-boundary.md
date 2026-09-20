@@ -53,6 +53,6 @@ DoD:
 
 proof node는 `p07-provider-boundary`, canonical release command는 `just rust-profile test-integration-semantic`이며
 Linux production-like/release-daemon/승인된 real-provider proof가 필요하다. 최종 handoff
-`docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/P07.json`에 source freeze, admission order, reservation/executor API, config caps, egress matrix,
+`artifacts/sep-21/handoffs/P07.json`에 source freeze, admission order, reservation/executor API, config caps, egress matrix,
 commands/counts, NOT_RUN real-provider proof, P08 lifecycle invariants를 남겨라. explicit owner path만 checkpoint
 commit하고 push는 별도 요청 시에만 한다.

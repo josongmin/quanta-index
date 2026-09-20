@@ -10,6 +10,15 @@ on:
   schedule:
     - cron: "17 5 * * *"
   workflow_dispatch:
+    inputs:
+      proof_bundle_run_id:
+        description: "Run ID containing the exact-source proof-authority-release-bundle artifact"
+        required: false
+        type: string
+      paired_repository_ref:
+        description: "Exact 40-character semantica-codegraph-v2 commit for the proof source pair"
+        required: false
+        type: string
 
 concurrency:
   group: correctness-${{ github.ref }}
@@ -19,6 +28,64 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  proof-authority-release-gate:
+    name: proof-authority-release-gate (all registered proofs)
+    if: github.event_name == 'workflow_dispatch' && inputs.proof_bundle_run_id != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Refuse an unpinned paired repository
+        shell: bash
+        env:
+          PAIRED_REPOSITORY_REF: ${{ inputs.paired_repository_ref }}
+        run: |
+          if [[ ! "$PAIRED_REPOSITORY_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "paired_repository_ref must be an exact 40-character commit" >&2
+            exit 2
+          fi
+
+      - name: Checkout the paired Semantica source
+        uses: actions/checkout@v4
+        with:
+          repository: josongmin/semantica-codegraph-v2
+          ref: ${{ inputs.paired_repository_ref }}
+          fetch-depth: 0
+          path: .proof-pairs/semantica-codegraph-v2
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+
+      - name: Install just
+        uses: taiki-e/install-action@just
+
+      - name: Restore the exact-source release proof bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: proof-authority-release-bundle
+          path: artifacts/proof-authority
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.proof_bundle_run_id }}
+
+      - name: Validate every registered proof and the P12 aggregate receipt
+        env:
+          SEMANTICA_CHECKOUT: ${{ github.workspace }}/.proof-pairs/semantica-codegraph-v2
+        run: just proof-authority-release-gate
+
   rust-authority-nextest:
     name: rust-authority-nextest (nightly receipt)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

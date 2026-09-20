@@ -50,6 +50,6 @@ DoD:
 
 proof node는 `p06-sdk-binding`, canonical release command는 `just rust-profile test-daemon`이며 Linux
 production-like/release-daemon proof가 필요하다. 최종 보고에 method coverage table, source freeze,
-schema/baseline changes, negative matrix counts, NOT_RUN, P07/P08 request context와 `docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/P06.json`을
+schema/baseline changes, negative matrix counts, NOT_RUN, P07/P08 request context와 `artifacts/sep-21/handoffs/P06.json`을
 남겨라. 이 checkpoint에서 M2의 S21-05/06/07을 함께 닫을 수 있는지 판정한다. explicit owner path만 checkpoint
 commit하고 push는 별도 요청 시에만 한다.

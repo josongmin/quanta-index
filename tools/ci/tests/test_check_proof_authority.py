@@ -55,13 +55,16 @@ def _proof(root: Path) -> dict:
 
 
 def _manifest(root: Path, proof: dict) -> dict:
-    binary = root / "bin/searchd"
     evidence = root / "artifacts/raw.jsonl"
-    binary.parent.mkdir(parents=True)
-    evidence.parent.mkdir(parents=True)
-    binary.write_bytes(b"release-daemon")
+    evidence.parent.mkdir(parents=True, exist_ok=True)
     evidence.write_bytes(b'{"terminal":"passed"}\n')
     digest = "sha256:" + "1" * 64
+    daemon_binary = None
+    if proof["binary_binding"] == "release-daemon":
+        binary = root / "bin/searchd"
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_bytes(b"release-daemon")
+        daemon_binary = {"path": "bin/searchd", "sha256": _sha(binary)}
     return {
         "schema_version": 1,
         "proof_id": proof["id"],
@@ -74,6 +77,7 @@ def _manifest(root: Path, proof: dict) -> dict:
             "upstream": "origin/main",
             "merge_base": "b" * 40,
         },
+        "source_pair": None,
         "invocation": {
             "command": proof["command"],
             "profile": proof["profile"],
@@ -93,7 +97,7 @@ def _manifest(root: Path, proof: dict) -> dict:
                 "identity_digest": digest,
             },
         },
-        "daemon_binary": {"path": "bin/searchd", "sha256": _sha(binary)},
+        "daemon_binary": daemon_binary,
         "state_root_format": "fixture-v1",
         "inputs": {
             "fixture": digest,
@@ -111,6 +115,18 @@ def _manifest(root: Path, proof: dict) -> dict:
 
 def _messages(findings) -> list[str]:
     return [finding.message for finding in findings]
+
+
+def _init_repo(root: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "Fixture"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.email", "fixture@example.invalid"],
+        check=True,
+    )
+    (root / "tracked").write_bytes(b"tracked\n")
+    subprocess.run(["git", "-C", str(root), "add", "tracked"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-qm", "fixture"], check=True)
 
 
 def test_repository_registry_is_complete() -> None:
@@ -142,6 +158,40 @@ def test_valid_manifest_binds_files_and_counts(tmp_path: Path) -> None:
         )
         == []
     )
+
+
+def test_nonpassing_terminal_manifest_is_not_authoritative(tmp_path: Path) -> None:
+    proof = _proof(tmp_path)
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    for status in ("failed", "blocked", "not_run"):
+        payload = _manifest(tmp_path, proof)
+        payload["status"] = status
+        messages = _messages(
+            MODULE.check_manifest(
+                payload,
+                manifest_path=tmp_path / "proof.json",
+                proof=proof,
+                schema=schema,
+                root=tmp_path,
+                bind_source=False,
+            )
+        )
+        assert f"authoritative proof status must be 'passed', got {status!r}" in messages
+
+    payload = _manifest(tmp_path, proof)
+    payload["status"] = "blocked"
+    messages = _messages(
+        MODULE.check_manifest(
+            payload,
+            manifest_path=tmp_path / "proof.json",
+            proof=proof,
+            schema=schema,
+            root=tmp_path,
+            bind_source=False,
+            allow_non_passed=True,
+        )
+    )
+    assert not any("authoritative proof status" in message for message in messages)
 
 
 def test_passed_manifest_refuses_zero_execution_and_ignored_only(tmp_path: Path) -> None:
@@ -201,6 +251,7 @@ def test_manifest_refuses_timestamp_inversion(tmp_path: Path) -> None:
 
 def test_manifest_refuses_wrong_binary_and_missing_artifact(tmp_path: Path) -> None:
     proof = _proof(tmp_path)
+    proof["binary_binding"] = "release-daemon"
     payload = _manifest(tmp_path, proof)
     payload["daemon_binary"]["sha256"] = "0" * 64
     (tmp_path / payload["artifacts"][0]["path"]).unlink()
@@ -258,16 +309,28 @@ def test_manifest_refuses_failed_count_with_passed_status(tmp_path: Path) -> Non
     assert "passed proof cannot contain failed tests" in messages
 
 
-def test_bind_source_refuses_stale_head_and_dirty_digest(tmp_path: Path) -> None:
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Fixture"], check=True)
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "config", "user.email", "fixture@example.invalid"],
-        check=True,
+def test_linux_production_host_label_cannot_spoof_non_linux_os(tmp_path: Path) -> None:
+    proof = _proof(tmp_path)
+    proof["required_host"] = "linux-production-like"
+    payload = _manifest(tmp_path, proof)
+    payload["environment"]["host"]["profile"] = "linux-production-like"
+    payload["environment"]["os"] = "darwin"
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    messages = _messages(
+        MODULE.check_manifest(
+            payload,
+            manifest_path=tmp_path / "proof.json",
+            proof=proof,
+            schema=schema,
+            root=tmp_path,
+            bind_source=False,
+        )
     )
-    (tmp_path / "tracked").write_text("tracked\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(tmp_path), "add", "tracked"], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "fixture"], check=True)
+    assert "linux-production-like proof requires environment.os='linux'" in messages
+
+
+def test_bind_source_refuses_stale_head_and_dirty_digest(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
     proof = _proof(tmp_path)
     payload = _manifest(tmp_path, proof)
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
@@ -283,6 +346,273 @@ def test_bind_source_refuses_stale_head_and_dirty_digest(tmp_path: Path) -> None
     )
     assert "source.head is not current HEAD" in messages
     assert "source.dirty_digest is not current working tree" in messages
+    assert "source.branch is not current branch" in messages
+    assert "source.upstream is not current upstream" in messages
+    assert "source.merge_base is not current upstream merge-base" in messages
+
+
+def test_dirty_digest_binds_staged_unstaged_and_scoped_untracked_bytes(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    excluded = [Path("artifacts/proof-authority")]
+    clean = MODULE.dirty_digest(tmp_path, excluded_paths=excluded)
+
+    (tmp_path / "tracked").write_bytes(b"staged\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "tracked"], check=True)
+    staged = MODULE.dirty_digest(tmp_path, excluded_paths=excluded)
+    assert staged != clean
+
+    (tmp_path / "tracked").write_bytes(b"unstaged-after-index\n")
+    staged_and_unstaged = MODULE.dirty_digest(tmp_path, excluded_paths=excluded)
+    assert staged_and_unstaged not in {clean, staged}
+
+    (tmp_path / "source-new").write_bytes(b"untracked-source\x00bytes")
+    with_untracked = MODULE.dirty_digest(tmp_path, excluded_paths=excluded)
+    assert with_untracked not in {clean, staged, staged_and_unstaged}
+
+    proof_root = tmp_path / "artifacts/proof-authority"
+    proof_root.mkdir(parents=True)
+    (proof_root / "proof.json").write_bytes(b"self-referential-output-v1")
+    assert MODULE.dirty_digest(tmp_path, excluded_paths=excluded) == with_untracked
+    (proof_root / "proof.json").write_bytes(b"self-referential-output-v2")
+    assert MODULE.dirty_digest(tmp_path, excluded_paths=excluded) == with_untracked
+
+
+def test_proof_source_snapshot_excludes_manifest_artifact_root(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    proof = _proof(tmp_path)
+    proof["artifact"] = "artifacts/proof-authority/fixture-proof.json"
+    manifest_path = tmp_path / proof["artifact"]
+    before = MODULE.proof_source_snapshot(
+        tmp_path,
+        manifest_path=manifest_path,
+        proof=proof,
+    )
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_bytes(b"first-manifest")
+    (manifest_path.parent / "raw.log").write_bytes(b"proof-output")
+    after = MODULE.proof_source_snapshot(
+        tmp_path,
+        manifest_path=manifest_path,
+        proof=proof,
+    )
+    assert after == before
+    assert before["upstream"] is None
+    assert before["merge_base"] is None
+
+
+def test_source_snapshot_tracks_upstream_merge_base_and_detached_head(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    branch = subprocess.run(
+        ["git", "-C", str(tmp_path), "branch", "--show-current"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(["git", "-C", str(tmp_path), "branch", "tracking-target"], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "branch", "--set-upstream-to", "tracking-target"],
+        check=True,
+        capture_output=True,
+    )
+    attached = MODULE.source_snapshot(tmp_path)
+    assert attached["branch"] == branch
+    assert attached["upstream"] == "tracking-target"
+    assert attached["merge_base"] == attached["head"]
+
+    subprocess.run(["git", "-C", str(tmp_path), "checkout", "--detach", "-q"], check=True)
+    detached = MODULE.source_snapshot(tmp_path)
+    assert detached["branch"] is None
+    assert detached["upstream"] is None
+    assert detached["merge_base"] is None
+
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "checkout", "--orphan", "disconnected", "-q"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "commit", "--allow-empty", "-qm", "disconnected"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "branch", "--set-upstream-to", "tracking-target"],
+        check=True,
+        capture_output=True,
+    )
+    disconnected = MODULE.source_snapshot(tmp_path)
+    assert disconnected["branch"] == "disconnected"
+    assert disconnected["upstream"] == "tracking-target"
+    assert disconnected["merge_base"] is None
+
+
+def test_manifest_refuses_absolute_traversal_and_symlink_escape(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    proof = _proof(root)
+    proof["binary_binding"] = "release-daemon"
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    absolute_artifact = _manifest(root, proof)
+    absolute_artifact["artifacts"][0]["path"] = str(
+        (root / absolute_artifact["artifacts"][0]["path"]).resolve()
+    )
+    messages = _messages(
+        MODULE.check_manifest(
+            absolute_artifact,
+            manifest_path=root / "proof.json",
+            proof=proof,
+            schema=schema,
+            root=root,
+            bind_source=False,
+        )
+    )
+    assert any("proof artifact path must be canonical repo-relative" in item for item in messages)
+
+    traversal = _manifest(root, proof)
+    proof["dependencies"] = ["parent-proof"]
+    traversal["dependency_receipts"] = [
+        {"proof_id": "parent-proof", "path": "../outside.json", "sha256": "0" * 64}
+    ]
+    messages = _messages(
+        MODULE.check_manifest(
+            traversal,
+            manifest_path=root / "proof.json",
+            proof=proof,
+            schema=schema,
+            root=root,
+            bind_source=False,
+        )
+    )
+    assert any(
+        "dependency receipt path must be canonical repo-relative" in item for item in messages
+    )
+
+    proof["dependencies"] = []
+    outside_binary = tmp_path / "outside-searchd"
+    outside_binary.write_bytes(b"outside")
+    daemon_link = root / "bin/searchd"
+    daemon_link.unlink()
+    daemon_link.symlink_to(outside_binary)
+    symlink_escape = _manifest(root, proof)
+    daemon_link.unlink()
+    daemon_link.symlink_to(outside_binary)
+    symlink_escape["daemon_binary"]["sha256"] = _sha(outside_binary)
+    messages = _messages(
+        MODULE.check_manifest(
+            symlink_escape,
+            manifest_path=root / "proof.json",
+            proof=proof,
+            schema=schema,
+            root=root,
+            bind_source=False,
+        )
+    )
+    assert any("daemon binary path escapes repository root" in item for item in messages)
+
+
+def test_dependency_closure_is_registry_driven_and_excludes_target() -> None:
+    registry = MODULE._read_toml(REGISTRY_PATH)
+    proof_by_id = {proof["id"]: proof for proof in registry["proofs"]}
+    closure = MODULE.dependency_closure(proof_by_id, "p12-final-qualification")
+    assert closure[-1] == "p11-cross-repo-cutover"
+    assert set(closure) == set(proof_by_id) - {"p12-final-qualification"}
+    assert len(closure) == len(set(closure))
+
+
+def test_aggregate_refuses_source_and_release_daemon_identity_drift(tmp_path: Path) -> None:
+    proof_a = _proof(tmp_path)
+    proof_a["id"] = "proof-a"
+    proof_a["binary_binding"] = "release-daemon"
+    proof_b = copy.deepcopy(proof_a)
+    proof_b["id"] = "proof-b"
+    payload_a = _manifest(tmp_path / "a", proof_a)
+    payload_b = copy.deepcopy(payload_a)
+    payload_b["proof_id"] = "proof-b"
+    payload_b["source"]["head"] = "b" * 40
+    payload_b["daemon_binary"] = {"path": "bin/other", "sha256": "2" * 64}
+    messages = _messages(
+        MODULE.check_aggregate(
+            {"proof-a": payload_a, "proof-b": payload_b},
+            proof_by_id={"proof-a": proof_a, "proof-b": proof_b},
+            path=tmp_path / "registry.toml",
+        )
+    )
+    assert "aggregate exact-source manifests do not share one source identity" in messages
+    assert "aggregate release-daemon proofs do not share one daemon path and digest" in messages
+
+
+def test_exact_pair_live_binding_and_nested_checkout_exclusion(tmp_path: Path) -> None:
+    root = tmp_path / "primary"
+    root.mkdir()
+    _init_repo(root)
+    paired = root / ".proof-pairs/semantica-codegraph-v2"
+    paired.mkdir(parents=True)
+    _init_repo(paired)
+    (paired / "Cargo.lock").write_bytes(b"lock-v1\n")
+    subprocess.run(["git", "-C", str(paired), "add", "Cargo.lock"], check=True)
+    subprocess.run(["git", "-C", str(paired), "commit", "-qm", "lock"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(paired),
+            "remote",
+            "add",
+            "origin",
+            "git@github-personal:josongmin/semantica-codegraph-v2.git",
+        ],
+        check=True,
+    )
+
+    proof = _proof(root)
+    proof.update(
+        {
+            "source_binding": "exact-pair",
+            "paired_repository": MODULE.PAIRED_REPOSITORY,
+            "paired_dependency_lock": MODULE.PAIRED_DEPENDENCY_LOCK,
+        }
+    )
+    payload = _manifest(root, proof)
+    payload["source_pair"] = MODULE.paired_source_snapshot(
+        paired,
+        repository=proof["paired_repository"],
+        dependency_lock=Path(proof["paired_dependency_lock"]),
+    )
+    manifest_path = root / proof["artifact"]
+    payload["source"] = MODULE.proof_source_snapshot(
+        root,
+        manifest_path=manifest_path,
+        proof=proof,
+        excluded_paths=[paired],
+    )
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    assert (
+        MODULE.check_manifest(
+            payload,
+            manifest_path=manifest_path,
+            proof=proof,
+            schema=schema,
+            root=root,
+            bind_source=True,
+            paired_checkouts={proof["paired_repository"]: paired},
+        )
+        == []
+    )
+
+    (paired / "Cargo.lock").write_bytes(b"lock-v2\n")
+    messages = _messages(
+        MODULE.check_manifest(
+            payload,
+            manifest_path=manifest_path,
+            proof=proof,
+            schema=schema,
+            root=root,
+            bind_source=True,
+            paired_checkouts={proof["paired_repository"]: paired},
+        )
+    )
+    assert "source_pair is not current paired source" in messages
 
 
 def test_cli_refuses_unregistered_proof_id(tmp_path: Path) -> None:

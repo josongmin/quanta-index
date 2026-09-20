@@ -235,10 +235,13 @@ jobs:
       - name: Wire-surface inventory (IPC opcodes + on-disk format versions)
         run: python3 tools/ci/lint/check-wire-inventory.py
 
-      - name: Proof authority registry and manifest schema
+      - name: Proof authority registry and manifest schema lint
         run: |
           python3 tools/ci/lint/check-proof-authority.py
-          python3 -m pytest tools/ci/tests/test_check_proof_authority.py -q
+          python3 -m pytest \
+            tools/ci/tests/test_check_proof_authority.py \
+            tools/ci/tests/test_write_proof_manifest.py \
+            -q
 
       - name: Benchmark artifacts are attributed to HEAD (no stale / unknown-SHA / old-schema artifact)
         run: python3 tools/ci/lint/check-bench-artifacts.py
@@ -259,6 +262,113 @@ jobs:
         run: |
           python3 tools/benchmark/sourcegraph_parity.py --write
           git diff --exit-code tools/benchmark/SOURCEGRAPH_PARITY.md
+
+  proof-authority-current-gate:
+    name: proof-authority-current-gate (P00)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+
+      - name: Install just
+        uses: taiki-e/install-action@just
+
+      - name: Produce P00 authority proof from the static gate
+        shell: bash
+        run: |
+          mkdir -p artifacts/proof-authority/raw
+          started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          set -o pipefail
+          just proof-authority-lint \
+            | tee artifacts/proof-authority/raw/p00-authority.log
+          ended_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          python3 - "$started_at" "$ended_at" <<'PY'
+          import json
+          import os
+          import platform
+          import sys
+          from pathlib import Path
+
+          try:
+              memory_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+          except (AttributeError, OSError, ValueError):
+              memory_bytes = 1
+          terminal = {
+              "status": "passed",
+              "counts": {
+                  "selected": 1,
+                  "executed": 1,
+                  "passed": 1,
+                  "failed": 0,
+                  "ignored": 0,
+              },
+              "environment": {
+                  "toolchain": f"python-{platform.python_version()}",
+                  "features": [],
+                  "os": platform.system().lower(),
+                  "arch": platform.machine(),
+                  "host": {
+                      "profile": "github-hosted-ci",
+                      "cpu_count": os.cpu_count() or 1,
+                      "memory_bytes": memory_bytes,
+                      "identity": ":".join(
+                          filter(
+                              None,
+                              (
+                                  os.environ.get("RUNNER_NAME"),
+                                  os.environ.get("ImageOS"),
+                                  os.environ.get("ImageVersion"),
+                              ),
+                          )
+                      )
+                      or "github-hosted-ci",
+                  },
+              },
+              "daemon_binary": None,
+              "state_root_format": "not-applicable",
+              "inputs": {
+                  "fixture": None,
+                  "corpus": None,
+                  "config": None,
+                  "model": None,
+                  "provider": None,
+              },
+              "started_at": sys.argv[1],
+              "ended_at": sys.argv[2],
+              "artifacts": [
+                  "artifacts/proof-authority/raw/p00-authority.log",
+                  "artifacts/proof-authority/raw/p00-terminal-input.json",
+              ],
+          }
+          Path("artifacts/proof-authority/raw/p00-terminal-input.json").write_text(
+              json.dumps(terminal, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          python3 tools/ci/write-proof-manifest.py \
+            --proof-id p00-authority-freeze \
+            --terminal-input artifacts/proof-authority/raw/p00-terminal-input.json
+
+      - name: Validate the source-bound P00 current gate
+        run: just proof-authority-current-gate
+
+      - name: Upload P00 proof receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: proof-authority-p00-${{ github.run_id }}-${{ github.job }}
+          path: artifacts/proof-authority/
+          if-no-files-found: error
 
   agent-output:
     runs-on: ubuntu-latest

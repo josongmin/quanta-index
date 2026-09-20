@@ -56,5 +56,5 @@ mandatory proofs:
 proof node는 `p08-runtime-supervisor`, canonical release command는 `just rust-profile test-daemon-all`이다. macOS
 focused proof를 Linux production proof로 승격하지 마라. 최종 보고에 source freeze, lifecycle diagram, owned
 resource inventory, exit semantics, command/counts, platform별 NOT_RUN, P09 readiness events와
-`docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/P08.json`을 남겨라. 이 checkpoint에서 S21-08/09의 M3 lifecycle closure를 함께 판정한다. explicit
+`artifacts/sep-21/handoffs/P08.json`을 남겨라. 이 checkpoint에서 S21-08/09의 M3 lifecycle closure를 함께 판정한다. explicit
 owner path만 checkpoint commit하고 push는 별도 요청 시에만 한다.

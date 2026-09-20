@@ -53,5 +53,5 @@ DoD:
 
 proof node는 `p05-query-truth`, canonical release command는 `just rust-verify-quality-all`이며 Linux
 production-like/release-daemon proof가 필요하다. 최종 보고에 source freeze, route capability matrix, schema bump,
-oracle independence, commands/counts, NOT_RUN, P06 expected response context inputs와 `docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/P05.json`을
+oracle independence, commands/counts, NOT_RUN, P06 expected response context inputs와 `artifacts/sep-21/handoffs/P05.json`을
 남겨라. explicit owner path만 checkpoint commit하고 push는 별도 요청 시에만 한다.

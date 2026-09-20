@@ -51,5 +51,5 @@ DoD:
 proof node는 `p04-read-view-lifetime`, canonical release command는 `just rust-profile test-daemon`이며 Linux
 production-like/release-daemon proof가 없으면 `RELEASE_PROOF_PENDING`이다. 최종 보고에 source/dirty freeze, 변경
 route/handles, lock order, proof counts, NOT_RUN, P05가 소비할 internal read identity와
-`docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/P04.json`을 남겨라. public cursor schema는 P05 owner다. explicit owner path만 checkpoint commit하고
+`artifacts/sep-21/handoffs/P04.json`을 남겨라. public cursor schema는 P05 owner다. explicit owner path만 checkpoint commit하고
 push는 별도 요청 시에만 한다.

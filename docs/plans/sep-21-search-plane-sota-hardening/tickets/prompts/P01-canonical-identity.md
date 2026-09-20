@@ -54,4 +54,4 @@ DoD/proof:
 
 proof node는 `p01-canonical-identity`, canonical release command는 registry의 현재 값을 사용한다. 최종 보고에 공통
 상태, source freeze, 변경 파일/타입, format bump, 실행 proof counts, NOT_RUN, P02A/P02B에 제공할 frozen identity
-API와 `docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/P01.json`을 포함하라. explicit owner path만 checkpoint commit하고 push는 별도 요청 시에만 한다.
+API와 `artifacts/sep-21/handoffs/P01.json`을 포함하라. explicit owner path만 checkpoint commit하고 push는 별도 요청 시에만 한다.

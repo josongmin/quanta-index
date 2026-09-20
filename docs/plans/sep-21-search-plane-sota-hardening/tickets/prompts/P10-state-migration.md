@@ -55,5 +55,5 @@ DoD fixtures:
 proof node는 `p10-state-migration`, canonical release command는 `just rust-profile test-daemon-all`이며 Linux
 production-like/release-daemon proof가 필요하다. 모든 drill은 disposable state root에서 수행한다. 실제/공유 state
 root cutover는 별도 명시 승인 없이는 NOT_RUN이다. 최종 보고에 source freeze, CLI surface, root/backup manifest
-schema, rollback cutoff, fixture results/counts, NOT_RUN, P11 migration receipt와 `docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/P10.json`을
+schema, rollback cutoff, fixture results/counts, NOT_RUN, P11 migration receipt와 `artifacts/sep-21/handoffs/P10.json`을
 남겨라. explicit owner path만 checkpoint commit하고 push는 별도 요청 시에만 한다.

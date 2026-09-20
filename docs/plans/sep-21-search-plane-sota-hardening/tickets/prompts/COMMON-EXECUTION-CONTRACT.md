@@ -37,10 +37,11 @@ owner path가 시작 시 이미 dirty이거나 다른 lane이 소유하면 수�
 
 ## 4. Handoff authority
 
-각 lane은 `docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/<LANE>.json`을
-`docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/lane-handoff.schema.json`에 맞춰 남긴다. 최소 내용은 base/result SHA, dirty digest, exact write set,
+각 lane은 source digest에서 제외되는 `artifacts/sep-21/handoffs/<LANE>.json`을
+`docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/lane-handoff.schema.json`에 맞춰 남긴다. tracked
+source 안에 result commit SHA를 자기참조로 기록하지 않는다. 최소 내용은 base/result SHA, dirty digest, exact write set,
 exported API/schema, proof ID별 manifest digest, 실행 counts, NOT_RUN, blockers다. 병렬 통합은 별도로
-`docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/P02I.json`을 남긴다. handoff와 proof source가 current HEAD와 다르면 downstream 시작을 금지한다.
+`artifacts/sep-21/handoffs/P02I.json`을 남긴다. handoff와 proof source가 current HEAD와 다르면 downstream 시작을 금지한다.
 
 상태는 다음 네 값만 사용한다.
 

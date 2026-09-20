@@ -596,8 +596,39 @@ rust-policy:
     @just rust-test-authority
     @just rust-ignored-test-policy
     @just rust-wire-inventory
+    @just proof-authority-lint
     @just rust-bench-artifacts
     @just rust-deny
+
+# SEP-21 proof policy separates static lint, the P00 current gate, the P12
+# dependency aggregate producer, and the final release gate. Static lint never
+# treats absent future proof artifacts as success or failure. Only the final
+# release gate requires every registered receipt, including P12.
+proof-authority-lint:
+    python3 tools/ci/lint/check-proof-authority.py
+
+proof-authority-current-gate:
+    python3 tools/ci/lint/check-proof-authority.py \
+        --manifest artifacts/proof-authority/p00-authority-freeze.json \
+        --bind-source
+
+# P12 records this dependency aggregate as its own terminal evidence. It must
+# exclude p12-final-qualification itself; the release gate below validates the
+# resulting P12 receipt together with every dependency and therefore is not
+# self-validating.
+proof-authority-final-qualification:
+    @test -n "${SEMANTICA_CHECKOUT:-}" || { echo "SEMANTICA_CHECKOUT is required" >&2; exit 2; }
+    python3 tools/ci/lint/check-proof-authority.py \
+        --dependencies-of p12-final-qualification \
+        --paired-checkout "github:josongmin/semantica-codegraph-v2=${SEMANTICA_CHECKOUT}" \
+        --bind-source
+
+proof-authority-release-gate:
+    @test -n "${SEMANTICA_CHECKOUT:-}" || { echo "SEMANTICA_CHECKOUT is required" >&2; exit 2; }
+    python3 tools/ci/lint/check-proof-authority.py \
+        --require-all \
+        --paired-checkout "github:josongmin/semantica-codegraph-v2=${SEMANTICA_CHECKOUT}" \
+        --bind-source
 
 verify-rust:
     @just fmt-check

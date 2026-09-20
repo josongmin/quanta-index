@@ -16,7 +16,7 @@ commit을 격리 integration branch에 순서대로 통합한다. conflict가 se
 4. 두 manifest를 current integration HEAD에 `--bind-source`로 검증한다.
 5. exported compiler/journal types, refusal codes, sequence scope, mutation coordinator 경계가 Accepted ADR과 일치하는지
    정적으로 교차 검토한다.
-6. `docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/P02I.json`을 만들고 exact integration commit 및 두 fresh manifest digest를 downstream에 넘긴다.
+6. `artifacts/sep-21/handoffs/P02I.json`을 만들고 exact integration commit 및 두 fresh manifest digest를 downstream에 넘긴다.
 
 금지: branch별 과거 proof 재사용, conflict를 shim/optional field로 봉합, 한 lane failure를 다른 lane success로
 상쇄, unrelated dirty 변경 포함.

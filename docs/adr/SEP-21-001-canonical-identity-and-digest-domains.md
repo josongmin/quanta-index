@@ -40,6 +40,18 @@ u32_be(len(revision_utf8)) || revision_utf8
 payload above and is rendered only as lowercase `sha256:<64 hex>`. Filesystem addresses use the raw 32-byte digest
 with fixed two-level fanout. Human identifiers stay inside verified payloads.
 
+The RepoMap candidate object grammar is exact:
+
+```text
+objects/sha256/<hex[0:2]>/<hex[2:4]>/<hex[4:64]>.cbor
+```
+
+`hex` is the lowercase 64-character SHA-256 of the canonical candidate bytes. Every component is ASCII, the two
+fanout components are exactly two characters, and the leaf is exactly 60 characters plus `.cbor`. No alternate
+extension, uppercase form, human identifier, separator escaping or adjacent metadata file is accepted by the live
+runtime. Quarantine incidents use the same digest grammar under `quarantine/incidents/sha256/`, where the digest is
+over the canonical incident envelope rather than the quarantined payload.
+
 ### Identity separation
 
 - logical key: `{repo_id, revision_id, generation}`;
@@ -59,6 +71,23 @@ different commitment is `CANDIDATE_COMMITMENT_CONFLICT`.
 - map iteration order and input order cannot affect a commitment;
 - zero digest and empty string are not absence sentinels;
 - filename/payload mismatch, hardlink, symlink or `nlink != 1` is typed corruption.
+
+### Filesystem security policy
+
+- state-root directories created by the product are mode `0700`; authority files and lock/key/object files are mode
+  `0600`;
+- expected owner is the effective UID captured while acquiring the state-root lease;
+- open performs `lstat`, no-follow open and `fstat`, then verifies the same inode/device, regular-file type, expected
+  UID, exact mode and `nlink == 1` before reading bytes;
+- a platform without equivalent owner/mode/no-follow checks cannot open a production state root and returns
+  `STATE_ROOT_SECURITY_POLICY_UNSUPPORTED` before mutation;
+- quarantine publish is create-new + file fsync + directory fsync. An existing incident address must contain the exact
+  same canonical envelope or is a collision refusal; it is never overwritten.
+
+`QuarantineIncidentV1` contains a positive state-root-global sequence, observed Unix nanoseconds, original relative
+path, observed size, payload digest when readable, expected address digest, stable reason code and the evidence digest.
+The original path must be one normalized relative path below the state root; absolute paths, `..`, empty components and
+symlink traversal are refused.
 
 ## Compatibility
 

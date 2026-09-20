@@ -48,6 +48,6 @@ provider/storage 재실행, indefinite intent, caller-only sequence validation.
 DoD: ACK-loss/base-GC/config-change replay, invalid auxiliary restart/retry, same-key different body, crash at every
 boundary, restore regression, stale-worker commit, retention-floor fixtures를 실행하고 counts를 남긴다.
 
-proof node는 `p02b-operation-journal`다. 최종 handoff `docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/P02B.json`에 source/dirty digest, schema/API,
+proof node는 `p02b-operation-journal`다. 최종 handoff `artifacts/sep-21/handoffs/P02B.json`에 source/dirty digest, schema/API,
 migration impact, refusal/terminal matrix, sequence scope, command/counts, NOT_RUN, P03이 소비할 journal API/fixtures를
 남겨라. explicit owner path만 단일 checkpoint commit으로 만들고 push는 별도 요청 시에만 한다.

@@ -11,10 +11,12 @@ full semantics.
 |---|---|---|---|
 | D-ID-01 | UTF-8 already-NFC, case-sensitive, 1..=512 bytes, controls rejected | contract-base IDs | S21-01 |
 | D-ID-02 | length-delimited BE canonical tuples; domain-separated SHA-256 | contract-base digest owner | S21-01/02/06/12 |
+| D-LAYOUT-01 | `objects/sha256/aa/bb/<60hex>.cbor`; 0700 dirs, 0600 files, effective-UID/no-follow/inode/mode/nlink checks | RepoMap/runtime | S21-01/09/11 |
 | D-AUTH-01 | SQLite candidate/activation ledger is sole RepoMap visibility authority | catalog | S21-02/05/11 |
 | D-AUTH-02 | process-global `MutationCoordinatorV1`, prepared plan and fence | core/catalog/runtime | S21-04/09 |
 | D-REC-01 | `OperationTerminalResultV2`, canonical CBOR v2, immutable replay bytes | contract/catalog | S21-04/11/12 |
 | D-REC-02 | replay floor 1; terminal retention for root lifetime; offline floor advance only | catalog/migration | S21-04/11 |
+| D-SEQ-01 | one state-root-global positive sequence from transactional `catalog_sequence_v2` | catalog | S21-02/04/11 |
 | D-READ-01 | one domain evidence each; handles held by `QueryReadViewV2` | search-plane/core | S21-05/06 |
 | D-QUERY-01 | explicit exact/lower-bound/capped/interrupted/approximate outcomes | contract/core | S21-06/07 |
 | D-CURSOR-01 | signed stateless HMAC cursor, 15m default/1h max, no unsigned decoder | contract/runtime | S21-06/07/11 |
@@ -56,6 +58,7 @@ S21-01 introduces closed `SearchPlaneErrorCodeV2`; messages are non-authoritativ
 - `OPERATION_FENCE_LOST`
 - `OPERATION_REPLAY_FLOOR`
 - `STATE_ROOT_FORMAT_UNSUPPORTED`
+- `STATE_ROOT_SECURITY_POLICY_UNSUPPORTED`
 - `CURSOR_INVALID`
 - `CURSOR_EXPIRED`
 - `CURSOR_CONTEXT_MISMATCH`

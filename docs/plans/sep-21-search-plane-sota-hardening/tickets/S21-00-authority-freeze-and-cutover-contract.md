@@ -22,8 +22,8 @@ Depends on: none
 3. candidate publish와 activation의 exact transaction boundary
 4. activation rollback/CAS/epoch semantics
 5. legacy persisted state의 지원 방식: offline import only
-6. cursor security model: signed opaque token 또는 server-side state
-7. `focus_subjects`: strict scope 또는 ranking hint 중 하나
+6. cursor security model: signed opaque stateless token
+7. `focus_subjects`: non-empty strict scope, unresolved refusal, no global fallback
 8. empty/partial/capped/approximate/unavailable의 public response semantics
 9. provider egress profile과 source/query data classification owner
 10. supported deployment/backup/restore/rollback boundary
@@ -103,9 +103,11 @@ ADR와 breaking cutover contract가 frozen된 뒤 owner implementation을 시작
 | persisted receipt evolution | `BatchPublishReceipt` canonical-CBOR version bump, old/new refusal matrix, inventory entry | S21-04, S21-11, S21-12 |
 | RepoMap authority | SQLite candidate/activation ledger가 유일한 visibility authority; object store는 immutable bytes만 소유 | S21-02 |
 | terminal refusal | `Refused`를 저장·재생할 범위와 retention/replay-floor | S21-04 |
-| ingest concurrency | v1은 serial ingest를 machine-enforce할지, multi-writer fence를 구현할지 | S21-04 |
+| ingest concurrency | one state-root-global `MutationCoordinatorV1` and fenced prepared mutations | S21-04 |
 | state-root format | root manifest/version, old binary/new root 및 new binary/old root의 typed refusal | S21-11 |
-| raw identifier policy | decode 뒤 silent normalization 금지; non-canonical reject 또는 raw bytes 보존 후 address digest | S21-01 |
+| raw identifier policy | already-NFC UTF-8, case-sensitive, 1..=512 bytes, controls rejected, no silent normalization | S21-01 |
+| physical layout/security | `objects/sha256/aa/bb/<60hex>.cbor`; effective-UID, exact mode, no-follow, inode and nlink checks | S21-01, S21-09, S21-11 |
+| terminal sequence scope | one positive state-root-global transactional `catalog_sequence_v2` stream | S21-02, S21-04, S21-11 |
 | shutdown escalation | cooperative deadline 뒤 process abort/non-zero exit 여부; kill 불가능한 Rust thread를 graceful로 표기 금지 | S21-09 |
 | provider policy | tenant/source/query classification별 egress consent, region, retention, budget owner | S21-08 |
 | active selector binding | resolution epoch/read identity로 검증; 원 요청 selector와 resolved pin의 단순 equality 금지 | S21-07 |

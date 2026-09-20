@@ -56,5 +56,5 @@ proof로 남긴다. test/disposable activation을 production `ACTIVATED`로 승�
 proof node는 `p11-cross-repo-cutover`, canonical release command는 `just rust-verify-hellgate-cross-repo`이며 Linux
 production-like/release-daemon proof가 필요하다. Semantica 수정/commit/push, provider egress, deploy/activation은
 각각 별도 명시 승인 없이는 수행하지 않는다. 최종 보고에 source-pair freeze, dependency roots, receipt chain,
-compatibility matrix, commands/counts, NOT_RUN/BLOCKED, P12 artifact paths/digests와 `docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/P11.json`을
+compatibility matrix, commands/counts, NOT_RUN/BLOCKED, P12 artifact paths/digests와 `artifacts/sep-21/handoffs/P11.json`을
 남겨라. 두 repo의 checkpoint/commit/push 권한과 결과를 분리 기록한다.

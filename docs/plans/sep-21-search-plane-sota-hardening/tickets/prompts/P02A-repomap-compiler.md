@@ -53,6 +53,6 @@ DoD:
 - configured cap이 materialized bytes/work/RSS upper bound를 설명
 - independent golden/property/allocation proof와 owning integration proof
 
-proof node는 `p02a-repomap-compiler`다. 최종 handoff `docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/P02A.json`에 source/dirty digest, 변경 파일,
+proof node는 `p02a-repomap-compiler`다. 최종 handoff `artifacts/sep-21/handoffs/P02A.json`에 source/dirty digest, 변경 파일,
 frozen compiler API, commitment inputs, refusal codes, resource limits, command/counts, NOT_RUN, P03 소비 fixture를
 남겨라. explicit owner path만 단일 checkpoint commit으로 만들고 push는 별도 요청 시에만 한다.

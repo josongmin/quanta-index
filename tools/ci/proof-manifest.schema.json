@@ -9,6 +9,7 @@
     "family",
     "status",
     "source",
+    "source_pair",
     "invocation",
     "counts",
     "environment",
@@ -32,10 +33,65 @@
       "properties": {
         "head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
         "dirty_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
-        "branch": {"type": "string", "minLength": 1},
-        "upstream": {"type": "string", "minLength": 1},
-        "merge_base": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+        "branch": {"type": ["string", "null"], "minLength": 1},
+        "upstream": {"type": ["string", "null"], "minLength": 1},
+        "merge_base": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{40}$"
+        }
       }
+    },
+    "source_pair": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "repository",
+            "remote_identity_digest",
+            "source",
+            "dependency_lock"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9._-]*:[A-Za-z0-9._/-]+$"
+            },
+            "remote_identity_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["head", "dirty_digest", "branch", "upstream", "merge_base"],
+              "properties": {
+                "head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+                "dirty_digest": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "branch": {"type": ["string", "null"], "minLength": 1},
+                "upstream": {"type": ["string", "null"], "minLength": 1},
+                "merge_base": {
+                  "type": ["string", "null"],
+                  "pattern": "^[0-9a-f]{40}$"
+                }
+              }
+            },
+            "dependency_lock": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "sha256"],
+              "properties": {
+                "path": {"type": "string", "minLength": 1},
+                "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+              }
+            }
+          }
+        }
+      ]
     },
     "invocation": {
       "type": "object",
@@ -83,13 +139,18 @@
       }
     },
     "daemon_binary": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["path", "sha256"],
-      "properties": {
-        "path": {"type": "string", "minLength": 1},
-        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
-      }
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "sha256"],
+          "properties": {
+            "path": {"type": "string", "minLength": 1},
+            "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          }
+        }
+      ]
     },
     "state_root_format": {"type": "string", "minLength": 1},
     "inputs": {

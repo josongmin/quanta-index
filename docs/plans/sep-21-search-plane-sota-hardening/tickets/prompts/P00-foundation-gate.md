@@ -76,6 +76,6 @@ proof node는 `p00-authority-freeze`다. 검증은 변경 범위에 맞는 repo 
 - proof validator negative 결과
 - 후속 lane이 소비할 exact artifact/API
 - 실행한 proof와 NOT_RUN proof
-- handoff: `docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/P00.json`; residual risks와 다음 허용 prompt: P01
+- handoff: `artifacts/sep-21/handoffs/P00.json`; residual risks와 다음 허용 prompt: P01
 
 explicit owner path만 checkpoint commit에 포함한다. push는 별도 요청이 있을 때만 수행한다.

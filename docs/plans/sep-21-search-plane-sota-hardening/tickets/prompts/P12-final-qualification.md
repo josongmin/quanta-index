@@ -69,5 +69,5 @@ migration/rollback/cross-repo/Linux/승인된 real-provider proof pass, unresolv
 
 proof node는 `p12-final-qualification`이다. 최종 보고에는 exact source pair, registry/plan/aggregate manifest digest,
 daemon binary, 모든 proof ID/family result/counts/artifact path, failed/skipped/not-run ledger, 네 verdict와 근거,
-unresolved risks와 `docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/P12.json`을 포함하라. proof execution은 code 수정과 분리한다. commit/push,
+unresolved risks와 `artifacts/sep-21/handoffs/P12.json`을 포함하라. proof execution은 code 수정과 분리한다. commit/push,
 provider egress, deploy, activate, rollback은 각각 별도 명시 요청 없이는 수행하지 않는다.

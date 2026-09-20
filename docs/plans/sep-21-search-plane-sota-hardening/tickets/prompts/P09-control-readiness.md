@@ -50,5 +50,5 @@ DoD:
 proof node는 `p09-control-readiness`, canonical release command는 `just rust-profile test-daemon`이며 Linux
 production-like/release-daemon proof가 필요하다. component kill/corruption은 disposable local process/state-root에서만
 수행하고 shared daemon kill은 별도 승인이 필요하다. 최종 보고에 source freeze, capability table, readiness truth
-table, diagnostic bounds, proof counts, NOT_RUN, M3 residual risk와 `docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/P09.json`을 남겨라. explicit
+table, diagnostic bounds, proof counts, NOT_RUN, M3 residual risk와 `artifacts/sep-21/handoffs/P09.json`을 남겨라. explicit
 owner path만 checkpoint commit하고 push는 별도 요청 시에만 한다.

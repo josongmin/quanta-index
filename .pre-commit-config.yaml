@@ -209,12 +209,12 @@ repos:
         stages: [pre-push]
 
       - id: proof-authority
-        name: proof authority registry and manifest schema
+        name: proof authority registry and manifest schema lint
         entry: python3 tools/ci/lint/check-proof-authority.py
         language: system
         pass_filenames: false
         always_run: true
-        files: ^(tools/ci/(proof-authority\.toml|proof-manifest\.schema\.json|lint/check-proof-authority\.py)|docs/adr/SEP-21-.*\.md)$
+        files: ^(tools/ci/(proof-authority\.toml|proof-manifest\.schema\.json|write-proof-manifest\.py|lint/check-proof-authority\.py|tests/test_check_proof_authority\.py|tests/test_write_proof_manifest\.py)|docs/adr/SEP-21-.*\.md)$
         stages: [pre-commit, pre-push]
 
       - id: rust-digest-fallibility
