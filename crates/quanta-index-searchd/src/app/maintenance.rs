@@ -16,7 +16,8 @@
 //! Everything the timer does is counted, and a failed sweep or walk is a
 //! counted failure the next tick retries, never a silent stop.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -133,7 +134,7 @@ fn refresh_disk_usage(parts: &MaintenanceParts, tallies: &MaintenanceTallies) {
 
 /// The running timer; dropping it stops the thread and joins it.
 pub struct MaintenanceTimer {
-    stop: Arc<AtomicBool>,
+    stop: Sender<()>,
     thread: Option<JoinHandle<()>>,
     tallies: Arc<MaintenanceTallies>,
 }
@@ -146,19 +147,17 @@ impl MaintenanceTimer {
     pub fn start(parts: MaintenanceParts, cadence: Duration) -> Result<Self, CoreError> {
         let tallies = Arc::new(MaintenanceTallies::default());
         refresh_disk_usage(&parts, &tallies);
-        let stop = Arc::new(AtomicBool::new(false));
+        let (stop, stop_rx) = mpsc::channel();
         let thread = {
-            let stop = Arc::clone(&stop);
             let tallies = Arc::clone(&tallies);
             std::thread::Builder::new()
                 .name("searchd-maintenance".to_string())
                 .spawn(move || {
-                    while !stop.load(Ordering::Acquire) {
-                        std::thread::sleep(cadence);
-                        if stop.load(Ordering::Acquire) {
-                            break;
+                    loop {
+                        match stop_rx.recv_timeout(cadence) {
+                            Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
+                            Err(RecvTimeoutError::Timeout) => tick(&parts, &tallies),
                         }
-                        tick(&parts, &tallies);
                     }
                 })
                 .map_err(|error| {
@@ -181,10 +180,8 @@ impl MaintenanceTimer {
 
 impl Drop for MaintenanceTimer {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
+        let _stop_result = self.stop.send(());
         if let Some(thread) = self.thread.take() {
-            // A sleeping thread wakes within one cadence; the join bounds
-            // shutdown by that.
             let _joined = thread.join();
         }
     }
@@ -331,6 +328,29 @@ mod tests {
             sweeps.0.load(Ordering::Acquire),
             after_drop,
             "a dropped timer sweeps no more"
+        );
+    }
+
+    #[test]
+    fn drop_interrupts_a_long_cadence_without_waiting_for_the_deadline() {
+        let timer = MaintenanceTimer::start(
+            MaintenanceParts {
+                writer_sweep: Arc::new(CountingSweep(AtomicU64::new(0))),
+                lexical_disk_usage: Arc::new(ScriptedDisk(AtomicU64::new(10))),
+                semantic_disk_usage: Arc::new(ScriptedDisk(AtomicU64::new(20))),
+                integrity_scrub: None,
+            },
+            Duration::from_secs(30),
+        )
+        .expect("timer starts");
+
+        let started = Instant::now();
+        drop(timer);
+
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "drop waited for the maintenance cadence: {:?}",
+            started.elapsed()
         );
     }
 }

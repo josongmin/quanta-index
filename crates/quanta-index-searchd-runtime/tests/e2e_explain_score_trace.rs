@@ -82,11 +82,8 @@ fn contribution_sum(explanation: &SearchExplanation) -> f32 {
         .sum()
 }
 
-#[test]
-fn every_page_candidate_explains_to_its_carried_score_in_page_order() -> TestResult {
-    let mut rt = E2eRuntime::boot()?;
-    ingest_fixture(&mut rt)?;
-    let candidates = page(&mut rt, PLAIN_QUERY)?;
+fn verify_page_candidate_scores(rt: &mut E2eRuntime) -> TestResult {
+    let candidates = page(rt, PLAIN_QUERY)?;
     if candidates.len() != 3 {
         return Err(format!("three documents carry the needle: {candidates:?}").into());
     }
@@ -94,7 +91,7 @@ fn every_page_candidate_explains_to_its_carried_score_in_page_order() -> TestRes
     let mut previous_score: Option<f32> = None;
     for candidate in candidates {
         let carried = candidate.score;
-        let (presence, explanation) = explained(&mut rt, candidate.clone(), PLAIN_QUERY)?;
+        let (presence, explanation) = explained(rt, candidate.clone(), PLAIN_QUERY)?;
         if presence != CandidatePresenceV1::Indexed {
             return Err(format!("{} is indexed", candidate.candidate_id).into());
         }
@@ -142,13 +139,9 @@ fn every_page_candidate_explains_to_its_carried_score_in_page_order() -> TestRes
     Ok(())
 }
 
-#[test]
-fn a_boost_is_the_weight_and_moves_the_page_the_trace_and_the_weights_hash_together() -> TestResult
-{
-    let mut rt = E2eRuntime::boot()?;
-    ingest_fixture(&mut rt)?;
-    let plain = page(&mut rt, PLAIN_QUERY)?;
-    let boosted = page(&mut rt, BOOSTED_QUERY)?;
+fn verify_boost(rt: &mut E2eRuntime) -> TestResult {
+    let plain = page(rt, PLAIN_QUERY)?;
+    let boosted = page(rt, BOOSTED_QUERY)?;
     let Some(plain_top) = plain.first().cloned() else {
         return Err("a plain hit".into());
     };
@@ -166,8 +159,8 @@ fn a_boost_is_the_weight_and_moves_the_page_the_trace_and_the_weights_hash_toget
         )
         .into());
     }
-    let (_, plain_explanation) = explained(&mut rt, plain_top.clone(), PLAIN_QUERY)?;
-    let (_, boosted_explanation) = explained(&mut rt, boosted_top.clone(), BOOSTED_QUERY)?;
+    let (_, plain_explanation) = explained(rt, plain_top.clone(), PLAIN_QUERY)?;
+    let (_, boosted_explanation) = explained(rt, boosted_top.clone(), BOOSTED_QUERY)?;
     let (Some(plain_row), Some(boosted_row)) = (
         plain_explanation.contributions.first(),
         boosted_explanation.contributions.first(),
@@ -190,7 +183,7 @@ fn a_boost_is_the_weight_and_moves_the_page_the_trace_and_the_weights_hash_toget
     // A candidate carried from the boosted page, explained under the plain
     // query, is not reconciled: the trace is honest about which plan it
     // scored under.
-    let (_, cross) = explained(&mut rt, boosted_top, PLAIN_QUERY)?;
+    let (_, cross) = explained(rt, boosted_top, PLAIN_QUERY)?;
     if !trace_says(&cross, "explain.score_reconciled=false")
         || (contribution_sum(&cross) - plain_top.score).abs() > SCORE_TOLERANCE
     {
@@ -199,11 +192,8 @@ fn a_boost_is_the_weight_and_moves_the_page_the_trace_and_the_weights_hash_toget
     Ok(())
 }
 
-#[test]
-fn presence_is_a_typed_exact_lookup_and_a_non_match_is_not_absence() -> TestResult {
-    let mut rt = E2eRuntime::boot()?;
-    ingest_fixture(&mut rt)?;
-    let candidates = page(&mut rt, PLAIN_QUERY)?;
+fn verify_presence(rt: &mut E2eRuntime) -> TestResult {
+    let candidates = page(rt, PLAIN_QUERY)?;
     let Some(hit) = candidates.first().cloned() else {
         return Err("a hit".into());
     };
@@ -226,7 +216,7 @@ fn presence_is_a_typed_exact_lookup_and_a_non_match_is_not_absence() -> TestResu
     if absent.presence != Some(CandidatePresenceV1::NotIndexed) {
         return Err(format!("a ghost is not indexed: {:?}", absent.explanation).into());
     }
-    let (presence, explanation) = explained(&mut rt, ghost, PLAIN_QUERY)?;
+    let (presence, explanation) = explained(rt, ghost, PLAIN_QUERY)?;
     if presence != CandidatePresenceV1::NotIndexed
         || !explanation.contributions.is_empty()
         || !trace_says(&explanation, "explain.candidate_indexed=false")
@@ -235,11 +225,11 @@ fn presence_is_a_typed_exact_lookup_and_a_non_match_is_not_absence() -> TestResu
     }
     // The document without the needle is indexed but unmatched — never
     // reported as absent.
-    let other_page = page(&mut rt, "nothing")?;
+    let other_page = page(rt, "nothing")?;
     let Some(other) = other_page.first().cloned() else {
         return Err("the other document is a hit for its own text".into());
     };
-    let (presence, explanation) = explained(&mut rt, other, PLAIN_QUERY)?;
+    let (presence, explanation) = explained(rt, other, PLAIN_QUERY)?;
     if presence != CandidatePresenceV1::Indexed
         || !trace_says(&explanation, "explain.candidate_matched=false")
         || !explanation.contributions.is_empty()
@@ -259,11 +249,8 @@ fn presence_is_a_typed_exact_lookup_and_a_non_match_is_not_absence() -> TestResu
 /// carried as the hybrid route emitted it reconciles on every axis; a row
 /// forged on one axis — even one whose fused score is exactly the RRF of
 /// the ranks it forged — fails on that axis and no other.
-#[test]
-fn a_hybrid_both_lane_candidate_is_rederived_against_the_index_on_every_axis() -> TestResult {
+fn verify_hybrid_both_lane(rt: &mut E2eRuntime) -> TestResult {
     const HYBRID_TOP_K: u32 = 10;
-    let mut rt = E2eRuntime::boot()?;
-    ingest_fixture(&mut rt)?;
     // The same text drives both lanes, so the needle documents are seen by
     // both: the lexical lane by term, the dense lane by the hashed vector.
     let hybrid = rt.query_hybrid(
@@ -305,7 +292,7 @@ fn a_hybrid_both_lane_candidate_is_rederived_against_the_index_on_every_axis() -
     // Independent oracles: the lexical page scores the row exactly as the
     // lexical lane did, and the semantic page ranks and scores it exactly
     // as the dense lane did.
-    let page = page(&mut rt, PLAIN_QUERY)?;
+    let page = page(rt, PLAIN_QUERY)?;
     let Some(page_row) = page
         .iter()
         .find(|candidate| candidate.candidate_id == row.candidate.candidate_id)
@@ -469,11 +456,8 @@ fn a_hybrid_both_lane_candidate_is_rederived_against_the_index_on_every_axis() -
 /// QI-BB-022: an indexed candidate the plan does not match names the
 /// plan's filter leaves, so a caller sees which filters stood between the
 /// document and the page rather than a bare "does not match".
-#[test]
-fn an_unmatched_candidate_names_the_plan_filters_that_excluded_it() -> TestResult {
-    let mut rt = E2eRuntime::boot()?;
-    ingest_fixture(&mut rt)?;
-    let candidates = page(&mut rt, PLAIN_QUERY)?;
+fn verify_unmatched_candidate_filters(rt: &mut E2eRuntime) -> TestResult {
+    let candidates = page(rt, PLAIN_QUERY)?;
     let Some(sparse) = candidates
         .iter()
         .find(|candidate| candidate.repo_relative_path.as_str().ends_with("sparse.rs"))
@@ -484,7 +468,7 @@ fn an_unmatched_candidate_names_the_plan_filters_that_excluded_it() -> TestResul
     // Under a file filter that names another document, the sparse hit is
     // indexed and unmatched, and the filter is listed.
     let filtered_query = "file:dense needle";
-    let (presence, explanation) = explained(&mut rt, sparse, filtered_query)?;
+    let (presence, explanation) = explained(rt, sparse, filtered_query)?;
     let filter_entries = explanation
         .planner_trace
         .iter()
@@ -508,7 +492,7 @@ fn an_unmatched_candidate_names_the_plan_filters_that_excluded_it() -> TestResul
     }
     // The same document under the plain query matches, and no filter is
     // listed for a match.
-    let candidates = page(&mut rt, PLAIN_QUERY)?;
+    let candidates = page(rt, PLAIN_QUERY)?;
     let Some(sparse) = candidates
         .iter()
         .find(|candidate| candidate.repo_relative_path.as_str().ends_with("sparse.rs"))
@@ -516,7 +500,7 @@ fn an_unmatched_candidate_names_the_plan_filters_that_excluded_it() -> TestResul
     else {
         return Err("the sparse document is a plain hit".into());
     };
-    let (_, explanation) = explained(&mut rt, sparse, PLAIN_QUERY)?;
+    let (_, explanation) = explained(rt, sparse, PLAIN_QUERY)?;
     if !trace_says(&explanation, "explain.candidate_matched=true")
         || explanation
             .planner_trace
@@ -524,6 +508,29 @@ fn an_unmatched_candidate_names_the_plan_filters_that_excluded_it() -> TestResul
             .any(|entry| entry.detail.starts_with("explain.plan_filter"))
     {
         return Err(format!("a match lists no filters: {explanation:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn explain_score_traces_share_one_indexed_fixture() -> TestResult {
+    let mut rt = E2eRuntime::boot()?;
+    ingest_fixture(&mut rt)?;
+
+    for (name, verify) in [
+        (
+            "page_candidate_scores",
+            verify_page_candidate_scores as fn(&mut E2eRuntime) -> TestResult,
+        ),
+        ("boost", verify_boost),
+        ("presence", verify_presence),
+        ("hybrid_both_lane", verify_hybrid_both_lane),
+        (
+            "unmatched_candidate_filters",
+            verify_unmatched_candidate_filters,
+        ),
+    ] {
+        verify(&mut rt).map_err(|error| -> Box<dyn Error> { format!("{name}: {error}").into() })?;
     }
     Ok(())
 }

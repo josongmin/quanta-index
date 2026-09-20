@@ -66,7 +66,7 @@ files as 49 Cargo test binaries. Each binary linked nearly the complete daemon
 graph and measured about 330 MiB in the current lane. The sources now compile as
 modules of three explicit targets:
 
-- `runtime_fast_suite`: 9 source files, 79 runnable tests plus one ignored test;
+- `runtime_fast_suite`: 9 source files, 67 runnable tests plus one ignored test;
 - `runtime_risk_suite`: 21 source files, 168 tests;
 - `runtime_extended_suite`: 19 source files, 48 tests.
 
@@ -96,6 +96,29 @@ expensive benchmark-truth target; it remains in `test-daemon`,
 Nextest output now emits failure and final summaries instead of one PASS line
 per test. This reduces log rendering and makes slow/failing cases visible
 without changing selection.
+
+## Runtime fixture and shutdown optimization
+
+A per-test timing trace exposed a fixed shutdown cost in direct-runtime tests.
+`MaintenanceTimer` slept for the full maintenance cadence and `Drop` joined the
+sleeping worker. The production default cadence is five seconds, so a short
+test could spend most of its lifetime waiting for an idle maintenance thread.
+The timer now waits on an interruptible channel timeout: a timeout performs the
+maintenance tick, while a stop signal or sender disconnect exits immediately.
+A 30-second-cadence regression test requires drop to finish within one second.
+
+Three fast-suite source files also rebuilt an identical indexed fixture for
+each read-only scenario. Their 15 test entry points are now three test entry
+points with named scenario helpers:
+
+- text-route authorities: five fixture boots reduced to one;
+- hybrid filter authorities: five fixture boots reduced to one;
+- explain score traces: five fixture boots reduced to one.
+
+All query cases and assertions remain. Helper failures are wrapped with the
+scenario name, so consolidation does not erase the failing semantic oracle.
+The suite's process-visible test count falls from 79 to 67 because 12 redundant
+fixture/daemon lifecycles were removed, not because scenarios were deleted.
 
 Local `sccache` is enabled only when installed and uses a repository-derived
 server port. It caches non-incremental compilations after a lane is cleaned or
@@ -145,6 +168,17 @@ an overridden run is not clean performance evidence.
 - daemon-fast after consolidation and DSL-truth separation: 79/79 PASS, one
   ignored, one binary; 1.24s cached compile and 131.949s nextest execution
   under heavy foreign Rust load
+- per-test baseline before shutdown/fixture optimization: 79/79 PASS, one
+  ignored; 132.545s wall time and 497.798s cumulative test execution while 23
+  foreign Rust processes were active
+- direct-runtime shutdown probe: `publish_dispatch_query_lexical_roundtrip`
+  fell from 5.336s to 2.142s after the interruptible maintenance timer change
+- consolidated fixture probes: 3/3 PASS in 6.676s; the same three source groups
+  previously performed 15 indexed-fixture/daemon lifecycles
+- daemon-fast after both optimizations: 67/67 PASS, one ignored, in 50.509s;
+  a repeated run under worsening host load completed in 74.413s. Both are
+  diagnostic only, because the host still had 18 foreign Rust processes and a
+  load average near 80 on 16 logical CPUs
 - daemon-fast before DSL-truth separation: 84/84 PASS, one ignored, two
   binaries; 193.157s nextest execution under the same non-authoritative class
   of host contention

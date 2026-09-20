@@ -431,10 +431,7 @@ fn boot_with_rev_at_time_generations() -> AnyResult<(E2eRuntime, GenerationPin)>
     Ok((rt.reopen(), head_pin))
 }
 
-#[test]
-fn sourcegraph_repo_meta_description_and_repo_file_hellgate() -> AnyResult<()> {
-    let mut rt = boot_with_text_route_authorities()?;
-
+fn verify_repo_meta_description_and_repo_file(rt: &mut E2eRuntime) -> AnyResult<()> {
     let regex_pair = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "repo:has.meta(/license/:/apache.*/) shared_oracle_needle",
@@ -582,10 +579,7 @@ fn sourcegraph_repo_meta_description_and_repo_file_hellgate() -> AnyResult<()> {
     Ok(())
 }
 
-#[test]
-fn sourcegraph_repo_topic_and_commit_recency_hellgate() -> AnyResult<()> {
-    let mut rt = boot_with_text_route_authorities()?;
-
+fn verify_repo_topic_and_commit_recency(rt: &mut E2eRuntime) -> AnyResult<()> {
     let topic = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "repo:has.topic(security) shared_oracle_needle",
@@ -658,10 +652,7 @@ fn sourcegraph_repo_topic_and_commit_recency_hellgate() -> AnyResult<()> {
     Ok(())
 }
 
-#[test]
-fn sourcegraph_scoped_file_content_name_and_boolean_hellgate() -> AnyResult<()> {
-    let mut rt = boot_with_text_route_authorities()?;
-
+fn verify_scoped_file_content_name_and_boolean(rt: &mut E2eRuntime) -> AnyResult<()> {
     for query in [
         "file:contains(name:colors.md, \"lemon yellow banana\")",
         "file:has.content(name:colors.md, \"lemon yellow banana\")",
@@ -692,10 +683,7 @@ fn sourcegraph_scoped_file_content_name_and_boolean_hellgate() -> AnyResult<()> 
     Ok(())
 }
 
-#[test]
-fn sourcegraph_file_owner_contributor_and_projection_hellgate() -> AnyResult<()> {
-    let mut rt = boot_with_text_route_authorities()?;
-
+fn verify_file_owner_contributor_and_projection(rt: &mut E2eRuntime) -> AnyResult<()> {
     let owner = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "file:has.owner(@alice) shared_oracle_needle",
@@ -903,9 +891,7 @@ fn sourcegraph_rev_at_time_hellgate() -> AnyResult<()> {
     Ok(())
 }
 
-#[test]
-fn sourcegraph_legacy_index_and_boost_execute_on_active_stack() -> AnyResult<()> {
-    let mut rt = boot_with_text_route_authorities()?;
+fn verify_legacy_index_and_boost(rt: &mut E2eRuntime) -> AnyResult<()> {
     let baseline = rt.query_text(TextQuerySyntax::Sourcegraph, "shared_oracle_needle", 10);
     ensure!(
         baseline.typed_error.is_none(),
@@ -951,6 +937,33 @@ fn sourcegraph_legacy_index_and_boost_execute_on_active_stack() -> AnyResult<()>
         boosted_score > baseline_score,
         "boost: must increase lexical score magnitude, got baseline={baseline_score} boosted={boosted_score}",
     );
+    Ok(())
+}
+
+#[test]
+fn sourcegraph_text_route_authorities_share_one_indexed_fixture() -> AnyResult<()> {
+    let mut rt = boot_with_text_route_authorities()?;
+    for (name, verify) in [
+        (
+            "repo_meta_description_and_repo_file",
+            verify_repo_meta_description_and_repo_file as fn(&mut E2eRuntime) -> AnyResult<()>,
+        ),
+        (
+            "repo_topic_and_commit_recency",
+            verify_repo_topic_and_commit_recency,
+        ),
+        (
+            "scoped_file_content_name_and_boolean",
+            verify_scoped_file_content_name_and_boolean,
+        ),
+        (
+            "file_owner_contributor_and_projection",
+            verify_file_owner_contributor_and_projection,
+        ),
+        ("legacy_index_and_boost", verify_legacy_index_and_boost),
+    ] {
+        verify(&mut rt).map_err(|error| anyhow::anyhow!("{name}: {error:#}"))?;
+    }
     Ok(())
 }
 

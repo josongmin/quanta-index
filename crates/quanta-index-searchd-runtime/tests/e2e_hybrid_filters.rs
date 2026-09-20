@@ -218,13 +218,8 @@ fn assert_dense_lane_ranks_all_three(rt: &mut E2eRuntime, fixture: &Fixture) -> 
 
 // CASE-COVERS: QI-BB-018 보완 #3 — `file:` binds the dense lane: only the
 // chunk in that file is served, though the dense lane ranks all three.
-#[test]
-fn hybrid_file_filter_excludes_dense_rows_from_other_files() -> TestResult {
-    let mut rt = E2eRuntime::boot()?;
-    let fixture = ingest_fixture(&mut rt)?;
-    assert_dense_lane_ranks_all_three(&mut rt, &fixture)?;
-
-    let page = hybrid_page(&mut rt, "file:src/lib.rs needle")?;
+fn verify_file_filter(rt: &mut E2eRuntime, fixture: &Fixture) -> TestResult {
+    let page = hybrid_page(rt, "file:src/lib.rs needle")?;
     if page.ids != [fixture.alpha.clone()] {
         return Err(format!(
             "file:src/lib.rs must serve alpha alone, got {:?} (beta={}, gamma={})",
@@ -256,13 +251,8 @@ fn hybrid_file_filter_excludes_dense_rows_from_other_files() -> TestResult {
 // The lexical repo predicate is a whole-term regex over the document's
 // repo id, so `repo:other` names exactly the repo `other`; the fixture's
 // generation belongs to another repo and no lane may answer from it.
-#[test]
-fn hybrid_repo_filter_excluding_the_generation_answers_empty() -> TestResult {
-    let mut rt = E2eRuntime::boot()?;
-    let fixture = ingest_fixture(&mut rt)?;
-    assert_dense_lane_ranks_all_three(&mut rt, &fixture)?;
-
-    let page = hybrid_page(&mut rt, "repo:other needle")?;
+fn verify_repo_filter(rt: &mut E2eRuntime, _fixture: &Fixture) -> TestResult {
+    let page = hybrid_page(rt, "repo:other needle")?;
     if !page.ids.is_empty() {
         return Err(format!(
             "a repo the query excluded must not be served: {:?}",
@@ -292,13 +282,8 @@ fn hybrid_repo_filter_excluding_the_generation_answers_empty() -> TestResult {
 
 // CASE-COVERS: QI-BB-018 보완 #3 — `lang:` is pushed down typed and `type:`
 // evaluated exactly; each class is named in the trace.
-#[test]
-fn hybrid_lang_and_type_filters_bind_the_dense_lane_by_class() -> TestResult {
-    let mut rt = E2eRuntime::boot()?;
-    let fixture = ingest_fixture(&mut rt)?;
-    assert_dense_lane_ranks_all_three(&mut rt, &fixture)?;
-
-    let page = hybrid_page(&mut rt, "lang:python needle")?;
+fn verify_lang_and_type_filters(rt: &mut E2eRuntime, fixture: &Fixture) -> TestResult {
+    let page = hybrid_page(rt, "lang:python needle")?;
     if page.ids != [fixture.gamma.clone()] {
         return Err(format!("lang:python must serve gamma alone: {:?}", page.ids).into());
     }
@@ -311,7 +296,7 @@ fn hybrid_lang_and_type_filters_bind_the_dense_lane_by_class() -> TestResult {
     // `type:file` admits text chunks: all three; `type:symbol` admits
     // symbol documents, of which the fixture has none — the dense chunks
     // are not symbols and must not stand in.
-    let page = hybrid_page(&mut rt, "type:file needle")?;
+    let page = hybrid_page(rt, "type:file needle")?;
     if as_set(&page.ids) != fixture.all() {
         return Err(format!("type:file must serve every chunk: {:?}", page.ids).into());
     }
@@ -320,7 +305,7 @@ fn hybrid_lang_and_type_filters_bind_the_dense_lane_by_class() -> TestResult {
     if filters != "hybrid.filters=exact:type:file" {
         return Err(format!("type must be classed exact: {filters}").into());
     }
-    let page = hybrid_page(&mut rt, "type:symbol needle")?;
+    let page = hybrid_page(rt, "type:symbol needle")?;
     if !page.ids.is_empty() {
         return Err(format!("type:symbol must not serve chunks: {:?}", page.ids).into());
     }
@@ -330,14 +315,9 @@ fn hybrid_lang_and_type_filters_bind_the_dense_lane_by_class() -> TestResult {
 // CASE-COVERS: QI-BB-018 보완 #3 / item 3 — a filter or option no lane can
 // apply to dense rows is refused typed, never served lexical-only; and the
 // native grammar has no negated filter, so `-file:` never reaches a lane.
-#[test]
-fn hybrid_refuses_unsupported_filters_and_negated_filters_typed() -> TestResult {
-    let mut rt = E2eRuntime::boot()?;
-    let fixture = ingest_fixture(&mut rt)?;
-    assert_dense_lane_ranks_all_three(&mut rt, &fixture)?;
-
+fn verify_refusals(rt: &mut E2eRuntime, _fixture: &Fixture) -> TestResult {
     for query in ["select:file needle", "count:2 needle", "type:path needle"] {
-        let code = hybrid_refusal(&mut rt, TextQuerySyntax::Sourcegraph, query)?;
+        let code = hybrid_refusal(rt, TextQuerySyntax::Sourcegraph, query)?;
         if code != "HYBRID_FILTER_UNSUPPORTED" {
             return Err(
                 format!("`{query}` must refuse HYBRID_FILTER_UNSUPPORTED, got {code}").into(),
@@ -347,7 +327,7 @@ fn hybrid_refuses_unsupported_filters_and_negated_filters_typed() -> TestResult 
     // The native grammar refuses a dash before a filter at parse time
     // (`NOT/- without expression`): a negated filter is not a filter either
     // lane could apply, and the refusal is the parser's.
-    let code = hybrid_refusal(&mut rt, TextQuerySyntax::Native, "-file:src/lib.rs needle")?;
+    let code = hybrid_refusal(rt, TextQuerySyntax::Native, "-file:src/lib.rs needle")?;
     if code != "PARSE_FAIL" {
         return Err(format!("a negated filter must be refused by the grammar, got {code}").into());
     }
@@ -356,13 +336,8 @@ fn hybrid_refuses_unsupported_filters_and_negated_filters_typed() -> TestResult 
 
 // CASE-COVERS: QI-BB-018 보완 #3 — the hybrid-seed route binds its dense
 // lane under the same contract, on the same fixture.
-#[test]
-fn hybrid_seed_filters_bind_the_dense_lane_under_the_same_contract() -> TestResult {
-    let mut rt = E2eRuntime::boot()?;
-    let fixture = ingest_fixture(&mut rt)?;
-    assert_dense_lane_ranks_all_three(&mut rt, &fixture)?;
-
-    let (seeds, _window, explanation) = hybrid_seed_page(&mut rt, "needle")?;
+fn verify_hybrid_seed_filters(rt: &mut E2eRuntime, fixture: &Fixture) -> TestResult {
+    let (seeds, _window, explanation) = hybrid_seed_page(rt, "needle")?;
     if as_set(&seeds) != fixture.all() {
         return Err(format!("the unfiltered seed set must carry all three: {seeds:?}").into());
     }
@@ -372,7 +347,7 @@ fn hybrid_seed_filters_bind_the_dense_lane_under_the_same_contract() -> TestResu
         return Err(format!("no filter, no admission: {admission}").into());
     }
 
-    let (seeds, window, explanation) = hybrid_seed_page(&mut rt, "file:src/lib.rs needle")?;
+    let (seeds, window, explanation) = hybrid_seed_page(rt, "file:src/lib.rs needle")?;
     if seeds != [fixture.alpha.clone()] {
         return Err(format!("file:src/lib.rs must seed alpha alone: {seeds:?}").into());
     }
@@ -390,17 +365,17 @@ fn hybrid_seed_filters_bind_the_dense_lane_under_the_same_contract() -> TestResu
         return Err(format!("file must be classed exact: {filters}").into());
     }
 
-    let (seeds, window, _explanation) = hybrid_seed_page(&mut rt, "repo:other needle")?;
+    let (seeds, window, _explanation) = hybrid_seed_page(rt, "repo:other needle")?;
     if !seeds.is_empty() || window != QueryResultWindowV1::exact(0) {
         return Err(format!("an excluded repo must seed nothing: {seeds:?} {window:?}").into());
     }
 
-    let (seeds, _window, _explanation) = hybrid_seed_page(&mut rt, "lang:python needle")?;
+    let (seeds, _window, _explanation) = hybrid_seed_page(rt, "lang:python needle")?;
     if seeds != [fixture.gamma.clone()] {
         return Err(format!("lang:python must seed gamma alone: {seeds:?}").into());
     }
 
-    match hybrid_seed_page(&mut rt, "select:file needle") {
+    match hybrid_seed_page(rt, "select:file needle") {
         Ok((seeds, _, _)) => {
             return Err(
                 format!("select:file must be refused on hybrid-seed, seeded {seeds:?}").into(),
@@ -408,6 +383,28 @@ fn hybrid_seed_filters_bind_the_dense_lane_under_the_same_contract() -> TestResu
         }
         Err(err) if err.to_string().contains("HYBRID_FILTER_UNSUPPORTED") => {}
         Err(err) => return Err(format!("unexpected hybrid-seed refusal: {err}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn hybrid_filters_share_one_indexed_fixture() -> TestResult {
+    let mut rt = E2eRuntime::boot()?;
+    let fixture = ingest_fixture(&mut rt)?;
+    assert_dense_lane_ranks_all_three(&mut rt, &fixture)?;
+
+    for (name, verify) in [
+        (
+            "file_filter",
+            verify_file_filter as fn(&mut E2eRuntime, &Fixture) -> TestResult,
+        ),
+        ("repo_filter", verify_repo_filter),
+        ("lang_and_type_filters", verify_lang_and_type_filters),
+        ("typed_refusals", verify_refusals),
+        ("hybrid_seed_filters", verify_hybrid_seed_filters),
+    ] {
+        verify(&mut rt, &fixture)
+            .map_err(|error| -> Box<dyn Error> { format!("{name}: {error}").into() })?;
     }
     Ok(())
 }
