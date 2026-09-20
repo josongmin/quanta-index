@@ -138,7 +138,7 @@ def resolve_targets(
     target_names = {entry["target"] for entry in resolved}
     for entry in by_id.values():
         path = Path(entry["path"])
-        pair = (entry["owner"], path.stem)
+        pair = (entry["owner"], entry.get("target", path.stem))
         if pair[0] in packages and pair[1] in target_names and pair not in selected_pairs:
             raise ValueError(
                 f"scope selectors would run an undeclared package/target pair: {pair[0]}::{pair[1]}"

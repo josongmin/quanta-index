@@ -652,7 +652,6 @@ proof-authority-release-gate:
 
 verify-rust:
     @just fmt-check
-    @just rust-check
     @just rust-clippy
     @just rust-policy
     @just rust-machete

@@ -265,6 +265,48 @@ an overridden run is not clean performance evidence.
   load held the `lance` compile near 12% CPU; no correctness claim is made from
   that run, and it is excluded from performance evidence
 
+## Follow-up verification-topology audit
+
+The next audit started from clean `main` at
+`3e5fd07ade8a50a4807b1aaaf44b36f51ae3da4e`. It found three more
+unnecessary compile paths and one selector-safety defect:
+
+| Path | Before | After | Retained authority |
+|---|---|---|---|
+| CI pre-commit | Installs Rust and runs full-workspace Cargo fmt/check, despite dedicated jobs | Skips those two hooks in this job and omits the Rust installation | `rust-fmt` and `rust-clippy` jobs |
+| CI clippy | Full all-target/all-feature `check`, then exact-surface clippy in separate cache lanes | Clippy only | Exact-surface clippy; stand-alone check remains in `rust-msrv` |
+| Local `verify-rust` | Full check, then exact-surface clippy in separate lanes | Clippy only | `just rust-check` remains an explicit compile-only command |
+| Local Git hooks | Rust compile, test, doc, dependency, and bench hooks run even for Python/doc-only changes | Heavy hooks run only when their declared Rust/manifest paths changed | CI whole-workspace jobs still run on every PR/push/merge-group |
+
+The removed checks were redundant within these aggregates, not a removal of
+stand-alone compile capability. MSRV, test-profile, bench-profile, docs,
+nextest, and policy jobs remain distinct. The `pre-push` hook is now a
+changed-file fast gate; it is **not** a complete qualification receipt for
+unchanged Rust files. A full verification claim still requires the appropriate
+CI/`just` rails.
+
+The local scope runner's cross-product guard previously compared the source
+file stem instead of the declared Cargo `target`. A renamed/grouped test target
+from another selected package could be executed unintentionally. The guard now
+checks the same target name used to construct the Cargo command, with a
+regression test for the alias case.
+
+The baseline workflow also had a ShellCheck SC2209 warning in verification
+receipt variable assignments, independently reproduced against the prior HEAD;
+quoting those literal assignments makes the changed workflow actionlint-clean.
+
+Verification for this follow-up: runner unit tests 11/11 PASS; test-authority
+lint PASS; pre-commit config valid; non-Rust file probes skip the Rust and bench
+hooks; explicit `SKIP` probe skips CI's two duplicate hooks; `just --dry-run
+verify-rust` contains no full check; actionlint, scoped Ruff checks, and all
+three sampled local-scope dry runs PASS. The non-DSL CI-tool tests passed
+276/276; all seven prompt-manager tests passed. The unfiltered CI-tool run
+was interrupted after 85 passes while a DSL test's Cargo subprocess waited
+under foreign Rust load. Doc-path lint remains RED on 35 broken paths in
+unchanged `docs/bugbash/sep-16` files. Whole-workspace Rust tests and clean
+wall-clock savings are not claimed. The timing preflight still found 11
+unrelated Cargo/rustc processes on the host.
+
 ## Remaining measurement
 
 On a quiet host, run:

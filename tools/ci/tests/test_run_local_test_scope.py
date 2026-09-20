@@ -94,6 +94,29 @@ def test_scope_refuses_cross_product_target_leak(tmp_path: Path, monkeypatch) ->
         raise AssertionError("cross-product target leak was accepted")
 
 
+def test_scope_refuses_cross_product_declared_target_alias(tmp_path: Path, monkeypatch) -> None:
+    data = _catalog(tmp_path)
+    shadow = tmp_path / "crates" / "second" / "tests" / "gamma.rs"
+    shadow.write_text("", encoding="utf-8")
+    data["integration_targets"].append(
+        {
+            "id": "second-gamma",
+            "owner": "second",
+            "path": str(shadow.relative_to(tmp_path)),
+            "target": "alpha",
+        }
+    )
+    data["local_scopes"]["mixed"] = {
+        "lane": "mixed-lane",
+        "test_threads": 2,
+        "targets": ["first-alpha", "second-beta"],
+    }
+    monkeypatch.setattr(MODULE, "ROOT", tmp_path)
+
+    with pytest.raises(ValueError, match="undeclared package/target pair: second::alpha"):
+        MODULE.resolve_targets(data, ["mixed"])
+
+
 def test_library_and_integration_selectors_are_rejected(tmp_path: Path, monkeypatch) -> None:
     data = _catalog(tmp_path)
     library = tmp_path / "crates" / "library"

@@ -78,7 +78,6 @@ repos:
         entry: ./scripts/cargow fmt --all -- --check
         language: system
         pass_filenames: false
-        always_run: true
         files: ^(Cargo\.toml|Cargo\.lock|crates/.*/.*\.rs)$
         stages: [pre-commit]
 
@@ -87,7 +86,6 @@ repos:
         entry: ./scripts/cargow check --workspace --all-targets --all-features --locked
         language: system
         pass_filenames: false
-        always_run: true
         files: ^(Cargo\.toml|Cargo\.lock|crates/.*/.*\.rs)$
         stages: [pre-commit]
 
@@ -96,7 +94,6 @@ repos:
         entry: ./scripts/cargow clippy --workspace --all-targets --all-features --locked -- -D warnings
         language: system
         pass_filenames: false
-        always_run: true
         files: ^(Cargo\.toml|Cargo\.lock|clippy\.toml|crates/.*/.*\.rs)$
         stages: [pre-push]
 
@@ -105,7 +102,6 @@ repos:
         entry: ./scripts/cargow test --workspace --all-features --locked
         language: system
         pass_filenames: false
-        always_run: true
         files: ^(Cargo\.toml|Cargo\.lock|crates/.*/.*\.rs)$
         stages: [pre-push]
 
@@ -114,7 +110,6 @@ repos:
         entry: bash -lc 'RUSTDOCFLAGS="-D warnings" ./scripts/cargow doc --workspace --all-features --no-deps --locked'
         language: system
         pass_filenames: false
-        always_run: true
         files: ^(Cargo\.toml|Cargo\.lock|crates/.*/.*\.rs)$
         stages: [pre-push]
 
@@ -231,7 +226,6 @@ repos:
         entry: bash scripts/run-cargo-deny.sh
         language: system
         pass_filenames: false
-        always_run: true
         files: ^(Cargo\.toml|Cargo\.lock|deny\.toml|crates/.*/Cargo\.toml)$
         stages: [pre-push]
 
@@ -240,7 +234,6 @@ repos:
         entry: cargo machete --with-metadata
         language: system
         pass_filenames: false
-        always_run: true
         files: ^(Cargo\.toml|Cargo\.lock|crates/.*/Cargo\.toml)$
         stages: [pre-push]
 
@@ -249,7 +242,6 @@ repos:
         entry: ./scripts/cargow bench --workspace --all-features --locked --no-run
         language: system
         pass_filenames: false
-        always_run: true
         files: ^(Cargo\.toml|Cargo\.lock|crates/.*/(src|benches)/.*\.rs|crates/.*/Cargo\.toml)$
         stages: [pre-push]
 
@@ -258,7 +250,6 @@ repos:
         entry: bash -lc 'source scripts/quanta-index-env.sh && python3 -m pytest tools -q -o cache_dir="$PYTEST_CACHE_DIR"'
         language: system
         pass_filenames: false
-        always_run: true
         files: ^(pyproject\.toml|tools/.*|scripts/check_workspace_lints\.py)$
         stages: [pre-push]
 
