@@ -61,6 +61,20 @@ def _write_catalog(path: Path, body: str) -> Path:
     return catalog
 
 
+def test_rail_binding_requires_an_executed_command() -> None:
+    module = _load_module()
+    command = (
+        "./scripts/cargow nextest run --workspace --all-features --locked "
+        "--message-format libtest-json-plus --message-format-version 0.1"
+    )
+    prefix, suffix = command.split(" --message-format ", 1)
+    executed = prefix + " \\\n    --message-format " + suffix + " \\\n    | tee evidence.jsonl"
+    metadata_only = f'# {command}\npython3 writer.py --command "{command}"\n'
+
+    assert module._executes_declared_command(executed, command)
+    assert not module._executes_declared_command(metadata_only, command)
+
+
 def test_orphan_integration_target_fails_closed(tmp_path: Path):
     module = _load_module()
     (tmp_path / "crates" / "demo" / "tests").mkdir(parents=True)

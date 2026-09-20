@@ -350,13 +350,17 @@ complete started/finished suite events, and matching suite/test pass counts.
 Unknown event types and test outcomes fail closed. Both receipt-producing
 workflows pin nextest's `libtest-json-plus` format version `0.1` and record the
 full executed command in the receipt instead of omitting its format flags.
+The test-authority rail declarations now include those flags. Their binding
+check matches a logical shell execution line across continuations, not a
+comment or the receipt writer's `--command` metadata argument. This is a
+static binding check, not a substitute for executing the workflow.
 This follows nextest's documented
 `libtest-json-plus` suite and test event shape
 (<https://nexte.st/docs/machine-readable/libtest-json/>); that format remains
 experimental, so format drift must fail visibly rather than silently produce
 a receipt. The receipt schema and rail identity are unchanged.
 
-Focused receipt and test-authority tests passed 20/20. Scoped Ruff, test-authority
+Focused receipt and test-authority tests passed 21/21. Scoped Ruff, test-authority
 lint, wire-inventory lint, and diff checks passed. A new live nextest JSONL
 sample was not produced under the current foreign Rust build contention;
 GitHub CI still cannot run while the account billing/spending-limit issue

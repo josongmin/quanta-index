@@ -9,7 +9,7 @@ format_version = 2
 
 [rails.pr-workspace-nextest]
 tier = "pr"
-command = "./scripts/cargow nextest run --workspace --all-features --locked"
+command = "./scripts/cargow nextest run --workspace --all-features --locked --message-format libtest-json-plus --message-format-version 0.1"
 target_kind = "integration"
 workflow = ".github/workflows/ci.yml"
 job = "rust-test"
@@ -17,7 +17,7 @@ step = "rust nextest"
 
 [rails.merge-workspace-nextest]
 tier = "merge"
-command = "./scripts/cargow nextest run --workspace --all-features --locked"
+command = "./scripts/cargow nextest run --workspace --all-features --locked --message-format libtest-json-plus --message-format-version 0.1"
 target_kind = "integration"
 workflow = ".github/workflows/ci.yml"
 job = "rust-test"
@@ -25,7 +25,7 @@ step = "rust nextest"
 
 [rails.nightly-workspace-nextest]
 tier = "nightly"
-command = "./scripts/cargow nextest run --workspace --all-features --locked"
+command = "./scripts/cargow nextest run --workspace --all-features --locked --message-format libtest-json-plus --message-format-version 0.1"
 target_kind = "integration"
 workflow = ".github/workflows/correctness.yml"
 job = "rust-authority-nextest"

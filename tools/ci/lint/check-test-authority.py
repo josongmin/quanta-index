@@ -180,7 +180,7 @@ def _validate_rail_binding(
         if not isinstance(step, dict) or step.get("name") != step_name:
             continue
         run = step.get("run")
-        if isinstance(run, str) and command in run:
+        if isinstance(run, str) and _executes_declared_command(run, command):
             return
         violations.append(
             _violation(
@@ -192,6 +192,22 @@ def _validate_rail_binding(
     violations.append(
         _violation(catalog, f"rail {rail_id} workflow step does not exist: {step_name!r}")
     )
+
+
+def _executes_declared_command(run: str, command: str) -> bool:
+    """Match a logical shell command, not a comment or receipt metadata string."""
+    logical_lines = re.sub(r"\\\r?\n[ \t]*", " ", run)
+    for raw_line in logical_lines.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        for statement in re.split(r"&&|;", line):
+            statement = " ".join(statement.split())
+            if statement.startswith(command):
+                suffix = statement[len(command) :]
+                if not suffix or suffix[0].isspace() or suffix[0] == "|":
+                    return True
+    return False
 
 
 def _validate_rails(
