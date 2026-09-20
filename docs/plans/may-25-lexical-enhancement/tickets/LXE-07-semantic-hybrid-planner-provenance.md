@@ -85,13 +85,8 @@ Landed on the current tree:
 - deterministic merge tests with equal scores.
 - typed error tests for invalid lexical scope in semantic/hybrid requests.
 - live proof:
-  - `cargo test -p quanta-index-searchd-runtime --test end_to_end semantic_query_without_lexical_scope_returns_global_nearest_hit -- --nocapture`
-  - `cargo test -p quanta-index-searchd-runtime --test end_to_end semantic_query_with_lexical_scope_returns_intersection_only -- --nocapture`
-  - `cargo test -p quanta-index-searchd-runtime --test end_to_end semantic_scoped_query_ignores_out_of_scope_global_nearest_hit -- --nocapture`
-  - `cargo test -p quanta-index-searchd-runtime --test end_to_end hybrid_query_excludes_semantic_outsider_from_lexical_universe -- --nocapture`
-  - `cargo test -p quanta-index-searchd-runtime --test end_to_end hybrid_query_repeated_tied_scope_query_keeps_stable_order -- --nocapture`
-  - `cargo test -p quanta-index-searchd-runtime --test dsl_scenarios semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scope -- --nocapture`
-  - `cargo test -p quanta-index-searchd-runtime --test dsl_scenarios hybrid_query_reports_complex_scope_explanation_accounting -- --nocapture`
+  - `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test runtime_fast_suite --all-features --locked -E 'test(/end_to_end::(default_indexed_queries_share_one_fixture|semantic_query_with_lexical_scope_returns_intersection_only|semantic_scoped_query_ignores_out_of_scope_global_nearest_hit|hybrid_query_admits_a_semantic_only_relevant_hit_beside_the_lexical_hits|hybrid_query_repeated_tied_scope_query_keeps_stable_order)/)'`
+  - `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test runtime_risk_suite --all-features --locked -E 'test(/dsl_scenarios::(semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scope|hybrid_query_reports_complex_scope_explanation_accounting)/)'`
 
 ## E2E plan
 
