@@ -307,6 +307,33 @@ unchanged `docs/bugbash/sep-16` files. Whole-workspace Rust tests and clean
 wall-clock savings are not claimed. The timing preflight still found 11
 unrelated Cargo/rustc processes on the host.
 
+## Follow-up DSL tooling test separation
+
+The general `pytest tools` rail previously called `main()` in three DSL
+checker unit tests. Each call executed two owner dump binaries through Cargo,
+so a Python-tooling test run could launch six Rust builds and stall on a shared
+Cargo target lock. The unit tests now inject deterministic, schema-shaped owner
+dump payloads while still reading the real lowering source and checking the
+guarded-widening and verdict-flip rejection paths. A new failure case verifies
+that an unavailable owner dump fails closed.
+
+The executable truth check was not removed: the `rust-policy` CI job now
+installs the pinned Rust toolchain and executes
+`tools/ci/lint/check-dsl-capability-truth.py` once against the real owner
+binaries. The local pre-push hook executes that same gate only when its core
+predicate, lexical registry/dump, structural lowering/dump, checker, or
+capability-document inputs change. Local hooks are a changed-file gate; CI
+remains the whole-revision authority.
+
+The focused DSL unit module passed 30/30 in 0.43s without a Cargo invocation.
+The full `python3 -m pytest tools -q` suite passed 313/313 in 100.43s while
+other Rust builds saturated the host. The real
+`python3 tools/ci/lint/check-dsl-capability-truth.py` gate also passed locally
+against both executable owner dumps. These are correctness results, not a clean
+end-to-end timing comparison. The then-current GitHub Actions account
+billing/spending-limit failure prevented CI jobs from starting, so the new
+CI step itself remains unqualified.
+
 ## Remaining measurement
 
 On a quiet host, run:

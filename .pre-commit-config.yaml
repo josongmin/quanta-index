@@ -181,8 +181,7 @@ repos:
         entry: python3 tools/ci/lint/check-dsl-capability-truth.py
         language: system
         pass_filenames: false
-        always_run: true
-        files: ^(crates/quanta-index-lexical/src/predicate_registry\.rs|crates/quanta-index-search-plane/src/lowering\.rs|docs/plans/may-25-lexical-enhancement/.*|docs/plans/jun-2-dsl-advanced/.*)$
+        files: ^(crates/quanta-index-core/src/domains/read_view/predicate\.rs|crates/quanta-index-lexical/src/(predicate_registry\.rs|bin/dump_predicate_capabilities\.rs)|crates/quanta-index-search-plane/src/(lowering\.rs|bin/dump_sg_structural_legality\.rs)|tools/ci/lint/check-dsl-capability-truth\.py|docs/plans/may-25-lexical-enhancement/.*|docs/plans/jun-2-dsl-advanced/.*)$
         stages: [pre-push]
 
       - id: rust-error-shape

@@ -14,6 +14,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = REPO_ROOT / "tools" / "ci" / "lint" / "check-dsl-capability-truth.py"
 REAL_LOWERING = REPO_ROOT / "crates" / "quanta-index-search-plane" / "src" / "lowering.rs"
@@ -32,6 +34,27 @@ def _load_module():
 
 
 MODULE = _load_module()
+
+
+@pytest.fixture
+def synthetic_owner_dumps(monkeypatch):
+    """Exercise checker logic without recompiling owner binaries per unit test.
+
+    The CI DSL capability step executes the real binaries once per revision.
+    """
+    predicates = MODULE.documented_predicates(MODULE.CAPABILITY_MATRIX_MD.read_text())
+    verdicts = MODULE.extract_structural_verdicts(REAL_LOWERING.read_text())
+    assert predicates
+    assert verdicts == MODULE.EXPECTED_STRUCTURAL_VERDICTS
+
+    def dump(package: str, bin_name: str) -> dict:
+        if (package, bin_name) == (MODULE.PREDICATE_DUMP_PACKAGE, MODULE.PREDICATE_DUMP_BIN):
+            return {"canonical_predicates": sorted(predicates), "aliases": {}}
+        if (package, bin_name) == (MODULE.STRUCTURAL_DUMP_PACKAGE, MODULE.STRUCTURAL_DUMP_BIN):
+            return {"verdicts": verdicts}
+        raise AssertionError(f"unexpected owner dump: {package}:{bin_name}")
+
+    monkeypatch.setattr(MODULE, "run_json_dump", dump)
 
 
 def _verdict_fn(arms: str) -> str:
@@ -252,11 +275,13 @@ def test_non_advanced_status_not_gated():
 # --- fail-closed against the REAL source, mutated ----------------------------
 
 
-def test_main_passes_on_real_tree():
+def test_main_accepts_real_source_shape_with_synthetic_owner_dumps(synthetic_owner_dumps):
     assert MODULE.main() == 0
 
 
-def test_main_fails_closed_on_guarded_predicate_widening(tmp_path, monkeypatch):
+def test_main_fails_closed_on_guarded_predicate_widening(
+    tmp_path, monkeypatch, synthetic_owner_dumps
+):
     """The exact round-2 attack: a guarded Predicate widening of the real file."""
     real = REAL_LOWERING.read_text()
     assert CANON_TYPEDFAIL_ARM in real
@@ -270,9 +295,17 @@ def test_main_fails_closed_on_guarded_predicate_widening(tmp_path, monkeypatch):
     assert MODULE.main() == 1
 
 
-def test_main_fails_closed_on_flipped_verdict(monkeypatch):
+def test_main_fails_closed_on_flipped_verdict(monkeypatch, synthetic_owner_dumps):
     """A flat verdict flip in the owner dump must trip the snapshot legality check."""
     verdicts = dict(MODULE.EXPECTED_STRUCTURAL_VERDICTS)
     verdicts["Phrase"] = "TypedFail"
     monkeypatch.setattr(MODULE, "load_structural_verdicts", lambda: verdicts)
+    assert MODULE.main() == 1
+
+
+def test_main_fails_closed_when_owner_dump_fails(monkeypatch, synthetic_owner_dumps):
+    def fail_dump(_package: str, _bin_name: str) -> dict:
+        raise RuntimeError("owner dump unavailable")
+
+    monkeypatch.setattr(MODULE, "run_json_dump", fail_dump)
     assert MODULE.main() == 1
