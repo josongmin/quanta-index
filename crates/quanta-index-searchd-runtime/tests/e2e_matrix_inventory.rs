@@ -15,12 +15,7 @@ use quanta_index_contract::TextQuerySyntax;
 use crate::e2e_corpus::{SMOKE_CORPUS, ingest_all};
 use crate::e2e_harness::E2eRuntime;
 
-#[test]
-fn harness_smoke_write_seal_reopen_query() -> AnyResult<()> {
-    let mut rt = E2eRuntime::boot()?;
-    ingest_all(&mut rt, SMOKE_CORPUS)?;
-    let _sealed = rt.seal()?;
-    let mut rt = rt.reopen();
+fn verify_write_seal_reopen_query(rt: &mut E2eRuntime) -> AnyResult<()> {
     // After reopen the harness pin still points at the just-sealed
     // generation, so `query_text` pins to the durable manifest the
     // restarted runtime replays from disk.
@@ -57,11 +52,7 @@ fn harness_smoke_write_seal_reopen_query() -> AnyResult<()> {
     Ok(())
 }
 
-#[test]
-fn harness_smoke_invalid_query_returns_typed_error() -> AnyResult<()> {
-    let mut rt = E2eRuntime::boot()?;
-    ingest_all(&mut rt, SMOKE_CORPUS)?;
-    let _sealed = rt.seal()?;
+fn verify_invalid_query_returns_typed_error(rt: &mut E2eRuntime) -> AnyResult<()> {
     // No generation pin AND no selector → dispatcher should reject with
     // `INVALID_REQUEST` ("text: generation pin required"). This proves the
     // typed-error surface of the harness end-to-end.
@@ -78,5 +69,18 @@ fn harness_smoke_invalid_query_returns_typed_error() -> AnyResult<()> {
             typed.message
         ));
     }
+    Ok(())
+}
+
+#[test]
+fn harness_smoke_scenarios_share_one_reopened_fixture() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    ingest_all(&mut rt, SMOKE_CORPUS)?;
+    let _sealed = rt.seal()?;
+    let mut rt = rt.reopen();
+
+    verify_write_seal_reopen_query(&mut rt).map_err(|error| anyhow::anyhow!("query: {error:#}"))?;
+    verify_invalid_query_returns_typed_error(&mut rt)
+        .map_err(|error| anyhow::anyhow!("typed_error: {error:#}"))?;
     Ok(())
 }

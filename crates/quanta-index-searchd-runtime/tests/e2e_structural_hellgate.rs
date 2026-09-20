@@ -238,9 +238,7 @@ fn boot_symbol_projection_fixture() -> AnyResult<E2eRuntime> {
     Ok(rt.reopen())
 }
 
-#[test]
-fn sourcegraph_structural_file_predicate_siblings_execute_in_boolean_scope() -> AnyResult<()> {
-    let mut rt = boot_structural_file_predicate_fixture()?;
+fn verify_file_predicate_boolean_scope(rt: &mut E2eRuntime) -> AnyResult<()> {
     for (query, expected_count) in [
         (
             r#"patterntype:structural file:contains(path:src/lib.rs, main) AND "function_item { { identifier :[name] } }""#,
@@ -304,10 +302,7 @@ fn sourcegraph_structural_file_predicate_siblings_execute_in_boolean_scope() -> 
     Ok(())
 }
 
-#[test]
-fn sourcegraph_structural_direct_phrase_and_regex_demote_into_structural_bodies() -> AnyResult<()> {
-    let mut rt = boot_structural_file_predicate_fixture()?;
-
+fn verify_direct_phrase_and_regex_bodies(rt: &mut E2eRuntime) -> AnyResult<()> {
     let direct_phrase = rt.query_structural(
         TextQuerySyntax::Sourcegraph,
         r#"patterntype:structural "function_item { { identifier :[name] } }""#,
@@ -372,6 +367,16 @@ fn sourcegraph_structural_direct_phrase_and_regex_demote_into_structural_bodies(
         "non-matching SG structural regex body must miss instead of typed-failing, got {:?}",
         regex_miss.candidate_ids,
     );
+    Ok(())
+}
+
+#[test]
+fn sourcegraph_structural_file_queries_share_one_indexed_fixture() -> AnyResult<()> {
+    let mut rt = boot_structural_file_predicate_fixture()?;
+    verify_file_predicate_boolean_scope(&mut rt)
+        .map_err(|error| anyhow::anyhow!("file_predicates: {error:#}"))?;
+    verify_direct_phrase_and_regex_bodies(&mut rt)
+        .map_err(|error| anyhow::anyhow!("direct_bodies: {error:#}"))?;
     Ok(())
 }
 

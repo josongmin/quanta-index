@@ -66,7 +66,7 @@ files as 49 Cargo test binaries. Each binary linked nearly the complete daemon
 graph and measured about 330 MiB in the current lane. The sources now compile as
 modules of three explicit targets:
 
-- `runtime_fast_suite`: 9 source files, 67 runnable tests plus one ignored test;
+- `runtime_fast_suite`: 9 source files, 57 runnable tests plus one ignored test;
 - `runtime_risk_suite`: 21 source files, 168 tests;
 - `runtime_extended_suite`: 19 source files, 48 tests.
 
@@ -119,6 +119,21 @@ All query cases and assertions remain. Helper failures are wrapped with the
 scenario name, so consolidation does not erase the failing semantic oracle.
 The suite's process-visible test count falls from 79 to 67 because 12 redundant
 fixture/daemon lifecycles were removed, not because scenarios were deleted.
+
+A second consolidation pass removed ten more identical read-only lifecycles:
+
+- four structural-ready scenarios now share one indexed parse-tree fixture;
+- three structural request-refusal scenarios now share one empty runtime;
+- text and hybrid repo-metadata filters share one indexed fixture;
+- lexical and Sourcegraph publish/dispatch checks share one indexed fixture;
+- the two harness smoke checks share one reopened fixture;
+- the two sealed-track read-view checks share one fixture;
+- two structural file-query checks share one indexed fixture.
+
+The current fast suite exposes 57 runnable test entry points plus one ignored
+network test while retaining the original query cases and assertions. In total,
+22 redundant fixture or daemon lifecycles were removed from the original 79
+runnable entry points.
 
 Local `sccache` is enabled only when installed and uses a repository-derived
 server port. It caches non-incremental compilations after a lane is cleaned or
@@ -179,6 +194,9 @@ an overridden run is not clean performance evidence.
   a repeated run under worsening host load completed in 74.413s. Both are
   diagnostic only, because the host still had 18 foreign Rust processes and a
   load average near 80 on 16 logical CPUs
+- daemon-fast after the second fixture consolidation: 57/57 PASS, one ignored,
+  in 32.367s with a 0.94s cached compile. The host was still shared, so this is
+  diagnostic rather than a clean performance receipt
 - daemon-fast before DSL-truth separation: 84/84 PASS, one ignored, two
   binaries; 193.157s nextest execution under the same non-authoritative class
   of host contention

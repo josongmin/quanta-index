@@ -787,25 +787,11 @@ fn seal_structural(socket: &Path) -> TestResult {
     )
 }
 
-#[test]
-fn publish_dispatch_query_lexical_roundtrip() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "searchd-test-driver")?;
-    publish_search_corpus_chunks(
-        &ingest_socket,
-        vec![
-            chunk_record("c1", "hello world")?,
-            chunk_record("c2", "hello rust")?,
-            chunk_record("c3", "goodbye")?,
-        ],
-        Some(b"manifest".to_vec()),
-    )?;
-    seal_lexical(&ingest_socket)?;
+fn verify_publish_dispatch_lexical_roundtrip(socket: &Path) -> TestResult {
     let mut ready_candidates = None;
     if !wait_until(READINESS_TIMEOUT, || {
         let probe = lex_query("hello");
-        match send_query_request(&socket, &probe) {
+        match send_query_request(socket, &probe) {
             Ok(resp) => match resp.payload {
                 SearchPlaneQueryIpcResponse::Text(lex) => {
                     if lex.results.len() == 2 {
@@ -830,8 +816,6 @@ fn publish_dispatch_query_lexical_roundtrip() -> TestResult {
             Err(_) => false,
         }
     }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("dispatcher never sealed generation".into());
     }
 
@@ -844,39 +828,13 @@ fn publish_dispatch_query_lexical_roundtrip() -> TestResult {
     if !ids.iter().any(|i| i == "c1") || !ids.iter().any(|i| i == "c2") {
         return Err(format!("missing expected ids: {ids:?}").into());
     }
-
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
-#[test]
-fn publish_dispatch_query_sourcegraph_roundtrip() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-sourcegraph-query-test")?;
-    publish_search_corpus_chunks(
-        &ingest_socket,
-        vec![
-            chunk_record("c1", "hello world")?,
-            chunk_record("c2", "hello rust")?,
-            chunk_record("c3", "goodbye")?,
-        ],
-        Some(b"manifest".to_vec()),
-    )?;
-    seal_lexical(&ingest_socket)?;
-    if !wait_until(READINESS_TIMEOUT, || {
-        send_query_request(&socket, &lex_query("hello"))
-            .map(|resp| matches!(resp.payload, SearchPlaneQueryIpcResponse::Text(_)))
-            .unwrap_or(false)
-    }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("dispatcher never sealed sourcegraph generation".into());
-    }
-
+fn verify_publish_dispatch_sourcegraph_roundtrip(socket: &Path) -> TestResult {
     let pin = GenerationPin::new(repo(), revision(), generation());
     let response = send_query_request(
-        &socket,
+        socket,
         &SearchPlaneQueryIpcRequestEnvelope {
             request_id: 44,
             payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
@@ -892,15 +850,9 @@ fn publish_dispatch_query_sourcegraph_roundtrip() -> TestResult {
     )?;
     let sourcegraph = match response.payload {
         SearchPlaneQueryIpcResponse::Text(payload) => payload,
-        other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
-            return Err(format!("expected Text, got {other:?}").into());
-        }
+        other => return Err(format!("expected Text, got {other:?}").into()),
     };
     if sourcegraph.generation != pin {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("sourcegraph response generation did not echo request pin".into());
     }
     let ids: Vec<String> = sourcegraph
@@ -909,12 +861,38 @@ fn publish_dispatch_query_sourcegraph_roundtrip() -> TestResult {
         .map(|candidate| candidate.candidate_id.clone())
         .collect();
     if !ids.iter().any(|id| id == "c1") || !ids.iter().any(|id| id == "c2") {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("missing expected sourcegraph ids: {ids:?}").into());
     }
+    Ok(())
+}
 
-    stop_runtime(shutdown, join)
+#[test]
+fn publish_dispatch_queries_share_one_indexed_fixture() -> TestResult {
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
+    let state_root = dir.path();
+    let (socket, ingest_socket, shutdown, join) =
+        start_runtime(state_root, "searchd-publish-dispatch-shared-test")?;
+    publish_search_corpus_chunks(
+        &ingest_socket,
+        vec![
+            chunk_record("c1", "hello world")?,
+            chunk_record("c2", "hello rust")?,
+            chunk_record("c3", "goodbye")?,
+        ],
+        Some(b"manifest".to_vec()),
+    )?;
+    seal_lexical(&ingest_socket)?;
+
+    let verification: TestResult = (|| {
+        verify_publish_dispatch_lexical_roundtrip(&socket)
+            .map_err(|error| -> Box<dyn Error> { format!("lexical: {error}").into() })?;
+        verify_publish_dispatch_sourcegraph_roundtrip(&socket)
+            .map_err(|error| -> Box<dyn Error> { format!("sourcegraph: {error}").into() })?;
+        Ok(())
+    })();
+    let shutdown_result = stop_runtime(shutdown, join);
+    verification?;
+    shutdown_result
 }
 
 #[test]
@@ -1599,24 +1577,7 @@ fn hybrid_query_rejects_generation_pin_mismatch() -> TestResult {
     }
 }
 
-#[test]
-fn sourcegraph_context_filter_executes_against_repo_metadata_surface() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-sourcegraph-context-test")?;
-    publish_search_corpus_chunks(
-        &ingest_socket,
-        vec![chunk_record("alpha", "needle")?],
-        Some(repo_metadata_payload(
-            false,
-            false,
-            LqVisibility::Public,
-            &["global", "team-search"],
-        )?),
-    )?;
-    seal_lexical(&ingest_socket)?;
-
+fn verify_sourcegraph_context_filter(socket: &Path) -> TestResult {
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 17,
         payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
@@ -1631,30 +1592,22 @@ fn sourcegraph_context_filter_executes_against_repo_metadata_surface() -> TestRe
     };
 
     if !wait_until(READINESS_TIMEOUT, || {
-        send_query_request(&socket, &req)
+        send_query_request(socket, &req)
             .map(|resp| match resp.payload {
                 SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
                 _ => true,
             })
             .unwrap_or(false)
     }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("sourcegraph context filter never progressed past NOT_READY".into());
     }
 
-    let response = send_query_request(&socket, &req)?;
+    let response = send_query_request(socket, &req)?;
     let results = match response.payload {
         SearchPlaneQueryIpcResponse::Text(text) => text.results,
-        other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
-            return Err(format!("expected Text, got {other:?}").into());
-        }
+        other => return Err(format!("expected Text, got {other:?}").into()),
     };
     if results.len() != 1 {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected one context-filtered hit, got {results:?}").into());
     }
     if results
@@ -1662,33 +1615,12 @@ fn sourcegraph_context_filter_executes_against_repo_metadata_surface() -> TestRe
         .map(|candidate| candidate.candidate_id.as_str())
         != Some("alpha")
     {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected alpha hit, got {results:?}").into());
     }
-
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
-#[test]
-fn hybrid_query_visibility_filter_executes_against_repo_metadata_surface() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-hybrid-lowering-error-test")?;
-    let alpha = chunk_record("alpha", "needle")?;
-    publish_search_corpus_chunks(
-        &ingest_socket,
-        vec![alpha],
-        Some(repo_metadata_payload(
-            false,
-            false,
-            LqVisibility::Public,
-            &["global"],
-        )?),
-    )?;
-    seal_lexical(&ingest_socket)?;
-
+fn verify_hybrid_visibility_filter(socket: &Path) -> TestResult {
     let pin = GenerationPin::new(repo(), revision(), generation());
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 41,
@@ -1711,30 +1643,22 @@ fn hybrid_query_visibility_filter_executes_against_repo_metadata_surface() -> Te
     };
 
     if !wait_until(READINESS_TIMEOUT, || {
-        send_query_request(&socket, &req)
+        send_query_request(socket, &req)
             .map(|resp| match resp.payload {
                 SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
                 _ => true,
             })
             .unwrap_or(false)
     }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("hybrid visibility filter never progressed past NOT_READY".into());
     }
 
-    let response = send_query_request(&socket, &req)?;
+    let response = send_query_request(socket, &req)?;
     let results = match response.payload {
         SearchPlaneQueryIpcResponse::Hybrid(hybrid) => hybrid.results,
-        other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
-            return Err(format!("expected Hybrid, got {other:?}").into());
-        }
+        other => return Err(format!("expected Hybrid, got {other:?}").into()),
     };
     if results.len() != 1 {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected one hybrid hit, got {results:?}").into());
     }
     if results
@@ -1742,12 +1666,45 @@ fn hybrid_query_visibility_filter_executes_against_repo_metadata_surface() -> Te
         .map(|row| row.candidate.candidate_id.as_str())
         != Some("alpha")
     {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected alpha top hit, got {results:?}").into());
     }
+    Ok(())
+}
 
-    stop_runtime(shutdown, join)
+#[test]
+fn repo_metadata_filters_share_one_indexed_fixture() -> TestResult {
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
+    let state_root = dir.path();
+    let (socket, ingest_socket, shutdown, join) =
+        start_runtime(state_root, "searchd-repo-metadata-filters-shared-test")?;
+    publish_search_corpus_chunks(
+        &ingest_socket,
+        vec![chunk_record("alpha", "needle")?],
+        Some(repo_metadata_payload(
+            false,
+            false,
+            LqVisibility::Public,
+            &["global", "team-search"],
+        )?),
+    )?;
+    seal_lexical(&ingest_socket)?;
+
+    let verification: TestResult = (|| {
+        for (name, verify) in [
+            (
+                "sourcegraph_context_filter",
+                verify_sourcegraph_context_filter as fn(&Path) -> TestResult,
+            ),
+            ("hybrid_visibility_filter", verify_hybrid_visibility_filter),
+        ] {
+            verify(&socket)
+                .map_err(|error| -> Box<dyn Error> { format!("{name}: {error}").into() })?;
+        }
+        Ok(())
+    })();
+    let shutdown_result = stop_runtime(shutdown, join);
+    verification?;
+    shutdown_result
 }
 
 #[test]
@@ -3178,16 +3135,7 @@ fn structural_query_composition_wiring_emits_typed_error() -> TestResult {
     result.map_err(Into::into)
 }
 
-#[test]
-fn structural_sourcegraph_query_returns_match_after_parse_tree_ingest() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-structural-sourcegraph-success-test")?;
-    publish_structural_ready_fixture(&ingest_socket)?;
-    seal_lexical(&ingest_socket)?;
-    seal_structural(&ingest_socket)?;
-
+fn verify_structural_sourcegraph_match(socket: &Path) -> TestResult {
     let pin = GenerationPin::new(repo(), revision(), generation());
     let request = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 46,
@@ -3206,7 +3154,7 @@ fn structural_sourcegraph_query_returns_match_after_parse_tree_ingest() -> TestR
     };
     let mut observed: Option<String> = None;
     let saw_ready = wait_until(READINESS_TIMEOUT, || {
-        match send_query_request(&socket, &request) {
+        match send_query_request(socket, &request) {
             Ok(response) => match response.payload {
                 SearchPlaneQueryIpcResponse::Structural(structural) => {
                     observed = Some(format!("{structural:?}"));
@@ -3230,26 +3178,18 @@ fn structural_sourcegraph_query_returns_match_after_parse_tree_ingest() -> TestR
         }
     });
     if !saw_ready {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!(
             "structural Sourcegraph query never became ready; observed {observed:?}"
         )
         .into());
     }
 
-    let response = send_query_request(&socket, &request)?;
+    let response = send_query_request(socket, &request)?;
     let structural = match response.payload {
         SearchPlaneQueryIpcResponse::Structural(structural) => structural,
-        other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
-            return Err(format!("expected Structural, got {other:?}").into());
-        }
+        other => return Err(format!("expected Structural, got {other:?}").into()),
     };
     if structural.generation != pin || structural.results.len() != 1 {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("unexpected structural Sourcegraph response: {structural:?}").into());
     }
     let candidate = structural
@@ -3265,28 +3205,14 @@ fn structural_sourcegraph_query_returns_match_after_parse_tree_ingest() -> TestR
         || binding.start_byte != 3
         || binding.end_byte != 7
     {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(
             format!("unexpected structural Sourcegraph candidate/binding: {candidate:?}").into(),
         );
     }
-
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
-#[test]
-fn structural_sourcegraph_regex_query_returns_match_after_parse_tree_ingest() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) = start_runtime(
-        state_root,
-        "searchd-structural-sourcegraph-regex-success-test",
-    )?;
-    publish_structural_ready_fixture(&ingest_socket)?;
-    seal_lexical(&ingest_socket)?;
-    seal_structural(&ingest_socket)?;
-
+fn verify_structural_sourcegraph_regex_match(socket: &Path) -> TestResult {
     let pin = GenerationPin::new(repo(), revision(), generation());
     let request = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 46,
@@ -3307,7 +3233,7 @@ fn structural_sourcegraph_regex_query_returns_match_after_parse_tree_ingest() ->
     };
     let mut observed: Option<String> = None;
     let saw_ready = wait_until(READINESS_TIMEOUT, || {
-        match send_query_request(&socket, &request) {
+        match send_query_request(socket, &request) {
             Ok(response) => match response.payload {
                 SearchPlaneQueryIpcResponse::Structural(structural) => {
                     observed = Some(format!("{structural:?}"));
@@ -3331,22 +3257,16 @@ fn structural_sourcegraph_regex_query_returns_match_after_parse_tree_ingest() ->
         }
     });
     if !saw_ready {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!(
             "structural Sourcegraph regex query never became ready; observed {observed:?}"
         )
         .into());
     }
 
-    let response = send_query_request(&socket, &request)?;
+    let response = send_query_request(socket, &request)?;
     let structural = match response.payload {
         SearchPlaneQueryIpcResponse::Structural(structural) => structural,
-        other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
-            return Err(format!("expected Structural, got {other:?}").into());
-        }
+        other => return Err(format!("expected Structural, got {other:?}").into()),
     };
     let candidate = structural
         .results
@@ -3361,38 +3281,17 @@ fn structural_sourcegraph_regex_query_returns_match_after_parse_tree_ingest() ->
         || binding.start_byte != 3
         || binding.end_byte != 7
     {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!(
             "unexpected structural Sourcegraph regex candidate/binding: {candidate:?}"
         )
         .into());
     }
-
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
-#[test]
-fn structural_sourcegraph_query_requires_structural_pattern_type() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let config = build_config(state_root);
-    let runtime = build_runtime(config)?;
-    let socket = runtime.query_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name("searchd-structural-sourcegraph-pattern-type-test".into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-
-    if !wait_until(Duration::from_secs(2), || socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("socket never appeared".into());
-    }
-
+fn verify_structural_pattern_type_required(socket: &Path) -> TestResult {
     let response = send_query_request(
-        &socket,
+        socket,
         &SearchPlaneQueryIpcRequestEnvelope {
             request_id: 47,
             payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
@@ -3411,41 +3310,18 @@ fn structural_sourcegraph_query_requires_structural_pattern_type() -> TestResult
     )?;
     let err = match response.payload {
         SearchPlaneQueryIpcResponse::Error(err) => err,
-        other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
-            return Err(format!("expected Error, got {other:?}").into());
-        }
+        other => return Err(format!("expected Error, got {other:?}").into()),
     };
     if err.code != "BRIDGE_TRANSLATE_FAIL" || !err.message.contains("patterntype:structural") {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!(
             "expected BRIDGE_TRANSLATE_FAIL structural pattern-type error, got {err:?}"
         )
         .into());
     }
-
-    shutdown.store(true, Ordering::Release);
-    match join.join() {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(e.into()),
-        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
-    }
+    Ok(())
 }
 
-#[test]
-fn structural_sourcegraph_query_rejects_select_filter() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) = start_runtime(
-        state_root,
-        "searchd-structural-sourcegraph-select-filter-test",
-    )?;
-    publish_structural_ready_fixture(&ingest_socket)?;
-    seal_lexical(&ingest_socket)?;
-    seal_structural(&ingest_socket)?;
-
+fn verify_structural_sourcegraph_select_refusal(socket: &Path) -> TestResult {
     let request = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 48,
         payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
@@ -3463,7 +3339,7 @@ fn structural_sourcegraph_query_rejects_select_filter() -> TestResult {
     };
     let mut observed: Option<String> = None;
     let saw_expected = wait_until(READINESS_TIMEOUT, || {
-        match send_query_request(&socket, &request) {
+        match send_query_request(socket, &request) {
             Ok(response) => match response.payload {
                 SearchPlaneQueryIpcResponse::Error(err)
                     if err.code == "NOT_READY" || err.code == "STR_GENERATION_NOT_READY" =>
@@ -3487,38 +3363,17 @@ fn structural_sourcegraph_query_rejects_select_filter() -> TestResult {
         }
     });
     if !saw_expected {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!(
             "expected STR_INVALID_REQUEST for structural SG select filter, observed {observed:?}"
         )
         .into());
     }
-
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
-#[test]
-fn structural_sourcegraph_query_rejects_timeout_filter() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let config = build_config(state_root);
-    let runtime = build_runtime(config)?;
-    let socket = runtime.query_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name("searchd-structural-sourcegraph-timeout-filter-test".into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-
-    if !wait_until(Duration::from_secs(2), || socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("socket never appeared".into());
-    }
-
+fn verify_structural_timeout_refusal(socket: &Path) -> TestResult {
     let response = send_query_request(
-        &socket,
+        socket,
         &SearchPlaneQueryIpcRequestEnvelope {
             request_id: 49,
             payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
@@ -3537,38 +3392,17 @@ fn structural_sourcegraph_query_rejects_timeout_filter() -> TestResult {
     )?;
     let err = match response.payload {
         SearchPlaneQueryIpcResponse::Error(err) => err,
-        other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
-            return Err(format!("expected Error, got {other:?}").into());
-        }
+        other => return Err(format!("expected Error, got {other:?}").into()),
     };
     if err.code != "STR_INVALID_REQUEST" || !err.message.contains("timeout option") {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(
             format!("expected STR_INVALID_REQUEST structural timeout error, got {err:?}").into(),
         );
     }
-
-    shutdown.store(true, Ordering::Release);
-    match join.join() {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(e.into()),
-        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
-    }
+    Ok(())
 }
 
-#[test]
-fn structural_query_typed_holes_return_role_tag_scoped_matches() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-structural-typed-hole-success-test")?;
-    publish_structural_ready_fixture(&ingest_socket)?;
-    seal_lexical(&ingest_socket)?;
-    seal_structural(&ingest_socket)?;
-
+fn verify_structural_typed_holes(socket: &Path) -> TestResult {
     let pin = GenerationPin::new(repo(), revision(), generation());
     let expr_request = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 48,
@@ -3587,7 +3421,7 @@ fn structural_query_typed_holes_return_role_tag_scoped_matches() -> TestResult {
     };
     let mut observed_expr: Option<String> = None;
     let saw_expr = wait_until(READINESS_TIMEOUT, || {
-        match send_query_request(&socket, &expr_request) {
+        match send_query_request(socket, &expr_request) {
             Ok(response) => match response.payload {
                 SearchPlaneQueryIpcResponse::Structural(structural) => {
                     observed_expr = Some(format!("{structural:?}"));
@@ -3611,22 +3445,16 @@ fn structural_query_typed_holes_return_role_tag_scoped_matches() -> TestResult {
         }
     });
     if !saw_expr {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!(
             "typed expr structural query never became ready; observed {observed_expr:?}"
         )
         .into());
     }
 
-    let expr_response = send_query_request(&socket, &expr_request)?;
+    let expr_response = send_query_request(socket, &expr_request)?;
     let expr_structural = match expr_response.payload {
         SearchPlaneQueryIpcResponse::Structural(structural) => structural,
-        other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
-            return Err(format!("expected Structural for typed expr, got {other:?}").into());
-        }
+        other => return Err(format!("expected Structural for typed expr, got {other:?}").into()),
     };
     let expr_candidate = expr_structural
         .results
@@ -3641,13 +3469,11 @@ fn structural_query_typed_holes_return_role_tag_scoped_matches() -> TestResult {
         || expr_binding.start_byte != 3
         || expr_binding.end_byte != 7
     {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("unexpected typed expr candidate/binding: {expr_candidate:?}").into());
     }
 
     let item_response = send_query_request(
-        &socket,
+        socket,
         &SearchPlaneQueryIpcRequestEnvelope {
             request_id: 49,
             payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
@@ -3666,11 +3492,7 @@ fn structural_query_typed_holes_return_role_tag_scoped_matches() -> TestResult {
     )?;
     let item_structural = match item_response.payload {
         SearchPlaneQueryIpcResponse::Structural(structural) => structural,
-        other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
-            return Err(format!("expected Structural for typed item, got {other:?}").into());
-        }
+        other => return Err(format!("expected Structural for typed item, got {other:?}").into()),
     };
     let item_candidate = item_structural
         .results
@@ -3685,23 +3507,50 @@ fn structural_query_typed_holes_return_role_tag_scoped_matches() -> TestResult {
         || item_binding.start_byte != 0
         || item_binding.end_byte != 10
     {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("unexpected typed item candidate/binding: {item_candidate:?}").into());
     }
-
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
 #[test]
-fn structural_query_rejects_typed_hole_kind_with_exact_code() -> TestResult {
+fn structural_ready_queries_share_one_indexed_fixture() -> TestResult {
     let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
-    let (socket, _ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-structural-typed-hole-reject-test")?;
+    let (socket, ingest_socket, shutdown, join) =
+        start_runtime(state_root, "searchd-structural-ready-shared-test")?;
+    publish_structural_ready_fixture(&ingest_socket)?;
+    seal_lexical(&ingest_socket)?;
+    seal_structural(&ingest_socket)?;
 
+    let verification: TestResult = (|| {
+        for (name, verify) in [
+            (
+                "sourcegraph_match",
+                verify_structural_sourcegraph_match as fn(&Path) -> TestResult,
+            ),
+            (
+                "sourcegraph_regex_match",
+                verify_structural_sourcegraph_regex_match,
+            ),
+            (
+                "sourcegraph_select_refusal",
+                verify_structural_sourcegraph_select_refusal,
+            ),
+            ("typed_holes", verify_structural_typed_holes),
+        ] {
+            verify(&socket)
+                .map_err(|error| -> Box<dyn Error> { format!("{name}: {error}").into() })?;
+        }
+        Ok(())
+    })();
+    let shutdown_result = stop_runtime(shutdown, join);
+    verification?;
+    shutdown_result
+}
+
+fn verify_structural_typed_hole_kind_refusal(socket: &Path) -> TestResult {
     let response = send_query_request(
-        &socket,
+        socket,
         &SearchPlaneQueryIpcRequestEnvelope {
             request_id: 49,
             payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
@@ -3720,22 +3569,44 @@ fn structural_query_rejects_typed_hole_kind_with_exact_code() -> TestResult {
     )?;
     let err = match response.payload {
         SearchPlaneQueryIpcResponse::Error(err) => err,
-        other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
-            return Err(format!("expected Error, got {other:?}").into());
-        }
+        other => return Err(format!("expected Error, got {other:?}").into()),
     };
     if err.code != "STR_HOLE_KIND_UNSUPPORTED" || !err.message.contains("typed hole kind `lambda`")
     {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(
             format!("expected STR_HOLE_KIND_UNSUPPORTED typed-hole error, got {err:?}").into(),
         );
     }
+    Ok(())
+}
 
-    stop_runtime(shutdown, join)
+#[test]
+fn structural_request_refusals_share_one_runtime() -> TestResult {
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
+    let state_root = dir.path();
+    let (socket, _ingest_socket, shutdown, join) =
+        start_runtime(state_root, "searchd-structural-refusals-shared-test")?;
+
+    let verification: TestResult = (|| {
+        for (name, verify) in [
+            (
+                "pattern_type_required",
+                verify_structural_pattern_type_required as fn(&Path) -> TestResult,
+            ),
+            ("timeout_refusal", verify_structural_timeout_refusal),
+            (
+                "typed_hole_kind_refusal",
+                verify_structural_typed_hole_kind_refusal,
+            ),
+        ] {
+            verify(&socket)
+                .map_err(|error| -> Box<dyn Error> { format!("{name}: {error}").into() })?;
+        }
+        Ok(())
+    })();
+    let shutdown_result = stop_runtime(shutdown, join);
+    verification?;
+    shutdown_result
 }
 
 fn lex_query(needle: &str) -> SearchPlaneQueryIpcRequestEnvelope {

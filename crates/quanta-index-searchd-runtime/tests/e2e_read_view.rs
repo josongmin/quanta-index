@@ -100,10 +100,7 @@ fn pin_detail(rt: &E2eRuntime) -> String {
 /// A generation without history, commit recency or runtime authority
 /// refuses each plan that reads one of them with that domain's code and
 /// serves every plan that reads only the sealed tracks.
-#[test]
-fn missing_domains_are_refused_typed_per_route_and_track_plans_serve() -> TestResult {
-    let mut rt = seeded_runtime()?;
-
+fn verify_missing_domains_and_track_plans(rt: &mut E2eRuntime) -> TestResult {
     // The plain lexical plan reads the lexical track only.
     let plain = rt.query_text(TextQuerySyntax::Native, QUERY, TOP_K);
     served(&plain, "plain lexical query")?;
@@ -205,9 +202,7 @@ fn missing_domains_are_refused_typed_per_route_and_track_plans_serve() -> TestRe
 
 /// The routes that carry an explanation open their planner trace with the
 /// view's domains, epochs, pin and pinned artifacts.
-#[test]
-fn explanations_name_the_view_domains_epochs_and_artifacts() -> TestResult {
-    let mut rt = seeded_runtime()?;
+fn verify_explanation_read_view_identity(rt: &mut E2eRuntime) -> TestResult {
     let pin_detail = pin_detail(&rt);
 
     let hybrid = rt.query_hybrid(TextQuerySyntax::Native, QUERY, QUERY, TOP_K);
@@ -243,7 +238,7 @@ fn explanations_name_the_view_domains_epochs_and_artifacts() -> TestResult {
     let trace = plan_trace(&scoped)?;
     expect_trace_head(&trace, "lexical,semantic", &pin_detail, "scoped semantic")?;
 
-    let candidate = plain_first_candidate(&mut rt)?;
+    let candidate = plain_first_candidate(rt)?;
     let explain = rt.explain_candidate(candidate);
     if let Some(error) = &explain.typed_error {
         return Err(format!("explain: refused: {error}").into());
@@ -259,6 +254,16 @@ fn explanations_name_the_view_domains_epochs_and_artifacts() -> TestResult {
         .map(|entry| entry.detail.clone())
         .collect();
     expect_trace_head(&trace, "lexical", &pin_detail, "explain")?;
+    Ok(())
+}
+
+#[test]
+fn sealed_track_read_view_scenarios_share_one_fixture() -> TestResult {
+    let mut rt = seeded_runtime()?;
+    verify_missing_domains_and_track_plans(&mut rt)
+        .map_err(|error| -> Box<dyn Error> { format!("missing_domains: {error}").into() })?;
+    verify_explanation_read_view_identity(&mut rt)
+        .map_err(|error| -> Box<dyn Error> { format!("explanation_identity: {error}").into() })?;
     Ok(())
 }
 
