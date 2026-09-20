@@ -990,48 +990,23 @@ fn verify_history_generation_not_ready(socket: &Path) -> TestResult {
     Ok(())
 }
 
-#[test]
-fn history_query_returns_typed_producer_unavailable_without_lexical_fallback() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-history-producer-unavailable-test")?;
-    publish_search_corpus_chunks(
-        &ingest_socket,
-        vec![chunk_record(
-            "history-fallback",
-            "fix only lives in lexical content",
-        )?],
-        Some(b"manifest".to_vec()),
-    )?;
-    seal_lexical(&ingest_socket)?;
+fn verify_history_producer_unavailable_without_lexical_fallback(socket: &Path) -> TestResult {
     if !wait_until(READINESS_TIMEOUT, || {
-        send_query_request(&socket, &lex_query("fix"))
+        send_query_request(socket, &lex_query("fix"))
             .map(|resp| matches!(resp.payload, SearchPlaneQueryIpcResponse::Text(_)))
             .unwrap_or(false)
     }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("lexical fixture never became queryable".into());
     }
 
-    let err = wait_for_typed_error(
-        &socket,
-        &history_query("type:commit fix"),
-        READINESS_TIMEOUT,
-    )?;
+    let err = wait_for_typed_error(socket, &history_query("type:commit fix"), READINESS_TIMEOUT)?;
     if err.code != "HISTORY_PRODUCER_UNAVAILABLE" {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected HISTORY_PRODUCER_UNAVAILABLE, got {}", err.code).into());
     }
     if !err.message.contains("producer data is unavailable") {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("unexpected producer-unavailable message: {}", err.message).into());
     }
-
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
 #[test]
@@ -1674,17 +1649,7 @@ fn verify_semantic_requires_materialization(socket: &Path) -> TestResult {
     Ok(())
 }
 
-#[test]
-fn semantic_query_without_lexical_scope_returns_global_nearest_hit() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-semantic-no-scope-success-test")?;
-    let alpha = chunk_record("alpha", "semantic alpha")?;
-    let beta = chunk_record("beta", "semantic beta")?;
-    publish_search_corpus_chunks(&ingest_socket, vec![alpha, beta], None)?;
-    seal_lexical(&ingest_socket)?;
-
+fn verify_semantic_without_lexical_scope(socket: &Path) -> TestResult {
     let pin = GenerationPin::new(repo(), revision(), generation());
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 42,
@@ -1699,42 +1664,31 @@ fn semantic_query_without_lexical_scope_returns_global_nearest_hit() -> TestResu
     };
 
     if !wait_until(READINESS_TIMEOUT, || {
-        send_query_request(&socket, &req)
+        send_query_request(socket, &req)
             .map(|resp| !matches!(resp.payload, SearchPlaneQueryIpcResponse::Error(_)))
             .unwrap_or(false)
     }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("semantic no-scope query never became ready".into());
     }
 
-    let response = send_query_request(&socket, &req)?;
+    let response = send_query_request(socket, &req)?;
     let results = match response.payload {
         SearchPlaneQueryIpcResponse::Semantic(semantic) => {
             if semantic.generation != pin {
-                shutdown.store(true, Ordering::Release);
-                drop(join.join());
                 return Err("semantic response generation did not echo request pin".into());
             }
             semantic.results
         }
-        other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
-            return Err(format!("expected Semantic, got {other:?}").into());
-        }
+        other => return Err(format!("expected Semantic, got {other:?}").into()),
     };
     let ids: Vec<String> = results
         .iter()
         .map(|candidate| candidate.candidate_id.clone())
         .collect();
     if ids != ["alpha".to_string()] {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected global nearest [alpha], got {ids:?}").into());
     }
-
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
 /// Boot the real daemon with an explicit `OpenAi` embedder profile.
@@ -1892,23 +1846,7 @@ fn openai_semantic_paraphrase_outranks_unrelated_v1() -> TestResult {
     stop_runtime(shutdown, join)
 }
 
-#[test]
-fn semantic_query_uses_search_owned_text_derivation_by_default() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-semantic-default-text-derivation-test")?;
-
-    publish_search_corpus_chunks(
-        &ingest_socket,
-        vec![
-            chunk_record("alpha", "parser pipeline typed semantic search")?,
-            chunk_record("beta", "archive storage compaction")?,
-        ],
-        None,
-    )?;
-    seal_lexical(&ingest_socket)?;
-
+fn verify_semantic_search_owned_text_derivation(socket: &Path) -> TestResult {
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 43,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
@@ -1922,35 +1860,30 @@ fn semantic_query_uses_search_owned_text_derivation_by_default() -> TestResult {
     };
 
     if !wait_until(READINESS_TIMEOUT, || {
-        send_query_request(&socket, &req)
+        send_query_request(socket, &req)
             .map(|resp| !matches!(resp.payload, SearchPlaneQueryIpcResponse::Error(_)))
             .unwrap_or(false)
     }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("semantic default text query never became ready".into());
     }
 
-    let response = send_query_request(&socket, &req)?;
+    let response = send_query_request(socket, &req)?;
     let semantic = match response.payload {
         SearchPlaneQueryIpcResponse::Semantic(semantic) => semantic,
-        other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
-            return Err(format!("expected Semantic, got {other:?}").into());
-        }
+        other => return Err(format!("expected Semantic, got {other:?}").into()),
     };
     let first = semantic
         .results
         .first()
         .ok_or_else(|| "semantic default derivation returned no results".to_string())?;
-    if first.candidate_id != "alpha" {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err(format!("expected alpha candidate, got {}", first.candidate_id).into());
+    if first.candidate_id != "derivation-alpha" {
+        return Err(format!(
+            "expected derivation-alpha candidate, got {}",
+            first.candidate_id
+        )
+        .into());
     }
-
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
 #[test]
@@ -2061,16 +1994,7 @@ fn verify_semantic_generation_pin_mismatch(socket: &Path) -> TestResult {
     Ok(())
 }
 
-#[test]
-fn semantic_query_executes_scoped_unindexed_lexical_scope() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-semantic-unindexed-scope-test")?;
-    let alpha = chunk_record("alpha", "semantic alpha")?;
-    publish_search_corpus_chunks(&ingest_socket, vec![alpha], None)?;
-    seal_lexical(&ingest_socket)?;
-
+fn verify_semantic_scoped_unindexed_lexical_scope(socket: &Path) -> TestResult {
     let pin = GenerationPin::new(repo(), revision(), generation());
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 44,
@@ -2093,42 +2017,31 @@ fn semantic_query_executes_scoped_unindexed_lexical_scope() -> TestResult {
     };
 
     if !wait_until(READINESS_TIMEOUT, || {
-        send_query_request(&socket, &req)
+        send_query_request(socket, &req)
             .map(|resp| !matches!(resp.payload, SearchPlaneQueryIpcResponse::Error(_)))
             .unwrap_or(false)
     }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("semantic unindexed scope query never became ready".into());
     }
 
-    let response = send_query_request(&socket, &req)?;
+    let response = send_query_request(socket, &req)?;
     let results = match response.payload {
         SearchPlaneQueryIpcResponse::Semantic(semantic) => {
             if semantic.generation != pin {
-                shutdown.store(true, Ordering::Release);
-                drop(join.join());
                 return Err("semantic response generation did not echo request pin".into());
             }
             semantic.results
         }
-        other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
-            return Err(format!("expected Semantic, got {other:?}").into());
-        }
+        other => return Err(format!("expected Semantic, got {other:?}").into()),
     };
     let ids: Vec<String> = results
         .iter()
         .map(|candidate| candidate.candidate_id.clone())
         .collect();
     if ids != ["alpha".to_string()] {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected scoped semantic intersection [alpha], got {ids:?}").into());
     }
-
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
 #[test]
@@ -2261,19 +2174,7 @@ fn semantic_scoped_query_ignores_out_of_scope_global_nearest_hit() -> TestResult
     stop_runtime(shutdown, join)
 }
 
-#[test]
-fn semantic_query_rejects_empty_text_with_typed_code() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-sem-empty-query-test")?;
-    publish_search_corpus_chunks(
-        &ingest_socket,
-        vec![chunk_record("alpha", "semantic alpha")?],
-        None,
-    )?;
-    seal_lexical(&ingest_socket)?;
-
+fn verify_semantic_empty_text_refusal(socket: &Path) -> TestResult {
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 43,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
@@ -2287,34 +2188,75 @@ fn semantic_query_rejects_empty_text_with_typed_code() -> TestResult {
     };
 
     if !wait_until(READINESS_TIMEOUT, || {
-        send_query_request(&socket, &req)
+        send_query_request(socket, &req)
             .map(|resp| match resp.payload {
                 SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
                 _ => true,
             })
             .unwrap_or(false)
     }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("semantic empty-query request never progressed past NOT_READY".into());
     }
 
-    let response = send_query_request(&socket, &req)?;
+    let response = send_query_request(socket, &req)?;
     let err = match response.payload {
         SearchPlaneQueryIpcResponse::Error(err) => err,
-        other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
-            return Err(format!("expected Error, got {other:?}").into());
-        }
+        other => return Err(format!("expected Error, got {other:?}").into()),
     };
     if err.code != "EMPTY_QUERY" {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected EMPTY_QUERY, got {}", err.code).into());
     }
 
-    stop_runtime(shutdown, join)
+    Ok(())
+}
+
+#[test]
+fn default_indexed_queries_share_one_fixture() -> TestResult {
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
+    let state_root = dir.path();
+    let (socket, ingest_socket, shutdown, join) =
+        start_runtime(state_root, "searchd-default-indexed-queries-shared-test")?;
+    publish_search_corpus_chunks(
+        &ingest_socket,
+        vec![
+            chunk_record("alpha", "semantic alpha")?,
+            chunk_record("beta", "semantic beta")?,
+            chunk_record("derivation-alpha", "parser pipeline typed semantic search")?,
+            chunk_record("derivation-beta", "archive storage compaction")?,
+            chunk_record("history-fallback", "fix only lives in lexical content")?,
+        ],
+        Some(b"manifest".to_vec()),
+    )?;
+    seal_lexical(&ingest_socket)?;
+
+    let verification: TestResult = (|| {
+        for (name, verify) in [
+            (
+                "without_lexical_scope",
+                verify_semantic_without_lexical_scope as fn(&Path) -> TestResult,
+            ),
+            (
+                "scoped_unindexed_lexical_scope",
+                verify_semantic_scoped_unindexed_lexical_scope,
+            ),
+            ("empty_text_refusal", verify_semantic_empty_text_refusal),
+            (
+                "search_owned_text_derivation",
+                verify_semantic_search_owned_text_derivation,
+            ),
+            (
+                "history_producer_unavailable_without_lexical_fallback",
+                verify_history_producer_unavailable_without_lexical_fallback,
+            ),
+        ] {
+            verify(&socket)
+                .map_err(|error| -> Box<dyn Error> { format!("{name}: {error}").into() })?;
+        }
+        Ok(())
+    })();
+    let shutdown_result = stop_runtime(shutdown, join);
+    verification?;
+    shutdown_result
 }
 
 #[test]
