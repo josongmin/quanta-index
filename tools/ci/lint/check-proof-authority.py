@@ -549,9 +549,12 @@ def paired_source_snapshot(
     assert lock_path is not None
     if not lock_path.is_file():
         raise ValueError(f"paired dependency lock is missing: {lock_value!r}")
+    # Bind the canonical repository identity, not the transport spelling of
+    # the remote. The same trusted GitHub repository may be checked out via an
+    # HTTPS URL or an SSH host alias; that must not fork release receipts.
     remote_digest = hashlib.sha256()
     remote_digest.update(b"quanta-index-remote-identity-v1\0")
-    remote_digest.update(origin.encode("utf-8"))
+    remote_digest.update(repository.encode("utf-8"))
     return {
         "repository": repository,
         "remote_identity_digest": f"sha256:{remote_digest.hexdigest()}",
@@ -573,6 +576,7 @@ def check_manifest(
     bind_source: bool,
     allow_non_passed: bool = False,
     paired_checkouts: dict[str, Path] | None = None,
+    proof_by_id: dict[str, dict[str, Any]] | None = None,
 ) -> list[Finding]:
     findings: list[Finding] = []
     validator = jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker())
@@ -733,6 +737,24 @@ def check_manifest(
             Finding(manifest_path, "dependency receipt IDs differ from proof authority")
         )
     for dependency in dependencies:
+        if proof_by_id is not None:
+            dependency_authority = proof_by_id.get(dependency["proof_id"])
+            if dependency_authority is None:
+                findings.append(
+                    Finding(
+                        manifest_path,
+                        f"dependency receipt names unknown proof {dependency['proof_id']!r}",
+                    )
+                )
+                continue
+            if dependency["path"] != dependency_authority["artifact"]:
+                findings.append(
+                    Finding(
+                        manifest_path,
+                        f"dependency receipt path differs from registered artifact: {dependency['proof_id']!r}",
+                    )
+                )
+                continue
         dependency_path, path_error = _payload_repo_file(
             root,
             dependency["path"],
@@ -964,6 +986,7 @@ def main(argv: list[str] | None = None) -> int:
             root=root,
             bind_source=args.bind_source,
             paired_checkouts=paired_checkouts,
+            proof_by_id=proof_by_id,
         )
         findings.extend(manifest_findings)
         if not manifest_findings:

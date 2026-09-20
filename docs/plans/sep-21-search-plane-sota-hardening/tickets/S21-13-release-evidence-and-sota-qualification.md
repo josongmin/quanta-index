@@ -2,9 +2,10 @@
 
 Status: `planned`
 
-Phase A status: `partial`; registry/schema/static validator and CI policy check exist, but current-source manifest
-production, staged+unstaged source binding, conditional non-binary proof semantics and fail-closed aggregate artifact
-requirements are not closed. Phase B remains `planned` and depends on S21-01 through S21-12.
+Phase A status: `done` for the M0 foundation gate. Registry-driven atomic manifest production, staged/unstaged/
+Git-visible-untracked source binding, conditional non-binary semantics, exact-pair binding, blocking P00 validation
+and the fail-closed aggregate release command are implemented. Phase B remains `planned` and depends on S21-01
+through S21-12; no product/runtime/release qualification is implied by Phase A.
 
 Depends on: phase A depends on S21-00; phase B depends on S21-01 through S21-12
 
@@ -84,13 +85,16 @@ Implemented owners:
 - `.pre-commit-config.yaml` `proof-authority` hook
 - `.github/workflows/ci.yml` blocking proof-authority step
 
-Open Phase A owners:
+Closed Phase A owners:
 
-- source digest semantics that include staged+unstaged changes and exclude proof output
-- registry-driven terminal manifest writer
-- conditional `binary_binding=none` and upstream-less worktree schema/validator semantics
-- blocking current-gate manifest validation and final `--require-all --bind-source` aggregate gate
-- S21 proof node to concrete `test-authority` target cross-links
+- source digest semantics include staged, unstaged and Git-visible untracked bytes while excluding proof output
+- `tools/ci/write-proof-manifest.py` atomically publishes registry-derived terminal receipts
+- `binary_binding=none`, upstream-less/detached worktrees and non-passing terminal receipts are explicit
+- PR CI blocks on the current P00 receipt; the explicit release gate uses `--require-all --bind-source`
+- exact-pair release receipts bind normalized Semantica repository identity, Git state and `Cargo.lock`
+
+Per-lane requirement, not Phase A closure: each P01-P12 owner must register any new concrete `test-authority`
+target before claiming its proof. Empty future target lists are not evidence and are not promoted by the M0 receipt.
 
 ### Phase B — final aggregate
 

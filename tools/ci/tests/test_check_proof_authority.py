@@ -290,6 +290,41 @@ def test_manifest_refuses_registry_invocation_and_dependency_drift(tmp_path: Pat
     assert "dependency receipt IDs differ from proof authority" in messages
 
 
+def test_manifest_refuses_dependency_receipt_path_not_owned_by_registry(tmp_path: Path) -> None:
+    proof = _proof(tmp_path)
+    proof["dependencies"] = ["parent-proof"]
+    parent = _proof(tmp_path)
+    parent["id"] = "parent-proof"
+    parent["artifact"] = "proofs/parent-proof.json"
+    registered_receipt = tmp_path / parent["artifact"]
+    registered_receipt.parent.mkdir(parents=True)
+    registered_receipt.write_text('{"proof_id":"parent-proof"}\n', encoding="utf-8")
+    substitute = tmp_path / "proofs/substitute.json"
+    substitute.write_bytes(registered_receipt.read_bytes())
+
+    payload = _manifest(tmp_path, proof)
+    payload["dependency_receipts"] = [
+        {
+            "proof_id": "parent-proof",
+            "path": "proofs/substitute.json",
+            "sha256": _sha(substitute),
+        }
+    ]
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    messages = _messages(
+        MODULE.check_manifest(
+            payload,
+            manifest_path=tmp_path / "proof.json",
+            proof=proof,
+            schema=schema,
+            root=tmp_path,
+            bind_source=False,
+            proof_by_id={proof["id"]: proof, parent["id"]: parent},
+        )
+    )
+    assert "dependency receipt path differs from registered artifact: 'parent-proof'" in messages
+
+
 def test_manifest_refuses_failed_count_with_passed_status(tmp_path: Path) -> None:
     proof = _proof(tmp_path)
     payload = _manifest(tmp_path, proof)
@@ -613,6 +648,51 @@ def test_exact_pair_live_binding_and_nested_checkout_exclusion(tmp_path: Path) -
         )
     )
     assert "source_pair is not current paired source" in messages
+
+
+def test_paired_remote_identity_is_transport_independent(tmp_path: Path) -> None:
+    paired = tmp_path / "semantica-codegraph-v2"
+    paired.mkdir()
+    _init_repo(paired)
+    (paired / "Cargo.lock").write_bytes(b"lock-v1\n")
+    subprocess.run(["git", "-C", str(paired), "add", "Cargo.lock"], check=True)
+    subprocess.run(["git", "-C", str(paired), "commit", "-qm", "lock"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(paired),
+            "remote",
+            "add",
+            "origin",
+            "git@github-personal:josongmin/semantica-codegraph-v2.git",
+        ],
+        check=True,
+    )
+    ssh_snapshot = MODULE.paired_source_snapshot(
+        paired,
+        repository=MODULE.PAIRED_REPOSITORY,
+        dependency_lock=Path(MODULE.PAIRED_DEPENDENCY_LOCK),
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(paired),
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/josongmin/semantica-codegraph-v2.git",
+        ],
+        check=True,
+    )
+    https_snapshot = MODULE.paired_source_snapshot(
+        paired,
+        repository=MODULE.PAIRED_REPOSITORY,
+        dependency_lock=Path(MODULE.PAIRED_DEPENDENCY_LOCK),
+    )
+
+    assert https_snapshot == ssh_snapshot
 
 
 def test_cli_refuses_unregistered_proof_id(tmp_path: Path) -> None:

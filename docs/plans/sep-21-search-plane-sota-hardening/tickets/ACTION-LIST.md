@@ -19,17 +19,20 @@ so and only after shared DTO/schema owners are frozen. A checked item requires c
 
 ### S21-13A
 
-- [ ] Purpose: make required evidence absent/stale/zero-execution fail before implementation starts.
-- [ ] Files: `tools/ci/proof-authority.toml`, proof schema/validator, CI/pre-commit wiring,
+- [x] Purpose: make required evidence absent/stale/zero-execution fail before implementation starts.
+- [x] Files: `tools/ci/proof-authority.toml`, proof schema/validator, CI/pre-commit wiring,
   `tools/ci/lint/check-test-authority.py`, receipt schema/writer, CI workflow skeleton.
-- [ ] Logic: strict manifest validation for full SHA, dirty digest, binary, host, feature/toolchain, counts and
+- [x] Logic: strict manifest validation for full SHA, dirty digest, binary, host, feature/toolchain, counts and
   artifact digests; register every mandatory family.
-- [ ] DoD: missing artifact, short SHA, dirty mismatch, selected/executed 0, ignored-only, wrong binary and
+- [x] DoD: missing artifact, short SHA, dirty mismatch, selected/executed 0, ignored-only, wrong binary and
   unregistered proof all fail locally and in blocking CI.
 
-Open blockers: blocking CI currently validates registry/schema only; final artifact absence requires an explicit
-`--require-all --bind-source` aggregate gate. Dirty digest must include staged changes while excluding proof output,
-and `binary_binding=none`/upstream-less worktrees need conditional schema semantics.
+Closed M0 boundary: blocking PR CI produces and validates the registered P00 receipt against current source;
+`--require-all --bind-source` is a separate explicit release gate and refuses any absent future receipt. The source
+digest covers staged, unstaged and Git-visible untracked bytes while excluding proof output. Exact-pair receipts bind
+the normalized paired repository identity, its current Git state and registered lockfile. Future proof nodes still
+must add their owner-local `test-authority` targets and evidence in the owning lane; this checkbox does not qualify
+those unimplemented product surfaces.
 
 ## W1a — canonical identity/layout
 

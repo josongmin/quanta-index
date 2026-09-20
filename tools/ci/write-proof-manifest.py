@@ -421,6 +421,7 @@ def publish_manifest(
                 if paired_checkout is not None
                 else None
             ),
+            proof_by_id=proof_by_id,
         )
         if findings:
             rendered = "; ".join(finding.render() for finding in findings)

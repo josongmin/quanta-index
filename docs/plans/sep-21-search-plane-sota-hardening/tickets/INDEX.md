@@ -1,7 +1,8 @@
 # SEP-21 Search Plane SOTA Hardening — Ticket Index
 
-Status: `in progress`; S21-00 decisions are frozen, but S21-13A source-binding/fail-closed proof gate remains open.
-P01 is blocked until P00 current-checkpoint verification closes that gap.
+Status: `in progress`; S21-00 decisions and the M0/P00 current-source fail-closed proof gate are implemented.
+P01 is the next permitted lane. S21-13 Phase B and every product/runtime proof remain open until their owning lanes
+produce same-source receipts.
 
 Authority inputs:
 
