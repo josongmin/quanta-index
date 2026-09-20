@@ -34,6 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SYNTAX_RS = REPO_ROOT / "crates/quanta-index-lq-bridge/src/syntax.rs"
 TRANSLATOR_RS = REPO_ROOT / "crates/quanta-index-lq-bridge/src/translator.rs"
 PREDICATE_REGISTRY_RS = REPO_ROOT / "crates/quanta-index-lexical/src/predicate_registry.rs"
+CORE_PREDICATE_RS = REPO_ROOT / "crates/quanta-index-core/src/domains/read_view/predicate.rs"
 PARITY_RS = (
     REPO_ROOT / "crates/quanta-index-searchd-runtime/tests/e2e_dual_syntax_lowering_parity.rs"
 )
@@ -553,19 +554,73 @@ def scan_lowering_owner_local_demotions(
     return hits
 
 
-def ours_predicates() -> tuple[list[str], list[str], list[str]]:
-    registry_body = read(PREDICATE_REGISTRY_RS)
-    translator_body = read(TRANSLATOR_RS) + read(SYNTAX_RS)
-    canonical = set(re.findall(r'PredicateSpec\s*\{\s*name:\s*"([^"]+)"', registry_body))
-    aliases = set(re.findall(r'alias:\s*"([^"]+)"', registry_body))
-    aliases.update(
-        re.findall(
-            r'"(repo\.has\.path|file\.contains\.content|repo\.contains\.content)"',
-            translator_body,
-        )
+def _typed_names(core_body: str, type_name: str) -> tuple[set[str], dict[str, str]]:
+    start = core_body.find(f"impl {type_name} {{")
+    end = core_body.find("\n}\n", start)
+    if start < 0 or end < 0:
+        raise ValueError(f"cannot locate {type_name} implementation")
+    implementation = core_body[start:end]
+    all_match = re.search(
+        r"pub const ALL: \[Self; (\d+)\] = \[(.*?)\n    \];", implementation, re.S
     )
-    route_owned = ["symbol.has.name"]
-    return sorted(canonical), sorted(aliases), route_owned
+    name_match = re.search(
+        r"pub const fn name\(self\).*?match self \{(.*?)\n        \}", implementation, re.S
+    )
+    if not all_match or not name_match:
+        raise ValueError(f"cannot locate {type_name} ALL/name tables")
+    all_body, names_body = all_match.group(2), name_match.group(1)
+    if "/*" in all_body + names_body:
+        raise ValueError(f"{type_name} table contains unsupported block comments")
+    variants = re.findall(r"^\s*Self::(\w+),\s*$", all_body, re.M)
+    names = re.findall(r'^\s*Self::(\w+)\s*=>\s*"([^"]+)",\s*$', names_body, re.M)
+    if (
+        len(variants) != int(all_match.group(1))
+        or len(variants) != len(set(variants))
+        or len(names) != names_body.count("=>")
+        or len(names) != len({variant for variant, _ in names})
+        or set(variants) != {variant for variant, _ in names}
+        or len(names) != len({name for _, name in names})
+    ):
+        raise ValueError(f"{type_name} ALL/name tables are incomplete or ambiguous")
+    return set(variants), dict(names)
+
+
+def _registry_variants(registry_body: str, table: str, row: str, enum: str, field: str) -> set[str]:
+    match = re.search(
+        rf"pub\(crate\) const {table}: &\[{row}\] = &\[(.*?)\n\];", registry_body, re.S
+    )
+    if not match or "/*" in match.group(1):
+        raise ValueError(f"cannot read active {table} rows")
+    body = match.group(1)
+    rows = re.findall(rf"^\s*{row}\s*\{{\s*$", body, re.M)
+    variants = re.findall(rf"^\s*{field}:\s*{enum}::(\w+),\s*$", body, re.M)
+    if not variants or len(rows) != len(variants) or len(variants) != len(set(variants)):
+        raise ValueError(f"{table} rows are missing or ambiguous")
+    return set(variants)
+
+
+def ours_predicates() -> tuple[list[str], list[str], list[str]]:
+    core_body = read(CORE_PREDICATE_RS)
+    registry_body = read(PREDICATE_REGISTRY_RS)
+    canonical_variants, canonical_names = _typed_names(core_body, "LexicalPredicateV1")
+    alias_variants, alias_names = _typed_names(core_body, "LexicalPredicateAliasV1")
+    registry_variants = _registry_variants(
+        registry_body, "PREDICATE_REGISTRY", "PredicateSpec", "LexicalPredicateV1", "predicate"
+    )
+    registered_aliases = _registry_variants(
+        registry_body, "PREDICATE_ALIASES", "PredicateAliasSpec", "LexicalPredicateAliasV1", "alias"
+    )
+    if canonical_variants - registry_variants != {"SymbolHasName"}:
+        raise ValueError("predicate registry omits a non-symbol core predicate")
+    if registry_variants - canonical_variants or registered_aliases != alias_variants:
+        raise ValueError("predicate registry disagrees with core typed names")
+    if set(canonical_names.values()) & set(alias_names.values()):
+        raise ValueError("canonical predicate and alias names overlap")
+    return (
+        sorted(canonical_names[variant] for variant in registry_variants),
+        sorted(alias_names[variant] for variant in registered_aliases),
+        [canonical_names["SymbolHasName"]],
+    )
 
 
 def supported_select_surfaces() -> set[str]:
@@ -574,6 +629,7 @@ def supported_select_surfaces() -> set[str]:
 
 
 def build_report(
+    predicate_inventory: tuple[list[str], list[str], list[str]],
     variants: list[str],
     refused: set[str],
     keyword_evidence: dict[str, Evidence],
@@ -672,7 +728,7 @@ def build_report(
 
     lines.append("## Predicate coverage vs Sourcegraph")
     lines.append("")
-    canonical, aliases, route_owned = ours_predicates()
+    canonical, aliases, route_owned = predicate_inventory
     supported_surface = set(canonical) | set(aliases) | set(route_owned)
     lines.append(
         "**Canonical executable predicates (`PREDICATE_REGISTRY` SSOT):** "
@@ -776,7 +832,13 @@ def main() -> int:
     owner_local_demotion_hits = scan_lowering_owner_local_demotions(demoted_evidence)
 
     missing_map = [v for v in variants if v not in VARIANT_KEYWORD]
+    try:
+        predicate_inventory = ours_predicates()
+    except (OSError, ValueError) as error:
+        print(f"FAIL: typed predicate inventory: {error}", file=sys.stderr)
+        return 1
     report, untested_filters, unverified_surfaces = build_report(
+        predicate_inventory,
         variants,
         refused,
         keyword_evidence,
@@ -825,7 +887,7 @@ def main() -> int:
             for surface in unverified_surfaces:
                 print(f"  - {surface}", file=sys.stderr)
             problems += len(unverified_surfaces)
-        canonical, aliases, route_owned = ours_predicates()
+        canonical, aliases, route_owned = predicate_inventory
         supported_surface = set(canonical) | set(aliases) | set(route_owned)
         implemented_unsupported = sorted(
             surface_id

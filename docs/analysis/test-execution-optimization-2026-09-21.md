@@ -405,6 +405,35 @@ host had 70 Cargo/rustc processes during the audit, and jobs on the previous
 published HEAD failed before startup on account billing. This is a structural PR job
 reduction, not a measured wall-clock speedup.
 
+## CI Python setup and static-gate baseline
+
+Ten CI/correctness jobs previously installed the complete `.[dev]` dependency
+set even when they needed only the project runtime dependencies, pytest,
+pre-commit, Semgrep, or the Python standard library. Their installs now match
+their actual command imports; the prompt-manager job retains one full dev
+environment check. Two stdlib-only correctness jobs no longer invoke pip at
+all. This removes redundant package resolution and installation, without
+dropping a gate or changing its selected tests. No hosted-runner time reduction
+can be measured while GitHub jobs fail before startup.
+
+A clean-environment rehearsal exposed an existing CI pre-commit failure:
+generated prompt files and the parity report had extra final blank lines, two
+historical docs had trailing spaces, and six Python files did not match the
+then-latest Ruff formatter. The prompt-manager and parity generators now emit
+one final newline, Ruff is pinned to `0.16.8`, and those files are normalized.
+Historical bugbash links to deleted pre-split files now point to verified
+commits where the files existed. The same `pre-commit --all-files` command as
+CI passed locally with only the two independently owned Cargo hooks skipped;
+that is static/local proof, not a hosted CI pass.
+
+Regenerating the parity report also exposed a separate P1 false-negative:
+its old string-literal regex read zero canonical predicates from the typed
+registry. The generator now binds the lexical registry rows to core enum
+names, checks complete/unique typed tables, and fails closed on drift. The
+report again lists 10 canonical predicates, six aliases, and the symbol route.
+This inventory is static source proof; it does not replace executable query
+results or the DSL capability owner's runnable dump.
+
 ## Remaining measurement
 
 On a quiet host, run:
