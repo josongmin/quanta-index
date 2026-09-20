@@ -334,6 +334,35 @@ end-to-end timing comparison. The then-current GitHub Actions account
 billing/spending-limit failure prevented CI jobs from starting, so the new
 CI step itself remains unqualified.
 
+## Follow-up verification receipt hardening
+
+`tools/ci/write-verification-receipt.py` previously read the same nextest
+JSONL twice (once fully into memory for SHA-256, then again as text for event
+counting) and accepted a receipt whenever it found any terminal test event.
+That admitted ignored-only evidence, failed or timed-out tests, and truncated
+evidence with a passing test but no finished suite. A receipt consumer could
+misread such an artifact as a completed passing run even though the normal CI
+producer also checks the process exit status.
+
+The writer now hashes and validates the bytes in one streaming pass. It
+requires at least one passing test, no failed/timed-out test or failed suite,
+complete started/finished suite events, and matching suite/test pass counts.
+Unknown event types and test outcomes fail closed. Both receipt-producing
+workflows pin nextest's `libtest-json-plus` format version `0.1` and record the
+full executed command in the receipt instead of omitting its format flags.
+This follows nextest's documented
+`libtest-json-plus` suite and test event shape
+(<https://nexte.st/docs/machine-readable/libtest-json/>); that format remains
+experimental, so format drift must fail visibly rather than silently produce
+a receipt. The receipt schema and rail identity are unchanged.
+
+Focused receipt and test-authority tests passed 20/20. Scoped Ruff, test-authority
+lint, wire-inventory lint, and diff checks passed. A new live nextest JSONL
+sample was not produced under the current foreign Rust build contention;
+GitHub CI still cannot run while the account billing/spending-limit issue
+persists. Thus the stronger writer is locally contract-tested but not yet
+CI-qualified at this HEAD.
+
 ## Remaining measurement
 
 On a quiet host, run:

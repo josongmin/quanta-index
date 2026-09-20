@@ -107,12 +107,12 @@ jobs:
           set -o pipefail
           export NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1
           ./scripts/cargow nextest run --workspace --all-features --locked \
-            --message-format libtest-json-plus \
+            --message-format libtest-json-plus --message-format-version 0.1 \
             | tee artifacts/test-authority/nextest.jsonl
           python3 tools/ci/write-verification-receipt.py \
             --rail nightly-workspace-nextest \
             --tier nightly \
-            --command "./scripts/cargow nextest run --workspace --all-features --locked" \
+            --command "./scripts/cargow nextest run --workspace --all-features --locked --message-format libtest-json-plus --message-format-version 0.1" \
             --evidence artifacts/test-authority/nextest.jsonl \
             --out artifacts/test-authority/receipt.json
 
