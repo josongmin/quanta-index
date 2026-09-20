@@ -7,7 +7,6 @@
 
 #![forbid(unsafe_code)]
 
-
 use anyhow::Result as AnyResult;
 use quanta_index_contract::{
     EarlyStopReason, EngineTouched, HistoryIngestBatch, HistoryRefDelete, HistoryRefMutation,

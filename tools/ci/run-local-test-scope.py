@@ -217,9 +217,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"local test scope error: {error}", file=sys.stderr)
         return 2
 
+    cargo_test_binaries = len({(target["owner"], target["target"]) for target in targets})
     print(
         f"local test scopes: {','.join(args.scopes)}; "
-        f"targets={len(targets)}; cargo_processes=1; test_threads={test_threads}; "
+        f"catalog_rows={len(targets)}; cargo_test_binaries={cargo_test_binaries}; "
+        f"cargo_processes=1; test_threads={test_threads}; "
         f"lane={args.lane or default_lane}"
     )
     if args.dry_run:

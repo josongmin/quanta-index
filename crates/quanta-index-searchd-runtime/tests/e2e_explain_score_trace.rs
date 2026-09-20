@@ -12,11 +12,11 @@
 
 use std::error::Error;
 
+use crate::e2e_harness;
 use quanta_index_contract::{
     CandidatePresenceV1, HybridLaneV1, LexicalCandidate, PlannerStage, SearchExplanation,
     TextQuerySyntax,
 };
-use crate::e2e_harness;
 
 use e2e_harness::E2eRuntime;
 

@@ -31,7 +31,7 @@
 ## Tests
 
 - default local tests: `just rust-profile test-fast`
-- non-storage integration edit loop: `just rust-profile test-integration-fast`
+- bounded integration edit loop: `just rust-profile test-integration-fast`
 - lexical storage integration slice: `just rust-profile test-integration-storage`
 - semantic storage integration slice: `just rust-profile test-integration-semantic`
 - complete integration rail: `just rust-profile test-integration`
@@ -45,13 +45,19 @@
 Local integration/CLI/daemon profiles resolve target IDs from
 `tools/ci/test-authority.toml` and launch one `cargo nextest` process per scope.
 Do not restore one-Cargo-process-per-test recipes. `validate-shared-surface`
-uses one shared lane for its compile and three bounded nextest selections:
-shared libraries, non-semantic integration, and CLI smoke. The selections stay
-separate because Cargo's global `--lib` selector would otherwise pull unrelated
-package libraries into the integration command. CI keeps its independent
-workspace-wide authority rail. Scope-specific `test_threads` caps prevent a
-scheduler from oversubscribing daemon and storage tests; composed scopes use
-the smallest declared cap.
+uses one shared lane, compiles the selected all-target graph once in the test
+profile with nextest `--no-run`, then executes three bounded selections: shared
+libraries, bounded integration, and CLI smoke. The selections stay separate
+because Cargo's global `--lib` selector would otherwise pull unrelated package
+libraries into the integration command. CI keeps its independent workspace-wide
+authority rail. Scope-specific `test_threads` caps prevent a scheduler from
+oversubscribing daemon and storage tests; composed scopes use the smallest
+declared cap.
+The 49 searchd-runtime scenario source files are modules of three explicit Cargo
+test suites (fast, risk, extended), not 49 separately linked binaries. The test
+authority guard verifies every source-to-suite binding. `test-daemon-fast`
+executes only the fast runtime suite; the expensive DSL golden-truth matrix
+remains in `test-daemon`, `test-daemon-all`, and `rust-bench-dsl-truth`.
 The complete integration profile runs fast, lexical-storage, and semantic
 slices sequentially in one build lane, retaining their 8/2/4 thread caps. The
 edit loop can skip text-authority persistence and Lance/DataFusion when those
@@ -156,6 +162,9 @@ The complete integration profile executes the fast, lexical-storage, and
 semantic scopes in one lane; use the owning slice when only one surface changed.
 `test-daemon-all` is the exhaustive runtime/harness closeout; use the smaller
 `test-daemon` scope for the normal risk-focused loop.
+Runtime scenario sources are linked through three explicit suite binaries.
+`test-daemon-fast` runs only the fast suite; DSL cold-matrix truth starts at
+`test-daemon` or the dedicated `rust-bench-dsl-truth` recipe.
 
 
 ---

@@ -108,6 +108,9 @@ The complete integration profile executes the fast, lexical-storage, and
 semantic scopes in one lane; use the owning slice when only one surface changed.
 `test-daemon-all` is the exhaustive runtime/harness closeout; use the smaller
 `test-daemon` scope for the normal risk-focused loop.
+Runtime scenario sources are linked through three explicit suite binaries.
+`test-daemon-fast` runs only the fast suite; DSL cold-matrix truth starts at
+`test-daemon` or the dedicated `rust-bench-dsl-truth` recipe.
 
 
 ---

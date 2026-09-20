@@ -42,6 +42,10 @@ use std::process::{Child, ExitStatus};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::searchd_binary_process::{
+    SOCKET_TIMEOUT, SearchdBinaryProcess, remove_socket_files, searchd_command, terminate_child,
+    wait_for_sockets,
+};
 use quanta_index_contract::{
     ChunkId, ChunkRecord, GenerationPin, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchScopeKey, SearchScopeSurface,
@@ -55,10 +59,6 @@ use quanta_index_search_plane::crash_point::{
     self, AFTER_CATALOG_TRANSACTION, AFTER_FENCE, AFTER_LEDGER_RECONCILE, AFTER_RETENTION_RECEIPT,
     AFTER_SEMANTIC_SEAL, BEFORE_AUTHORITY_RECORD, BEFORE_RECORD_FORGET, BETWEEN_TRACK_RECLAIMS,
     CRASH_EXIT_CODE, CRASH_POINT_ENV,
-};
-use crate::searchd_binary_process::{
-    SOCKET_TIMEOUT, SearchdBinaryProcess, remove_socket_files, searchd_command, terminate_child,
-    wait_for_sockets,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;

@@ -24,6 +24,7 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::e2e_harness;
 use quanta_index_contract::{
     BatchPublishReceipt, ERR_SERVER_OVERLOADED, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
@@ -31,7 +32,6 @@ use quanta_index_contract::{
 };
 use quanta_index_core::BATCH_DIGEST_MISMATCH_CODE;
 use quanta_index_ipc::{ClientIoPolicy, send_request};
-use crate::e2e_harness;
 
 use e2e_harness::E2eRuntime;
 

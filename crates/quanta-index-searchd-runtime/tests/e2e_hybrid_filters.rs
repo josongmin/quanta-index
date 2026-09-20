@@ -13,12 +13,12 @@
 use std::collections::BTreeSet;
 use std::error::Error;
 
+use crate::e2e_harness;
 use quanta_index_contract::{
     CandidateCountV1, HybridSeedQueryRequest, PlannerStage, QueryConstraintSetV1,
     QueryResultWindowV1, SearchExplanation, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcResponse, TextQueryRequest, TextQuerySyntax,
 };
-use crate::e2e_harness;
 
 use e2e_harness::E2eRuntime;
 

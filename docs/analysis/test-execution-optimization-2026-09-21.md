@@ -2,7 +2,10 @@
 
 ## Source snapshot
 
-- HEAD: `3ad279a08879de35fa96a5495a3382af28f095d0`
+- Audit-start HEAD: `3ad279a08879de35fa96a5495a3382af28f095d0`
+- Final verification HEAD: `a11085b7af1152df40983ac2c69c53befc8266f6`.
+  The shared checkout advanced through `49204a8` and `a11085b` while this work
+  was running; validation was repeated after that advance.
 - The checkout already contained user-owned contract, SDK, search-plane, and
   public-API baseline edits. They are not part of this optimization.
 - The host was not quiet: the timing preflight observed 23 foreign Cargo/rustc
@@ -118,7 +121,7 @@ an overridden run is not clean performance evidence.
 
 - test-authority catalog and local scopes: PASS
 - new runner/preflight/checker tests: PASS
-- all `tools/ci/tests`: 242 PASS
+- all `tools/ci/tests`: 257 PASS
 - prompt-manager sync/lint/tests: PASS
 - Just recipe parse and dry-run expansion: PASS
 - new CLI scope: 25 PASS across two binaries; warm nextest execution 1.101s,
@@ -150,7 +153,7 @@ an overridden run is not clean performance evidence.
   changing diagnostic quality
 - sccache same-lane clean-rebuild probe: 27 hits; cross-lane probe: 0 hits
 - Python lint: PASS
-- repository-wide Python format check: PRE-EXISTING RED on nine unrelated
+- repository-wide Python format check: PRE-EXISTING RED on seven unrelated
   files; all files changed by this optimization pass their scoped format check
 - clean wall-clock comparison: BLOCKED by 23 foreign Rust processes
 - new integration execution: INTERRUPTED after 11 minutes while the foreign

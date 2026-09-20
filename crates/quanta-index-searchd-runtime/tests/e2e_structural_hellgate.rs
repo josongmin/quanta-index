@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use crate::e2e_harness::E2eRuntime;
 use anyhow::{Result as AnyResult, ensure};
 use quanta_index_contract::lex::{
     LanguageCode, ParseNode, ParseRoleTag, ParseTreeRecord, SymbolKindCode, SymbolKindFamily,
@@ -12,7 +13,6 @@ use quanta_index_contract::{
     SemanticSourceScopeKeyV1, SourceRoleV1, StructuralIngestBatch, StructuralReplaceScope,
     StructuralTreeRecord, SymbolId, TextQuerySyntax,
 };
-use crate::e2e_harness::E2eRuntime;
 
 fn scope_key(path: &str) -> SearchScopeKey {
     SearchScopeKey {

@@ -152,7 +152,7 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 ## Test rails
 
 - unit/local fast: `just rust-profile test-fast`
-- non-storage integration: `just rust-profile test-integration-fast`
+- bounded integration: `just rust-profile test-integration-fast`
 - lexical storage integration: `just rust-profile test-integration-storage`
 - semantic storage integration: `just rust-profile test-integration-semantic`
 - complete integration: `just rust-profile test-integration`
@@ -168,13 +168,19 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 The local integration/CLI/daemon rails expand authoritative target IDs from
 `tools/ci/test-authority.toml` and execute each selected scope in one nextest
 process. `validate-shared-surface` deliberately shares one build lane across
-compile and test phases, but keeps library, integration, and CLI selectors in
-separate nextest processes so `--lib` cannot expand across their package union.
+one test-profile `--no-run` compile and its test phases, but keeps library,
+integration, and CLI selectors in separate nextest processes so `--lib` cannot
+expand across their package union.
 Do not treat these local scopes as a replacement for the workspace-wide CI
 nextest receipt. Keep the cataloged `test_threads` caps; composed scopes use the
 smallest cap, and daemon tests boot real runtimes and must not expand to
 CPU-count concurrency.
-The fast integration slice excludes text-authority shard persistence,
+The runtime's 49 scenario source files are grouped into fast/risk/extended
+suite binaries. Their catalog rows retain source-level ownership while mapping
+to the shared Cargo target; the authority guard fails if a suite omits a row.
+The fast daemon loop excludes the cold DSL matrix. Run `test-daemon` or
+`rust-bench-dsl-truth` when benchmark truth is in scope.
+The bounded integration slice excludes the slow text-authority shard scenarios,
 `quanta-index-semantic`, Lance, DataFusion, and Arrow. The complete profile runs
 fast, lexical-storage, and semantic scopes sequentially in one build lane so
 their 8/2/4 thread caps remain independent.

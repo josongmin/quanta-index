@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use crate::e2e_harness;
 use anyhow::{Result as AnyResult, ensure};
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, FileContributorEntry, FileContributorIdentityEntry,
@@ -11,7 +12,6 @@ use quanta_index_contract::{
     SearchCorpusReplaceScope, SearchScopeKey, SearchScopeSurface, TextQuerySyntax,
     lex::{CommitSha, LanguageCode},
 };
-use crate::e2e_harness;
 
 use crate::e2e_harness::{E2eRuntime, E2eTextChunkSpec};
 
