@@ -11,11 +11,6 @@
     reason = "integration-test helpers outside `#[test]` fns assert fixture setup with `expect`; the workspace already permits this inside test fns and a helper that cannot set up its fixture has no caller to propagate to"
 )]
 
-#[path = "common/searchd_binary_process.rs"]
-mod searchd_binary_process;
-#[path = "common/searchd_lease_probe.rs"]
-mod searchd_lease_probe;
-
 use std::error::Error;
 use std::path::Path;
 use std::sync::Arc;
@@ -35,6 +30,7 @@ use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd_runtime::build_runtime;
 
 use crate::searchd_binary_process::SearchdBinaryProcess;
+use crate::searchd_lease_probe;
 
 type TestResult = Result<(), Box<dyn Error>>;
 type DriverJoin = thread::JoinHandle<anyhow::Result<()>>;

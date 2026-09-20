@@ -19,6 +19,7 @@ file name or accepts an unregistered target: both are correctness gaps.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -167,7 +168,9 @@ def _validate_rail_binding(
         return
     jobs = workflow.get("jobs")
     if not isinstance(jobs, dict) or not isinstance(jobs.get(job_id), dict):
-        violations.append(_violation(catalog, f"rail {rail_id} workflow job does not exist: {job_id}"))
+        violations.append(
+            _violation(catalog, f"rail {rail_id} workflow job does not exist: {job_id}")
+        )
         return
     steps = jobs[job_id].get("steps")
     if not isinstance(steps, list):
@@ -192,8 +195,7 @@ def _validate_rail_binding(
 
 
 def _validate_rails(
-    *, root: Path,
-    data: dict[str, Any], catalog: Path, violations: list[Violation]
+    *, root: Path, data: dict[str, Any], catalog: Path, violations: list[Violation]
 ) -> dict[str, dict[str, str]]:
     raw_rails = data.get("rails")
     if not isinstance(raw_rails, dict) or not raw_rails:
@@ -289,6 +291,14 @@ def _validate_targets(
         owner = _string(
             entry.get("owner"), catalog=catalog, context=f"{prefix}.owner", violations=violations
         )
+        cargo_target = entry.get("target")
+        if cargo_target is not None:
+            cargo_target = _string(
+                cargo_target,
+                catalog=catalog,
+                context=f"{prefix}.target",
+                violations=violations,
+            )
         rail = _string(
             entry.get("rail"), catalog=catalog, context=f"{prefix}.rail", violations=violations
         )
@@ -314,13 +324,110 @@ def _validate_targets(
             )
         if path not in discovered:
             violations.append(_violation(catalog, f"catalog target does not exist on disk: {path}"))
-        targets[target_id] = {"path": path, "owner": owner, "rail": rail, "kind": expected_kind}
+        targets[target_id] = {
+            "path": path,
+            "owner": owner,
+            "rail": rail,
+            "kind": expected_kind,
+            "target": cargo_target or Path(path).stem,
+        }
 
     for path in sorted(discovered - paths):
         violations.append(
             _violation(root / path, f"orphan {expected_kind} test target: no catalog entry")
         )
     return targets
+
+
+def _validate_grouped_integration_targets(
+    *,
+    root: Path,
+    catalog: Path,
+    targets: dict[str, dict[str, str]],
+    violations: list[Violation],
+) -> None:
+    """Ensure source rows mapped to one Cargo test cannot silently disappear."""
+    groups: dict[tuple[str, str], list[dict[str, str]]] = {}
+    for target in targets.values():
+        key = (target["owner"], target["target"])
+        groups.setdefault(key, []).append(target)
+
+    for (owner, cargo_target), members in sorted(groups.items()):
+        source_members = [member for member in members if Path(member["path"]).stem != cargo_target]
+        if not source_members:
+            continue
+        launchers = [member for member in members if Path(member["path"]).stem == cargo_target]
+        if len(launchers) != 1:
+            violations.append(
+                _violation(
+                    catalog,
+                    f"grouped test {owner}:{cargo_target} must have exactly one cataloged launcher",
+                )
+            )
+            continue
+
+        launcher_path = PurePosixPath(launchers[0]["path"])
+        launcher = root / launcher_path
+        try:
+            launcher_text = launcher.read_text(encoding="utf-8")
+        except OSError as error:
+            violations.append(_violation(launcher, f"cannot read grouped test launcher: {error}"))
+            continue
+        declared_modules = set(re.findall(r'#\s*\[\s*path\s*=\s*"([^"]+)"\s*\]', launcher_text))
+        for member in source_members:
+            member_path = PurePosixPath(member["path"])
+            try:
+                relative_member = member_path.relative_to(launcher_path.parent).as_posix()
+            except ValueError:
+                violations.append(
+                    _violation(
+                        catalog,
+                        f"grouped test {owner}:{cargo_target} source must be beside its launcher: {member_path}",
+                    )
+                )
+                continue
+            if relative_member not in declared_modules:
+                violations.append(
+                    _violation(
+                        launcher,
+                        f"grouped test {owner}:{cargo_target} omits cataloged source {relative_member}",
+                    )
+                )
+
+        manifest = launcher.parent.parent / "Cargo.toml"
+        try:
+            manifest_data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            violations.append(_violation(manifest, f"cannot parse grouped test manifest: {error}"))
+            continue
+        package = manifest_data.get("package")
+        if not isinstance(package, dict) or package.get("autotests") is not False:
+            violations.append(
+                _violation(
+                    manifest,
+                    f"grouped test {owner}:{cargo_target} requires package.autotests = false",
+                )
+            )
+        raw_tests = manifest_data.get("test", [])
+        declared = False
+        if isinstance(raw_tests, list):
+            for raw_test in raw_tests:
+                if not isinstance(raw_test, dict) or raw_test.get("name") != cargo_target:
+                    continue
+                path = raw_test.get("path")
+                if (
+                    isinstance(path, str)
+                    and (manifest.parent / path).resolve() == launcher.resolve()
+                ):
+                    declared = True
+                    break
+        if not declared:
+            violations.append(
+                _violation(
+                    manifest,
+                    f"grouped test {owner}:{cargo_target} launcher is not an explicit [[test]] target",
+                )
+            )
 
 
 def _validate_fuzz_manifest_bindings(
@@ -384,6 +491,157 @@ def _validate_fuzz_manifest_bindings(
             )
 
 
+def _validate_local_scopes(
+    *,
+    root: Path,
+    data: dict[str, Any],
+    catalog: Path,
+    integration_targets: dict[str, dict[str, str]],
+    violations: list[Violation],
+) -> None:
+    """Validate local nextest selections against the CI target authority."""
+    raw_scopes = data.get("local_scopes")
+    if raw_scopes is None:
+        return
+    if not isinstance(raw_scopes, dict) or not raw_scopes:
+        violations.append(_violation(catalog, "[local_scopes] must be a non-empty table"))
+        return
+
+    known_owners = {target["owner"] for target in integration_targets.values()}
+    scope_names = set(raw_scopes)
+    include_graph: dict[str, list[str]] = {}
+    for scope_name, raw_scope in sorted(raw_scopes.items()):
+        context = f"local_scopes.{scope_name}"
+        if not isinstance(scope_name, str) or not scope_name or not isinstance(raw_scope, dict):
+            violations.append(_violation(catalog, "each local scope must be a non-empty table"))
+            continue
+        lane = _string(
+            raw_scope.get("lane"),
+            catalog=catalog,
+            context=f"{context}.lane",
+            violations=violations,
+        )
+        if lane is not None and not lane.endswith("-lane"):
+            violations.append(_violation(catalog, f"{context}.lane must end with '-lane'"))
+        test_threads = raw_scope.get("test_threads")
+        if not isinstance(test_threads, int) or isinstance(test_threads, bool) or test_threads < 1:
+            violations.append(
+                _violation(catalog, f"{context}.test_threads must be a positive integer")
+            )
+
+        raw_targets = raw_scope.get("targets")
+        raw_owners = raw_scope.get("owners")
+        raw_includes = raw_scope.get("includes", [])
+        raw_packages = raw_scope.get("packages", [])
+        include_lib = raw_scope.get("lib", False)
+        if raw_targets is not None and raw_owners is not None:
+            violations.append(
+                _violation(catalog, f"{context} cannot declare both targets and owners")
+            )
+            continue
+        if not isinstance(raw_includes, list):
+            violations.append(_violation(catalog, f"{context}.includes must be a list"))
+            raw_includes = []
+        includes: list[str] = []
+        for included in raw_includes:
+            if not isinstance(included, str) or not included:
+                violations.append(
+                    _violation(catalog, f"{context}.includes must contain non-empty strings")
+                )
+                continue
+            includes.append(included)
+            if included not in scope_names:
+                violations.append(
+                    _violation(catalog, f"{context} includes unknown local scope {included}")
+                )
+        include_graph[scope_name] = includes
+
+        if not isinstance(raw_packages, list):
+            violations.append(_violation(catalog, f"{context}.packages must be a list"))
+            raw_packages = []
+        for package in raw_packages:
+            if not isinstance(package, str) or not package:
+                violations.append(
+                    _violation(catalog, f"{context}.packages must contain non-empty strings")
+                )
+                continue
+            if not (root / "crates" / package / "Cargo.toml").is_file():
+                violations.append(
+                    _violation(catalog, f"{context} references unknown package {package}")
+                )
+        if not isinstance(include_lib, bool):
+            violations.append(_violation(catalog, f"{context}.lib must be boolean"))
+            include_lib = False
+        if include_lib and (raw_targets is not None or raw_owners is not None or includes):
+            violations.append(
+                _violation(
+                    catalog,
+                    f"{context} must keep library and integration selectors separate",
+                )
+            )
+        if (
+            raw_targets is None
+            and raw_owners is None
+            and not includes
+            and not (include_lib and raw_packages)
+        ):
+            violations.append(_violation(catalog, f"{context} selects no tests"))
+            continue
+
+        if raw_targets is not None:
+            if not isinstance(raw_targets, list) or not raw_targets:
+                violations.append(
+                    _violation(catalog, f"{context}.targets must be a non-empty list")
+                )
+                continue
+            seen: set[str] = set()
+            for target_id in raw_targets:
+                if not isinstance(target_id, str) or not target_id:
+                    violations.append(
+                        _violation(catalog, f"{context}.targets must contain non-empty strings")
+                    )
+                    continue
+                if target_id in seen:
+                    violations.append(_violation(catalog, f"{context} repeats target {target_id}"))
+                seen.add(target_id)
+                if target_id not in integration_targets:
+                    violations.append(
+                        _violation(
+                            catalog, f"{context} references unknown integration target {target_id}"
+                        )
+                    )
+        elif raw_owners is not None:
+            if not isinstance(raw_owners, list) or not raw_owners:
+                violations.append(_violation(catalog, f"{context}.owners must be a non-empty list"))
+                continue
+            seen_owners: set[str] = set()
+            for owner in raw_owners:
+                if not isinstance(owner, str) or not owner:
+                    violations.append(
+                        _violation(catalog, f"{context}.owners must contain non-empty strings")
+                    )
+                    continue
+                if owner in seen_owners:
+                    violations.append(_violation(catalog, f"{context} repeats owner {owner}"))
+                seen_owners.add(owner)
+                if owner not in known_owners:
+                    violations.append(
+                        _violation(catalog, f"{context} references unknown owner {owner}")
+                    )
+
+    def visit(scope_name: str, trail: tuple[str, ...]) -> None:
+        if scope_name in trail:
+            cycle = " -> ".join((*trail, scope_name))
+            violations.append(_violation(catalog, f"local scope include cycle: {cycle}"))
+            return
+        for included in include_graph.get(scope_name, []):
+            if included in include_graph:
+                visit(included, (*trail, scope_name))
+
+    for scope_name in sorted(include_graph):
+        visit(scope_name, ())
+
+
 def _validate_invariants(
     *,
     root: Path,
@@ -413,17 +671,23 @@ def _validate_invariants(
         if invariant_id is None or risk is None or owner is None or source is None:
             continue
         if invariant_id in universe_by_id:
-            violations.append(_violation(catalog, f"duplicate invariant universe id: {invariant_id}"))
+            violations.append(
+                _violation(catalog, f"duplicate invariant universe id: {invariant_id}")
+            )
             continue
         if risk not in {"P0", "P1", "P2", "P3"}:
             violations.append(_violation(catalog, f"{prefix}.risk must be one of P0, P1, P2, P3"))
             continue
         if not (root / source).is_file():
-            violations.append(_violation(catalog, f"invariant universe source does not exist: {source}"))
+            violations.append(
+                _violation(catalog, f"invariant universe source does not exist: {source}")
+            )
         universe_by_id[invariant_id] = {"risk": risk, "owner": owner, "source": source}
 
     if entries and not universe_by_id:
-        violations.append(_violation(catalog, "invariant_universe must declare every P0/P1 invariant"))
+        violations.append(
+            _violation(catalog, "invariant_universe must declare every P0/P1 invariant")
+        )
 
     ids: set[str] = set()
     for index, entry in enumerate(entries):
@@ -446,12 +710,24 @@ def _validate_invariants(
             ids.add(invariant_id)
             expected = universe_by_id.get(invariant_id)
             if expected is None:
-                violations.append(_violation(catalog, f"invariant {invariant_id} is absent from invariant_universe"))
-            elif owner is not None and source is not None and (
-                expected["owner"] != owner or expected["source"] != source or expected["risk"] != risk
+                violations.append(
+                    _violation(
+                        catalog, f"invariant {invariant_id} is absent from invariant_universe"
+                    )
+                )
+            elif (
+                owner is not None
+                and source is not None
+                and (
+                    expected["owner"] != owner
+                    or expected["source"] != source
+                    or expected["risk"] != risk
+                )
             ):
                 violations.append(
-                    _violation(catalog, f"invariant {invariant_id} disagrees with invariant_universe")
+                    _violation(
+                        catalog, f"invariant {invariant_id} disagrees with invariant_universe"
+                    )
                 )
         if risk is not None and risk not in {"P0", "P1", "P2", "P3"}:
             violations.append(_violation(catalog, f"{prefix}.risk must be one of P0, P1, P2, P3"))
@@ -549,6 +825,19 @@ def audit_catalog(root: Path = ROOT, catalog: Path = DEFAULT_CATALOG) -> list[Vi
         collection="integration_targets",
         expected_kind="integration",
         discovered=_discover_integration_targets(root),
+        violations=violations,
+    )
+    _validate_grouped_integration_targets(
+        root=root,
+        catalog=catalog,
+        targets=targets,
+        violations=violations,
+    )
+    _validate_local_scopes(
+        root=root,
+        data=data,
+        catalog=catalog,
+        integration_targets=targets,
         violations=violations,
     )
     fuzz_targets = _validate_targets(

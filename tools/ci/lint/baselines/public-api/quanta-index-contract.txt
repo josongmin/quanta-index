@@ -1371,6 +1371,8 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SourceRoleV
 pub struct quanta_index_contract::ipc::BatchPublishReceipt
 pub quanta_index_contract::ipc::BatchPublishReceipt::accepted_clear_surfaces: u32
 pub quanta_index_contract::ipc::BatchPublishReceipt::accepted_replace_scopes: u32
+pub quanta_index_contract::ipc::BatchPublishReceipt::accepted_semantic_replace_scopes: u32
+pub quanta_index_contract::ipc::BatchPublishReceipt::accepted_semantic_tombstone_scopes: u32
 pub quanta_index_contract::ipc::BatchPublishReceipt::accepted_tombstone_scopes: u32
 pub quanta_index_contract::ipc::BatchPublishReceipt::applied: bool
 pub quanta_index_contract::ipc::BatchPublishReceipt::batch_digest: alloc::string::String
@@ -1382,6 +1384,8 @@ pub quanta_index_contract::ipc::BatchPublishReceipt::semantic_content: core::opt
 impl quanta_index_contract::BatchPublishReceipt
 pub fn quanta_index_contract::BatchPublishReceipt::accept_clear_surface(&mut self)
 pub fn quanta_index_contract::BatchPublishReceipt::accept_replace_scope(&mut self)
+pub fn quanta_index_contract::BatchPublishReceipt::accept_semantic_replace_scope(&mut self)
+pub fn quanta_index_contract::BatchPublishReceipt::accept_semantic_tombstone_scope(&mut self)
 pub fn quanta_index_contract::BatchPublishReceipt::accept_tombstone_scope(&mut self)
 pub fn quanta_index_contract::BatchPublishReceipt::attest_semantic_content(&mut self, roots: quanta_index_contract::SemanticContentRootsV1)
 pub fn quanta_index_contract::BatchPublishReceipt::empty_for(generation: quanta_index_contract_base::ids::ManifestGeneration, manifest_digest: core::option::Option<alloc::string::String>, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
@@ -8346,6 +8350,8 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::AuxEpochV1
 pub struct quanta_index_contract::BatchPublishReceipt
 pub quanta_index_contract::BatchPublishReceipt::accepted_clear_surfaces: u32
 pub quanta_index_contract::BatchPublishReceipt::accepted_replace_scopes: u32
+pub quanta_index_contract::BatchPublishReceipt::accepted_semantic_replace_scopes: u32
+pub quanta_index_contract::BatchPublishReceipt::accepted_semantic_tombstone_scopes: u32
 pub quanta_index_contract::BatchPublishReceipt::accepted_tombstone_scopes: u32
 pub quanta_index_contract::BatchPublishReceipt::applied: bool
 pub quanta_index_contract::BatchPublishReceipt::batch_digest: alloc::string::String
@@ -8357,6 +8363,8 @@ pub quanta_index_contract::BatchPublishReceipt::semantic_content: core::option::
 impl quanta_index_contract::BatchPublishReceipt
 pub fn quanta_index_contract::BatchPublishReceipt::accept_clear_surface(&mut self)
 pub fn quanta_index_contract::BatchPublishReceipt::accept_replace_scope(&mut self)
+pub fn quanta_index_contract::BatchPublishReceipt::accept_semantic_replace_scope(&mut self)
+pub fn quanta_index_contract::BatchPublishReceipt::accept_semantic_tombstone_scope(&mut self)
 pub fn quanta_index_contract::BatchPublishReceipt::accept_tombstone_scope(&mut self)
 pub fn quanta_index_contract::BatchPublishReceipt::attest_semantic_content(&mut self, roots: quanta_index_contract::SemanticContentRootsV1)
 pub fn quanta_index_contract::BatchPublishReceipt::empty_for(generation: quanta_index_contract_base::ids::ManifestGeneration, manifest_digest: core::option::Option<alloc::string::String>, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self

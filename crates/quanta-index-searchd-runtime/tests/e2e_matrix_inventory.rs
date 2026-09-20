@@ -9,10 +9,6 @@
 
 #![forbid(unsafe_code)]
 
-#[path = "common/e2e_corpus.rs"]
-mod e2e_corpus;
-use quanta_index_searchd_harness as e2e_harness;
-
 use anyhow::Result as AnyResult;
 use quanta_index_contract::TextQuerySyntax;
 

@@ -20,7 +20,7 @@ use quanta_index_contract::{PlannerStage, TextQuerySyntax};
 use quanta_index_core::{
     REPO_COMMIT_RECENCY_UNAVAILABLE_CODE, RUNTIME_NOT_READY_CODE, RepoMetadataAuthorityV1,
 };
-use quanta_index_searchd_harness as e2e_harness;
+use crate::e2e_harness;
 
 use e2e_harness::{E2eHistoryFixtureSpec, E2eQueryResult, E2eRuntime};
 

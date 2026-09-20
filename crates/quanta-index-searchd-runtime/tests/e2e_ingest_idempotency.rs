@@ -31,7 +31,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::BATCH_DIGEST_MISMATCH_CODE;
 use quanta_index_ipc::{ClientIoPolicy, send_request};
-use quanta_index_searchd_harness as e2e_harness;
+use crate::e2e_harness;
 
 use e2e_harness::E2eRuntime;
 

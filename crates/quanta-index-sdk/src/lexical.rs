@@ -646,6 +646,18 @@ fn validate_search_corpus_publish_receipt_v1<const SEALED: bool>(
     let expected_clear_surfaces = u32::try_from(batch.clear_surfaces.len()).map_err(|err| {
         SdkError::Protocol(format!("search corpus clear surface count overflow: {err}"))
     })?;
+    let expected_semantic_replace_scopes = u32::try_from(batch.semantic_replace_scopes.len())
+        .map_err(|err| {
+            SdkError::Protocol(format!(
+                "search corpus semantic replace scope count overflow: {err}"
+            ))
+        })?;
+    let expected_semantic_tombstone_scopes = u32::try_from(batch.semantic_tombstone_scopes.len())
+        .map_err(|err| {
+        SdkError::Protocol(format!(
+            "search corpus semantic tombstone scope count overflow: {err}"
+        ))
+    })?;
 
     for (label, expected, observed) in [
         (
@@ -662,6 +674,16 @@ fn validate_search_corpus_publish_receipt_v1<const SEALED: bool>(
             "clear surface",
             expected_clear_surfaces,
             receipt.accepted_clear_surfaces,
+        ),
+        (
+            "semantic replace scope",
+            expected_semantic_replace_scopes,
+            receipt.accepted_semantic_replace_scopes,
+        ),
+        (
+            "semantic tombstone scope",
+            expected_semantic_tombstone_scopes,
+            receipt.accepted_semantic_tombstone_scopes,
         ),
     ] {
         if observed != expected {

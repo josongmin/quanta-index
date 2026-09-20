@@ -254,6 +254,8 @@ mod tests {
             accepted_clear_surfaces: 0,
             accepted_replace_scopes: 1,
             accepted_tombstone_scopes: 0,
+            accepted_semantic_replace_scopes: 0,
+            accepted_semantic_tombstone_scopes: 0,
             sealed: true,
         })
     }

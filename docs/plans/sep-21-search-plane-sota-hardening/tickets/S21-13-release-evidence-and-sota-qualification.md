@@ -1,0 +1,173 @@
+# S21-13 — Release Evidence and SOTA Qualification
+
+Status: `planned`
+
+Phase A status: `done`; proof registry/schema/semantic validator and blocking CI policy check are implemented.
+Phase B remains `planned` and depends on S21-01 through S21-12.
+
+Depends on: phase A depends on S21-00; phase B depends on S21-01 through S21-12
+
+## Goal
+
+모든 구조 변경을 동일 final source에서 검증하고, artifact absence/staleness가 green이 될 수 없는 blocking
+release proof graph를 만든다.
+
+## Root cause
+
+- benchmark/quality artifact checker가 absence를 허용
+- 일부 summary schema/boolean/source binding이 약함
+- verification receipt가 full source/binary/host/feature 정보를 자체 검증하지 않음
+- focused/static/in-process proof가 product closure로 승격될 수 있음
+- deploy/backup/provider/cross-repo rail이 하나의 mandatory graph에 연결되지 않음
+
+## Proof manifest
+
+각 proof node는 다음을 필수로 가진다.
+
+- proof ID and required evidence class `S/U/A/D/P/F/Q/X`
+- exact 40-char HEAD, dirty digest, branch/upstream/merge-base
+- command/profile/target/filter and selected/executed/passed/failed/ignored counts
+- toolchain/features/OS/arch/host CPU-memory
+- daemon binary SHA-256 and state-root format
+- fixture/corpus/config/model/provider digest
+- started/ended timestamps and raw log/artifact paths
+- terminal status; missing field/failed prerequisite는 success 금지
+
+## Mandatory proof families
+
+1. static architecture/public API/wire/module/policy guards
+2. owner-local positive/negative/recovery tests
+3. real SQLite/Tantivy/Lance/RepoMap adapter integration
+4. in-process SDK/UDS route matrix
+5. real child-process signal/crash/restart/lease/readiness
+6. corruption/failpoint/concurrency/cancellation
+7. fixed-corpus relevance, ANN recall, latency, RSS/FD/disk/WAL/QPS
+8. external Semantica producer and real-provider opt-in rail
+9. migration/backup/restore/rollback drill
+
+## Threshold freeze
+
+S21-00에서 baseline과 target을 같은 corpus/host/profile로 고정한다. 구현 후 유리한 metric만 선택하지
+않는다. 최소한 다음을 분리 측정한다.
+
+- authority correctness: collision, mixed generation, replay, recovery failures = 0
+- completeness: exact/partial/capped truth and ANN recall
+- relevance: nDCG/MRR/Recall@K on held-out judgments
+- latency: p50/p95/p99 plus offered/accepted/completed QPS and error rate
+- resources: peak RSS, FD/thread/request count, disk/WAL, queue depth, drain duration
+- operations: recovery time, restore verification time, GC progress and reclaim
+- provider: request count, residual tasks, tokens/usage/cost, model identity
+
+## Work items
+
+1. strict proof-manifest schema and validator
+2. `check-bench-artifacts --require` equivalent를 blocking workflow에 연결
+3. mandatory family inventory에 ambiguity/snippet/ops/ui/integration 포함 여부를 owner 결정
+4. strict boolean/schema/full HEAD/source binding
+5. test-authority invariant universe에 S21 scenarios 등록
+6. Justfile canonical profiles와 CI workflow 연결
+7. receipt writer가 terminal success와 source metadata를 자체 검증
+8. exact-source artifact store/publish policy
+9. purpose checklist에 pass2/pass3 proposed rows 실제 반영
+10. final closeout report와 unresolved risk ledger
+11. composite local test scope는 포함된 scope 중 가장 엄격한 thread/resource cap을 적용
+12. generated checklist/agent docs는 canonical source owner를 수정한 뒤 생성·lint
+
+### Phase A — land early
+
+- `proof-authority.toml` 또는 동등한 canonical registry에 proof ID, owner, family, command/profile,
+  source-binding rule, required host, artifact schema를 선언한다.
+- strict proof-manifest schema/validator, test-authority entries, CI workflow skeleton을 W0/W1에 배치한다.
+- schema는 full 40-char SHA, dirty digest, selected/executed/passed/failed/ignored counts, exact binary SHA,
+  features/toolchain/OS/arch/host, timestamps와 artifact digest를 mandatory로 한다.
+
+Implemented owners:
+
+- `tools/ci/proof-authority.toml`
+- `tools/ci/proof-manifest.schema.json`
+- `tools/ci/lint/check-proof-authority.py`
+- `.pre-commit-config.yaml` `proof-authority` hook
+- `.github/workflows/ci.yml` blocking proof-authority step
+
+### Phase B — final aggregate
+
+- final clean source에서 동일 release daemon binary를 모든 process/cross-repo proof에 사용한다.
+- mandatory family 전부와 deployment/activation/rollback evidence를 aggregate하고 누락/실패/skipped/stale를
+  success로 계산하지 않는다.
+- verdict를 `CODE_QUALIFIED`, `DEPLOYED`, `ACTIVATED`, `ROLLBACK_PROVEN`으로 분리한다.
+
+## Owner files
+
+- `tools/ci/test-authority.toml`
+- `tools/ci/lint/check-test-authority.py`
+- `tools/ci/lint/check-bench-artifacts.py`
+- verification receipt writer/schema
+- `.github/workflows/ci.yml`
+- `.github/workflows/correctness.yml`
+- `Justfile`
+- `tools/benchmark/`
+- purpose validation checklist and final closeout reports
+- `tools/ci/proof-authority.toml` (new canonical registry; exact name is S21-00 decision)
+
+## Canonical verification escalation
+
+- contract/SDK: `just rust-public-api`
+- wire/decoder: `just rust-fuzz-smoke`
+- crate/module boundaries: `just rust-hexagonal` and `just rust-cargo-modules`
+- owner loop: `just rust-profile test-fast` plus owning integration targets
+- storage/semantic: `just rust-profile test-integration-semantic`
+- activation/pin/state root: `just rust-profile test-daemon`
+- exhaustive runtime: `just rust-profile test-daemon-all`
+- quality: `just rust-verify-quality-all` plus strict artifact validation
+- full closeout: `just rust-profile verify-rust` plus external/migration/provider rails
+
+실제 구현 시 profile catalog가 새 target을 포함하는지 먼저 검증한다. profile 이름만으로 coverage를
+추정하지 않는다.
+
+## Adversarial closeout matrix
+
+- artifact missing, stale HEAD, dirty mismatch, wrong binary
+- selected/executed 0, ignored-only, early-return fixture
+- duplicate proof ID, missing required family, report-only job
+- composite test scope가 child scope의 더 엄격한 thread cap을 넓힘
+- fake/hash provider substituted for required real-provider proof
+- in-process harness substituted for process crash proof
+- macOS result substituted for Linux production performance/credential proof
+- restored state without verified manifest
+- external producer checkout mismatch
+
+## Acceptance
+
+- mandatory artifact absence is failure
+- all proof nodes refer to one final clean source pair or explicitly scoped delta proof
+- no failed/skipped/missing node can produce `PURPOSE_GREEN` or `PRODUCTION_READY`
+- independent quality oracle does not derive expected output from SUT output
+- checklist mandatory P0/P1 rows are all `PASS`; runtime/external rows are not static-pass
+- final report separates code completion, test proof, deployment, and activation
+
+## Final release gate
+
+`PRODUCTION_READY`는 다음을 모두 만족할 때만 허용한다.
+
+1. M0-M4 merge units complete
+2. legacy live paths removed
+3. full proof manifest validates
+4. migration and rollback drill passes
+5. cross-repo terminal receipt passes
+6. Linux process/performance proof passes
+7. required real-provider relevance/egress proof passes
+8. unresolved P0/P1, `NOT_RUN`, `BLOCKED` = 0
+
+추가 mandatory proof inventory:
+
+- 등록된 J7Q/live owner target 전수(현재 inventory 기준 7개는 구현 착수 시 재산정)
+- ANN recall/relevance와 latency/resource를 분리한 fixed-corpus proof
+- activation/read-view/GC concurrency 및 state-root two-process lease proof
+- provider spy cancellation/egress matrix와 opt-in real-provider budgeted proof
+- migration/backup/restore/rollback 및 cross-repo producer integration
+- self-hosted production-like Linux runner의 pinned host identity; GitHub label 문자열만으로 host proof를 대체하지 않음
+
+## No patch-on-patch rule
+
+artifact schema 추가만으로 닫지 않는다. validator, blocking workflow, test authority, external rail,
+final verdict computation을 하나의 proof graph로 연결한다.

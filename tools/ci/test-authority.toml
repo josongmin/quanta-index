@@ -63,6 +63,115 @@ workflow = ".github/workflows/correctness.yml"
 job = "rust-fuzz-smoke"
 step = "Smoke-run lq_parse_pipeline (60s)"
 
+# Local scopes reuse the authoritative target IDs below. The runner expands a
+# scope into one cargo-nextest process, so adding a second hand-maintained path
+# or invoking Cargo once per test binary is unnecessary. CI authority remains
+# the workspace-wide rails above.
+[local_scopes.integration-fast]
+lane = "test-integration-lane"
+test_threads = 8
+targets = [
+  "contract-ipc-query-result-v2",
+  "contract-lex-scaffold",
+  "core-hybrid-policy",
+  "core-semantic-policy",
+  "lexical-tantivy-smoke",
+  "lexical-generation-delta-base-carryforward",
+  "lexical-execution-budget",
+  "lexical-sealed-manifest",
+  "lexical-boot-inventory",
+  "lexical-regex-cache-bounds",
+  "lexical-regex-literal-alternation",
+  "ipc-admission",
+  "catalog-idempotency",
+  "repomap-bootstrap-owner-flow",
+  "repomap-owner-surface",
+]
+
+[local_scopes.integration-storage]
+lane = "test-integration-lane"
+test_threads = 2
+targets = [
+  "lexical-text-authority-shards",
+]
+
+[local_scopes.integration-semantic]
+lane = "test-integration-lane"
+test_threads = 4
+targets = [
+  "semantic-persisted",
+  "semantic-generation-delta-reuse",
+  "semantic-sealed-manifest",
+  "semantic-generation-lifecycle-model",
+  "semantic-scv2-persisted-scenarios",
+]
+
+[local_scopes.shared-surface]
+lane = "shared-validation-lane"
+test_threads = 8
+packages = [
+  "quanta-index-contract",
+  "quanta-index-core",
+  "quanta-index-sdk",
+  "quanta-index-search-plane",
+  "quanta-index-ipc",
+]
+lib = true
+
+[local_scopes.cli-smoke]
+lane = "test-cli-smoke-lane"
+test_threads = 2
+targets = [
+  "searchctl-cli-smoke",
+  "corpus-smoke-cli",
+]
+
+[local_scopes.daemon-fast]
+lane = "test-daemon-lane"
+test_threads = 4
+targets = [
+  "searchd-runtime-fast-suite-launcher",
+]
+
+[local_scopes.daemon]
+lane = "test-daemon-lane"
+test_threads = 4
+includes = ["daemon-fast"]
+targets = [
+  "searchd-harness-dsl-scenario-truth",
+  "searchd-runtime-lexical-full-fidelity",
+  "searchd-runtime-dual-syntax-lowering-parity",
+  "searchd-runtime-filter-execution",
+  "searchd-runtime-predicate-authority-boolean",
+  "searchd-runtime-e2e-top-k-truth-table",
+  "searchd-runtime-e2e-semantic-scope-cap",
+  "searchd-runtime-e2e-snapshot-registry",
+  "searchd-runtime-e2e-exact-count-window",
+  "searchd-runtime-e2e-physical-gc",
+  "searchd-runtime-e2e-boot-quarantine",
+  "searchd-runtime-predicate-authority-lifecycle",
+  "searchd-runtime-generation-activation-concurrency",
+  "searchd-runtime-dsl-scenarios",
+  "searchd-runtime-restart-replay-determinism",
+  "searchd-runtime-perf-chaos",
+  "searchd-runtime-explain",
+  "searchd-runtime-repo-map-end-to-end",
+  "searchd-runtime-full-corpus",
+  "searchd-runtime-e2e-history-relevance",
+  "searchd-runtime-e2e-aux-epoch",
+  "searchd-runtime-e2e-keyset-cursors",
+]
+
+# Complete local daemon closeout. This expands from owners so every newly
+# cataloged runtime/harness integration target joins the exhaustive rail.
+[local_scopes.daemon-all]
+lane = "test-daemon-lane"
+test_threads = 4
+owners = [
+  "quanta-index-searchd-harness",
+  "quanta-index-searchd-runtime",
+]
+
 [[integration_targets]]
 id = "contract-hybrid-candidate"
 path = "crates/quanta-index-contract/tests/hybrid_candidate_contract.rs"
@@ -512,294 +621,364 @@ rail = "pr-workspace-nextest"
 id = "searchd-runtime-dsl-scenarios"
 path = "crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-dual-syntax-lowering-parity"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_dual_syntax_lowering_parity.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-filter-execution"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_filter_execution.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-predicate-authority-boolean"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_predicate_authority_boolean.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-predicate-authority-lifecycle"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_predicate_authority_lifecycle.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-generation-activation-concurrency"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_generation_activation_concurrency.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-full-corpus"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_full_corpus.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-lexical-full-fidelity"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_lexical_full_fidelity.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-matrix-inventory"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_matrix_inventory.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_fast_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-perf-chaos"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_perf_chaos.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-restart-replay-determinism"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_restart_replay_determinism.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-composite-generation-authority-restart"
 path = "crates/quanta-index-searchd-runtime/tests/composite_generation_authority_restart.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-structural-hellgate"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_structural_hellgate.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_fast_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-text-route-hellgate"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_text_route_hellgate.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_fast_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-physical-gc"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_physical_gc.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-crash-matrix"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_crash_matrix.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-boot-quarantine"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_boot_quarantine.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-lexical-sealed-overlays"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_lexical_sealed_overlays.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-integrity-scrub"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_integrity_scrub.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-ingest-idempotency"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_ingest_idempotency.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_fast_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-ingest-resource-envelope"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_ingest_resource_envelope.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-ingest-preflight"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_ingest_preflight.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-auxiliary-catalog"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_auxiliary_catalog.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-explain-score-trace"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_explain_score_trace.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_fast_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-metrics-scrape"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_metrics_scrape.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-socket-access"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_socket_access.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-umask-hardening"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_umask_hardening.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-process-envelope"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_process_envelope.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-history-order"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_history_order.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-aux-epoch"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_aux_epoch.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-keyset-cursors"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_keyset_cursors.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-ranked-pages"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_ranked_pages.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-history-relevance"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_history_relevance.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-history-text-predicate"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_history_text_predicate.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-unicode-text-semantics"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_unicode_text_semantics.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-read-view"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_read_view.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_fast_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-exact-count-window"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_exact_count_window.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-snapshot-registry"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_snapshot_registry.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-semantic-scope-cap"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_semantic_scope_cap.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-ann-incremental-seal"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_ann_incremental_seal.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-semantic-budget-interruption"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_semantic_budget_interruption.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-semantic-stream-window"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_semantic_stream_window.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-top-k-truth-table"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_top_k_truth_table.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-end-to-end"
 path = "crates/quanta-index-searchd-runtime/tests/end_to_end.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_fast_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-explain"
 path = "crates/quanta-index-searchd-runtime/tests/explain.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-hybrid-filters"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_hybrid_filters.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_fast_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-repo-map-end-to-end"
 path = "crates/quanta-index-searchd-runtime/tests/repo_map_end_to_end.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-sdk-frontdoor"
 path = "crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_fast_suite"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-fast-suite-launcher"
+path = "crates/quanta-index-searchd-runtime/tests/runtime_fast_suite.rs"
+owner = "quanta-index-searchd-runtime"
+target = "runtime_fast_suite"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-risk-suite-launcher"
+path = "crates/quanta-index-searchd-runtime/tests/runtime_risk_suite.rs"
+owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-extended-suite-launcher"
+path = "crates/quanta-index-searchd-runtime/tests/runtime_extended_suite.rs"
+owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "searchd-runtime-semantic-boot-report"
 path = "crates/quanta-index-searchd-runtime/tests/semantic_boot_report.rs"
 owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]

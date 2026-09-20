@@ -8,7 +8,6 @@
 
 #![forbid(unsafe_code)]
 
-use quanta_index_searchd_harness as e2e_harness;
 
 use anyhow::Result as AnyResult;
 use quanta_index_contract::{

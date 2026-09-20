@@ -10,9 +10,6 @@
     reason = "integration response checks intentionally collapse non-target variants"
 )]
 
-#[path = "common/frontdoor_scenarios.rs"]
-mod frontdoor_scenarios;
-
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

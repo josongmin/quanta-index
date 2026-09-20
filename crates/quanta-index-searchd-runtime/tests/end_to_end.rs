@@ -19,9 +19,6 @@
     reason = "mixed migration: typed ingest helpers land before all channel setup blocks are cut over"
 )]
 
-#[path = "common/frontdoor_scenarios.rs"]
-mod frontdoor_scenarios;
-
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::path::Path;
@@ -1924,8 +1921,10 @@ fn start_runtime_with_openai(
 /// the end-to-end capability that was structurally impossible before.
 ///
 /// `#[ignore]` because it hits the real `OpenAI` API; run with `OPENAI_API_KEY` set:
-/// `OPENAI_API_KEY=<key> cargo test -p quanta-index-searchd-runtime --test end_to_end \
-///   -- --ignored openai_semantic_paraphrase_outranks_unrelated_v1 --nocapture`
+/// `OPENAI_API_KEY=<key> ./scripts/cargow --lane test-daemon-lane test \
+///   -p quanta-index-searchd-runtime --test runtime_fast_suite \
+///   end_to_end::openai_semantic_paraphrase_outranks_unrelated_v1 \
+///   -- --ignored --nocapture`
 #[test]
 #[ignore = "hits the real OpenAI API; run with OPENAI_API_KEY set and --ignored"]
 fn openai_semantic_paraphrase_outranks_unrelated_v1() -> TestResult {

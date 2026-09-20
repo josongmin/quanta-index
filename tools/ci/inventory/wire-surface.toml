@@ -28,7 +28,37 @@
 #   vendor-native        bytes owned by a vendor library and reproduced by the
 #                        owning adapter's build; never copied by hand.
 
-schema = 1
+schema = 2
+
+# ---------------------------------------------------------------------------
+# Tools-owned proof and verification formats
+# ---------------------------------------------------------------------------
+
+[[tool_artifact]]
+id = "proof-manifest-v1"
+owner = "tools/ci/proof-authority.toml"
+path = "artifacts/proof-authority/<proof-id>.json"
+producer = "registered command in tools/ci/proof-authority.toml"
+consumers = ["tools/ci/lint/check-proof-authority.py", "release qualification aggregator"]
+version = 1
+schema_file = "tools/ci/proof-manifest.schema.json"
+decoder = "tools/ci/lint/check-proof-authority.py"
+compatibility = "Only schema 1 is accepted. Missing, stale, unregistered or other-version manifests are refused; there is no fallback decoder."
+migration_fixture = "proof_manifest_v0_refused"
+notes = "Source, dirty tree, command/profile/target/filter, counts, host, daemon binary, dependency receipts and raw artifacts are independently re-hashed before a passed proof is admitted."
+
+[[tool_artifact]]
+id = "verification-receipt-v1-legacy"
+owner = "tools/ci/write-verification-receipt.py"
+path = "artifacts/test-authority/receipt.json"
+producer = "tools/ci/write-verification-receipt.py"
+consumers = ["GitHub Actions artifact browser"]
+version = 1
+schema_file = "tools/ci/verification-receipt.schema.json"
+decoder = "tools/ci/write-verification-receipt.py"
+compatibility = "Legacy CI receipt only; ProofManifestV1 validators never accept it as release authority. It is replaced, not upgraded live."
+migration_fixture = "verification_receipt_v1_not_release_authority"
+notes = "Retained temporarily for existing CI consumers. S21-13 removes it after all producers emit ProofManifestV1."
 
 # ---------------------------------------------------------------------------
 # IPC opcodes

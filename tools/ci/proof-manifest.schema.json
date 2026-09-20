@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Quanta Index ProofManifestV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "proof_id",
+    "family",
+    "status",
+    "source",
+    "invocation",
+    "counts",
+    "environment",
+    "daemon_binary",
+    "state_root_format",
+    "inputs",
+    "started_at",
+    "ended_at",
+    "dependency_receipts",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "proof_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]+$"},
+    "family": {"enum": ["S", "U", "A", "D", "P", "F", "Q", "X"]},
+    "status": {"enum": ["passed", "failed", "blocked", "not_run"]},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["head", "dirty_digest", "branch", "upstream", "merge_base"],
+      "properties": {
+        "head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "dirty_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "branch": {"type": "string", "minLength": 1},
+        "upstream": {"type": "string", "minLength": 1},
+        "merge_base": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "invocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "profile", "target", "filter"],
+      "properties": {
+        "command": {"type": "string", "minLength": 1},
+        "profile": {"type": ["string", "null"]},
+        "target": {"type": ["string", "null"]},
+        "filter": {"type": ["string", "null"]}
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selected", "executed", "passed", "failed", "ignored"],
+      "properties": {
+        "selected": {"type": "integer", "minimum": 0},
+        "executed": {"type": "integer", "minimum": 0},
+        "passed": {"type": "integer", "minimum": 0},
+        "failed": {"type": "integer", "minimum": 0},
+        "ignored": {"type": "integer", "minimum": 0}
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["toolchain", "features", "os", "arch", "host"],
+      "properties": {
+        "toolchain": {"type": "string", "minLength": 1},
+        "features": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "os": {"type": "string", "minLength": 1},
+        "arch": {"type": "string", "minLength": 1},
+        "host": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["profile", "cpu_count", "memory_bytes", "identity_digest"],
+          "properties": {
+            "profile": {"type": "string", "minLength": 1},
+            "cpu_count": {"type": "integer", "minimum": 1},
+            "memory_bytes": {"type": "integer", "minimum": 1},
+            "identity_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+          }
+        }
+      }
+    },
+    "daemon_binary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "state_root_format": {"type": "string", "minLength": 1},
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixture", "corpus", "config", "model", "provider"],
+      "properties": {
+        "fixture": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+        "corpus": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+        "config": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+        "model": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+        "provider": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
+    },
+    "started_at": {"type": "string", "format": "date-time"},
+    "ended_at": {"type": "string", "format": "date-time"},
+    "dependency_receipts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["proof_id", "path", "sha256"],
+        "properties": {
+          "proof_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]+$"},
+          "path": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    }
+  }
+}

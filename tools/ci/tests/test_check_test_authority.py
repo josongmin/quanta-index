@@ -34,7 +34,7 @@ def _write_catalog(path: Path, body: str) -> Path:
     )
     if "[[invariants]]" in body:
         body = body.replace(
-            "consumer_target = \"demo-covered\"",
+            'consumer_target = "demo-covered"',
             'consumer_target = "demo-covered"\n        pr_rail = "pr-workspace"\n        merge_rail = "merge-workspace"\n        nightly_rail = "nightly-workspace"',
         )
         body = body.replace(
@@ -216,6 +216,204 @@ def test_valid_catalog_is_green(tmp_path: Path):
     )
 
     assert module.audit_catalog(tmp_path, catalog) == []
+
+
+def test_grouped_integration_sources_require_manifest_and_launcher_binding(tmp_path: Path):
+    module = _load_module()
+    crate = tmp_path / "crates" / "demo"
+    tests = crate / "tests"
+    tests.mkdir(parents=True)
+    (tests / "case.rs").write_text("#[test]\nfn case() {}\n", encoding="utf-8")
+    (tests / "fast_suite.rs").write_text('#[path = "case.rs"]\nmod case;\n', encoding="utf-8")
+    (crate / "Cargo.toml").write_text(
+        """
+        [package]
+        name = "demo"
+        version = "0.1.0"
+        autotests = false
+
+        [[test]]
+        name = "fast_suite"
+        path = "tests/fast_suite.rs"
+        """,
+        encoding="utf-8",
+    )
+    catalog = _write_catalog(
+        tmp_path,
+        """
+        format_version = 1
+
+        [rails.pr-workspace]
+        tier = "pr"
+        command = "./scripts/cargow nextest run --workspace --all-features --locked"
+        target_kind = "integration"
+
+        [[integration_targets]]
+        id = "demo-case"
+        path = "crates/demo/tests/case.rs"
+        owner = "demo"
+        target = "fast_suite"
+        rail = "pr-workspace"
+
+        [[integration_targets]]
+        id = "demo-fast-suite"
+        path = "crates/demo/tests/fast_suite.rs"
+        owner = "demo"
+        target = "fast_suite"
+        rail = "pr-workspace"
+        """,
+    )
+
+    assert module.audit_catalog(tmp_path, catalog) == []
+
+    (tests / "fast_suite.rs").write_text("", encoding="utf-8")
+    violations = module.audit_catalog(tmp_path, catalog)
+
+    assert any("omits cataloged source case.rs" in violation.message for violation in violations)
+
+
+def test_local_scope_rejects_unknown_target(tmp_path: Path):
+    module = _load_module()
+    tests = tmp_path / "crates" / "demo" / "tests"
+    tests.mkdir(parents=True)
+    (tests / "covered.rs").write_text("", encoding="utf-8")
+    catalog = _write_catalog(
+        tmp_path,
+        """
+        format_version = 1
+
+        [rails.pr-workspace]
+        tier = "pr"
+        command = "./scripts/cargow nextest run --workspace --all-features --locked"
+        target_kind = "integration"
+
+        [local_scopes.fast]
+        lane = "test-fast-lane"
+        test_threads = 2
+        targets = ["missing"]
+
+        [[integration_targets]]
+        id = "demo-covered"
+        path = "crates/demo/tests/covered.rs"
+        owner = "demo"
+        rail = "pr-workspace"
+        """,
+    )
+
+    violations = module.audit_catalog(tmp_path, catalog)
+
+    assert any(
+        "unknown integration target missing" in violation.message for violation in violations
+    )
+
+
+def test_local_scope_owner_selection_is_valid(tmp_path: Path):
+    module = _load_module()
+    tests = tmp_path / "crates" / "demo" / "tests"
+    tests.mkdir(parents=True)
+    (tests / "covered.rs").write_text("", encoding="utf-8")
+    catalog = _write_catalog(
+        tmp_path,
+        """
+        format_version = 1
+
+        [rails.pr-workspace]
+        tier = "pr"
+        command = "./scripts/cargow nextest run --workspace --all-features --locked"
+        target_kind = "integration"
+
+        [local_scopes.all-demo]
+        lane = "test-demo-lane"
+        test_threads = 2
+        owners = ["demo"]
+
+        [[integration_targets]]
+        id = "demo-covered"
+        path = "crates/demo/tests/covered.rs"
+        owner = "demo"
+        rail = "pr-workspace"
+        """,
+    )
+
+    assert module.audit_catalog(tmp_path, catalog) == []
+
+
+def test_local_scope_rejects_mixed_library_and_integration_selectors(tmp_path: Path):
+    module = _load_module()
+    crate = tmp_path / "crates" / "demo"
+    tests = crate / "tests"
+    tests.mkdir(parents=True)
+    (crate / "Cargo.toml").write_text("[package]\nname='demo'\nversion='0.1.0'\n", encoding="utf-8")
+    (tests / "covered.rs").write_text("", encoding="utf-8")
+    catalog = _write_catalog(
+        tmp_path,
+        """
+        format_version = 1
+
+        [rails.pr-workspace]
+        tier = "pr"
+        command = "./scripts/cargow nextest run --workspace --all-features --locked"
+        target_kind = "integration"
+
+        [local_scopes.mixed]
+        lane = "test-mixed-lane"
+        test_threads = 2
+        targets = ["demo-covered"]
+        packages = ["demo"]
+        lib = true
+
+        [[integration_targets]]
+        id = "demo-covered"
+        path = "crates/demo/tests/covered.rs"
+        owner = "demo"
+        rail = "pr-workspace"
+        """,
+    )
+
+    violations = module.audit_catalog(tmp_path, catalog)
+
+    assert any(
+        "must keep library and integration selectors separate" in violation.message
+        for violation in violations
+    )
+
+
+def test_local_scope_include_cycle_fails_closed(tmp_path: Path):
+    module = _load_module()
+    tests = tmp_path / "crates" / "demo" / "tests"
+    tests.mkdir(parents=True)
+    (tests / "covered.rs").write_text("", encoding="utf-8")
+    catalog = _write_catalog(
+        tmp_path,
+        """
+        format_version = 1
+
+        [rails.pr-workspace]
+        tier = "pr"
+        command = "./scripts/cargow nextest run --workspace --all-features --locked"
+        target_kind = "integration"
+
+        [local_scopes.first]
+        lane = "test-first-lane"
+        test_threads = 2
+        includes = ["second"]
+
+        [local_scopes.second]
+        lane = "test-second-lane"
+        test_threads = 2
+        includes = ["first"]
+
+        [[integration_targets]]
+        id = "demo-covered"
+        path = "crates/demo/tests/covered.rs"
+        owner = "demo"
+        rail = "pr-workspace"
+        """,
+    )
+
+    violations = module.audit_catalog(tmp_path, catalog)
+
+    assert any("local scope include cycle" in violation.message for violation in violations)
 
 
 @pytest.mark.parametrize("risk", ["P0", "P1"])

@@ -14,6 +14,9 @@ install-hooks:
 cache-root:
     @bash scripts/quanta-index-env.sh
 
+rust-sccache-stats:
+    @source scripts/quanta-index-env.sh && if [[ -n "${RUSTC_WRAPPER:-}" && "${RUSTC_WRAPPER:t}" == "sccache" ]]; then sccache --show-stats; else echo 'sccache is disabled or unavailable'; fi
+
 rust-profile-list:
     @printf '%s\n' \
         'dev-fast            default local edit loop; workspace lib/bin compile, excludes searchd runtime' \
@@ -21,9 +24,14 @@ rust-profile-list:
         'dev-all-targets     widest compile rail; all targets across the workspace' \
         'validate-shared-surface contract/core/sdk/search-plane shared-surface validation rail' \
         'test-fast           default local test loop; workspace lib/bin tests, excludes daemon e2e' \
-        'test-integration    contract/core/channel/lexical/repomap integration rail' \
+        'test-integration-fast bounded integration loop; excludes slow text/Lance storage' \
+        'test-integration-storage text-authority shard persistence slice' \
+        'test-integration-semantic semantic storage integration slice' \
+        'test-integration    complete fast + storage + semantic integration rail' \
         'test-cli-smoke      CLI smoke tests for searchctl + corpus-smoke' \
-        'test-daemon         searchd runtime scenario/e2e tests' \
+        'test-daemon-fast    9-source/1-binary daemon edit loop; excludes DSL cold truth' \
+        'test-daemon         30 runtime sources plus DSL truth; 3 binaries' \
+        'test-daemon-all     49 runtime sources plus DSL truth; 4 binaries' \
         'release-cli        optimized release build for quanta-index-searchctl' \
         'release-cli-fresh  clean release-bin lane, then rebuild quanta-index-searchctl' \
         'release-daemon     optimized release build for quanta-index-searchd daemon' \
@@ -44,9 +52,14 @@ rust-profile profile:
         dev-all-targets) ./scripts/run-rust-profile.sh "{{profile}}" rust-check ;; \
         validate-shared-surface) ./scripts/run-rust-profile.sh "{{profile}}" rust-validate-shared-surface ;; \
         test-fast) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-fast ;; \
+        test-integration-fast) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-fast ;; \
+        test-integration-storage) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-storage ;; \
+        test-integration-semantic) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-semantic ;; \
         test-integration) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration ;; \
         test-cli-smoke) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-cli-smoke ;; \
+        test-daemon-fast) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-e2e-fast ;; \
         test-daemon) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-e2e ;; \
+        test-daemon-all) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-e2e-all ;; \
         release-cli) ./scripts/run-rust-profile.sh "{{profile}}" rust-build-release-cli ;; \
         release-cli-fresh) ./scripts/run-rust-profile.sh "{{profile}}" rust-build-release-cli-fresh ;; \
         release-daemon) ./scripts/run-rust-profile.sh "{{profile}}" rust-build-release-daemon ;; \
@@ -77,8 +90,8 @@ fmt:
 fmt-check:
     {{cargo}} --lane fmt-lane fmt --all -- --check
 
-rust-check:
-    {{cargo}} --lane all-targets-lane check --workspace --all-targets --all-features --locked
+rust-check lane="all-targets-lane":
+    {{cargo}} --lane {{lane}} check --workspace --all-targets --all-features --locked
 
 # Local edit/compile loop without integration tests, examples, or benches.
 rust-check-fast:
@@ -87,10 +100,14 @@ rust-check-fast:
 rust-check-daemon:
     {{cargo}} --lane daemon-lane check -p quanta-index-searchd-runtime --all-features --locked
 
+rust-compile-shared-surface lane="shared-validation-lane":
+    {{cargo}} --lane {{lane}} nextest run -p quanta-index-contract -p quanta-index-core -p quanta-index-sdk -p quanta-index-search-plane -p quanta-index-ipc --all-targets --all-features --locked --no-run
+
 rust-validate-shared-surface:
-    @just rust-check
-    @just rust-test-integration
-    @just rust-test-cli-smoke
+    @just rust-compile-shared-surface shared-validation-lane
+    python3 tools/ci/run-local-test-scope.py shared-surface --lane shared-validation-lane
+    python3 tools/ci/run-local-test-scope.py integration-fast --lane shared-validation-lane
+    python3 tools/ci/run-local-test-scope.py cli-smoke --lane shared-validation-lane
 
 # Local build loop without integration tests or benches.
 rust-build-fast:
@@ -125,14 +142,17 @@ rust-build-all-targets:
     {{cargo}} --lane all-targets-lane build --workspace --all-targets --all-features --locked
 
 rust-timings-fast:
+    python3 tools/ci/timing/check_host_contention.py
     {{cargo}} --lane timings-fast-lane build --workspace --lib --bins --all-features --locked --exclude quanta-index-searchd-runtime --timings
     env QUANTA_INDEX_BUILD_LANE=timings-fast-lane bash -lc 'source scripts/quanta-index-env.sh && python3 tools/ci/timing/summarize_cargo_timings.py "$CARGO_TARGET_DIR/cargo-timings/cargo-timing.html"'
 
 rust-timings-daemon:
+    python3 tools/ci/timing/check_host_contention.py
     {{cargo}} --lane timings-daemon-lane build -p quanta-index-searchd-runtime --all-features --locked --timings
     env QUANTA_INDEX_BUILD_LANE=timings-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && python3 tools/ci/timing/summarize_cargo_timings.py "$CARGO_TARGET_DIR/cargo-timings/cargo-timing.html"'
 
 rust-timings-all-targets:
+    python3 tools/ci/timing/check_host_contention.py
     {{cargo}} --lane timings-all-targets-lane build --workspace --all-targets --all-features --locked --timings
     env QUANTA_INDEX_BUILD_LANE=timings-all-targets-lane bash -lc 'source scripts/quanta-index-env.sh && python3 tools/ci/timing/summarize_cargo_timings.py "$CARGO_TARGET_DIR/cargo-timings/cargo-timing.html"'
 
@@ -145,18 +165,21 @@ rust-timings-all-targets:
 # clean` here would wipe the wrong target dir and leave a warm cache underneath
 # the timing build, defeating the cold-build assumption (BLD-06A).
 rust-timings-fast-check:
+    python3 tools/ci/timing/check_host_contention.py
     {{cargo}} --lane timings-fast-lane clean --quiet
     {{cargo}} --lane timings-fast-lane build --workspace --lib --bins --all-features --locked --exclude quanta-index-searchd-runtime --timings
     env QUANTA_INDEX_BUILD_LANE=timings-fast-lane bash -lc 'source scripts/quanta-index-env.sh && python3 tools/ci/timing/summarize_cargo_timings.py "$CARGO_TARGET_DIR/cargo-timings/cargo-timing.html" --json --top-crates 25 > /tmp/quanta-index-fast-current.json'
     python3 tools/ci/timing/compare_cargo_timings.py tools/ci/timing/baselines/fast-lane.json /tmp/quanta-index-fast-current.json
 
 rust-timings-daemon-check:
+    python3 tools/ci/timing/check_host_contention.py
     {{cargo}} --lane timings-daemon-lane clean --quiet
     {{cargo}} --lane timings-daemon-lane build -p quanta-index-searchd-runtime --all-features --locked --timings
     env QUANTA_INDEX_BUILD_LANE=timings-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && python3 tools/ci/timing/summarize_cargo_timings.py "$CARGO_TARGET_DIR/cargo-timings/cargo-timing.html" --json --top-crates 25 > /tmp/quanta-index-daemon-current.json'
     python3 tools/ci/timing/compare_cargo_timings.py tools/ci/timing/baselines/daemon-lane.json /tmp/quanta-index-daemon-current.json
 
 rust-timings-update-baselines:
+    python3 tools/ci/timing/check_host_contention.py
     {{cargo}} --lane timings-fast-lane clean --quiet
     {{cargo}} --lane timings-fast-lane build --workspace --lib --bins --all-features --locked --exclude quanta-index-searchd-runtime --timings
     env QUANTA_INDEX_BUILD_LANE=timings-fast-lane bash -lc 'source scripts/quanta-index-env.sh && python3 tools/ci/timing/summarize_cargo_timings.py "$CARGO_TARGET_DIR/cargo-timings/cargo-timing.html" --json --top-crates 25 > tools/ci/timing/baselines/fast-lane.json'
@@ -178,28 +201,19 @@ rust-test-fast:
 rust-test-unit:
     {{cargo}} --lane test-fast-lane test --workspace --lib --bins --all-features --locked --exclude quanta-index-searchd-runtime
 
-rust-test-integration:
-    {{cargo}} --lane test-integration-lane test -p quanta-index-contract --test ipc_query_result_v2_contract --all-features --locked
-    {{cargo}} --lane test-integration-lane test -p quanta-index-contract --test lex_scaffold --all-features --locked
-    {{cargo}} --lane test-integration-lane test -p quanta-index-core --test hybrid_policy --all-features --locked
-    {{cargo}} --lane test-integration-lane test -p quanta-index-core --test semantic_policy --all-features --locked
-    {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test tantivy_smoke --all-features --locked
-    {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test generation_delta_base_carryforward --all-features --locked
-    {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test text_authority_shards --all-features --locked -- --nocapture
-    {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test execution_budget --all-features --locked
-    {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test sealed_manifest --all-features --locked
-    {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test boot_inventory --all-features --locked
-    {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test regex_cache_bounds --all-features --locked
-    {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test regex_literal_alternation --all-features --locked
-    {{cargo}} --lane test-integration-lane test -p quanta-index-ipc --test admission --all-features --locked
-    {{cargo}} --lane test-integration-lane test -p quanta-index-catalog --test idempotency --all-features --locked
-    {{cargo}} --lane test-integration-lane test -p quanta-index-repomap --test bootstrap_owner_flow --all-features --locked
-    {{cargo}} --lane test-integration-lane test -p quanta-index-repomap --test owner_surface --all-features --locked
-    {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test persisted_semantic --all-features --locked
-    {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test generation_delta_reuse --all-features --locked -- --nocapture
-    {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test sealed_manifest --all-features --locked
-    {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test semantic_generation_lifecycle_model --all-features --locked
-    {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test scv2_persisted_scenarios --all-features --locked
+rust-test-integration-fast lane="test-integration-lane":
+    python3 tools/ci/run-local-test-scope.py integration-fast --lane {{lane}}
+
+rust-test-integration-storage lane="test-integration-lane":
+    python3 tools/ci/run-local-test-scope.py integration-storage --lane {{lane}}
+
+rust-test-integration-semantic lane="test-integration-lane":
+    python3 tools/ci/run-local-test-scope.py integration-semantic --lane {{lane}}
+
+rust-test-integration lane="test-integration-lane":
+    python3 tools/ci/run-local-test-scope.py integration-fast --lane {{lane}}
+    python3 tools/ci/run-local-test-scope.py integration-storage --lane {{lane}}
+    python3 tools/ci/run-local-test-scope.py integration-semantic --lane {{lane}}
 
 # W0 decision-gate probes (G0-L / G0-S / G0-R). Vendor- and transport-capability
 # evidence for the structural remediation gates; `--nocapture` so the
@@ -211,9 +225,8 @@ rust-w0-storage-gates:
     {{cargo}} --lane test-integration-lane test -p quanta-index-semantic --test g0s_lance_snapshot_probe --all-features --locked -- --nocapture
     {{cargo}} --lane test-integration-lane test -p quanta-index-ipc --test g0r_runtime_cancellation_probe --all-features --locked -- --nocapture
 
-rust-test-cli-smoke:
-    {{cargo}} --lane test-cli-smoke-lane test -p quanta-index-searchctl --test cli_smoke --all-features --locked
-    {{cargo}} --lane test-cli-smoke-lane test -p quanta-index-corpus-smoke --test cli_smoke --all-features --locked
+rust-test-cli-smoke lane="test-cli-smoke-lane":
+    python3 tools/ci/run-local-test-scope.py cli-smoke --lane {{lane}}
 
 rust-bench-dsl-truth:
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --test dsl_scenario_truth --all-features --locked -- --nocapture
@@ -221,20 +234,12 @@ rust-bench-dsl-truth:
 rust-verify-hellgate-fast:
     @just rust-bench-dsl-truth
     {{cargo}} --lane test-daemon-lane test -p quanta-index-search-plane --lib --all-features --locked -- --nocapture
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_text_route_hellgate --all-features --locked -- --nocapture
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_structural_hellgate --all-features --locked -- --nocapture
+    {{cargo}} --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test runtime_fast_suite --all-features --locked -E 'test(/^(e2e_text_route_hellgate|e2e_structural_hellgate)::/)' --success-output final
     python3 tools/benchmark/sourcegraph_parity.py --check
     python3 tools/ci/lint/check-dsl-capability-truth.py
 
 rust-verify-hellgate-broad:
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test dsl_scenarios --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test sdk_frontdoor --all-features --locked -- --nocapture
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test end_to_end --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_restart_replay_determinism --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_perf_chaos --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test explain --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test repo_map_end_to_end --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_full_corpus --all-features --locked -- --nocapture
+    {{cargo}} --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test runtime_fast_suite --test runtime_risk_suite --all-features --locked -E 'test(/^(dsl_scenarios|sdk_frontdoor|end_to_end|e2e_restart_replay_determinism|e2e_perf_chaos|explain|repo_map_end_to_end|e2e_full_corpus)::/)' --success-output final
 
 rust-verify-hellgate-cross-repo semantica_root="/Users/songmin/Documents/code-new/semantica-codegraph-v2":
     bash -lc 'test -n "$QUANTA_INDEX_SEARCHD_BIN" || { echo "QUANTA_INDEX_SEARCHD_BIN is required"; exit 1; }'
@@ -247,35 +252,17 @@ rust-verify-hellgate-all samples="20":
     @just rust-bench-dsl-cold {{samples}}
     @just rust-bench-dsl-compare
 
-rust-test-e2e:
-    @just rust-bench-dsl-truth
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_matrix_inventory --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_lexical_full_fidelity --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_dual_syntax_lowering_parity --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_filter_execution --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_text_route_hellgate --all-features --locked -- --nocapture
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_structural_hellgate --all-features --locked -- --nocapture
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_predicate_authority_boolean --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_top_k_truth_table --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_semantic_scope_cap --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_snapshot_registry --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_exact_count_window --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_physical_gc --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_boot_quarantine --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_ingest_idempotency --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_predicate_authority_lifecycle --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_generation_activation_concurrency --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test dsl_scenarios --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test sdk_frontdoor --all-features --locked -- --nocapture
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test end_to_end --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_restart_replay_determinism --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_perf_chaos --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test explain --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test repo_map_end_to_end --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_full_corpus --all-features --locked -- --nocapture
+rust-test-e2e-fast lane="test-daemon-lane":
+    python3 tools/ci/run-local-test-scope.py daemon-fast --lane {{lane}}
+
+rust-test-e2e lane="test-daemon-lane":
+    python3 tools/ci/run-local-test-scope.py daemon --lane {{lane}}
+
+rust-test-e2e-all lane="test-daemon-lane":
+    python3 tools/ci/run-local-test-scope.py daemon-all --lane {{lane}}
 
 rust-test-full-corpus:
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_full_corpus --all-features --locked -- --nocapture
+    {{cargo}} --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test runtime_risk_suite --all-features --locked -E 'test(/^e2e_full_corpus::/)' --success-output final
 
 rust-test-pyramid:
     @just rust-test-unit
@@ -397,6 +384,7 @@ rust-verify-quality-snippet:
 # exit, never a fabricated zero-latency pass.
 # Artifacts: artifacts/search-quality/scale/latest/{summary,tier_manifest}.json
 rust-verify-quality-scale:
+    python3 tools/ci/timing/check_host_contention.py
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib scale:: --all-features --locked -- --nocapture
     mkdir -p artifacts/search-quality/scale/latest
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin scale_matrix --all-features --locked
@@ -411,6 +399,7 @@ rust-verify-quality-scale:
 # runner). No single global threshold; verdicts carry route-local diagnostics.
 # Artifacts: artifacts/search-quality/tail/latest/{summary,route_budgets}.json
 rust-verify-quality-tail:
+    python3 tools/ci/timing/check_host_contention.py
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib tail:: --all-features --locked -- --nocapture
     mkdir -p artifacts/search-quality/tail/latest
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin tail_matrix --all-features --locked
@@ -425,6 +414,7 @@ rust-verify-quality-tail:
 # normalization policy. Latency advisory on this host.
 # Artifacts: artifacts/search-quality/ann/latest/summary.json
 rust-verify-quality-ann:
+    python3 tools/ci/timing/check_host_contention.py
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib ann:: --all-features --locked -- --nocapture
     mkdir -p artifacts/search-quality/ann/latest
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin ann_matrix --all-features --locked
@@ -440,6 +430,7 @@ rust-verify-quality-ann:
 # host by default (`requests` per client); the Linux perf runner raises it.
 # Artifacts: artifacts/search-quality/concurrency/latest/summary-c{1,8,32}.json
 rust-verify-quality-concurrency requests="16":
+    python3 tools/ci/timing/check_host_contention.py
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib concurrency:: --all-features --locked -- --nocapture
     mkdir -p artifacts/search-quality/concurrency/latest
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin concurrency_matrix --all-features --locked

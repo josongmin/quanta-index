@@ -34,8 +34,6 @@
 
 #![forbid(unsafe_code)]
 
-use quanta_index_searchd_harness as e2e_harness;
-
 use anyhow::{Result as AnyResult, ensure};
 use quanta_index_contract::{
     FileContributorEntry, FileContributorIdentityEntry, FileContributorIngestBatch,
@@ -46,6 +44,7 @@ use quanta_index_contract::{
 use std::fmt::Write as _;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::e2e_harness;
 use crate::e2e_harness::{
     E2eHistoryFixtureSpec, E2eHistoryResult, E2eQueryResult, E2eRuntime, E2eRuntimeCatalogSpec,
     E2eRuntimeChangedSpec, E2eRuntimeEdgeSpec, E2eRuntimeFacetSpec, E2eRuntimeSnapshotSpec,

@@ -235,6 +235,11 @@ jobs:
       - name: Wire-surface inventory (IPC opcodes + on-disk format versions)
         run: python3 tools/ci/lint/check-wire-inventory.py
 
+      - name: Proof authority registry and manifest schema
+        run: |
+          python3 tools/ci/lint/check-proof-authority.py
+          python3 -m pytest tools/ci/tests/test_check_proof_authority.py -q
+
       - name: Benchmark artifacts are attributed to HEAD (no stale / unknown-SHA / old-schema artifact)
         run: python3 tools/ci/lint/check-bench-artifacts.py
 

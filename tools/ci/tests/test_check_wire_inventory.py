@@ -65,7 +65,7 @@ LEXICAL_LIB_RS = """
 """
 
 INVENTORY_OK = """
-    schema = 1
+    schema = 2
 
     [[ipc]]
     enum = "SearchPlaneQueryIpcRequest"
@@ -159,6 +159,34 @@ def test_exact_inventory_passes(tmp_path: Path):
     assert MODULE.check(load(INVENTORY_OK), root) == []
 
 
+def test_tools_owned_schema_version_is_checked(tmp_path: Path):
+    root = make_workspace(tmp_path)
+    _write(root / "tools/ci/owner.py", "# owner\n")
+    _write(root / "tools/ci/decoder.py", "# decoder\n")
+    _write(
+        root / "tools/ci/schema.json",
+        '{"properties":{"schema_version":{"const":2}}}\n',
+    )
+    inventory = load(INVENTORY_OK)
+    inventory["tool_artifact"] = [
+        {
+            "id": "proof",
+            "owner": "tools/ci/owner.py",
+            "path": "artifacts/proof.json",
+            "producer": "fixture",
+            "consumers": ["fixture"],
+            "version": 1,
+            "schema_file": "tools/ci/schema.json",
+            "decoder": "tools/ci/decoder.py",
+            "compatibility": "refuse old",
+            "migration_fixture": "old_refused",
+            "notes": "fixture",
+        }
+    ]
+    found = messages(MODULE.check(inventory, root))
+    assert any("inventory version 1 differs from schema const 2" in message for message in found)
+
+
 def test_ipc_enum_parser_reads_only_opcode_enums():
     enums = MODULE.parse_ipc_enums(textwrap.dedent(SPLIT_RS))
     assert enums == {
@@ -200,7 +228,9 @@ def test_an_inventory_variant_the_code_lacks_fails(tmp_path: Path):
 def test_an_opcode_enum_without_an_inventory_row_fails(tmp_path: Path):
     root = make_workspace(tmp_path)
     inventory = load(INVENTORY_OK)
-    inventory["ipc"] = [row for row in inventory["ipc"] if row["enum"] != "SearchPlaneIngestIpcResponse"]
+    inventory["ipc"] = [
+        row for row in inventory["ipc"] if row["enum"] != "SearchPlaneIngestIpcResponse"
+    ]
     found = messages(MODULE.check(inventory, root))
     assert any("`SearchPlaneIngestIpcResponse` has no [[ipc]] row" in m for m in found)
 
@@ -210,11 +240,15 @@ def test_a_wrong_file_for_an_enum_fails(tmp_path: Path):
     inventory = load(INVENTORY_OK)
     inventory["ipc"][2]["file"] = "crates/quanta-index-contract/src/ipc/split.rs"
     found = messages(MODULE.check(inventory, root))
-    assert any("the enum lives in 'crates/quanta-index-contract/src/ipc/ingest.rs'" in m for m in found)
+    assert any(
+        "the enum lives in 'crates/quanta-index-contract/src/ipc/ingest.rs'" in m for m in found
+    )
 
 
 def test_format_constants_are_read_with_test_and_non_format_names_excluded():
-    constants = MODULE.parse_format_constants("crates/x/src/lib.rs", textwrap.dedent(LEXICAL_LIB_RS))
+    constants = MODULE.parse_format_constants(
+        "crates/x/src/lib.rs", textwrap.dedent(LEXICAL_LIB_RS)
+    )
     assert [(c.name, c.value) for c in constants] == [
         ("LEXICAL_SEALED_MANIFEST_FORMAT_VERSION", "3"),
         ("TEXT_NORMALIZER_VERSION", "2.0"),

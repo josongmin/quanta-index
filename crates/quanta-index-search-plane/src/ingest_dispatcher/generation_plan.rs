@@ -382,6 +382,12 @@ pub(super) fn batch_publish_receipt_v1(batch: &SearchCorpusIngestBatch) -> Batch
     for _scope in &batch.tombstone_scopes {
         receipt.accept_tombstone_scope();
     }
+    for _scope in &batch.semantic_replace_scopes {
+        receipt.accept_semantic_replace_scope();
+    }
+    for _scope in &batch.semantic_tombstone_scopes {
+        receipt.accept_semantic_tombstone_scope();
+    }
     for _surface in &batch.clear_surfaces {
         receipt.accept_clear_surface();
     }

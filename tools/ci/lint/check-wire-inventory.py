@@ -23,6 +23,7 @@ integer declarations, and exactness on that shape beats cleverness.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from dataclasses import dataclass
@@ -86,6 +87,72 @@ REPRODUCTION_CLASSES: frozenset[str] = frozenset(
         "vendor-native",
     }
 )
+
+
+def check_tool_artifacts(inventory: dict, root: Path = ROOT) -> list[Finding]:
+    """Validate tools-owned JSON formats that do not have Rust constants."""
+    findings: list[Finding] = []
+    ids: set[str] = set()
+    for row in inventory.get("tool_artifact", []):
+        artifact_id = row.get("id")
+        where = f"wire-surface.toml [[tool_artifact]] id={artifact_id!r}"
+        if not isinstance(artifact_id, str) or not artifact_id:
+            findings.append(Finding(where, "`id` must be a non-empty string"))
+            continue
+        if artifact_id in ids:
+            findings.append(Finding(where, "listed twice"))
+            continue
+        ids.add(artifact_id)
+        for field in (
+            "owner",
+            "path",
+            "producer",
+            "schema_file",
+            "decoder",
+            "compatibility",
+            "migration_fixture",
+            "notes",
+        ):
+            if not isinstance(row.get(field), str) or not row[field]:
+                findings.append(Finding(where, f"`{field}` must be a non-empty string"))
+        consumers = row.get("consumers")
+        if (
+            not isinstance(consumers, list)
+            or not consumers
+            or any(not isinstance(consumer, str) or not consumer for consumer in consumers)
+        ):
+            findings.append(Finding(where, "`consumers` must be a non-empty string array"))
+        version = row.get("version")
+        if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+            findings.append(Finding(where, "`version` must be a positive integer"))
+        owner = row.get("owner")
+        if isinstance(owner, str) and not (root / owner).is_file():
+            findings.append(Finding(where, f"owner file does not exist: {owner}"))
+        decoder = row.get("decoder")
+        if isinstance(decoder, str) and not (root / decoder).is_file():
+            findings.append(Finding(where, f"decoder file does not exist: {decoder}"))
+        schema_file = row.get("schema_file")
+        if isinstance(schema_file, str):
+            schema_path = root / schema_file
+            if not schema_path.is_file():
+                findings.append(Finding(where, f"schema file does not exist: {schema_file}"))
+            else:
+                try:
+                    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+                    declared = schema["properties"]["schema_version"]["const"]
+                except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+                    findings.append(
+                        Finding(where, f"schema has no readable schema_version const: {error}")
+                    )
+                else:
+                    if declared != version:
+                        findings.append(
+                            Finding(
+                                where,
+                                f"inventory version {version!r} differs from schema const {declared!r}",
+                            )
+                        )
+    return findings
 
 
 @dataclass(frozen=True)
@@ -174,9 +241,7 @@ def parse_format_constants(rel: str, text: str) -> list[CodeConstant]:
         match = INT_CONST_RE.match(line)
         if match and is_format_constant_name(match.group("name")):
             found.append(
-                CodeConstant(
-                    rel, match.group("name"), match.group("value").replace("_", "")
-                )
+                CodeConstant(rel, match.group("name"), match.group("value").replace("_", ""))
             )
             continue
         normalizer = NORMALIZER_CONST_RE.match(line)
@@ -252,7 +317,9 @@ def check_ipc(inventory: dict, root: Path = ROOT) -> list[Finding]:
                 Finding(where, f"variant `{missing}` exists in the code but is not listed")
             )
         for extra in [v for v in inventory_variants if v not in code_variants]:
-            findings.append(Finding(where, f"variant `{extra}` is listed but the enum has no such variant"))
+            findings.append(
+                Finding(where, f"variant `{extra}` is listed but the enum has no such variant")
+            )
         if row.get("direction") not in {"request", "response"}:
             findings.append(Finding(where, "`direction` must be `request` or `response`"))
         if row.get("plane") not in {"query", "control", "ingest"}:
@@ -320,15 +387,11 @@ def check_artifacts(inventory: dict, root: Path = ROOT) -> list[Finding]:
                 continue
             key = (file, name)
             if key in claimed:
-                findings.append(
-                    Finding(cwhere, f"already claimed by artifact {claimed[key]!r}")
-                )
+                findings.append(Finding(cwhere, f"already claimed by artifact {claimed[key]!r}"))
                 continue
             claimed[key] = artifact_id
             if key not in code_constants:
-                findings.append(
-                    Finding(cwhere, f"no format-version constant `{name}` in `{file}`")
-                )
+                findings.append(Finding(cwhere, f"no format-version constant `{name}` in `{file}`"))
                 continue
             if str(value) != code_constants[key]:
                 findings.append(
@@ -350,9 +413,13 @@ def check_artifacts(inventory: dict, root: Path = ROOT) -> list[Finding]:
 
 
 def check(inventory: dict, root: Path = ROOT) -> list[Finding]:
-    if inventory.get("schema") != 1:
-        return [Finding("wire-surface.toml", "`schema` must be 1")]
-    return check_ipc(inventory, root) + check_artifacts(inventory, root)
+    if inventory.get("schema") != 2:
+        return [Finding("wire-surface.toml", "`schema` must be 2")]
+    return (
+        check_ipc(inventory, root)
+        + check_artifacts(inventory, root)
+        + check_tool_artifacts(inventory, root)
+    )
 
 
 def main() -> int:

@@ -31,11 +31,38 @@
 ## Tests
 
 - default local tests: `just rust-profile test-fast`
-- integration rail: `just rust-profile test-integration`
-- daemon e2e rail: `just rust-profile test-daemon`
+- non-storage integration edit loop: `just rust-profile test-integration-fast`
+- lexical storage integration slice: `just rust-profile test-integration-storage`
+- semantic storage integration slice: `just rust-profile test-integration-semantic`
+- complete integration rail: `just rust-profile test-integration`
+- fast daemon e2e edit loop: `just rust-profile test-daemon-fast`
+- risk-focused daemon e2e rail: `just rust-profile test-daemon`
+- exhaustive daemon e2e rail: `just rust-profile test-daemon-all`
 - full Rust closeout: `just rust-profile verify-rust`
 - history summary: `just rust-profile-history-summary`
 - one crate probe when the profile catalog is insufficient: `./scripts/cargow test -p <crate>`
+
+Local integration/CLI/daemon profiles resolve target IDs from
+`tools/ci/test-authority.toml` and launch one `cargo nextest` process per scope.
+Do not restore one-Cargo-process-per-test recipes. `validate-shared-surface`
+uses one shared lane for its compile and three bounded nextest selections:
+shared libraries, non-semantic integration, and CLI smoke. The selections stay
+separate because Cargo's global `--lib` selector would otherwise pull unrelated
+package libraries into the integration command. CI keeps its independent
+workspace-wide authority rail. Scope-specific `test_threads` caps prevent a
+scheduler from oversubscribing daemon and storage tests; composed scopes use
+the smallest declared cap.
+The complete integration profile runs fast, lexical-storage, and semantic
+slices sequentially in one build lane, retaining their 8/2/4 thread caps. The
+edit loop can skip text-authority persistence and Lance/DataFusion when those
+storage surfaces did not change. Local `sccache`, when installed, reuses
+cacheable clean-rebuild work on a repository-isolated server;
+`QUANTA_INDEX_SCCACHE=0` disables it.
+
+Timing and timing-bearing quality rails fail before build/cache mutation when
+foreign Cargo or rustc processes are active. Wait for a quiet host. The
+`QUANTA_INDEX_ALLOW_CONTENDED_TIMINGS=1` escape hatch permits diagnosis only;
+it is not clean performance evidence.
 
 ## Structured Agent Output
 
@@ -102,8 +129,13 @@ Canonical Rust commands:
 - `just rust-clippy`
 - `just rust-policy`
 - `just rust-profile test-fast`
+- `just rust-profile test-integration-fast`
+- `just rust-profile test-integration-storage`
+- `just rust-profile test-integration-semantic`
 - `just rust-profile test-integration`
+- `just rust-profile test-daemon-fast`
 - `just rust-profile test-daemon`
+- `just rust-profile test-daemon-all`
 - `./scripts/cargow check -p <crate>`
 - `./scripts/cargow test -p <crate>`
 
@@ -116,6 +148,14 @@ Canonical developer shortcuts:
 - `just verify-rust-heavy`
 - `just rust-profile-history-summary`
 - `just verify`
+
+`test-integration-fast`, `test-integration-storage`, `test-integration-semantic`,
+`test-cli-smoke`, `test-daemon-fast`, and `test-daemon` are declarative
+single-process nextest scopes from `tools/ci/test-authority.toml`.
+The complete integration profile executes the fast, lexical-storage, and
+semantic scopes in one lane; use the owning slice when only one surface changed.
+`test-daemon-all` is the exhaustive runtime/harness closeout; use the smaller
+`test-daemon` scope for the normal risk-focused loop.
 
 
 ---
@@ -155,6 +195,8 @@ Rule:
 
 - generated docs are build artifacts owned by prompt-manager
 - build/runtime caches default outside the repo via `scripts/quanta-index-env.sh`
-- macOS cache root: `~/Library/Caches/quanta-index/` (`target/`, `state/`, `pytest/`, `ruff/`)
+- macOS cache root: `~/Library/Caches/quanta-index/` (`target/`, `state/`, `pytest/`, `ruff/`, optional `sccache/`)
+- local `sccache` uses a repository-derived server port and a 10 GiB maximum;
+  inspect with `just rust-sccache-stats`, disable with `QUANTA_INDEX_SCCACHE=0`
 - large bundle/vector payloads belong in artifact stores, not git
 

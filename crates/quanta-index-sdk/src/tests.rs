@@ -1629,6 +1629,8 @@ fn search_corpus_publish_routes_through_ingest_transport_and_carries_typed_recor
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 1,
         accepted_tombstone_scopes: 0,
+        accepted_semantic_replace_scopes: 0,
+        accepted_semantic_tombstone_scopes: 0,
         sealed: true,
     };
     let ingest = Arc::new(StubIngestTransport::new(
@@ -1698,6 +1700,8 @@ fn search_corpus_builder_preserves_semantic_lifecycle_in_canonical_wire_order() 
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 0,
         accepted_tombstone_scopes: 0,
+        accepted_semantic_replace_scopes: 2,
+        accepted_semantic_tombstone_scopes: 2,
         sealed: true,
     };
     let ingest = Arc::new(StubIngestTransport::new(
@@ -1772,6 +1776,8 @@ fn search_corpus_builder_preserves_typed_cluster_membership_without_text_inferen
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 0,
         accepted_tombstone_scopes: 0,
+        accepted_semantic_replace_scopes: 1,
+        accepted_semantic_tombstone_scopes: 0,
         sealed: true,
     };
     let ingest = Arc::new(StubIngestTransport::new(
@@ -2037,6 +2043,8 @@ fn producer_client_publish_search_corpus_accepts_unsealed_batches() {
             accepted_clear_surfaces: 0,
             accepted_replace_scopes: 0,
             accepted_tombstone_scopes: 0,
+            accepted_semantic_replace_scopes: 0,
+            accepted_semantic_tombstone_scopes: 0,
             sealed: false,
         }),
     ));
@@ -2079,6 +2087,8 @@ fn producer_client_publish_search_corpus_and_activate_routes_ingest_then_control
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 0,
         accepted_tombstone_scopes: 0,
+        accepted_semantic_replace_scopes: 0,
+        accepted_semantic_tombstone_scopes: 0,
         sealed: true,
     };
     let manifest_digest = receipt
@@ -2214,6 +2224,8 @@ fn producer_client_rejects_activation_ack_identity_mismatches_v1() {
                 accepted_clear_surfaces: 0,
                 accepted_replace_scopes: 0,
                 accepted_tombstone_scopes: 0,
+                accepted_semantic_replace_scopes: 0,
+                accepted_semantic_tombstone_scopes: 0,
                 sealed: true,
             }),
         ));
@@ -2250,6 +2262,8 @@ fn producer_client_refuses_to_activate_on_a_sealed_receipt_without_content_roots
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 0,
         accepted_tombstone_scopes: 0,
+        accepted_semantic_replace_scopes: 0,
+        accepted_semantic_tombstone_scopes: 0,
         sealed: true,
     };
     let control = unused_control();
@@ -2293,6 +2307,8 @@ fn producer_client_rejects_mismatched_sealed_receipt_before_composite_activation
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 0,
         accepted_tombstone_scopes: 0,
+        accepted_semantic_replace_scopes: 0,
+        accepted_semantic_tombstone_scopes: 0,
         sealed: true,
     };
     let control = unused_control();
@@ -2352,6 +2368,8 @@ fn producer_client_rejects_each_search_corpus_receipt_mismatch_before_activation
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 1,
         accepted_tombstone_scopes: 1,
+        accepted_semantic_replace_scopes: 0,
+        accepted_semantic_tombstone_scopes: 0,
         sealed: true,
     };
     let mut cases = Vec::new();
@@ -2379,6 +2397,14 @@ fn producer_client_rejects_each_search_corpus_receipt_mismatch_before_activation
     let mut wrong_tombstone_count = valid.clone();
     wrong_tombstone_count.accepted_tombstone_scopes = 0;
     cases.push(("tombstone scope", wrong_tombstone_count));
+
+    let mut wrong_semantic_replace_count = valid.clone();
+    wrong_semantic_replace_count.accepted_semantic_replace_scopes = 1;
+    cases.push(("semantic replace scope", wrong_semantic_replace_count));
+
+    let mut wrong_semantic_tombstone_count = valid.clone();
+    wrong_semantic_tombstone_count.accepted_semantic_tombstone_scopes = 1;
+    cases.push(("semantic tombstone scope", wrong_semantic_tombstone_count));
 
     let mut wrong_clear_count = valid;
     wrong_clear_count.accepted_clear_surfaces = 1;
@@ -2497,6 +2523,8 @@ fn history_publish_routes_through_ingest_transport_and_carries_typed_authority_r
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 4,
         accepted_tombstone_scopes: 0,
+        accepted_semantic_replace_scopes: 0,
+        accepted_semantic_tombstone_scopes: 0,
         sealed: false,
     };
     let ingest = Arc::new(StubIngestTransport::new(
@@ -2557,6 +2585,8 @@ fn history_publish_repo_commit_recency_routes_through_ingest_transport() {
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 2,
         accepted_tombstone_scopes: 0,
+        accepted_semantic_replace_scopes: 0,
+        accepted_semantic_tombstone_scopes: 0,
         sealed: false,
     };
     let ingest = Arc::new(StubIngestTransport::new(
@@ -2612,6 +2642,8 @@ fn history_publish_repo_meta_routes_through_ingest_transport() {
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 2,
         accepted_tombstone_scopes: 0,
+        accepted_semantic_replace_scopes: 0,
+        accepted_semantic_tombstone_scopes: 0,
         sealed: false,
     };
     let ingest = Arc::new(StubIngestTransport::new(
@@ -2668,6 +2700,8 @@ fn history_publish_repo_topic_routes_through_ingest_transport() {
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 3,
         accepted_tombstone_scopes: 0,
+        accepted_semantic_replace_scopes: 0,
+        accepted_semantic_tombstone_scopes: 0,
         sealed: false,
     };
     let ingest = Arc::new(StubIngestTransport::new(
@@ -2725,6 +2759,8 @@ fn history_publish_file_ownership_routes_through_ingest_transport() {
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 2,
         accepted_tombstone_scopes: 0,
+        accepted_semantic_replace_scopes: 0,
+        accepted_semantic_tombstone_scopes: 0,
         sealed: false,
     };
     let ingest = Arc::new(StubIngestTransport::new(
@@ -2790,6 +2826,8 @@ fn history_publish_file_contributor_routes_through_ingest_transport() {
         accepted_clear_surfaces: 0,
         accepted_replace_scopes: 2,
         accepted_tombstone_scopes: 0,
+        accepted_semantic_replace_scopes: 0,
+        accepted_semantic_tombstone_scopes: 0,
         sealed: false,
     };
     let ingest = Arc::new(StubIngestTransport::new(
@@ -3621,6 +3659,8 @@ fn control_request_id_mismatch_is_rejected_for_activation_and_rollback_v1() {
             accepted_clear_surfaces: 0,
             accepted_replace_scopes: 0,
             accepted_tombstone_scopes: 0,
+            accepted_semantic_replace_scopes: 0,
+            accepted_semantic_tombstone_scopes: 0,
             sealed: true,
         }),
     ));

@@ -1,0 +1,301 @@
+# SEP-21 proof authority. The registry is declarative; evidence is valid only
+# when a strict ProofManifestV1 names one of these nodes and passes the checker.
+schema = 1
+
+[families.S]
+name = "static-policy"
+description = "Architecture, public API, wire, module and policy guards."
+
+[families.U]
+name = "owner-unit"
+description = "Owner-local positive, negative and recovery proof."
+
+[families.A]
+name = "real-adapter"
+description = "Real SQLite, Tantivy, Lance or RepoMap adapter proof."
+
+[families.D]
+name = "daemon-consumer"
+description = "Real SDK/UDS consumer proof against the daemon boundary."
+
+[families.P]
+name = "process"
+description = "Child-process signal, crash, restart, lease and readiness proof."
+
+[families.F]
+name = "fault-concurrency"
+description = "Corruption, failpoint, concurrency and cancellation proof."
+
+[families.Q]
+name = "quality-performance"
+description = "Independent relevance, ANN, latency and resource proof."
+
+[families.X]
+name = "external"
+description = "External producer, provider, migration or deployment proof."
+
+[[proofs]]
+id = "p00-authority-freeze"
+ticket = "S21-00"
+family = "S"
+checkpoint = "M0"
+owner = "docs/adr/SEP-21-DECISION-REGISTRY.md"
+command = "python3 tools/ci/lint/check-proof-authority.py"
+gate = "pr"
+profile = "none"
+target = "proof-authority"
+filter = "none"
+source_binding = "exact"
+binary_binding = "none"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = []
+dependencies = []
+artifact = "artifacts/proof-authority/p00-authority-freeze.json"
+required_host = "any"
+
+[[proofs]]
+id = "p01-canonical-identity"
+ticket = "S21-01"
+family = "U"
+checkpoint = "M1"
+owner = "crates/quanta-index-contract-base/src/ids.rs"
+command = "just rust-profile test-fast"
+gate = "release"
+profile = "test-fast"
+target = "canonical-identity-owner"
+filter = "none"
+source_binding = "exact"
+binary_binding = "none"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = []
+dependencies = ["p00-authority-freeze"]
+artifact = "artifacts/proof-authority/p01-canonical-identity.json"
+required_host = "any"
+
+[[proofs]]
+id = "p02a-repomap-compiler"
+ticket = "S21-03"
+family = "A"
+checkpoint = "M1"
+owner = "crates/quanta-index-repomap/src/materializer.rs"
+command = "just rust-profile test-integration-fast"
+gate = "release"
+profile = "test-integration-fast"
+target = "repomap-compiler-owner"
+filter = "none"
+source_binding = "exact"
+binary_binding = "none"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = ["repomap-bounded-query", "repomap-owner-surface"]
+dependencies = ["p01-canonical-identity"]
+artifact = "artifacts/proof-authority/p02a-repomap-compiler.json"
+required_host = "any"
+
+[[proofs]]
+id = "p02b-operation-journal"
+ticket = "S21-04"
+family = "F"
+checkpoint = "M1"
+owner = "crates/quanta-index-core/src/domains/idempotency.rs"
+command = "just rust-profile test-integration-fast"
+gate = "release"
+profile = "test-integration-fast"
+target = "operation-journal-owner"
+filter = "none"
+source_binding = "exact"
+binary_binding = "none"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = ["catalog-idempotency"]
+dependencies = ["p01-canonical-identity"]
+artifact = "artifacts/proof-authority/p02b-operation-journal.json"
+required_host = "any"
+
+[[proofs]]
+id = "p03-candidate-activation"
+ticket = "S21-02"
+family = "F"
+checkpoint = "M1"
+owner = "crates/quanta-index-repomap/src/store.rs"
+command = "just rust-profile test-daemon"
+gate = "release"
+profile = "test-daemon"
+target = "candidate-activation"
+filter = "none"
+source_binding = "exact"
+binary_binding = "release-daemon"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = ["repomap-store-durability", "searchd-runtime-generation-activation-concurrency"]
+dependencies = ["p02a-repomap-compiler", "p02b-operation-journal"]
+artifact = "artifacts/proof-authority/p03-candidate-activation.json"
+required_host = "linux-production-like"
+
+[[proofs]]
+id = "p04-read-view-lifetime"
+ticket = "S21-05"
+family = "F"
+checkpoint = "M2"
+owner = "crates/quanta-index-search-plane/src/query_dispatcher/read_view/view.rs"
+command = "just rust-profile test-daemon"
+gate = "release"
+profile = "test-daemon"
+target = "read-view-lifetime"
+filter = "none"
+source_binding = "exact"
+binary_binding = "release-daemon"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = ["searchd-runtime-e2e-read-view"]
+dependencies = ["p03-candidate-activation", "p02b-operation-journal"]
+artifact = "artifacts/proof-authority/p04-read-view-lifetime.json"
+required_host = "linux-production-like"
+
+[[proofs]]
+id = "p05-query-truth"
+ticket = "S21-06"
+family = "Q"
+checkpoint = "M2"
+owner = "crates/quanta-index-contract-base/src/results/query_window.rs"
+command = "just rust-verify-quality-all"
+gate = "release"
+profile = "quality-all"
+target = "query-truth"
+filter = "none"
+source_binding = "exact"
+binary_binding = "release-daemon"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = ["searchd-runtime-e2e-keyset-cursors"]
+dependencies = ["p04-read-view-lifetime"]
+artifact = "artifacts/proof-authority/p05-query-truth.json"
+required_host = "linux-production-like"
+
+[[proofs]]
+id = "p06-sdk-binding"
+ticket = "S21-07"
+family = "D"
+checkpoint = "M2"
+owner = "crates/quanta-index-sdk/src/client.rs"
+command = "just rust-profile test-daemon"
+gate = "release"
+profile = "test-daemon"
+target = "sdk-binding"
+filter = "none"
+source_binding = "exact"
+binary_binding = "release-daemon"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = ["searchd-runtime-sdk-frontdoor"]
+dependencies = ["p03-candidate-activation", "p02b-operation-journal", "p05-query-truth"]
+artifact = "artifacts/proof-authority/p06-sdk-binding.json"
+required_host = "linux-production-like"
+
+[[proofs]]
+id = "p07-provider-boundary"
+ticket = "S21-08"
+family = "X"
+checkpoint = "M3"
+owner = "crates/quanta-index-search-plane/src/query_embedder.rs"
+command = "just rust-profile test-integration-semantic"
+gate = "release"
+profile = "test-integration-semantic"
+target = "provider-boundary"
+filter = "none"
+source_binding = "exact"
+binary_binding = "release-daemon"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = []
+dependencies = ["p06-sdk-binding"]
+artifact = "artifacts/proof-authority/p07-provider-boundary.json"
+required_host = "linux-production-like"
+
+[[proofs]]
+id = "p08-runtime-supervisor"
+ticket = "S21-09"
+family = "P"
+checkpoint = "M3"
+owner = "crates/quanta-index-searchd-runtime/src/lib.rs"
+command = "just rust-profile test-daemon-all"
+gate = "release"
+profile = "test-daemon-all"
+target = "runtime-supervisor"
+filter = "none"
+source_binding = "exact"
+binary_binding = "release-daemon"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = []
+dependencies = ["p07-provider-boundary"]
+artifact = "artifacts/proof-authority/p08-runtime-supervisor.json"
+required_host = "linux-production-like"
+
+[[proofs]]
+id = "p09-control-readiness"
+ticket = "S21-10"
+family = "P"
+checkpoint = "M3"
+owner = "crates/quanta-index-search-plane/src/control_dispatcher.rs"
+command = "just rust-profile test-daemon"
+gate = "release"
+profile = "test-daemon"
+target = "control-readiness"
+filter = "none"
+source_binding = "exact"
+binary_binding = "release-daemon"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = []
+dependencies = ["p08-runtime-supervisor", "p02b-operation-journal"]
+artifact = "artifacts/proof-authority/p09-control-readiness.json"
+required_host = "linux-production-like"
+
+[[proofs]]
+id = "p10-state-migration"
+ticket = "S21-11"
+family = "X"
+checkpoint = "M4"
+owner = "crates/quanta-index-searchd/src/cli/command.rs"
+command = "just rust-profile test-daemon-all"
+gate = "release"
+profile = "test-daemon-all"
+target = "state-migration"
+filter = "none"
+source_binding = "exact"
+binary_binding = "release-daemon"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = []
+dependencies = ["p01-canonical-identity", "p03-candidate-activation", "p02b-operation-journal", "p08-runtime-supervisor"]
+artifact = "artifacts/proof-authority/p10-state-migration.json"
+required_host = "linux-production-like"
+
+[[proofs]]
+id = "p11-cross-repo-cutover"
+ticket = "S21-12"
+family = "X"
+checkpoint = "M4"
+owner = "docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-12-cross-repo-terminal-receipt-cutover.md"
+command = "just rust-verify-hellgate-cross-repo"
+gate = "release"
+profile = "cross-repo"
+target = "semantica-terminal-receipt"
+filter = "none"
+source_binding = "exact-pair"
+binary_binding = "release-daemon"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = []
+dependencies = ["p03-candidate-activation", "p02b-operation-journal", "p06-sdk-binding", "p10-state-migration"]
+artifact = "artifacts/proof-authority/p11-cross-repo-cutover.json"
+required_host = "linux-production-like"
+
+[[proofs]]
+id = "p12-final-qualification"
+ticket = "S21-13"
+family = "S"
+checkpoint = "M5"
+owner = "docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-13-release-evidence-and-sota-qualification.md"
+command = "just rust-profile verify-rust"
+gate = "release"
+profile = "verify-rust"
+target = "final-qualification"
+filter = "none"
+source_binding = "exact-pair"
+binary_binding = "release-daemon"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = []
+dependencies = ["p01-canonical-identity", "p02a-repomap-compiler", "p02b-operation-journal", "p03-candidate-activation", "p04-read-view-lifetime", "p05-query-truth", "p06-sdk-binding", "p07-provider-boundary", "p08-runtime-supervisor", "p09-control-readiness", "p10-state-migration", "p11-cross-repo-cutover"]
+artifact = "artifacts/proof-authority/p12-final-qualification.json"
+required_host = "linux-production-like"

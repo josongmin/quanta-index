@@ -34,9 +34,6 @@
 
 #![forbid(unsafe_code)]
 
-#[path = "common/searchd_binary_process.rs"]
-mod searchd_binary_process;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::os::unix::fs::MetadataExt as _;
@@ -59,7 +56,7 @@ use quanta_index_search_plane::crash_point::{
     AFTER_SEMANTIC_SEAL, BEFORE_AUTHORITY_RECORD, BEFORE_RECORD_FORGET, BETWEEN_TRACK_RECLAIMS,
     CRASH_EXIT_CODE, CRASH_POINT_ENV,
 };
-use searchd_binary_process::{
+use crate::searchd_binary_process::{
     SOCKET_TIMEOUT, SearchdBinaryProcess, remove_socket_files, searchd_command, terminate_child,
     wait_for_sockets,
 };

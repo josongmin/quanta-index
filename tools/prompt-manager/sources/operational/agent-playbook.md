@@ -26,11 +26,44 @@
 ## Tests
 
 - default local tests: `just rust-profile test-fast`
-- integration rail: `just rust-profile test-integration`
-- daemon e2e rail: `just rust-profile test-daemon`
+- bounded integration edit loop: `just rust-profile test-integration-fast`
+- lexical storage integration slice: `just rust-profile test-integration-storage`
+- semantic storage integration slice: `just rust-profile test-integration-semantic`
+- complete integration rail: `just rust-profile test-integration`
+- fast daemon e2e edit loop: `just rust-profile test-daemon-fast`
+- risk-focused daemon e2e rail: `just rust-profile test-daemon`
+- exhaustive daemon e2e rail: `just rust-profile test-daemon-all`
 - full Rust closeout: `just rust-profile verify-rust`
 - history summary: `just rust-profile-history-summary`
 - one crate probe when the profile catalog is insufficient: `./scripts/cargow test -p <crate>`
+
+Local integration/CLI/daemon profiles resolve target IDs from
+`tools/ci/test-authority.toml` and launch one `cargo nextest` process per scope.
+Do not restore one-Cargo-process-per-test recipes. `validate-shared-surface`
+uses one shared lane, compiles the selected all-target graph once in the test
+profile with nextest `--no-run`, then executes three bounded selections: shared
+libraries, bounded integration, and CLI smoke. The selections stay separate
+because Cargo's global `--lib` selector would otherwise pull unrelated package
+libraries into the integration command. CI keeps its independent workspace-wide
+authority rail. Scope-specific `test_threads` caps prevent a scheduler from
+oversubscribing daemon and storage tests; composed scopes use the smallest
+declared cap.
+The 49 searchd-runtime scenario source files are modules of three explicit Cargo
+test suites (fast, risk, extended), not 49 separately linked binaries. The test
+authority guard verifies every source-to-suite binding. `test-daemon-fast`
+executes only the fast runtime suite; the expensive DSL golden-truth matrix
+remains in `test-daemon`, `test-daemon-all`, and `rust-bench-dsl-truth`.
+The complete integration profile runs fast, lexical-storage, and semantic
+slices sequentially in one build lane, retaining their 8/2/4 thread caps. The
+edit loop can skip text-authority persistence and Lance/DataFusion when those
+storage surfaces did not change. Local `sccache`, when installed, reuses
+cacheable clean-rebuild work on a repository-isolated server;
+`QUANTA_INDEX_SCCACHE=0` disables it.
+
+Timing and timing-bearing quality rails fail before build/cache mutation when
+foreign Cargo or rustc processes are active. Wait for a quiet host. The
+`QUANTA_INDEX_ALLOW_CONTENDED_TIMINGS=1` escape hatch permits diagnosis only;
+it is not clean performance evidence.
 
 ## Structured Agent Output
 

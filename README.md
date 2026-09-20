@@ -74,16 +74,23 @@ Build artifacts:
 - use `just ...` for repo recipes
 - agent/default entrypoint: `just rust-profile <name>`
 - both route `target/` and related local caches to the shared external cache root instead of the repo working tree
+- when installed locally, `sccache` is enabled on a repository-isolated server
+  for cacheable clean rebuild work; set `QUANTA_INDEX_SCCACHE=0` to disable it
 
 Recommended Rust profiles:
 
 - `just rust-profile dev-fast` — default local edit loop
 - `just rust-profile dev-daemon` — daemon/runtime-only loop
 - `just rust-profile dev-all-targets` — widest compile rail after shared-surface edits
-- `just rust-profile validate-shared-surface` — contract/core/sdk/search-plane shared-surface validation
+- `just rust-profile validate-shared-surface` — one test-profile compile plus bounded contract/core/sdk/search-plane validation
 - `just rust-profile test-fast` — default local test loop
-- `just rust-profile test-integration` — contract/core/channel/lexical/repomap integration rail
-- `just rust-profile test-daemon` — `searchd-runtime` scenario/e2e rail
+- `just rust-profile test-integration-fast` — 15-target bounded integration loop
+- `just rust-profile test-integration-storage` — text-authority shard persistence slice
+- `just rust-profile test-integration-semantic` — five Lance/DataFusion-backed semantic targets
+- `just rust-profile test-integration` — complete fast + storage + semantic integration rail
+- `just rust-profile test-daemon-fast` — 9-source/1-binary daemon edit loop; excludes DSL cold-matrix truth
+- `just rust-profile test-daemon` — 30 runtime scenario sources plus DSL truth, linked as 3 binaries
+- `just rust-profile test-daemon-all` — 49 runtime scenario sources plus DSL truth, linked as 4 binaries
 - `just rust-profile verify-rust` — standard merge gate
 - `just rust-profile verify-rust-heavy` — nightly/heavy correctness rail
 - `just rust-profile timings-fast` / `timings-daemon` — build-regression capture rails
@@ -105,9 +112,19 @@ Quality gates:
 - lint front door: `just rust-check`, `just rust-clippy`, `just python-lint`, `just semgrep`
 - test pyramid:
   - unit: `just rust-test-unit`
-  - integration/component: `just rust-test-integration`
-  - e2e smoke: `just rust-test-e2e`
+  - bounded integration/component: `just rust-test-integration-fast`
+  - lexical storage integration: `just rust-test-integration-storage`
+  - semantic storage integration: `just rust-test-integration-semantic`
+  - complete integration/component: `just rust-test-integration`
+  - fast e2e: `just rust-test-e2e-fast`
+  - risk-focused e2e: `just rust-test-e2e`
+  - exhaustive daemon e2e: `just rust-test-e2e-all`
   - full workspace: `just rust-test`
+
+The integration, CLI-smoke, and daemon recipes resolve target IDs from
+`tools/ci/test-authority.toml` and run one nextest process per scope. Timing
+rails refuse to start while unrelated Cargo/rustc processes are active; set
+`QUANTA_INDEX_ALLOW_CONTENDED_TIMINGS=1` only for non-authoritative diagnosis.
 
 Repo layout:
 

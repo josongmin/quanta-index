@@ -10,11 +10,6 @@
     reason = "integration polling uses explicit Result fallback checks"
 )]
 
-#[path = "common/frontdoor_scenarios.rs"]
-mod frontdoor_scenarios;
-#[path = "common/searchd_binary_process.rs"]
-mod searchd_binary_process;
-
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::path::{Path, PathBuf};

@@ -7,8 +7,9 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
 
 use quanta_index_contract::{
-    BatchIngestMode, GenerationSnapshot, IngestOperationKindV1, ManifestGeneration, RepoId,
-    RevisionId, SearchPlaneTrackKind, SearchScopeSurface,
+    BatchIngestMode, GenerationSnapshot, IngestOperationKindV1, ManifestGeneration, OwnerDocKind,
+    RepoId, RevisionId, SearchPlaneTrackKind, SearchScopeSurface, SemanticCorpusKindV1,
+    SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1,
 };
 use quanta_index_core::{
     CoreError, GenerationIdentityValidatePort, IdempotencyCatalogPort as _, IdempotencyKeyV1,
@@ -21,7 +22,9 @@ use crate::ingest_dispatcher::errors::{
     ERR_SEARCH_CORPUS_BATCH_SHAPE, ERR_SEARCH_CORPUS_DELTA_BASE_NOT_SEALED,
     ERR_SEARCH_CORPUS_GENERATION_REPAIR_REQUIRED,
 };
-use crate::ingest_dispatcher::generation_plan::generation_pair_from_batch_v1;
+use crate::ingest_dispatcher::generation_plan::{
+    batch_publish_receipt_v1, generation_pair_from_batch_v1,
+};
 use crate::ingest_dispatcher::search_corpus::{
     DirectSearchCorpusMaterializer, IngestResourceStats, SearchCorpusMaterializerParts,
 };
@@ -38,6 +41,34 @@ use crate::ingest_dispatcher::tests::support::{
 };
 use crate::readiness::SearchCorpusHistoryRetentionReceiptV1;
 use crate::{Ledger, SEARCH_OWNED_SEMANTIC_DIMENSION, SnapshotKey, SnapshotRegistries};
+
+#[test]
+fn search_corpus_receipt_exactly_acknowledges_semantic_replace_and_tombstone_mutations_v1()
+-> TestRes {
+    let mut batch = fixture_search_corpus_batch()?;
+    let semantic_scope = SemanticSourceScopeKeyV1 {
+        corpus_kind: SemanticCorpusKindV1::SymbolCard,
+        owner_kind: OwnerDocKind::Symbol,
+        owner_id: "symbol:receipt-cardinality".to_string(),
+    };
+    batch.semantic_replace_scopes = vec![SemanticSourceReplaceScopeV1 {
+        scope: semantic_scope.clone(),
+        scope_digest: "scope:semantic:receipt-cardinality".to_string(),
+        sources: Vec::new(),
+        cluster_memberships: Vec::new(),
+    }];
+    batch.semantic_tombstone_scopes = vec![semantic_scope];
+
+    let receipt = batch_publish_receipt_v1(&batch);
+    if receipt.accepted_semantic_replace_scopes != 1
+        || receipt.accepted_semantic_tombstone_scopes != 1
+    {
+        return Err(
+            format!("search-corpus receipt lost semantic mutation partition: {receipt:?}").into(),
+        );
+    }
+    Ok(())
+}
 
 /// QI-BB-029: refused batches change nothing.
 ///

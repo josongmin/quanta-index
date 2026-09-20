@@ -4,12 +4,25 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+autotests = false
 
 [[bin]]
 name = "quanta-index-searchd"
 path = "src/bin/quanta-index-searchd.rs"
 doc = false
 bench = false
+
+[[test]]
+name = "runtime_fast_suite"
+path = "tests/runtime_fast_suite.rs"
+
+[[test]]
+name = "runtime_risk_suite"
+path = "tests/runtime_risk_suite.rs"
+
+[[test]]
+name = "runtime_extended_suite"
+path = "tests/runtime_extended_suite.rs"
 
 [lints]
 workspace = true

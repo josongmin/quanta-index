@@ -18,7 +18,7 @@ use quanta_index_contract::{
     QueryResultWindowV1, SearchExplanation, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcResponse, TextQueryRequest, TextQuerySyntax,
 };
-use quanta_index_searchd_harness as e2e_harness;
+use crate::e2e_harness;
 
 use e2e_harness::E2eRuntime;
 

@@ -11,11 +11,7 @@ use quanta_index_contract::{
     SearchCorpusReplaceScope, SearchScopeKey, SearchScopeSurface, TextQuerySyntax,
     lex::{CommitSha, LanguageCode},
 };
-use quanta_index_searchd_harness as e2e_harness;
-use quanta_index_searchd_harness::bench_support::{
-    ScenarioTruthMode, prepare_cold_runtime, run_scenario_query, validate_scenario_outcome,
-};
-use quanta_index_searchd_harness::scenarios::{HellgateLane, hellgate_scenarios};
+use crate::e2e_harness;
 
 use crate::e2e_harness::{E2eRuntime, E2eTextChunkSpec};
 
@@ -433,23 +429,6 @@ fn boot_with_rev_at_time_generations() -> AnyResult<(E2eRuntime, GenerationPin)>
         diff_hunks: Vec::new(),
     })?;
     Ok((rt.reopen(), head_pin))
-}
-
-#[test]
-fn bench_owned_text_route_subset_matches_golden_truth() -> AnyResult<()> {
-    for scenario in hellgate_scenarios(HellgateLane::TextRoute) {
-        let mut runtime = prepare_cold_runtime(scenario)?;
-        let outcome = run_scenario_query(&mut runtime, scenario);
-        validate_scenario_outcome(scenario, ScenarioTruthMode::IsolatedFixture, &outcome).map_err(
-            |err| {
-                anyhow::anyhow!(
-                    "text-route scenario {} drifted from golden truth: {err:#}",
-                    scenario.id
-                )
-            },
-        )?;
-    }
-    Ok(())
 }
 
 #[test]

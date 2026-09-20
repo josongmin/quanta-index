@@ -12,12 +12,6 @@ use quanta_index_contract::{
     SemanticSourceScopeKeyV1, SourceRoleV1, StructuralIngestBatch, StructuralReplaceScope,
     StructuralTreeRecord, SymbolId, TextQuerySyntax,
 };
-use quanta_index_searchd_harness as e2e_harness;
-use quanta_index_searchd_harness::bench_support::{
-    ScenarioTruthMode, prepare_cold_runtime, run_scenario_query, validate_scenario_outcome,
-};
-use quanta_index_searchd_harness::scenarios::{HellgateLane, hellgate_scenarios};
-
 use crate::e2e_harness::E2eRuntime;
 
 fn scope_key(path: &str) -> SearchScopeKey {
@@ -242,23 +236,6 @@ fn boot_symbol_projection_fixture() -> AnyResult<E2eRuntime> {
     let _generation = rt.seal()?;
     rt.activate_last_sealed_generation()?;
     Ok(rt.reopen())
-}
-
-#[test]
-fn bench_owned_structural_subset_matches_golden_truth() -> AnyResult<()> {
-    for scenario in hellgate_scenarios(HellgateLane::StructuralRoute) {
-        let mut runtime = prepare_cold_runtime(scenario)?;
-        let outcome = run_scenario_query(&mut runtime, scenario);
-        validate_scenario_outcome(scenario, ScenarioTruthMode::IsolatedFixture, &outcome).map_err(
-            |err| {
-                anyhow::anyhow!(
-                    "structural scenario {} drifted from golden truth: {err:#}",
-                    scenario.id
-                )
-            },
-        )?;
-    }
-    Ok(())
 }
 
 #[test]

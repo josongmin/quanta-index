@@ -208,6 +208,15 @@ repos:
         files: ^(tools/ci/inventory/wire-surface\.toml|crates/.*/src/.*\.rs)$
         stages: [pre-push]
 
+      - id: proof-authority
+        name: proof authority registry and manifest schema
+        entry: python3 tools/ci/lint/check-proof-authority.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: ^(tools/ci/(proof-authority\.toml|proof-manifest\.schema\.json|lint/check-proof-authority\.py)|docs/adr/SEP-21-.*\.md)$
+        stages: [pre-commit, pre-push]
+
       - id: rust-digest-fallibility
         name: rust digest fallibility
         entry: python3 tools/ci/lint/check-digest-fallibility.py

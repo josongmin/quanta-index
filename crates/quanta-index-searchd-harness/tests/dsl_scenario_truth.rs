@@ -23,9 +23,13 @@ fn warm_matrix_scenarios_match_golden_truth() -> AnyResult<()> {
     Ok(())
 }
 
-#[test]
-fn cold_matrix_scenarios_match_golden_truth() -> AnyResult<()> {
-    for scenario in SCENARIOS {
+const COLD_SHARD_COUNT: usize = 4;
+
+fn cold_matrix_shard_matches_golden_truth(shard: usize) -> AnyResult<()> {
+    for (index, scenario) in SCENARIOS.iter().enumerate() {
+        if index % COLD_SHARD_COUNT != shard {
+            continue;
+        }
         let mut runtime = prepare_cold_runtime(scenario)?;
         let outcome = run_scenario_query(&mut runtime, scenario);
         validate_scenario_outcome(scenario, ScenarioTruthMode::IsolatedFixture, &outcome).map_err(
@@ -38,4 +42,24 @@ fn cold_matrix_scenarios_match_golden_truth() -> AnyResult<()> {
         )?;
     }
     Ok(())
+}
+
+#[test]
+fn cold_matrix_shard_0_matches_golden_truth() -> AnyResult<()> {
+    cold_matrix_shard_matches_golden_truth(0)
+}
+
+#[test]
+fn cold_matrix_shard_1_matches_golden_truth() -> AnyResult<()> {
+    cold_matrix_shard_matches_golden_truth(1)
+}
+
+#[test]
+fn cold_matrix_shard_2_matches_golden_truth() -> AnyResult<()> {
+    cold_matrix_shard_matches_golden_truth(2)
+}
+
+#[test]
+fn cold_matrix_shard_3_matches_golden_truth() -> AnyResult<()> {
+    cold_matrix_shard_matches_golden_truth(3)
 }

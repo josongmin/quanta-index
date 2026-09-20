@@ -4193,6 +4193,10 @@ pub struct BatchPublishReceipt {
     pub batch_digest: String,
     pub accepted_replace_scopes: u32,
     pub accepted_tombstone_scopes: u32,
+    /// Search-corpus semantic mutations accepted by the same durable apply.
+    /// Auxiliary routes always report zero.
+    pub accepted_semantic_replace_scopes: u32,
+    pub accepted_semantic_tombstone_scopes: u32,
     pub accepted_clear_surfaces: u32,
     pub sealed: bool,
     /// `true` when this call applied the batch; `false` when the same body
@@ -4216,6 +4220,8 @@ const BATCH_PUBLISH_RECEIPT_FIELDS: &[&str] = &[
     "batch_digest",
     "accepted_replace_scopes",
     "accepted_tombstone_scopes",
+    "accepted_semantic_replace_scopes",
+    "accepted_semantic_tombstone_scopes",
     "accepted_clear_surfaces",
     "sealed",
     "applied",
@@ -4228,12 +4234,20 @@ impl Serialize for BatchPublishReceipt {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("BatchPublishReceipt", 10)?;
+        let mut state = serializer.serialize_struct("BatchPublishReceipt", 12)?;
         state.serialize_field("generation", &self.generation)?;
         state.serialize_field("manifest_digest", &self.manifest_digest)?;
         state.serialize_field("batch_digest", &self.batch_digest)?;
         state.serialize_field("accepted_replace_scopes", &self.accepted_replace_scopes)?;
         state.serialize_field("accepted_tombstone_scopes", &self.accepted_tombstone_scopes)?;
+        state.serialize_field(
+            "accepted_semantic_replace_scopes",
+            &self.accepted_semantic_replace_scopes,
+        )?;
+        state.serialize_field(
+            "accepted_semantic_tombstone_scopes",
+            &self.accepted_semantic_tombstone_scopes,
+        )?;
         state.serialize_field("accepted_clear_surfaces", &self.accepted_clear_surfaces)?;
         state.serialize_field("sealed", &self.sealed)?;
         state.serialize_field("applied", &self.applied)?;
@@ -4261,6 +4275,8 @@ impl<'de> Visitor<'de> for BatchPublishReceiptVisitor {
         let mut batch_digest: Option<String> = None;
         let mut accepted_replace_scopes: Option<u32> = None;
         let mut accepted_tombstone_scopes: Option<u32> = None;
+        let mut accepted_semantic_replace_scopes: Option<u32> = None;
+        let mut accepted_semantic_tombstone_scopes: Option<u32> = None;
         let mut accepted_clear_surfaces: Option<u32> = None;
         let mut sealed: Option<bool> = None;
         let mut applied: Option<bool> = None;
@@ -4297,6 +4313,22 @@ impl<'de> Visitor<'de> for BatchPublishReceiptVisitor {
                         return Err(de::Error::duplicate_field("accepted_tombstone_scopes"));
                     }
                     accepted_tombstone_scopes = Some(map.next_value()?);
+                }
+                "accepted_semantic_replace_scopes" => {
+                    if accepted_semantic_replace_scopes.is_some() {
+                        return Err(de::Error::duplicate_field(
+                            "accepted_semantic_replace_scopes",
+                        ));
+                    }
+                    accepted_semantic_replace_scopes = Some(map.next_value()?);
+                }
+                "accepted_semantic_tombstone_scopes" => {
+                    if accepted_semantic_tombstone_scopes.is_some() {
+                        return Err(de::Error::duplicate_field(
+                            "accepted_semantic_tombstone_scopes",
+                        ));
+                    }
+                    accepted_semantic_tombstone_scopes = Some(map.next_value()?);
                 }
                 "accepted_clear_surfaces" => {
                     if accepted_clear_surfaces.is_some() {
@@ -4345,6 +4377,10 @@ impl<'de> Visitor<'de> for BatchPublishReceiptVisitor {
                 .ok_or_else(|| de::Error::missing_field("accepted_replace_scopes"))?,
             accepted_tombstone_scopes: accepted_tombstone_scopes
                 .ok_or_else(|| de::Error::missing_field("accepted_tombstone_scopes"))?,
+            accepted_semantic_replace_scopes: accepted_semantic_replace_scopes
+                .ok_or_else(|| de::Error::missing_field("accepted_semantic_replace_scopes"))?,
+            accepted_semantic_tombstone_scopes: accepted_semantic_tombstone_scopes
+                .ok_or_else(|| de::Error::missing_field("accepted_semantic_tombstone_scopes"))?,
             accepted_clear_surfaces: accepted_clear_surfaces
                 .ok_or_else(|| de::Error::missing_field("accepted_clear_surfaces"))?,
             sealed: sealed.ok_or_else(|| de::Error::missing_field("sealed"))?,
@@ -4387,6 +4423,8 @@ impl BatchPublishReceipt {
             batch_digest: batch_digest.into(),
             accepted_replace_scopes: 0,
             accepted_tombstone_scopes: 0,
+            accepted_semantic_replace_scopes: 0,
+            accepted_semantic_tombstone_scopes: 0,
             accepted_clear_surfaces: 0,
             sealed: false,
             applied: true,
@@ -4406,6 +4444,16 @@ impl BatchPublishReceipt {
 
     pub fn accept_tombstone_scope(&mut self) {
         self.accepted_tombstone_scopes = self.accepted_tombstone_scopes.saturating_add(1);
+    }
+
+    pub fn accept_semantic_replace_scope(&mut self) {
+        self.accepted_semantic_replace_scopes =
+            self.accepted_semantic_replace_scopes.saturating_add(1);
+    }
+
+    pub fn accept_semantic_tombstone_scope(&mut self) {
+        self.accepted_semantic_tombstone_scopes =
+            self.accepted_semantic_tombstone_scopes.saturating_add(1);
     }
 
     pub fn accept_clear_surface(&mut self) {
@@ -5503,6 +5551,27 @@ mod tests {
             .ok_or("receipt fixture must encode as a map")?
             .remove("accepted_clear_surfaces");
         assert!(serde_json::from_value::<BatchPublishReceipt>(receipt_value).is_err());
+
+        for field in [
+            "accepted_semantic_replace_scopes",
+            "accepted_semantic_tombstone_scopes",
+        ] {
+            let mut receipt_value = serde_json::to_value(BatchPublishReceipt::empty_for(
+                fixture_generation(),
+                Some("manifest:legacy".to_string()),
+                "batch:legacy",
+            ))?;
+            drop(
+                receipt_value
+                    .as_object_mut()
+                    .ok_or("receipt fixture must encode as a map")?
+                    .remove(field),
+            );
+            assert!(
+                serde_json::from_value::<BatchPublishReceipt>(receipt_value).is_err(),
+                "missing {field} must fail closed"
+            );
+        }
         Ok(())
     }
 
@@ -5674,6 +5743,8 @@ mod tests {
             semantic_content: None,
             accepted_replace_scopes: 2,
             accepted_tombstone_scopes: 1,
+            accepted_semantic_replace_scopes: 3,
+            accepted_semantic_tombstone_scopes: 1,
             accepted_clear_surfaces: 0,
             sealed: true,
         };
@@ -5812,6 +5883,8 @@ mod tests {
                 semantic_content: None,
                 accepted_replace_scopes: 1,
                 accepted_tombstone_scopes: 0,
+                accepted_semantic_replace_scopes: 0,
+                accepted_semantic_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
                 sealed: true,
             }),
@@ -5851,6 +5924,8 @@ mod tests {
                 semantic_content: None,
                 accepted_replace_scopes: 4,
                 accepted_tombstone_scopes: 0,
+                accepted_semantic_replace_scopes: 0,
+                accepted_semantic_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
                 sealed: false,
             }),
@@ -5874,6 +5949,8 @@ mod tests {
                 semantic_content: None,
                 accepted_replace_scopes: 2,
                 accepted_tombstone_scopes: 0,
+                accepted_semantic_replace_scopes: 0,
+                accepted_semantic_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
                 sealed: false,
             }),
@@ -5897,6 +5974,8 @@ mod tests {
                 semantic_content: None,
                 accepted_replace_scopes: 2,
                 accepted_tombstone_scopes: 0,
+                accepted_semantic_replace_scopes: 0,
+                accepted_semantic_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
                 sealed: false,
             }),
@@ -5920,6 +5999,8 @@ mod tests {
                 semantic_content: None,
                 accepted_replace_scopes: 2,
                 accepted_tombstone_scopes: 0,
+                accepted_semantic_replace_scopes: 0,
+                accepted_semantic_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
                 sealed: false,
             }),
@@ -5943,6 +6024,8 @@ mod tests {
                 semantic_content: None,
                 accepted_replace_scopes: 2,
                 accepted_tombstone_scopes: 0,
+                accepted_semantic_replace_scopes: 0,
+                accepted_semantic_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
                 sealed: false,
             }),
@@ -5966,6 +6049,8 @@ mod tests {
                 semantic_content: None,
                 accepted_replace_scopes: 2,
                 accepted_tombstone_scopes: 0,
+                accepted_semantic_replace_scopes: 0,
+                accepted_semantic_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
                 sealed: false,
             }),
@@ -5989,6 +6074,8 @@ mod tests {
                 semantic_content: None,
                 accepted_replace_scopes: 1,
                 accepted_tombstone_scopes: 1,
+                accepted_semantic_replace_scopes: 0,
+                accepted_semantic_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
                 sealed: false,
             }),
@@ -6012,6 +6099,8 @@ mod tests {
                 semantic_content: None,
                 accepted_replace_scopes: 1,
                 accepted_tombstone_scopes: 0,
+                accepted_semantic_replace_scopes: 0,
+                accepted_semantic_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
                 sealed: false,
             }),
