@@ -570,8 +570,10 @@ mod tests {
             handles.land(second, &unbounded, never_opened),
         ] {
             match landed {
-                Err(CoreError::Typed { code, .. })
-                    if code == quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexNotReady => {}
+                Err(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexNotReady,
+                    ..
+                }) => {}
                 Err(other) => {
                     return Err(format!("the opener's failure by value: {other:?}").into());
                 }

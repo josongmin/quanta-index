@@ -258,6 +258,10 @@ fn now_epoch_ms() -> AnyResult<u64> {
     u64::try_from(millis).map_err(|err| anyhow::anyhow!("epoch millis overflow u64: {err}"))
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn boot_with_multi_repo_and_commit_recency() -> AnyResult<E2eRuntime> {
     let mut rt = E2eRuntime::boot()?;
     seed_multi_repo_chunks(&mut rt)?;
@@ -285,6 +289,10 @@ fn boot_with_multi_repo_and_commit_recency() -> AnyResult<E2eRuntime> {
     Ok(rt)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn boot_with_multi_repo_and_repo_meta() -> AnyResult<E2eRuntime> {
     let mut rt = E2eRuntime::boot()?;
     seed_multi_repo_chunks(&mut rt)?;
@@ -319,6 +327,10 @@ fn boot_with_multi_repo_and_repo_meta() -> AnyResult<E2eRuntime> {
     Ok(rt)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn boot_with_multi_repo_and_repo_topic() -> AnyResult<E2eRuntime> {
     let mut rt = E2eRuntime::boot()?;
     seed_multi_repo_chunks(&mut rt)?;
@@ -350,6 +362,10 @@ fn boot_with_multi_repo_and_repo_topic() -> AnyResult<E2eRuntime> {
     Ok(rt)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn boot_with_multi_repo_and_repo_description() -> AnyResult<E2eRuntime> {
     let mut rt = E2eRuntime::boot()?;
     seed_multi_repo_chunks(&mut rt)?;
@@ -376,6 +392,10 @@ fn boot_with_multi_repo_and_repo_description() -> AnyResult<E2eRuntime> {
     Ok(rt)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn boot_with_multi_repo_and_file_ownership() -> AnyResult<E2eRuntime> {
     let mut rt = E2eRuntime::boot()?;
     seed_multi_repo_chunks(&mut rt)?;
@@ -416,6 +436,10 @@ fn boot_with_multi_repo_and_file_ownership() -> AnyResult<E2eRuntime> {
     Ok(rt)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn boot_with_multi_repo_and_file_contributor() -> AnyResult<E2eRuntime> {
     let mut rt = E2eRuntime::boot()?;
     seed_multi_repo_chunks(&mut rt)?;
@@ -475,11 +499,19 @@ fn boot_with_multi_repo_and_file_contributor() -> AnyResult<E2eRuntime> {
     Ok(rt)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn rev_at_time_ancestor_revision() -> RevisionId {
     RevisionId::new("1111111111111111111111111111111111111111")
         .expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn rev_at_time_head_revision() -> RevisionId {
     RevisionId::new("2222222222222222222222222222222222222222")
         .expect("static fixture ID satisfies canonical policy")

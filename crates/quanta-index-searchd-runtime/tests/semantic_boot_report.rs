@@ -1,4 +1,5 @@
 //! LDB-E2E-01 observability: the assembled runtime exposes a populated,
+//!
 //! payload-free `SemanticBootReport` (migration outcome + seeded sealed-
 //! generation count + cold-boot seed timing). This proves the boot path
 //! surfaces direct-open vs migration, not just that the helpers compute it.

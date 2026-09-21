@@ -13,6 +13,10 @@ use quanta_index_core::{CoreError, HybridOrchestratorPolicy};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn candidate(id: &str) -> LexicalCandidate {
     LexicalCandidate {
         candidate_id: id.to_string(),

@@ -270,12 +270,10 @@ pub(super) fn inspect_physical_generation_v1(
     match validator.validate_generation_identity(candidate) {
         Ok(()) => Ok(PhysicalGenerationStateV1::Exact),
         Err(CoreError::NotFound(_)) => Ok(PhysicalGenerationStateV1::Absent),
-        Err(CoreError::Typed { code, .. })
-            if code
-                == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityIncomplete =>
-        {
-            Ok(PhysicalGenerationStateV1::InProgress)
-        }
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityIncomplete,
+            ..
+        }) => Ok(PhysicalGenerationStateV1::InProgress),
         Err(CoreError::Typed { code, .. }) => Ok(PhysicalGenerationStateV1::Corrupt { code }),
         Err(source) => Err(CoreError::Storage(format!(
             "direct search-corpus materialize: {label} generation could not be inspected for repo={} revision={} generation={}: {source}",

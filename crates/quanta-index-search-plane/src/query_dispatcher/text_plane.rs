@@ -382,11 +382,10 @@ mod tests {
             "👍",
             &options(None),
         ) {
-            Err(CoreError::Typed { code, .. })
-                if code == quanta_index_contract::SearchPlaneErrorCodeV2::LexTextQueryNoTokens =>
-            {
-                Ok(())
-            }
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTextQueryNoTokens,
+                ..
+            }) => Ok(()),
             other => Err(format!("expected the shared typed refusal, got {other:?}").into()),
         }
     }

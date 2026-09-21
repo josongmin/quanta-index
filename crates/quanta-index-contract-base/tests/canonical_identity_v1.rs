@@ -3,14 +3,17 @@ use quanta_index_contract_base::{
     RevisionId,
 };
 
-type TestResult = Result<(), Box<dyn std::error::Error>>;
-
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for byte in bytes {
+        let _unused = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 #[test]
-fn validated_id_constructor_and_serde_refuse_the_same_invalid_forms() -> TestResult {
+fn validated_id_constructor_and_serde_refuse_the_same_invalid_forms() {
     for (raw, expected) in [
         ("", IdentityValidationErrorV1::Empty),
         ("bad\u{0000}id", IdentityValidationErrorV1::ControlCharacter),
@@ -18,7 +21,7 @@ fn validated_id_constructor_and_serde_refuse_the_same_invalid_forms() -> TestRes
     ] {
         assert_eq!(RepoId::new(raw), Err(expected));
         assert_eq!(RevisionId::new(raw), Err(expected));
-        let wire = serde_json::to_string(raw)?;
+        let wire = serde_json::to_string(raw).expect("serialize fixture");
         assert!(serde_json::from_str::<RepoId>(&wire).is_err());
         assert!(serde_json::from_str::<RevisionId>(&wire).is_err());
     }
@@ -27,21 +30,32 @@ fn validated_id_constructor_and_serde_refuse_the_same_invalid_forms() -> TestRes
         RepoId::new(&over_limit),
         Err(IdentityValidationErrorV1::TooLong)
     );
-    assert!(serde_json::from_str::<RepoId>(&serde_json::to_string(&over_limit)?).is_err());
+    assert!(
+        serde_json::from_str::<RepoId>(
+            &serde_json::to_string(&over_limit).expect("serialize over-limit")
+        )
+        .is_err()
+    );
     for raw in ["%", "/", ".", "..", "MiXeD", "é", &"é".repeat(256)] {
-        let id = RepoId::new(raw)?;
+        let id = RepoId::new(raw).expect("valid fixture ID");
         assert_eq!(
-            serde_json::from_str::<RepoId>(&serde_json::to_string(&id)?)?,
+            serde_json::from_str::<RepoId>(&serde_json::to_string(&id).expect("serialize id"))
+                .expect("roundtrip"),
             id
         );
     }
-    Ok(())
 }
 
 #[test]
-fn tuple_framing_separates_legacy_collision_and_digest_domains() -> TestResult {
-    let first = RepositoryRevisionIdentityV1::new(RepoId::new("a--b")?, RevisionId::new("c")?);
-    let second = RepositoryRevisionIdentityV1::new(RepoId::new("a")?, RevisionId::new("b--c")?);
+fn tuple_framing_separates_legacy_collision_and_digest_domains() {
+    let first = RepositoryRevisionIdentityV1::new(
+        RepoId::new("a--b").expect("valid"),
+        RevisionId::new("c").expect("valid"),
+    );
+    let second = RepositoryRevisionIdentityV1::new(
+        RepoId::new("a").expect("valid"),
+        RevisionId::new("b--c").expect("valid"),
+    );
     assert_ne!(first.canonical_payload(), second.canonical_payload());
     assert_ne!(first.digest(), second.digest());
     let first_generation = LogicalGenerationIdentityV1::new(first, 0);
@@ -52,8 +66,8 @@ fn tuple_framing_separates_legacy_collision_and_digest_domains() -> TestResult {
         first_generation.repository_revision().digest()
     );
     assert_eq!(
-        &first_generation.canonical_payload()[..4],
-        &4_u32.to_be_bytes()
+        first_generation.canonical_payload().get(..4),
+        Some(&4_u32.to_be_bytes()[..])
     );
     assert_eq!(
         hex(&first_generation.repository_revision().canonical_payload()),
@@ -71,5 +85,4 @@ fn tuple_framing_separates_legacy_collision_and_digest_domains() -> TestResult {
         hex(&first_generation.digest()),
         "578c84366a18814ec6581d50b59159cf4342a4b207f5cdb6965713909899fefa"
     );
-    Ok(())
 }

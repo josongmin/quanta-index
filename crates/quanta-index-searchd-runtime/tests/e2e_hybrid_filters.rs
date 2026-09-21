@@ -125,6 +125,10 @@ fn hybrid_refusal(
     syntax: TextQuerySyntax,
     text_query: &str,
 ) -> Result<SearchPlaneErrorCodeV2, Box<dyn Error>> {
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "any served response variant is the same refusal-expectation failure"
+    )]
     match hybrid_response(rt, syntax, text_query)? {
         SearchPlaneQueryIpcResponse::Error(error) => Ok(error.code),
         other => Err(format!("hybrid `{text_query}` served or returned {other:?}").into()),
@@ -395,11 +399,9 @@ fn hybrid_filters_share_one_indexed_fixture() -> TestResult {
     let fixture = ingest_fixture(&mut rt)?;
     assert_dense_lane_ranks_all_three(&mut rt, &fixture)?;
 
+    let verify_file_filter_fn: fn(&mut E2eRuntime, &Fixture) -> TestResult = verify_file_filter;
     for (name, verify) in [
-        (
-            "file_filter",
-            verify_file_filter as fn(&mut E2eRuntime, &Fixture) -> TestResult,
-        ),
+        ("file_filter", verify_file_filter_fn),
         ("repo_filter", verify_repo_filter),
         ("lang_and_type_filters", verify_lang_and_type_filters),
         ("typed_refusals", verify_refusals),

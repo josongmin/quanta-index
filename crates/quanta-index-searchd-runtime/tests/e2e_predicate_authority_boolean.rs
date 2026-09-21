@@ -51,7 +51,8 @@ fn chunk(id: &str, path: &str, text: &str, source_repo_id: &str) -> AnyResult<Ch
         structural: None,
         parent_chunk_id: None,
         source_repo_id: Some(
-            RepoId::new(source_repo_id).expect("test fixture ID satisfies canonical policy"),
+            RepoId::new(source_repo_id)
+                .map_err(|error| anyhow::anyhow!("invalid fixture repo id: {error}"))?,
         ),
     })
 }
@@ -121,6 +122,10 @@ fn require_ids(
     Ok(())
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn boot_fixture() -> AnyResult<(E2eRuntime, FixtureIds)> {
     let mut rt = E2eRuntime::boot()?;
     let alpha_shared = "predicate-boolean-alpha".to_string();

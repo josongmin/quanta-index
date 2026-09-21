@@ -50,7 +50,10 @@ pub use domains::hybrid::{
 };
 pub use domains::idempotency::{
     BATCH_DIGEST_CONFLICT_CODE, BATCH_DIGEST_MISMATCH_CODE, CATALOG_BUSY_CODE,
-    CATALOG_ROW_CORRUPT_CODE, IdempotencyBeginV1, IdempotencyCatalogPort, IdempotencyKeyV1,
+    CATALOG_ROW_CORRUPT_CODE, ClaimOutcomeV1, IdempotencyCatalogPort, IdempotencyKeyV1,
+    MutationCoordinatorPort, MutationLeaseV1, OPERATION_FENCE_LOST_CODE,
+    OPERATION_REPLAY_FLOOR_CODE, OperationInspectV1, OperationJournalStateV1, PreparedMutationV1,
+    SEQUENCE_EXHAUSTED_CODE, ingest_kind_from_code_str, now_unix_ms,
 };
 pub use domains::ingest_body::IngestBatchBodyV1;
 pub use domains::integrity::{

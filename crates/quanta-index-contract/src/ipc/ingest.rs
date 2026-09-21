@@ -4174,6 +4174,17 @@ impl<'de> Deserialize<'de> for StructuralIngestBatch {
 // BatchPublishReceipt
 // =============================================================================
 
+/// The canonical-CBOR format version of a persisted
+/// [`BatchPublishReceipt`] in the operation journal (SEP-21 P02B).
+///
+/// A journal-persisted receipt is stored as this version tag followed by
+/// the receipt's canonical CBOR. A reader that finds any other version
+/// refuses before any mutation (typed refusal — old receipt / new runtime
+/// and new receipt / old runtime are incompatible by design); there is no
+/// boot-time dual decoder and no live migration. Receipts of another
+/// version are offline-migration input only.
+pub const BATCH_PUBLISH_RECEIPT_FORMAT_VERSION: u32 = 1;
+
 /// Server-side receipt for a successful batch publish.
 ///
 /// Receipt truth is generation/materialization scoped, not channel-sequence

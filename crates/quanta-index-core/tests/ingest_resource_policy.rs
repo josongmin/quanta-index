@@ -67,6 +67,10 @@ fn source(index: usize, text: &str) -> SemanticSourceRecordV1 {
 }
 
 /// A batch of `chunk_texts` legacy chunks and `source_texts` typed sources.
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn batch(
     chunk_texts: &[&str],
     source_texts: &[&str],

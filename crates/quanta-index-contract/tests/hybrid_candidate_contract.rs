@@ -30,6 +30,10 @@ where
     Ok(ciborium::de::from_reader(bytes)?)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn lexical_row(id: &str, score: f32) -> LexicalCandidate {
     LexicalCandidate {
         candidate_id: id.to_owned(),
@@ -90,6 +94,10 @@ fn lexical_only(id: &str, lexical_rank: u32) -> HybridCandidateV1 {
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn response(results: Vec<HybridCandidateV1>) -> SearchPlaneQueryIpcResponse {
     let returned = u32::try_from(results.len()).map_or(u32::MAX, |n| n);
     SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {

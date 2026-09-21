@@ -164,6 +164,10 @@ where
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn generation_pin() -> GenerationPin {
     GenerationPin::new(
         RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
@@ -198,6 +202,10 @@ fn semantic_scope() -> TextQueryRequest {
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn lexical_candidate() -> LexicalCandidate {
     LexicalCandidate {
         candidate_id: "cand-1".to_owned(),
@@ -242,9 +250,8 @@ fn hybrid_candidate() -> HybridCandidateV1 {
 fn symbol_candidate() -> Result<SymbolCandidate, Box<dyn std::error::Error>> {
     Ok(SymbolCandidate {
         candidate_id: "sym-1".to_owned(),
-        repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
-        revision_id: RevisionId::new("rev-1")
-            .expect("static fixture ID satisfies canonical policy"),
+        repo_id: RepoId::new("repo-1")?,
+        revision_id: RevisionId::new("rev-1")?,
         manifest_generation: ManifestGeneration::new(7),
         repo_relative_path: RepoRelativePath::new("src/search.rs"),
         start_line: 10,
@@ -2261,6 +2268,10 @@ fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
 // `text_query`, a semantic scope, or a hybrid-seed corpus budget — refuses
 // to encode out of range, and raw bytes carrying an out-of-range value that
 // no encoder would have produced are refused at decode, under the one code.
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn top_k_bearing_requests(top_k: u32) -> Vec<(&'static str, SearchPlaneQueryIpcRequest)> {
     let text = TextQueryRequest {
         top_k,

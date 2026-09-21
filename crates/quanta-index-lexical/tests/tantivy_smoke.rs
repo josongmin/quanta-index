@@ -40,10 +40,18 @@ struct RepoMetadataPayload {
     contexts: Vec<String>,
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo() -> RepoId {
     RepoId::new("smoke-repo").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision() -> RevisionId {
     RevisionId::new("smoke-rev").expect("static fixture ID satisfies canonical policy")
 }
@@ -278,6 +286,10 @@ fn upsert_with_metadata(
     }))
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn upsert_with_source_repo(
     chunk_id: &str,
     repo_relative_path: &str,
@@ -3422,9 +3434,10 @@ fn tantivy_executes_scoped_file_content_predicates_across_boolean_contexts() -> 
         ],
     }));
     match searcher.search(&multiple_scalars_query, 10, &RequestBudgetV1::unbounded()) {
-        Err(CoreError::Typed { code, .. })
-            if code == quanta_index_contract::SearchPlaneErrorCodeV2::LexPredicateUnimplemented => {
-        }
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexPredicateUnimplemented,
+            ..
+        }) => {}
         other => {
             return Err(format!(
                 "expected file.contains(two scalars) to fail closed with LEX_PREDICATE_UNIMPLEMENTED, got {other:?}"
@@ -3444,9 +3457,10 @@ fn tantivy_executes_scoped_file_content_predicates_across_boolean_contexts() -> 
         ],
     }));
     match searcher.search(&repo_scoped_query, 10, &RequestBudgetV1::unbounded()) {
-        Err(CoreError::Typed { code, .. })
-            if code == quanta_index_contract::SearchPlaneErrorCodeV2::LexPredicateUnimplemented => {
-        }
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexPredicateUnimplemented,
+            ..
+        }) => {}
         other => {
             return Err(format!(
                 "expected repo.has.content(path:src, 7) to fail closed with LEX_PREDICATE_UNIMPLEMENTED, got {other:?}"

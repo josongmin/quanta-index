@@ -37,10 +37,18 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 const DOCS: u32 = 6;
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo() -> RepoId {
     RepoId::new("regex-cache-repo").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision() -> RevisionId {
     RevisionId::new("regex-cache-rev").expect("static fixture ID satisfies canonical policy")
 }

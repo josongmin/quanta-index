@@ -22,6 +22,10 @@ use quanta_index_contract::{
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn pin() -> GenerationPin {
     GenerationPin::new(
         RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
@@ -30,6 +34,10 @@ fn pin() -> GenerationPin {
     )
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn row(id: &str, score: f32, path: &str, line: u32) -> LexicalCandidate {
     LexicalCandidate {
         candidate_id: id.to_string(),

@@ -32,6 +32,10 @@ use quanta_index_core::{
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn generation(generation: u64) -> AuxiliaryGenerationKeyV1 {
     AuxiliaryGenerationKeyV1 {
         repo_id: RepoId::new("repo-aux").expect("static fixture ID satisfies canonical policy"),

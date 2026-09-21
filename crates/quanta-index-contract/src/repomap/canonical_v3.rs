@@ -1,4 +1,4 @@
-//! Canonical immutable RepoMap candidate and quarantine contracts.
+//! Canonical immutable `RepoMap` candidate and quarantine contracts.
 //!
 //! These codecs intentionally do not implement generic serde. Persisted bytes
 //! have one accepted form: the exact canonical CBOR schemas in SEP-21-001.
@@ -616,7 +616,7 @@ impl QuarantineObservationEvidenceV1 {
     }
 }
 
-/// Append-only incident envelope. Sequence zero and values above SQLite's
+/// Append-only incident envelope. Sequence zero and values above `SQLite`'s
 /// positive integer range are rejected by construction and decoding.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QuarantineIncidentV1 {
@@ -746,7 +746,7 @@ fn decode_raw_path_components(
 ) -> Result<Vec<Vec<u8>>, CanonicalRepoMapCodecErrorV1> {
     let component_count = usize::try_from(decoder.len(4)?)
         .map_err(|_error| CanonicalRepoMapCodecErrorV1::LengthOutOfRange)?;
-    if component_count > decoder.bytes.len() - decoder.offset {
+    if component_count > decoder.bytes.len().saturating_sub(decoder.offset) {
         return Err(CanonicalRepoMapCodecErrorV1::UnexpectedEnd);
     }
     let mut components = Vec::with_capacity(component_count);

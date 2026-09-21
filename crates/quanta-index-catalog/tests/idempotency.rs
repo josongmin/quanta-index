@@ -1,17 +1,20 @@
-//! QI-BB-032 — the idempotency catalog's contract, against the real engine.
+//! QI-BB-032 / SEP-21 P02B — the operation journal's contract, against
+//! the real engine.
 //!
-//! 1. intent → apply → finalize: a fresh key is begun, finalized with a
-//!    receipt, and every later `begin` of the same body is a replay carrying
-//!    that receipt and sequence; a different body is a typed conflict.
-//! 2. A begun-but-unfinalized key (a crash before finalize) resumes.
-//! 3. Rows verify their own digest: a bit flipped in the stored body hash is
-//!    a typed `CATALOG_ROW_CORRUPT`, never a silent replay or conflict.
+//! 1. inspect → claim → apply → fenced commit: a fresh key is claimed,
+//!    committed with a receipt, and every later attempt of the same body
+//!    replays that receipt and sequence; a different body is a typed
+//!    conflict.
+//! 2. A claim left in progress by a crash (recovered) is claimed fresh
+//!    and then commits.
+//! 3. Rows verify their own digest: a bit flipped in the stored body hash
+//!    is a typed `CATALOG_ROW_CORRUPT`, never a silent replay.
 //! 4. Sequences are unique and monotonic across keys and survive reopen.
-//! 5. A second writer holding the database past the busy budget is a typed
-//!    `CATALOG_BUSY`.
-//! 6. Forgetting a generation drops exactly its records, across every
-//!    route, and forgetting it again is `Ok(0)`; the pair's generation
-//!    listing is what a reclaim pass reconciles against disk.
+//! 5. A second writer holding the database past the busy budget is a
+//!    typed `CATALOG_BUSY`.
+//! 6. Forgetting a generation drops exactly its records, records one
+//!    invalidation per dropped key, and a retry of a forgotten key is
+//!    refused below the replay floor.
 
 #![forbid(unsafe_code)]
 
@@ -23,12 +26,19 @@ use quanta_index_contract::{
     BatchPublishReceipt, IngestOperationKindV1, ManifestGeneration, RepoId, RevisionId,
 };
 use quanta_index_core::{
-    BATCH_DIGEST_CONFLICT_CODE, CATALOG_BUSY_CODE, CATALOG_ROW_CORRUPT_CODE, CoreError,
-    IdempotencyBeginV1, IdempotencyCatalogPort, IdempotencyKeyV1,
+    BATCH_DIGEST_CONFLICT_CODE, CATALOG_BUSY_CODE, CATALOG_ROW_CORRUPT_CODE, ClaimOutcomeV1,
+    CoreError, IdempotencyCatalogPort, IdempotencyKeyV1, OPERATION_REPLAY_FLOOR_CODE,
+    OperationInspectV1, PreparedMutationV1,
 };
+
+const LONG_LEASE_MS: u64 = i64::MAX.unsigned_abs();
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn key(kind: IngestOperationKindV1, generation: u64, digest: &str) -> IdempotencyKeyV1 {
     IdempotencyKeyV1 {
         kind,
@@ -63,22 +73,40 @@ fn typed_code(error: &CoreError) -> Option<quanta_index_contract::SearchPlaneErr
     }
 }
 
+/// Claim, mark applying, and commit in one helper: the dispatcher's
+/// happy path.
+fn claim_and_commit(
+    catalog: &SqliteCatalog,
+    key: &IdempotencyKeyV1,
+    body: &[u8; 32],
+    receipt: &BatchPublishReceipt,
+) -> Result<u64, CoreError> {
+    let claim = match catalog.claim_prepared(key, body, "test", LONG_LEASE_MS, body)? {
+        ClaimOutcomeV1::Claimed(claim) => claim,
+        ClaimOutcomeV1::Replay { .. } => {
+            return Err(CoreError::InvalidContract(
+                "expected a fresh claim, got a replay".to_string(),
+            ));
+        }
+    };
+    catalog.mark_applying(&claim)?;
+    catalog.commit(&claim, receipt)
+}
+
 #[test]
-fn a_finalized_record_replays_and_a_different_body_conflicts() -> TestResult {
+fn a_committed_record_replays_and_a_different_body_conflicts() -> TestResult {
     let temp = tempfile::tempdir()?;
     let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
     let key = key(IngestOperationKindV1::SearchCorpus, 3, "digest-a");
     let body = [1_u8; 32];
 
-    if catalog.begin(&key, &body)? != IdempotencyBeginV1::Fresh {
-        return Err("a new key must be fresh".into());
-    }
-    let sequence = catalog.finalize(&key, &body, &receipt(3, "digest-a", 2))?;
+    let sequence = claim_and_commit(&catalog, &key, &body, &receipt(3, "digest-a", 2))?;
     if sequence != 1 {
         return Err(format!("first apply must be sequence 1, got {sequence}").into());
     }
-    match catalog.begin(&key, &body)? {
-        IdempotencyBeginV1::Replay {
+    // inspect answers the replay read-only.
+    match catalog.inspect(&key)? {
+        OperationInspectV1::Committed {
             receipt: stored,
             durable_sequence,
         } => {
@@ -89,62 +117,83 @@ fn a_finalized_record_replays_and_a_different_body_conflicts() -> TestResult {
                 .into());
             }
         }
-        other @ (IdempotencyBeginV1::Fresh | IdempotencyBeginV1::Resume) => {
-            return Err(format!("expected a replay, got {other:?}").into());
+        other @ (OperationInspectV1::Absent
+        | OperationInspectV1::InFlight { .. }
+        | OperationInspectV1::Refused { .. }
+        | OperationInspectV1::Uncertain { .. }) => {
+            return Err(format!("expected a committed inspect, got {other:?}").into());
+        }
+    }
+    // And so does a claim: same outcome, no mutation.
+    match catalog.claim_prepared(&key, &body, "test", LONG_LEASE_MS, &body)? {
+        ClaimOutcomeV1::Replay {
+            durable_sequence: 1,
+            ..
+        } => {}
+        other @ (ClaimOutcomeV1::Claimed(_) | ClaimOutcomeV1::Replay { .. }) => {
+            return Err(format!("expected a replay claim, got {other:?}").into());
         }
     }
     let different = [2_u8; 32];
     let conflict = catalog
-        .begin(&key, &different)
+        .claim_prepared(&key, &different, "test", LONG_LEASE_MS, &different)
         .expect_err("a different body under the same key must be refused");
     if typed_code(&conflict) != Some(BATCH_DIGEST_CONFLICT_CODE) {
         return Err(format!("expected a typed conflict, got {conflict:?}").into());
     }
     // The conflict wrote nothing: the original record still replays.
-    if !matches!(
-        catalog.begin(&key, &body)?,
-        IdempotencyBeginV1::Replay { .. }
-    ) {
+    if !matches!(catalog.inspect(&key)?, OperationInspectV1::Committed { .. }) {
         return Err("a refused conflict must leave the record untouched".into());
     }
-    // Finalizing an applied record again is a caller defect.
-    if catalog
-        .finalize(&key, &body, &receipt(3, "digest-a", 2))
-        .is_ok()
-    {
-        return Err("finalizing an applied record twice must fail".into());
+    // Committing again is a stale-fence caller defect.
+    let stale = PreparedMutationV1 {
+        key,
+        body_sha256: body,
+        owner: "test".to_string(),
+        fence_token: u64::MAX,
+        lease_deadline_ms: u64::MAX,
+        epoch_commitment: body,
+    };
+    if catalog.commit(&stale, &receipt(3, "digest-a", 2)).is_ok() {
+        return Err("committing an already-committed record must fail".into());
     }
     Ok(())
 }
 
 #[test]
-fn a_crash_before_finalize_resumes_and_then_finalizes() -> TestResult {
+fn a_crashed_claim_is_recovered_then_claimed_fresh_and_commits() -> TestResult {
     let temp = tempfile::tempdir()?;
     let key = key(IngestOperationKindV1::History, 5, "digest-h");
     let body = [9_u8; 32];
     {
         let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
-        if catalog.begin(&key, &body)? != IdempotencyBeginV1::Fresh {
-            return Err("fresh".into());
-        }
-        // The process dies here: the record is in progress on disk.
+        let _claim = catalog
+            .claim_prepared(&key, &body, "crashed", 0, &body)?
+            .claimed_or_fail()?;
+        // The process dies here: the record is claimed on disk with an
+        // expired lease.
     }
     let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
-    if catalog.begin(&key, &body)? != IdempotencyBeginV1::Resume {
-        return Err("an in-progress record must resume".into());
+    if !matches!(catalog.recover(&key)?, OperationInspectV1::Absent) {
+        return Err("an expired claim must recover to an absent record".into());
     }
-    let sequence = catalog.finalize(&key, &body, &receipt(5, "digest-h", 1))?;
-    if sequence != 1 {
-        return Err(format!("resumed apply must take the next sequence, got {sequence}").into());
+    let sequence = claim_and_commit(&catalog, &key, &body, &receipt(5, "digest-h", 1))?;
+    // The ledger holds, in order: the abort of the crashed claim (1), the
+    // invalidation that attributes it (2), and the recovered commit (3).
+    if sequence != 3 {
+        return Err(format!(
+            "the recovered apply commits after its abort and invalidation events, got {sequence}"
+        )
+        .into());
     }
     if !matches!(
-        catalog.begin(&key, &body)?,
-        IdempotencyBeginV1::Replay {
-            durable_sequence: 1,
+        catalog.inspect(&key)?,
+        OperationInspectV1::Committed {
+            durable_sequence: 3,
             ..
         }
     ) {
-        return Err("a finalized resume replays like any apply".into());
+        return Err("a committed recovery replays like any apply".into());
     }
     Ok(())
 }
@@ -155,8 +204,7 @@ fn a_row_that_does_not_match_its_digest_is_refused_typed() -> TestResult {
     let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
     let key = key(IngestOperationKindV1::Dirty, 7, "digest-d");
     let body = [4_u8; 32];
-    let _fresh = catalog.begin(&key, &body)?;
-    let _sequence = catalog.finalize(&key, &body, &receipt(7, "digest-d", 0))?;
+    let _sequence = claim_and_commit(&catalog, &key, &body, &receipt(7, "digest-d", 0))?;
     drop(catalog);
 
     // Flip one byte of the stored body hash behind the catalog's back, as
@@ -164,9 +212,9 @@ fn a_row_that_does_not_match_its_digest_is_refused_typed() -> TestResult {
     let path = catalog_dir(temp.path()).join(CATALOG_FILE_NAME);
     let connection = rusqlite::Connection::open(&path)?;
     let changed = connection.execute(
-        "UPDATE idempotency_v1
-         SET body_sha256 = CAST(X'0404040404040404040404040404040404040404040404040404040404040405' AS BLOB)
-         WHERE batch_digest = 'digest-d'",
+        "UPDATE idempotency_v2
+          SET body_sha256 = CAST(X'0404040404040404040404040404040404040404040404040404040404040405' AS BLOB)
+          WHERE batch_digest = 'digest-d'",
         [],
     )?;
     if changed != 1 {
@@ -176,7 +224,7 @@ fn a_row_that_does_not_match_its_digest_is_refused_typed() -> TestResult {
 
     let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
     let refused = catalog
-        .begin(&key, &body)
+        .claim_prepared(&key, &body, "test", LONG_LEASE_MS, &body)
         .expect_err("a corrupt row must not be served as replay or conflict");
     if typed_code(&refused) != Some(CATALOG_ROW_CORRUPT_CODE) {
         return Err(format!("expected CATALOG_ROW_CORRUPT, got {refused:?}").into());
@@ -201,15 +249,23 @@ fn sequences_are_unique_and_monotonic_across_keys_and_reopens() -> TestResult {
             let generation = u64::try_from(index)?.saturating_add(1);
             let key = key(kind, generation, "digest");
             let body = [u8::try_from(index)?; 32];
-            let _fresh = catalog.begin(&key, &body)?;
-            sequences.push(catalog.finalize(&key, &body, &receipt(generation, "digest", 0))?);
+            sequences.push(claim_and_commit(
+                &catalog,
+                &key,
+                &body,
+                &receipt(generation, "digest", 0),
+            )?);
         }
     }
     let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
     let key = key(IngestOperationKindV1::RepoMeta, 9, "digest-late");
     let body = [8_u8; 32];
-    let _fresh = catalog.begin(&key, &body)?;
-    sequences.push(catalog.finalize(&key, &body, &receipt(9, "digest-late", 0))?);
+    sequences.push(claim_and_commit(
+        &catalog,
+        &key,
+        &body,
+        &receipt(9, "digest-late", 0),
+    )?);
     if sequences != vec![1, 2, 3, 4] {
         return Err(format!("sequences must be 1..=4 in order, got {sequences:?}").into());
     }
@@ -228,7 +284,7 @@ fn a_held_write_lock_past_the_busy_budget_is_typed_busy() -> TestResult {
     let key = key(IngestOperationKindV1::Dirty, 1, "digest-busy");
     let started = std::time::Instant::now();
     let refused = catalog
-        .begin(&key, &[0_u8; 32])
+        .claim_prepared(&key, &[0_u8; 32], "test", LONG_LEASE_MS, &[0_u8; 32])
         .expect_err("a held lock past the budget must be refused");
     let waited = started.elapsed();
     if typed_code(&refused) != Some(CATALOG_BUSY_CODE) {
@@ -238,21 +294,23 @@ fn a_held_write_lock_past_the_busy_budget_is_typed_busy() -> TestResult {
         return Err(format!("the busy budget was not honored: waited {waited:?}").into());
     }
     holder.execute_batch("ROLLBACK;")?;
-    if catalog.begin(&key, &[0_u8; 32])? != IdempotencyBeginV1::Fresh {
+    if !matches!(
+        catalog.claim_prepared(&key, &[0_u8; 32], "test", LONG_LEASE_MS, &[0_u8; 32])?,
+        ClaimOutcomeV1::Claimed(_)
+    ) {
         return Err("once released, the write proceeds".into());
     }
     Ok(())
 }
 
 #[test]
-fn forgetting_a_generation_drops_exactly_its_records() -> TestResult {
+fn forgetting_a_generation_drops_exactly_its_records_and_raises_the_floor() -> TestResult {
     let temp = tempfile::tempdir()?;
     let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
     for (generation, digest) in [(1, "a"), (1, "b"), (2, "c")] {
         let key = key(IngestOperationKindV1::SearchCorpus, generation, digest);
         let body = [u8::try_from(generation)?; 32];
-        let _fresh = catalog.begin(&key, &body)?;
-        let _sequence = catalog.finalize(&key, &body, &receipt(generation, digest, 0))?;
+        let _sequence = claim_and_commit(&catalog, &key, &body, &receipt(generation, digest, 0))?;
     }
     let removed = catalog.forget_generation(
         &RepoId::new("repo-cat").expect("static fixture ID satisfies canonical policy"),
@@ -262,19 +320,24 @@ fn forgetting_a_generation_drops_exactly_its_records() -> TestResult {
     if removed != 2 {
         return Err(format!("expected 2 records forgotten, got {removed}").into());
     }
-    if catalog.begin(
-        &key(IngestOperationKindV1::SearchCorpus, 1, "a"),
-        &[1_u8; 32],
-    )? != IdempotencyBeginV1::Fresh
-    {
-        return Err("a forgotten key is fresh again".into());
+    // A retry of a forgotten key is below the replay floor: refused, not
+    // silently re-executed.
+    let refused = catalog
+        .claim_prepared(
+            &key(IngestOperationKindV1::SearchCorpus, 1, "a"),
+            &[1_u8; 32],
+            "test",
+            u64::MAX,
+            &[1_u8; 32],
+        )
+        .expect_err("a forgotten key must refuse below the replay floor");
+    if typed_code(&refused) != Some(OPERATION_REPLAY_FLOOR_CODE) {
+        return Err(format!("expected OPERATION_REPLAY_FLOOR, got {refused:?}").into());
     }
+    // Another generation's record survives untouched.
     if !matches!(
-        catalog.begin(
-            &key(IngestOperationKindV1::SearchCorpus, 2, "c"),
-            &[2_u8; 32]
-        )?,
-        IdempotencyBeginV1::Replay { .. }
+        catalog.inspect(&key(IngestOperationKindV1::SearchCorpus, 2, "c"))?,
+        OperationInspectV1::Committed { .. }
     ) {
         return Err("another generation's record must survive".into());
     }
@@ -299,11 +362,13 @@ fn the_pair_listing_and_forget_cover_every_route_and_forget_is_idempotent() -> T
     ] {
         let key = key(kind, generation, digest);
         let body = [u8::try_from(generation)?; 32];
-        // A record left in progress (never finalized) is listed too: the
-        // sweep must be able to forget a generation that never sealed.
-        let _fresh = catalog.begin(&key, &body)?;
+        let claim = catalog
+            .claim_prepared(&key, &body, "test", LONG_LEASE_MS, &body)?
+            .claimed_or_fail()?;
         if kind != IngestOperationKindV1::Dirty {
-            let _sequence = catalog.finalize(&key, &body, &receipt(generation, digest, 0))?;
+            catalog.mark_applying(&claim)?;
+            let receipt = receipt(generation, digest, 0);
+            let _sequence = catalog.commit(&claim, &receipt)?;
         }
     }
     let listed: Vec<u64> = catalog
@@ -342,4 +407,18 @@ fn the_pair_listing_and_forget_cover_every_route_and_forget_is_idempotent() -> T
         return Err(format!("expected generations [2, 9] after forget, got {listed:?}").into());
     }
     Ok(())
+}
+
+/// Test helper: a claim outcome that must be a claim.
+trait ClaimedOrFail {
+    fn claimed_or_fail(&self) -> Result<PreparedMutationV1, Box<dyn Error>>;
+}
+
+impl ClaimedOrFail for ClaimOutcomeV1 {
+    fn claimed_or_fail(&self) -> Result<PreparedMutationV1, Box<dyn Error>> {
+        match self {
+            ClaimOutcomeV1::Claimed(claim) => Ok(claim.clone()),
+            ClaimOutcomeV1::Replay { .. } => Err("expected a fresh claim, got a replay".into()),
+        }
+    }
 }

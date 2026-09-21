@@ -789,8 +789,11 @@ fn concurrent_history_writes_serialize_gc_and_remain_bounded() -> TestResult {
             .map_err(|_panic_payload| "history GC worker panicked")?
         {
             Ok(_receipt) => {}
-            Err(CoreError::Typed { code, .. })
-                if code == quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted => {}
+            Err(CoreError::Typed {
+                code:
+                    quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+                ..
+            }) => {}
             Err(error) => return Err(format!("unexpected concurrent GC error: {error}").into()),
         }
     }

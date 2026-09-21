@@ -427,7 +427,7 @@ fn engine_labels(engines: &[quanta_index_contract::EngineTouched]) -> Vec<String
 fn outcome_from_query(result: &E2eQueryResult) -> QueryOutcome {
     let engine_touched = engine_labels(&result.engines_touched);
     if let Some(error) = &result.typed_error {
-        return typed_error_outcome(error.code.clone(), engine_touched);
+        return typed_error_outcome(error.code, engine_touched);
     }
     let count = saturating_u64(result.candidates.len());
     QueryOutcome {
@@ -442,7 +442,7 @@ fn outcome_from_query(result: &E2eQueryResult) -> QueryOutcome {
 fn outcome_from_structural(result: &E2eQueryResult) -> QueryOutcome {
     let engine_touched = engine_labels(&result.engines_touched);
     if let Some(error) = &result.typed_error {
-        return typed_error_outcome(error.code.clone(), engine_touched);
+        return typed_error_outcome(error.code, engine_touched);
     }
     let count = saturating_u64(result.structural_results.len());
     QueryOutcome {
@@ -456,7 +456,7 @@ fn outcome_from_structural(result: &E2eQueryResult) -> QueryOutcome {
 
 fn outcome_from_history(result: &E2eHistoryResult) -> QueryOutcome {
     if let Some(error) = &result.typed_error {
-        return typed_error_outcome(error.code.clone(), Vec::new());
+        return typed_error_outcome(error.code, Vec::new());
     }
     let commits = result.commit_ids.len();
     let diffs = result.diff_paths.len();

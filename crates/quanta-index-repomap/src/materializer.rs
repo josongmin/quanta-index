@@ -1,4 +1,4 @@
-//! P02A whole-bundle validated RepoMap graph compiler.
+//! P02A whole-bundle validated `RepoMap` graph compiler.
 //!
 //! Replaces the permissive `RepoMapMaterializer` transformer: every bundle is
 //! fully validated (typed variant+domain identity, duplicate/dangling/illegal
@@ -8,7 +8,7 @@
 //! mutation and never calls object store, catalog, activation, quarantine, or
 //! the global sequence allocator.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use sha2::{Digest as _, Sha256};
 
@@ -94,8 +94,8 @@ impl RepoMapGraphCompiler {
         let canonical_edges = self.validated_edges(bundle, &identities)?;
 
         // Stage: Budget ------------------------------------------------------
-        let node_count = u64::try_from(bundle.nodes.len()).map_err(|_| overflow())?;
-        let edge_count = u64::try_from(bundle.edges.len()).map_err(|_| overflow())?;
+        let node_count = u64::try_from(bundle.nodes.len()).map_err(|_error| overflow())?;
+        let edge_count = u64::try_from(bundle.edges.len()).map_err(|_error| overflow())?;
         check_cap(
             RepoMapCompileRefusalCodeV1::NodeLimitExceeded,
             self.budget.max_nodes,
@@ -117,12 +117,13 @@ impl RepoMapGraphCompiler {
         )?;
 
         // Stage: Projection ---------------------------------------------------
-        let projection = self.build_projection(bundle, &identities, &canonical_edges)?;
+        let projection = self.build_projection(bundle, &canonical_edges)?;
 
         // Stage: Commitment ---------------------------------------------------
         let canonical_graph = canonical_graph_table(&identities, &canonical_edges);
         let compiled_payload = encode_compiled_payload(&canonical_graph, &projection);
-        let materialized_bytes = u64::try_from(compiled_payload.len()).map_err(|_| overflow())?;
+        let materialized_bytes =
+            u64::try_from(compiled_payload.len()).map_err(|_error| overflow())?;
         check_cap(
             RepoMapCompileRefusalCodeV1::MaterializedByteLimitExceeded,
             self.budget.max_materialized_bytes,
@@ -138,7 +139,7 @@ impl RepoMapGraphCompiler {
             .iter()
             .filter(|node| matches!(node.identity, RepoMapNodeRef::Symbol(_)))
             .count();
-        let owner_symbols = u64::try_from(owner_symbols).map_err(|_| overflow())?;
+        let owner_symbols = u64::try_from(owner_symbols).map_err(|_error| overflow())?;
         let commitments = RepoMapCandidateCommitmentsV1 {
             producer_manifest,
             producer_authority,
@@ -152,8 +153,8 @@ impl RepoMapGraphCompiler {
             owner_symbols,
             preview_bytes: projection
                 .iter()
-                .map(|entry| u64::try_from(entry.search_text.len()).unwrap_or(u64::MAX))
-                .fold(0_u64, |acc, len| acc.saturating_add(len)),
+                .map(|entry| u64::try_from(entry.search_text.len()).map_or(u64::MAX, |len| len))
+                .fold(0_u64, u64::saturating_add),
             materialized_bytes,
             work_units,
             budget: self.budget,
@@ -171,13 +172,13 @@ impl RepoMapGraphCompiler {
     fn validated_identities(
         &self,
         bundle: &RepoMapSourceBundle,
-    ) -> Result<BTreeMap<RepoMapNodeRef, ()>, RepoMapCompileRefusalV1> {
-        let mut identities = BTreeMap::<RepoMapNodeRef, ()>::new();
+    ) -> Result<BTreeSet<RepoMapNodeRef>, RepoMapCompileRefusalV1> {
+        let mut identities = BTreeSet::new();
         let mut raw_id_variants = BTreeMap::<String, u8>::new();
         for node in &bundle.nodes {
             let identity = node_identity(node);
             let (raw_id, discriminant) = node_ref_parts(&identity);
-            if identities.insert(identity, ()).is_some() {
+            if !identities.insert(identity) {
                 return Err(refusal(
                     RepoMapCompileStageV1::GraphValidation,
                     RepoMapCompileRefusalCodeV1::DuplicateNode,
@@ -203,7 +204,7 @@ impl RepoMapGraphCompiler {
     fn validated_edges(
         &self,
         bundle: &RepoMapSourceBundle,
-        identities: &BTreeMap<RepoMapNodeRef, ()>,
+        identities: &BTreeSet<RepoMapNodeRef>,
     ) -> Result<Vec<CompiledRepoMapEdgeV1>, RepoMapCompileRefusalV1> {
         let mut edges = Vec::new();
         for edge in &bundle.edges {
@@ -226,7 +227,7 @@ impl RepoMapGraphCompiler {
                     &depends.dependency,
                 ),
             };
-            if !identities.contains_key(source) || !identities.contains_key(target) {
+            if !identities.contains(source) || !identities.contains(target) {
                 return Err(refusal(
                     RepoMapCompileStageV1::GraphValidation,
                     RepoMapCompileRefusalCodeV1::DanglingEdgeEndpoint,
@@ -271,15 +272,18 @@ impl RepoMapGraphCompiler {
     fn build_projection(
         &self,
         bundle: &RepoMapSourceBundle,
-        identities: &BTreeMap<RepoMapNodeRef, ()>,
         canonical_edges: &[CompiledRepoMapEdgeV1],
     ) -> Result<Vec<CompiledRepoMapProjectionEntryV1>, RepoMapCompileRefusalV1> {
         let mut degrees = BTreeMap::<&RepoMapNodeRef, (u32, u32)>::new();
         for edge in canonical_edges {
-            degrees.entry(&edge.source).or_default().0 =
-                degrees.get(&edge.source).map_or(0, |pair| pair.0) + 1;
-            degrees.entry(&edge.target).or_default().1 =
-                degrees.get(&edge.target).map_or(0, |pair| pair.1) + 1;
+            degrees.entry(&edge.source).or_default().0 = degrees
+                .get(&edge.source)
+                .map_or(0, |pair| pair.0)
+                .saturating_add(1);
+            degrees.entry(&edge.target).or_default().1 = degrees
+                .get(&edge.target)
+                .map_or(0, |pair| pair.1)
+                .saturating_add(1);
         }
         let mut per_owner_symbols = BTreeMap::<&str, u64>::new();
         let mut files = Vec::new();
@@ -315,29 +319,22 @@ impl RepoMapGraphCompiler {
                 RepoMapNode::Module(_) | RepoMapNode::Chunk(_) => {}
             }
         }
-        for (owner_path, observed) in per_owner_symbols {
-            check_cap(
-                RepoMapCompileRefusalCodeV1::OwnerSymbolLimitExceeded,
-                self.budget.max_owner_symbols,
-                observed,
-            )
-            .map_err(|_| {
-                refusal(
+        for observed in per_owner_symbols.values() {
+            if *observed > self.budget.max_owner_symbols {
+                return Err(refusal(
                     RepoMapCompileStageV1::Projection,
                     RepoMapCompileRefusalCodeV1::OwnerSymbolLimitExceeded,
                     Some(self.budget.max_owner_symbols),
-                    observed,
-                )
-            })?;
-            let _ = owner_path;
+                    *observed,
+                ));
+            }
         }
-        let _ = identities;
 
         let chunk_stats = validated_chunk_stats(bundle)?;
         let mut projection = Vec::new();
         for file in &files {
             let search_text = file_search_text(file, &chunk_stats.0);
-            let preview_bytes = u64::try_from(search_text.len()).map_err(|_| overflow())?;
+            let preview_bytes = u64::try_from(search_text.len()).map_err(|_error| overflow())?;
             check_cap(
                 RepoMapCompileRefusalCodeV1::PreviewLimitExceeded,
                 self.budget.max_preview_bytes,
@@ -356,7 +353,7 @@ impl RepoMapGraphCompiler {
         }
         for symbol in &symbols {
             let search_text = symbol_search_text(symbol, &chunk_stats.1);
-            let preview_bytes = u64::try_from(search_text.len()).map_err(|_| overflow())?;
+            let preview_bytes = u64::try_from(search_text.len()).map_err(|_error| overflow())?;
             check_cap(
                 RepoMapCompileRefusalCodeV1::PreviewLimitExceeded,
                 self.budget.max_preview_bytes,
@@ -412,12 +409,12 @@ fn check_cap(
     Ok(())
 }
 
-fn identities_len(identities: &BTreeMap<RepoMapNodeRef, ()>) -> u64 {
-    u64::try_from(identities.len()).unwrap_or(u64::MAX)
+fn identities_len(identities: &BTreeSet<RepoMapNodeRef>) -> u64 {
+    u64::try_from(identities.len()).map_or(u64::MAX, |len| len)
 }
 
 fn edges_len(bundle: &RepoMapSourceBundle) -> u64 {
-    u64::try_from(bundle.edges.len()).unwrap_or(u64::MAX)
+    u64::try_from(bundle.edges.len()).map_or(u64::MAX, |len| len)
 }
 
 fn node_identity(node: &RepoMapNode) -> RepoMapNodeRef {
@@ -473,14 +470,15 @@ fn edge_variant_legal(
 fn producer_digest(text: &str) -> Result<[u8; 32], RepoMapCompileRefusalV1> {
     let hex = text.strip_prefix("sha256:").unwrap_or(text);
     let mut bytes = [0_u8; 32];
-    match hex_decode32(hex, &mut bytes) {
-        true => Ok(bytes),
-        false => Err(refusal(
+    if hex_decode32(hex, &mut bytes) {
+        Ok(bytes)
+    } else {
+        Err(refusal(
             RepoMapCompileStageV1::BundleValidation,
             RepoMapCompileRefusalCodeV1::ProducerDigestInvalid,
             None,
-            u64::try_from(hex.len()).unwrap_or(u64::MAX),
-        )),
+            u64::try_from(hex.len()).map_or(u64::MAX, |len| len),
+        ))
     }
 }
 
@@ -489,38 +487,42 @@ fn hex_decode32(hex: &str, out: &mut [u8; 32]) -> bool {
     if hex_bytes.len() != 64 {
         return false;
     }
-    let mut index = 0;
-    while index < 64 {
-        let high = hex_nibble(hex_bytes[index]);
-        let low = hex_nibble(hex_bytes[index + 1]);
-        match (high, low) {
-            (Some(high), Some(low)) => out[index / 2] = (high << 4) | low,
+    for (index, pair) in hex_bytes.chunks_exact(2).enumerate() {
+        let (Some(high_nibble), Some(low_nibble)) = (pair.first().copied(), pair.get(1).copied())
+        else {
+            return false;
+        };
+        match (hex_nibble(high_nibble), hex_nibble(low_nibble)) {
+            (Some(high), Some(low)) => {
+                let Some(slot) = out.get_mut(index) else {
+                    return false;
+                };
+                *slot = (high << 4) | low;
+            }
             _ => return false,
         }
-        index += 2;
     }
     true
 }
 
 fn hex_nibble(byte: u8) -> Option<u8> {
     match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'0'..=b'9' => Some(byte.saturating_sub(b'0')),
+        b'a'..=b'f' => Some(byte.saturating_sub(b'a').saturating_add(10)),
         _ => None,
     }
 }
 
-/// Validated chunk statistics: (by_owner_path, by_subject_ref). Dangling
-/// OwnsChunk endpoints were already refused by the edge validation stage.
+/// Validated chunk statistics: (`by_owner_path`, `by_subject_ref`). Dangling
+/// `OwnsChunk` endpoints were already refused by the edge validation stage.
+type ChunkStatsTables = (
+    BTreeMap<String, ChunkStatsV1>,
+    BTreeMap<String, ChunkStatsV1>,
+);
+
 fn validated_chunk_stats(
     bundle: &RepoMapSourceBundle,
-) -> Result<
-    (
-        BTreeMap<String, ChunkStatsV1>,
-        BTreeMap<String, ChunkStatsV1>,
-    ),
-    RepoMapCompileRefusalV1,
-> {
+) -> Result<ChunkStatsTables, RepoMapCompileRefusalV1> {
     let mut by_owner = BTreeMap::<String, ChunkStatsV1>::new();
     let mut by_subject = BTreeMap::<String, ChunkStatsV1>::new();
     let mut chunks = BTreeMap::<&str, &RepoMapChunkNode>::new();
@@ -567,7 +569,7 @@ fn accumulate_chunk(
         .ok_or_else(overflow)?;
     let trimmed = chunk.preview_text.trim();
     if !trimmed.is_empty() {
-        let len = u64::try_from(trimmed.len()).map_err(|_| overflow())?;
+        let len = u64::try_from(trimmed.len()).map_err(|_error| overflow())?;
         stats.preview_bytes = stats.preview_bytes.checked_add(len).ok_or_else(overflow)?;
         stats.preview_fragments.push(trimmed.to_string());
     }
@@ -644,12 +646,12 @@ fn file_score_millis(
 }
 
 fn symbol_score_millis(
-    _symbol: &SymbolEntryInput,
+    symbol: &SymbolEntryInput,
     subject_chunks: &BTreeMap<String, ChunkStatsV1>,
     graph_degree: u32,
 ) -> u32 {
     let chunk_total = subject_chunks
-        .get(&node_ref_key(&_symbol.subject))
+        .get(&node_ref_key(&symbol.subject))
         .map_or(0, |stats| stats.token_total);
     let importance = (420_u32).saturating_add(graph_degree.saturating_mul(35));
     let utility = (320_u32).saturating_add(chunk_total.div_euclid(4).min(220));
@@ -661,7 +663,7 @@ fn symbol_score_millis(
 }
 
 fn canonical_graph_table(
-    identities: &BTreeMap<RepoMapNodeRef, ()>,
+    identities: &BTreeSet<RepoMapNodeRef>,
     edges: &[CompiledRepoMapEdgeV1],
 ) -> CompiledRepoMapGraphV1 {
     let mut degrees = BTreeMap::<&RepoMapNodeRef, (u32, u32)>::new();
@@ -672,7 +674,7 @@ fn canonical_graph_table(
         target.1 = target.1.saturating_add(1);
     }
     let nodes = identities
-        .keys()
+        .iter()
         .map(|identity| {
             let (degree_in, degree_out) = degrees.get(identity).copied().unwrap_or((0, 0));
             CompiledRepoMapNodeV1 {
@@ -757,6 +759,7 @@ impl RepoMapMaterializer {
 }
 
 /// Legacy snapshot materialization entry retained for the store boundary.
+///
 /// It runs the full compiler validation first and refuses typed instead of
 /// producing a partial snapshot. P03 replaces this consumer with the sealed
 /// candidate path.
@@ -791,7 +794,8 @@ fn projection_entry_to_model_entry(
     bundle: &RepoMapSourceBundle,
     entry: &CompiledRepoMapProjectionEntryV1,
 ) -> RepoMapEntry {
-    let final_score_millis = entry.final_score_millis.clamp(0, 1_000) as u32;
+    let final_score_millis = u32::try_from(entry.final_score_millis.clamp(0, 1_000))
+        .map_or(0, |final_score_millis| final_score_millis);
     let (raw_identity, _discriminant) = node_ref_parts(&entry.subject);
     RepoMapEntry {
         subject_identity: raw_identity,
@@ -802,12 +806,14 @@ fn projection_entry_to_model_entry(
             "symbol".to_string()
         },
         owner_path: entry.owner_path.as_str().to_string(),
-        score: f32::from(final_score_millis.min(u16::MAX as u32) as u16) / 1_000.0,
+        score: f32::from(
+            u16::try_from(final_score_millis.min(u32::from(u16::MAX))).map_or(0, u16::from),
+        ) / 1_000.0,
         final_score_millis,
         importance_score_millis: final_score_millis,
-        utility_score_millis: final_score_millis / 2,
+        utility_score_millis: final_score_millis.div_euclid(2),
         freshness_score_millis: freshness_score(bundle),
-        evidence_priority_millis: final_score_millis / 2,
+        evidence_priority_millis: final_score_millis.div_euclid(2),
         token_budget_hint: 64,
         contributing_signals: BTreeMap::new(),
         projection_evidence_kind: "CompiledRepoMapCandidateV1".to_string(),
@@ -867,7 +873,7 @@ const REPOMAP_COMPILE_PROJECTION_PROFILE_DESCRIPTOR: &str =
 /// Infallible by construction: SHA-256 over the length-prefixed domain and
 /// payload cannot fail.
 fn compile_domain_digest(domain: &str, payload: &[u8]) -> [u8; 32] {
-    let domain_length = u32::try_from(domain.len()).unwrap_or(u32::MAX);
+    let domain_length = u32::try_from(domain.len()).map_or(u32::MAX, |len| len);
     let mut hasher = Sha256::new();
     hasher.update(domain_length.to_be_bytes());
     hasher.update(domain.as_bytes());
@@ -885,21 +891,21 @@ impl CompileCborWriter {
     }
 
     fn write_array_header(&mut self, len: usize) {
-        self.write_u64(u64::try_from(len).unwrap_or(u64::MAX));
+        self.write_u64(u64::try_from(len).map_or(u64::MAX, |len| len));
     }
 
     fn write_u64(&mut self, value: u64) {
-        if value <= 23 {
-            self.bytes.push(0x00 | value as u8);
-        } else if value <= u64::from(u8::MAX) {
-            self.bytes.push(0x18);
-            self.bytes.push(value as u8);
-        } else if value <= u64::from(u16::MAX) {
+        if let Ok(byte) = u8::try_from(value) {
+            if value > 23 {
+                self.bytes.push(0x18);
+            }
+            self.bytes.push(byte);
+        } else if let Ok(short) = u16::try_from(value) {
             self.bytes.push(0x19);
-            self.bytes.extend_from_slice(&(value as u16).to_be_bytes());
-        } else if value <= u64::from(u32::MAX) {
+            self.bytes.extend_from_slice(&short.to_be_bytes());
+        } else if let Ok(word) = u32::try_from(value) {
             self.bytes.push(0x1a);
-            self.bytes.extend_from_slice(&(value as u32).to_be_bytes());
+            self.bytes.extend_from_slice(&word.to_be_bytes());
         } else {
             self.bytes.push(0x1b);
             self.bytes.extend_from_slice(&value.to_be_bytes());
@@ -908,49 +914,51 @@ impl CompileCborWriter {
 
     fn write_i64(&mut self, value: i64) {
         if value >= 0 {
-            self.write_u64(value as u64);
+            self.write_u64(u64::try_from(value).map_or(u64::MAX, |value| value));
         } else {
-            let magnitude = -(value as i128);
+            let magnitude = i128::from(value).abs();
             self.write_negative(magnitude);
         }
     }
 
     fn write_negative(&mut self, magnitude: i128) {
         debug_assert!(magnitude >= 0);
-        if magnitude <= 23 {
-            self.bytes.push(0x20 | magnitude as u8);
-        } else if magnitude <= i128::from(u8::MAX) {
-            self.bytes.push(0x38);
-            self.bytes.push(magnitude as u8);
-        } else if magnitude <= i128::from(u16::MAX) {
+        if let Ok(byte) = u8::try_from(magnitude) {
+            if magnitude <= 23 {
+                self.bytes.push(0x20 | byte);
+            } else {
+                self.bytes.push(0x38);
+                self.bytes.push(byte);
+            }
+        } else if let Ok(short) = u16::try_from(magnitude) {
             self.bytes.push(0x39);
-            self.bytes
-                .extend_from_slice(&(magnitude as u16).to_be_bytes());
-        } else if magnitude <= i128::from(u32::MAX) {
+            self.bytes.extend_from_slice(&short.to_be_bytes());
+        } else if let Ok(word) = u32::try_from(magnitude) {
             self.bytes.push(0x3a);
-            self.bytes
-                .extend_from_slice(&(magnitude as u32).to_be_bytes());
+            self.bytes.extend_from_slice(&word.to_be_bytes());
         } else {
             self.bytes.push(0x3b);
-            self.bytes
-                .extend_from_slice(&(magnitude as u64).to_be_bytes());
+            let long = u64::try_from(magnitude).map_or(u64::MAX, |long| long);
+            self.bytes.extend_from_slice(&long.to_be_bytes());
         }
     }
 
     fn write_text(&mut self, text: &str) {
         let utf8 = text.as_bytes();
-        let len = u64::try_from(utf8.len()).unwrap_or(u64::MAX);
-        if len <= 23 {
-            self.bytes.push(0x60 | len as u8);
-        } else if len <= u64::from(u8::MAX) {
-            self.bytes.push(0x78);
-            self.bytes.push(len as u8);
-        } else if len <= u64::from(u16::MAX) {
+        let len = u64::try_from(utf8.len()).map_or(u64::MAX, |len| len);
+        if let Ok(byte) = u8::try_from(len) {
+            if len <= 23 {
+                self.bytes.push(0x60 | byte);
+            } else {
+                self.bytes.push(0x78);
+                self.bytes.push(byte);
+            }
+        } else if let Ok(short) = u16::try_from(len) {
             self.bytes.push(0x79);
-            self.bytes.extend_from_slice(&(len as u16).to_be_bytes());
-        } else if len <= u64::from(u32::MAX) {
+            self.bytes.extend_from_slice(&short.to_be_bytes());
+        } else if let Ok(word) = u32::try_from(len) {
             self.bytes.push(0x7a);
-            self.bytes.extend_from_slice(&(len as u32).to_be_bytes());
+            self.bytes.extend_from_slice(&word.to_be_bytes());
         } else {
             self.bytes.push(0x7b);
             self.bytes.extend_from_slice(&len.to_be_bytes());

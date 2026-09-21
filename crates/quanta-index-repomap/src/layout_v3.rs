@@ -123,9 +123,11 @@ fn content_address_path(root: &str, family: &str, digest: &[u8; 32], extension: 
         path.push(family);
     }
     path.push("sha256");
-    path.push(&hex[0..2]);
-    path.push(&hex[2..4]);
-    path.push(format!("{}.{}", &hex[4..], extension));
+    let (first_fanout, rest) = hex.split_at(2);
+    let (second_fanout, leaf_hex) = rest.split_at(2);
+    path.push(first_fanout);
+    path.push(second_fanout);
+    path.push(format!("{leaf_hex}.{extension}"));
     path
 }
 
@@ -134,7 +136,7 @@ fn parse_content_address(
     prefix: &[&[u8]],
     extension: &str,
 ) -> Result<[u8; 32], LayoutV3AddressError> {
-    let expected_count = prefix.len() + 4;
+    let expected_count = prefix.len().saturating_add(4);
     if components.len() != expected_count {
         return Err(LayoutV3AddressError::WrongComponentCount);
     }
@@ -143,21 +145,33 @@ fn parse_content_address(
             return Err(LayoutV3AddressError::WrongStaticComponent);
         }
     }
-    let algorithm = components[prefix.len()];
+    let algorithm = components
+        .get(prefix.len())
+        .ok_or(LayoutV3AddressError::WrongComponentCount)?;
     if algorithm != b"sha256" {
         return Err(LayoutV3AddressError::WrongStaticComponent);
     }
-    let first = components[prefix.len() + 1];
-    let second = components[prefix.len() + 2];
+    let first = components
+        .get(prefix.len().saturating_add(1))
+        .ok_or(LayoutV3AddressError::WrongComponentCount)?;
+    let second = components
+        .get(prefix.len().saturating_add(2))
+        .ok_or(LayoutV3AddressError::WrongComponentCount)?;
     if first.len() != 2 || second.len() != 2 {
         return Err(LayoutV3AddressError::WrongFanoutWidth);
     }
-    let leaf = components[prefix.len() + 3];
+    let leaf = components
+        .get(prefix.len().saturating_add(3))
+        .ok_or(LayoutV3AddressError::WrongComponentCount)?;
     let expected_suffix = format!(".{extension}");
-    if leaf.len() != 60 + expected_suffix.len() || !leaf.ends_with(expected_suffix.as_bytes()) {
+    if leaf.len() != 60_usize.saturating_add(expected_suffix.len())
+        || !leaf.ends_with(expected_suffix.as_bytes())
+    {
         return Err(LayoutV3AddressError::WrongLeafGrammar);
     }
-    let leaf_hex = &leaf[..60];
+    let leaf_hex = leaf
+        .get(..60)
+        .ok_or(LayoutV3AddressError::WrongLeafGrammar)?;
     let mut encoded = Vec::with_capacity(64);
     encoded.extend_from_slice(first);
     encoded.extend_from_slice(second);
@@ -166,11 +180,16 @@ fn parse_content_address(
 }
 
 fn lowercase_hex(digest: &[u8; 32]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
+    fn hex_digit(nibble: u8) -> char {
+        match nibble {
+            0..=9 => char::from(b'0'.saturating_add(nibble)),
+            _ => char::from(b'a'.saturating_add(nibble.saturating_sub(10))),
+        }
+    }
     let mut encoded = String::with_capacity(64);
     for byte in digest {
-        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
-        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        encoded.push(hex_digit(byte >> 4));
+        encoded.push(hex_digit(byte & 0x0f));
     }
     encoded
 }
@@ -181,17 +200,28 @@ fn decode_lowercase_hex(encoded: &[u8]) -> Result<[u8; 32], LayoutV3AddressError
     }
     let mut digest = [0_u8; 32];
     for (index, pair) in encoded.chunks_exact(2).enumerate() {
-        let high = hex_nibble(pair[0])?;
-        let low = hex_nibble(pair[1])?;
-        digest[index] = (high << 4) | low;
+        let high = hex_nibble(
+            pair.first()
+                .copied()
+                .ok_or(LayoutV3AddressError::WrongLeafGrammar)?,
+        )?;
+        let low = hex_nibble(
+            pair.get(1)
+                .copied()
+                .ok_or(LayoutV3AddressError::WrongLeafGrammar)?,
+        )?;
+        let slot = digest
+            .get_mut(index)
+            .ok_or(LayoutV3AddressError::WrongLeafGrammar)?;
+        *slot = (high << 4) | low;
     }
     Ok(digest)
 }
 
 fn hex_nibble(value: u8) -> Result<u8, LayoutV3AddressError> {
     match value {
-        b'0'..=b'9' => Ok(value - b'0'),
-        b'a'..=b'f' => Ok(value - b'a' + 10),
+        b'0'..=b'9' => Ok(value.saturating_sub(b'0')),
+        b'a'..=b'f' => Ok(value.saturating_sub(b'a').saturating_add(10)),
         _ => Err(LayoutV3AddressError::NonLowercaseHex),
     }
 }
@@ -375,7 +405,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn address_roundtrip_and_case_refusal() -> Result<(), Box<dyn std::error::Error>> {
+    fn address_roundtrip_and_case_refusal() {
         let address =
             CandidateObjectAddressV1::new(CandidateObjectDigestV1::from_bytes([0xab; 32]));
         assert_eq!(
@@ -383,16 +413,16 @@ mod tests {
             PathBuf::from(format!("objects/sha256/ab/ab/{}.cbor", "ab".repeat(30)))
         );
         let leaf = format!("{}.cbor", "ab".repeat(30));
-        assert_eq!(
-            CandidateObjectAddressV1::parse_components(&[
-                b"objects",
-                b"sha256",
-                b"ab",
-                b"ab",
-                leaf.as_bytes()
-            ])?,
-            address
-        );
+        match CandidateObjectAddressV1::parse_components(&[
+            b"objects",
+            b"sha256",
+            b"ab",
+            b"ab",
+            leaf.as_bytes(),
+        ]) {
+            Ok(parsed) => assert_eq!(parsed, address),
+            Err(error) => panic!("expected roundtrip parse, got {error}"),
+        }
         let upper_leaf = format!("{}.cbor", "AB".repeat(30));
         assert_eq!(
             CandidateObjectAddressV1::parse_components(&[
@@ -404,7 +434,6 @@ mod tests {
             ]),
             Err(LayoutV3AddressError::NonLowercaseHex)
         );
-        Ok(())
     }
 
     #[test]

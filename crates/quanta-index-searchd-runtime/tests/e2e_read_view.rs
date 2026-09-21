@@ -204,7 +204,7 @@ fn verify_missing_domains_and_track_plans(rt: &mut E2eRuntime) -> TestResult {
 /// The routes that carry an explanation open their planner trace with the
 /// view's domains, epochs, pin and pinned artifacts.
 fn verify_explanation_read_view_identity(rt: &mut E2eRuntime) -> TestResult {
-    let pin_detail = pin_detail(&rt);
+    let pin_detail = pin_detail(rt);
 
     let hybrid = rt.query_hybrid(TextQuerySyntax::Native, QUERY, QUERY, TOP_K);
     served(&hybrid, "hybrid query")?;

@@ -50,6 +50,10 @@ impl QueryRoute {
 /// (QI-BB-002): a deadline and a peer cancellation are different events
 /// and are never folded into one metric.
 pub(super) fn interruption_route_suffix(code: Code) -> Option<&'static str> {
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "only deadline and cancellation have a dedicated route counter; every other code, including future ones, has none"
+    )]
     match code {
         Code::RequestDeadlineExceeded => Some("deadline_exceeded_total"),
         Code::RequestCancelled => Some("cancelled_total"),
@@ -86,6 +90,10 @@ pub(super) fn classify_error_metric_name(err: &CoreError) -> &'static str {
 }
 
 fn classify_typed_error_metric_name(code: Code) -> &'static str {
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "the `_other_total` bucket is the deliberate catch-all for every code without a dedicated counter, including future ones"
+    )]
     match code {
         Code::RequestDeadlineExceeded => "lq_typed_error_deadline_exceeded_total",
         Code::RequestCancelled => "lq_typed_error_cancelled_total",

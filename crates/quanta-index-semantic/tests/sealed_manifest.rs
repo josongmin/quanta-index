@@ -56,10 +56,18 @@ const SCOPE_MANIFEST: &str = "semantic-manifest.cbor";
 const BUILD_CONTRACT: &str = "semantic-build-contract.cbor";
 const DATASET: &str = "dataset";
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo() -> RepoId {
     RepoId::new("sealed-repo").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision() -> RevisionId {
     RevisionId::new("sealed-rev").expect("static fixture ID satisfies canonical policy")
 }
@@ -574,8 +582,10 @@ fn a_door_finding_is_quarantined_only_by_the_adapters_re_proof() -> TestResult {
         let mut foreign = identity(generation);
         foreign.manifest_digest = "manifest:another-seal".to_string();
         match adapter.quarantine_door_finding(&foreign) {
-            Err(CoreError::Typed { code, .. })
-                if code == SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch => {}
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
+                ..
+            }) => {}
             other => {
                 return Err(format!("{what}: a foreign identity answered {other:?}").into());
             }

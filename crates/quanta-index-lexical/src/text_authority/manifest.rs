@@ -389,10 +389,10 @@ mod tests {
     }
 
     fn typed_code(
-        result: Result<TextAuthorityManifest, CoreError>,
+        result: &Result<TextAuthorityManifest, CoreError>,
     ) -> Option<quanta_index_contract::SearchPlaneErrorCodeV2> {
         match result {
-            Err(CoreError::Typed { code, .. }) => Some(code),
+            Err(CoreError::Typed { code, .. }) => Some(*code),
             _ => None,
         }
     }
@@ -480,7 +480,7 @@ mod tests {
         ];
         for (label, manifest) in cases {
             let bytes = manifest.encode().expect("encode");
-            let code = typed_code(TextAuthorityManifest::decode(&bytes, Path::new("/g1")));
+            let code = typed_code(&TextAuthorityManifest::decode(&bytes, Path::new("/g1")));
             assert_eq!(
                 code,
                 Some(quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt),
@@ -492,7 +492,7 @@ mod tests {
     /// The refusal code for a manifest row this build should not serve.
     fn refusal_for(row: &ManifestRow) -> Option<quanta_index_contract::SearchPlaneErrorCodeV2> {
         let bytes = crate::channel_payloads::encode_cbor(row, "test").expect("encode");
-        typed_code(TextAuthorityManifest::decode(&bytes, Path::new("/g1")))
+        typed_code(&TextAuthorityManifest::decode(&bytes, Path::new("/g1")))
     }
 
     #[test]

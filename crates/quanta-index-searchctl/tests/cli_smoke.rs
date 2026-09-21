@@ -579,6 +579,10 @@ impl ControlScenarioDispatcher {
         }
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "static fixture IDs provably satisfy the canonical ID policy"
+    )]
     fn generation_status(&self, req: &GenerationStatusRequest) -> SearchPlaneControlIpcResponse {
         if req.repo_id
             != RepoId::new(DOCTOR_REPO).expect("test fixture ID satisfies canonical policy")
@@ -1522,6 +1526,10 @@ fn dispatch_hybrid_seed_request(
     })
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn dispatch_repomap_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQueryIpcResponse {
     let SearchPlaneQueryIpcRequest::RepoMapQuery(payload) = request else {
         return error_response(
@@ -1558,6 +1566,10 @@ fn error_response(
     })
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn stub_generation() -> GenerationPin {
     GenerationPin::new(
         RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
@@ -1668,6 +1680,10 @@ fn stub_repomap_entry() -> RepoMapEntryDto {
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn stub_repomap_response() -> RepoMapQueryResponse {
     RepoMapQueryResponse {
         repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),

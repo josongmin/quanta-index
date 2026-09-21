@@ -80,6 +80,10 @@ fn fixture_semantic_source_record() -> SemanticSourceRecordV1 {
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn fixture_search_corpus_batch() -> SearchCorpusIngestBatch {
     SearchCorpusIngestBatch {
         repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),

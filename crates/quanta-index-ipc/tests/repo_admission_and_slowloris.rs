@@ -171,6 +171,10 @@ impl Harness {
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "test fixture IDs provably satisfy the canonical ID policy"
+)]
 fn text_query(request_id: u64, repo: &str) -> SearchPlaneQueryIpcRequestEnvelope {
     SearchPlaneQueryIpcRequestEnvelope {
         request_id,

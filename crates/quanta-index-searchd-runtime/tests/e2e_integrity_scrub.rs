@@ -271,7 +271,7 @@ fn a_byte_defect_survives_the_doors_and_is_quarantined_by_the_scrub() -> TestRes
     // The next query is refused typed: the resident handle was fenced.
     let after = rt.query_once(semantic_query)?;
     match typed_code(&after) {
-        Some((code, message)) if code == "GENERATION_QUARANTINED" => {
+        Some(("GENERATION_QUARANTINED", message)) => {
             if !message.contains("GENERATION_QUARANTINE_CONTENT_CORRUPT") {
                 return Err(format!("the refusal names the quarantine reason: {message}").into());
             }
@@ -425,7 +425,7 @@ fn a_generation_of_an_earlier_format_is_quarantined_at_boot_with_the_format_reas
     let pin = GenerationPin::new(rt.repo(), rt.revision(), inactive);
     let pinned = rt.query_once(|_| semantic_query(Some(pin)))?;
     match typed_code(&pinned) {
-        Some((code, _)) if code == "SEMANTIC_GENERATION_NOT_MATERIALIZED" => {}
+        Some(("SEMANTIC_GENERATION_NOT_MATERIALIZED", _)) => {}
         other => {
             return Err(format!(
                 "a query pinned to a quarantined generation is refused as not materialized, got {other:?}"

@@ -25,10 +25,18 @@ use quanta_index_semantic::{
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo_id() -> RepoId {
     RepoId::new("repo-sem").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision_id() -> RevisionId {
     RevisionId::new("rev-sem").expect("static fixture ID satisfies canonical policy")
 }
@@ -78,9 +86,10 @@ fn embedding_record_same_owner(
 /// answered by the same typed code naming the file.
 fn expect_sidecar_corrupt(err: CoreError, expected_file: &str) -> TestResult {
     match err {
-        CoreError::Typed { code, message }
-            if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt =>
-        {
+        CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+            message,
+        } => {
             if !message.contains(expected_file) {
                 return Err(format!("sidecar refusal must name {expected_file}: {message}").into());
             }

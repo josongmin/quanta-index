@@ -785,7 +785,9 @@ impl DirectSearchCorpusMaterializer {
         // catalog and the ledger as they were, the retried seal redoes it.
         // The coordinator serializes every auxiliary mutation, so the set
         // read here is the set the write lock forgets.
-        let _serial = self.auxiliary_coordinator.lock()?;
+        let _serial = self
+            .auxiliary_coordinator
+            .lock(&crate::ingest_dispatcher::auxiliary::coordinator_owner())?;
         let (chunks, reaped_auxiliary) = {
             let guard = self.ledger.read().map_err(|err| {
                 CoreError::Storage(format!(

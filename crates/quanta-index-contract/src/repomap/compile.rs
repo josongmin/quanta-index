@@ -217,6 +217,10 @@ impl<'de> Deserialize<'de> for RepoMapCompileRefusalV1 {
 /// a zero ceiling is refused at construction because it would make the whole
 /// compiler unusable instead of bounded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "field names are the public contract surface; stripping the `max_` prefix would break the typed API"
+)]
 pub struct RepoMapCompilerBudgetV1 {
     pub max_nodes: u64,
     pub max_edges: u64,
@@ -596,10 +600,11 @@ pub struct CompiledRepoMapGraphV1 {
     pub edges: Vec<CompiledRepoMapEdgeV1>,
 }
 
-/// The whole-bundle validated compiler output. Carries everything P03 needs
-/// to build `RepoMapCandidateEnvelopeV1` without the raw bundle: canonical
-/// graph, bounded projection, all five commitments, the compiled payload
-/// bytes, and the resource receipt.
+/// The whole-bundle validated compiler output.
+///
+/// Carries everything P03 needs to build `RepoMapCandidateEnvelopeV1` without
+/// the raw bundle: canonical graph, bounded projection, all five commitments,
+/// the compiled payload bytes, and the resource receipt.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompiledRepoMapCandidateV1 {
     graph: CompiledRepoMapGraphV1,
@@ -659,7 +664,9 @@ impl CompiledRepoMapCandidateV1 {
 
     #[must_use]
     pub fn byte_size(&self) -> u64 {
-        u64::try_from(self.compiled_payload.len()).unwrap_or(u64::MAX)
+        // usize wider than u64 cannot occur on supported targets; keep the
+        // saturating ceiling rather than panicking or silently truncating.
+        u64::try_from(self.compiled_payload.len()).map_or(u64::MAX, |size| size)
     }
 
     #[must_use]

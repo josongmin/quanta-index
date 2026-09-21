@@ -1246,6 +1246,10 @@ fn encode_repo_metadata_payload(metadata: &FixtureRepoMetadata) -> AnyResult<Vec
     Ok(buf)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn ingest_fixture(rt: &mut E2eRuntime, fixture: &LoadedFixture) -> AnyResult<FixtureRuntimeState> {
     let mut docs_by_path: BTreeMap<String, Vec<&FixtureDoc>> = BTreeMap::new();
     for doc in &fixture.docs {

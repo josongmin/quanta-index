@@ -78,10 +78,18 @@ impl Drop for DenseLaneHold {
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo() -> RepoId {
     RepoId::new("cancel-semantic-repo").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision() -> RevisionId {
     RevisionId::new("cancel-semantic-rev").expect("static fixture ID satisfies canonical policy")
 }

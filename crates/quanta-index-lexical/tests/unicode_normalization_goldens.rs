@@ -728,10 +728,18 @@ const GOLDENS: &[Golden] = &[
     ),
 ];
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo() -> RepoId {
     RepoId::new("unicode-golden-repo").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision() -> RevisionId {
     RevisionId::new("unicode-golden-rev").expect("static fixture ID satisfies canonical policy")
 }

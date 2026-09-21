@@ -30,10 +30,18 @@ use quanta_index_lexical::regex::RegexPolicy;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo() -> RepoId {
     RepoId::new("envelope-repo").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision() -> RevisionId {
     RevisionId::new("envelope-rev").expect("static fixture ID satisfies canonical policy")
 }

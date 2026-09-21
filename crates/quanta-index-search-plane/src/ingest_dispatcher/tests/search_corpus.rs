@@ -79,10 +79,10 @@ fn malformed_or_baseless_batches_change_zero_bytes() -> TestRes {
     let mut malformed = fixture_search_corpus_batch()?;
     malformed.base_generation = Some(ManifestGeneration::new(3));
     match probe.materializer.publish_batch(&malformed) {
-        Err(CoreError::Typed { code, .. })
-            if code
-                == quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid => {
-        }
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid,
+            ..
+        }) => {}
         other => return Err(format!("mode/base mismatch answered {other:?}").into()),
     }
     probe.assert_nothing_touched("mode/base mismatch")?;
@@ -90,10 +90,10 @@ fn malformed_or_baseless_batches_change_zero_bytes() -> TestRes {
     let mut empty_digest = fixture_search_corpus_batch()?;
     empty_digest.manifest_digest = String::new();
     match probe.materializer.publish_batch(&empty_digest) {
-        Err(CoreError::Typed { code, .. })
-            if code
-                == quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid => {
-        }
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid,
+            ..
+        }) => {}
         other => return Err(format!("empty digest answered {other:?}").into()),
     }
     probe.assert_nothing_touched("empty digest")?;
@@ -102,7 +102,10 @@ fn malformed_or_baseless_batches_change_zero_bytes() -> TestRes {
     unsealed_base.mode = BatchIngestMode::Delta;
     unsealed_base.base_generation = Some(ManifestGeneration::new(3));
     match probe.materializer.publish_batch(&unsealed_base) {
-        Err(CoreError::Typed { code, .. }) if code == quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusDeltaBaseNotSealed => {}
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusDeltaBaseNotSealed,
+            ..
+        }) => {}
         other => return Err(format!("unsealed base answered {other:?}").into()),
     }
     probe.assert_nothing_touched("base never sealed")?;
@@ -122,8 +125,11 @@ fn malformed_or_baseless_batches_change_zero_bytes() -> TestRes {
             "manifest:base",
         );
     match mismatched.materializer.publish_batch(&unsealed_base) {
-        Err(CoreError::Typed { code, .. })
-            if code == quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationRepairRequired => {}
+        Err(CoreError::Typed {
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationRepairRequired,
+            ..
+        }) => {}
         other => return Err(format!("mismatched base answered {other:?}").into()),
     }
     mismatched.assert_nothing_touched("base identity mismatch")
@@ -212,13 +218,18 @@ fn seed_records(
                 batch_digest: format!("{kind}:{generation}"),
             };
             let body = [u8::try_from(*generation)?; 32];
-            let _fresh = catalog.begin(&key, &body)?;
+            let claim = match catalog.claim_prepared(&key, &body, "test-seed", u64::MAX, &body)? {
+                quanta_index_core::ClaimOutcomeV1::Claimed(claim) => claim,
+                quanta_index_core::ClaimOutcomeV1::Replay { .. } => {
+                    return Err("seed claim unexpectedly replayed".into());
+                }
+            };
             let receipt = quanta_index_contract::BatchPublishReceipt::empty_for(
                 ManifestGeneration::new(*generation),
                 None,
                 key.batch_digest.clone(),
             );
-            let _sequence = catalog.finalize(&key, &body, &receipt)?;
+            let _sequence = catalog.commit(&claim, &receipt)?;
         }
     }
     Ok(())

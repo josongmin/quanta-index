@@ -61,6 +61,10 @@ pub(super) fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
 #[must_use]
 pub fn repair_for_code(code: SearchPlaneErrorCodeV2) -> Option<QueryErrorRepair> {
     const DOCS_ANCHOR: &str = "docs/analysis/jun-4-dsl-capabilty.md";
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "codes without a confirmed repair must return `None`, including future codes; a wildcard is the only maintainable form for this contract-sized enum"
+    )]
     let (class, alternatives): (RepairClass, &[&str]) = match code {
         SearchPlaneErrorCodeV2::Lexical(LexicalErrorCode::BridgeAmbiguousFilter) => (
             RepairClass::Ambiguous,

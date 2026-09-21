@@ -48,7 +48,7 @@ fn validate_identity(value: &str) -> Result<(), IdentityValidationErrorV1> {
     }
     if value
         .chars()
-        .any(|ch| matches!(ch as u32, 0x00..=0x1f | 0x7f..=0x9f))
+        .any(|ch| matches!(u32::from(ch), 0x00..=0x1f | 0x7f..=0x9f))
     {
         return Err(IdentityValidationErrorV1::ControlCharacter);
     }
@@ -182,7 +182,11 @@ impl RepositoryRevisionIdentityV1 {
     /// Exact length-delimited payload from SEP-21-001.
     #[must_use]
     pub fn canonical_payload(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(8 + self.repo_id.0.len() + self.revision_id.0.len());
+        let mut bytes = Vec::with_capacity(
+            8usize
+                .saturating_add(self.repo_id.0.len())
+                .saturating_add(self.revision_id.0.len()),
+        );
         push_len_prefixed(&mut bytes, self.repo_id.0.as_bytes());
         push_len_prefixed(&mut bytes, self.revision_id.0.as_bytes());
         bytes
@@ -244,14 +248,14 @@ impl LogicalGenerationIdentityV1 {
 
 fn push_len_prefixed(target: &mut Vec<u8>, value: &[u8]) {
     let length = value.len().to_be_bytes();
-    target.extend_from_slice(&length[length.len() - 4..]);
+    target.extend_from_slice(&length[4..]);
     target.extend_from_slice(value);
 }
 
 fn domain_digest(domain: &str, payload: &[u8]) -> [u8; 32] {
     let domain_length = domain.len().to_be_bytes();
     let mut hasher = Sha256::new();
-    hasher.update(&domain_length[domain_length.len() - 4..]);
+    hasher.update(&domain_length[4..]);
     hasher.update(domain.as_bytes());
     hasher.update(payload);
     hasher.finalize().into()
@@ -287,32 +291,38 @@ mod tests {
         );
         for accepted in ["%", "/", ".", "..", "A", "a", "é"] {
             assert_eq!(
-                RepoId::new(accepted).map(|id| id.into_inner()),
+                RepoId::new(accepted).map(super::RepoId::into_inner),
                 Ok(accepted.to_owned())
             );
         }
     }
 
     #[test]
-    fn identity_serde_and_constructor_share_validation() -> Result<(), Box<dyn std::error::Error>> {
-        let id = RepoId::new("repo/../%")?;
-        let json = serde_json::to_string(&id)?;
-        assert_eq!(serde_json::from_str::<RepoId>(json.as_str())?, id);
+    fn identity_serde_and_constructor_share_validation() {
+        let id = RepoId::new("repo/../%").expect("valid fixture ID");
+        let json = serde_json::to_string(&id).expect("serialize id");
+        assert_eq!(
+            serde_json::from_str::<RepoId>(json.as_str()).expect("roundtrip decode"),
+            id
+        );
         assert!(serde_json::from_str::<RepoId>("\"e\\u0301\"").is_err());
-        Ok(())
     }
 
     #[test]
-    fn tuple_framing_is_injective_for_separator_collision_fixture()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let left = RepositoryRevisionIdentityV1::new(RepoId::new("a--b")?, RevisionId::new("c")?);
-        let right = RepositoryRevisionIdentityV1::new(RepoId::new("a")?, RevisionId::new("b--c")?);
+    fn tuple_framing_is_injective_for_separator_collision_fixture() {
+        let left = RepositoryRevisionIdentityV1::new(
+            RepoId::new("a--b").expect("valid"),
+            RevisionId::new("c").expect("valid"),
+        );
+        let right = RepositoryRevisionIdentityV1::new(
+            RepoId::new("a").expect("valid"),
+            RevisionId::new("b--c").expect("valid"),
+        );
         assert_ne!(left.canonical_payload(), right.canonical_payload());
         assert_ne!(left.digest(), right.digest());
         assert_ne!(
             LogicalGenerationIdentityV1::new(left, 7).digest(),
             LogicalGenerationIdentityV1::new(right, 7).digest()
         );
-        Ok(())
     }
 }

@@ -1611,10 +1611,12 @@ fn repo_metadata_filters_share_one_indexed_fixture() -> TestResult {
     seal_lexical(&ingest_socket)?;
 
     let verification: TestResult = (|| {
+        let verify_sourcegraph_context_filter_fn: fn(&Path) -> TestResult =
+            verify_sourcegraph_context_filter;
         for (name, verify) in [
             (
                 "sourcegraph_context_filter",
-                verify_sourcegraph_context_filter as fn(&Path) -> TestResult,
+                verify_sourcegraph_context_filter_fn,
             ),
             ("hybrid_visibility_filter", verify_hybrid_visibility_filter),
         ] {
@@ -2236,10 +2238,12 @@ fn default_indexed_queries_share_one_fixture() -> TestResult {
     seal_lexical(&ingest_socket)?;
 
     let verification: TestResult = (|| {
+        let verify_semantic_without_lexical_scope_fn: fn(&Path) -> TestResult =
+            verify_semantic_without_lexical_scope;
         for (name, verify) in [
             (
                 "without_lexical_scope",
-                verify_semantic_without_lexical_scope as fn(&Path) -> TestResult,
+                verify_semantic_without_lexical_scope_fn,
             ),
             (
                 "scoped_unindexed_lexical_scope",
@@ -3273,11 +3277,10 @@ fn structural_ready_queries_share_one_indexed_fixture() -> TestResult {
     seal_structural(&ingest_socket)?;
 
     let verification: TestResult = (|| {
+        let verify_structural_sourcegraph_match_fn: fn(&Path) -> TestResult =
+            verify_structural_sourcegraph_match;
         for (name, verify) in [
-            (
-                "sourcegraph_match",
-                verify_structural_sourcegraph_match as fn(&Path) -> TestResult,
-            ),
+            ("sourcegraph_match", verify_structural_sourcegraph_match_fn),
             (
                 "sourcegraph_regex_match",
                 verify_structural_sourcegraph_regex_match,
@@ -3339,10 +3342,12 @@ fn request_validation_refusals_share_one_runtime() -> TestResult {
         start_runtime(state_root, "searchd-request-refusals-shared-test")?;
 
     let verification: TestResult = (|| {
+        let verify_history_generation_not_ready_fn: fn(&Path) -> TestResult =
+            verify_history_generation_not_ready;
         for (name, verify) in [
             (
                 "history_generation_not_ready",
-                verify_history_generation_not_ready as fn(&Path) -> TestResult,
+                verify_history_generation_not_ready_fn,
             ),
             (
                 "hybrid_requires_joint_materialization",

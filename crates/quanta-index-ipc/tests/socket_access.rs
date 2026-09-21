@@ -189,6 +189,10 @@ impl Served {
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "test fixture IDs provably satisfy the canonical ID policy"
+)]
 fn request(repo: &str) -> SearchPlaneControlIpcRequestEnvelope {
     SearchPlaneControlIpcRequestEnvelope {
         request_id: 3,

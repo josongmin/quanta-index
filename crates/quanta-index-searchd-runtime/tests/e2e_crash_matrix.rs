@@ -1,4 +1,5 @@
 //! QI-BB-029 완료 기준 #2 and QI-BB-003 완료 기준 #2 — a crash at every
+//!
 //! point from a seal's first track to the end of the GC it triggers leaves
 //! a state the restarted daemon serves correctly, and the retried seal
 //! converges on the same generation.
@@ -73,6 +74,10 @@ fn digest(generation: u64) -> String {
     format!("manifest:crash-matrix:g{generation}")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn pin(generation: u64) -> GenerationPin {
     GenerationPin::new(
         RepoId::new(REPO).expect("test fixture ID satisfies canonical policy"),
@@ -88,8 +93,8 @@ fn batch(generation: u64) -> Result<SearchCorpusBatch, Box<dyn Error>> {
     let text = format!("fn needle{generation}() {{}}");
     let end_byte = u32::try_from(text.len())?;
     Ok(SearchCorpusBatch::replace_generation(
-        RepoId::new(REPO).expect("test fixture ID satisfies canonical policy"),
-        RevisionId::new(REVISION).expect("test fixture ID satisfies canonical policy"),
+        RepoId::new(REPO)?,
+        RevisionId::new(REVISION)?,
         ManifestGeneration::new(generation),
         digest(generation),
     )
@@ -128,6 +133,10 @@ fn publish_and_activate(
 }
 
 /// The directory `generation` has on `track_root`.
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn generation_dir(state_root: &Path, track_root: &str, generation: u64) -> PathBuf {
     GenerationStorageKeyV1::for_repo_revision(
         &RepoId::new(REPO).expect("test fixture ID satisfies canonical policy"),

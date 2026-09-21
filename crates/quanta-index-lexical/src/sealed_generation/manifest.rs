@@ -448,10 +448,10 @@ mod tests {
     }
 
     fn typed_code(
-        result: Result<LexicalSealedManifest, CoreError>,
+        result: &Result<LexicalSealedManifest, CoreError>,
     ) -> Option<quanta_index_contract::SearchPlaneErrorCodeV2> {
         match result {
-            Err(CoreError::Typed { code, .. }) => Some(code),
+            Err(CoreError::Typed { code, .. }) => Some(*code),
             _ => None,
         }
     }
@@ -526,7 +526,7 @@ mod tests {
         for (label, manifest) in cases {
             let bytes = manifest.encode().expect("encode");
             assert_eq!(
-                typed_code(LexicalSealedManifest::decode(&bytes, Path::new("/g1/m"))),
+                typed_code(&LexicalSealedManifest::decode(&bytes, Path::new("/g1/m"))),
                 Some(quanta_index_core::GENERATION_SIDECAR_CORRUPT_CODE),
                 "{label}"
             );
@@ -554,7 +554,7 @@ mod tests {
             let bytes =
                 crate::channel_payloads::encode_cbor(&other_format, "test").expect("encode");
             assert_eq!(
-                typed_code(LexicalSealedManifest::decode(&bytes, Path::new("/g1/m"))),
+                typed_code(&LexicalSealedManifest::decode(&bytes, Path::new("/g1/m"))),
                 Some(quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported),
                 "format {format}"
             );
@@ -571,7 +571,7 @@ mod tests {
         );
         let bytes = crate::channel_payloads::encode_cbor(&other_policy, "test").expect("encode");
         assert_eq!(
-            typed_code(LexicalSealedManifest::decode(&bytes, Path::new("/g1/m"))),
+            typed_code(&LexicalSealedManifest::decode(&bytes, Path::new("/g1/m"))),
             Some(
                 quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
             )

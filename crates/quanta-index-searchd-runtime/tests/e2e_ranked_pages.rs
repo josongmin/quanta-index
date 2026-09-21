@@ -1,4 +1,5 @@
 //! QI-BB-005 — ranked text pages at the daemon front door: cut in the one
+//!
 //! total order, continued by their cursor, cut by the response byte budget
 //! with an explicit continuation, and never continued in another
 //! generation.

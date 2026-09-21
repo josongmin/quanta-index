@@ -192,6 +192,10 @@ impl Harness {
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "test fixture IDs provably satisfy the canonical ID policy"
+)]
 fn current_generation(repo: &str) -> SearchPlaneControlIpcRequestEnvelope {
     SearchPlaneControlIpcRequestEnvelope {
         request_id: 7,

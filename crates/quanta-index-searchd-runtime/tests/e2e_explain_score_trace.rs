@@ -517,11 +517,10 @@ fn explain_score_traces_share_one_indexed_fixture() -> TestResult {
     let mut rt = E2eRuntime::boot()?;
     ingest_fixture(&mut rt)?;
 
+    let verify_page_candidate_scores_fn: fn(&mut E2eRuntime) -> TestResult =
+        verify_page_candidate_scores;
     for (name, verify) in [
-        (
-            "page_candidate_scores",
-            verify_page_candidate_scores as fn(&mut E2eRuntime) -> TestResult,
-        ),
+        ("page_candidate_scores", verify_page_candidate_scores_fn),
         ("boost", verify_boost),
         ("presence", verify_presence),
         ("hybrid_both_lane", verify_hybrid_both_lane),

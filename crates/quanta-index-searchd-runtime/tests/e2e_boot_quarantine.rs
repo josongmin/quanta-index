@@ -251,7 +251,7 @@ fn damage_to_an_inactive_generation_does_not_stop_the_daemon() -> TestResult {
     let inactive_pin = GenerationPin::new(rt.repo(), rt.revision(), inactive);
     let lexical_answer = rt.query_once(|_| pinned_text(inactive_pin.clone(), "needle_first"))?;
     match typed_code(&lexical_answer) {
-        Some((code, _)) if code == "GENERATION_SIDECAR_CORRUPT" => {}
+        Some(("GENERATION_SIDECAR_CORRUPT", _)) => {}
         other => {
             return Err(format!(
                 "lexical query pinned to the damaged generation must be refused typed, got {other:?}"
@@ -274,7 +274,7 @@ fn damage_to_an_inactive_generation_does_not_stop_the_daemon() -> TestResult {
     let quarantined_pin = GenerationPin::new(rt.repo(), rt.revision(), ManifestGeneration::new(9));
     let quarantined_answer = rt.query_once(|_| pinned_text(quarantined_pin, "needle"))?;
     match typed_code(&quarantined_answer) {
-        Some((code, _)) if code == "NOT_READY" => Ok(()),
+        Some(("NOT_READY", _)) => Ok(()),
         other => Err(format!(
             "query pinned to a quarantined generation must be NOT_READY, got {other:?}"
         )
@@ -674,7 +674,7 @@ fn a_rollback_that_proves_inactive_damage_quarantines_it() -> TestResult {
     // A query door meets the damage, answers typed, and records nothing.
     let first_pin = GenerationPin::new(rt.repo(), rt.revision(), first.lexical.manifest_generation);
     match typed_code(&rt.query_once(|_| pinned_text(first_pin.clone(), "needle_first"))?) {
-        Some((code, _)) if code == "GENERATION_SIDECAR_CORRUPT" => {}
+        Some(("GENERATION_SIDECAR_CORRUPT", _)) => {}
         other => {
             return Err(
                 format!("the pinned query must meet the damage typed, got {other:?}").into(),
@@ -732,7 +732,7 @@ fn a_rollback_that_proves_inactive_damage_quarantines_it() -> TestResult {
         }
     }
     match typed_code(&rt.query_once(|_| pinned_text(first_pin.clone(), "needle_first"))?) {
-        Some((code, _)) if code == "GENERATION_QUARANTINED" => {}
+        Some(("GENERATION_QUARANTINED", _)) => {}
         other => {
             return Err(
                 format!("a pinned query must be refused as quarantined, got {other:?}").into(),

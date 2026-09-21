@@ -320,7 +320,7 @@ fn clone_outcome(outcome: &QueryOutcome) -> QueryOutcome {
     QueryOutcome {
         result_shape: outcome.result_shape,
         result_count: outcome.result_count,
-        typed_error_code: outcome.typed_error_code.clone(),
+        typed_error_code: outcome.typed_error_code,
         engine_touched: outcome.engine_touched.clone(),
         early_stop_reason: outcome.early_stop_reason.clone(),
     }

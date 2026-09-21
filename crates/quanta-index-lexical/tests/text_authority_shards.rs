@@ -66,10 +66,18 @@ const TEXT_AUTHORITY_DIR: &str = "text-authority";
 const TEXT_AUTHORITY_MANIFEST: &str = "manifest.cbor";
 const SEALED_MANIFEST: &str = "search-corpus-generation-manifest.cbor";
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo() -> RepoId {
     RepoId::new("shard-repo").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision() -> RevisionId {
     RevisionId::new("shard-rev").expect("static fixture ID satisfies canonical policy")
 }

@@ -106,11 +106,13 @@ fn a_batch_that_fails_validation_never_reaches_the_catalog() -> TestRes {
     // A child whose parent is neither in the state nor earlier in the batch.
     let orphan = fixture_history_batch(9, vec![fixture_commit(2, &[1])]);
     match materializer.publish_batch(&orphan) {
-        Err(CoreError::Typed { code, .. })
-            if code
-                == quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+        Err(CoreError::Typed {
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
                     quanta_index_contract::lex::LexicalErrorCode::HistoryCommitParentUnknown,
-                ) => {}
+                ),
+            ..
+        }) => {}
         other => return Err(format!("orphan commit answered {other:?}").into()),
     }
     if catalog.applies() != 0 || catalog.row_count() != 0 {

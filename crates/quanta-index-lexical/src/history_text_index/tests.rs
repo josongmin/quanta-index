@@ -561,11 +561,10 @@ fn the_admit_predicate_bounds_the_page_and_counts_exactly() -> TestRes {
         })
     });
     match searcher.search(&query, None, 2, failing, &RequestBudgetV1::unbounded()) {
-        Err(CoreError::Typed { code, .. })
-            if code == quanta_index_contract::SearchPlaneErrorCodeV2::NotFound =>
-        {
-            Ok(())
-        }
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::NotFound,
+            ..
+        }) => Ok(()),
         other => Err(format!("the predicate's error propagates, got {other:?}").into()),
     }
 }
@@ -989,11 +988,10 @@ fn unscorable_expressions_are_refused_typed() -> TestRes {
         None,
         10,
     ) {
-        Err(CoreError::Typed { code, .. })
-            if code == quanta_index_contract::SearchPlaneErrorCodeV2::LexTextQueryNoTokens =>
-        {
-            Ok(())
-        }
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTextQueryNoTokens,
+            ..
+        }) => Ok(()),
         other => Err(format!("a token-less literal is refused typed, got {other:?}").into()),
     }
 }

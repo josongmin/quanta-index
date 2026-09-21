@@ -35,11 +35,19 @@ const DIAGONAL_XYZ: [f32; 3] = [0.577_350_26, 0.577_350_26, 0.577_350_26];
 
 const DIMENSION: u32 = 3;
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo_id() -> RepoId {
     RepoId::new("repo-semantic-lifecycle-model")
         .expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision_id() -> RevisionId {
     RevisionId::new("rev-semantic-lifecycle-model")
         .expect("static fixture ID satisfies canonical policy")

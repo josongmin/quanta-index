@@ -4,6 +4,10 @@
 //! is gone.
 
 #![forbid(unsafe_code)]
+#![expect(
+    clippy::unreachable,
+    reason = "test fixtures use invariant literal constructors for repo and revision IDs"
+)]
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -20,11 +24,17 @@ use quanta_index_repomap::{RepoMapEntry, RepoMapGenerationStore, RepoMapSnapshot
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn repo() -> RepoId {
-    RepoId::new("repo-durable").expect("static fixture ID satisfies canonical policy")
+    match RepoId::new("repo-durable") {
+        Ok(repo) => repo,
+        Err(err) => unreachable!("static fixture ID satisfies canonical policy: {err}"),
+    }
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new("rev-durable").expect("static fixture ID satisfies canonical policy")
+    match RevisionId::new("rev-durable") {
+        Ok(revision) => revision,
+        Err(err) => unreachable!("static fixture ID satisfies canonical policy: {err}"),
+    }
 }
 
 fn snapshot(generation: u64) -> RepoMapSnapshot {

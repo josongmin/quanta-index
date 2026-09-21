@@ -37,10 +37,18 @@ const BUDGET: usize = 4;
 /// One more than the budget: exact-set executions over all of them must refuse.
 const DOCS: u32 = 5;
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo() -> RepoId {
     RepoId::new("budget-repo").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision() -> RevisionId {
     RevisionId::new("budget-rev").expect("static fixture ID satisfies canonical policy")
 }

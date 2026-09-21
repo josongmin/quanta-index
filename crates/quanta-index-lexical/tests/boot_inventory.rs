@@ -38,10 +38,18 @@ const IDENTITY: &str = "search-corpus-generation-identity.cbor";
 /// files the seal commits to and the inventory must not read.
 const TEXT_AUTHORITY_MANIFEST: &str = "text-authority/manifest.cbor";
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo() -> RepoId {
     RepoId::new("inventory-repo").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision() -> RevisionId {
     RevisionId::new("inventory-rev").expect("static fixture ID satisfies canonical policy")
 }

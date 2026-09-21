@@ -8,10 +8,18 @@ use quanta_index_contract_base::{
     LogicalGenerationIdentityV1, RepoId, RepositoryRevisionIdentityV1, RevisionId,
 };
 
+use std::fmt::Write as _;
+
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    bytes.iter().fold(
+        String::with_capacity(bytes.len().saturating_mul(2)),
+        |mut out, byte| {
+            let _written = write!(out, "{byte:02x}");
+            out
+        },
+    )
 }
 
 fn candidate() -> Result<RepoMapCandidateEnvelopeV1, Box<dyn std::error::Error>> {
@@ -40,10 +48,14 @@ fn candidate() -> Result<RepoMapCandidateEnvelopeV1, Box<dyn std::error::Error>>
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assert-based #[test] body; TestResult exists only so the setup steps can use `?`"
+)]
 fn candidate_canonical_bytes_bind_artifact_and_distinct_digest_domains() -> TestResult {
     let candidate = candidate()?;
     let bytes = candidate.encode_canonical()?;
-    assert_eq!(bytes[0], 0xab);
+    assert_eq!(bytes.first(), Some(&0xab_u8));
     assert_eq!(
         RepoMapCandidateEnvelopeV1::decode_canonical(&bytes)?,
         candidate
@@ -105,6 +117,10 @@ fn candidate_canonical_bytes_bind_artifact_and_distinct_digest_domains() -> Test
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assert-based #[test] body; TestResult exists only so the setup steps can use `?`"
+)]
 fn quarantine_incident_retains_raw_invalid_path_evidence_and_sequence() -> TestResult {
     let evidence = QuarantineObservationEvidenceV1::new(
         vec![
@@ -149,8 +165,10 @@ fn quarantine_incident_retains_raw_invalid_path_evidence_and_sequence() -> TestR
         .windows(3)
         .position(|window| window == [0x08, 0x58, 0x20])
         .expect("incident evidence digest field")
-        + 3;
-    detached_evidence[evidence_digest_offset] ^= 1;
+        .saturating_add(3);
+    *detached_evidence
+        .get_mut(evidence_digest_offset)
+        .ok_or("incident evidence digest offset in bounds")? ^= 1;
     assert_eq!(
         QuarantineIncidentV1::decode_canonical(&detached_evidence),
         Err(CanonicalRepoMapCodecErrorV1::EvidenceBindingMismatch)
@@ -185,17 +203,28 @@ fn evidence(
     )
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "fixture helper: every caller passes a needle the golden fixture provably contains"
+)]
 fn replace_first(bytes: &[u8], old: &[u8], new: &[u8]) -> Vec<u8> {
     let offset = bytes
         .windows(old.len())
         .position(|window| window == old)
         .expect("the fixture contains the targeted canonical field");
     let mut mutated = bytes.to_vec();
-    drop(mutated.splice(offset..offset + old.len(), new.iter().copied()));
+    drop(mutated.splice(
+        offset..offset.saturating_add(old.len()),
+        new.iter().copied(),
+    ));
     mutated
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assert-based #[test] body; TestResult exists only so the setup steps can use `?`"
+)]
 fn canonical_cbor_rejects_schema_and_type_mutations() -> TestResult {
     let bytes = evidence(
         vec![b"file".to_vec()],
@@ -237,6 +266,10 @@ fn canonical_cbor_rejects_schema_and_type_mutations() -> TestResult {
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assert-based #[test] body; TestResult exists only so the setup steps can use `?`"
+)]
 fn candidate_decoder_rejects_artifact_payload_and_schema_mutations() -> TestResult {
     let candidate = candidate()?;
     let bytes = candidate.encode_canonical()?;
@@ -246,8 +279,10 @@ fn candidate_decoder_rejects_artifact_payload_and_schema_mutations() -> TestResu
         .windows(3)
         .position(|window| window == [0x05, 0x58, 0x20])
         .expect("artifact content digest field")
-        + 3;
-    wrong_content[digest_offset] ^= 1;
+        .saturating_add(3);
+    *wrong_content
+        .get_mut(digest_offset)
+        .ok_or("artifact content digest offset in bounds")? ^= 1;
     let bad_digest = replace_first(&bytes, &artifact, &wrong_content);
     assert_eq!(
         RepoMapCandidateEnvelopeV1::decode_canonical(&bad_digest),
@@ -264,7 +299,9 @@ fn candidate_decoder_rejects_artifact_payload_and_schema_mutations() -> TestResu
         .windows(b"compiled payload".len())
         .position(|window| window == b"compiled payload")
         .expect("candidate compiled payload field");
-    bad_payload[payload_offset] ^= 1;
+    *bad_payload
+        .get_mut(payload_offset)
+        .ok_or("candidate compiled payload offset in bounds")? ^= 1;
     assert_eq!(
         RepoMapCandidateEnvelopeV1::decode_canonical(&bad_payload),
         Err(CanonicalRepoMapCodecErrorV1::ArtifactBindingMismatch)
@@ -290,6 +327,10 @@ fn candidate_decoder_rejects_artifact_payload_and_schema_mutations() -> TestResu
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assert-based #[test] body; TestResult exists only so the setup steps can use `?`"
+)]
 fn quarantine_evidence_rejects_reason_prerequisite_violations() -> TestResult {
     use QuarantineReasonCodeV1 as Reason;
     let valid = || vec![b"objects".to_vec(), b"file".to_vec()];

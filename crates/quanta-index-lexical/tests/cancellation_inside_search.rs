@@ -34,10 +34,18 @@ type TestResult = Result<(), Box<dyn Error>>;
 /// one probe interval so an interruption is observed mid-walk.
 const DOCS: u32 = 3_000;
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo() -> RepoId {
     RepoId::new("cancel-repo").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision() -> RevisionId {
     RevisionId::new("cancel-rev").expect("static fixture ID satisfies canonical policy")
 }

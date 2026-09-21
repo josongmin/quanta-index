@@ -113,6 +113,10 @@ fn seed_multi_repo_chunks(rt: &mut E2eRuntime) -> AnyResult<()> {
     Ok(())
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn boot_with_text_route_authorities() -> AnyResult<E2eRuntime> {
     let mut rt = E2eRuntime::boot()?;
     seed_multi_repo_chunks(&mut rt)?;
@@ -300,11 +304,19 @@ fn boot_with_runtime_dirty_fixture() -> AnyResult<E2eRuntime> {
     Ok(rt)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn rev_at_time_ancestor_revision() -> RevisionId {
     RevisionId::new("1111111111111111111111111111111111111111")
         .expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn rev_at_time_head_revision() -> RevisionId {
     RevisionId::new("2222222222222222222222222222222222222222")
         .expect("static fixture ID satisfies canonical policy")
@@ -963,10 +975,12 @@ fn verify_legacy_index_and_boost(rt: &mut E2eRuntime) -> AnyResult<()> {
 #[test]
 fn sourcegraph_text_route_authorities_share_one_indexed_fixture() -> AnyResult<()> {
     let mut rt = boot_with_text_route_authorities()?;
+    let verify_repo_meta_description_and_repo_file_fn: fn(&mut E2eRuntime) -> AnyResult<()> =
+        verify_repo_meta_description_and_repo_file;
     for (name, verify) in [
         (
             "repo_meta_description_and_repo_file",
-            verify_repo_meta_description_and_repo_file as fn(&mut E2eRuntime) -> AnyResult<()>,
+            verify_repo_meta_description_and_repo_file_fn,
         ),
         (
             "repo_topic_and_commit_recency",

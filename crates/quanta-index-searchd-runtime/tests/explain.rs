@@ -1,4 +1,5 @@
 //! Explain query path: a presence-only explain reports whether a candidate
+//!
 //! previously returned by a lexical query is in the index, as a typed field
 //! decided by exact lookup (QI-BB-022); the scored explain is covered by
 //! `e2e_explain_score_trace.rs`.

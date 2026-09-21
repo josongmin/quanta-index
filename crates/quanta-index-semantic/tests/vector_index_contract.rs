@@ -41,10 +41,18 @@ const INDEX_NAME: &str = "vector_ivf_hnsw_sq";
 const SCOPE_MANIFEST: &str = "semantic-manifest.cbor";
 const SEALED_MANIFEST: &str = "semantic-sealed-manifest.cbor";
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo() -> RepoId {
     RepoId::new("ann-contract-repo").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision() -> RevisionId {
     RevisionId::new("ann-contract-rev").expect("static fixture ID satisfies canonical policy")
 }

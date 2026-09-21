@@ -132,6 +132,19 @@ pub(crate) fn open_connection(
             path.display()
         )));
     }
+    // `fullfsync` is read back too (SEP-21 P02B): on the platforms that
+    // honor it, a silent `OFF` would ack directory entries the engine
+    // never forced. A platform that reports 0 because it cannot honor
+    // the flag is a storage error, not a degraded mode to run in.
+    let fullfsync: i64 = connection
+        .pragma_query_value(None, "fullfsync", |row| row.get(0))
+        .map_err(|error| engine_error("read fullfsync", &path, &error))?;
+    if fullfsync != 1 {
+        return Err(CoreError::Storage(format!(
+            "catalog: {} runs fullfsync={fullfsync}; the catalog requires fullfsync=ON where the platform honors it",
+            path.display()
+        )));
+    }
     Ok((connection, path))
 }
 

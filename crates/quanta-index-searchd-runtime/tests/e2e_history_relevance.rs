@@ -1,4 +1,5 @@
 //! QI-BB-023 follow-up #1 — the history route's `relevance` order end to
+//!
 //! end: BM25 over the epoch's text index, checked against an in-test
 //! reference; `recency` unchanged beside it; keyset pages that partition
 //! the ranking; the same pages after a restart; and a walk in flight that

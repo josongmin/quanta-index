@@ -26,7 +26,7 @@ impl<'a> Decoder<'a> {
         let Some(byte) = self.bytes.get(self.offset).copied() else {
             return Err(CanonicalRepoMapCodecErrorV1::UnexpectedEnd);
         };
-        self.offset += 1;
+        self.offset = self.offset.saturating_add(1);
         Ok(byte)
     }
 
@@ -63,8 +63,11 @@ impl<'a> Decoder<'a> {
             }
             25 => {
                 let raw = self.exact(2)?;
-                let value = u64::from(u16::from_be_bytes([raw[0], raw[1]]));
-                if value <= u64::from(u8::MAX) {
+                let value = u64::from(u16::from_be_bytes(
+                    <[u8; 2]>::try_from(raw)
+                        .map_err(|_error| CanonicalRepoMapCodecErrorV1::UnexpectedEnd)?,
+                ));
+                if u8::try_from(value).is_ok() {
                     Err(CanonicalRepoMapCodecErrorV1::NonCanonicalInteger)
                 } else {
                     Ok(value)
@@ -72,8 +75,11 @@ impl<'a> Decoder<'a> {
             }
             26 => {
                 let raw = self.exact(4)?;
-                let value = u64::from(u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]));
-                if value <= u64::from(u16::MAX) {
+                let value = u64::from(u32::from_be_bytes(
+                    <[u8; 4]>::try_from(raw)
+                        .map_err(|_error| CanonicalRepoMapCodecErrorV1::UnexpectedEnd)?,
+                ));
+                if u16::try_from(value).is_ok() {
                     Err(CanonicalRepoMapCodecErrorV1::NonCanonicalInteger)
                 } else {
                     Ok(value)
@@ -81,10 +87,11 @@ impl<'a> Decoder<'a> {
             }
             27 => {
                 let raw = self.exact(8)?;
-                let value = u64::from_be_bytes([
-                    raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
-                ]);
-                if value <= u64::from(u32::MAX) {
+                let value = u64::from_be_bytes(
+                    <[u8; 8]>::try_from(raw)
+                        .map_err(|_error| CanonicalRepoMapCodecErrorV1::UnexpectedEnd)?,
+                );
+                if u32::try_from(value).is_ok() {
                     Err(CanonicalRepoMapCodecErrorV1::NonCanonicalInteger)
                 } else {
                     Ok(value)
@@ -144,7 +151,7 @@ impl<'a> Decoder<'a> {
 
     pub(super) fn nullable_uint(&mut self) -> Result<Option<u64>, CanonicalRepoMapCodecErrorV1> {
         if self.bytes.get(self.offset) == Some(&0xf6) {
-            self.offset += 1;
+            self.offset = self.offset.saturating_add(1);
             Ok(None)
         } else {
             self.uint().map(Some)
@@ -155,7 +162,7 @@ impl<'a> Decoder<'a> {
         &mut self,
     ) -> Result<Option<[u8; 32]>, CanonicalRepoMapCodecErrorV1> {
         if self.bytes.get(self.offset) == Some(&0xf6) {
-            self.offset += 1;
+            self.offset = self.offset.saturating_add(1);
             Ok(None)
         } else {
             self.digest().map(Some)
@@ -236,13 +243,13 @@ fn push_major(bytes: &mut Vec<u8>, major: u8, value: u64) {
     let prefix = major << 5;
     if value <= 23 {
         bytes.push(prefix | value.to_be_bytes()[7]);
-    } else if value <= u64::from(u8::MAX) {
+    } else if u8::try_from(value).is_ok() {
         bytes.push(prefix | 24);
         bytes.push(value.to_be_bytes()[7]);
-    } else if value <= u64::from(u16::MAX) {
+    } else if u16::try_from(value).is_ok() {
         bytes.push(prefix | 25);
         bytes.extend_from_slice(&value.to_be_bytes()[6..]);
-    } else if value <= u64::from(u32::MAX) {
+    } else if u32::try_from(value).is_ok() {
         bytes.push(prefix | 26);
         bytes.extend_from_slice(&value.to_be_bytes()[4..]);
     } else {
@@ -260,17 +267,23 @@ pub(super) fn plain_digest(payload: &[u8]) -> [u8; 32] {
 pub(super) fn domain_digest(domain: &str, payload: &[u8]) -> [u8; 32] {
     let domain_length = domain.len().to_be_bytes();
     let mut hasher = Sha256::new();
-    hasher.update(&domain_length[domain_length.len() - 4..]);
+    let [_, _, _, _, a, b, c, d] = domain_length;
+    hasher.update([a, b, c, d]);
     hasher.update(domain.as_bytes());
     hasher.update(payload);
     hasher.finalize().into()
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indices are masked to 4 bits, so both HEX lookups are provably in bounds"
+)]
 pub(super) fn digest_wire_string(digest: &[u8; 32]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut wire = String::with_capacity(71);
     wire.push_str("sha256:");
     for byte in digest {
+        // Indices are masked to 4 bits, so both lookups are provably in bounds.
         wire.push(char::from(HEX[usize::from(byte >> 4)]));
         wire.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
@@ -288,17 +301,21 @@ pub(super) fn decode_digest_wire_string(
     }
     let mut digest = [0_u8; 32];
     for (index, pair) in hex.as_bytes().chunks_exact(2).enumerate() {
+        let pair = <[u8; 2]>::try_from(pair)
+            .map_err(|_error| CanonicalRepoMapCodecErrorV1::UnexpectedEnd)?;
         let high = lowercase_hex_nibble(pair[0])?;
         let low = lowercase_hex_nibble(pair[1])?;
-        digest[index] = (high << 4) | low;
+        *digest
+            .get_mut(index)
+            .ok_or(CanonicalRepoMapCodecErrorV1::UnexpectedEnd)? = (high << 4) | low;
     }
     Ok(digest)
 }
 
 fn lowercase_hex_nibble(value: u8) -> Result<u8, CanonicalRepoMapCodecErrorV1> {
     match value {
-        b'0'..=b'9' => Ok(value - b'0'),
-        b'a'..=b'f' => Ok(value - b'a' + 10),
+        b'0'..=b'9' => Ok(value.saturating_sub(b'0')),
+        b'a'..=b'f' => Ok(value.saturating_sub(b'a').saturating_add(10)),
         _ => Err(CanonicalRepoMapCodecErrorV1::InvalidDigestText),
     }
 }

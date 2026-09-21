@@ -50,9 +50,14 @@ crate quanta_index_core
 │   │       ├── struct KeyFuseAccumulator: pub(self)
 │   │       └── struct LaneRows: pub(self)
 │   ├── mod idempotency: pub
-│   │   ├── enum IdempotencyBeginV1: pub
+│   │   ├── enum ClaimOutcomeV1: pub
 │   │   ├── trait IdempotencyCatalogPort: pub
-│   │   └── struct IdempotencyKeyV1: pub
+│   │   ├── struct IdempotencyKeyV1: pub
+│   │   ├── trait MutationCoordinatorPort: pub
+│   │   ├── struct MutationLeaseV1: pub
+│   │   ├── enum OperationInspectV1: pub
+│   │   ├── enum OperationJournalStateV1: pub
+│   │   └── struct PreparedMutationV1: pub
 │   ├── mod ingest_body: pub
 │   │   └── trait IngestBatchBodyV1: pub
 │   ├── mod integrity: pub

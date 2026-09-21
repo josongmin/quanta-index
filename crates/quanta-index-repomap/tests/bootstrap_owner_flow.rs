@@ -31,9 +31,17 @@ fn symbol_kind(name: &str) -> SymbolKindCode {
 }
 
 fn sample_bundle() -> RepoMapSourceBundle {
+    let repo = match RepoId::new("repo-a") {
+        Ok(repo) => repo,
+        Err(err) => unreachable!("static fixture ID satisfies canonical policy: {err}"),
+    };
+    let revision = match RevisionId::new("rev-a") {
+        Ok(revision) => revision,
+        Err(err) => unreachable!("static fixture ID satisfies canonical policy: {err}"),
+    };
     RepoMapSourceBundle::new(
-        RepoId::new("repo-a").expect("static fixture ID satisfies canonical policy"),
-        RevisionId::new("rev-a").expect("static fixture ID satisfies canonical policy"),
+        repo,
+        revision,
         ManifestGeneration::new(7),
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "snap-7",

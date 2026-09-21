@@ -42,10 +42,18 @@ const DELTA_PATH: &str = "src/delta.rs";
 /// generation while everything else may be shared.
 const VERSION_HINT: &str = "latest_version_hint.json";
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo_id() -> RepoId {
     RepoId::new("repo-delta-reuse").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision_id() -> RevisionId {
     RevisionId::new("rev-delta-reuse").expect("static fixture ID satisfies canonical policy")
 }

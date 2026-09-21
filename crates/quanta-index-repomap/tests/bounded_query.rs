@@ -10,6 +10,10 @@
 //! the rest is a count.
 
 #![forbid(unsafe_code)]
+#![expect(
+    clippy::unreachable,
+    reason = "test fixtures use invariant literal constructors for repo and revision IDs"
+)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -118,9 +122,17 @@ fn snapshot(rng: &mut Lcg, entries: u64) -> RepoMapSnapshot {
             rows.push(row);
         }
     }
+    let repo = match RepoId::new("repo") {
+        Ok(repo) => repo,
+        Err(err) => unreachable!("static fixture ID satisfies canonical policy: {err}"),
+    };
+    let revision = match RevisionId::new("rev") {
+        Ok(revision) => revision,
+        Err(err) => unreachable!("static fixture ID satisfies canonical policy: {err}"),
+    };
     RepoMapSnapshot {
-        repo_id: RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
-        revision_id: RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
+        repo_id: repo,
+        revision_id: revision,
         manifest_generation: ManifestGeneration::new(1),
         snapshot_meta: RepoMapSnapshotMeta {
             snapshot_id: "snap".to_string(),
@@ -376,7 +388,7 @@ fn a_fixed_top_k_response_does_not_grow_with_the_snapshot() -> TestResult {
 }
 
 #[test]
-fn an_unresolved_focus_subject_is_a_typed_refusal() -> TestResult {
+fn an_unresolved_focus_subject_is_a_typed_refusal() {
     let mut rng = Lcg(0x5EED_5EED);
     let snap = snapshot(&mut rng, 24);
     let indexed = RepoMapIndexedSnapshot::new(snap.clone());
@@ -393,11 +405,10 @@ fn an_unresolved_focus_subject_is_a_typed_refusal() -> TestResult {
         }],
     };
     match RepoMapQueryEngine::query(&indexed, &request) {
-        Err(quanta_index_core::CoreError::Typed { code, .. })
-            if code == quanta_index_contract::SearchPlaneErrorCodeV2::FocusSubjectNotFound =>
-        {
-            Ok(())
-        }
+        Err(quanta_index_core::CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::FocusSubjectNotFound,
+            ..
+        }) => {}
         other => panic!("expected FocusSubjectNotFound typed refusal, got {other:?}"),
     }
 }

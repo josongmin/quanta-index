@@ -1751,6 +1751,10 @@ fn ingest_corpus(rt: &mut E2eRuntime) -> AnyResult<()> {
     Ok(())
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn ingest_authority_fixtures(rt: &mut E2eRuntime) -> AnyResult<()> {
     ingest_corpus(rt)?;
     rt.ingest_history_fixture_spec(&E2eHistoryFixtureSpec {

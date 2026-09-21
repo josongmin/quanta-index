@@ -9,10 +9,8 @@ use quanta_index_repomap::{
     StateRootSecurityVerificationErrorV1,
 };
 
-type TestResult = Result<(), Box<dyn std::error::Error>>;
-
 #[test]
-fn typed_addresses_have_exact_fixed_fanout_and_disjoint_roots() -> TestResult {
+fn typed_addresses_have_exact_fixed_fanout_and_disjoint_roots() {
     let candidate = CandidateObjectAddressV1::new(CandidateObjectDigestV1::from_bytes([0xab; 32]));
     let incident =
         QuarantineIncidentAddressV1::new(QuarantineIncidentDigestV1::from_bytes([0xab; 32]));
@@ -31,16 +29,15 @@ fn typed_addresses_have_exact_fixed_fanout_and_disjoint_roots() -> TestResult {
         format!("quarantine/payloads/sha256/ab/ab/{}.bin", "ab".repeat(30))
     );
     let leaf = format!("{}.cbor", "ab".repeat(30));
-    assert_eq!(
-        CandidateObjectAddressV1::parse_components(&[
-            b"objects",
-            b"sha256",
-            b"ab",
-            b"ab",
-            leaf.as_bytes()
-        ])?,
-        candidate
-    );
+    let parsed = CandidateObjectAddressV1::parse_components(&[
+        b"objects",
+        b"sha256",
+        b"ab",
+        b"ab",
+        leaf.as_bytes(),
+    ])
+    .expect("roundtrip components parse");
+    assert_eq!(parsed, candidate);
     let bad_leaf = format!("{}.cbor", "AB".repeat(30));
     assert_eq!(
         CandidateObjectAddressV1::parse_components(&[
@@ -52,7 +49,6 @@ fn typed_addresses_have_exact_fixed_fanout_and_disjoint_roots() -> TestResult {
         ]),
         Err(LayoutV3AddressError::NonLowercaseHex)
     );
-    Ok(())
 }
 
 fn metadata(kind: ObservedFileKindV1, link_count: u64) -> ObservedFileMetadataV1 {

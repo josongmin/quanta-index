@@ -23,11 +23,17 @@ fn rust_language() -> LanguageCode {
 }
 
 fn repo_id() -> RepoId {
-    RepoId::new("repo-map-owner-test").expect("static fixture ID satisfies canonical policy")
+    match RepoId::new("repo-map-owner-test") {
+        Ok(repo_id) => repo_id,
+        Err(err) => unreachable!("static fixture ID satisfies canonical policy: {err}"),
+    }
 }
 
 fn revision_id() -> RevisionId {
-    RevisionId::new("rev-owner-test").expect("static fixture ID satisfies canonical policy")
+    match RevisionId::new("rev-owner-test") {
+        Ok(revision_id) => revision_id,
+        Err(err) => unreachable!("static fixture ID satisfies canonical policy: {err}"),
+    }
 }
 
 fn manifest_generation() -> ManifestGeneration {
