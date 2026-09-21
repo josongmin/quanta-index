@@ -59,25 +59,9 @@ def _build_fixture_root(tmp_path: Path) -> tuple[Path, dict]:
     shutil.copyfile(SCHEMA_PATH, root / "tools/ci/proof-manifest.schema.json")
     shutil.copyfile(AGGREGATE_SCHEMA_PATH, root / "tools/ci/proof-aggregate.schema.json")
 
-    target_ids = sorted(
-        {target for proof in registry["proofs"] for target in proof["test_authority_targets"]}
-    )
     test_authority = root / "tools/ci/test-authority.toml"
-    test_authority.write_text(
-        '[local_scopes.integration-fast]\ntargets = ["catalog-idempotency"]\n\n'
-        '[local_scopes.canonical-identity]\n'
-        'targets = ["contract-base-canonical-identity-v1", '
-        '"contract-repomap-layout-v3-contract", '
-        '"contract-search-plane-error-code-v2", '
-        '"repomap-layout-v3-security"]\n\n'
-        + "".join(f'[[integration_targets]]\nid = "{target}"\n' for target in target_ids),
-        encoding="utf-8",
-    )
-    (root / "Justfile").write_text(
-        "proof-p01-canonical-identity:\n"
-        "    @just rust-profile test-canonical-identity\n",
-        encoding="utf-8",
-    )
+    shutil.copyfile(REPO_ROOT / "tools/ci/test-authority.toml", test_authority)
+    shutil.copyfile(REPO_ROOT / "Justfile", root / "Justfile")
     for proof in registry["proofs"]:
         owner = root / proof["owner"]
         owner.parent.mkdir(parents=True, exist_ok=True)
@@ -246,8 +230,10 @@ def test_p00_manifest_refuses_missing_error_inventory_attestation(
         _publish(root, terminal_path)
 
 
-def test_archive_publish_is_idempotent_and_refuses_byte_replacement(tmp_path: Path) -> None:
-    root, _ = _fixture_root(tmp_path)
+def test_archive_publish_is_idempotent_and_refuses_byte_replacement(
+    tmp_path: Path, manifest_templates: ManifestTemplates
+) -> None:
+    root, _ = _fixture_root(tmp_path, manifest_templates)
     terminal_path, _ = _terminal(root)
 
     first_path, first_digest, _ = _publish(root, terminal_path)
@@ -261,8 +247,10 @@ def test_archive_publish_is_idempotent_and_refuses_byte_replacement(tmp_path: Pa
         _publish(root, terminal_path)
 
 
-def test_archive_publish_refuses_a_deleted_indexed_leaf(tmp_path: Path) -> None:
-    root, _ = _fixture_root(tmp_path)
+def test_archive_publish_refuses_a_deleted_indexed_leaf(
+    tmp_path: Path, manifest_templates: ManifestTemplates
+) -> None:
+    root, _ = _fixture_root(tmp_path, manifest_templates)
     terminal_path, _ = _terminal(root)
     archive_path, _, _ = _publish(root, terminal_path)
 
@@ -272,8 +260,10 @@ def test_archive_publish_refuses_a_deleted_indexed_leaf(tmp_path: Path) -> None:
         _publish(root, terminal_path)
 
 
-def test_archive_publish_refuses_a_symlinked_archive_parent(tmp_path: Path) -> None:
-    root, _ = _fixture_root(tmp_path)
+def test_archive_publish_refuses_a_symlinked_archive_parent(
+    tmp_path: Path, manifest_templates: ManifestTemplates
+) -> None:
+    root, _ = _fixture_root(tmp_path, manifest_templates)
     terminal_path, _ = _terminal(root)
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -288,8 +278,9 @@ def test_archive_publish_refuses_a_symlinked_archive_parent(tmp_path: Path) -> N
 
 def test_historical_manifest_keeps_content_addressed_evidence_after_retry(
     tmp_path: Path,
+    manifest_templates: ManifestTemplates,
 ) -> None:
-    root, registry = _fixture_root(tmp_path)
+    root, registry = _fixture_root(tmp_path, manifest_templates)
     terminal_path, _ = _terminal(root)
     first_path, _, _ = _publish(root, terminal_path)
     first_payload = json.loads(first_path.read_text(encoding="utf-8"))
@@ -315,8 +306,10 @@ def test_historical_manifest_keeps_content_addressed_evidence_after_retry(
     )
 
 
-def test_passed_manifest_refuses_dirty_product_source(tmp_path: Path) -> None:
-    root, _ = _fixture_root(tmp_path)
+def test_passed_manifest_refuses_dirty_product_source(
+    tmp_path: Path, manifest_templates: ManifestTemplates
+) -> None:
+    root, _ = _fixture_root(tmp_path, manifest_templates)
     terminal_path, _ = _terminal(root)
     owner = root / "docs/adr/SEP-21-DECISION-REGISTRY.md"
     owner.write_text("dirty source\n", encoding="utf-8")

@@ -173,7 +173,7 @@ def test_ci_precommit_skips_only_hooks_owned_by_dedicated_full_jobs() -> None:
         "hexagonal-boundaries": ("rust-policy", "lint-hexagonal-boundaries.py"),
         "rust-derive-allowlist": ("rust-policy", "check-rust-derive-allowlist.py"),
         "rust-cargo-toml-hygiene": ("rust-policy", "check-cargo-toml-hygiene.py"),
-        "proof-authority": ("proof-authority-current-gate", "just proof-authority-lint"),
+        "proof-authority": ("proof-authority-current-gate", "just proof-p00-authority-freeze"),
         "rust-digest-fallibility": ("rust-policy", "check-digest-fallibility.py"),
     }
     assert skipped == set(owners)
@@ -221,7 +221,8 @@ def test_proof_authority_ci_has_one_static_owner_and_one_test_owner() -> None:
     p00_commands = "\n".join(
         str(step.get("run", "")) for step in jobs["proof-authority-current-gate"]["steps"]
     )
-    assert "just proof-authority-lint" in p00_commands
+    assert "just proof-p00-authority-freeze" in p00_commands
+    assert "just proof-authority-current-gate" in p00_commands
     prompt_commands = "\n".join(
         str(step.get("run", "")) for step in jobs["prompt-manager"]["steps"]
     )
@@ -233,7 +234,7 @@ def test_ci_python_jobs_install_only_their_runtime_imports() -> None:
     jobs = workflow["jobs"]
     expected = {
         "rust-policy": "python -m pip install 'jsonschema>=4.23.0' 'pyyaml>=6.0.2'",
-        "proof-authority-current-gate": "python -m pip install 'jsonschema>=4.23.0'",
+        "proof-authority-current-gate": "python -m pip install 'jsonschema>=4.23.0' 'pytest>=8.3.0'",
         "agent-output": "python -m pip install 'jsonschema>=4.23.0'",
     }
     for job_id, command in expected.items():

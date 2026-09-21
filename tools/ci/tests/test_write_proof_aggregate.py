@@ -148,31 +148,28 @@ def _build_fixture_root(tmp_path: Path, *, executable: bool) -> tuple[Path, dict
     shutil.copyfile(MANIFEST_SCHEMA_PATH, root / "tools/ci/proof-manifest.schema.json")
     shutil.copyfile(AGGREGATE_SCHEMA_PATH, root / "tools/ci/proof-aggregate.schema.json")
     registry = CHECKER._read_toml(registry_path)
-    target_ids = sorted(
-        {target for proof in registry["proofs"] for target in proof["test_authority_targets"]}
-    )
-    (root / "tools/ci/test-authority.toml").write_text(
-        "[local_scopes.canonical-identity]\n"
-        'targets = ["contract-base-canonical-identity-v1", '
-        '"contract-repomap-layout-v3-contract", '
-        '"contract-search-plane-error-code-v2", '
-        '"repomap-layout-v3-security"]\n\n'
-        "[local_scopes.fixture-all]\n"
-        f"targets = {json.dumps(target_ids)}\n"
-        + "".join(f'[[integration_targets]]\nid = "{target}"\n' for target in target_ids),
-        encoding="utf-8",
-    )
-    proof_recipes = []
-    for proof in registry["proofs"]:
-        if proof["authority_state"] != "executable" or proof["execution_mode"] != "test-authority":
-            continue
-        recipe = proof["command"].removeprefix("just ")
-        scopes = proof.get("test_authority_scopes", ["fixture-all"])
-        proof_recipes.append(
-            f"{recipe}:\n"
-            + "".join(f"    @just rust-profile test-{scope}\n" for scope in scopes)
+    if executable:
+        target_ids = sorted(
+            {target for proof in registry["proofs"] for target in proof["test_authority_targets"]}
         )
-    (root / "Justfile").write_text("\n".join(proof_recipes), encoding="utf-8")
+        (root / "tools/ci/test-authority.toml").write_text(
+            "[local_scopes.fixture-all]\n"
+            f"targets = {json.dumps(target_ids)}\n"
+            + "".join(f'[[integration_targets]]\nid = "{target}"\n' for target in target_ids),
+            encoding="utf-8",
+        )
+        proof_recipes = []
+        for proof in registry["proofs"]:
+            if proof["authority_state"] != "executable" or proof["execution_mode"] != "test-authority":
+                continue
+            recipe = proof["command"].removeprefix("just ")
+            proof_recipes.append(
+                f"{recipe}:\n    @just rust-profile test-fixture-all\n"
+            )
+        (root / "Justfile").write_text("\n".join(proof_recipes), encoding="utf-8")
+    else:
+        shutil.copyfile(REPO_ROOT / "tools/ci/test-authority.toml", root / "tools/ci/test-authority.toml")
+        shutil.copyfile(REPO_ROOT / "Justfile", root / "Justfile")
     for proof in registry["proofs"]:
         owner = root / proof["owner"]
         owner.parent.mkdir(parents=True, exist_ok=True)

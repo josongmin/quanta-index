@@ -39,6 +39,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict, Path]:
     root = tmp_path / "repo"
     root.mkdir()
     for relative in (
+        "Justfile",
         "tools/ci/lint/check-proof-authority.py",
         "tools/ci/proof-authority.toml",
         "tools/ci/proof-manifest.schema.json",

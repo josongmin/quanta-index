@@ -990,13 +990,12 @@ def test_registry_refuses_verdict_meaning_drift() -> None:
 def test_executable_test_proof_requires_scope_that_selects_registered_targets() -> None:
     registry = MODULE._read_toml(REGISTRY_PATH)
     proof = next(proof for proof in registry["proofs"] if proof["id"] == "p02b-operation-journal")
-    proof["authority_state"] = "executable"
-    proof.pop("staged_reason")
+    proof["test_authority_scopes"] = []
 
     messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
     assert any("requires non-empty test_authority_scopes" in message for message in messages)
 
-    proof["test_authority_scopes"] = ["integration-fast"]
+    proof["test_authority_scopes"] = ["p02b-operation-journal"]
     messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
     assert not any("test_authority_scopes" in message for message in messages)
     assert not any("targets are not selected" in message for message in messages)
@@ -1006,9 +1005,6 @@ def test_executable_test_proof_requires_scope_that_selects_registered_targets() 
 def test_executable_dedicated_proof_requires_existing_scope_bound_recipe() -> None:
     registry = MODULE._read_toml(REGISTRY_PATH)
     proof = next(proof for proof in registry["proofs"] if proof["id"] == "p02b-operation-journal")
-    proof["authority_state"] = "executable"
-    proof.pop("staged_reason")
-    proof["test_authority_scopes"] = ["integration-fast"]
     proof["command"] = "just proof-does-not-exist"
 
     messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
