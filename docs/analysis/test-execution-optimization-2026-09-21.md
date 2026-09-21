@@ -637,6 +637,17 @@ jobs and pins each install to its observed import set. The focused workflow
 set passes 10 tests, and the complete tooling set passes 343 tests after the
 dependency narrowing.
 
+Staged-source hashing still launched `git ls-files` and `git cat-file` once per
+changed path. A 100-file fixture required 201 Git subprocesses and 3.76s. The
+source binder now reads the index once and resolves all unique blobs through
+one `git cat-file --batch` stream. The equivalent prototype required two Git
+subprocesses and 0.05s for 101 staged paths while producing byte-identical
+index entries. The implemented end-to-end dirty digest requires three Git
+subprocesses and 0.07s for 100 staged paths, versus 201 and 3.76s before, and
+produces the identical digest. A regression test fixes the full dirty digest
+and requires one status, one index, and one blob-batch subprocess for 32
+staged files. The complete tooling set passes 344 tests after batching.
+
 ## Remaining measurement
 
 On a quiet host, run:

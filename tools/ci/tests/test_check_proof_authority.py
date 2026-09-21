@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = REPO_ROOT / "tools/ci/lint/check-proof-authority.py"
 REGISTRY_PATH = REPO_ROOT / "tools/ci/proof-authority.toml"
@@ -460,6 +462,40 @@ def test_dirty_digest_binds_staged_unstaged_and_scoped_untracked_bytes(
     assert MODULE.dirty_digest(tmp_path, excluded_paths=excluded) == with_untracked
     (proof_root / "proof.json").write_bytes(b"self-referential-output-v2")
     assert MODULE.dirty_digest(tmp_path, excluded_paths=excluded) == with_untracked
+
+
+def test_dirty_digest_batches_staged_index_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    contents = {f"staged-{index}".encode(): f"payload-{index}\n".encode() for index in range(32)}
+    for raw_path in contents:
+        (tmp_path / raw_path.decode()).write_bytes(b"base\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "batch fixtures"], check=True)
+    for raw_path, content in contents.items():
+        (tmp_path / raw_path.decode()).write_bytes(content)
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+
+    calls: list[list[str]] = []
+    original_run = MODULE.subprocess.run
+
+    def record_run(*args, **kwargs):
+        calls.append(args[0])
+        return original_run(*args, **kwargs)
+
+    monkeypatch.setattr(MODULE.subprocess, "run", record_run)
+    actual = MODULE.dirty_digest(tmp_path)
+
+    expected = hashlib.sha256()
+    expected.update(b"quanta-index-dirty-v2\0")
+    for raw_path, content in sorted(contents.items()):
+        MODULE._digest_record(expected, b"index", raw_path, b"mode=100644;stage=0", content)
+    assert actual == f"sha256:{expected.hexdigest()}"
+    assert sum("ls-files" in command for command in calls) == 1
+    assert sum("cat-file" in command for command in calls) == 1
+    assert len(calls) == 3
 
 
 def test_porcelain_status_paths_match_existing_git_diff_domains(tmp_path: Path) -> None:

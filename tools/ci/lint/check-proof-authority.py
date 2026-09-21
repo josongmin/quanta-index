@@ -746,20 +746,80 @@ def _working_tree_bytes(root: Path, raw_path: bytes) -> tuple[bytes, bytes]:
     return b"special:" + mode, b""
 
 
-def _index_entries(root: Path, raw_path: bytes) -> list[tuple[bytes, bytes]]:
-    output = _git_bytes(root, "ls-files", "--stage", "-z", "--", os.fsdecode(raw_path))
-    entries: list[tuple[bytes, bytes]] = []
+def _batch_blob_contents(root: Path, object_ids: Iterable[bytes]) -> dict[bytes, bytes]:
+    ordered_ids = list(dict.fromkeys(object_ids))
+    if not ordered_ids:
+        return {}
+    completed = subprocess.run(
+        ["git", "-C", str(root), "cat-file", "--batch"],
+        input=b"\n".join(ordered_ids) + b"\n",
+        check=False,
+        capture_output=True,
+    )
+    if completed.returncode != 0:
+        message = os.fsdecode(completed.stderr).strip()
+        raise RuntimeError(message or "git cat-file --batch failed")
+
+    output = completed.stdout
+    cursor = 0
+    contents: dict[bytes, bytes] = {}
+    for expected_id in ordered_ids:
+        header_end = output.find(b"\n", cursor)
+        if header_end < 0:
+            raise RuntimeError("truncated git cat-file --batch header")
+        header = output[cursor:header_end].split()
+        if len(header) != 3 or header[0] != expected_id or header[1] != b"blob":
+            raise RuntimeError(
+                f"unexpected git cat-file --batch header for {os.fsdecode(expected_id)!r}"
+            )
+        try:
+            size = int(header[2])
+        except ValueError as error:
+            raise RuntimeError("invalid git cat-file --batch object size") from error
+        content_start = header_end + 1
+        content_end = content_start + size
+        if content_end >= len(output) or output[content_end : content_end + 1] != b"\n":
+            raise RuntimeError("truncated git cat-file --batch object")
+        contents[expected_id] = output[content_start:content_end]
+        cursor = content_end + 1
+    if cursor != len(output):
+        raise RuntimeError("unexpected trailing git cat-file --batch output")
+    return contents
+
+
+def _index_entries(
+    root: Path, raw_paths: Iterable[bytes]
+) -> dict[bytes, list[tuple[bytes, bytes]]]:
+    requested = set(raw_paths)
+    entries_by_path: dict[bytes, list[tuple[bytes, bytes]]] = {
+        raw_path: [] for raw_path in requested
+    }
+    if not requested:
+        return entries_by_path
+
+    # Read the index once. Passing every path as an argument would still risk
+    # ARG_MAX on large staged changes, while one ls-files scan stays constant
+    # in subprocess count and preserves arbitrary path bytes with -z.
+    output = _git_bytes(root, "ls-files", "--stage", "-z")
+    indexed: dict[bytes, list[tuple[bytes, bytes]]] = {raw_path: [] for raw_path in requested}
+    object_ids: list[bytes] = []
     for raw_entry in (entry for entry in output.split(b"\0") if entry):
         header, _, entry_path = raw_entry.partition(b"\t")
-        if entry_path != raw_path:
+        if entry_path not in requested:
             continue
         parts = header.split()
         if len(parts) != 3:
-            raise RuntimeError(f"unexpected git index entry for {os.fsdecode(raw_path)!r}")
+            raise RuntimeError(f"unexpected git index entry for {os.fsdecode(entry_path)!r}")
         mode, object_id, stage = parts
-        content = _git_bytes(root, "cat-file", "blob", os.fsdecode(object_id))
-        entries.append((b"mode=" + mode + b";stage=" + stage, content))
-    return entries
+        indexed[entry_path].append((b"mode=" + mode + b";stage=" + stage, object_id))
+        object_ids.append(object_id)
+
+    contents = _batch_blob_contents(root, object_ids)
+    for raw_path, entries in indexed.items():
+        entries_by_path[raw_path] = [
+            (metadata, contents[object_id]) for metadata, object_id in entries
+        ]
+    return entries_by_path
 
 
 def _git_status_snapshot(root: Path) -> bytes:
@@ -835,10 +895,14 @@ def dirty_digest(
     staged, unstaged, untracked = _dirty_paths_from_status(
         _status_snapshot if _status_snapshot is not None else _git_status_snapshot(root)
     )
+    staged_entries = _index_entries(
+        root,
+        (raw_path for raw_path in staged if not _is_excluded(raw_path, exclusions)),
+    )
     for raw_path in staged:
         if _is_excluded(raw_path, exclusions):
             continue
-        entries = _index_entries(root, raw_path)
+        entries = staged_entries[raw_path]
         if not entries:
             _digest_record(digest, b"index", raw_path, b"missing", b"")
         for metadata, content in entries:
