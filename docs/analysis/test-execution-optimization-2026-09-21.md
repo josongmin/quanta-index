@@ -503,18 +503,28 @@ spawned 465 subprocesses and evaluated 66 source snapshots. Each validation
 pass rebound the same repository and paired checkout once per dependency even
 though all dependency manifests share the same proof artifact root. Aggregate
 construction and validation now share snapshots only inside one pass and only
-for identical artifact-root/exclusion keys. A validation pass independently
+for identical artifact-root/effective-exclusion keys. Checkout exclusions
+outside the primary repository are omitted from the key because the dirty
+digest cannot observe them; a nested paired checkout remains a distinct key.
+A validation pass independently
 re-snapshots every used key at the end and refuses publication if the source
 or paired checkout changed while manifests were being checked. The existing
 post-publication rebind remains independent.
 
-The profiled ready-aggregate test now spawns 139 subprocesses and evaluates 15
-source snapshots instead of 465 and 66. Its cProfile test body fell from 11.73s
-to 1.93s on the observed host. A regression test mutates tracked source after
-the first cached manifest validation and proves the end-of-pass binding rejects
-it. The focused proof-authority/manifest/aggregate set passed 54 tests, and the
-complete tooling set passed 335 tests. These local timings are diagnostic;
-hosted CI remains unavailable while jobs fail before startup.
+`source_snapshot` also read HEAD, branch, and upstream with three separate Git
+commands. Porcelain-v2 branch headers provide the same values in one command;
+merge-base and dirty-byte binding remain independent. The attached, detached,
+and disconnected-upstream source tests pass with the combined reader.
+
+The profiled ready-aggregate test now spawns 83 subprocesses and evaluates 10
+source snapshots instead of 465 and 66. Its cProfile test body was 1.03s in the
+final probe versus 11.73s in the baseline probe. A regression test mutates
+tracked source after the first cached manifest validation and proves the
+end-of-pass binding rejects it. The focused proof-authority/manifest/aggregate
+set passed 55 tests. The complete tooling set passed 336 tests in 26.76s,
+versus 334 tests in 57.07s in the baseline probe before the new regressions
+were added. These local timings are diagnostic; hosted CI remains unavailable
+while jobs fail before startup.
 
 ## Local hook selection
 

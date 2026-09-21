@@ -823,18 +823,41 @@ def dirty_digest(root: Path, *, excluded_paths: Iterable[Path] = ()) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
+def _source_identity(root: Path) -> tuple[str, str | None, str | None]:
+    """Read HEAD, branch and upstream in one Git process."""
+
+    output = _git_bytes(
+        root,
+        "status",
+        "--porcelain=v2",
+        "--branch",
+        "-z",
+        "--untracked-files=no",
+        "--ignore-submodules=none",
+        "--no-renames",
+        "--no-ahead-behind",
+    )
+    headers: dict[bytes, bytes] = {}
+    for record in output.split(b"\0"):
+        if not record.startswith(b"# "):
+            continue
+        key, separator, value = record[2:].partition(b" ")
+        if separator:
+            headers[key] = value
+    raw_head = headers.get(b"branch.oid")
+    raw_branch = headers.get(b"branch.head")
+    if raw_head in {None, b"(initial)"} or raw_branch is None:
+        raise RuntimeError("Git repository has no committed HEAD")
+    branch = None if raw_branch == b"(detached)" else os.fsdecode(raw_branch)
+    raw_upstream = headers.get(b"branch.upstream")
+    upstream = None if raw_upstream is None else os.fsdecode(raw_upstream)
+    return os.fsdecode(raw_head), branch, upstream
+
+
 def source_snapshot(root: Path, *, excluded_paths: Iterable[Path] = ()) -> dict[str, Any]:
     """Return the exact Git identity used by source-bound proof manifests."""
 
-    head = _git(root, "rev-parse", "--verify", "HEAD")
-    branch = _optional_git(root, "symbolic-ref", "--quiet", "--short", "HEAD")
-    upstream = _optional_git(
-        root,
-        "rev-parse",
-        "--abbrev-ref",
-        "--symbolic-full-name",
-        "@{upstream}",
-    )
+    head, branch, upstream = _source_identity(root)
     merge_base = (
         _optional_git(root, "merge-base", "HEAD", upstream) if upstream is not None else None
     )
@@ -874,7 +897,16 @@ def _cached_proof_source_snapshot(
     """Reuse a source binding only inside one validation pass."""
 
     artifact_root = Path(proof["artifact"]).parent
-    resolved_exclusions = tuple(sorted((path.resolve() for path in excluded_paths), key=str))
+    resolved_exclusions = tuple(
+        sorted(
+            (
+                path.resolve()
+                for path in excluded_paths
+                if _repo_relative_bytes(root, path) is not None
+            ),
+            key=str,
+        )
+    )
     key = (
         artifact_root,
         manifest_path.resolve() if artifact_root == Path(".") else None,

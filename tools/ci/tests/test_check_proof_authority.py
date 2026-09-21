@@ -485,6 +485,40 @@ def test_proof_source_snapshot_excludes_manifest_artifact_root(tmp_path: Path) -
     assert before["merge_base"] is None
 
 
+def test_source_snapshot_cache_ignores_only_out_of_repo_exclusions(tmp_path: Path) -> None:
+    root = tmp_path / "primary"
+    root.mkdir()
+    _init_repo(root)
+    proof = _proof(root)
+    cache = {}
+    manifest_path = root / proof["artifact"]
+
+    baseline = MODULE._cached_proof_source_snapshot(
+        cache,
+        root,
+        manifest_path=manifest_path,
+        proof=proof,
+    )
+    external = MODULE._cached_proof_source_snapshot(
+        cache,
+        root,
+        manifest_path=manifest_path,
+        proof=proof,
+        excluded_paths=(tmp_path / "paired",),
+    )
+    assert external is baseline
+    assert len(cache) == 1
+
+    MODULE._cached_proof_source_snapshot(
+        cache,
+        root,
+        manifest_path=manifest_path,
+        proof=proof,
+        excluded_paths=(root / ".proof-pairs/paired",),
+    )
+    assert len(cache) == 2
+
+
 def test_source_snapshot_tracks_upstream_merge_base_and_detached_head(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     branch = subprocess.run(
