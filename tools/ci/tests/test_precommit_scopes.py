@@ -163,7 +163,7 @@ def test_ci_precommit_skips_only_hooks_owned_by_dedicated_full_jobs() -> None:
         "hexagonal-boundaries": ("rust-policy", "lint-hexagonal-boundaries.py"),
         "rust-derive-allowlist": ("rust-policy", "check-rust-derive-allowlist.py"),
         "rust-cargo-toml-hygiene": ("rust-policy", "check-cargo-toml-hygiene.py"),
-        "proof-authority": ("rust-policy", "check-proof-authority.py"),
+        "proof-authority": ("proof-authority-current-gate", "just proof-authority-lint"),
         "rust-digest-fallibility": ("rust-policy", "check-digest-fallibility.py"),
     }
     assert skipped == set(owners)
@@ -191,3 +191,21 @@ def test_prompt_manager_ci_lints_without_syncing_first() -> None:
     assert "tools/prompt-manager/pm.py lint" in commands
     assert "tools/prompt-manager/pm.py sync" not in commands
     assert "git diff --exit-code" in commands
+
+
+def test_proof_authority_ci_has_one_static_owner_and_one_test_owner() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    jobs = workflow["jobs"]
+    rust_policy_commands = "\n".join(
+        str(step.get("run", "")) for step in jobs["rust-policy"]["steps"]
+    )
+    assert "check-proof-authority.py" not in rust_policy_commands
+    assert "pytest" not in rust_policy_commands
+    p00_commands = "\n".join(
+        str(step.get("run", "")) for step in jobs["proof-authority-current-gate"]["steps"]
+    )
+    assert "just proof-authority-lint" in p00_commands
+    prompt_commands = "\n".join(
+        str(step.get("run", "")) for step in jobs["prompt-manager"]["steps"]
+    )
+    assert "python -m pytest tools" in prompt_commands

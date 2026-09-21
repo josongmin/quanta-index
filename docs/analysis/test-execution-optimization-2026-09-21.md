@@ -601,6 +601,15 @@ rendered every target again with `lint`. CI now runs the fail-closed drift lint
 directly. The final `git diff --exit-code` remains to catch any test-side
 mutation, while a workflow test prevents reintroducing the pre-lint sync.
 
+Proof authority had another cross-job duplicate: `rust-policy` ran the static
+checker and two proof unit-test modules, P00 reran the checker to produce its
+source-bound artifact, and prompt-manager's full tooling suite reran the unit
+tests. P00 is now the sole hosted static-check owner and the tooling suite is
+the regression-test owner. The redundant rust-policy step and its pytest-only
+dependency were removed. A topology test binds the skipped pre-commit hook to
+P00 and asserts that both authorities remain present. The complete tooling set
+passes 340 tests after these CI topology guards.
+
 ## Remaining measurement
 
 On a quiet host, run:

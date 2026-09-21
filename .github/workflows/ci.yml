@@ -201,8 +201,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install policy and test dependencies
-        run: python -m pip install -e . 'pytest>=8.3.0'
+      - name: Install policy dependencies
+        run: python -m pip install -e .
 
       - name: Ensure all workspace crates inherit lints
         run: python3 scripts/check_workspace_lints.py
@@ -230,14 +230,6 @@ jobs:
 
       - name: Wire-surface inventory (IPC opcodes + on-disk format versions)
         run: python3 tools/ci/lint/check-wire-inventory.py
-
-      - name: Proof authority registry and manifest schema lint
-        run: |
-          python3 tools/ci/lint/check-proof-authority.py
-          python3 -m pytest \
-            tools/ci/tests/test_check_proof_authority.py \
-            tools/ci/tests/test_write_proof_manifest.py \
-            -q
 
       - name: Benchmark artifacts are attributed to HEAD (no stale / unknown-SHA / old-schema artifact)
         run: python3 tools/ci/lint/check-bench-artifacts.py
