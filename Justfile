@@ -35,6 +35,7 @@ rust-profile-list:
         'test-sdk-binding-owner P06 SDK contextual binding negative-matrix owner proof' \
         'test-sdk-binding-owner-lib P06 SDK lib suites' \
         'test-provider-boundary-owner P07 semantic admission / provider boundary owner proof' \
+        'test-runtime-supervisor-owner P08 supervised runtime / bounded shutdown owner proof' \
         'test-integration-fast bounded integration loop; excludes slow text/Lance storage' \
         'test-integration-storage text-authority shard persistence slice' \
         'test-integration-semantic semantic storage integration slice' \
@@ -74,6 +75,7 @@ rust-profile profile:
         test-sdk-binding-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-sdk-binding-owner ;; \
         test-sdk-binding-owner-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-sdk-binding-owner-lib ;; \
         test-provider-boundary-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-provider-boundary-owner ;; \
+        test-runtime-supervisor-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-runtime-supervisor-owner ;; \
         test-integration-fast) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-fast ;; \
         test-integration-storage) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-storage ;; \
         test-integration-semantic) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-semantic ;; \
@@ -255,6 +257,9 @@ rust-test-sdk-binding-owner-lib lane="test-sdk-binding-owner-lane":
 
 rust-test-provider-boundary-owner lane="test-provider-boundary-owner-lane":
     python3 tools/ci/run-local-test-scope.py provider-boundary-owner --lane {{lane}}
+
+rust-test-runtime-supervisor-owner lane="test-runtime-supervisor-owner-lane":
+    python3 tools/ci/run-local-test-scope.py runtime-supervisor-owner --lane {{lane}}
 
 rust-test-integration-fast lane="test-integration-lane":
     python3 tools/ci/run-local-test-scope.py integration-fast --lane {{lane}}
@@ -889,6 +894,23 @@ proof-p07-provider-boundary-owner:
     @just rust-wire-inventory
     @just rust-cargo-modules
     @just rust-fuzz-smoke
+
+# P08 supervised runtime / bounded shutdown owner proof (S21-09): the
+# scoped rail runs the supervisor owner suite (clean drain with
+# guards-last drop order, startup rollback, required-child loss,
+# cooperative-vs-hard deadline escalation, second-signal abort exit
+# semantics, RAII permit reconciliation, real two-process state-root
+# exclusion with lock fstat invariants).
+# The supervisor lives in quanta-index-searchd and the split changed the
+# runtime facade, so the structural rails include hexagonal, wire
+# inventory and the module-tree snapshot. The Linux production-like
+# release process rail (p08-runtime-supervisor, release-daemon binding,
+# SIGINT/SIGTERM on the release binary) stays NOT_RUN on this host.
+proof-p08-runtime-supervisor-owner:
+    @just rust-profile test-runtime-supervisor-owner
+    @just rust-hexagonal
+    @just rust-wire-inventory
+    @just rust-cargo-modules
 
 proof-p05-query-truth-owner:
     @just rust-profile test-query-truth-owner

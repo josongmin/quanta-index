@@ -185,6 +185,13 @@ targets = [
   "provider-boundary-owner-v1",
 ]
 
+[local_scopes.runtime-supervisor-owner]
+lane = "test-runtime-supervisor-owner-lane"
+test_threads = 4
+targets = [
+  "runtime-supervisor-owner-v1",
+]
+
 [local_scopes.sdk-binding-owner-lib]
 lane = "test-sdk-binding-owner-lane"
 test_threads = 4
@@ -274,6 +281,12 @@ rail = "pr-workspace-nextest"
 id = "provider-boundary-owner-v1"
 path = "crates/quanta-index-search-plane/tests/provider_boundary_owner_v1.rs"
 owner = "quanta-index-search-plane"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "runtime-supervisor-owner-v1"
+path = "crates/quanta-index-searchd-runtime/tests/runtime_supervisor_owner_v1.rs"
+owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]

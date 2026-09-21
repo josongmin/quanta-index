@@ -370,9 +370,8 @@ required_host = "linux-production-like"
 
 [[proofs]]
 id = "p08-runtime-supervisor-owner"
-authority_state = "staged"
+authority_state = "executable"
 execution_mode = "test-authority"
-staged_reason = "P08 must land host-independent supervisor ownership and deterministic lifecycle owner targets."
 ticket = "S21-09"
 family = "U"
 checkpoint = "M3"
@@ -385,7 +384,8 @@ filter = "none"
 source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = []
+test_authority_scopes = ["runtime-supervisor-owner"]
+test_authority_targets = ["runtime-supervisor-owner-v1"]
 dependencies = ["p07-provider-boundary-owner"]
 artifact = "artifacts/proof-authority/p08-runtime-supervisor-owner.json"
 required_host = "any"

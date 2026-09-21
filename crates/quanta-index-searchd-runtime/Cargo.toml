@@ -24,11 +24,16 @@ path = "tests/runtime_risk_suite.rs"
 name = "runtime_extended_suite"
 path = "tests/runtime_extended_suite.rs"
 
+[[test]]
+name = "runtime_supervisor_owner_v1"
+path = "tests/runtime_supervisor_owner_v1.rs"
+
 [lints]
 workspace = true
 
 [dependencies]
 anyhow.workspace = true
+signal-hook.workspace = true
 quanta-index-catalog = { version = "0.1.0", path = "../quanta-index-catalog" }
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }

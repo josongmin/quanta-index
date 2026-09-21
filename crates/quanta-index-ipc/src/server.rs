@@ -856,7 +856,18 @@ impl UdsServer {
         let mut connection_threads: Vec<std::thread::JoinHandle<ConnectionCloseReason>> =
             Vec::new();
         while !self.shutdown.load(Ordering::Acquire) {
-            connection_threads.retain(|handle| !handle.is_finished());
+            // Finished connection handles are joined, never dropped
+            // unjoined (S21-09): after `is_finished` the join is bounded
+            // teardown, and a panicked connection is observed here.
+            let mut still_running: Vec<std::thread::JoinHandle<ConnectionCloseReason>> = Vec::new();
+            for handle in std::mem::take(&mut connection_threads) {
+                if handle.is_finished() {
+                    let _finished = handle.join();
+                } else {
+                    still_running.push(handle);
+                }
+            }
+            connection_threads = still_running;
             match self.listener.accept() {
                 Ok((stream, _addr)) => {
                     match self.screen(&stream, max_connections) {
@@ -877,7 +888,10 @@ impl UdsServer {
                             continue;
                         }
                     }
-                    self.counters.connection_accepted();
+                    // The live-connection permit is RAII (S21-09): a
+                    // panicking dispatcher unwinds through its drop and
+                    // the live count returns to its baseline.
+                    let live = crate::counters::LiveConnectionGuard::admit(&self.counters);
                     let dispatcher = Arc::clone(dispatcher);
                     let slots = Arc::clone(&slots);
                     let counters = Arc::clone(&self.counters);
@@ -900,15 +914,13 @@ impl UdsServer {
                                 &shutdown,
                                 &counters,
                             );
-                            counters.connection_closed();
+                            drop(live);
                             reason
                         });
                     match spawned {
                         Ok(handle) => connection_threads.push(handle),
-                        Err(err) => {
-                            self.counters.connection_closed();
-                            return Err(IpcError::Io(err));
-                        }
+                        // The un-moved guard releases the live count here.
+                        Err(err) => return Err(IpcError::Io(err)),
                     }
                 }
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {
@@ -1077,7 +1089,7 @@ fn handle_connection<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
     slots: &DispatchSlots,
     policy: ServerAdmissionPolicy,
     shutdown: &AtomicBool,
-    counters: &IpcServerCounters,
+    counters: &Arc<IpcServerCounters>,
 ) -> ConnectionCloseReason
 where
     RequestEnvelopeT: RequestEnvelope<Request>,
@@ -1131,22 +1143,27 @@ where
                 }
             }
         };
-        counters.dispatch_started(permit.waited());
         let budget = RequestBudgetV1::for_duration(policy.dispatch_budget());
-        // A dispatch without a live watch would run with a cancellation that
-        // can never fire; refusing the connection is the honest alternative.
-        let watch = match PeerWatch::arm(&stream, budget.cancel_handle()) {
-            Ok(watch) => watch,
-            Err(err) => {
-                drop(permit);
-                counters.dispatch_finished();
-                return ConnectionCloseReason::PeerWatchFailed(err.to_string());
-            }
+        // The dispatch slot and the in-flight count are one RAII pair
+        // (S21-09): a panicking dispatcher unwinds through both drops,
+        // and the peer watch stops and joins its thread the same way.
+        let (response_payload, peer_hung_up) = {
+            let _in_flight =
+                crate::counters::InFlightDispatchGuard::start(counters, permit.waited());
+            // A dispatch without a live watch would run with a cancellation
+            // that can never fire; refusing the connection is the honest
+            // alternative.
+            let watch = match PeerWatch::arm(&stream, budget.cancel_handle()) {
+                Ok(watch) => watch,
+                Err(err) => {
+                    return ConnectionCloseReason::PeerWatchFailed(err.to_string());
+                }
+            };
+            let response_payload = dispatcher.dispatch(request_payload, &budget);
+            let peer_hung_up = watch.disarm();
+            (response_payload, peer_hung_up)
         };
-        let response_payload = dispatcher.dispatch(request_payload, &budget);
-        let peer_hung_up = watch.disarm();
         drop(permit);
-        counters.dispatch_finished();
         counters.request_dispatched(peer_hung_up);
         if peer_hung_up {
             // Nothing to write to; the dispatcher already saw the
@@ -1279,6 +1296,18 @@ impl PeerWatch {
             let _joined = thread.join();
         }
         self.hung_up.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for PeerWatch {
+    /// Reconcile a watch whose owner did not disarm it — a panicking
+    /// dispatcher unwinding (S21-09): the watcher thread is stopped and
+    /// joined, never left spinning without an owner.
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _joined = thread.join();
+        }
     }
 }
 
@@ -1602,8 +1631,8 @@ mod tests {
 
     type TestRes = Result<(), String>;
 
-    fn test_counters() -> IpcServerCounters {
-        IpcServerCounters::for_plane("test")
+    fn test_counters() -> Arc<IpcServerCounters> {
+        Arc::new(IpcServerCounters::for_plane("test"))
     }
 
     fn test_slots() -> DispatchSlots {
