@@ -167,6 +167,8 @@ def _write_dependency_manifests(
     release_host_digest_overrides = release_host_digest_overrides or {}
     proof_by_id = {proof["id"]: proof for proof in registry["proofs"]}
     target = proof_by_id[registry["aggregate"]["target_proof"]]
+    source_snapshots: dict[tuple[Path, tuple[Path, ...], Path | None], dict] = {}
+    paired_snapshots: dict[tuple[str, str], dict] = {}
     for proof_id in CHECKER.dependency_closure(proof_by_id, target["id"]):
         proof = proof_by_id[proof_id]
         manifest_path = root / proof["artifact"]
@@ -176,12 +178,28 @@ def _write_dependency_manifests(
         source_pair = None
         excluded_paths: tuple[Path, ...] = ()
         if proof["source_binding"] == "exact-pair":
-            source_pair = CHECKER.paired_source_snapshot(
-                paired,
-                repository=proof["paired_repository"],
-                dependency_lock=Path(proof["paired_dependency_lock"]),
-            )
+            pair_key = (proof["paired_repository"], proof["paired_dependency_lock"])
+            if pair_key not in paired_snapshots:
+                paired_snapshots[pair_key] = CHECKER.paired_source_snapshot(
+                    paired,
+                    repository=proof["paired_repository"],
+                    dependency_lock=Path(proof["paired_dependency_lock"]),
+                )
+            source_pair = paired_snapshots[pair_key]
             excluded_paths = (paired,)
+        artifact_parent = manifest_path.parent
+        source_key = (
+            artifact_parent,
+            excluded_paths,
+            manifest_path if artifact_parent == root else None,
+        )
+        if source_key not in source_snapshots:
+            source_snapshots[source_key] = CHECKER.proof_source_snapshot(
+                root,
+                manifest_path=manifest_path,
+                proof=proof,
+                excluded_paths=excluded_paths,
+            )
         daemon_binary = None
         if proof["binary_binding"] == "release-daemon":
             daemon_binary = {"path": "bin/searchd", "sha256": WRITER._sha256(root / "bin/searchd")}
@@ -198,12 +216,7 @@ def _write_dependency_manifests(
             "proof_id": proof_id,
             "family": proof["family"],
             "status": "passed",
-            "source": CHECKER.proof_source_snapshot(
-                root,
-                manifest_path=manifest_path,
-                proof=proof,
-                excluded_paths=excluded_paths,
-            ),
+            "source": source_snapshots[source_key],
             "source_pair": source_pair,
             "invocation": {
                 "command": proof["command"],

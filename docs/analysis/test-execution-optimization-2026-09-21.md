@@ -490,6 +490,14 @@ new file when no prior receipt existed). This is a correctness repair as well
 as a repeated-validation reduction. Heavy fixture timings remain contended,
 so no numeric P12 speedup is claimed.
 
+The aggregate tests also minted every synthetic dependency manifest by
+re-running the same source and paired-checkout snapshot commands. Their
+fixture producer now reuses snapshots only for identical artifact-root and
+paired-checkout exclusion scopes; the production aggregate checker still
+rebinds each dependency independently. All nine aggregate tests passed after
+this fixture change. A local run took 33.97s, but comparison with earlier
+contended runs is not a controlled speedup measurement.
+
 ## Remaining measurement
 
 On a quiet host, run:
