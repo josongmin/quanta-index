@@ -8,6 +8,17 @@ cd "${ROOT_DIR}"
 
 if [[ $# -eq 0 ]]; then
   set -- .
+else
+  # A policy, ignore, or tool-version change can create findings in files that
+  # were not changed by this push. Keep those runs repository-wide.
+  for path in "$@"; do
+    case "$path" in
+      .pre-commit-config.yaml | .semgrepignore | pyproject.toml | scripts/run-semgrep.sh | tools/ci/semgrep/*)
+        set -- .
+        break
+        ;;
+    esac
+  done
 fi
 
 # --timeout 300: raise the per-file analysis budget from semgrep's 30s default so the

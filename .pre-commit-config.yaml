@@ -245,6 +245,6 @@ repos:
         name: semgrep policy
         entry: bash scripts/run-semgrep.sh
         language: system
-        pass_filenames: false
-        files: ^(crates/.*|scripts/.*|tools/.*|\.github/workflows/.*|pyproject\.toml|\.pre-commit-config\.yaml)$
+        pass_filenames: true
+        files: ^(crates/.*|scripts/.*|tools/.*|\.github/workflows/.*|pyproject\.toml|\.pre-commit-config\.yaml|\.semgrepignore)$
         stages: [pre-push]

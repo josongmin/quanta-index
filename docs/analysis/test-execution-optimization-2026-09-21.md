@@ -516,6 +516,17 @@ proof-aggregate schema probe still runs wire inventory. The CI-equivalent
 hooks skipped, and still executes the scoped pre-commit checks. These results
 verify selection behavior, not a measured end-to-end push or hosted-CI speedup.
 
+Semgrep's local pre-push hook previously re-scanned the entire repository on
+every applicable source change. Its rules are per-file syntactic patterns, so
+the hook now passes changed paths to the scanner. An explicit repository-wide
+scan remains the default for direct and CI invocation, and local changes to
+Semgrep rules, ignore rules, the wrapper, pre-commit selection, or the Python
+tool-version declaration force a full scan. A fake-executable dispatch test
+checks both branches; a real one-file Rust scan still runs all applicable
+rules. One local changed-file hook probe took 3.20s; the full-scan fallback
+on a wrapper change took 25.01s. These are scope probes on one host, not a
+controlled speedup claim. The CI full-scan rail is unchanged.
+
 ## Remaining measurement
 
 On a quiet host, run:

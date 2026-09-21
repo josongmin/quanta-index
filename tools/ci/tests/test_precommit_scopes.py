@@ -1,6 +1,8 @@
 """Keep local changed-file lint selection aligned with each linter's inputs."""
 
+import os
 import re
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -57,13 +59,17 @@ def test_scoped_repository_lints_skip_unrelated_docs_and_cover_their_inputs() ->
             "crates/quanta-index-core/src/lib.rs",
             "tools/ci/lint/check-digest-fallibility.py",
         ),
-        "semgrep": ("crates/quanta-index-core/src/lib.rs", "scripts/run-semgrep.sh"),
+        "semgrep": (
+            "crates/quanta-index-core/src/lib.rs",
+            "scripts/run-semgrep.sh",
+            ".semgrepignore",
+        ),
     }
 
     for hook_id, positive_paths in inputs.items():
         hook = hooks[hook_id]
         assert not hook.get("always_run", False), hook_id
-        assert hook["pass_filenames"] is False, hook_id
+        assert hook["pass_filenames"] is (hook_id == "semgrep"), hook_id
         pattern = re.compile(hook["files"])
         for path in positive_paths:
             assert pattern.search(path), (hook_id, path)
@@ -93,3 +99,45 @@ def test_wire_inventory_scope_includes_tool_format_dependencies() -> None:
         "tools/ci/tests/test_write_error_authority_inventory.py",
     ):
         assert pattern.search(path), path
+
+
+def test_semgrep_keeps_code_scope_but_expands_policy_changes(tmp_path: Path) -> None:
+    fake_semgrep = tmp_path / "semgrep"
+    fake_semgrep.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n', encoding="utf-8")
+    fake_semgrep.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{tmp_path}:{env['PATH']}"
+
+    def scan_targets(*paths: str) -> list[str]:
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/run-semgrep.sh"), *paths],
+            cwd=ROOT,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        arguments = result.stdout.splitlines()
+        assert arguments[:4] == [
+            "--config",
+            str(ROOT / "tools/ci/semgrep/rules.yml"),
+            "--error",
+            "--timeout",
+        ]
+        assert arguments[4] == "300"
+        return arguments[5:]
+
+    code_paths = [
+        "crates/quanta-index-core/src/lib.rs",
+        "tools/ci/tests/test_precommit_scopes.py",
+    ]
+    assert scan_targets(*code_paths) == code_paths
+    assert scan_targets() == ["."]
+    for policy_path in (
+        ".pre-commit-config.yaml",
+        ".semgrepignore",
+        "pyproject.toml",
+        "scripts/run-semgrep.sh",
+        "tools/ci/semgrep/rules.yml",
+    ):
+        assert scan_targets(*code_paths, policy_path) == ["."]
