@@ -693,6 +693,12 @@ receipt tests remain isolated. Across the ten parameterized cases this removes
 host load varied, while the subprocess reduction is structural. All 10
 aggregate tests pass with unchanged assertions.
 
+Manifest-writer tests had the same setup shape across 13 repository cases and
+two exact-pair cases. Independent copies from one root template and one paired
+template reduce their Git setup subprocesses from 77 to 11, removing 66 while
+preserving per-case repository mutation. The complete manifest file passes
+17 tests; same-host file time moved from 5.09s to 3.81s.
+
 ## Remaining measurement
 
 On a quiet host, run:

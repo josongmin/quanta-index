@@ -8,6 +8,7 @@ import platform
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import jsonschema
@@ -38,13 +39,19 @@ ERROR_INVENTORY_WRITER = _load_module(
 )
 
 
+@dataclass(frozen=True)
+class ManifestTemplates:
+    root: Path
+    paired_checkout: Path
+
+
 def _run(root: Path, *args: str) -> None:
     subprocess.run([*args], cwd=root, check=True, capture_output=True, text=True)
 
 
-def _fixture_root(tmp_path: Path) -> tuple[Path, dict]:
+def _build_fixture_root(tmp_path: Path) -> tuple[Path, dict]:
     root = tmp_path / "repo"
-    root.mkdir()
+    root.mkdir(parents=True)
     registry = CHECKER._read_toml(REGISTRY_PATH)
     registry_path = root / "tools/ci/proof-authority.toml"
     registry_path.parent.mkdir(parents=True)
@@ -131,9 +138,9 @@ def _publish(root: Path, terminal_path: Path) -> tuple[Path, str, str]:
     )
 
 
-def _paired_checkout(parent: Path) -> Path:
+def _build_paired_checkout(parent: Path) -> Path:
     checkout = parent / "arbitrary-local-directory"
-    checkout.mkdir()
+    checkout.mkdir(parents=True)
     (checkout / "Cargo.lock").write_text("version = 4\n", encoding="utf-8")
     _run(checkout, "git", "init", "-q")
     _run(checkout, "git", "config", "user.name", "Pair Fixture")
@@ -151,10 +158,32 @@ def _paired_checkout(parent: Path) -> Path:
     return checkout
 
 
+@pytest.fixture(scope="module")
+def manifest_templates(tmp_path_factory: pytest.TempPathFactory) -> ManifestTemplates:
+    base = tmp_path_factory.mktemp("proof-manifest-templates")
+    root, _ = _build_fixture_root(base / "root")
+    paired_checkout = _build_paired_checkout(base / "paired")
+    return ManifestTemplates(root=root, paired_checkout=paired_checkout)
+
+
+def _fixture_root(tmp_path: Path, templates: ManifestTemplates) -> tuple[Path, dict]:
+    root = tmp_path / "repo"
+    shutil.copytree(templates.root, root)
+    registry = CHECKER._read_toml(root / "tools/ci/proof-authority.toml")
+    return root, registry
+
+
+def _paired_checkout(tmp_path: Path, templates: ManifestTemplates) -> Path:
+    checkout = tmp_path / "arbitrary-local-directory"
+    shutil.copytree(templates.paired_checkout, checkout)
+    return checkout
+
+
 def test_writer_resolves_registry_source_and_null_binary_then_semantically_validates(
     tmp_path: Path,
+    manifest_templates: ManifestTemplates,
 ) -> None:
-    root, registry = _fixture_root(tmp_path)
+    root, registry = _fixture_root(tmp_path, manifest_templates)
     terminal_path, _ = _terminal(root)
 
     output, digest, status = _publish(root, terminal_path)
@@ -186,8 +215,11 @@ def test_writer_resolves_registry_source_and_null_binary_then_semantically_valid
     )
 
 
-def test_p00_manifest_refuses_missing_error_inventory_attestation(tmp_path: Path) -> None:
-    root, _ = _fixture_root(tmp_path)
+def test_p00_manifest_refuses_missing_error_inventory_attestation(
+    tmp_path: Path,
+    manifest_templates: ManifestTemplates,
+) -> None:
+    root, _ = _fixture_root(tmp_path, manifest_templates)
     terminal_path, terminal = _terminal(root)
     terminal["artifacts"] = ["artifacts/proof-authority/raw/p00.log"]
     terminal_path.write_text(json.dumps(terminal), encoding="utf-8")
@@ -200,8 +232,9 @@ def test_p00_manifest_refuses_missing_error_inventory_attestation(tmp_path: Path
 def test_non_passed_terminal_state_is_preserved_but_cli_returns_nonzero(
     tmp_path: Path,
     terminal_status: str,
+    manifest_templates: ManifestTemplates,
 ) -> None:
-    root, _ = _fixture_root(tmp_path)
+    root, _ = _fixture_root(tmp_path, manifest_templates)
     terminal_path, terminal = _terminal(root)
     output = root / "artifacts/proof-authority/p00-authority-freeze.json"
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -233,8 +266,11 @@ def test_non_passed_terminal_state_is_preserved_but_cli_returns_nonzero(
     assert json.loads(output.read_text(encoding="utf-8"))["status"] == terminal_status
 
 
-def test_unknown_terminal_state_is_refused_without_replacing_receipt(tmp_path: Path) -> None:
-    root, _ = _fixture_root(tmp_path)
+def test_unknown_terminal_state_is_refused_without_replacing_receipt(
+    tmp_path: Path,
+    manifest_templates: ManifestTemplates,
+) -> None:
+    root, _ = _fixture_root(tmp_path, manifest_templates)
     terminal_path, terminal = _terminal(root)
     output = root / "artifacts/proof-authority/p00-authority-freeze.json"
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -248,8 +284,11 @@ def test_unknown_terminal_state_is_refused_without_replacing_receipt(tmp_path: P
     assert output.read_bytes() == b"existing-authoritative-receipt\n"
 
 
-def test_free_form_invocation_is_refused_instead_of_overriding_registry(tmp_path: Path) -> None:
-    root, _ = _fixture_root(tmp_path)
+def test_free_form_invocation_is_refused_instead_of_overriding_registry(
+    tmp_path: Path,
+    manifest_templates: ManifestTemplates,
+) -> None:
+    root, _ = _fixture_root(tmp_path, manifest_templates)
     terminal_path, terminal = _terminal(root)
     terminal["invocation"] = {"command": "printf fake-green"}
     terminal_path.write_text(json.dumps(terminal), encoding="utf-8")
@@ -260,8 +299,11 @@ def test_free_form_invocation_is_refused_instead_of_overriding_registry(tmp_path
     assert not (root / "artifacts/proof-authority/p00-authority-freeze.json").exists()
 
 
-def test_semantic_failure_is_validated_before_atomic_replace(tmp_path: Path) -> None:
-    root, _ = _fixture_root(tmp_path)
+def test_semantic_failure_is_validated_before_atomic_replace(
+    tmp_path: Path,
+    manifest_templates: ManifestTemplates,
+) -> None:
+    root, _ = _fixture_root(tmp_path, manifest_templates)
     terminal_path, terminal = _terminal(root)
     output = root / "artifacts/proof-authority/p00-authority-freeze.json"
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -287,8 +329,9 @@ def test_postpublication_source_failure_restores_prior_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     prior_bytes: bytes | None,
+    manifest_templates: ManifestTemplates,
 ) -> None:
-    root, _ = _fixture_root(tmp_path)
+    root, _ = _fixture_root(tmp_path, manifest_templates)
     terminal_path, _ = _terminal(root)
     output = root / "artifacts/proof-authority/p00-authority-freeze.json"
     if prior_bytes is not None:
@@ -319,8 +362,11 @@ def test_postpublication_source_failure_restores_prior_manifest(
         assert output.read_bytes() == prior_bytes
 
 
-def test_binary_binding_is_derived_and_none_rejects_a_daemon_path(tmp_path: Path) -> None:
-    root, registry = _fixture_root(tmp_path)
+def test_binary_binding_is_derived_and_none_rejects_a_daemon_path(
+    tmp_path: Path,
+    manifest_templates: ManifestTemplates,
+) -> None:
+    root, registry = _fixture_root(tmp_path, manifest_templates)
     daemon = root / "bin/searchd"
     daemon.parent.mkdir()
     daemon.write_bytes(b"release-daemon")
@@ -339,8 +385,9 @@ def test_binary_binding_is_derived_and_none_rejects_a_daemon_path(tmp_path: Path
 
 def test_exact_pair_is_derived_from_live_external_checkout_without_persisting_path(
     tmp_path: Path,
+    manifest_templates: ManifestTemplates,
 ) -> None:
-    checkout = _paired_checkout(tmp_path)
+    checkout = _paired_checkout(tmp_path, manifest_templates)
     proof = {
         "source_binding": "exact-pair",
         "paired_repository": "github:josongmin/semantica-codegraph-v2",
@@ -369,8 +416,9 @@ def test_exact_pair_is_derived_from_live_external_checkout_without_persisting_pa
 def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    manifest_templates: ManifestTemplates,
 ) -> None:
-    root, registry = _fixture_root(tmp_path)
+    root, registry = _fixture_root(tmp_path, manifest_templates)
     registry_path = root / "tools/ci/proof-authority.toml"
     registry_text = (
         registry_path.read_text(encoding="utf-8")
@@ -397,7 +445,7 @@ def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
         encoding="utf-8",
     )
     registry = CHECKER._read_toml(registry_path)
-    checkout = _paired_checkout(tmp_path)
+    checkout = _paired_checkout(tmp_path, manifest_templates)
     terminal_path, terminal = _terminal(root)
     proof = next(proof for proof in registry["proofs"] if proof["id"] == "p11-cross-repo-cutover")
     daemon = root / "bin/searchd"
@@ -450,8 +498,9 @@ def test_exact_binding_refuses_a_free_paired_checkout(tmp_path: Path) -> None:
 def test_linux_production_profile_cannot_be_spoofed_on_non_linux_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    manifest_templates: ManifestTemplates,
 ) -> None:
-    root, registry = _fixture_root(tmp_path)
+    root, registry = _fixture_root(tmp_path, manifest_templates)
     _, terminal = _terminal(root)
     proof = dict(registry["proofs"][0])
     proof["required_host"] = "linux-production-like"
