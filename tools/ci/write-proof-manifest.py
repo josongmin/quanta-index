@@ -486,6 +486,34 @@ def _proof_lock_path(root: Path) -> Path:
     return path if path.is_absolute() else root / path
 
 
+def _restore_prior_manifest(output_path: Path, prior_bytes: bytes | None) -> None:
+    if prior_bytes is None:
+        output_path.unlink(missing_ok=True)
+    else:
+        restore_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=output_path.parent,
+                prefix=f".{output_path.name}.",
+                suffix=".restore",
+                delete=False,
+            ) as handle:
+                restore_path = Path(handle.name)
+                handle.write(prior_bytes)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except BaseException:
+            if restore_path is not None:
+                restore_path.unlink(missing_ok=True)
+            raise
+        os.replace(restore_path, output_path)
+    directory_fd = os.open(output_path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def _publish_manifest_locked(
     *,
     root: Path,
@@ -532,16 +560,6 @@ def _publish_manifest_locked(
         checker=checker,
         paired_checkout=paired_checkout,
     )
-    _validate_aggregate_issuance(
-        root=root,
-        registry=registry,
-        registry_path=registry_path,
-        proof=proof,
-        payload=payload,
-        checker=checker,
-        paired_checkout=paired_checkout,
-    )
-    _validate_p00_issuance(root=root, proof=proof, payload=payload)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     serialized = (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode()
     temporary_path: Path | None = None
@@ -556,6 +574,16 @@ def _publish_manifest_locked(
             handle.flush()
             os.fsync(handle.fileno())
             temporary_path = Path(handle.name)
+        _validate_aggregate_issuance(
+            root=root,
+            registry=registry,
+            registry_path=registry_path,
+            proof=proof,
+            payload=payload,
+            checker=checker,
+            paired_checkout=paired_checkout,
+        )
+        _validate_p00_issuance(root=root, proof=proof, payload=payload)
         findings = checker.check_manifest(
             payload,
             manifest_path=temporary_path,
@@ -574,66 +602,36 @@ def _publish_manifest_locked(
         if findings:
             rendered = "; ".join(finding.render() for finding in findings)
             raise ManifestRefused(f"semantic manifest validation failed: {rendered}")
-        if payload["source"] != checker.proof_source_snapshot(
-            root,
-            manifest_path=output_path,
-            proof=proof,
-            excluded_paths=(paired_checkout,) if paired_checkout is not None else (),
-        ):
-            raise ManifestRefused("source changed while proof manifest was being prepared")
-        _validate_aggregate_issuance(
-            root=root,
-            registry=registry,
-            registry_path=registry_path,
-            proof=proof,
-            payload=payload,
-            checker=checker,
-            paired_checkout=paired_checkout,
-        )
-        _validate_p00_issuance(root=root, proof=proof, payload=payload)
-        final_findings = checker.check_manifest(
-            payload,
-            manifest_path=temporary_path,
-            proof=proof,
-            schema=schema,
-            root=root,
-            bind_source=True,
-            allow_non_passed=True,
-            paired_checkouts=(
-                {proof["paired_repository"]: paired_checkout}
-                if paired_checkout is not None
-                else None
-            ),
-            proof_by_id=proof_by_id,
-        )
-        if final_findings:
-            rendered = "; ".join(finding.render() for finding in final_findings)
-            raise ManifestRefused(f"proof inputs changed before manifest publication: {rendered}")
+        prior_bytes = output_path.read_bytes() if output_path.exists() else None
         os.replace(temporary_path, output_path)
         temporary_path = None
-        installed_payload = _read_json_object(output_path, label="published proof manifest")
-        if installed_payload != payload:
-            output_path.unlink(missing_ok=True)
-            raise ManifestRefused("published proof manifest bytes differ from validated payload")
-        published_findings = checker.check_manifest(
-            installed_payload,
-            manifest_path=output_path,
-            proof=proof,
-            schema=schema,
-            root=root,
-            bind_source=True,
-            allow_non_passed=True,
-            paired_checkouts=(
-                {proof["paired_repository"]: paired_checkout}
-                if paired_checkout is not None
-                else None
-            ),
-            proof_by_id=proof_by_id,
-        )
-        if published_findings:
-            output_path.unlink(missing_ok=True)
-            rendered = "; ".join(finding.render() for finding in published_findings)
-            raise ManifestRefused(f"proof inputs changed at publication: {rendered}")
+        try:
+            installed_payload = _read_json_object(output_path, label="published proof manifest")
+            if installed_payload != payload:
+                raise ManifestRefused(
+                    "published proof manifest bytes differ from validated payload"
+                )
+            published_findings = checker.check_manifest(
+                installed_payload,
+                manifest_path=output_path,
+                proof=proof,
+                schema=schema,
+                root=root,
+                bind_source=True,
+                allow_non_passed=True,
+                paired_checkouts=(
+                    {proof["paired_repository"]: paired_checkout}
+                    if paired_checkout is not None
+                    else None
+                ),
+                proof_by_id=proof_by_id,
+            )
+            if published_findings:
+                rendered = "; ".join(finding.render() for finding in published_findings)
+                raise ManifestRefused(f"proof inputs changed at publication: {rendered}")
+        except BaseException:
+            _restore_prior_manifest(output_path, prior_bytes)
+            raise
         directory_fd = os.open(output_path.parent, os.O_RDONLY)
         try:
             os.fsync(directory_fd)

@@ -282,6 +282,43 @@ def test_semantic_failure_is_validated_before_atomic_replace(tmp_path: Path) -> 
     assert list(output.parent.glob(f".{output.name}.*.tmp")) == []
 
 
+@pytest.mark.parametrize("prior_bytes", [None, b"prior-authoritative-manifest\n"])
+def test_postpublication_source_failure_restores_prior_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    prior_bytes: bytes | None,
+) -> None:
+    root, _ = _fixture_root(tmp_path)
+    terminal_path, _ = _terminal(root)
+    output = root / "artifacts/proof-authority/p00-authority-freeze.json"
+    if prior_bytes is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(prior_bytes)
+    original_check_manifest = CHECKER.check_manifest
+    calls = 0
+
+    def mutate_after_prepublication_check(*args, **kwargs):
+        nonlocal calls
+        findings = original_check_manifest(*args, **kwargs)
+        calls += 1
+        if calls == 1:
+            with (root / "tools/ci/test-authority.toml").open("a", encoding="utf-8") as handle:
+                handle.write("\n# changed during manifest publication\n")
+        return findings
+
+    monkeypatch.setattr(WRITER, "_load_checker", lambda: CHECKER)
+    monkeypatch.setattr(CHECKER, "check_manifest", mutate_after_prepublication_check)
+
+    with pytest.raises(WRITER.ManifestRefused, match="proof inputs changed at publication"):
+        _publish(root, terminal_path)
+
+    assert calls == 2
+    if prior_bytes is None:
+        assert not output.exists()
+    else:
+        assert output.read_bytes() == prior_bytes
+
+
 def test_binary_binding_is_derived_and_none_rejects_a_daemon_path(tmp_path: Path) -> None:
     root, registry = _fixture_root(tmp_path)
     daemon = root / "bin/searchd"

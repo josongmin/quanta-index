@@ -532,6 +532,24 @@ confirms these local timings are diagnostic; the structural subprocess counts
 are the stable comparison. Hosted CI remains unavailable while jobs fail
 before startup.
 
+The single-proof manifest writer had the same pre-publication duplication: it
+ran semantic manifest validation twice and P00/P12 issuance validation twice
+before atomic replacement, followed by the required post-publication rebind.
+It now performs one complete pre-publication validation after issuance checks
+and retains the independent post-publication validation. The exact-pair writer
+profile moved from three to two `check_manifest` calls, nine to six source
+snapshots, and 41 to 36 subprocesses; observed writer cumulative time was
+0.564s before and 0.149s after.
+
+The audit also found a correctness failure in that post-publication path: a
+late source rejection unlinked the newly installed file after it had replaced
+a prior authoritative manifest, losing the prior receipt. The writer now
+atomically restores prior bytes, or removes the new file only when no prior
+receipt existed. Two regression cases mutate tracked source after the sole
+pre-publication validation and prove both restore branches. The complete proof
+authority/manifest/aggregate set passes 58 tests, and the complete tooling set
+passes 342 tests after this change.
+
 ## Local hook selection
 
 Twelve local pre-commit/pre-push hooks declared path filters but also set
