@@ -32,6 +32,8 @@ fn snapshot(generation: u64) -> RepoMapSnapshot {
         repo_id: repo(),
         revision_id: revision(),
         manifest_generation: ManifestGeneration::new(generation),
+        manifest_digest: Some(format!("manifest-{generation}")),
+        source_bundle_digest: Some(format!("bundle-{generation}")),
         snapshot_meta: RepoMapSnapshotMeta {
             snapshot_id: format!("snap-{generation}"),
             projection_version: 1,
@@ -70,12 +72,13 @@ fn snapshot(generation: u64) -> RepoMapSnapshot {
 }
 
 fn activate(store: &RepoMapGenerationStore, generation: u64) -> Result<(), CoreError> {
-    store.activate_generation(&RepoMapActivateGenerationRequest {
+    let _receipt = store.activate_generation(&RepoMapActivateGenerationRequest {
         repo_id: repo(),
         revision_id: revision(),
         manifest_generation: ManifestGeneration::new(generation),
         manifest_digest: format!("manifest-{generation}"),
-    })
+    })?;
+    Ok(())
 }
 
 fn query(store: &RepoMapGenerationStore, generation: u64) -> Result<Vec<String>, CoreError> {

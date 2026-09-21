@@ -122,6 +122,8 @@ fn snapshot(rng: &mut Lcg, entries: u64) -> RepoMapSnapshot {
         repo_id: RepoId::new("repo"),
         revision_id: RevisionId::new("rev"),
         manifest_generation: ManifestGeneration::new(1),
+        manifest_digest: Some("manifest-1".to_string()),
+        source_bundle_digest: Some("bundle-1".to_string()),
         snapshot_meta: RepoMapSnapshotMeta {
             snapshot_id: "snap".to_string(),
             projection_version: 1,

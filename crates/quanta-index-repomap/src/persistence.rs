@@ -823,6 +823,8 @@ mod tests {
             repo_id: RepoId::new("repo/a"),
             revision_id: RevisionId::new("rev:b"),
             manifest_generation: ManifestGeneration::new(generation),
+            manifest_digest: Some(format!("manifest-{generation}")),
+            source_bundle_digest: Some(format!("bundle-{generation}")),
             snapshot_meta: RepoMapSnapshotMeta {
                 snapshot_id: format!("snapshot-{marker}"),
                 projection_version: 2,

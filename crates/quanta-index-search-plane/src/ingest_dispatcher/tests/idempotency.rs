@@ -139,7 +139,10 @@ impl StructuralIngestPort for Unreachable {
     }
 }
 impl RepoMapBundleIngestPort for Unreachable {
-    fn ingest_bundle(&self, _bundle: &RepoMapSourceBundle) -> Result<(), CoreError> {
+    fn ingest_bundle(
+        &self,
+        _bundle: &RepoMapSourceBundle,
+    ) -> Result<quanta_index_contract::RepoMapMutationAck, CoreError> {
         Err(unreachable_route("repo map bundle"))
     }
 }

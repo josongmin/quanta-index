@@ -79,12 +79,7 @@ impl SearchPlaneControlDispatcher {
         &self,
         request: RepoMapActivateGenerationRequest,
     ) -> Result<RepoMapMutationAck, CoreError> {
-        self.repo_map_activate.activate_generation(&request)?;
-        Ok(RepoMapMutationAck {
-            repo_id: request.repo_id,
-            revision_id: request.revision_id,
-            manifest_generation: request.manifest_generation,
-        })
+        self.repo_map_activate.activate_generation(&request)
     }
 
     /// Promote a prepared lexical plus semantic corpus after proving both
@@ -734,13 +729,23 @@ mod tests {
         fn activate_generation(
             &self,
             request: &RepoMapActivateGenerationRequest,
-        ) -> Result<(), CoreError> {
+        ) -> Result<RepoMapMutationAck, CoreError> {
             if request.manifest_digest.is_empty() {
                 return Err(CoreError::InvalidContract(
                     "repo-map activate: manifest_digest must not be empty".to_string(),
                 ));
             }
-            Ok(())
+            Ok(RepoMapMutationAck {
+                repo_id: request.repo_id.clone(),
+                revision_id: request.revision_id.clone(),
+                manifest_generation: request.manifest_generation,
+                operation: quanta_index_contract::RepoMapMutationOperationV2::Activate,
+                manifest_digest: request.manifest_digest.clone(),
+                snapshot_id: "snapshot:test".to_string(),
+                projection_version: 1,
+                authority_digest: "authority:test".to_string(),
+                source_bundle_digest: "bundle:test".to_string(),
+            })
         }
     }
 

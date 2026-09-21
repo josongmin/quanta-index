@@ -147,12 +147,13 @@ fn source_bundle() -> RepoMapSourceBundle {
 
 fn activate(store: &RepoMapGenerationStore) -> Result<(), CoreError> {
     let bundle = source_bundle();
-    store.activate_generation(&RepoMapActivateGenerationRequest {
+    let _receipt = store.activate_generation(&RepoMapActivateGenerationRequest {
         repo_id: bundle.repo_id,
         revision_id: bundle.revision_id,
         manifest_generation: bundle.manifest_generation,
         manifest_digest: "manifest-digest-17".to_string(),
-    })
+    })?;
+    Ok(())
 }
 
 fn query_request(focus_subjects: Vec<RepoMapFocusSubjectDto>) -> RepoMapQueryRequest {

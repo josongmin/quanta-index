@@ -4,6 +4,7 @@ use quanta_index_contract::{
     RepoMapChunkExactness, RepoMapChunkNode, RepoMapDocType, RepoMapEdge, RepoMapFileNode,
     RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode, RepoMapNodeRef,
     RepoMapSnapshotMeta, RepoMapSourceBundle, RepoMapSymbolNode,
+    canonical_repo_map_source_bundle_digest_v1,
 };
 
 use crate::model::{RepoMapEntry, RepoMapSnapshot};
@@ -41,7 +42,7 @@ struct SymbolEntryInput {
 
 impl RepoMapMaterializer {
     #[must_use]
-    pub fn materialize(bundle: &RepoMapSourceBundle) -> RepoMapSnapshot {
+    pub fn materialize(bundle: &RepoMapSourceBundle) -> Result<RepoMapSnapshot, String> {
         let snapshot_meta = RepoMapSnapshotMeta {
             snapshot_id: bundle.snapshot_id.clone(),
             projection_version: bundle.projection_version,
@@ -113,13 +114,15 @@ impl RepoMapMaterializer {
                 .then(lhs.subject_identity.cmp(&rhs.subject_identity))
         });
 
-        RepoMapSnapshot {
+        Ok(RepoMapSnapshot {
             repo_id: bundle.repo_id.clone(),
             revision_id: bundle.revision_id.clone(),
             manifest_generation: bundle.manifest_generation,
+            manifest_digest: Some(bundle.manifest_digest.clone()),
+            source_bundle_digest: Some(canonical_repo_map_source_bundle_digest_v1(bundle)?),
             snapshot_meta,
             entries,
-        }
+        })
     }
 }
 

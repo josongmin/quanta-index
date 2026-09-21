@@ -2975,6 +2975,12 @@ fn repomap_publish_routes_through_ingest_transport() {
         repo_id: repo_id(),
         revision_id: revision_id(),
         manifest_generation: ManifestGeneration::new(1),
+        operation: quanta_index_contract::RepoMapMutationOperationV2::Publish,
+        manifest_digest: "manifest-digest".to_string(),
+        snapshot_id: "snap".to_string(),
+        projection_version: 1,
+        authority_digest: "digest".to_string(),
+        source_bundle_digest: "bundle-digest".to_string(),
     };
     let ingest = Arc::new(StubIngestTransport::new(
         SearchPlaneIngestIpcResponse::RepoMapReceipt(ack.clone()),
@@ -3085,6 +3091,12 @@ fn repomap_activate_routes_through_control_transport() {
         repo_id: repo_id(),
         revision_id: revision_id(),
         manifest_generation: ManifestGeneration::new(9),
+        operation: quanta_index_contract::RepoMapMutationOperationV2::Activate,
+        manifest_digest: "digest:repomap-9".to_string(),
+        snapshot_id: "snap-9".to_string(),
+        projection_version: 1,
+        authority_digest: "authority-9".to_string(),
+        source_bundle_digest: "bundle-digest-9".to_string(),
     };
     let control = Arc::new(StubControlTransport::new(
         quanta_index_contract::SearchPlaneControlIpcResponse::RepoMapMutationAck(ack.clone()),

@@ -9,9 +9,9 @@ use quanta_index_contract::lex::{LanguageCode, SymbolKindCode};
 use quanta_index_contract::{
     FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapChunkExactness,
     RepoMapDocType, RepoMapExactnessSummary, RepoMapFocusSubjectDto, RepoMapGraphCoverage,
-    RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode, RepoMapNodeRef,
-    RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath, RevisionId,
-    SymbolId,
+    RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapMutationOperationV2,
+    RepoMapNode, RepoMapNodeRef, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle,
+    RepoRelativePath, RevisionId, SymbolId, canonical_repo_map_source_bundle_digest_v1,
 };
 use quanta_index_core::CoreError;
 use quanta_index_repomap::RepoMapGenerationStore;
@@ -178,12 +178,13 @@ fn sample_bundle() -> RepoMapSourceBundle {
 }
 
 fn activate(store: &RepoMapGenerationStore, bundle: &RepoMapSourceBundle) -> Result<(), CoreError> {
-    store.activate_generation(&RepoMapActivateGenerationRequest {
+    let _receipt = store.activate_generation(&RepoMapActivateGenerationRequest {
         repo_id: bundle.repo_id.clone(),
         revision_id: bundle.revision_id.clone(),
         manifest_generation: bundle.manifest_generation,
         manifest_digest: "manifest-digest-7".to_string(),
-    })
+    })?;
+    Ok(())
 }
 
 fn assert_not_found_contains(error: CoreError, needle: &str) {
@@ -297,6 +298,66 @@ fn ingest_and_query_returns_ranked_entries() {
             .iter()
             .any(|code| code == "top_k_exhausted")
     );
+}
+
+#[test]
+fn mutation_receipts_bind_exact_persisted_bundle_and_activation() {
+    let store = RepoMapGenerationStore::default();
+    let bundle = sample_bundle();
+    let expected_bundle_digest = canonical_repo_map_source_bundle_digest_v1(&bundle);
+    assert!(
+        expected_bundle_digest.is_ok(),
+        "bundle digest should encode: {expected_bundle_digest:?}"
+    );
+    let Ok(expected_bundle_digest) = expected_bundle_digest else {
+        return;
+    };
+
+    let publish = store.ingest_bundle(&bundle);
+    assert!(publish.is_ok(), "publish should succeed: {publish:?}");
+    let Ok(publish) = publish else {
+        return;
+    };
+    assert_eq!(publish.operation, RepoMapMutationOperationV2::Publish);
+    assert_eq!(publish.manifest_digest, bundle.manifest_digest);
+    assert_eq!(publish.snapshot_id, bundle.snapshot_id);
+    assert_eq!(publish.projection_version, bundle.projection_version);
+    assert_eq!(publish.authority_digest, bundle.authority_digest);
+    assert_eq!(publish.source_bundle_digest, expected_bundle_digest);
+
+    let activate = store.activate_generation(&RepoMapActivateGenerationRequest {
+        repo_id: bundle.repo_id.clone(),
+        revision_id: bundle.revision_id.clone(),
+        manifest_generation: bundle.manifest_generation,
+        manifest_digest: bundle.manifest_digest.clone(),
+    });
+    assert!(activate.is_ok(), "activation should succeed: {activate:?}");
+    let Ok(activate) = activate else {
+        return;
+    };
+    assert_eq!(activate.operation, RepoMapMutationOperationV2::Activate);
+    assert_eq!(activate.source_bundle_digest, expected_bundle_digest);
+    assert_eq!(activate.manifest_digest, bundle.manifest_digest);
+}
+
+#[test]
+fn activate_generation_rejects_manifest_digest_mismatch() {
+    let store = RepoMapGenerationStore::default();
+    let bundle = sample_bundle();
+    let publish = store.ingest_bundle(&bundle);
+    assert!(publish.is_ok(), "publish should succeed: {publish:?}");
+
+    let activation = store.activate_generation(&RepoMapActivateGenerationRequest {
+        repo_id: bundle.repo_id,
+        revision_id: bundle.revision_id,
+        manifest_generation: bundle.manifest_generation,
+        manifest_digest: "manifest:wrong".to_string(),
+    });
+    assert!(activation.is_err(), "mismatched manifest must fail");
+    let Err(error) = activation else {
+        return;
+    };
+    assert_invalid_contract_contains(error, "manifest_digest mismatch");
 }
 
 #[test]

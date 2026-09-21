@@ -1,9 +1,11 @@
-use quanta_index_contract::{RepoMapActivateGenerationRequest, RepoMapSourceBundle};
+use quanta_index_contract::{
+    RepoMapActivateGenerationRequest, RepoMapMutationAck, RepoMapSourceBundle,
+};
 
 use crate::CoreError;
 
 pub trait RepoMapBundleIngestPort: Send + Sync {
-    fn ingest_bundle(&self, bundle: &RepoMapSourceBundle) -> Result<(), CoreError>;
+    fn ingest_bundle(&self, bundle: &RepoMapSourceBundle) -> Result<RepoMapMutationAck, CoreError>;
 }
 
 /// The `RepoMap` store's quarantine, listed and discarded one file at a
@@ -28,7 +30,7 @@ pub trait RepoMapGenerationActivatePort: Send + Sync {
     fn activate_generation(
         &self,
         request: &RepoMapActivateGenerationRequest,
-    ) -> Result<(), CoreError>;
+    ) -> Result<RepoMapMutationAck, CoreError>;
 }
 
 /// What a `RepoMap` store found on disk when it opened (QI-BB-008).

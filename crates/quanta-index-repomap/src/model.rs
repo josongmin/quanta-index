@@ -406,6 +406,8 @@ pub struct RepoMapSnapshot {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub manifest_generation: ManifestGeneration,
+    pub manifest_digest: Option<String>,
+    pub source_bundle_digest: Option<String>,
     pub snapshot_meta: RepoMapSnapshotMeta,
     pub entries: Vec<RepoMapEntry>,
 }
@@ -470,6 +472,8 @@ const REPOMAP_SNAPSHOT_FIELDS: &[&str] = &[
     "repo_id",
     "revision_id",
     "manifest_generation",
+    "manifest_digest",
+    "source_bundle_digest",
     "snapshot_meta",
     "entries",
 ];
@@ -479,10 +483,12 @@ impl Serialize for RepoMapSnapshot {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("RepoMapSnapshot", 5)?;
+        let mut state = serializer.serialize_struct("RepoMapSnapshot", 7)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("manifest_generation", &self.manifest_generation)?;
+        state.serialize_field("manifest_digest", &self.manifest_digest)?;
+        state.serialize_field("source_bundle_digest", &self.source_bundle_digest)?;
         state.serialize_field("snapshot_meta", &self.snapshot_meta)?;
         state.serialize_field("entries", &self.entries)?;
         state.end()
@@ -505,6 +511,8 @@ impl<'de> Visitor<'de> for RepoMapSnapshotVisitor {
         let mut repo_id: Option<RepoId> = None;
         let mut revision_id: Option<RevisionId> = None;
         let mut manifest_generation: Option<ManifestGeneration> = None;
+        let mut manifest_digest: Option<Option<String>> = None;
+        let mut source_bundle_digest: Option<Option<String>> = None;
         let mut snapshot_meta: Option<RepoMapSnapshotMeta> = None;
         let mut entries: Option<Vec<RepoMapEntry>> = None;
         while let Some(key) = map.next_key::<String>()? {
@@ -527,6 +535,8 @@ impl<'de> Visitor<'de> for RepoMapSnapshotVisitor {
                     }
                     manifest_generation = Some(map.next_value()?);
                 }
+                "manifest_digest" => manifest_digest = Some(map.next_value()?),
+                "source_bundle_digest" => source_bundle_digest = Some(map.next_value()?),
                 "snapshot_meta" => {
                     if snapshot_meta.is_some() {
                         return Err(de::Error::duplicate_field("snapshot_meta"));
@@ -549,6 +559,8 @@ impl<'de> Visitor<'de> for RepoMapSnapshotVisitor {
             revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
             manifest_generation: manifest_generation
                 .ok_or_else(|| de::Error::missing_field("manifest_generation"))?,
+            manifest_digest: manifest_digest.unwrap_or(None),
+            source_bundle_digest: source_bundle_digest.unwrap_or(None),
             snapshot_meta: snapshot_meta
                 .ok_or_else(|| de::Error::missing_field("snapshot_meta"))?,
             entries: entries.ok_or_else(|| de::Error::missing_field("entries"))?,
@@ -610,6 +622,8 @@ mod tests {
             repo_id: RepoId::new("repo-1"),
             revision_id: RevisionId::new("rev-1"),
             manifest_generation: ManifestGeneration::new(11),
+            manifest_digest: Some("manifest-11".to_string()),
+            source_bundle_digest: Some("bundle-11".to_string()),
             snapshot_meta: RepoMapSnapshotMeta {
                 snapshot_id: "snapshot-1".to_string(),
                 projection_version: 2,

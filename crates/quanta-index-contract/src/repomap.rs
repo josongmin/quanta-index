@@ -1776,6 +1776,27 @@ pub struct RepoMapSourceBundle {
     pub edges: Vec<RepoMapEdge>,
 }
 
+/// Lower-case SHA-256 over the canonical compact JSON encoding of the complete
+/// RepoMap source bundle. The same contract function is used by the producer
+/// and the durable store so a mutation receipt can bind the exact handoff
+/// bytes instead of only the repo/revision/generation tuple.
+pub fn canonical_repo_map_source_bundle_digest_v1(
+    bundle: &RepoMapSourceBundle,
+) -> Result<String, String> {
+    use sha2::{Digest as _, Sha256};
+
+    let canonical = serde_json::to_vec(bundle)
+        .map_err(|error| format!("failed to encode canonical RepoMap source bundle: {error}"))?;
+    let digest: [u8; 32] = Sha256::digest(canonical).into();
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        use core::fmt::Write as _;
+        write!(&mut hex, "{byte:02x}")
+            .map_err(|error| format!("failed to format RepoMap source bundle digest: {error}"))?;
+    }
+    Ok(hex)
+}
+
 impl RepoMapSourceBundle {
     #[must_use]
     #[expect(
@@ -2124,24 +2145,52 @@ impl<'de> Deserialize<'de> for RepoMapActivateGenerationRequest {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum RepoMapMutationOperationV2 {
+    Publish,
+    Activate,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RepoMapMutationAck {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub manifest_generation: ManifestGeneration,
+    pub operation: RepoMapMutationOperationV2,
+    pub manifest_digest: String,
+    pub snapshot_id: String,
+    pub projection_version: u32,
+    pub authority_digest: String,
+    pub source_bundle_digest: String,
 }
 
-const REPOMAP_MUTATION_ACK_V1_FIELDS: &[&str] = &["repo_id", "revision_id", "manifest_generation"];
+const REPOMAP_MUTATION_ACK_V2_FIELDS: &[&str] = &[
+    "repo_id",
+    "revision_id",
+    "manifest_generation",
+    "operation",
+    "manifest_digest",
+    "snapshot_id",
+    "projection_version",
+    "authority_digest",
+    "source_bundle_digest",
+];
 
 impl Serialize for RepoMapMutationAck {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("RepoMapMutationAck", 3)?;
+        let mut state = serializer.serialize_struct("RepoMapMutationAck", 9)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("manifest_generation", &self.manifest_generation)?;
+        state.serialize_field("operation", &self.operation)?;
+        state.serialize_field("manifest_digest", &self.manifest_digest)?;
+        state.serialize_field("snapshot_id", &self.snapshot_id)?;
+        state.serialize_field("projection_version", &self.projection_version)?;
+        state.serialize_field("authority_digest", &self.authority_digest)?;
+        state.serialize_field("source_bundle_digest", &self.source_bundle_digest)?;
         state.end()
     }
 }
@@ -2162,6 +2211,12 @@ impl<'de> Visitor<'de> for RepoMapMutationAckV1Visitor {
         let mut repo_id: Option<RepoId> = None;
         let mut revision_id: Option<RevisionId> = None;
         let mut manifest_generation: Option<ManifestGeneration> = None;
+        let mut operation: Option<RepoMapMutationOperationV2> = None;
+        let mut manifest_digest: Option<String> = None;
+        let mut snapshot_id: Option<String> = None;
+        let mut projection_version: Option<u32> = None;
+        let mut authority_digest: Option<String> = None;
+        let mut source_bundle_digest: Option<String> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "repo_id" => {
@@ -2182,10 +2237,46 @@ impl<'de> Visitor<'de> for RepoMapMutationAckV1Visitor {
                     }
                     manifest_generation = Some(map.next_value()?);
                 }
+                "operation" => {
+                    if operation.is_some() {
+                        return Err(de::Error::duplicate_field("operation"));
+                    }
+                    operation = Some(map.next_value()?);
+                }
+                "manifest_digest" => {
+                    if manifest_digest.is_some() {
+                        return Err(de::Error::duplicate_field("manifest_digest"));
+                    }
+                    manifest_digest = Some(map.next_value()?);
+                }
+                "snapshot_id" => {
+                    if snapshot_id.is_some() {
+                        return Err(de::Error::duplicate_field("snapshot_id"));
+                    }
+                    snapshot_id = Some(map.next_value()?);
+                }
+                "projection_version" => {
+                    if projection_version.is_some() {
+                        return Err(de::Error::duplicate_field("projection_version"));
+                    }
+                    projection_version = Some(map.next_value()?);
+                }
+                "authority_digest" => {
+                    if authority_digest.is_some() {
+                        return Err(de::Error::duplicate_field("authority_digest"));
+                    }
+                    authority_digest = Some(map.next_value()?);
+                }
+                "source_bundle_digest" => {
+                    if source_bundle_digest.is_some() {
+                        return Err(de::Error::duplicate_field("source_bundle_digest"));
+                    }
+                    source_bundle_digest = Some(map.next_value()?);
+                }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
-                        REPOMAP_MUTATION_ACK_V1_FIELDS,
+                        REPOMAP_MUTATION_ACK_V2_FIELDS,
                     ));
                 }
             }
@@ -2198,6 +2289,16 @@ impl<'de> Visitor<'de> for RepoMapMutationAckV1Visitor {
             repo_id,
             revision_id,
             manifest_generation,
+            operation: operation.ok_or_else(|| de::Error::missing_field("operation"))?,
+            manifest_digest: manifest_digest
+                .ok_or_else(|| de::Error::missing_field("manifest_digest"))?,
+            snapshot_id: snapshot_id.ok_or_else(|| de::Error::missing_field("snapshot_id"))?,
+            projection_version: projection_version
+                .ok_or_else(|| de::Error::missing_field("projection_version"))?,
+            authority_digest: authority_digest
+                .ok_or_else(|| de::Error::missing_field("authority_digest"))?,
+            source_bundle_digest: source_bundle_digest
+                .ok_or_else(|| de::Error::missing_field("source_bundle_digest"))?,
         })
     }
 }
@@ -2209,7 +2310,7 @@ impl<'de> Deserialize<'de> for RepoMapMutationAck {
     {
         deserializer.deserialize_struct(
             "RepoMapMutationAck",
-            REPOMAP_MUTATION_ACK_V1_FIELDS,
+            REPOMAP_MUTATION_ACK_V2_FIELDS,
             RepoMapMutationAckV1Visitor,
         )
     }
@@ -3095,10 +3196,10 @@ mod tests {
         RepoMapFileIndexRecord, RepoMapFileNode, RepoMapFocusSubjectDto, RepoMapGraphCoverage,
         RepoMapGraphCoverageClass, RepoMapGraphEdgeDto, RepoMapImportEdge,
         RepoMapItemIndexAvailability, RepoMapModuleId, RepoMapModuleNode, RepoMapMutationAck,
-        RepoMapNode, RepoMapNodeRef, RepoMapOwnsChunkEdge, RepoMapQueryRequest,
-        RepoMapQueryResponse, RepoMapRedactionState, RepoMapSnapshotMeta, RepoMapSourceBundle,
-        RepoMapSymbolNode, RepoMapSymbolRecordDto, RepoRelativePath, RevisionId, SymbolId,
-        SymbolKindCode,
+        RepoMapMutationOperationV2, RepoMapNode, RepoMapNodeRef, RepoMapOwnsChunkEdge,
+        RepoMapQueryRequest, RepoMapQueryResponse, RepoMapRedactionState, RepoMapSnapshotMeta,
+        RepoMapSourceBundle, RepoMapSymbolNode, RepoMapSymbolRecordDto, RepoRelativePath,
+        RevisionId, SymbolId, SymbolKindCode,
     };
     use std::collections::BTreeMap;
 
@@ -3376,6 +3477,12 @@ mod tests {
             repo_id: sample_repo_id(),
             revision_id: sample_revision_id(),
             manifest_generation: sample_manifest_generation(),
+            operation: RepoMapMutationOperationV2::Publish,
+            manifest_digest: "blake3:1234".into(),
+            snapshot_id: "snapshot:sample".into(),
+            projection_version: 1,
+            authority_digest: "authority:sample".into(),
+            source_bundle_digest: "0123456789abcdef".repeat(4),
         }
     }
 

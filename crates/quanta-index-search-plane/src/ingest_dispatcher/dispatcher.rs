@@ -4,8 +4,7 @@
 use std::sync::Arc;
 
 use quanta_index_contract::{
-    BatchPublishReceipt, RepoMapMutationAck, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcResponse,
+    BatchPublishReceipt, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
 };
 use quanta_index_core::{
     BATCH_DIGEST_MISMATCH_CODE, CoreError, FileContributorIngestPort, FileOwnershipIngestPort,
@@ -247,11 +246,7 @@ impl SearchPlaneIngestDispatcher {
             }
             SearchPlaneIngestIpcRequest::PublishRepoMapBundle(bundle) => {
                 match self.repomap.ingest_bundle(&bundle) {
-                    Ok(()) => SearchPlaneIngestIpcResponse::RepoMapReceipt(RepoMapMutationAck {
-                        repo_id: bundle.repo_id,
-                        revision_id: bundle.revision_id,
-                        manifest_generation: bundle.manifest_generation,
-                    }),
+                    Ok(receipt) => SearchPlaneIngestIpcResponse::RepoMapReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             } // QI-LXB-01 / QI-HIST-01 / QI-RT-02 / QI-STR-02: history /

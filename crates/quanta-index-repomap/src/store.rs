@@ -4,7 +4,8 @@
 use std::{collections::BTreeMap, path::Path, sync::Arc, sync::RwLock};
 
 use quanta_index_contract::{
-    ManifestGeneration, RepoId, RepoMapQueryRequest, RepoMapQueryResponse, RevisionId,
+    ManifestGeneration, RepoId, RepoMapMutationAck, RepoMapMutationOperationV2,
+    RepoMapQueryRequest, RepoMapQueryResponse, RevisionId,
 };
 use quanta_index_contract::{RepoMapActivateGenerationRequest, RepoMapSourceBundle};
 use quanta_index_core::{
@@ -114,7 +115,10 @@ impl RepoMapGenerationStore {
         })
     }
 
-    pub fn ingest_bundle(&self, bundle: &RepoMapSourceBundle) -> Result<(), CoreError> {
+    pub fn ingest_bundle(
+        &self,
+        bundle: &RepoMapSourceBundle,
+    ) -> Result<RepoMapMutationAck, CoreError> {
         if bundle.manifest_digest.trim().is_empty() {
             return Err(CoreError::InvalidContract(
                 "repomap ingest: manifest_digest must not be empty".to_string(),
@@ -130,8 +134,11 @@ impl RepoMapGenerationStore {
                 "repomap ingest: nodes must not be empty".to_string(),
             ));
         }
-        let snapshot = RepoMapMaterializer::materialize(bundle);
-        self.insert_snapshot(snapshot)
+        let snapshot =
+            RepoMapMaterializer::materialize(bundle).map_err(CoreError::InvalidContract)?;
+        let receipt = repo_map_mutation_receipt_v2(&snapshot, RepoMapMutationOperationV2::Publish)?;
+        self.insert_snapshot(snapshot)?;
+        Ok(receipt)
     }
 
     pub fn insert_snapshot(&self, snapshot: RepoMapSnapshot) -> Result<(), CoreError> {
@@ -163,7 +170,7 @@ impl RepoMapGenerationStore {
     pub fn activate_generation(
         &self,
         request: &RepoMapActivateGenerationRequest,
-    ) -> Result<(), CoreError> {
+    ) -> Result<RepoMapMutationAck, CoreError> {
         if request.manifest_digest.trim().is_empty() {
             return Err(CoreError::InvalidContract(
                 "repomap activate: manifest_digest must not be empty".to_string(),
@@ -178,14 +185,32 @@ impl RepoMapGenerationStore {
             .snapshots
             .read()
             .map_err(|err| CoreError::Storage(format!("repomap store poisoned: {err}")))?;
-        if !guard.contains_key(&key) {
-            return Err(CoreError::NotFound(format!(
+        let snapshot = guard.get(&key).ok_or_else(|| {
+            CoreError::NotFound(format!(
                 "repomap activate: no snapshot for repo={} revision={} generation={}",
                 request.repo_id.as_str(),
                 request.revision_id.as_str(),
                 request.manifest_generation.get()
+            ))
+        })?;
+        let stored_manifest_digest = snapshot
+            .snapshot
+            .manifest_digest
+            .as_deref()
+            .ok_or_else(|| {
+                CoreError::InvalidContract(
+                    "repomap activate: stored snapshot predates strong source binding; republish required"
+                        .to_string(),
+                )
+            })?;
+        if stored_manifest_digest != request.manifest_digest {
+            return Err(CoreError::InvalidContract(format!(
+                "repomap activate: manifest_digest mismatch: expected={} observed={}",
+                stored_manifest_digest, request.manifest_digest
             )));
         }
+        let receipt =
+            repo_map_mutation_receipt_v2(&snapshot.snapshot, RepoMapMutationOperationV2::Activate)?;
         drop(guard);
         if let Some(persistence) = &self.persistence {
             persistence.persist_activation(
@@ -210,7 +235,8 @@ impl RepoMapGenerationStore {
             &request.repo_id,
             &request.revision_id,
             request.manifest_generation,
-        )
+        )?;
+        Ok(receipt)
     }
 
     /// Retire every generation of `repo`/`revision` older than `keep_from`.
@@ -350,7 +376,7 @@ impl RepoMapGenerationStore {
 }
 
 impl RepoMapBundleIngestPort for RepoMapGenerationStore {
-    fn ingest_bundle(&self, bundle: &RepoMapSourceBundle) -> Result<(), CoreError> {
+    fn ingest_bundle(&self, bundle: &RepoMapSourceBundle) -> Result<RepoMapMutationAck, CoreError> {
         Self::ingest_bundle(self, bundle)
     }
 }
@@ -384,9 +410,34 @@ impl RepoMapGenerationActivatePort for RepoMapGenerationStore {
     fn activate_generation(
         &self,
         request: &RepoMapActivateGenerationRequest,
-    ) -> Result<(), CoreError> {
+    ) -> Result<RepoMapMutationAck, CoreError> {
         Self::activate_generation(self, request)
     }
+}
+
+fn repo_map_mutation_receipt_v2(
+    snapshot: &crate::model::RepoMapSnapshot,
+    operation: RepoMapMutationOperationV2,
+) -> Result<RepoMapMutationAck, CoreError> {
+    Ok(RepoMapMutationAck {
+        repo_id: snapshot.repo_id.clone(),
+        revision_id: snapshot.revision_id.clone(),
+        manifest_generation: snapshot.manifest_generation,
+        operation,
+        manifest_digest: snapshot.manifest_digest.clone().ok_or_else(|| {
+            CoreError::InvalidContract(
+                "repomap receipt: stored snapshot has no manifest binding".to_string(),
+            )
+        })?,
+        snapshot_id: snapshot.snapshot_meta.snapshot_id.clone(),
+        projection_version: snapshot.snapshot_meta.projection_version,
+        authority_digest: snapshot.snapshot_meta.authority_digest.clone(),
+        source_bundle_digest: snapshot.source_bundle_digest.clone().ok_or_else(|| {
+            CoreError::InvalidContract(
+                "repomap receipt: stored snapshot has no source bundle binding".to_string(),
+            )
+        })?,
+    })
 }
 
 impl RepoMapQueryPort for RepoMapGenerationStore {
