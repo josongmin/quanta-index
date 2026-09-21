@@ -8,10 +8,11 @@ use quanta_index_contract::{
     SearchPlaneIngestIpcResponse,
 };
 use quanta_index_core::{
-    CoreError, FileContributorIngestPort, FileOwnershipIngestPort, IdempotencyBeginV1,
-    IdempotencyCatalogPort, IdempotencyKeyV1, IngestBatchBodyV1, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMetaIngestPort, RepoTopicIngestPort,
-    RequestBudgetV1, SearchCorpusIngestPort,
+    ClaimOutcomeV1, CoreError, FileContributorIngestPort, FileOwnershipIngestPort,
+    IdempotencyCatalogPort, IdempotencyKeyV1, IngestBatchBodyV1, OperationInspectV1,
+    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
+    RepoMapBundleIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1,
+    SearchCorpusIngestPort,
 };
 use quanta_index_ipc::{BatchDigestVerdictV1, verify_batch_digest_v1};
 
@@ -23,6 +24,15 @@ use crate::ingest_dispatcher::ports::{
 // =============================================================================
 // Top-level dispatcher
 // =============================================================================
+
+/// How long one ingest claim holds its journal lease before recovery can
+/// abort it.
+const INGEST_CLAIM_LEASE_MS: u64 = 30_000;
+
+/// The owner identity every ingest claim of this process carries.
+fn claim_owner() -> String {
+    format!("searchd-ingest-{}", std::process::id())
+}
 
 /// Routes typed ingest requests to the appropriate domain port. Mirrors the
 /// shape of [`crate::SearchPlaneControlDispatcher`] / [`crate::SearchPlaneDispatcher`]
@@ -83,31 +93,34 @@ impl SearchPlaneIngestDispatcher {
         }
     }
 
-    /// Run one receipt-bearing publish under its idempotency record
-    /// (QI-BB-032), in this fixed order:
+    /// Run one receipt-bearing publish under the operation journal
+    /// (QI-BB-032, SEP-21 P02B), in this fixed order:
     ///
     /// 1. **Digest verification.** The carried `batch_digest` is recomputed
-    ///    from the body ([`verify_batch_digest_v1`]); a batch whose digest
-    ///    is not its body's is refused `BATCH_DIGEST_MISMATCH`. Nothing
-    ///    durable has happened.
-    /// 2. **Route preflight.** Everything the route can refuse without
-    ///    mutating (shape, surface authority, resource envelope, delta
-    ///    base) runs now, so a refused batch leaves no record and zero bytes
-    ///    changed (QI-BB-029).
-    /// 3. **Intent.** The record is begun under the verified digest. A
-    ///    finalized record answers with the recorded receipt marked
-    ///    `applied = false` and nothing runs.
-    /// 4. **Apply.** The route materializes the batch.
-    /// 5. **Finalize.** The receipt is recorded, stamped with the catalog's
-    ///    durable sequence, and returned as `applied = true`.
+    ///    from the body; a forged digest is refused before anything
+    ///    durable.
+    /// 2. **Preflight.** Everything the route can refuse without mutating —
+    ///    shape, surface authority, resource envelope, delta base, and the
+    ///    auxiliary routes' semantic validation against the ledger — runs
+    ///    now, so a refused batch leaves no record and zero bytes changed.
+    /// 3. **Inspect** (read-only replay check). A committed record answers
+    ///    the replay with its recorded receipt and nothing runs.
+    /// 4. **Fenced claim.** `claim_prepared` writes the immutable prepared
+    ///    row and hands back the [`PreparedMutationV1`] every later
+    ///    fenced step must carry. A terminal refusal replays exactly; a
+    ///    different body under the same key is a conflict; an invalidated
+    ///    key is below the replay floor.
+    /// 5. **Apply.** The route materializes the batch under the claim.
+    /// 6. **Terminal.** `commit` records the versioned receipt, allocates
+    ///    the global durable sequence and its journal event in one
+    ///    transaction. A typed refusal from the apply is recorded with
+    ///    `record_refused` (a frozen-policy refusal, exact-replayed by
+    ///    retries); an ambiguous terminal failure marks the record
+    ///    `Uncertain` for recovery.
     ///
-    /// A record left in progress by a crash between 4 and 5 re-runs the
-    /// apply, which every route makes idempotent and which the sealed
-    /// search-corpus path answers without re-materializing or re-embedding
-    /// when the durable end state already exists. Because the digest is the
-    /// body's, two bodies can never share a key; the catalog's own
-    /// different-body refusal is its invariant, not a path this dispatcher
-    /// can reach.
+    /// Because the digest is the body's, two bodies can never share a key;
+    /// the catalog's own different-body refusal is its invariant, not a
+    /// path this dispatcher can reach.
     fn publish_idempotent<B: IngestBatchBodyV1 + serde::Serialize>(
         &self,
         body: &mut B,
@@ -124,16 +137,53 @@ impl SearchPlaneIngestDispatcher {
             generation: body.generation(),
             batch_digest: body.batch_digest().to_string(),
         };
-        match self.idempotency.begin(&key, &body_sha256)? {
-            IdempotencyBeginV1::Replay {
+        // Replay-first: the read-only inspect answers a committed replay
+        // before any storage work.
+        if let OperationInspectV1::Committed {
+            receipt,
+            durable_sequence,
+        } = self.idempotency.inspect(&key)?
+        {
+            return Ok(receipt.recorded_at(durable_sequence).replayed());
+        }
+        let claim = match self.idempotency.claim_prepared(
+            &key,
+            &body_sha256,
+            &claim_owner(),
+            INGEST_CLAIM_LEASE_MS,
+            &body_sha256,
+        )? {
+            ClaimOutcomeV1::Replay {
                 receipt,
                 durable_sequence,
             } => return Ok(receipt.recorded_at(durable_sequence).replayed()),
-            IdempotencyBeginV1::Fresh | IdempotencyBeginV1::Resume => {}
+            ClaimOutcomeV1::Claimed(claim) => claim,
+        };
+        self.idempotency.mark_applying(&claim)?;
+        match apply(body) {
+            Ok(receipt) => match self.idempotency.commit(&claim, &receipt) {
+                Ok(durable_sequence) => Ok(receipt.recorded_at(durable_sequence)),
+                Err(error) => {
+                    let _uncertain = self.idempotency.mark_uncertain(&claim);
+                    Err(error)
+                }
+            },
+            Err(error) => {
+                // A typed refusal is frozen policy: record it so a retry
+                // replays the refusal exactly and no in-progress residue
+                // survives. Anything else (storage, ambiguity) is marked
+                // uncertain for recovery.
+                match &error {
+                    CoreError::Typed { .. } | CoreError::InvalidContract(_) => {
+                        let _refused = self.idempotency.record_refused(&claim, &error);
+                    }
+                    _ => {
+                        let _uncertain = self.idempotency.mark_uncertain(&claim);
+                    }
+                }
+                Err(error)
+            }
         }
-        let receipt = apply(body)?;
-        let durable_sequence = self.idempotency.finalize(&key, &body_sha256, &receipt)?;
-        Ok(receipt.recorded_at(durable_sequence))
     }
 
     /// Serve one ingest request (QI-BB-002).

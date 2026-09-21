@@ -19,6 +19,7 @@ use quanta_index_core::{
     AuxiliaryAuthorityCatalogPort, DoorFindingQuarantinePort, FileContributorIngestPort,
     FileOwnershipIngestPort, GenerationIdentityValidatePort, HistoryTextIndexPort,
     IdempotencyCatalogPort, IncompleteGenerationDiscardPort, IntegrityScrubPort,
+    MutationCoordinatorPort,
     LexicalIndexOpenPort, MetricSourcePort, ProcessMemoryProbePort,
     QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
     RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapQuarantinePort,
@@ -121,7 +122,10 @@ pub fn build_runtime_with_memory_probe(
         SqliteCatalog::open(&state_root, CATALOG_BUSY_BUDGET).map_err(anyhow::Error::from)?,
     );
     let shared_catalog = Arc::clone(&catalog);
-    let idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync> = shared_catalog;
+    let idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync> =
+        Arc::clone(&shared_catalog) as Arc<dyn IdempotencyCatalogPort + Send + Sync>;
+    let mutation_coordinator: Arc<dyn MutationCoordinatorPort + Send + Sync> =
+        Arc::clone(&shared_catalog) as Arc<dyn MutationCoordinatorPort + Send + Sync>;
     let auxiliary_catalog: Arc<dyn AuxiliaryAuthorityCatalogPort + Send + Sync> = catalog;
 
     let search_corpus_build_port: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync> =
@@ -221,6 +225,7 @@ pub fn build_runtime_with_memory_probe(
             search_corpus_lifecycle,
             legacy_semantic_journal_store,
             idempotency,
+            mutation_coordinator,
             auxiliary_catalog,
             history_text_index,
             adapter_metric_sources: vec![

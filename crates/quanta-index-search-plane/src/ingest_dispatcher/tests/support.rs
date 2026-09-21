@@ -15,8 +15,9 @@ use quanta_index_contract::{
     SourceRoleV1,
 };
 use quanta_index_core::{
-    CoreError, FinishedReclaims, GenerationIdentityValidatePort, IdempotencyBeginV1,
+    ClaimOutcomeV1, CoreError, FinishedReclaims, GenerationIdentityValidatePort,
     IdempotencyCatalogPort, IdempotencyKeyV1, IncompleteGenerationDiscardOutcomeV1,
+    OperationInspectV1, OperationJournalStateV1, PreparedMutationV1,
     IncompleteGenerationDiscardPort, IngestResourcePolicy, RequestBudgetV1,
     SealedGenerationBytesV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
     SemanticIngestHeaderV1, SemanticIngestPort, SemanticScopeSource, SemanticScopeStreamBuildPort,
@@ -44,9 +45,13 @@ use crate::{
 
 pub(super) type TestRes = Result<(), Box<dyn std::error::Error>>;
 
-/// One in-memory record: the body hash and, once finalized, the receipt
-/// and its sequence.
-pub(super) type MemoryRecord = ([u8; 32], Option<(BatchPublishReceipt, u64)>);
+/// One in-memory record: the body hash, the live claim (owner, fence,
+/// deadline, state) and, once terminal, the receipt and its sequence.
+pub(super) type MemoryRecord = (
+    [u8; 32],
+    Option<(String, u64, u64, OperationJournalStateV1)>,
+    Option<(BatchPublishReceipt, u64)>,
+);
 
 /// An in-memory idempotency catalog with the port's exact semantics, for
 /// tests that need the protocol without the storage engine.
@@ -124,73 +129,226 @@ impl MemoryIdempotencyCatalog {
             .records
             .lock()
             .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
-        let _prior = records.insert(key, (body_sha256, None));
+        let _prior = records.insert(
+            key,
+            (
+                body_sha256,
+                Some((
+                    "crashed-worker".to_string(),
+                    0,
+                    0,
+                    OperationJournalStateV1::Applying,
+                )),
+                None,
+            ),
+        );
         drop(records);
         Ok(())
     }
 }
 
+impl MemoryIdempotencyCatalog {
+    fn next_sequence_value(&self) -> Result<u64, CoreError> {
+        u64::try_from(self.next_sequence.fetch_add(1, Ordering::SeqCst))
+            .map_err(|err| CoreError::Storage(err.to_string()))
+            .map(|value| value.saturating_add(1))
+    }
+}
+
 impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
-    fn begin(
+    fn inspect(&self, key: &IdempotencyKeyV1) -> Result<OperationInspectV1, CoreError> {
+        let records = self
+            .records
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
+        Ok(match records.get(key) {
+            None => OperationInspectV1::Absent,
+            Some((_, _, Some((receipt, durable_sequence)))) => OperationInspectV1::Committed {
+                receipt: receipt.clone(),
+                durable_sequence: *durable_sequence,
+            },
+            Some((_, Some((owner, fence, deadline, state)), _)) => match state {
+                OperationJournalStateV1::Uncertain => OperationInspectV1::Uncertain {
+                    owner: owner.clone(),
+                },
+                state => OperationInspectV1::InFlight {
+                    state: *state,
+                    owner: owner.clone(),
+                    fence_token: *fence,
+                    lease_deadline_ms: *deadline,
+                },
+            },
+            Some((_, None, _)) => OperationInspectV1::Absent,
+        })
+    }
+
+    fn claim_prepared(
         &self,
         key: &IdempotencyKeyV1,
         body_sha256: &[u8; 32],
-    ) -> Result<IdempotencyBeginV1, CoreError> {
+        owner: &str,
+        lease_deadline_ms: u64,
+        epoch_commitment: &[u8; 32],
+    ) -> Result<ClaimOutcomeV1, CoreError> {
+        let _ = epoch_commitment;
         let mut records = self
             .records
             .lock()
             .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
-        let outcome = match records.get(key) {
+        let fence = quanta_index_core::now_unix_ms().saturating_add(1);
+        match records.get_mut(key) {
             None => {
-                let _new = records.insert(key.clone(), (*body_sha256, None));
-                Ok(IdempotencyBeginV1::Fresh)
+                let _new = records.insert(
+                    key.clone(),
+                    (
+                        *body_sha256,
+                        Some((
+                            owner.to_string(),
+                            fence,
+                            lease_deadline_ms,
+                            OperationJournalStateV1::Claimed,
+                        )),
+                        None,
+                    ),
+                );
+                Ok(ClaimOutcomeV1::Claimed(PreparedMutationV1 {
+                    key: key.clone(),
+                    body_sha256: *body_sha256,
+                    owner: owner.to_string(),
+                    fence_token: fence,
+                    lease_deadline_ms,
+                    epoch_commitment: *epoch_commitment,
+                }))
             }
-            Some((stored, _)) if stored != body_sha256 => Err(CoreError::Typed {
-                code: quanta_index_core::BATCH_DIGEST_CONFLICT_CODE,
-                message: format!(
-                    "{} batch_digest={} body differs",
-                    key.kind, key.batch_digest
-                ),
-            }),
-            Some((_, Some((receipt, durable_sequence)))) => Ok(IdempotencyBeginV1::Replay {
+            Some((stored, _, _)) if *stored != *body_sha256 => {
+                return Err(CoreError::Typed {
+                    code: quanta_index_core::BATCH_DIGEST_CONFLICT_CODE,
+                    message: format!("{} batch_digest={} body differs", key.kind, key.batch_digest),
+                });
+            }
+            Some((_, _, Some((receipt, durable_sequence)))) => Ok(ClaimOutcomeV1::Replay {
                 receipt: receipt.clone(),
                 durable_sequence: *durable_sequence,
             }),
-            Some((_, None)) => Ok(IdempotencyBeginV1::Resume),
-        };
-        drop(records);
-        outcome
+            Some((_, claim, None)) => {
+                *claim = Some((
+                    owner.to_string(),
+                    fence,
+                    lease_deadline_ms,
+                    OperationJournalStateV1::Claimed,
+                ));
+                Ok(ClaimOutcomeV1::Claimed(PreparedMutationV1 {
+                    key: key.clone(),
+                    body_sha256: *body_sha256,
+                    owner: owner.to_string(),
+                    fence_token: fence,
+                    lease_deadline_ms,
+                    epoch_commitment: *epoch_commitment,
+                }))
+            }
+        }
     }
 
-    fn finalize(
+    fn mark_applying(&self, claim: &PreparedMutationV1) -> Result<(), CoreError> {
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
+        let Some((_, Some((owner, fence, _, state)), _)) = records.get_mut(&claim.key) else {
+            return Err(CoreError::InvalidContract("mark_applying before claim".into()));
+        };
+        if *owner != claim.owner || *fence != claim.fence_token {
+            return Err(CoreError::InvalidContract("mark_applying under a stale fence".into()));
+        }
+        *state = OperationJournalStateV1::Applying;
+        Ok(())
+    }
+
+    fn record_refused(
         &self,
-        key: &IdempotencyKeyV1,
-        body_sha256: &[u8; 32],
+        claim: &PreparedMutationV1,
+        refusal: &CoreError,
+    ) -> Result<u64, CoreError> {
+        let _ = refusal;
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
+        let Some((_, Some((owner, fence, _, state)), _)) = records.get_mut(&claim.key) else {
+            return Err(CoreError::InvalidContract("record_refused before claim".into()));
+        };
+        if *owner != claim.owner || *fence != claim.fence_token {
+            return Err(CoreError::InvalidContract(
+                "record_refused under a stale fence".into(),
+            ));
+        }
+        *state = OperationJournalStateV1::Refused;
+        Ok(self.next_sequence_value()?)
+    }
+
+    fn commit(
+        &self,
+        claim: &PreparedMutationV1,
         receipt: &BatchPublishReceipt,
     ) -> Result<u64, CoreError> {
         let mut records = self
             .records
             .lock()
             .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
-        let Some(record) = records.get_mut(key) else {
-            return Err(CoreError::InvalidContract(
-                "finalize before begin".to_string(),
-            ));
+        let Some((body, Some((owner, fence, _, state)), committed)) =
+            records.get_mut(&claim.key)
+        else {
+            return Err(CoreError::InvalidContract("commit before claim".into()));
         };
-        if record.0 != *body_sha256 {
+        if *body != claim.body_sha256 || *owner != claim.owner || *fence != claim.fence_token {
+            return Err(CoreError::InvalidContract("commit under a stale fence".into()));
+        }
+        if committed.is_some() {
+            return Err(CoreError::InvalidContract("commit twice".into()));
+        }
+        *state = OperationJournalStateV1::Committed;
+        let sequence = self.next_sequence_value()?;
+        *committed = Some((receipt.clone(), sequence));
+        Ok(sequence)
+    }
+
+    fn mark_uncertain(&self, claim: &PreparedMutationV1) -> Result<(), CoreError> {
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
+        let Some((_, Some((owner, fence, _, state)), _)) = records.get_mut(&claim.key) else {
+            return Err(CoreError::InvalidContract("mark_uncertain before claim".into()));
+        };
+        if *owner != claim.owner || *fence != claim.fence_token {
             return Err(CoreError::InvalidContract(
-                "finalize under another body".to_string(),
+                "mark_uncertain under a stale fence".into(),
             ));
         }
-        if record.1.is_some() {
-            return Err(CoreError::InvalidContract("finalize twice".to_string()));
+        *state = OperationJournalStateV1::Uncertain;
+        Ok(())
+    }
+
+    fn recover(&self, key: &IdempotencyKeyV1) -> Result<OperationInspectV1, CoreError> {
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
+        match records.get_mut(key) {
+            None => Ok(OperationInspectV1::Absent),
+            Some((_, None, _)) => Ok(OperationInspectV1::Absent),
+            Some((_, Some((_owner, _fence, _deadline, state)), Some((receipt, sequence)))) => {
+                let _ = state;
+                Ok(OperationInspectV1::Committed {
+                    receipt: receipt.clone(),
+                    durable_sequence: *sequence,
+                })
+            }
+            Some((_, Some((_owner, _fence, _deadline, state)), None)) => {
+                *state = OperationJournalStateV1::Aborted;
+                Ok(OperationInspectV1::Absent)
+            }
         }
-        let sequence = u64::try_from(self.next_sequence.fetch_add(1, Ordering::SeqCst))
-            .map_err(|err| CoreError::Storage(err.to_string()))?
-            .saturating_add(1);
-        record.1 = Some((receipt.clone(), sequence));
-        drop(records);
-        Ok(sequence)
     }
 
     fn generations_for_pair(

@@ -449,6 +449,17 @@ reproduction = "offline-importer"
 notes = "P01A owns only the address grammar. P03 projects readable raw bytes after the catalog incident commits; a corrupted payload cannot be assumed rebuildable."
 
 [[artifact]]
+id = "operation-journal-receipt"
+owner = "quanta-index-catalog"
+path = "state_root/catalog/catalog-v1.sqlite (idempotency_v2.receipt_cbor)"
+reproduction = "offline-importer"
+notes = "P02B operation journal: persisted BatchPublishReceipt bytes are canonical CBOR behind an explicit format tag (SEP-21-002). A runtime that finds another version refuses typed before any mutation; receipts of another version are offline-migration input only (no boot-time dual decoder, no live migration). The journal's dedup state cannot be re-derived from producers, so a new state root needs an explicit importer."
+[[artifact.version_constants]]
+file = "crates/quanta-index-contract/src/ipc/ingest.rs"
+name = "BATCH_PUBLISH_RECEIPT_FORMAT_VERSION"
+value = 1
+
+[[artifact]]
 id = "legacy-semantic-journal"
 owner = "quanta-index-searchd"
 path = "state_root/semantic/{journal.cbor,MIGRATED,MIGRATED.lock}"

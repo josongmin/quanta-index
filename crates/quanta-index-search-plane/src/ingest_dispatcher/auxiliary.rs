@@ -28,7 +28,8 @@ use crate::ingest_dispatcher::ports::{
 use crate::readiness::{HistoryAuthorityState, HistoryDelta, history_diff_search_text};
 
 /// Serializes the validate → persist → apply protocol of every auxiliary
-/// mutation (QI-BB-020).
+/// mutation (QI-BB-020) under the durable `MutationCoordinatorV1`
+/// (SEP-21 P02B).
 ///
 /// A transition is validated against the ledger under its read lock and
 /// stamped with the next epoch of its generation and domain, made
@@ -39,24 +40,81 @@ use crate::readiness::{HistoryAuthorityState, HistoryDelta, history_diff_search_
 /// and the search-corpus path that owns the chunk universe take this lock
 /// for the whole protocol. Queries never take it: they clone a snapshot
 /// under the ledger's read lock and scan outside it.
-#[derive(Debug, Default)]
+///
+/// When a durable coordinator port is wired (production), the guard also
+/// holds the state-root-global mutation lease, so a second *process*
+/// against the same state root is refused `CATALOG_BUSY` rather than
+/// interleaving; a crash releases the lease at its deadline. The
+/// in-process mutex remains for same-process epoch ordering — the ledger
+/// epochs it protects are process-local state.
 pub struct AuxiliaryMutationCoordinator {
     serial: Mutex<()>,
+    durable: Option<Arc<dyn quanta_index_core::MutationCoordinatorPort + Send + Sync>>,
+}
+
+/// The guard the materializers hold for the whole protocol: the
+/// in-process serial slot plus, when wired, the durable lease (released
+/// on drop; a failed release is a fence loss the next `enter` surfaces
+/// typed, and the lease dies at its deadline regardless).
+pub(super) struct CoordinatorGuard<'a> {
+    _serial: std::sync::MutexGuard<'a, ()>,
+    lease: Option<(
+        Arc<dyn quanta_index_core::MutationCoordinatorPort + Send + Sync>,
+        quanta_index_core::MutationLeaseV1,
+    )>,
+}
+
+impl Drop for CoordinatorGuard<'_> {
+    fn drop(&mut self) {
+        if let Some((port, lease)) = &self.lease {
+            let _released = port.release(lease);
+        }
+    }
 }
 
 impl AuxiliaryMutationCoordinator {
+    /// A coordinator with only in-process serialization (tests and
+    /// single-process tooling).
     #[must_use]
     pub fn shared() -> Arc<Self> {
-        Arc::new(Self::default())
+        Arc::new(Self {
+            serial: Mutex::new(()),
+            durable: None,
+        })
     }
 
-    pub(super) fn lock(&self) -> Result<std::sync::MutexGuard<'_, ()>, CoreError> {
-        self.serial.lock().map_err(|err| {
+    /// A coordinator that also machine-enforces exclusivity through the
+    /// state-root-global durable mutation lease (production wiring).
+    #[must_use]
+    pub fn durable(
+        port: Arc<dyn quanta_index_core::MutationCoordinatorPort + Send + Sync>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            serial: Mutex::new(()),
+            durable: Some(port),
+        })
+    }
+
+    pub(super) fn lock(&self, owner: &str) -> Result<CoordinatorGuard<'_>, CoreError> {
+        let serial = self.serial.lock().map_err(|err| {
             CoreError::Storage(format!(
                 "auxiliary materialize: mutation coordinator poisoned: {err}"
             ))
-        })
+        })?;
+        let lease = match &self.durable {
+            None => None,
+            Some(port) => {
+                let lease = port.enter("auxiliary-mutation", owner, 30_000)?;
+                Some((Arc::clone(port), lease))
+            }
+        };
+        Ok(CoordinatorGuard { _serial: serial, lease })
     }
+}
+
+/// The owner identity auxiliary mutations of this process carry.
+pub(super) fn coordinator_owner() -> String {
+    format!("searchd-aux-{}", std::process::id())
 }
 
 /// The catalog and the ledger every auxiliary materializer writes through.
@@ -226,7 +284,7 @@ fn history_text_docs_of_delta(
 impl HistoryIngestPort for DirectHistoryMaterializer {
     fn publish_batch(&self, batch: &HistoryIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
         const WHAT: &str = "direct history materialize";
-        let _serial = self.parts.coordinator.lock()?;
+        let _serial = self.parts.coordinator.lock(&coordinator_owner())?;
         // The next epoch and the current snapshot are read under the
         // ledger lock; the transition and the index plan run on that
         // immutable snapshot after it, the coordinator lock keeping any
@@ -344,7 +402,7 @@ pub(super) fn dirty_publish_receipt_v1(batch: &DirtyIngestBatch) -> BatchPublish
 impl RuntimeMetadataIngestPort for DirectRuntimeMetadataMaterializer {
     fn publish_batch(&self, batch: &DirtyIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
         const WHAT: &str = "direct dirty materialize";
-        let _serial = self.parts.coordinator.lock()?;
+        let _serial = self.parts.coordinator.lock(&coordinator_owner())?;
         let delta = {
             let guard = self.parts.read_ledger(WHAT)?;
             let epoch =
@@ -371,7 +429,7 @@ impl RuntimeMetadataIngestPort for DirectRuntimeMetadataMaterializer {
         batch: &RuntimeCatalogIngestBatch,
     ) -> Result<BatchPublishReceipt, CoreError> {
         const WHAT: &str = "direct runtime catalog materialize";
-        let _serial = self.parts.coordinator.lock()?;
+        let _serial = self.parts.coordinator.lock(&coordinator_owner())?;
         let delta = {
             let guard = self.parts.read_ledger(WHAT)?;
             let epoch =
@@ -429,7 +487,7 @@ impl StructuralIngestPort for DirectStructuralMaterializer {
         batch: &StructuralIngestBatch,
     ) -> Result<BatchPublishReceipt, CoreError> {
         const WHAT: &str = "direct structural materialize";
-        let _serial = self.parts.coordinator.lock()?;
+        let _serial = self.parts.coordinator.lock(&coordinator_owner())?;
         let delta = {
             let guard = self.parts.read_ledger(WHAT)?;
             let epoch = guard.structural_next_epoch(

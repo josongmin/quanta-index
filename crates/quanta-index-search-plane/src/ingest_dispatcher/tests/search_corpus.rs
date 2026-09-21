@@ -212,13 +212,24 @@ fn seed_records(
                 batch_digest: format!("{kind}:{generation}"),
             };
             let body = [u8::try_from(*generation)?; 32];
-            let _fresh = catalog.begin(&key, &body)?;
+            let claim = match catalog.claim_prepared(
+                &key,
+                &body,
+                "test-seed",
+                u64::MAX,
+                &body,
+            )? {
+                quanta_index_core::ClaimOutcomeV1::Claimed(claim) => claim,
+                quanta_index_core::ClaimOutcomeV1::Replay { .. } => {
+                    return Err("seed claim unexpectedly replayed".into());
+                }
+            };
             let receipt = quanta_index_contract::BatchPublishReceipt::empty_for(
                 ManifestGeneration::new(*generation),
                 None,
                 key.batch_digest.clone(),
             );
-            let _sequence = catalog.finalize(&key, &body, &receipt)?;
+            let _sequence = catalog.commit(&claim, &receipt)?;
         }
     }
     Ok(())

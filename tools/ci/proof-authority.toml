@@ -119,22 +119,22 @@ required_host = "any"
 
 [[proofs]]
 id = "p02b-operation-journal"
-authority_state = "staged"
+authority_state = "executable"
 execution_mode = "test-authority"
-staged_reason = "P02B must land the global sequence/journal owner and its recovery/concurrency targets."
 ticket = "S21-04"
 family = "F"
 checkpoint = "M1"
 owner = "crates/quanta-index-core/src/domains/idempotency.rs"
-command = "just rust-profile test-integration-fast"
+command = "just proof-p02b-operation-journal"
 gate = "release"
-profile = "test-integration-fast"
+profile = "test-p02b-operation-journal"
 target = "operation-journal-owner"
 filter = "none"
 source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = ["catalog-idempotency"]
+test_authority_scopes = ["p02b-operation-journal"]
+test_authority_targets = ["operation-journal-owner-v1", "catalog-idempotency"]
 dependencies = ["p01-canonical-identity"]
 artifact = "artifacts/proof-authority/p02b-operation-journal.json"
 required_host = "any"

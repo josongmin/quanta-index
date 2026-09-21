@@ -25,6 +25,7 @@ rust-profile-list:
         'validate-shared-surface contract/core/sdk/search-plane shared-surface validation rail' \
         'test-fast           default local test loop; workspace lib/bin tests, excludes daemon e2e' \
         'test-canonical-identity P01A identity, codec, layout-security, and error-authority proof' \
+        'test-p02b-operation-journal P02B global sequence authority and operation journal proof' \
         'test-integration-fast bounded integration loop; excludes slow text/Lance storage' \
         'test-integration-storage text-authority shard persistence slice' \
         'test-integration-semantic semantic storage integration slice' \
@@ -54,6 +55,7 @@ rust-profile profile:
         validate-shared-surface) ./scripts/run-rust-profile.sh "{{profile}}" rust-validate-shared-surface ;; \
         test-fast) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-fast ;; \
         test-canonical-identity) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-canonical-identity ;; \
+        test-p02b-operation-journal) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-p02b-operation-journal ;; \
         test-integration-fast) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-fast ;; \
         test-integration-storage) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-storage ;; \
         test-integration-semantic) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-semantic ;; \
@@ -205,6 +207,9 @@ rust-test-unit:
 
 rust-test-canonical-identity lane="test-canonical-identity-lane":
     python3 tools/ci/run-local-test-scope.py canonical-identity --lane {{lane}}
+
+rust-test-p02b-operation-journal lane="test-p02b-operation-journal-lane":
+    python3 tools/ci/run-local-test-scope.py p02b-operation-journal --lane {{lane}}
 
 rust-test-integration-fast lane="test-integration-lane":
     python3 tools/ci/run-local-test-scope.py integration-fast --lane {{lane}}
@@ -638,6 +643,16 @@ proof-p01-canonical-identity:
     @just rust-cargo-modules
     @just rust-profile validate-shared-surface
     @just rust-profile test-daemon
+
+# P02B: the global sequence authority and operation journal proof. The
+# journal touches the ingest IPC receipt surface, so the wire inventory and
+# the IPC decoder fuzz smoke run alongside the scoped journal tests and
+# the hexagonal boundary guards.
+proof-p02b-operation-journal:
+    @just rust-profile test-p02b-operation-journal
+    @just rust-hexagonal
+    @just rust-wire-inventory
+    @just rust-fuzz-smoke
 
 proof-p00-authority-freeze:
     python3 tools/ci/write-error-authority-inventory.py

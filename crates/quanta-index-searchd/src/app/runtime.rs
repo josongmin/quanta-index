@@ -30,6 +30,7 @@ use quanta_index_core::{
     AUX_EPOCH_EXPIRED_CODE, AUX_EPOCH_UNKNOWN_CODE, AuxiliaryAuthorityCatalogPort, CoreError,
     DoorFindingQuarantinePort, FileContributorIngestPort, FileOwnershipIngestPort,
     GenerationIdentityValidatePort, HistoryTextIndexPort, IdempotencyCatalogPort,
+    MutationCoordinatorPort,
     IncompleteGenerationDiscardPort, IntegrityScrubPort, L2UnitEmbeddingProvider,
     LexicalIndexOpenPort, MetricSourcePort, ProcessMemoryProbePort,
     QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
@@ -123,8 +124,11 @@ pub struct SearchdRuntimeParts {
     pub repo_map_open_report: RepoMapOpenReportV1,
     pub search_corpus_lifecycle: Arc<SearchCorpusLifecycleOwner>,
     pub legacy_semantic_journal_store: Arc<LegacySemanticJournalStore>,
-    /// Durable ingest idempotency records (QI-BB-032).
+    /// Durable ingest operation journal (QI-BB-032, SEP-21 P02B).
     pub idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
+    /// The state-root-global durable mutation coordinator
+    /// (`MutationCoordinatorV1`, SEP-21 P02B).
+    pub mutation_coordinator: Arc<dyn MutationCoordinatorPort + Send + Sync>,
     /// Durable auxiliary authority rows (QI-BB-020).
     pub auxiliary_catalog: Arc<dyn AuxiliaryAuthorityCatalogPort + Send + Sync>,
     /// The per-epoch history text index the relevance order scores with
@@ -1079,6 +1083,7 @@ impl SearchdRuntime {
             search_corpus_lifecycle,
             legacy_semantic_journal_store,
             idempotency,
+            mutation_coordinator,
             auxiliary_catalog,
             history_text_index,
             adapter_metric_sources,
@@ -1242,7 +1247,9 @@ impl SearchdRuntime {
         };
         let auxiliary_parts = AuxiliaryMaterializerParts {
             catalog: Arc::clone(&auxiliary_catalog),
-            coordinator: AuxiliaryMutationCoordinator::shared(),
+            // The durable MutationCoordinatorV1 (SEP-21 P02B): the
+            // state-root-global mutation lease the catalog machine-enforces.
+            coordinator: AuxiliaryMutationCoordinator::durable(Arc::clone(&mutation_coordinator)),
             ledger: Arc::clone(&ledger),
         };
         // One registry of opened history text epochs, shared by the route

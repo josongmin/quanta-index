@@ -128,6 +128,14 @@ targets = [
   "repomap-layout-v3-security",
 ]
 
+[local_scopes.p02b-operation-journal]
+lane = "test-p02b-operation-journal-lane"
+test_threads = 2
+targets = [
+  "operation-journal-owner-v1",
+  "catalog-idempotency",
+]
+
 [local_scopes.cli-smoke]
 lane = "test-cli-smoke-lane"
 test_threads = 2
@@ -467,6 +475,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "catalog-auxiliary"
 path = "crates/quanta-index-catalog/tests/auxiliary.rs"
+owner = "quanta-index-catalog"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "operation-journal-owner-v1"
+path = "crates/quanta-index-catalog/tests/operation_journal.rs"
 owner = "quanta-index-catalog"
 rail = "pr-workspace-nextest"
 
