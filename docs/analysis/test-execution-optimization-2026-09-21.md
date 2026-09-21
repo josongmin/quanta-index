@@ -677,6 +677,12 @@ dispatch with no bundle still runs the deep suite, schedules are unchanged,
 and PR structural gates remain active. Topology tests bind all three event
 classes so a future condition edit cannot silently restore the fan-out.
 
+The isolated release gate also installed the editable project even though its
+entire Python call graph imports only `jsonschema` outside the standard
+library. It now installs only that runtime dependency, matching the P00 proof
+job and avoiding package build plus unused Jinja installation. The dependency
+topology test covers this fourth proof/agent job as well.
+
 ## Remaining measurement
 
 On a quiet host, run:

@@ -229,6 +229,15 @@ def test_ci_python_jobs_install_only_their_runtime_imports() -> None:
         assert command in installs, (job_id, installs)
         assert all("-e ." not in install for install in installs), (job_id, installs)
 
+    correctness = yaml.safe_load(CORRECTNESS_WORKFLOW.read_text(encoding="utf-8"))
+    release_steps = correctness["jobs"]["proof-authority-release-gate"]["steps"]
+    release_install = next(
+        step["run"]
+        for step in release_steps
+        if step.get("name") == "Install proof-authority dependencies"
+    )
+    assert release_install == "python -m pip install 'jsonschema>=4.23.0'"
+
 
 def test_msrv_uses_one_all_target_compile_graph() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
