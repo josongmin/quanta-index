@@ -190,9 +190,8 @@ required_host = "linux-production-like"
 
 [[proofs]]
 id = "p04-read-view-lifetime-owner"
-authority_state = "staged"
+authority_state = "executable"
 execution_mode = "test-authority"
-staged_reason = "P04 must land host-independent read-view lifetime, pin and GC owner targets."
 ticket = "S21-05"
 family = "U"
 checkpoint = "M2"
@@ -205,7 +204,12 @@ filter = "none"
 source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = []
+test_authority_scopes = ["read-view-lifetime-owner", "search-plane-read-view-lib"]
+test_authority_targets = [
+  "read-view-lifetime-owner-v1",
+  "repomap-owner-surface",
+  "core-read-view-declaration",
+]
 dependencies = ["p03-candidate-activation-owner"]
 artifact = "artifacts/proof-authority/p04-read-view-lifetime-owner.json"
 required_host = "any"

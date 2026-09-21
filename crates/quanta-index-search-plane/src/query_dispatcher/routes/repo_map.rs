@@ -1,8 +1,9 @@
-//! Repo-map query route: policy validation then delegation to the port.
+//! Repo-map query route: policy validation, then the pinned snapshot the
+//! read view acquired.
 //!
-//! The `RepoMap` domain is served by the port the composition root wired;
-//! the route's read view declares that domain and nothing else, so no
-//! track handle or auxiliary snapshot is opened for a `RepoMap` query.
+//! The `RepoMap` domain is acquired once by the view as a real immutable
+//! handle; the route executes against `view.repo_map()` only — there is
+//! no ambient store or registry left to consult after acquisition.
 
 use quanta_index_contract::{GenerationPin, RepoMapQueryRequest, RepoMapQueryResponse};
 use quanta_index_core::{
@@ -35,6 +36,13 @@ impl SearchPlaneDispatcher {
                 view.domains()
             )));
         }
-        self.repo_map_query.query(request)
+        if !view.identity().evidence_is_exact() {
+            return Err(CoreError::Storage(format!(
+                "repo map: the read view evidence is not exact for {}",
+                view.domains()
+            )));
+        }
+        let snapshot = view.repo_map()?;
+        snapshot.query(request)
     }
 }

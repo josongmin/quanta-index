@@ -29,7 +29,24 @@ use quanta_index_repomap::{OpenedRepoMapStore, RepoMapGenerationStore};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-/// A distinct valid 64-hex producer digest per fixture marker.
+// A distinct valid 64-hex producer digest per fixture marker.
+
+fn read_query_snapshot(
+    store: &quanta_index_repomap::RepoMapGenerationStore,
+    request: &RepoMapQueryRequest,
+) -> Result<quanta_index_contract::RepoMapQueryResponse, quanta_index_core::CoreError> {
+    // S21-05: the ambient store read is gone; a test reads through one
+    // acquired pinned view, exactly like a production route.
+    use quanta_index_core::PinnedRepoMapSnapshot as _;
+    store
+        .acquire_pinned(&quanta_index_core::RepoMapSnapshotAcquireV1 {
+            repo_id: request.repo_id.clone(),
+            revision_id: request.revision_id.clone(),
+            manifest_generation: request.manifest_generation,
+        })?
+        .query(request.clone())
+}
+
 fn producer_hex(marker: &str) -> String {
     let hash = marker
         .bytes()
@@ -120,7 +137,7 @@ fn a_fresh_root_bootstraps_empty_and_serves_nothing() -> TestResult {
     assert_eq!(opened.report.activations_loaded, 0);
     assert!(opened.report.quarantined.is_empty());
     assert!(opened.report.activations_without_snapshot.is_empty());
-    match opened.store.read_query_snapshot(&query_request(&repo(), 1)) {
+    match read_query_snapshot(&opened.store, &query_request(&repo(), 1)) {
         Err(CoreError::NotFound(_)) => {}
         other => unreachable!("expected typed NOT_FOUND, got {other:?}"),
     }
@@ -134,40 +151,23 @@ fn a_published_generation_is_visible_only_after_activation() -> TestResult {
     let (_catalog, opened) = open(&root)?;
     let store = &opened.store;
     let _receipt = store.ingest_bundle(&bundle(&repo(), 1, "g1"))?;
-    assert!(
-        store
-            .read_query_snapshot(&query_request(&repo(), 1))
-            .is_err()
-    );
+    assert!(read_query_snapshot(store, &query_request(&repo(), 1)).is_err());
     let _activation = store.activate_generation(&activate_request(&repo(), 1))?;
-    assert!(
-        store
-            .read_query_snapshot(&query_request(&repo(), 1))
-            .is_ok()
-    );
+    assert!(read_query_snapshot(store, &query_request(&repo(), 1)).is_ok());
 
     // After a restart, the same rules hold from the catalog alone.
     let (_catalog, opened) = open(&root)?;
     let store = &opened.store;
     assert_eq!(opened.report.snapshots_loaded, 1);
     assert_eq!(opened.report.activations_loaded, 1);
-    assert!(
-        store
-            .read_query_snapshot(&query_request(&repo(), 1))
-            .is_ok()
-    );
+    assert!(read_query_snapshot(store, &query_request(&repo(), 1)).is_ok());
 
     // A sealed-but-not-activated second generation stays invisible.
     let _receipt = store.ingest_bundle(&bundle(&repo(), 2, "g2"))?;
     let (_catalog, opened) = open(&root)?;
     assert_eq!(opened.report.snapshots_loaded, 2);
     assert_eq!(opened.report.activations_loaded, 1);
-    assert!(
-        opened
-            .store
-            .read_query_snapshot(&query_request(&repo(), 2))
-            .is_err()
-    );
+    assert!(read_query_snapshot(&opened.store, &query_request(&repo(), 2)).is_err());
     Ok(())
 }
 
@@ -181,16 +181,8 @@ fn repo_revisions_are_isolated_activation_keys() -> TestResult {
     let _second = store.ingest_bundle(&bundle(&other_repo(), 5, "b5"))?;
     let _activated = store.activate_generation(&activate_request(&other_repo(), 5))?;
     // Only the other repo's generation is active.
-    assert!(
-        store
-            .read_query_snapshot(&query_request(&repo(), 1))
-            .is_err()
-    );
-    assert!(
-        store
-            .read_query_snapshot(&query_request(&other_repo(), 5))
-            .is_ok()
-    );
+    assert!(read_query_snapshot(store, &query_request(&repo(), 1)).is_err());
+    assert!(read_query_snapshot(store, &query_request(&other_repo(), 5)).is_ok());
     assert_eq!(
         store.activated_generation_for(&repo(), &revision())?,
         None,
@@ -224,7 +216,7 @@ fn an_activation_for_a_missing_candidate_object_reports_and_fail_closes() -> Tes
         !opened.report.quarantined.is_empty(),
         "the loss is a durable quarantine incident"
     );
-    match opened.store.read_query_snapshot(&query_request(&repo(), 1)) {
+    match read_query_snapshot(&opened.store, &query_request(&repo(), 1)) {
         Err(CoreError::NotFound(_)) => {}
         other => unreachable!("expected typed NOT_FOUND, got {other:?}"),
     }

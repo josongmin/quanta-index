@@ -30,7 +30,24 @@ use quanta_index_repomap::RepoMapGenerationStore;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-/// A distinct valid 64-hex producer digest per fixture marker.
+// A distinct valid 64-hex producer digest per fixture marker.
+
+fn read_query_snapshot(
+    store: &quanta_index_repomap::RepoMapGenerationStore,
+    request: &RepoMapQueryRequest,
+) -> Result<quanta_index_contract::RepoMapQueryResponse, quanta_index_core::CoreError> {
+    // S21-05: the ambient store read is gone; a test reads through one
+    // acquired pinned view, exactly like a production route.
+    use quanta_index_core::PinnedRepoMapSnapshot as _;
+    store
+        .acquire_pinned(&quanta_index_core::RepoMapSnapshotAcquireV1 {
+            repo_id: request.repo_id.clone(),
+            revision_id: request.revision_id.clone(),
+            manifest_generation: request.manifest_generation,
+        })?
+        .query(request.clone())
+}
+
 fn producer_hex(marker: &str) -> String {
     let hash = marker
         .bytes()
@@ -149,7 +166,7 @@ fn activation_is_durable_across_restart() -> TestResult {
     {
         let (_catalog, store) = open(&root)?;
         publish_activate(store.as_ref(), 1, "g1")?;
-        let answer = store.as_ref().read_query_snapshot(&query_request(1))?;
+        let answer = read_query_snapshot(store.as_ref(), &query_request(1))?;
         assert!(!answer.entries.is_empty());
     }
     let (_catalog, store) = open(&root)?;
@@ -160,7 +177,7 @@ fn activation_is_durable_across_restart() -> TestResult {
         Some(1),
         "the activation survives the restart from the catalog"
     );
-    let answer = store.as_ref().read_query_snapshot(&query_request(1))?;
+    let answer = read_query_snapshot(store.as_ref(), &query_request(1))?;
     assert_eq!(answer.snapshot_meta.snapshot_id, "snap-g1");
     assert!(!answer.entries.is_empty());
     Ok(())
@@ -188,7 +205,7 @@ fn a_damaged_candidate_is_quarantined_and_the_rest_answers_fail_closed() -> Test
     let (catalog, store) = open(&root)?;
     // The open succeeded; the repo answers fail-closed until a fresh
     // activation, which is the answer a damaged object earns.
-    match store.as_ref().read_query_snapshot(&query_request(1)) {
+    match read_query_snapshot(store.as_ref(), &query_request(1)) {
         Err(CoreError::NotFound(_)) => {}
         other => unreachable!("expected typed NOT_FOUND, got {other:?}"),
     }
@@ -199,12 +216,7 @@ fn a_damaged_candidate_is_quarantined_and_the_rest_answers_fail_closed() -> Test
     // The next open is clean: the damaged object is quarantined, not left
     // to serve.
     let (_catalog, store) = open(&root)?;
-    assert!(
-        store
-            .as_ref()
-            .read_query_snapshot(&query_request(1))
-            .is_err()
-    );
+    assert!(read_query_snapshot(store.as_ref(), &query_request(1)).is_err());
     assert!(!object.exists(), "the damaged source object is gone");
     Ok(())
 }
@@ -227,18 +239,8 @@ fn supersede_keeps_the_prior_object_gc_is_tombstone_only_pre_p04() -> TestResult
         "both generations' objects survive; GC is tombstone-only pre-P04"
     );
     let (_catalog, store) = open(&root)?;
-    assert!(
-        store
-            .as_ref()
-            .read_query_snapshot(&query_request(2))
-            .is_ok()
-    );
-    assert!(
-        store
-            .as_ref()
-            .read_query_snapshot(&query_request(1))
-            .is_err()
-    );
+    assert!(read_query_snapshot(store.as_ref(), &query_request(2)).is_ok());
+    assert!(read_query_snapshot(store.as_ref(), &query_request(1)).is_err());
     Ok(())
 }
 

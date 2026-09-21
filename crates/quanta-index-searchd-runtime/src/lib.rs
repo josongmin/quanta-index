@@ -22,10 +22,11 @@ use quanta_index_core::{
     LexicalIndexOpenPort, MetricSourcePort, MutationCoordinatorPort, ProcessMemoryProbePort,
     QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
     RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapQuarantinePort,
-    RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort, ResidentMemoryWriterAdmission,
-    SealedGenerationReclaimPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
-    SemanticContentRootsPort, SemanticIndexOpenPort, SemanticScopeStreamBuildPort,
-    TrackDiskUsagePort, UnboundedWriterAdmission, WriterAdmissionPort, WriterIdleSweepPort,
+    RepoMapSnapshotAcquirePort, RepoMetaIngestPort, RepoTopicIngestPort,
+    ResidentMemoryWriterAdmission, SealedGenerationReclaimPort, SealedGenerationScanPort,
+    SearchCorpusBatchBuildPort, SemanticContentRootsPort, SemanticIndexOpenPort,
+    SemanticScopeStreamBuildPort, TrackDiskUsagePort, UnboundedWriterAdmission,
+    WriterAdmissionPort, WriterIdleSweepPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_lexical::history_text_index::HistoryTextIndexAdapter;
@@ -186,7 +187,8 @@ pub fn build_runtime_with_memory_probe(
     // (QI-BB-017), through the one scrub port.
     let semantic_integrity_scrub: Arc<dyn IntegrityScrubPort + Send + Sync> = sem_adapter.clone();
     let sem_open_port: Arc<dyn SemanticIndexOpenPort + Send + Sync> = sem_adapter;
-    let repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync> = repo_map_store.clone();
+    let repo_map_snapshot_port: Arc<dyn RepoMapSnapshotAcquirePort + Send + Sync> =
+        repo_map_store.clone();
     let repo_map_bundle_ingest_port: Arc<dyn RepoMapBundleIngestPort + Send + Sync> =
         repo_map_store.clone();
     let repo_map_generation_activate_port: Arc<dyn RepoMapGenerationActivatePort + Send + Sync> =
@@ -216,7 +218,7 @@ pub fn build_runtime_with_memory_probe(
             semantic_incomplete_discard,
             semantic_sealed_reclaim,
             sem_open_port,
-            repo_map_query_port,
+            repo_map_snapshot_port,
             repo_map_bundle_ingest_port,
             repo_map_generation_activate_port,
             lexical_quarantine_discard,

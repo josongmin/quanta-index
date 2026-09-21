@@ -136,8 +136,10 @@ crate quanta_index_core
 │   │   ├── mod errors: pub(self)
 │   │   │   └── enum ReadViewRefusedError: pub
 │   │   ├── mod identity: pub(self)
+│   │   │   ├── struct DomainReadEvidenceV2: pub
 │   │   │   ├── struct LexicalArtifactIdentityV1: pub
-│   │   │   ├── struct ReadIdentityV1: pub
+│   │   │   ├── struct ReadIdentityV2: pub
+│   │   │   ├── enum ReadResourceGroupV2: pub
 │   │   │   ├── struct SemanticProfileV1: pub
 │   │   │   └── struct TextNormalizerVersionV1: pub
 │   │   └── mod predicate: pub(self)
@@ -147,7 +149,10 @@ crate quanta_index_core
 │   ├── mod reclaim_area: pub
 │   ├── mod repomap: pub
 │   │   ├── mod inbound: pub(self)
-│   │   │   └── trait RepoMapQueryPort: pub
+│   │   │   ├── trait PinnedRepoMapSnapshot: pub
+│   │   │   ├── trait RepoMapSnapshotAcquirePort: pub
+│   │   │   ├── struct RepoMapSnapshotAcquireV1: pub
+│   │   │   └── struct RepoMapSnapshotEvidenceV1: pub
 │   │   ├── mod outbound: pub(self)
 │   │   │   ├── struct QuarantinedRepoMapFileV1: pub
 │   │   │   ├── trait RepoMapBundleIngestPort: pub

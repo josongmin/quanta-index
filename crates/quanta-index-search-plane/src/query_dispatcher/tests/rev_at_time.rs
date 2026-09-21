@@ -16,7 +16,7 @@ use crate::query_dispatcher::tests::support::history::ledger_with_rev_at_time_hi
 use crate::query_dispatcher::tests::support::lexical::{
     RecordingLexicalOpener, RecordingLexicalState, StubLexicalOpener,
 };
-use crate::query_dispatcher::tests::support::repo_map::StubRepoMapQueryPort;
+use crate::query_dispatcher::tests::support::repo_map::StubRepoMapSnapshotPort;
 use crate::query_dispatcher::tests::support::semantic::RejectSemanticOpener;
 use crate::query_dispatcher::tests::support::structural::FailClosedStructuralProducer;
 
@@ -45,7 +45,7 @@ fn lexical_dispatch_rebinds_rev_at_time_to_reachable_ancestor() -> TestResult {
             results: vec![candidate("ancestor-hit", 1.0)],
         }),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ledger_with_rev_at_time_history()?,
         activation_catalog,
@@ -135,7 +135,7 @@ fn lexical_dispatch_rejects_rev_at_time_invalid_timeref() -> TestResult {
             results: Vec::new(),
         }),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ledger_with_rev_at_time_history()?,
         test_activation_catalog()?,
@@ -173,7 +173,7 @@ fn lexical_dispatch_rejects_rev_at_time_when_rebound_generation_is_unactivated()
             results: Vec::new(),
         }),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ledger_with_rev_at_time_history()?,
         activation_catalog_with_generations(&[corpus_generation(

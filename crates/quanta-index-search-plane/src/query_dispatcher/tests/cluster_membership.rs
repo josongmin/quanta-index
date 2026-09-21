@@ -8,7 +8,7 @@ use crate::query_dispatcher::tests::support::common::{
     TestResult, ready_ledger, ready_pin, test_activation_catalog,
 };
 use crate::query_dispatcher::tests::support::lexical::RejectLexicalOpener;
-use crate::query_dispatcher::tests::support::repo_map::StubRepoMapQueryPort;
+use crate::query_dispatcher::tests::support::repo_map::StubRepoMapSnapshotPort;
 use crate::query_dispatcher::tests::support::semantic::{
     RecordingSemanticOpener, RecordingSemanticState,
     available_cluster_membership_batch_response_v1, cluster_membership_batch_request_v1,
@@ -23,7 +23,7 @@ fn cluster_membership_dispatch_rejects_invalid_request_before_semantic_open_v1()
         Arc::new(RecordingSemanticOpener {
             state: Arc::clone(&state),
         }),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -67,7 +67,7 @@ fn cluster_membership_dispatch_opens_one_pinned_generation_and_preserves_authori
         Arc::new(RecordingSemanticOpener {
             state: Arc::clone(&state),
         }),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -137,7 +137,7 @@ fn cluster_membership_dispatch_rejects_forged_or_stale_searcher_authority_v1() -
             Arc::new(RecordingSemanticOpener {
                 state: Arc::clone(&state),
             }),
-            Arc::new(StubRepoMapQueryPort),
+            Arc::new(StubRepoMapSnapshotPort::default()),
             Arc::new(FailClosedStructuralProducer),
             ready_ledger(),
             test_activation_catalog()?,

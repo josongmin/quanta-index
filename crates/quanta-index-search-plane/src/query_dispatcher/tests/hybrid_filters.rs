@@ -28,7 +28,7 @@ use crate::query_dispatcher::tests::support::common::{
 use crate::query_dispatcher::tests::support::lexical::{
     RecordingLexicalOpener, RecordingLexicalState,
 };
-use crate::query_dispatcher::tests::support::repo_map::StubRepoMapQueryPort;
+use crate::query_dispatcher::tests::support::repo_map::StubRepoMapSnapshotPort;
 use crate::query_dispatcher::tests::support::semantic::{
     RecordingSemanticOpener, RecordingSemanticState,
 };
@@ -73,7 +73,7 @@ fn filtered_dispatcher(
         Arc::new(RecordingSemanticOpener {
             state: Arc::clone(&semantic_state),
         }),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,

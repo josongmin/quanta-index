@@ -21,7 +21,7 @@ use crate::query_dispatcher::tests::support::common::{
     TestResult, encode_cbor, ready_ledger, test_activation_catalog,
 };
 use crate::query_dispatcher::tests::support::lexical::RejectLexicalOpener;
-use crate::query_dispatcher::tests::support::repo_map::StubRepoMapQueryPort;
+use crate::query_dispatcher::tests::support::repo_map::StubRepoMapSnapshotPort;
 use crate::query_dispatcher::tests::support::semantic::RejectSemanticOpener;
 
 /// Test-only fail-closed structural producer.
@@ -261,7 +261,7 @@ where
     Ok(SearchPlaneDispatcher::new(
         Arc::new(RejectLexicalOpener),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         producer,
         ledger,
         test_activation_catalog()?,
@@ -279,7 +279,7 @@ where
     Ok(SearchPlaneDispatcher::new(
         lex_opener,
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         producer,
         ledger,
         test_activation_catalog()?,

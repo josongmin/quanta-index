@@ -11,7 +11,7 @@
 //!   `planning`; never on each other except `hybrid`/`hybrid_seed` ->
 //!   `semantic` (shared embed gate) and `structural/route` -> its own
 //!   sub-modules.
-//! - `read_view` — the one `QueryReadViewV1` a request executes against:
+//! - `read_view` — the one `QueryReadViewV2` a request executes against:
 //!   the declared domains acquired once, every ledger read under one
 //!   guard, the track handles through its private `snapshots` child.
 //!   Routes never reach the ledger or the registries except through it.

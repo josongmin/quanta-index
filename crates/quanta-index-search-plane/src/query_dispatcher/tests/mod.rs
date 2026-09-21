@@ -13,6 +13,7 @@ mod lexical_pages;
 mod metrics;
 mod planning;
 mod read_view;
+mod read_view_lifetime;
 mod repo_map;
 mod rev_at_time;
 mod runtime_metadata;

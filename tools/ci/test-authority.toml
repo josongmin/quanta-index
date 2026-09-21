@@ -155,6 +155,23 @@ targets = [
   "repomap-owner-surface",
 ]
 
+[local_scopes.read-view-lifetime-owner]
+lane = "test-read-view-lifetime-owner-lane"
+test_threads = 4
+targets = [
+  "read-view-lifetime-owner-v1",
+  "repomap-owner-surface",
+  "core-read-view-declaration",
+]
+
+[local_scopes.search-plane-read-view-lib]
+lane = "test-search-plane-read-view-lane"
+test_threads = 4
+lib = true
+packages = [
+  "quanta-index-search-plane",
+]
+
 [local_scopes.cli-smoke]
 lane = "test-cli-smoke-lane"
 test_threads = 2
@@ -681,6 +698,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "candidate-activation-owner-v1"
 path = "crates/quanta-index-repomap/tests/candidate_activation_owner_v1.rs"
+owner = "quanta-index-repomap"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "read-view-lifetime-owner-v1"
+path = "crates/quanta-index-repomap/tests/read_view_lifetime_owner_v1.rs"
 owner = "quanta-index-repomap"
 rail = "pr-workspace-nextest"
 

@@ -23,7 +23,7 @@ use crate::query_dispatcher::tests::support::history::{
     ledger_with_history_ops,
 };
 use crate::query_dispatcher::tests::support::lexical::RejectLexicalOpener;
-use crate::query_dispatcher::tests::support::repo_map::StubRepoMapQueryPort;
+use crate::query_dispatcher::tests::support::repo_map::StubRepoMapSnapshotPort;
 use crate::query_dispatcher::tests::support::semantic::RejectSemanticOpener;
 use crate::query_dispatcher::tests::support::structural::FailClosedStructuralProducer;
 use crate::{Ledger, SnapshotRegistries, SnapshotRegistryPolicy};
@@ -36,7 +36,7 @@ fn history_dispatch_success_emits_closed_obs_metrics() -> TestResult {
         Arc::new(RejectLexicalOpener),
         Arc::new(RejectSemanticOpener),
         SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ledger_with_history_ops(vec![LexicalChannelOp::UpsertCommit(UpsertCommit {
             repo_id: RepoId::new("repo-map-ipc")
@@ -100,7 +100,7 @@ fn history_dispatch_unavailable_emits_closed_obs_metric() -> TestResult {
         Arc::new(RejectLexicalOpener),
         Arc::new(RejectSemanticOpener),
         SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,

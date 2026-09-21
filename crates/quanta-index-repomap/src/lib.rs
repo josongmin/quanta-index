@@ -24,5 +24,6 @@ pub use materializer::{
 };
 pub use model::{RepoMapEntry, RepoMapIndexedSnapshot, RepoMapSnapshot, RepoMapSnapshotIndex};
 pub use query::RepoMapQueryEngine;
-pub use reader::RepoMapPinnedReader;
+pub use reader::PinnedRepoMapSnapshotV1;
+pub use store::RepoMapGcOutcomeV1;
 pub use store::{OpenedRepoMapStore, RepoMapGenerationStore};

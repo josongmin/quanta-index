@@ -28,7 +28,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, QuarantineDiscardOutcomeV1, QuarantinedRepoMapFileV1, RepoMapBundleIngestPort,
-    RepoMapGenerationActivatePort, RepoMapQuarantinePort, RepoMapQueryPort,
+    RepoMapGenerationActivatePort, RepoMapQuarantinePort, RepoMapSnapshotAcquirePort,
 };
 use quanta_index_repomap::RepoMapGenerationStore;
 
@@ -90,6 +90,14 @@ fn activate_request(generation: u64) -> RepoMapActivateGenerationRequest {
     }
 }
 
+fn acquire_request(generation: u64) -> quanta_index_core::RepoMapSnapshotAcquireV1 {
+    quanta_index_core::RepoMapSnapshotAcquireV1 {
+        repo_id: repo(),
+        revision_id: revision(),
+        manifest_generation: ManifestGeneration::new(generation),
+    }
+}
+
 fn query_request(generation: u64) -> RepoMapQueryRequest {
     RepoMapQueryRequest {
         repo_id: repo(),
@@ -113,7 +121,7 @@ fn ports(
         Arc<SqliteCatalog>,
         Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
         Arc<dyn RepoMapGenerationActivatePort + Send + Sync>,
-        Arc<dyn RepoMapQueryPort + Send + Sync>,
+        Arc<dyn RepoMapSnapshotAcquirePort + Send + Sync>,
         Arc<dyn RepoMapQuarantinePort + Send + Sync>,
     ),
     Box<dyn Error>,
@@ -148,10 +156,12 @@ fn the_four_ports_drive_one_store_end_to_end() -> TestResult {
     let (_catalog, ingest, activate, query, quarantine) = ports(&root)?;
     let receipt = ingest.ingest_bundle(&bundle(1, "g1"))?;
     assert!(receipt.new_candidate_commitment.starts_with("sha256:"));
-    assert!(query.query(query_request(1)).is_err());
+    // A sealed-but-not-activated generation has no serving head: acquire
+    // refuses typed (fail-closed) instead of pinning an unservable view.
+    assert!(query.acquire(acquire_request(1)).is_err());
     let activation = activate.activate_generation(&activate_request(1))?;
     assert_eq!(activation.activation_epoch, 1);
-    let response = query.query(query_request(1))?;
+    let response = query.acquire(acquire_request(1))?.query(query_request(1))?;
     assert!(!response.entries.is_empty());
     assert!(quarantine.quarantined_files()?.is_empty());
     Ok(())

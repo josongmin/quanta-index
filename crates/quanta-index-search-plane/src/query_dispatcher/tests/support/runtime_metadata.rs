@@ -16,7 +16,7 @@ use crate::query_dispatcher::tests::support::common::{
     ready_ledger, ready_pin, test_activation_catalog,
 };
 use crate::query_dispatcher::tests::support::lexical::RejectLexicalOpener;
-use crate::query_dispatcher::tests::support::repo_map::StubRepoMapQueryPort;
+use crate::query_dispatcher::tests::support::repo_map::StubRepoMapSnapshotPort;
 use crate::query_dispatcher::tests::support::semantic::RejectSemanticOpener;
 use crate::query_dispatcher::tests::support::structural::{
     FailClosedStructuralProducer, install_structural_test_chunk,
@@ -28,7 +28,7 @@ pub(crate) fn runtime_metadata_dispatcher_with_ledger(
     Ok(SearchPlaneDispatcher::new(
         Arc::new(RejectLexicalOpener),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ledger,
         test_activation_catalog()?,

@@ -28,6 +28,8 @@ rust-profile-list:
         'test-p02a-repomap-compiler P02A whole-bundle graph compiler owner proof' \
         'test-p02b-operation-journal P02B global sequence authority and operation journal proof' \
         'test-candidate-activation-owner P03 sealed-candidate activation, recovery, and quarantine owner proof' \
+        'test-read-view-lifetime-owner P04 read-view lifetime, pin/GC barrier owner proof' \
+        'test-search-plane-read-view-lib P04 search-plane read-view lib proof' \
         'test-integration-fast bounded integration loop; excludes slow text/Lance storage' \
         'test-integration-storage text-authority shard persistence slice' \
         'test-integration-semantic semantic storage integration slice' \
@@ -60,6 +62,8 @@ rust-profile profile:
         test-p02a-repomap-compiler) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-p02a-repomap-compiler ;; \
         test-p02b-operation-journal) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-p02b-operation-journal ;; \
         test-candidate-activation-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-candidate-activation-owner ;; \
+        test-read-view-lifetime-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-read-view-lifetime-owner ;; \
+        test-search-plane-read-view-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-search-plane-read-view-lib ;; \
         test-integration-fast) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-fast ;; \
         test-integration-storage) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-storage ;; \
         test-integration-semantic) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-semantic ;; \
@@ -220,6 +224,12 @@ rust-test-p02b-operation-journal lane="test-p02b-operation-journal-lane":
 
 rust-test-candidate-activation-owner lane="test-candidate-activation-owner-lane":
     python3 tools/ci/run-local-test-scope.py candidate-activation-owner --lane {{lane}}
+
+rust-test-read-view-lifetime-owner lane="test-read-view-lifetime-owner-lane":
+    python3 tools/ci/run-local-test-scope.py read-view-lifetime-owner --lane {{lane}}
+
+rust-test-search-plane-read-view-lib lane="test-search-plane-read-view-lane":
+    python3 tools/ci/run-local-test-scope.py search-plane-read-view-lib --lane {{lane}}
 
 rust-test-integration-fast lane="test-integration-lane":
     python3 tools/ci/run-local-test-scope.py integration-fast --lane {{lane}}
@@ -798,3 +808,23 @@ proof-p03-candidate-activation-owner:
     @just rust-wire-inventory
     @just rust-public-api
     @just rust-fuzz-smoke
+
+# P04 read-view lifetime owner proof (S21-05): the scoped rail runs the
+# repomap lifetime owner target plus the repomap owner surface and the core
+# read-view declaration bound to the same source; the search-plane lib rail
+# carries the view-level V2 tests. The structural guard proves routes have
+# zero ambient lookup and the V1 surfaces stay deleted. The Linux
+# production-like release subrail (p04-read-view-lifetime, release-daemon
+# binding) stays NOT_RUN on this host.
+proof-p04-read-view-lifetime-owner:
+    @just rust-profile test-read-view-lifetime-owner
+    @just rust-profile test-search-plane-read-view-lib
+    @python3 tools/ci/lint/check-read-view-ambient-lookup.py
+    @just rust-hexagonal
+    @just rust-wire-inventory
+    @just rust-public-api
+    @just rust-fuzz-smoke
+
+# Dedicated P04 read-view recipe: owner-local selector first, then the
+# Linux release subrail split the prompt names (NOT_RUN off-Linux).
+rust-proof-p04-read-view: proof-p04-read-view-lifetime-owner

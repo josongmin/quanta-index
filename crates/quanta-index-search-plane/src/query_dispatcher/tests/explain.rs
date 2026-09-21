@@ -23,7 +23,7 @@ use crate::query_dispatcher::tests::support::common::{
     TestResult, candidate, ipc_error_from, ready_ledger, ready_pin, test_activation_catalog,
 };
 use crate::query_dispatcher::tests::support::lexical::StubLexicalOpener;
-use crate::query_dispatcher::tests::support::repo_map::StubRepoMapQueryPort;
+use crate::query_dispatcher::tests::support::repo_map::StubRepoMapSnapshotPort;
 use crate::query_dispatcher::tests::support::semantic::{
     RecordingSemanticOpener, RecordingSemanticState,
 };
@@ -58,7 +58,7 @@ fn dispatcher_over(
             Arc::new(RecordingSemanticOpener {
                 state: Arc::clone(&state),
             }),
-            Arc::new(StubRepoMapQueryPort),
+            Arc::new(StubRepoMapSnapshotPort::default()),
             Arc::new(FailClosedStructuralProducer),
             ready_ledger(),
             test_activation_catalog()?,
@@ -509,7 +509,7 @@ fn the_rerun_dense_lane_admits_candidates_through_the_same_filter_plan() -> Test
         Arc::new(RecordingSemanticOpener {
             state: Arc::clone(&semantic_state),
         }),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,

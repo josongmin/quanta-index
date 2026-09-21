@@ -27,7 +27,7 @@ use crate::query_dispatcher::tests::support::common::{
 use crate::query_dispatcher::tests::support::lexical::{
     RecordingLexicalOpener, RecordingLexicalState, RejectLexicalOpener, recording_lexical_candidate,
 };
-use crate::query_dispatcher::tests::support::repo_map::StubRepoMapQueryPort;
+use crate::query_dispatcher::tests::support::repo_map::StubRepoMapSnapshotPort;
 use crate::query_dispatcher::tests::support::semantic::RejectSemanticOpener;
 use crate::query_dispatcher::tests::support::structural::{
     PatternRoutingStructuralProducer, RecordingStructuralProducer,
@@ -101,7 +101,7 @@ fn structural_dispatch_success_emits_closed_obs_metrics() -> TestResult {
         Arc::new(RejectLexicalOpener),
         Arc::new(RejectSemanticOpener),
         SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(RecordingStructuralProducer::ready_with(vec![
             structural_match_candidate("chunk-tree"),
         ])),

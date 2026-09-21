@@ -86,22 +86,23 @@ pub use domains::observability::{
     count_as_f64, count_from_usize,
 };
 pub use domains::read_view::{
-    FILE_CONTRIBUTOR_UNAVAILABLE_CODE, FILE_OWNERSHIP_UNAVAILABLE_CODE, LexicalArtifactIdentityV1,
-    LexicalPredicateAliasV1, LexicalPredicateFamilyV1, LexicalPredicateV1, QueryRouteV1,
-    READ_VIEW_DOMAIN_UNDECLARED_CODE, READ_VIEW_GENERATION_MIX_CODE,
-    REPO_COMMIT_RECENCY_UNAVAILABLE_CODE, REPO_DESCRIPTION_UNAVAILABLE_CODE,
-    REPO_META_UNAVAILABLE_CODE, REPO_TOPIC_UNAVAILABLE_CODE, RUNTIME_NOT_READY_CODE, ReadDomainV1,
-    ReadIdentityV1, ReadViewRefusedError, RepoMetadataAuthoritiesV1, RepoMetadataAuthorityV1,
-    RequiredDomainsV1, SemanticProfileV1, TextNormalizerVersionV1, declare_required_domains_v1,
-    lexical_predicate_v1,
+    DomainReadEvidenceV2, FILE_CONTRIBUTOR_UNAVAILABLE_CODE, FILE_OWNERSHIP_UNAVAILABLE_CODE,
+    LexicalArtifactIdentityV1, LexicalPredicateAliasV1, LexicalPredicateFamilyV1,
+    LexicalPredicateV1, QueryRouteV1, READ_VIEW_DOMAIN_UNDECLARED_CODE,
+    READ_VIEW_GENERATION_MIX_CODE, REPO_COMMIT_RECENCY_UNAVAILABLE_CODE,
+    REPO_DESCRIPTION_UNAVAILABLE_CODE, REPO_META_UNAVAILABLE_CODE, REPO_TOPIC_UNAVAILABLE_CODE,
+    RUNTIME_NOT_READY_CODE, ReadDomainV1, ReadIdentityV2, ReadResourceGroupV2,
+    ReadViewRefusedError, RepoMetadataAuthoritiesV1, RepoMetadataAuthorityV1, RequiredDomainsV1,
+    SemanticProfileV1, TextNormalizerVersionV1, declare_required_domains_v1, lexical_predicate_v1,
 };
 pub use domains::reclaim_area::{
     RECLAIM_AREA_DIR_NAME, finish_interrupted_reclaims, reclaim_area, reclaim_directory,
 };
 pub use domains::repomap::{
-    QuarantinedRepoMapFileV1, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
-    RepoMapMutationReceiptV1, RepoMapOpenReportV1, RepoMapPolicy, RepoMapQuarantinePort,
-    RepoMapQueryPort, RepoMapService,
+    PinnedRepoMapSnapshot, QuarantinedRepoMapFileV1, RepoMapBundleIngestPort,
+    RepoMapGenerationActivatePort, RepoMapMutationReceiptV1, RepoMapOpenReportV1, RepoMapPolicy,
+    RepoMapQuarantinePort, RepoMapService, RepoMapSnapshotAcquirePort, RepoMapSnapshotAcquireV1,
+    RepoMapSnapshotEvidenceV1,
 };
 pub use domains::semantic::{
     DenseIndexBuildV1, DenseIndexEffortV1, DenseIndexSegmentBuildV1, DenseIndexTrainingV1,
