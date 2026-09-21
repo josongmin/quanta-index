@@ -628,6 +628,15 @@ dependency were removed. A topology test binds the skipped pre-commit hook to
 P00 and asserts that both authorities remain present. The complete tooling set
 passes 340 tests after these CI topology guards.
 
+Three CI jobs still installed the editable project even though they execute
+scripts by path and import only a subset of runtime dependencies. Rust policy
+now installs `jsonschema` and `pyyaml`; P00 and agent-output install only
+`jsonschema`. This removes editable wheel construction and unused Jinja from
+those jobs. A workflow test rejects `-e .` in these three dependency-isolated
+jobs and pins each install to its observed import set. The focused workflow
+set passes 10 tests, and the complete tooling set passes 343 tests after the
+dependency narrowing.
+
 ## Remaining measurement
 
 On a quiet host, run:

@@ -209,3 +209,21 @@ def test_proof_authority_ci_has_one_static_owner_and_one_test_owner() -> None:
         str(step.get("run", "")) for step in jobs["prompt-manager"]["steps"]
     )
     assert "python -m pytest tools" in prompt_commands
+
+
+def test_ci_python_jobs_install_only_their_runtime_imports() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    jobs = workflow["jobs"]
+    expected = {
+        "rust-policy": "python -m pip install 'jsonschema>=4.23.0' 'pyyaml>=6.0.2'",
+        "proof-authority-current-gate": "python -m pip install 'jsonschema>=4.23.0'",
+        "agent-output": "python -m pip install 'jsonschema>=4.23.0'",
+    }
+    for job_id, command in expected.items():
+        installs = [
+            step["run"]
+            for step in jobs[job_id]["steps"]
+            if str(step.get("name", "")).startswith("Install ") and "run" in step
+        ]
+        assert command in installs, (job_id, installs)
+        assert all("-e ." not in install for install in installs), (job_id, installs)
