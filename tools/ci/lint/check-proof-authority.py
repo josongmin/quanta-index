@@ -40,55 +40,38 @@ TICKET_RE = re.compile(r"^S21-(?:0[0-9]|1[0-3])$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 PAIRED_REPOSITORY = "github:josongmin/semantica-codegraph-v2"
 PAIRED_DEPENDENCY_LOCK = "Cargo.lock"
+SOURCE_BINDING_DOMAIN = "quanta-proof-source-binding-v1"
+PROOF_ARCHIVE_ROOT = PurePosixPath("artifacts/proof-authority/archive")
+EVIDENCE_ARCHIVE_ROOT = PurePosixPath("artifacts/proof-authority/evidence")
+BINARY_ARCHIVE_ROOT = PurePosixPath("artifacts/proof-authority/binaries")
+CLEAN_DIRTY_DIGEST = "sha256:" + hashlib.sha256(b"quanta-index-dirty-v2\0").hexdigest()
 EXPECTED_PROOF_DEPENDENCIES: dict[str, list[str]] = {
     "p00-authority-freeze": [],
     "p01-canonical-identity": ["p00-authority-freeze"],
     "p02a-repomap-compiler": ["p01-canonical-identity"],
     "p02b-operation-journal": ["p01-canonical-identity"],
-    "p03-candidate-activation": ["p02a-repomap-compiler", "p02b-operation-journal"],
-    "p04-read-view-lifetime": ["p03-candidate-activation", "p02b-operation-journal"],
-    "p05-query-truth": ["p04-read-view-lifetime"],
-    "p06-sdk-binding": [
-        "p03-candidate-activation",
-        "p02b-operation-journal",
-        "p05-query-truth",
-    ],
-    "p07-provider-boundary": ["p06-sdk-binding"],
-    "p08-runtime-supervisor": ["p07-provider-boundary"],
-    "p09-control-readiness": ["p08-runtime-supervisor", "p02b-operation-journal"],
-    "p10-state-migration": [
-        "p01-canonical-identity",
-        "p03-candidate-activation",
-        "p02b-operation-journal",
-        "p08-runtime-supervisor",
-        "p09-control-readiness",
-    ],
-    "p11-cross-repo-cutover": [
-        "p03-candidate-activation",
-        "p02b-operation-journal",
-        "p06-sdk-binding",
-        "p10-state-migration",
-    ],
+    "p03-candidate-activation-owner": ["p02a-repomap-compiler", "p02b-operation-journal"],
+    "p03-candidate-activation": ["p03-candidate-activation-owner"],
+    "p04-read-view-lifetime-owner": ["p03-candidate-activation-owner"],
+    "p04-read-view-lifetime": ["p04-read-view-lifetime-owner", "p03-candidate-activation"],
+    "p05-query-truth-owner": ["p04-read-view-lifetime-owner"],
+    "p05-query-truth": ["p05-query-truth-owner", "p04-read-view-lifetime"],
+    "p06-sdk-binding-owner": ["p05-query-truth-owner"],
+    "p06-sdk-binding": ["p06-sdk-binding-owner", "p05-query-truth"],
+    "p07-provider-boundary-owner": ["p06-sdk-binding-owner"],
+    "p07-provider-boundary": ["p07-provider-boundary-owner", "p06-sdk-binding"],
+    "p08-runtime-supervisor-owner": ["p07-provider-boundary-owner"],
+    "p08-runtime-supervisor": ["p08-runtime-supervisor-owner", "p07-provider-boundary"],
+    "p09-control-readiness-owner": ["p08-runtime-supervisor-owner"],
+    "p09-control-readiness": ["p09-control-readiness-owner", "p08-runtime-supervisor"],
+    "p10-state-migration-owner": ["p09-control-readiness-owner"],
+    "p10-state-migration": ["p10-state-migration-owner", "p09-control-readiness"],
+    "p11-cross-repo-cutover": ["p10-state-migration"],
     "p11-deployment": ["p11-cross-repo-cutover"],
     "p11-activation": ["p11-deployment"],
     "p11-rollback": ["p10-state-migration", "p11-activation"],
-    "p12-final-qualification": [
-        "p01-canonical-identity",
-        "p02a-repomap-compiler",
-        "p02b-operation-journal",
-        "p03-candidate-activation",
-        "p04-read-view-lifetime",
-        "p05-query-truth",
-        "p06-sdk-binding",
-        "p07-provider-boundary",
-        "p08-runtime-supervisor",
-        "p09-control-readiness",
-        "p10-state-migration",
-        "p11-cross-repo-cutover",
-        "p11-deployment",
-        "p11-activation",
-        "p11-rollback",
-    ],
+    "p12a-proof-infrastructure": ["p11-cross-repo-cutover"],
+    "p12-final-qualification": ["p12a-proof-infrastructure"],
 }
 EXPECTED_VERDICT_PROOFS: dict[str, list[str]] = {
     "CODE_QUALIFIED": [
@@ -96,13 +79,21 @@ EXPECTED_VERDICT_PROOFS: dict[str, list[str]] = {
         "p01-canonical-identity",
         "p02a-repomap-compiler",
         "p02b-operation-journal",
+        "p03-candidate-activation-owner",
         "p03-candidate-activation",
+        "p04-read-view-lifetime-owner",
         "p04-read-view-lifetime",
+        "p05-query-truth-owner",
         "p05-query-truth",
+        "p06-sdk-binding-owner",
         "p06-sdk-binding",
+        "p07-provider-boundary-owner",
         "p07-provider-boundary",
+        "p08-runtime-supervisor-owner",
         "p08-runtime-supervisor",
+        "p09-control-readiness-owner",
         "p09-control-readiness",
+        "p10-state-migration-owner",
         "p10-state-migration",
         "p11-cross-repo-cutover",
     ],
@@ -595,12 +586,6 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                         path, "aggregate verdict proof sets differ from canonical SEP-21 meanings"
                     )
                 )
-            closure = set()
-            try:
-                closure = set(dependency_closure(proof_by_id, "p12-final-qualification"))
-            except ValueError as error:
-                findings.append(Finding(path, str(error)))
-            covered: set[str] = set()
             for verdict, requirements in verdicts.items():
                 if (
                     not isinstance(requirements, list)
@@ -611,22 +596,14 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                         Finding(path, f"aggregate verdict {verdict} requires proof IDs")
                     )
                     continue
-                unknown = set(requirements) - closure
+                unknown = set(requirements) - set(proof_by_id)
                 if unknown:
                     findings.append(
                         Finding(
                             path,
-                            f"aggregate verdict {verdict} has non-dependencies {sorted(unknown)}",
+                            f"aggregate verdict {verdict} names unknown proofs {sorted(unknown)}",
                         )
                     )
-                covered.update(requirements)
-            if closure and covered != closure:
-                findings.append(
-                    Finding(
-                        path,
-                        f"aggregate verdict requirements must cover dependency closure; missing={sorted(closure - covered)}",
-                    )
-                )
     return findings
 
 
@@ -636,6 +613,46 @@ def _parse_time(value: str) -> datetime:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def source_binding_digest(payload: dict[str, Any]) -> str:
+    """Return the versioned canonical digest for a manifest's complete source binding."""
+
+    canonical = json.dumps(
+        {
+            "domain": SOURCE_BINDING_DOMAIN,
+            "source": payload["source"],
+            "source_pair": payload["source_pair"],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def proof_archive_relative_path(payload: dict[str, Any], manifest_sha256: str) -> str:
+    proof_id = payload["proof_id"]
+    if not isinstance(proof_id, str) or PROOF_ID_RE.fullmatch(proof_id) is None:
+        raise ValueError(f"manifest proof_id is not canonical: {proof_id!r}")
+    if DIGEST_RE.fullmatch(manifest_sha256) is None:
+        raise ValueError(f"manifest digest is not canonical: {manifest_sha256!r}")
+    return (
+        PROOF_ARCHIVE_ROOT / proof_id / source_binding_digest(payload) / f"{manifest_sha256}.json"
+    ).as_posix()
+
+
+def content_archive_relative_path(kind: str, digest: str) -> str:
+    """Return the canonical immutable path for evidence or a release binary."""
+
+    if DIGEST_RE.fullmatch(digest) is None:
+        raise ValueError(f"content digest is not canonical: {digest!r}")
+    roots = {"evidence": EVIDENCE_ARCHIVE_ROOT, "binary": BINARY_ARCHIVE_ROOT}
+    try:
+        root = roots[kind]
+    except KeyError as error:
+        raise ValueError(f"unknown content archive kind: {kind!r}") from error
+    return (root / digest).as_posix()
 
 
 def _payload_repo_file(
@@ -1041,6 +1058,7 @@ def check_manifest(
     proof_by_id: dict[str, dict[str, Any]] | None = None,
     bound_source: dict[str, Any] | None = None,
     bound_source_pair: dict[str, Any] | None = None,
+    _archive_stack: frozenset[str] | None = None,
 ) -> list[Finding]:
     findings: list[Finding] = []
     validator = jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker())
@@ -1066,6 +1084,8 @@ def check_manifest(
                 f"authoritative proof status must be 'passed', got {payload['status']!r}",
             )
         )
+    if payload["status"] == "passed" and payload["source"]["dirty_digest"] != CLEAN_DIRTY_DIGEST:
+        findings.append(Finding(manifest_path, "passed proof requires a clean primary source"))
     source_pair = payload["source_pair"]
     paired_checkout: Path | None = None
     if proof["source_binding"] == "exact":
@@ -1094,6 +1114,13 @@ def check_manifest(
                         manifest_path,
                         "source_pair.dependency_lock.path differs from proof authority",
                     )
+                )
+            if (
+                payload["status"] == "passed"
+                and source_pair["source"]["dirty_digest"] != CLEAN_DIRTY_DIGEST
+            ):
+                findings.append(
+                    Finding(manifest_path, "passed proof requires a clean paired source")
                 )
             if bind_source:
                 paired_checkout = (paired_checkouts or {}).get(repository)
@@ -1177,6 +1204,11 @@ def check_manifest(
             )
         )
     else:
+        expected_binary_path = content_archive_relative_path("binary", daemon_binary["sha256"])
+        if daemon_binary["path"] != expected_binary_path:
+            findings.append(
+                Finding(manifest_path, "daemon binary is not its immutable content archive")
+            )
         daemon_path, path_error = _payload_repo_file(
             root,
             daemon_binary["path"],
@@ -1189,6 +1221,11 @@ def check_manifest(
         elif _sha256(daemon_path) != daemon_binary["sha256"]:
             findings.append(Finding(manifest_path, "daemon binary digest mismatch"))
     for artifact in payload["artifacts"]:
+        expected_artifact_path = content_archive_relative_path("evidence", artifact["sha256"])
+        if artifact["path"] != expected_artifact_path:
+            findings.append(
+                Finding(manifest_path, "proof artifact is not its immutable content archive")
+            )
         artifact_path, path_error = _payload_repo_file(
             root,
             artifact["path"],
@@ -1204,9 +1241,13 @@ def check_manifest(
             )
 
     dependencies = payload["dependency_receipts"]
-    if {item["proof_id"] for item in dependencies} != set(proof["dependencies"]):
+    archive_stack = (_archive_stack or frozenset()) | {payload["proof_id"]}
+    if [item["proof_id"] for item in dependencies] != proof["dependencies"]:
         findings.append(
-            Finding(manifest_path, "dependency receipt IDs differ from proof authority")
+            Finding(
+                manifest_path,
+                "dependency receipts are not the ordered one-to-one proof authority edges",
+            )
         )
     for dependency in dependencies:
         if proof_by_id is not None:
@@ -1216,14 +1257,6 @@ def check_manifest(
                     Finding(
                         manifest_path,
                         f"dependency receipt names unknown proof {dependency['proof_id']!r}",
-                    )
-                )
-                continue
-            if dependency["path"] != dependency_authority["artifact"]:
-                findings.append(
-                    Finding(
-                        manifest_path,
-                        f"dependency receipt path differs from registered artifact: {dependency['proof_id']!r}",
                     )
                 )
                 continue
@@ -1242,8 +1275,72 @@ def check_manifest(
             findings.append(
                 Finding(manifest_path, f"dependency receipt digest mismatch: {dependency_path}")
             )
+        else:
+            try:
+                dependency_payload = _read_json(dependency_path)
+            except (OSError, json.JSONDecodeError) as error:
+                findings.append(
+                    Finding(manifest_path, f"dependency receipt is unreadable: {error}")
+                )
+                continue
+            if not isinstance(dependency_payload, dict):
+                findings.append(Finding(manifest_path, "dependency receipt root is not an object"))
+                continue
+            if dependency_payload.get("proof_id") != dependency["proof_id"]:
+                findings.append(
+                    Finding(manifest_path, "dependency receipt proof_id does not match its edge")
+                )
+                continue
+            try:
+                expected_archive = proof_archive_relative_path(
+                    dependency_payload,
+                    dependency["sha256"],
+                )
+            except (KeyError, TypeError, ValueError) as error:
+                findings.append(
+                    Finding(manifest_path, f"dependency archive identity is invalid: {error}")
+                )
+                continue
+            if dependency["path"] != expected_archive:
+                findings.append(
+                    Finding(
+                        manifest_path,
+                        f"dependency receipt is not its immutable archive path: expected {expected_archive}",
+                    )
+                )
+                continue
+            if dependency["proof_id"] in archive_stack:
+                findings.append(
+                    Finding(
+                        manifest_path,
+                        f"dependency archive cycle reaches {dependency['proof_id']!r}",
+                    )
+                )
+                continue
+            if proof_by_id is not None:
+                nested_findings = check_manifest(
+                    dependency_payload,
+                    manifest_path=dependency_path,
+                    proof=dependency_authority,
+                    schema=schema,
+                    root=root,
+                    bind_source=False,
+                    paired_checkouts=None,
+                    proof_by_id=proof_by_id,
+                    _archive_stack=archive_stack,
+                )
+                findings.extend(nested_findings)
 
     if bind_source:
+        runtime_exclusions: list[Path] = []
+        for artifact in payload["artifacts"]:
+            source_path = artifact.get("source_path")
+            if isinstance(source_path, str):
+                runtime_exclusions.append(root / source_path)
+        if isinstance(daemon_binary, dict) and isinstance(daemon_binary.get("source_path"), str):
+            runtime_exclusions.append(root / daemon_binary["source_path"])
+        if paired_checkout is not None:
+            runtime_exclusions.append(paired_checkout)
         current_source = (
             bound_source
             if bound_source is not None
@@ -1251,7 +1348,7 @@ def check_manifest(
                 root,
                 manifest_path=manifest_path,
                 proof=proof,
-                excluded_paths=(() if paired_checkout is None else (paired_checkout,)),
+                excluded_paths=runtime_exclusions,
             )
         )
         labels = {
@@ -1291,6 +1388,35 @@ def dependency_closure(proof_by_id: dict[str, dict[str, Any]], target_id: str) -
 
     visit(target_id)
     return ordered
+
+
+def aggregate_proof_ids(registry: dict[str, Any]) -> list[str]:
+    """Return every proof consumed by aggregate verdicts in registry order."""
+
+    proof_list = registry.get("proofs", [])
+    proof_by_id = {
+        proof["id"]: proof
+        for proof in proof_list
+        if isinstance(proof, dict) and isinstance(proof.get("id"), str)
+    }
+    aggregate = registry.get("aggregate")
+    if not isinstance(aggregate, dict) or not isinstance(aggregate.get("target_proof"), str):
+        raise ValueError("registry has no aggregate target proof")
+    target_id = aggregate["target_proof"]
+    required = set(dependency_closure(proof_by_id, target_id))
+    verdicts = aggregate.get("verdicts")
+    if not isinstance(verdicts, dict):
+        raise ValueError("registry has no aggregate verdict table")
+    for proof_ids in verdicts.values():
+        if not isinstance(proof_ids, list):
+            raise ValueError("aggregate verdict proof IDs are not a list")
+        for proof_id in proof_ids:
+            if proof_id not in proof_by_id:
+                raise ValueError(f"aggregate verdict names unknown proof {proof_id!r}")
+            required.add(proof_id)
+            required.update(dependency_closure(proof_by_id, proof_id))
+    required.discard(target_id)
+    return [proof["id"] for proof in proof_list if proof.get("id") in required]
 
 
 def check_aggregate(
@@ -1390,7 +1516,7 @@ def check_aggregate_receipt(
     if not isinstance(target_id, str):
         return [Finding(receipt_path, "registry aggregate has no target proof")]
     try:
-        dependency_ids = dependency_closure(proof_by_id, target_id)
+        dependency_ids = aggregate_proof_ids(registry)
     except ValueError as error:
         return [Finding(receipt_path, str(error))]
 
@@ -1408,7 +1534,7 @@ def check_aggregate_receipt(
     if receipt_ids != dependency_ids:
         findings.append(
             Finding(
-                receipt_path, "aggregate dependency receipts are not the ordered target closure"
+                receipt_path, "aggregate dependency receipts are not the ordered verdict closure"
             )
         )
 

@@ -110,14 +110,20 @@ inventory한다.
   `archive/<proof-id>/<source-binding-digest>/<manifest-digest>.json` immutable receipt를 create-new 발급한다.
   동일 path의 exact bytes는 idempotent success, 다른 bytes/overwrite/delete는 fail-closed다. primary source만 같은 서로
   다른 pair와 동일 source의 서로 다른 retry receipt가 충돌하지 않아야 한다.
+- passed receipt는 primary/paired source 모두 clean이어야 한다. terminal evidence와 release daemon은 각각
+  `artifacts/proof-authority/{evidence,binaries}/<sha256>` content-addressed archive로 복사하고 manifest는 mutable raw
+  path가 아니라 archive object를 검증한다. 후속 retry가 raw/current alias를 바꿔도 과거 manifest가 유효해야 한다.
+- source-binding별 issuance index가 이미 기록한 manifest leaf의 삭제/변조를 탐지하고 재생성 대신 fail-closed한다.
+  archive parent component가 symlink면 repo 밖 write를 시도하지 않고 거부한다.
 - manifest `dependency_receipts`와 handoff는 dependency의 exact immutable archive path/digest만 참조한다. writer/checker의
   historical mode는 registry alias equality를 요구하지 않고 transitive archive DAG를 검증한다. current alias가 후속
   receipt로 이동해도 과거 DAG는 유효해야 하며 archive path/bytes/digest 변경은 실패해야 한다.
 - `tools/ci/lint/check-lane-handoff.py`와 owner tests/canonical recipe를 이 lane에서 구현한다. schema validation 외에
-  top-level quanta SHA/digest와 paired quanta entry equality, `PUSHED ⇒ attempted=true ∧ remote_sha=result_sha`, proof
-  archive path/source/count/status consistency를 fail-closed 검증한다. downstream lane이 존재하지 않는 validator를
-  가정하지 않게 P00 owner proof에 포함한다. `selected == executed == passed`, proof ID uniqueness,
-  `not_run[]`와 `proofs[status=NOT_RUN]` exact consistency도 검증한다.
+  canonical lane/ticket/proof/status tuple, exact `base..result` Git write set, current-clean result source,
+  top-level quanta SHA/digest와 paired quanta entry equality, exact-pair manifest와 paired source/lock equality,
+  `PUSHED ⇒ attempted=true ∧ remote_sha=result_sha`, proof archive path/source/count/status consistency를 fail-closed
+  검증한다. downstream lane이 존재하지 않는 validator를 가정하지 않게 P00 owner proof에 포함한다.
+  `selected == executed == passed`, proof ID uniqueness, `not_run[]`와 `proofs[status=NOT_RUN]` exact consistency도 검증한다.
   P02I `integration_commits`는 P02A/P02B exactly once이며 MERGE면 original ancestry 보존, CHERRY_PICK이면
   original/applied mapping과 patch identity를 검증한다.
 - archive negative fixtures는 source_pair만 다른 binding, 동일 source retry의 서로 다른 manifest leaf, dependency current

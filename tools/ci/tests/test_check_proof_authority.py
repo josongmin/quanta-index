@@ -60,13 +60,25 @@ def _manifest(root: Path, proof: dict) -> dict:
     evidence = root / "artifacts/raw.jsonl"
     evidence.parent.mkdir(parents=True, exist_ok=True)
     evidence.write_bytes(b'{"terminal":"passed"}\n')
-    digest = "sha256:" + "1" * 64
+    digest = MODULE.CLEAN_DIRTY_DIGEST
+    evidence_digest = _sha(evidence)
+    evidence_archive = root / MODULE.content_archive_relative_path("evidence", evidence_digest)
+    evidence_archive.parent.mkdir(parents=True, exist_ok=True)
+    evidence_archive.write_bytes(evidence.read_bytes())
     daemon_binary = None
     if proof["binary_binding"] == "release-daemon":
         binary = root / "bin/searchd"
         binary.parent.mkdir(parents=True, exist_ok=True)
         binary.write_bytes(b"release-daemon")
-        daemon_binary = {"path": "bin/searchd", "sha256": _sha(binary)}
+        binary_digest = _sha(binary)
+        binary_archive = root / MODULE.content_archive_relative_path("binary", binary_digest)
+        binary_archive.parent.mkdir(parents=True, exist_ok=True)
+        binary_archive.write_bytes(binary.read_bytes())
+        daemon_binary = {
+            "source_path": "bin/searchd",
+            "path": binary_archive.relative_to(root).as_posix(),
+            "sha256": binary_digest,
+        }
     return {
         "schema_version": 1,
         "proof_id": proof["id"],
@@ -111,7 +123,13 @@ def _manifest(root: Path, proof: dict) -> dict:
         "started_at": "2026-09-21T00:00:00Z",
         "ended_at": "2026-09-21T00:00:01Z",
         "dependency_receipts": [],
-        "artifacts": [{"path": "artifacts/raw.jsonl", "sha256": _sha(evidence)}],
+        "artifacts": [
+            {
+                "source_path": "artifacts/raw.jsonl",
+                "path": evidence_archive.relative_to(root).as_posix(),
+                "sha256": evidence_digest,
+            }
+        ],
     }
 
 
@@ -335,7 +353,7 @@ def test_manifest_refuses_registry_invocation_and_dependency_drift(tmp_path: Pat
         )
     )
     assert "invocation.profile differs from proof authority" in messages
-    assert "dependency receipt IDs differ from proof authority" in messages
+    assert "dependency receipts are not the ordered one-to-one proof authority edges" in messages
 
 
 def test_manifest_refuses_dependency_receipt_path_not_owned_by_registry(tmp_path: Path) -> None:
@@ -370,7 +388,121 @@ def test_manifest_refuses_dependency_receipt_path_not_owned_by_registry(tmp_path
             proof_by_id={proof["id"]: proof, parent["id"]: parent},
         )
     )
-    assert "dependency receipt path differs from registered artifact: 'parent-proof'" in messages
+    assert any("does not match" in message for message in messages)
+
+
+def test_historical_dependency_archive_survives_current_alias_move(tmp_path: Path) -> None:
+    parent = _proof(tmp_path)
+    parent["id"] = "parent-proof"
+    parent["artifact"] = "artifacts/proof-authority/parent-proof.json"
+    child = _proof(tmp_path)
+    child["id"] = "child-proof"
+    child["artifact"] = "artifacts/proof-authority/child-proof.json"
+    child["dependencies"] = [parent["id"]]
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    parent_payload = _manifest(tmp_path, parent)
+    parent_bytes = (json.dumps(parent_payload, sort_keys=True, indent=2) + "\n").encode()
+    parent_digest = hashlib.sha256(parent_bytes).hexdigest()
+    parent_archive_relative = MODULE.proof_archive_relative_path(parent_payload, parent_digest)
+    parent_archive = tmp_path / parent_archive_relative
+    parent_archive.parent.mkdir(parents=True)
+    parent_archive.write_bytes(parent_bytes)
+
+    child_payload = _manifest(tmp_path, child)
+    child_payload["dependency_receipts"] = [
+        {
+            "proof_id": parent["id"],
+            "path": parent_archive_relative,
+            "sha256": parent_digest,
+        }
+    ]
+
+    current_alias = tmp_path / parent["artifact"]
+    current_alias.parent.mkdir(parents=True, exist_ok=True)
+    newer_payload = copy.deepcopy(parent_payload)
+    newer_payload["source"]["head"] = "c" * 40
+    current_alias.write_text(json.dumps(newer_payload), encoding="utf-8")
+
+    assert (
+        MODULE.check_manifest(
+            child_payload,
+            manifest_path=tmp_path / child["artifact"],
+            proof=child,
+            schema=schema,
+            root=tmp_path,
+            bind_source=False,
+            proof_by_id={parent["id"]: parent, child["id"]: child},
+        )
+        == []
+    )
+
+    parent_archive.write_bytes(parent_bytes + b"tampered\n")
+    messages = _messages(
+        MODULE.check_manifest(
+            child_payload,
+            manifest_path=tmp_path / child["artifact"],
+            proof=child,
+            schema=schema,
+            root=tmp_path,
+            bind_source=False,
+            proof_by_id={parent["id"]: parent, child["id"]: child},
+        )
+    )
+    assert any("dependency receipt digest mismatch" in message for message in messages)
+
+
+def test_manifest_refuses_duplicate_retry_receipts_for_one_dependency(tmp_path: Path) -> None:
+    parent = _proof(tmp_path)
+    parent["id"] = "parent-proof"
+    child = _proof(tmp_path)
+    child["id"] = "child-proof"
+    child["dependencies"] = [parent["id"]]
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    receipts = []
+    for offset in (1, 2):
+        payload = _manifest(tmp_path, parent)
+        payload["ended_at"] = f"2026-09-21T00:00:0{offset}Z"
+        raw = (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode()
+        digest = hashlib.sha256(raw).hexdigest()
+        relative = MODULE.proof_archive_relative_path(payload, digest)
+        archive = tmp_path / relative
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        archive.write_bytes(raw)
+        receipts.append({"proof_id": parent["id"], "path": relative, "sha256": digest})
+
+    payload = _manifest(tmp_path, child)
+    payload["dependency_receipts"] = receipts
+    messages = _messages(
+        MODULE.check_manifest(
+            payload,
+            manifest_path=tmp_path / "child.json",
+            proof=child,
+            schema=schema,
+            root=tmp_path,
+            bind_source=False,
+            proof_by_id={parent["id"]: parent, child["id"]: child},
+        )
+    )
+
+    assert "dependency receipts are not the ordered one-to-one proof authority edges" in messages
+
+
+def test_source_binding_digest_includes_pair_and_manifest_digest_allows_retries() -> None:
+    proof = _proof(Path("."))
+    first = {
+        "proof_id": proof["id"],
+        "source": {"head": "a" * 40},
+        "source_pair": None,
+    }
+    paired = copy.deepcopy(first)
+    paired["source_pair"] = {"repository": "github:example/pair", "source": {"head": "b" * 40}}
+    assert MODULE.source_binding_digest(first) != MODULE.source_binding_digest(paired)
+    first_leaf = MODULE.proof_archive_relative_path(first, "1" * 64)
+    retry_leaf = MODULE.proof_archive_relative_path(first, "2" * 64)
+    assert first_leaf != retry_leaf
+    assert first_leaf.split("/")[-2] == retry_leaf.split("/")[-2]
 
 
 def test_manifest_refuses_failed_count_with_passed_status(tmp_path: Path) -> None:
@@ -416,6 +548,7 @@ def test_bind_source_refuses_stale_head_and_dirty_digest(tmp_path: Path) -> None
     _init_repo(tmp_path)
     proof = _proof(tmp_path)
     payload = _manifest(tmp_path, proof)
+    payload["source"]["dirty_digest"] = "sha256:" + "1" * 64
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     messages = _messages(
         MODULE.check_manifest(
@@ -638,7 +771,7 @@ def test_manifest_refuses_absolute_traversal_and_symlink_escape(tmp_path: Path) 
             bind_source=False,
         )
     )
-    assert any("proof artifact path must be canonical repo-relative" in item for item in messages)
+    assert any("schema artifacts.0.path" in item for item in messages)
 
     traversal = _manifest(root, proof)
     proof["dependencies"] = ["parent-proof"]
@@ -655,20 +788,15 @@ def test_manifest_refuses_absolute_traversal_and_symlink_escape(tmp_path: Path) 
             bind_source=False,
         )
     )
-    assert any(
-        "dependency receipt path must be canonical repo-relative" in item for item in messages
-    )
+    assert any("does not match" in item for item in messages)
 
     proof["dependencies"] = []
     outside_binary = tmp_path / "outside-searchd"
     outside_binary.write_bytes(b"outside")
-    daemon_link = root / "bin/searchd"
-    daemon_link.unlink()
-    daemon_link.symlink_to(outside_binary)
     symlink_escape = _manifest(root, proof)
-    daemon_link.unlink()
-    daemon_link.symlink_to(outside_binary)
-    symlink_escape["daemon_binary"]["sha256"] = _sha(outside_binary)
+    daemon_archive = root / symlink_escape["daemon_binary"]["path"]
+    daemon_archive.unlink()
+    daemon_archive.symlink_to(outside_binary)
     messages = _messages(
         MODULE.check_manifest(
             symlink_escape,
@@ -686,8 +814,10 @@ def test_dependency_closure_is_registry_driven_and_excludes_target() -> None:
     registry = MODULE._read_toml(REGISTRY_PATH)
     proof_by_id = {proof["id"]: proof for proof in registry["proofs"]}
     closure = MODULE.dependency_closure(proof_by_id, "p12-final-qualification")
-    assert closure[-1] == "p11-rollback"
-    assert set(closure) == set(proof_by_id) - {"p12-final-qualification"}
+    assert closure[-1] == "p12a-proof-infrastructure"
+    assert "p11-deployment" not in closure
+    assert "p11-activation" not in closure
+    assert "p11-rollback" not in closure
     assert len(closure) == len(set(closure))
 
 
@@ -754,7 +884,11 @@ def test_aggregate_refuses_source_and_release_daemon_identity_drift(tmp_path: Pa
     payload_b = copy.deepcopy(payload_a)
     payload_b["proof_id"] = "proof-b"
     payload_b["source"]["head"] = "b" * 40
-    payload_b["daemon_binary"] = {"path": "bin/other", "sha256": "2" * 64}
+    payload_b["daemon_binary"] = {
+        "source_path": "bin/other",
+        "path": "artifacts/proof-authority/binaries/" + "2" * 64,
+        "sha256": "2" * 64,
+    }
     messages = _messages(
         MODULE.check_aggregate(
             {"proof-a": payload_a, "proof-b": payload_b},

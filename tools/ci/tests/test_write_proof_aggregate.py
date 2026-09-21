@@ -71,6 +71,12 @@ def _make_all_proofs_executable(text: str) -> str:
         'authority_state = "executable"\nexecution_mode = "test-authority"',
         text,
     )
+    text = re.sub(
+        r'authority_state = "staged"\nexecution_mode = "aggregate"\n'
+        r'staged_reason = "[^"]*"',
+        'authority_state = "executable"\nexecution_mode = "aggregate"',
+        text,
+    )
     sections = text.split("[[proofs]]")
     for index in range(1, len(sections)):
         if 'execution_mode = "test-authority"' in sections[index]:
@@ -166,10 +172,9 @@ def _write_dependency_manifests(
 ) -> None:
     release_host_digest_overrides = release_host_digest_overrides or {}
     proof_by_id = {proof["id"]: proof for proof in registry["proofs"]}
-    target = proof_by_id[registry["aggregate"]["target_proof"]]
     source_snapshots: dict[tuple[Path, tuple[Path, ...], Path | None], dict] = {}
     paired_snapshots: dict[tuple[str, str], dict] = {}
-    for proof_id in CHECKER.dependency_closure(proof_by_id, target["id"]):
+    for proof_id in CHECKER.aggregate_proof_ids(registry):
         proof = proof_by_id[proof_id]
         manifest_path = root / proof["artifact"]
         evidence = root / f"artifacts/proof-authority/raw/{proof_id}.log"
@@ -202,15 +207,34 @@ def _write_dependency_manifests(
             )
         daemon_binary = None
         if proof["binary_binding"] == "release-daemon":
-            daemon_binary = {"path": "bin/searchd", "sha256": WRITER._sha256(root / "bin/searchd")}
-        dependencies = [
-            {
-                "proof_id": dependency_id,
-                "path": proof_by_id[dependency_id]["artifact"],
-                "sha256": WRITER._sha256(root / proof_by_id[dependency_id]["artifact"]),
+            binary_digest = WRITER._sha256(root / "bin/searchd")
+            binary_archive = root / CHECKER.content_archive_relative_path("binary", binary_digest)
+            binary_archive.parent.mkdir(parents=True, exist_ok=True)
+            binary_archive.write_bytes((root / "bin/searchd").read_bytes())
+            daemon_binary = {
+                "source_path": "bin/searchd",
+                "path": binary_archive.relative_to(root).as_posix(),
+                "sha256": binary_digest,
             }
-            for dependency_id in proof["dependencies"]
-        ]
+        dependencies = []
+        for dependency_id in proof["dependencies"]:
+            dependency_path = root / proof_by_id[dependency_id]["artifact"]
+            dependency_payload = json.loads(dependency_path.read_text(encoding="utf-8"))
+            dependency_digest = WRITER._sha256(dependency_path)
+            dependencies.append(
+                {
+                    "proof_id": dependency_id,
+                    "path": CHECKER.proof_archive_relative_path(
+                        dependency_payload,
+                        dependency_digest,
+                    ),
+                    "sha256": dependency_digest,
+                }
+            )
+        evidence_digest = WRITER._sha256(evidence)
+        evidence_archive = root / CHECKER.content_archive_relative_path("evidence", evidence_digest)
+        evidence_archive.parent.mkdir(parents=True, exist_ok=True)
+        evidence_archive.write_bytes(evidence.read_bytes())
         payload = {
             "schema_version": 1,
             "proof_id": proof_id,
@@ -257,13 +281,19 @@ def _write_dependency_manifests(
             "dependency_receipts": dependencies,
             "artifacts": [
                 {
-                    "path": evidence.relative_to(root).as_posix(),
-                    "sha256": WRITER._sha256(evidence),
+                    "source_path": evidence.relative_to(root).as_posix(),
+                    "path": evidence_archive.relative_to(root).as_posix(),
+                    "sha256": evidence_digest,
                 }
             ],
         }
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        manifest_bytes = (json.dumps(payload, sort_keys=True) + "\n").encode()
+        manifest_path.write_bytes(manifest_bytes)
+        manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+        archive_path = root / CHECKER.proof_archive_relative_path(payload, manifest_digest)
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        archive_path.write_bytes(manifest_bytes)
 
 
 def test_writer_publishes_truthful_not_ready_diagnostic_for_staged_graph(
@@ -347,7 +377,9 @@ def test_writer_derives_ready_receipt_from_full_valid_closure(tmp_path: Path) ->
     assert all(item["status"] == "PASSED" for item in payload["dependency_receipts"])
     assert all(verdict["status"] == "PASSED" for verdict in payload["verdicts"].values())
     assert payload["daemon_binary"] == {
-        "path": "bin/searchd",
+        "path": CHECKER.content_archive_relative_path(
+            "binary", WRITER._sha256(root / "bin/searchd")
+        ),
         "sha256": WRITER._sha256(root / "bin/searchd"),
     }
     assert payload["release_host"]["profile"] == "linux-production-like"
@@ -478,7 +510,10 @@ def test_ready_aggregate_is_mandatory_and_sufficient_for_p12_issuance(
     assert status == "passed"
     assert payload["artifacts"] == [
         {
-            "path": registry["aggregate"]["artifact"],
+            "source_path": registry["aggregate"]["artifact"],
+            "path": CHECKER.content_archive_relative_path(
+                "evidence", WRITER._sha256(aggregate_path)
+            ),
             "sha256": WRITER._sha256(aggregate_path),
         }
     ]
@@ -513,7 +548,11 @@ def test_p12_guard_refuses_an_unregistered_terminal_artifact(tmp_path: Path) -> 
         "status": "passed",
         "counts": {"selected": 1, "executed": 1, "passed": 1, "failed": 0, "ignored": 0},
         "artifacts": [
-            {"path": "artifacts/proof-authority/raw/not-aggregate.log", "sha256": "0" * 64}
+            {
+                "source_path": "artifacts/proof-authority/raw/not-aggregate.log",
+                "path": "artifacts/proof-authority/evidence/" + "0" * 64,
+                "sha256": "0" * 64,
+            }
         ],
     }
 
@@ -547,7 +586,8 @@ def test_p12_guard_refuses_registered_not_ready_aggregate(tmp_path: Path) -> Non
         "counts": {"selected": 1, "executed": 1, "passed": 1, "failed": 0, "ignored": 0},
         "artifacts": [
             {
-                "path": aggregate_path.relative_to(root).as_posix(),
+                "source_path": aggregate_path.relative_to(root).as_posix(),
+                "path": "artifacts/proof-authority/evidence/" + aggregate_digest,
                 "sha256": aggregate_digest,
             }
         ],

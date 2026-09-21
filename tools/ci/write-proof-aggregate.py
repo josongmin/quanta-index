@@ -147,7 +147,7 @@ def build_aggregate(
     aggregate = registry["aggregate"]
     proof_by_id = {proof["id"]: proof for proof in registry["proofs"]}
     target = proof_by_id[aggregate["target_proof"]]
-    dependency_ids = checker.dependency_closure(proof_by_id, target["id"])
+    dependency_ids = checker.aggregate_proof_ids(registry)
     repository = target["paired_repository"]
     paired_checkouts = {repository: paired_checkout.resolve()}
     source_cache: dict[tuple[Path, Path | None, tuple[Path, ...]], dict[str, Any]] = {}

@@ -172,6 +172,14 @@ def test_writer_resolves_registry_source_and_null_binary_then_semantically_valid
     assert payload["source"]["merge_base"] is None
     assert payload["daemon_binary"] is None
     assert digest == WRITER._sha256(output)
+    assert (
+        output.relative_to(root)
+        .as_posix()
+        .startswith("artifacts/proof-authority/archive/p00-authority-freeze/")
+    )
+    assert (
+        root / "artifacts/proof-authority/p00-authority-freeze.json"
+    ).read_bytes() == output.read_bytes()
     assert status == "passed"
     assert (
         CHECKER.check_manifest(
@@ -193,6 +201,87 @@ def test_p00_manifest_refuses_missing_error_inventory_attestation(tmp_path: Path
     terminal_path.write_text(json.dumps(terminal), encoding="utf-8")
 
     with pytest.raises(WRITER.ManifestRefused, match="must attest.*error-authority inventory"):
+        _publish(root, terminal_path)
+
+
+def test_archive_publish_is_idempotent_and_refuses_byte_replacement(tmp_path: Path) -> None:
+    root, _ = _fixture_root(tmp_path)
+    terminal_path, _ = _terminal(root)
+
+    first_path, first_digest, _ = _publish(root, terminal_path)
+    second_path, second_digest, _ = _publish(root, terminal_path)
+
+    assert second_path == first_path
+    assert second_digest == first_digest
+    original = first_path.read_bytes()
+    first_path.write_bytes(original + b"tampered\n")
+    with pytest.raises(WRITER.ManifestRefused, match="immutable proof archive leaf was modified"):
+        _publish(root, terminal_path)
+
+
+def test_archive_publish_refuses_a_deleted_indexed_leaf(tmp_path: Path) -> None:
+    root, _ = _fixture_root(tmp_path)
+    terminal_path, _ = _terminal(root)
+    archive_path, _, _ = _publish(root, terminal_path)
+
+    archive_path.unlink()
+
+    with pytest.raises(WRITER.ManifestRefused, match="immutable proof archive leaf was deleted"):
+        _publish(root, terminal_path)
+
+
+def test_archive_publish_refuses_a_symlinked_archive_parent(tmp_path: Path) -> None:
+    root, _ = _fixture_root(tmp_path)
+    terminal_path, _ = _terminal(root)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    archive_root = root / "artifacts/proof-authority/archive"
+    archive_root.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(WRITER.ManifestRefused, match="archive directory is not a real directory"):
+        _publish(root, terminal_path)
+
+    assert list(outside.iterdir()) == []
+
+
+def test_historical_manifest_keeps_content_addressed_evidence_after_retry(
+    tmp_path: Path,
+) -> None:
+    root, registry = _fixture_root(tmp_path)
+    terminal_path, _ = _terminal(root)
+    first_path, _, _ = _publish(root, terminal_path)
+    first_payload = json.loads(first_path.read_text(encoding="utf-8"))
+
+    (root / "artifacts/proof-authority/raw/p00.log").write_text(
+        "proof authority: passed retry\n", encoding="utf-8"
+    )
+    second_path, _, _ = _publish(root, terminal_path)
+
+    proof = next(item for item in registry["proofs"] if item["id"] == "p00-authority-freeze")
+    schema = json.loads((root / "tools/ci/proof-manifest.schema.json").read_text())
+    assert second_path != first_path
+    assert (
+        CHECKER.check_manifest(
+            first_payload,
+            manifest_path=first_path,
+            proof=proof,
+            schema=schema,
+            root=root,
+            bind_source=True,
+        )
+        == []
+    )
+
+
+def test_passed_manifest_refuses_dirty_product_source(tmp_path: Path) -> None:
+    root, _ = _fixture_root(tmp_path)
+    terminal_path, _ = _terminal(root)
+    owner = root / "docs/adr/SEP-21-DECISION-REGISTRY.md"
+    owner.write_text("dirty source\n", encoding="utf-8")
+
+    with pytest.raises(
+        WRITER.ManifestRefused, match="passed proof requires a clean primary source"
+    ):
         _publish(root, terminal_path)
 
 
@@ -330,10 +419,12 @@ def test_binary_binding_is_derived_and_none_rejects_a_daemon_path(tmp_path: Path
     )
 
     with pytest.raises(WRITER.ManifestRefused, match="requires terminal.daemon_binary=null"):
-        WRITER._resolve_binary(root, proof_none, "bin/searchd")
-    assert WRITER._resolve_binary(root, proof_release, "bin/searchd") == {
-        "path": "bin/searchd",
-        "sha256": WRITER._sha256(daemon),
+        WRITER._resolve_binary(root, proof_none, "bin/searchd", checker=CHECKER)
+    binary_digest = WRITER._sha256(daemon)
+    assert WRITER._resolve_binary(root, proof_release, "bin/searchd", checker=CHECKER) == {
+        "source_path": "bin/searchd",
+        "path": CHECKER.content_archive_relative_path("binary", binary_digest),
+        "sha256": binary_digest,
     }
 
 
@@ -383,8 +474,8 @@ def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
             'target = "semantica-terminal-receipt"\nfilter = "none"\nsource_binding = "exact-pair"',
         )
         .replace(
-            'test_authority_targets = []\ndependencies = ["p03-candidate-activation", "p02b-operation-journal", "p06-sdk-binding", "p10-state-migration"]',
-            'test_authority_targets = ["catalog-idempotency"]\ntest_authority_scopes = ["integration-fast"]\ndependencies = ["p03-candidate-activation", "p02b-operation-journal", "p06-sdk-binding", "p10-state-migration"]',
+            'test_authority_targets = []\ndependencies = ["p10-state-migration"]',
+            'test_authority_targets = ["catalog-idempotency"]\ntest_authority_scopes = ["integration-fast"]\ndependencies = ["p10-state-migration"]',
         )
         .replace(
             'command = "just rust-verify-hellgate-cross-repo"',
@@ -396,6 +487,8 @@ def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
         "proof-p11-cross-repo-cutover:\n    @just rust-profile test-integration-fast\n",
         encoding="utf-8",
     )
+    _run(root, "git", "add", "tools/ci/proof-authority.toml", "Justfile")
+    _run(root, "git", "commit", "-qm", "activate exact-pair fixture")
     registry = CHECKER._read_toml(registry_path)
     checkout = _paired_checkout(tmp_path)
     terminal_path, terminal = _terminal(root)
@@ -407,12 +500,49 @@ def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
         dependency = next(item for item in registry["proofs"] if item["id"] == dependency_id)
         dependency_path = root / dependency["artifact"]
         dependency_path.parent.mkdir(parents=True, exist_ok=True)
-        dependency_path.write_text(f'{{"proof_id":"{dependency_id}"}}\n', encoding="utf-8")
+        dependency_payload = {
+            "proof_id": dependency_id,
+            "source": {
+                "head": "a" * 40,
+                "dirty_digest": "sha256:" + "b" * 64,
+                "branch": "fixture",
+                "upstream": None,
+                "merge_base": None,
+            },
+            "source_pair": None,
+        }
+        dependency_bytes = (
+            json.dumps(dependency_payload, sort_keys=True, indent=2) + "\n"
+        ).encode()
+        dependency_path.write_bytes(dependency_bytes)
+        dependency_digest = WRITER._sha256(dependency_path)
+        archive_relative = CHECKER.proof_archive_relative_path(
+            dependency_payload,
+            dependency_digest,
+        )
+        archive_path = root / archive_relative
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        archive_path.write_bytes(dependency_bytes)
     terminal["environment"]["host"]["profile"] = "linux-production-like"
     terminal["environment"]["os"] = "linux"
     terminal["daemon_binary"] = "bin/searchd"
     terminal_path.write_text(json.dumps(terminal), encoding="utf-8")
     monkeypatch.setattr(WRITER.platform, "system", lambda: "Linux")
+
+    original_load_checker = WRITER._load_checker
+
+    def load_checker_without_nested_fixture_validation():
+        checker = original_load_checker()
+        original_check_manifest = checker.check_manifest
+
+        def check_manifest_without_nested_authority(*args, **kwargs):
+            kwargs["proof_by_id"] = None
+            return original_check_manifest(*args, **kwargs)
+
+        checker.check_manifest = check_manifest_without_nested_authority
+        return checker
+
+    monkeypatch.setattr(WRITER, "_load_checker", load_checker_without_nested_fixture_validation)
 
     output, _, status = WRITER.publish_manifest(
         root=root,
@@ -533,6 +663,12 @@ def test_schema_allows_upstreamless_or_detached_source_but_keeps_binary_field() 
             "started_at": "2026-09-21T00:00:00Z",
             "ended_at": "2026-09-21T00:00:01Z",
             "dependency_receipts": [],
-            "artifacts": [{"path": "raw.log", "sha256": "d" * 64}],
+            "artifacts": [
+                {
+                    "source_path": "raw.log",
+                    "path": "artifacts/proof-authority/evidence/" + "d" * 64,
+                    "sha256": "d" * 64,
+                }
+            ],
         }
     )

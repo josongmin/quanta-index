@@ -110,6 +110,11 @@ exact-pair/deploy/activate/rollback proof는 별도 승인 경계이므로 owner
   equality를 요구하거나 허용하지 않는다. `artifacts/proof-authority/<proof-id>.json` current alias는 편의용이며
   historical handoff authority가 아니다. 같은 source binding의 retry도 새 manifest digest leaf를 추가할 수 있지만 과거
   archive leaf와 dependency edge를 변경하지 않는다.
+- passed proof는 primary와 paired source 모두 clean이어야 한다. terminal evidence와 release daemon은
+  `artifacts/proof-authority/{evidence,binaries}/<sha256>` content-addressed immutable object로 보존한다. historical
+  manifest는 mutable raw/current path가 아니라 이 object를 검증하며, 후속 retry가 raw output을 교체해도 과거 leaf는
+  유효해야 한다. source-binding issuance index가 기록한 manifest leaf의 삭제/변조와 archive-parent symlink는
+  fail-closed한다.
 - source dirty digest는 staged+unstaged+scoped untracked content를 포함하고 proof output 자체는 source digest에서
   제외한다. final gate는 `--require-all --bind-source`와 aggregate receipt를 요구한다.
 

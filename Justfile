@@ -611,6 +611,12 @@ proof-authority-current-gate:
         --manifest artifacts/proof-authority/p00-authority-freeze.json \
         --bind-source
 
+lane-handoff-check handoff:
+    python3 tools/ci/lint/check-lane-handoff.py --require-result-head "{{handoff}}"
+
+lane-handoff-check-historical handoff:
+    python3 tools/ci/lint/check-lane-handoff.py "{{handoff}}"
+
 proof-error-authority-inventory:
     python3 tools/ci/write-error-authority-inventory.py
 
@@ -623,6 +629,13 @@ proof-error-authority-closed:
 proof-p00-authority-freeze:
     python3 tools/ci/write-error-authority-inventory.py
     python3 tools/ci/lint/check-proof-authority.py
+    python3 -m pytest \
+        tools/ci/tests/test_write_error_authority_inventory.py \
+        tools/ci/tests/test_write_proof_aggregate.py \
+        tools/ci/tests/test_write_proof_manifest.py \
+        tools/ci/tests/test_check_proof_authority.py \
+        tools/ci/tests/test_check_lane_handoff.py \
+        -q
 
 # P12 records this dependency aggregate as its own terminal evidence. It must
 # exclude p12-final-qualification itself; the release gate below validates the

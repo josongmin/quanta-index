@@ -265,7 +265,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install proof-authority dependencies
-        run: python -m pip install 'jsonschema>=4.23.0'
+        run: python -m pip install 'jsonschema>=4.23.0' 'pytest>=8.3.0'
 
       - name: Install just
         uses: taiki-e/install-action@just
@@ -276,7 +276,7 @@ jobs:
           mkdir -p artifacts/proof-authority/raw
           started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           set -o pipefail
-          just proof-authority-lint \
+          just proof-p00-authority-freeze \
             | tee artifacts/proof-authority/raw/p00-authority.log
           ended_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           python3 - "$started_at" "$ended_at" <<'PY'
@@ -335,6 +335,7 @@ jobs:
               "artifacts": [
                   "artifacts/proof-authority/raw/p00-authority.log",
                   "artifacts/proof-authority/raw/p00-terminal-input.json",
+                  "artifacts/sep-21/p00/error-authority-inventory.json",
               ],
           }
           Path("artifacts/proof-authority/raw/p00-terminal-input.json").write_text(
@@ -353,7 +354,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: proof-authority-p00-${{ github.run_id }}-${{ github.job }}
-          path: artifacts/proof-authority/
+          path: |
+            artifacts/proof-authority/
+            artifacts/sep-21/p00/error-authority-inventory.json
           if-no-files-found: error
 
   agent-output:
