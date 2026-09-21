@@ -31,9 +31,7 @@ use quanta_index_core::{CoreError, QueryRouteV1, RequestBudgetV1, validate_query
 
 use crate::lower_lexical_text_query;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
-use crate::query_dispatcher::errors::{
-    ERR_RUNTIME_CATALOG_NOT_READY, runtime_catalog_head_missing, runtime_snapshot_unknown,
-};
+use crate::query_dispatcher::errors::{runtime_catalog_head_missing, runtime_snapshot_unknown};
 use crate::query_dispatcher::keyset_page::{KeysetPageCollector, StreamEnd};
 use crate::query_dispatcher::read_view::{AuxEpochPinsV1, ReadViewRequestV1};
 use crate::query_dispatcher::selection::resolve_optional_selection;
@@ -174,7 +172,7 @@ fn ensure_runtime_catalog_ready(state: &RuntimeMetadataState) -> Result<(), Core
         Ok(())
     } else {
         Err(CoreError::Typed {
-            code: ERR_RUNTIME_CATALOG_NOT_READY.to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::RuntimeCatalogNotReady,
             message: "runtime metadata: catalog is not materialized for the pinned generation"
                 .to_string(),
         })

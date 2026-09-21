@@ -45,8 +45,8 @@ fn hybrid_seed_dispatch_includes_dense_only_entity_in_the_seed_set() -> TestResu
     );
 
     let pin = make_pin(
-        RepoId::new("repo-map-ipc"),
-        RevisionId::new("rev-map-ipc"),
+        RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+        RevisionId::new("rev-map-ipc").expect("static fixture ID satisfies canonical policy"),
         ManifestGeneration::new(9),
     );
     let response = dispatcher.dispatch(

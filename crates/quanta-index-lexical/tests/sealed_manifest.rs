@@ -70,11 +70,11 @@ const OVERLAY_FILES: [&str; 7] = [
 ];
 
 fn repo() -> RepoId {
-    RepoId::new("manifest-repo")
+    RepoId::new("manifest-repo").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new("manifest-rev")
+    RevisionId::new("manifest-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 fn scope(
@@ -198,7 +198,7 @@ fn publish_overlays(
     generation: ManifestGeneration,
     label: &str,
 ) -> Result<Vec<OverlayPublishOutcome>, Box<dyn Error>> {
-    let source = RepoId::new(format!("source-{label}"));
+    let source = RepoId::new(format!("source-{label}"))?;
     let digest = |family: &str| format!("overlay:{family}:{label}:{}", generation.get());
     let bundle = LexicalChannelOp::FullBundle(LexicalFullBundle {
         repo_id: repo(),
@@ -396,14 +396,14 @@ fn knock(adapter: &LexicalAdapter, generation: ManifestGeneration) -> Doors {
 
 fn typed_code(result: &Result<(), CoreError>) -> Option<String> {
     match result {
-        Err(CoreError::Typed { code, .. }) => Some(code.clone()),
+        Err(CoreError::Typed { code, .. }) => Some(code.to_string()),
         _ => None,
     }
 }
 
 fn typed_open_code(result: &Result<usize, CoreError>) -> Option<String> {
     match result {
-        Err(CoreError::Typed { code, .. }) => Some(code.clone()),
+        Err(CoreError::Typed { code, .. }) => Some(code.to_string()),
         _ => None,
     }
 }
@@ -784,12 +784,14 @@ fn a_sealed_generation_refuses_every_mutation_and_keeps_its_bytes() -> TestResul
         payload: Vec::new(),
     });
     match adapter.build(&repo(), &revision(), generation, &[mutation]) {
-        Err(CoreError::Typed { code, .. }) if code == "GENERATION_IMMUTABLE" => {}
+        Err(CoreError::Typed { code, .. })
+            if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationImmutable => {}
         other => return Err(format!("index mutation after seal answered {other:?}").into()),
     }
     for outcome in publish_overlays(&adapter, generation, "late")? {
         match outcome.result {
-            Err(CoreError::Typed { code, .. }) if code == "GENERATION_IMMUTABLE" => {}
+            Err(CoreError::Typed { code, .. })
+                if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationImmutable => {}
             other => {
                 return Err(format!(
                     "{} publish after the seal answered {other:?}, expected typed GENERATION_IMMUTABLE",
@@ -975,7 +977,11 @@ fn a_same_length_flip_is_found_by_the_scrub_and_quarantines_the_generation() -> 
             max_bytes: u64::MAX,
         },
     ) {
-        Err(CoreError::Typed { code, .. }) if code == "GENERATION_QUARANTINED" => Ok(()),
+        Err(CoreError::Typed { code, .. })
+            if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationQuarantined =>
+        {
+            Ok(())
+        }
         other => Err(format!("scrubbing a quarantined generation answered {other:?}").into()),
     }
 }

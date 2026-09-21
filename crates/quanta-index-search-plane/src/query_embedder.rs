@@ -145,7 +145,7 @@ pub(crate) fn hash_query_text(text: &str, dimension: usize) -> Result<Vec<f32>, 
     }
     if !saw_token {
         return Err(CoreError::Typed {
-            code: LexicalErrorCode::EmptyQuery.as_code_str().to_string(),
+            code: LexicalErrorCode::EmptyQuery.into(),
             message: "semantic: query text must contain at least one alphanumeric token"
                 .to_string(),
         });

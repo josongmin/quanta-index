@@ -22,7 +22,7 @@ use anyhow::Result as AnyResult;
 use quanta_index_contract::TextQuerySyntax;
 
 use crate::artifact::{BenchRowV1, BenchSyntax, LatencySummary, ResultShape};
-use crate::harness::{E2eHistoryResult, E2eQueryResult, E2eRuntime};
+use crate::harness::{E2eErrorCode, E2eHistoryResult, E2eQueryResult, E2eRuntime};
 use crate::scenarios::{DslBenchScenario, FixtureKind};
 
 /// Result cap requested for every benchmark query.
@@ -38,7 +38,7 @@ const BENCH_REPO: &str = "repo-bench";
 pub struct QueryOutcome {
     pub result_shape: ResultShape,
     pub result_count: Option<u64>,
-    pub typed_error_code: Option<String>,
+    pub typed_error_code: Option<E2eErrorCode>,
     pub engine_touched: Vec<String>,
     pub early_stop_reason: Option<String>,
 }
@@ -88,11 +88,11 @@ pub fn validate_scenario_outcome(
             mode
         ));
     }
-    if outcome.typed_error_code.as_deref() != scenario.expected_typed_error_code {
+    if outcome.typed_error_code.map(E2eErrorCode::as_str) != scenario.expected_typed_error_code {
         return Err(anyhow::anyhow!(
             "scenario {} returned typed_error_code {:?}, expected {:?}",
             scenario.id,
-            outcome.typed_error_code.as_deref(),
+            outcome.typed_error_code.map(E2eErrorCode::as_str),
             scenario.expected_typed_error_code
         ));
     }
@@ -359,7 +359,9 @@ pub fn bench_row(
         error_count: u64::from(outcome.typed_error_code.is_some()),
         timeout_count: 0,
         result_count: outcome.result_count,
-        typed_error_code: outcome.typed_error_code,
+        typed_error_code: outcome
+            .typed_error_code
+            .map(|code| code.as_str().to_owned()),
         engine_touched: outcome.engine_touched,
         early_stop_reason: outcome.early_stop_reason,
     }
@@ -475,7 +477,7 @@ fn outcome_from_history(result: &E2eHistoryResult) -> QueryOutcome {
     }
 }
 
-fn typed_error_outcome(code: String, engine_touched: Vec<String>) -> QueryOutcome {
+fn typed_error_outcome(code: E2eErrorCode, engine_touched: Vec<String>) -> QueryOutcome {
     QueryOutcome {
         result_shape: ResultShape::TypedError,
         result_count: None,

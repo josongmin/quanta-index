@@ -11,6 +11,7 @@ use crate::query_errors::{
     fold_literal_prefix, map_phrase_plan_error, map_positions_error, map_trigram_error,
 };
 use crate::regex_match_cache::{RegexMatchCacheKey, RegexMatchCacheRefusal};
+use crate::searcher::authorities::TextAuthorityFeature;
 use crate::searcher::planner_errors::map_regex_plan_error;
 use crate::text_docs::authority_member_set;
 use crate::{GenKey, TantivySearcher, normalize};
@@ -36,7 +37,7 @@ impl TantivySearcher {
         needle: &str,
         options: &LqOptions,
     ) -> Result<RoaringBitmap, CoreError> {
-        let authority = self.text_authority("LEX_RAW_SUBSTRING")?;
+        let authority = self.text_authority(TextAuthorityFeature::RawSubstring)?;
         let folded = !Self::is_case_sensitive(options);
         let trigram_index = authority.trigram_index(folded);
         let resolver = authority.resolver(folded);
@@ -47,7 +48,7 @@ impl TantivySearcher {
         let verified_doc_ids = query_raw_substring(&trigram_index, &query_bytes, &resolver)
             .map_err(|err| match err.code {
                 TrigramErrorCode::RegexPrefilterUnusable => CoreError::Typed {
-                    code: "LEX_RAW_SUBSTRING_TRIGRAM_INDEX_MISSING".to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::LexRawSubstringTrigramIndexMissing,
                     message: format!("lexical: raw substring requires verify-only fallback: {err}"),
                 },
                 TrigramErrorCode::PlanLimitExceeded
@@ -117,7 +118,7 @@ impl TantivySearcher {
                 return Ok(cached);
             }
         }
-        let authority = self.text_authority("LEX_REGEX_TRIGRAM")?;
+        let authority = self.text_authority(TextAuthorityFeature::RegexTrigram)?;
         let plan = crate::regex::plan_regex(&normalized_source, options, &self.regex_policy)
             .map_err(map_regex_plan_error)?;
         let executor = RegexExecutor::compile(&normalized_source).map_err(|err| {
@@ -155,7 +156,7 @@ impl TantivySearcher {
         let budget_ms = Self::regex_timeout_budget_ms(options).unwrap_or(0);
         if options.timeout_ms == Some(0) && !prefiltered_doc_ids.is_empty() {
             return Err(CoreError::Typed {
-                code: LexicalErrorCode::QueryTimeout.as_code_str().to_string(),
+                code: LexicalErrorCode::QueryTimeout.into(),
                 message:
                     "lexical: regex verify timed out before candidate verification began (budget 0ms)"
                         .to_string(),
@@ -171,7 +172,7 @@ impl TantivySearcher {
             })
             .map_err(|err| match err.code {
                 quanta_index_lq_regex::RegexErrorCode::QueryTimeout => CoreError::Typed {
-                    code: LexicalErrorCode::QueryTimeout.as_code_str().to_string(),
+                    code: LexicalErrorCode::QueryTimeout.into(),
                     message: format!("lexical: regex verify timed out: {err}"),
                 },
                 quanta_index_lq_regex::RegexErrorCode::Interrupted => probe
@@ -186,7 +187,7 @@ impl TantivySearcher {
                 | quanta_index_lq_regex::RegexErrorCode::PlanLimitExceeded
                 | quanta_index_lq_regex::RegexErrorCode::RegexPrefilterUnusable
                 | quanta_index_lq_regex::RegexErrorCode::ExecutionInternal => CoreError::Typed {
-                    code: format!("LEX_REGEX_{}", err.code.as_code_str()),
+                    code: crate::query_errors::regex_wire_code(err.code),
                     message: format!("lexical: regex verify failed: {err}"),
                 },
             })?;
@@ -219,7 +220,7 @@ impl TantivySearcher {
         text: &str,
         options: &LqOptions,
     ) -> Result<RoaringBitmap, CoreError> {
-        let authority = self.text_authority("LEX_PHRASE_POSITIONS")?;
+        let authority = self.text_authority(TextAuthorityFeature::PhrasePositions)?;
         let plan = plan_phrase(
             text,
             options,

@@ -16,8 +16,7 @@ use std::path::{Path, PathBuf};
 
 use quanta_index_contract::{AuxEpochV1, ManifestGeneration, RepoId, RevisionId};
 use quanta_index_core::{
-    AuxiliaryGenerationKeyV1, CoreError, GenerationStorageKeyV1, HISTORY_TEXT_INDEX_CORRUPT_CODE,
-    HistoryTextKindV1,
+    AuxiliaryGenerationKeyV1, CoreError, GenerationStorageKeyV1, HistoryTextKindV1,
 };
 
 const EPOCH_DIR_PREFIX: &str = "e";
@@ -76,13 +75,13 @@ fn parse_epoch_dir_name(name: &str) -> Result<Option<AuxEpochV1>, CoreError> {
     let digits = name
         .strip_prefix(EPOCH_DIR_PREFIX)
         .ok_or_else(|| CoreError::Typed {
-            code: HISTORY_TEXT_INDEX_CORRUPT_CODE.to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexCorrupt,
             message: format!(
                 "history text index: foreign entry `{name}` in a generation directory"
             ),
         })?;
     let epoch = digits.parse::<u64>().map_err(|err| CoreError::Typed {
-        code: HISTORY_TEXT_INDEX_CORRUPT_CODE.to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexCorrupt,
         message: format!("history text index: entry `{name}` is not an epoch directory: {err}"),
     })?;
     Ok(Some(AuxEpochV1::new(epoch)))
@@ -119,7 +118,7 @@ pub(super) fn list_generations(
             .to_str()
             .and_then(GenerationStorageKeyV1::generation_of_dir_name)
             .ok_or_else(|| CoreError::Typed {
-                code: HISTORY_TEXT_INDEX_CORRUPT_CODE.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexCorrupt,
                 message: format!(
                     "history text index: foreign entry {} in the pair directory {}",
                     name.to_string_lossy(),
@@ -158,7 +157,7 @@ pub(super) fn list_epochs(
         })?;
         let name = entry.file_name();
         let name = name.to_str().ok_or_else(|| CoreError::Typed {
-            code: HISTORY_TEXT_INDEX_CORRUPT_CODE.to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexCorrupt,
             message: format!(
                 "history text index: entry with a non-UTF-8 name in {}",
                 dir.display()

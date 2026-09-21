@@ -341,7 +341,9 @@ fn a_regex_case_flag_beside_case_yes_is_refused_typed() -> TestResult {
     let _labels = ingest_corpus(&mut rt)?;
     let result = rt.query_text(TextQuerySyntax::Native, "ΟΔΟΣ /(?i)δ/ case:yes", TOP_K);
     match result.typed_error {
-        Some(error) if error.code == "PARSE_FAIL" && error.message.contains("contradicts") => {
+        Some(error)
+            if error.code.as_str() == "PARSE_FAIL" && error.message.contains("contradicts") =>
+        {
             Ok(())
         }
         other => Err(format!(

@@ -39,11 +39,11 @@ const IDENTITY: &str = "search-corpus-generation-identity.cbor";
 const TEXT_AUTHORITY_MANIFEST: &str = "text-authority/manifest.cbor";
 
 fn repo() -> RepoId {
-    RepoId::new("inventory-repo")
+    RepoId::new("inventory-repo").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new("inventory-rev")
+    RevisionId::new("inventory-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 fn scope(body: &str) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
@@ -116,7 +116,7 @@ fn flip_last_byte(path: &Path) -> TestResult {
 
 fn typed_code(result: &Result<(), CoreError>) -> Option<String> {
     match result {
-        Err(CoreError::Typed { code, .. }) => Some(code.clone()),
+        Err(CoreError::Typed { code, .. }) => Some(code.to_string()),
         _ => None,
     }
 }

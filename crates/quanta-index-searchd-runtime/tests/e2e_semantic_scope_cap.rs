@@ -224,7 +224,8 @@ fn scope_top_k_shares_the_public_gate() -> TestResult {
         )?;
         let refused_typed = matches!(
             &answer.payload,
-            SearchPlaneQueryIpcResponse::Error(error) if error.code == TOP_K_OUT_OF_RANGE_CODE
+            SearchPlaneQueryIpcResponse::Error(error)
+                if error.code.as_wire_str() == TOP_K_OUT_OF_RANGE_CODE
         );
         if !refused_typed {
             return Err(format!(

@@ -363,9 +363,10 @@ mod tests {
 
     fn typed(
         result: &Result<(), CoreError>,
-    ) -> Result<(String, String), Box<dyn std::error::Error>> {
+    ) -> Result<(quanta_index_contract::SearchPlaneErrorCodeV2, String), Box<dyn std::error::Error>>
+    {
         match result {
-            Err(CoreError::Typed { code, message }) => Ok((code.clone(), message.clone())),
+            Err(CoreError::Typed { code, message }) => Ok((*code, message.clone())),
             other => Err(format!("expected a typed interruption, got {other:?}").into()),
         }
     }
@@ -537,7 +538,7 @@ mod tests {
             }
         };
         assert!(
-            matches!(&refused, CoreError::Typed { code, .. } if code == REQUEST_CANCELLED_CODE)
+            matches!(&refused, CoreError::Typed { code, .. } if *code == REQUEST_CANCELLED_CODE)
         );
         assert_eq!(passed, SEMANTIC_BUDGET_TICK_ROWS);
         assert_eq!(tallies.interruptions(DenseLaneKindV1::Exact), 1);

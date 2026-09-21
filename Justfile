@@ -24,6 +24,7 @@ rust-profile-list:
         'dev-all-targets     widest compile rail; all targets across the workspace' \
         'validate-shared-surface contract/core/sdk/search-plane shared-surface validation rail' \
         'test-fast           default local test loop; workspace lib/bin tests, excludes daemon e2e' \
+        'test-canonical-identity P01A identity, codec, layout-security, and error-authority proof' \
         'test-integration-fast bounded integration loop; excludes slow text/Lance storage' \
         'test-integration-storage text-authority shard persistence slice' \
         'test-integration-semantic semantic storage integration slice' \
@@ -52,6 +53,7 @@ rust-profile profile:
         dev-all-targets) ./scripts/run-rust-profile.sh "{{profile}}" rust-check ;; \
         validate-shared-surface) ./scripts/run-rust-profile.sh "{{profile}}" rust-validate-shared-surface ;; \
         test-fast) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-fast ;; \
+        test-canonical-identity) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-canonical-identity ;; \
         test-integration-fast) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-fast ;; \
         test-integration-storage) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-storage ;; \
         test-integration-semantic) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-semantic ;; \
@@ -200,6 +202,9 @@ rust-test-fast:
 
 rust-test-unit:
     {{cargo}} --lane test-fast-lane test --workspace --lib --bins --all-features --locked --exclude quanta-index-searchd-runtime
+
+rust-test-canonical-identity lane="test-canonical-identity-lane":
+    python3 tools/ci/run-local-test-scope.py canonical-identity --lane {{lane}}
 
 rust-test-integration-fast lane="test-integration-lane":
     python3 tools/ci/run-local-test-scope.py integration-fast --lane {{lane}}
@@ -615,11 +620,19 @@ proof-authority-current-gate:
 proof-error-authority-inventory:
     python3 tools/ci/write-error-authority-inventory.py
 
-# Intentionally fail closed until P01A replaces this staged rail with the
-# enum/table/mapping/SDK semantic validators and registered owner-local tests.
 proof-error-authority-closed:
-    @echo "REFUSED: P01A semantic error-authority closure rail is not implemented" >&2
-    @exit 1
+    python3 tools/ci/check-error-authority-closure.py
+
+proof-p01-canonical-identity:
+    @just proof-error-authority-closed
+    @just rust-profile test-canonical-identity
+    @just rust-public-api
+    @just rust-wire-inventory
+    @just rust-fuzz-smoke
+    @just rust-hexagonal
+    @just rust-cargo-modules
+    @just rust-profile validate-shared-surface
+    @just rust-profile test-daemon
 
 proof-p00-authority-freeze:
     python3 tools/ci/write-error-authority-inventory.py

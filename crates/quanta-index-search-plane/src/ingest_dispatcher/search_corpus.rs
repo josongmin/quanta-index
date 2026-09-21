@@ -22,10 +22,6 @@ use crate::auxiliary_authority::{structural_chunks_delta_rows, structural_chunks
 use crate::crash_point;
 use crate::history_text::HistoryTextIndexParts;
 use crate::ingest_dispatcher::auxiliary::AuxiliaryMutationCoordinator;
-use crate::ingest_dispatcher::errors::{
-    ERR_SEARCH_CORPUS_BATCH_SHAPE, ERR_SEARCH_CORPUS_DELTA_BASE_NOT_SEALED,
-    ERR_SEARCH_CORPUS_GENERATION_CONFLICT,
-};
 use crate::ingest_dispatcher::generation_plan::{
     DeferredGcStep, SealedGenerationBuildPlanV1, SearchCorpusPhysicalReclaimReceiptV1,
     batch_publish_receipt_v1, ensure_generation_is_mutable_v1, generation_pair_from_batch_v1,
@@ -418,7 +414,7 @@ impl DirectSearchCorpusMaterializer {
     /// storage-free, refused typed.
     fn validate_batch_shape_v1(batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
         batch.validate_v1().map_err(|err| CoreError::Typed {
-            code: ERR_SEARCH_CORPUS_BATCH_SHAPE.to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid,
             message: format!("direct search-corpus materialize: {err}"),
         })?;
         batch.validate_surface_mutations_v1().map_err(|err| {
@@ -607,7 +603,7 @@ impl DirectSearchCorpusMaterializer {
             .semantic_content_roots
             .sealed_content_roots(&semantic)
             .map_err(|source| CoreError::Typed {
-                code: ERR_SEARCH_CORPUS_GENERATION_CONFLICT.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
                 message: format!(
                     "direct search-corpus materialize: sealed semantic generation {} carries no attestable content roots: {source}",
                     semantic.manifest_generation.get()
@@ -663,7 +659,7 @@ impl DirectSearchCorpusMaterializer {
                 );
             let Some(digest) = recorded else {
                 return Err(CoreError::Typed {
-                    code: ERR_SEARCH_CORPUS_DELTA_BASE_NOT_SEALED.to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusDeltaBaseNotSealed,
                     message: format!(
                         "direct search-corpus materialize: delta base generation {} is not a sealed {label} track for repo={} revision={}; refusing before any mutation",
                         base_generation.get(),

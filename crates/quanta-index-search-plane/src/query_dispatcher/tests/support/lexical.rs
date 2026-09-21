@@ -458,8 +458,9 @@ impl LexicalIndexOpenPort for RecordingLexicalOpener {
 pub(crate) fn recording_lexical_candidate(candidate_id: &str) -> LexicalCandidate {
     LexicalCandidate {
         candidate_id: candidate_id.to_string(),
-        repo_id: RepoId::new("repo-map-ipc"),
-        revision_id: RevisionId::new("rev-map-ipc"),
+        repo_id: RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev-map-ipc")
+            .expect("static fixture ID satisfies canonical policy"),
         manifest_generation: ManifestGeneration::new(9),
         repo_relative_path: RepoRelativePath::new("src/a.rs"),
         start_line: 1,

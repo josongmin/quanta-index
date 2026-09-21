@@ -299,7 +299,7 @@ impl<P: TextEmbeddingProvider> TextEmbeddingProvider for L2UnitEmbeddingProvider
 
 fn invalid_vector(message: String) -> CoreError {
     CoreError::Typed {
-        code: LexicalErrorCode::SemInvalidVector.as_code_str().to_string(),
+        code: LexicalErrorCode::SemInvalidVector.into(),
         message,
     }
 }
@@ -350,7 +350,12 @@ mod tests {
         for refused in [0, PUBLIC_TOP_K_MAX + 1] {
             match SemanticPolicy::validate_top_k(refused) {
                 Err(CoreError::Typed { code, .. }) => {
-                    assert_eq!(code, quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE);
+                    assert_eq!(
+                        code,
+                        quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                            LexicalErrorCode::QueryTopKOutOfRange
+                        )
+                    );
                 }
                 other => panic!("top_k={refused} must be refused with the shared code: {other:?}"),
             }

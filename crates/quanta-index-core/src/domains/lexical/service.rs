@@ -7,7 +7,8 @@ use crate::timeref::is_rev_at_time_spec;
 
 /// Wire code for a lexical execution that would have to examine more
 /// candidates than the policy allows (QI-BB-005).
-pub const LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE: &str = "LEXICAL_EXAMINED_BUDGET_EXCEEDED";
+pub const LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::LexicalExaminedBudgetExceeded;
 
 /// How much one lexical execution may materialize (QI-BB-005).
 ///
@@ -59,7 +60,7 @@ impl LexicalExecutionBudgetV1 {
     #[must_use]
     pub fn exceeded(self, surface: &str) -> CoreError {
         CoreError::Typed {
-            code: LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE.to_string(),
+            code: LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE,
             message: format!(
                 "lexical: {surface} would examine more than {} candidates; narrow the query or drop the exact-set option",
                 self.max_examined_candidates
@@ -101,7 +102,9 @@ impl LexicalPolicy {
             || filters_contain_structural(&query.filters)
         {
             return Err(CoreError::Typed {
-                code: "STR_PRODUCER_PARSE_TREE_UNAVAILABLE".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                    quanta_index_contract::lex::LexicalErrorCode::StrProducerParseTreeUnavailable,
+                ),
                 message:
                     "lexical: structural execution is fail-closed until producer parse-tree ops land"
                         .to_string(),
@@ -430,7 +433,9 @@ mod tests {
             matches!(
                 result,
                 Err(CoreError::Typed { ref code, .. })
-                    if code == "STR_PRODUCER_PARSE_TREE_UNAVAILABLE"
+                    if *code == quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                        quanta_index_contract::lex::LexicalErrorCode::StrProducerParseTreeUnavailable
+                    )
             ),
             "unexpected result: {result:?}"
         );
@@ -457,7 +462,9 @@ mod tests {
             matches!(
                 result,
                 Err(CoreError::Typed { ref code, .. })
-                    if code == "STR_PRODUCER_PARSE_TREE_UNAVAILABLE"
+                    if *code == quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                        quanta_index_contract::lex::LexicalErrorCode::StrProducerParseTreeUnavailable
+                    )
             ),
             "unexpected result: {result:?}"
         );

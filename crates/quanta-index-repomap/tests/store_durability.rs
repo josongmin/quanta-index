@@ -20,11 +20,11 @@ use quanta_index_repomap::{RepoMapEntry, RepoMapGenerationStore, RepoMapSnapshot
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn repo() -> RepoId {
-    RepoId::new("repo-durable")
+    RepoId::new("repo-durable").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new("rev-durable")
+    RevisionId::new("rev-durable").expect("static fixture ID satisfies canonical policy")
 }
 
 fn snapshot(generation: u64) -> RepoMapSnapshot {

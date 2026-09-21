@@ -67,11 +67,11 @@ const TEXT_AUTHORITY_MANIFEST: &str = "manifest.cbor";
 const SEALED_MANIFEST: &str = "search-corpus-generation-manifest.cbor";
 
 fn repo() -> RepoId {
-    RepoId::new("shard-repo")
+    RepoId::new("shard-repo").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new("shard-rev")
+    RevisionId::new("shard-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 fn scope_path(index: usize) -> String {
@@ -556,14 +556,14 @@ fn small_batch(
 
 fn typed_code(result: Result<(), CoreError>) -> Result<String, Box<dyn Error>> {
     match result {
-        Err(CoreError::Typed { code, .. }) => Ok(code),
+        Err(CoreError::Typed { code, .. }) => Ok(code.to_string()),
         other => Err(format!("expected a typed refusal, got {other:?}").into()),
     }
 }
 
 fn open_code(adapter: &LexicalAdapter, generation: ManifestGeneration) -> Option<String> {
     match adapter.open(&repo(), &revision(), generation) {
-        Err(CoreError::Typed { code, .. }) => Some(code),
+        Err(CoreError::Typed { code, .. }) => Some(code.to_string()),
         _ => None,
     }
 }

@@ -1,4 +1,4 @@
-use quanta_index_contract::QueryErrorRepair;
+use quanta_index_contract::{QueryErrorRepair, SearchPlaneErrorCodeV2};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -24,7 +24,7 @@ pub enum SdkError {
     // failures and for query failures with no repairable class.
     #[error("remote {code}: {message}")]
     Remote {
-        code: String,
+        code: SearchPlaneErrorCodeV2,
         message: String,
         repair: Option<QueryErrorRepair>,
     },

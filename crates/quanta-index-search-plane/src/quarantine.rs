@@ -29,16 +29,16 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, GenerationQuarantineReasonV1, InventoriedSealedGenerationV1,
-    QUARANTINE_TARGET_NOT_QUARANTINED_CODE, QuarantineDiscardOutcomeV1,
-    QuarantinedGenerationDiscardPort, QuarantinedGenerationV1, QuarantinedRepoMapFileV1,
-    RepoMapQuarantinePort, SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1,
-    SealedGenerationReclaimPort, SealedGenerationScanPort,
+    QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort, QuarantinedGenerationV1,
+    QuarantinedRepoMapFileV1, RepoMapQuarantinePort, SealedGenerationInventoryV1,
+    SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, SealedGenerationScanPort,
 };
 
 use crate::{Ledger, SnapshotKey, SnapshotRegistries, SnapshotRetireOutcome};
 
 /// Wire code for discarding an orphan whose handle a query still holds.
-pub const QUARANTINE_TARGET_STILL_REFERENCED_CODE: &str = "QUARANTINE_TARGET_STILL_REFERENCED";
+pub const QUARANTINE_TARGET_STILL_REFERENCED_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::QuarantineTargetStillReferenced;
 
 /// One sealed directory the durable authority does not retain.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -292,7 +292,7 @@ impl QuarantineService {
                     .any(|quarantined| quarantined.path == entry.path);
             if named_now {
                 return Err(CoreError::Typed {
-                    code: QUARANTINE_TARGET_NOT_QUARANTINED_CODE.to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined,
                     message: format!(
                         "quarantine discard: {} is not an orphan now; it is retained by the authority or set aside by the adapter itself and is not this path's to remove",
                         entry.path.display()
@@ -318,7 +318,8 @@ impl QuarantineService {
         };
         if let SnapshotRetireOutcome::StillReferenced { holders } = fence {
             return Err(CoreError::Typed {
-                code: QUARANTINE_TARGET_STILL_REFERENCED_CODE.to_string(),
+                code:
+                    quanta_index_contract::SearchPlaneErrorCodeV2::QuarantineTargetStillReferenced,
                 message: format!(
                     "quarantine discard: {} is still held by {holders} in-flight reader(s); retry once they finish",
                     entry.path.display()
@@ -459,7 +460,7 @@ pub(crate) mod tests {
         ) -> Result<QuarantineDiscardOutcomeV1, CoreError> {
             if !self.quarantined.contains(entry) {
                 return Err(CoreError::Typed {
-                    code: QUARANTINE_TARGET_NOT_QUARANTINED_CODE.to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined,
                     message: format!("not quarantined now: {}", entry.path.display()),
                 });
             }
@@ -560,7 +561,7 @@ pub(crate) mod tests {
                     Ok(QuarantineDiscardOutcomeV1::Discarded { bytes: 7 })
                 }
                 Some(listed) => Err(CoreError::Typed {
-                    code: QUARANTINE_TARGET_NOT_QUARANTINED_CODE.to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined,
                     message: format!(
                         "recorded as `{}` now, not `{}`",
                         listed.reason, entry.reason
@@ -581,11 +582,11 @@ pub(crate) mod tests {
     }
 
     fn repo() -> RepoId {
-        RepoId::new("repo")
+        RepoId::new("repo").expect("static fixture ID satisfies canonical policy")
     }
 
     fn revision() -> RevisionId {
-        RevisionId::new("rev")
+        RevisionId::new("rev").expect("static fixture ID satisfies canonical policy")
     }
 
     fn sealed(track: SearchPlaneTrackKind, generation: u64) -> InventoriedSealedGenerationV1 {

@@ -9,9 +9,7 @@ use crate::overlay_codec::{
     encode_repo_description_batch, encode_repo_meta_batch, encode_repo_topic_batch,
 };
 use crate::sealed_generation::seal_generation;
-use crate::{
-    GENERATION_IMMUTABLE_CODE, GenKey, LexicalAdapter, op_mutates_index, op_writes_generation,
-};
+use crate::{GenKey, LexicalAdapter, op_mutates_index, op_writes_generation};
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::{
     FileContributorIngestBatch, FileOwnershipIngestBatch, GenerationSnapshot, ManifestGeneration,
@@ -154,7 +152,7 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
         if lexical_sealed_identity_path(&generation_dir).exists() {
             if !batch.seal {
                 return Err(CoreError::Typed {
-                    code: GENERATION_IMMUTABLE_CODE.to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationImmutable,
                     message: format!(
                         "lexical: generation {} is already sealed; refusing non-seal mutation",
                         batch.generation.get()

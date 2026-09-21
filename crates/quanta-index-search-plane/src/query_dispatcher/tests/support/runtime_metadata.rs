@@ -76,8 +76,10 @@ pub(crate) fn ready_runtime_metadata_ledger(
         guard
             .apply_runtime_batch(
                 &DirtyIngestBatch {
-                    repo_id: RepoId::new("repo-map-ipc"),
-                    revision_id: RevisionId::new("rev-map-ipc"),
+                    repo_id: RepoId::new("repo-map-ipc")
+                        .expect("static fixture ID satisfies canonical policy"),
+                    revision_id: RevisionId::new("rev-map-ipc")
+                        .expect("static fixture ID satisfies canonical policy"),
                     generation: ManifestGeneration::new(9),
                     overlay_epoch_ms: 100,
                     batch_digest: "dirty:test".to_string(),
@@ -94,8 +96,10 @@ pub(crate) fn ready_runtime_metadata_ledger(
         guard
             .apply_runtime_catalog_batch(
                 &RuntimeCatalogIngestBatch {
-                    repo_id: RepoId::new("repo-map-ipc"),
-                    revision_id: RevisionId::new("rev-map-ipc"),
+                    repo_id: RepoId::new("repo-map-ipc")
+                        .expect("static fixture ID satisfies canonical policy"),
+                    revision_id: RevisionId::new("rev-map-ipc")
+                        .expect("static fixture ID satisfies canonical policy"),
                     generation: ManifestGeneration::new(9),
                     overlay_epoch_ms: 20,
                     batch_digest: "catalog:test".to_string(),

@@ -22,7 +22,9 @@ use crate::readiness::track_state::TrackAuthorityState;
 
 pub(super) fn structural_parse_tree_decode_fail(reason: impl Into<String>) -> CoreError {
     CoreError::Typed {
-        code: "STR_PARSE_TREE_DECODE_FAIL".to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+            quanta_index_contract::lex::LexicalErrorCode::StrParseTreeDecodeFail,
+        ),
         message: reason.into(),
     }
 }

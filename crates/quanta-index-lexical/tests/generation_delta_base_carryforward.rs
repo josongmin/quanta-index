@@ -58,11 +58,11 @@ const BETA_MARKER_V2: &str = "gamma_replacement";
 const COST_FIXTURE_FILLER_SCOPES: usize = 400;
 
 fn repo() -> RepoId {
-    RepoId::new("carryforward-repo")
+    RepoId::new("carryforward-repo").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new("carryforward-rev")
+    RevisionId::new("carryforward-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 fn scope(
@@ -232,7 +232,8 @@ fn recency_batch(generation: ManifestGeneration) -> RepoCommitRecencyIngestBatch
         generation,
         batch_digest: format!("carryforward-recency:{}", generation.get()),
         entries: vec![RepoCommitRecencyEntry {
-            source_repo_id: RepoId::new("source-repo"),
+            source_repo_id: RepoId::new("source-repo")
+                .expect("static fixture ID satisfies canonical policy"),
             latest_committer_time_ms: 1_700_000_000_000,
         }],
     }

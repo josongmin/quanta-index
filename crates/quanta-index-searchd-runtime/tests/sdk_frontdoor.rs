@@ -68,11 +68,11 @@ static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn repo() -> RepoId {
-    RepoId::new("repo-sdk")
+    RepoId::new("repo-sdk").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new("rev-sdk")
+    RevisionId::new("rev-sdk").expect("static fixture ID satisfies canonical policy")
 }
 
 fn generation() -> ManifestGeneration {
@@ -544,7 +544,7 @@ fn lexical_chunk_with_source_repo(
         text: snippet.to_string().into_boxed_str(),
         structural: None,
         parent_chunk_id: None,
-        source_repo_id: source_repo_id.map(RepoId::new),
+        source_repo_id: source_repo_id.map(RepoId::new).transpose()?,
     })
 }
 
@@ -564,46 +564,72 @@ fn repo_commit_recency_batch() -> Result<RepoCommitRecencyBatch, Box<dyn Error>>
     Ok(
         RepoCommitRecencyBatch::new(repo(), revision(), generation())
             .entry(
-                RepoId::new("corp-a"),
+                RepoId::new("corp-a").expect("static fixture ID satisfies canonical policy"),
                 now_ms.saturating_sub(6 * 60 * 60 * 1000),
             )
-            .entry(RepoId::new("corp-b"), 1_700_000_000_000),
+            .entry(
+                RepoId::new("corp-b").expect("static fixture ID satisfies canonical policy"),
+                1_700_000_000_000,
+            ),
     )
 }
 
 fn repo_meta_batch() -> RepoMetaBatch {
     RepoMetaBatch::new(repo(), revision(), generation())
-        .entry(RepoId::new("corp-a"), "license", "apache-2.0")
-        .entry(RepoId::new("corp-b"), "license", "gpl-3.0")
+        .entry(
+            RepoId::new("corp-a").expect("static fixture ID satisfies canonical policy"),
+            "license",
+            "apache-2.0",
+        )
+        .entry(
+            RepoId::new("corp-b").expect("static fixture ID satisfies canonical policy"),
+            "license",
+            "gpl-3.0",
+        )
 }
 
 fn repo_topic_batch() -> RepoTopicBatch {
     RepoTopicBatch::new(repo(), revision(), generation())
-        .entry(RepoId::new("corp-a"), "security")
-        .entry(RepoId::new("corp-a"), "platform")
-        .entry(RepoId::new("corp-b"), "ml")
+        .entry(
+            RepoId::new("corp-a").expect("static fixture ID satisfies canonical policy"),
+            "security",
+        )
+        .entry(
+            RepoId::new("corp-a").expect("static fixture ID satisfies canonical policy"),
+            "platform",
+        )
+        .entry(
+            RepoId::new("corp-b").expect("static fixture ID satisfies canonical policy"),
+            "ml",
+        )
 }
 
 fn repo_description_batch() -> RepoDescriptionBatch {
     RepoDescriptionBatch::new(repo(), revision(), generation())
-        .entry(RepoId::new("corp-a"), "Apache distributed systems platform")
-        .entry(RepoId::new("corp-b"), "Machine learning training pipelines")
+        .entry(
+            RepoId::new("corp-a").expect("static fixture ID satisfies canonical policy"),
+            "Apache distributed systems platform",
+        )
+        .entry(
+            RepoId::new("corp-b").expect("static fixture ID satisfies canonical policy"),
+            "Machine learning training pipelines",
+        )
 }
 
 fn file_ownership_batch() -> FileOwnershipBatch {
     FileOwnershipBatch::new(repo(), revision(), generation())
         .entry(
-            RepoId::new("corp-a"),
+            RepoId::new("corp-a").expect("static fixture ID satisfies canonical policy"),
             RepoRelativePath::new("src/recency_a.rs"),
             vec!["@alice".to_string(), "@acme/platform".to_string()],
         )
         .entry(
-            RepoId::new("corp-a"),
+            RepoId::new("corp-a").expect("static fixture ID satisfies canonical policy"),
             RepoRelativePath::new("src/recency_gate.rs"),
             vec!["@alice".to_string()],
         )
         .entry(
-            RepoId::new("corp-b"),
+            RepoId::new("corp-b").expect("static fixture ID satisfies canonical policy"),
             RepoRelativePath::new("src/recency_b.rs"),
             vec!["@bob".to_string()],
         )
@@ -612,7 +638,7 @@ fn file_ownership_batch() -> FileOwnershipBatch {
 fn file_contributor_batch() -> FileContributorBatch {
     FileContributorBatch::new(repo(), revision(), generation())
         .entry_identities(
-            RepoId::new("corp-a"),
+            RepoId::new("corp-a").expect("static fixture ID satisfies canonical policy"),
             RepoRelativePath::new("src/recency_a.rs"),
             vec![
                 FileContributorIdentityEntry {
@@ -628,7 +654,7 @@ fn file_contributor_batch() -> FileContributorBatch {
             ],
         )
         .entry_identities(
-            RepoId::new("corp-a"),
+            RepoId::new("corp-a").expect("static fixture ID satisfies canonical policy"),
             RepoRelativePath::new("src/recency_gate.rs"),
             vec![FileContributorIdentityEntry {
                 canonical: "alice".to_string(),
@@ -637,7 +663,7 @@ fn file_contributor_batch() -> FileContributorBatch {
             }],
         )
         .entry_identities(
-            RepoId::new("corp-b"),
+            RepoId::new("corp-b").expect("static fixture ID satisfies canonical policy"),
             RepoRelativePath::new("src/recency_b.rs"),
             vec![FileContributorIdentityEntry {
                 canonical: "bob".to_string(),
@@ -649,10 +675,12 @@ fn file_contributor_batch() -> FileContributorBatch {
 
 fn rev_at_time_ancestor_revision() -> RevisionId {
     RevisionId::new("1111111111111111111111111111111111111111")
+        .expect("static fixture ID satisfies canonical policy")
 }
 
 fn rev_at_time_head_revision() -> RevisionId {
     RevisionId::new("2222222222222222222222222222222222222222")
+        .expect("static fixture ID satisfies canonical policy")
 }
 
 fn rev_at_time_ancestor_generation() -> ManifestGeneration {
@@ -1124,7 +1152,7 @@ fn structural_scope() -> SearchScopeKey {
 
 fn expect_remote_code(err: SdkError, expected: &str) -> TestResult {
     match err {
-        SdkError::Remote { code, .. } if code == expected => Ok(()),
+        SdkError::Remote { code, .. } if code.as_wire_str() == expected => Ok(()),
         other @ (SdkError::Usage(_)
         | SdkError::Protocol(_)
         | SdkError::Serialization(_)
@@ -1193,10 +1221,14 @@ fn current_sdk_search_corpus_or_none(
                 code: semantic_code,
                 ..
             }),
-        ) if lexical_code == "NOT_READY" && semantic_code == "NOT_READY" => Ok(None),
+        ) if lexical_code.as_wire_str() == "NOT_READY"
+            && semantic_code.as_wire_str() == "NOT_READY" =>
+        {
+            Ok(None)
+        }
         (Ok(_), Err(SdkError::Remote { code, .. }))
         | (Err(SdkError::Remote { code, .. }), Ok(_))
-            if code == "NOT_READY" =>
+            if code.as_wire_str() == "NOT_READY" =>
         {
             Err(SdkError::Protocol(
                 "search corpus active state is split across lexical and semantic tracks"
@@ -1274,7 +1306,7 @@ where
         match run() {
             Ok(value) => return Ok(value),
             Err(SdkError::Remote { code, message, .. })
-                if code == "NOT_READY" && start.elapsed() < timeout =>
+                if code.as_wire_str() == "NOT_READY" && start.elapsed() < timeout =>
             {
                 drop(message);
                 thread::sleep(Duration::from_millis(10));
@@ -1308,7 +1340,9 @@ where
             Ok(value) if ready(&value) || start.elapsed() >= timeout => return Ok(value),
             Ok(_value) => thread::sleep(Duration::from_millis(10)),
             Err(SdkError::Remote { code, message, .. })
-                if retry_codes.iter().any(|candidate| code == *candidate)
+                if retry_codes
+                    .iter()
+                    .any(|candidate| code.as_wire_str() == *candidate)
                     && start.elapsed() < timeout =>
             {
                 drop(message);
@@ -1334,7 +1368,9 @@ where
                 return Err("query unexpectedly succeeded while waiting for typed error".into());
             }
             Err(SdkError::Remote { code, message, .. })
-                if retry_codes.iter().any(|candidate| code == *candidate)
+                if retry_codes
+                    .iter()
+                    .any(|candidate| code.as_wire_str() == *candidate)
                     && start.elapsed() < timeout =>
             {
                 drop(message);
@@ -3002,7 +3038,7 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                 };
                 match err {
                     SdkError::Remote { code, message, .. }
-                        if code == expected_error.code
+                        if code.as_wire_str() == expected_error.code
                             && message.contains(expected_error.message_contains) => {}
                     other @ (SdkError::Usage(_)
                     | SdkError::Protocol(_)
@@ -3320,7 +3356,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
     )?;
     match lexical_timeout {
         SdkError::Remote { code, message, .. }
-            if code == "QUERY_TIMEOUT"
+            if code.as_wire_str() == "QUERY_TIMEOUT"
                 && (message.contains("timeout") || message.contains("timed out")) => {}
         other @ (SdkError::Usage(_)
         | SdkError::Protocol(_)
@@ -3370,7 +3406,8 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
     )?;
     match structural_timeout {
         SdkError::Remote { code, message, .. }
-            if code == "STR_INVALID_REQUEST" && message.contains("timeout option") => {}
+            if code.as_wire_str() == "STR_INVALID_REQUEST"
+                && message.contains("timeout option") => {}
         other @ (SdkError::Usage(_)
         | SdkError::Protocol(_)
         | SdkError::Serialization(_)
@@ -3393,7 +3430,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
     )?;
     match typed_hole {
         SdkError::Remote { code, message, .. }
-            if code == "STR_HOLE_KIND_UNSUPPORTED"
+            if code.as_wire_str() == "STR_HOLE_KIND_UNSUPPORTED"
                 && message.contains("typed hole kind `lambda`") => {}
         other @ (SdkError::Usage(_)
         | SdkError::Protocol(_)
@@ -3541,7 +3578,8 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
     )?;
     match missing_patterntype {
         SdkError::Remote { code, message, .. }
-            if code == "BRIDGE_TRANSLATE_FAIL" && message.contains("patterntype:structural") => {}
+            if code.as_wire_str() == "BRIDGE_TRANSLATE_FAIL"
+                && message.contains("patterntype:structural") => {}
         other @ (SdkError::Usage(_)
         | SdkError::Protocol(_)
         | SdkError::Serialization(_)

@@ -17,11 +17,6 @@ use quanta_index_core::{
 };
 
 use crate::readiness::aux_epoch::{AuxRead, AuxSnapshots};
-use crate::readiness::errors::{
-    ERR_SEARCH_TRACK_GENERATION_NOT_SEALED, ERR_SEARCH_TRACK_MANIFEST_DIGEST_MISMATCH,
-    ERR_SEMANTIC_GENERATION_NOT_MATERIALIZED, ERR_SEMANTIC_GENERATION_NOT_SEALED,
-    ERR_SEMANTIC_MANIFEST_DIGEST_MISMATCH,
-};
 use crate::readiness::history_state::HistoryAuthorityState;
 use crate::readiness::keys::{AuthorityKey, TrackAuthorityKey, TrackGenerationKey};
 use crate::readiness::retention_receipt::SearchCorpusHistoryRetentionReceiptV1;
@@ -533,7 +528,7 @@ impl Ledger {
         );
         let Some(observed_digest) = self.sealed_search_track_identities.get(&key) else {
             return Err(CoreError::Typed {
-                code: ERR_SEARCH_TRACK_GENERATION_NOT_SEALED.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchTrackGenerationNotSealed,
                 message: format!(
                     "{plane}: rollback target is not a historically sealed track identity for repo={} revision={} track={:?} generation={}",
                     candidate.repo_id.as_str(),
@@ -545,7 +540,8 @@ impl Ledger {
         };
         if observed_digest != &candidate.manifest_digest {
             return Err(CoreError::Typed {
-                code: ERR_SEARCH_TRACK_MANIFEST_DIGEST_MISMATCH.to_string(),
+                code:
+                    quanta_index_contract::SearchPlaneErrorCodeV2::SearchTrackManifestDigestMismatch,
                 message: format!(
                     "{plane}: rollback target manifest digest mismatch for repo={} revision={} track={:?} generation={}: expected={}, observed={}",
                     candidate.repo_id.as_str(),
@@ -608,7 +604,8 @@ impl Ledger {
     ) -> Result<(), CoreError> {
         let Some(state) = self.semantic_generation_state(repo_id, revision_id, generation) else {
             return Err(CoreError::Typed {
-                code: ERR_SEMANTIC_GENERATION_NOT_MATERIALIZED.to_string(),
+                code:
+                    quanta_index_contract::SearchPlaneErrorCodeV2::SemanticGenerationNotMaterialized,
                 message: format!(
                     "{plane}: semantic generation {} is not materialized for repo={} revision={}",
                     generation.get(),
@@ -619,7 +616,8 @@ impl Ledger {
         };
         if !state.materialized() {
             return Err(CoreError::Typed {
-                code: ERR_SEMANTIC_GENERATION_NOT_MATERIALIZED.to_string(),
+                code:
+                    quanta_index_contract::SearchPlaneErrorCodeV2::SemanticGenerationNotMaterialized,
                 message: format!(
                     "{plane}: semantic generation {} is not materialized for repo={} revision={}",
                     generation.get(),
@@ -630,7 +628,7 @@ impl Ledger {
         }
         if require_sealed && !state.sealed() {
             return Err(CoreError::Typed {
-                code: ERR_SEMANTIC_GENERATION_NOT_SEALED.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SemanticGenerationNotSealed,
                 message: format!(
                     "{plane}: semantic generation {} is not sealed for repo={} revision={}",
                     generation.get(),
@@ -643,7 +641,7 @@ impl Ledger {
             && state.manifest_digest() != expected_manifest_digest
         {
             return Err(CoreError::Typed {
-                code: ERR_SEMANTIC_MANIFEST_DIGEST_MISMATCH.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SemanticManifestDigestMismatch,
                 message: format!(
                     "{plane}: semantic manifest digest mismatch for repo={} revision={} generation={}: expected={}, observed={}",
                     repo_id.as_str(),

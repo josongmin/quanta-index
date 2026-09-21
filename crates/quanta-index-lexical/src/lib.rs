@@ -179,9 +179,6 @@ const TEXT_DOC_KIND: &str = "text";
 
 const SYMBOL_DOC_KIND: &str = "symbol";
 
-/// Typed refusal for anything that would change a sealed generation.
-const GENERATION_IMMUTABLE_CODE: &str = "GENERATION_IMMUTABLE";
-
 /// Marker inside the name of a durable write's temporary file.
 const DURABLE_WRITE_TEMPORARY_MARKER: &str = ".tmp-";
 
@@ -601,8 +598,10 @@ mod adapter_tests {
 
     fn sample_identity(generation: u64, digest: &str) -> GenerationSnapshot {
         GenerationSnapshot {
-            repo_id: RepoId::new("../../repo-alpha"),
-            revision_id: RevisionId::new("/rev-alpha"),
+            repo_id: RepoId::new("../../repo-alpha")
+                .expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("/rev-alpha")
+                .expect("static fixture ID satisfies canonical policy"),
             track: SearchPlaneTrackKind::Lexical,
             manifest_generation: ManifestGeneration::new(generation),
             manifest_digest: digest.to_string(),
@@ -627,7 +626,7 @@ mod adapter_tests {
             matches!(
                 refused,
                 CoreError::Typed { ref code, .. }
-                    if code == sealed_generation::GENERATION_MANIFEST_FORMAT_UNSUPPORTED_CODE
+                    if *code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
             ),
             "{refused:?}"
         );
@@ -693,7 +692,8 @@ mod adapter_tests {
             .expect_err("sealed exact must be immutable");
         assert!(matches!(
             exact_error,
-            CoreError::Typed { ref code, .. } if code == "GENERATION_IMMUTABLE"
+            CoreError::Typed { ref code, .. }
+                if *code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationImmutable
         ));
         let mut conflict = sealed;
         conflict.manifest_digest = "digest-b".to_string();
@@ -703,7 +703,7 @@ mod adapter_tests {
         assert!(matches!(
             conflict_error,
             CoreError::Typed { ref code, .. }
-                if code == "GENERATION_IDENTITY_DIGEST_MISMATCH"
+                if *code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch
         ));
         assert!(generation_dir.exists());
     }

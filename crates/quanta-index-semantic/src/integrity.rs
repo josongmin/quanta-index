@@ -30,10 +30,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use quanta_index_contract::{GenerationSnapshot, SearchPlaneTrackKind};
 use quanta_index_core::{
-    CoreError, DoorFindingOutcome, DoorFindingQuarantinePort, GENERATION_QUARANTINED_CODE,
-    GENERATION_SIDECAR_CORRUPT_CODE, GenerationQuarantineReasonV1, IntegrityScrubBudgetV1,
-    IntegrityScrubCandidateV1, IntegrityScrubCursorV1, IntegrityScrubOutcomeV1, IntegrityScrubPort,
-    IntegrityScrubReportV1, MetricPointV1, QuarantinedGenerationV1,
+    CoreError, DoorFindingOutcome, DoorFindingQuarantinePort, GENERATION_SIDECAR_CORRUPT_CODE,
+    GenerationQuarantineReasonV1, IntegrityScrubBudgetV1, IntegrityScrubCandidateV1,
+    IntegrityScrubCursorV1, IntegrityScrubOutcomeV1, IntegrityScrubPort, IntegrityScrubReportV1,
+    MetricPointV1, QuarantinedGenerationV1,
 };
 
 use crate::SemanticAdapter;
@@ -150,7 +150,7 @@ pub(crate) fn refuse_if_quarantined(generation_dir: &Path) -> Result<(), CoreErr
         return Ok(());
     };
     Err(CoreError::Typed {
-        code: GENERATION_QUARANTINED_CODE.to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationQuarantined,
         message: format!(
             "semantic: generation {} is quarantined as {} since unix {}: {}; discard it through the quarantine surface or rebuild it from its producer",
             generation_dir.display(),
@@ -370,7 +370,8 @@ impl SemanticAdapter {
         })?;
         if sealed_digest != generation.manifest_digest {
             return Err(CoreError::Typed {
-                code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
+                code:
+                    quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
                 message: format!(
                     "semantic {what}: sealed marker says {sealed_digest} but the target names {} for generation {}",
                     generation.manifest_digest,

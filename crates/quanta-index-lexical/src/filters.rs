@@ -141,7 +141,7 @@ impl CountPolicy {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TypedUnavailable {
     /// Stable wire code (e.g. `LEX_FILTER_FORK_UNAVAILABLE`).
-    pub code: &'static str,
+    pub code: quanta_index_contract::SearchPlaneErrorCodeV2,
     /// Operator-facing reason.
     pub reason: &'static str,
 }
@@ -149,19 +149,21 @@ pub struct TypedUnavailable {
 /// Stable typed-unavailable codes. Kept as constants so call sites can name
 /// them without re-typing the string and so the executor can match on them.
 pub mod codes {
-    pub const FORK_UNAVAILABLE: &str = "LEX_FILTER_FORK_UNAVAILABLE";
-    pub const ARCHIVED_UNAVAILABLE: &str = "LEX_FILTER_ARCHIVED_UNAVAILABLE";
-    pub const VISIBILITY_UNAVAILABLE: &str = "LEX_FILTER_VISIBILITY_UNAVAILABLE";
-    pub const CONTEXT_UNAVAILABLE: &str = "LEX_FILTER_CONTEXT_UNAVAILABLE";
-    pub const REV_UNAVAILABLE: &str = "LEX_FILTER_REV_UNAVAILABLE";
-    pub const AUTHOR_UNAVAILABLE: &str = "LEX_FILTER_AUTHOR_UNAVAILABLE";
-    pub const COMMITTER_UNAVAILABLE: &str = "LEX_FILTER_COMMITTER_UNAVAILABLE";
-    pub const MESSAGE_UNAVAILABLE: &str = "LEX_FILTER_MESSAGE_UNAVAILABLE";
-    pub const DIRTY_UNAVAILABLE: &str = "LEX_FILTER_DIRTY_UNAVAILABLE";
-    pub const RUNTIME_CATALOG_UNAVAILABLE: &str = "LEX_FILTER_RUNTIME_CATALOG_UNAVAILABLE";
+    use quanta_index_contract::SearchPlaneErrorCodeV2 as Code;
+
+    pub const FORK_UNAVAILABLE: Code = Code::LexFilterForkUnavailable;
+    pub const ARCHIVED_UNAVAILABLE: Code = Code::LexFilterArchivedUnavailable;
+    pub const VISIBILITY_UNAVAILABLE: Code = Code::LexFilterVisibilityUnavailable;
+    pub const CONTEXT_UNAVAILABLE: Code = Code::LexFilterContextUnavailable;
+    pub const REV_UNAVAILABLE: Code = Code::LexFilterRevUnavailable;
+    pub const AUTHOR_UNAVAILABLE: Code = Code::LexFilterAuthorUnavailable;
+    pub const COMMITTER_UNAVAILABLE: Code = Code::LexFilterCommitterUnavailable;
+    pub const MESSAGE_UNAVAILABLE: Code = Code::LexFilterMessageUnavailable;
+    pub const DIRTY_UNAVAILABLE: Code = Code::LexFilterDirtyUnavailable;
+    pub const RUNTIME_CATALOG_UNAVAILABLE: Code = Code::LexFilterRuntimeCatalogUnavailable;
     /// Matches the existing dispatcher code emitted for commit/diff/repo
     /// surfaces so producers and search-plane callers see one code per cause.
-    pub const HISTORY_PRODUCER_UNAVAILABLE: &str = "HISTORY_PRODUCER_UNAVAILABLE";
+    pub const HISTORY_PRODUCER_UNAVAILABLE: Code = Code::HistoryProducerUnavailable;
 }
 
 /// Resolved, executable plan for a query's filter list.

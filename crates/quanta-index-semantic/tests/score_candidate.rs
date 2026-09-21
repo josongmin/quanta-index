@@ -36,11 +36,11 @@ const ANN_ROWS: u64 = 256;
 const SCORE_TOLERANCE: f32 = 1e-5;
 
 fn repo() -> RepoId {
-    RepoId::new("score-candidate-repo")
+    RepoId::new("score-candidate-repo").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new("score-candidate-rev")
+    RevisionId::new("score-candidate-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 fn exact_generation() -> ManifestGeneration {
@@ -268,7 +268,14 @@ fn a_query_of_the_wrong_dimension_is_refused_not_answered_none() -> TestResult {
     let searcher = adapter.open(&repo(), &revision(), exact_generation())?;
     let narrow: Vec<f32> = unit_vector(1).into_iter().take(DIMENSION - 1).collect();
     match searcher.score_candidate("row-1", &narrow, &RequestBudgetV1::unbounded()) {
-        Err(CoreError::Typed { code, .. }) if code == "SEM_DIM_MISMATCH" => Ok(()),
+        Err(CoreError::Typed { code, .. })
+            if code
+                == quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                    quanta_index_contract::lex::LexicalErrorCode::SemDimMismatch,
+                ) =>
+        {
+            Ok(())
+        }
         other => Err(format!("expected SEM_DIM_MISMATCH, got {other:?}").into()),
     }
 }

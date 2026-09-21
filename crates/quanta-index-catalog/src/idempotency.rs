@@ -23,10 +23,7 @@
 use std::path::Path;
 
 use quanta_index_contract::{BatchPublishReceipt, ManifestGeneration, RepoId, RevisionId};
-use quanta_index_core::{
-    BATCH_DIGEST_CONFLICT_CODE, CATALOG_ROW_CORRUPT_CODE, CoreError, IdempotencyBeginV1,
-    IdempotencyCatalogPort, IdempotencyKeyV1,
-};
+use quanta_index_core::{CoreError, IdempotencyBeginV1, IdempotencyCatalogPort, IdempotencyKeyV1};
 use quanta_index_ipc::{decode_cbor_payload, encode_cbor_payload};
 use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
@@ -160,7 +157,7 @@ fn read_row(
         1 => true,
         other => {
             return Err(CoreError::Typed {
-                code: CATALOG_ROW_CORRUPT_CODE.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
                 message: format!("catalog: applied flag is {other}, expected 0 or 1"),
             });
         }
@@ -175,7 +172,7 @@ fn read_row(
     );
     if expected != stored_digest {
         return Err(CoreError::Typed {
-            code: CATALOG_ROW_CORRUPT_CODE.to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
             message: format!(
                 "catalog: idempotency row for {} repo={} revision={} generation={} batch_digest={} does not match its own digest",
                 key.kind,
@@ -196,7 +193,7 @@ fn read_row(
 
 fn conflict(key: &IdempotencyKeyV1) -> CoreError {
     CoreError::Typed {
-        code: BATCH_DIGEST_CONFLICT_CODE.to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::BatchDigestConflict,
         message: format!(
             "{} batch_digest={} for repo={} revision={} generation={} was already published with a different body; a batch digest names one immutable body",
             key.kind,
@@ -250,7 +247,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
             }) => {
                 let receipt: BatchPublishReceipt =
                     decode_cbor_payload(&receipt_cbor).map_err(|error| CoreError::Typed {
-                        code: CATALOG_ROW_CORRUPT_CODE.to_string(),
+                        code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
                         message: format!("catalog: stored receipt does not decode: {error}"),
                     })?;
                 IdempotencyBeginV1::Replay {
@@ -261,7 +258,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
             Some(StoredRow { applied: false, .. }) => IdempotencyBeginV1::Resume,
             Some(StoredRow { applied: true, .. }) => {
                 return Err(CoreError::Typed {
-                    code: CATALOG_ROW_CORRUPT_CODE.to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
                     message: "catalog: an applied record has no receipt or sequence".to_string(),
                 });
             }
@@ -371,7 +368,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
             let generation =
                 row.map_err(|error| engine_error("read generation row", &self.path, &error))?;
             let generation = u64::try_from(generation).map_err(|error| CoreError::Typed {
-                code: CATALOG_ROW_CORRUPT_CODE.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
                 message: format!("catalog: generation column holds {generation}: {error}"),
             })?;
             generations.push(ManifestGeneration::new(generation));

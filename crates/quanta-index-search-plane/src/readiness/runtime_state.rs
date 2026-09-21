@@ -279,9 +279,12 @@ impl RuntimeMetadataState {
     }
 }
 
-pub(super) fn runtime_catalog_typed(code: &str, message: impl Into<String>) -> CoreError {
+pub(super) fn runtime_catalog_typed(
+    code: quanta_index_contract::SearchPlaneErrorCodeV2,
+    message: impl Into<String>,
+) -> CoreError {
     CoreError::Typed {
-        code: code.to_string(),
+        code,
         message: message.into(),
     }
 }

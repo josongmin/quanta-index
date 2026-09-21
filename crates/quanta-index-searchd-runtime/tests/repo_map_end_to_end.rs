@@ -50,11 +50,11 @@ static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn repo() -> RepoId {
-    RepoId::new("repo-repomap-e2e")
+    RepoId::new("repo-repomap-e2e").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new("rev-repomap-e2e")
+    RevisionId::new("rev-repomap-e2e").expect("static fixture ID satisfies canonical policy")
 }
 
 fn generation() -> ManifestGeneration {
@@ -563,7 +563,7 @@ fn repo_map_query_without_materialized_snapshot_fails_closed() -> TestResult {
             return Err(format!("expected error response, got {other:?}").into());
         }
     };
-    assert_eq!(err.code, "NOT_FOUND");
+    assert_eq!(err.code.as_wire_str(), "NOT_FOUND");
     assert!(err.message.contains("no activated generation"));
 
     shutdown.store(true, Ordering::Release);

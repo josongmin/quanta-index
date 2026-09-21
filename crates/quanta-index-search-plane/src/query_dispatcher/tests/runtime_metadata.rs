@@ -14,7 +14,6 @@ use quanta_index_core::{CoreError, RUNTIME_NOT_READY_CODE, RequestBudgetV1};
 
 use crate::Ledger;
 use crate::observability::BoundedQueryObsStore;
-use crate::query_dispatcher::errors::ERR_NOT_IMPLEMENTED;
 use crate::query_dispatcher::routes::runtime_metadata::{
     RuntimeMetadataPage, RuntimeMetadataRead, execute_runtime_metadata_query,
     runtime_generation_is_stale, validate_runtime_metadata_query,
@@ -138,8 +137,8 @@ fn runtime_metadata_dispatch_rejects_predicate_leaf_typed_error() -> TestResult 
         &RequestBudgetV1::unbounded(),
     );
     let (code, message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-    if code != ERR_NOT_IMPLEMENTED {
-        return Err(format!("expected {ERR_NOT_IMPLEMENTED}, got {code}").into());
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::NotImplemented {
+        return Err(format!("expected NOT_IMPLEMENTED, got {code}").into());
     }
     if !message.contains("runtime metadata: predicate leaves are not executable") {
         return Err(format!("unexpected predicate-leaf rejection message: {message}").into());
@@ -181,8 +180,8 @@ fn runtime_generation_is_stale_requires_producer_head_ahead() -> TestResult {
         .map_err(|err| format!("runtime metadata test ledger poisoned: {err}"))?;
     let runtime = guard
         .runtime_state(
-            &RepoId::new("repo-map-ipc"),
-            &RevisionId::new("rev-map-ipc"),
+            &RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+            &RevisionId::new("rev-map-ipc").expect("static fixture ID satisfies canonical policy"),
             ManifestGeneration::new(9),
         )
         .ok_or("missing runtime metadata state")?;
@@ -284,8 +283,9 @@ fn ids(page: &RuntimeMetadataPage) -> Vec<String> {
 /// The dirty batch marking `chunk_ids` dirty in the fixture generation.
 fn dirty_batch(digest: &str, chunk_ids: &[&str]) -> DirtyIngestBatch {
     DirtyIngestBatch {
-        repo_id: RepoId::new("repo-map-ipc"),
-        revision_id: RevisionId::new("rev-map-ipc"),
+        repo_id: RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev-map-ipc")
+            .expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(9),
         overlay_epoch_ms: 100,
         batch_digest: digest.to_string(),

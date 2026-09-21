@@ -952,8 +952,8 @@ mod tests {
 
     fn sample_generation_pin() -> GenerationPin {
         GenerationPin::new(
-            RepoId::new("repo-seed"),
-            RevisionId::new("rev-seed"),
+            RepoId::new("repo-seed").expect("static fixture ID satisfies canonical policy"),
+            RevisionId::new("rev-seed").expect("static fixture ID satisfies canonical policy"),
             ManifestGeneration::new(7),
         )
     }
@@ -1071,8 +1071,9 @@ mod tests {
             ClusterMembershipReadOutcomeV1::Rejected(ClusterMembershipReadRejectionV1 {
                 cluster_record_id: request.cluster_record_id.clone(),
                 generation: GenerationPin::new(
-                    RepoId::new("repo-seed"),
-                    RevisionId::new("rev-seed"),
+                    RepoId::new("repo-seed").expect("static fixture ID satisfies canonical policy"),
+                    RevisionId::new("rev-seed")
+                        .expect("static fixture ID satisfies canonical policy"),
                     ManifestGeneration::new(8),
                 ),
                 expected_authority_digest: request.expected_authority_digest.clone(),
@@ -1161,8 +1162,8 @@ mod tests {
 
         let mut wrong_generation = snapshot;
         wrong_generation.generation = GenerationPin::new(
-            RepoId::new("repo-seed"),
-            RevisionId::new("rev-seed"),
+            RepoId::new("repo-seed").expect("static fixture ID satisfies canonical policy"),
+            RevisionId::new("rev-seed").expect("static fixture ID satisfies canonical policy"),
             ManifestGeneration::new(8),
         );
         assert_eq!(

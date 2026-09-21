@@ -86,11 +86,19 @@ def _make_all_proofs_executable(text: str) -> str:
                 "test_authority_targets = []",
                 'test_authority_targets = ["catalog-idempotency"]',
             )
-            sections[index] = sections[index].replace(
-                "test_authority_targets = ",
-                'test_authority_scopes = ["fixture-all"]\ntest_authority_targets = ',
-                1,
-            )
+            if "test_authority_scopes = " in sections[index]:
+                sections[index] = re.sub(
+                    r"test_authority_scopes = \[[^\]]*\]",
+                    'test_authority_scopes = ["fixture-all"]',
+                    sections[index],
+                    count=1,
+                )
+            else:
+                sections[index] = sections[index].replace(
+                    "test_authority_targets = ",
+                    'test_authority_scopes = ["fixture-all"]\ntest_authority_targets = ',
+                    1,
+                )
     return "[[proofs]]".join(sections)
 
 
@@ -130,6 +138,11 @@ def _fixture_root(tmp_path: Path, *, executable: bool) -> tuple[Path, dict]:
         {target for proof in registry["proofs"] for target in proof["test_authority_targets"]}
     )
     (root / "tools/ci/test-authority.toml").write_text(
+        "[local_scopes.canonical-identity]\n"
+        'targets = ["contract-base-canonical-identity-v1", '
+        '"contract-repomap-layout-v3-contract", '
+        '"contract-search-plane-error-code-v2", '
+        '"repomap-layout-v3-security"]\n\n'
         "[local_scopes.fixture-all]\n"
         f"targets = {json.dumps(target_ids)}\n"
         + "".join(f'[[integration_targets]]\nid = "{target}"\n' for target in target_ids),
@@ -140,7 +153,11 @@ def _fixture_root(tmp_path: Path, *, executable: bool) -> tuple[Path, dict]:
         if proof["authority_state"] != "executable" or proof["execution_mode"] != "test-authority":
             continue
         recipe = proof["command"].removeprefix("just ")
-        proof_recipes.append(f"{recipe}:\n    @just rust-profile test-fixture-all\n")
+        scopes = proof.get("test_authority_scopes", ["fixture-all"])
+        proof_recipes.append(
+            f"{recipe}:\n"
+            + "".join(f"    @just rust-profile test-{scope}\n" for scope in scopes)
+        )
     (root / "Justfile").write_text("\n".join(proof_recipes), encoding="utf-8")
     for proof in registry["proofs"]:
         owner = root / proof["owner"]
@@ -270,7 +287,9 @@ def test_writer_publishes_truthful_not_ready_diagnostic_for_staged_graph(
     assert not ready
     assert payload["production_ready"] is False
     assert statuses["p00-authority-freeze"] == "NOT_RUN"
-    assert statuses["p01-canonical-identity"] == "BLOCKED"
+    # P01A is now executable, so absent execution is NOT_RUN rather than a
+    # staged-contract BLOCKED state. Neither state can qualify the aggregate.
+    assert statuses["p01-canonical-identity"] == "NOT_RUN"
     assert payload["verdicts"]["DEPLOYED"]["status"] == "BLOCKED"
     assert payload["registry_sha256"] == WRITER._sha256(root / "tools/ci/proof-authority.toml")
     assert registry["aggregate"]["artifact"] == output.relative_to(root).as_posix()

@@ -23,13 +23,9 @@ use crate::{
     ActivationCatalog, PreparedSearchCorpusGenerationV1, SearchCorpusGenerationActivationV1,
 };
 
-const ERR_INVALID: &str = "INVALID_REQUEST";
-const ERR_NOT_READY: &str = "NOT_READY";
-const ERR_NOT_FOUND: &str = "NOT_FOUND";
-const ERR_NOT_IMPLEMENTED: &str = "NOT_IMPLEMENTED";
-const ERR_INTERNAL: &str = "INTERNAL";
 #[cfg(test)]
-const ERR_ROLLBACK_CAS_CONFLICT: &str = crate::readiness::ERR_ROLLBACK_CAS_CONFLICT;
+const ERR_ROLLBACK_CAS_CONFLICT: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::RollbackCasConflict;
 
 pub struct SearchPlaneControlDispatcher {
     // QI-INT-01: `repo_map_ingest` field removed. RepoMap bundle ingest now
@@ -267,14 +263,7 @@ impl SearchPlaneControlDispatcher {
 }
 
 fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
-    let (code, message) = match err {
-        CoreError::InvalidContract(msg) => (ERR_INVALID.to_string(), msg),
-        CoreError::Typed { code, message } => (code, message),
-        CoreError::NotReady(msg) => (ERR_NOT_READY.to_string(), msg),
-        CoreError::NotImplemented(msg) => (ERR_NOT_IMPLEMENTED.to_string(), msg),
-        CoreError::NotFound(msg) => (ERR_NOT_FOUND.to_string(), msg),
-        CoreError::Storage(msg) => (ERR_INTERNAL.to_string(), msg),
-    };
+    let (code, message) = err.into_search_plane_wire();
     // Control-plane failures carry no query-intent repair metadata (J7Q-06);
     // the wire field stays None.
     SearchPlaneIpcError {
@@ -359,15 +348,17 @@ mod tests {
     ) -> Result<SearchCorpusGenerationV1, quanta_index_core::CoreError> {
         SearchCorpusGenerationV1::new(
             GenerationSnapshot {
-                repo_id: RepoId::new(repo_id),
-                revision_id: RevisionId::new(revision_id),
+                repo_id: RepoId::new(repo_id).expect("test fixture ID satisfies canonical policy"),
+                revision_id: RevisionId::new(revision_id)
+                    .expect("test fixture ID satisfies canonical policy"),
                 track: SearchPlaneTrackKind::Lexical,
                 manifest_generation: ManifestGeneration::new(generation),
                 manifest_digest: manifest_digest.to_string(),
             },
             GenerationSnapshot {
-                repo_id: RepoId::new(repo_id),
-                revision_id: RevisionId::new(revision_id),
+                repo_id: RepoId::new(repo_id).expect("test fixture ID satisfies canonical policy"),
+                revision_id: RevisionId::new(revision_id)
+                    .expect("test fixture ID satisfies canonical policy"),
                 track: SearchPlaneTrackKind::Semantic,
                 manifest_generation: ManifestGeneration::new(generation),
                 manifest_digest: manifest_digest.to_string(),
@@ -405,7 +396,7 @@ mod tests {
             return Ok(());
         }
         Err(CoreError::Typed {
-            code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
             message: format!(
                 "{:?}: sealed under {sealed}, candidate names {}",
                 candidate.track, candidate.manifest_digest
@@ -586,7 +577,7 @@ mod tests {
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => Err(SearchPlaneIpcError {
-                code: "TEST_UNEXPECTED_RESPONSE".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::Internal,
                 message: format!("{other:?}"),
                 repair: None,
             }),
@@ -626,7 +617,7 @@ mod tests {
         ];
         let dispatcher = scrape_dispatcher(Arc::clone(&store), sources)?;
 
-        let first = scrape_via_control(&dispatcher).map_err(|error| error.code)?;
+        let first = scrape_via_control(&dispatcher).map_err(|error| error.code.to_string())?;
         let counters: Vec<(&str, u64)> = first
             .counters
             .iter()
@@ -665,7 +656,7 @@ mod tests {
                 dimensions(),
             ));
         }
-        let second = scrape_via_control(&dispatcher).map_err(|error| error.code)?;
+        let second = scrape_via_control(&dispatcher).map_err(|error| error.code.to_string())?;
         let intake = second
             .counters
             .iter()
@@ -686,7 +677,10 @@ mod tests {
         let error = scrape_via_control(&dispatcher)
             .err()
             .ok_or("a failing source refuses")?;
-        assert_eq!(error.code, "INTERNAL");
+        assert_eq!(
+            error.code,
+            quanta_index_contract::SearchPlaneErrorCodeV2::Internal
+        );
         assert!(
             error.message.contains("writer cache poisoned"),
             "the source's own failure is the answer: {}",
@@ -702,7 +696,10 @@ mod tests {
         let error = scrape_via_control(&dispatcher)
             .err()
             .ok_or("a bad name refuses")?;
-        assert_eq!(error.code, "METRICS_SOURCE_DEFECT");
+        assert_eq!(
+            error.code,
+            quanta_index_contract::SearchPlaneErrorCodeV2::MetricsSourceDefect
+        );
         assert!(error.message.contains("Ipc-Bad Name"), "{}", error.message);
 
         let store = Arc::new(BoundedQueryObsStore::default());
@@ -721,7 +718,10 @@ mod tests {
         let error = scrape_via_control(&dispatcher)
             .err()
             .ok_or("a collision refuses")?;
-        assert_eq!(error.code, "METRICS_SOURCE_DEFECT");
+        assert_eq!(
+            error.code,
+            quanta_index_contract::SearchPlaneErrorCodeV2::MetricsSourceDefect
+        );
         assert!(
             error.message.contains("more than one source"),
             "{}",
@@ -764,7 +764,7 @@ mod tests {
 
     fn into_error_code(
         response: SearchPlaneControlIpcResponse,
-    ) -> Result<String, Box<dyn std::error::Error>> {
+    ) -> Result<quanta_index_contract::SearchPlaneErrorCodeV2, Box<dyn std::error::Error>> {
         match response {
             SearchPlaneControlIpcResponse::Error(err) => Ok(err.code),
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
@@ -793,8 +793,10 @@ mod tests {
             let mut guard = ledger
                 .write()
                 .map_err(|err| format!("ledger poisoned: {err}"))?;
-            let repo_id = RepoId::new("repo-map-ipc");
-            let revision_id = RevisionId::new("rev-map-ipc");
+            let repo_id =
+                RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy");
+            let revision_id = RevisionId::new("rev-map-ipc")
+                .expect("static fixture ID satisfies canonical policy");
             guard.record_track_materialized(
                 &repo_id,
                 &revision_id,
@@ -825,15 +827,19 @@ mod tests {
         }
         let dispatcher = control_dispatcher(activation_catalog.clone(), ledger);
 
-        let activate = into_repo_map_mutation_ack(dispatcher.dispatch(
-            SearchPlaneControlIpcRequest::RepoMapActivate(RepoMapActivateGenerationRequest {
-                repo_id: RepoId::new("repo-map-ipc"),
-                revision_id: RevisionId::new("rev-map-ipc"),
-                manifest_generation: ManifestGeneration::new(9),
-                manifest_digest: "manifest-digest-9".to_string(),
-            }),
-            &RequestBudgetV1::unbounded(),
-        ))?;
+        let activate = into_repo_map_mutation_ack(
+            dispatcher.dispatch(
+                SearchPlaneControlIpcRequest::RepoMapActivate(RepoMapActivateGenerationRequest {
+                    repo_id: RepoId::new("repo-map-ipc")
+                        .expect("static fixture ID satisfies canonical policy"),
+                    revision_id: RevisionId::new("rev-map-ipc")
+                        .expect("static fixture ID satisfies canonical policy"),
+                    manifest_generation: ManifestGeneration::new(9),
+                    manifest_digest: "manifest-digest-9".to_string(),
+                }),
+                &RequestBudgetV1::unbounded(),
+            ),
+        )?;
         if activate.manifest_generation.get() != 9 {
             return Err(format!(
                 "unexpected activate manifest generation: {}",
@@ -847,15 +853,19 @@ mod tests {
                 SearchPlaneActivateSearchCorpusGenerationCasRequest {
                     candidate: SearchCorpusGenerationIdentityV1 {
                         lexical: GenerationSnapshot {
-                            repo_id: RepoId::new("repo-map-ipc"),
-                            revision_id: RevisionId::new("rev-map-ipc"),
+                            repo_id: RepoId::new("repo-map-ipc")
+                                .expect("static fixture ID satisfies canonical policy"),
+                            revision_id: RevisionId::new("rev-map-ipc")
+                                .expect("static fixture ID satisfies canonical policy"),
                             track: SearchPlaneTrackKind::Lexical,
                             manifest_generation: ManifestGeneration::new(11),
                             manifest_digest: "manifest-digest-11".to_string(),
                         },
                         semantic: GenerationSnapshot {
-                            repo_id: RepoId::new("repo-map-ipc"),
-                            revision_id: RevisionId::new("rev-map-ipc"),
+                            repo_id: RepoId::new("repo-map-ipc")
+                                .expect("static fixture ID satisfies canonical policy"),
+                            revision_id: RevisionId::new("rev-map-ipc")
+                                .expect("static fixture ID satisfies canonical policy"),
                             track: SearchPlaneTrackKind::Semantic,
                             manifest_generation: ManifestGeneration::new(11),
                             manifest_digest: "manifest-digest-11".to_string(),
@@ -879,8 +889,8 @@ mod tests {
             .into());
         }
         let lexical_pin = activation_catalog.resolve(
-            &RepoId::new("repo-map-ipc"),
-            &RevisionId::new("rev-map-ipc"),
+            &RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+            &RevisionId::new("rev-map-ipc").expect("static fixture ID satisfies canonical policy"),
             SearchPlaneTrackKind::Lexical,
         )?;
         if lexical_pin.manifest_generation.get() != 11 {
@@ -891,8 +901,8 @@ mod tests {
             .into());
         }
         let semantic_pin = activation_catalog.resolve(
-            &RepoId::new("repo-map-ipc"),
-            &RevisionId::new("rev-map-ipc"),
+            &RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+            &RevisionId::new("rev-map-ipc").expect("static fixture ID satisfies canonical policy"),
             SearchPlaneTrackKind::Semantic,
         )?;
         assert_eq!(
@@ -910,37 +920,48 @@ mod tests {
             Arc::clone(&activation_catalog),
             Arc::new(RwLock::new(Ledger::new())),
         );
-        let code = into_error_code(dispatcher.dispatch(
-            SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
-                SearchPlaneActivateSearchCorpusGenerationCasRequest {
-                    candidate: SearchCorpusGenerationIdentityV1 {
-                        lexical: GenerationSnapshot {
-                            repo_id: RepoId::new("repo-invalid"),
-                            revision_id: RevisionId::new("rev-invalid"),
-                            track: SearchPlaneTrackKind::Semantic,
-                            manifest_generation: ManifestGeneration::new(11),
-                            manifest_digest: "manifest-digest-11".to_string(),
+        let code = into_error_code(
+            dispatcher.dispatch(
+                SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
+                    SearchPlaneActivateSearchCorpusGenerationCasRequest {
+                        candidate: SearchCorpusGenerationIdentityV1 {
+                            lexical: GenerationSnapshot {
+                                repo_id: RepoId::new("repo-invalid")
+                                    .expect("static fixture ID satisfies canonical policy"),
+                                revision_id: RevisionId::new("rev-invalid")
+                                    .expect("static fixture ID satisfies canonical policy"),
+                                track: SearchPlaneTrackKind::Semantic,
+                                manifest_generation: ManifestGeneration::new(11),
+                                manifest_digest: "manifest-digest-11".to_string(),
+                            },
+                            semantic: GenerationSnapshot {
+                                repo_id: RepoId::new("repo-invalid")
+                                    .expect("static fixture ID satisfies canonical policy"),
+                                revision_id: RevisionId::new("rev-invalid")
+                                    .expect("static fixture ID satisfies canonical policy"),
+                                track: SearchPlaneTrackKind::Semantic,
+                                manifest_generation: ManifestGeneration::new(11),
+                                manifest_digest: "manifest-digest-11".to_string(),
+                            },
+                            semantic_content: roots_for_generation(11),
                         },
-                        semantic: GenerationSnapshot {
-                            repo_id: RepoId::new("repo-invalid"),
-                            revision_id: RevisionId::new("rev-invalid"),
-                            track: SearchPlaneTrackKind::Semantic,
-                            manifest_generation: ManifestGeneration::new(11),
-                            manifest_digest: "manifest-digest-11".to_string(),
-                        },
-                        semantic_content: roots_for_generation(11),
+                        expected_active: None,
                     },
-                    expected_active: None,
-                },
+                ),
+                &RequestBudgetV1::unbounded(),
             ),
-            &RequestBudgetV1::unbounded(),
-        ))?;
-        assert_eq!(code, super::ERR_INVALID);
+        )?;
+        assert_eq!(
+            code,
+            quanta_index_contract::SearchPlaneErrorCodeV2::InvalidRequest
+        );
         assert!(
             activation_catalog
                 .resolve_record(
-                    &RepoId::new("repo-invalid"),
-                    &RevisionId::new("rev-invalid"),
+                    &RepoId::new("repo-invalid")
+                        .expect("static fixture ID satisfies canonical policy"),
+                    &RevisionId::new("rev-invalid")
+                        .expect("static fixture ID satisfies canonical policy"),
                     SearchPlaneTrackKind::Lexical,
                 )
                 .is_err()
@@ -958,8 +979,10 @@ mod tests {
             let mut guard = ledger
                 .write()
                 .map_err(|err| format!("ledger poisoned: {err}"))?;
-            let repo_id = RepoId::new("repo-rollback");
-            let revision_id = RevisionId::new("rev-rollback");
+            let repo_id =
+                RepoId::new("repo-rollback").expect("static fixture ID satisfies canonical policy");
+            let revision_id = RevisionId::new("rev-rollback")
+                .expect("static fixture ID satisfies canonical policy");
             for (generation, digest) in [(10, "manifest-digest-10"), (11, "manifest-digest-11")] {
                 for track in [
                     SearchPlaneTrackKind::Lexical,
@@ -1027,8 +1050,8 @@ mod tests {
             return Err(format!("unexpected rollback ack: {ack:?}").into());
         }
         let current = activation_catalog.resolve_record(
-            &RepoId::new("repo-rollback"),
-            &RevisionId::new("rev-rollback"),
+            &RepoId::new("repo-rollback").expect("static fixture ID satisfies canonical policy"),
+            &RevisionId::new("rev-rollback").expect("static fixture ID satisfies canonical policy"),
             SearchPlaneTrackKind::Semantic,
         )?;
         if current.manifest_generation != ManifestGeneration::new(10)
@@ -1037,8 +1060,8 @@ mod tests {
             return Err(format!("rollback did not update active state: {current:?}").into());
         }
         let lexical = activation_catalog.resolve_record(
-            &RepoId::new("repo-rollback"),
-            &RevisionId::new("rev-rollback"),
+            &RepoId::new("repo-rollback").expect("static fixture ID satisfies canonical policy"),
+            &RevisionId::new("rev-rollback").expect("static fixture ID satisfies canonical policy"),
             SearchPlaneTrackKind::Lexical,
         )?;
         if lexical.manifest_generation != ManifestGeneration::new(10)
@@ -1048,13 +1071,13 @@ mod tests {
         }
         let reopened = ActivationCatalog::open(dir.path())?;
         let reopened_lexical = reopened.resolve_record(
-            &RepoId::new("repo-rollback"),
-            &RevisionId::new("rev-rollback"),
+            &RepoId::new("repo-rollback").expect("static fixture ID satisfies canonical policy"),
+            &RevisionId::new("rev-rollback").expect("static fixture ID satisfies canonical policy"),
             SearchPlaneTrackKind::Lexical,
         )?;
         let reopened_semantic = reopened.resolve_record(
-            &RepoId::new("repo-rollback"),
-            &RevisionId::new("rev-rollback"),
+            &RepoId::new("repo-rollback").expect("static fixture ID satisfies canonical policy"),
+            &RevisionId::new("rev-rollback").expect("static fixture ID satisfies canonical policy"),
             SearchPlaneTrackKind::Semantic,
         )?;
         if reopened_lexical.manifest_generation != ManifestGeneration::new(10)
@@ -1113,7 +1136,9 @@ mod tests {
         let SearchPlaneControlIpcResponse::Error(error) = unsealed_target else {
             return Err("rollback to unsealed historical target unexpectedly succeeded".into());
         };
-        if error.code != crate::readiness::ERR_SEARCH_TRACK_GENERATION_NOT_SEALED {
+        if error.code
+            != quanta_index_contract::SearchPlaneErrorCodeV2::SearchTrackGenerationNotSealed
+        {
             return Err(format!("unexpected unsealed rollback code: {}", error.code).into());
         }
         Ok(())
@@ -1124,8 +1149,10 @@ mod tests {
     /// `manifest-digest-<generation>`.
     fn sealed_ledger(generations: &[u64]) -> Arc<RwLock<Ledger>> {
         let mut ledger = Ledger::new();
-        let repo_id = RepoId::new("repo-map-ipc");
-        let revision_id = RevisionId::new("rev-map-ipc");
+        let repo_id =
+            RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy");
+        let revision_id =
+            RevisionId::new("rev-map-ipc").expect("static fixture ID satisfies canonical policy");
         for generation in generations {
             let digest = format!("manifest-digest-{generation}");
             for track in [
@@ -1174,8 +1201,8 @@ mod tests {
 
     fn fixture_key(generation: u64) -> crate::SnapshotKey {
         crate::SnapshotKey::new(
-            &RepoId::new("repo-map-ipc"),
-            &RevisionId::new("rev-map-ipc"),
+            &RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+            &RevisionId::new("rev-map-ipc").expect("static fixture ID satisfies canonical policy"),
             ManifestGeneration::new(generation),
         )
     }
@@ -1336,13 +1363,15 @@ mod tests {
         )?;
         assert_eq!(
             code,
-            crate::readiness::ERR_SEARCH_TRACK_GENERATION_NOT_SEALED
+            quanta_index_contract::SearchPlaneErrorCodeV2::SearchTrackGenerationNotSealed
         );
         assert!(
             activation_catalog
                 .resolve_record(
-                    &RepoId::new("repo-map-ipc"),
-                    &RevisionId::new("rev-map-ipc"),
+                    &RepoId::new("repo-map-ipc")
+                        .expect("static fixture ID satisfies canonical policy"),
+                    &RevisionId::new("rev-map-ipc")
+                        .expect("static fixture ID satisfies canonical policy"),
                     SearchPlaneTrackKind::Lexical,
                 )
                 .is_err(),
@@ -1376,7 +1405,7 @@ mod tests {
                 candidate: &GenerationSnapshot,
             ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
                 Err(CoreError::Typed {
-                    code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
                     message: format!(
                         "sealed under manifest-digest-foreign, candidate names {}",
                         candidate.manifest_digest
@@ -1412,8 +1441,10 @@ mod tests {
         assert!(
             activation_catalog
                 .resolve_record(
-                    &RepoId::new("repo-map-ipc"),
-                    &RevisionId::new("rev-map-ipc"),
+                    &RepoId::new("repo-map-ipc")
+                        .expect("static fixture ID satisfies canonical policy"),
+                    &RevisionId::new("rev-map-ipc")
+                        .expect("static fixture ID satisfies canonical policy"),
                     SearchPlaneTrackKind::Lexical,
                 )
                 .is_err(),

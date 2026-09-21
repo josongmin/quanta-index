@@ -260,7 +260,7 @@ impl LexicalAdapter {
                 return Ok(());
             }
             return Err(CoreError::Typed {
-                code: "DELTA_BASE_CONFLICT".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::DeltaBaseConflict,
                 message: format!(
                     "lexical: generation {} already carried forward base {}; refusing a batch that declares base {}",
                     key.generation.get(),
@@ -271,7 +271,7 @@ impl LexicalAdapter {
         }
         if lexical_index_content_exists(&target_path) {
             return Err(CoreError::Typed {
-                code: "DELTA_BASE_UNRESOLVED".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::DeltaBaseUnresolved,
                 message: format!(
                     "lexical: generation {} already holds index content with no recorded base; cannot prove base {} was carried forward",
                     key.generation.get(),

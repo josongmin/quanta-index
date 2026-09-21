@@ -8,9 +8,8 @@ use quanta_index_contract::{
 };
 use quanta_index_contract::{RepoMapActivateGenerationRequest, RepoMapSourceBundle};
 use quanta_index_core::{
-    CoreError, QUARANTINE_TARGET_NOT_QUARANTINED_CODE, QuarantineDiscardOutcomeV1,
-    QuarantinedRepoMapFileV1, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
-    RepoMapOpenReportV1, RepoMapQuarantinePort, RepoMapQueryPort,
+    CoreError, QuarantineDiscardOutcomeV1, QuarantinedRepoMapFileV1, RepoMapBundleIngestPort,
+    RepoMapGenerationActivatePort, RepoMapOpenReportV1, RepoMapQuarantinePort, RepoMapQueryPort,
 };
 
 use crate::{
@@ -91,9 +90,19 @@ impl RepoMapGenerationStore {
             manifest_generation,
         } in loaded.activations
         {
+            let validated_repo = RepoId::new(&repo_id).map_err(|error| {
+                CoreError::Storage(format!(
+                    "repomap activation contains invalid repo ID: {error}"
+                ))
+            })?;
+            let validated_revision = RevisionId::new(&revision_id).map_err(|error| {
+                CoreError::Storage(format!(
+                    "repomap activation contains invalid revision ID: {error}"
+                ))
+            })?;
             let key = RepoMapStoreKeyV1::new(
-                &RepoId::new(&repo_id),
-                &RevisionId::new(&revision_id),
+                &validated_repo,
+                &validated_revision,
                 ManifestGeneration::new(manifest_generation),
             );
             if !snapshots.contains_key(&key) {
@@ -369,7 +378,7 @@ impl RepoMapQuarantinePort for RepoMapGenerationStore {
     ) -> Result<QuarantineDiscardOutcomeV1, CoreError> {
         let Some(persistence) = self.persistence.as_ref() else {
             return Err(CoreError::Typed {
-                code: QUARANTINE_TARGET_NOT_QUARANTINED_CODE.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined,
                 message: format!(
                     "repomap: refusing to discard quarantined `{}`: this store has no durable quarantine",
                     entry.file_name

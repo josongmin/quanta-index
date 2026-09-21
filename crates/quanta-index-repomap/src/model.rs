@@ -607,8 +607,9 @@ mod tests {
 
     fn fixture_snapshot() -> RepoMapSnapshot {
         RepoMapSnapshot {
-            repo_id: RepoId::new("repo-1"),
-            revision_id: RevisionId::new("rev-1"),
+            repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev-1")
+                .expect("static fixture ID satisfies canonical policy"),
             manifest_generation: ManifestGeneration::new(11),
             snapshot_meta: RepoMapSnapshotMeta {
                 snapshot_id: "snapshot-1".to_string(),

@@ -16,7 +16,8 @@ use crate::CoreError;
 /// never sealed. The refusal is typed so a caller can tell "this
 /// generation is gone" from "this generation is not ready yet"
 /// (`NOT_READY`); neither is ever answered from another generation.
-pub const UNKNOWN_GENERATION_CODE: &str = "UNKNOWN_GENERATION";
+pub const UNKNOWN_GENERATION_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::UnknownGeneration;
 
 /// The typed refusal for a pin the durable authority does not retain.
 #[must_use]
@@ -26,7 +27,7 @@ pub fn unknown_generation_error(
     track: SearchPlaneTrackKind,
 ) -> CoreError {
     CoreError::Typed {
-        code: UNKNOWN_GENERATION_CODE.to_string(),
+        code: UNKNOWN_GENERATION_CODE,
         message: format!(
             "{plane}: generation {} of repo={} revision={} track={track:?} is not a sealed generation the durable search-corpus authority retains (reaped, orphaned or never sealed)",
             pin.manifest_generation.get(),
@@ -332,7 +333,8 @@ pub trait IncompleteGenerationDiscardPort: Send + Sync {
 }
 
 /// Wire code for a discard whose target is not quarantined right now.
-pub const QUARANTINE_TARGET_NOT_QUARANTINED_CODE: &str = "QUARANTINE_TARGET_NOT_QUARANTINED";
+pub const QUARANTINE_TARGET_NOT_QUARANTINED_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined;
 
 /// What discarding a quarantined entry did.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -522,12 +524,14 @@ mod tests {
     #[test]
     fn storage_key_is_bounded_and_distinguishes_delimiter_ambiguous_pairs() {
         let first = GenerationStorageKeyV1::for_repo_revision(
-            &RepoId::new("repo--with--delimiter"),
-            &RevisionId::new("rev"),
+            &RepoId::new("repo--with--delimiter")
+                .expect("static fixture ID satisfies canonical policy"),
+            &RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
         );
         let second = GenerationStorageKeyV1::for_repo_revision(
-            &RepoId::new("repo"),
-            &RevisionId::new("with--delimiter--rev"),
+            &RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+            &RevisionId::new("with--delimiter--rev")
+                .expect("static fixture ID satisfies canonical policy"),
         );
         assert_ne!(first, second);
         assert_eq!(first.as_str().len(), "generation-v1-".len() + 64);
@@ -536,8 +540,8 @@ mod tests {
     #[test]
     fn storage_key_has_a_stable_versioned_golden_vector() {
         let key = GenerationStorageKeyV1::for_repo_revision(
-            &RepoId::new("repo-alpha"),
-            &RevisionId::new("rev-alpha"),
+            &RepoId::new("repo-alpha").expect("static fixture ID satisfies canonical policy"),
+            &RevisionId::new("rev-alpha").expect("static fixture ID satisfies canonical policy"),
         );
         assert_eq!(
             key.as_str(),
@@ -556,11 +560,11 @@ mod tests {
         for (repo, revision) in [
             ("../../outside".to_string(), "/absolute".to_string()),
             ("repo/child".to_string(), "rev\\child".to_string()),
-            ("r".repeat(16_384), "v".repeat(16_384)),
+            ("r".repeat(512), "v".repeat(512)),
         ] {
             let key = GenerationStorageKeyV1::for_repo_revision(
-                &RepoId::new(repo),
-                &RevisionId::new(revision),
+                &RepoId::new(repo).expect("test fixture ID satisfies canonical policy"),
+                &RevisionId::new(revision).expect("test fixture ID satisfies canonical policy"),
             );
             let path = key.generation_dir(root, ManifestGeneration::new(17));
             let relative = path
@@ -574,6 +578,8 @@ mod tests {
             );
             assert!(key.as_str().len() < 96);
         }
+        assert!(RepoId::new("r".repeat(16_384)).is_err());
+        assert!(RevisionId::new("v".repeat(16_384)).is_err());
     }
 }
 

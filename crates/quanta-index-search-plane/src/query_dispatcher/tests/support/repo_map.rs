@@ -53,8 +53,9 @@ impl RepoMapQueryPort for StubRepoMapQueryPort {
 
 pub(crate) fn repo_map_request() -> RepoMapQueryRequest {
     RepoMapQueryRequest {
-        repo_id: RepoId::new("repo-map-ipc"),
-        revision_id: RevisionId::new("rev-map-ipc"),
+        repo_id: RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev-map-ipc")
+            .expect("static fixture ID satisfies canonical policy"),
         manifest_generation: ManifestGeneration::new(9),
         query_text: "dispatch owner".to_string(),
         top_k: 4,

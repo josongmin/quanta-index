@@ -600,7 +600,10 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
         Some(first_cursor),
     );
     match stale.typed_error {
-        Some(error) if error.code == quanta_index_core::AUX_EPOCH_EXPIRED_CODE => {}
+        Some(error)
+            if error.code
+                == e2e_harness::E2eErrorCode::Remote(quanta_index_core::AUX_EPOCH_EXPIRED_CODE) => {
+        }
         other => {
             return Err(format!("a pre-restart cursor is refused expired, got {other:?}").into());
         }
@@ -626,7 +629,7 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
         Some(recency_cursor),
     );
     match mismatch.typed_error {
-        Some(error) if error.code == "HISTORY_CURSOR_ORDER_MISMATCH" => {}
+        Some(error) if error.code.as_str() == "HISTORY_CURSOR_ORDER_MISMATCH" => {}
         other => {
             return Err(format!(
                 "a recency cursor on a relevance walk is refused typed, got {other:?}"
@@ -644,7 +647,11 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
         None,
     );
     match unscorable.typed_error {
-        Some(error) if error.code == quanta_index_core::HISTORY_TEXT_QUERY_UNSCORABLE_CODE => {}
+        Some(error)
+            if error.code
+                == e2e_harness::E2eErrorCode::Remote(
+                    quanta_index_core::HISTORY_TEXT_QUERY_UNSCORABLE_CODE,
+                ) => {}
         other => {
             return Err(
                 format!("a raw string is unscorable under relevance, got {other:?}").into(),

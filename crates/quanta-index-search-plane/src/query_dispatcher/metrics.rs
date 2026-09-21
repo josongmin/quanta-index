@@ -1,7 +1,8 @@
 //! The closed query-route metric taxonomy: route names, error-metric
 //! classification, and metric value shaping.
 
-use quanta_index_core::{CoreError, REQUEST_CANCELLED_CODE, REQUEST_DEADLINE_EXCEEDED_CODE};
+use quanta_index_contract::{SearchPlaneErrorCodeV2 as Code, lex::LexicalErrorCode as Lexical};
+use quanta_index_core::CoreError;
 
 /// The closed set of query routes, for the per-route metric names
 /// (QI-BB-015).
@@ -48,13 +49,11 @@ impl QueryRoute {
 /// The per-route counter a budget interruption lands in, by its wire code
 /// (QI-BB-002): a deadline and a peer cancellation are different events
 /// and are never folded into one metric.
-pub(super) fn interruption_route_suffix(code: &str) -> Option<&'static str> {
-    if code == REQUEST_DEADLINE_EXCEEDED_CODE {
-        Some("deadline_exceeded_total")
-    } else if code == REQUEST_CANCELLED_CODE {
-        Some("cancelled_total")
-    } else {
-        None
+pub(super) fn interruption_route_suffix(code: Code) -> Option<&'static str> {
+    match code {
+        Code::RequestDeadlineExceeded => Some("deadline_exceeded_total"),
+        Code::RequestCancelled => Some("cancelled_total"),
+        _ => None,
     }
 }
 
@@ -78,46 +77,74 @@ pub(super) fn elapsed_millis_metric(elapsed: std::time::Duration) -> f64 {
 
 pub(super) fn classify_error_metric_name(err: &CoreError) -> &'static str {
     match err {
-        CoreError::Typed { code, .. } if code == REQUEST_DEADLINE_EXCEEDED_CODE => {
-            "lq_typed_error_deadline_exceeded_total"
-        }
-        CoreError::Typed { code, .. } if code == REQUEST_CANCELLED_CODE => {
-            "lq_typed_error_cancelled_total"
-        }
-        CoreError::Typed { code, .. }
-            if code.contains("PARSE")
-                || code.contains("TRANSLATE_FAIL")
-                || code.contains("INVALID_VECTOR")
-                || code.contains("HOLE_KIND_UNSUPPORTED") =>
-        {
-            "lq_typed_error_parse_total"
-        }
-        CoreError::Typed { code, .. } if code.contains("DIRTY_ONLY_UNSUPPORTED") => {
-            "lq_typed_error_invalid_request_total"
-        }
-        CoreError::Typed { code, .. }
-            if code.contains("UNAVAILABLE")
-                || code.contains("NOT_IMPLEMENTED")
-                || code.contains("NOT_FOUND") =>
-        {
-            "lq_typed_error_unavailable_total"
-        }
-        CoreError::Typed { code, .. }
-            if code.contains("PLAN_LIMIT")
-                || code.contains("BUDGET_EXCEEDED")
-                || code.contains("QUERY_TIMEOUT")
-                || code.contains("COUNT_INVALID") =>
-        {
-            "lq_typed_error_plan_limit_total"
-        }
+        CoreError::Typed { code, .. } => classify_typed_error_metric_name(*code),
         CoreError::NotReady(_) => "lq_typed_error_not_ready_total",
-        CoreError::Typed { code, .. } if code.contains("NOT_READY") => {
-            "lq_typed_error_not_ready_total"
-        }
         CoreError::Storage(_) => "lq_typed_error_internal_total",
         CoreError::InvalidContract(_) => "lq_typed_error_invalid_request_total",
         CoreError::NotImplemented(_) | CoreError::NotFound(_) => "lq_typed_error_unavailable_total",
-        CoreError::Typed { .. } => "lq_typed_error_other_total",
+    }
+}
+
+fn classify_typed_error_metric_name(code: Code) -> &'static str {
+    match code {
+        Code::RequestDeadlineExceeded => "lq_typed_error_deadline_exceeded_total",
+        Code::RequestCancelled => "lq_typed_error_cancelled_total",
+        Code::Lexical(
+            Lexical::RegexParse
+            | Lexical::ParseFail
+            | Lexical::StrParseFail
+            | Lexical::StrParseTreeDecodeFail
+            | Lexical::BridgeTranslateFail
+            | Lexical::SemInvalidVector
+            | Lexical::StrHoleKindUnsupported,
+        )
+        | Code::LexRegexDialectParseError => "lq_typed_error_parse_total",
+        Code::RuntimeDirtyOnlyUnsupported => "lq_typed_error_invalid_request_total",
+        Code::Lexical(
+            Lexical::StrProducerParseTreeUnavailable
+            | Lexical::SemProviderUnavailable
+            | Lexical::HistoryRefNotFound,
+        )
+        | Code::FileContributorUnavailable
+        | Code::FileOwnershipUnavailable
+        | Code::HistoryProducerUnavailable
+        | Code::HistoryRepoCommitRecencyUnavailable
+        | Code::HistoryRelevanceUnavailable
+        | Code::HistoryShardUnavailable
+        | Code::HistoryTextIndexNormalizerUnsupported
+        | Code::LexFilterArchivedUnavailable
+        | Code::LexFilterAuthorUnavailable
+        | Code::LexFilterCommitterUnavailable
+        | Code::LexFilterContextUnavailable
+        | Code::LexFilterDirtyUnavailable
+        | Code::LexFilterForkUnavailable
+        | Code::LexFilterMessageUnavailable
+        | Code::LexFilterRevUnavailable
+        | Code::LexFilterRuntimeCatalogUnavailable
+        | Code::LexFilterVisibilityUnavailable
+        | Code::RepoDescriptionUnavailable
+        | Code::RepoMetaUnavailable
+        | Code::RepoTopicUnavailable
+        | Code::NotFound
+        | Code::NotImplemented
+        | Code::RuntimeCatalogChunkUniverseUnavailable
+        | Code::StrShardUnavailable => "lq_typed_error_unavailable_total",
+        Code::Lexical(Lexical::PlanLimitExceeded | Lexical::QueryTimeout)
+        | Code::IngestResourceBudgetExceeded
+        | Code::LexicalExaminedBudgetExceeded
+        | Code::LexPhrasePlanLimitExceeded
+        | Code::LexRegexBudgetExceeded
+        | Code::LexTrigramPlanLimitExceeded => "lq_typed_error_plan_limit_total",
+        Code::HistoryGenerationNotReady
+        | Code::HistoryTextIndexNotReady
+        | Code::NotReady
+        | Code::RuntimeCatalogNotReady
+        | Code::RuntimeNotReady
+        | Code::StrGenerationNotReady
+        | Code::Lexical(Lexical::SemNotReady | Lexical::StateNotReady) => {
+            "lq_typed_error_not_ready_total"
+        }
+        _ => "lq_typed_error_other_total",
     }
 }
 

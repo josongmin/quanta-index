@@ -30,11 +30,11 @@ type TestResult = Result<(), Box<dyn Error>>;
 const TEXT_AUTHORITY_DIR: &str = "text-authority";
 
 fn repo() -> RepoId {
-    RepoId::new("resident-repo")
+    RepoId::new("resident-repo").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new("resident-rev")
+    RevisionId::new("resident-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 fn scope(path: &str, body: &str) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {

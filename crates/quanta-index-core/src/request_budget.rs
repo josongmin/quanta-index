@@ -20,9 +20,11 @@ use std::time::{Duration, Instant};
 use crate::error::CoreError;
 
 /// Wire code for a request that ran past its deadline.
-pub const REQUEST_DEADLINE_EXCEEDED_CODE: &str = "REQUEST_DEADLINE_EXCEEDED";
+pub const REQUEST_DEADLINE_EXCEEDED_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::RequestDeadlineExceeded;
 /// Wire code for a request abandoned by its peer while it was running.
-pub const REQUEST_CANCELLED_CODE: &str = "REQUEST_CANCELLED";
+pub const REQUEST_CANCELLED_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::RequestCancelled;
 
 /// Why a checkpoint stopped a request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -137,11 +139,11 @@ impl RequestBudgetV1 {
     pub fn interrupted_at(&self, stage: &'static str) -> Option<CoreError> {
         match self.interruption()? {
             BudgetInterruptionV1::Cancelled => Some(CoreError::Typed {
-                code: REQUEST_CANCELLED_CODE.to_string(),
+                code: REQUEST_CANCELLED_CODE,
                 message: format!("request cancelled by its peer; observed at checkpoint `{stage}`"),
             }),
             BudgetInterruptionV1::DeadlineExceeded { over_by } => Some(CoreError::Typed {
-                code: REQUEST_DEADLINE_EXCEEDED_CODE.to_string(),
+                code: REQUEST_DEADLINE_EXCEEDED_CODE,
                 message: format!(
                     "request deadline exceeded by {}ms; observed at checkpoint `{stage}`",
                     over_by.as_millis()

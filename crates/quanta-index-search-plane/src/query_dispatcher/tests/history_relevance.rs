@@ -208,7 +208,7 @@ fn error_code(
     query_text: &str,
     order: HistoryOrderV1,
     cursor: Option<HistoryCursor>,
-) -> Result<String, String> {
+) -> Result<quanta_index_contract::SearchPlaneErrorCodeV2, String> {
     match dispatcher.dispatch(
         request(query_text, order, 3, cursor),
         &RequestBudgetV1::unbounded(),

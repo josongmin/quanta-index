@@ -89,11 +89,11 @@ impl Serialize for RepoMetadataPayload<'_> {
 }
 
 fn repo() -> RepoId {
-    RepoId::new("repo-int")
+    RepoId::new("repo-int").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new("rev-int")
+    RevisionId::new("rev-int").expect("static fixture ID satisfies canonical policy")
 }
 
 fn generation() -> ManifestGeneration {
@@ -981,7 +981,7 @@ fn sourcegraph_path_and_lang_filters_execute_against_indexed_metadata() -> TestR
 
 fn verify_history_generation_not_ready(socket: &Path) -> TestResult {
     let err = wait_for_typed_error(socket, &history_query("type:commit fix"), READINESS_TIMEOUT)?;
-    if err.code != "HISTORY_GENERATION_NOT_READY" {
+    if err.code.as_wire_str() != "HISTORY_GENERATION_NOT_READY" {
         return Err(format!("expected HISTORY_GENERATION_NOT_READY, got {}", err.code).into());
     }
     if !err.message.contains("not yet materialized") {
@@ -1020,7 +1020,7 @@ fn history_query_returns_typed_producer_unavailable_without_lexical_fallback() -
         &history_query("type:commit fix"),
         READINESS_TIMEOUT,
     )?;
-    if err.code != "HISTORY_PRODUCER_UNAVAILABLE" {
+    if err.code.as_wire_str() != "HISTORY_PRODUCER_UNAVAILABLE" {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(format!("expected HISTORY_PRODUCER_UNAVAILABLE, got {}", err.code).into());
@@ -1062,7 +1062,7 @@ fn history_query_returns_typed_shard_unavailable_when_diff_shard_missing() -> Te
         &history_query("type:diff history"),
         READINESS_TIMEOUT,
     )?;
-    if err.code != "HISTORY_SHARD_UNAVAILABLE" {
+    if err.code.as_wire_str() != "HISTORY_SHARD_UNAVAILABLE" {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(format!("expected HISTORY_SHARD_UNAVAILABLE, got {}", err.code).into());
@@ -1193,7 +1193,7 @@ fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> Tes
                     }
                 };
                 let err = wait_for_typed_error(&socket, &request, READINESS_TIMEOUT)?;
-                if err.code != expected_error.code
+                if err.code.as_wire_str() != expected_error.code
                     || !err.message.contains(expected_error.message_contains)
                 {
                     shutdown.store(true, Ordering::Release);
@@ -1215,7 +1215,9 @@ fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> Tes
                     send_query_request(&socket, &request)
                         .map(|resp| match resp.payload {
                             SearchPlaneQueryIpcResponse::History(_) => true,
-                            SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+                            SearchPlaneQueryIpcResponse::Error(err) => {
+                                err.code.as_wire_str() != "NOT_READY"
+                            }
                             _ => false,
                         })
                         .unwrap_or(false)
@@ -1260,7 +1262,9 @@ fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> Tes
                     send_query_request(&socket, &request)
                         .map(|resp| match resp.payload {
                             SearchPlaneQueryIpcResponse::History(_) => true,
-                            SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+                            SearchPlaneQueryIpcResponse::Error(err) => {
+                                err.code.as_wire_str() != "NOT_READY"
+                            }
                             _ => false,
                         })
                         .unwrap_or(false)
@@ -1308,7 +1312,9 @@ fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> Tes
                             quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(
                                 _,
                             ) => true,
-                            SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+                            SearchPlaneQueryIpcResponse::Error(err) => {
+                                err.code.as_wire_str() != "NOT_READY"
+                            }
                             _ => false,
                         })
                         .unwrap_or(false)
@@ -1383,7 +1389,7 @@ fn verify_hybrid_requires_joint_materialization(socket: &Path) -> TestResult {
         SearchPlaneQueryIpcResponse::Error(err) => err,
         other => return Err(format!("expected Error, got {other:?}").into()),
     };
-    if err.code != "NOT_READY" {
+    if err.code.as_wire_str() != "NOT_READY" {
         return Err(format!("expected NOT_READY, got {}", err.code).into());
     }
     Ok(())
@@ -1505,7 +1511,7 @@ fn verify_hybrid_generation_pin_mismatch(socket: &Path) -> TestResult {
         SearchPlaneQueryIpcResponse::Error(err) => err,
         other => return Err(format!("expected Error, got {other:?}").into()),
     };
-    if err.code != "INVALID_REQUEST" {
+    if err.code.as_wire_str() != "INVALID_REQUEST" {
         return Err(format!("expected INVALID_REQUEST, got {}", err.code).into());
     }
     if !err
@@ -1534,7 +1540,7 @@ fn verify_sourcegraph_context_filter(socket: &Path) -> TestResult {
     if !wait_until(READINESS_TIMEOUT, || {
         send_query_request(socket, &req)
             .map(|resp| match resp.payload {
-                SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+                SearchPlaneQueryIpcResponse::Error(err) => err.code.as_wire_str() != "NOT_READY",
                 _ => true,
             })
             .unwrap_or(false)
@@ -1585,7 +1591,7 @@ fn verify_hybrid_visibility_filter(socket: &Path) -> TestResult {
     if !wait_until(READINESS_TIMEOUT, || {
         send_query_request(socket, &req)
             .map(|resp| match resp.payload {
-                SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+                SearchPlaneQueryIpcResponse::Error(err) => err.code.as_wire_str() != "NOT_READY",
                 _ => true,
             })
             .unwrap_or(false)
@@ -1664,7 +1670,7 @@ fn verify_semantic_requires_materialization(socket: &Path) -> TestResult {
         SearchPlaneQueryIpcResponse::Error(e) => e,
         other => return Err(format!("expected Error, got {other:?}").into()),
     };
-    if err.code != "SEMANTIC_GENERATION_NOT_MATERIALIZED" {
+    if err.code.as_wire_str() != "SEMANTIC_GENERATION_NOT_MATERIALIZED" {
         return Err(format!(
             "expected SEMANTIC_GENERATION_NOT_MATERIALIZED, got {}",
             err.code
@@ -2049,7 +2055,7 @@ fn verify_semantic_generation_pin_mismatch(socket: &Path) -> TestResult {
         SearchPlaneQueryIpcResponse::Error(err) => err,
         other => return Err(format!("expected Error, got {other:?}").into()),
     };
-    if err.code != "INVALID_REQUEST" {
+    if err.code.as_wire_str() != "INVALID_REQUEST" {
         return Err(format!("expected INVALID_REQUEST, got {}", err.code).into());
     }
     if !err
@@ -2289,7 +2295,7 @@ fn semantic_query_rejects_empty_text_with_typed_code() -> TestResult {
     if !wait_until(READINESS_TIMEOUT, || {
         send_query_request(&socket, &req)
             .map(|resp| match resp.payload {
-                SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+                SearchPlaneQueryIpcResponse::Error(err) => err.code.as_wire_str() != "NOT_READY",
                 _ => true,
             })
             .unwrap_or(false)
@@ -2308,7 +2314,7 @@ fn semantic_query_rejects_empty_text_with_typed_code() -> TestResult {
             return Err(format!("expected Error, got {other:?}").into());
         }
     };
-    if err.code != "EMPTY_QUERY" {
+    if err.code.as_wire_str() != "EMPTY_QUERY" {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(format!("expected EMPTY_QUERY, got {}", err.code).into());
@@ -2368,7 +2374,7 @@ fn semantic_query_fails_closed_when_runtime_has_no_query_embedder() -> TestResul
     if !wait_until(READINESS_TIMEOUT, || {
         send_query_request(&socket, &req)
             .map(|resp| match resp.payload {
-                SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+                SearchPlaneQueryIpcResponse::Error(err) => err.code.as_wire_str() != "NOT_READY",
                 _ => true,
             })
             .unwrap_or(false)
@@ -2387,7 +2393,7 @@ fn semantic_query_fails_closed_when_runtime_has_no_query_embedder() -> TestResul
             return Err(format!("expected Error, got {other:?}").into());
         }
     };
-    if err.code != "SEM_PROVIDER_UNAVAILABLE" {
+    if err.code.as_wire_str() != "SEM_PROVIDER_UNAVAILABLE" {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(format!("expected SEM_PROVIDER_UNAVAILABLE, got {}", err.code).into());
@@ -2461,7 +2467,7 @@ fn verify_hybrid_zero_top_k_refusal(socket: &Path) -> TestResult {
             );
         }
     };
-    if refused_code != quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE {
+    if refused_code.as_wire_str() != quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE {
         return Err(format!(
             "the raw caller gets the typed client's code {}, got {refused_code}",
             quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE
@@ -2752,7 +2758,7 @@ fn verify_structural_generation_not_ready(socket: &Path) -> TestResult {
         SearchPlaneQueryIpcResponse::Error(err) => err,
         other => return Err(format!("expected Error, got {other:?}").into()),
     };
-    if err.code != "STR_GENERATION_NOT_READY" {
+    if err.code.as_wire_str() != "STR_GENERATION_NOT_READY" {
         return Err(format!("expected STR_GENERATION_NOT_READY, got {}", err.code).into());
     }
     if !err.message.contains("not yet materialized") {
@@ -2840,8 +2846,8 @@ fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
         match send_query_request(&socket, &request) {
             Ok(response) => match response.payload {
                 SearchPlaneQueryIpcResponse::Error(err) => {
-                    observed = Some(err.code.clone());
-                    err.code == "STR_SHARD_UNAVAILABLE"
+                    observed = Some(err.code.as_wire_str().to_string());
+                    err.code.as_wire_str() == "STR_SHARD_UNAVAILABLE"
                 }
                 other => {
                     observed = Some(format!("{other:?}"));
@@ -2905,7 +2911,7 @@ fn verify_structural_composition_wiring(socket: &Path) -> TestResult {
             // shape today: STR_GENERATION_NOT_READY while no structural
             // materialization exists. Anything else is a genuine wiring
             // regression.
-            let code = err.code.as_str();
+            let code = err.code.as_wire_str();
             if code == "STR_GENERATION_NOT_READY" {
                 Ok(())
             } else {
@@ -2956,9 +2962,10 @@ fn verify_structural_sourcegraph_match(socket: &Path) -> TestResult {
                     structural.generation == pin && structural.results.len() == 1
                 }
                 SearchPlaneQueryIpcResponse::Error(err)
-                    if err.code == "NOT_READY" || err.code == "STR_GENERATION_NOT_READY" =>
+                    if err.code.as_wire_str() == "NOT_READY"
+                        || err.code.as_wire_str() == "STR_GENERATION_NOT_READY" =>
                 {
-                    observed = Some(err.code);
+                    observed = Some(err.code.as_wire_str().to_string());
                     false
                 }
                 other => {
@@ -3035,9 +3042,10 @@ fn verify_structural_sourcegraph_regex_match(socket: &Path) -> TestResult {
                     structural.generation == pin && structural.results.len() == 1
                 }
                 SearchPlaneQueryIpcResponse::Error(err)
-                    if err.code == "NOT_READY" || err.code == "STR_GENERATION_NOT_READY" =>
+                    if err.code.as_wire_str() == "NOT_READY"
+                        || err.code.as_wire_str() == "STR_GENERATION_NOT_READY" =>
                 {
-                    observed = Some(err.code);
+                    observed = Some(err.code.as_wire_str().to_string());
                     false
                 }
                 other => {
@@ -3107,7 +3115,9 @@ fn verify_structural_pattern_type_required(socket: &Path) -> TestResult {
         SearchPlaneQueryIpcResponse::Error(err) => err,
         other => return Err(format!("expected Error, got {other:?}").into()),
     };
-    if err.code != "BRIDGE_TRANSLATE_FAIL" || !err.message.contains("patterntype:structural") {
+    if err.code.as_wire_str() != "BRIDGE_TRANSLATE_FAIL"
+        || !err.message.contains("patterntype:structural")
+    {
         return Err(format!(
             "expected BRIDGE_TRANSLATE_FAIL structural pattern-type error, got {err:?}"
         )
@@ -3137,14 +3147,16 @@ fn verify_structural_sourcegraph_select_refusal(socket: &Path) -> TestResult {
         match send_query_request(socket, &request) {
             Ok(response) => match response.payload {
                 SearchPlaneQueryIpcResponse::Error(err)
-                    if err.code == "NOT_READY" || err.code == "STR_GENERATION_NOT_READY" =>
+                    if err.code.as_wire_str() == "NOT_READY"
+                        || err.code.as_wire_str() == "STR_GENERATION_NOT_READY" =>
                 {
-                    observed = Some(err.code);
+                    observed = Some(err.code.as_wire_str().to_string());
                     false
                 }
                 SearchPlaneQueryIpcResponse::Error(err) => {
                     observed = Some(format!("{err:?}"));
-                    err.code == "STR_INVALID_REQUEST" && err.message.contains("filter `select`")
+                    err.code.as_wire_str() == "STR_INVALID_REQUEST"
+                        && err.message.contains("filter `select`")
                 }
                 other => {
                     observed = Some(format!("{other:?}"));
@@ -3189,7 +3201,7 @@ fn verify_structural_timeout_refusal(socket: &Path) -> TestResult {
         SearchPlaneQueryIpcResponse::Error(err) => err,
         other => return Err(format!("expected Error, got {other:?}").into()),
     };
-    if err.code != "STR_INVALID_REQUEST" || !err.message.contains("timeout option") {
+    if err.code.as_wire_str() != "STR_INVALID_REQUEST" || !err.message.contains("timeout option") {
         return Err(
             format!("expected STR_INVALID_REQUEST structural timeout error, got {err:?}").into(),
         );
@@ -3223,9 +3235,10 @@ fn verify_structural_typed_holes(socket: &Path) -> TestResult {
                     structural.generation == pin && structural.results.len() == 1
                 }
                 SearchPlaneQueryIpcResponse::Error(err)
-                    if err.code == "NOT_READY" || err.code == "STR_GENERATION_NOT_READY" =>
+                    if err.code.as_wire_str() == "NOT_READY"
+                        || err.code.as_wire_str() == "STR_GENERATION_NOT_READY" =>
                 {
-                    observed_expr = Some(err.code);
+                    observed_expr = Some(err.code.as_wire_str().to_string());
                     false
                 }
                 other => {
@@ -3366,7 +3379,8 @@ fn verify_structural_typed_hole_kind_refusal(socket: &Path) -> TestResult {
         SearchPlaneQueryIpcResponse::Error(err) => err,
         other => return Err(format!("expected Error, got {other:?}").into()),
     };
-    if err.code != "STR_HOLE_KIND_UNSUPPORTED" || !err.message.contains("typed hole kind `lambda`")
+    if err.code.as_wire_str() != "STR_HOLE_KIND_UNSUPPORTED"
+        || !err.message.contains("typed hole kind `lambda`")
     {
         return Err(
             format!("expected STR_HOLE_KIND_UNSUPPORTED typed-hole error, got {err:?}").into(),
@@ -3508,7 +3522,7 @@ fn wait_for_typed_error(
     if !wait_until(timeout, || match send_query_request(socket, request) {
         Ok(response) => match response.payload {
             SearchPlaneQueryIpcResponse::Error(err) => {
-                last_observed = err.code;
+                last_observed = err.code.as_wire_str().to_string();
                 true
             }
             other => {

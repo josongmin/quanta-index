@@ -43,11 +43,11 @@ const DELTA_PATH: &str = "src/delta.rs";
 const VERSION_HINT: &str = "latest_version_hint.json";
 
 fn repo_id() -> RepoId {
-    RepoId::new("repo-delta-reuse")
+    RepoId::new("repo-delta-reuse").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision_id() -> RevisionId {
-    RevisionId::new("rev-delta-reuse")
+    RevisionId::new("rev-delta-reuse").expect("static fixture ID satisfies canonical policy")
 }
 
 fn dataset_dir(root: &Path, generation: ManifestGeneration) -> PathBuf {

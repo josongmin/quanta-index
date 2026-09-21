@@ -38,11 +38,11 @@ type TestResult = Result<(), Box<dyn Error>>;
 const DOCS: u32 = 6;
 
 fn repo() -> RepoId {
-    RepoId::new("regex-cache-repo")
+    RepoId::new("regex-cache-repo").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new("regex-cache-rev")
+    RevisionId::new("regex-cache-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 /// Every doc carries the broad token; only doc `index` carries its own; a

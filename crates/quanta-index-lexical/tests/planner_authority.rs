@@ -29,11 +29,11 @@ use quanta_index_lexical::LexicalAdapter;
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn repo() -> RepoId {
-    RepoId::new("planner-authority-repo")
+    RepoId::new("planner-authority-repo").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new("planner-authority-rev")
+    RevisionId::new("planner-authority-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 fn generation() -> ManifestGeneration {
@@ -160,7 +160,7 @@ fn fresh_searcher_with_corpus(
 
 fn assert_typed_error(
     outcome: Result<impl std::fmt::Debug, CoreError>,
-    expected_code: &str,
+    expected_code: quanta_index_contract::SearchPlaneErrorCodeV2,
 ) -> Result<(), Box<dyn Error>> {
     match outcome {
         Err(CoreError::Typed { code, message }) => {
@@ -207,7 +207,10 @@ fn fork_only_without_metadata_returns_typed_fork_unavailable() -> TestResult {
         }],
     );
     let outcome = searcher.search(&q, 10, &RequestBudgetV1::unbounded());
-    assert_typed_error(outcome, "LEX_FILTER_FORK_UNAVAILABLE")?;
+    assert_typed_error(
+        outcome,
+        quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterForkUnavailable,
+    )?;
     Ok(())
 }
 
@@ -227,7 +230,10 @@ fn archived_only_without_metadata_returns_typed_archived_unavailable() -> TestRe
         }],
     );
     let outcome = searcher.search(&q, 10, &RequestBudgetV1::unbounded());
-    assert_typed_error(outcome, "LEX_FILTER_ARCHIVED_UNAVAILABLE")?;
+    assert_typed_error(
+        outcome,
+        quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterArchivedUnavailable,
+    )?;
     Ok(())
 }
 
@@ -280,7 +286,10 @@ fn count_zero_returns_typed_invalid_count() -> TestResult {
     opts.count = Some(LqCountBound::Bounded(0));
     let q = make_query_with_options(LqExpr::Leaf(LqLeaf::Keyword("fox".to_string())), opts);
     let outcome = searcher.search(&q, 10, &RequestBudgetV1::unbounded());
-    assert_typed_error(outcome, "LEX_FILTER_INVALID_COUNT")?;
+    assert_typed_error(
+        outcome,
+        quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterInvalidCount,
+    )?;
     Ok(())
 }
 
@@ -347,6 +356,9 @@ fn keyword_with_regexp_pattern_type_routes_through_planner_dialect_filter() -> T
     opts.pattern_type = LqPatternType::Regexp;
     let q = make_query_with_options(LqExpr::Leaf(LqLeaf::Keyword("(?<=x)y".to_string())), opts);
     let outcome = searcher.search(&q, 10, &RequestBudgetV1::unbounded());
-    assert_typed_error(outcome, "LEX_REGEX_DIALECT_UNSUPPORTED")?;
+    assert_typed_error(
+        outcome,
+        quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexDialectUnsupported,
+    )?;
     Ok(())
 }

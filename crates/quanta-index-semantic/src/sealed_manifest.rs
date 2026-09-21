@@ -217,7 +217,7 @@ fn read_sealed_manifest(generation_dir: &Path) -> Result<SemanticSealedManifestV
     let bytes = std::fs::read(&path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             CoreError::Typed {
-                code: "GENERATION_MANIFEST_MISSING".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestMissing,
                 message: format!(
                     "semantic: sealed generation has no content manifest at {}; it predates the sealed-manifest format and must be rebuilt from its producer",
                     path.display()
@@ -250,7 +250,7 @@ fn read_sealed_manifest(generation_dir: &Path) -> Result<SemanticSealedManifestV
 
 fn sidecar_corrupt(generation_dir: &Path, detail: &str) -> CoreError {
     CoreError::Typed {
-        code: GENERATION_SIDECAR_CORRUPT_CODE.to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
         message: format!(
             "semantic: sealed generation {} does not match its manifest: {detail}",
             generation_dir.display()
@@ -266,7 +266,7 @@ fn read_bound_sealed_manifest(
     let manifest = read_sealed_manifest(generation_dir)?;
     if manifest.manifest_digest != manifest_digest {
         return Err(CoreError::Typed {
-            code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
             message: format!(
                 "semantic: sealed manifest under {} was written for digest {} but the identity says {manifest_digest}",
                 generation_dir.display(),

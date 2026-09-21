@@ -20,7 +20,6 @@ use crate::readiness::durable_fs::{
     read_regular_file_nofollow_v1, reconcile_legacy_atomic_temporaries_v1,
     reconcile_owned_staging_directory_v1,
 };
-use crate::readiness::errors::ERR_ROLLBACK_CAS_CONFLICT;
 use crate::readiness::pair_digest::search_corpus_pair_digest;
 use crate::readiness::search_corpus_generation::{
     PersistedSearchCorpusGenerationRootV1, PreparedSearchCorpusGenerationV1,
@@ -356,7 +355,7 @@ impl ActivationCatalog {
         };
         if current != expected_active {
             return Err(CoreError::Typed {
-                code: ERR_ROLLBACK_CAS_CONFLICT.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::RollbackCasConflict,
                 message: format!(
                     "search-corpus rollback: active composite root changed for repo={} revision={}: expected generation={} digest={}, observed generation={} digest={}",
                     expected_active.repo_id().as_str(),

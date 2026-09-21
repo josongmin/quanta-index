@@ -619,7 +619,7 @@ fn regex_typed_rejection_does_not_poison_next_query() -> AnyResult<()> {
     let error = invalid
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected typed regex rejection"))?;
-    if error.code != "PARSE_FAIL" {
+    if error.code.as_str() != "PARSE_FAIL" {
         return Err(anyhow::anyhow!("expected PARSE_FAIL, got {}", error.code));
     }
     if !error.message.contains("regex") {
@@ -653,7 +653,7 @@ fn regex_timeout_is_typed_and_does_not_poison_next_query() -> AnyResult<()> {
     let error = timed_out
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected typed regex timeout"))?;
-    if error.code != "QUERY_TIMEOUT" {
+    if error.code.as_str() != "QUERY_TIMEOUT" {
         return Err(anyhow::anyhow!(
             "expected QUERY_TIMEOUT, got {}",
             error.code
@@ -694,7 +694,7 @@ fn oversized_raw_substring_query_fails_parse_and_does_not_poison_next_query() ->
             limited.candidate_ids
         )
     })?;
-    if error.code != "PARSE_FAIL" {
+    if error.code.as_str() != "PARSE_FAIL" {
         return Err(anyhow::anyhow!("expected PARSE_FAIL, got {}", error.code));
     }
     if !error.message.contains("16 KiB cap") {
@@ -732,7 +732,7 @@ fn raw_substring_trigram_plan_limit_is_typed_and_does_not_poison_next_query() ->
             limited.candidate_ids
         )
     })?;
-    if error.code != "LEX_TRIGRAM_PLAN_LIMIT_EXCEEDED" {
+    if error.code.as_str() != "LEX_TRIGRAM_PLAN_LIMIT_EXCEEDED" {
         return Err(anyhow::anyhow!(
             "expected LEX_TRIGRAM_PLAN_LIMIT_EXCEEDED, got {}",
             error.code
@@ -773,7 +773,7 @@ fn trigram_plan_limit_query_fails_typed_and_does_not_poison_next_query() -> AnyR
             limited.candidate_ids
         )
     })?;
-    if error.code != "LEX_TRIGRAM_PLAN_LIMIT_EXCEEDED" {
+    if error.code.as_str() != "LEX_TRIGRAM_PLAN_LIMIT_EXCEEDED" {
         return Err(anyhow::anyhow!(
             "expected LEX_TRIGRAM_PLAN_LIMIT_EXCEEDED, got {}",
             error.code
@@ -977,7 +977,7 @@ fn lexical_timeout_runtime_metrics_use_plan_limit_bucket_without_query_leakage()
     let error = result
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected lexical timeout typed error"))?;
-    if error.code != "QUERY_TIMEOUT" {
+    if error.code.as_str() != "QUERY_TIMEOUT" {
         return Err(anyhow::anyhow!(
             "expected QUERY_TIMEOUT, got {}",
             error.code
@@ -1004,7 +1004,7 @@ fn history_missing_ref_shard_uses_closed_unavailable_metric() -> AnyResult<()> {
     let error = result
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected history ref-shard typed error"))?;
-    if error.code != "HISTORY_SHARD_UNAVAILABLE" {
+    if error.code.as_str() != "HISTORY_SHARD_UNAVAILABLE" {
         return Err(anyhow::anyhow!(
             "expected HISTORY_SHARD_UNAVAILABLE, got {}",
             error.code
@@ -1037,7 +1037,7 @@ fn history_missing_tag_shard_uses_closed_unavailable_metric() -> AnyResult<()> {
     let error = result
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected history tag-shard typed error"))?;
-    if error.code != "HISTORY_SHARD_UNAVAILABLE" {
+    if error.code.as_str() != "HISTORY_SHARD_UNAVAILABLE" {
         return Err(anyhow::anyhow!(
             "expected HISTORY_SHARD_UNAVAILABLE, got {}",
             error.code
@@ -1105,7 +1105,7 @@ fn structural_missing_parse_tree_fails_typed_generation_not_ready() -> AnyResult
     let error = result
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected typed structural readiness error"))?;
-    if error.code != "STR_GENERATION_NOT_READY" {
+    if error.code.as_str() != "STR_GENERATION_NOT_READY" {
         return Err(anyhow::anyhow!(
             "expected STR_GENERATION_NOT_READY, got {}",
             error.code
@@ -1143,7 +1143,7 @@ fn structural_orphan_chunk_authority_fails_typed_shard_unavailable() -> AnyResul
     let error = result
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected typed structural shard-unavailable error"))?;
-    if error.code != "STR_SHARD_UNAVAILABLE" {
+    if error.code.as_str() != "STR_SHARD_UNAVAILABLE" {
         return Err(anyhow::anyhow!(
             "expected STR_SHARD_UNAVAILABLE, got {}",
             error.code
@@ -1368,7 +1368,7 @@ fn structural_typed_hole_kind_rejects_typed_and_does_not_poison_next_query() -> 
     let error = invalid
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected typed structural typed-hole rejection"))?;
-    if error.code != "STR_HOLE_KIND_UNSUPPORTED" {
+    if error.code.as_str() != "STR_HOLE_KIND_UNSUPPORTED" {
         return Err(anyhow::anyhow!(
             "expected STR_HOLE_KIND_UNSUPPORTED, got {}",
             error.code
@@ -1486,7 +1486,7 @@ fn runtime_catalog_without_authority_fails_typed_and_metrics_are_bounded() -> An
     let error = result
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected RUNTIME_CATALOG_NOT_READY typed error"))?;
-    if error.code != "RUNTIME_CATALOG_NOT_READY" {
+    if error.code.as_str() != "RUNTIME_CATALOG_NOT_READY" {
         return Err(anyhow::anyhow!(
             "expected RUNTIME_CATALOG_NOT_READY, got {}",
             error.code
@@ -1656,7 +1656,7 @@ fn runtime_catalog_snapshot_unknown_rejects_typed_and_does_not_poison_next_query
     let error = rejected
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected SNAPSHOT_UNKNOWN typed rejection"))?;
-    if error.code != "SNAPSHOT_UNKNOWN" {
+    if error.code.as_str() != "SNAPSHOT_UNKNOWN" {
         return Err(anyhow::anyhow!(
             "expected SNAPSHOT_UNKNOWN, got {}",
             error.code
@@ -1923,7 +1923,7 @@ fn history_missing_type_rejects_typed_and_does_not_poison_next_query() -> AnyRes
     let error = rejected
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected INVALID_REQUEST for missing history type"))?;
-    if error.code != "INVALID_REQUEST" {
+    if error.code.as_str() != "INVALID_REQUEST" {
         return Err(anyhow::anyhow!(
             "expected INVALID_REQUEST, got {}",
             error.code
@@ -1983,7 +1983,7 @@ fn history_commit_file_filter_rejects_typed_and_does_not_poison_next_query() -> 
     let error = rejected.typed_error.ok_or_else(|| {
         anyhow::anyhow!("expected INVALID_REQUEST for commit history file filter")
     })?;
-    if error.code != "INVALID_REQUEST" {
+    if error.code.as_str() != "INVALID_REQUEST" {
         return Err(anyhow::anyhow!(
             "expected INVALID_REQUEST, got {}",
             error.code
@@ -2043,7 +2043,7 @@ fn history_predicate_leaf_rejects_typed_and_does_not_poison_next_query() -> AnyR
     let error = rejected
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected NOT_IMPLEMENTED for history predicate leaf"))?;
-    if error.code != "NOT_IMPLEMENTED" {
+    if error.code.as_str() != "NOT_IMPLEMENTED" {
         return Err(anyhow::anyhow!(
             "expected NOT_IMPLEMENTED, got {}",
             error.code
@@ -2103,7 +2103,7 @@ fn runtime_metadata_predicate_leaf_rejects_typed_and_does_not_poison_next_query(
     let error = rejected
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected NOT_IMPLEMENTED for runtime predicate leaf"))?;
-    if error.code != "NOT_IMPLEMENTED" {
+    if error.code.as_str() != "NOT_IMPLEMENTED" {
         return Err(anyhow::anyhow!(
             "expected NOT_IMPLEMENTED, got {}",
             error.code
@@ -2207,7 +2207,7 @@ fn history_before_invalid_timeref_rejects_typed_and_does_not_poison_next_query()
     let error = rejected
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected HISTORY_INVALID_TIMEREF typed error"))?;
-    if error.code != "HISTORY_INVALID_TIMEREF" {
+    if error.code.as_str() != "HISTORY_INVALID_TIMEREF" {
         return Err(anyhow::anyhow!(
             "expected HISTORY_INVALID_TIMEREF, got {}",
             error.code
@@ -2290,7 +2290,7 @@ fn history_since_time_and_commit_execute_and_unknown_commit_fails_closed() -> An
     let error = rejected
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected typed error for since.commit unknown ref"))?;
-    if error.code != "HISTORY_INVALID_TIMEREF" {
+    if error.code.as_str() != "HISTORY_INVALID_TIMEREF" {
         return Err(anyhow::anyhow!(
             "expected HISTORY_INVALID_TIMEREF for since.commit unknown ref, got {}",
             error.code

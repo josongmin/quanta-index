@@ -305,7 +305,7 @@ fn a_page_walk_never_mixes_epochs_and_the_epoch_survives_a_restart() -> TestResu
         Some(cursor),
     );
     match stale.typed_error {
-        Some(error) if error.code == AUX_EPOCH_EXPIRED_CODE => {}
+        Some(error) if error.code == e2e_harness::E2eErrorCode::Remote(AUX_EPOCH_EXPIRED_CODE) => {}
         other => {
             return Err(format!(
                 "a cursor from before the restart is refused {AUX_EPOCH_EXPIRED_CODE}, got {other:?}"

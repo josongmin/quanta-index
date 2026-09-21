@@ -498,9 +498,9 @@ impl QueryTextEmbedderPort for UnavailableTestQueryEmbedder {
         _budget: &quanta_index_core::RequestBudgetV1,
     ) -> Result<Vec<f32>, quanta_index_core::CoreError> {
         Err(quanta_index_core::CoreError::Typed {
-            code: quanta_index_contract::lex::LexicalErrorCode::SemProviderUnavailable
-                .as_code_str()
-                .to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                quanta_index_contract::lex::LexicalErrorCode::SemProviderUnavailable,
+            ),
             message: "test embedder unavailable".to_string(),
         })
     }
@@ -517,8 +517,8 @@ pub(crate) fn semantic_focus_request() -> SemanticQueryRequest {
         query_text: "focus alpha".to_string(),
         constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
         generation: Some(GenerationPin::new(
-            RepoId::new("repo-map-ipc"),
-            RevisionId::new("rev-map-ipc"),
+            RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+            RevisionId::new("rev-map-ipc").expect("static fixture ID satisfies canonical policy"),
             ManifestGeneration::new(9),
         )),
         generation_selector: None,

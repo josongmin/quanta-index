@@ -3,7 +3,7 @@
 use std::io::Cursor;
 
 use quanta_index_contract::SearchPlaneIpcError;
-use quanta_index_ipc::{IpcError, MAX_FRAME_BODY_BYTES, decode_response, encode_response};
+use quanta_index_ipc::{IpcError, MAX_FRAME_BODY_BYTES, decode_response};
 
 type TestRes = Result<(), Box<dyn std::error::Error>>;
 
@@ -56,29 +56,13 @@ fn historical_frame_v1() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     Ok(frame)
 }
 
-fn expected_error_v1() -> SearchPlaneIpcError {
-    SearchPlaneIpcError {
-        code: "BAD_REQUEST".to_owned(),
-        message: "bad request".to_owned(),
-        repair: None,
-    }
-}
-
 #[test]
-fn historical_v1_cbor_frame_decodes_and_reencodes_byte_identically() -> TestRes {
+fn historical_v1_bad_request_code_is_rejected_by_the_closed_v2_decoder() -> TestRes {
     let historical = historical_frame_v1()?;
-    let decoded: SearchPlaneIpcError = decode_response(&mut Cursor::new(&historical))?;
-    if decoded != expected_error_v1() {
-        return Err(format!("historical V1 decode drifted: {decoded:?}").into());
-    }
-
-    let reencoded = encode_response(&decoded)?;
-    if reencoded != historical {
-        return Err(format!(
-            "V1 canonical re-encode drifted from checked-in historical frame: \
-             expected={historical:02x?}, actual={reencoded:02x?}"
-        )
-        .into());
+    let decoded: Result<SearchPlaneIpcError, IpcError> =
+        decode_response(&mut Cursor::new(&historical));
+    if !matches!(decoded, Err(IpcError::Decode(_))) {
+        return Err(format!("retired BAD_REQUEST code was not rejected: {decoded:?}").into());
     }
     Ok(())
 }

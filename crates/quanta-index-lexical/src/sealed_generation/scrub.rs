@@ -23,10 +23,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ciborium::Value as CborValue;
 use quanta_index_contract::{GenerationSnapshot, SearchPlaneTrackKind};
 use quanta_index_core::{
-    CoreError, GENERATION_QUARANTINED_CODE, GenerationQuarantineReasonV1, IntegrityScrubBudgetV1,
-    IntegrityScrubCursorV1, IntegrityScrubOutcomeV1, IntegrityScrubReportV1,
-    QuarantinedGenerationV1, SealedArtifactCommitmentV1, TreeCommitmentMismatchV1,
-    TreeScrubVerdictV1, hash_committed_step_v1,
+    CoreError, GenerationQuarantineReasonV1, IntegrityScrubBudgetV1, IntegrityScrubCursorV1,
+    IntegrityScrubOutcomeV1, IntegrityScrubReportV1, QuarantinedGenerationV1,
+    SealedArtifactCommitmentV1, TreeCommitmentMismatchV1, TreeScrubVerdictV1,
+    hash_committed_step_v1,
 };
 
 use crate::sealed_generation::manifest::read_bound_manifest;
@@ -42,10 +42,6 @@ pub(crate) const LEXICAL_QUARANTINE_RECEIPT_FILE_NAME: &str =
     "search-corpus-generation-quarantine.cbor";
 /// Quarantine receipt: the reason code, what did not match, and when.
 pub(crate) const LEXICAL_QUARANTINE_RECEIPT_FORMAT_VERSION: u32 = 1;
-/// Typed refusal for a receipt this build cannot trust: unreadable,
-/// another format, or written for a different sealed digest.
-pub(crate) const GENERATION_SCRUB_RECEIPT_INVALID_CODE: &str = "GENERATION_SCRUB_RECEIPT_INVALID";
-
 /// Wire shape of the completed-pass receipt: a fixed-order CBOR array,
 /// format version first.
 type ScrubReceiptRow = (u32, String, u64, u64, u64);
@@ -62,7 +58,7 @@ fn quarantine_receipt_path(generation_dir: &Path) -> PathBuf {
 
 fn receipt_invalid(path: &Path, reason: &str) -> CoreError {
     CoreError::Typed {
-        code: GENERATION_SCRUB_RECEIPT_INVALID_CODE.to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationScrubReceiptInvalid,
         message: format!("lexical: receipt {}: {reason}", path.display()),
     }
 }
@@ -167,7 +163,7 @@ pub(crate) fn refuse_if_quarantined(generation_dir: &Path) -> Result<(), CoreErr
         return Ok(());
     };
     Err(CoreError::Typed {
-        code: GENERATION_QUARANTINED_CODE.to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationQuarantined,
         message: format!(
             "lexical: generation {} is quarantined as {}: {}; discard it through the quarantine surface or rebuild it from its producer",
             generation_dir.display(),

@@ -35,7 +35,6 @@ use super::support::{
 };
 use crate::ingest_dispatcher::auxiliary::{AuxiliaryMutationCoordinator, dirty_publish_receipt_v1};
 use crate::ingest_dispatcher::dispatcher::SearchPlaneIngestDispatcher;
-use crate::ingest_dispatcher::errors::ERR_SEARCH_CORPUS_BATCH_SHAPE;
 use crate::ingest_dispatcher::ports::{
     HistoryIngestPort, RuntimeMetadataIngestPort, StructuralIngestPort,
 };
@@ -268,8 +267,9 @@ fn search_corpus_materializer(
 /// A dirty batch carrying its canonical digest.
 fn dirty_batch(doc: &str) -> Result<DirtyIngestBatch, Box<dyn std::error::Error>> {
     let mut batch = DirtyIngestBatch {
-        repo_id: RepoId::new("repo-idem"),
-        revision_id: RevisionId::new("rev-idem"),
+        repo_id: RepoId::new("repo-idem").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev-idem")
+            .expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(4),
         overlay_epoch_ms: 11,
         batch_digest: String::new(),
@@ -284,9 +284,11 @@ fn dirty_batch(doc: &str) -> Result<DirtyIngestBatch, Box<dyn std::error::Error>
     Ok(batch)
 }
 
-fn typed_code_of(response: &SearchPlaneIngestIpcResponse) -> Option<String> {
+fn typed_code_of(
+    response: &SearchPlaneIngestIpcResponse,
+) -> Option<quanta_index_contract::SearchPlaneErrorCodeV2> {
     match response {
-        SearchPlaneIngestIpcResponse::Error(error) => Some(error.code.clone()),
+        SearchPlaneIngestIpcResponse::Error(error) => Some(error.code),
         SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
         | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
@@ -424,7 +426,7 @@ fn a_well_formed_but_wrong_digest_is_a_mismatch() -> TestRes {
         SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch),
         &RequestBudgetV1::unbounded(),
     );
-    if typed_code_of(&refused).as_deref() != Some(BATCH_DIGEST_MISMATCH_CODE) {
+    if typed_code_of(&refused) != Some(BATCH_DIGEST_MISMATCH_CODE) {
         return Err(format!("expected BATCH_DIGEST_MISMATCH, got {refused:?}").into());
     }
     if runtime.applies.load(Ordering::SeqCst) != 0 || catalog.records() != 0 {
@@ -455,7 +457,9 @@ fn a_refused_search_corpus_batch_leaves_no_record() -> TestRes {
         SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(malformed),
         &budget,
     );
-    if typed_code_of(&refused).as_deref() != Some(ERR_SEARCH_CORPUS_BATCH_SHAPE) {
+    if typed_code_of(&refused)
+        != Some(quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid)
+    {
         return Err(format!("expected a shape refusal, got {refused:?}").into());
     }
     if catalog.records() != 0 {

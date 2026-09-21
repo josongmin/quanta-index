@@ -34,8 +34,9 @@ use crate::search_corpus_retention::SearchCorpusHistoryRetentionPolicyV1;
 fn sealed_search_corpus_history_reaps_max_plus_one_and_preserves_predecessor() -> TestResult {
     let dir = tempdir()?;
     let store = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(2)?)?;
-    let repo = RepoId::new("repo-corpus");
-    let revision = RevisionId::new("rev-corpus");
+    let repo = RepoId::new("repo-corpus").expect("static fixture ID satisfies canonical policy");
+    let revision =
+        RevisionId::new("rev-corpus").expect("static fixture ID satisfies canonical policy");
     let mut live_ledger = Ledger::new();
     for generation in 17..=19 {
         let manifest_generation = ManifestGeneration::new(generation);
@@ -70,7 +71,7 @@ fn sealed_search_corpus_history_reaps_max_plus_one_and_preserves_predecessor() -
     };
     assert_eq!(
         code,
-        crate::readiness::errors::ERR_SEARCH_CORPUS_AUTHORITY_CONFLICT
+        quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusAuthorityConflict
     );
     let root_snapshot = store.load_search_corpus_root_snapshot_v1()?;
     assert_eq!(
@@ -134,8 +135,10 @@ fn sealed_search_corpus_history_reaps_max_plus_one_and_preserves_predecessor() -
 
 #[test]
 fn unreconciled_retention_receipt_fails_before_ledger_pruning() -> TestResult {
-    let repo = RepoId::new("repo-incomplete-receipt");
-    let revision = RevisionId::new("rev-incomplete-receipt");
+    let repo = RepoId::new("repo-incomplete-receipt")
+        .expect("static fixture ID satisfies canonical policy");
+    let revision = RevisionId::new("rev-incomplete-receipt")
+        .expect("static fixture ID satisfies canonical policy");
     let mut ledger = Ledger::new();
     ledger.record_historically_sealed_search_corpus(
         &repo,
@@ -177,8 +180,9 @@ fn unreconciled_retention_receipt_fails_before_ledger_pruning() -> TestResult {
 #[test]
 fn sealed_search_corpus_history_enforces_byte_cap_without_losing_predecessor() -> TestResult {
     let dir = tempdir()?;
-    let repo = RepoId::new("repo-byte-cap");
-    let revision = RevisionId::new("rev-byte-cap");
+    let repo = RepoId::new("repo-byte-cap").expect("static fixture ID satisfies canonical policy");
+    let revision =
+        RevisionId::new("rev-byte-cap").expect("static fixture ID satisfies canonical policy");
     let first_len = TEST_INDEX_BYTES_PER_GENERATION;
     let second_len = TEST_INDEX_BYTES_PER_GENERATION;
     let policy =
@@ -210,8 +214,10 @@ fn sealed_search_corpus_history_enforces_byte_cap_without_losing_predecessor() -
 #[test]
 fn sealed_search_corpus_history_rejects_write_before_predecessor_window_overflows() -> TestResult {
     let dir = tempdir()?;
-    let repo = RepoId::new("repo-byte-exhausted");
-    let revision = RevisionId::new("rev-byte-exhausted");
+    let repo =
+        RepoId::new("repo-byte-exhausted").expect("static fixture ID satisfies canonical policy");
+    let revision = RevisionId::new("rev-byte-exhausted")
+        .expect("static fixture ID satisfies canonical policy");
     let first_len = TEST_INDEX_BYTES_PER_GENERATION;
     let second_len = TEST_INDEX_BYTES_PER_GENERATION;
     let pair_bytes = first_len
@@ -237,7 +243,7 @@ fn sealed_search_corpus_history_rejects_write_before_predecessor_window_overflow
     };
     assert_eq!(
         code,
-        crate::search_corpus_retention::ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED
+        quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted
     );
     assert_eq!(
         std::fs::read_dir(store.search_corpus_pair_dir(&repo, &revision))?.count(),
@@ -252,8 +258,10 @@ fn state_root_revision_pair_cap_rejects_growth_without_cross_pair_deletion() -> 
     let dir = tempdir()?;
     let policy = SearchCorpusHistoryRetentionPolicyV1::new(2, 1024 * 1024, 1, 4 * 1024 * 1024)?;
     let store = AuxiliaryAuthorityStore::open(dir.path(), policy)?;
-    let first_repo = RepoId::new("repo-global-first");
-    let first_revision = RevisionId::new("rev-global-first");
+    let first_repo =
+        RepoId::new("repo-global-first").expect("static fixture ID satisfies canonical policy");
+    let first_revision =
+        RevisionId::new("rev-global-first").expect("static fixture ID satisfies canonical policy");
     let _first_pair_retention_receipt = store.record_sealed_search_corpus(
         &first_repo,
         &first_revision,
@@ -261,8 +269,10 @@ fn state_root_revision_pair_cap_rejects_growth_without_cross_pair_deletion() -> 
         "digest-first",
     )?;
 
-    let second_repo = RepoId::new("repo-global-second");
-    let second_revision = RevisionId::new("rev-global-second");
+    let second_repo =
+        RepoId::new("repo-global-second").expect("static fixture ID satisfies canonical policy");
+    let second_revision =
+        RevisionId::new("rev-global-second").expect("static fixture ID satisfies canonical policy");
     let rejected = store.record_sealed_search_corpus(
         &second_repo,
         &second_revision,
@@ -274,7 +284,7 @@ fn state_root_revision_pair_cap_rejects_growth_without_cross_pair_deletion() -> 
     };
     assert_eq!(
         code,
-        crate::search_corpus_retention::ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED
+        quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted
     );
     assert!(
         store
@@ -294,10 +304,14 @@ fn state_root_revision_pair_cap_rejects_growth_without_cross_pair_deletion() -> 
 #[test]
 fn state_root_total_byte_cap_rejects_growth_before_write() -> TestResult {
     let dir = tempdir()?;
-    let first_repo = RepoId::new("repo-byte-root-first");
-    let first_revision = RevisionId::new("rev-byte-root-first");
-    let second_repo = RepoId::new("repo-byte-root-second");
-    let second_revision = RevisionId::new("rev-byte-root-second");
+    let first_repo =
+        RepoId::new("repo-byte-root-first").expect("static fixture ID satisfies canonical policy");
+    let first_revision = RevisionId::new("rev-byte-root-first")
+        .expect("static fixture ID satisfies canonical policy");
+    let second_repo =
+        RepoId::new("repo-byte-root-second").expect("static fixture ID satisfies canonical policy");
+    let second_revision = RevisionId::new("rev-byte-root-second")
+        .expect("static fixture ID satisfies canonical policy");
     let first_len = TEST_INDEX_BYTES_PER_GENERATION;
     let second_len = TEST_INDEX_BYTES_PER_GENERATION;
     let pair_limit = first_len.max(second_len);
@@ -322,7 +336,7 @@ fn state_root_total_byte_cap_rejects_growth_before_write() -> TestResult {
     };
     assert_eq!(
         code,
-        crate::search_corpus_retention::ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED
+        quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted
     );
     assert!(
         !store
@@ -341,8 +355,10 @@ fn restore_refuses_cross_pair_gc_when_state_root_pair_cap_shrinks() -> TestResul
     )?;
     for ordinal in 1..=2 {
         let _retention_receipt = writer.record_sealed_search_corpus(
-            &RepoId::new(format!("repo-shrink-{ordinal}")),
-            &RevisionId::new(format!("rev-shrink-{ordinal}")),
+            &RepoId::new(format!("repo-shrink-{ordinal}"))
+                .expect("test fixture ID satisfies canonical policy"),
+            &RevisionId::new(format!("rev-shrink-{ordinal}"))
+                .expect("test fixture ID satisfies canonical policy"),
             ManifestGeneration::new(1),
             format!("digest-{ordinal}").as_str(),
         )?;
@@ -359,7 +375,7 @@ fn restore_refuses_cross_pair_gc_when_state_root_pair_cap_shrinks() -> TestResul
     };
     assert_eq!(
         code,
-        crate::search_corpus_retention::ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED
+        quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted
     );
     assert_eq!(
         reopened.load_search_corpus_root_snapshot_v1()?.pairs.len(),
@@ -372,8 +388,10 @@ fn restore_refuses_cross_pair_gc_when_state_root_pair_cap_shrinks() -> TestResul
 #[test]
 fn restart_repairs_one_over_limit_before_restoring_history() -> TestResult {
     let dir = tempdir()?;
-    let repo = RepoId::new("repo-restart-gc");
-    let revision = RevisionId::new("rev-restart-gc");
+    let repo =
+        RepoId::new("repo-restart-gc").expect("static fixture ID satisfies canonical policy");
+    let revision =
+        RevisionId::new("rev-restart-gc").expect("static fixture ID satisfies canonical policy");
     let writer = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(3)?)?;
     for generation in 17..=19 {
         let _retention_receipt = writer.record_sealed_search_corpus(
@@ -410,8 +428,9 @@ fn restart_repairs_one_over_limit_before_restoring_history() -> TestResult {
 #[test]
 fn restore_fails_closed_on_foreign_pair_entry() -> TestResult {
     let dir = tempdir()?;
-    let repo = RepoId::new("repo-foreign");
-    let revision = RevisionId::new("rev-foreign");
+    let repo = RepoId::new("repo-foreign").expect("static fixture ID satisfies canonical policy");
+    let revision =
+        RevisionId::new("rev-foreign").expect("static fixture ID satisfies canonical policy");
     let store = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(2)?)?;
     let _retention_receipt = store.record_sealed_search_corpus(
         &repo,
@@ -552,8 +571,10 @@ fn retention_active_digest_mismatch_preserves_activation_and_history_v1() -> Tes
 #[test]
 fn retention_required_set_exhaustion_preserves_activation_and_history_v1() -> TestResult {
     let dir = tempdir()?;
-    let repo = RepoId::new("repo-required-set-exhausted");
-    let revision = RevisionId::new("rev-required-set-exhausted");
+    let repo = RepoId::new("repo-required-set-exhausted")
+        .expect("static fixture ID satisfies canonical policy");
+    let revision = RevisionId::new("rev-required-set-exhausted")
+        .expect("static fixture ID satisfies canonical policy");
     let active_digest = "digest-active-1";
     let candidate_digest = "digest-candidate-2";
     let active_len = TEST_INDEX_BYTES_PER_GENERATION;
@@ -615,7 +636,7 @@ fn retention_required_set_exhaustion_preserves_activation_and_history_v1() -> Te
     };
     assert_eq!(
         code,
-        crate::search_corpus_retention::ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED
+        quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted
     );
     assert_active_composite_v1(&catalog, &active)?;
     assert_eq!(
@@ -641,8 +662,9 @@ fn retention_preserves_rolled_back_active_generation_before_next_activation_v1()
     )?;
     let store = owner.authority_store();
     let catalog = owner.activation_catalog();
-    let repo = RepoId::new("repo-corpus");
-    let revision = RevisionId::new("rev-corpus");
+    let repo = RepoId::new("repo-corpus").expect("static fixture ID satisfies canonical policy");
+    let revision =
+        RevisionId::new("rev-corpus").expect("static fixture ID satisfies canonical policy");
     for raw_generation in 1..=2 {
         let _receipt = store.record_sealed_search_corpus(
             &repo,
@@ -740,8 +762,10 @@ fn concurrent_history_writes_serialize_gc_and_remain_bounded() -> TestResult {
         dir.path(),
         search_corpus_retention(3)?,
     )?);
-    let repo = RepoId::new("repo-concurrent-gc");
-    let revision = RevisionId::new("rev-concurrent-gc");
+    let repo =
+        RepoId::new("repo-concurrent-gc").expect("static fixture ID satisfies canonical policy");
+    let revision =
+        RevisionId::new("rev-concurrent-gc").expect("static fixture ID satisfies canonical policy");
     let barrier = Arc::new(Barrier::new(8));
     let mut workers = Vec::new();
     for generation in 1..=8 {
@@ -766,7 +790,7 @@ fn concurrent_history_writes_serialize_gc_and_remain_bounded() -> TestResult {
         {
             Ok(_receipt) => {}
             Err(CoreError::Typed { code, .. })
-                if code == crate::search_corpus_retention::ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED => {}
+                if code == quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted => {}
             Err(error) => return Err(format!("unexpected concurrent GC error: {error}").into()),
         }
     }
@@ -789,8 +813,9 @@ fn search_corpus_authority_refuses_symlink_records() -> TestResult {
 
     let dir = tempdir()?;
     let store = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(2)?)?;
-    let repo = RepoId::new("repo-symlink");
-    let revision = RevisionId::new("rev-symlink");
+    let repo = RepoId::new("repo-symlink").expect("static fixture ID satisfies canonical policy");
+    let revision =
+        RevisionId::new("rev-symlink").expect("static fixture ID satisfies canonical policy");
     let generation = ManifestGeneration::new(17);
     let record_path = store.search_corpus_authority_path(&repo, &revision, generation);
     let parent = record_path.parent().ok_or("authority path has no parent")?;
@@ -810,21 +835,25 @@ fn search_corpus_authority_refuses_symlink_records() -> TestResult {
 #[test]
 fn durable_pair_names_are_bounded_and_length_delimited() {
     let first = crate::readiness::pair_digest::search_corpus_pair_digest(
-        &RepoId::new("repo--with--delimiter"),
-        &RevisionId::new("rev"),
+        &RepoId::new("repo--with--delimiter")
+            .expect("static fixture ID satisfies canonical policy"),
+        &RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
     );
     let second = crate::readiness::pair_digest::search_corpus_pair_digest(
-        &RepoId::new("repo"),
-        &RevisionId::new("with--delimiter--rev"),
+        &RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+        &RevisionId::new("with--delimiter--rev")
+            .expect("static fixture ID satisfies canonical policy"),
     );
     assert_ne!(first, second);
     assert_eq!(first.len(), 64);
 
     let long = crate::readiness::activation_catalog::search_corpus_root_file_name(
-        &RepoId::new("r".repeat(8_192)),
-        &RevisionId::new("v".repeat(8_192)),
+        &RepoId::new("r".repeat(512)).expect("maximum length fixture repo ID is canonical"),
+        &RevisionId::new("v".repeat(512)).expect("maximum length fixture revision ID is canonical"),
     );
     assert_eq!(long.len(), 64 + "--corpus.json".len());
+    assert!(RepoId::new("r".repeat(8_192)).is_err());
+    assert!(RevisionId::new("v".repeat(8_192)).is_err());
 }
 
 #[test]
@@ -849,8 +878,9 @@ fn sealed_search_corpus_retry_revalidates_parent_durability() -> TestResult {
         Arc::new(crate::readiness::ScriptedIndexBytesV1),
         sync.clone(),
     )?;
-    let repo = RepoId::new("repo-retry");
-    let revision = RevisionId::new("rev-retry");
+    let repo = RepoId::new("repo-retry").expect("static fixture ID satisfies canonical policy");
+    let revision =
+        RevisionId::new("rev-retry").expect("static fixture ID satisfies canonical policy");
     let first = store.record_sealed_search_corpus(
         &repo,
         &revision,
@@ -894,8 +924,10 @@ fn sealed_search_corpus_retry_repairs_post_rename_parent_sync_failure() -> TestR
         Arc::new(crate::readiness::ScriptedIndexBytesV1),
         sync.clone(),
     )?;
-    let repo = RepoId::new("repo-post-rename");
-    let revision = RevisionId::new("rev-post-rename");
+    let repo =
+        RepoId::new("repo-post-rename").expect("static fixture ID satisfies canonical policy");
+    let revision =
+        RevisionId::new("rev-post-rename").expect("static fixture ID satisfies canonical policy");
     let generation = ManifestGeneration::new(17);
     let first =
         store.record_sealed_search_corpus(&repo, &revision, generation, "digest-post-rename");
@@ -938,8 +970,10 @@ fn sealed_search_corpus_retry_repairs_staging_parent_sync_failure_v1() -> TestRe
         Arc::new(crate::readiness::ScriptedIndexBytesV1),
         sync.clone(),
     )?;
-    let repo = RepoId::new("repo-staging-retry");
-    let revision = RevisionId::new("rev-staging-retry");
+    let repo =
+        RepoId::new("repo-staging-retry").expect("static fixture ID satisfies canonical policy");
+    let revision =
+        RevisionId::new("rev-staging-retry").expect("static fixture ID satisfies canonical policy");
     let generation = ManifestGeneration::new(17);
 
     let first =
@@ -966,8 +1000,10 @@ fn sealed_search_corpus_retry_repairs_staging_parent_sync_failure_v1() -> TestRe
 fn post_delete_fsync_failure_fences_rollback_and_retry_reconciles_authoritative_set() -> TestResult
 {
     let dir = tempdir()?;
-    let repo = RepoId::new("repo-post-delete");
-    let revision = RevisionId::new("rev-post-delete");
+    let repo =
+        RepoId::new("repo-post-delete").expect("static fixture ID satisfies canonical policy");
+    let revision =
+        RevisionId::new("rev-post-delete").expect("static fixture ID satisfies canonical policy");
     let writer = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(4)?)?;
     let mut ledger = Ledger::new();
     for generation in 1..=4 {

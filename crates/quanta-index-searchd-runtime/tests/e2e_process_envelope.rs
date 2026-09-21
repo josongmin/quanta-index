@@ -86,7 +86,7 @@ fn expect_eq<T: PartialEq + std::fmt::Debug>(what: &str, observed: &T, expected:
 
 fn typed_code(response: &SearchPlaneIngestIpcResponse) -> Option<&str> {
     match response {
-        SearchPlaneIngestIpcResponse::Error(error) => Some(error.code.as_str()),
+        SearchPlaneIngestIpcResponse::Error(error) => Some(error.code.as_wire_str()),
         SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
         | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
@@ -134,7 +134,7 @@ fn a_new_writer_is_refused_typed_above_the_rss_ceiling_and_admitted_below_it() -
     // Above the ceiling: the first batch needs a writer and is refused.
     let batch = rt.text_search_corpus_batch("src/gate.rs", "fn gate_body() { gate_needle }")?;
     let refused = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch))?;
-    if typed_code(&refused) != Some(PROCESS_RSS_CEILING_EXCEEDED_CODE) {
+    if typed_code(&refused) != Some(PROCESS_RSS_CEILING_EXCEEDED_CODE.as_wire_str()) {
         return Err(format!(
             "a writer open above the resident-memory ceiling is refused typed, got {refused:?}"
         )
@@ -359,7 +359,7 @@ fn an_envelope_over_its_ceiling_refuses_boot_typed_before_any_socket() -> TestRe
         Ok(()) => return Err("an envelope over its ceiling must refuse boot".into()),
         Err(error) => format!("{error:#}"),
     };
-    if !refused.contains(PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE) {
+    if !refused.contains(PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE.as_wire_str()) {
         return Err(format!("the refusal names the code: {refused}").into());
     }
     if rt.socket_paths().is_some() || rt.boot_inventory().is_some() {

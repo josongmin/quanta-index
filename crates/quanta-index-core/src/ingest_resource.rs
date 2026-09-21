@@ -15,7 +15,8 @@ use quanta_index_contract::SearchCorpusIngestBatch;
 use crate::error::CoreError;
 
 /// Wire code for a batch that exceeds the ingest resource envelope.
-pub const INGEST_RESOURCE_BUDGET_EXCEEDED_CODE: &str = "INGEST_RESOURCE_BUDGET_EXCEEDED";
+pub const INGEST_RESOURCE_BUDGET_EXCEEDED_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded;
 
 /// Widest embedding dimension the plane configures or serves.
 ///
@@ -132,7 +133,7 @@ impl IngestResourcePolicy {
 
 fn refusal(message: &str) -> CoreError {
     CoreError::Typed {
-        code: INGEST_RESOURCE_BUDGET_EXCEEDED_CODE.to_string(),
+        code: INGEST_RESOURCE_BUDGET_EXCEEDED_CODE,
         message: format!("ingest resource envelope: {message}"),
     }
 }

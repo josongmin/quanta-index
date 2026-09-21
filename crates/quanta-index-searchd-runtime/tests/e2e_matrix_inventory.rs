@@ -62,9 +62,9 @@ fn verify_invalid_query_returns_typed_error(rt: &mut E2eRuntime) -> AnyResult<()
             "expected a typed error for missing generation pin"
         ));
     };
-    if !typed.code.starts_with("INVALID") {
+    if typed.code.as_str() != "INVALID_REQUEST" {
         return Err(anyhow::anyhow!(
-            "expected INVALID_* typed error code, got code={} message={}",
+            "expected INVALID_REQUEST typed error code, got code={} message={}",
             typed.code,
             typed.message
         ));

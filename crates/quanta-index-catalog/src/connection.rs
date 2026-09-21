@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use quanta_index_contract::ManifestGeneration;
-use quanta_index_core::{CATALOG_BUSY_CODE, CATALOG_ROW_CORRUPT_CODE, CoreError};
+use quanta_index_core::CoreError;
 use rusqlite::{Connection, OpenFlags};
 
 /// The catalog database file, under `state_root/catalog/`.
@@ -55,7 +55,7 @@ pub(crate) fn engine_error(action: &str, path: &Path, error: &rusqlite::Error) -
         )
     {
         return CoreError::Typed {
-            code: CATALOG_BUSY_CODE.to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogBusy,
             message: format!(
                 "catalog: {action} {} met a held lock past the busy budget: {error}",
                 path.display()
@@ -76,7 +76,7 @@ pub(crate) fn generation_i64(generation: ManifestGeneration) -> Result<i64, Core
 
 pub(crate) fn blob32(label: &str, bytes: &[u8]) -> Result<[u8; 32], CoreError> {
     <[u8; 32]>::try_from(bytes).map_err(|_wrong_length| CoreError::Typed {
-        code: CATALOG_ROW_CORRUPT_CODE.to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
         message: format!("catalog: {label} is {} bytes, expected 32", bytes.len()),
     })
 }

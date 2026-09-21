@@ -624,10 +624,12 @@ fn parse_repo_revision(
         }
     }
     Ok((
-        RepoId::new(repo_id.ok_or_else(|| CliError::usage("missing --repo-id".to_string()))?),
+        RepoId::new(repo_id.ok_or_else(|| CliError::usage("missing --repo-id".to_string()))?)
+            .map_err(|error| CliError::usage(format!("invalid --repo-id: {error}")))?,
         RevisionId::new(
             revision_id.ok_or_else(|| CliError::usage("missing --revision-id".to_string()))?,
-        ),
+        )
+        .map_err(|error| CliError::usage(format!("invalid --revision-id: {error}")))?,
     ))
 }
 
@@ -1162,10 +1164,12 @@ fn parse_generation_pin(
     manifest_generation: Option<u64>,
 ) -> CliResult<GenerationPin> {
     Ok(GenerationPin::new(
-        RepoId::new(repo_id.ok_or_else(|| CliError::usage("missing --repo-id".to_string()))?),
+        RepoId::new(repo_id.ok_or_else(|| CliError::usage("missing --repo-id".to_string()))?)
+            .map_err(|error| CliError::usage(format!("invalid --repo-id: {error}")))?,
         RevisionId::new(
             revision_id.ok_or_else(|| CliError::usage("missing --revision-id".to_string()))?,
-        ),
+        )
+        .map_err(|error| CliError::usage(format!("invalid --revision-id: {error}")))?,
         ManifestGeneration::new(
             manifest_generation
                 .ok_or_else(|| CliError::usage("missing --manifest-generation".to_string()))?,
@@ -1837,7 +1841,13 @@ fn build_doctor_report(
 /// typed code exactly; every other `SdkError` (including other remote codes) stays
 /// an abort in [`build_doctor_report`].
 fn is_not_ready(error: &SdkError) -> bool {
-    matches!(error, SdkError::Remote { code, .. } if code.as_str() == "NOT_READY")
+    matches!(
+        error,
+        SdkError::Remote {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::NotReady,
+            ..
+        }
+    )
 }
 
 /// J7Q-05: render a [`DoctorReport`].
@@ -2615,7 +2625,7 @@ fn fmt_ok(result: std::fmt::Result) -> CliResult<()> {
 /// the whole envelope, `repair` included. This only renders guidance; it never
 /// rewrites the query or softens the failure.
 fn render_remote_error_text(
-    code: &str,
+    code: &quanta_index_contract::SearchPlaneErrorCodeV2,
     message: &str,
     repair: Option<&QueryErrorRepair>,
 ) -> CliResult<String> {
@@ -2964,8 +2974,8 @@ mod tests {
         assert_eq!(
             request.generation,
             Some(GenerationPin::new(
-                RepoId::new("repo"),
-                RevisionId::new("rev"),
+                RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
                 ManifestGeneration::new(7)
             ))
         );
@@ -3216,14 +3226,16 @@ mod tests {
             request_id: 1,
             payload: SearchPlaneQueryIpcResponse::Symbol(SymbolQueryResponse {
                 generation: GenerationPin::new(
-                    RepoId::new("repo"),
-                    RevisionId::new("rev"),
+                    RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                    RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
                     ManifestGeneration::new(7),
                 ),
                 results: vec![SymbolCandidate {
                     candidate_id: "sym-1".to_string(),
-                    repo_id: RepoId::new("repo"),
-                    revision_id: RevisionId::new("rev"),
+                    repo_id: RepoId::new("repo")
+                        .expect("static fixture ID satisfies canonical policy"),
+                    revision_id: RevisionId::new("rev")
+                        .expect("static fixture ID satisfies canonical policy"),
                     manifest_generation: ManifestGeneration::new(7),
                     repo_relative_path: RepoRelativePath::new("src/lib.rs"),
                     start_line: 10,
@@ -3264,14 +3276,17 @@ mod tests {
             payload: SearchPlaneQueryIpcResponse::RuntimeMetadata(
                 SearchPlaneRuntimeMetadataQueryResponse {
                     generation: GenerationPin::new(
-                        RepoId::new("repo"),
-                        RevisionId::new("rev"),
+                        RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                        RevisionId::new("rev")
+                            .expect("static fixture ID satisfies canonical policy"),
                         ManifestGeneration::new(7),
                     ),
                     results: vec![LexicalCandidate {
                         candidate_id: "rt-1".to_string(),
-                        repo_id: RepoId::new("repo"),
-                        revision_id: RevisionId::new("rev"),
+                        repo_id: RepoId::new("repo")
+                            .expect("static fixture ID satisfies canonical policy"),
+                        revision_id: RevisionId::new("rev")
+                            .expect("static fixture ID satisfies canonical policy"),
                         manifest_generation: ManifestGeneration::new(7),
                         repo_relative_path: RepoRelativePath::new("src/runtime.rs"),
                         start_line: 1,
@@ -3326,14 +3341,16 @@ mod tests {
             request_id: 1,
             payload: SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
                 generation: GenerationPin::new(
-                    RepoId::new("repo"),
-                    RevisionId::new("rev"),
+                    RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                    RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
                     ManifestGeneration::new(7),
                 ),
                 results: vec![LexicalCandidate {
                     candidate_id: "cand-1".to_string(),
-                    repo_id: RepoId::new("repo"),
-                    revision_id: RevisionId::new("rev"),
+                    repo_id: RepoId::new("repo")
+                        .expect("static fixture ID satisfies canonical policy"),
+                    revision_id: RevisionId::new("rev")
+                        .expect("static fixture ID satisfies canonical policy"),
                     manifest_generation: ManifestGeneration::new(7),
                     repo_relative_path: quanta_index_contract::RepoRelativePath::new("src/lib.rs"),
                     start_line: 1,
@@ -3346,8 +3363,10 @@ mod tests {
                 window: quanta_index_contract::QueryResultWindowV1::exact(1),
                 file_owner_rows: Some(vec![quanta_index_contract::FileOwnerProjectionRow {
                     candidate_id: "cand-1".to_string(),
-                    repo_id: RepoId::new("repo"),
-                    revision_id: RevisionId::new("rev"),
+                    repo_id: RepoId::new("repo")
+                        .expect("static fixture ID satisfies canonical policy"),
+                    revision_id: RevisionId::new("rev")
+                        .expect("static fixture ID satisfies canonical policy"),
                     manifest_generation: ManifestGeneration::new(7),
                     repo_relative_path: quanta_index_contract::RepoRelativePath::new("src/lib.rs"),
                     owners: vec!["@alice".to_string(), "@acme/platform".to_string()],
@@ -3535,8 +3554,8 @@ mod tests {
             request_id: 1,
             payload: SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
                 generation: GenerationPin::new(
-                    RepoId::new("repo"),
-                    RevisionId::new("rev"),
+                    RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                    RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
                     ManifestGeneration::new(7),
                 ),
                 order: HistoryOrderV1::Recency,
@@ -3607,8 +3626,8 @@ mod tests {
             request_id: 1,
             payload: SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
                 generation: GenerationPin::new(
-                    RepoId::new("repo"),
-                    RevisionId::new("rev"),
+                    RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                    RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
                     ManifestGeneration::new(7),
                 ),
                 order: HistoryOrderV1::Relevance,
@@ -4136,8 +4155,9 @@ mod tests {
             GenerationStatusReport, SearchPlaneTrackKind, TrackReadinessRecord,
         };
         let report = GenerationStatusReport {
-            repo_id: RepoId::new("repo-1"),
-            revision_id: RevisionId::new("rev-1"),
+            repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev-1")
+                .expect("static fixture ID satisfies canonical policy"),
             semantic_content: None,
             tracks: vec![TrackReadinessRecord {
                 track: SearchPlaneTrackKind::Lexical,
@@ -4163,8 +4183,9 @@ mod tests {
     fn render_readiness_pretty_marks_empty_tracks() {
         use quanta_index_contract::ipc::GenerationStatusReport;
         let report = GenerationStatusReport {
-            repo_id: RepoId::new("repo-1"),
-            revision_id: RevisionId::new("rev-1"),
+            repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev-1")
+                .expect("static fixture ID satisfies canonical policy"),
             semantic_content: None,
             tracks: vec![],
         };
@@ -4183,8 +4204,9 @@ mod tests {
             GenerationStatusReport, SearchPlaneTrackKind, TrackReadinessRecord,
         };
         let report = GenerationStatusReport {
-            repo_id: RepoId::new("repo-1"),
-            revision_id: RevisionId::new("rev-1"),
+            repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev-1")
+                .expect("static fixture ID satisfies canonical policy"),
             semantic_content: None,
             tracks: vec![
                 TrackReadinessRecord {
@@ -4215,8 +4237,8 @@ mod tests {
             request_id: 1,
             payload: SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
                 generation: GenerationPin::new(
-                    RepoId::new("repo"),
-                    RevisionId::new("rev"),
+                    RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                    RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
                     ManifestGeneration::new(7),
                 ),
                 results: vec![quanta_index_contract::StructuralCandidate {
@@ -4263,8 +4285,9 @@ mod tests {
     fn sample_candidate(id: &str, score: f32) -> LexicalCandidate {
         LexicalCandidate {
             candidate_id: id.to_string(),
-            repo_id: RepoId::new("repo"),
-            revision_id: RevisionId::new("rev"),
+            repo_id: RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev")
+                .expect("static fixture ID satisfies canonical policy"),
             manifest_generation: ManifestGeneration::new(7),
             repo_relative_path: quanta_index_contract::RepoRelativePath::new("src/lib.rs"),
             start_line: 1,
@@ -4305,8 +4328,8 @@ mod tests {
             request_id: 1,
             payload: SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
                 generation: GenerationPin::new(
-                    RepoId::new("repo"),
-                    RevisionId::new("rev"),
+                    RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                    RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
                     ManifestGeneration::new(7),
                 ),
                 results: vec![

@@ -217,7 +217,9 @@ impl VectorQueryBuilderState {
 /// `QUERY_TOP_K_OUT_OF_RANGE` code it would otherwise get back.
 fn accepted_top_k(plane: &str, top_k: u32) -> Result<u32, SdkError> {
     quanta_index_contract::validate_public_top_k(top_k).map_err(|refused| SdkError::Remote {
-        code: refused.code().to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+            quanta_index_contract::lex::LexicalErrorCode::QueryTopKOutOfRange,
+        ),
         message: format!("{plane}: {refused}"),
         repair: None,
     })

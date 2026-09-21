@@ -69,14 +69,6 @@ pub use search_corpus_history::SealedSearchCorpusAuthorityStateV1;
 pub use structural_state::StructuralAuthorityState;
 pub use track_state::TrackLedger;
 
-#[cfg(test)]
-pub(crate) use errors::{
-    ERR_ROLLBACK_CAS_CONFLICT, ERR_SEMANTIC_GENERATION_NOT_SEALED,
-    ERR_SEMANTIC_MANIFEST_DIGEST_MISMATCH,
-};
-pub(crate) use errors::{
-    ERR_RUNTIME_CATALOG_CHUNK_UNIVERSE_UNAVAILABLE, ERR_SEARCH_TRACK_GENERATION_NOT_SEALED,
-};
 pub(crate) use history_state::{
     HistoryDelta, HistoryStateMeta, RefChange, history_diff_search_text,
 };

@@ -209,8 +209,9 @@ mod tests {
         let root = std::path::Path::new("/state/indexes/semantic");
         let path = super::generation_dir(
             root,
-            &RepoId::new("../../outside"),
-            &RevisionId::new("/absolute/revision"),
+            &RepoId::new("../../outside").expect("static fixture ID satisfies canonical policy"),
+            &RevisionId::new("/absolute/revision")
+                .expect("static fixture ID satisfies canonical policy"),
             ManifestGeneration::new(7),
         );
         let relative = path

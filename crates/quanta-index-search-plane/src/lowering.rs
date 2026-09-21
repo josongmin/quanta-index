@@ -1,8 +1,7 @@
 use quanta_index_contract::{
     LqExpr, LqLeaf, LqMetaVar, LqPatternType, LqQuery, LqStructuralBlock, LqStructuralConstraint,
     LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleMultiplicity,
-    LqStructuralHoleRef, LqStructuralNode, QUERY_CURSOR_UNSUPPORTED_CODE, TextQueryRequest,
-    TextQuerySyntax,
+    LqStructuralHoleRef, LqStructuralNode, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_lq_bridge::{
     BridgeError, BridgeErrorCode, SgFilter, SgQuery, SourcegraphVersionTag, parse_sourcegraph,
@@ -25,7 +24,7 @@ use quanta_index_core::CoreError;
 pub fn lower_lexical_text_query(request: &TextQueryRequest) -> Result<LqQuery, CoreError> {
     if request.cursor.is_some() {
         return Err(CoreError::Typed {
-            code: QUERY_CURSOR_UNSUPPORTED_CODE.to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::QueryCursorUnsupported,
             message: "a cursor continues only a text or symbol page; this route ranks no pages to continue"
                 .to_string(),
         });
@@ -79,9 +78,7 @@ fn lower_sourcegraph_query_text_for_route(
         SourcegraphLoweringRoute::Structural => {
             if !saw_structural_patterntype {
                 return Err(CoreError::Typed {
-                    code: BridgeErrorCode::BridgeTranslateFail
-                        .as_code_str()
-                        .to_string(),
+                    code: map_bridge_code(BridgeErrorCode::BridgeTranslateFail),
                     message:
                         "bridge: Sourcegraph structural route requires `patterntype:structural`"
                             .to_string(),
@@ -201,9 +198,7 @@ fn reject_sourcegraph_structural_lexical_shape(query: LqQuery) -> Result<LqQuery
         return Ok(query);
     }
     Err(CoreError::Typed {
-        code: BridgeErrorCode::BridgeTranslateFail
-            .as_code_str()
-            .to_string(),
+        code: map_bridge_code(BridgeErrorCode::BridgeTranslateFail),
         message:
             "bridge: patterntype:structural is not executable on the lexical Sourcegraph route; use the structural route instead"
                 .to_string(),
@@ -216,9 +211,7 @@ fn lower_sourcegraph_structural_shape(
 ) -> Result<LqQuery, CoreError> {
     if query.options.pattern_type != LqPatternType::Structural {
         return Err(CoreError::Typed {
-            code: BridgeErrorCode::BridgeTranslateFail
-                .as_code_str()
-                .to_string(),
+            code: map_bridge_code(BridgeErrorCode::BridgeTranslateFail),
             message: "bridge: Sourcegraph structural route requires `patterntype:structural`"
                 .to_string(),
         });
@@ -300,9 +293,7 @@ fn structural_route_unsupported_predicate(name: &str) -> CoreError {
         }
     };
     CoreError::Typed {
-        code: BridgeErrorCode::BridgeTranslateFail
-            .as_code_str()
-            .to_string(),
+        code: map_bridge_code(BridgeErrorCode::BridgeTranslateFail),
         message: format!(
             "bridge: Sourcegraph structural route preserves only the shipped repo gate predicate subset in mixed boolean cells; `{name}` is unsupported. {guidance}"
         ),
@@ -312,9 +303,7 @@ fn structural_route_unsupported_predicate(name: &str) -> CoreError {
 /// Typed-fail for a leaf kind the SG structural route does not represent.
 fn structural_route_typed_fail() -> CoreError {
     CoreError::Typed {
-        code: BridgeErrorCode::BridgeTranslateFail
-            .as_code_str()
-            .to_string(),
+        code: map_bridge_code(BridgeErrorCode::BridgeTranslateFail),
         message:
             "bridge: Sourcegraph structural route accepts only structural pattern bodies plus executable filters"
                 .to_string(),
@@ -336,9 +325,7 @@ fn rewrite_sourcegraph_structural_expr(
 ) -> Result<LqExpr, CoreError> {
     match expr {
         LqExpr::Empty => Err(CoreError::Typed {
-            code: BridgeErrorCode::BridgeTranslateFail
-                .as_code_str()
-                .to_string(),
+            code: map_bridge_code(BridgeErrorCode::BridgeTranslateFail),
             message:
                 "bridge: Sourcegraph structural route requires at least one structural pattern body"
                     .to_string(),
@@ -395,9 +382,7 @@ fn lower_sourcegraph_structural_body(
     let native_structural = lower_lq_query_text(&format!("match {{ {structural_body} }}"))?;
     let LqExpr::Leaf(LqLeaf::StructuralBlock(block)) = native_structural.expr else {
         return Err(CoreError::Typed {
-            code: BridgeErrorCode::BridgeTranslateFail
-                .as_code_str()
-                .to_string(),
+            code: map_bridge_code(BridgeErrorCode::BridgeTranslateFail),
             message: format!(
                 "bridge: internal lowering failure while rewriting Sourcegraph structural query `{query_text}`"
             ),
@@ -410,9 +395,7 @@ fn lower_sourcegraph_structural_regex_body(
     regex_body: &str,
 ) -> Result<LqStructuralBlock, CoreError> {
     let _validated_regex = RegexExecutor::compile(regex_body).map_err(|err| CoreError::Typed {
-        code: BridgeErrorCode::BridgeTranslateFail
-            .as_code_str()
-            .to_string(),
+        code: map_bridge_code(BridgeErrorCode::BridgeTranslateFail),
         message: format!("bridge: invalid Sourcegraph structural regex body: {err}"),
     })?;
     let capture = structural_regex_capture_name(regex_body);
@@ -464,17 +447,30 @@ fn map_lq_error(err: &LqParseError) -> CoreError {
         | LqParseErrorCode::RegexParse
         | LqParseErrorCode::InvalidPatternType
         | LqParseErrorCode::UnsupportedCombo
-        | LqParseErrorCode::SyntaxError => "PARSE_FAIL",
+        | LqParseErrorCode::SyntaxError => quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+            quanta_index_contract::lex::LexicalErrorCode::ParseFail,
+        ),
     };
     CoreError::Typed {
-        code: code.to_string(),
+        code,
         message: err.to_string(),
     }
 }
 
+fn map_bridge_code(code: BridgeErrorCode) -> quanta_index_contract::SearchPlaneErrorCodeV2 {
+    use quanta_index_contract::{SearchPlaneErrorCodeV2, lex::LexicalErrorCode};
+    SearchPlaneErrorCodeV2::Lexical(match code {
+        BridgeErrorCode::BridgeUnsupportedFilter => LexicalErrorCode::BridgeUnsupportedFilter,
+        BridgeErrorCode::BridgeUnsupportedDirective => LexicalErrorCode::BridgeUnsupportedDirective,
+        BridgeErrorCode::BridgeAmbiguousFilter => LexicalErrorCode::BridgeAmbiguousFilter,
+        BridgeErrorCode::BridgeVersionPin => LexicalErrorCode::BridgeVersionPin,
+        BridgeErrorCode::BridgeTranslateFail => LexicalErrorCode::BridgeTranslateFail,
+    })
+}
+
 fn map_bridge_error(err: &BridgeError) -> CoreError {
     CoreError::Typed {
-        code: err.code.as_code_str().to_string(),
+        code: map_bridge_code(err.code),
         message: err.detail.to_string(),
     }
 }
@@ -497,7 +493,7 @@ mod tests {
 
     fn typed_error(err: CoreError) -> Result<(String, String), Box<dyn std::error::Error>> {
         match err {
-            CoreError::Typed { code, message } => Ok((code, message)),
+            CoreError::Typed { code, message } => Ok((code.to_string(), message)),
             other @ (CoreError::InvalidContract(_)
             | CoreError::NotReady(_)
             | CoreError::NotImplemented(_)

@@ -146,7 +146,7 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
                 Ok(IdempotencyBeginV1::Fresh)
             }
             Some((stored, _)) if stored != body_sha256 => Err(CoreError::Typed {
-                code: quanta_index_core::BATCH_DIGEST_CONFLICT_CODE.to_string(),
+                code: quanta_index_core::BATCH_DIGEST_CONFLICT_CODE,
                 message: format!(
                     "{} batch_digest={} body differs",
                     key.kind, key.batch_digest
@@ -436,7 +436,7 @@ impl GenerationIdentityValidatePort for IncompleteThenValidGeneration {
     ) -> Result<(), CoreError> {
         if self.validations.fetch_add(1, Ordering::SeqCst) == 0 {
             return Err(CoreError::Typed {
-                code: "GENERATION_IDENTITY_INCOMPLETE".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityIncomplete,
                 message: "injected incomplete generation".to_string(),
             });
         }
@@ -664,7 +664,8 @@ impl SealedGenerationReclaimPort for ScriptedSealedReclaim {
     ) -> Result<Vec<GenerationSnapshot>, CoreError> {
         if self.refuse_next_listing.swap(false, Ordering::SeqCst) {
             return Err(CoreError::Typed {
-                code: "GENERATION_IDENTITY_SCOPE_MISMATCH".to_string(),
+                code:
+                    quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityScopeMismatch,
                 message: "scripted reclaim: injected identity contradicting its path".to_string(),
             });
         }
@@ -894,7 +895,7 @@ impl ZeroMutationProbe {
 /// (identity present, content failing validation) and the other as exact.
 pub(super) struct CorruptTrackGeneration {
     pub(super) corrupt: SearchPlaneTrackKind,
-    pub(super) code: &'static str,
+    pub(super) code: quanta_index_contract::SearchPlaneErrorCodeV2,
 }
 
 impl GenerationIdentityValidatePort for CorruptTrackGeneration {
@@ -904,7 +905,7 @@ impl GenerationIdentityValidatePort for CorruptTrackGeneration {
     ) -> Result<(), CoreError> {
         if candidate.track == self.corrupt {
             return Err(CoreError::Typed {
-                code: self.code.to_string(),
+                code: self.code,
                 message: format!(
                     "injected damage on {:?} generation {}",
                     candidate.track,
@@ -925,7 +926,7 @@ impl GenerationIdentityValidatePort for MismatchedGeneration {
         candidate: &GenerationSnapshot,
     ) -> Result<(), CoreError> {
         Err(CoreError::Typed {
-            code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
             message: format!(
                 "injected digest mismatch for {:?} generation {}",
                 candidate.track,
@@ -1099,8 +1100,8 @@ pub(super) fn fixture_embedding_record() -> Result<EmbeddingRecord, Box<dyn std:
 
 pub(super) fn fixture_semantic_batch() -> Result<SemanticIngestBatch, Box<dyn std::error::Error>> {
     Ok(SemanticIngestBatch {
-        repo_id: RepoId::new("r"),
-        revision_id: RevisionId::new("rev"),
+        repo_id: RepoId::new("r").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(1),
         base_generation: None,
         manifest_digest: "manifest:sem".to_string(),
@@ -1145,8 +1146,8 @@ pub(super) fn fixture_chunk_record() -> Result<ChunkRecord, Box<dyn std::error::
 pub(super) fn fixture_search_corpus_batch()
 -> Result<SearchCorpusIngestBatch, Box<dyn std::error::Error>> {
     let mut batch = SearchCorpusIngestBatch {
-        repo_id: RepoId::new("r"),
-        revision_id: RevisionId::new("rev"),
+        repo_id: RepoId::new("r").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(7),
         base_generation: None,
         manifest_digest: "manifest:lex".to_string(),
@@ -1171,8 +1172,8 @@ pub(super) fn fixture_search_corpus_batch()
 
 pub(super) fn fixture_dirty_batch() -> DirtyIngestBatch {
     DirtyIngestBatch {
-        repo_id: RepoId::new("r"),
-        revision_id: RevisionId::new("rev"),
+        repo_id: RepoId::new("r").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(9),
         overlay_epoch_ms: 123,
         batch_digest: "batch:dirty".to_string(),
@@ -1218,8 +1219,8 @@ pub(super) fn fixture_history_batch(
     commits: Vec<quanta_index_contract::lex::CommitRecord>,
 ) -> HistoryIngestBatch {
     HistoryIngestBatch {
-        repo_id: RepoId::new("r"),
-        revision_id: RevisionId::new("rev"),
+        repo_id: RepoId::new("r").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(generation),
         manifest_digest: None,
         batch_digest: format!("batch:history:{generation}"),
@@ -1317,8 +1318,8 @@ pub(super) fn scope_with_chunks(
 pub(super) fn multi_scope_corpus_batch()
 -> Result<SearchCorpusIngestBatch, Box<dyn std::error::Error>> {
     let mut batch = SearchCorpusIngestBatch {
-        repo_id: RepoId::new("r"),
-        revision_id: RevisionId::new("rev"),
+        repo_id: RepoId::new("r").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(7),
         base_generation: None,
         manifest_digest: "manifest:lex".to_string(),

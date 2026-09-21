@@ -75,7 +75,7 @@ fn receipt_of(
 
 fn typed_code(response: &SearchPlaneIngestIpcResponse) -> Option<&str> {
     match response {
-        SearchPlaneIngestIpcResponse::Error(error) => Some(error.code.as_str()),
+        SearchPlaneIngestIpcResponse::Error(error) => Some(error.code.as_wire_str()),
         SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
         | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
@@ -136,7 +136,7 @@ fn a_replay_is_acked_from_the_record_and_a_forged_digest_never_lands() -> TestRe
     let refused = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
         forged,
     ))?;
-    if typed_code(&refused) != Some(BATCH_DIGEST_MISMATCH_CODE) {
+    if typed_code(&refused) != Some(BATCH_DIGEST_MISMATCH_CODE.as_wire_str()) {
         return Err(format!(
             "a body that is not what its digest names must be refused typed, got {refused:?}"
         )

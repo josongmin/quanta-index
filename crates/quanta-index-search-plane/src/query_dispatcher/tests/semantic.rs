@@ -41,7 +41,9 @@ fn ensure_query_model_matches_index_v1_fails_closed_on_model_drift() {
         match err {
             CoreError::Typed { code, .. } => assert_eq!(
                 code,
-                LexicalErrorCode::SemModelMismatch.as_code_str(),
+                quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                    LexicalErrorCode::SemModelMismatch
+                ),
                 "model drift must surface SEM_MODEL_MISMATCH"
             ),
             other => panic!("expected SemModelMismatch typed error, got {other:?}"),
@@ -105,8 +107,9 @@ fn semantic_dispatch_embeds_query_text() -> TestResult {
             query_text: "focus alpha".to_string(),
             constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(GenerationPin::new(
-                RepoId::new("repo-map-ipc"),
-                RevisionId::new("rev-map-ipc"),
+                RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+                RevisionId::new("rev-map-ipc")
+                    .expect("static fixture ID satisfies canonical policy"),
                 ManifestGeneration::new(9),
             )),
             generation_selector: None,
@@ -186,8 +189,9 @@ fn semantic_dispatch_rejects_model_identity_drift_v1() -> TestResult {
 
     match dispatcher.semantic(&semantic_focus_request(), &RequestBudgetV1::unbounded()) {
         Err(quanta_index_core::CoreError::Typed { code, .. }) => {
-            let expected =
-                quanta_index_contract::lex::LexicalErrorCode::SemModelMismatch.as_code_str();
+            let expected = quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                quanta_index_contract::lex::LexicalErrorCode::SemModelMismatch,
+            );
             if code != expected {
                 return Err(format!("expected SEM_MODEL_MISMATCH, got code {code}").into());
             }
@@ -236,8 +240,9 @@ fn semantic_dispatch_unavailable_embedder_keeps_provider_error_before_model_gate
 
     match dispatcher.semantic(&semantic_focus_request(), &RequestBudgetV1::unbounded()) {
         Err(quanta_index_core::CoreError::Typed { code, .. }) => {
-            let provider =
-                quanta_index_contract::lex::LexicalErrorCode::SemProviderUnavailable.as_code_str();
+            let provider = quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                quanta_index_contract::lex::LexicalErrorCode::SemProviderUnavailable,
+            );
             if code != provider {
                 return Err(format!(
                     "unavailable embedder must surface SEM_PROVIDER_UNAVAILABLE (embed precedes the model gate), got {code}"
@@ -257,8 +262,8 @@ fn semantic_dispatch_rejects_active_digest_mismatch_with_exact_code() -> TestRes
     let dir = tempdir()?;
     let activation_catalog = Arc::new(ActivationCatalog::open(dir.keep())?);
     let active = corpus_generation(
-        RepoId::new("repo-map-ipc"),
-        RevisionId::new("rev-map-ipc"),
+        RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+        RevisionId::new("rev-map-ipc").expect("static fixture ID satisfies canonical policy"),
         ManifestGeneration::new(9),
         "activation-digest-9",
     )?;
@@ -268,8 +273,10 @@ fn semantic_dispatch_rejects_active_digest_mismatch_with_exact_code() -> TestRes
         return Err("expected active composite generation 9".into());
     }
     let mut ledger = Ledger::default();
-    let repo_id = RepoId::new("repo-map-ipc");
-    let revision_id = RevisionId::new("rev-map-ipc");
+    let repo_id =
+        RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy");
+    let revision_id =
+        RevisionId::new("rev-map-ipc").expect("static fixture ID satisfies canonical policy");
     ledger.record_track_materialized(
         &repo_id,
         &revision_id,
@@ -305,8 +312,10 @@ fn semantic_dispatch_rejects_active_digest_mismatch_with_exact_code() -> TestRes
             constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: None,
             generation_selector: Some(GenerationSelector::Active {
-                repo_id: RepoId::new("repo-map-ipc"),
-                revision_id: RevisionId::new("rev-map-ipc"),
+                repo_id: RepoId::new("repo-map-ipc")
+                    .expect("static fixture ID satisfies canonical policy"),
+                revision_id: RevisionId::new("rev-map-ipc")
+                    .expect("static fixture ID satisfies canonical policy"),
             }),
             lexical_scope: None,
             top_k: 3,
@@ -315,7 +324,7 @@ fn semantic_dispatch_rejects_active_digest_mismatch_with_exact_code() -> TestRes
     );
 
     let (code, message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-    if code != crate::readiness::ERR_SEMANTIC_MANIFEST_DIGEST_MISMATCH {
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::SemanticManifestDigestMismatch {
         return Err(format!("unexpected semantic mismatch code: {code}").into());
     }
     if !message.contains("expected=activation-digest-9")
@@ -329,8 +338,10 @@ fn semantic_dispatch_rejects_active_digest_mismatch_with_exact_code() -> TestRes
 #[test]
 fn semantic_dispatch_rejects_unsealed_pinned_generation_with_exact_code() -> TestResult {
     let mut ledger = Ledger::default();
-    let repo_id = RepoId::new("repo-map-ipc");
-    let revision_id = RevisionId::new("rev-map-ipc");
+    let repo_id =
+        RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy");
+    let revision_id =
+        RevisionId::new("rev-map-ipc").expect("static fixture ID satisfies canonical policy");
     ledger.record_track_materialized(
         &repo_id,
         &revision_id,
@@ -352,8 +363,9 @@ fn semantic_dispatch_rejects_unsealed_pinned_generation_with_exact_code() -> Tes
             query_text: "focus alpha".to_string(),
             constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(GenerationPin::new(
-                RepoId::new("repo-map-ipc"),
-                RevisionId::new("rev-map-ipc"),
+                RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+                RevisionId::new("rev-map-ipc")
+                    .expect("static fixture ID satisfies canonical policy"),
                 ManifestGeneration::new(9),
             )),
             generation_selector: None,
@@ -364,7 +376,7 @@ fn semantic_dispatch_rejects_unsealed_pinned_generation_with_exact_code() -> Tes
     );
 
     let (code, _message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-    if code != crate::readiness::ERR_SEMANTIC_GENERATION_NOT_SEALED {
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::SemanticGenerationNotSealed {
         return Err(format!("unexpected semantic unsealed code: {code}").into());
     }
     Ok(())

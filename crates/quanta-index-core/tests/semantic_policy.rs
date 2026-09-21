@@ -6,7 +6,7 @@ use quanta_index_core::{CoreError, SemanticPolicy};
 
 fn typed_code_or_debug(result: Result<(), CoreError>) -> String {
     match result {
-        Err(CoreError::Typed { code, .. }) => code,
+        Err(CoreError::Typed { code, .. }) => code.to_string(),
         other => format!("unexpected result: {other:?}"),
     }
 }
@@ -56,7 +56,7 @@ mod vector_contract {
 
     fn code(result: Result<(), CoreError>) -> String {
         match result {
-            Err(CoreError::Typed { code, .. }) => code,
+            Err(CoreError::Typed { code, .. }) => code.to_string(),
             other => format!("unexpected result: {other:?}"),
         }
     }

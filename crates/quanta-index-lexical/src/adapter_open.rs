@@ -191,7 +191,8 @@ impl LexicalIndexOpenPort for LexicalAdapter {
             || identity.manifest_generation != generation
         {
             return Err(CoreError::Typed {
-                code: "GENERATION_IDENTITY_SCOPE_MISMATCH".to_string(),
+                code:
+                    quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityScopeMismatch,
                 message: format!(
                     "lexical: active generation identity scope disagrees with path {}",
                     path.display()

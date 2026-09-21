@@ -4,6 +4,7 @@
 #![deny(clippy::map_err_ignore)]
 
 pub mod delta;
+pub mod layout_v3;
 pub mod materializer;
 pub mod model;
 pub(crate) mod persistence;
@@ -12,6 +13,11 @@ pub mod reader;
 pub mod store;
 
 pub use delta::RepoMapDeltaApplier;
+pub use layout_v3::{
+    CandidateObjectAddressV1, ObservedFileMetadataV1, QuarantineIncidentAddressV1,
+    QuarantinePayloadAddressV1, SecureMetadataPairV1, StateRootSecurityContextV1,
+    StateRootSecurityVerificationErrorV1,
+};
 pub use materializer::RepoMapMaterializer;
 pub use model::{RepoMapEntry, RepoMapIndexedSnapshot, RepoMapSnapshot, RepoMapSnapshotIndex};
 pub use query::RepoMapQueryEngine;

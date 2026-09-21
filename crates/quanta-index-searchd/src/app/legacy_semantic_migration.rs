@@ -202,7 +202,7 @@ fn decode_receipt(bytes: &[u8]) -> Result<Receipt, CoreError> {
     decode_cbor_payload::<ReceiptWire>(bytes)
         .map(receipt_from_wire)
         .map_err(|error| CoreError::Typed {
-            code: "LEGACY_SEMANTIC_MIGRATION_RECEIPT_CORRUPT".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationReceiptCorrupt,
             message: error.to_string(),
         })
 }
@@ -253,7 +253,7 @@ impl LegacySemanticJournalStore {
             .unwrap_or_default();
         if journal.batches.len() > MAX_JOURNAL_BATCHES {
             return Err(CoreError::Typed {
-                code: "LEGACY_SEMANTIC_MIGRATION_INPUT_TOO_LARGE".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationInputTooLarge,
                 message: format!(
                     "journal has {} batches; maximum is {MAX_JOURNAL_BATCHES}",
                     journal.batches.len()
@@ -280,7 +280,7 @@ impl LegacySemanticJournalStore {
         fs::create_dir_all(root).map_err(storage("create journal root", root))?;
         if root.join("MIGRATED").exists() {
             return Err(CoreError::Typed {
-                code: "LEGACY_SEMANTIC_JOURNAL_IMMUTABLE_AFTER_MIGRATION".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticJournalImmutableAfterMigration,
                 message: "legacy journal already has a migration receipt".to_string(),
             });
         }
@@ -302,7 +302,7 @@ pub(super) fn migrate(
     let Some(journal_digest) = store.journal_digest.as_deref() else {
         if store.receipt_path.exists() {
             return Err(CoreError::Typed {
-                code: "LEGACY_SEMANTIC_JOURNAL_MISSING".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticJournalMissing,
                 message: "migration receipt exists without retained journal".to_string(),
             });
         }
@@ -322,7 +322,7 @@ pub(super) fn migrate(
         let expected = validated_migration(store, journal_digest, sources, durable)?.0;
         if receipt != expected {
             return Err(CoreError::Typed {
-                code: "LEGACY_SEMANTIC_MIGRATION_RECEIPT_CONFLICT".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationReceiptConflict,
                 message: "migration receipt no longer matches journal/durable authority"
                     .to_string(),
             });
@@ -354,7 +354,7 @@ pub(super) fn migrate(
             && witness.manifest_digest() != source.manifest_digest
         {
             return Err(CoreError::Typed {
-                code: "LEGACY_SEMANTIC_MIGRATION_DIGEST_CONFLICT".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationDigestConflict,
                 message: "journal conflicts with sealed durable generation".to_string(),
             });
         }
@@ -390,7 +390,7 @@ fn source_rows(batches: &[SemanticIngestBatch]) -> Result<Vec<SourceRow>, CoreEr
     for batch in batches {
         if batch.manifest_digest.is_empty() {
             return Err(CoreError::Typed {
-                code: "LEGACY_SEMANTIC_JOURNAL_MANIFEST_DIGEST_MISSING".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticJournalManifestDigestMissing,
                 message: "journal generation has an empty manifest digest".to_string(),
             });
         }
@@ -403,7 +403,7 @@ fn source_rows(batches: &[SemanticIngestBatch]) -> Result<Vec<SourceRow>, CoreEr
             && prior != batch.manifest_digest
         {
             return Err(CoreError::Typed {
-                code: "LEGACY_SEMANTIC_JOURNAL_GENERATION_CONFLICT".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticJournalGenerationConflict,
                 message: "journal has multiple digests for one generation".to_string(),
             });
         }
@@ -450,7 +450,7 @@ fn witness_map_for_sources(
             let witness = validate_persisted_generation_v2(semantic_root, record)?;
             if out.insert(key, witness).is_some() {
                 return Err(CoreError::Typed {
-                    code: "LEGACY_SEMANTIC_MIGRATION_DURABLE_GENERATION_DUPLICATE".to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationDurableGenerationDuplicate,
                     message: "durable scan returned one generation more than once".to_string(),
                 });
             }
@@ -474,12 +474,12 @@ fn durable_rows(
                 source.generation,
             );
             let witness = map.get(&key).ok_or_else(|| CoreError::Typed {
-                code: "LEGACY_SEMANTIC_MIGRATION_DURABLE_ROOT_MISSING".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationDurableRootMissing,
                 message: "journal generation has no validated v7 durable root".to_string(),
             })?;
             if witness.manifest_digest() != source.manifest_digest {
                 return Err(CoreError::Typed {
-                    code: "LEGACY_SEMANTIC_MIGRATION_DIGEST_CONFLICT".to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationDigestConflict,
                     message: "durable generation digest conflicts with journal".to_string(),
                 });
             }
@@ -536,7 +536,7 @@ fn read_receipt(store: &LegacySemanticJournalStore) -> Result<Option<Receipt>, C
     };
     if bytes == b"migrated" {
         return Err(CoreError::Typed {
-            code: "LEGACY_SEMANTIC_MIGRATION_RECEIPT_UNSUPPORTED".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationReceiptUnsupported,
             message: "unvalidated v1 migration marker cannot authorize durable cutover".to_string(),
         });
     }
@@ -547,7 +547,7 @@ fn read_receipt(store: &LegacySemanticJournalStore) -> Result<Option<Receipt>, C
 
 fn validate_receipt_shape(receipt: &Receipt) -> Result<(), CoreError> {
     let batch_count = usize::try_from(receipt.batch_count).map_err(|error| CoreError::Typed {
-        code: "LEGACY_SEMANTIC_MIGRATION_RECEIPT_CORRUPT".to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationReceiptCorrupt,
         message: format!("receipt batch count overflow: {error}"),
     })?;
     let exact_rows = receipt.sources.len() == receipt.durable.len()
@@ -575,7 +575,8 @@ fn validate_receipt_shape(receipt: &Receipt) -> Result<(), CoreError> {
         || !strictly_ordered
     {
         return Err(CoreError::Typed {
-            code: "LEGACY_SEMANTIC_MIGRATION_RECEIPT_CORRUPT".to_string(),
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationReceiptCorrupt,
             message: "receipt shape, bounds, ordering, or content proof is invalid".to_string(),
         });
     }
@@ -601,7 +602,7 @@ fn write_receipt(
             return Ok(());
         }
         return Err(CoreError::Typed {
-            code: "LEGACY_SEMANTIC_MIGRATION_RECEIPT_CONFLICT".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationReceiptConflict,
             message: "refusing to replace a different migration receipt".to_string(),
         });
     }
@@ -617,12 +618,12 @@ fn revalidate_journal(store: &LegacySemanticJournalStore, expected: &str) -> Res
         "journal",
     )?
     .ok_or_else(|| CoreError::Typed {
-        code: "LEGACY_SEMANTIC_JOURNAL_CHANGED_DURING_MIGRATION".to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticJournalChangedDuringMigration,
         message: "journal disappeared".to_string(),
     })?;
     if digest(&bytes) != expected {
         return Err(CoreError::Typed {
-            code: "LEGACY_SEMANTIC_JOURNAL_CHANGED_DURING_MIGRATION".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticJournalChangedDuringMigration,
             message: "journal changed".to_string(),
         });
     }
@@ -676,7 +677,8 @@ fn read_bounded(
         .map_err(storage("read bounded input", path))?;
     if u64::try_from(bytes.len()).is_ok_and(|len| len > max) {
         return Err(CoreError::Typed {
-            code: "LEGACY_SEMANTIC_MIGRATION_INPUT_TOO_LARGE".to_string(),
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationInputTooLarge,
             message: format!("{label} exceeds {max} bytes"),
         });
     }
@@ -690,7 +692,8 @@ fn validate_root_custody(root: &Path) -> Result<(), CoreError> {
     let metadata = fs::symlink_metadata(root).map_err(storage("inspect migration root", root))?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() || metadata.mode() & 0o022 != 0 {
         return Err(CoreError::Typed {
-            code: "LEGACY_SEMANTIC_MIGRATION_CUSTODY_INVALID".to_string(),
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationCustodyInvalid,
             message: format!(
                 "migration root must be a non-symlink directory without group/other write permission: {}",
                 root.display()
@@ -705,7 +708,8 @@ fn validate_root_custody(root: &Path) -> Result<(), CoreError> {
     let metadata = fs::symlink_metadata(root).map_err(storage("inspect migration root", root))?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(CoreError::Typed {
-            code: "LEGACY_SEMANTIC_MIGRATION_CUSTODY_INVALID".to_string(),
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationCustodyInvalid,
             message: format!(
                 "migration root is not a non-symlink directory: {}",
                 root.display()
@@ -735,7 +739,8 @@ fn validate_opened_file_custody(
         || (require_single_link && metadata.nlink() != 1)
     {
         return Err(CoreError::Typed {
-            code: "LEGACY_SEMANTIC_MIGRATION_CUSTODY_INVALID".to_string(),
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationCustodyInvalid,
             message: format!(
                 "migration file must be regular, same-owner, non-shared, and not group/other writable: {}",
                 path.display()
@@ -758,7 +763,8 @@ fn validate_opened_file_custody(
         .is_file()
     {
         return Err(CoreError::Typed {
-            code: "LEGACY_SEMANTIC_MIGRATION_CUSTODY_INVALID".to_string(),
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationCustodyInvalid,
             message: format!("migration input is not a regular file: {}", path.display()),
         });
     }
@@ -999,7 +1005,7 @@ mod tests {
         assert!(matches!(
             legacy,
             CoreError::Typed { ref code, .. }
-                if code == "LEGACY_SEMANTIC_MIGRATION_RECEIPT_UNSUPPORTED"
+                if *code == quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationReceiptUnsupported
         ));
 
         fs::write(
@@ -1009,14 +1015,18 @@ mod tests {
                 journal_digest: format!("sha256:{}", "1".repeat(64)),
                 batch_count: 1,
                 sources: vec![SourceRow {
-                    repo_id: RepoId::new("repo"),
-                    revision_id: RevisionId::new("rev"),
+                    repo_id: RepoId::new("repo")
+                        .expect("static fixture ID satisfies canonical policy"),
+                    revision_id: RevisionId::new("rev")
+                        .expect("static fixture ID satisfies canonical policy"),
                     generation: ManifestGeneration::new(1),
                     manifest_digest: "manifest".to_string(),
                 }],
                 durable: vec![DurableRow {
-                    repo_id: RepoId::new("repo"),
-                    revision_id: RevisionId::new("rev"),
+                    repo_id: RepoId::new("repo")
+                        .expect("static fixture ID satisfies canonical policy"),
+                    revision_id: RevisionId::new("rev")
+                        .expect("static fixture ID satisfies canonical policy"),
                     generation: ManifestGeneration::new(1),
                     manifest_digest: "manifest".to_string(),
                     semantic_row_root_digest: "sha256:not-a-root".to_string(),
@@ -1028,7 +1038,7 @@ mod tests {
         assert!(matches!(
             invalid,
             CoreError::Typed { ref code, .. }
-                if code == "LEGACY_SEMANTIC_MIGRATION_RECEIPT_CORRUPT"
+                if *code == quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationReceiptCorrupt
         ));
         Ok(())
     }
@@ -1062,7 +1072,7 @@ mod tests {
         assert!(matches!(
             error,
             CoreError::Typed { ref code, .. }
-                if code == "LEGACY_SEMANTIC_MIGRATION_CUSTODY_INVALID"
+                if *code == quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationCustodyInvalid
         ));
         Ok(())
     }

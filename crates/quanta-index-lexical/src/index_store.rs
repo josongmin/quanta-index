@@ -7,12 +7,9 @@
 
 use crate::analyzer::register_analyzers;
 use crate::normalize::{TEXT_NORMALIZER_VERSION, TextNormalizerVersion};
-use crate::{
-    DURABLE_WRITE_TEMPORARY_MARKER, LEXICAL_SEALED_IDENTITY_FILE_NAME, SchemaFields,
-    sealed_generation,
-};
+use crate::{DURABLE_WRITE_TEMPORARY_MARKER, LEXICAL_SEALED_IDENTITY_FILE_NAME, SchemaFields};
 use quanta_index_contract::GenerationSnapshot;
-use quanta_index_core::{CoreError, GENERATION_SIDECAR_CORRUPT_CODE};
+use quanta_index_core::CoreError;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -37,7 +34,8 @@ pub(crate) fn open_sealed_index(generation_dir: &Path) -> Result<Index, CoreErro
     })?;
     if index.schema() != SchemaFields::build().schema {
         return Err(CoreError::Typed {
-            code: sealed_generation::GENERATION_MANIFEST_FORMAT_UNSUPPORTED_CODE.to_string(),
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
             message: format!(
                 "lexical: generation {} was indexed under a schema this build does not write; it must be rebuilt",
                 generation_dir.display()
@@ -178,7 +176,7 @@ pub(crate) fn persist_lexical_sealed_identity(
 
 pub(crate) fn normalizer_unsupported(path: &Path, built_with: TextNormalizerVersion) -> CoreError {
     CoreError::Typed {
-        code: "GENERATION_NORMALIZER_UNSUPPORTED".to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationNormalizerUnsupported,
         message: format!(
             "lexical: sealed generation {} was built under text normalizer {built_with} (this build runs {TEXT_NORMALIZER_VERSION}); it must be rebuilt, never served with mismatched text semantics",
             path.display()
@@ -190,7 +188,7 @@ pub(crate) fn normalizer_unsupported(path: &Path, built_with: TextNormalizerVers
 /// manifest committed to.
 pub(crate) fn sidecar_corrupt(generation_dir: &Path, name: &str, reason: &str) -> CoreError {
     CoreError::Typed {
-        code: GENERATION_SIDECAR_CORRUPT_CODE.to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
         message: format!(
             "lexical: generation {} does not match its manifest: {name}: {reason}",
             generation_dir.display()
@@ -205,7 +203,7 @@ pub(crate) fn read_lexical_sealed_identity(
     let bytes = std::fs::read(&path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             CoreError::Typed {
-                code: "GENERATION_IDENTITY_INCOMPLETE".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityIncomplete,
                 message: format!(
                     "lexical: incomplete generation has no sealed identity at {}",
                     path.display()
@@ -232,7 +230,7 @@ pub(crate) fn validate_lexical_sealed_identity(
 ) -> Result<(), CoreError> {
     if observed != candidate {
         return Err(CoreError::Typed {
-            code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
             message: format!(
                 "lexical: durable generation identity mismatch for repo={} revision={} generation={}",
                 candidate.repo_id.as_str(),

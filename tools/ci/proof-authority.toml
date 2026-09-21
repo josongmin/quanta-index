@@ -75,22 +75,22 @@ required_host = "any"
 
 [[proofs]]
 id = "p01-canonical-identity"
-authority_state = "staged"
+authority_state = "executable"
 execution_mode = "test-authority"
-staged_reason = "P01A must land canonical identity/error-code owners and a dedicated executable test-authority scope."
 ticket = "S21-01"
 family = "U"
 checkpoint = "M1"
 owner = "crates/quanta-index-contract-base/src/ids.rs"
-command = "just rust-profile test-fast"
+command = "just proof-p01-canonical-identity"
 gate = "release"
-profile = "test-fast"
+profile = "test-canonical-identity"
 target = "canonical-identity-owner"
 filter = "none"
 source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = []
+test_authority_scopes = ["canonical-identity"]
+test_authority_targets = ["contract-base-canonical-identity-v1", "contract-repomap-layout-v3-contract", "contract-search-plane-error-code-v2", "repomap-layout-v3-security"]
 dependencies = ["p00-authority-freeze"]
 artifact = "artifacts/proof-authority/p01-canonical-identity.json"
 required_host = "any"

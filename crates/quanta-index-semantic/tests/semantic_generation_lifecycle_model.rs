@@ -37,10 +37,12 @@ const DIMENSION: u32 = 3;
 
 fn repo_id() -> RepoId {
     RepoId::new("repo-semantic-lifecycle-model")
+        .expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision_id() -> RevisionId {
     RevisionId::new("rev-semantic-lifecycle-model")
+        .expect("static fixture ID satisfies canonical policy")
 }
 
 #[derive(Clone, Debug)]

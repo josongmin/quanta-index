@@ -2412,8 +2412,8 @@ mod tests {
 
     fn sample_generation_pin() -> GenerationPin {
         GenerationPin::new(
-            RepoId::new("repo-seed"),
-            RevisionId::new("rev-seed"),
+            RepoId::new("repo-seed").expect("static fixture ID satisfies canonical policy"),
+            RevisionId::new("rev-seed").expect("static fixture ID satisfies canonical policy"),
             ManifestGeneration::new(7),
         )
     }

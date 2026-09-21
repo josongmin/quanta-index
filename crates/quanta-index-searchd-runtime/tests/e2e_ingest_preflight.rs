@@ -28,7 +28,8 @@ use std::path::{Path, PathBuf};
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, ManifestGeneration, RepoRelativePath,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchScopeKey, SearchScopeSurface,
+    SearchPlaneErrorCodeV2, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
+    SearchScopeKey, SearchScopeSurface,
 };
 use quanta_index_core::{
     BATCH_DIGEST_MISMATCH_CODE, INGEST_RESOURCE_BUDGET_EXCEEDED_CODE, IngestResourcePolicy,
@@ -41,8 +42,9 @@ use e2e_harness::E2eRuntime;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-const SHAPE_INVALID: &str = "SEARCH_CORPUS_BATCH_SHAPE_INVALID";
-const DELTA_BASE_NOT_SEALED: &str = "SEARCH_CORPUS_DELTA_BASE_NOT_SEALED";
+const SHAPE_INVALID: SearchPlaneErrorCodeV2 = SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid;
+const DELTA_BASE_NOT_SEALED: SearchPlaneErrorCodeV2 =
+    SearchPlaneErrorCodeV2::SearchCorpusDeltaBaseNotSealed;
 
 /// The idempotency table's row count, read straight from the catalog file.
 fn idempotency_rows(rt: &E2eRuntime) -> Result<u64, Box<dyn Error>> {
@@ -82,7 +84,7 @@ fn durable_tree(rt: &E2eRuntime) -> Result<BTreeMap<PathBuf, u64>, Box<dyn Error
 
 fn typed_code(response: &SearchPlaneIngestIpcResponse) -> Option<&str> {
     match response {
-        SearchPlaneIngestIpcResponse::Error(error) => Some(error.code.as_str()),
+        SearchPlaneIngestIpcResponse::Error(error) => Some(error.code.as_wire_str()),
         SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
         | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
@@ -104,12 +106,12 @@ fn refused_with_nothing_changed(
     rt: &mut E2eRuntime,
     label: &str,
     batch: quanta_index_contract::SearchCorpusIngestBatch,
-    expected: &str,
+    expected: SearchPlaneErrorCodeV2,
 ) -> TestResult {
     let rows_before = idempotency_rows(rt)?;
     let tree_before = durable_tree(rt)?;
     let response = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch))?;
-    if typed_code(&response) != Some(expected) {
+    if typed_code(&response) != Some(expected.as_wire_str()) {
         return Err(format!("{label}: expected {expected}, got {response:?}").into());
     }
     if idempotency_rows(rt)? != rows_before {
@@ -276,7 +278,7 @@ fn sdk_batch(
 
 fn remote_code(error: &SdkError) -> Option<&str> {
     match error {
-        SdkError::Remote { code, .. } => Some(code.as_str()),
+        SdkError::Remote { code, .. } => Some(code.as_wire_str()),
         SdkError::Usage(_)
         | SdkError::Protocol(_)
         | SdkError::Serialization(_)
@@ -314,7 +316,7 @@ fn sdk_publishes_carry_the_canonical_digest_and_refusals_record_nothing() -> Tes
         .search_corpus()
         .publish(&unsealed_base)
         .expect_err("a delta on an unsealed base must be refused");
-    if remote_code(&refused) != Some(DELTA_BASE_NOT_SEALED) {
+    if remote_code(&refused) != Some(DELTA_BASE_NOT_SEALED.as_wire_str()) {
         return Err(
             format!("expected {DELTA_BASE_NOT_SEALED} through the SDK, got {refused:?}").into(),
         );
@@ -345,7 +347,7 @@ fn sdk_publishes_carry_the_canonical_digest_and_refusals_record_nothing() -> Tes
         .search_corpus()
         .publish(&oversized)
         .expect_err("a batch past the envelope must be refused");
-    if remote_code(&refused) != Some(INGEST_RESOURCE_BUDGET_EXCEEDED_CODE) {
+    if remote_code(&refused) != Some(INGEST_RESOURCE_BUDGET_EXCEEDED_CODE.as_wire_str()) {
         return Err(format!(
             "expected {INGEST_RESOURCE_BUDGET_EXCEEDED_CODE} through the SDK, got {refused:?}"
         )

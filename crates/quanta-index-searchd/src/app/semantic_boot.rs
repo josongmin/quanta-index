@@ -137,11 +137,11 @@ mod tests {
     type GenerationKey = (RepoId, RevisionId, ManifestGeneration);
 
     fn repo_id() -> RepoId {
-        RepoId::new("repo-boot")
+        RepoId::new("repo-boot").expect("static fixture ID satisfies canonical policy")
     }
 
     fn revision_id() -> RevisionId {
-        RevisionId::new("rev-boot")
+        RevisionId::new("rev-boot").expect("static fixture ID satisfies canonical policy")
     }
 
     fn model_contract() -> EmbeddingModelContract {
@@ -400,7 +400,8 @@ mod tests {
             matches!(
                 err,
                 quanta_index_core::CoreError::Typed { ref code, ref message }
-                    if code == "GENERATION_SIDECAR_CORRUPT" && message.contains("semantic-manifest.cbor")
+                    if *code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt
+                        && message.contains("semantic-manifest.cbor")
             ),
             "expected the sealed manifest to refuse the forged scope manifest, got: {err:?}"
         );

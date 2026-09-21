@@ -18,7 +18,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest;
+use quanta_index_contract::{
+    SearchPlaneErrorCodeV2, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
+};
 use quanta_index_core::{CoreError, GenerationStorageKeyV1};
 use quanta_index_sdk::{
     ChunkId, ChunkRecord, ConnectOptions, LanguageCode, ManifestGeneration, QuantaIndex, RepoId,
@@ -44,9 +46,11 @@ const G0_DIGEST: &str = "manifest:composite-restart:g0";
 const G1_DIGEST: &str = "manifest:composite-restart:g1";
 const G2_DIGEST: &str = "manifest:composite-restart:g2";
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(30);
-const ERR_ROLLBACK_TARGET_UNOPENABLE: &str = "ROLLBACK_TARGET_UNOPENABLE";
-const ERR_ROLLBACK_CAS_CONFLICT: &str = "ROLLBACK_CAS_CONFLICT";
-const ERR_STATE_ROOT_IN_USE: &str = "STATE_ROOT_IN_USE";
+const ERR_ROLLBACK_TARGET_UNOPENABLE: SearchPlaneErrorCodeV2 =
+    SearchPlaneErrorCodeV2::RollbackTargetUnopenable;
+const ERR_ROLLBACK_CAS_CONFLICT: SearchPlaneErrorCodeV2 =
+    SearchPlaneErrorCodeV2::RollbackCasConflict;
+const ERR_STATE_ROOT_IN_USE: SearchPlaneErrorCodeV2 = SearchPlaneErrorCodeV2::StateRootInUse;
 
 static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -119,11 +123,11 @@ impl Drop for RunningRuntime {
 }
 
 fn repo() -> RepoId {
-    RepoId::new(REPO)
+    RepoId::new(REPO).expect("test fixture ID satisfies canonical policy")
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new(REVISION)
+    RevisionId::new(REVISION).expect("test fixture ID satisfies canonical policy")
 }
 
 fn generation(raw: u64) -> ManifestGeneration {
@@ -214,8 +218,8 @@ fn batch_for(
     let end_byte = u32::try_from(text.len())?;
     let language = LanguageCode::new("rust")?;
     Ok(SearchCorpusBatch::replace_generation(
-        RepoId::new(repo_id),
-        RevisionId::new(revision_id),
+        RepoId::new(repo_id).expect("test fixture ID satisfies canonical policy"),
+        RevisionId::new(revision_id).expect("test fixture ID satisfies canonical policy"),
         generation(raw_generation),
         digest,
     )
@@ -322,15 +326,17 @@ fn composite_identity_for(
 ) -> SearchCorpusGenerationIdentityV1 {
     SearchCorpusGenerationIdentityV1 {
         lexical: quanta_index_sdk::GenerationSnapshot {
-            repo_id: RepoId::new(repo_id),
-            revision_id: RevisionId::new(revision_id),
+            repo_id: RepoId::new(repo_id).expect("test fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new(revision_id)
+                .expect("test fixture ID satisfies canonical policy"),
             track: SearchPlaneTrackKind::Lexical,
             manifest_generation: generation(raw_generation),
             manifest_digest: digest.to_string(),
         },
         semantic: quanta_index_sdk::GenerationSnapshot {
-            repo_id: RepoId::new(repo_id),
-            revision_id: RevisionId::new(revision_id),
+            repo_id: RepoId::new(repo_id).expect("test fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new(revision_id)
+                .expect("test fixture ID satisfies canonical policy"),
             track: SearchPlaneTrackKind::Semantic,
             manifest_generation: generation(raw_generation),
             manifest_digest: digest.to_string(),
@@ -354,18 +360,21 @@ fn current_composite_for(
     revision_id: &str,
 ) -> Result<SearchCorpusGenerationIdentityV1, SdkError> {
     let lexical = client.generations().current(
-        RepoId::new(repo_id),
-        RevisionId::new(revision_id),
+        RepoId::new(repo_id).expect("test fixture ID satisfies canonical policy"),
+        RevisionId::new(revision_id).expect("test fixture ID satisfies canonical policy"),
         SearchPlaneTrackKind::Lexical,
     )?;
     let semantic = client.generations().current(
-        RepoId::new(repo_id),
-        RevisionId::new(revision_id),
+        RepoId::new(repo_id).expect("test fixture ID satisfies canonical policy"),
+        RevisionId::new(revision_id).expect("test fixture ID satisfies canonical policy"),
         SearchPlaneTrackKind::Semantic,
     )?;
     let semantic_content = client
         .generations()
-        .status(RepoId::new(repo_id), RevisionId::new(revision_id))?
+        .status(
+            RepoId::new(repo_id).expect("test fixture ID satisfies canonical policy"),
+            RevisionId::new(revision_id).expect("test fixture ID satisfies canonical policy"),
+        )?
         .semantic_content
         .ok_or_else(|| {
             SdkError::Protocol("an active pair reports no semantic content roots".to_string())
@@ -621,7 +630,7 @@ fn real_child_process_cross_repo_restart_retains_and_rolls_back_each_composite_v
         String::from_utf8_lossy(&rejected.stdout),
         String::from_utf8_lossy(&rejected.stderr)
     );
-    if rejected.status.success() || !rejection_text.contains(ERR_STATE_ROOT_IN_USE) {
+    if rejected.status.success() || !rejection_text.contains(ERR_STATE_ROOT_IN_USE.as_wire_str()) {
         return Err(format!(
             "second child did not reject the live cross-repo state root with {ERR_STATE_ROOT_IN_USE}: {rejection_text}"
         )
@@ -698,7 +707,7 @@ fn real_child_process_state_root_lease_rejects_second_owner_and_releases_v1() ->
         String::from_utf8_lossy(&rejected.stdout),
         String::from_utf8_lossy(&rejected.stderr)
     );
-    if !rejection_text.contains(ERR_STATE_ROOT_IN_USE) {
+    if !rejection_text.contains(ERR_STATE_ROOT_IN_USE.as_wire_str()) {
         return Err(format!(
             "second child process did not report {ERR_STATE_ROOT_IN_USE}: {rejection_text}"
         )
@@ -722,7 +731,7 @@ fn state_root_has_one_live_runtime_owner_and_releases_lease_on_drop() -> TestRes
     let Some(CoreError::Typed { code, .. }) = error.downcast_ref::<CoreError>() else {
         return Err(format!("state-root conflict was not a typed CoreError: {error:#}").into());
     };
-    if code != ERR_STATE_ROOT_IN_USE {
+    if *code != ERR_STATE_ROOT_IN_USE {
         return Err(format!("expected {ERR_STATE_ROOT_IN_USE}, got {code}").into());
     }
 

@@ -133,8 +133,10 @@ mod tests {
             candidate_scope: None,
             options: LqOptions::defaults(),
             generation: GenerationSelector::Active {
-                repo_id: RepoId::new("repo".to_string()),
-                revision_id: RevisionId::new("rev".to_string()),
+                repo_id: RepoId::new("repo".to_string())
+                    .expect("static fixture ID satisfies canonical policy"),
+                revision_id: RevisionId::new("rev".to_string())
+                    .expect("static fixture ID satisfies canonical policy"),
             },
             aux_epoch: quanta_index_contract::AuxEpochV1::GENESIS,
         }

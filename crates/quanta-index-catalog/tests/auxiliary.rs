@@ -34,8 +34,9 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 fn generation(generation: u64) -> AuxiliaryGenerationKeyV1 {
     AuxiliaryGenerationKeyV1 {
-        repo_id: RepoId::new("repo-aux"),
-        revision_id: RevisionId::new("rev-aux"),
+        repo_id: RepoId::new("repo-aux").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev-aux")
+            .expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(generation),
     }
 }
@@ -94,9 +95,9 @@ fn all_rows(catalog: &SqliteCatalog) -> Result<Vec<AuxiliaryRowV1>, CoreError> {
     Ok(rows)
 }
 
-fn typed_code(error: &CoreError) -> Option<&str> {
+fn typed_code(error: &CoreError) -> Option<quanta_index_contract::SearchPlaneErrorCodeV2> {
     match error {
-        CoreError::Typed { code, .. } => Some(code.as_str()),
+        CoreError::Typed { code, .. } => Some(*code),
         CoreError::InvalidContract(_)
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
@@ -323,8 +324,9 @@ fn a_row_that_does_not_match_its_digest_is_refused_typed() -> TestResult {
             "chunk-bytes",
         ))],
         tracks: vec![AuxiliaryTrackRowV1 {
-            repo_id: RepoId::new("repo-aux"),
-            revision_id: RevisionId::new("rev-aux"),
+            repo_id: RepoId::new("repo-aux").expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev-aux")
+                .expect("static fixture ID satisfies canonical policy"),
             track: SearchPlaneTrackKind::Structural,
             value: b"track-bytes".to_vec(),
         }],
@@ -406,8 +408,9 @@ fn forgetting_a_generation_drops_exactly_its_rows_across_domains() -> TestResult
             )),
         ],
         tracks: vec![AuxiliaryTrackRowV1 {
-            repo_id: RepoId::new("repo-aux"),
-            revision_id: RevisionId::new("rev-aux"),
+            repo_id: RepoId::new("repo-aux").expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev-aux")
+                .expect("static fixture ID satisfies canonical policy"),
             track: SearchPlaneTrackKind::Structural,
             value: b"track".to_vec(),
         }],
@@ -482,8 +485,9 @@ fn track_rows_replace_by_key_and_round_trip() -> TestResult {
     let temp = tempfile::tempdir()?;
     let catalog = open(temp.path())?;
     let track = |value: &str| AuxiliaryTrackRowV1 {
-        repo_id: RepoId::new("repo-aux"),
-        revision_id: RevisionId::new("rev-aux"),
+        repo_id: RepoId::new("repo-aux").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev-aux")
+            .expect("static fixture ID satisfies canonical policy"),
         track: SearchPlaneTrackKind::Structural,
         value: value.as_bytes().to_vec(),
     };

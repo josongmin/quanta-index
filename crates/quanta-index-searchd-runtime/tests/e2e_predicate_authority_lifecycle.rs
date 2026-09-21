@@ -96,7 +96,9 @@ fn replacement_chunk(id: &str, path: &str, source_repo_id: &str) -> AnyResult<Ch
         text: text.into_boxed_str(),
         structural: None,
         parent_chunk_id: None,
-        source_repo_id: Some(RepoId::new(source_repo_id)),
+        source_repo_id: Some(
+            RepoId::new(source_repo_id).expect("test fixture ID satisfies canonical policy"),
+        ),
     })
 }
 
@@ -232,8 +234,10 @@ fn observe_generation(rt: &mut E2eRuntime, label: &str) -> AnyResult<AuthorityOb
 }
 
 fn publish_generation(rt: &mut E2eRuntime, label: &str, recent_at_ms: u64) -> AnyResult<()> {
-    let source_repo_alpha = RepoId::new("authority-alpha");
-    let source_repo_beta = RepoId::new("authority-beta");
+    let source_repo_alpha =
+        RepoId::new("authority-alpha").expect("static fixture ID satisfies canonical policy");
+    let source_repo_beta =
+        RepoId::new("authority-beta").expect("static fixture ID satisfies canonical policy");
 
     rt.publish_repo_commit_recency_batch(RepoCommitRecencyIngestBatch {
         repo_id: rt.repo(),

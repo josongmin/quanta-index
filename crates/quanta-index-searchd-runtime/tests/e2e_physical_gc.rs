@@ -291,14 +291,14 @@ fn assert_unknown_on_every_route(
         Some(pin(rt, generation)),
     );
     match text.typed_error {
-        Some(error) if error.code == "UNKNOWN_GENERATION" => {}
+        Some(error) if error.code.as_str() == "UNKNOWN_GENERATION" => {}
         other => {
             return Err(format!("lexical pin to {what} g{}: {other:?}", generation.get()).into());
         }
     }
     let semantic = rt.query_semantic_with_pin("needle", 5, Some(pin(rt, generation)));
     match semantic.typed_error {
-        Some(error) if error.code == "UNKNOWN_GENERATION" => {}
+        Some(error) if error.code.as_str() == "UNKNOWN_GENERATION" => {}
         other => {
             return Err(format!("semantic pin to {what} g{}: {other:?}", generation.get()).into());
         }

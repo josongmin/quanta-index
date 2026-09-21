@@ -24,8 +24,8 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 fn pin() -> GenerationPin {
     GenerationPin::new(
-        RepoId::new("repo-1"),
-        RevisionId::new("rev-1"),
+        RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
+        RevisionId::new("rev-1").expect("static fixture ID satisfies canonical policy"),
         ManifestGeneration::new(7),
     )
 }
@@ -33,8 +33,9 @@ fn pin() -> GenerationPin {
 fn row(id: &str, score: f32, path: &str, line: u32) -> LexicalCandidate {
     LexicalCandidate {
         candidate_id: id.to_string(),
-        repo_id: RepoId::new("repo-1"),
-        revision_id: RevisionId::new("rev-1"),
+        repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev-1")
+            .expect("static fixture ID satisfies canonical policy"),
         manifest_generation: ManifestGeneration::new(7),
         repo_relative_path: RepoRelativePath::new(path),
         start_line: line,
@@ -139,8 +140,9 @@ fn the_decoder_refuses_every_page_that_would_skip_or_repeat() -> TestResult {
     let mut owners = continued(rows())?;
     owners.file_owner_rows = Some(vec![FileOwnerProjectionRow {
         candidate_id: "b".to_string(),
-        repo_id: RepoId::new("repo-1"),
-        revision_id: RevisionId::new("rev-1"),
+        repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev-1")
+            .expect("static fixture ID satisfies canonical policy"),
         manifest_generation: ManifestGeneration::new(7),
         repo_relative_path: RepoRelativePath::new("src/a.rs"),
         owners: Vec::new(),

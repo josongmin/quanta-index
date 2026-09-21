@@ -26,7 +26,8 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use quanta_index_contract::{
-    EmbeddingRecord, LexicalCandidate, ManifestGeneration, QueryConstraintSetV1, RepoId, RevisionId,
+    EmbeddingRecord, LexicalCandidate, ManifestGeneration, QueryConstraintSetV1, RepoId,
+    RevisionId, SearchPlaneErrorCodeV2,
 };
 use quanta_index_core::{
     CoreError, DenseIndexV1, MetricSourcePort, MetricValueV1, REQUEST_CANCELLED_CODE,
@@ -78,11 +79,11 @@ impl Drop for DenseLaneHold {
 }
 
 fn repo() -> RepoId {
-    RepoId::new("cancel-semantic-repo")
+    RepoId::new("cancel-semantic-repo").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new("cancel-semantic-rev")
+    RevisionId::new("cancel-semantic-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 fn exact_generation() -> ManifestGeneration {
@@ -179,9 +180,9 @@ fn tallies(adapter: &SemanticAdapter) -> Result<Tallies, Box<dyn Error>> {
 
 fn typed(
     result: &Result<Vec<LexicalCandidate>, CoreError>,
-) -> Result<(String, String), Box<dyn Error>> {
+) -> Result<(SearchPlaneErrorCodeV2, String), Box<dyn Error>> {
     match result {
-        Err(CoreError::Typed { code, message }) => Ok((code.clone(), message.clone())),
+        Err(CoreError::Typed { code, message }) => Ok((*code, message.clone())),
         Ok(hits) => Err(format!(
             "expected a typed interruption, the lane served {} hits",
             hits.len()
@@ -193,7 +194,7 @@ fn typed(
 
 fn expect_interruption(
     result: &Result<Vec<LexicalCandidate>, CoreError>,
-    code: &str,
+    code: SearchPlaneErrorCodeV2,
     checkpoint: &str,
     what: &str,
 ) -> TestResult {
