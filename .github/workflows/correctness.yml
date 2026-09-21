@@ -87,7 +87,7 @@ jobs:
 
   rust-authority-nextest:
     name: rust-authority-nextest (nightly receipt)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.proof_bundle_run_id == '')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -124,7 +124,7 @@ jobs:
 
   rust-miri:
     name: rust-miri (UB detection)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.proof_bundle_run_id == '')
     runs-on: ubuntu-latest
     env:
       RUSTUP_TOOLCHAIN: nightly
@@ -165,7 +165,7 @@ jobs:
 
   rust-careful:
     name: rust-careful (stacked borrows / debug assertions)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.proof_bundle_run_id == '')
     runs-on: ubuntu-latest
     env:
       RUSTUP_TOOLCHAIN: nightly
@@ -190,7 +190,7 @@ jobs:
 
   rust-tsan:
     name: rust-tsan (ThreadSanitizer)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.proof_bundle_run_id == '')
     runs-on: ubuntu-latest
     env:
       RUSTUP_TOOLCHAIN: nightly
@@ -221,7 +221,7 @@ jobs:
 
   rust-asan:
     name: rust-asan (AddressSanitizer)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.proof_bundle_run_id == '')
     runs-on: ubuntu-latest
     env:
       RUSTUP_TOOLCHAIN: nightly
@@ -252,7 +252,7 @@ jobs:
 
   rust-mutants:
     name: rust-mutants (mutation testing)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.proof_bundle_run_id == '')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -279,7 +279,7 @@ jobs:
 
   rust-udeps:
     name: rust-udeps (unused deps, rustc)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.proof_bundle_run_id == '')
     runs-on: ubuntu-latest
     env:
       RUSTUP_TOOLCHAIN: nightly
@@ -302,6 +302,7 @@ jobs:
 
   rust-llvm-lines:
     name: rust-llvm-lines (monomorphization budget)
+    if: github.event_name != 'workflow_dispatch' || inputs.proof_bundle_run_id == ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -326,6 +327,7 @@ jobs:
 
   rust-public-api:
     name: rust-public-api (contract surface diff)
+    if: github.event_name != 'workflow_dispatch' || inputs.proof_bundle_run_id == ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -348,6 +350,7 @@ jobs:
 
   rust-cargo-modules:
     name: rust-cargo-modules (module-tree snapshot)
+    if: github.event_name != 'workflow_dispatch' || inputs.proof_bundle_run_id == ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -372,7 +375,7 @@ jobs:
 
   rust-fuzz-smoke:
     name: rust-fuzz-smoke (IPC decoders, 60s each)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.proof_bundle_run_id == '')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -457,7 +460,7 @@ jobs:
     # gate: recapture the baselines ON this runner (a workflow_dispatch run +
     # `compare_dsl_bench.py --update-baseline`, commit the result), then drop
     # the `continue-on-error` line below.
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.proof_bundle_run_id == '')
     runs-on: ubuntu-latest
     continue-on-error: true
     timeout-minutes: 30

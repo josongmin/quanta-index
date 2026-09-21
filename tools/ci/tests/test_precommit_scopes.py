@@ -250,7 +250,8 @@ def test_exhaustive_correctness_jobs_do_not_duplicate_every_pr_build() -> None:
     workflow = yaml.safe_load(CORRECTNESS_WORKFLOW.read_text(encoding="utf-8"))
     jobs = workflow["jobs"]
     nightly_or_manual = (
-        "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
+        "github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && "
+        "inputs.proof_bundle_run_id == '')"
     )
     exhaustive = {
         "rust-miri",
@@ -265,12 +266,20 @@ def test_exhaustive_correctness_jobs_do_not_duplicate_every_pr_build() -> None:
         job_id for job_id in exhaustive if jobs[job_id].get("if") == nightly_or_manual
     } == exhaustive
 
-    # These gates are source-specific or supply immediate PR coverage signal.
+    # These gates are source-specific and remain on PRs, schedules and ordinary
+    # manual runs, but a release-proof dispatch starts only its dedicated gate.
+    structural_condition = (
+        "github.event_name != 'workflow_dispatch' || inputs.proof_bundle_run_id == ''"
+    )
     for job_id in (
         "rust-llvm-lines",
         "rust-public-api",
         "rust-cargo-modules",
-        "rust-changed-line-coverage",
     ):
-        condition = jobs[job_id].get("if", "")
-        assert "schedule" not in condition and "workflow_dispatch" not in condition, job_id
+        assert jobs[job_id].get("if") == structural_condition, job_id
+    assert jobs["rust-changed-line-coverage"].get("if") == "github.event_name == 'pull_request'"
+
+    assert jobs["proof-authority-release-gate"]["if"] == (
+        "github.event_name == 'workflow_dispatch' && inputs.proof_bundle_run_id != ''"
+    )
+    assert jobs["dsl-bench-latency"]["if"] == nightly_or_manual

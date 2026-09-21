@@ -326,7 +326,8 @@ def test_full_corpus_has_one_hosted_workspace_owner_per_event():
 
     job = workflow["jobs"]["rust-authority-nextest"]
     assert job["if"] == (
-        "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
+        "github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && "
+        "inputs.proof_bundle_run_id == '')"
     )
     assert any(
         step.get("uses") == "taiki-e/install-action@nextest"

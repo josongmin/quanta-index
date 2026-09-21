@@ -669,6 +669,14 @@ removing seven independent cold toolchain/workspace builds from each PR. A
 workflow topology test fixes both the nightly set and the retained PR set.
 The complete tooling set passes 346 tests after the split.
 
+Manual release-proof validation shared the same workflow with exploratory
+correctness jobs. Supplying `proof_bundle_run_id` therefore launched the
+release gate plus every manual correctness build. Event conditions now make
+that dispatch exclusive to `proof-authority-release-gate`; an ordinary manual
+dispatch with no bundle still runs the deep suite, schedules are unchanged,
+and PR structural gates remain active. Topology tests bind all three event
+classes so a future condition edit cannot silently restore the fan-out.
+
 ## Remaining measurement
 
 On a quiet host, run:
