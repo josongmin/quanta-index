@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib.util
+import io
 import json
 import subprocess
 import sys
@@ -493,6 +494,7 @@ def test_dirty_digest_batches_staged_index_reads(
 
     monkeypatch.setattr(MODULE.subprocess, "run", record_run)
     monkeypatch.setattr(MODULE.subprocess, "Popen", record_popen)
+    monkeypatch.setattr(MODULE.os, "fpathconf", lambda *_args: 82)
     actual = MODULE.dirty_digest(tmp_path)
 
     expected = hashlib.sha256()
@@ -503,6 +505,57 @@ def test_dirty_digest_batches_staged_index_reads(
     assert sum("ls-files" in command for command in calls) == 1
     assert sum("cat-file" in command for command in calls) == 1
     assert len(calls) == 3
+
+
+def test_digest_stream_field_is_bounded_and_byte_compatible() -> None:
+    content = b"x" * (MODULE.STREAM_CHUNK_SIZE * 2 + 17)
+
+    class RecordingDigest:
+        def __init__(self) -> None:
+            self.delegate = hashlib.sha256()
+            self.largest_update = 0
+
+        def update(self, field: bytes) -> None:
+            self.largest_update = max(self.largest_update, len(field))
+            self.delegate.update(field)
+
+        def hexdigest(self) -> str:
+            return self.delegate.hexdigest()
+
+    actual = RecordingDigest()
+    MODULE._digest_stream_field(actual, io.BytesIO(content), len(content))
+
+    expected = hashlib.sha256()
+    MODULE._digest_field(expected, content)
+    assert actual.hexdigest() == expected.hexdigest()
+    assert actual.largest_update <= MODULE.STREAM_CHUNK_SIZE
+
+
+def test_digest_stream_field_rejects_truncated_source() -> None:
+    with pytest.raises(RuntimeError, match="truncated source while hashing"):
+        MODULE._digest_stream_field(hashlib.sha256(), io.BytesIO(b"short"), 6)
+
+
+def test_file_sha256_streams_large_artifacts(tmp_path: Path) -> None:
+    content = b"artifact\x00" * (MODULE.STREAM_CHUNK_SIZE // 9 + 5)
+    artifact = tmp_path / "artifact.bin"
+    artifact.write_bytes(content)
+
+    assert MODULE._sha256(artifact) == hashlib.sha256(content).hexdigest()
+
+
+def test_digest_working_tree_entry_is_byte_compatible(tmp_path: Path) -> None:
+    content = b"source\x00" * (MODULE.STREAM_CHUNK_SIZE // 7 + 3)
+    source = tmp_path / "large-source"
+    source.write_bytes(content)
+    mode = f"{source.stat().st_mode & 0o7777:04o}".encode()
+
+    actual = hashlib.sha256()
+    MODULE._digest_working_tree_entry(actual, b"untracked", tmp_path, b"large-source")
+
+    expected = hashlib.sha256()
+    MODULE._digest_record(expected, b"untracked", b"large-source", b"file:" + mode, content)
+    assert actual.hexdigest() == expected.hexdigest()
 
 
 def test_porcelain_status_paths_match_existing_git_diff_domains(tmp_path: Path) -> None:

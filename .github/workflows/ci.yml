@@ -112,16 +112,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Remove rust-toolchain override
-        run: rm -f rust-toolchain.toml
-
       - name: Install MSRV toolchain (exact)
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.92.0
 
       - name: cargo +1.92.0 test --all-targets --no-run
-        run: cargo +1.92.0 test --workspace --all-targets --all-features --locked --no-run
+        run: RUSTUP_TOOLCHAIN=1.92.0 ./scripts/cargow --lane msrv-lane test --workspace --all-targets --all-features --locked --no-run
 
   rust-docs:
     runs-on: ubuntu-latest
@@ -437,7 +434,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install prompt-manager deps
-        run: python -m pip install -e . 'pytest>=8.3.0' 'ruff==0.16.8'
+        run: python -m pip install 'jinja2>=3.1.4' 'jsonschema>=4.23.0' 'pyyaml>=6.0.2' 'pytest>=8.3.0' 'ruff==0.16.8'
 
       - name: prompt-manager lint
         run: python tools/prompt-manager/pm.py lint

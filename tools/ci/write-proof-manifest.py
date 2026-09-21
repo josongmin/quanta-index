@@ -83,7 +83,11 @@ def _require_exact_keys(value: dict[str, Any], expected: set[str], *, label: str
 
 
 def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _repo_file(root: Path, value: Any, *, label: str) -> tuple[str, Path]:

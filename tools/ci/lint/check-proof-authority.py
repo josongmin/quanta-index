@@ -12,6 +12,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
@@ -110,6 +111,7 @@ EXPECTED_VERDICT_PROOFS: dict[str, list[str]] = {
     "ACTIVATED": ["p11-activation"],
     "ROLLBACK_PROVEN": ["p10-state-migration", "p11-rollback"],
 }
+STREAM_CHUNK_SIZE = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -635,7 +637,11 @@ def _parse_time(value: str) -> datetime:
 
 
 def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(STREAM_CHUNK_SIZE), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _payload_repo_file(
@@ -706,8 +712,23 @@ def _optional_git(root: Path, *args: str) -> str | None:
 
 def _digest_record(digest: Any, *fields: bytes) -> None:
     for field in fields:
-        digest.update(len(field).to_bytes(8, "big"))
-        digest.update(field)
+        _digest_field(digest, field)
+
+
+def _digest_field(digest: Any, field: bytes) -> None:
+    digest.update(len(field).to_bytes(8, "big"))
+    digest.update(field)
+
+
+def _digest_stream_field(digest: Any, stream: Any, size: int) -> None:
+    digest.update(size.to_bytes(8, "big"))
+    remaining = size
+    while remaining:
+        chunk = stream.read(min(STREAM_CHUNK_SIZE, remaining))
+        if not chunk:
+            raise RuntimeError("truncated source while hashing")
+        digest.update(chunk)
+        remaining -= len(chunk)
 
 
 def _repo_relative_bytes(root: Path, path: Path) -> bytes | None:
@@ -724,26 +745,62 @@ def _is_excluded(raw_path: bytes, excluded_paths: tuple[bytes, ...]) -> bool:
     return any(raw_path == item or raw_path.startswith(item + b"/") for item in excluded_paths)
 
 
-def _working_tree_bytes(root: Path, raw_path: bytes) -> tuple[bytes, bytes]:
+def _digest_working_tree_entry(
+    digest: Any,
+    domain: bytes,
+    root: Path,
+    raw_path: bytes,
+) -> None:
     native_path = os.fsencode(root) + b"/" + raw_path
     try:
         metadata = os.lstat(native_path)
     except FileNotFoundError:
-        return b"missing", b""
+        _digest_record(digest, domain, raw_path, b"missing", b"")
+        return
     mode = f"{stat.S_IMODE(metadata.st_mode):04o}".encode()
     if stat.S_ISLNK(metadata.st_mode):
-        return b"symlink:" + mode, os.fsencode(os.readlink(native_path))
+        _digest_record(
+            digest,
+            domain,
+            raw_path,
+            b"symlink:" + mode,
+            os.fsencode(os.readlink(native_path)),
+        )
+        return
     if stat.S_ISREG(metadata.st_mode):
-        with open(native_path, "rb") as handle:
-            return b"file:" + mode, handle.read()
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(native_path, flags)
+        except OSError as error:
+            raise RuntimeError(f"source changed while hashing {os.fsdecode(raw_path)!r}") from error
+        with os.fdopen(descriptor, "rb") as handle:
+            opened = os.fstat(handle.fileno())
+            if not stat.S_ISREG(opened.st_mode):
+                raise RuntimeError(f"source changed while hashing {os.fsdecode(raw_path)!r}")
+            opened_mode = f"{stat.S_IMODE(opened.st_mode):04o}".encode()
+            _digest_record(digest, domain, raw_path, b"file:" + opened_mode)
+            _digest_stream_field(digest, handle, opened.st_size)
+            if handle.read(1):
+                raise RuntimeError(f"source grew while hashing {os.fsdecode(raw_path)!r}")
+            current = os.fstat(handle.fileno())
+            if current.st_size != opened.st_size or current.st_mtime_ns != opened.st_mtime_ns:
+                raise RuntimeError(f"source changed while hashing {os.fsdecode(raw_path)!r}")
+        return
     if stat.S_ISDIR(metadata.st_mode):
         # A changed submodule is a source-state change, but its contents are a
         # separate repository. Bind its exact checked-out commit and dirty bit.
         submodule = root / os.fsdecode(raw_path)
         head = _optional_git(submodule, "rev-parse", "--verify", "HEAD") or "missing"
         dirty = _git_bytes(submodule, "status", "--porcelain=v1", "-z")
-        return b"directory:" + mode, head.encode() + b"\0" + dirty
-    return b"special:" + mode, b""
+        _digest_record(
+            digest,
+            domain,
+            raw_path,
+            b"directory:" + mode,
+            head.encode() + b"\0" + dirty,
+        )
+        return
+    _digest_record(digest, domain, raw_path, b"special:" + mode, b"")
 
 
 def _index_entries(
@@ -784,76 +841,81 @@ def _digest_index_entries(
             _digest_record(digest, b"index", raw_path, b"missing", b"")
         return
 
-    process = subprocess.Popen(
-        ["git", "-C", str(root), "cat-file", "--batch"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    assert process.stdin is not None
-    assert process.stdout is not None
-    assert process.stderr is not None
-    try:
-        pending: list[tuple[bytes, bytes, bytes]] = []
+    with tempfile.TemporaryFile() as error_stream:
+        process = subprocess.Popen(
+            ["git", "-C", str(root), "cat-file", "--batch"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=error_stream,
+        )
+        assert process.stdin is not None
+        assert process.stdout is not None
+        try:
+            pending: list[tuple[bytes, bytes, bytes]] = []
+            pending_bytes = 0
+            try:
+                pipe_buf = max(512, os.fpathconf(process.stdin.fileno(), "PC_PIPE_BUF"))
+            except (OSError, ValueError):
+                pipe_buf = 512
 
-        def digest_pending() -> None:
-            if not pending:
-                return
-            # Keep each request write well below PIPE_BUF. Git may block on a
-            # large response before reading later requests, but the complete
-            # request chunk is already in the independent stdin pipe.
-            for _, _, object_id in pending:
-                process.stdin.write(object_id + b"\n")
-            process.stdin.flush()
-            for raw_path, metadata, object_id in pending:
-                header = process.stdout.readline().removesuffix(b"\n").split()
-                if len(header) != 3 or header[0] != object_id or header[1] != b"blob":
-                    raise RuntimeError(
-                        f"unexpected git cat-file --batch header for {os.fsdecode(object_id)!r}"
-                    )
-                try:
-                    size = int(header[2])
-                except ValueError as error:
-                    raise RuntimeError("invalid git cat-file --batch object size") from error
-                content = bytearray(size)
-                view = memoryview(content)
-                while view:
-                    read = process.stdout.readinto(view)
-                    if not read:
-                        raise RuntimeError("truncated git cat-file --batch object")
-                    view = view[read:]
-                if process.stdout.read(1) != b"\n":
-                    raise RuntimeError("truncated git cat-file --batch object delimiter")
-                _digest_record(digest, b"index", raw_path, metadata, content)
-            pending.clear()
+            def digest_pending() -> None:
+                nonlocal pending_bytes
+                if not pending:
+                    return
+                # The complete request chunk fits in the stdin pipe's atomic
+                # write bound before Git can block while emitting responses.
+                request_chunk = b"".join(object_id + b"\n" for _, _, object_id in pending)
+                if process.stdin.write(request_chunk) != len(request_chunk):
+                    raise RuntimeError("truncated git cat-file --batch request")
+                process.stdin.flush()
+                for raw_path, metadata, object_id in pending:
+                    header = process.stdout.readline().removesuffix(b"\n").split()
+                    if len(header) != 3 or header[0] != object_id or header[1] != b"blob":
+                        raise RuntimeError(
+                            f"unexpected git cat-file --batch header for {os.fsdecode(object_id)!r}"
+                        )
+                    try:
+                        size = int(header[2])
+                    except ValueError as error:
+                        raise RuntimeError("invalid git cat-file --batch object size") from error
+                    _digest_record(digest, b"index", raw_path, metadata)
+                    _digest_stream_field(digest, process.stdout, size)
+                    if process.stdout.read(1) != b"\n":
+                        raise RuntimeError("truncated git cat-file --batch object delimiter")
+                pending.clear()
+                pending_bytes = 0
 
-        for raw_path in ordered_paths:
-            entries = entries_by_path[raw_path]
-            if not entries:
-                digest_pending()
-                _digest_record(digest, b"index", raw_path, b"missing", b"")
-                continue
-            for metadata, object_id in entries:
-                pending.append((raw_path, metadata, object_id))
-                if len(pending) == 32:
+            for raw_path in ordered_paths:
+                entries = entries_by_path[raw_path]
+                if not entries:
                     digest_pending()
-        digest_pending()
+                    _digest_record(digest, b"index", raw_path, b"missing", b"")
+                    continue
+                for metadata, object_id in entries:
+                    request_size = len(object_id) + 1
+                    if request_size > pipe_buf:
+                        raise RuntimeError("Git object identifier exceeds pipe write bound")
+                    if pending and pending_bytes + request_size > pipe_buf:
+                        digest_pending()
+                    pending.append((raw_path, metadata, object_id))
+                    pending_bytes += request_size
+            digest_pending()
 
-        process.stdin.close()
-        message = os.fsdecode(process.stderr.read()).strip()
-        returncode = process.wait()
-        if returncode != 0:
-            raise RuntimeError(message or "git cat-file --batch failed")
-    except BaseException:
-        if process.poll() is None:
-            process.kill()
-            process.wait()
-        raise
-    finally:
-        if not process.stdin.closed:
             process.stdin.close()
-        process.stdout.close()
-        process.stderr.close()
+            returncode = process.wait()
+            error_stream.seek(0)
+            message = os.fsdecode(error_stream.read()).strip()
+            if returncode != 0:
+                raise RuntimeError(message or "git cat-file --batch failed")
+        except BaseException:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            raise
+        finally:
+            if not process.stdin.closed:
+                process.stdin.close()
+            process.stdout.close()
 
 
 def _git_status_snapshot(root: Path) -> bytes:
@@ -936,14 +998,12 @@ def dirty_digest(
     for raw_path in unstaged:
         if _is_excluded(raw_path, exclusions):
             continue
-        metadata, content = _working_tree_bytes(root, raw_path)
-        _digest_record(digest, b"worktree", raw_path, metadata, content)
+        _digest_working_tree_entry(digest, b"worktree", root, raw_path)
 
     for raw_path in untracked:
         if _is_excluded(raw_path, exclusions):
             continue
-        metadata, content = _working_tree_bytes(root, raw_path)
-        _digest_record(digest, b"untracked", raw_path, metadata, content)
+        _digest_working_tree_entry(digest, b"untracked", root, raw_path)
     return f"sha256:{digest.hexdigest()}"
 
 

@@ -644,14 +644,18 @@ one `git cat-file --batch` stream. The equivalent prototype required two Git
 subprocesses and 0.05s for 101 staged paths while producing byte-identical
 index entries. A follow-up audit found that capturing the complete batch
 output traded subprocess cost for RSS proportional to all staged bytes. The
-final implementation streams bounded 32-request chunks through one persistent
-process and hashes each response before reading the next; memory is bounded by
-the largest staged blob rather than their sum. The end-to-end dirty digest now
-requires three Git subprocesses and 0.12s for 100 staged paths, versus 201 and
-3.76s before, and produces the identical digest. A regression test fixes the
-full dirty digest and requires one status, one index, and one streaming
-blob-batch subprocess for 32 staged files. The complete tooling set passes 344
-tests after batching.
+initial implementation streamed bounded 32-request chunks through one
+persistent process and hashed each response before reading the next, bounding
+memory by the largest staged blob rather than their sum. A follow-up
+portability audit found that a fixed 32-object request is not guaranteed to fit
+the POSIX minimum `PIPE_BUF`, and each response still allocated the complete
+blob. The final implementation derives each request batch from the actual pipe
+bound, drains stderr through a temporary file, and hashes staged and worktree
+bytes in fixed 1 MiB chunks. Memory is now independent of source file size,
+while the digest framing remains byte-identical. The end-to-end dirty digest
+still requires three Git subprocesses and about 0.12s for 100 staged paths,
+versus 201 and 3.76s before. Regression tests cover a constrained pipe, bounded
+streaming, truncated-input refusal, and exact digest compatibility.
 
 The MSRV rail invoked Cargo twice on the same 1.92.0 workspace: `check
 --all-targets` and then `test --no-run`. A single `test --all-targets --no-run`
@@ -661,7 +665,11 @@ CI and `just rust-msrv` now use the same one-command rail, guarded by a
 workflow/Justfile topology test. A cold local `msrv-lane` compile completed
 the consolidated command successfully in 11m32s and emitted every workspace
 test and benchmark executable without running them. The complete tooling set
-passes 345 tests after consolidation.
+passes 345 tests after consolidation. The rail now also uses the canonical
+`scripts/cargow` front door with an explicit `RUSTUP_TOOLCHAIN=1.92.0`
+override. This removes the CI step that deleted `rust-toolchain.toml` and the
+local recipe's redundant shell/environment bootstrap without weakening the
+exact-version assertion.
 
 The correctness workflow also started seven exhaustive cold-build jobs on
 every PR: Miri, cargo-careful, TSan, ASan, cargo-mutants, cargo-udeps, and four
@@ -711,6 +719,19 @@ job is removed. Dedicated whole-revision owners remain skipped exactly as
 before. Repository branch protection has no required status contexts, so the
 deleted job name is not an external merge dependency; a topology test also
 requires both hooks to remain enabled in pre-commit.
+
+The remaining prompt-manager job installed the repository as an editable
+package even though every tool is invoked by path and no test reads installed
+package metadata. It now installs only the five imported runtime/test tools:
+Jinja, jsonschema, PyYAML, pytest, and Ruff. This removes the editable wheel
+build while retaining the full tooling-test surface.
+
+Proof issuance and validation hashed daemon binaries and arbitrary registered
+artifacts with `Path.read_bytes()`, making peak Python memory proportional to
+the largest artifact. The checker, manifest writer, and aggregate writer now
+hash those files in 1 MiB chunks. This is byte-compatible and keeps memory
+bounded for release-sized binaries; the focused proof/workflow set passes 73
+tests after the change.
 
 ## Remaining measurement
 

@@ -158,7 +158,10 @@ def test_ci_precommit_skips_only_hooks_owned_by_dedicated_full_jobs() -> None:
         "ruff-format": ("prompt-manager", "python -m ruff format --check ."),
         "prompt-manager-lint": ("prompt-manager", "tools/prompt-manager/pm.py lint"),
         "cargo-fmt-check": ("rust-fmt", "./scripts/cargow fmt"),
-        "cargo-check": ("rust-msrv", "cargo +1.92.0 test --workspace --all-targets"),
+        "cargo-check": (
+            "rust-msrv",
+            "RUSTUP_TOOLCHAIN=1.92.0 ./scripts/cargow --lane msrv-lane test --workspace",
+        ),
         "hexagonal-boundaries": ("rust-policy", "lint-hexagonal-boundaries.py"),
         "rust-derive-allowlist": ("rust-policy", "check-rust-derive-allowlist.py"),
         "rust-cargo-toml-hygiene": ("rust-policy", "check-cargo-toml-hygiene.py"),
@@ -186,12 +189,17 @@ def test_sourcegraph_parity_generates_and_checks_in_one_pass() -> None:
 
 def test_prompt_manager_ci_lints_without_syncing_first() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    commands = "\n".join(
-        str(step.get("run", "")) for step in workflow["jobs"]["prompt-manager"]["steps"]
-    )
+    steps = workflow["jobs"]["prompt-manager"]["steps"]
+    commands = "\n".join(str(step.get("run", "")) for step in steps)
     assert "tools/prompt-manager/pm.py lint" in commands
     assert "tools/prompt-manager/pm.py sync" not in commands
     assert "git diff --exit-code" in commands
+    install = next(
+        step["run"] for step in steps if step.get("name") == "Install prompt-manager deps"
+    )
+    assert "-e ." not in install
+    for dependency in ("jinja2", "jsonschema", "pyyaml", "pytest", "ruff"):
+        assert dependency in install
 
 
 def test_proof_authority_ci_has_one_static_owner_and_one_test_owner() -> None:
@@ -244,15 +252,23 @@ def test_msrv_uses_one_all_target_compile_graph() -> None:
     commands = [
         str(step["run"])
         for step in workflow["jobs"]["rust-msrv"]["steps"]
-        if "run" in step and "cargo +1.92.0" in str(step["run"])
+        if "run" in step and "RUSTUP_TOOLCHAIN=1.92.0" in str(step["run"])
     ]
-    expected = "cargo +1.92.0 test --workspace --all-targets --all-features --locked --no-run"
+    expected = (
+        "RUSTUP_TOOLCHAIN=1.92.0 ./scripts/cargow --lane msrv-lane test "
+        "--workspace --all-targets --all-features --locked --no-run"
+    )
     assert commands == [expected]
+    assert all(
+        "Remove rust-toolchain override" != step.get("name")
+        for step in workflow["jobs"]["rust-msrv"]["steps"]
+    )
 
     justfile = (ROOT / "Justfile").read_text(encoding="utf-8")
     recipe = justfile.split("rust-msrv:\n", 1)[1].split("\n\n", 1)[0]
-    assert recipe.count("cargo +1.92.0") == 1
-    assert expected in recipe
+    assert recipe.count("RUSTUP_TOOLCHAIN=1.92.0") == 1
+    assert "{{cargo}} --lane msrv-lane test --workspace --all-targets" in recipe
+    assert "bash -lc" not in recipe
 
 
 def test_exhaustive_correctness_jobs_do_not_duplicate_every_pr_build() -> None:

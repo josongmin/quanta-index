@@ -274,7 +274,7 @@ rust-doc:
     RUSTDOCFLAGS="-D warnings" {{cargo}} --lane doc-lane doc --workspace --all-features --no-deps --locked
 
 rust-msrv:
-    env QUANTA_INDEX_BUILD_LANE=msrv-lane bash -lc 'source scripts/quanta-index-env.sh && cargo +1.92.0 test --workspace --all-targets --all-features --locked --no-run'
+    RUSTUP_TOOLCHAIN=1.92.0 {{cargo}} --lane msrv-lane test --workspace --all-targets --all-features --locked --no-run
 
 rust-bench:
     {{cargo}} --lane bench-lane bench --workspace --all-features --locked
