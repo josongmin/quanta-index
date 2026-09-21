@@ -450,7 +450,9 @@ impl RepoMapSnapshotIndex {
         for (position, entry) in entries.iter().enumerate() {
             index
                 .folded_search_text
-                .push(entry.search_text.to_ascii_lowercase());
+                .push(quanta_index_lq_text_normalizer::fold(
+                    entry.search_text.as_str(),
+                ));
             let _prior = index
                 .by_subject
                 .entry(entry.subject_identity.clone())

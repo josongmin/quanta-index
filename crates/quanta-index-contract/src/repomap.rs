@@ -96,6 +96,9 @@ macro_rules! repomap_string_enum {
     };
 }
 
+mod compile;
+pub use compile::*;
+
 repomap_string_enum! {
     pub enum RepoMapDocType {
         File => "File",

@@ -140,14 +140,12 @@ fn request(rng: &mut Lcg, snapshot: &RepoMapSnapshot) -> RepoMapQueryRequest {
         .map(|_| rng.word("zzz", 12))
         .collect::<Vec<_>>()
         .join(" ");
+    // Focus subjects are always resolvable here: an unresolved focus is a
+    // typed refusal (see `an_unresolved_focus_subject_is_a_typed_refusal`),
+    // not a degraded page.
     let mut focus_subjects = Vec::new();
     for _ in 0..rng.below(3) {
-        if rng.below(4) == 0 {
-            focus_subjects.push(RepoMapFocusSubjectDto {
-                subject_identity: "nowhere".to_string(),
-                subject_doc_type: RepoMapDocType::File,
-            });
-        } else if let Some(picked) = snapshot.entries.get(rng.index(snapshot.entries.len())) {
+        if let Some(picked) = snapshot.entries.get(rng.index(snapshot.entries.len())) {
             focus_subjects.push(RepoMapFocusSubjectDto {
                 subject_identity: picked.subject_identity.clone(),
                 subject_doc_type: picked.subject_doc_type,
@@ -180,11 +178,13 @@ struct Page {
 }
 
 fn tokenize(query_text: &str) -> Vec<String> {
-    query_text
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .filter(|term| !term.is_empty())
-        .map(str::to_ascii_lowercase)
-        .collect()
+    quanta_index_lq_text_normalizer::tokenize(
+        query_text,
+        quanta_index_lq_text_normalizer::CaseMode::Folded,
+    )
+    .indexable()
+    .map(|token| token.text.clone())
+    .collect()
 }
 
 /// The previous engine, verbatim in behaviour: clone, filter, full sort,
@@ -218,7 +218,7 @@ fn reference_query(snapshot: &RepoMapSnapshot, request: &RepoMapQueryRequest) ->
         if query_terms.is_empty() {
             return 0;
         }
-        let haystack = entry.search_text.to_ascii_lowercase();
+        let haystack = quanta_index_lq_text_normalizer::fold(entry.search_text.as_str());
         u32::try_from(
             query_terms
                 .iter()
@@ -373,4 +373,31 @@ fn a_fixed_top_k_response_does_not_grow_with_the_snapshot() -> TestResult {
         return Err(format!("response bytes grew with the snapshot: {small} -> {large}").into());
     }
     Ok(())
+}
+
+#[test]
+fn an_unresolved_focus_subject_is_a_typed_refusal() -> TestResult {
+    let mut rng = Lcg(0x5EED_5EED);
+    let snap = snapshot(&mut rng, 24);
+    let indexed = RepoMapIndexedSnapshot::new(snap.clone());
+    let request = RepoMapQueryRequest {
+        repo_id: snap.repo_id.clone(),
+        revision_id: snap.revision_id.clone(),
+        manifest_generation: snap.manifest_generation,
+        query_text: "alpha".to_string(),
+        top_k: 4,
+        token_budget: 256,
+        focus_subjects: vec![RepoMapFocusSubjectDto {
+            subject_identity: "nowhere".to_string(),
+            subject_doc_type: RepoMapDocType::File,
+        }],
+    };
+    match RepoMapQueryEngine::query(&indexed, &request) {
+        Err(quanta_index_core::CoreError::Typed { code, .. })
+            if code == quanta_index_contract::SearchPlaneErrorCodeV2::FocusSubjectNotFound =>
+        {
+            Ok(())
+        }
+        other => panic!("expected FocusSubjectNotFound typed refusal, got {other:?}"),
+    }
 }

@@ -139,7 +139,9 @@ impl RepoMapGenerationStore {
                 "repomap ingest: nodes must not be empty".to_string(),
             ));
         }
-        let snapshot = RepoMapMaterializer::materialize(bundle);
+        let snapshot = RepoMapMaterializer::materialize(bundle).map_err(|refusal| {
+            CoreError::InvalidContract(format!("repomap compile refused: {refusal}"))
+        })?;
         self.insert_snapshot(snapshot)
     }
 

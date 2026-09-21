@@ -39,10 +39,10 @@ fn source_bundle() -> RepoMapSourceBundle {
         repo_id(),
         revision_id(),
         manifest_generation(),
-        "manifest-digest-17",
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         "snapshot-17",
         3,
-        "auth-digest-17",
+        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
         RepoMapGraphCoverage {
             item_index_availability: RepoMapItemIndexAvailability::Full,
             graph_coverage_class: RepoMapGraphCoverageClass::Complete,
@@ -107,16 +107,16 @@ fn source_bundle() -> RepoMapSourceBundle {
             exactness: RepoMapChunkExactness::Approximate,
         },
     ))
-    .with_edge(quanta_index_contract::RepoMapEdge::Call(
-        quanta_index_contract::RepoMapCallEdge {
-            caller: RepoMapNodeRef::File(FileId::new("src/lib.rs")),
-            callee: RepoMapNodeRef::File(FileId::new("src/main.rs")),
+    .with_edge(quanta_index_contract::RepoMapEdge::DependsOn(
+        quanta_index_contract::RepoMapDependsOnEdge {
+            dependent: RepoMapNodeRef::File(FileId::new("src/lib.rs")),
+            dependency: RepoMapNodeRef::File(FileId::new("src/main.rs")),
         },
     ))
-    .with_edge(quanta_index_contract::RepoMapEdge::Call(
-        quanta_index_contract::RepoMapCallEdge {
-            caller: RepoMapNodeRef::File(FileId::new("src/lib.rs")),
-            callee: RepoMapNodeRef::File(FileId::new("src/http.rs")),
+    .with_edge(quanta_index_contract::RepoMapEdge::DependsOn(
+        quanta_index_contract::RepoMapDependsOnEdge {
+            dependent: RepoMapNodeRef::File(FileId::new("src/lib.rs")),
+            dependency: RepoMapNodeRef::File(FileId::new("src/http.rs")),
         },
     ))
     .with_edge(quanta_index_contract::RepoMapEdge::Import(
@@ -151,7 +151,8 @@ fn activate(store: &RepoMapGenerationStore) -> Result<(), CoreError> {
         repo_id: bundle.repo_id,
         revision_id: bundle.revision_id,
         manifest_generation: bundle.manifest_generation,
-        manifest_digest: "manifest-digest-17".to_string(),
+        manifest_digest: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            .to_string(),
     })
 }
 
@@ -221,7 +222,10 @@ fn ingest_bundle_materializes_snapshot_and_serves_query() {
     assert_eq!(response.manifest_generation, bundle.manifest_generation);
     assert_eq!(response.snapshot_meta.snapshot_id, "snapshot-17");
     assert_eq!(response.snapshot_meta.projection_version, 3);
-    assert_eq!(response.snapshot_meta.authority_digest, "auth-digest-17");
+    assert_eq!(
+        response.snapshot_meta.authority_digest,
+        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    );
     assert_eq!(response.entries.len(), 1);
     assert_eq!(
         response

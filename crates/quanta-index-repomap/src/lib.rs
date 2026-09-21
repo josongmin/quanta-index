@@ -18,7 +18,7 @@ pub use layout_v3::{
     QuarantinePayloadAddressV1, SecureMetadataPairV1, StateRootSecurityContextV1,
     StateRootSecurityVerificationErrorV1,
 };
-pub use materializer::RepoMapMaterializer;
+pub use materializer::{RepoMapGraphCompiler, RepoMapMaterializer};
 pub use model::{RepoMapEntry, RepoMapIndexedSnapshot, RepoMapSnapshot, RepoMapSnapshotIndex};
 pub use query::RepoMapQueryEngine;
 pub use reader::RepoMapPinnedReader;

@@ -118,6 +118,15 @@ packages = [
 ]
 lib = true
 
+[local_scopes.p02a-repomap-compiler]
+lane = "test-p02a-repomap-compiler-lane"
+test_threads = 4
+targets = [
+  "repomap-compiler-owner-v1",
+  "repomap-bounded-query",
+  "repomap-owner-surface",
+]
+
 [local_scopes.canonical-identity]
 lane = "test-canonical-identity-lane"
 test_threads = 4
@@ -632,6 +641,12 @@ path = "crates/quanta-index-repomap/tests/store_durability.rs"
 owner = "quanta-index-repomap"
 rail = "pr-workspace-nextest"
 
+
+[[integration_targets]]
+id = "repomap-compiler-owner-v1"
+path = "crates/quanta-index-repomap/tests/compiler_owner_v1.rs"
+owner = "quanta-index-repomap"
+rail = "pr-workspace-nextest"
 
 [[integration_targets]]
 id = "repomap-owner-surface"
