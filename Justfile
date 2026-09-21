@@ -313,8 +313,7 @@ rust-bench-dsl-compare:
 
 # Sourcegraph filter parity: regenerate the execution-coverage matrix and gate it.
 rust-bench-dsl-parity:
-    python3 tools/benchmark/sourcegraph_parity.py --write
-    python3 tools/benchmark/sourcegraph_parity.py --check
+    python3 tools/benchmark/sourcegraph_parity.py --check --write
 
 # --------------------------------------------------------------------------
 # Search product quality rails (docs/plans/jun-7-search-product-quality).

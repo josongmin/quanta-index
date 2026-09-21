@@ -254,12 +254,9 @@ jobs:
       - name: Ignored-test exceptions are owned and unexpired
         run: python3 tools/ci/lint/check-ignored-test-policy.py
 
-      - name: Sourcegraph parity coverage (no accepted-but-untested SgFilter)
-        run: python3 tools/benchmark/sourcegraph_parity.py --check
-
-      - name: Sourcegraph parity doc is regenerated from code
+      - name: Sourcegraph parity coverage and generated doc
         run: |
-          python3 tools/benchmark/sourcegraph_parity.py --write
+          python3 tools/benchmark/sourcegraph_parity.py --check --write
           git diff --exit-code tools/benchmark/SOURCEGRAPH_PARITY.md
 
   proof-authority-current-gate:
@@ -471,9 +468,6 @@ jobs:
 
       - name: Install prompt-manager deps
         run: python -m pip install -e . 'pytest>=8.3.0' 'ruff==0.16.8'
-
-      - name: prompt-manager sync
-        run: python tools/prompt-manager/pm.py sync
 
       - name: prompt-manager lint
         run: python tools/prompt-manager/pm.py lint

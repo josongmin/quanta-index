@@ -170,3 +170,24 @@ def test_ci_precommit_skips_only_hooks_owned_by_dedicated_full_jobs() -> None:
     for hook_id, (job_id, command) in owners.items():
         job_commands = "\n".join(str(step.get("run", "")) for step in jobs[job_id]["steps"])
         assert command in job_commands, (hook_id, job_id, command)
+
+
+def test_sourcegraph_parity_generates_and_checks_in_one_pass() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    justfile = (ROOT / "Justfile").read_text(encoding="utf-8")
+    command = "python3 tools/benchmark/sourcegraph_parity.py --check --write"
+    assert workflow.count("tools/benchmark/sourcegraph_parity.py") == 1
+    assert command in workflow
+    recipe = justfile.split("rust-bench-dsl-parity:\n", 1)[1].split("\n\n", 1)[0]
+    assert recipe.count("tools/benchmark/sourcegraph_parity.py") == 1
+    assert command in recipe
+
+
+def test_prompt_manager_ci_lints_without_syncing_first() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    commands = "\n".join(
+        str(step.get("run", "")) for step in workflow["jobs"]["prompt-manager"]["steps"]
+    )
+    assert "tools/prompt-manager/pm.py lint" in commands
+    assert "tools/prompt-manager/pm.py sync" not in commands
+    assert "git diff --exit-code" in commands

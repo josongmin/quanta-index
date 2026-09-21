@@ -588,6 +588,19 @@ locally. The complete tooling set passes 337 tests after adding that mapping
 guard. Hosted savings cannot be measured until GitHub billing allows jobs to
 start.
 
+The Rust-policy job and `rust-bench-dsl-parity` recipe also invoked the
+Sourcegraph parity generator twice: `--check` and `--write` each built the same
+in-memory report from the full source inventory. The CLI already supports both
+flags together, so each rail now performs one `--check --write` pass and keeps
+the generated-file `git diff` gate. A topology test requires exactly one
+generator invocation in each owner. The combined command reports 38 filters,
+29 required surfaces, zero waivers, and no generated diff.
+
+The prompt-manager job rendered every target with `sync`, then immediately
+rendered every target again with `lint`. CI now runs the fail-closed drift lint
+directly. The final `git diff --exit-code` remains to catch any test-side
+mutation, while a workflow test prevents reintroducing the pre-lint sync.
+
 ## Remaining measurement
 
 On a quiet host, run:
