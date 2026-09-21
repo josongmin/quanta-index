@@ -648,6 +648,16 @@ produces the identical digest. A regression test fixes the full dirty digest
 and requires one status, one index, and one blob-batch subprocess for 32
 staged files. The complete tooling set passes 344 tests after batching.
 
+The MSRV rail invoked Cargo twice on the same 1.92.0 workspace: `check
+--all-targets` and then `test --no-run`. A single `test --all-targets --no-run`
+keeps the union of compile targets and the explicit MSRV contract while
+removing the duplicate workspace resolution and normal-target compile pass.
+CI and `just rust-msrv` now use the same one-command rail, guarded by a
+workflow/Justfile topology test. A cold local `msrv-lane` compile completed
+the consolidated command successfully in 11m32s and emitted every workspace
+test and benchmark executable without running them. The complete tooling set
+passes 345 tests after consolidation.
+
 ## Remaining measurement
 
 On a quiet host, run:

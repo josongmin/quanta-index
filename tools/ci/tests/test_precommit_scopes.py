@@ -159,7 +159,7 @@ def test_ci_precommit_skips_only_hooks_owned_by_dedicated_full_jobs() -> None:
         "ruff-format": ("prompt-manager", "python -m ruff format --check ."),
         "prompt-manager-lint": ("prompt-manager", "tools/prompt-manager/pm.py lint"),
         "cargo-fmt-check": ("rust-fmt", "./scripts/cargow fmt"),
-        "cargo-check": ("rust-msrv", "cargo +1.92.0 check"),
+        "cargo-check": ("rust-msrv", "cargo +1.92.0 test --workspace --all-targets"),
         "hexagonal-boundaries": ("rust-policy", "lint-hexagonal-boundaries.py"),
         "rust-derive-allowlist": ("rust-policy", "check-rust-derive-allowlist.py"),
         "rust-cargo-toml-hygiene": ("rust-policy", "check-cargo-toml-hygiene.py"),
@@ -227,3 +227,19 @@ def test_ci_python_jobs_install_only_their_runtime_imports() -> None:
         ]
         assert command in installs, (job_id, installs)
         assert all("-e ." not in install for install in installs), (job_id, installs)
+
+
+def test_msrv_uses_one_all_target_compile_graph() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    commands = [
+        str(step["run"])
+        for step in workflow["jobs"]["rust-msrv"]["steps"]
+        if "run" in step and "cargo +1.92.0" in str(step["run"])
+    ]
+    expected = "cargo +1.92.0 test --workspace --all-targets --all-features --locked --no-run"
+    assert commands == [expected]
+
+    justfile = (ROOT / "Justfile").read_text(encoding="utf-8")
+    recipe = justfile.split("rust-msrv:\n", 1)[1].split("\n\n", 1)[0]
+    assert recipe.count("cargo +1.92.0") == 1
+    assert expected in recipe
