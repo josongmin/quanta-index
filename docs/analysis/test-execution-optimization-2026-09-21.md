@@ -570,6 +570,24 @@ After this removal, the complete tooling set passed 336 tests in 18.55s and no
 single repo-wide lint test exceeded 1.03s in that run. Host variability still
 makes the structural removal, not this wall-clock sample, the authority.
 
+## Hosted CI duplicate ownership
+
+The CI pre-commit job ran whole-revision actionlint, shellcheck, Ruff,
+prompt-manager lint, Cargo format/check, and five Rust policy hooks even though
+dedicated `policy`, `prompt-manager`, `rust-fmt`, `rust-msrv`, and
+`rust-policy` jobs rerun those same or broader surfaces. The pre-commit job now
+skips only hooks with a named dedicated whole-revision owner. It retains the
+generic whitespace/EOF/YAML/JSON/TOML/merge/debug gates plus root, lock, and
+doc-path hygiene. Its installation no longer resolves the project runtime or
+Ruff; only pre-commit is needed for the retained hooks.
+
+A workflow regression test maps every skipped hook to its owning job and
+command, preventing an optimization from silently deleting coverage. The
+focused CI-equivalent pre-commit selection, actionlint, Ruff, and Semgrep pass
+locally. The complete tooling set passes 337 tests after adding that mapping
+guard. Hosted savings cannot be measured until GitHub billing allows jobs to
+start.
+
 ## Remaining measurement
 
 On a quiet host, run:

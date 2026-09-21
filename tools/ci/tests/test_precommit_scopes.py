@@ -9,6 +9,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 CONFIG = ROOT / ".pre-commit-config.yaml"
+WORKFLOW = ROOT / ".github/workflows/ci.yml"
 
 
 def test_scoped_repository_lints_skip_unrelated_docs_and_cover_their_inputs() -> None:
@@ -141,3 +142,31 @@ def test_semgrep_keeps_code_scope_but_expands_policy_changes(tmp_path: Path) -> 
         "tools/ci/semgrep/rules.yml",
     ):
         assert scan_targets(*code_paths, policy_path) == ["."]
+
+
+def test_ci_precommit_skips_only_hooks_owned_by_dedicated_full_jobs() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    jobs = workflow["jobs"]
+    precommit_steps = jobs["pre-commit"]["steps"]
+    install = next(step for step in precommit_steps if step.get("name") == "Install pre-commit")
+    assert install["run"] == "python -m pip install 'pre-commit>=4.0.0'"
+    run = next(step for step in precommit_steps if step.get("name") == "Run pre-commit")
+    skipped = set(run["env"]["SKIP"].split(","))
+    owners = {
+        "actionlint": ("policy", "bash scripts/run-actionlint.sh"),
+        "shellcheck": ("policy", "bash scripts/run-shellcheck.sh"),
+        "ruff": ("prompt-manager", "python -m ruff check ."),
+        "ruff-format": ("prompt-manager", "python -m ruff format --check ."),
+        "prompt-manager-lint": ("prompt-manager", "tools/prompt-manager/pm.py lint"),
+        "cargo-fmt-check": ("rust-fmt", "./scripts/cargow fmt"),
+        "cargo-check": ("rust-msrv", "cargo +1.92.0 check"),
+        "hexagonal-boundaries": ("rust-policy", "lint-hexagonal-boundaries.py"),
+        "rust-derive-allowlist": ("rust-policy", "check-rust-derive-allowlist.py"),
+        "rust-cargo-toml-hygiene": ("rust-policy", "check-cargo-toml-hygiene.py"),
+        "proof-authority": ("rust-policy", "check-proof-authority.py"),
+        "rust-digest-fallibility": ("rust-policy", "check-digest-fallibility.py"),
+    }
+    assert skipped == set(owners)
+    for hook_id, (job_id, command) in owners.items():
+        job_commands = "\n".join(str(step.get("run", "")) for step in jobs[job_id]["steps"])
+        assert command in job_commands, (hook_id, job_id, command)
