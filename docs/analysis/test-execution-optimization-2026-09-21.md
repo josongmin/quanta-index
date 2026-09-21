@@ -498,6 +498,24 @@ rebinds each dependency independently. All nine aggregate tests passed after
 this fixture change. A local run took 33.97s, but comparison with earlier
 contended runs is not a controlled speedup measurement.
 
+A production-path profile then showed that one ready-aggregate publication
+spawned 465 subprocesses and evaluated 66 source snapshots. Each validation
+pass rebound the same repository and paired checkout once per dependency even
+though all dependency manifests share the same proof artifact root. Aggregate
+construction and validation now share snapshots only inside one pass and only
+for identical artifact-root/exclusion keys. A validation pass independently
+re-snapshots every used key at the end and refuses publication if the source
+or paired checkout changed while manifests were being checked. The existing
+post-publication rebind remains independent.
+
+The profiled ready-aggregate test now spawns 139 subprocesses and evaluates 15
+source snapshots instead of 465 and 66. Its cProfile test body fell from 11.73s
+to 1.93s on the observed host. A regression test mutates tracked source after
+the first cached manifest validation and proves the end-of-pass binding rejects
+it. The focused proof-authority/manifest/aggregate set passed 54 tests, and the
+complete tooling set passed 335 tests. These local timings are diagnostic;
+hosted CI remains unavailable while jobs fail before startup.
+
 ## Local hook selection
 
 Twelve local pre-commit/pre-push hooks declared path filters but also set

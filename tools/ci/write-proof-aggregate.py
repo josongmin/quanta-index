@@ -65,6 +65,8 @@ def _manifest_status(
     proof_by_id: dict[str, dict[str, Any]],
     checker: ModuleType,
     paired_checkouts: dict[str, Path],
+    source_cache: dict[tuple[Path, Path | None, tuple[Path, ...]], dict[str, Any]],
+    pair_cache: dict[tuple[Path, str, Path], dict[str, Any]],
 ) -> tuple[str, str | None, dict[str, Any] | None]:
     if proof.get("authority_state") != "executable":
         return "BLOCKED", None, None
@@ -77,6 +79,27 @@ def _manifest_status(
         schema = _read_json(root / proof["artifact_schema"])
     except (OSError, json.JSONDecodeError):
         return "FAILED", digest, None
+    repository = proof.get("paired_repository")
+    paired_checkout = paired_checkouts.get(repository) if isinstance(repository, str) else None
+    bound_source = checker._cached_proof_source_snapshot(
+        source_cache,
+        root,
+        manifest_path=manifest_path,
+        proof=proof,
+        excluded_paths=(() if paired_checkout is None else (paired_checkout,)),
+    )
+    bound_source_pair = None
+    if paired_checkout is not None:
+        try:
+            bound_source_pair = checker._cached_paired_source_snapshot(
+                pair_cache,
+                paired_checkout,
+                repository=repository,
+                dependency_lock=Path(proof["paired_dependency_lock"]),
+            )
+        except (OSError, RuntimeError, ValueError):
+            # Keep check_manifest's proof-specific paired-source finding.
+            bound_source_pair = None
     findings = checker.check_manifest(
         payload,
         manifest_path=manifest_path,
@@ -87,6 +110,8 @@ def _manifest_status(
         allow_non_passed=True,
         paired_checkouts=paired_checkouts,
         proof_by_id=proof_by_id,
+        bound_source=bound_source,
+        bound_source_pair=bound_source_pair,
     )
     if findings or not isinstance(payload, dict):
         return "FAILED", digest, None
@@ -125,20 +150,24 @@ def build_aggregate(
     dependency_ids = checker.dependency_closure(proof_by_id, target["id"])
     repository = target["paired_repository"]
     paired_checkouts = {repository: paired_checkout.resolve()}
+    source_cache: dict[tuple[Path, Path | None, tuple[Path, ...]], dict[str, Any]] = {}
+    pair_cache: dict[tuple[Path, str, Path], dict[str, Any]] = {}
     output_path = (root / aggregate["artifact"]).resolve()
     try:
         output_path.relative_to(root)
     except ValueError as error:
         raise AggregateRefused("registered aggregate artifact escapes repository root") from error
 
-    source = checker.proof_source_snapshot(
+    source = checker._cached_proof_source_snapshot(
+        source_cache,
         root,
         manifest_path=output_path,
         proof=target,
         excluded_paths=(paired_checkout.resolve(),),
     )
     try:
-        source_pair = checker.paired_source_snapshot(
+        source_pair = checker._cached_paired_source_snapshot(
+            pair_cache,
             paired_checkout,
             repository=repository,
             dependency_lock=Path(target["paired_dependency_lock"]),
@@ -157,6 +186,8 @@ def build_aggregate(
             proof_by_id=proof_by_id,
             checker=checker,
             paired_checkouts=paired_checkouts,
+            source_cache=source_cache,
+            pair_cache=pair_cache,
         )
         dependency_statuses[proof_id] = status
         dependency_receipts.append(

@@ -354,6 +354,51 @@ def test_writer_derives_ready_receipt_from_full_valid_closure(tmp_path: Path) ->
     assert payload["state_root_format"] == "v2"
 
 
+def test_aggregate_validation_refuses_source_change_during_cached_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, registry = _fixture_root(tmp_path, executable=True)
+    paired = _paired_checkout(tmp_path)
+    _write_dependency_manifests(root, registry, paired)
+    output, _, ready = WRITER.publish_aggregate(
+        root=root,
+        registry_path=root / "tools/ci/proof-authority.toml",
+        paired_checkout=paired,
+    )
+    assert ready
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    original_check_manifest = CHECKER.check_manifest
+    mutated = False
+
+    def mutate_after_first_manifest(*args, **kwargs):
+        nonlocal mutated
+        findings = original_check_manifest(*args, **kwargs)
+        if not mutated:
+            with (root / "Justfile").open("a", encoding="utf-8") as handle:
+                handle.write("\n# changed during aggregate validation\n")
+            mutated = True
+        return findings
+
+    monkeypatch.setattr(CHECKER, "check_manifest", mutate_after_first_manifest)
+    findings = CHECKER.check_aggregate_receipt(
+        payload,
+        receipt_path=output,
+        registry=registry,
+        registry_path=root / "tools/ci/proof-authority.toml",
+        schema=json.loads((root / "tools/ci/proof-aggregate.schema.json").read_text()),
+        root=root,
+        bind_source=True,
+        paired_checkouts={"github:josongmin/semantica-codegraph-v2": paired},
+        require_ready=True,
+    )
+
+    assert mutated
+    assert any(
+        finding.message == "source changed during aggregate validation" for finding in findings
+    )
+
+
 def test_writer_publishes_failed_diagnostic_for_cross_manifest_host_drift(
     tmp_path: Path,
 ) -> None:

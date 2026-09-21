@@ -863,6 +863,52 @@ def proof_source_snapshot(
     return source_snapshot(root, excluded_paths=exclusions)
 
 
+def _cached_proof_source_snapshot(
+    cache: dict[tuple[Path, Path | None, tuple[Path, ...]], dict[str, Any]],
+    root: Path,
+    *,
+    manifest_path: Path,
+    proof: dict[str, Any],
+    excluded_paths: Iterable[Path] = (),
+) -> dict[str, Any]:
+    """Reuse a source binding only inside one validation pass."""
+
+    artifact_root = Path(proof["artifact"]).parent
+    resolved_exclusions = tuple(sorted((path.resolve() for path in excluded_paths), key=str))
+    key = (
+        artifact_root,
+        manifest_path.resolve() if artifact_root == Path(".") else None,
+        resolved_exclusions,
+    )
+    if key not in cache:
+        cache[key] = proof_source_snapshot(
+            root,
+            manifest_path=manifest_path,
+            proof=proof,
+            excluded_paths=resolved_exclusions,
+        )
+    return cache[key]
+
+
+def _cached_paired_source_snapshot(
+    cache: dict[tuple[Path, str, Path], dict[str, Any]],
+    checkout: Path,
+    *,
+    repository: str,
+    dependency_lock: Path,
+) -> dict[str, Any]:
+    """Reuse one paired-checkout binding only inside one validation pass."""
+
+    key = (checkout.resolve(), repository, dependency_lock)
+    if key not in cache:
+        cache[key] = paired_source_snapshot(
+            checkout,
+            repository=repository,
+            dependency_lock=dependency_lock,
+        )
+    return cache[key]
+
+
 def _github_repository_from_origin(origin: str) -> str | None:
     patterns = (
         r"^https://github\.com/(?P<path>[^/\s]+/[^/\s]+?)(?:\.git)?/?$",
@@ -933,6 +979,8 @@ def check_manifest(
     allow_non_passed: bool = False,
     paired_checkouts: dict[str, Path] | None = None,
     proof_by_id: dict[str, dict[str, Any]] | None = None,
+    bound_source: dict[str, Any] | None = None,
+    bound_source_pair: dict[str, Any] | None = None,
 ) -> list[Finding]:
     findings: list[Finding] = []
     validator = jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker())
@@ -998,10 +1046,14 @@ def check_manifest(
                     )
                 else:
                     try:
-                        live_pair = paired_source_snapshot(
-                            paired_checkout,
-                            repository=repository,
-                            dependency_lock=Path(dependency_lock),
+                        live_pair = (
+                            bound_source_pair
+                            if bound_source_pair is not None
+                            else paired_source_snapshot(
+                                paired_checkout,
+                                repository=repository,
+                                dependency_lock=Path(dependency_lock),
+                            )
                         )
                     except (OSError, RuntimeError, ValueError) as error:
                         findings.append(Finding(manifest_path, f"cannot bind source_pair: {error}"))
@@ -1132,11 +1184,15 @@ def check_manifest(
             )
 
     if bind_source:
-        current_source = proof_source_snapshot(
-            root,
-            manifest_path=manifest_path,
-            proof=proof,
-            excluded_paths=(() if paired_checkout is None else (paired_checkout,)),
+        current_source = (
+            bound_source
+            if bound_source is not None
+            else proof_source_snapshot(
+                root,
+                manifest_path=manifest_path,
+                proof=proof,
+                excluded_paths=(() if paired_checkout is None else (paired_checkout,)),
+            )
         )
         labels = {
             "head": "current HEAD",
@@ -1298,7 +1354,10 @@ def check_aggregate_receipt(
 
     target_proof = proof_by_id[target_id]
     excluded_pair_paths = tuple((paired_checkouts or {}).values())
-    current_source = proof_source_snapshot(
+    source_cache: dict[tuple[Path, Path | None, tuple[Path, ...]], dict[str, Any]] = {}
+    pair_cache: dict[tuple[Path, str, Path], dict[str, Any]] = {}
+    current_source = _cached_proof_source_snapshot(
+        source_cache,
         root,
         manifest_path=receipt_path,
         proof=target_proof,
@@ -1310,14 +1369,18 @@ def check_aggregate_receipt(
     expected_pair: dict[str, Any] | None = None
     repository = target_proof.get("paired_repository")
     checkout = (paired_checkouts or {}).get(repository) if isinstance(repository, str) else None
+    source_requests: list[tuple[Path, dict[str, Any], tuple[Path, ...]]] = []
+    pair_requests: list[tuple[Path, str, Path]] = []
     if bind_source:
+        source_requests.append((receipt_path, target_proof, excluded_pair_paths))
         if checkout is None:
             findings.append(
                 Finding(receipt_path, f"aggregate requires paired checkout for {repository!r}")
             )
         else:
             try:
-                expected_pair = paired_source_snapshot(
+                expected_pair = _cached_paired_source_snapshot(
+                    pair_cache,
                     checkout,
                     repository=repository,
                     dependency_lock=Path(target_proof["paired_dependency_lock"]),
@@ -1327,6 +1390,9 @@ def check_aggregate_receipt(
                     Finding(receipt_path, f"cannot bind aggregate source_pair: {error}")
                 )
             else:
+                pair_requests.append(
+                    (checkout, repository, Path(target_proof["paired_dependency_lock"]))
+                )
                 if payload.get("source_pair") != expected_pair:
                     findings.append(
                         Finding(receipt_path, "aggregate source_pair is not current paired source")
@@ -1371,6 +1437,41 @@ def check_aggregate_receipt(
             expected_sha256 = _sha256(manifest_path)
             try:
                 manifest = _read_json(manifest_path)
+                proof_repository = proof.get("paired_repository")
+                manifest_checkout = (
+                    (paired_checkouts or {}).get(proof_repository)
+                    if isinstance(proof_repository, str)
+                    else None
+                )
+                bound_source = None
+                bound_source_pair = None
+                if bind_source:
+                    manifest_exclusions = () if manifest_checkout is None else (manifest_checkout,)
+                    source_requests.append((manifest_path, proof, manifest_exclusions))
+                    bound_source = _cached_proof_source_snapshot(
+                        source_cache,
+                        root,
+                        manifest_path=manifest_path,
+                        proof=proof,
+                        excluded_paths=manifest_exclusions,
+                    )
+                    if manifest_checkout is not None:
+                        dependency_lock = Path(proof["paired_dependency_lock"])
+                        try:
+                            bound_source_pair = _cached_paired_source_snapshot(
+                                pair_cache,
+                                manifest_checkout,
+                                repository=proof_repository,
+                                dependency_lock=dependency_lock,
+                            )
+                        except (OSError, RuntimeError, ValueError):
+                            # Preserve check_manifest's contextual finding on
+                            # an invalid paired checkout.
+                            bound_source_pair = None
+                        else:
+                            pair_requests.append(
+                                (manifest_checkout, proof_repository, dependency_lock)
+                            )
                 manifest_findings = check_manifest(
                     manifest,
                     manifest_path=manifest_path,
@@ -1381,6 +1482,8 @@ def check_aggregate_receipt(
                     allow_non_passed=True,
                     paired_checkouts=paired_checkouts,
                     proof_by_id=proof_by_id,
+                    bound_source=bound_source,
+                    bound_source_pair=bound_source_pair,
                 )
             except (OSError, json.JSONDecodeError) as error:
                 manifest_findings = [
@@ -1507,6 +1610,26 @@ def check_aggregate_receipt(
         findings.append(Finding(receipt_path, "aggregate production_ready is not derived verdict"))
     if require_ready and not expected_ready:
         findings.append(Finding(receipt_path, "aggregate is not production ready"))
+    if bind_source:
+        final_source_cache: dict[tuple[Path, Path | None, tuple[Path, ...]], dict[str, Any]] = {}
+        final_pair_cache: dict[tuple[Path, str, Path], dict[str, Any]] = {}
+        for manifest_path, proof, exclusions in source_requests:
+            _cached_proof_source_snapshot(
+                final_source_cache,
+                root,
+                manifest_path=manifest_path,
+                proof=proof,
+                excluded_paths=exclusions,
+            )
+        for pair_checkout, pair_repository, dependency_lock in pair_requests:
+            _cached_paired_source_snapshot(
+                final_pair_cache,
+                pair_checkout,
+                repository=pair_repository,
+                dependency_lock=dependency_lock,
+            )
+        if final_source_cache != source_cache or final_pair_cache != pair_cache:
+            findings.append(Finding(receipt_path, "source changed during aggregate validation"))
     return findings
 
 
