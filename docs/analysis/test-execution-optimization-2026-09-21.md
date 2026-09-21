@@ -658,6 +658,17 @@ the consolidated command successfully in 11m32s and emitted every workspace
 test and benchmark executable without running them. The complete tooling set
 passes 345 tests after consolidation.
 
+The correctness workflow also started seven exhaustive cold-build jobs on
+every PR: Miri, cargo-careful, TSan, ASan, cargo-mutants, cargo-udeps, and four
+60-second fuzz targets. These are discovery/defense-in-depth rails rather than
+the immediate PR semantic authority; regular CI already runs workspace
+nextest and clippy, while correctness retains PR changed-line coverage, public
+API diff, module snapshots, and the LLVM-line budget. The seven exhaustive
+jobs now run nightly or on explicit dispatch, preserving their oracles while
+removing seven independent cold toolchain/workspace builds from each PR. A
+workflow topology test fixes both the nightly set and the retained PR set.
+The complete tooling set passes 346 tests after the split.
+
 ## Remaining measurement
 
 On a quiet host, run:

@@ -10,6 +10,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[3]
 CONFIG = ROOT / ".pre-commit-config.yaml"
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
+CORRECTNESS_WORKFLOW = ROOT / ".github/workflows/correctness.yml"
 
 
 def test_scoped_repository_lints_skip_unrelated_docs_and_cover_their_inputs() -> None:
@@ -243,3 +244,33 @@ def test_msrv_uses_one_all_target_compile_graph() -> None:
     recipe = justfile.split("rust-msrv:\n", 1)[1].split("\n\n", 1)[0]
     assert recipe.count("cargo +1.92.0") == 1
     assert expected in recipe
+
+
+def test_exhaustive_correctness_jobs_do_not_duplicate_every_pr_build() -> None:
+    workflow = yaml.safe_load(CORRECTNESS_WORKFLOW.read_text(encoding="utf-8"))
+    jobs = workflow["jobs"]
+    nightly_or_manual = (
+        "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
+    )
+    exhaustive = {
+        "rust-miri",
+        "rust-careful",
+        "rust-tsan",
+        "rust-asan",
+        "rust-mutants",
+        "rust-udeps",
+        "rust-fuzz-smoke",
+    }
+    assert {
+        job_id for job_id in exhaustive if jobs[job_id].get("if") == nightly_or_manual
+    } == exhaustive
+
+    # These gates are source-specific or supply immediate PR coverage signal.
+    for job_id in (
+        "rust-llvm-lines",
+        "rust-public-api",
+        "rust-cargo-modules",
+        "rust-changed-line-coverage",
+    ):
+        condition = jobs[job_id].get("if", "")
+        assert "schedule" not in condition and "workflow_dispatch" not in condition, job_id

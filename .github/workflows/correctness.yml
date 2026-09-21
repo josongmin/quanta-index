@@ -1,9 +1,10 @@
 name: correctness
 
-# Heavy correctness tooling (Miri / sanitizers / mutation testing / unused-dep
-# scans). These run nightly on a schedule, on pull requests, and on demand via
-# workflow_dispatch. They are intentionally separate from `ci.yml` because they
-# take significantly longer than the regular test rail.
+# Heavy correctness tooling. PRs retain source-specific structural gates and
+# changed-line coverage; exhaustive interpreter, sanitizer, mutation, unused-
+# dependency and fuzz exploration runs nightly or on explicit dispatch. These
+# are intentionally separate from `ci.yml` because they take significantly
+# longer than the regular test rail.
 
 on:
   pull_request:
@@ -123,6 +124,7 @@ jobs:
 
   rust-miri:
     name: rust-miri (UB detection)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     env:
       RUSTUP_TOOLCHAIN: nightly
@@ -163,6 +165,7 @@ jobs:
 
   rust-careful:
     name: rust-careful (stacked borrows / debug assertions)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     env:
       RUSTUP_TOOLCHAIN: nightly
@@ -187,6 +190,7 @@ jobs:
 
   rust-tsan:
     name: rust-tsan (ThreadSanitizer)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     env:
       RUSTUP_TOOLCHAIN: nightly
@@ -217,6 +221,7 @@ jobs:
 
   rust-asan:
     name: rust-asan (AddressSanitizer)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     env:
       RUSTUP_TOOLCHAIN: nightly
@@ -247,6 +252,7 @@ jobs:
 
   rust-mutants:
     name: rust-mutants (mutation testing)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -273,6 +279,7 @@ jobs:
 
   rust-udeps:
     name: rust-udeps (unused deps, rustc)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     env:
       RUSTUP_TOOLCHAIN: nightly
@@ -393,6 +400,7 @@ jobs:
 
   rust-fuzz-smoke:
     name: rust-fuzz-smoke (IPC decoders, 60s each)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
