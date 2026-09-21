@@ -462,6 +462,60 @@ def test_dirty_digest_binds_staged_unstaged_and_scoped_untracked_bytes(
     assert MODULE.dirty_digest(tmp_path, excluded_paths=excluded) == with_untracked
 
 
+def test_porcelain_status_paths_match_existing_git_diff_domains(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    (tmp_path / "rename-source").write_bytes(b"rename\n")
+    (tmp_path / "unstaged-delete").write_bytes(b"delete\n")
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "add", "rename-source", "unstaged-delete"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "more fixtures"], check=True)
+    tracked = tmp_path / "tracked"
+    tracked.write_bytes(b"staged\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "tracked"], check=True)
+    tracked.write_bytes(b"unstaged-after-index\n")
+    (tmp_path / "untracked with space").write_bytes(b"new\n")
+    (tmp_path / "intent-to-add").write_bytes(b"intent\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-N", "intent-to-add"], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "mv", "rename-source", "renamed target"], check=True
+    )
+    (tmp_path / "unstaged-delete").unlink()
+
+    staged, unstaged, untracked = MODULE._dirty_paths_from_status(
+        MODULE._git_status_snapshot(tmp_path)
+    )
+
+    def git_paths(*args: str) -> list[bytes]:
+        output = subprocess.run(
+            ["git", "-C", str(tmp_path), *args],
+            check=True,
+            capture_output=True,
+        ).stdout
+        return sorted(path for path in output.split(b"\0") if path)
+
+    assert staged == git_paths(
+        "diff",
+        "--cached",
+        "--name-only",
+        "--no-renames",
+        "--ignore-submodules=none",
+        "-z",
+        "HEAD",
+        "--",
+    )
+    assert unstaged == git_paths(
+        "diff",
+        "--name-only",
+        "--no-renames",
+        "--ignore-submodules=none",
+        "-z",
+        "--",
+    )
+    assert untracked == git_paths("ls-files", "--others", "--exclude-standard", "-z")
+
+
 def test_proof_source_snapshot_excludes_manifest_artifact_root(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     proof = _proof(tmp_path)

@@ -762,7 +762,60 @@ def _index_entries(root: Path, raw_path: bytes) -> list[tuple[bytes, bytes]]:
     return entries
 
 
-def dirty_digest(root: Path, *, excluded_paths: Iterable[Path] = ()) -> str:
+def _git_status_snapshot(root: Path) -> bytes:
+    return _git_bytes(
+        root,
+        "status",
+        "--porcelain=v2",
+        "--branch",
+        "-z",
+        "--untracked-files=all",
+        "--ignore-submodules=none",
+        "--no-renames",
+        "--no-ahead-behind",
+    )
+
+
+def _dirty_paths_from_status(output: bytes) -> tuple[list[bytes], list[bytes], list[bytes]]:
+    staged: set[bytes] = set()
+    unstaged: set[bytes] = set()
+    untracked: set[bytes] = set()
+    for record in output.split(b"\0"):
+        if not record or record.startswith(b"# "):
+            continue
+        kind = record[:1]
+        if kind == b"1":
+            parts = record.split(b" ", 8)
+            if len(parts) != 9 or len(parts[1]) != 2:
+                raise RuntimeError("unexpected porcelain-v2 ordinary status record")
+            xy, path = parts[1], parts[8]
+        elif kind == b"u":
+            parts = record.split(b" ", 10)
+            if len(parts) != 11 or len(parts[1]) != 2:
+                raise RuntimeError("unexpected porcelain-v2 unmerged status record")
+            xy, path = parts[1], parts[10]
+        elif kind == b"?":
+            if not record.startswith(b"? "):
+                raise RuntimeError("unexpected porcelain-v2 untracked status record")
+            untracked.add(record[2:])
+            continue
+        else:
+            raise RuntimeError(
+                f"unsupported porcelain-v2 status record: {os.fsdecode(record[:32])!r}"
+            )
+        if xy[:1] != b".":
+            staged.add(path)
+        if xy[1:] != b".":
+            unstaged.add(path)
+    return sorted(staged), sorted(unstaged), sorted(untracked)
+
+
+def dirty_digest(
+    root: Path,
+    *,
+    excluded_paths: Iterable[Path] = (),
+    _status_snapshot: bytes | None = None,
+) -> str:
     """Hash staged, unstaged and scoped untracked source bytes.
 
     The index and worktree are distinct domains so staging a different byte
@@ -779,18 +832,10 @@ def dirty_digest(root: Path, *, excluded_paths: Iterable[Path] = ()) -> str:
         )
     )
 
-    staged = _git_bytes(
-        root,
-        "diff",
-        "--cached",
-        "--name-only",
-        "--no-renames",
-        "--ignore-submodules=none",
-        "-z",
-        "HEAD",
-        "--",
+    staged, unstaged, untracked = _dirty_paths_from_status(
+        _status_snapshot if _status_snapshot is not None else _git_status_snapshot(root)
     )
-    for raw_path in sorted(item for item in staged.split(b"\0") if item):
+    for raw_path in staged:
         if _is_excluded(raw_path, exclusions):
             continue
         entries = _index_entries(root, raw_path)
@@ -799,23 +844,13 @@ def dirty_digest(root: Path, *, excluded_paths: Iterable[Path] = ()) -> str:
         for metadata, content in entries:
             _digest_record(digest, b"index", raw_path, metadata, content)
 
-    unstaged = _git_bytes(
-        root,
-        "diff",
-        "--name-only",
-        "--no-renames",
-        "--ignore-submodules=none",
-        "-z",
-        "--",
-    )
-    for raw_path in sorted(item for item in unstaged.split(b"\0") if item):
+    for raw_path in unstaged:
         if _is_excluded(raw_path, exclusions):
             continue
         metadata, content = _working_tree_bytes(root, raw_path)
         _digest_record(digest, b"worktree", raw_path, metadata, content)
 
-    untracked = _git_bytes(root, "ls-files", "--others", "--exclude-standard", "-z")
-    for raw_path in sorted(item for item in untracked.split(b"\0") if item):
+    for raw_path in untracked:
         if _is_excluded(raw_path, exclusions):
             continue
         metadata, content = _working_tree_bytes(root, raw_path)
@@ -823,20 +858,8 @@ def dirty_digest(root: Path, *, excluded_paths: Iterable[Path] = ()) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
-def _source_identity(root: Path) -> tuple[str, str | None, str | None]:
-    """Read HEAD, branch and upstream in one Git process."""
-
-    output = _git_bytes(
-        root,
-        "status",
-        "--porcelain=v2",
-        "--branch",
-        "-z",
-        "--untracked-files=no",
-        "--ignore-submodules=none",
-        "--no-renames",
-        "--no-ahead-behind",
-    )
+def _source_identity(output: bytes) -> tuple[str, str | None, str | None]:
+    """Read HEAD, branch and upstream from porcelain-v2 branch headers."""
     headers: dict[bytes, bytes] = {}
     for record in output.split(b"\0"):
         if not record.startswith(b"# "):
@@ -857,13 +880,18 @@ def _source_identity(root: Path) -> tuple[str, str | None, str | None]:
 def source_snapshot(root: Path, *, excluded_paths: Iterable[Path] = ()) -> dict[str, Any]:
     """Return the exact Git identity used by source-bound proof manifests."""
 
-    head, branch, upstream = _source_identity(root)
+    status_snapshot = _git_status_snapshot(root)
+    head, branch, upstream = _source_identity(status_snapshot)
     merge_base = (
         _optional_git(root, "merge-base", "HEAD", upstream) if upstream is not None else None
     )
     return {
         "head": head,
-        "dirty_digest": dirty_digest(root, excluded_paths=excluded_paths),
+        "dirty_digest": dirty_digest(
+            root,
+            excluded_paths=excluded_paths,
+            _status_snapshot=status_snapshot,
+        ),
         "branch": branch,
         "upstream": upstream,
         "merge_base": merge_base,

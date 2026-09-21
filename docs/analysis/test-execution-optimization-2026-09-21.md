@@ -512,19 +512,25 @@ or paired checkout changed while manifests were being checked. The existing
 post-publication rebind remains independent.
 
 `source_snapshot` also read HEAD, branch, and upstream with three separate Git
-commands. Porcelain-v2 branch headers provide the same values in one command;
-merge-base and dirty-byte binding remain independent. The attached, detached,
-and disconnected-upstream source tests pass with the combined reader.
+commands, then launched three more commands to enumerate staged, unstaged, and
+untracked paths. One porcelain-v2 status snapshot now supplies both branch
+headers and the three path domains; merge-base, index-blob reads, file mode,
+symlink, submodule, and raw working-tree byte hashing remain independent. A
+parity test covers simultaneous staged/unstaged bytes, rename, deletion,
+intent-to-add, spaces, and untracked paths. The attached, detached, and
+disconnected-upstream source tests pass with the combined reader.
 
-The profiled ready-aggregate test now spawns 83 subprocesses and evaluates 10
-source snapshots instead of 465 and 66. Its cProfile test body was 1.03s in the
-final probe versus 11.73s in the baseline probe. A regression test mutates
+The profiled ready-aggregate test now spawns 44 subprocesses and evaluates 10
+source snapshots instead of 465 and 66. Its final cProfile test body was 1.91s
+versus 11.73s in the baseline probe. A regression test mutates
 tracked source after the first cached manifest validation and proves the
 end-of-pass binding rejects it. The focused proof-authority/manifest/aggregate
-set passed 55 tests. The complete tooling set passed 336 tests in 26.76s,
-versus 334 tests in 57.07s in the baseline probe before the new regressions
-were added. These local timings are diagnostic; hosted CI remains unavailable
-while jobs fail before startup.
+set passed 56 tests. The complete tooling set passed 337 tests in 39.75s; an
+earlier intermediate run passed 336 tests in 26.76s, versus 334 tests in 57.07s
+in the baseline probe before the new regressions were added. The variability
+confirms these local timings are diagnostic; the structural subprocess counts
+are the stable comparison. Hosted CI remains unavailable while jobs fail
+before startup.
 
 ## Local hook selection
 
