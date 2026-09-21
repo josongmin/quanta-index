@@ -29,8 +29,8 @@ jobs:
       - name: Run pre-commit
         env:
           # Dedicated jobs below own these whole-revision checks. Keep this
-          # job for generic file integrity plus root, lock and doc hygiene.
-          SKIP: actionlint,shellcheck,ruff,ruff-format,prompt-manager-lint,cargo-fmt-check,cargo-check,hexagonal-boundaries,rust-derive-allowlist,rust-cargo-toml-hygiene,proof-authority,rust-digest-fallibility
+          # job for action/shell policy, generic file integrity, and hygiene.
+          SKIP: ruff,ruff-format,prompt-manager-lint,cargo-fmt-check,cargo-check,hexagonal-boundaries,rust-derive-allowlist,rust-cargo-toml-hygiene,proof-authority,rust-digest-fallibility
         run: bash -lc 'source scripts/quanta-index-env.sh && python -m pre_commit run --all-files --show-diff-on-failure'
 
   rust-fmt:
@@ -425,25 +425,6 @@ jobs:
 
       - name: Run semgrep
         run: bash scripts/run-semgrep.sh
-
-  policy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install pre-commit
-        run: python -m pip install 'pre-commit>=4.0.0'
-
-      - name: actionlint
-        run: bash scripts/run-actionlint.sh
-
-      - name: shellcheck
-        run: bash scripts/run-shellcheck.sh
 
   prompt-manager:
     runs-on: ubuntu-latest

@@ -704,6 +704,14 @@ template reduce their Git setup subprocesses from 77 to 11, removing 66 while
 preserving per-case repository mutation. The complete manifest file passes
 17 tests; same-host file time moved from 5.09s to 3.81s.
 
+Actionlint and shellcheck were isolated in a `policy` job that repeated the
+pre-commit job's checkout, Python setup, and pre-commit installation. They are
+now enabled in the existing all-files pre-commit invocation, and the redundant
+job is removed. Dedicated whole-revision owners remain skipped exactly as
+before. Repository branch protection has no required status contexts, so the
+deleted job name is not an external merge dependency; a topology test also
+requires both hooks to remain enabled in pre-commit.
+
 ## Remaining measurement
 
 On a quiet host, run:

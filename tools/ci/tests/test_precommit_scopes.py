@@ -154,8 +154,6 @@ def test_ci_precommit_skips_only_hooks_owned_by_dedicated_full_jobs() -> None:
     run = next(step for step in precommit_steps if step.get("name") == "Run pre-commit")
     skipped = set(run["env"]["SKIP"].split(","))
     owners = {
-        "actionlint": ("policy", "bash scripts/run-actionlint.sh"),
-        "shellcheck": ("policy", "bash scripts/run-shellcheck.sh"),
         "ruff": ("prompt-manager", "python -m ruff check ."),
         "ruff-format": ("prompt-manager", "python -m ruff format --check ."),
         "prompt-manager-lint": ("prompt-manager", "tools/prompt-manager/pm.py lint"),
@@ -171,6 +169,8 @@ def test_ci_precommit_skips_only_hooks_owned_by_dedicated_full_jobs() -> None:
     for hook_id, (job_id, command) in owners.items():
         job_commands = "\n".join(str(step.get("run", "")) for step in jobs[job_id]["steps"])
         assert command in job_commands, (hook_id, job_id, command)
+    assert {"actionlint", "shellcheck"}.isdisjoint(skipped)
+    assert "policy" not in jobs
 
 
 def test_sourcegraph_parity_generates_and_checks_in_one_pass() -> None:
