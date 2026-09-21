@@ -30,6 +30,7 @@ rust-profile-list:
         'test-candidate-activation-owner P03 sealed-candidate activation, recovery, and quarantine owner proof' \
         'test-read-view-lifetime-owner P04 read-view lifetime, pin/GC barrier owner proof' \
         'test-search-plane-read-view-lib P04 search-plane read-view lib proof' \
+        'test-query-truth-owner P05 query outcome/cursor/oracle owner proof' \
         'test-integration-fast bounded integration loop; excludes slow text/Lance storage' \
         'test-integration-storage text-authority shard persistence slice' \
         'test-integration-semantic semantic storage integration slice' \
@@ -64,6 +65,7 @@ rust-profile profile:
         test-candidate-activation-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-candidate-activation-owner ;; \
         test-read-view-lifetime-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-read-view-lifetime-owner ;; \
         test-search-plane-read-view-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-search-plane-read-view-lib ;; \
+        test-query-truth-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-query-truth-owner ;; \
         test-integration-fast) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-fast ;; \
         test-integration-storage) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-storage ;; \
         test-integration-semantic) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-semantic ;; \
@@ -230,6 +232,9 @@ rust-test-read-view-lifetime-owner lane="test-read-view-lifetime-owner-lane":
 
 rust-test-search-plane-read-view-lib lane="test-search-plane-read-view-lane":
     python3 tools/ci/run-local-test-scope.py search-plane-read-view-lib --lane {{lane}}
+
+rust-test-query-truth-owner lane="test-query-truth-owner-lane":
+    python3 tools/ci/run-local-test-scope.py query-truth-owner --lane {{lane}}
 
 rust-test-integration-fast lane="test-integration-lane":
     python3 tools/ci/run-local-test-scope.py integration-fast --lane {{lane}}
@@ -820,6 +825,21 @@ proof-p04-read-view-lifetime-owner:
     @just rust-profile test-read-view-lifetime-owner
     @just rust-profile test-search-plane-read-view-lib
     @python3 tools/ci/lint/check-read-view-ambient-lookup.py
+    @just rust-hexagonal
+    @just rust-wire-inventory
+    @just rust-public-api
+    @just rust-fuzz-smoke
+
+# P05 query-truth owner proof (S21-06): the scoped rail runs the
+# contract-base outcome/cursor-envelope owner suite and the search-plane
+# query-truth owner suite (independent RRF/window oracle, outcome honesty
+# matrix, cursor key custody) bound to the same source. Wire shapes
+# changed (window_v2 fields, cursor envelope), so the structural rails
+# include wire inventory, public API and the IPC fuzz smoke. The Linux
+# production-like release subrail (p05-query-truth, release-daemon
+# binding) stays NOT_RUN on this host.
+proof-p05-query-truth-owner:
+    @just rust-profile test-query-truth-owner
     @just rust-hexagonal
     @just rust-wire-inventory
     @just rust-public-api

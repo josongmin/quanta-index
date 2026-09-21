@@ -19,7 +19,9 @@ use crate::query_dispatcher::semantic_query::{
     SemanticScopeV1, build_semantic_response_explanation, ensure_query_model_matches_index_v1,
     prefix_semantic_query_error, resolve_semantic_request_selection,
 };
-use crate::query_dispatcher::window::{finalize_probe_window_v1, probe_top_k_v1, top_k_limit};
+use crate::query_dispatcher::window::{
+    finalize_probe_window_v1, probe_top_k_v1, semantic_window_v2, top_k_limit,
+};
 
 /// The lexical scope of a semantic query, lowered before anything is
 /// acquired: its candidate cap and its prepared plan.
@@ -150,7 +152,9 @@ impl SearchPlaneDispatcher {
             )?
         };
         budget.checkpoint("semantic:project")?;
+        let observed = results.len();
         let window = finalize_probe_window_v1(&mut results, request.top_k)?;
+        let window_v2 = semantic_window_v2(request.top_k, observed, &searcher.dense_lane())?;
         let early_stop_reason = scope_candidate_ids.and_then(|scope_ids| {
             let limit = top_k_limit(request.top_k);
             if scope_ids.len() > results.len() && results.len() == limit {
@@ -170,6 +174,7 @@ impl SearchPlaneDispatcher {
             generation: pin,
             results,
             window,
+            window_v2,
             explanation,
         })
     }

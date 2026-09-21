@@ -1,11 +1,14 @@
-//! Top-k probing and result-window finalization (`QueryResultWindowV1`) for
-//! lexical, semantic, and fused lanes.
+//! Top-k probing and result-window finalization (`QueryResultWindowV1`,
+//! `QueryResultWindowV2`) for lexical, semantic, and fused lanes.
 
 use quanta_index_contract::{
-    CandidateCountV1, LqQuery, QueryResultWindowV1, continuation_fetch_size,
+    CandidateCountV1, CoverageV1, EmptyProvenanceV2, ExaminedUniverseV1, ExecutionOutcomeV2,
+    ExhaustionProofV1, LaneTraceV1, LqQuery, QueryResultWindowV1, QueryResultWindowV2,
+    continuation_fetch_size,
 };
 use quanta_index_core::{
-    CoreError, HybridOrchestratorPolicy, LexicalSearchPageV1, validate_query_top_k,
+    CoreError, DenseAdmissionOutcomeV1, DenseLaneContractV1, HybridOrchestratorPolicy,
+    LexicalSearchPageV1, validate_query_top_k,
 };
 
 /// Rows to fetch for one query so the window can observe a continuation row.
@@ -130,6 +133,192 @@ pub(super) fn fused_window_v1(
         .map_err(|err| CoreError::InvalidContract(format!("query result window: {err}")))
 }
 
+/// A lane count as `u64`, failing closed instead of saturating.
+pub(super) fn lane_count_u64(count: usize) -> Result<u64, CoreError> {
+    u64::try_from(count).map_err(|err| {
+        CoreError::InvalidContract(format!("lane candidate count exceeds u64: {err}"))
+    })
+}
+
 pub(super) fn top_k_limit(top_k: u32) -> usize {
     usize::try_from(top_k).map_or(usize::MAX, core::convert::identity)
+}
+
+/// V2 window for one fused (hybrid / hybrid-seed) page.
+///
+/// The V1 probe arithmetic is unchanged; what V2 adds is that the dense
+/// admission outcome survives to the outer window: a capped admission is
+/// reported as `CappedUnknown`, a filled lane as a lower bound with an
+/// observed continuation, and only a genuinely exhausted universe as
+/// `ExactExhausted` with its proof.
+pub(super) fn fused_window_v2(
+    top_k: u32,
+    returned: usize,
+    observed_universe: usize,
+    lane_limit_reached: bool,
+    dense_outcome: Option<DenseAdmissionOutcomeV1>,
+    internal_cap: u32,
+    lanes: Vec<LaneTraceV1>,
+) -> Result<QueryResultWindowV2, CoreError> {
+    let requested = usize::try_from(top_k)
+        .map_err(|err| CoreError::InvalidContract(format!("query top_k overflow: {err}")))?;
+    let returned_u32 = u32::try_from(returned)
+        .map_err(|err| CoreError::InvalidContract(format!("fused rows exceed u32: {err}")))?;
+    let universe_u64 = u64::try_from(observed_universe)
+        .map_err(|err| CoreError::InvalidContract(format!("fused universe exceeds u64: {err}")))?;
+    let filtered_ran = dense_outcome.is_some();
+    // The outcome the lanes proved, most to least specific.
+    // A continuation can only be reported when the fused universe holds
+    // more distinct rows than the page returned: a lane at its internal
+    // limit whose rows all deduplicated into the page proves nothing
+    // about further distinct rows, so it stays `CappedUnknown`.
+    let fused_continuation = observed_universe > returned;
+    let outcome = match dense_outcome {
+        Some(DenseAdmissionOutcomeV1::Capped) => {
+            ExecutionOutcomeV2::CappedUnknown { cap: internal_cap }
+        }
+        Some(DenseAdmissionOutcomeV1::Exhausted) => ExecutionOutcomeV2::LowerBound {
+            continuation: false,
+        },
+        Some(DenseAdmissionOutcomeV1::NotNeeded) => {
+            if returned < requested {
+                // No filter was evaluated per candidate, so the fetch is a
+                // plain probe: observing fewer rows than requested proves
+                // the universe end.
+                ExecutionOutcomeV2::ExactExhausted
+            } else if fused_continuation {
+                ExecutionOutcomeV2::LowerBound { continuation: true }
+            } else {
+                ExecutionOutcomeV2::CappedUnknown { cap: internal_cap }
+            }
+        }
+        Some(DenseAdmissionOutcomeV1::Filled) => {
+            if fused_continuation {
+                ExecutionOutcomeV2::LowerBound { continuation: true }
+            } else {
+                ExecutionOutcomeV2::CappedUnknown { cap: internal_cap }
+            }
+        }
+        None => {
+            if returned < requested {
+                ExecutionOutcomeV2::ExactExhausted
+            } else if lane_limit_reached && fused_continuation {
+                ExecutionOutcomeV2::LowerBound { continuation: true }
+            } else {
+                // The page filled without an observable continuation row:
+                // nothing proves exhaustion either way past the internal
+                // fetch ceiling.
+                ExecutionOutcomeV2::CappedUnknown { cap: internal_cap }
+            }
+        }
+    };
+    let candidate_count = match outcome {
+        ExecutionOutcomeV2::ExactExhausted => CandidateCountV1::Exact(u64::from(returned_u32)),
+        ExecutionOutcomeV2::LowerBound { .. }
+        | ExecutionOutcomeV2::CappedUnknown { .. }
+        | ExecutionOutcomeV2::InterruptedPartial { .. }
+        | ExecutionOutcomeV2::Approximate { .. } => {
+            CandidateCountV1::AtLeast(universe_u64.max(u64::from(returned_u32)))
+        }
+    };
+    let exhaustion_proof = match outcome {
+        ExecutionOutcomeV2::ExactExhausted => Some(ExhaustionProofV1::ProbeExhausted {
+            fetched: returned_u32,
+        }),
+        ExecutionOutcomeV2::LowerBound { .. }
+        | ExecutionOutcomeV2::CappedUnknown { .. }
+        | ExecutionOutcomeV2::InterruptedPartial { .. }
+        | ExecutionOutcomeV2::Approximate { .. } => None,
+    };
+    let examined = match outcome {
+        ExecutionOutcomeV2::ExactExhausted => ExaminedUniverseV1::Exact(u64::from(returned_u32)),
+        ExecutionOutcomeV2::LowerBound { .. }
+        | ExecutionOutcomeV2::CappedUnknown { .. }
+        | ExecutionOutcomeV2::InterruptedPartial { .. }
+        | ExecutionOutcomeV2::Approximate { .. } => ExaminedUniverseV1::AtLeast(universe_u64),
+    };
+    let empty_provenance = if returned_u32 == 0 {
+        let any_executed = lanes.iter().any(LaneTraceV1::executed);
+        if any_executed {
+            Some(EmptyProvenanceV2::ZeroHitExecuted)
+        } else if filtered_ran {
+            Some(EmptyProvenanceV2::FilteredEmpty)
+        } else {
+            Some(EmptyProvenanceV2::AvailableEmpty)
+        }
+    } else {
+        None
+    };
+    QueryResultWindowV2::new(
+        returned_u32,
+        candidate_count,
+        outcome,
+        CoverageV1::new(examined, exhaustion_proof, lanes),
+        empty_provenance,
+    )
+    .map_err(|err| CoreError::InvalidContract(format!("fused result window v2: {err}")))
+}
+
+/// V2 window for the bounded semantic top-k route.
+///
+/// The dense lane is a top-k fetch with a probe row: exact only when the
+/// probe observed the universe end (`observed <= requested`), a lower
+/// bound when the probe saw a continuation row, and `CappedUnknown` under
+/// the internal fetch ceiling when the page filled without either proof.
+/// The lane trace records the model profile so a zero-hit page still
+/// carries its executed backend and cost class.
+pub(super) fn semantic_window_v2(
+    top_k: u32,
+    observed: usize,
+    dense_lane: &DenseLaneContractV1,
+) -> Result<QueryResultWindowV2, CoreError> {
+    let requested = usize::try_from(top_k)
+        .map_err(|err| CoreError::InvalidContract(format!("query top_k overflow: {err}")))?;
+    let returned = observed.min(requested);
+    let continuation = observed > requested;
+    let returned_u32 = u32::try_from(returned)
+        .map_err(|err| CoreError::InvalidContract(format!("page rows exceed u32: {err}")))?;
+    let observed_u64 = u64::try_from(observed)
+        .map_err(|err| CoreError::InvalidContract(format!("page rows exceed u64: {err}")))?;
+    let lane = LaneTraceV1::new("semantic.dense", true, returned > 0)
+        .with_candidates(CandidateCountV1::AtLeast(observed_u64))
+        .with_profile(dense_lane.trace_detail());
+    let (outcome, proof) = if continuation {
+        (ExecutionOutcomeV2::LowerBound { continuation: true }, None)
+    } else {
+        (
+            ExecutionOutcomeV2::ExactExhausted,
+            Some(ExhaustionProofV1::ProbeExhausted {
+                fetched: returned_u32,
+            }),
+        )
+    };
+    let candidate_count = match outcome {
+        ExecutionOutcomeV2::ExactExhausted => CandidateCountV1::Exact(u64::from(returned_u32)),
+        ExecutionOutcomeV2::LowerBound { .. } | ExecutionOutcomeV2::CappedUnknown { .. } => {
+            CandidateCountV1::AtLeast(observed_u64)
+        }
+        ExecutionOutcomeV2::InterruptedPartial { .. } | ExecutionOutcomeV2::Approximate { .. } => {
+            return Err(CoreError::InvalidContract(
+                "semantic window v2: unreachable outcome for a probe lane".to_string(),
+            ));
+        }
+    };
+    let empty_provenance = (returned_u32 == 0).then_some(EmptyProvenanceV2::ZeroHitExecuted);
+    QueryResultWindowV2::new(
+        returned_u32,
+        candidate_count,
+        outcome,
+        CoverageV1::new(
+            if continuation {
+                ExaminedUniverseV1::AtLeast(observed_u64)
+            } else {
+                ExaminedUniverseV1::Exact(u64::from(returned_u32))
+            },
+            proof,
+            vec![lane],
+        ),
+        empty_provenance,
+    )
+    .map_err(|err| CoreError::InvalidContract(format!("semantic result window v2: {err}")))
 }

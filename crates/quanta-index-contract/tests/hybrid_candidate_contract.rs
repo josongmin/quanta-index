@@ -11,8 +11,8 @@
 use quanta_index_contract::{
     EngineTouched, GenerationPin, HybridCandidatePolicyErrorV1, HybridCandidateV1,
     HybridLaneContributionV1, HybridLaneV1, HybridQueryResponse, LexicalCandidate,
-    ManifestGeneration, QueryResultWindowV1, RepoId, RepoRelativePath, RevisionId,
-    SearchExplanation, SearchPlaneQueryIpcResponse, validate_hybrid_results_v1,
+    ManifestGeneration, QueryResultWindowV1, QueryResultWindowV2, RepoId, RepoRelativePath,
+    RevisionId, SearchExplanation, SearchPlaneQueryIpcResponse, validate_hybrid_results_v1,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -108,6 +108,7 @@ fn response(results: Vec<HybridCandidateV1>) -> SearchPlaneQueryIpcResponse {
         ),
         results,
         window: QueryResultWindowV1::exact(returned),
+        window_v2: QueryResultWindowV2::exact_probe(returned),
         explanation: SearchExplanation {
             planner_trace: Vec::new(),
             engines_touched: vec![EngineTouched::Lexical, EngineTouched::Semantic],

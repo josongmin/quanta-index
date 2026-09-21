@@ -164,6 +164,15 @@ targets = [
   "core-read-view-declaration",
 ]
 
+[local_scopes.query-truth-owner]
+lane = "test-query-truth-owner-lane"
+test_threads = 4
+lib = true
+packages = [
+  "quanta-index-contract-base",
+  "quanta-index-search-plane",
+]
+
 [local_scopes.search-plane-read-view-lib]
 lane = "test-search-plane-read-view-lane"
 test_threads = 4

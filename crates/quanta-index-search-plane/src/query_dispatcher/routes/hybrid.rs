@@ -21,7 +21,30 @@ use crate::query_dispatcher::semantic_query::{
     HybridFilterTraceV1, HybridFusion, HybridLaneTallyV1, build_hybrid_response_explanation,
     resolve_hybrid_request_selection,
 };
-use crate::query_dispatcher::window::{fused_window_v1, hybrid_probe_top_k_v1};
+use crate::query_dispatcher::window::{
+    fused_window_v1, fused_window_v2, hybrid_probe_top_k_v1, lane_count_u64,
+};
+
+/// Lane traces for the fused window: lexical and dense lanes carry their
+/// executed/contributed split, candidate counts, and the dense admission
+/// examination count as the dense lane's cost observation.
+fn hybrid_lane_traces(
+    lexical_hits: usize,
+    dense_hits: usize,
+    dense_examined: usize,
+    dense_admitted: usize,
+) -> Result<Vec<quanta_index_contract::LaneTraceV1>, CoreError> {
+    use quanta_index_contract::{CandidateCountV1, LaneTraceV1};
+    let excluded = dense_examined.saturating_sub(dense_admitted);
+    Ok(vec![
+        LaneTraceV1::new("hybrid.lexical", true, lexical_hits > 0)
+            .with_candidates(CandidateCountV1::AtLeast(lane_count_u64(lexical_hits)?)),
+        LaneTraceV1::new("hybrid.dense", true, dense_hits > 0)
+            .with_candidates(CandidateCountV1::AtLeast(lane_count_u64(dense_hits)?))
+            .with_filtered_out(lane_count_u64(excluded)?)
+            .with_cost(lane_count_u64(dense_examined)?),
+    ])
+}
 
 impl SearchPlaneDispatcher {
     /// The hybrid route: two independent, bounded lanes fused by RRF
@@ -113,6 +136,9 @@ impl SearchPlaneDispatcher {
             filters: format!("hybrid.filters={filter_plan}"),
             admission: vec![dense.trace_detail("hybrid.dense_admission")],
         };
+        let dense_outcome = dense.outcome;
+        let dense_examined = dense.examined;
+        let dense_admitted = dense.admitted;
         let mut sem_results = dense.rows;
         budget.checkpoint("hybrid:fuse")?;
         stabilize_ranked_candidates(&mut sem_results);
@@ -155,10 +181,25 @@ impl SearchPlaneDispatcher {
         );
         attach_read_view_trace(&mut explanation, view.identity());
         let window = fused_window_v1(top_k, fused.len(), fused_universe_size, lane_limit_reached)?;
+        let window_v2 = fused_window_v2(
+            top_k,
+            fused.len(),
+            fused_universe_size,
+            lane_limit_reached,
+            Some(dense_outcome),
+            internal_top_k,
+            hybrid_lane_traces(
+                lex_results.len(),
+                sem_results.len(),
+                dense_examined,
+                dense_admitted,
+            )?,
+        )?;
         Ok(HybridFusion {
             pin,
             fused,
             window,
+            window_v2,
             explanation,
         })
     }
@@ -184,6 +225,7 @@ impl SearchPlaneDispatcher {
             generation: fusion.pin,
             results: fusion.fused,
             window: fusion.window,
+            window_v2: fusion.window_v2,
             explanation: fusion.explanation,
         })
     }

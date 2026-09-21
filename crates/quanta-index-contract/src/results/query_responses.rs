@@ -9,8 +9,8 @@ use serde::{
 use crate::{
     AuxEpochV1, CommitCandidate, DiffCandidate, GenerationPin, HistoryCursor, HistoryOrderV1,
     LexicalCandidate, LexicalCursor, LexicalRowOrderKey, ManifestGeneration, OwnerDocKind,
-    QueryResultWindowV1, RepoId, RepoRelativePath, RevisionId, RuntimeMetadataCursorV1,
-    SemanticCorpusKindV1, StructuralCandidate, StructuralCursorV1,
+    QueryResultWindowV1, QueryResultWindowV2, RepoId, RepoRelativePath, RevisionId,
+    RuntimeMetadataCursorV1, SemanticCorpusKindV1, StructuralCandidate, StructuralCursorV1,
     lex::{SymbolKindCode, SymbolKindFamily},
     validate_lexical_page_v1,
 };
@@ -271,10 +271,20 @@ pub struct SemanticQueryResponse {
     pub generation: GenerationPin,
     pub results: Vec<LexicalCandidate>,
     pub window: QueryResultWindowV1,
+    /// Typed execution outcome and coverage (S21-06): a bounded top-k
+    /// page that filled without an observed continuation is
+    /// `CappedUnknown`, never exact.
+    pub window_v2: QueryResultWindowV2,
     pub explanation: SearchExplanation,
 }
 
-const SEMANTIC_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "window", "explanation"];
+const SEMANTIC_QUERY_RESPONSE_FIELDS: &[&str] = &[
+    "generation",
+    "results",
+    "window",
+    "window_v2",
+    "explanation",
+];
 
 /// The hybrid response: the RRF fusion of the two independent lanes, one
 /// [`HybridCandidateV1`] per fused identity (QI-BB-018, QI-BB-022).
@@ -287,10 +297,20 @@ pub struct HybridQueryResponse {
     pub generation: GenerationPin,
     pub results: Vec<HybridCandidateV1>,
     pub window: QueryResultWindowV1,
+    /// Typed execution outcome and coverage (S21-06): a capped dense
+    /// admission, an interrupted scan or an approximate method stays
+    /// typed here and can never be read as exact exhaustion.
+    pub window_v2: QueryResultWindowV2,
     pub explanation: SearchExplanation,
 }
 
-const HYBRID_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "window", "explanation"];
+const HYBRID_QUERY_RESPONSE_FIELDS: &[&str] = &[
+    "generation",
+    "results",
+    "window",
+    "window_v2",
+    "explanation",
+];
 
 /// One of the two lanes the hybrid route fuses (QI-BB-018).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -690,6 +710,9 @@ pub struct HybridSeedQueryResponse {
     pub manifest_digest: String,
     pub seed_candidates: Vec<SeedCandidate>,
     pub window: QueryResultWindowV1,
+    /// Typed execution outcome and coverage (S21-06), as
+    /// [`HybridQueryResponse::window_v2`].
+    pub window_v2: QueryResultWindowV2,
     pub explanation: SearchExplanation,
 }
 
@@ -698,6 +721,7 @@ const HYBRID_SEED_QUERY_RESPONSE_FIELDS: &[&str] = &[
     "manifest_digest",
     "seed_candidates",
     "window",
+    "window_v2",
     "explanation",
 ];
 const SEED_CONTRIBUTION_V2_FIELDS: &[&str] = &["lane", "rank", "raw_score", "corpus_kind"];
@@ -1259,10 +1283,11 @@ macro_rules! impl_generation_results_explanation_response_serde {
                 S: Serializer,
             {
                 ($validate_results)(&self.results).map_err(serde::ser::Error::custom)?;
-                let mut state = serializer.serialize_struct(stringify!($ty), 4)?;
+                let mut state = serializer.serialize_struct(stringify!($ty), 5)?;
                 state.serialize_field("generation", &self.generation)?;
                 state.serialize_field("results", &self.results)?;
                 state.serialize_field("window", &self.window)?;
+                state.serialize_field("window_v2", &self.window_v2)?;
                 state.serialize_field("explanation", &self.explanation)?;
                 state.end()
             }
@@ -1284,6 +1309,7 @@ macro_rules! impl_generation_results_explanation_response_serde {
                 let mut generation: Option<GenerationPin> = None;
                 let mut results: Option<Vec<$result_ty>> = None;
                 let mut window: Option<QueryResultWindowV1> = None;
+                let mut window_v2: Option<QueryResultWindowV2> = None;
                 let mut explanation: Option<SearchExplanation> = None;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
@@ -1304,6 +1330,12 @@ macro_rules! impl_generation_results_explanation_response_serde {
                                 return Err(de::Error::duplicate_field("window"));
                             }
                             window = Some(map.next_value()?);
+                        }
+                        "window_v2" => {
+                            if window_v2.is_some() {
+                                return Err(de::Error::duplicate_field("window_v2"));
+                            }
+                            window_v2 = Some(map.next_value()?);
                         }
                         "explanation" => {
                             if explanation.is_some() {
@@ -1333,6 +1365,7 @@ macro_rules! impl_generation_results_explanation_response_serde {
                     generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
                     results,
                     window,
+                    window_v2: window_v2.ok_or_else(|| de::Error::missing_field("window_v2"))?,
                     explanation: explanation
                         .ok_or_else(|| de::Error::missing_field("explanation"))?,
                 })
@@ -2118,11 +2151,12 @@ impl Serialize for HybridSeedQueryResponse {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("HybridSeedQueryResponse", 5)?;
+        let mut state = serializer.serialize_struct("HybridSeedQueryResponse", 6)?;
         state.serialize_field("generation", &self.generation)?;
         state.serialize_field("manifest_digest", &self.manifest_digest)?;
         state.serialize_field("seed_candidates", &self.seed_candidates)?;
         state.serialize_field("window", &self.window)?;
+        state.serialize_field("window_v2", &self.window_v2)?;
         state.serialize_field("explanation", &self.explanation)?;
         state.end()
     }
@@ -2145,6 +2179,7 @@ impl<'de> Visitor<'de> for HybridSeedQueryResponseVisitor {
         let mut manifest_digest: Option<String> = None;
         let mut seed_candidates: Option<Vec<SeedCandidate>> = None;
         let mut window: Option<QueryResultWindowV1> = None;
+        let mut window_v2: Option<QueryResultWindowV2> = None;
         let mut explanation: Option<SearchExplanation> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -2172,6 +2207,12 @@ impl<'de> Visitor<'de> for HybridSeedQueryResponseVisitor {
                     }
                     window = Some(map.next_value()?);
                 }
+                "window_v2" => {
+                    if window_v2.is_some() {
+                        return Err(de::Error::duplicate_field("window_v2"));
+                    }
+                    window_v2 = Some(map.next_value()?);
+                }
                 "explanation" => {
                     if explanation.is_some() {
                         return Err(de::Error::duplicate_field("explanation"));
@@ -2189,6 +2230,7 @@ impl<'de> Visitor<'de> for HybridSeedQueryResponseVisitor {
         let seed_candidates =
             seed_candidates.ok_or_else(|| de::Error::missing_field("seed_candidates"))?;
         let window = window.ok_or_else(|| de::Error::missing_field("window"))?;
+        let window_v2 = window_v2.ok_or_else(|| de::Error::missing_field("window_v2"))?;
         let returned = usize::try_from(window.returned()).map_err(|error| {
             de::Error::custom(format!(
                 "hybrid seed window returned count cannot fit usize: {error}"
@@ -2205,6 +2247,7 @@ impl<'de> Visitor<'de> for HybridSeedQueryResponseVisitor {
                 .ok_or_else(|| de::Error::missing_field("manifest_digest"))?,
             seed_candidates,
             window,
+            window_v2,
             explanation: explanation.ok_or_else(|| de::Error::missing_field("explanation"))?,
         })
     }
@@ -2525,6 +2568,7 @@ mod tests {
             manifest_digest: "a".repeat(64),
             seed_candidates: vec![sample_seed_candidate()],
             window: QueryResultWindowV1::exact(1),
+            window_v2: QueryResultWindowV2::exact_probe(1),
             explanation: SearchExplanation::default(),
         };
 

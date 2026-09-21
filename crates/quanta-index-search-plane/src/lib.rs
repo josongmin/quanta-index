@@ -53,7 +53,7 @@ pub use quarantine::{
     QuarantineServiceParts, partition_sealed_inventory_v1,
 };
 pub use query_dispatcher::{
-    RESPONSE_ENVELOPE_RESERVE_BYTES, ResponsePayloadBudget, SearchPlaneDispatcher,
+    CursorKeyStore, RESPONSE_ENVELOPE_RESERVE_BYTES, ResponsePayloadBudget, SearchPlaneDispatcher,
     SearchPlaneQueryDispatcher, SearchPlaneQueryService, make_pin, repair_for_code,
 };
 pub use query_embedder::{

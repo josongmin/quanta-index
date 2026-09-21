@@ -1,8 +1,24 @@
 pub mod quanta_index_contract
+pub use quanta_index_contract::ApproximateMethodV2
+pub use quanta_index_contract::ApproximateQualityContractV2
+pub use quanta_index_contract::CURSOR_ENVELOPE_V2_VERSION
 pub use quanta_index_contract::CandidateCountV1
+pub use quanta_index_contract::CoverageV1
+pub use quanta_index_contract::CursorAuxEpochKindV2
+pub use quanta_index_contract::CursorAuxEpochV2
+pub use quanta_index_contract::CursorBindingV2
+pub use quanta_index_contract::CursorEnvelopeError
+pub use quanta_index_contract::CursorEnvelopeV2
+pub use quanta_index_contract::CursorKeyV2
+pub use quanta_index_contract::CursorRouteV2
+pub use quanta_index_contract::CursorTtlPolicyV2
 pub use quanta_index_contract::DiffCandidate
 pub use quanta_index_contract::DiffHunkSide
+pub use quanta_index_contract::EmptyProvenanceV2
 pub use quanta_index_contract::ExactRepoRelativePathV1
+pub use quanta_index_contract::ExaminedUniverseV1
+pub use quanta_index_contract::ExecutionOutcomeV2
+pub use quanta_index_contract::ExhaustionProofV1
 pub use quanta_index_contract::FileId
 pub use quanta_index_contract::GenerationId
 pub use quanta_index_contract::GenerationPin
@@ -14,7 +30,9 @@ pub use quanta_index_contract::INTERNAL_FETCH_CEILING
 pub use quanta_index_contract::INTERNAL_FETCH_OUT_OF_RANGE_CODE
 pub use quanta_index_contract::IdentityValidationErrorV1
 pub use quanta_index_contract::InternalFetchOutOfRangeV1
+pub use quanta_index_contract::InterruptedReasonV2
 pub use quanta_index_contract::LQ_VERSION_TAG
+pub use quanta_index_contract::LaneTraceV1
 pub use quanta_index_contract::LexicalCandidate
 pub use quanta_index_contract::LexicalCursor
 pub use quanta_index_contract::LexicalRowOrderKey
@@ -51,6 +69,7 @@ pub use quanta_index_contract::QUERY_CURSOR_UNSUPPORTED_CODE
 pub use quanta_index_contract::QueryConstraintIntersectionV1
 pub use quanta_index_contract::QueryConstraintSetV1
 pub use quanta_index_contract::QueryResultWindowV1
+pub use quanta_index_contract::QueryResultWindowV2
 pub use quanta_index_contract::RepoId
 pub use quanta_index_contract::RepoRelativePath
 pub use quanta_index_contract::RepositoryRevisionIdentityV1
@@ -7305,6 +7324,7 @@ pub quanta_index_contract::results::HybridQueryResponse::explanation: quanta_ind
 pub quanta_index_contract::results::HybridQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
 pub quanta_index_contract::results::HybridQueryResponse::results: alloc::vec::Vec<quanta_index_contract::HybridCandidateV1>
 pub quanta_index_contract::results::HybridQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV1
+pub quanta_index_contract::results::HybridQueryResponse::window_v2: quanta_index_contract_base::results::query_window::QueryResultWindowV2
 impl core::clone::Clone for quanta_index_contract::HybridQueryResponse
 pub fn quanta_index_contract::HybridQueryResponse::clone(&self) -> quanta_index_contract::HybridQueryResponse
 impl core::cmp::PartialEq for quanta_index_contract::HybridQueryResponse
@@ -7329,6 +7349,7 @@ pub quanta_index_contract::results::HybridSeedQueryResponse::generation: quanta_
 pub quanta_index_contract::results::HybridSeedQueryResponse::manifest_digest: alloc::string::String
 pub quanta_index_contract::results::HybridSeedQueryResponse::seed_candidates: alloc::vec::Vec<quanta_index_contract::SeedCandidate>
 pub quanta_index_contract::results::HybridSeedQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV1
+pub quanta_index_contract::results::HybridSeedQueryResponse::window_v2: quanta_index_contract_base::results::query_window::QueryResultWindowV2
 impl core::clone::Clone for quanta_index_contract::HybridSeedQueryResponse
 pub fn quanta_index_contract::HybridSeedQueryResponse::clone(&self) -> quanta_index_contract::HybridSeedQueryResponse
 impl core::cmp::PartialEq for quanta_index_contract::HybridSeedQueryResponse
@@ -7612,6 +7633,7 @@ pub quanta_index_contract::results::SemanticQueryResponse::explanation: quanta_i
 pub quanta_index_contract::results::SemanticQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
 pub quanta_index_contract::results::SemanticQueryResponse::results: alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>
 pub quanta_index_contract::results::SemanticQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV1
+pub quanta_index_contract::results::SemanticQueryResponse::window_v2: quanta_index_contract_base::results::query_window::QueryResultWindowV2
 impl core::clone::Clone for quanta_index_contract::SemanticQueryResponse
 pub fn quanta_index_contract::SemanticQueryResponse::clone(&self) -> quanta_index_contract::SemanticQueryResponse
 impl core::cmp::PartialEq for quanta_index_contract::SemanticQueryResponse
@@ -10923,6 +10945,7 @@ pub quanta_index_contract::HybridQueryResponse::explanation: quanta_index_contra
 pub quanta_index_contract::HybridQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
 pub quanta_index_contract::HybridQueryResponse::results: alloc::vec::Vec<quanta_index_contract::HybridCandidateV1>
 pub quanta_index_contract::HybridQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV1
+pub quanta_index_contract::HybridQueryResponse::window_v2: quanta_index_contract_base::results::query_window::QueryResultWindowV2
 impl core::clone::Clone for quanta_index_contract::HybridQueryResponse
 pub fn quanta_index_contract::HybridQueryResponse::clone(&self) -> quanta_index_contract::HybridQueryResponse
 impl core::cmp::PartialEq for quanta_index_contract::HybridQueryResponse
@@ -10972,6 +10995,7 @@ pub quanta_index_contract::HybridSeedQueryResponse::generation: quanta_index_con
 pub quanta_index_contract::HybridSeedQueryResponse::manifest_digest: alloc::string::String
 pub quanta_index_contract::HybridSeedQueryResponse::seed_candidates: alloc::vec::Vec<quanta_index_contract::SeedCandidate>
 pub quanta_index_contract::HybridSeedQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV1
+pub quanta_index_contract::HybridSeedQueryResponse::window_v2: quanta_index_contract_base::results::query_window::QueryResultWindowV2
 impl core::clone::Clone for quanta_index_contract::HybridSeedQueryResponse
 pub fn quanta_index_contract::HybridSeedQueryResponse::clone(&self) -> quanta_index_contract::HybridSeedQueryResponse
 impl core::cmp::PartialEq for quanta_index_contract::HybridSeedQueryResponse
@@ -13270,6 +13294,7 @@ pub quanta_index_contract::SemanticQueryResponse::explanation: quanta_index_cont
 pub quanta_index_contract::SemanticQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
 pub quanta_index_contract::SemanticQueryResponse::results: alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>
 pub quanta_index_contract::SemanticQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV1
+pub quanta_index_contract::SemanticQueryResponse::window_v2: quanta_index_contract_base::results::query_window::QueryResultWindowV2
 impl core::clone::Clone for quanta_index_contract::SemanticQueryResponse
 pub fn quanta_index_contract::SemanticQueryResponse::clone(&self) -> quanta_index_contract::SemanticQueryResponse
 impl core::cmp::PartialEq for quanta_index_contract::SemanticQueryResponse

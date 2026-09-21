@@ -23,8 +23,8 @@ use quanta_index_contract::lex::ExplanationRow;
 use quanta_index_contract::{
     EngineTouched, ExplainCandidateV1, GenerationPin, HybridCandidateV1, HybridLaneContributionV1,
     HybridLaneV1, HybridQueryResponse, HybridSeedQueryResponse, LexicalCandidate,
-    ManifestGeneration, PlannerStage, PlannerTraceEntry, QueryResultWindowV1, RepoId,
-    RepoMapDocType, RepoMapEntryDto, RepoMapExactnessSummary, RepoMapFocusSubjectDto,
+    ManifestGeneration, PlannerStage, PlannerTraceEntry, QueryResultWindowV1, QueryResultWindowV2,
+    RepoId, RepoMapDocType, RepoMapEntryDto, RepoMapExactnessSummary, RepoMapFocusSubjectDto,
     RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapQueryResponse,
     RepoMapRedactionState, RepoMapSnapshotMeta, RepoRelativePath, RevisionId, SearchExplanation,
     SearchPlaneErrorCodeV2, SearchPlaneExplainQueryResponse, SearchPlaneIpcError,
@@ -1415,6 +1415,7 @@ fn dispatch_semantic_request(request: SearchPlaneQueryIpcRequest) -> SearchPlane
         generation: expected_generation.clone(),
         results: vec![stub_candidate(expected_generation)],
         window: QueryResultWindowV1::exact(1),
+        window_v2: QueryResultWindowV2::exact_probe(1),
         explanation: stub_explanation("semantic explanation", vec![EngineTouched::Semantic]),
     })
 }
@@ -1445,6 +1446,7 @@ fn dispatch_hybrid_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQu
         generation: expected_generation.clone(),
         results: vec![stub_hybrid_candidate(expected_generation)],
         window: QueryResultWindowV1::exact(1),
+        window_v2: QueryResultWindowV2::exact_probe(1),
         explanation,
     })
 }
@@ -1519,6 +1521,7 @@ fn dispatch_hybrid_seed_request(
             degraded_reasons: Vec::new(),
         }],
         window: QueryResultWindowV1::exact(1),
+        window_v2: QueryResultWindowV2::exact_probe(1),
         explanation: stub_explanation(
             "hybrid seed explanation",
             vec![EngineTouched::Lexical, EngineTouched::Semantic],

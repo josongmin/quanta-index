@@ -238,9 +238,8 @@ required_host = "linux-production-like"
 
 [[proofs]]
 id = "p05-query-truth-owner"
-authority_state = "staged"
+authority_state = "executable"
 execution_mode = "test-authority"
-staged_reason = "P05 must land host-independent query outcome, cursor and independent-oracle owner targets."
 ticket = "S21-06"
 family = "U"
 checkpoint = "M2"
@@ -253,6 +252,7 @@ filter = "none"
 source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_scopes = ["query-truth-owner"]
 test_authority_targets = []
 dependencies = ["p04-read-view-lifetime-owner"]
 artifact = "artifacts/proof-authority/p05-query-truth-owner.json"

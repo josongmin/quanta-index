@@ -28,6 +28,7 @@
 //!   ranked lexical page's byte budget). `rev_at_time` and `text_plane`
 //!   depend on `timeref` / `errors`; the rest depend only on `errors`.
 
+mod cursor_key;
 mod dense_admission;
 mod dispatcher;
 mod errors;
@@ -49,6 +50,8 @@ pub use dispatcher::{SearchPlaneDispatcher, SearchPlaneQueryDispatcher, SearchPl
 pub use errors::repair_for_code;
 pub use response_budget::{RESPONSE_ENVELOPE_RESERVE_BYTES, ResponsePayloadBudget};
 pub use selection::make_pin;
+
+pub use cursor_key::CursorKeyStore;
 
 #[cfg(test)]
 pub(crate) mod tests;

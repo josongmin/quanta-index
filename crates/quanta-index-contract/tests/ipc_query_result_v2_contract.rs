@@ -10,8 +10,8 @@ use quanta_index_contract::{
     AuxEpochV1, DiffCandidate, DiffHunkSide, ExplainCandidateV1, GenerationPin, HighlightSpan,
     HybridCandidateV1, HybridLaneContributionV1, HybridLaneV1, HybridQueryRequest,
     HybridQueryResponse, HybridSeedQueryRequest, LexicalCandidate, LqQuery, LqSpan,
-    ManifestGeneration, QueryConstraintSetV1, QueryResultWindowV1, RepoId, RepoRelativePath,
-    RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
+    ManifestGeneration, QueryConstraintSetV1, QueryResultWindowV1, QueryResultWindowV2, RepoId,
+    RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
     SearchPlaneQueryIpcResponse, SemanticCorpusKindV1, SemanticQueryRequest, SemanticQueryResponse,
     SemanticSeedCorpusBudgetV1, StructuralQueryRequest, SymbolCandidate, TextQueryRequest,
     TextQuerySyntax,
@@ -767,6 +767,7 @@ fn search_plane_ipc_response_v2_semantic_roundtrips_explanation() -> TestRes {
         generation: generation_pin(),
         results: vec![lexical_candidate()],
         window: QueryResultWindowV1::exact(1),
+        window_v2: QueryResultWindowV2::exact_probe(1),
         explanation: explanation_v2(),
     });
 
@@ -793,6 +794,7 @@ fn search_plane_ipc_response_v2_hybrid_roundtrips_explanation() -> TestRes {
         generation: generation_pin(),
         results: vec![hybrid_candidate()],
         window: QueryResultWindowV1::exact(1),
+        window_v2: QueryResultWindowV2::exact_probe(1),
         explanation: explanation_v2(),
     });
 
@@ -1408,6 +1410,7 @@ fn search_plane_ipc_response_v2_semantic_rejects_duplicate_generation() -> TestR
         generation: generation_pin(),
         results: vec![lexical_candidate()],
         window: QueryResultWindowV1::exact(1),
+        window_v2: QueryResultWindowV2::exact_probe(1),
         explanation: explanation_v2(),
     });
     let bytes = mutate_ipc_response_wire(&response, |wire| {
@@ -1427,6 +1430,7 @@ fn search_plane_ipc_response_v2_hybrid_rejects_duplicate_explanation() -> TestRe
         generation: generation_pin(),
         results: vec![hybrid_candidate()],
         window: QueryResultWindowV1::exact(1),
+        window_v2: QueryResultWindowV2::exact_probe(1),
         explanation: explanation_v2(),
     });
     let bytes = mutate_ipc_response_wire(&response, |wire| {

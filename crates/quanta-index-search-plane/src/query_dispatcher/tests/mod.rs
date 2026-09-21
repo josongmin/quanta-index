@@ -12,6 +12,7 @@ mod lexical;
 mod lexical_pages;
 mod metrics;
 mod planning;
+mod query_truth_owner;
 mod read_view;
 mod read_view_lifetime;
 mod repo_map;
