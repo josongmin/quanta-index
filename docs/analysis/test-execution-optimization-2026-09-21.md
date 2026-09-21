@@ -561,6 +561,15 @@ rules. One local changed-file hook probe took 3.20s; the full-scan fallback
 on a wrapper change took 25.01s. These are scope probes on one host, not a
 controlled speedup claim. The CI full-scan rail is unchanged.
 
+The derive-allowlist test module also scanned every Rust source twice: one
+test manually reproduced the linter loop and a second called the real `main()`
+entry point. The duplicated manual whole-tree test was removed. Parser policy
+still has eight focused cases, and the retained CLI smoke scans the complete
+repository. The module now passes nine tests in 0.50s on the observed host.
+After this removal, the complete tooling set passed 336 tests in 18.55s and no
+single repo-wide lint test exceeded 1.03s in that run. Host variability still
+makes the structural removal, not this wall-clock sample, the authority.
+
 ## Remaining measurement
 
 On a quiet host, run:

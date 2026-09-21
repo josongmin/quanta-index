@@ -75,16 +75,6 @@ def test_multiline_derive_parses_each_entry(tmp_path: Path):
     assert "EnumIter" in findings[0]
 
 
-def test_repo_audit_passes():
-    """Whole-tree sanity: existing crates must satisfy the allowlist."""
-    findings: list[str] = []
-    for rs in sorted((REPO_ROOT / "crates").rglob("*.rs")):
-        if "/target/" in str(rs):
-            continue
-        findings.extend(MODULE.audit_file(rs))
-    assert findings == [], "existing tree violates derive allowlist:\n" + "\n".join(findings)
-
-
 def test_clippy_attribute_is_not_a_derive(tmp_path: Path):
     """Defensive: `#[derive(...)]` regex must not catch other attributes."""
     f = tmp_path / "attrs.rs"
