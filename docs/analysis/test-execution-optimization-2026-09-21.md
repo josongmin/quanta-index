@@ -498,6 +498,24 @@ rebinds each dependency independently. All nine aggregate tests passed after
 this fixture change. A local run took 33.97s, but comparison with earlier
 contended runs is not a controlled speedup measurement.
 
+## Local hook selection
+
+Twelve local pre-commit/pre-push hooks declared path filters but also set
+`always_run: true`, which made the filters ineffective. A docs-only pre-push
+therefore ran unrelated Rust policy scans and Semgrep. The scoped hooks now
+use their declared changed-file filters and include their own lint scripts and
+test sources. The wire-inventory filter also covers its tool-artifact schemas,
+registry, and migration fixtures; workspace-member readers include root
+`Cargo.toml`. Global root hygiene, doc-path, prompt-manager, and proof-authority
+checks remain unconditional because their inputs or effects are not safely
+bounded by a single owner-file filter.
+
+The docs-only pre-push probe now skips the Rust policy scans and Semgrep. A
+proof-aggregate schema probe still runs wire inventory. The CI-equivalent
+`pre-commit run --all-files` passes locally with the two independent Cargo
+hooks skipped, and still executes the scoped pre-commit checks. These results
+verify selection behavior, not a measured end-to-end push or hosted-CI speedup.
+
 ## Remaining measurement
 
 On a quiet host, run:

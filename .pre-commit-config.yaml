@@ -52,8 +52,7 @@ repos:
         entry: bash scripts/check-lock-freshness.sh
         language: system
         pass_filenames: false
-        always_run: true
-        files: ^(Cargo\.toml|Cargo\.lock|pyproject\.toml|crates/.*/Cargo\.toml)$
+        files: ^(Cargo\.toml|Cargo\.lock|pyproject\.toml|crates/.*/Cargo\.toml|scripts/check-lock-freshness\.sh)$
         stages: [pre-commit]
 
       - id: doc-paths
@@ -118,8 +117,7 @@ repos:
         entry: python3 scripts/check_workspace_lints.py
         language: system
         pass_filenames: false
-        always_run: true
-        files: ^(Cargo\.toml|crates/.*/Cargo\.toml)$
+        files: ^(Cargo\.toml|crates/.*/Cargo\.toml|scripts/check_workspace_lints\.py)$
         stages: [pre-push]
 
       - id: hexagonal-boundaries
@@ -127,8 +125,7 @@ repos:
         entry: python3 tools/ci/lint/lint-hexagonal-boundaries.py
         language: system
         pass_filenames: false
-        always_run: true
-        files: ^(Cargo\.toml|crates/.*/(Cargo\.toml|src/.*\.rs)|tools/ci/lint/lint-hexagonal-boundaries\.py)$
+        files: ^(Cargo\.toml|crates/.*/(Cargo\.toml|src/.*\.rs)|tools/ci/lint/lint-hexagonal-boundaries\.py|tools/ci/tests/test_lint_hexagonal_boundaries\.py)$
         stages: [pre-commit, pre-push]
 
       - id: rust-no-allow
@@ -136,8 +133,7 @@ repos:
         entry: bash scripts/check-rust-allow-attributes.sh
         language: system
         pass_filenames: false
-        always_run: true
-        files: ^crates/.*/.*\.rs$
+        files: ^(crates/.*\.rs|scripts/check-rust-allow-attributes\.sh)$
         stages: [pre-push]
 
       - id: rust-derive-allowlist
@@ -145,8 +141,7 @@ repos:
         entry: python3 tools/ci/lint/check-rust-derive-allowlist.py
         language: system
         pass_filenames: false
-        always_run: true
-        files: ^crates/.*/.*\.rs$
+        files: ^(crates/.*\.rs|tools/ci/lint/check-rust-derive-allowlist\.py|tools/ci/tests/test_lint_derive_allowlist\.py)$
         stages: [pre-commit, pre-push]
 
       - id: rust-cargo-toml-hygiene
@@ -154,8 +149,7 @@ repos:
         entry: python3 tools/ci/lint/check-cargo-toml-hygiene.py
         language: system
         pass_filenames: false
-        always_run: true
-        files: ^(Cargo\.toml|crates/.*/Cargo\.toml)$
+        files: ^(Cargo\.toml|crates/.*/Cargo\.toml|tools/ci/lint/check-cargo-toml-hygiene\.py|tools/ci/tests/test_check_cargo_toml_hygiene\.py)$
         stages: [pre-commit, pre-push]
 
       - id: rust-module-discipline
@@ -163,8 +157,7 @@ repos:
         entry: python3 tools/ci/lint/check-module-discipline.py
         language: system
         pass_filenames: false
-        always_run: true
-        files: ^(Cargo\.toml|crates/.*/(src|tests)/.*\.rs)$
+        files: ^(Cargo\.toml|crates/.*/(src|tests)/.*\.rs|tools/ci/lint/check-module-discipline\.py|tools/ci/tests/test_check_module_discipline\.py)$
         stages: [pre-push]
 
       - id: rust-module-cycles
@@ -172,8 +165,7 @@ repos:
         entry: python3 tools/ci/lint/check-module-cycles.py
         language: system
         pass_filenames: false
-        always_run: true
-        files: ^(Cargo\.toml|crates/.*/src/.*\.rs|tools/ci/lint/baselines/module-cycles\.txt)$
+        files: ^(Cargo\.toml|crates/.*/src/.*\.rs|tools/ci/lint/(check-module-cycles\.py|baselines/module-cycles\.txt)|tools/ci/tests/test_check_module_cycles\.py)$
         stages: [pre-push]
 
       - id: dsl-capability-truth
@@ -189,8 +181,7 @@ repos:
         entry: python3 tools/ci/lint/check-error-shape.py
         language: system
         pass_filenames: false
-        always_run: true
-        files: ^crates/.*/src/.*\.rs$
+        files: ^(Cargo\.toml|crates/.*/src/.*\.rs|tools/ci/lint/check-error-shape\.py|tools/ci/tests/test_check_error_shape\.py)$
         stages: [pre-push]
 
       - id: rust-wire-inventory
@@ -198,8 +189,7 @@ repos:
         entry: python3 tools/ci/lint/check-wire-inventory.py
         language: system
         pass_filenames: false
-        always_run: true
-        files: ^(tools/ci/inventory/wire-surface\.toml|crates/.*/src/.*\.rs)$
+        files: ^(Cargo\.toml|tools/ci/inventory/wire-surface\.toml|crates/.*/src/.*\.rs|tools/ci/(proof-authority\.toml|(?:(proof-manifest|proof-aggregate|error-authority-inventory|verification-receipt)\.schema\.json)|lint/check-wire-inventory\.py|tests/(test_check_wire_inventory|test_check_proof_authority|test_write_proof_aggregate|test_write_error_authority_inventory)\.py))$
         stages: [pre-push]
 
       - id: proof-authority
@@ -216,8 +206,7 @@ repos:
         entry: python3 tools/ci/lint/check-digest-fallibility.py
         language: system
         pass_filenames: false
-        always_run: true
-        files: ^crates/.*\.rs$
+        files: ^(Cargo\.toml|crates/.*\.rs|tools/ci/lint/check-digest-fallibility\.py|tools/ci/tests/test_check_digest_fallibility\.py)$
         stages: [pre-commit, pre-push]
 
       - id: cargo-deny
@@ -257,6 +246,5 @@ repos:
         entry: bash scripts/run-semgrep.sh
         language: system
         pass_filenames: false
-        always_run: true
         files: ^(crates/.*|scripts/.*|tools/.*|\.github/workflows/.*|pyproject\.toml|\.pre-commit-config\.yaml)$
         stages: [pre-push]
