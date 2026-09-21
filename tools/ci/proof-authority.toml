@@ -326,9 +326,8 @@ required_host = "linux-production-like"
 
 [[proofs]]
 id = "p07-provider-boundary-owner"
-authority_state = "staged"
+authority_state = "executable"
 execution_mode = "test-authority"
-staged_reason = "P07 must land host-independent admission, reservation and loopback-provider owner targets."
 ticket = "S21-08"
 family = "U"
 checkpoint = "M3"
@@ -341,7 +340,8 @@ filter = "none"
 source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = []
+test_authority_scopes = ["provider-boundary-owner"]
+test_authority_targets = ["provider-boundary-owner-v1"]
 dependencies = ["p06-sdk-binding-owner"]
 artifact = "artifacts/proof-authority/p07-provider-boundary-owner.json"
 required_host = "any"

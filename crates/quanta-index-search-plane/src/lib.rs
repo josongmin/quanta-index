@@ -57,8 +57,9 @@ pub use query_dispatcher::{
     SearchPlaneQueryDispatcher, SearchPlaneQueryService, make_pin, repair_for_code,
 };
 pub use query_embedder::{
-    HashingQueryTextEmbedder, QueryTextEmbedderPort, SEARCH_OWNED_SEMANTIC_DIMENSION,
-    SEARCH_OWNED_SEMANTIC_MODEL_ID, SEARCH_OWNED_SEMANTIC_MODEL_REVISION,
+    HashingQueryTextEmbedder, ProviderBoundaryQueryEmbedder, QueryTextEmbedderPort,
+    SEARCH_OWNED_SEMANTIC_DIMENSION, SEARCH_OWNED_SEMANTIC_MODEL_ID,
+    SEARCH_OWNED_SEMANTIC_MODEL_REVISION, admit_source_derive_content,
 };
 pub use readiness::{
     ActivationCatalog, ActiveGenerationRecord, AuxiliaryAuthorityStore, Ledger,

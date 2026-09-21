@@ -165,6 +165,23 @@ crate quanta_index_core
 │   │   └── mod service: pub(self)
 │   │       └── struct RepoMapService: pub
 │   ├── mod semantic: pub
+│   │   ├── mod admission: pub(self)
+│   │   │   ├── struct AdmittedSemanticInputV1: pub
+│   │   │   ├── struct EmbeddingOutcomeV1: pub
+│   │   │   ├── struct LedgerInner: pub(self)
+│   │   │   ├── struct ProviderBudgetLedger: pub
+│   │   │   ├── struct ProviderBudgetSnapshotV1: pub
+│   │   │   ├── struct ProviderReservationTicketV1: pub
+│   │   │   ├── enum ProviderSettlementKindV1: pub
+│   │   │   ├── struct ProviderSettlementReceiptV1: pub
+│   │   │   ├── struct ProviderSettlementUsageV1: pub
+│   │   │   ├── struct ProviderSupervisorEnrollmentV1: pub
+│   │   │   ├── struct ProviderWorkBudgetV1: pub
+│   │   │   ├── struct ProviderWorkEstimateV1: pub
+│   │   │   ├── struct SemanticAdmissionEngine: pub
+│   │   │   ├── struct SemanticEgressGrantV1: pub
+│   │   │   ├── enum SemanticEgressPolicyV1: pub
+│   │   │   └── enum SemanticInputClass: pub
 │   │   ├── mod inbound: pub(self)
 │   │   │   └── trait SemanticQueryPort: pub
 │   │   ├── mod outbound: pub(self)

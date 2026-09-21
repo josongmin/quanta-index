@@ -1,7 +1,11 @@
+use std::sync::Arc;
+
 use quanta_index_contract::EmbeddingNormalization;
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_core::{
-    CoreError, EMBED_CHECKPOINT, RequestBudgetV1, SemanticPolicy, TextEmbeddingProvider,
+    CoreError, EMBED_CHECKPOINT, ProviderBudgetLedger, ProviderSettlementKindV1,
+    ProviderSettlementUsageV1, ProviderWorkEstimateV1, RequestBudgetV1, SemanticAdmissionEngine,
+    SemanticEgressPolicyV1, SemanticInputClass, SemanticPolicy, TextEmbeddingProvider,
 };
 
 /// Output dimension of the search-owned hash embedder.
@@ -187,4 +191,156 @@ fn stable_fnv1a64(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
     hash
+}
+
+/// The provider boundary every admitted embedder sits behind (S21-08).
+///
+/// Order is the contract: admission (class + egress policy + common input
+/// matrix), the declared-model gate, the global reservation, and only then
+/// the inner embedder's I/O. A request refused at any pre-I/O step costs
+/// exactly zero provider calls and reserves nothing — the owner-local suite
+/// proves this with a counting spy. Cancellation and failure settle the
+/// reservation on the way out, so no detached work can outlive the request
+/// against the global caps. The supervisor enrollment handle is created at
+/// reservation; the actual spawn/register/cancel/join is P08 (S21-09).
+pub struct ProviderBoundaryQueryEmbedder {
+    inner: Arc<dyn QueryTextEmbedderPort>,
+    ledger: Arc<ProviderBudgetLedger>,
+    policy: SemanticEgressPolicyV1,
+    supervisor_id: String,
+}
+
+impl ProviderBoundaryQueryEmbedder {
+    /// Compose one embedder behind the boundary. The supervisor id is the
+    /// P08 supervisor this reservation is enrolled to; it must be named so
+    /// reserved work always has an owner.
+    #[must_use]
+    pub fn new(
+        inner: Arc<dyn QueryTextEmbedderPort>,
+        ledger: Arc<ProviderBudgetLedger>,
+        policy: SemanticEgressPolicyV1,
+        supervisor_id: &str,
+    ) -> Self {
+        Self {
+            inner,
+            ledger,
+            policy,
+            supervisor_id: supervisor_id.to_string(),
+        }
+    }
+
+    /// Embed one query text through the full admission pipeline.
+    ///
+    /// Returns the validated outcome alongside the vector; a provider that
+    /// answers with an unexpected model, dimension or a non-finite vector
+    /// produces a typed failure and neither a success nor a receipt.
+    pub fn embed_query_admitted(
+        &self,
+        query_text: &str,
+        budget: &RequestBudgetV1,
+    ) -> Result<(Vec<f32>, quanta_index_core::EmbeddingOutcomeV1), CoreError> {
+        let _admitted = SemanticAdmissionEngine::admit_text(
+            SemanticInputClass::QueryText,
+            query_text,
+            &self.policy,
+        )?;
+        // Declared-model gate: refuse a composition whose declared profile
+        // model is not the inner embedder's, before any provider I/O. A
+        // loopback/stub policy declares no external model, so the gate
+        // applies only to `External` profiles.
+        match declared_model_id(&self.policy) {
+            Some(declared) if self.inner.model_id() != declared => {
+                return Err(CoreError::Typed {
+                    code: LexicalErrorCode::SemModelMismatch.into(),
+                    message: "semantic admission: embedder model does not match the \
+                              declared egress profile model"
+                        .to_string(),
+                });
+            }
+            Some(_) | None => {}
+        }
+        let inflight_bytes = u64::try_from(query_text.len()).map_err(|err| {
+            CoreError::InvalidContract(format!(
+                "semantic admission: query text byte length conversion failed: {err}"
+            ))
+        })?;
+        let ticket = self.ledger.reserve(
+            SemanticInputClass::QueryText,
+            &ProviderWorkEstimateV1::loopback(inflight_bytes),
+            &self.supervisor_id,
+        )?;
+        let embedded = self.inner.embed_query(query_text, budget);
+        match embedded {
+            Ok(vector) => {
+                let outcome = quanta_index_core::EmbeddingOutcomeV1::from_local_vector(
+                    &vector,
+                    self.inner.model_id(),
+                    self.inner.model_revision(),
+                    vector.len(),
+                );
+                match outcome {
+                    Ok(outcome) => {
+                        let usage = ProviderSettlementUsageV1 {
+                            observed_cost_micros: 0,
+                            observed_usage_tokens: 0,
+                        };
+                        let _: quanta_index_core::ProviderSettlementReceiptV1 = self
+                            .ledger
+                            .settle(&ticket, ProviderSettlementKindV1::Success, usage)?;
+                        Ok((vector, outcome))
+                    }
+                    Err(refusal) => {
+                        let _: quanta_index_core::ProviderSettlementReceiptV1 = self
+                            .ledger
+                            .settle(&ticket, ProviderSettlementKindV1::Failed, zero_usage())?;
+                        Err(refusal)
+                    }
+                }
+            }
+            Err(err) => {
+                let wire_code = err.clone().into_search_plane_wire().0;
+                let kind = if matches!(
+                    wire_code,
+                    quanta_index_contract::SearchPlaneErrorCodeV2::RequestCancelled
+                        | quanta_index_contract::SearchPlaneErrorCodeV2::RequestDeadlineExceeded
+                ) {
+                    ProviderSettlementKindV1::Cancelled
+                } else {
+                    ProviderSettlementKindV1::Failed
+                };
+                let _: quanta_index_core::ProviderSettlementReceiptV1 =
+                    self.ledger.settle(&ticket, kind, zero_usage())?;
+                Err(err)
+            }
+        }
+    }
+}
+
+/// The zero-usage settlement for paths that never reached a provider bill.
+fn zero_usage() -> ProviderSettlementUsageV1 {
+    ProviderSettlementUsageV1 {
+        observed_cost_micros: 0,
+        observed_usage_tokens: 0,
+    }
+}
+
+/// The model id an external policy declared; `None` when the policy
+/// declares no external model (loopback/stub compositions).
+fn declared_model_id(policy: &SemanticEgressPolicyV1) -> Option<&str> {
+    match policy {
+        SemanticEgressPolicyV1::External(grant) => Some(grant.model_id.as_str()),
+        SemanticEgressPolicyV1::Denied | SemanticEgressPolicyV1::Loopback => None,
+    }
+}
+
+/// Admit producer source content through the same boundary the query
+/// path uses (S21-08).
+///
+/// Same engine, same class separation, and a separate explicit grant
+/// without which source content is refused before any I/O.
+pub fn admit_source_derive_content(
+    text: &str,
+    policy: &SemanticEgressPolicyV1,
+) -> Result<(), CoreError> {
+    SemanticAdmissionEngine::admit_text(SemanticInputClass::SourceContent, text, policy).map(|_| ())
 }

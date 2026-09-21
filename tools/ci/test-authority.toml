@@ -178,6 +178,13 @@ targets = [
   "sdk-binding-owner-v1",
 ]
 
+[local_scopes.provider-boundary-owner]
+lane = "test-provider-boundary-owner-lane"
+test_threads = 4
+targets = [
+  "provider-boundary-owner-v1",
+]
+
 [local_scopes.sdk-binding-owner-lib]
 lane = "test-sdk-binding-owner-lane"
 test_threads = 4
@@ -261,6 +268,12 @@ owners = [
 id = "contract-hybrid-candidate"
 path = "crates/quanta-index-contract/tests/hybrid_candidate_contract.rs"
 owner = "quanta-index-contract"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "provider-boundary-owner-v1"
+path = "crates/quanta-index-search-plane/tests/provider_boundary_owner_v1.rs"
+owner = "quanta-index-search-plane"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]

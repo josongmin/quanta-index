@@ -259,6 +259,16 @@ impl<'a> DerivedSemanticScopeSource<'a> {
         owners: Vec<PendingOwnerScope<'a>>,
     ) -> Result<Vec<SemanticReplaceScope>, CoreError> {
         let texts: Vec<&str> = owners.iter().flat_map(PendingOwnerScope::texts).collect();
+        // Pre-I/O admission (S21-08): the same profile-independent input
+        // matrix the query path runs, applied to source content before the
+        // window's single provider call. The egress/consent gate itself
+        // lives at the provider boundary composition.
+        for text in &texts {
+            quanta_index_core::SemanticAdmissionEngine::admit_input_text(
+                quanta_index_core::SemanticInputClass::SourceContent,
+                text,
+            )?;
+        }
         let all_vectors = self.embedder.embed_batch(&texts)?;
         if all_vectors.len() != texts.len() {
             return Err(CoreError::InvalidContract(format!(

@@ -34,6 +34,7 @@ rust-profile-list:
         'test-query-truth-owner-lib P05 outcome/cursor/oracle lib suites' \
         'test-sdk-binding-owner P06 SDK contextual binding negative-matrix owner proof' \
         'test-sdk-binding-owner-lib P06 SDK lib suites' \
+        'test-provider-boundary-owner P07 semantic admission / provider boundary owner proof' \
         'test-integration-fast bounded integration loop; excludes slow text/Lance storage' \
         'test-integration-storage text-authority shard persistence slice' \
         'test-integration-semantic semantic storage integration slice' \
@@ -72,6 +73,7 @@ rust-profile profile:
         test-query-truth-owner-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-query-truth-owner-lib ;; \
         test-sdk-binding-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-sdk-binding-owner ;; \
         test-sdk-binding-owner-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-sdk-binding-owner-lib ;; \
+        test-provider-boundary-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-provider-boundary-owner ;; \
         test-integration-fast) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-fast ;; \
         test-integration-storage) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-storage ;; \
         test-integration-semantic) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-semantic ;; \
@@ -250,6 +252,9 @@ rust-test-sdk-binding-owner lane="test-sdk-binding-owner-lane":
 
 rust-test-sdk-binding-owner-lib lane="test-sdk-binding-owner-lane":
     python3 tools/ci/run-local-test-scope.py sdk-binding-owner-lib --lane {{lane}}
+
+rust-test-provider-boundary-owner lane="test-provider-boundary-owner-lane":
+    python3 tools/ci/run-local-test-scope.py provider-boundary-owner --lane {{lane}}
 
 rust-test-integration-fast lane="test-integration-lane":
     python3 tools/ci/run-local-test-scope.py integration-fast --lane {{lane}}
@@ -869,6 +874,22 @@ proof-p06-sdk-binding-owner:
 # include wire inventory, public API and the IPC fuzz smoke. The Linux
 # production-like release subrail (p05-query-truth, release-daemon
 # binding) stays NOT_RUN on this host.
+# P07 semantic admission / provider boundary owner proof (S21-08): the
+# scoped rail runs the search-plane owner suite (zero-call refusal matrix
+# over a counting spy embedder, global reservation/settlement bounds,
+# cancellation reconciliation, declared-vs-observed validation, source
+# content egress grant). Core gained the semantic admission module, so the
+# structural rails include the module-tree snapshot plus hexagonal, wire
+# inventory and the IPC fuzz smoke. The Linux production-like release
+# subrail (p07-provider-boundary, release-daemon binding) and the approved
+# budgeted real-provider proof stay NOT_RUN on this host.
+proof-p07-provider-boundary-owner:
+    @just rust-profile test-provider-boundary-owner
+    @just rust-hexagonal
+    @just rust-wire-inventory
+    @just rust-cargo-modules
+    @just rust-fuzz-smoke
+
 proof-p05-query-truth-owner:
     @just rust-profile test-query-truth-owner
     @just rust-profile test-query-truth-owner-lib
