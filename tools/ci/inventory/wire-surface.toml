@@ -403,15 +403,18 @@ reproduction = "offline-importer"
 notes = "Tables `idempotency_v1` + `catalog_sequence_v1` (batch-digest dedup receipts and the global durable sequence; not reproducible) and `auxiliary_rows_v1` + `auxiliary_tracks_v1` (history / runtime / structural authority rows across the 14 `AuxiliaryRowFamilyV1` families Commit, Ref, Tag, DiffHunk, DirtyDoc, ChangedDoc, DocFacet, Snapshot, AffectedDocs, InvalidatedByDocs, Chunk, ParseTree, StateMeta, Epoch). Runtime dirty overlays and the Epoch family are not reproducible; history/structural rows could be replayed from producer batches but plan §11 item 3 keeps them under the importer with the dedup state. Schema is versioned by table-name suffix; no `user_version` pragma."
 
 [[artifact]]
+id = "catalog-repomap-candidate-activation"
+owner = "quanta-index-catalog"
+path = "state_root/catalog/catalog-v1.sqlite (repomap_candidate_v1, repomap_activation_v1, repomap_quarantine_event_v1)"
+reproduction = "offline-importer"
+notes = "P03 sealed-candidate/activation/quarantine authority: logical-key-UNIQUE candidate rows (commitment, object address, content digest, projection meta, closed state 1..=4, terminal sequence), one activation row per repo/revision (epoch CAS, stable activation_sequence + latest terminal_sequence, invalidation reason) and quarantine incident rows (evidence digest PK, exact envelope bytes, payload/envelope digests, record + discard sequences, tombstone). Not reproducible; every mutation allocates through the P02B global sequence ledger in one transaction."
+
+[[artifact]]
 id = "repo-map-legacy-snapshots"
 owner = "quanta-index-repomap"
 path = "state_root/repo-map/snapshots/<identity>.json"
 reproduction = "producer-rebuild"
-notes = "Legacy live V2 layout until P03. Snapshots are `{format_version, sha256, snapshot}` envelopes rebuilt from RepoMap bundles."
-[[artifact.version_constants]]
-file = "crates/quanta-index-repomap/src/persistence.rs"
-name = "SNAPSHOT_FILE_FORMAT_VERSION"
-value = 2
+notes = "Legacy live V2 layout until P03. The P03 cutover deleted the runtime writer; the files themselves are untouched and P10 owns offline import."
 
 [[artifact]]
 id = "repo-map-legacy-activations"
@@ -430,23 +433,23 @@ notes = "Legacy observed corruption and reason sidecars are evidence, not deriva
 [[artifact]]
 id = "repo-map-candidate-object-v1"
 owner = "quanta-index-contract"
-path = "P03 target: state_root/repo-map/objects/sha256/<hex[0:2]>/<hex[2:4]>/<hex[4:64]>.cbor"
+path = "state_root/repo-map/objects/sha256/<hex[0:2]>/<hex[2:4]>/<hex[4:64]>.cbor"
 reproduction = "producer-rebuild"
-notes = "P01A owns only the strict canonical CBOR envelope and content-address function; no live writer or reader exists until P03 cutover."
+notes = "P03 cutover live: the immutable sealed-candidate object store (strict canonical CBOR envelope, content address = P01A object digest, create-new/no-clobber/fsync, lstat/fstat security verification). Rebuildable by republishing the same producer bundle."
 
 [[artifact]]
 id = "repo-map-quarantine-incident-v1"
 owner = "quanta-index-contract"
-path = "P03 target: state_root/repo-map/quarantine/incidents/sha256/<hex[0:2]>/<hex[2:4]>/<hex[4:64]>.cbor"
+path = "state_root/repo-map/quarantine/incidents/sha256/<hex[0:2]>/<hex[2:4]>/<hex[4:64]>.cbor"
 reproduction = "offline-importer"
-notes = "P01A owns only the canonical incident envelope/address. P03 must allocate timestamp and global sequence in catalog and project exact bytes; incidents are not reproducible from the raw payload alone."
+notes = "P03 cutover live: canonical incident envelope bytes projected create-new with exact-byte replay after the catalog incident row commits; timestamp and global sequence come from the catalog and are reused on retry; not reproducible from the raw payload alone."
 
 [[artifact]]
 id = "repo-map-quarantine-payload-v1"
 owner = "quanta-index-repomap"
-path = "P03 target: state_root/repo-map/quarantine/payloads/sha256/<hex[0:2]>/<hex[2:4]>/<hex[4:64]>.bin"
+path = "state_root/repo-map/quarantine/payloads/sha256/<hex[0:2]>/<hex[2:4]>/<hex[4:64]>.bin"
 reproduction = "offline-importer"
-notes = "P01A owns only the address grammar. P03 projects readable raw bytes after the catalog incident commits; a corrupted payload cannot be assumed rebuildable."
+notes = "P03 cutover live: readable raw bytes of a failed candidate object, projected after the catalog incident commits; reclaimed only by the journaled tombstone discard; a corrupted payload cannot be assumed rebuildable."
 
 [[artifact]]
 id = "operation-journal-receipt"

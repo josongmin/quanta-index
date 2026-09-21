@@ -21,9 +21,9 @@ use quanta_index_contract::{
 use quanta_index_core::{
     BATCH_DIGEST_MISMATCH_CODE, CoreError, FileContributorIngestPort, FileOwnershipIngestPort,
     IdempotencyKeyV1, IngestBatchBodyV1 as _, IngestResourcePolicy, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMetaIngestPort, RepoTopicIngestPort,
-    RequestBudgetV1, SearchCorpusIngestPort, SemanticIngestPort, SemanticStreamWindowPolicy,
-    TextEmbeddingProvider,
+    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMapMutationReceiptV1,
+    RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1, SearchCorpusIngestPort,
+    SemanticIngestPort, SemanticStreamWindowPolicy, TextEmbeddingProvider,
 };
 use quanta_index_ipc::{canonical_batch_digest_v1, stamp_batch_digest_v1};
 
@@ -138,7 +138,10 @@ impl StructuralIngestPort for Unreachable {
     }
 }
 impl RepoMapBundleIngestPort for Unreachable {
-    fn ingest_bundle(&self, _bundle: &RepoMapSourceBundle) -> Result<(), CoreError> {
+    fn ingest_bundle(
+        &self,
+        _bundle: &RepoMapSourceBundle,
+    ) -> Result<RepoMapMutationReceiptV1, CoreError> {
         Err(unreachable_route("repo map bundle"))
     }
 }

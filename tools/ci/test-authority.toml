@@ -145,6 +145,16 @@ targets = [
   "catalog-idempotency",
 ]
 
+[local_scopes.candidate-activation-owner]
+lane = "test-candidate-activation-owner-lane"
+test_threads = 4
+targets = [
+  "candidate-activation-owner-v1",
+  "repomap-store-durability",
+  "repomap-bootstrap-owner-flow",
+  "repomap-owner-surface",
+]
+
 [local_scopes.cli-smoke]
 lane = "test-cli-smoke-lane"
 test_threads = 2
@@ -665,6 +675,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "repomap-owner-surface"
 path = "crates/quanta-index-repomap/tests/owner_surface.rs"
+owner = "quanta-index-repomap"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "candidate-activation-owner-v1"
+path = "crates/quanta-index-repomap/tests/candidate_activation_owner_v1.rs"
 owner = "quanta-index-repomap"
 rail = "pr-workspace-nextest"
 

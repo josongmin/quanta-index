@@ -75,11 +75,16 @@ impl SearchPlaneControlDispatcher {
         &self,
         request: RepoMapActivateGenerationRequest,
     ) -> Result<RepoMapMutationAck, CoreError> {
-        self.repo_map_activate.activate_generation(&request)?;
+        let receipt = self.repo_map_activate.activate_generation(&request)?;
         Ok(RepoMapMutationAck {
             repo_id: request.repo_id,
             revision_id: request.revision_id,
             manifest_generation: request.manifest_generation,
+            prior_candidate_commitment: receipt.prior_candidate_commitment,
+            new_candidate_commitment: receipt.new_candidate_commitment,
+            activation_epoch: receipt.activation_epoch,
+            terminal_sequence: receipt.terminal_sequence,
+            replayed: receipt.replayed,
         })
     }
 
@@ -313,7 +318,8 @@ mod tests {
     };
     use quanta_index_core::{
         CoreError, GenerationQuarantineReasonV1, MetricPointV1, MetricSourcePort,
-        QUARANTINE_TARGET_NOT_QUARANTINED_CODE, RepoMapGenerationActivatePort, RequestBudgetV1,
+        QUARANTINE_TARGET_NOT_QUARANTINED_CODE, RepoMapGenerationActivatePort,
+        RepoMapMutationReceiptV1, RequestBudgetV1,
     };
     use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
     use tempfile::tempdir;
@@ -734,13 +740,19 @@ mod tests {
         fn activate_generation(
             &self,
             request: &RepoMapActivateGenerationRequest,
-        ) -> Result<(), CoreError> {
+        ) -> Result<RepoMapMutationReceiptV1, CoreError> {
             if request.manifest_digest.is_empty() {
                 return Err(CoreError::InvalidContract(
                     "repo-map activate: manifest_digest must not be empty".to_string(),
                 ));
             }
-            Ok(())
+            Ok(RepoMapMutationReceiptV1 {
+                prior_candidate_commitment: None,
+                new_candidate_commitment: "sha256:".to_string(),
+                activation_epoch: 1,
+                terminal_sequence: 1,
+                replayed: false,
+            })
         }
     }
 

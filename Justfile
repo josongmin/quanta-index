@@ -27,6 +27,7 @@ rust-profile-list:
         'test-canonical-identity P01A identity, codec, layout-security, and error-authority proof' \
         'test-p02a-repomap-compiler P02A whole-bundle graph compiler owner proof' \
         'test-p02b-operation-journal P02B global sequence authority and operation journal proof' \
+        'test-candidate-activation-owner P03 sealed-candidate activation, recovery, and quarantine owner proof' \
         'test-integration-fast bounded integration loop; excludes slow text/Lance storage' \
         'test-integration-storage text-authority shard persistence slice' \
         'test-integration-semantic semantic storage integration slice' \
@@ -58,6 +59,7 @@ rust-profile profile:
         test-canonical-identity) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-canonical-identity ;; \
         test-p02a-repomap-compiler) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-p02a-repomap-compiler ;; \
         test-p02b-operation-journal) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-p02b-operation-journal ;; \
+        test-candidate-activation-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-candidate-activation-owner ;; \
         test-integration-fast) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-fast ;; \
         test-integration-storage) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-storage ;; \
         test-integration-semantic) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-semantic ;; \
@@ -215,6 +217,9 @@ rust-test-p02a-repomap-compiler lane="test-p02a-repomap-compiler-lane":
 
 rust-test-p02b-operation-journal lane="test-p02b-operation-journal-lane":
     python3 tools/ci/run-local-test-scope.py p02b-operation-journal --lane {{lane}}
+
+rust-test-candidate-activation-owner lane="test-candidate-activation-owner-lane":
+    python3 tools/ci/run-local-test-scope.py candidate-activation-owner --lane {{lane}}
 
 rust-test-integration-fast lane="test-integration-lane":
     python3 tools/ci/run-local-test-scope.py integration-fast --lane {{lane}}
@@ -786,3 +791,10 @@ proof-p02a-repomap-compiler:
     @just rust-profile test-p02a-repomap-compiler
     @just rust-hexagonal
     @just rust-wire-inventory
+
+proof-p03-candidate-activation-owner:
+    @just rust-profile test-candidate-activation-owner
+    @just rust-hexagonal
+    @just rust-wire-inventory
+    @just rust-public-api
+    @just rust-fuzz-smoke

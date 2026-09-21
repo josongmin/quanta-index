@@ -1,27 +1,44 @@
-//! QI-BB-008 — the `RepoMap` store retires superseded generations on
-//! activation, survives a lost or damaged file with a report instead of a
-//! failed open, and answers fail-closed for an activation whose snapshot
-//! is gone.
+//! S21-02/P03 — the `RepoMap` store's durability under SQLite-catalog
+//! authority: sealed candidates and activations survive restart, a
+//! damaged candidate object is durably quarantined and answered
+//! fail-closed instead of failing the open, and supersede keeps old
+//! objects (physical GC is tombstone-only/disabled before P04).
 
 #![forbid(unsafe_code)]
 #![expect(
     clippy::unreachable,
     reason = "test fixtures use invariant literal constructors for repo and revision IDs"
 )]
+#![expect(
+    clippy::panic_in_result_fn,
+    reason = "integration tests use Result-returning setup with assertion-style validation"
+)]
 
-use std::collections::BTreeMap;
 use std::error::Error;
-use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
 
+use quanta_index_catalog::SqliteCatalog;
 use quanta_index_contract::{
-    ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapDocType,
-    RepoMapExactnessSummary, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
-    RepoMapQueryRequest, RepoMapRedactionState, RepoMapSnapshotMeta, RevisionId,
+    FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapExactnessSummary,
+    RepoMapFileNode, RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
+    RepoMapNode, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath,
+    RevisionId,
 };
 use quanta_index_core::CoreError;
-use quanta_index_repomap::{RepoMapEntry, RepoMapGenerationStore, RepoMapSnapshot};
+use quanta_index_repomap::RepoMapGenerationStore;
 
 type TestResult = Result<(), Box<dyn Error>>;
+
+/// A distinct valid 64-hex producer digest per fixture marker.
+fn producer_hex(marker: &str) -> String {
+    let hash = marker
+        .bytes()
+        .fold(0_u16, |acc, byte| acc.wrapping_add(u16::from(byte)));
+    format!("{}{:04x}", "ab".repeat(30), hash)
+}
+
+const CATALOG_BUSY_BUDGET: Duration = Duration::from_secs(5);
 
 fn repo() -> RepoId {
     match RepoId::new("repo-durable") {
@@ -37,194 +54,214 @@ fn revision() -> RevisionId {
     }
 }
 
-fn snapshot(generation: u64) -> RepoMapSnapshot {
-    RepoMapSnapshot {
-        repo_id: repo(),
-        revision_id: revision(),
-        manifest_generation: ManifestGeneration::new(generation),
-        snapshot_meta: RepoMapSnapshotMeta {
-            snapshot_id: format!("snap-{generation}"),
-            projection_version: 1,
-            authority_digest: format!("authority-{generation}"),
-            item_index_availability: RepoMapItemIndexAvailability::Full,
-            graph_coverage_class: RepoMapGraphCoverageClass::Full,
-            exactness_summary: RepoMapExactnessSummary::Exact,
+fn bundle(generation: u64, marker: &str) -> RepoMapSourceBundle {
+    RepoMapSourceBundle::new(
+        repo(),
+        revision(),
+        ManifestGeneration::new(generation),
+        producer_hex(marker),
+        format!("snap-{marker}"),
+        1,
+        "d".repeat(64),
+        RepoMapGraphCoverage {
+            item_index_availability: RepoMapItemIndexAvailability::Available,
+            graph_coverage_class: RepoMapGraphCoverageClass::Complete,
         },
-        entries: vec![RepoMapEntry {
-            subject_identity: format!("src/g{generation}.rs"),
-            subject_doc_type: RepoMapDocType::File,
-            subject_kind: "file".to_string(),
-            owner_path: format!("src/g{generation}.rs"),
-            score: 1.0,
-            final_score_millis: 1000,
-            importance_score_millis: 0,
-            utility_score_millis: 0,
-            freshness_score_millis: 0,
-            evidence_priority_millis: 0,
-            token_budget_hint: 8,
-            contributing_signals: BTreeMap::new(),
-            projection_evidence_kind: "bundle".to_string(),
-            projection_authority_artifact_id: "artifact".to_string(),
-            projection_authority_digest: "digest".to_string(),
-            projection_status: "fresh".to_string(),
-            redaction_state: RepoMapRedactionState::Unredacted,
-            search_text: format!("generation {generation}"),
-            source_symbol_count: 0,
-            source_chunk_token_total: 0,
-            source_call_incoming_edges: 0,
-            source_call_outgoing_edges: 0,
-            source_import_incoming_edges: 0,
-            source_import_outgoing_edges: 0,
-        }],
+        RepoMapExactnessSummary::Exact,
+        RepoMapRedactionState::Unredacted,
+    )
+    .with_node(RepoMapNode::File(RepoMapFileNode {
+        file_id: FileId::new("file://src/main.rs"),
+        repo_relative_path: RepoRelativePath::new("src/main.rs"),
+        line_count: 120,
+    }))
+}
+
+fn activate_request(generation: u64) -> RepoMapActivateGenerationRequest {
+    RepoMapActivateGenerationRequest {
+        repo_id: repo(),
+        revision_id: revision(),
+        manifest_generation: ManifestGeneration::new(generation),
+        manifest_digest: producer_hex(&format!("g{generation}")),
     }
 }
 
-fn activate(store: &RepoMapGenerationStore, generation: u64) -> Result<(), CoreError> {
-    store.activate_generation(&RepoMapActivateGenerationRequest {
+fn query_request(generation: u64) -> RepoMapQueryRequest {
+    RepoMapQueryRequest {
         repo_id: repo(),
         revision_id: revision(),
         manifest_generation: ManifestGeneration::new(generation),
-        manifest_digest: format!("manifest-{generation}"),
-    })
-}
-
-fn query(store: &RepoMapGenerationStore, generation: u64) -> Result<Vec<String>, CoreError> {
-    let response = store.read_query_snapshot(&RepoMapQueryRequest {
-        repo_id: repo(),
-        revision_id: revision(),
-        manifest_generation: ManifestGeneration::new(generation),
-        query_text: "generation".to_string(),
-        top_k: 4,
-        token_budget: 64,
+        query_text: "lib".to_string(),
+        top_k: 10,
+        token_budget: 1_000,
         focus_subjects: Vec::new(),
-    })?;
-    Ok(response
-        .entries
-        .into_iter()
-        .map(|entry| entry.subject_identity)
-        .collect())
+    }
 }
 
-fn snapshot_files(root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
-    let mut names = Vec::new();
-    for entry in std::fs::read_dir(root.join("snapshots"))? {
+fn open(
+    root: &std::path::Path,
+) -> Result<(Arc<SqliteCatalog>, Arc<RepoMapGenerationStore>), Box<dyn Error>> {
+    let catalog = Arc::new(SqliteCatalog::open(root, CATALOG_BUSY_BUDGET)?);
+    let opened = RepoMapGenerationStore::open(root.join("repo-map"), Arc::clone(&catalog))?;
+    Ok((catalog, Arc::new(opened.store)))
+}
+
+fn publish_activate(
+    store: &RepoMapGenerationStore,
+    generation: u64,
+    marker: &str,
+) -> Result<(), CoreError> {
+    let _sealed = store.ingest_bundle(&bundle(generation, marker))?;
+    let _activated = store.activate_generation(&activate_request(generation))?;
+    Ok(())
+}
+
+fn find_objects(root: &std::path::Path) -> Result<Vec<std::path::PathBuf>, Box<dyn Error>> {
+    let mut out = Vec::new();
+    let objects = root.join("repo-map").join("objects");
+    if !objects.exists() {
+        return Ok(out);
+    }
+    collect_files(&objects, &mut out)?;
+    Ok(out)
+}
+
+fn collect_files(
+    dir: &std::path::Path,
+    out: &mut Vec<std::path::PathBuf>,
+) -> Result<(), Box<dyn Error>> {
+    for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
-        if let Some(name) = entry.file_name().to_str() {
-            names.push(name.to_owned());
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(&path, out)?;
+        } else {
+            out.push(path);
         }
-    }
-    names.sort();
-    Ok(names)
-}
-
-#[test]
-fn activation_retires_older_generations_on_disk_and_in_memory_and_keeps_newer_ones() -> TestResult {
-    let temp = tempfile::tempdir()?;
-    let opened = RepoMapGenerationStore::open(temp.path())?;
-    let store = opened.store;
-    for generation in 1..=4 {
-        store.insert_snapshot(snapshot(generation))?;
-    }
-    if snapshot_files(temp.path())?.len() != 4 {
-        return Err("four snapshot files before activation".into());
-    }
-    activate(&store, 3)?;
-    if store.resident_generations_for(&repo(), &revision())? != vec![3, 4] {
-        return Err(format!(
-            "generations older than the activated one are retired, newer kept: {:?}",
-            store.resident_generations_for(&repo(), &revision())?
-        )
-        .into());
-    }
-    let files = snapshot_files(temp.path())?;
-    if files.len() != 2
-        || files
-            .iter()
-            .any(|name| name.contains("--g1.") || name.contains("--g2."))
-    {
-        return Err(format!("retired generations leave no file behind: {files:?}").into());
-    }
-    if query(&store, 3)? != vec!["src/g3.rs".to_string()] {
-        return Err("the activated generation serves".into());
-    }
-    // Activating again is idempotent for retention; a reopen agrees.
-    activate(&store, 3)?;
-    let reopened = RepoMapGenerationStore::open(temp.path())?;
-    if !reopened.report.quarantined.is_empty()
-        || !reopened.report.activations_without_snapshot.is_empty()
-        || reopened.report.snapshots_loaded != 2
-        || reopened.report.activations_loaded != 1
-    {
-        return Err(format!("clean reopen: {:?}", reopened.report).into());
-    }
-    if reopened
-        .store
-        .resident_generations_for(&repo(), &revision())?
-        != vec![3, 4]
-        || query(&reopened.store, 3)? != vec!["src/g3.rs".to_string()]
-    {
-        return Err("the reopened store serves the activated generation".into());
     }
     Ok(())
 }
 
 #[test]
-fn a_lost_activated_snapshot_is_reported_and_answers_not_found_never_a_stale_generation()
--> TestResult {
-    let temp = tempfile::tempdir()?;
-    let store = RepoMapGenerationStore::open(temp.path())?.store;
-    store.insert_snapshot(snapshot(1))?;
-    store.insert_snapshot(snapshot(2))?;
-    activate(&store, 2)?;
-    // A newer generation arrives but is not activated yet.
-    store.insert_snapshot(snapshot(3))?;
-    drop(store);
-    // The activated generation's file is gone; the newer one is still there,
-    // beside a file that is not a snapshot at all.
-    std::fs::write(
-        temp.path().join("snapshots").join("stale--marker.json"),
-        b"not json at all",
-    )?;
-    for name in snapshot_files(temp.path())? {
-        if name.contains("--g2.") {
-            std::fs::remove_file(temp.path().join("snapshots").join(name))?;
-        }
-    }
-    let reopened = RepoMapGenerationStore::open(temp.path())?;
-    if reopened.report.activations_without_snapshot.len() != 1
-        || reopened.report.quarantined.len() != 1
-        || reopened
-            .report
-            .quarantined
-            .first()
-            .is_none_or(|entry| entry.file_name != "stale--marker.json")
+fn activation_is_durable_across_restart() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().to_path_buf();
     {
-        return Err(format!("the open reports what it found: {:?}", reopened.report).into());
+        let (_catalog, store) = open(&root)?;
+        publish_activate(store.as_ref(), 1, "g1")?;
+        let answer = store.as_ref().read_query_snapshot(&query_request(1))?;
+        assert!(!answer.entries.is_empty());
     }
-    match query(&reopened.store, 2) {
-        Err(CoreError::NotFound(message)) if message.contains("no activated generation") => {}
-        other => return Err(format!("a lost activation answers NOT_FOUND, got {other:?}").into()),
+    let (_catalog, store) = open(&root)?;
+    assert_eq!(
+        store
+            .as_ref()
+            .activated_generation_for(&repo(), &revision())?,
+        Some(1),
+        "the activation survives the restart from the catalog"
+    );
+    let answer = store.as_ref().read_query_snapshot(&query_request(1))?;
+    assert_eq!(answer.snapshot_meta.snapshot_id, "snap-g1");
+    assert!(!answer.entries.is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_damaged_candidate_is_quarantined_and_the_rest_answers_fail_closed() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().to_path_buf();
+    {
+        let (_catalog, store) = open(&root)?;
+        publish_activate(store.as_ref(), 1, "g1")?;
     }
-    match query(&reopened.store, 3) {
+    // Bit-rot the sealed object: decode or digest verification fails.
+    let objects = find_objects(&root)?;
+    assert_eq!(objects.len(), 1);
+    let object = objects.first().expect("one object").clone();
+    let bytes = std::fs::read(&object)?;
+    let mut damaged = bytes;
+    if let Some(last) = damaged.last_mut() {
+        *last = last.wrapping_add(1);
+    }
+    std::fs::write(&object, &damaged)?;
+
+    let (catalog, store) = open(&root)?;
+    // The open succeeded; the repo answers fail-closed until a fresh
+    // activation, which is the answer a damaged object earns.
+    match store.as_ref().read_query_snapshot(&query_request(1)) {
         Err(CoreError::NotFound(_)) => {}
-        other => {
-            return Err(format!(
-                "an unactivated generation is never served instead, got {other:?}"
-            )
-            .into());
-        }
+        other => unreachable!("expected typed NOT_FOUND, got {other:?}"),
     }
-    if reopened
-        .store
-        .activated_generation_for(&repo(), &revision())?
-        .is_some()
+    let activation = catalog
+        .repomap_activation_row(repo().as_str(), revision().as_str())?
+        .expect("the activation row survives, invalidated");
+    assert!(!activation.active);
+    // The next open is clean: the damaged object is quarantined, not left
+    // to serve.
+    let (_catalog, store) = open(&root)?;
+    assert!(
+        store
+            .as_ref()
+            .read_query_snapshot(&query_request(1))
+            .is_err()
+    );
+    assert!(!object.exists(), "the damaged source object is gone");
+    Ok(())
+}
+
+#[test]
+fn supersede_keeps_the_prior_object_gc_is_tombstone_only_pre_p04() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().to_path_buf();
     {
-        return Err("no generation is activated after the loss".into());
+        let (_catalog, store) = open(&root)?;
+        publish_activate(store.as_ref(), 1, "g1")?;
+        publish_activate(store.as_ref(), 2, "g2")?;
     }
-    // Activating what is still there restores service.
-    activate(&reopened.store, 3)?;
-    if query(&reopened.store, 3)? != vec!["src/g3.rs".to_string()] {
-        return Err("activation serves".into());
-    }
+    // Physical GC refuses deletion without pinned-handle/rollback-proof
+    // (P04): both sealed objects stay on disk after the supersede.
+    let objects = find_objects(&root)?;
+    assert_eq!(
+        objects.len(),
+        2,
+        "both generations' objects survive; GC is tombstone-only pre-P04"
+    );
+    let (_catalog, store) = open(&root)?;
+    assert!(
+        store
+            .as_ref()
+            .read_query_snapshot(&query_request(2))
+            .is_ok()
+    );
+    assert!(
+        store
+            .as_ref()
+            .read_query_snapshot(&query_request(1))
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn publish_refuses_malformed_bundles_with_zero_mutation() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().to_path_buf();
+    let (catalog, store) = open(&root)?;
+    let mut empty_digest = bundle(1, "g1");
+    empty_digest.manifest_digest = String::new();
+    assert!(store.as_ref().ingest_bundle(&empty_digest).is_err());
+    let mut no_nodes = bundle(1, "g1");
+    no_nodes.nodes.clear();
+    assert!(store.as_ref().ingest_bundle(&no_nodes).is_err());
+    assert!(
+        find_objects(&root)?.is_empty(),
+        "a refused publish mutates nothing on disk"
+    );
+    assert!(
+        catalog
+            .repomap_candidate_row(repo().as_str(), revision().as_str(), 1)?
+            .is_none(),
+        "a refused publish mutates nothing in the catalog"
+    );
     Ok(())
 }

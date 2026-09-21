@@ -13,13 +13,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use sha2::{Digest as _, Sha256};
 
 use quanta_index_contract::{
-    CompiledRepoMapCandidateV1, CompiledRepoMapEdgeV1, CompiledRepoMapGraphV1,
-    CompiledRepoMapNodeV1, CompiledRepoMapProjectionEntryV1, RepoMapCandidateCommitmentsV1,
-    RepoMapChunkExactness, RepoMapChunkNode, RepoMapCompileRefusalCodeV1, RepoMapCompileRefusalV1,
-    RepoMapCompileStageV1, RepoMapCompilerBudgetV1, RepoMapDocType, RepoMapEdge, RepoMapEdgeKind,
-    RepoMapFileNode, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode,
-    RepoMapNodeRef, RepoMapResourceReceiptV1, RepoMapSnapshotMeta, RepoMapSourceBundle,
-    RepoMapSymbolNode,
+    ChunkId, CompiledRepoMapCandidateV1, CompiledRepoMapEdgeV1, CompiledRepoMapGraphV1,
+    CompiledRepoMapNodeV1, CompiledRepoMapProjectionEntryV1, FileId, ManifestGeneration, RepoId,
+    RepoMapCandidateCommitmentsV1, RepoMapChunkExactness, RepoMapChunkNode,
+    RepoMapCompileRefusalCodeV1, RepoMapCompileRefusalV1, RepoMapCompileStageV1,
+    RepoMapCompilerBudgetV1, RepoMapDocType, RepoMapEdge, RepoMapEdgeKind, RepoMapExactnessSummary,
+    RepoMapFileNode, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapModuleId,
+    RepoMapNode, RepoMapNodeRef, RepoMapRedactionState, RepoMapResourceReceiptV1,
+    RepoMapSnapshotMeta, RepoMapSourceBundle, RepoMapSymbolNode, RepoRelativePath, RevisionId,
+    SymbolId,
 };
 
 use crate::model::{RepoMapEntry, RepoMapSnapshot};
@@ -768,30 +770,444 @@ pub fn compile_snapshot(
 ) -> Result<RepoMapSnapshot, RepoMapCompileRefusalV1> {
     let compiler = RepoMapGraphCompiler::with_default_budget();
     let candidate = compiler.compile(bundle)?;
+    Ok(snapshot_from_projection(
+        &bundle.repo_id,
+        &bundle.revision_id,
+        bundle.manifest_generation,
+        &CandidateProjectionMetaV1::from_bundle(bundle),
+        candidate.projection(),
+    ))
+}
+
+/// The bundle-declared projection metadata a sealed candidate's query
+/// projection is rebuilt from.
+///
+/// The P03 store persists exactly this (as JSON in the catalog candidate
+/// row) so the boot-rebuilt snapshot is byte-identical to the publish-time
+/// one.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CandidateProjectionMetaV1 {
+    pub snapshot_id: String,
+    pub projection_version: u32,
+    pub authority_digest: String,
+    pub item_index_availability: RepoMapItemIndexAvailability,
+    pub graph_coverage_class: RepoMapGraphCoverageClass,
+    pub exactness_summary: RepoMapExactnessSummary,
+    pub redaction_state: RepoMapRedactionState,
+}
+
+impl CandidateProjectionMetaV1 {
+    #[must_use]
+    pub fn from_bundle(bundle: &RepoMapSourceBundle) -> Self {
+        Self {
+            snapshot_id: bundle.snapshot_id.clone(),
+            projection_version: bundle.projection_version,
+            authority_digest: bundle.authority_digest.clone(),
+            item_index_availability: bundle.graph_coverage.item_index_availability,
+            graph_coverage_class: bundle.graph_coverage.graph_coverage_class,
+            exactness_summary: bundle.exactness_summary,
+            redaction_state: bundle.redaction_state,
+        }
+    }
+
+    /// Canonical JSON column form. Enum fields use their wire strings.
+    pub fn to_json(&self) -> Result<String, quanta_index_core::CoreError> {
+        serde_json::to_string(&serde_json::json!({
+            "snapshot_id": self.snapshot_id,
+            "projection_version": self.projection_version,
+            "authority_digest": self.authority_digest,
+            "item_index_availability": self.item_index_availability.as_code_str(),
+            "graph_coverage_class": self.graph_coverage_class.as_code_str(),
+            "exactness_summary": self.exactness_summary.as_code_str(),
+            "redaction_state": self.redaction_state.as_code_str(),
+        }))
+        .map_err(|err| {
+            quanta_index_core::CoreError::Storage(format!(
+                "repomap projection meta encode failed: {err}"
+            ))
+        })
+    }
+
+    /// Strict parse of the JSON column form; unknown enum codes are
+    /// refused typed, never defaulted.
+    pub fn from_json(value: &str) -> Result<Self, quanta_index_core::CoreError> {
+        fn enum_str<T: for<'de> serde::Deserialize<'de>>(
+            value: &serde_json::Value,
+            field: &str,
+        ) -> Result<T, quanta_index_core::CoreError> {
+            serde_json::from_value(value.get(field).cloned().ok_or_else(|| {
+                quanta_index_core::CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                    message: format!("repomap projection meta is missing `{field}`"),
+                }
+            })?)
+            .map_err(|err| quanta_index_core::CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                message: format!("repomap projection meta field `{field}` is invalid: {err}"),
+            })
+        }
+        fn plain_str(
+            value: &serde_json::Value,
+            field: &str,
+        ) -> Result<String, quanta_index_core::CoreError> {
+            value
+                .get(field)
+                .and_then(|field| field.as_str())
+                .map(str::to_owned)
+                .ok_or_else(|| quanta_index_core::CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                    message: format!("repomap projection meta is missing string `{field}`"),
+                })
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(value).map_err(|err| quanta_index_core::CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                message: format!("repomap projection meta is not valid JSON: {err}"),
+            })?;
+        let Some(Ok(projection_version)) = value
+            .get("projection_version")
+            .and_then(serde_json::Value::as_u64)
+            .map(u32::try_from)
+        else {
+            return Err(quanta_index_core::CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                message: "repomap projection meta is missing `projection_version`".to_string(),
+            });
+        };
+        Ok(Self {
+            snapshot_id: plain_str(&value, "snapshot_id")?,
+            projection_version,
+            authority_digest: plain_str(&value, "authority_digest")?,
+            item_index_availability: enum_str(&value, "item_index_availability")?,
+            graph_coverage_class: enum_str(&value, "graph_coverage_class")?,
+            exactness_summary: enum_str(&value, "exactness_summary")?,
+            redaction_state: enum_str(&value, "redaction_state")?,
+        })
+    }
+}
+
+/// Build the query snapshot from a candidate projection plus its persisted
+/// meta. Deterministic: the same projection and meta always build the same
+/// snapshot, at publish time and at boot alike.
+#[must_use]
+pub fn snapshot_from_projection(
+    repo_id: &RepoId,
+    revision_id: &RevisionId,
+    manifest_generation: ManifestGeneration,
+    meta: &CandidateProjectionMetaV1,
+    projection: &[CompiledRepoMapProjectionEntryV1],
+) -> RepoMapSnapshot {
     let snapshot_meta = RepoMapSnapshotMeta {
-        snapshot_id: bundle.snapshot_id.clone(),
-        projection_version: bundle.projection_version,
-        authority_digest: bundle.authority_digest.clone(),
-        item_index_availability: bundle.graph_coverage.item_index_availability,
-        graph_coverage_class: bundle.graph_coverage.graph_coverage_class,
-        exactness_summary: bundle.exactness_summary,
+        snapshot_id: meta.snapshot_id.clone(),
+        projection_version: meta.projection_version,
+        authority_digest: meta.authority_digest.clone(),
+        item_index_availability: meta.item_index_availability,
+        graph_coverage_class: meta.graph_coverage_class,
+        exactness_summary: meta.exactness_summary,
     };
-    let entries = candidate
-        .projection()
+    let entries = projection
         .iter()
-        .map(|entry| projection_entry_to_model_entry(bundle, entry))
+        .map(|entry| projection_entry_to_model_entry(meta, entry))
         .collect();
-    Ok(RepoMapSnapshot {
-        repo_id: bundle.repo_id.clone(),
-        revision_id: bundle.revision_id.clone(),
-        manifest_generation: bundle.manifest_generation,
+    RepoMapSnapshot {
+        repo_id: repo_id.clone(),
+        revision_id: revision_id.clone(),
+        manifest_generation,
         snapshot_meta,
         entries,
-    })
+    }
+}
+
+/// Strictly decode the compiled candidate payload back into its canonical
+/// graph and projection tables.
+///
+/// Exactly one accepted form: the compiler's own canonical encoding; trailing
+/// bytes, indefinite lengths, non-minimal integers and unknown variant tags
+/// are refused.
+pub fn decode_compiled_payload(
+    bytes: &[u8],
+) -> Result<
+    (
+        CompiledRepoMapGraphV1,
+        Vec<CompiledRepoMapProjectionEntryV1>,
+    ),
+    quanta_index_core::CoreError,
+> {
+    let refuse = |detail: String| -> quanta_index_core::CoreError {
+        quanta_index_core::CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+            message: format!("repomap compiled payload decode refused: {detail}"),
+        }
+    };
+    let mut reader = CompileCborReader::new(bytes);
+    // The compiler's payload frame is: a top-level array header whose
+    // length is the schema version (2), then the three canonical tables
+    // (nodes, edges, projection) each under its own definite array header.
+    let version = reader.array_header("payload").map_err(refuse)?;
+    if version != 2 {
+        return Err(refuse(format!(
+            "payload schema version {version}, expected 2"
+        )));
+    }
+    let nodes_len = reader.array_header("nodes").map_err(refuse)?;
+    if !matches!(nodes_len, 0..=2_000_000) {
+        return Err(refuse(format!("node table holds {nodes_len} entries")));
+    }
+    let mut nodes = Vec::new();
+    for _ in 0..nodes_len {
+        let entry_len = reader.array_header("node").map_err(refuse)?;
+        if entry_len != 3 {
+            return Err(refuse(format!(
+                "node array holds {entry_len} items, expected 3"
+            )));
+        }
+        let identity = reader.node_ref("node.identity").map_err(refuse)?;
+        let degree_in = reader.u32_value("node.degree_in").map_err(refuse)?;
+        let degree_out = reader.u32_value("node.degree_out").map_err(refuse)?;
+        nodes.push(CompiledRepoMapNodeV1 {
+            identity,
+            degree_in,
+            degree_out,
+        });
+    }
+    let edges_len = reader.array_header("edges").map_err(refuse)?;
+    if !matches!(edges_len, 0..=20_000_000) {
+        return Err(refuse(format!("edge table holds {edges_len} entries")));
+    }
+    let mut edges = Vec::new();
+    for _ in 0..edges_len {
+        let entry_len = reader.array_header("edge").map_err(refuse)?;
+        if entry_len != 3 {
+            return Err(refuse(format!(
+                "edge array holds {entry_len} items, expected 3"
+            )));
+        }
+        let kind = reader.edge_kind("edge.kind").map_err(refuse)?;
+        let source = reader.node_ref("edge.source").map_err(refuse)?;
+        let target = reader.node_ref("edge.target").map_err(refuse)?;
+        edges.push(CompiledRepoMapEdgeV1 {
+            kind,
+            source,
+            target,
+        });
+    }
+    let projection_len = reader.array_header("projection").map_err(refuse)?;
+    if !matches!(projection_len, 0..=2_000_000) {
+        return Err(refuse(format!(
+            "projection table holds {projection_len} entries"
+        )));
+    }
+    let mut projection = Vec::new();
+    for _ in 0..projection_len {
+        let entry_len = reader.array_header("projection-entry").map_err(refuse)?;
+        if entry_len != 5 {
+            return Err(refuse(format!(
+                "projection entry holds {entry_len} items, expected 5"
+            )));
+        }
+        let subject = reader.node_ref("projection.subject").map_err(refuse)?;
+        let doc_type = reader.doc_type("projection.doc_type").map_err(refuse)?;
+        let owner_path = reader.path_id("projection.owner_path").map_err(refuse)?;
+        let search_text = reader.text("projection.search_text").map_err(refuse)?;
+        let final_score_millis = reader
+            .i64_value("projection.final_score_millis")
+            .map_err(refuse)?;
+        projection.push(CompiledRepoMapProjectionEntryV1 {
+            subject,
+            doc_type,
+            owner_path,
+            search_text,
+            final_score_millis,
+        });
+    }
+    reader.expect_end().map_err(refuse)?;
+    Ok((CompiledRepoMapGraphV1 { nodes, edges }, projection))
+}
+
+/// Minimal strict CBOR reader for the compiler's canonical payload schema:
+/// definite lengths, minimal integers, UTF-8 text only.
+struct CompileCborReader<'a> {
+    bytes: &'a [u8],
+    position: usize,
+}
+
+impl<'a> CompileCborReader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, position: 0 }
+    }
+
+    fn peek(&self) -> Result<u8, String> {
+        self.bytes
+            .get(self.position)
+            .copied()
+            .ok_or_else(|| "unexpected end".to_string())
+    }
+
+    fn take(&mut self) -> Result<u8, String> {
+        let byte = self.peek()?;
+        self.position = self.position.saturating_add(1);
+        Ok(byte)
+    }
+
+    fn uint_value(&mut self, label: &str) -> Result<u64, String> {
+        let major = self.take()?;
+        let info = major & 0x1f;
+        if major & 0xe0 != 0 {
+            return Err(format!("{label}: expected unsigned integer"));
+        }
+        let width = match info {
+            0..=23 => {
+                let value = u64::from(info);
+                return Ok(value);
+            }
+            24 => 1,
+            25 => 2,
+            26 => 4,
+            27 => 8,
+            _ => return Err(format!("{label}: non-minimal or unsupported integer")),
+        };
+        let mut raw = [0_u8; 8];
+        let end = self.position.saturating_add(width);
+        let slice = self
+            .bytes
+            .get(self.position..end)
+            .ok_or_else(|| format!("{label}: unexpected end"))?;
+        let offset = 8_usize
+            .checked_sub(width)
+            .ok_or_else(|| format!("{label}: width out of range"))?;
+        raw.get_mut(offset..)
+            .ok_or_else(|| format!("{label}: width out of range"))?
+            .copy_from_slice(slice);
+        self.position = end;
+        let value = u64::from_be_bytes(raw);
+        // Minimality: the encoding must be the shortest for its value.
+        let minimal_shift = 8_usize.checked_mul(width.saturating_sub(1)).unwrap_or(0);
+        if width < 8 && value < (1_u64 << minimal_shift) {
+            return Err(format!("{label}: non-minimal integer"));
+        }
+        Ok(value)
+    }
+
+    /// The compiler's framing writes table and tuple lengths as bare
+    /// canonical unsigned integers (not CBOR array heads); read exactly
+    /// that, with the minimality check `uint_value` carries.
+    fn array_header(&mut self, label: &str) -> Result<u64, String> {
+        let value = self.uint_value(label)?;
+        Ok(value)
+    }
+
+    fn uint_body(&mut self, info: u8, label: &str) -> Result<u64, String> {
+        let width = match info {
+            0..=23 => return Ok(u64::from(info)),
+            24 => 1,
+            25 => 2,
+            26 => 4,
+            27 => 8,
+            _ => return Err(format!("{label}: unsupported array length")),
+        };
+        let mut raw = [0_u8; 8];
+        let end = self.position.saturating_add(width);
+        let slice = self
+            .bytes
+            .get(self.position..end)
+            .ok_or_else(|| format!("{label}: unexpected end"))?;
+        let offset = 8_usize
+            .checked_sub(width)
+            .ok_or_else(|| format!("{label}: width out of range"))?;
+        raw.get_mut(offset..)
+            .ok_or_else(|| format!("{label}: width out of range"))?
+            .copy_from_slice(slice);
+        self.position = end;
+        Ok(u64::from_be_bytes(raw))
+    }
+
+    fn text(&mut self, label: &str) -> Result<String, String> {
+        let major = self.take()?;
+        if (major >> 5) != 3 {
+            return Err(format!("{label}: expected text"));
+        }
+        let len = self.uint_body(major & 0x1f, label)?;
+        let len = usize::try_from(len).map_err(|_error| format!("{label}: length out of range"))?;
+        let end = self.position.saturating_add(len);
+        let slice = self
+            .bytes
+            .get(self.position..end)
+            .ok_or_else(|| format!("{label}: unexpected end"))?;
+        self.position = end;
+        std::str::from_utf8(slice)
+            .map(str::to_owned)
+            .map_err(|_error| format!("{label}: invalid UTF-8"))
+    }
+
+    fn u32_value(&mut self, label: &str) -> Result<u32, String> {
+        let value = self.uint_value(label)?;
+        u32::try_from(value).map_err(|_error| format!("{label}: does not fit u32"))
+    }
+
+    fn i64_value(&mut self, label: &str) -> Result<i64, String> {
+        let major = self.peek()?;
+        if major & 0xe0 == 0x20 {
+            let _tag: u8 = self.take()?;
+            let magnitude = self.uint_value(label)?;
+            let signed = magnitude
+                .checked_add(1)
+                .ok_or_else(|| format!("{label}: overflow"))?;
+            let signed = i64::try_from(signed).map_err(|_error| format!("{label}: overflow"))?;
+            signed
+                .checked_neg()
+                .ok_or_else(|| format!("{label}: overflow"))
+        } else {
+            let value = self.uint_value(label)?;
+            i64::try_from(value).map_err(|_error| format!("{label}: does not fit i64"))
+        }
+    }
+
+    fn node_ref(&mut self, label: &str) -> Result<RepoMapNodeRef, String> {
+        let entry_len = self.array_header(label)?;
+        if entry_len != 2 {
+            return Err(format!(
+                "{label}: array holds {entry_len} items, expected 2"
+            ));
+        }
+        let variant = self.text(label)?;
+        let id = self.text(label)?;
+        match variant.as_str() {
+            "File" => Ok(RepoMapNodeRef::File(FileId::new(&id))),
+            "Module" => Ok(RepoMapNodeRef::Module(RepoMapModuleId::new(&id))),
+            "Symbol" => Ok(RepoMapNodeRef::Symbol(SymbolId::new(&id))),
+            "Chunk" => Ok(RepoMapNodeRef::Chunk(ChunkId::new(&id))),
+            other => Err(format!("{label}: unknown node variant `{other}`")),
+        }
+    }
+
+    fn edge_kind(&mut self, label: &str) -> Result<RepoMapEdgeKind, String> {
+        let code = self.text(label)?;
+        serde_json::from_value(serde_json::Value::String(code))
+            .map_err(|error| format!("{label}: {error}"))
+    }
+
+    fn doc_type(&mut self, label: &str) -> Result<RepoMapDocType, String> {
+        let code = self.text(label)?;
+        serde_json::from_value(serde_json::Value::String(code))
+            .map_err(|error| format!("{label}: {error}"))
+    }
+
+    fn path_id(&mut self, label: &str) -> Result<RepoRelativePath, String> {
+        let text = self.text(label)?;
+        Ok(RepoRelativePath::new(&text))
+    }
+
+    fn expect_end(&self) -> Result<(), String> {
+        if self.position == self.bytes.len() {
+            Ok(())
+        } else {
+            Err("trailing bytes".to_string())
+        }
+    }
 }
 
 fn projection_entry_to_model_entry(
-    bundle: &RepoMapSourceBundle,
+    meta: &CandidateProjectionMetaV1,
     entry: &CompiledRepoMapProjectionEntryV1,
 ) -> RepoMapEntry {
     let final_score_millis = u32::try_from(entry.final_score_millis.clamp(0, 1_000))
@@ -812,19 +1228,19 @@ fn projection_entry_to_model_entry(
         final_score_millis,
         importance_score_millis: final_score_millis,
         utility_score_millis: final_score_millis.div_euclid(2),
-        freshness_score_millis: freshness_score(bundle),
+        freshness_score_millis: freshness_score(meta),
         evidence_priority_millis: final_score_millis.div_euclid(2),
         token_budget_hint: 64,
         contributing_signals: BTreeMap::new(),
         projection_evidence_kind: "CompiledRepoMapCandidateV1".to_string(),
         projection_authority_artifact_id: format!(
             "repo-map:{}:{}",
-            bundle.snapshot_id,
+            meta.snapshot_id,
             node_ref_key(&entry.subject)
         ),
-        projection_authority_digest: bundle.authority_digest.clone(),
-        projection_status: projection_status(bundle),
-        redaction_state: bundle.redaction_state,
+        projection_authority_digest: meta.authority_digest.clone(),
+        projection_status: projection_status(meta),
+        redaction_state: meta.redaction_state,
         search_text: entry.search_text.clone(),
         source_symbol_count: 0,
         source_chunk_token_total: 0,
@@ -835,12 +1251,12 @@ fn projection_entry_to_model_entry(
     }
 }
 
-fn freshness_score(bundle: &RepoMapSourceBundle) -> u32 {
+fn freshness_score(meta: &CandidateProjectionMetaV1) -> u32 {
     if matches!(
-        bundle.graph_coverage.item_index_availability,
+        meta.item_index_availability,
         RepoMapItemIndexAvailability::Available | RepoMapItemIndexAvailability::Full
     ) && matches!(
-        bundle.graph_coverage.graph_coverage_class,
+        meta.graph_coverage_class,
         RepoMapGraphCoverageClass::Complete | RepoMapGraphCoverageClass::Full
     ) {
         return 860;
@@ -848,12 +1264,12 @@ fn freshness_score(bundle: &RepoMapSourceBundle) -> u32 {
     500
 }
 
-fn projection_status(bundle: &RepoMapSourceBundle) -> String {
+fn projection_status(meta: &CandidateProjectionMetaV1) -> String {
     if matches!(
-        bundle.graph_coverage.item_index_availability,
+        meta.item_index_availability,
         RepoMapItemIndexAvailability::Available | RepoMapItemIndexAvailability::Full
     ) && matches!(
-        bundle.graph_coverage.graph_coverage_class,
+        meta.graph_coverage_class,
         RepoMapGraphCoverageClass::Complete | RepoMapGraphCoverageClass::Full
     ) {
         return "Complete".to_string();

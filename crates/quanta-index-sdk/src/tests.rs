@@ -2997,6 +2997,11 @@ fn structural_publish_routes_through_ingest_transport_and_carries_parse_trees() 
 #[test]
 fn repomap_publish_routes_through_ingest_transport() {
     let ack = RepoMapMutationAck {
+        prior_candidate_commitment: None,
+        new_candidate_commitment: format!("sha256:{}", "ab".repeat(32)),
+        activation_epoch: 1,
+        terminal_sequence: 1,
+        replayed: false,
         repo_id: repo_id(),
         revision_id: revision_id(),
         manifest_generation: ManifestGeneration::new(1),
@@ -3107,6 +3112,11 @@ fn repomap_query_routes_through_query_transport() {
 #[test]
 fn repomap_activate_routes_through_control_transport() {
     let ack = RepoMapMutationAck {
+        prior_candidate_commitment: None,
+        new_candidate_commitment: format!("sha256:{}", "ab".repeat(32)),
+        activation_epoch: 1,
+        terminal_sequence: 1,
+        replayed: false,
         repo_id: repo_id(),
         revision_id: revision_id(),
         manifest_generation: ManifestGeneration::new(9),

@@ -4417,6 +4417,7 @@ name = "quanta-index-repomap"
 version = "0.1.0"
 dependencies = [
  "ciborium",
+ "quanta-index-catalog",
  "quanta-index-contract",
  "quanta-index-core",
  "quanta-index-lq-text-normalizer",

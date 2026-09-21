@@ -152,6 +152,7 @@ crate quanta_index_core
 │   │   │   ├── struct QuarantinedRepoMapFileV1: pub
 │   │   │   ├── trait RepoMapBundleIngestPort: pub
 │   │   │   ├── trait RepoMapGenerationActivatePort: pub
+│   │   │   ├── struct RepoMapMutationReceiptV1: pub
 │   │   │   ├── struct RepoMapOpenReportV1: pub
 │   │   │   └── trait RepoMapQuarantinePort: pub
 │   │   ├── mod policy: pub(self)

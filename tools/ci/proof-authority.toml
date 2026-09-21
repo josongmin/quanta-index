@@ -141,22 +141,27 @@ required_host = "any"
 
 [[proofs]]
 id = "p03-candidate-activation-owner"
-authority_state = "staged"
+authority_state = "executable"
 execution_mode = "test-authority"
-staged_reason = "P03 must land its host-independent live-layout/quarantine/activation owner scope before downstream implementation opens."
 ticket = "S21-02"
 family = "U"
 checkpoint = "M1"
 owner = "crates/quanta-index-repomap/src/store.rs"
 command = "just proof-p03-candidate-activation-owner"
 gate = "correctness"
-profile = "candidate-activation-owner"
+profile = "test-candidate-activation-owner"
 target = "candidate-activation-owner"
 filter = "none"
 source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = []
+test_authority_scopes = ["candidate-activation-owner"]
+test_authority_targets = [
+  "candidate-activation-owner-v1",
+  "repomap-store-durability",
+  "repomap-bootstrap-owner-flow",
+  "repomap-owner-surface",
+]
 dependencies = ["p02a-repomap-compiler", "p02b-operation-journal"]
 artifact = "artifacts/proof-authority/p03-candidate-activation-owner.json"
 required_host = "any"

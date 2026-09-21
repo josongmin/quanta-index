@@ -100,7 +100,8 @@ pub use domains::reclaim_area::{
 };
 pub use domains::repomap::{
     QuarantinedRepoMapFileV1, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
-    RepoMapOpenReportV1, RepoMapPolicy, RepoMapQuarantinePort, RepoMapQueryPort, RepoMapService,
+    RepoMapMutationReceiptV1, RepoMapOpenReportV1, RepoMapPolicy, RepoMapQuarantinePort,
+    RepoMapQueryPort, RepoMapService,
 };
 pub use domains::semantic::{
     DenseIndexBuildV1, DenseIndexEffortV1, DenseIndexSegmentBuildV1, DenseIndexTrainingV1,

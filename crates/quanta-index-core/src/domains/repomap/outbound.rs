@@ -2,8 +2,34 @@ use quanta_index_contract::{RepoMapActivateGenerationRequest, RepoMapSourceBundl
 
 use crate::CoreError;
 
+/// Identity/content-bound durable receipt for a `RepoMap` publish,
+/// activate or rollback (S21-02).
+///
+/// The dispatcher copies these fields into the wire
+/// [`quanta_index_contract::RepoMapMutationAck`] verbatim; the store is
+/// their authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoMapMutationReceiptV1 {
+    /// Wire hex of the prior activation's candidate commitment; `None`
+    /// when no activation existed.
+    pub prior_candidate_commitment: Option<String>,
+    /// Wire hex of the new candidate commitment this receipt binds.
+    pub new_candidate_commitment: String,
+    /// Monotonic activation epoch for the repo/revision pair after the
+    /// mutation; `0` for a publish that activated nothing.
+    pub activation_epoch: u64,
+    /// Global terminal sequence (P02B allocator) that committed the
+    /// mutation, or the original sequence a replayed receipt carried.
+    pub terminal_sequence: u64,
+    /// `true` when the original durable receipt was replayed unchanged.
+    pub replayed: bool,
+}
+
 pub trait RepoMapBundleIngestPort: Send + Sync {
-    fn ingest_bundle(&self, bundle: &RepoMapSourceBundle) -> Result<(), CoreError>;
+    fn ingest_bundle(
+        &self,
+        bundle: &RepoMapSourceBundle,
+    ) -> Result<RepoMapMutationReceiptV1, CoreError>;
 }
 
 /// The `RepoMap` store's quarantine, listed and discarded one file at a
@@ -28,7 +54,7 @@ pub trait RepoMapGenerationActivatePort: Send + Sync {
     fn activate_generation(
         &self,
         request: &RepoMapActivateGenerationRequest,
-    ) -> Result<(), CoreError>;
+    ) -> Result<RepoMapMutationReceiptV1, CoreError>;
 }
 
 /// What a `RepoMap` store found on disk when it opened (QI-BB-008).

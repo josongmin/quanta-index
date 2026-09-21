@@ -2130,24 +2130,62 @@ impl<'de> Deserialize<'de> for RepoMapActivateGenerationRequest {
     }
 }
 
+/// Identity/content-bound mutation receipt (S21-02).
+///
+/// Every publish, activate and rollback ACK names the commitment it
+/// supersedes, the new candidate commitment, the activation epoch after
+/// the mutation, the global terminal sequence that made it durable, and
+/// whether this was a replay of the original receipt rather than a new
+/// mutation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RepoMapMutationAck {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub manifest_generation: ManifestGeneration,
+    /// Wire hex of the prior activation's candidate commitment; `None`
+    /// when no activation existed for the repo/revision pair.
+    pub prior_candidate_commitment: Option<String>,
+    /// Wire hex of the new candidate commitment this receipt binds.
+    pub new_candidate_commitment: String,
+    /// Monotonic activation epoch for the repo/revision pair after this
+    /// mutation; `0` for a publish that activated nothing.
+    pub activation_epoch: u64,
+    /// Global terminal sequence (P02B allocator) that committed the
+    /// mutation, or the original sequence a replayed receipt carried.
+    pub terminal_sequence: u64,
+    /// `true` when the original durable receipt was replayed unchanged
+    /// instead of allocating a new sequence or rewriting state.
+    pub replayed: bool,
 }
 
-const REPOMAP_MUTATION_ACK_V1_FIELDS: &[&str] = &["repo_id", "revision_id", "manifest_generation"];
+const REPOMAP_MUTATION_ACK_V1_FIELDS: &[&str] = &[
+    "repo_id",
+    "revision_id",
+    "manifest_generation",
+    "prior_candidate_commitment",
+    "new_candidate_commitment",
+    "activation_epoch",
+    "terminal_sequence",
+    "replayed",
+];
 
 impl Serialize for RepoMapMutationAck {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("RepoMapMutationAck", 3)?;
+        let mut state = serializer.serialize_struct("RepoMapMutationAck", 8)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("manifest_generation", &self.manifest_generation)?;
+        state.serialize_field(
+            "prior_candidate_commitment",
+            &self.prior_candidate_commitment,
+        )?;
+        state.serialize_field("new_candidate_commitment", &self.new_candidate_commitment)?;
+        state.serialize_field("activation_epoch", &self.activation_epoch)?;
+        state.serialize_field("terminal_sequence", &self.terminal_sequence)?;
+        state.serialize_field("replayed", &self.replayed)?;
         state.end()
     }
 }
@@ -2168,6 +2206,11 @@ impl<'de> Visitor<'de> for RepoMapMutationAckV1Visitor {
         let mut repo_id: Option<RepoId> = None;
         let mut revision_id: Option<RevisionId> = None;
         let mut manifest_generation: Option<ManifestGeneration> = None;
+        let mut prior_candidate_commitment: Option<Option<String>> = None;
+        let mut new_candidate_commitment: Option<String> = None;
+        let mut activation_epoch: Option<u64> = None;
+        let mut terminal_sequence: Option<u64> = None;
+        let mut replayed: Option<bool> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "repo_id" => {
@@ -2188,6 +2231,36 @@ impl<'de> Visitor<'de> for RepoMapMutationAckV1Visitor {
                     }
                     manifest_generation = Some(map.next_value()?);
                 }
+                "prior_candidate_commitment" => {
+                    if prior_candidate_commitment.is_some() {
+                        return Err(de::Error::duplicate_field("prior_candidate_commitment"));
+                    }
+                    prior_candidate_commitment = Some(map.next_value()?);
+                }
+                "new_candidate_commitment" => {
+                    if new_candidate_commitment.is_some() {
+                        return Err(de::Error::duplicate_field("new_candidate_commitment"));
+                    }
+                    new_candidate_commitment = Some(map.next_value()?);
+                }
+                "activation_epoch" => {
+                    if activation_epoch.is_some() {
+                        return Err(de::Error::duplicate_field("activation_epoch"));
+                    }
+                    activation_epoch = Some(map.next_value()?);
+                }
+                "terminal_sequence" => {
+                    if terminal_sequence.is_some() {
+                        return Err(de::Error::duplicate_field("terminal_sequence"));
+                    }
+                    terminal_sequence = Some(map.next_value()?);
+                }
+                "replayed" => {
+                    if replayed.is_some() {
+                        return Err(de::Error::duplicate_field("replayed"));
+                    }
+                    replayed = Some(map.next_value()?);
+                }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -2200,10 +2273,22 @@ impl<'de> Visitor<'de> for RepoMapMutationAckV1Visitor {
         let revision_id = revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?;
         let manifest_generation =
             manifest_generation.ok_or_else(|| de::Error::missing_field("manifest_generation"))?;
+        let new_candidate_commitment = new_candidate_commitment
+            .ok_or_else(|| de::Error::missing_field("new_candidate_commitment"))?;
+        let activation_epoch =
+            activation_epoch.ok_or_else(|| de::Error::missing_field("activation_epoch"))?;
+        let terminal_sequence =
+            terminal_sequence.ok_or_else(|| de::Error::missing_field("terminal_sequence"))?;
+        let replayed = replayed.ok_or_else(|| de::Error::missing_field("replayed"))?;
         Ok(RepoMapMutationAck {
             repo_id,
             revision_id,
             manifest_generation,
+            prior_candidate_commitment: prior_candidate_commitment.unwrap_or_default(),
+            new_candidate_commitment,
+            activation_epoch,
+            terminal_sequence,
+            replayed,
         })
     }
 }
@@ -3382,6 +3467,11 @@ mod tests {
             repo_id: sample_repo_id(),
             revision_id: sample_revision_id(),
             manifest_generation: sample_manifest_generation(),
+            prior_candidate_commitment: None,
+            new_candidate_commitment: format!("sha256:{}", "ab".repeat(32)),
+            activation_epoch: 0,
+            terminal_sequence: 1,
+            replayed: false,
         }
     }
 

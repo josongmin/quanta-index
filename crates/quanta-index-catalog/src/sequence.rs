@@ -502,17 +502,80 @@ pub(crate) fn verify_integrity(
                     }
                 }
             }
-            // An Invalidation's attribution is consulted per operation
-            // event above (same identity digest). Seal / activation /
-            // rollback / quarantine kinds have no domain table in this
-            // crate yet (their owners are later SEP-21 lanes); for them
-            // the ledger row and its digests are the record.
-            SequenceEventKindV1::CandidateSeal
-            | SequenceEventKindV1::Activation
-            | SequenceEventKindV1::Rollback
-            | SequenceEventKindV1::Invalidation
-            | SequenceEventKindV1::QuarantineRecord
-            | SequenceEventKindV1::QuarantineDiscard => {}
+            // Repomap domain pairing (P03): every CandidateSeal and
+            // Activation event has its exact domain row in
+            // `repomap_candidate_v1` / `repomap_activation_v1` (same
+            // terminal sequence); every QuarantineRecord pairs the
+            // incident's record sequence and QuarantineDiscard its
+            // discard sequence. An Invalidation pairs the repomap
+            // activation row when one names its sequence; invalidations
+            // the idempotency lane attributes (generation GC) keep the
+            // per-operation attribution consulted above and pair nothing
+            // here. Rollback is not emitted by any current owner; the
+            // ledger row and its digests are its record until one is.
+            SequenceEventKindV1::CandidateSeal => {
+                pair_exists(
+                    connection,
+                    path,
+                    "SELECT 1 FROM repomap_candidate_v1 WHERE terminal_sequence = ?1",
+                    sequence,
+                    "candidate seal",
+                )?;
+            }
+            SequenceEventKindV1::Activation => {
+                pair_exists(
+                    connection,
+                    path,
+                    "SELECT 1 FROM repomap_activation_v1 WHERE activation_sequence = ?1",
+                    sequence,
+                    "activation",
+                )?;
+            }
+            SequenceEventKindV1::Rollback => {}
+            SequenceEventKindV1::Invalidation => {
+                pair_exists(
+                    connection,
+                    path,
+                    "SELECT 1 FROM repomap_activation_v1
+                     WHERE terminal_sequence = ?1 AND active = 0",
+                    sequence,
+                    "repomap activation invalidation",
+                )
+                .or_else(|invalidation_pair_error| {
+                    // Not a repomap invalidation: the idempotency lane's
+                    // attribution (checked per operation event above) owns
+                    // it, so the pairing requirement does not apply.
+                    if matches!(
+                        invalidation_pair_error,
+                        CoreError::Typed {
+                            code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                            ..
+                        }
+                    ) {
+                        Ok(())
+                    } else {
+                        Err(invalidation_pair_error)
+                    }
+                })?;
+            }
+            SequenceEventKindV1::QuarantineRecord => {
+                pair_exists(
+                    connection,
+                    path,
+                    "SELECT 1 FROM repomap_quarantine_event_v1 WHERE sequence = ?1",
+                    sequence,
+                    "quarantine record",
+                )?;
+            }
+            SequenceEventKindV1::QuarantineDiscard => {
+                pair_exists(
+                    connection,
+                    path,
+                    "SELECT 1 FROM repomap_quarantine_event_v1 WHERE discard_sequence = ?1",
+                    sequence,
+                    "quarantine discard",
+                )?;
+            }
         }
     }
     Ok(())
@@ -566,6 +629,27 @@ pub(crate) fn is_invalidated(
         .optional()
         .map_err(|error| engine_error("read invalidation", path, &error))?;
     Ok(found.is_some())
+}
+
+/// The integrity pass's domain-pairing lookup: the named row must exist.
+fn pair_exists(
+    connection: &Connection,
+    path: &std::path::Path,
+    sql: &str,
+    sequence: i64,
+    label: &str,
+) -> Result<(), CoreError> {
+    let found: Option<i64> = connection
+        .query_row(sql, params![sequence], |row| row.get(0))
+        .optional()
+        .map_err(|error| engine_error("pair integrity lookup", path, &error))?;
+    if found.is_none() {
+        return Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+            message: format!("catalog: {label} event {sequence} has no exact domain pair"),
+        });
+    }
+    Ok(())
 }
 
 impl SqliteCatalog {

@@ -22,9 +22,14 @@
 #![forbid(unsafe_code)]
 
 mod auxiliary;
+mod candidate;
 mod connection;
 mod idempotency;
 mod open;
 mod sequence;
 
+pub use candidate::{
+    ActivationOutcomeV1, RepoMapActivationRowV1, RepoMapCandidateRowV1, RepoMapCandidateStateV1,
+    RepoMapQuarantineIncidentRowV1, SealOutcomeV1,
+};
 pub use connection::{CATALOG_FILE_NAME, SqliteCatalog, catalog_dir};

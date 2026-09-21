@@ -108,7 +108,17 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     # P02A: the compiler and query engine reuse the one shared Unicode
     # tokenizer (QI-BB-011 leaf crate); there is no route-local tokenizer.
     "quanta-index-repomap": frozenset(
-        {"quanta-index-contract", "quanta-index-core", "quanta-index-lq-text-normalizer"}
+        {
+            "quanta-index-contract",
+            "quanta-index-core",
+            "quanta-index-lq-text-normalizer",
+            # P03 (SEP-21 S21-01B/S21-02): the store's candidate/activation/
+            # quarantine visibility authority is the durable catalog; the
+            # composition root shares its one `SqliteCatalog` connection
+            # with the store, exactly as it shares the idempotency and
+            # auxiliary ports.
+            "quanta-index-catalog",
+        }
     ),
     # Corpus parser/runner smoke helpers. No production deps; tests in
     # other crates consume it via dev-dependencies only.

@@ -842,7 +842,7 @@ fn repo_map_bundle() -> Result<RepoMapSourceBundle, Box<dyn Error>> {
         repo(),
         revision(),
         generation(),
-        "manifest-digest-sdk",
+        "2".repeat(64),
         "repomap-snapshot-sdk",
         1,
         "e".repeat(64),
@@ -880,7 +880,14 @@ fn repo_map_bundle() -> Result<RepoMapSourceBundle, Box<dyn Error>> {
         owner_path: RepoRelativePath::new("src/service/mod.rs"),
         local_name: "Beta".to_string(),
         qualified_name: "src::service::Beta".to_string(),
-        symbol_kind,
+        symbol_kind: symbol_kind.clone(),
+    }))
+    .with_node(RepoMapNode::Symbol(RepoMapSymbolNode {
+        symbol_id: SymbolId::new("symbol://gamma"),
+        owner_path: RepoRelativePath::new("tests/repo_map.rs"),
+        local_name: "Gamma".to_string(),
+        qualified_name: "tests::repo_map::Gamma".to_string(),
+        symbol_kind: symbol_kind.clone(),
     }))
     .with_node(RepoMapNode::Chunk(RepoMapChunkNode {
         chunk_id: ChunkId::new("chunk://alpha"),
@@ -934,9 +941,7 @@ fn repo_map_bundle() -> Result<RepoMapSourceBundle, Box<dyn Error>> {
     }))
     .with_edge(RepoMapEdge::Call(quanta_index_contract::RepoMapCallEdge {
         caller: RepoMapNodeRef::Symbol(SymbolId::new("symbol://beta")),
-        callee: RepoMapNodeRef::File(quanta_index_contract::FileId::new(
-            "file://tests/repo_map.rs",
-        )),
+        callee: RepoMapNodeRef::Symbol(SymbolId::new("symbol://gamma")),
     }))
     .with_edge(RepoMapEdge::Import(
         quanta_index_contract::RepoMapImportEdge {
@@ -967,7 +972,7 @@ fn repo_map_activate_request() -> RepoMapActivateGenerationRequest {
         repo_id: repo(),
         revision_id: revision(),
         manifest_generation: generation(),
-        manifest_digest: "manifest-digest-sdk".to_string(),
+        manifest_digest: "2".repeat(64).to_string(),
     }
 }
 
@@ -1419,7 +1424,7 @@ fn assert_repo_map_happy_path(
     if entry.subject_identity != "symbol://beta"
         || entry.owner_path != "src/service/mod.rs"
         || entry.subject_doc_type != RepoMapDocType::Symbol
-        || entry.projection_evidence_kind != "AuthorityBundle"
+        || entry.projection_evidence_kind != "CompiledRepoMapCandidateV1"
     {
         return Err(format!("unexpected repo-map entry: {entry:?}").into());
     }

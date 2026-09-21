@@ -300,11 +300,18 @@ impl SearchPlaneIngestDispatcher {
             }
             SearchPlaneIngestIpcRequest::PublishRepoMapBundle(bundle) => {
                 match self.repomap.ingest_bundle(&bundle) {
-                    Ok(()) => SearchPlaneIngestIpcResponse::RepoMapReceipt(RepoMapMutationAck {
-                        repo_id: bundle.repo_id,
-                        revision_id: bundle.revision_id,
-                        manifest_generation: bundle.manifest_generation,
-                    }),
+                    Ok(receipt) => {
+                        SearchPlaneIngestIpcResponse::RepoMapReceipt(RepoMapMutationAck {
+                            repo_id: bundle.repo_id,
+                            revision_id: bundle.revision_id,
+                            manifest_generation: bundle.manifest_generation,
+                            prior_candidate_commitment: receipt.prior_candidate_commitment,
+                            new_candidate_commitment: receipt.new_candidate_commitment,
+                            activation_epoch: receipt.activation_epoch,
+                            terminal_sequence: receipt.terminal_sequence,
+                            replayed: receipt.replayed,
+                        })
+                    }
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             } // QI-LXB-01 / QI-HIST-01 / QI-RT-02 / QI-STR-02: history /

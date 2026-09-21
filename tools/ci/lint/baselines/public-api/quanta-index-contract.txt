@@ -6530,9 +6530,14 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::RepoMapModuleNode
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RepoMapModuleNode
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RepoMapModuleNode
 pub struct quanta_index_contract::repomap::RepoMapMutationAck
+pub quanta_index_contract::repomap::RepoMapMutationAck::activation_epoch: u64
 pub quanta_index_contract::repomap::RepoMapMutationAck::manifest_generation: quanta_index_contract_base::ids::ManifestGeneration
+pub quanta_index_contract::repomap::RepoMapMutationAck::new_candidate_commitment: alloc::string::String
+pub quanta_index_contract::repomap::RepoMapMutationAck::prior_candidate_commitment: core::option::Option<alloc::string::String>
+pub quanta_index_contract::repomap::RepoMapMutationAck::replayed: bool
 pub quanta_index_contract::repomap::RepoMapMutationAck::repo_id: quanta_index_contract_base::ids::RepoId
 pub quanta_index_contract::repomap::RepoMapMutationAck::revision_id: quanta_index_contract_base::ids::RevisionId
+pub quanta_index_contract::repomap::RepoMapMutationAck::terminal_sequence: u64
 impl core::clone::Clone for quanta_index_contract::RepoMapMutationAck
 pub fn quanta_index_contract::RepoMapMutationAck::clone(&self) -> quanta_index_contract::RepoMapMutationAck
 impl core::cmp::Eq for quanta_index_contract::RepoMapMutationAck
@@ -12053,9 +12058,14 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::RepoMapModuleNode
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RepoMapModuleNode
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RepoMapModuleNode
 pub struct quanta_index_contract::RepoMapMutationAck
+pub quanta_index_contract::RepoMapMutationAck::activation_epoch: u64
 pub quanta_index_contract::RepoMapMutationAck::manifest_generation: quanta_index_contract_base::ids::ManifestGeneration
+pub quanta_index_contract::RepoMapMutationAck::new_candidate_commitment: alloc::string::String
+pub quanta_index_contract::RepoMapMutationAck::prior_candidate_commitment: core::option::Option<alloc::string::String>
+pub quanta_index_contract::RepoMapMutationAck::replayed: bool
 pub quanta_index_contract::RepoMapMutationAck::repo_id: quanta_index_contract_base::ids::RepoId
 pub quanta_index_contract::RepoMapMutationAck::revision_id: quanta_index_contract_base::ids::RevisionId
+pub quanta_index_contract::RepoMapMutationAck::terminal_sequence: u64
 impl core::clone::Clone for quanta_index_contract::RepoMapMutationAck
 pub fn quanta_index_contract::RepoMapMutationAck::clone(&self) -> quanta_index_contract::RepoMapMutationAck
 impl core::cmp::Eq for quanta_index_contract::RepoMapMutationAck

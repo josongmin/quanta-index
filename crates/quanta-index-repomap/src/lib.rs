@@ -7,7 +7,7 @@ pub mod delta;
 pub mod layout_v3;
 pub mod materializer;
 pub mod model;
-pub(crate) mod persistence;
+mod object_store;
 pub mod query;
 pub mod reader;
 pub mod store;
@@ -18,7 +18,10 @@ pub use layout_v3::{
     QuarantinePayloadAddressV1, SecureMetadataPairV1, StateRootSecurityContextV1,
     StateRootSecurityVerificationErrorV1,
 };
-pub use materializer::{RepoMapGraphCompiler, RepoMapMaterializer};
+pub use materializer::{
+    CandidateProjectionMetaV1, RepoMapGraphCompiler, RepoMapMaterializer, decode_compiled_payload,
+    snapshot_from_projection,
+};
 pub use model::{RepoMapEntry, RepoMapIndexedSnapshot, RepoMapSnapshot, RepoMapSnapshotIndex};
 pub use query::RepoMapQueryEngine;
 pub use reader::RepoMapPinnedReader;
