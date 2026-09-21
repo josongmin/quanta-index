@@ -16,12 +16,25 @@ pub struct ConnectOptions {
     request_io_deadline: Option<Instant>,
 }
 
+/// Which transports a client configures (S21-07). The query-only
+/// profile is least privilege: it requires and constructs only the query
+/// transport, and never fabricates dummy control or ingest transports.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ClientProfile {
+    /// Query, control and ingest transports, all required.
+    #[default]
+    Full,
+    /// Query transport only; control and ingest calls fail with a typed
+    /// [`crate::SdkError::PlaneUnavailable`].
+    QueryOnly,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResolvedConnectOptions {
     pub(crate) state_root: Option<PathBuf>,
     pub(crate) query_socket: PathBuf,
-    pub(crate) control_socket: PathBuf,
-    pub(crate) ingest_socket: PathBuf,
+    pub(crate) control_socket: Option<PathBuf>,
+    pub(crate) ingest_socket: Option<PathBuf>,
     pub(crate) io_policy: ClientIoPolicy,
 }
 
@@ -79,6 +92,16 @@ impl ConnectOptions {
     }
 
     pub(crate) fn resolve(self) -> Result<ResolvedConnectOptions, SdkError> {
+        self.resolve_profile(ClientProfile::Full)
+    }
+
+    /// Resolve under an explicit profile (S21-07): `QueryOnly` leaves
+    /// the control and ingest sockets unresolved instead of failing or
+    /// inventing defaults for transports the profile never constructs.
+    pub(crate) fn resolve_profile(
+        self,
+        profile: ClientProfile,
+    ) -> Result<ResolvedConnectOptions, SdkError> {
         let io_policy = match self.request_io_deadline {
             Some(deadline) => ClientIoPolicy::try_with_deadline(deadline),
             None => ClientIoPolicy::try_new(self.request_io_timeout),
@@ -94,25 +117,32 @@ impl ConnectOptions {
                 ));
             }
         };
-        let control_socket = match (self.control_socket, &state_root) {
-            (Some(path), _) => path,
-            (None, Some(root)) => root.join("search-plane").join("control.sock"),
-            (None, None) => {
-                return Err(SdkError::Usage(
-                    "control socket unresolved: set state root or explicit control socket"
-                        .to_string(),
-                ));
+        let optional_socket = |explicit: Option<PathBuf>, name: &str| -> Option<PathBuf> {
+            match (explicit, &state_root) {
+                (Some(path), _) => Some(path),
+                (None, Some(root)) => Some(root.join("search-plane").join(name)),
+                (None, None) => None,
             }
         };
-        let ingest_socket = match (self.ingest_socket, &state_root) {
-            (Some(path), _) => path,
-            (None, Some(root)) => root.join("search-plane").join("ingest.sock"),
-            (None, None) => {
-                return Err(SdkError::Usage(
-                    "ingest socket unresolved: set state root or explicit ingest socket"
-                        .to_string(),
-                ));
+        let (control_socket, ingest_socket) = match profile {
+            ClientProfile::Full => {
+                let control_socket = optional_socket(self.control_socket, "control.sock")
+                    .ok_or_else(|| {
+                        SdkError::Usage(
+                            "control socket unresolved: set state root or explicit control socket"
+                                .to_string(),
+                        )
+                    })?;
+                let ingest_socket =
+                    optional_socket(self.ingest_socket, "ingest.sock").ok_or_else(|| {
+                        SdkError::Usage(
+                            "ingest socket unresolved: set state root or explicit ingest socket"
+                                .to_string(),
+                        )
+                    })?;
+                (Some(control_socket), Some(ingest_socket))
             }
+            ClientProfile::QueryOnly => (None, None),
         };
         Ok(ResolvedConnectOptions {
             state_root,

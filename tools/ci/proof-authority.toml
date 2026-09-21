@@ -282,9 +282,8 @@ required_host = "linux-production-like"
 
 [[proofs]]
 id = "p06-sdk-binding-owner"
-authority_state = "staged"
+authority_state = "executable"
 execution_mode = "test-authority"
-staged_reason = "P06 must land host-independent SDK contextual binding and negative-matrix owner targets."
 ticket = "S21-07"
 family = "U"
 checkpoint = "M2"
@@ -297,7 +296,8 @@ filter = "none"
 source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = []
+test_authority_scopes = ["sdk-binding-owner", "sdk-binding-owner-lib"]
+test_authority_targets = ["sdk-binding-owner-v1"]
 dependencies = ["p05-query-truth-owner"]
 artifact = "artifacts/proof-authority/p06-sdk-binding-owner.json"
 required_host = "any"

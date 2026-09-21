@@ -753,11 +753,11 @@ fn connect_options_from_state_root_resolve_default_sockets() {
     );
     assert_eq!(
         resolved.control_socket,
-        PathBuf::from("/tmp/qi-state/search-plane/control.sock")
+        Some(PathBuf::from("/tmp/qi-state/search-plane/control.sock"))
     );
     assert_eq!(
         resolved.ingest_socket,
-        PathBuf::from("/tmp/qi-state/search-plane/ingest.sock"),
+        Some(PathBuf::from("/tmp/qi-state/search-plane/ingest.sock")),
         "QI-SDK-01: ingest socket resolves to state_root/search-plane/ingest.sock"
     );
     assert_eq!(
@@ -983,13 +983,10 @@ fn cluster_membership_read_rejects_unrelated_query_response_v1() {
         Ok(outcome) => panic!("unrelated query response unexpectedly admitted: {outcome:?}"),
         Err(error) => error,
     };
-    let crate::SdkError::Protocol(message) = error else {
-        panic!("expected protocol error for unrelated response");
+    let crate::SdkError::Binding { axis, .. } = error else {
+        panic!("expected a binding mismatch for unrelated response");
     };
-    assert_eq!(
-        message,
-        "expected cluster membership read response, got text"
-    );
+    assert_eq!(axis, crate::ResponseBindingAxis::Variant);
 }
 
 #[test]
@@ -2251,8 +2248,17 @@ fn producer_client_rejects_activation_ack_identity_mismatches_v1() {
             .publish_search_corpus_and_activate(&batch, Some(previous.clone()))
             .expect_err(label);
         assert!(
-            matches!(error, crate::SdkError::Protocol(ref message) if message.contains("acknowledgement")),
-            "{label} mismatch must fail as a protocol error, got {error:?}"
+            matches!(
+                error,
+                crate::SdkError::Binding {
+                    axis: crate::ResponseBindingAxis::TargetIdentity,
+                    ..
+                } | crate::SdkError::Binding {
+                    axis: crate::ResponseBindingAxis::CasExpectation,
+                    ..
+                }
+            ) || matches!(error, crate::SdkError::Protocol(ref message) if message.contains("acknowledgement")),
+            "{label} mismatch must fail closed, got {error:?}"
         );
     }
 }
@@ -2431,8 +2437,14 @@ fn producer_client_rejects_each_search_corpus_receipt_mismatch_before_activation
             .publish_search_corpus_and_activate(&batch, None)
             .expect_err(label);
         assert!(
-            matches!(error, crate::SdkError::Protocol(ref message) if message.contains(label)),
-            "{label} mismatch must be a protocol error, got {error:?}"
+            matches!(
+                error,
+                crate::SdkError::Binding {
+                    axis: crate::ResponseBindingAxis::BatchCommitment,
+                    ..
+                }
+            ) || matches!(error, crate::SdkError::Protocol(ref message) if message.contains(label)),
+            "{label} mismatch must fail closed, got {error:?}"
         );
         assert!(
             control
@@ -2926,10 +2938,6 @@ fn history_publish_file_contributor_routes_through_ingest_transport() {
 
 #[test]
 fn dirty_publish_routes_through_ingest_transport_and_carries_typed_entries() {
-    let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::DirtyReceipt(BatchPublishReceipt::default()),
-    ));
-    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
     let batch = DirtyBatch::new(
         repo_id(),
         revision_id(),
@@ -2938,6 +2946,14 @@ fn dirty_publish_routes_through_ingest_transport_and_carries_typed_entries() {
     )
     .upsert(sample_dirty_record())
     .delete(ChunkId::new("chunk-evict"));
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::DirtyReceipt(BatchPublishReceipt {
+            generation: ManifestGeneration::new(4),
+            batch_digest: ok_or_fail!(batch.batch_digest()),
+            ..BatchPublishReceipt::default()
+        }),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
     let _receipt = ok_or_fail!(client.runtime().publish_dirty(&batch));
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(
@@ -2958,10 +2974,6 @@ fn dirty_publish_routes_through_ingest_transport_and_carries_typed_entries() {
 
 #[test]
 fn structural_publish_routes_through_ingest_transport_and_carries_parse_trees() {
-    let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::StructuralReceipt(BatchPublishReceipt::default()),
-    ));
-    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
     let batch = StructuralBatch::delta(
         repo_id(),
         revision_id(),
@@ -2981,6 +2993,14 @@ fn structural_publish_routes_through_ingest_transport_and_carries_parse_trees() 
         doc_surface: SearchScopeSurface::Chunk,
         repo_relative_path: RepoRelativePath::new("src/old.rs"),
     });
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::StructuralReceipt(BatchPublishReceipt {
+            generation: ManifestGeneration::new(5),
+            batch_digest: ok_or_fail!(batch.batch_digest()),
+            ..BatchPublishReceipt::default()
+        }),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
     let _receipt = ok_or_fail!(client.structural().publish(&batch));
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(
@@ -3207,7 +3227,7 @@ fn history_sourcegraph_query_preserves_rev_filter_and_syntax() {
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
             generation: sample_generation_pin(),
-            order: quanta_index_contract::HistoryOrderV1::Recency,
+            order: quanta_index_contract::HistoryOrderV1::Relevance,
             commits: vec![],
             diffs: vec![],
             window: quanta_index_contract::QueryResultWindowV1::exact(0),
@@ -3251,7 +3271,7 @@ fn history_query_request_forwards_contract_dto_unchanged() {
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
             generation: sample_generation_pin(),
-            order: quanta_index_contract::HistoryOrderV1::Recency,
+            order: quanta_index_contract::HistoryOrderV1::Relevance,
             commits: vec![],
             diffs: vec![],
             window: quanta_index_contract::QueryResultWindowV1::exact(0),
@@ -3624,8 +3644,17 @@ fn generations_rollback_rejects_ack_identity_mismatches_v1() {
             })
             .expect_err(label);
         assert!(
-            matches!(error, crate::SdkError::Protocol(ref message) if message.contains("acknowledgement")),
-            "{label} mismatch must fail as a protocol error, got {error:?}"
+            matches!(
+                error,
+                crate::SdkError::Binding {
+                    axis: crate::ResponseBindingAxis::TargetIdentity,
+                    ..
+                } | crate::SdkError::Binding {
+                    axis: crate::ResponseBindingAxis::CasExpectation,
+                    ..
+                }
+            ),
+            "{label} mismatch must fail as a binding error, got {error:?}"
         );
     }
 }
@@ -3960,13 +3989,13 @@ fn observability_metrics_snapshot_refuses_wrong_kind_and_surfaces_remote_errors(
     ));
     let client = QuantaIndex::from_transports(unused_query(), wrong_kind, unused_ingest());
     match client.observability().metrics_snapshot() {
-        Err(crate::SdkError::Protocol(message)) => {
-            assert!(
-                message.contains("generation_status_report"),
-                "the protocol error names what arrived: {message}"
+        Err(crate::SdkError::Binding { actual, .. }) => {
+            assert_eq!(
+                actual, "generation_status_report",
+                "the binding error names what arrived"
             );
         }
-        other => panic!("expected a protocol error, got {other:?}"),
+        other => panic!("expected a binding error, got {other:?}"),
     }
     let refused = Arc::new(StubControlTransport::new(
         SearchPlaneControlIpcResponse::Error(SearchPlaneIpcError {
@@ -4076,26 +4105,27 @@ fn quarantine_discard_refuses_mismatched_acks_wrong_kinds_and_surfaces_refusals(
     ));
     let client = QuantaIndex::from_transports(unused_query(), mismatched, unused_ingest());
     match client.quarantine().discard(&sent) {
-        Err(crate::SdkError::Protocol(message)) => {
-            assert!(
-                message.contains("different target"),
-                "the protocol error says the ack is for another target: {message}"
+        Err(crate::SdkError::Binding { axis, .. }) => {
+            assert_eq!(
+                axis,
+                crate::ResponseBindingAxis::TargetIdentity,
+                "the binding error says the ack is for another target"
             );
         }
-        other => panic!("expected a protocol error, got {other:?}"),
+        other => panic!("expected a binding error, got {other:?}"),
     }
     let wrong_kind = Arc::new(StubControlTransport::new(
         SearchPlaneControlIpcResponse::QuarantineInventory(QuarantineInventoryV1::default()),
     ));
     let client = QuantaIndex::from_transports(unused_query(), wrong_kind, unused_ingest());
     match client.quarantine().discard(&sent) {
-        Err(crate::SdkError::Protocol(message)) => {
-            assert!(
-                message.contains("quarantine_inventory"),
-                "the protocol error names what arrived: {message}"
+        Err(crate::SdkError::Binding { actual, .. }) => {
+            assert_eq!(
+                actual, "quarantine_inventory",
+                "the binding error names what arrived"
             );
         }
-        other => panic!("expected a protocol error, got {other:?}"),
+        other => panic!("expected a binding error, got {other:?}"),
     }
     let wrong_kind = Arc::new(StubControlTransport::new(
         SearchPlaneControlIpcResponse::QuarantineDiscardAck(QuarantineDiscardAck {
@@ -4105,13 +4135,13 @@ fn quarantine_discard_refuses_mismatched_acks_wrong_kinds_and_surfaces_refusals(
     ));
     let client = QuantaIndex::from_transports(unused_query(), wrong_kind, unused_ingest());
     match client.quarantine().inventory() {
-        Err(crate::SdkError::Protocol(message)) => {
-            assert!(
-                message.contains("quarantine_discard_ack"),
-                "the protocol error names what arrived: {message}"
+        Err(crate::SdkError::Binding { actual, .. }) => {
+            assert_eq!(
+                actual, "quarantine_discard_ack",
+                "the binding error names what arrived"
             );
         }
-        other => panic!("expected a protocol error, got {other:?}"),
+        other => panic!("expected a binding error, got {other:?}"),
     }
     let refused = Arc::new(StubControlTransport::new(
         SearchPlaneControlIpcResponse::Error(SearchPlaneIpcError {
@@ -4245,7 +4275,19 @@ fn text_query_builder_refuses_out_of_range_top_k_before_any_round_trip() {
 
 #[test]
 fn text_query_builder_accepts_the_public_maximum_top_k() {
-    let query = unused_query();
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
+        TextQueryResponse {
+            generation: quanta_index_contract::GenerationPin::new(
+                RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
+                ManifestGeneration::new(7),
+            ),
+            results: vec![],
+            window: QueryResultWindowV1::exact(0),
+            file_owner_rows: None,
+            next_cursor: None,
+        },
+    )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let _response = ok_or_fail!(
         client

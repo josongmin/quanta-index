@@ -1320,6 +1320,17 @@ fn map_sdk_error(error: SdkError) -> CliError {
             Ok(text) => CliError::remote(text),
             Err(err) => err,
         },
+        SdkError::Binding {
+            route,
+            axis,
+            expected,
+            actual,
+        } => CliError::protocol(format!(
+            "response binding failed on route `{route}` axis `{axis}`: expected {expected}, got {actual}"
+        )),
+        SdkError::PlaneUnavailable { plane } => CliError::usage(format!(
+            "{plane} transport is not configured for this client profile"
+        )),
     }
 }
 

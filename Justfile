@@ -32,6 +32,8 @@ rust-profile-list:
         'test-search-plane-read-view-lib P04 search-plane read-view lib proof' \
         'test-query-truth-owner P05 query outcome/cursor/oracle owner proof' \
         'test-query-truth-owner-lib P05 outcome/cursor/oracle lib suites' \
+        'test-sdk-binding-owner P06 SDK contextual binding negative-matrix owner proof' \
+        'test-sdk-binding-owner-lib P06 SDK lib suites' \
         'test-integration-fast bounded integration loop; excludes slow text/Lance storage' \
         'test-integration-storage text-authority shard persistence slice' \
         'test-integration-semantic semantic storage integration slice' \
@@ -68,6 +70,8 @@ rust-profile profile:
         test-search-plane-read-view-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-search-plane-read-view-lib ;; \
         test-query-truth-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-query-truth-owner ;; \
         test-query-truth-owner-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-query-truth-owner-lib ;; \
+        test-sdk-binding-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-sdk-binding-owner ;; \
+        test-sdk-binding-owner-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-sdk-binding-owner-lib ;; \
         test-integration-fast) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-fast ;; \
         test-integration-storage) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-storage ;; \
         test-integration-semantic) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-semantic ;; \
@@ -240,6 +244,12 @@ rust-test-query-truth-owner lane="test-query-truth-owner-lane":
 
 rust-test-query-truth-owner-lib lane="test-query-truth-owner-lane":
     python3 tools/ci/run-local-test-scope.py query-truth-owner-lib --lane {{lane}}
+
+rust-test-sdk-binding-owner lane="test-sdk-binding-owner-lane":
+    python3 tools/ci/run-local-test-scope.py sdk-binding-owner --lane {{lane}}
+
+rust-test-sdk-binding-owner-lib lane="test-sdk-binding-owner-lane":
+    python3 tools/ci/run-local-test-scope.py sdk-binding-owner-lib --lane {{lane}}
 
 rust-test-integration-fast lane="test-integration-lane":
     python3 tools/ci/run-local-test-scope.py integration-fast --lane {{lane}}
@@ -830,6 +840,22 @@ proof-p04-read-view-lifetime-owner:
     @just rust-profile test-read-view-lifetime-owner
     @just rust-profile test-search-plane-read-view-lib
     @python3 tools/ci/lint/check-read-view-ambient-lookup.py
+    @just rust-hexagonal
+    @just rust-wire-inventory
+    @just rust-public-api
+    @just rust-fuzz-smoke
+
+# P06 SDK binding owner proof (S21-07): the scoped rail runs the SDK
+# owner integration target (wrong-but-same-variant negative matrix over a
+# real UDS scripted peer, query-only profile, coverage table) and the SDK
+# lib suites bound to the same source. The SDK public API changed
+# (binding error, profile split, coverage inventory), so the structural
+# rails include public API and wire inventory plus the IPC fuzz smoke.
+# The Linux production-like release subrail (p06-sdk-binding,
+# release-daemon binding) stays NOT_RUN on this host.
+proof-p06-sdk-binding-owner:
+    @just rust-profile test-sdk-binding-owner
+    @just rust-profile test-sdk-binding-owner-lib
     @just rust-hexagonal
     @just rust-wire-inventory
     @just rust-public-api

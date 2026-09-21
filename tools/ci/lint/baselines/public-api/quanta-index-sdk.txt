@@ -109,6 +109,88 @@ pub use quanta_index_sdk::TextQuerySyntax
 pub use quanta_index_sdk::TrackReadinessRecord
 pub use quanta_index_sdk::canonical_batch_digest_v1
 pub use quanta_index_sdk::stamp_batch_digest_v1
+pub mod quanta_index_sdk::binding
+pub enum quanta_index_sdk::binding::ExpectedQueryResponseV1
+pub quanta_index_sdk::binding::ExpectedQueryResponseV1::ClusterMembershipRead
+pub quanta_index_sdk::binding::ExpectedQueryResponseV1::Explain
+pub quanta_index_sdk::binding::ExpectedQueryResponseV1::History
+pub quanta_index_sdk::binding::ExpectedQueryResponseV1::Hybrid
+pub quanta_index_sdk::binding::ExpectedQueryResponseV1::HybridSeed
+pub quanta_index_sdk::binding::ExpectedQueryResponseV1::RepoMapQuery
+pub quanta_index_sdk::binding::ExpectedQueryResponseV1::RuntimeMetadata
+pub quanta_index_sdk::binding::ExpectedQueryResponseV1::Semantic
+pub quanta_index_sdk::binding::ExpectedQueryResponseV1::Structural
+pub quanta_index_sdk::binding::ExpectedQueryResponseV1::Symbol
+pub quanta_index_sdk::binding::ExpectedQueryResponseV1::Text
+impl quanta_index_sdk::binding::ExpectedQueryResponseV1
+pub const fn quanta_index_sdk::binding::ExpectedQueryResponseV1::kind(self) -> &'static str
+impl core::clone::Clone for quanta_index_sdk::binding::ExpectedQueryResponseV1
+pub fn quanta_index_sdk::binding::ExpectedQueryResponseV1::clone(&self) -> quanta_index_sdk::binding::ExpectedQueryResponseV1
+impl core::cmp::Eq for quanta_index_sdk::binding::ExpectedQueryResponseV1
+impl core::cmp::PartialEq for quanta_index_sdk::binding::ExpectedQueryResponseV1
+pub fn quanta_index_sdk::binding::ExpectedQueryResponseV1::eq(&self, other: &quanta_index_sdk::binding::ExpectedQueryResponseV1) -> bool
+impl core::fmt::Debug for quanta_index_sdk::binding::ExpectedQueryResponseV1
+pub fn quanta_index_sdk::binding::ExpectedQueryResponseV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_sdk::binding::ExpectedQueryResponseV1
+impl core::marker::StructuralPartialEq for quanta_index_sdk::binding::ExpectedQueryResponseV1
+impl core::marker::Freeze for quanta_index_sdk::binding::ExpectedQueryResponseV1
+impl core::marker::Send for quanta_index_sdk::binding::ExpectedQueryResponseV1
+impl core::marker::Sync for quanta_index_sdk::binding::ExpectedQueryResponseV1
+impl core::marker::Unpin for quanta_index_sdk::binding::ExpectedQueryResponseV1
+impl core::marker::UnsafeUnpin for quanta_index_sdk::binding::ExpectedQueryResponseV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::binding::ExpectedQueryResponseV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::binding::ExpectedQueryResponseV1
+pub enum quanta_index_sdk::binding::ResponseBindingAxis
+pub quanta_index_sdk::binding::ResponseBindingAxis::BatchCommitment
+pub quanta_index_sdk::binding::ResponseBindingAxis::CandidateIdentity
+pub quanta_index_sdk::binding::ResponseBindingAxis::Cardinality
+pub quanta_index_sdk::binding::ResponseBindingAxis::CasExpectation
+pub quanta_index_sdk::binding::ResponseBindingAxis::Order
+pub quanta_index_sdk::binding::ResponseBindingAxis::ReadIdentity
+pub quanta_index_sdk::binding::ResponseBindingAxis::SelectorDomain
+pub quanta_index_sdk::binding::ResponseBindingAxis::Sequence
+pub quanta_index_sdk::binding::ResponseBindingAxis::TargetIdentity
+pub quanta_index_sdk::binding::ResponseBindingAxis::Variant
+pub quanta_index_sdk::binding::ResponseBindingAxis::Window
+impl quanta_index_sdk::binding::ResponseBindingAxis
+pub const fn quanta_index_sdk::binding::ResponseBindingAxis::as_str(self) -> &'static str
+impl core::clone::Clone for quanta_index_sdk::binding::ResponseBindingAxis
+pub fn quanta_index_sdk::binding::ResponseBindingAxis::clone(&self) -> quanta_index_sdk::binding::ResponseBindingAxis
+impl core::cmp::Eq for quanta_index_sdk::binding::ResponseBindingAxis
+impl core::cmp::PartialEq for quanta_index_sdk::binding::ResponseBindingAxis
+pub fn quanta_index_sdk::binding::ResponseBindingAxis::eq(&self, other: &quanta_index_sdk::binding::ResponseBindingAxis) -> bool
+impl core::fmt::Debug for quanta_index_sdk::binding::ResponseBindingAxis
+pub fn quanta_index_sdk::binding::ResponseBindingAxis::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_sdk::binding::ResponseBindingAxis
+pub fn quanta_index_sdk::binding::ResponseBindingAxis::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_sdk::binding::ResponseBindingAxis
+impl core::marker::StructuralPartialEq for quanta_index_sdk::binding::ResponseBindingAxis
+impl core::marker::Freeze for quanta_index_sdk::binding::ResponseBindingAxis
+impl core::marker::Send for quanta_index_sdk::binding::ResponseBindingAxis
+impl core::marker::Sync for quanta_index_sdk::binding::ResponseBindingAxis
+impl core::marker::Unpin for quanta_index_sdk::binding::ResponseBindingAxis
+impl core::marker::UnsafeUnpin for quanta_index_sdk::binding::ResponseBindingAxis
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::binding::ResponseBindingAxis
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::binding::ResponseBindingAxis
+pub struct quanta_index_sdk::binding::SdkWireRouteV1
+pub quanta_index_sdk::binding::SdkWireRouteV1::bound_axes: &'static [&'static str]
+pub quanta_index_sdk::binding::SdkWireRouteV1::expected_kind: &'static str
+pub quanta_index_sdk::binding::SdkWireRouteV1::plane: &'static str
+pub quanta_index_sdk::binding::SdkWireRouteV1::route: &'static str
+impl core::clone::Clone for quanta_index_sdk::binding::SdkWireRouteV1
+pub fn quanta_index_sdk::binding::SdkWireRouteV1::clone(&self) -> quanta_index_sdk::binding::SdkWireRouteV1
+impl core::fmt::Debug for quanta_index_sdk::binding::SdkWireRouteV1
+pub fn quanta_index_sdk::binding::SdkWireRouteV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_sdk::binding::SdkWireRouteV1
+impl core::marker::Freeze for quanta_index_sdk::binding::SdkWireRouteV1
+impl core::marker::Send for quanta_index_sdk::binding::SdkWireRouteV1
+impl core::marker::Sync for quanta_index_sdk::binding::SdkWireRouteV1
+impl core::marker::Unpin for quanta_index_sdk::binding::SdkWireRouteV1
+impl core::marker::UnsafeUnpin for quanta_index_sdk::binding::SdkWireRouteV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::binding::SdkWireRouteV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::binding::SdkWireRouteV1
+pub const quanta_index_sdk::binding::SDK_WIRE_ROUTES_V1: &[quanta_index_sdk::binding::SdkWireRouteV1]
+pub const quanta_index_sdk::binding::SDK_WIRE_ROUTE_EXCLUSIONS_V1: &[(&str, &str)]
 pub enum quanta_index_sdk::BatchMode
 pub quanta_index_sdk::BatchMode::Delta
 pub quanta_index_sdk::BatchMode::ReplaceGeneration
@@ -128,6 +210,27 @@ impl core::marker::Unpin for quanta_index_sdk::BatchMode
 impl core::marker::UnsafeUnpin for quanta_index_sdk::BatchMode
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::BatchMode
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::BatchMode
+pub enum quanta_index_sdk::ClientProfile
+pub quanta_index_sdk::ClientProfile::Full
+pub quanta_index_sdk::ClientProfile::QueryOnly
+impl core::clone::Clone for quanta_index_sdk::ClientProfile
+pub fn quanta_index_sdk::ClientProfile::clone(&self) -> quanta_index_sdk::ClientProfile
+impl core::cmp::Eq for quanta_index_sdk::ClientProfile
+impl core::cmp::PartialEq for quanta_index_sdk::ClientProfile
+pub fn quanta_index_sdk::ClientProfile::eq(&self, other: &quanta_index_sdk::ClientProfile) -> bool
+impl core::default::Default for quanta_index_sdk::ClientProfile
+pub fn quanta_index_sdk::ClientProfile::default() -> quanta_index_sdk::ClientProfile
+impl core::fmt::Debug for quanta_index_sdk::ClientProfile
+pub fn quanta_index_sdk::ClientProfile::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_sdk::ClientProfile
+impl core::marker::StructuralPartialEq for quanta_index_sdk::ClientProfile
+impl core::marker::Freeze for quanta_index_sdk::ClientProfile
+impl core::marker::Send for quanta_index_sdk::ClientProfile
+impl core::marker::Sync for quanta_index_sdk::ClientProfile
+impl core::marker::Unpin for quanta_index_sdk::ClientProfile
+impl core::marker::UnsafeUnpin for quanta_index_sdk::ClientProfile
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::ClientProfile
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::ClientProfile
 pub enum quanta_index_sdk::DirtyBatchMutation
 pub quanta_index_sdk::DirtyBatchMutation::Delete
 pub quanta_index_sdk::DirtyBatchMutation::Delete::doc_id: quanta_index_contract::channel::ids::ChunkId
@@ -147,6 +250,36 @@ impl core::marker::Unpin for quanta_index_sdk::DirtyBatchMutation
 impl core::marker::UnsafeUnpin for quanta_index_sdk::DirtyBatchMutation
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::DirtyBatchMutation
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::DirtyBatchMutation
+pub enum quanta_index_sdk::ExpectedQueryResponseV1
+pub quanta_index_sdk::ExpectedQueryResponseV1::ClusterMembershipRead
+pub quanta_index_sdk::ExpectedQueryResponseV1::Explain
+pub quanta_index_sdk::ExpectedQueryResponseV1::History
+pub quanta_index_sdk::ExpectedQueryResponseV1::Hybrid
+pub quanta_index_sdk::ExpectedQueryResponseV1::HybridSeed
+pub quanta_index_sdk::ExpectedQueryResponseV1::RepoMapQuery
+pub quanta_index_sdk::ExpectedQueryResponseV1::RuntimeMetadata
+pub quanta_index_sdk::ExpectedQueryResponseV1::Semantic
+pub quanta_index_sdk::ExpectedQueryResponseV1::Structural
+pub quanta_index_sdk::ExpectedQueryResponseV1::Symbol
+pub quanta_index_sdk::ExpectedQueryResponseV1::Text
+impl quanta_index_sdk::binding::ExpectedQueryResponseV1
+pub const fn quanta_index_sdk::binding::ExpectedQueryResponseV1::kind(self) -> &'static str
+impl core::clone::Clone for quanta_index_sdk::binding::ExpectedQueryResponseV1
+pub fn quanta_index_sdk::binding::ExpectedQueryResponseV1::clone(&self) -> quanta_index_sdk::binding::ExpectedQueryResponseV1
+impl core::cmp::Eq for quanta_index_sdk::binding::ExpectedQueryResponseV1
+impl core::cmp::PartialEq for quanta_index_sdk::binding::ExpectedQueryResponseV1
+pub fn quanta_index_sdk::binding::ExpectedQueryResponseV1::eq(&self, other: &quanta_index_sdk::binding::ExpectedQueryResponseV1) -> bool
+impl core::fmt::Debug for quanta_index_sdk::binding::ExpectedQueryResponseV1
+pub fn quanta_index_sdk::binding::ExpectedQueryResponseV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_sdk::binding::ExpectedQueryResponseV1
+impl core::marker::StructuralPartialEq for quanta_index_sdk::binding::ExpectedQueryResponseV1
+impl core::marker::Freeze for quanta_index_sdk::binding::ExpectedQueryResponseV1
+impl core::marker::Send for quanta_index_sdk::binding::ExpectedQueryResponseV1
+impl core::marker::Sync for quanta_index_sdk::binding::ExpectedQueryResponseV1
+impl core::marker::Unpin for quanta_index_sdk::binding::ExpectedQueryResponseV1
+impl core::marker::UnsafeUnpin for quanta_index_sdk::binding::ExpectedQueryResponseV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::binding::ExpectedQueryResponseV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::binding::ExpectedQueryResponseV1
 pub enum quanta_index_sdk::RefMutation
 pub quanta_index_sdk::RefMutation::Delete
 pub quanta_index_sdk::RefMutation::Delete::name: alloc::string::String
@@ -168,7 +301,46 @@ impl core::marker::Unpin for quanta_index_sdk::RefMutation
 impl core::marker::UnsafeUnpin for quanta_index_sdk::RefMutation
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::RefMutation
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::RefMutation
+pub enum quanta_index_sdk::ResponseBindingAxis
+pub quanta_index_sdk::ResponseBindingAxis::BatchCommitment
+pub quanta_index_sdk::ResponseBindingAxis::CandidateIdentity
+pub quanta_index_sdk::ResponseBindingAxis::Cardinality
+pub quanta_index_sdk::ResponseBindingAxis::CasExpectation
+pub quanta_index_sdk::ResponseBindingAxis::Order
+pub quanta_index_sdk::ResponseBindingAxis::ReadIdentity
+pub quanta_index_sdk::ResponseBindingAxis::SelectorDomain
+pub quanta_index_sdk::ResponseBindingAxis::Sequence
+pub quanta_index_sdk::ResponseBindingAxis::TargetIdentity
+pub quanta_index_sdk::ResponseBindingAxis::Variant
+pub quanta_index_sdk::ResponseBindingAxis::Window
+impl quanta_index_sdk::binding::ResponseBindingAxis
+pub const fn quanta_index_sdk::binding::ResponseBindingAxis::as_str(self) -> &'static str
+impl core::clone::Clone for quanta_index_sdk::binding::ResponseBindingAxis
+pub fn quanta_index_sdk::binding::ResponseBindingAxis::clone(&self) -> quanta_index_sdk::binding::ResponseBindingAxis
+impl core::cmp::Eq for quanta_index_sdk::binding::ResponseBindingAxis
+impl core::cmp::PartialEq for quanta_index_sdk::binding::ResponseBindingAxis
+pub fn quanta_index_sdk::binding::ResponseBindingAxis::eq(&self, other: &quanta_index_sdk::binding::ResponseBindingAxis) -> bool
+impl core::fmt::Debug for quanta_index_sdk::binding::ResponseBindingAxis
+pub fn quanta_index_sdk::binding::ResponseBindingAxis::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_sdk::binding::ResponseBindingAxis
+pub fn quanta_index_sdk::binding::ResponseBindingAxis::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_sdk::binding::ResponseBindingAxis
+impl core::marker::StructuralPartialEq for quanta_index_sdk::binding::ResponseBindingAxis
+impl core::marker::Freeze for quanta_index_sdk::binding::ResponseBindingAxis
+impl core::marker::Send for quanta_index_sdk::binding::ResponseBindingAxis
+impl core::marker::Sync for quanta_index_sdk::binding::ResponseBindingAxis
+impl core::marker::Unpin for quanta_index_sdk::binding::ResponseBindingAxis
+impl core::marker::UnsafeUnpin for quanta_index_sdk::binding::ResponseBindingAxis
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::binding::ResponseBindingAxis
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::binding::ResponseBindingAxis
 pub enum quanta_index_sdk::SdkError
+pub quanta_index_sdk::SdkError::Binding
+pub quanta_index_sdk::SdkError::Binding::actual: alloc::string::String
+pub quanta_index_sdk::SdkError::Binding::axis: quanta_index_sdk::binding::ResponseBindingAxis
+pub quanta_index_sdk::SdkError::Binding::expected: alloc::string::String
+pub quanta_index_sdk::SdkError::Binding::route: &'static str
+pub quanta_index_sdk::SdkError::PlaneUnavailable
+pub quanta_index_sdk::SdkError::PlaneUnavailable::plane: &'static str
 pub quanta_index_sdk::SdkError::Protocol(alloc::string::String)
 pub quanta_index_sdk::SdkError::Remote
 pub quanta_index_sdk::SdkError::Remote::code: quanta_index_contract::ipc::error::SearchPlaneErrorCodeV2
@@ -548,6 +720,7 @@ impl<'a> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::ProducerCli
 pub struct quanta_index_sdk::QuantaIndex
 impl quanta_index_sdk::QuantaIndex
 pub fn quanta_index_sdk::QuantaIndex::connect(options: quanta_index_sdk::ConnectOptions) -> core::result::Result<Self, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::QuantaIndex::connect_query_only(options: quanta_index_sdk::ConnectOptions) -> core::result::Result<Self, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::QuantaIndex::control(&self) -> quanta_index_sdk::ControlClient<'_>
 pub fn quanta_index_sdk::QuantaIndex::generations(&self) -> quanta_index_sdk::GenerationNamespace<'_>
 pub fn quanta_index_sdk::QuantaIndex::history(&self) -> quanta_index_sdk::HistoryNamespace<'_>
@@ -821,6 +994,23 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::UnsafeUnpin for quanta_index_sdk::RuntimeQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::RuntimeQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::RuntimeQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
+pub struct quanta_index_sdk::SdkWireRouteV1
+pub quanta_index_sdk::SdkWireRouteV1::bound_axes: &'static [&'static str]
+pub quanta_index_sdk::SdkWireRouteV1::expected_kind: &'static str
+pub quanta_index_sdk::SdkWireRouteV1::plane: &'static str
+pub quanta_index_sdk::SdkWireRouteV1::route: &'static str
+impl core::clone::Clone for quanta_index_sdk::binding::SdkWireRouteV1
+pub fn quanta_index_sdk::binding::SdkWireRouteV1::clone(&self) -> quanta_index_sdk::binding::SdkWireRouteV1
+impl core::fmt::Debug for quanta_index_sdk::binding::SdkWireRouteV1
+pub fn quanta_index_sdk::binding::SdkWireRouteV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_sdk::binding::SdkWireRouteV1
+impl core::marker::Freeze for quanta_index_sdk::binding::SdkWireRouteV1
+impl core::marker::Send for quanta_index_sdk::binding::SdkWireRouteV1
+impl core::marker::Sync for quanta_index_sdk::binding::SdkWireRouteV1
+impl core::marker::Unpin for quanta_index_sdk::binding::SdkWireRouteV1
+impl core::marker::UnsafeUnpin for quanta_index_sdk::binding::SdkWireRouteV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::binding::SdkWireRouteV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::binding::SdkWireRouteV1
 pub struct quanta_index_sdk::SearchCorpusBatch<const SEALED: bool>
 impl quanta_index_sdk::SearchCorpusBatch
 pub fn quanta_index_sdk::SearchCorpusBatch::delta(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, base_generation: quanta_index_contract_base::ids::ManifestGeneration, manifest_digest: impl core::convert::Into<alloc::string::String>) -> Self
@@ -1015,6 +1205,8 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::UnsafeUnpin for quanta_index_sdk::SymbolQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::SymbolQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::SymbolQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
+pub const quanta_index_sdk::SDK_WIRE_ROUTES_V1: &[quanta_index_sdk::binding::SdkWireRouteV1]
+pub const quanta_index_sdk::SDK_WIRE_ROUTE_EXCLUSIONS_V1: &[(&str, &str)]
 pub type quanta_index_sdk::BatchReceipt = quanta_index_contract::ipc::ingest::BatchPublishReceipt
 pub type quanta_index_sdk::CodeHit = quanta_index_contract_base::results::candidates::LexicalCandidate
 pub type quanta_index_sdk::QuerySyntax = quanta_index_contract_base::query::syntax::TextQuerySyntax

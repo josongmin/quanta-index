@@ -15,6 +15,24 @@ pub enum SdkError {
     #[error("transport: {0}")]
     Transport(#[source] quanta_index_ipc::IpcError),
 
+    /// Contextual response binding refused a response whose variant was
+    /// right but whose identity, order, window or commitment did not
+    /// match the request that produced it (S21-07). Carries only the
+    /// route, the failed axis and kind labels — never a payload field.
+    #[error("binding mismatch on {route} axis {axis}: expected {expected}, got {actual}")]
+    Binding {
+        route: &'static str,
+        axis: crate::binding::ResponseBindingAxis,
+        expected: String,
+        actual: String,
+    },
+
+    /// The call needs a transport this client profile does not configure
+    /// (S21-07): a query-only client has no control or ingest transport,
+    /// and never fabricates a dummy one.
+    #[error("plane unavailable: {plane} transport is not configured for this client profile")]
+    PlaneUnavailable { plane: &'static str },
+
     // QI-SDK-01: SDK no longer opens channel publishers directly, so the
     // `Channel(ChannelError)` variant was removed alongside the dependency
     // drop. Channel-level failures now surface through the ingest
