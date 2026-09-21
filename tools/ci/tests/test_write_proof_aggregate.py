@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,13 @@ RELEASE_HOST_DIGEST = (
 )
 
 
+@dataclass(frozen=True)
+class AggregateTemplates:
+    staged_root: Path
+    executable_root: Path
+    paired_checkout: Path
+
+
 def _run(root: Path, *args: str) -> None:
     subprocess.run([*args], cwd=root, check=True, capture_output=True, text=True)
 
@@ -94,9 +102,9 @@ def _make_all_proofs_executable(text: str) -> str:
     return "[[proofs]]".join(sections)
 
 
-def _paired_checkout(tmp_path: Path) -> Path:
+def _build_paired_checkout(tmp_path: Path) -> Path:
     checkout = tmp_path / "semantica"
-    checkout.mkdir()
+    checkout.mkdir(parents=True)
     (checkout / "Cargo.lock").write_text("version = 4\n", encoding="utf-8")
     _run(checkout, "git", "init", "-q")
     _run(checkout, "git", "config", "user.name", "Pair Fixture")
@@ -114,9 +122,9 @@ def _paired_checkout(tmp_path: Path) -> Path:
     return checkout
 
 
-def _fixture_root(tmp_path: Path, *, executable: bool) -> tuple[Path, dict]:
+def _build_fixture_root(tmp_path: Path, *, executable: bool) -> tuple[Path, dict]:
     root = tmp_path / "repo"
-    root.mkdir()
+    root.mkdir(parents=True)
     registry_text = REGISTRY_PATH.read_text(encoding="utf-8")
     if executable:
         registry_text = _make_all_proofs_executable(registry_text)
@@ -155,6 +163,38 @@ def _fixture_root(tmp_path: Path, *, executable: bool) -> tuple[Path, dict]:
     _run(root, "git", "add", ".")
     _run(root, "git", "commit", "-qm", "fixture")
     return root, registry
+
+
+@pytest.fixture(scope="module")
+def aggregate_templates(tmp_path_factory: pytest.TempPathFactory) -> AggregateTemplates:
+    base = tmp_path_factory.mktemp("proof-aggregate-templates")
+    staged_root, _ = _build_fixture_root(base / "staged", executable=False)
+    executable_root, _ = _build_fixture_root(base / "executable", executable=True)
+    paired_checkout = _build_paired_checkout(base / "paired")
+    return AggregateTemplates(
+        staged_root=staged_root,
+        executable_root=executable_root,
+        paired_checkout=paired_checkout,
+    )
+
+
+def _fixture_root(
+    tmp_path: Path,
+    *,
+    executable: bool,
+    templates: AggregateTemplates,
+) -> tuple[Path, dict]:
+    source = templates.executable_root if executable else templates.staged_root
+    root = tmp_path / "repo"
+    shutil.copytree(source, root)
+    registry = CHECKER._read_toml(root / "tools/ci/proof-authority.toml")
+    return root, registry
+
+
+def _paired_checkout(tmp_path: Path, templates: AggregateTemplates) -> Path:
+    checkout = tmp_path / "semantica"
+    shutil.copytree(templates.paired_checkout, checkout)
+    return checkout
 
 
 def _write_dependency_manifests(
@@ -268,9 +308,10 @@ def _write_dependency_manifests(
 
 def test_writer_publishes_truthful_not_ready_diagnostic_for_staged_graph(
     tmp_path: Path,
+    aggregate_templates: AggregateTemplates,
 ) -> None:
-    root, registry = _fixture_root(tmp_path, executable=False)
-    paired = _paired_checkout(tmp_path)
+    root, registry = _fixture_root(tmp_path, executable=False, templates=aggregate_templates)
+    paired = _paired_checkout(tmp_path, aggregate_templates)
 
     output, _, ready = WRITER.publish_aggregate(
         root=root,
@@ -291,10 +332,13 @@ def test_writer_publishes_truthful_not_ready_diagnostic_for_staged_graph(
 
 @pytest.mark.parametrize("prior_bytes", [None, b"prior-authoritative-aggregate\n"])
 def test_writer_rebinds_source_after_publication(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prior_bytes: bytes | None
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    prior_bytes: bytes | None,
+    aggregate_templates: AggregateTemplates,
 ) -> None:
-    root, registry = _fixture_root(tmp_path, executable=False)
-    paired = _paired_checkout(tmp_path)
+    root, registry = _fixture_root(tmp_path, executable=False, templates=aggregate_templates)
+    paired = _paired_checkout(tmp_path, aggregate_templates)
     output = root / registry["aggregate"]["artifact"]
     if prior_bytes is not None:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -330,9 +374,12 @@ def test_writer_rebinds_source_after_publication(
         assert output.read_bytes() == prior_bytes
 
 
-def test_writer_derives_ready_receipt_from_full_valid_closure(tmp_path: Path) -> None:
-    root, registry = _fixture_root(tmp_path, executable=True)
-    paired = _paired_checkout(tmp_path)
+def test_writer_derives_ready_receipt_from_full_valid_closure(
+    tmp_path: Path,
+    aggregate_templates: AggregateTemplates,
+) -> None:
+    root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
+    paired = _paired_checkout(tmp_path, aggregate_templates)
     _write_dependency_manifests(root, registry, paired)
 
     output, _, ready = WRITER.publish_aggregate(
@@ -357,9 +404,10 @@ def test_writer_derives_ready_receipt_from_full_valid_closure(tmp_path: Path) ->
 def test_aggregate_validation_refuses_source_change_during_cached_pass(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    aggregate_templates: AggregateTemplates,
 ) -> None:
-    root, registry = _fixture_root(tmp_path, executable=True)
-    paired = _paired_checkout(tmp_path)
+    root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
+    paired = _paired_checkout(tmp_path, aggregate_templates)
     _write_dependency_manifests(root, registry, paired)
     output, _, ready = WRITER.publish_aggregate(
         root=root,
@@ -401,9 +449,10 @@ def test_aggregate_validation_refuses_source_change_during_cached_pass(
 
 def test_writer_publishes_failed_diagnostic_for_cross_manifest_host_drift(
     tmp_path: Path,
+    aggregate_templates: AggregateTemplates,
 ) -> None:
-    root, registry = _fixture_root(tmp_path, executable=True)
-    paired = _paired_checkout(tmp_path)
+    root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
+    paired = _paired_checkout(tmp_path, aggregate_templates)
     _write_dependency_manifests(
         root,
         registry,
@@ -427,9 +476,10 @@ def test_writer_publishes_failed_diagnostic_for_cross_manifest_host_drift(
 def test_ready_aggregate_is_mandatory_and_sufficient_for_p12_issuance(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    aggregate_templates: AggregateTemplates,
 ) -> None:
-    root, registry = _fixture_root(tmp_path, executable=True)
-    paired = _paired_checkout(tmp_path)
+    root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
+    paired = _paired_checkout(tmp_path, aggregate_templates)
     _write_dependency_manifests(root, registry, paired)
     aggregate_path, _, ready = WRITER.publish_aggregate(
         root=root,
@@ -484,9 +534,12 @@ def test_ready_aggregate_is_mandatory_and_sufficient_for_p12_issuance(
     ]
 
 
-def test_failure_preserves_prior_aggregate(tmp_path: Path) -> None:
-    root, _ = _fixture_root(tmp_path, executable=False)
-    paired = _paired_checkout(tmp_path)
+def test_failure_preserves_prior_aggregate(
+    tmp_path: Path,
+    aggregate_templates: AggregateTemplates,
+) -> None:
+    root, _ = _fixture_root(tmp_path, executable=False, templates=aggregate_templates)
+    paired = _paired_checkout(tmp_path, aggregate_templates)
     output = root / "artifacts/proof-authority/p12-release-aggregate.json"
     output.parent.mkdir(parents=True)
     output.write_bytes(b"prior-authoritative-bytes\n")
@@ -506,8 +559,11 @@ def test_failure_preserves_prior_aggregate(tmp_path: Path) -> None:
     assert output.read_bytes() == b"prior-authoritative-bytes\n"
 
 
-def test_p12_guard_refuses_an_unregistered_terminal_artifact(tmp_path: Path) -> None:
-    root, registry = _fixture_root(tmp_path, executable=False)
+def test_p12_guard_refuses_an_unregistered_terminal_artifact(
+    tmp_path: Path,
+    aggregate_templates: AggregateTemplates,
+) -> None:
+    root, registry = _fixture_root(tmp_path, executable=False, templates=aggregate_templates)
     proof = next(proof for proof in registry["proofs"] if proof["id"] == "p12-final-qualification")
     payload = {
         "status": "passed",
@@ -532,9 +588,12 @@ def test_p12_guard_refuses_an_unregistered_terminal_artifact(tmp_path: Path) -> 
         )
 
 
-def test_p12_guard_refuses_registered_not_ready_aggregate(tmp_path: Path) -> None:
-    root, registry = _fixture_root(tmp_path, executable=False)
-    paired = _paired_checkout(tmp_path)
+def test_p12_guard_refuses_registered_not_ready_aggregate(
+    tmp_path: Path,
+    aggregate_templates: AggregateTemplates,
+) -> None:
+    root, registry = _fixture_root(tmp_path, executable=False, templates=aggregate_templates)
+    paired = _paired_checkout(tmp_path, aggregate_templates)
     aggregate_path, aggregate_digest, ready = WRITER.publish_aggregate(
         root=root,
         registry_path=root / "tools/ci/proof-authority.toml",

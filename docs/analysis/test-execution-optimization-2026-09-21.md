@@ -683,6 +683,16 @@ library. It now installs only that runtime dependency, matching the P00 proof
 job and avoiding package build plus unused Jinja installation. The dependency
 topology test covers this fourth proof/agent job as well.
 
+Aggregate-writer tests rebuilt and committed the same staged, executable, and
+paired Git fixture repositories for every case. Module-scoped immutable
+templates now pay that construction once; every case receives an independent
+copy including its own `.git`, so source mutation, remote mutation, and prior
+receipt tests remain isolated. Across the ten parameterized cases this removes
+88 Git setup subprocesses (104 to 16). Same-host stabilized file runs were
+13.25s before and 11.05s after; the timing is diagnostic because concurrent
+host load varied, while the subprocess reduction is structural. All 10
+aggregate tests pass with unchanged assertions.
+
 ## Remaining measurement
 
 On a quiet host, run:
