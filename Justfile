@@ -25,6 +25,7 @@ rust-profile-list:
         'validate-shared-surface contract/core/sdk/search-plane shared-surface validation rail' \
         'test-fast           default local test loop; workspace lib/bin tests, excludes daemon e2e' \
         'test-canonical-identity P01A identity, codec, layout-security, and error-authority proof' \
+        'test-p02a-repomap-compiler P02A whole-bundle graph compiler owner proof' \
         'test-integration-fast bounded integration loop; excludes slow text/Lance storage' \
         'test-integration-storage text-authority shard persistence slice' \
         'test-integration-semantic semantic storage integration slice' \
@@ -54,6 +55,7 @@ rust-profile profile:
         validate-shared-surface) ./scripts/run-rust-profile.sh "{{profile}}" rust-validate-shared-surface ;; \
         test-fast) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-fast ;; \
         test-canonical-identity) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-canonical-identity ;; \
+        test-p02a-repomap-compiler) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-p02a-repomap-compiler ;; \
         test-integration-fast) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-fast ;; \
         test-integration-storage) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-storage ;; \
         test-integration-semantic) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-semantic ;; \
@@ -205,6 +207,9 @@ rust-test-unit:
 
 rust-test-canonical-identity lane="test-canonical-identity-lane":
     python3 tools/ci/run-local-test-scope.py canonical-identity --lane {{lane}}
+
+rust-test-p02a-repomap-compiler lane="test-p02a-repomap-compiler-lane":
+    python3 tools/ci/run-local-test-scope.py p02a-repomap-compiler --lane {{lane}}
 
 rust-test-integration-fast lane="test-integration-lane":
     python3 tools/ci/run-local-test-scope.py integration-fast --lane {{lane}}
@@ -756,3 +761,13 @@ verify-prompts:
 
 precommit-run:
     source scripts/quanta-index-env.sh && python3 -m pre_commit run --all-files --show-diff-on-failure
+
+# P02A whole-bundle RepoMap graph compiler owner proof. The scoped rail runs
+# the compiler owner target plus the repomap bounded/owner surfaces bound to
+# the same source; structural rails guard the contract surface the compiler
+# DTO section touched. RSS/production-host benchmark stays a separate
+# release-only rail and is NOT_RUN here.
+proof-p02a-repomap-compiler:
+    @just rust-profile test-p02a-repomap-compiler
+    @just rust-hexagonal
+    @just rust-wire-inventory

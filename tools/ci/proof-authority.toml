@@ -97,22 +97,22 @@ required_host = "any"
 
 [[proofs]]
 id = "p02a-repomap-compiler"
-authority_state = "staged"
+authority_state = "executable"
 execution_mode = "test-authority"
-staged_reason = "P02A must land the final compiler owner and bind its completed owner-local target set."
 ticket = "S21-03"
 family = "A"
 checkpoint = "M1"
 owner = "crates/quanta-index-repomap/src/materializer.rs"
-command = "just rust-profile test-integration-fast"
+command = "just proof-p02a-repomap-compiler"
 gate = "release"
-profile = "test-integration-fast"
+profile = "p02a-repomap-compiler"
 target = "repomap-compiler-owner"
 filter = "none"
 source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = ["repomap-bounded-query", "repomap-owner-surface"]
+test_authority_scopes = ["p02a-repomap-compiler"]
+test_authority_targets = ["repomap-compiler-owner-v1", "repomap-bounded-query", "repomap-owner-surface"]
 dependencies = ["p01-canonical-identity"]
 artifact = "artifacts/proof-authority/p02a-repomap-compiler.json"
 required_host = "any"

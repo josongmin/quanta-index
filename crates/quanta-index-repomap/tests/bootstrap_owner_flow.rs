@@ -35,10 +35,10 @@ fn sample_bundle() -> RepoMapSourceBundle {
         RepoId::new("repo-a").expect("static fixture ID satisfies canonical policy"),
         RevisionId::new("rev-a").expect("static fixture ID satisfies canonical policy"),
         ManifestGeneration::new(7),
-        "manifest-digest-7",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "snap-7",
         1,
-        "digest-7",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         RepoMapGraphCoverage {
             item_index_availability: RepoMapItemIndexAvailability::Available,
             graph_coverage_class: RepoMapGraphCoverageClass::Complete,
@@ -139,10 +139,10 @@ fn sample_bundle() -> RepoMapSourceBundle {
             callee: RepoMapNodeRef::Symbol(SymbolId::new("src/lib.rs::OwnerBeta")),
         },
     ))
-    .with_edge(quanta_index_contract::RepoMapEdge::Call(
-        quanta_index_contract::RepoMapCallEdge {
-            caller: RepoMapNodeRef::Symbol(SymbolId::new("src/lib.rs::OwnerAlpha")),
-            callee: RepoMapNodeRef::File(FileId::new("src/runtime/mod.rs")),
+    .with_edge(quanta_index_contract::RepoMapEdge::DependsOn(
+        quanta_index_contract::RepoMapDependsOnEdge {
+            dependent: RepoMapNodeRef::Symbol(SymbolId::new("src/lib.rs::OwnerAlpha")),
+            dependency: RepoMapNodeRef::File(FileId::new("src/runtime/mod.rs")),
         },
     ))
     .with_edge(quanta_index_contract::RepoMapEdge::Import(
@@ -182,7 +182,8 @@ fn activate(store: &RepoMapGenerationStore, bundle: &RepoMapSourceBundle) -> Res
         repo_id: bundle.repo_id.clone(),
         revision_id: bundle.revision_id.clone(),
         manifest_generation: bundle.manifest_generation,
-        manifest_digest: "manifest-digest-7".to_string(),
+        manifest_digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .to_string(),
     })
 }
 
@@ -467,7 +468,8 @@ fn activate_generation_requires_materialized_snapshot() {
         revision_id: RevisionId::new("rev-missing")
             .expect("static fixture ID satisfies canonical policy"),
         manifest_generation: ManifestGeneration::new(99),
-        manifest_digest: "manifest-digest-99".to_string(),
+        manifest_digest: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            .to_string(),
     });
     assert!(
         activation_result.is_err(),

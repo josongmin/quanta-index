@@ -4419,6 +4419,7 @@ dependencies = [
  "ciborium",
  "quanta-index-contract",
  "quanta-index-core",
+ "quanta-index-lq-text-normalizer",
  "serde",
  "serde_json",
  "sha2",

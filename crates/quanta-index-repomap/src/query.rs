@@ -86,12 +86,22 @@ impl RepoMapQueryEngine {
             .map(|entry| entry.owner_path.as_str())
             .collect();
 
-        let mut degraded_reason_codes = BTreeSet::<String>::new();
-        if !focus_keys.is_empty() && focus_owner_paths.is_empty() {
-            let _inserted = degraded_reason_codes.insert("focus_subjects_unresolved".to_string());
+        // Non-empty focus_subjects resolve strictly: any unresolved focus
+        // subject is a typed refusal. There is no global-fallback universe
+        // behind a focus (S21-03).
+        if !focus_keys.is_empty() && focus_positions.len() != focus_keys.len() {
+            return Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::FocusSubjectNotFound,
+                message: format!(
+                    "repomap query: {} of {} focus subjects unresolved",
+                    focus_keys.len().saturating_sub(focus_positions.len()),
+                    focus_keys.len()
+                ),
+            });
         }
-        // The candidate universe: every entry, or under a focus only the
-        // focused subjects and the entries sharing their owner paths.
+        let mut degraded_reason_codes = BTreeSet::<String>::new();
+        // The candidate universe: under a focus only the focused subjects and
+        // the entries sharing their owner paths; without a focus every entry.
         let candidates: Vec<usize> = if focus_owner_paths.is_empty() {
             Vec::new()
         } else {
@@ -291,12 +301,16 @@ fn walk_inclusion(
     }
 }
 
+/// Tokenize with the one shared Unicode tokenizer (NFC + full Unicode fold).
+/// CJK runs stay one token; there is no route-local ASCII tokenizer here.
 fn tokenize(query_text: &str) -> Vec<String> {
-    query_text
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .filter(|term| !term.is_empty())
-        .map(str::to_ascii_lowercase)
-        .collect()
+    quanta_index_lq_text_normalizer::tokenize(
+        query_text,
+        quanta_index_lq_text_normalizer::CaseMode::Folded,
+    )
+    .indexable()
+    .map(|token| token.text.clone())
+    .collect()
 }
 
 /// How many query terms the entry's folded search text contains.
