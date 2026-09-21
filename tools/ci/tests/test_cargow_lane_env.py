@@ -7,6 +7,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = REPO_ROOT / "scripts" / "cargow"
 ENV_SCRIPT = REPO_ROOT / "scripts" / "quanta-index-env.sh"
@@ -40,6 +42,39 @@ def test_preserve_opt_out_keeps_inherited_target_dir(tmp_path: Path) -> None:
     env["CARGO_TARGET_DIR"] = str(inherited)
     payload = _run_metadata("--lane", "release-bin-lane", env=env)
     assert str(payload["target_directory"]) == str(inherited)
+
+
+@pytest.mark.parametrize(
+    ("args", "inherited_lane"),
+    [
+        (("--lane", "../escaped"), None),
+        ((), "../escaped"),
+        (("--lane", ""), None),
+        (("--lane", "UPPER-lane"), None),
+    ],
+)
+def test_invalid_lane_is_rejected_before_cargo(
+    tmp_path: Path, args: tuple[str, ...], inherited_lane: str | None
+) -> None:
+    env = os.environ.copy()
+    env["QUANTA_INDEX_BUILD_LOGGING"] = "0"
+    env["QUANTA_INDEX_CACHE_ROOT"] = str(tmp_path / "cache")
+    if inherited_lane is None:
+        env.pop("QUANTA_INDEX_BUILD_LANE", None)
+    else:
+        env["QUANTA_INDEX_BUILD_LANE"] = inherited_lane
+
+    result = subprocess.run(
+        [str(SCRIPT), *args, "metadata", "--format-version", "1", "--no-deps"],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "invalid cargo lane" in result.stderr
+    assert not (tmp_path / "cache" / "escaped").exists()
 
 
 def _source_env(env: dict[str, str], shell: str = "/bin/bash") -> list[str]:

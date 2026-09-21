@@ -726,6 +726,38 @@ def test_source_snapshot_rejects_source_change_during_capture(
         MODULE.source_snapshot(tmp_path)
 
 
+def test_merge_base_distinguishes_disconnected_history_from_git_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def completed(args: list[str], **_kwargs):
+        if args[-1] == "disconnected":
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
+        return subprocess.CompletedProcess(args, 128, stdout="", stderr="fatal: broken ref")
+
+    monkeypatch.setattr(MODULE.subprocess, "run", completed)
+
+    assert MODULE._merge_base(tmp_path, "a" * 40, "disconnected") is None
+    with pytest.raises(RuntimeError, match="fatal: broken ref"):
+        MODULE._merge_base(tmp_path, "a" * 40, "broken")
+
+
+def test_source_snapshot_rejects_upstream_move_during_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    subprocess.run(["git", "-C", str(tmp_path), "branch", "tracking-target"], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "branch", "--set-upstream-to", "tracking-target"],
+        check=True,
+        capture_output=True,
+    )
+    merge_bases = iter(("a" * 40, "b" * 40))
+    monkeypatch.setattr(MODULE, "_merge_base", lambda *_args: next(merge_bases))
+
+    with pytest.raises(RuntimeError, match="upstream changed while capturing proof snapshot"):
+        MODULE.source_snapshot(tmp_path)
+
+
 def test_manifest_refuses_absolute_traversal_and_symlink_escape(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()

@@ -710,6 +710,24 @@ def _optional_git(root: Path, *args: str) -> str | None:
     return None
 
 
+def _merge_base(root: Path, head: str, upstream: str) -> str | None:
+    completed = subprocess.run(
+        ["git", "-C", str(root), "merge-base", head, upstream],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode == 1:
+        return None
+    if completed.returncode != 0:
+        message = completed.stderr.strip()
+        raise RuntimeError(message or "git merge-base failed")
+    value = completed.stdout.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", value):
+        raise RuntimeError(f"git merge-base returned an invalid object id: {value!r}")
+    return value
+
+
 def _digest_record(digest: Any, *fields: bytes) -> None:
     for field in fields:
         _digest_field(digest, field)
@@ -1031,9 +1049,7 @@ def source_snapshot(root: Path, *, excluded_paths: Iterable[Path] = ()) -> dict[
 
     status_snapshot = _git_status_snapshot(root)
     head, branch, upstream = _source_identity(status_snapshot)
-    merge_base = (
-        _optional_git(root, "merge-base", "HEAD", upstream) if upstream is not None else None
-    )
+    merge_base = _merge_base(root, head, upstream) if upstream is not None else None
     snapshot = {
         "head": head,
         "dirty_digest": dirty_digest(
@@ -1047,6 +1063,8 @@ def source_snapshot(root: Path, *, excluded_paths: Iterable[Path] = ()) -> dict[
     }
     if _git_status_snapshot(root) != status_snapshot:
         raise RuntimeError("Git source changed while capturing proof snapshot")
+    if upstream is not None and _merge_base(root, head, upstream) != merge_base:
+        raise RuntimeError("Git upstream changed while capturing proof snapshot")
     return snapshot
 
 
