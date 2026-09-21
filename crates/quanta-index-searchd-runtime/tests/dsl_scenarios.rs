@@ -68,11 +68,11 @@ impl Serialize for RepoMetadataPayload<'_> {
 }
 
 fn repo() -> RepoId {
-    RepoId::new("repo-dsl")
+    RepoId::new("repo-dsl").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new("rev-dsl")
+    RevisionId::new("rev-dsl").expect("static fixture ID satisfies canonical policy")
 }
 
 fn generation() -> ManifestGeneration {
@@ -645,7 +645,7 @@ fn sourcegraph_phrase_and_regex_patterns_execute_live() -> TestResult {
                 | SearchPlaneQueryIpcResponse::Explain(_)
                 | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
                 | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => true,
-                SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+                SearchPlaneQueryIpcResponse::Error(err) => err.code.as_wire_str() != "NOT_READY",
             },
             Err(_) => false,
         }

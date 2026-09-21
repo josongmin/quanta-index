@@ -46,16 +46,20 @@ use crate::error::CoreError;
 ///
 /// The batch was forged, corrupted in transit, or mutated after its digest
 /// was computed; it is refused before any record or mutation.
-pub const BATCH_DIGEST_MISMATCH_CODE: &str = "BATCH_DIGEST_MISMATCH";
+pub const BATCH_DIGEST_MISMATCH_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::BatchDigestMismatch;
 /// Wire code for a `begin` whose body hash differs from the one recorded
 /// under the same key.
-pub const BATCH_DIGEST_CONFLICT_CODE: &str = "BATCH_DIGEST_CONFLICT";
+pub const BATCH_DIGEST_CONFLICT_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::BatchDigestConflict;
 /// Wire code for a catalog row whose own digest no longer matches its
 /// content (G0-C: the engine serves bit-rotted cells with a clean
 /// integrity check, so the row digest is the only content check).
-pub const CATALOG_ROW_CORRUPT_CODE: &str = "CATALOG_ROW_CORRUPT";
+pub const CATALOG_ROW_CORRUPT_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt;
 /// Wire code for a catalog write that met a held lock past its busy budget.
-pub const CATALOG_BUSY_CODE: &str = "CATALOG_BUSY";
+pub const CATALOG_BUSY_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::CatalogBusy;
 
 /// The durable identity of one publish.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

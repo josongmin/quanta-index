@@ -11,9 +11,8 @@ use crate::sealed_generation::{
     LEXICAL_SEALED_MANIFEST_FILE_NAME,
 };
 use crate::{
-    GENERATION_IMMUTABLE_CODE, LEXICAL_DELTA_BASE_FILE_NAME, LEXICAL_SEALED_IDENTITY_FILE_NAME,
-    TANTIVY_INDEX_META_FILE_NAME, TANTIVY_LOCK_FILE_PREFIX, TANTIVY_MANAGED_FILE_NAME,
-    sealed_generation,
+    LEXICAL_DELTA_BASE_FILE_NAME, LEXICAL_SEALED_IDENTITY_FILE_NAME, TANTIVY_INDEX_META_FILE_NAME,
+    TANTIVY_LOCK_FILE_PREFIX, TANTIVY_MANAGED_FILE_NAME, sealed_generation,
 };
 use quanta_index_contract::ManifestGeneration;
 use quanta_index_core::CoreError;
@@ -233,7 +232,7 @@ pub(crate) fn ensure_unsealed(
 ) -> Result<(), CoreError> {
     if lexical_sealed_identity_path(generation_dir).exists() {
         return Err(CoreError::Typed {
-            code: GENERATION_IMMUTABLE_CODE.to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationImmutable,
             message: format!(
                 "lexical: generation {} is sealed; refusing to write {what} behind its sealed manifest",
                 generation.get()

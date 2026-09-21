@@ -106,11 +106,11 @@ impl crate::readiness::durable_fs::ParentDirectorySyncPort for ToggleParentSyncF
 pub(super) type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 pub(super) fn repo_id() -> RepoId {
-    RepoId::new("repo")
+    RepoId::new("repo").expect("static fixture ID satisfies canonical policy")
 }
 
 pub(super) fn revision_id() -> RevisionId {
-    RevisionId::new("rev")
+    RevisionId::new("rev").expect("static fixture ID satisfies canonical policy")
 }
 
 pub(super) fn generation() -> ManifestGeneration {
@@ -219,7 +219,11 @@ pub(super) fn install_parse_tree(ledger: &mut Ledger, text: &str) -> TestResult 
 pub(super) fn expect_decode_fail(err: CoreError, needle: &str) -> TestResult {
     match err {
         CoreError::Typed { code, message } => {
-            if code != "STR_PARSE_TREE_DECODE_FAIL" {
+            if code
+                != quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                    quanta_index_contract::lex::LexicalErrorCode::StrParseTreeDecodeFail,
+                )
+            {
                 return Err(format!("expected STR_PARSE_TREE_DECODE_FAIL, got {code}").into());
             }
             if !message.contains(needle) {
@@ -245,8 +249,9 @@ pub(super) fn corpus_snapshot(
     digest: &str,
 ) -> GenerationSnapshot {
     GenerationSnapshot {
-        repo_id: RepoId::new("repo-corpus"),
-        revision_id: RevisionId::new("rev-corpus"),
+        repo_id: RepoId::new("repo-corpus").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev-corpus")
+            .expect("static fixture ID satisfies canonical policy"),
         track,
         manifest_generation: ManifestGeneration::new(generation),
         manifest_digest: digest.to_string(),

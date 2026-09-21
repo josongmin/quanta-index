@@ -26,11 +26,13 @@ use crate::error::CoreError;
 /// Wire code for a read that named an auxiliary epoch the plane no longer
 /// retains (QI-BB-020 W2): the continuation must be restarted, it is never
 /// served from a newer epoch.
-pub const AUX_EPOCH_EXPIRED_CODE: &str = "AUX_EPOCH_EXPIRED";
+pub const AUX_EPOCH_EXPIRED_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::AuxEpochExpired;
 
 /// Wire code for a read that named an auxiliary epoch newer than the
 /// authority's current one: no snapshot of this state root ever had it.
-pub const AUX_EPOCH_UNKNOWN_CODE: &str = "AUX_EPOCH_UNKNOWN";
+pub const AUX_EPOCH_UNKNOWN_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::AuxEpochUnknown;
 
 /// How many superseded snapshots of one auxiliary authority the plane
 /// keeps beside the current one (QI-BB-020 W2).

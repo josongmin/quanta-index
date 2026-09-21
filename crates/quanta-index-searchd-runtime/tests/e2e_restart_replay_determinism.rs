@@ -243,7 +243,7 @@ fn require_structural_typed_error_code(
     let error = result
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected typed structural error for {query_text:?}"))?;
-    if error.code != expected_code {
+    if error.code.as_str() != expected_code {
         return Err(anyhow::anyhow!(
             "expected {expected_code} for structural query {query_text:?}, got {}",
             error.code

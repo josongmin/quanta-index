@@ -20,7 +20,8 @@ pub mod query;
 pub mod results;
 
 pub use ids::{
-    FileId, GenerationId, ManifestDigest, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    FileId, GenerationId, IdentityValidationErrorV1, LogicalGenerationIdentityV1, ManifestDigest,
+    ManifestGeneration, RepoId, RepoRelativePath, RepositoryRevisionIdentityV1, RevisionId,
 };
 pub use query::{
     ExactRepoRelativePathV1, GenerationPin, GenerationSelector, INTERNAL_FETCH_CEILING,

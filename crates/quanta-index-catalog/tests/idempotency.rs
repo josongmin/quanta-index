@@ -32,8 +32,9 @@ type TestResult = Result<(), Box<dyn Error>>;
 fn key(kind: IngestOperationKindV1, generation: u64, digest: &str) -> IdempotencyKeyV1 {
     IdempotencyKeyV1 {
         kind,
-        repo_id: RepoId::new("repo-cat"),
-        revision_id: RevisionId::new("rev-cat"),
+        repo_id: RepoId::new("repo-cat").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev-cat")
+            .expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(generation),
         batch_digest: digest.to_string(),
     }
@@ -51,9 +52,9 @@ fn receipt(generation: u64, digest: &str, replace: u32) -> BatchPublishReceipt {
     receipt
 }
 
-fn typed_code(error: &CoreError) -> Option<&str> {
+fn typed_code(error: &CoreError) -> Option<quanta_index_contract::SearchPlaneErrorCodeV2> {
     match error {
-        CoreError::Typed { code, .. } => Some(code.as_str()),
+        CoreError::Typed { code, .. } => Some(*code),
         CoreError::InvalidContract(_)
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
@@ -254,8 +255,8 @@ fn forgetting_a_generation_drops_exactly_its_records() -> TestResult {
         let _sequence = catalog.finalize(&key, &body, &receipt(generation, digest, 0))?;
     }
     let removed = catalog.forget_generation(
-        &RepoId::new("repo-cat"),
-        &RevisionId::new("rev-cat"),
+        &RepoId::new("repo-cat").expect("static fixture ID satisfies canonical policy"),
+        &RevisionId::new("rev-cat").expect("static fixture ID satisfies canonical policy"),
         ManifestGeneration::new(1),
     )?;
     if removed != 2 {
@@ -287,8 +288,9 @@ fn forgetting_a_generation_drops_exactly_its_records() -> TestResult {
 fn the_pair_listing_and_forget_cover_every_route_and_forget_is_idempotent() -> TestResult {
     let temp = tempfile::tempdir()?;
     let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
-    let repo = RepoId::new("repo-cat");
-    let revision = RevisionId::new("rev-cat");
+    let repo = RepoId::new("repo-cat").expect("static fixture ID satisfies canonical policy");
+    let revision =
+        RevisionId::new("rev-cat").expect("static fixture ID satisfies canonical policy");
     for (kind, generation, digest) in [
         (IngestOperationKindV1::SearchCorpus, 4, "s"),
         (IngestOperationKindV1::History, 4, "h"),
@@ -313,7 +315,10 @@ fn the_pair_listing_and_forget_cover_every_route_and_forget_is_idempotent() -> T
         return Err(format!("expected generations [2, 4, 9], got {listed:?}").into());
     }
     if !catalog
-        .generations_for_pair(&RepoId::new("other"), &revision)?
+        .generations_for_pair(
+            &RepoId::new("other").expect("static fixture ID satisfies canonical policy"),
+            &revision,
+        )?
         .is_empty()
     {
         return Err("another pair's listing must be empty".into());

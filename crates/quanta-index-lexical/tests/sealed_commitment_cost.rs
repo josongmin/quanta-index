@@ -49,11 +49,11 @@ const OVERLAY_FILES: [&str; 7] = [
 ];
 
 fn repo() -> RepoId {
-    RepoId::new("cost-repo")
+    RepoId::new("cost-repo").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new("cost-rev")
+    RevisionId::new("cost-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 fn scope_path(index: usize) -> String {
@@ -148,7 +148,8 @@ fn publish_repo_meta(adapter: &LexicalAdapter, generation: ManifestGeneration) -
         generation,
         batch_digest: format!("cost-meta:{}", generation.get()),
         entries: vec![RepoMetaEntry {
-            source_repo_id: RepoId::new("cost-source"),
+            source_repo_id: RepoId::new("cost-source")
+                .expect("static fixture ID satisfies canonical policy"),
             key: "lifecycle".to_string(),
             value: "cost".to_string(),
         }],

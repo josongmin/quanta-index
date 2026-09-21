@@ -206,8 +206,10 @@ fn a_hybrid_query_opens_both_tracks_once_and_names_them_in_its_trace() -> TestRe
 /// lexical track, no history authority.
 fn lexical_only_ledger() -> Arc<RwLock<Ledger>> {
     let mut ledger = Ledger::default();
-    let repo_id = RepoId::new("repo-map-ipc");
-    let revision_id = RevisionId::new("2222222222222222222222222222222222222222");
+    let repo_id =
+        RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy");
+    let revision_id = RevisionId::new("2222222222222222222222222222222222222222")
+        .expect("static fixture ID satisfies canonical policy");
     ledger.record_track_materialized(
         &repo_id,
         &revision_id,
@@ -238,8 +240,9 @@ fn a_history_read_on_a_generation_without_history_is_refused_before_any_lane() -
     let lexical_state = Arc::new(Mutex::new(RecordingLexicalState::default()));
     let semantic_state = Arc::new(Mutex::new(RecordingSemanticState::default()));
     let pin = GenerationPin::new(
-        RepoId::new("repo-map-ipc"),
-        RevisionId::new("2222222222222222222222222222222222222222"),
+        RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+        RevisionId::new("2222222222222222222222222222222222222222")
+            .expect("static fixture ID satisfies canonical policy"),
         ManifestGeneration::new(9),
     );
     let dispatcher = SearchPlaneDispatcher::new(
@@ -301,8 +304,9 @@ fn a_history_read_ahead_of_the_lexical_track_is_not_ready() -> TestResult {
     let lexical_state = Arc::new(Mutex::new(RecordingLexicalState::default()));
     let semantic_state = Arc::new(Mutex::new(RecordingSemanticState::default()));
     let pin = GenerationPin::new(
-        RepoId::new("repo-map-ipc"),
-        RevisionId::new("2222222222222222222222222222222222222222"),
+        RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+        RevisionId::new("2222222222222222222222222222222222222222")
+            .expect("static fixture ID satisfies canonical policy"),
         ManifestGeneration::new(12),
     );
     let dispatcher = SearchPlaneDispatcher::new(

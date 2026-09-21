@@ -142,9 +142,7 @@ fn reject_typed_structural_hole_name(
     }
     if multiplicity != quanta_index_contract::LqStructuralHoleMultiplicity::One {
         return Err(CoreError::Typed {
-            code: LexicalErrorCode::StrHoleKindUnsupported
-                .as_code_str()
-                .to_string(),
+            code: LexicalErrorCode::StrHoleKindUnsupported.into(),
             message: format!(
                 "structural typed hole kind `{kind}` is executable only on single-capture holes"
             ),
@@ -154,9 +152,7 @@ fn reject_typed_structural_hole_name(
         return Ok(());
     }
     Err(CoreError::Typed {
-        code: LexicalErrorCode::StrHoleKindUnsupported
-            .as_code_str()
-            .to_string(),
+        code: LexicalErrorCode::StrHoleKindUnsupported.into(),
         message: format!(
             "structural typed hole kind `{kind}` is not executable on the current authority route"
         ),

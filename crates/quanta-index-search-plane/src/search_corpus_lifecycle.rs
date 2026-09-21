@@ -16,12 +16,11 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, DoorFindingOutcome, DoorFindingQuarantinePort, GENERATION_SIDECAR_CORRUPT_CODE,
-    LexicalIndexOpenPort, LexicalSearcher, SEMANTIC_ROW_ROOT_MISMATCH_CODE,
-    SemanticContentRootsPort, SemanticIndexOpenPort, SemanticSearcher,
+    LexicalIndexOpenPort, LexicalSearcher, SemanticContentRootsPort, SemanticIndexOpenPort,
+    SemanticSearcher,
 };
 
 use crate::ingest_dispatcher::SearchCorpusAuthorityInspectPort;
-use crate::readiness::ERR_SEARCH_TRACK_GENERATION_NOT_SEALED;
 use crate::search_corpus_retention::SearchCorpusIndexBytesPort;
 use crate::{
     ActivationCatalog, AuxiliaryAuthorityStore, Ledger, OpenedSnapshot,
@@ -36,8 +35,10 @@ pub(crate) use pair_lock::{
     SearchCorpusPairMutationGuard,
 };
 
-pub(crate) const ERR_ACTIVATION_TARGET_UNOPENABLE: &str = "ACTIVATION_TARGET_UNOPENABLE";
-const ERR_ROLLBACK_TARGET_UNOPENABLE: &str = "ROLLBACK_TARGET_UNOPENABLE";
+pub(crate) const ERR_ACTIVATION_TARGET_UNOPENABLE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::ActivationTargetUnopenable;
+const ERR_ROLLBACK_TARGET_UNOPENABLE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::RollbackTargetUnopenable;
 
 /// Opens the activation and rollback-history authorities as one lifecycle
 /// unit.  Production composition must use this owner rather than opening either
@@ -179,7 +180,7 @@ enum DoorFindingPolicy {
 /// operation it names, and what a door's content defect leads to.
 #[derive(Clone, Copy, Debug)]
 struct ProofGate<'a> {
-    error_code: &'a str,
+    error_code: quanta_index_contract::SearchPlaneErrorCodeV2,
     operation: &'a str,
     findings: DoorFindingPolicy,
 }
@@ -231,7 +232,7 @@ impl ActivationPromotionParts {
             })?;
         if sealed != *candidate.semantic_content() {
             return Err(CoreError::Typed {
-                code: SEMANTIC_ROW_ROOT_MISMATCH_CODE.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SemanticRowRootMismatch,
                 message: format!(
                     "search-corpus {operation}: the physical semantic generation for repo={} revision={} generation={} sealed row_root={} membership_root={}, but the identity names row_root={} membership_root={}; nothing was promoted",
                     candidate.repo_id().as_str(),
@@ -278,7 +279,7 @@ impl ActivationPromotionParts {
     ) -> CoreError {
         let is_content_defect = matches!(
             source,
-            CoreError::Typed { code, .. } if code == GENERATION_SIDECAR_CORRUPT_CODE
+            CoreError::Typed { code, .. } if *code == GENERATION_SIDECAR_CORRUPT_CODE
         );
         if gate.findings == DoorFindingPolicy::FailClosed || !is_content_defect {
             return generation_target_unopenable(target, gate.operation, gate.error_code, source);
@@ -305,7 +306,7 @@ impl ActivationPromotionParts {
             Err(error) => format!("the quarantine was not recorded: {error}"),
         };
         CoreError::Typed {
-            code: gate.error_code.to_string(),
+            code: gate.error_code,
             message: format!(
                 "{}; {recorded}",
                 target_unopenable_message(target, gate.operation, source)
@@ -461,7 +462,7 @@ impl SearchCorpusLifecycleService {
         )? {
             SealedSearchCorpusAuthorityStateV1::Exact => Ok(()),
             SealedSearchCorpusAuthorityStateV1::Absent => Err(CoreError::Typed {
-                code: ERR_SEARCH_TRACK_GENERATION_NOT_SEALED.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchTrackGenerationNotSealed,
                 message: format!(
                     "search-corpus {operation}: generation {} of repo={} revision={} is not recorded in the durable sealed history any more; it was reaped before the CAS committed",
                     candidate.manifest_generation().get(),
@@ -526,11 +527,11 @@ fn validate_currently_sealed_candidate_v1(
 fn generation_target_unopenable(
     candidate: &GenerationSnapshot,
     operation: &str,
-    error_code: &str,
+    error_code: quanta_index_contract::SearchPlaneErrorCodeV2,
     source: &CoreError,
 ) -> CoreError {
     CoreError::Typed {
-        code: error_code.to_string(),
+        code: error_code,
         message: target_unopenable_message(candidate, operation, source),
     }
 }
@@ -541,7 +542,7 @@ fn target_unopenable_message(
     source: &CoreError,
 ) -> String {
     format!(
-        "search-corpus {operation}: target is not physically valid for repo={} revision={} track={:?} generation={}: {source:?}",
+        "search-corpus {operation}: target is not physically valid for repo={} revision={} track={:?} generation={}: {source}",
         candidate.repo_id.as_str(),
         candidate.revision_id.as_str(),
         candidate.track,
@@ -611,11 +612,11 @@ mod tests {
                     candidate.track
                 )),
                 Self::ContentDefect => CoreError::Typed {
-                    code: "GENERATION_SIDECAR_CORRUPT".to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
                     message: format!("injected content defect on {:?}", candidate.track),
                 },
                 Self::Quarantined => CoreError::Typed {
-                    code: "GENERATION_QUARANTINED".to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationQuarantined,
                     message: format!("injected quarantine on {:?}", candidate.track),
                 },
             }
@@ -756,7 +757,8 @@ mod tests {
     fn refused_proof(
         promotion: &ActivationPromotionParts,
         gate: ProofGate<'_>,
-    ) -> Result<(String, String), Box<dyn std::error::Error>> {
+    ) -> Result<(quanta_index_contract::SearchPlaneErrorCodeV2, String), Box<dyn std::error::Error>>
+    {
         let candidate = active_generation()?;
         let Err(CoreError::Typed { code, message }) =
             promotion.prove_and_promote_pair(&candidate, gate)
@@ -788,8 +790,9 @@ mod tests {
         digest: &str,
     ) -> Result<SearchCorpusGenerationV1, CoreError> {
         let snapshot = |track| GenerationSnapshot {
-            repo_id: RepoId::new(repo_id),
-            revision_id: RevisionId::new("revision-rehydrate"),
+            repo_id: RepoId::new(repo_id).expect("test fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("revision-rehydrate")
+                .expect("static fixture ID satisfies canonical policy"),
             track,
             manifest_generation: ManifestGeneration::new(generation),
             manifest_digest: digest.to_string(),
@@ -905,11 +908,16 @@ mod tests {
     #[test]
     fn pair_guard_rejects_a_different_pair_even_on_the_same_stripe_v1() -> TestResult {
         let coordinator = SearchCorpusPairMutationCoordinator::shared();
-        let repo_a = RepoId::new("repo-guard-a");
-        let revision = RevisionId::new("revision-guard");
+        let repo_a =
+            RepoId::new("repo-guard-a").expect("static fixture ID satisfies canonical policy");
+        let revision = RevisionId::new("revision-guard")
+            .expect("static fixture ID satisfies canonical policy");
         let stripe_a = crate::readiness::search_corpus_lock_stripe_v1(&repo_a, &revision);
         let repo_b = (0_u64..4096)
-            .map(|index| RepoId::new(format!("repo-guard-b-{index}")))
+            .map(|index| {
+                RepoId::new(format!("repo-guard-b-{index}"))
+                    .expect("test fixture ID satisfies canonical policy")
+            })
             .find(|repo| {
                 crate::readiness::search_corpus_lock_stripe_v1(repo, &revision) == stripe_a
             })
@@ -1005,8 +1013,9 @@ mod tests {
         // The proven handles are resident: the first acquire of the active
         // pair on either track is a hit and runs no opener.
         let key = SnapshotKey::new(
-            &RepoId::new("repo-rehydrate"),
-            &RevisionId::new("revision-rehydrate"),
+            &RepoId::new("repo-rehydrate").expect("static fixture ID satisfies canonical policy"),
+            &RevisionId::new("revision-rehydrate")
+                .expect("static fixture ID satisfies canonical policy"),
             ManifestGeneration::new(17),
         );
         let lexical =

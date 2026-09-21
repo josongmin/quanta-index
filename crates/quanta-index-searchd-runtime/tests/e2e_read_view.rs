@@ -17,12 +17,12 @@
 use std::error::Error;
 
 use crate::e2e_harness;
-use quanta_index_contract::{PlannerStage, TextQuerySyntax};
+use quanta_index_contract::{PlannerStage, SearchPlaneErrorCodeV2, TextQuerySyntax};
 use quanta_index_core::{
     REPO_COMMIT_RECENCY_UNAVAILABLE_CODE, RUNTIME_NOT_READY_CODE, RepoMetadataAuthorityV1,
 };
 
-use e2e_harness::{E2eHistoryFixtureSpec, E2eQueryResult, E2eRuntime};
+use e2e_harness::{E2eErrorCode, E2eHistoryFixtureSpec, E2eQueryResult, E2eRuntime};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -30,7 +30,8 @@ const QUERY: &str = "needle";
 const TOP_K: u32 = 10;
 /// The history domain's code for a generation whose lexical track is
 /// materialized but whose producer never published history.
-const HISTORY_PRODUCER_UNAVAILABLE: &str = "HISTORY_PRODUCER_UNAVAILABLE";
+const HISTORY_PRODUCER_UNAVAILABLE: SearchPlaneErrorCodeV2 =
+    SearchPlaneErrorCodeV2::HistoryProducerUnavailable;
 
 fn seeded_runtime() -> Result<E2eRuntime, Box<dyn Error>> {
     let mut rt = E2eRuntime::boot()?;
@@ -48,9 +49,9 @@ fn served(result: &E2eQueryResult, what: &str) -> TestResult {
     Ok(())
 }
 
-fn refused_with(result: &E2eQueryResult, what: &str, code: &str) -> TestResult {
+fn refused_with(result: &E2eQueryResult, what: &str, code: SearchPlaneErrorCodeV2) -> TestResult {
     match &result.typed_error {
-        Some(error) if error.code == code => Ok(()),
+        Some(error) if error.code == E2eErrorCode::Remote(code) => Ok(()),
         Some(error) => Err(format!("{what}: expected {code}, got {error}").into()),
         None => Err(format!(
             "{what}: expected {code}, got {} rows",
@@ -173,7 +174,7 @@ fn verify_missing_domains_and_track_plans(rt: &mut E2eRuntime) -> TestResult {
     // The history route reads the history authority: absent.
     let history = rt.query_history(TextQuerySyntax::Native, "type:commit needle", TOP_K);
     match &history.typed_error {
-        Some(error) if error.code == HISTORY_PRODUCER_UNAVAILABLE => {}
+        Some(error) if error.code == E2eErrorCode::Remote(HISTORY_PRODUCER_UNAVAILABLE) => {}
         other => {
             return Err(format!(
                 "history route: expected {HISTORY_PRODUCER_UNAVAILABLE}, got {other:?}"

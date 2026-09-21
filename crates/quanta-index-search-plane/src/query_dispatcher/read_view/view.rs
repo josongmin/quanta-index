@@ -497,7 +497,7 @@ impl SearchPlaneDispatcher {
                     .ok_or_else(|| {
                         let not_ready = StructuralError::GenerationNotReady;
                         CoreError::Typed {
-                            code: not_ready.code().to_string(),
+                            code: not_ready.code(),
                             message: format!(
                                 "{not_ready}: generation {} has no structural authority to pin",
                                 pin.manifest_generation.get()

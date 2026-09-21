@@ -296,7 +296,10 @@ fn replace_scope(file: &CorpusFile) -> SearchCorpusReplaceScope {
 
 /// One sealed `ReplaceGeneration` batch carrying every corpus file as its own
 /// file-surface scope.
-fn ingest_batch(corpus: &Corpus, generation: ManifestGeneration) -> SearchCorpusIngestBatch {
+fn ingest_batch(
+    corpus: &Corpus,
+    generation: ManifestGeneration,
+) -> Result<SearchCorpusIngestBatch> {
     let replace_scopes: Vec<SearchCorpusReplaceScope> =
         corpus.files.iter().map(replace_scope).collect();
     let scope_digests: Vec<&[u8]> = replace_scopes
@@ -305,9 +308,9 @@ fn ingest_batch(corpus: &Corpus, generation: ManifestGeneration) -> SearchCorpus
         .collect();
     let manifest_digest = framed_digest(DIGEST_DOMAIN_MANIFEST, &scope_digests);
     let batch_digest = framed_digest(DIGEST_DOMAIN_BATCH, &[manifest_digest.as_bytes()]);
-    SearchCorpusIngestBatch {
-        repo_id: RepoId::new(EXPERIMENT_REPO),
-        revision_id: RevisionId::new(EXPERIMENT_REVISION),
+    Ok(SearchCorpusIngestBatch {
+        repo_id: RepoId::new(EXPERIMENT_REPO)?,
+        revision_id: RevisionId::new(EXPERIMENT_REVISION)?,
         generation,
         base_generation: None,
         manifest_digest,
@@ -320,7 +323,7 @@ fn ingest_batch(corpus: &Corpus, generation: ManifestGeneration) -> SearchCorpus
         semantic_replace_scopes: Vec::new(),
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
-    }
+    })
 }
 
 fn make_query() -> LqQuery {
@@ -450,10 +453,10 @@ fn run() -> Result<BenchArtifactV1> {
     write_scan_corpus(&args.out_dir, &corpus)?;
 
     let adapter = LexicalAdapter::with_state_root(args.index_dir.clone());
-    let repo = RepoId::new(EXPERIMENT_REPO);
-    let revision = RevisionId::new(EXPERIMENT_REVISION);
+    let repo = RepoId::new(EXPERIMENT_REPO)?;
+    let revision = RevisionId::new(EXPERIMENT_REVISION)?;
     let generation = ManifestGeneration::new(1);
-    let batch = ingest_batch(&corpus, generation);
+    let batch = ingest_batch(&corpus, generation)?;
 
     let build_started = Instant::now();
     adapter.build_batch(&batch)?;

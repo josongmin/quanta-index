@@ -19,8 +19,7 @@ use std::{
 
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
 use quanta_index_core::{
-    CoreError, QUARANTINE_TARGET_NOT_QUARANTINED_CODE, QuarantineDiscardOutcomeV1,
-    QuarantinedRepoMapFileV1, RepoMapOpenReportV1,
+    CoreError, QuarantineDiscardOutcomeV1, QuarantinedRepoMapFileV1, RepoMapOpenReportV1,
 };
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
@@ -469,10 +468,11 @@ impl RepoMapSnapshotPersistence {
         let bytes = fs::read(path).map_err(|err| format!("read: {err}"))?;
         let record = serde_json::from_slice::<RepoMapActivationRecordV1>(&bytes)
             .map_err(|err| format!("decode: {err}"))?;
-        let expected = activation_file_name(
-            &RepoId::new(&record.repo_id),
-            &RevisionId::new(&record.revision_id),
-        );
+        let repo_id = RepoId::new(&record.repo_id)
+            .map_err(|error| format!("decode: invalid activation repo ID: {error}"))?;
+        let revision_id = RevisionId::new(&record.revision_id)
+            .map_err(|error| format!("decode: invalid activation revision ID: {error}"))?;
+        let expected = activation_file_name(&repo_id, &revision_id);
         if path.file_name().and_then(|name| name.to_str()) != Some(expected.as_str()) {
             return Err(format!(
                 "activation names repo={} revision={} but sits under another file name",
@@ -573,7 +573,7 @@ impl RepoMapSnapshotPersistence {
     ) -> Result<QuarantineDiscardOutcomeV1, CoreError> {
         let file_name = entry.file_name.as_str();
         let refuse = |why: String| CoreError::Typed {
-            code: QUARANTINE_TARGET_NOT_QUARANTINED_CODE.to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined,
             message: format!("repomap: refusing to discard quarantined `{file_name}`: {why}"),
         };
         if file_name.is_empty()
@@ -820,8 +820,9 @@ mod tests {
         let mut contributing_signals = BTreeMap::new();
         let _prior = contributing_signals.insert("files".to_string(), 3);
         RepoMapSnapshot {
-            repo_id: RepoId::new("repo/a"),
-            revision_id: RevisionId::new("rev:b"),
+            repo_id: RepoId::new("repo/a").expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev:b")
+                .expect("static fixture ID satisfies canonical policy"),
             manifest_generation: ManifestGeneration::new(generation),
             snapshot_meta: RepoMapSnapshotMeta {
                 snapshot_id: format!("snapshot-{marker}"),

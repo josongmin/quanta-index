@@ -787,7 +787,9 @@ mod tests {
             text: "fn main() {}".into(),
             structural: None,
             parent_chunk_id: None,
-            source_repo_id: Some(RepoId::new("corp-a")),
+            source_repo_id: Some(
+                RepoId::new("corp-a").expect("static fixture ID satisfies canonical policy"),
+            ),
         };
         let mut bytes = Vec::new();
         ciborium::into_writer(&record, &mut bytes)?;

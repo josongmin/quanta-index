@@ -4,8 +4,7 @@ use std::path::PathBuf;
 
 use quanta_index_contract::{AuxEpochV1, ManifestGeneration, RepoId, RevisionId};
 use quanta_index_core::{
-    AuxiliaryGenerationKeyV1, CoreError, HISTORY_TEXT_INDEX_NORMALIZER_UNSUPPORTED_CODE,
-    HISTORY_TEXT_INDEX_NOT_READY_CODE, HistoryTextBuildV1, HistoryTextDiscardOutcomeV1,
+    AuxiliaryGenerationKeyV1, CoreError, HistoryTextBuildV1, HistoryTextDiscardOutcomeV1,
     HistoryTextEpochReceiptV1, HistoryTextEpochStatusV1, HistoryTextIndexPort, HistoryTextSearcher,
     LEXICAL_WRITER_HEAP_BYTES_MIN,
 };
@@ -87,7 +86,7 @@ impl HistoryTextIndexPort for HistoryTextIndexAdapter {
             HistoryTextEpochStatusV1::Servable => {}
             HistoryTextEpochStatusV1::Absent => {
                 return Err(CoreError::Typed {
-                    code: HISTORY_TEXT_INDEX_NOT_READY_CODE.to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexNotReady,
                     message: format!(
                         "history text index: generation {} of {}@{} has no text index at epoch {epoch}; the next history batch builds it",
                         generation.generation.get(),
@@ -98,7 +97,7 @@ impl HistoryTextIndexPort for HistoryTextIndexAdapter {
             }
             HistoryTextEpochStatusV1::Unsupported { built_with } => {
                 return Err(CoreError::Typed {
-                    code: HISTORY_TEXT_INDEX_NORMALIZER_UNSUPPORTED_CODE.to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexNormalizerUnsupported,
                     message: format!(
                         "history text index: epoch {epoch} was built under text normalizer {built_with}; it is never served with mismatched text semantics and the next history batch rebuilds it"
                     ),

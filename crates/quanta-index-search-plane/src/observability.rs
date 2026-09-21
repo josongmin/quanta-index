@@ -52,8 +52,6 @@ pub const HISTOGRAM_BUCKET_BOUNDS: [f64; 14] = [
     30_000.0,
 ];
 
-const ERR_METRICS_SOURCE_DEFECT: &str = "METRICS_SOURCE_DEFECT";
-
 /// The newest `capacity` items, and how many were recorded and let go.
 struct BoundedRing<T> {
     items: VecDeque<T>,
@@ -483,7 +481,7 @@ fn admit_source_point(
 
 fn source_defect(message: &str) -> CoreError {
     CoreError::Typed {
-        code: ERR_METRICS_SOURCE_DEFECT.to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::MetricsSourceDefect,
         message: format!("metrics scrape: {message}"),
     }
 }
@@ -806,7 +804,9 @@ mod tests {
         for (expected, points) in defects {
             match scrape(vec![Arc::new(FixedSource(points))]) {
                 Err(CoreError::Typed { code, message })
-                    if code == "METRICS_SOURCE_DEFECT" && message.contains(expected) => {}
+                    if code
+                        == quanta_index_contract::SearchPlaneErrorCodeV2::MetricsSourceDefect
+                        && message.contains(expected) => {}
                 other => {
                     return Err(format!(
                         "expected METRICS_SOURCE_DEFECT mentioning `{expected}`, got {other:?}"

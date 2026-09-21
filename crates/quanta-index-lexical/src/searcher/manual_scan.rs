@@ -94,7 +94,7 @@ impl TantivySearcher {
         let normalized_source = Self::regex_source_for_options(source, options);
         let executor =
             RegexExecutor::compile(&normalized_source).map_err(|err| CoreError::Typed {
-                code: format!("LEX_REGEX_{}", err.code.as_code_str()),
+                code: crate::query_errors::regex_wire_code(err.code),
                 message: format!(
                     "lexical: regex {source:?} failed to compile on unindexed scan route: {err}"
                 ),
@@ -181,7 +181,7 @@ impl TantivySearcher {
                 .any(|identity| identity.canonical == *contributor)),
             ContributorPattern::Regex(source) => {
                 let executor = RegexExecutor::compile(source).map_err(|err| CoreError::Typed {
-                    code: format!("LEX_REGEX_{}", err.code.as_code_str()),
+                    code: crate::query_errors::regex_wire_code(err.code),
                     message: format!(
                         "lexical: file.has.contributor regex {source:?} failed to compile: {err}"
                     ),
@@ -377,7 +377,9 @@ impl TantivySearcher {
             }
             LqLeaf::Regex(text) => self.manual_regex_matches(text, options, content),
             LqLeaf::StructuralBlock(_) => Err(CoreError::Typed {
-                code: "STR_PRODUCER_PARSE_TREE_UNAVAILABLE".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                    quanta_index_contract::lex::LexicalErrorCode::StrProducerParseTreeUnavailable,
+                ),
                 message: "lexical: structural leaf cannot execute on the unindexed scan route"
                     .to_string(),
             }),
@@ -471,7 +473,7 @@ impl TantivySearcher {
             LqFilter::Repo { pattern, revs } => {
                 if !revs.is_empty() {
                     return Err(CoreError::Typed {
-                        code: crate::filters::codes::REV_UNAVAILABLE.to_string(),
+                        code: crate::filters::codes::REV_UNAVAILABLE,
                         message: "lexical: repo filter revisions require a history producer"
                             .to_string(),
                     });
@@ -508,7 +510,7 @@ impl TantivySearcher {
             | LqFilter::Visibility { .. }
             | LqFilter::Context { .. } => Ok(true),
             LqFilter::Rev { spec } => Err(CoreError::Typed {
-                code: crate::filters::codes::REV_UNAVAILABLE.to_string(),
+                code: crate::filters::codes::REV_UNAVAILABLE,
                 message: if is_rev_at_time_spec(spec) {
                     "lexical: rev:at.time(...) requires revision-selection and pin rebinding before lexical execution".to_string()
                 } else {
@@ -516,22 +518,22 @@ impl TantivySearcher {
                 },
             }),
             LqFilter::Author { .. } => Err(CoreError::Typed {
-                code: crate::filters::codes::AUTHOR_UNAVAILABLE.to_string(),
+                code: crate::filters::codes::AUTHOR_UNAVAILABLE,
                 message: "lexical: author filter is not executable on the current adapter set"
                     .to_string(),
             }),
             LqFilter::Committer { .. } => Err(CoreError::Typed {
-                code: crate::filters::codes::COMMITTER_UNAVAILABLE.to_string(),
+                code: crate::filters::codes::COMMITTER_UNAVAILABLE,
                 message: "lexical: committer filter is not executable on the current adapter set"
                     .to_string(),
             }),
             LqFilter::Message { .. } => Err(CoreError::Typed {
-                code: crate::filters::codes::MESSAGE_UNAVAILABLE.to_string(),
+                code: crate::filters::codes::MESSAGE_UNAVAILABLE,
                 message: "lexical: message filter is not executable on the current adapter set"
                     .to_string(),
             }),
             LqFilter::Dirty { .. } => Err(CoreError::Typed {
-                code: crate::filters::codes::DIRTY_UNAVAILABLE.to_string(),
+                code: crate::filters::codes::DIRTY_UNAVAILABLE,
                 message: "lexical: dirty filter is not executable on the current adapter set"
                     .to_string(),
             }),
@@ -544,7 +546,7 @@ impl TantivySearcher {
             | LqFilter::MetaSurface { .. }
             | LqFilter::Affected { .. }
             | LqFilter::InvalidatedBy { .. } => Err(CoreError::Typed {
-                code: crate::filters::codes::RUNTIME_CATALOG_UNAVAILABLE.to_string(),
+                code: crate::filters::codes::RUNTIME_CATALOG_UNAVAILABLE,
                 message:
                     "lexical: runtime catalog filters are not executable on the current adapter set"
                         .to_string(),
@@ -556,11 +558,11 @@ impl TantivySearcher {
             | LqFilter::DiffAdded { .. }
             | LqFilter::DiffRemoved { .. }
             | LqFilter::DiffTouched { .. } => Err(CoreError::Typed {
-                code: crate::filters::codes::HISTORY_PRODUCER_UNAVAILABLE.to_string(),
+                code: crate::filters::codes::HISTORY_PRODUCER_UNAVAILABLE,
                 message: "lexical: history date/diff filters require history producer".to_string(),
             }),
             LqFilter::Type { .. } | LqFilter::Select { .. } => Err(CoreError::Typed {
-                code: "LEX_FILTER_UNROUTED".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterUnrouted,
                 message: format!(
                     "lexical: type/select filters must be routed through doc-kind preparation, got `{filter:?}`"
                 ),

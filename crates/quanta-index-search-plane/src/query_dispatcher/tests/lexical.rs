@@ -7,7 +7,6 @@ use quanta_index_contract::{
     TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_core::{CoreError, REQUEST_CANCELLED_CODE, RequestBudgetV1};
-use quanta_index_lq_bridge::BridgeErrorCode;
 
 use crate::Ledger;
 use crate::observability::BoundedQueryObsStore;
@@ -41,8 +40,9 @@ fn lexical_dispatch_fail_closed_when_generation_is_not_ready() -> TestResult {
             query_text: "needle".to_string(),
             constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(make_pin(
-                RepoId::new("repo-map-ipc"),
-                RevisionId::new("rev-map-ipc"),
+                RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+                RevisionId::new("rev-map-ipc")
+                    .expect("static fixture ID satisfies canonical policy"),
                 ManifestGeneration::new(9),
             )),
             generation_selector: None,
@@ -52,7 +52,7 @@ fn lexical_dispatch_fail_closed_when_generation_is_not_ready() -> TestResult {
         &RequestBudgetV1::unbounded(),
     ) {
         SearchPlaneQueryIpcResponse::Error(err) => {
-            if err.code != "NOT_READY" {
+            if err.code != quanta_index_contract::SearchPlaneErrorCodeV2::NotReady {
                 return Err(format!("unexpected error code: {}", err.code).into());
             }
         }
@@ -97,8 +97,8 @@ fn the_request_budget_reaches_the_lexical_searcher() -> TestResult {
         test_activation_catalog()?,
     );
     let pin = make_pin(
-        RepoId::new("repo-map-ipc"),
-        RevisionId::new("rev-map-ipc"),
+        RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+        RevisionId::new("rev-map-ipc").expect("static fixture ID satisfies canonical policy"),
         ManifestGeneration::new(9),
     );
     let budget = RequestBudgetV1::unbounded();
@@ -142,8 +142,8 @@ fn sourcegraph_text_syntax_dispatch_returns_text_payload() -> TestResult {
     );
 
     let pin = make_pin(
-        RepoId::new("repo-map-ipc"),
-        RevisionId::new("rev-map-ipc"),
+        RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+        RevisionId::new("rev-map-ipc").expect("static fixture ID satisfies canonical policy"),
         ManifestGeneration::new(9),
     );
     let response = dispatcher.dispatch(
@@ -274,8 +274,9 @@ fn symbol_dispatch_admits_only_typed_exact_path_as_constraint_only_authority_v1(
 fn lexical_dispatch_stabilizes_tied_text_results() -> TestResult {
     let make_candidate = |id: &str, path: &str, start_line: u32, score: f32| LexicalCandidate {
         candidate_id: id.to_string(),
-        repo_id: RepoId::new("repo-map-ipc"),
-        revision_id: RevisionId::new("rev-map-ipc"),
+        repo_id: RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev-map-ipc")
+            .expect("static fixture ID satisfies canonical policy"),
         manifest_generation: ManifestGeneration::new(9),
         repo_relative_path: RepoRelativePath::new(path),
         start_line,
@@ -375,7 +376,11 @@ fn sourcegraph_dispatch_rejects_structural_pattern_type_before_lexical_execution
     );
 
     let (code, message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-    if code != BridgeErrorCode::BridgeTranslateFail.as_code_str() {
+    if code
+        != quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+            quanta_index_contract::lex::LexicalErrorCode::BridgeTranslateFail,
+        )
+    {
         return Err(format!(
             "expected BRIDGE_TRANSLATE_FAIL for SG structural lexical route, got {code}"
         )
@@ -416,7 +421,11 @@ fn text_dispatch_parse_error_emits_closed_obs_metric() -> TestResult {
         &RequestBudgetV1::unbounded(),
     );
     let (code, _message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-    if code != "PARSE_FAIL" {
+    if code
+        != quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+            quanta_index_contract::lex::LexicalErrorCode::ParseFail,
+        )
+    {
         return Err(format!("expected PARSE_FAIL, got {code}").into());
     }
     let names = obs_sink
@@ -543,7 +552,7 @@ fn lexical_dispatch_returns_typed_when_filter_is_rev() -> TestResult {
     );
 
     let (code, _message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-    if code != "NOT_IMPLEMENTED" {
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::NotImplemented {
         return Err(format!("expected NOT_IMPLEMENTED, got {code}").into());
     }
     Ok(())

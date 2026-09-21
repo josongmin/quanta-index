@@ -103,10 +103,10 @@ fn semantic_query(pin: Option<GenerationPin>) -> SearchPlaneQueryIpcRequest {
     })
 }
 
-fn typed_code(response: &SearchPlaneQueryIpcResponse) -> Option<(String, String)> {
+fn typed_code(response: &SearchPlaneQueryIpcResponse) -> Option<(&'static str, String)> {
     match response {
         SearchPlaneQueryIpcResponse::Error(error) => {
-            Some((error.code.clone(), error.message.clone()))
+            Some((error.code.as_wire_str(), error.message.clone()))
         }
         SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
@@ -479,7 +479,7 @@ fn activation_refuses_semantic_content_roots_the_generation_did_not_seal() -> Te
         )
         .into());
     };
-    if error.code != "SEMANTIC_ROW_ROOT_MISMATCH" {
+    if error.code.as_wire_str() != "SEMANTIC_ROW_ROOT_MISMATCH" {
         return Err(format!(
             "foreign roots must be refused typed as SEMANTIC_ROW_ROOT_MISMATCH, got {}: {}",
             error.code, error.message

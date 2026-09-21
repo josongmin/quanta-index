@@ -77,7 +77,7 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse> 
             | SearchPlaneControlIpcRequest::QuarantineInventory(_)
             | SearchPlaneControlIpcRequest::QuarantineDiscard(_)) => {
                 SearchPlaneControlIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError {
-                    code: "TEST_UNEXPECTED_REQUEST".to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::Internal,
                     message: format!("only CurrentGeneration is stubbed, got {other:?}"),
                     repair: None,
                 })
@@ -193,8 +193,9 @@ fn request(repo: &str) -> SearchPlaneControlIpcRequestEnvelope {
     SearchPlaneControlIpcRequestEnvelope {
         request_id: 3,
         payload: SearchPlaneControlIpcRequest::CurrentGeneration(CurrentGenerationRequest {
-            repo_id: RepoId::new(repo),
-            revision_id: RevisionId::new("rev"),
+            repo_id: RepoId::new(repo).expect("test fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev")
+                .expect("static fixture ID satisfies canonical policy"),
             track: SearchPlaneTrackKind::Lexical,
         }),
     }

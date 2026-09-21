@@ -22,6 +22,9 @@ use crate::lex::{LanguageCode, SymbolKindCode};
 use crate::{ChunkId, FileId, RepoRelativePath, SymbolId};
 use quanta_index_contract_base::ids::{ManifestGeneration, RepoId, RevisionId};
 
+mod canonical_v3;
+pub use canonical_v3::*;
+
 macro_rules! repomap_string_enum {
     (
         $(#[$meta:meta])*
@@ -3315,11 +3318,11 @@ mod tests {
     }
 
     fn sample_repo_id() -> RepoId {
-        RepoId::new("repo-1")
+        RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy")
     }
 
     fn sample_revision_id() -> RevisionId {
-        RevisionId::new("rev-1")
+        RevisionId::new("rev-1").expect("static fixture ID satisfies canonical policy")
     }
 
     fn sample_manifest_generation() -> ManifestGeneration {

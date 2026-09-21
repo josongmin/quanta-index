@@ -56,8 +56,7 @@ use quanta_index_core::domains::semantic::SemanticSearcher;
 
 use crate::single_flight::{AwaitFlightFailure, Flight};
 use quanta_index_core::{
-    CoreError, MetricPointV1, MetricSourcePort, RequestBudgetV1, UNKNOWN_GENERATION_CODE,
-    count_from_usize,
+    CoreError, MetricPointV1, MetricSourcePort, RequestBudgetV1, count_from_usize,
 };
 
 /// The checkpoint name a waiter's typed interruption carries.
@@ -510,7 +509,7 @@ impl<H: ?Sized + Send + Sync> SnapshotRegistry<H> {
 /// The refusal a flight lands with when its key was retired while it ran.
 fn retired_in_flight(key: &SnapshotKey) -> CoreError {
     CoreError::Typed {
-        code: UNKNOWN_GENERATION_CODE.to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::UnknownGeneration,
         message: format!(
             "snapshot registry: generation {} of repo={} revision={} was retired while its open was in flight; the durable authority no longer retains it and nothing was admitted",
             key.generation.get(),
@@ -601,8 +600,8 @@ mod tests {
 
     fn key(generation: u64) -> SnapshotKey {
         SnapshotKey::new(
-            &RepoId::new("repo"),
-            &RevisionId::new("rev"),
+            &RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+            &RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
             ManifestGeneration::new(generation),
         )
     }

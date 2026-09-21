@@ -41,11 +41,11 @@ struct RepoMetadataPayload {
 }
 
 fn repo() -> RepoId {
-    RepoId::new("smoke-repo")
+    RepoId::new("smoke-repo").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new("smoke-rev")
+    RevisionId::new("smoke-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 fn generation() -> ManifestGeneration {
@@ -300,7 +300,9 @@ fn upsert_with_source_repo(
         text: text.to_string().into_boxed_str(),
         structural: None,
         parent_chunk_id: None,
-        source_repo_id: Some(RepoId::new(source_repo_id)),
+        source_repo_id: Some(
+            RepoId::new(source_repo_id).expect("test fixture ID satisfies canonical policy"),
+        ),
     };
     let mut payload = Vec::new();
     ciborium::into_writer(&record, &mut payload)
@@ -3420,7 +3422,9 @@ fn tantivy_executes_scoped_file_content_predicates_across_boolean_contexts() -> 
         ],
     }));
     match searcher.search(&multiple_scalars_query, 10, &RequestBudgetV1::unbounded()) {
-        Err(CoreError::Typed { code, .. }) if code == "LEX_PREDICATE_UNIMPLEMENTED" => {}
+        Err(CoreError::Typed { code, .. })
+            if code == quanta_index_contract::SearchPlaneErrorCodeV2::LexPredicateUnimplemented => {
+        }
         other => {
             return Err(format!(
                 "expected file.contains(two scalars) to fail closed with LEX_PREDICATE_UNIMPLEMENTED, got {other:?}"
@@ -3440,7 +3444,9 @@ fn tantivy_executes_scoped_file_content_predicates_across_boolean_contexts() -> 
         ],
     }));
     match searcher.search(&repo_scoped_query, 10, &RequestBudgetV1::unbounded()) {
-        Err(CoreError::Typed { code, .. }) if code == "LEX_PREDICATE_UNIMPLEMENTED" => {}
+        Err(CoreError::Typed { code, .. })
+            if code == quanta_index_contract::SearchPlaneErrorCodeV2::LexPredicateUnimplemented => {
+        }
         other => {
             return Err(format!(
                 "expected repo.has.content(path:src, 7) to fail closed with LEX_PREDICATE_UNIMPLEMENTED, got {other:?}"

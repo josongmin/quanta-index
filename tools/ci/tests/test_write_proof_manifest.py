@@ -58,7 +58,17 @@ def _fixture_root(tmp_path: Path) -> tuple[Path, dict]:
     test_authority = root / "tools/ci/test-authority.toml"
     test_authority.write_text(
         '[local_scopes.integration-fast]\ntargets = ["catalog-idempotency"]\n\n'
+        '[local_scopes.canonical-identity]\n'
+        'targets = ["contract-base-canonical-identity-v1", '
+        '"contract-repomap-layout-v3-contract", '
+        '"contract-search-plane-error-code-v2", '
+        '"repomap-layout-v3-security"]\n\n'
         + "".join(f'[[integration_targets]]\nid = "{target}"\n' for target in target_ids),
+        encoding="utf-8",
+    )
+    (root / "Justfile").write_text(
+        "proof-p01-canonical-identity:\n"
+        "    @just rust-profile test-canonical-identity\n",
         encoding="utf-8",
     )
     for proof in registry["proofs"]:
@@ -483,10 +493,10 @@ def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
         )
     )
     registry_path.write_text(registry_text, encoding="utf-8")
-    (root / "Justfile").write_text(
-        "proof-p11-cross-repo-cutover:\n    @just rust-profile test-integration-fast\n",
-        encoding="utf-8",
-    )
+    with (root / "Justfile").open("a", encoding="utf-8") as handle:
+        handle.write(
+            "proof-p11-cross-repo-cutover:\n    @just rust-profile test-integration-fast\n"
+        )
     _run(root, "git", "add", "tools/ci/proof-authority.toml", "Justfile")
     _run(root, "git", "commit", "-qm", "activate exact-pair fixture")
     registry = CHECKER._read_toml(registry_path)

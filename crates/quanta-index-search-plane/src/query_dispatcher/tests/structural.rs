@@ -60,8 +60,10 @@ fn symbol_hits_project_into_all_overlapping_chunks_deterministically()
     let buckets = symbol_hits_to_structural_buckets(
         vec![SymbolCandidate {
             candidate_id: "symbol-hit-1".to_string(),
-            repo_id: RepoId::new("repo-map-ipc"),
-            revision_id: RevisionId::new("rev-map-ipc"),
+            repo_id: RepoId::new("repo-map-ipc")
+                .expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev-map-ipc")
+                .expect("static fixture ID satisfies canonical policy"),
             manifest_generation: ManifestGeneration::new(9),
             repo_relative_path: RepoRelativePath::new("src/symbol.rs"),
             start_line: 1,
@@ -282,7 +284,7 @@ fn structural_dispatch_maps_generation_not_ready() -> TestResult {
     );
 
     let (code, _message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-    if code != "STR_GENERATION_NOT_READY" {
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::StrGenerationNotReady {
         return Err(format!("expected STR_GENERATION_NOT_READY, got {code}").into());
     }
     if producer.execute_calls.load(Ordering::SeqCst) != 0 {
@@ -315,7 +317,7 @@ fn structural_dispatch_maps_shard_unavailable() -> TestResult {
     );
 
     let (code, _message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-    if code != "STR_SHARD_UNAVAILABLE" {
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::StrShardUnavailable {
         return Err(format!("expected STR_SHARD_UNAVAILABLE, got {code}").into());
     }
     if producer.execute_calls.load(Ordering::SeqCst) != 0 {
@@ -348,7 +350,11 @@ fn structural_dispatch_maps_lang_not_supported() -> TestResult {
     );
 
     let (code, _message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-    if code != "STR_LANG_NOT_SUPPORTED" {
+    if code
+        != quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+            quanta_index_contract::lex::LexicalErrorCode::StrLangNotSupported,
+        )
+    {
         return Err(format!("expected STR_LANG_NOT_SUPPORTED, got {code}").into());
     }
     Ok(())
@@ -442,7 +448,7 @@ fn structural_dispatch_rejects_non_executable_filters_before_consulting_producer
     );
 
     let (code, message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-    if code != "STR_INVALID_REQUEST" {
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::StrInvalidRequest {
         return Err(format!("expected STR_INVALID_REQUEST, got {code}").into());
     }
     if !message.contains("filter `select` is not executable") {
@@ -549,7 +555,11 @@ fn structural_dispatch_rejects_typed_hole_kind_with_exact_code() -> TestResult {
     );
 
     let (code, message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-    if code != "STR_HOLE_KIND_UNSUPPORTED" {
+    if code
+        != quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+            quanta_index_contract::lex::LexicalErrorCode::StrHoleKindUnsupported,
+        )
+    {
         return Err(format!("expected STR_HOLE_KIND_UNSUPPORTED, got {code}").into());
     }
     if !message.contains("typed hole kind `lambda`") {

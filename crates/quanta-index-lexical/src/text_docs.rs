@@ -7,7 +7,7 @@
 
 use crate::documents::stored_text;
 use crate::text_authority::AddedTextDoc;
-use crate::{IndexedTextDoc, SchemaFields, TEXT_DOC_KIND, text_authority};
+use crate::{IndexedTextDoc, SchemaFields, TEXT_DOC_KIND};
 use quanta_index_core::CoreError;
 use roaring::RoaringBitmap;
 use tantivy::collector::TopDocs;
@@ -30,7 +30,7 @@ pub(crate) fn stored_text_authority_doc_id(
     doc.get_first(fields.text_authority_doc_id)
         .and_then(|value| Value::as_u64(&value))
         .ok_or_else(|| CoreError::Typed {
-            code: text_authority::TEXT_AUTHORITY_FORMAT_UNSUPPORTED_CODE.to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationTextAuthorityFormatUnsupported,
             message: format!(
                 "lexical: text document {candidate_id} stores no text-authority doc id; the generation predates the sharded text authority and must be rebuilt"
             ),

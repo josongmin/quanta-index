@@ -55,7 +55,7 @@ pub enum AuxEpochRefusedError {
 impl AuxEpochRefusedError {
     /// The wire code of the refusal.
     #[must_use]
-    pub const fn code(&self) -> &'static str {
+    pub const fn code(&self) -> quanta_index_contract::SearchPlaneErrorCodeV2 {
         match self {
             Self::Expired { .. } => AUX_EPOCH_EXPIRED_CODE,
             Self::Unknown { .. } => AUX_EPOCH_UNKNOWN_CODE,
@@ -91,7 +91,7 @@ impl std::error::Error for AuxEpochRefusedError {}
 impl From<AuxEpochRefusedError> for CoreError {
     fn from(refused: AuxEpochRefusedError) -> Self {
         Self::Typed {
-            code: refused.code().to_string(),
+            code: refused.code(),
             message: refused.to_string(),
         }
     }
@@ -319,8 +319,9 @@ mod tests {
 
     fn generation() -> AuxiliaryGenerationKeyV1 {
         AuxiliaryGenerationKeyV1 {
-            repo_id: RepoId::new("repo"),
-            revision_id: RevisionId::new("rev"),
+            repo_id: RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev")
+                .expect("static fixture ID satisfies canonical policy"),
             generation: ManifestGeneration::new(1),
         }
     }

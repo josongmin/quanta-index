@@ -153,7 +153,7 @@ impl IncompleteGenerationDiscardPort for LexicalAdapter {
             let observed = read_lexical_sealed_identity(&generation_dir)?;
             validate_lexical_sealed_identity(&observed, candidate)?;
             return Err(CoreError::Typed {
-                code: "GENERATION_IMMUTABLE".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationImmutable,
                 message: format!(
                     "lexical: refusing to discard sealed generation {}",
                     candidate.manifest_generation.get()
@@ -208,7 +208,7 @@ impl SealedGenerationReclaimPort for LexicalAdapter {
         // directory belongs to the incomplete-generation protocol.
         if !lexical_sealed_identity_path(&generation_dir).exists() {
             return Err(CoreError::Typed {
-                code: "GENERATION_NOT_SEALED".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationNotSealed,
                 message: format!(
                     "lexical: refusing to reclaim unsealed generation {} as retired history",
                     retired.manifest_generation.get()
@@ -278,7 +278,7 @@ impl SealedGenerationReclaimPort for LexicalAdapter {
                 }) != generation_dir
             {
                 return Err(CoreError::Typed {
-                    code: "GENERATION_IDENTITY_SCOPE_MISMATCH".to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityScopeMismatch,
                     message: format!(
                         "lexical: persisted identity does not own physical path {}",
                         generation_dir.display()

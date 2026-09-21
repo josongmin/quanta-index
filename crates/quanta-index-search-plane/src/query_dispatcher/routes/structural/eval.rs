@@ -320,7 +320,7 @@ fn map_structural_error(
     err: &quanta_index_core::domains::structural::StructuralError,
 ) -> CoreError {
     CoreError::Typed {
-        code: err.code().to_string(),
+        code: err.code(),
         message: err.to_string(),
     }
 }

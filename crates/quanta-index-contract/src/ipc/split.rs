@@ -1121,11 +1121,11 @@ mod tests {
     }
 
     fn fixture_repo() -> RepoId {
-        RepoId::new("repo")
+        RepoId::new("repo").expect("static fixture ID satisfies canonical policy")
     }
 
     fn fixture_revision() -> RevisionId {
-        RevisionId::new("rev")
+        RevisionId::new("rev").expect("static fixture ID satisfies canonical policy")
     }
 
     #[test]
@@ -1208,7 +1208,7 @@ mod tests {
         let envelope = SearchPlaneQueryIpcResponseEnvelope {
             request_id: 8,
             payload: SearchPlaneQueryIpcResponse::Error(SearchPlaneIpcError {
-                code: "INVALID_REQUEST".to_string(),
+                code: crate::SearchPlaneErrorCodeV2::InvalidRequest,
                 message: "bad request".to_string(),
                 repair: None,
             }),

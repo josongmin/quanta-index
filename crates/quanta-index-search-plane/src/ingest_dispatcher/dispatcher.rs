@@ -8,10 +8,10 @@ use quanta_index_contract::{
     SearchPlaneIngestIpcResponse,
 };
 use quanta_index_core::{
-    BATCH_DIGEST_MISMATCH_CODE, CoreError, FileContributorIngestPort, FileOwnershipIngestPort,
-    IdempotencyBeginV1, IdempotencyCatalogPort, IdempotencyKeyV1, IngestBatchBodyV1,
-    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
-    RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1, SearchCorpusIngestPort,
+    CoreError, FileContributorIngestPort, FileOwnershipIngestPort, IdempotencyBeginV1,
+    IdempotencyCatalogPort, IdempotencyKeyV1, IngestBatchBodyV1, RepoCommitRecencyIngestPort,
+    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMetaIngestPort, RepoTopicIngestPort,
+    RequestBudgetV1, SearchCorpusIngestPort,
 };
 use quanta_index_ipc::{BatchDigestVerdictV1, verify_batch_digest_v1};
 
@@ -293,7 +293,7 @@ fn verified_batch_digest_v1<B: IngestBatchBodyV1 + serde::Serialize>(
     match verdict {
         BatchDigestVerdictV1::Verified(digest) => Ok(digest),
         BatchDigestVerdictV1::Mismatch { carried, expected } => Err(CoreError::Typed {
-            code: BATCH_DIGEST_MISMATCH_CODE.to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::BatchDigestMismatch,
             message: format!(
                 "{} batch for repo={} revision={} generation={} carries batch_digest={carried} but its body digests to {expected}; a batch digest is the canonical digest of the body it names, computed after the body is final",
                 B::OPERATION,

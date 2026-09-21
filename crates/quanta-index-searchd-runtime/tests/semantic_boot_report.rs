@@ -75,8 +75,9 @@ fn fixture_batch(generation: ManifestGeneration) -> Result<SemanticIngestBatch, 
     let language =
         LanguageCode::new("rust").map_err(|err| format!("fixture language invalid: {err}"))?;
     Ok(SemanticIngestBatch {
-        repo_id: RepoId::new("repo-bootrep"),
-        revision_id: RevisionId::new("rev-bootrep"),
+        repo_id: RepoId::new("repo-bootrep").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev-bootrep")
+            .expect("static fixture ID satisfies canonical policy"),
         generation,
         base_generation: None,
         manifest_digest: format!("manifest:{}", generation.get()),
@@ -174,8 +175,8 @@ fn runtime_boot_inventories_a_corrupted_inactive_semantic_generation() -> TestRe
     build_resident_batch_v1(&adapter, &fixture_batch(generation)?)?;
 
     let manifest_path = GenerationStorageKeyV1::for_repo_revision(
-        &RepoId::new("repo-bootrep"),
-        &RevisionId::new("rev-bootrep"),
+        &RepoId::new("repo-bootrep").expect("static fixture ID satisfies canonical policy"),
+        &RevisionId::new("rev-bootrep").expect("static fixture ID satisfies canonical policy"),
     )
     .generation_dir(&semantic_root, generation)
     .join("semantic-manifest.cbor");

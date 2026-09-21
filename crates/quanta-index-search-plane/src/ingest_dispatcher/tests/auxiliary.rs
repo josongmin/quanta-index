@@ -32,8 +32,8 @@ use crate::{HistoryTextIndexParts, Ledger, SEARCH_OWNED_SEMANTIC_DIMENSION, Snap
 #[test]
 fn dirty_publish_receipt_binds_exact_auxiliary_batch_without_sealing_v1() {
     let batch = DirtyIngestBatch {
-        repo_id: RepoId::new("repo"),
-        revision_id: RevisionId::new("rev"),
+        repo_id: RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(9),
         overlay_epoch_ms: 7,
         batch_digest: "dirty-batch:exact".to_string(),
@@ -106,7 +106,11 @@ fn a_batch_that_fails_validation_never_reaches_the_catalog() -> TestRes {
     // A child whose parent is neither in the state nor earlier in the batch.
     let orphan = fixture_history_batch(9, vec![fixture_commit(2, &[1])]);
     match materializer.publish_batch(&orphan) {
-        Err(CoreError::Typed { code, .. }) if code == "HISTORY_COMMIT_PARENT_UNKNOWN" => {}
+        Err(CoreError::Typed { code, .. })
+            if code
+                == quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                    quanta_index_contract::lex::LexicalErrorCode::HistoryCommitParentUnknown,
+                ) => {}
         other => return Err(format!("orphan commit answered {other:?}").into()),
     }
     if catalog.applies() != 0 || catalog.row_count() != 0 {
@@ -537,7 +541,8 @@ fn a_refused_history_text_listing_fails_the_seal_closed() -> TestRes {
 
     index.refuse_next_listing();
     let refused = materializer.finalize_generation_v1(&batch, Some(&receipt));
-    if !matches!(&refused, Err(CoreError::Typed { code, .. }) if code == "HISTORY_TEXT_INDEX_FOREIGN_ENTRY")
+    if !matches!(&refused, Err(CoreError::Typed { code, .. })
+        if *code == quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexForeignEntry)
     {
         return Err(format!("the refusal fails the seal closed, got {refused:?}").into());
     }

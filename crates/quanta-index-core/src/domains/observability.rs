@@ -88,10 +88,12 @@ pub fn count_as_f64(value: u64) -> f64 {
 
 /// Wire code for a process memory envelope whose declared components sum
 /// past its ceiling (QI-BB-016).
-pub const PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE: &str = "PROCESS_MEMORY_ENVELOPE_EXCEEDED";
+pub const PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::ProcessMemoryEnvelopeExceeded;
 /// Wire code for a writer refused because the process is already above
 /// its resident-memory ceiling (QI-BB-016).
-pub const PROCESS_RSS_CEILING_EXCEEDED_CODE: &str = "PROCESS_RSS_CEILING_EXCEEDED";
+pub const PROCESS_RSS_CEILING_EXCEEDED_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::ProcessRssCeilingExceeded;
 
 /// Bytes the embedding cache ledger holds per resident entry: two
 /// ordered-map nodes keyed by a 32-byte digest and a tick, their pointers,
@@ -162,7 +164,7 @@ impl ProcessMemoryEnvelopeV1 {
         let declared = self.declared_bytes();
         if declared > self.ceiling {
             return Err(CoreError::Typed {
-                code: PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE.to_string(),
+                code: PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE,
                 message: format!(
                     "process memory envelope: declared policies sum to {declared} bytes (lexical writers {}, snapshot registry {}, regex cache {}, embedding cache ledger {}, semantic stream window {}, ingest batch {}) over the {} byte ceiling; lower a policy or raise the ceiling",
                     self.lexical_writer_bytes,
@@ -283,7 +285,7 @@ impl WriterAdmissionPort for ResidentMemoryWriterAdmission {
                 .refusals
                 .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             return Err(CoreError::Typed {
-                code: PROCESS_RSS_CEILING_EXCEEDED_CODE.to_string(),
+                code: PROCESS_RSS_CEILING_EXCEEDED_CODE,
                 message: format!(
                     "lexical: refusing to open another generation writer: the process holds {resident} resident bytes, above the {} byte ceiling",
                     self.ceiling_bytes
@@ -346,7 +348,7 @@ mod tests {
         let over = envelope(2_099).validate();
         assert!(
             matches!(&over, Err(CoreError::Typed { code, message })
-                if code == PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE && message.contains("2100 bytes")),
+                if *code == PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE && message.contains("2100 bytes")),
             "{over:?}"
         );
         assert!(envelope(0).validate().is_err());
@@ -375,7 +377,7 @@ mod tests {
         let refused = gate.admit_writer_open();
         assert!(
             matches!(&refused, Err(CoreError::Typed { code, .. })
-                if code == PROCESS_RSS_CEILING_EXCEEDED_CODE),
+                if *code == PROCESS_RSS_CEILING_EXCEEDED_CODE),
             "{refused:?}"
         );
         assert_eq!(gate.refusals(), 1);

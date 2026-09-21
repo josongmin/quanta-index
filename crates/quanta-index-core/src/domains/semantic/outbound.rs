@@ -90,7 +90,8 @@ pub struct SemanticReadiness {
 
 /// Wire code for an activation that names semantic content roots the
 /// physical generation does not carry (QI-BB-028).
-pub const SEMANTIC_ROW_ROOT_MISMATCH_CODE: &str = "SEMANTIC_ROW_ROOT_MISMATCH";
+pub const SEMANTIC_ROW_ROOT_MISMATCH_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::SemanticRowRootMismatch;
 
 /// The content roots a sealed semantic generation carries (QI-BB-028).
 ///

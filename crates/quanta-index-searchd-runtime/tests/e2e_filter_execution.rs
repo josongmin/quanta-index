@@ -269,11 +269,13 @@ fn boot_with_multi_repo_and_commit_recency() -> AnyResult<E2eRuntime> {
         batch_digest: "e2e-repo-commit-recency".to_string(),
         entries: vec![
             RepoCommitRecencyEntry {
-                source_repo_id: RepoId::new("corp-a"),
+                source_repo_id: RepoId::new("corp-a")
+                    .expect("static fixture ID satisfies canonical policy"),
                 latest_committer_time_ms: now_ms.saturating_sub(6 * 60 * 60 * 1000),
             },
             RepoCommitRecencyEntry {
-                source_repo_id: RepoId::new("corp-b"),
+                source_repo_id: RepoId::new("corp-b")
+                    .expect("static fixture ID satisfies canonical policy"),
                 latest_committer_time_ms: 1_700_000_000_000,
             },
         ],
@@ -293,17 +295,20 @@ fn boot_with_multi_repo_and_repo_meta() -> AnyResult<E2eRuntime> {
         batch_digest: "e2e-repo-meta".to_string(),
         entries: vec![
             RepoMetaEntry {
-                source_repo_id: RepoId::new("corp-a"),
+                source_repo_id: RepoId::new("corp-a")
+                    .expect("static fixture ID satisfies canonical policy"),
                 key: "license".to_string(),
                 value: "apache-2.0".to_string(),
             },
             RepoMetaEntry {
-                source_repo_id: RepoId::new("corp-b"),
+                source_repo_id: RepoId::new("corp-b")
+                    .expect("static fixture ID satisfies canonical policy"),
                 key: "license".to_string(),
                 value: "gpl-3.0".to_string(),
             },
             RepoMetaEntry {
-                source_repo_id: RepoId::new("corp-a"),
+                source_repo_id: RepoId::new("corp-a")
+                    .expect("static fixture ID satisfies canonical policy"),
                 key: "tier".to_string(),
                 value: "prod".to_string(),
             },
@@ -324,15 +329,18 @@ fn boot_with_multi_repo_and_repo_topic() -> AnyResult<E2eRuntime> {
         batch_digest: "e2e-repo-topic".to_string(),
         entries: vec![
             RepoTopicEntry {
-                source_repo_id: RepoId::new("corp-a"),
+                source_repo_id: RepoId::new("corp-a")
+                    .expect("static fixture ID satisfies canonical policy"),
                 topic: "security".to_string(),
             },
             RepoTopicEntry {
-                source_repo_id: RepoId::new("corp-a"),
+                source_repo_id: RepoId::new("corp-a")
+                    .expect("static fixture ID satisfies canonical policy"),
                 topic: "platform".to_string(),
             },
             RepoTopicEntry {
-                source_repo_id: RepoId::new("corp-b"),
+                source_repo_id: RepoId::new("corp-b")
+                    .expect("static fixture ID satisfies canonical policy"),
                 topic: "ml".to_string(),
             },
         ],
@@ -352,11 +360,13 @@ fn boot_with_multi_repo_and_repo_description() -> AnyResult<E2eRuntime> {
         batch_digest: "e2e-repo-description".to_string(),
         entries: vec![
             RepoDescriptionEntry {
-                source_repo_id: RepoId::new("corp-a"),
+                source_repo_id: RepoId::new("corp-a")
+                    .expect("static fixture ID satisfies canonical policy"),
                 description: "Apache distributed systems platform".to_string(),
             },
             RepoDescriptionEntry {
-                source_repo_id: RepoId::new("corp-b"),
+                source_repo_id: RepoId::new("corp-b")
+                    .expect("static fixture ID satisfies canonical policy"),
                 description: "Machine learning training pipelines".to_string(),
             },
         ],
@@ -376,22 +386,26 @@ fn boot_with_multi_repo_and_file_ownership() -> AnyResult<E2eRuntime> {
         batch_digest: "e2e-file-ownership".to_string(),
         entries: vec![
             FileOwnershipEntry {
-                source_repo_id: RepoId::new("corp-a"),
+                source_repo_id: RepoId::new("corp-a")
+                    .expect("static fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/corp-a.rs"),
                 owners: vec!["@alice".to_string(), "@acme/platform".to_string()],
             },
             FileOwnershipEntry {
-                source_repo_id: RepoId::new("corp-a"),
+                source_repo_id: RepoId::new("corp-a")
+                    .expect("static fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/gate-a.rs"),
                 owners: vec!["@alice".to_string()],
             },
             FileOwnershipEntry {
-                source_repo_id: RepoId::new("corp-b"),
+                source_repo_id: RepoId::new("corp-b")
+                    .expect("static fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/corp-b.rs"),
                 owners: vec!["@bob".to_string()],
             },
             FileOwnershipEntry {
-                source_repo_id: RepoId::new("corp-b"),
+                source_repo_id: RepoId::new("corp-b")
+                    .expect("static fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/gate-b.py"),
                 owners: Vec::new(),
             },
@@ -412,7 +426,8 @@ fn boot_with_multi_repo_and_file_contributor() -> AnyResult<E2eRuntime> {
         batch_digest: "e2e-file-contributor".to_string(),
         entries: vec![
             FileContributorEntry {
-                source_repo_id: RepoId::new("corp-a"),
+                source_repo_id: RepoId::new("corp-a")
+                    .expect("static fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/corp-a.rs"),
                 contributors: vec![
                     FileContributorIdentityEntry {
@@ -428,7 +443,8 @@ fn boot_with_multi_repo_and_file_contributor() -> AnyResult<E2eRuntime> {
                 ],
             },
             FileContributorEntry {
-                source_repo_id: RepoId::new("corp-a"),
+                source_repo_id: RepoId::new("corp-a")
+                    .expect("static fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/gate-a.rs"),
                 contributors: vec![FileContributorIdentityEntry {
                     canonical: "alice".to_string(),
@@ -437,7 +453,8 @@ fn boot_with_multi_repo_and_file_contributor() -> AnyResult<E2eRuntime> {
                 }],
             },
             FileContributorEntry {
-                source_repo_id: RepoId::new("corp-b"),
+                source_repo_id: RepoId::new("corp-b")
+                    .expect("static fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/corp-b.rs"),
                 contributors: vec![FileContributorIdentityEntry {
                     canonical: "bob".to_string(),
@@ -446,7 +463,8 @@ fn boot_with_multi_repo_and_file_contributor() -> AnyResult<E2eRuntime> {
                 }],
             },
             FileContributorEntry {
-                source_repo_id: RepoId::new("corp-b"),
+                source_repo_id: RepoId::new("corp-b")
+                    .expect("static fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/gate-b.py"),
                 contributors: Vec::new(),
             },
@@ -459,10 +477,12 @@ fn boot_with_multi_repo_and_file_contributor() -> AnyResult<E2eRuntime> {
 
 fn rev_at_time_ancestor_revision() -> RevisionId {
     RevisionId::new("1111111111111111111111111111111111111111")
+        .expect("static fixture ID satisfies canonical policy")
 }
 
 fn rev_at_time_head_revision() -> RevisionId {
     RevisionId::new("2222222222222222222222222222222222222222")
+        .expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision_scope_key(path: &str) -> SearchScopeKey {
@@ -781,7 +801,7 @@ fn repo_has_commit_after_rejects_invalid_timeref_typed() -> AnyResult<()> {
         );
     };
     ensure!(
-        error.code == "HISTORY_INVALID_TIMEREF",
+        error.code.as_str() == "HISTORY_INVALID_TIMEREF",
         "invalid repo:has.commit.after timeref must fail with HISTORY_INVALID_TIMEREF, got {}",
         error.code
     );
@@ -1021,7 +1041,7 @@ fn repo_has_meta_invalid_regex_typed_fails() -> AnyResult<()> {
         );
     };
     ensure!(
-        error.code.starts_with("LEX_REGEX_"),
+        error.code.as_str() == "LEX_REGEX_PARSE_FAIL",
         "invalid regex repo:has.meta must fail with lexical regex code, got {}",
         error.code
     );
@@ -1181,8 +1201,8 @@ fn repo_has_description_invalid_regex_fails_closed() -> AnyResult<()> {
         );
     };
     ensure!(
-        error.code.starts_with("LEX_REGEX_"),
-        "malformed description regex must fail with a LEX_REGEX_* code, got {}",
+        error.code.as_str() == "LEX_REGEX_PARSE_FAIL",
+        "malformed description regex must fail with LEX_REGEX_PARSE_FAIL, got {}",
         error.code
     );
     Ok(())
@@ -1206,7 +1226,7 @@ fn repo_has_description_without_authority_fails_closed() -> AnyResult<()> {
         );
     };
     ensure!(
-        error.code == "REPO_DESCRIPTION_UNAVAILABLE",
+        error.code.as_str() == "REPO_DESCRIPTION_UNAVAILABLE",
         "missing description authority must fail with REPO_DESCRIPTION_UNAVAILABLE, got {}",
         error.code
     );
@@ -1227,11 +1247,13 @@ fn repo_has_description_conflicting_batch_fails_closed() -> AnyResult<()> {
         batch_digest: "e2e-repo-description-conflict".to_string(),
         entries: vec![
             RepoDescriptionEntry {
-                source_repo_id: RepoId::new("corp-a"),
+                source_repo_id: RepoId::new("corp-a")
+                    .expect("static fixture ID satisfies canonical policy"),
                 description: "First description".to_string(),
             },
             RepoDescriptionEntry {
-                source_repo_id: RepoId::new("corp-a"),
+                source_repo_id: RepoId::new("corp-a")
+                    .expect("static fixture ID satisfies canonical policy"),
                 description: "Conflicting second description".to_string(),
             },
         ],
@@ -1261,7 +1283,7 @@ fn repo_has_description_non_textual_arg_is_typed_unsupported() -> AnyResult<()> 
         );
     };
     ensure!(
-        error.code == "LEX_PREDICATE_UNIMPLEMENTED",
+        error.code.as_str() == "LEX_PREDICATE_UNIMPLEMENTED",
         "numeric description arg must fail with LEX_PREDICATE_UNIMPLEMENTED, got {}",
         error.code
     );
@@ -1468,8 +1490,8 @@ fn file_has_contributor_supports_name_and_email_regex_without_canonical_fallback
         );
     };
     ensure!(
-        error.code.starts_with("LEX_REGEX_"),
-        "invalid regex file:has.contributor must fail with LEX_REGEX_*, got {}",
+        error.code.as_str() == "LEX_REGEX_PARSE_FAIL",
+        "invalid regex file:has.contributor must fail with LEX_REGEX_PARSE_FAIL, got {}",
         error.code
     );
     Ok(())
@@ -1652,7 +1674,7 @@ fn rev_at_time_text_route_rebinds_to_selected_revision_generation() -> AnyResult
         );
     };
     ensure!(
-        error.code == "HISTORY_INVALID_TIMEREF",
+        error.code.as_str() == "HISTORY_INVALID_TIMEREF",
         "invalid rev:at.time timeref must fail with HISTORY_INVALID_TIMEREF, got {}",
         error.code
     );
@@ -1953,7 +1975,7 @@ fn repo_has_file_path_content_correlates_per_document_on_sourcegraph_surface() -
         );
     };
     ensure!(
-        error.code == "LEX_PREDICATE_UNIMPLEMENTED" && error.message.contains("content:"),
+        error.code.as_str() == "LEX_PREDICATE_UNIMPLEMENTED" && error.message.contains("content:"),
         "empty content must fail with the content: empty reason, got {} {:?}",
         error.code,
         error.message,
@@ -2267,7 +2289,7 @@ fn scoped_file_content_predicates_execute_under_or_not_and_name_scope() -> AnyRe
             );
         };
         ensure!(
-            error.code == "LEX_PREDICATE_UNIMPLEMENTED",
+            error.code.as_str() == "LEX_PREDICATE_UNIMPLEMENTED",
             "query `{query}` must fail closed on unsupported scoped content shape, got {}",
             error.code
         );

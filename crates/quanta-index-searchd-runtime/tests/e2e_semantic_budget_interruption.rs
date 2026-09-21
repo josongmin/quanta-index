@@ -204,7 +204,7 @@ fn a_deadline_inside_the_dense_lane_is_answered_from_the_lane_counted_and_surviv
         )
         .into());
     };
-    if error.code != REQUEST_DEADLINE_EXCEEDED_CODE
+    if error.code != e2e_harness::E2eErrorCode::Remote(REQUEST_DEADLINE_EXCEEDED_CODE)
         || !error.message.contains("checkpoint `semantic:exact`")
     {
         return Err(format!(

@@ -41,7 +41,7 @@ pub(crate) fn planner_preflight_expr(
             continue;
         }
         return Err(CoreError::Typed {
-            code: entry.code.to_string(),
+            code: entry.code,
             message: entry.reason.to_string(),
         });
     }
@@ -59,18 +59,18 @@ pub(crate) fn map_regex_plan_error(err: crate::regex::RegexPlannerError) -> Core
     use crate::regex::RegexPlannerError;
     match err {
         RegexPlannerError::ParseError { source, detail } => CoreError::Typed {
-            code: "LEX_REGEX_DIALECT_PARSE_ERROR".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexDialectParseError,
             message: format!("lexical: regex parse error for {source:?}: {detail}"),
         },
         RegexPlannerError::UnsupportedFeature { feature } => CoreError::Typed {
-            code: "LEX_REGEX_DIALECT_UNSUPPORTED".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexDialectUnsupported,
             message: format!("lexical: regex unsupported feature `{feature}`"),
         },
         RegexPlannerError::UnboundedCandidatePlan {
             estimated_states,
             budget,
         } => CoreError::Typed {
-            code: "LEX_REGEX_BUDGET_EXCEEDED".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexBudgetExceeded,
             message: format!(
                 "lexical: regex NFA budget exceeded (estimated {estimated_states} states, budget {budget})"
             ),
@@ -107,32 +107,33 @@ pub(crate) fn map_planner_error(err: &crate::planner::LexicalPlannerError) -> Co
     match err {
         LexicalPlannerError::FilterPlan(fpe) => match fpe {
             crate::filters::FilterPlannerError::InvalidCount { detail } => CoreError::Typed {
-                code: "LEX_FILTER_INVALID_COUNT".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterInvalidCount,
                 message: (*detail).to_string(),
             },
             crate::filters::FilterPlannerError::ConflictingResultSurface { detail } => {
                 CoreError::Typed {
-                    code: "LEX_FILTER_CONFLICTING_SURFACE".to_string(),
+                    code:
+                        quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterConflictingSurface,
                     message: (*detail).to_string(),
                 }
             }
             crate::filters::FilterPlannerError::UnsupportedFilterCombo { detail } => {
                 CoreError::Typed {
-                    code: "LEX_FILTER_UNSUPPORTED_COMBO".to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterUnsupportedCombo,
                     message: (*detail).to_string(),
                 }
             }
         },
         LexicalPlannerError::UnsupportedNotScope => CoreError::Typed {
-            code: "LEX_PLANNER_UNSUPPORTED_NOT_SCOPE".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexPlannerUnsupportedNotScope,
             message: "lexical: planner does not yet lower the NOT scope shape".to_string(),
         },
         LexicalPlannerError::UnsupportedOrScope => CoreError::Typed {
-            code: "LEX_PLANNER_UNSUPPORTED_OR_SCOPE".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexPlannerUnsupportedOrScope,
             message: "lexical: planner does not yet lower the OR scope shape".to_string(),
         },
         LexicalPlannerError::UnsupportedFilterCombo => CoreError::Typed {
-            code: "LEX_PLANNER_UNSUPPORTED_FILTER_COMBO".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexPlannerUnsupportedFilterCombo,
             message: "lexical: planner does not yet lower this filter combination".to_string(),
         },
         LexicalPlannerError::Unimplemented { node, owner_ticket } => CoreError::NotImplemented(

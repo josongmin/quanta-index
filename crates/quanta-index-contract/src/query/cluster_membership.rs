@@ -460,8 +460,8 @@ mod cluster_membership_request_tests {
         ClusterMembershipReadRequestV1 {
             cluster_record_id: "cluster-card:auth-service".to_string(),
             generation: GenerationPin::new(
-                RepoId::new("repo"),
-                RevisionId::new("rev"),
+                RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
                 ManifestGeneration::new(17),
             ),
             expected_authority_digest: "authority-digest".to_string(),

@@ -171,7 +171,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::RefMutation
 pub enum quanta_index_sdk::SdkError
 pub quanta_index_sdk::SdkError::Protocol(alloc::string::String)
 pub quanta_index_sdk::SdkError::Remote
-pub quanta_index_sdk::SdkError::Remote::code: alloc::string::String
+pub quanta_index_sdk::SdkError::Remote::code: quanta_index_contract::ipc::error::SearchPlaneErrorCodeV2
 pub quanta_index_sdk::SdkError::Remote::message: alloc::string::String
 pub quanta_index_sdk::SdkError::Remote::repair: core::option::Option<quanta_index_contract::ipc::error::QueryErrorRepair>
 pub quanta_index_sdk::SdkError::Serialization(alloc::string::String)

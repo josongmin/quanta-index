@@ -174,12 +174,20 @@ fn exact_top_k(rows: &[(String, Vec<f32>)], query: &[f32], k: usize) -> Vec<Stri
         .collect()
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "fixed ANN harness identity is an in-source validated fixture"
+)]
 fn repo() -> RepoId {
-    RepoId::new("ann-rail")
+    RepoId::new("ann-rail").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "fixed ANN harness identity is an in-source validated fixture"
+)]
 fn revision() -> RevisionId {
-    RevisionId::new("ann-rail-rev")
+    RevisionId::new("ann-rail-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 /// The id of row `seed`.

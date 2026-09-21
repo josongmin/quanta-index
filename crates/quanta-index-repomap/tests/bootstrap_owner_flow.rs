@@ -32,8 +32,8 @@ fn symbol_kind(name: &str) -> SymbolKindCode {
 
 fn sample_bundle() -> RepoMapSourceBundle {
     RepoMapSourceBundle::new(
-        RepoId::new("repo-a"),
-        RevisionId::new("rev-a"),
+        RepoId::new("repo-a").expect("static fixture ID satisfies canonical policy"),
+        RevisionId::new("rev-a").expect("static fixture ID satisfies canonical policy"),
         ManifestGeneration::new(7),
         "manifest-digest-7",
         "snap-7",
@@ -387,8 +387,9 @@ fn query_before_activate_fails_closed() {
 fn missing_snapshot_fails_closed() {
     let store = RepoMapGenerationStore::default();
     let query_result = store.read_query_snapshot(&RepoMapQueryRequest {
-        repo_id: RepoId::new("repo-missing"),
-        revision_id: RevisionId::new("rev-missing"),
+        repo_id: RepoId::new("repo-missing").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev-missing")
+            .expect("static fixture ID satisfies canonical policy"),
         manifest_generation: ManifestGeneration::new(42),
         query_text: "repo map".to_string(),
         top_k: 1,
@@ -462,8 +463,9 @@ fn activate_generation_rejects_empty_manifest_digest() {
 fn activate_generation_requires_materialized_snapshot() {
     let store = RepoMapGenerationStore::default();
     let activation_result = store.activate_generation(&RepoMapActivateGenerationRequest {
-        repo_id: RepoId::new("repo-missing"),
-        revision_id: RevisionId::new("rev-missing"),
+        repo_id: RepoId::new("repo-missing").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev-missing")
+            .expect("static fixture ID satisfies canonical policy"),
         manifest_generation: ManifestGeneration::new(99),
         manifest_digest: "manifest-digest-99".to_string(),
     });
@@ -594,8 +596,9 @@ fn persistent_store_reports_an_orphaned_activation_and_fails_closed_for_its_repo
         vec!["repo=repo-missing revision=rev-missing generation=99".to_string()]
     );
     let query_result = opened.store.read_query_snapshot(&RepoMapQueryRequest {
-        repo_id: RepoId::new("repo-missing"),
-        revision_id: RevisionId::new("rev-missing"),
+        repo_id: RepoId::new("repo-missing").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev-missing")
+            .expect("static fixture ID satisfies canonical policy"),
         manifest_generation: ManifestGeneration::new(99),
         query_text: "anything".to_string(),
         top_k: 1,

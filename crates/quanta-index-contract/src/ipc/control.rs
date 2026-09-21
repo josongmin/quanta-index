@@ -1358,11 +1358,11 @@ mod qi_act_01_tests {
     }
 
     fn fixture_repo() -> RepoId {
-        RepoId::new("repo")
+        RepoId::new("repo").expect("static fixture ID satisfies canonical policy")
     }
 
     fn fixture_rev() -> RevisionId {
-        RevisionId::new("rev")
+        RevisionId::new("rev").expect("static fixture ID satisfies canonical policy")
     }
 
     #[test]
@@ -1569,8 +1569,10 @@ mod qi_act_01_tests {
         );
 
         let mut cross_repo = corpus_identity(11, "digest-11");
-        cross_repo.lexical.repo_id = RepoId::new("other-repo");
-        cross_repo.semantic.repo_id = RepoId::new("other-repo");
+        cross_repo.lexical.repo_id =
+            RepoId::new("other-repo").expect("static fixture ID satisfies canonical policy");
+        cross_repo.semantic.repo_id =
+            RepoId::new("other-repo").expect("static fixture ID satisfies canonical policy");
         assert_eq!(
             SearchPlaneActivateSearchCorpusGenerationCasRequest {
                 candidate: cross_repo,
@@ -1581,8 +1583,10 @@ mod qi_act_01_tests {
         );
 
         let mut cross_revision = corpus_identity(11, "digest-11");
-        cross_revision.lexical.revision_id = RevisionId::new("other-revision");
-        cross_revision.semantic.revision_id = RevisionId::new("other-revision");
+        cross_revision.lexical.revision_id = RevisionId::new("other-revision")
+            .expect("static fixture ID satisfies canonical policy");
+        cross_revision.semantic.revision_id = RevisionId::new("other-revision")
+            .expect("static fixture ID satisfies canonical policy");
         assert_eq!(
             SearchPlaneActivateSearchCorpusGenerationCasRequest {
                 candidate: cross_revision,
@@ -1667,8 +1671,10 @@ mod qi_act_01_tests {
         let expected_active = corpus_identity(11, "digest-11");
 
         let mut cross_repo = corpus_identity(10, "digest-10");
-        cross_repo.lexical.repo_id = RepoId::new("other-repo");
-        cross_repo.semantic.repo_id = RepoId::new("other-repo");
+        cross_repo.lexical.repo_id =
+            RepoId::new("other-repo").expect("static fixture ID satisfies canonical policy");
+        cross_repo.semantic.repo_id =
+            RepoId::new("other-repo").expect("static fixture ID satisfies canonical policy");
         assert_eq!(
             SearchPlaneRollbackSearchCorpusGenerationCasRequest {
                 expected_active: expected_active.clone(),
@@ -1679,8 +1685,10 @@ mod qi_act_01_tests {
         );
 
         let mut cross_revision = corpus_identity(10, "digest-10");
-        cross_revision.lexical.revision_id = RevisionId::new("other-revision");
-        cross_revision.semantic.revision_id = RevisionId::new("other-revision");
+        cross_revision.lexical.revision_id = RevisionId::new("other-revision")
+            .expect("static fixture ID satisfies canonical policy");
+        cross_revision.semantic.revision_id = RevisionId::new("other-revision")
+            .expect("static fixture ID satisfies canonical policy");
         assert_eq!(
             SearchPlaneRollbackSearchCorpusGenerationCasRequest {
                 expected_active: expected_active.clone(),

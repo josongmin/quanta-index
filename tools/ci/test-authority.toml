@@ -118,6 +118,16 @@ packages = [
 ]
 lib = true
 
+[local_scopes.canonical-identity]
+lane = "test-canonical-identity-lane"
+test_threads = 4
+targets = [
+  "contract-base-canonical-identity-v1",
+  "contract-repomap-layout-v3-contract",
+  "contract-search-plane-error-code-v2",
+  "repomap-layout-v3-security",
+]
+
 [local_scopes.cli-smoke]
 lane = "test-cli-smoke-lane"
 test_threads = 2
@@ -176,6 +186,30 @@ owners = [
 id = "contract-hybrid-candidate"
 path = "crates/quanta-index-contract/tests/hybrid_candidate_contract.rs"
 owner = "quanta-index-contract"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "contract-base-canonical-identity-v1"
+path = "crates/quanta-index-contract-base/tests/canonical_identity_v1.rs"
+owner = "quanta-index-contract-base"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "contract-repomap-layout-v3-contract"
+path = "crates/quanta-index-contract/tests/repomap_layout_v3_contract.rs"
+owner = "quanta-index-contract"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "contract-search-plane-error-code-v2"
+path = "crates/quanta-index-contract/tests/search_plane_error_code_v2.rs"
+owner = "quanta-index-contract"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "repomap-layout-v3-security"
+path = "crates/quanta-index-repomap/tests/layout_v3_security.rs"
+owner = "quanta-index-repomap"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]

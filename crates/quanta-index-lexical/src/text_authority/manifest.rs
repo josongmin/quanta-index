@@ -47,9 +47,6 @@ pub(crate) const TEXT_AUTHORITY_FORMAT_VERSION: u32 = 1;
 /// never exceed the pre-verify cap (100k), so every candidate cap is
 /// enforced on the union, exactly as over one index.
 pub(crate) const SHARD_DOCS: u64 = 2048;
-/// Typed refusal for a text authority written under another layout.
-pub(crate) const TEXT_AUTHORITY_FORMAT_UNSUPPORTED_CODE: &str =
-    "GENERATION_TEXT_AUTHORITY_FORMAT_UNSUPPORTED";
 /// Highest doc id the position engine can encode as a posting gap
 /// (`u32::MAX`; the first doc of a posting list is written as an absolute
 /// `u32` gap).
@@ -178,7 +175,8 @@ pub(crate) fn leading_format_version(
 
 fn format_unsupported(path: &Path, detail: &str) -> CoreError {
     CoreError::Typed {
-        code: TEXT_AUTHORITY_FORMAT_UNSUPPORTED_CODE.to_string(),
+        code:
+            quanta_index_contract::SearchPlaneErrorCodeV2::GenerationTextAuthorityFormatUnsupported,
         message: format!(
             "lexical: text authority {} {detail}; this build serves text-authority format {TEXT_AUTHORITY_FORMAT_VERSION} with {SHARD_DOCS} documents per shard, and the generation must be rebuilt, never reinterpreted",
             path.display()
@@ -373,9 +371,8 @@ pub(crate) fn read_manifest(
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_DOC_ID, ManifestRow, SHARD_DOCS, ShardEntry, TEXT_AUTHORITY_FORMAT_UNSUPPORTED_CODE,
-        TEXT_AUTHORITY_FORMAT_VERSION, TextAuthorityManifest, shard_doc_range, shard_file_name,
-        shard_index_of,
+        MAX_DOC_ID, ManifestRow, SHARD_DOCS, ShardEntry, TEXT_AUTHORITY_FORMAT_VERSION,
+        TextAuthorityManifest, shard_doc_range, shard_file_name, shard_index_of,
     };
     use quanta_index_core::CoreError;
     use std::path::Path;
@@ -391,7 +388,9 @@ mod tests {
         }
     }
 
-    fn typed_code(result: Result<TextAuthorityManifest, CoreError>) -> Option<String> {
+    fn typed_code(
+        result: Result<TextAuthorityManifest, CoreError>,
+    ) -> Option<quanta_index_contract::SearchPlaneErrorCodeV2> {
         match result {
             Err(CoreError::Typed { code, .. }) => Some(code),
             _ => None,
@@ -483,15 +482,15 @@ mod tests {
             let bytes = manifest.encode().expect("encode");
             let code = typed_code(TextAuthorityManifest::decode(&bytes, Path::new("/g1")));
             assert_eq!(
-                code.as_deref(),
-                Some("GENERATION_SIDECAR_CORRUPT"),
+                code,
+                Some(quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt),
                 "{label}"
             );
         }
     }
 
     /// The refusal code for a manifest row this build should not serve.
-    fn refusal_for(row: &ManifestRow) -> Option<String> {
+    fn refusal_for(row: &ManifestRow) -> Option<quanta_index_contract::SearchPlaneErrorCodeV2> {
         let bytes = crate::channel_payloads::encode_cbor(row, "test").expect("encode");
         typed_code(TextAuthorityManifest::decode(&bytes, Path::new("/g1")))
     }
@@ -500,8 +499,8 @@ mod tests {
     fn another_format_or_shard_size_is_refused_by_name() {
         let other_format: ManifestRow = (99, SHARD_DOCS, (0, 0), 0, Vec::new());
         assert_eq!(
-            refusal_for(&other_format).as_deref(),
-            Some(TEXT_AUTHORITY_FORMAT_UNSUPPORTED_CODE)
+            refusal_for(&other_format),
+            Some(quanta_index_contract::SearchPlaneErrorCodeV2::GenerationTextAuthorityFormatUnsupported)
         );
         let other_shard_size: ManifestRow = (
             TEXT_AUTHORITY_FORMAT_VERSION,
@@ -511,8 +510,8 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(
-            refusal_for(&other_shard_size).as_deref(),
-            Some(TEXT_AUTHORITY_FORMAT_UNSUPPORTED_CODE)
+            refusal_for(&other_shard_size),
+            Some(quanta_index_contract::SearchPlaneErrorCodeV2::GenerationTextAuthorityFormatUnsupported)
         );
     }
 
@@ -526,8 +525,8 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(
-            refusal_for(&stale).as_deref(),
-            Some("GENERATION_NORMALIZER_UNSUPPORTED")
+            refusal_for(&stale),
+            Some(quanta_index_contract::SearchPlaneErrorCodeV2::GenerationNormalizerUnsupported)
         );
     }
 }

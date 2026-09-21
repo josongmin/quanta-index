@@ -12,11 +12,13 @@ pub use quanta_index_contract::HistoryScoreError
 pub use quanta_index_contract::HistoryScoreV1
 pub use quanta_index_contract::INTERNAL_FETCH_CEILING
 pub use quanta_index_contract::INTERNAL_FETCH_OUT_OF_RANGE_CODE
+pub use quanta_index_contract::IdentityValidationErrorV1
 pub use quanta_index_contract::InternalFetchOutOfRangeV1
 pub use quanta_index_contract::LQ_VERSION_TAG
 pub use quanta_index_contract::LexicalCandidate
 pub use quanta_index_contract::LexicalCursor
 pub use quanta_index_contract::LexicalRowOrderKey
+pub use quanta_index_contract::LogicalGenerationIdentityV1
 pub use quanta_index_contract::LqCase
 pub use quanta_index_contract::LqCountBound
 pub use quanta_index_contract::LqDirective
@@ -51,6 +53,7 @@ pub use quanta_index_contract::QueryConstraintSetV1
 pub use quanta_index_contract::QueryResultWindowV1
 pub use quanta_index_contract::RepoId
 pub use quanta_index_contract::RepoRelativePath
+pub use quanta_index_contract::RepositoryRevisionIdentityV1
 pub use quanta_index_contract::RevisionId
 pub use quanta_index_contract::StructuralBinding
 pub use quanta_index_contract::StructuralCandidate
@@ -1114,6 +1117,218 @@ impl core::marker::Unpin for quanta_index_contract::SearchPlaneControlIpcRespons
 impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneControlIpcResponse
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneControlIpcResponse
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneControlIpcResponse
+pub enum quanta_index_contract::ipc::SearchPlaneErrorCodeV2
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::ActivationCasConflict
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::ActivationTargetNotSealed
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::ActivationTargetUnopenable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::AnnIndexIncompatible
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::AnnIndexMissing
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::AuxEpochExpired
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::AuxEpochUnknown
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::BatchDigestConflict
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::BatchDigestMismatch
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::CandidateCommitmentConflict
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::CandidateGenerationMustAdvanceExpectedActive
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::CandidateIdentityInvalid
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::CatalogBusy
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::CatalogRowCorrupt
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::CompositeActivationCasConflict
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::CursorContextMismatch
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::CursorExpired
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::CursorInvalid
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::DeltaBaseConflict
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::DeltaBaseUnresolved
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::FileContributorUnavailable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::FileOwnershipUnavailable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::FocusSubjectNotFound
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::GenerationIdentityIncomplete
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::GenerationIdentityScopeMismatch
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::GenerationImmutable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::GenerationManifestMissing
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::GenerationMismatch
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::GenerationNormalizerUnsupported
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::GenerationNotSealed
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::GenerationQuarantineContentCorrupt
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::GenerationQuarantineFormatUnsupported
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::GenerationQuarantineIdentityDigestMismatch
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::GenerationQuarantineIdentityUnreadable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::GenerationQuarantineNonCanonicalLayout
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::GenerationQuarantineOrphaned
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::GenerationQuarantineScopeMismatch
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::GenerationQuarantined
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::GenerationScrubReceiptInvalid
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::GenerationTextAuthorityFormatUnsupported
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::HistoryCursorOrderMismatch
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::HistoryGenerationNotReady
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::HistoryInvalidTimeref
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::HistoryProducerUnavailable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::HistoryRelevanceUnavailable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::HistoryRepoCommitRecencyUnavailable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::HistoryShardUnavailable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::HistoryTextIndexCorrupt
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::HistoryTextIndexForeignEntry
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::HistoryTextIndexNormalizerUnsupported
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::HistoryTextIndexNotReady
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::HistoryTextQueryUnscorable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::HybridFilterUnsupported
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::IdentityControlCharacter
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::IdentityEmpty
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::IdentityNonCanonical
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::IdentityTooLong
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::Internal
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::InvalidRequest
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LegacySemanticJournalChangedDuringMigration
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LegacySemanticJournalGenerationConflict
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LegacySemanticJournalImmutableAfterMigration
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LegacySemanticJournalManifestDigestMissing
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LegacySemanticJournalMissing
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LegacySemanticMigrationCustodyInvalid
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LegacySemanticMigrationDigestConflict
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LegacySemanticMigrationDurableGenerationDuplicate
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LegacySemanticMigrationDurableRootMissing
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LegacySemanticMigrationInputTooLarge
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LegacySemanticMigrationReceiptConflict
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LegacySemanticMigrationReceiptCorrupt
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LegacySemanticMigrationReceiptUnsupported
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexFilterArchivedUnavailable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexFilterAuthorUnavailable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexFilterCommitterUnavailable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexFilterConflictingSurface
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexFilterContextUnavailable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexFilterDirtyUnavailable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexFilterForkUnavailable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexFilterInvalidCount
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexFilterMessageUnavailable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexFilterRevUnavailable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexFilterRuntimeCatalogUnavailable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexFilterUnrouted
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexFilterUnsupportedCombo
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexFilterVisibilityUnavailable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexPhrasePlanLimitExceeded
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexPhrasePositionsIndexMissing
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexPlannerUnsupportedFilterCombo
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexPlannerUnsupportedNotScope
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexPlannerUnsupportedOrScope
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexPredicateUnimplemented
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexRawSubstringIndexMissing
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexRawSubstringTrigramIndexMissing
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexRegexBudgetExceeded
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexRegexDialectParseError
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexRegexDialectUnsupported
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexRegexExecutionInternal
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexRegexForbiddenSyntax
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexRegexInterrupted
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexRegexParseFail
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexRegexQueryTimeout
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexRegexRegexPrefilterUnusable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexRegexTrigramIndexMissing
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexTextQueryNoTokens
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexTextQueryTokenTooLong
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexTrigramPrefilterUnusable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::Lexical(quanta_index_contract::lex::error_code::LexicalErrorCode)
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LexicalExaminedBudgetExceeded
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::MetricsSourceDefect
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::NotFound
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::NotImplemented
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::NotReady
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::OperationFenceLost
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::OperationReplayFloor
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::ProcessMemoryEnvelopeExceeded
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::ProcessNotReady
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::ProcessRssCeilingExceeded
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::ProtocolVersionUnsupported
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::ProviderEgressDenied
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::QuarantineTargetStillReferenced
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::QueryCursorGenerationMismatch
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::QueryCursorUnsupported
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::ReadViewDomainUndeclared
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::ReadViewGenerationMix
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::RepoDescriptionUnavailable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::RepoMetaUnavailable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::RepoTopicUnavailable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::RequestCancelled
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::RequestDeadlineExceeded
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::ResultTooLarge
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::RollbackCasConflict
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::RollbackTargetUnopenable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::RuntimeCatalogChunkUniverseUnavailable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::RuntimeCatalogConflictingBatch
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::RuntimeCatalogHeadMissing
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::RuntimeCatalogNotReady
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::RuntimeCatalogStaleBatch
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::RuntimeCatalogUnknownDocId
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::RuntimeDirtyOnlyUnsupported
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::RuntimeInvalidScope
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::RuntimeNotReady
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SearchCorpusAuthorityConflict
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SearchCorpusDeltaBaseNotSealed
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SearchCorpusGenerationRepairRequired
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionPolicyInvalid
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SearchTrackGenerationNotSealed
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SearchTrackManifestDigestMismatch
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SemanticGenerationNotMaterialized
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SemanticGenerationNotSealed
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SemanticManifestDigestMismatch
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SemanticRowRootMismatch
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SemanticStreamOwnerScopeOverWindow
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SemanticStreamWindowExceeded
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SemanticStreamWindowStillResident
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SequenceExhausted
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::ServerOverloaded
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SnapshotUnknown
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::StateRootFormatUnsupported
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::StateRootInUse
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::StateRootInsecure
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::StateRootSecurityPolicyUnsupported
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::StrGenerationNotReady
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::StrInvalidRequest
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::StrProducerExecutionFailed
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::StrShardUnavailable
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::UnknownGeneration
+impl quanta_index_contract::SearchPlaneErrorCodeV2
+pub const quanta_index_contract::SearchPlaneErrorCodeV2::ALL: &'static [Self]
+pub const fn quanta_index_contract::SearchPlaneErrorCodeV2::as_wire_str(self) -> &'static str
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::from_wire_str(value: &str) -> core::option::Option<Self>
+impl core::clone::Clone for quanta_index_contract::SearchPlaneErrorCodeV2
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::clone(&self) -> quanta_index_contract::SearchPlaneErrorCodeV2
+impl core::cmp::Eq for quanta_index_contract::SearchPlaneErrorCodeV2
+impl core::cmp::Ord for quanta_index_contract::SearchPlaneErrorCodeV2
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::cmp(&self, other: &quanta_index_contract::SearchPlaneErrorCodeV2) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneErrorCodeV2
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::eq(&self, other: &quanta_index_contract::SearchPlaneErrorCodeV2) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::SearchPlaneErrorCodeV2
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::partial_cmp(&self, other: &quanta_index_contract::SearchPlaneErrorCodeV2) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<quanta_index_contract::lex::error_code::LexicalErrorCode> for quanta_index_contract::SearchPlaneErrorCodeV2
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::from(value: quanta_index_contract::lex::error_code::LexicalErrorCode) -> Self
+impl core::fmt::Debug for quanta_index_contract::SearchPlaneErrorCodeV2
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::SearchPlaneErrorCodeV2
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::SearchPlaneErrorCodeV2
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::SearchPlaneErrorCodeV2
+impl core::marker::StructuralPartialEq for quanta_index_contract::SearchPlaneErrorCodeV2
+impl serde_core::ser::Serialize for quanta_index_contract::SearchPlaneErrorCodeV2
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SearchPlaneErrorCodeV2
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::SearchPlaneErrorCodeV2
+impl core::marker::Send for quanta_index_contract::SearchPlaneErrorCodeV2
+impl core::marker::Sync for quanta_index_contract::SearchPlaneErrorCodeV2
+impl core::marker::Unpin for quanta_index_contract::SearchPlaneErrorCodeV2
+impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneErrorCodeV2
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneErrorCodeV2
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneErrorCodeV2
 pub enum quanta_index_contract::ipc::SearchPlaneIngestIpcRequest
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishDirtyBatch(quanta_index_contract::DirtyIngestBatch)
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishFileContributorBatch(quanta_index_contract::FileContributorIngestBatch)
@@ -2677,7 +2892,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneIngestIpcRe
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneIngestIpcResponseEnvelope
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneIngestIpcResponseEnvelope
 pub struct quanta_index_contract::ipc::SearchPlaneIpcError
-pub quanta_index_contract::ipc::SearchPlaneIpcError::code: alloc::string::String
+pub quanta_index_contract::ipc::SearchPlaneIpcError::code: quanta_index_contract::SearchPlaneErrorCodeV2
 pub quanta_index_contract::ipc::SearchPlaneIpcError::message: alloc::string::String
 pub quanta_index_contract::ipc::SearchPlaneIpcError::repair: core::option::Option<quanta_index_contract::QueryErrorRepair>
 impl quanta_index_contract::SearchPlaneIpcError
@@ -3146,8 +3361,8 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::TrackReadinessRecord
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::TrackReadinessRecord
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::TrackReadinessRecord
 pub const quanta_index_contract::ipc::BATCH_DIGEST_TOKEN_LEN_V1: usize
-pub const quanta_index_contract::ipc::ERR_RESULT_TOO_LARGE: &str
-pub const quanta_index_contract::ipc::ERR_SERVER_OVERLOADED: &str
+pub const quanta_index_contract::ipc::ERR_RESULT_TOO_LARGE: quanta_index_contract::SearchPlaneErrorCodeV2
+pub const quanta_index_contract::ipc::ERR_SERVER_OVERLOADED: quanta_index_contract::SearchPlaneErrorCodeV2
 pub const quanta_index_contract::ipc::INGEST_BATCH_DIGEST_DOMAIN_V1: &[u8]
 pub const quanta_index_contract::ipc::INGEST_BATCH_DIGEST_FIELD_SEPARATOR_V1: &[u8]
 pub fn quanta_index_contract::ipc::batch_digest_token_v1(digest: &[u8; 32]) -> alloc::string::String
@@ -3329,6 +3544,8 @@ impl core::cmp::PartialEq for quanta_index_contract::lex::error_code::LexicalErr
 pub fn quanta_index_contract::lex::error_code::LexicalErrorCode::eq(&self, other: &quanta_index_contract::lex::error_code::LexicalErrorCode) -> bool
 impl core::cmp::PartialOrd for quanta_index_contract::lex::error_code::LexicalErrorCode
 pub fn quanta_index_contract::lex::error_code::LexicalErrorCode::partial_cmp(&self, other: &quanta_index_contract::lex::error_code::LexicalErrorCode) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<quanta_index_contract::lex::error_code::LexicalErrorCode> for quanta_index_contract::SearchPlaneErrorCodeV2
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::from(value: quanta_index_contract::lex::error_code::LexicalErrorCode) -> Self
 impl core::fmt::Debug for quanta_index_contract::lex::error_code::LexicalErrorCode
 pub fn quanta_index_contract::lex::error_code::LexicalErrorCode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for quanta_index_contract::lex::error_code::LexicalErrorCode
@@ -3896,6 +4113,8 @@ impl core::cmp::PartialEq for quanta_index_contract::lex::error_code::LexicalErr
 pub fn quanta_index_contract::lex::error_code::LexicalErrorCode::eq(&self, other: &quanta_index_contract::lex::error_code::LexicalErrorCode) -> bool
 impl core::cmp::PartialOrd for quanta_index_contract::lex::error_code::LexicalErrorCode
 pub fn quanta_index_contract::lex::error_code::LexicalErrorCode::partial_cmp(&self, other: &quanta_index_contract::lex::error_code::LexicalErrorCode) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<quanta_index_contract::lex::error_code::LexicalErrorCode> for quanta_index_contract::SearchPlaneErrorCodeV2
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::from(value: quanta_index_contract::lex::error_code::LexicalErrorCode) -> Self
 impl core::fmt::Debug for quanta_index_contract::lex::error_code::LexicalErrorCode
 pub fn quanta_index_contract::lex::error_code::LexicalErrorCode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for quanta_index_contract::lex::error_code::LexicalErrorCode
@@ -5054,6 +5273,74 @@ pub const quanta_index_contract::query::MAX_CLUSTER_MEMBERSHIP_READ_V1: u32
 pub type quanta_index_contract::query::LqQuery = quanta_index_contract::TextQueryAst
 pub type quanta_index_contract::query::TextQueryAst = quanta_index_lq_norm::ast::LqNormalizedQuery
 pub mod quanta_index_contract::repomap
+pub enum quanta_index_contract::repomap::CanonicalRepoMapCodecErrorV1
+pub quanta_index_contract::repomap::CanonicalRepoMapCodecErrorV1::ArtifactBindingMismatch
+pub quanta_index_contract::repomap::CanonicalRepoMapCodecErrorV1::EvidenceBindingMismatch
+pub quanta_index_contract::repomap::CanonicalRepoMapCodecErrorV1::Identity(quanta_index_contract_base::ids::IdentityValidationErrorV1)
+pub quanta_index_contract::repomap::CanonicalRepoMapCodecErrorV1::InvalidDigestText
+pub quanta_index_contract::repomap::CanonicalRepoMapCodecErrorV1::InvalidUtf8
+pub quanta_index_contract::repomap::CanonicalRepoMapCodecErrorV1::InvalidValue(&'static str)
+pub quanta_index_contract::repomap::CanonicalRepoMapCodecErrorV1::LengthOutOfRange
+pub quanta_index_contract::repomap::CanonicalRepoMapCodecErrorV1::NonCanonicalInteger
+pub quanta_index_contract::repomap::CanonicalRepoMapCodecErrorV1::TrailingBytes
+pub quanta_index_contract::repomap::CanonicalRepoMapCodecErrorV1::UnexpectedEnd
+pub quanta_index_contract::repomap::CanonicalRepoMapCodecErrorV1::WrongType(&'static str)
+impl core::clone::Clone for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+pub fn quanta_index_contract::CanonicalRepoMapCodecErrorV1::clone(&self) -> quanta_index_contract::CanonicalRepoMapCodecErrorV1
+impl core::cmp::Eq for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+impl core::cmp::PartialEq for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+pub fn quanta_index_contract::CanonicalRepoMapCodecErrorV1::eq(&self, other: &quanta_index_contract::CanonicalRepoMapCodecErrorV1) -> bool
+impl core::convert::From<quanta_index_contract_base::ids::IdentityValidationErrorV1> for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+pub fn quanta_index_contract::CanonicalRepoMapCodecErrorV1::from(error: quanta_index_contract_base::ids::IdentityValidationErrorV1) -> Self
+impl core::error::Error for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+impl core::fmt::Debug for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+pub fn quanta_index_contract::CanonicalRepoMapCodecErrorV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+pub fn quanta_index_contract::CanonicalRepoMapCodecErrorV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+impl core::marker::Freeze for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+impl core::marker::Send for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+impl core::marker::Sync for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+impl core::marker::Unpin for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+#[repr(u8)] pub enum quanta_index_contract::repomap::QuarantineReasonCodeV1
+pub quanta_index_contract::repomap::QuarantineReasonCodeV1::AddressDigestMismatch = 1
+pub quanta_index_contract::repomap::QuarantineReasonCodeV1::EnvelopeDecodeFailed = 3
+pub quanta_index_contract::repomap::QuarantineReasonCodeV1::HardlinkEncountered = 7
+pub quanta_index_contract::repomap::QuarantineReasonCodeV1::LogicalIdentityMismatch = 4
+pub quanta_index_contract::repomap::QuarantineReasonCodeV1::NonCanonicalEnvelope = 2
+pub quanta_index_contract::repomap::QuarantineReasonCodeV1::NonCanonicalSourceAddress = 9
+pub quanta_index_contract::repomap::QuarantineReasonCodeV1::SecureIoUnavailable = 8
+pub quanta_index_contract::repomap::QuarantineReasonCodeV1::SymlinkEncountered = 6
+pub quanta_index_contract::repomap::QuarantineReasonCodeV1::UnsafeFilesystemMetadata = 5
+pub quanta_index_contract::repomap::QuarantineReasonCodeV1::UnsupportedPersistedFormat = 10
+impl quanta_index_contract::QuarantineReasonCodeV1
+pub const quanta_index_contract::QuarantineReasonCodeV1::ALL: [Self; 10]
+pub const fn quanta_index_contract::QuarantineReasonCodeV1::code(self) -> u8
+impl core::clone::Clone for quanta_index_contract::QuarantineReasonCodeV1
+pub fn quanta_index_contract::QuarantineReasonCodeV1::clone(&self) -> quanta_index_contract::QuarantineReasonCodeV1
+impl core::cmp::Eq for quanta_index_contract::QuarantineReasonCodeV1
+impl core::cmp::Ord for quanta_index_contract::QuarantineReasonCodeV1
+pub fn quanta_index_contract::QuarantineReasonCodeV1::cmp(&self, other: &quanta_index_contract::QuarantineReasonCodeV1) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::QuarantineReasonCodeV1
+pub fn quanta_index_contract::QuarantineReasonCodeV1::eq(&self, other: &quanta_index_contract::QuarantineReasonCodeV1) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::QuarantineReasonCodeV1
+pub fn quanta_index_contract::QuarantineReasonCodeV1::partial_cmp(&self, other: &quanta_index_contract::QuarantineReasonCodeV1) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for quanta_index_contract::QuarantineReasonCodeV1
+pub fn quanta_index_contract::QuarantineReasonCodeV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::QuarantineReasonCodeV1
+pub fn quanta_index_contract::QuarantineReasonCodeV1::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::QuarantineReasonCodeV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantineReasonCodeV1
+impl core::marker::Freeze for quanta_index_contract::QuarantineReasonCodeV1
+impl core::marker::Send for quanta_index_contract::QuarantineReasonCodeV1
+impl core::marker::Sync for quanta_index_contract::QuarantineReasonCodeV1
+impl core::marker::Unpin for quanta_index_contract::QuarantineReasonCodeV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineReasonCodeV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineReasonCodeV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineReasonCodeV1
 pub enum quanta_index_contract::repomap::RepoMapChunkExactness
 pub quanta_index_contract::repomap::RepoMapChunkExactness::Approximate
 pub quanta_index_contract::repomap::RepoMapChunkExactness::Exact
@@ -5359,6 +5646,290 @@ impl core::marker::Unpin for quanta_index_contract::RepoMapRedactionState
 impl core::marker::UnsafeUnpin for quanta_index_contract::RepoMapRedactionState
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RepoMapRedactionState
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RepoMapRedactionState
+pub struct quanta_index_contract::repomap::ArtifactContentDigestV1(_)
+impl quanta_index_contract::ArtifactContentDigestV1
+pub const fn quanta_index_contract::ArtifactContentDigestV1::as_bytes(&self) -> &[u8; 32]
+pub const fn quanta_index_contract::ArtifactContentDigestV1::from_bytes(bytes: [u8; 32]) -> Self
+pub fn quanta_index_contract::ArtifactContentDigestV1::from_wire_str(value: &str) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::ArtifactContentDigestV1::to_wire_string(self) -> alloc::string::String
+impl quanta_index_contract::ArtifactContentDigestV1
+pub fn quanta_index_contract::ArtifactContentDigestV1::for_payload(payload: &[u8]) -> Self
+impl core::clone::Clone for quanta_index_contract::ArtifactContentDigestV1
+pub fn quanta_index_contract::ArtifactContentDigestV1::clone(&self) -> quanta_index_contract::ArtifactContentDigestV1
+impl core::cmp::Eq for quanta_index_contract::ArtifactContentDigestV1
+impl core::cmp::Ord for quanta_index_contract::ArtifactContentDigestV1
+pub fn quanta_index_contract::ArtifactContentDigestV1::cmp(&self, other: &quanta_index_contract::ArtifactContentDigestV1) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::ArtifactContentDigestV1
+pub fn quanta_index_contract::ArtifactContentDigestV1::eq(&self, other: &quanta_index_contract::ArtifactContentDigestV1) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::ArtifactContentDigestV1
+pub fn quanta_index_contract::ArtifactContentDigestV1::partial_cmp(&self, other: &quanta_index_contract::ArtifactContentDigestV1) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for quanta_index_contract::ArtifactContentDigestV1
+pub fn quanta_index_contract::ArtifactContentDigestV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::ArtifactContentDigestV1
+pub fn quanta_index_contract::ArtifactContentDigestV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::ArtifactContentDigestV1
+pub fn quanta_index_contract::ArtifactContentDigestV1::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::ArtifactContentDigestV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::ArtifactContentDigestV1
+impl core::marker::Freeze for quanta_index_contract::ArtifactContentDigestV1
+impl core::marker::Send for quanta_index_contract::ArtifactContentDigestV1
+impl core::marker::Sync for quanta_index_contract::ArtifactContentDigestV1
+impl core::marker::Unpin for quanta_index_contract::ArtifactContentDigestV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ArtifactContentDigestV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ArtifactContentDigestV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ArtifactContentDigestV1
+pub struct quanta_index_contract::repomap::ArtifactIdentityCommitmentV1(_)
+impl quanta_index_contract::ArtifactIdentityCommitmentV1
+pub const fn quanta_index_contract::ArtifactIdentityCommitmentV1::as_bytes(&self) -> &[u8; 32]
+pub const fn quanta_index_contract::ArtifactIdentityCommitmentV1::from_bytes(bytes: [u8; 32]) -> Self
+pub fn quanta_index_contract::ArtifactIdentityCommitmentV1::from_wire_str(value: &str) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::ArtifactIdentityCommitmentV1::to_wire_string(self) -> alloc::string::String
+impl core::clone::Clone for quanta_index_contract::ArtifactIdentityCommitmentV1
+pub fn quanta_index_contract::ArtifactIdentityCommitmentV1::clone(&self) -> quanta_index_contract::ArtifactIdentityCommitmentV1
+impl core::cmp::Eq for quanta_index_contract::ArtifactIdentityCommitmentV1
+impl core::cmp::Ord for quanta_index_contract::ArtifactIdentityCommitmentV1
+pub fn quanta_index_contract::ArtifactIdentityCommitmentV1::cmp(&self, other: &quanta_index_contract::ArtifactIdentityCommitmentV1) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::ArtifactIdentityCommitmentV1
+pub fn quanta_index_contract::ArtifactIdentityCommitmentV1::eq(&self, other: &quanta_index_contract::ArtifactIdentityCommitmentV1) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::ArtifactIdentityCommitmentV1
+pub fn quanta_index_contract::ArtifactIdentityCommitmentV1::partial_cmp(&self, other: &quanta_index_contract::ArtifactIdentityCommitmentV1) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for quanta_index_contract::ArtifactIdentityCommitmentV1
+pub fn quanta_index_contract::ArtifactIdentityCommitmentV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::ArtifactIdentityCommitmentV1
+pub fn quanta_index_contract::ArtifactIdentityCommitmentV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::ArtifactIdentityCommitmentV1
+pub fn quanta_index_contract::ArtifactIdentityCommitmentV1::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::ArtifactIdentityCommitmentV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::ArtifactIdentityCommitmentV1
+impl core::marker::Freeze for quanta_index_contract::ArtifactIdentityCommitmentV1
+impl core::marker::Send for quanta_index_contract::ArtifactIdentityCommitmentV1
+impl core::marker::Sync for quanta_index_contract::ArtifactIdentityCommitmentV1
+impl core::marker::Unpin for quanta_index_contract::ArtifactIdentityCommitmentV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ArtifactIdentityCommitmentV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ArtifactIdentityCommitmentV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ArtifactIdentityCommitmentV1
+pub struct quanta_index_contract::repomap::ArtifactIdentityV1
+impl quanta_index_contract::ArtifactIdentityV1
+pub const fn quanta_index_contract::ArtifactIdentityV1::byte_size(&self) -> u64
+pub fn quanta_index_contract::ArtifactIdentityV1::commitment(&self) -> core::result::Result<quanta_index_contract::ArtifactIdentityCommitmentV1, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub const fn quanta_index_contract::ArtifactIdentityV1::content_digest(&self) -> quanta_index_contract::ArtifactContentDigestV1
+pub fn quanta_index_contract::ArtifactIdentityV1::decode_canonical(bytes: &[u8]) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::ArtifactIdentityV1::encode_canonical(&self) -> core::result::Result<alloc::vec::Vec<u8>, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub const fn quanta_index_contract::ArtifactIdentityV1::logical_identity(&self) -> &quanta_index_contract_base::ids::LogicalGenerationIdentityV1
+pub const fn quanta_index_contract::ArtifactIdentityV1::new(logical_identity: quanta_index_contract_base::ids::LogicalGenerationIdentityV1, content_digest: quanta_index_contract::ArtifactContentDigestV1, byte_size: u64) -> Self
+impl core::clone::Clone for quanta_index_contract::ArtifactIdentityV1
+pub fn quanta_index_contract::ArtifactIdentityV1::clone(&self) -> quanta_index_contract::ArtifactIdentityV1
+impl core::cmp::Eq for quanta_index_contract::ArtifactIdentityV1
+impl core::cmp::PartialEq for quanta_index_contract::ArtifactIdentityV1
+pub fn quanta_index_contract::ArtifactIdentityV1::eq(&self, other: &quanta_index_contract::ArtifactIdentityV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::ArtifactIdentityV1
+pub fn quanta_index_contract::ArtifactIdentityV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::ArtifactIdentityV1
+impl core::marker::Freeze for quanta_index_contract::ArtifactIdentityV1
+impl core::marker::Send for quanta_index_contract::ArtifactIdentityV1
+impl core::marker::Sync for quanta_index_contract::ArtifactIdentityV1
+impl core::marker::Unpin for quanta_index_contract::ArtifactIdentityV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ArtifactIdentityV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ArtifactIdentityV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ArtifactIdentityV1
+pub struct quanta_index_contract::repomap::CandidateCommitmentV1(_)
+impl quanta_index_contract::CandidateCommitmentV1
+pub const fn quanta_index_contract::CandidateCommitmentV1::as_bytes(&self) -> &[u8; 32]
+pub const fn quanta_index_contract::CandidateCommitmentV1::from_bytes(bytes: [u8; 32]) -> Self
+pub fn quanta_index_contract::CandidateCommitmentV1::from_wire_str(value: &str) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::CandidateCommitmentV1::to_wire_string(self) -> alloc::string::String
+impl core::clone::Clone for quanta_index_contract::CandidateCommitmentV1
+pub fn quanta_index_contract::CandidateCommitmentV1::clone(&self) -> quanta_index_contract::CandidateCommitmentV1
+impl core::cmp::Eq for quanta_index_contract::CandidateCommitmentV1
+impl core::cmp::Ord for quanta_index_contract::CandidateCommitmentV1
+pub fn quanta_index_contract::CandidateCommitmentV1::cmp(&self, other: &quanta_index_contract::CandidateCommitmentV1) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::CandidateCommitmentV1
+pub fn quanta_index_contract::CandidateCommitmentV1::eq(&self, other: &quanta_index_contract::CandidateCommitmentV1) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::CandidateCommitmentV1
+pub fn quanta_index_contract::CandidateCommitmentV1::partial_cmp(&self, other: &quanta_index_contract::CandidateCommitmentV1) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for quanta_index_contract::CandidateCommitmentV1
+pub fn quanta_index_contract::CandidateCommitmentV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::CandidateCommitmentV1
+pub fn quanta_index_contract::CandidateCommitmentV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::CandidateCommitmentV1
+pub fn quanta_index_contract::CandidateCommitmentV1::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::CandidateCommitmentV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::CandidateCommitmentV1
+impl core::marker::Freeze for quanta_index_contract::CandidateCommitmentV1
+impl core::marker::Send for quanta_index_contract::CandidateCommitmentV1
+impl core::marker::Sync for quanta_index_contract::CandidateCommitmentV1
+impl core::marker::Unpin for quanta_index_contract::CandidateCommitmentV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::CandidateCommitmentV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::CandidateCommitmentV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::CandidateCommitmentV1
+pub struct quanta_index_contract::repomap::CandidateObjectDigestV1(_)
+impl quanta_index_contract::CandidateObjectDigestV1
+pub const fn quanta_index_contract::CandidateObjectDigestV1::as_bytes(&self) -> &[u8; 32]
+pub const fn quanta_index_contract::CandidateObjectDigestV1::from_bytes(bytes: [u8; 32]) -> Self
+pub fn quanta_index_contract::CandidateObjectDigestV1::from_wire_str(value: &str) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::CandidateObjectDigestV1::to_wire_string(self) -> alloc::string::String
+impl quanta_index_contract::CandidateObjectDigestV1
+pub fn quanta_index_contract::CandidateObjectDigestV1::for_canonical_envelope(bytes: &[u8]) -> Self
+impl core::clone::Clone for quanta_index_contract::CandidateObjectDigestV1
+pub fn quanta_index_contract::CandidateObjectDigestV1::clone(&self) -> quanta_index_contract::CandidateObjectDigestV1
+impl core::cmp::Eq for quanta_index_contract::CandidateObjectDigestV1
+impl core::cmp::Ord for quanta_index_contract::CandidateObjectDigestV1
+pub fn quanta_index_contract::CandidateObjectDigestV1::cmp(&self, other: &quanta_index_contract::CandidateObjectDigestV1) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::CandidateObjectDigestV1
+pub fn quanta_index_contract::CandidateObjectDigestV1::eq(&self, other: &quanta_index_contract::CandidateObjectDigestV1) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::CandidateObjectDigestV1
+pub fn quanta_index_contract::CandidateObjectDigestV1::partial_cmp(&self, other: &quanta_index_contract::CandidateObjectDigestV1) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for quanta_index_contract::CandidateObjectDigestV1
+pub fn quanta_index_contract::CandidateObjectDigestV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::CandidateObjectDigestV1
+pub fn quanta_index_contract::CandidateObjectDigestV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::CandidateObjectDigestV1
+pub fn quanta_index_contract::CandidateObjectDigestV1::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::CandidateObjectDigestV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::CandidateObjectDigestV1
+impl core::marker::Freeze for quanta_index_contract::CandidateObjectDigestV1
+impl core::marker::Send for quanta_index_contract::CandidateObjectDigestV1
+impl core::marker::Sync for quanta_index_contract::CandidateObjectDigestV1
+impl core::marker::Unpin for quanta_index_contract::CandidateObjectDigestV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::CandidateObjectDigestV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::CandidateObjectDigestV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::CandidateObjectDigestV1
+pub struct quanta_index_contract::repomap::QuarantineIncidentDigestV1(_)
+impl quanta_index_contract::QuarantineIncidentDigestV1
+pub const fn quanta_index_contract::QuarantineIncidentDigestV1::as_bytes(&self) -> &[u8; 32]
+pub const fn quanta_index_contract::QuarantineIncidentDigestV1::from_bytes(bytes: [u8; 32]) -> Self
+pub fn quanta_index_contract::QuarantineIncidentDigestV1::from_wire_str(value: &str) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::QuarantineIncidentDigestV1::to_wire_string(self) -> alloc::string::String
+impl core::clone::Clone for quanta_index_contract::QuarantineIncidentDigestV1
+pub fn quanta_index_contract::QuarantineIncidentDigestV1::clone(&self) -> quanta_index_contract::QuarantineIncidentDigestV1
+impl core::cmp::Eq for quanta_index_contract::QuarantineIncidentDigestV1
+impl core::cmp::Ord for quanta_index_contract::QuarantineIncidentDigestV1
+pub fn quanta_index_contract::QuarantineIncidentDigestV1::cmp(&self, other: &quanta_index_contract::QuarantineIncidentDigestV1) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::QuarantineIncidentDigestV1
+pub fn quanta_index_contract::QuarantineIncidentDigestV1::eq(&self, other: &quanta_index_contract::QuarantineIncidentDigestV1) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::QuarantineIncidentDigestV1
+pub fn quanta_index_contract::QuarantineIncidentDigestV1::partial_cmp(&self, other: &quanta_index_contract::QuarantineIncidentDigestV1) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for quanta_index_contract::QuarantineIncidentDigestV1
+pub fn quanta_index_contract::QuarantineIncidentDigestV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::QuarantineIncidentDigestV1
+pub fn quanta_index_contract::QuarantineIncidentDigestV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::QuarantineIncidentDigestV1
+pub fn quanta_index_contract::QuarantineIncidentDigestV1::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::QuarantineIncidentDigestV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantineIncidentDigestV1
+impl core::marker::Freeze for quanta_index_contract::QuarantineIncidentDigestV1
+impl core::marker::Send for quanta_index_contract::QuarantineIncidentDigestV1
+impl core::marker::Sync for quanta_index_contract::QuarantineIncidentDigestV1
+impl core::marker::Unpin for quanta_index_contract::QuarantineIncidentDigestV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineIncidentDigestV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineIncidentDigestV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineIncidentDigestV1
+pub struct quanta_index_contract::repomap::QuarantineIncidentV1
+impl quanta_index_contract::QuarantineIncidentV1
+pub fn quanta_index_contract::QuarantineIncidentV1::decode_canonical(bytes: &[u8]) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::QuarantineIncidentV1::digest(&self) -> core::result::Result<quanta_index_contract::QuarantineIncidentDigestV1, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::QuarantineIncidentV1::encode_canonical(&self) -> core::result::Result<alloc::vec::Vec<u8>, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub const fn quanta_index_contract::QuarantineIncidentV1::evidence(&self) -> &quanta_index_contract::QuarantineObservationEvidenceV1
+pub fn quanta_index_contract::QuarantineIncidentV1::new(sequence: u64, observed_at_unix_nanos: u64, evidence: quanta_index_contract::QuarantineObservationEvidenceV1) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub const fn quanta_index_contract::QuarantineIncidentV1::sequence(&self) -> u64
+impl core::clone::Clone for quanta_index_contract::QuarantineIncidentV1
+pub fn quanta_index_contract::QuarantineIncidentV1::clone(&self) -> quanta_index_contract::QuarantineIncidentV1
+impl core::cmp::Eq for quanta_index_contract::QuarantineIncidentV1
+impl core::cmp::PartialEq for quanta_index_contract::QuarantineIncidentV1
+pub fn quanta_index_contract::QuarantineIncidentV1::eq(&self, other: &quanta_index_contract::QuarantineIncidentV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::QuarantineIncidentV1
+pub fn quanta_index_contract::QuarantineIncidentV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantineIncidentV1
+impl core::marker::Freeze for quanta_index_contract::QuarantineIncidentV1
+impl core::marker::Send for quanta_index_contract::QuarantineIncidentV1
+impl core::marker::Sync for quanta_index_contract::QuarantineIncidentV1
+impl core::marker::Unpin for quanta_index_contract::QuarantineIncidentV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineIncidentV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineIncidentV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineIncidentV1
+pub struct quanta_index_contract::repomap::QuarantineObservationDigestV1(_)
+impl quanta_index_contract::QuarantineObservationDigestV1
+pub const fn quanta_index_contract::QuarantineObservationDigestV1::as_bytes(&self) -> &[u8; 32]
+pub const fn quanta_index_contract::QuarantineObservationDigestV1::from_bytes(bytes: [u8; 32]) -> Self
+pub fn quanta_index_contract::QuarantineObservationDigestV1::from_wire_str(value: &str) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::QuarantineObservationDigestV1::to_wire_string(self) -> alloc::string::String
+impl core::clone::Clone for quanta_index_contract::QuarantineObservationDigestV1
+pub fn quanta_index_contract::QuarantineObservationDigestV1::clone(&self) -> quanta_index_contract::QuarantineObservationDigestV1
+impl core::cmp::Eq for quanta_index_contract::QuarantineObservationDigestV1
+impl core::cmp::Ord for quanta_index_contract::QuarantineObservationDigestV1
+pub fn quanta_index_contract::QuarantineObservationDigestV1::cmp(&self, other: &quanta_index_contract::QuarantineObservationDigestV1) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::QuarantineObservationDigestV1
+pub fn quanta_index_contract::QuarantineObservationDigestV1::eq(&self, other: &quanta_index_contract::QuarantineObservationDigestV1) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::QuarantineObservationDigestV1
+pub fn quanta_index_contract::QuarantineObservationDigestV1::partial_cmp(&self, other: &quanta_index_contract::QuarantineObservationDigestV1) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for quanta_index_contract::QuarantineObservationDigestV1
+pub fn quanta_index_contract::QuarantineObservationDigestV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::QuarantineObservationDigestV1
+pub fn quanta_index_contract::QuarantineObservationDigestV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::QuarantineObservationDigestV1
+pub fn quanta_index_contract::QuarantineObservationDigestV1::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::QuarantineObservationDigestV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantineObservationDigestV1
+impl core::marker::Freeze for quanta_index_contract::QuarantineObservationDigestV1
+impl core::marker::Send for quanta_index_contract::QuarantineObservationDigestV1
+impl core::marker::Sync for quanta_index_contract::QuarantineObservationDigestV1
+impl core::marker::Unpin for quanta_index_contract::QuarantineObservationDigestV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineObservationDigestV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineObservationDigestV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineObservationDigestV1
+pub struct quanta_index_contract::repomap::QuarantineObservationEvidenceV1
+impl quanta_index_contract::QuarantineObservationEvidenceV1
+pub fn quanta_index_contract::QuarantineObservationEvidenceV1::decode_canonical(bytes: &[u8]) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::QuarantineObservationEvidenceV1::digest(&self) -> core::result::Result<quanta_index_contract::QuarantineObservationDigestV1, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::QuarantineObservationEvidenceV1::encode_canonical(&self) -> core::result::Result<alloc::vec::Vec<u8>, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::QuarantineObservationEvidenceV1::new(raw_relative_path_components: alloc::vec::Vec<alloc::vec::Vec<u8>>, observed_byte_size: core::option::Option<u64>, raw_payload_digest: core::option::Option<quanta_index_contract::QuarantinePayloadDigestV1>, encoded_address_digest: core::option::Option<quanta_index_contract::CandidateObjectDigestV1>, reason: quanta_index_contract::QuarantineReasonCodeV1, state_root_uuid_commitment: quanta_index_contract::StateRootUuidCommitmentV1) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+impl core::clone::Clone for quanta_index_contract::QuarantineObservationEvidenceV1
+pub fn quanta_index_contract::QuarantineObservationEvidenceV1::clone(&self) -> quanta_index_contract::QuarantineObservationEvidenceV1
+impl core::cmp::Eq for quanta_index_contract::QuarantineObservationEvidenceV1
+impl core::cmp::PartialEq for quanta_index_contract::QuarantineObservationEvidenceV1
+pub fn quanta_index_contract::QuarantineObservationEvidenceV1::eq(&self, other: &quanta_index_contract::QuarantineObservationEvidenceV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::QuarantineObservationEvidenceV1
+pub fn quanta_index_contract::QuarantineObservationEvidenceV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantineObservationEvidenceV1
+impl core::marker::Freeze for quanta_index_contract::QuarantineObservationEvidenceV1
+impl core::marker::Send for quanta_index_contract::QuarantineObservationEvidenceV1
+impl core::marker::Sync for quanta_index_contract::QuarantineObservationEvidenceV1
+impl core::marker::Unpin for quanta_index_contract::QuarantineObservationEvidenceV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineObservationEvidenceV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineObservationEvidenceV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineObservationEvidenceV1
+pub struct quanta_index_contract::repomap::QuarantinePayloadDigestV1(_)
+impl quanta_index_contract::QuarantinePayloadDigestV1
+pub const fn quanta_index_contract::QuarantinePayloadDigestV1::as_bytes(&self) -> &[u8; 32]
+pub const fn quanta_index_contract::QuarantinePayloadDigestV1::from_bytes(bytes: [u8; 32]) -> Self
+pub fn quanta_index_contract::QuarantinePayloadDigestV1::from_wire_str(value: &str) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::QuarantinePayloadDigestV1::to_wire_string(self) -> alloc::string::String
+impl quanta_index_contract::QuarantinePayloadDigestV1
+pub fn quanta_index_contract::QuarantinePayloadDigestV1::for_payload(payload: &[u8]) -> Self
+impl core::clone::Clone for quanta_index_contract::QuarantinePayloadDigestV1
+pub fn quanta_index_contract::QuarantinePayloadDigestV1::clone(&self) -> quanta_index_contract::QuarantinePayloadDigestV1
+impl core::cmp::Eq for quanta_index_contract::QuarantinePayloadDigestV1
+impl core::cmp::Ord for quanta_index_contract::QuarantinePayloadDigestV1
+pub fn quanta_index_contract::QuarantinePayloadDigestV1::cmp(&self, other: &quanta_index_contract::QuarantinePayloadDigestV1) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::QuarantinePayloadDigestV1
+pub fn quanta_index_contract::QuarantinePayloadDigestV1::eq(&self, other: &quanta_index_contract::QuarantinePayloadDigestV1) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::QuarantinePayloadDigestV1
+pub fn quanta_index_contract::QuarantinePayloadDigestV1::partial_cmp(&self, other: &quanta_index_contract::QuarantinePayloadDigestV1) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for quanta_index_contract::QuarantinePayloadDigestV1
+pub fn quanta_index_contract::QuarantinePayloadDigestV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::QuarantinePayloadDigestV1
+pub fn quanta_index_contract::QuarantinePayloadDigestV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::QuarantinePayloadDigestV1
+pub fn quanta_index_contract::QuarantinePayloadDigestV1::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::QuarantinePayloadDigestV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantinePayloadDigestV1
+impl core::marker::Freeze for quanta_index_contract::QuarantinePayloadDigestV1
+impl core::marker::Send for quanta_index_contract::QuarantinePayloadDigestV1
+impl core::marker::Sync for quanta_index_contract::QuarantinePayloadDigestV1
+impl core::marker::Unpin for quanta_index_contract::QuarantinePayloadDigestV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantinePayloadDigestV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantinePayloadDigestV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantinePayloadDigestV1
 pub struct quanta_index_contract::repomap::RepoMapActivateGenerationRequest
 pub quanta_index_contract::repomap::RepoMapActivateGenerationRequest::manifest_digest: alloc::string::String
 pub quanta_index_contract::repomap::RepoMapActivateGenerationRequest::manifest_generation: quanta_index_contract_base::ids::ManifestGeneration
@@ -5405,6 +5976,53 @@ impl core::marker::Unpin for quanta_index_contract::RepoMapCallEdge
 impl core::marker::UnsafeUnpin for quanta_index_contract::RepoMapCallEdge
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RepoMapCallEdge
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RepoMapCallEdge
+pub struct quanta_index_contract::repomap::RepoMapCandidateCommitmentsV1
+pub quanta_index_contract::repomap::RepoMapCandidateCommitmentsV1::compiled_graph: [u8; 32]
+pub quanta_index_contract::repomap::RepoMapCandidateCommitmentsV1::producer_authority: [u8; 32]
+pub quanta_index_contract::repomap::RepoMapCandidateCommitmentsV1::producer_manifest: [u8; 32]
+pub quanta_index_contract::repomap::RepoMapCandidateCommitmentsV1::projection_profile: [u8; 32]
+pub quanta_index_contract::repomap::RepoMapCandidateCommitmentsV1::schema: [u8; 32]
+impl core::clone::Clone for quanta_index_contract::RepoMapCandidateCommitmentsV1
+pub fn quanta_index_contract::RepoMapCandidateCommitmentsV1::clone(&self) -> quanta_index_contract::RepoMapCandidateCommitmentsV1
+impl core::cmp::Eq for quanta_index_contract::RepoMapCandidateCommitmentsV1
+impl core::cmp::PartialEq for quanta_index_contract::RepoMapCandidateCommitmentsV1
+pub fn quanta_index_contract::RepoMapCandidateCommitmentsV1::eq(&self, other: &quanta_index_contract::RepoMapCandidateCommitmentsV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::RepoMapCandidateCommitmentsV1
+pub fn quanta_index_contract::RepoMapCandidateCommitmentsV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::RepoMapCandidateCommitmentsV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::RepoMapCandidateCommitmentsV1
+impl core::marker::Freeze for quanta_index_contract::RepoMapCandidateCommitmentsV1
+impl core::marker::Send for quanta_index_contract::RepoMapCandidateCommitmentsV1
+impl core::marker::Sync for quanta_index_contract::RepoMapCandidateCommitmentsV1
+impl core::marker::Unpin for quanta_index_contract::RepoMapCandidateCommitmentsV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::RepoMapCandidateCommitmentsV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RepoMapCandidateCommitmentsV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RepoMapCandidateCommitmentsV1
+pub struct quanta_index_contract::repomap::RepoMapCandidateEnvelopeV1
+impl quanta_index_contract::RepoMapCandidateEnvelopeV1
+pub const fn quanta_index_contract::RepoMapCandidateEnvelopeV1::artifact(&self) -> &quanta_index_contract::ArtifactIdentityV1
+pub fn quanta_index_contract::RepoMapCandidateEnvelopeV1::commitment(&self) -> core::result::Result<quanta_index_contract::CandidateCommitmentV1, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::RepoMapCandidateEnvelopeV1::compiled_payload(&self) -> &[u8]
+pub fn quanta_index_contract::RepoMapCandidateEnvelopeV1::decode_canonical(bytes: &[u8]) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::RepoMapCandidateEnvelopeV1::encode_canonical(&self) -> core::result::Result<alloc::vec::Vec<u8>, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub const fn quanta_index_contract::RepoMapCandidateEnvelopeV1::logical_identity(&self) -> &quanta_index_contract_base::ids::LogicalGenerationIdentityV1
+pub fn quanta_index_contract::RepoMapCandidateEnvelopeV1::new(logical_identity: quanta_index_contract_base::ids::LogicalGenerationIdentityV1, commitments: quanta_index_contract::RepoMapCandidateCommitmentsV1, artifact: quanta_index_contract::ArtifactIdentityV1, compiled_payload: alloc::vec::Vec<u8>) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::RepoMapCandidateEnvelopeV1::object_digest(&self) -> core::result::Result<quanta_index_contract::CandidateObjectDigestV1, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+impl core::clone::Clone for quanta_index_contract::RepoMapCandidateEnvelopeV1
+pub fn quanta_index_contract::RepoMapCandidateEnvelopeV1::clone(&self) -> quanta_index_contract::RepoMapCandidateEnvelopeV1
+impl core::cmp::Eq for quanta_index_contract::RepoMapCandidateEnvelopeV1
+impl core::cmp::PartialEq for quanta_index_contract::RepoMapCandidateEnvelopeV1
+pub fn quanta_index_contract::RepoMapCandidateEnvelopeV1::eq(&self, other: &quanta_index_contract::RepoMapCandidateEnvelopeV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::RepoMapCandidateEnvelopeV1
+pub fn quanta_index_contract::RepoMapCandidateEnvelopeV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::RepoMapCandidateEnvelopeV1
+impl core::marker::Freeze for quanta_index_contract::RepoMapCandidateEnvelopeV1
+impl core::marker::Send for quanta_index_contract::RepoMapCandidateEnvelopeV1
+impl core::marker::Sync for quanta_index_contract::RepoMapCandidateEnvelopeV1
+impl core::marker::Unpin for quanta_index_contract::RepoMapCandidateEnvelopeV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::RepoMapCandidateEnvelopeV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RepoMapCandidateEnvelopeV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RepoMapCandidateEnvelopeV1
 pub struct quanta_index_contract::repomap::RepoMapChunkNode
 pub quanta_index_contract::repomap::RepoMapChunkNode::chunk_id: quanta_index_contract::ChunkId
 pub quanta_index_contract::repomap::RepoMapChunkNode::end_byte: u32
@@ -5852,6 +6470,38 @@ impl core::marker::Unpin for quanta_index_contract::RepoMapSymbolNode
 impl core::marker::UnsafeUnpin for quanta_index_contract::RepoMapSymbolNode
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RepoMapSymbolNode
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RepoMapSymbolNode
+pub struct quanta_index_contract::repomap::StateRootUuidCommitmentV1(_)
+impl quanta_index_contract::StateRootUuidCommitmentV1
+pub const fn quanta_index_contract::StateRootUuidCommitmentV1::as_bytes(&self) -> &[u8; 32]
+pub const fn quanta_index_contract::StateRootUuidCommitmentV1::from_bytes(bytes: [u8; 32]) -> Self
+pub fn quanta_index_contract::StateRootUuidCommitmentV1::from_wire_str(value: &str) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::StateRootUuidCommitmentV1::to_wire_string(self) -> alloc::string::String
+impl quanta_index_contract::StateRootUuidCommitmentV1
+pub fn quanta_index_contract::StateRootUuidCommitmentV1::for_uuid_bytes(uuid_bytes: [u8; 16]) -> Self
+impl core::clone::Clone for quanta_index_contract::StateRootUuidCommitmentV1
+pub fn quanta_index_contract::StateRootUuidCommitmentV1::clone(&self) -> quanta_index_contract::StateRootUuidCommitmentV1
+impl core::cmp::Eq for quanta_index_contract::StateRootUuidCommitmentV1
+impl core::cmp::Ord for quanta_index_contract::StateRootUuidCommitmentV1
+pub fn quanta_index_contract::StateRootUuidCommitmentV1::cmp(&self, other: &quanta_index_contract::StateRootUuidCommitmentV1) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::StateRootUuidCommitmentV1
+pub fn quanta_index_contract::StateRootUuidCommitmentV1::eq(&self, other: &quanta_index_contract::StateRootUuidCommitmentV1) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::StateRootUuidCommitmentV1
+pub fn quanta_index_contract::StateRootUuidCommitmentV1::partial_cmp(&self, other: &quanta_index_contract::StateRootUuidCommitmentV1) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for quanta_index_contract::StateRootUuidCommitmentV1
+pub fn quanta_index_contract::StateRootUuidCommitmentV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::StateRootUuidCommitmentV1
+pub fn quanta_index_contract::StateRootUuidCommitmentV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::StateRootUuidCommitmentV1
+pub fn quanta_index_contract::StateRootUuidCommitmentV1::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::StateRootUuidCommitmentV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::StateRootUuidCommitmentV1
+impl core::marker::Freeze for quanta_index_contract::StateRootUuidCommitmentV1
+impl core::marker::Send for quanta_index_contract::StateRootUuidCommitmentV1
+impl core::marker::Sync for quanta_index_contract::StateRootUuidCommitmentV1
+impl core::marker::Unpin for quanta_index_contract::StateRootUuidCommitmentV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::StateRootUuidCommitmentV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::StateRootUuidCommitmentV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::StateRootUuidCommitmentV1
 pub mod quanta_index_contract::results
 pub use quanta_index_contract::results::DiffCandidate
 pub use quanta_index_contract::results::DiffHunkSide
@@ -6850,6 +7500,38 @@ impl core::marker::Unpin for quanta_index_contract::CandidatePresenceV1
 impl core::marker::UnsafeUnpin for quanta_index_contract::CandidatePresenceV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::CandidatePresenceV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::CandidatePresenceV1
+pub enum quanta_index_contract::CanonicalRepoMapCodecErrorV1
+pub quanta_index_contract::CanonicalRepoMapCodecErrorV1::ArtifactBindingMismatch
+pub quanta_index_contract::CanonicalRepoMapCodecErrorV1::EvidenceBindingMismatch
+pub quanta_index_contract::CanonicalRepoMapCodecErrorV1::Identity(quanta_index_contract_base::ids::IdentityValidationErrorV1)
+pub quanta_index_contract::CanonicalRepoMapCodecErrorV1::InvalidDigestText
+pub quanta_index_contract::CanonicalRepoMapCodecErrorV1::InvalidUtf8
+pub quanta_index_contract::CanonicalRepoMapCodecErrorV1::InvalidValue(&'static str)
+pub quanta_index_contract::CanonicalRepoMapCodecErrorV1::LengthOutOfRange
+pub quanta_index_contract::CanonicalRepoMapCodecErrorV1::NonCanonicalInteger
+pub quanta_index_contract::CanonicalRepoMapCodecErrorV1::TrailingBytes
+pub quanta_index_contract::CanonicalRepoMapCodecErrorV1::UnexpectedEnd
+pub quanta_index_contract::CanonicalRepoMapCodecErrorV1::WrongType(&'static str)
+impl core::clone::Clone for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+pub fn quanta_index_contract::CanonicalRepoMapCodecErrorV1::clone(&self) -> quanta_index_contract::CanonicalRepoMapCodecErrorV1
+impl core::cmp::Eq for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+impl core::cmp::PartialEq for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+pub fn quanta_index_contract::CanonicalRepoMapCodecErrorV1::eq(&self, other: &quanta_index_contract::CanonicalRepoMapCodecErrorV1) -> bool
+impl core::convert::From<quanta_index_contract_base::ids::IdentityValidationErrorV1> for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+pub fn quanta_index_contract::CanonicalRepoMapCodecErrorV1::from(error: quanta_index_contract_base::ids::IdentityValidationErrorV1) -> Self
+impl core::error::Error for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+impl core::fmt::Debug for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+pub fn quanta_index_contract::CanonicalRepoMapCodecErrorV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+pub fn quanta_index_contract::CanonicalRepoMapCodecErrorV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+impl core::marker::Freeze for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+impl core::marker::Send for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+impl core::marker::Sync for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+impl core::marker::Unpin for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::CanonicalRepoMapCodecErrorV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::CanonicalRepoMapCodecErrorV1
 pub enum quanta_index_contract::CapabilityStatusV1
 pub quanta_index_contract::CapabilityStatusV1::Degraded
 pub quanta_index_contract::CapabilityStatusV1::Full
@@ -7450,6 +8132,42 @@ impl core::marker::Unpin for quanta_index_contract::QuarantineDiscardOutcomeDtoV
 impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineDiscardOutcomeDtoV1
+#[repr(u8)] pub enum quanta_index_contract::QuarantineReasonCodeV1
+pub quanta_index_contract::QuarantineReasonCodeV1::AddressDigestMismatch = 1
+pub quanta_index_contract::QuarantineReasonCodeV1::EnvelopeDecodeFailed = 3
+pub quanta_index_contract::QuarantineReasonCodeV1::HardlinkEncountered = 7
+pub quanta_index_contract::QuarantineReasonCodeV1::LogicalIdentityMismatch = 4
+pub quanta_index_contract::QuarantineReasonCodeV1::NonCanonicalEnvelope = 2
+pub quanta_index_contract::QuarantineReasonCodeV1::NonCanonicalSourceAddress = 9
+pub quanta_index_contract::QuarantineReasonCodeV1::SecureIoUnavailable = 8
+pub quanta_index_contract::QuarantineReasonCodeV1::SymlinkEncountered = 6
+pub quanta_index_contract::QuarantineReasonCodeV1::UnsafeFilesystemMetadata = 5
+pub quanta_index_contract::QuarantineReasonCodeV1::UnsupportedPersistedFormat = 10
+impl quanta_index_contract::QuarantineReasonCodeV1
+pub const quanta_index_contract::QuarantineReasonCodeV1::ALL: [Self; 10]
+pub const fn quanta_index_contract::QuarantineReasonCodeV1::code(self) -> u8
+impl core::clone::Clone for quanta_index_contract::QuarantineReasonCodeV1
+pub fn quanta_index_contract::QuarantineReasonCodeV1::clone(&self) -> quanta_index_contract::QuarantineReasonCodeV1
+impl core::cmp::Eq for quanta_index_contract::QuarantineReasonCodeV1
+impl core::cmp::Ord for quanta_index_contract::QuarantineReasonCodeV1
+pub fn quanta_index_contract::QuarantineReasonCodeV1::cmp(&self, other: &quanta_index_contract::QuarantineReasonCodeV1) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::QuarantineReasonCodeV1
+pub fn quanta_index_contract::QuarantineReasonCodeV1::eq(&self, other: &quanta_index_contract::QuarantineReasonCodeV1) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::QuarantineReasonCodeV1
+pub fn quanta_index_contract::QuarantineReasonCodeV1::partial_cmp(&self, other: &quanta_index_contract::QuarantineReasonCodeV1) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for quanta_index_contract::QuarantineReasonCodeV1
+pub fn quanta_index_contract::QuarantineReasonCodeV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::QuarantineReasonCodeV1
+pub fn quanta_index_contract::QuarantineReasonCodeV1::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::QuarantineReasonCodeV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantineReasonCodeV1
+impl core::marker::Freeze for quanta_index_contract::QuarantineReasonCodeV1
+impl core::marker::Send for quanta_index_contract::QuarantineReasonCodeV1
+impl core::marker::Sync for quanta_index_contract::QuarantineReasonCodeV1
+impl core::marker::Unpin for quanta_index_contract::QuarantineReasonCodeV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineReasonCodeV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineReasonCodeV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineReasonCodeV1
 pub enum quanta_index_contract::QuarantineTargetV1
 pub quanta_index_contract::QuarantineTargetV1::Generation(quanta_index_contract::QuarantinedGenerationEntryV1)
 pub quanta_index_contract::QuarantineTargetV1::RepoMapFile(quanta_index_contract::QuarantinedRepoMapFileEntryV1)
@@ -8035,6 +8753,218 @@ impl core::marker::Unpin for quanta_index_contract::SearchPlaneControlIpcRespons
 impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneControlIpcResponse
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneControlIpcResponse
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneControlIpcResponse
+pub enum quanta_index_contract::SearchPlaneErrorCodeV2
+pub quanta_index_contract::SearchPlaneErrorCodeV2::ActivationCasConflict
+pub quanta_index_contract::SearchPlaneErrorCodeV2::ActivationTargetNotSealed
+pub quanta_index_contract::SearchPlaneErrorCodeV2::ActivationTargetUnopenable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::AnnIndexIncompatible
+pub quanta_index_contract::SearchPlaneErrorCodeV2::AnnIndexMissing
+pub quanta_index_contract::SearchPlaneErrorCodeV2::AuxEpochExpired
+pub quanta_index_contract::SearchPlaneErrorCodeV2::AuxEpochUnknown
+pub quanta_index_contract::SearchPlaneErrorCodeV2::BatchDigestConflict
+pub quanta_index_contract::SearchPlaneErrorCodeV2::BatchDigestMismatch
+pub quanta_index_contract::SearchPlaneErrorCodeV2::CandidateCommitmentConflict
+pub quanta_index_contract::SearchPlaneErrorCodeV2::CandidateGenerationMustAdvanceExpectedActive
+pub quanta_index_contract::SearchPlaneErrorCodeV2::CandidateIdentityInvalid
+pub quanta_index_contract::SearchPlaneErrorCodeV2::CatalogBusy
+pub quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt
+pub quanta_index_contract::SearchPlaneErrorCodeV2::CompositeActivationCasConflict
+pub quanta_index_contract::SearchPlaneErrorCodeV2::CursorContextMismatch
+pub quanta_index_contract::SearchPlaneErrorCodeV2::CursorExpired
+pub quanta_index_contract::SearchPlaneErrorCodeV2::CursorInvalid
+pub quanta_index_contract::SearchPlaneErrorCodeV2::DeltaBaseConflict
+pub quanta_index_contract::SearchPlaneErrorCodeV2::DeltaBaseUnresolved
+pub quanta_index_contract::SearchPlaneErrorCodeV2::FileContributorUnavailable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::FileOwnershipUnavailable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::FocusSubjectNotFound
+pub quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch
+pub quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityIncomplete
+pub quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityScopeMismatch
+pub quanta_index_contract::SearchPlaneErrorCodeV2::GenerationImmutable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
+pub quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestMissing
+pub quanta_index_contract::SearchPlaneErrorCodeV2::GenerationMismatch
+pub quanta_index_contract::SearchPlaneErrorCodeV2::GenerationNormalizerUnsupported
+pub quanta_index_contract::SearchPlaneErrorCodeV2::GenerationNotSealed
+pub quanta_index_contract::SearchPlaneErrorCodeV2::GenerationQuarantineContentCorrupt
+pub quanta_index_contract::SearchPlaneErrorCodeV2::GenerationQuarantineFormatUnsupported
+pub quanta_index_contract::SearchPlaneErrorCodeV2::GenerationQuarantineIdentityDigestMismatch
+pub quanta_index_contract::SearchPlaneErrorCodeV2::GenerationQuarantineIdentityUnreadable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::GenerationQuarantineNonCanonicalLayout
+pub quanta_index_contract::SearchPlaneErrorCodeV2::GenerationQuarantineOrphaned
+pub quanta_index_contract::SearchPlaneErrorCodeV2::GenerationQuarantineScopeMismatch
+pub quanta_index_contract::SearchPlaneErrorCodeV2::GenerationQuarantined
+pub quanta_index_contract::SearchPlaneErrorCodeV2::GenerationScrubReceiptInvalid
+pub quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt
+pub quanta_index_contract::SearchPlaneErrorCodeV2::GenerationTextAuthorityFormatUnsupported
+pub quanta_index_contract::SearchPlaneErrorCodeV2::HistoryCursorOrderMismatch
+pub quanta_index_contract::SearchPlaneErrorCodeV2::HistoryGenerationNotReady
+pub quanta_index_contract::SearchPlaneErrorCodeV2::HistoryInvalidTimeref
+pub quanta_index_contract::SearchPlaneErrorCodeV2::HistoryProducerUnavailable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::HistoryRelevanceUnavailable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::HistoryRepoCommitRecencyUnavailable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::HistoryShardUnavailable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexCorrupt
+pub quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexForeignEntry
+pub quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexNormalizerUnsupported
+pub quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexNotReady
+pub quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextQueryUnscorable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::HybridFilterUnsupported
+pub quanta_index_contract::SearchPlaneErrorCodeV2::IdentityControlCharacter
+pub quanta_index_contract::SearchPlaneErrorCodeV2::IdentityEmpty
+pub quanta_index_contract::SearchPlaneErrorCodeV2::IdentityNonCanonical
+pub quanta_index_contract::SearchPlaneErrorCodeV2::IdentityTooLong
+pub quanta_index_contract::SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded
+pub quanta_index_contract::SearchPlaneErrorCodeV2::Internal
+pub quanta_index_contract::SearchPlaneErrorCodeV2::InvalidRequest
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticJournalChangedDuringMigration
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticJournalGenerationConflict
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticJournalImmutableAfterMigration
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticJournalManifestDigestMissing
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticJournalMissing
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationCustodyInvalid
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationDigestConflict
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationDurableGenerationDuplicate
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationDurableRootMissing
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationInputTooLarge
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationReceiptConflict
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationReceiptCorrupt
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationReceiptUnsupported
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterArchivedUnavailable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterAuthorUnavailable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterCommitterUnavailable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterConflictingSurface
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterContextUnavailable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterDirtyUnavailable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterForkUnavailable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterInvalidCount
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterMessageUnavailable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterRevUnavailable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterRuntimeCatalogUnavailable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterUnrouted
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterUnsupportedCombo
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterVisibilityUnavailable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexPhrasePlanLimitExceeded
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexPhrasePositionsIndexMissing
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexPlannerUnsupportedFilterCombo
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexPlannerUnsupportedNotScope
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexPlannerUnsupportedOrScope
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexPredicateUnimplemented
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexRawSubstringIndexMissing
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexRawSubstringTrigramIndexMissing
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexBudgetExceeded
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexDialectParseError
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexDialectUnsupported
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexExecutionInternal
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexForbiddenSyntax
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexInterrupted
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexParseFail
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexQueryTimeout
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexRegexPrefilterUnusable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexTrigramIndexMissing
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexTextQueryNoTokens
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexTextQueryTokenTooLong
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPrefilterUnusable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(quanta_index_contract::lex::error_code::LexicalErrorCode)
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LexicalExaminedBudgetExceeded
+pub quanta_index_contract::SearchPlaneErrorCodeV2::MetricsSourceDefect
+pub quanta_index_contract::SearchPlaneErrorCodeV2::NotFound
+pub quanta_index_contract::SearchPlaneErrorCodeV2::NotImplemented
+pub quanta_index_contract::SearchPlaneErrorCodeV2::NotReady
+pub quanta_index_contract::SearchPlaneErrorCodeV2::OperationFenceLost
+pub quanta_index_contract::SearchPlaneErrorCodeV2::OperationReplayFloor
+pub quanta_index_contract::SearchPlaneErrorCodeV2::ProcessMemoryEnvelopeExceeded
+pub quanta_index_contract::SearchPlaneErrorCodeV2::ProcessNotReady
+pub quanta_index_contract::SearchPlaneErrorCodeV2::ProcessRssCeilingExceeded
+pub quanta_index_contract::SearchPlaneErrorCodeV2::ProtocolVersionUnsupported
+pub quanta_index_contract::SearchPlaneErrorCodeV2::ProviderEgressDenied
+pub quanta_index_contract::SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined
+pub quanta_index_contract::SearchPlaneErrorCodeV2::QuarantineTargetStillReferenced
+pub quanta_index_contract::SearchPlaneErrorCodeV2::QueryCursorGenerationMismatch
+pub quanta_index_contract::SearchPlaneErrorCodeV2::QueryCursorUnsupported
+pub quanta_index_contract::SearchPlaneErrorCodeV2::ReadViewDomainUndeclared
+pub quanta_index_contract::SearchPlaneErrorCodeV2::ReadViewGenerationMix
+pub quanta_index_contract::SearchPlaneErrorCodeV2::RepoDescriptionUnavailable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::RepoMetaUnavailable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::RepoTopicUnavailable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::RequestCancelled
+pub quanta_index_contract::SearchPlaneErrorCodeV2::RequestDeadlineExceeded
+pub quanta_index_contract::SearchPlaneErrorCodeV2::ResultTooLarge
+pub quanta_index_contract::SearchPlaneErrorCodeV2::RollbackCasConflict
+pub quanta_index_contract::SearchPlaneErrorCodeV2::RollbackTargetUnopenable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::RuntimeCatalogChunkUniverseUnavailable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::RuntimeCatalogConflictingBatch
+pub quanta_index_contract::SearchPlaneErrorCodeV2::RuntimeCatalogHeadMissing
+pub quanta_index_contract::SearchPlaneErrorCodeV2::RuntimeCatalogNotReady
+pub quanta_index_contract::SearchPlaneErrorCodeV2::RuntimeCatalogStaleBatch
+pub quanta_index_contract::SearchPlaneErrorCodeV2::RuntimeCatalogUnknownDocId
+pub quanta_index_contract::SearchPlaneErrorCodeV2::RuntimeDirtyOnlyUnsupported
+pub quanta_index_contract::SearchPlaneErrorCodeV2::RuntimeInvalidScope
+pub quanta_index_contract::SearchPlaneErrorCodeV2::RuntimeNotReady
+pub quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusAuthorityConflict
+pub quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid
+pub quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusDeltaBaseNotSealed
+pub quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict
+pub quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationRepairRequired
+pub quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted
+pub quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionPolicyInvalid
+pub quanta_index_contract::SearchPlaneErrorCodeV2::SearchTrackGenerationNotSealed
+pub quanta_index_contract::SearchPlaneErrorCodeV2::SearchTrackManifestDigestMismatch
+pub quanta_index_contract::SearchPlaneErrorCodeV2::SemanticGenerationNotMaterialized
+pub quanta_index_contract::SearchPlaneErrorCodeV2::SemanticGenerationNotSealed
+pub quanta_index_contract::SearchPlaneErrorCodeV2::SemanticManifestDigestMismatch
+pub quanta_index_contract::SearchPlaneErrorCodeV2::SemanticRowRootMismatch
+pub quanta_index_contract::SearchPlaneErrorCodeV2::SemanticStreamOwnerScopeOverWindow
+pub quanta_index_contract::SearchPlaneErrorCodeV2::SemanticStreamWindowExceeded
+pub quanta_index_contract::SearchPlaneErrorCodeV2::SemanticStreamWindowStillResident
+pub quanta_index_contract::SearchPlaneErrorCodeV2::SequenceExhausted
+pub quanta_index_contract::SearchPlaneErrorCodeV2::ServerOverloaded
+pub quanta_index_contract::SearchPlaneErrorCodeV2::SnapshotUnknown
+pub quanta_index_contract::SearchPlaneErrorCodeV2::StateRootFormatUnsupported
+pub quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInUse
+pub quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInsecure
+pub quanta_index_contract::SearchPlaneErrorCodeV2::StateRootSecurityPolicyUnsupported
+pub quanta_index_contract::SearchPlaneErrorCodeV2::StrGenerationNotReady
+pub quanta_index_contract::SearchPlaneErrorCodeV2::StrInvalidRequest
+pub quanta_index_contract::SearchPlaneErrorCodeV2::StrProducerExecutionFailed
+pub quanta_index_contract::SearchPlaneErrorCodeV2::StrShardUnavailable
+pub quanta_index_contract::SearchPlaneErrorCodeV2::UnknownGeneration
+impl quanta_index_contract::SearchPlaneErrorCodeV2
+pub const quanta_index_contract::SearchPlaneErrorCodeV2::ALL: &'static [Self]
+pub const fn quanta_index_contract::SearchPlaneErrorCodeV2::as_wire_str(self) -> &'static str
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::from_wire_str(value: &str) -> core::option::Option<Self>
+impl core::clone::Clone for quanta_index_contract::SearchPlaneErrorCodeV2
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::clone(&self) -> quanta_index_contract::SearchPlaneErrorCodeV2
+impl core::cmp::Eq for quanta_index_contract::SearchPlaneErrorCodeV2
+impl core::cmp::Ord for quanta_index_contract::SearchPlaneErrorCodeV2
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::cmp(&self, other: &quanta_index_contract::SearchPlaneErrorCodeV2) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneErrorCodeV2
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::eq(&self, other: &quanta_index_contract::SearchPlaneErrorCodeV2) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::SearchPlaneErrorCodeV2
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::partial_cmp(&self, other: &quanta_index_contract::SearchPlaneErrorCodeV2) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<quanta_index_contract::lex::error_code::LexicalErrorCode> for quanta_index_contract::SearchPlaneErrorCodeV2
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::from(value: quanta_index_contract::lex::error_code::LexicalErrorCode) -> Self
+impl core::fmt::Debug for quanta_index_contract::SearchPlaneErrorCodeV2
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::SearchPlaneErrorCodeV2
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::SearchPlaneErrorCodeV2
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::SearchPlaneErrorCodeV2
+impl core::marker::StructuralPartialEq for quanta_index_contract::SearchPlaneErrorCodeV2
+impl serde_core::ser::Serialize for quanta_index_contract::SearchPlaneErrorCodeV2
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SearchPlaneErrorCodeV2
+pub fn quanta_index_contract::SearchPlaneErrorCodeV2::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::SearchPlaneErrorCodeV2
+impl core::marker::Send for quanta_index_contract::SearchPlaneErrorCodeV2
+impl core::marker::Sync for quanta_index_contract::SearchPlaneErrorCodeV2
+impl core::marker::Unpin for quanta_index_contract::SearchPlaneErrorCodeV2
+impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneErrorCodeV2
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneErrorCodeV2
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneErrorCodeV2
 pub enum quanta_index_contract::SearchPlaneIngestIpcRequest
 pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishDirtyBatch(quanta_index_contract::DirtyIngestBatch)
 pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishFileContributorBatch(quanta_index_contract::FileContributorIngestBatch)
@@ -8313,6 +9243,92 @@ impl core::marker::Unpin for quanta_index_contract::SourceRoleV1
 impl core::marker::UnsafeUnpin for quanta_index_contract::SourceRoleV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SourceRoleV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SourceRoleV1
+pub struct quanta_index_contract::ArtifactContentDigestV1(_)
+impl quanta_index_contract::ArtifactContentDigestV1
+pub const fn quanta_index_contract::ArtifactContentDigestV1::as_bytes(&self) -> &[u8; 32]
+pub const fn quanta_index_contract::ArtifactContentDigestV1::from_bytes(bytes: [u8; 32]) -> Self
+pub fn quanta_index_contract::ArtifactContentDigestV1::from_wire_str(value: &str) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::ArtifactContentDigestV1::to_wire_string(self) -> alloc::string::String
+impl quanta_index_contract::ArtifactContentDigestV1
+pub fn quanta_index_contract::ArtifactContentDigestV1::for_payload(payload: &[u8]) -> Self
+impl core::clone::Clone for quanta_index_contract::ArtifactContentDigestV1
+pub fn quanta_index_contract::ArtifactContentDigestV1::clone(&self) -> quanta_index_contract::ArtifactContentDigestV1
+impl core::cmp::Eq for quanta_index_contract::ArtifactContentDigestV1
+impl core::cmp::Ord for quanta_index_contract::ArtifactContentDigestV1
+pub fn quanta_index_contract::ArtifactContentDigestV1::cmp(&self, other: &quanta_index_contract::ArtifactContentDigestV1) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::ArtifactContentDigestV1
+pub fn quanta_index_contract::ArtifactContentDigestV1::eq(&self, other: &quanta_index_contract::ArtifactContentDigestV1) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::ArtifactContentDigestV1
+pub fn quanta_index_contract::ArtifactContentDigestV1::partial_cmp(&self, other: &quanta_index_contract::ArtifactContentDigestV1) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for quanta_index_contract::ArtifactContentDigestV1
+pub fn quanta_index_contract::ArtifactContentDigestV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::ArtifactContentDigestV1
+pub fn quanta_index_contract::ArtifactContentDigestV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::ArtifactContentDigestV1
+pub fn quanta_index_contract::ArtifactContentDigestV1::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::ArtifactContentDigestV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::ArtifactContentDigestV1
+impl core::marker::Freeze for quanta_index_contract::ArtifactContentDigestV1
+impl core::marker::Send for quanta_index_contract::ArtifactContentDigestV1
+impl core::marker::Sync for quanta_index_contract::ArtifactContentDigestV1
+impl core::marker::Unpin for quanta_index_contract::ArtifactContentDigestV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ArtifactContentDigestV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ArtifactContentDigestV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ArtifactContentDigestV1
+pub struct quanta_index_contract::ArtifactIdentityCommitmentV1(_)
+impl quanta_index_contract::ArtifactIdentityCommitmentV1
+pub const fn quanta_index_contract::ArtifactIdentityCommitmentV1::as_bytes(&self) -> &[u8; 32]
+pub const fn quanta_index_contract::ArtifactIdentityCommitmentV1::from_bytes(bytes: [u8; 32]) -> Self
+pub fn quanta_index_contract::ArtifactIdentityCommitmentV1::from_wire_str(value: &str) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::ArtifactIdentityCommitmentV1::to_wire_string(self) -> alloc::string::String
+impl core::clone::Clone for quanta_index_contract::ArtifactIdentityCommitmentV1
+pub fn quanta_index_contract::ArtifactIdentityCommitmentV1::clone(&self) -> quanta_index_contract::ArtifactIdentityCommitmentV1
+impl core::cmp::Eq for quanta_index_contract::ArtifactIdentityCommitmentV1
+impl core::cmp::Ord for quanta_index_contract::ArtifactIdentityCommitmentV1
+pub fn quanta_index_contract::ArtifactIdentityCommitmentV1::cmp(&self, other: &quanta_index_contract::ArtifactIdentityCommitmentV1) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::ArtifactIdentityCommitmentV1
+pub fn quanta_index_contract::ArtifactIdentityCommitmentV1::eq(&self, other: &quanta_index_contract::ArtifactIdentityCommitmentV1) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::ArtifactIdentityCommitmentV1
+pub fn quanta_index_contract::ArtifactIdentityCommitmentV1::partial_cmp(&self, other: &quanta_index_contract::ArtifactIdentityCommitmentV1) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for quanta_index_contract::ArtifactIdentityCommitmentV1
+pub fn quanta_index_contract::ArtifactIdentityCommitmentV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::ArtifactIdentityCommitmentV1
+pub fn quanta_index_contract::ArtifactIdentityCommitmentV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::ArtifactIdentityCommitmentV1
+pub fn quanta_index_contract::ArtifactIdentityCommitmentV1::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::ArtifactIdentityCommitmentV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::ArtifactIdentityCommitmentV1
+impl core::marker::Freeze for quanta_index_contract::ArtifactIdentityCommitmentV1
+impl core::marker::Send for quanta_index_contract::ArtifactIdentityCommitmentV1
+impl core::marker::Sync for quanta_index_contract::ArtifactIdentityCommitmentV1
+impl core::marker::Unpin for quanta_index_contract::ArtifactIdentityCommitmentV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ArtifactIdentityCommitmentV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ArtifactIdentityCommitmentV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ArtifactIdentityCommitmentV1
+pub struct quanta_index_contract::ArtifactIdentityV1
+impl quanta_index_contract::ArtifactIdentityV1
+pub const fn quanta_index_contract::ArtifactIdentityV1::byte_size(&self) -> u64
+pub fn quanta_index_contract::ArtifactIdentityV1::commitment(&self) -> core::result::Result<quanta_index_contract::ArtifactIdentityCommitmentV1, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub const fn quanta_index_contract::ArtifactIdentityV1::content_digest(&self) -> quanta_index_contract::ArtifactContentDigestV1
+pub fn quanta_index_contract::ArtifactIdentityV1::decode_canonical(bytes: &[u8]) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::ArtifactIdentityV1::encode_canonical(&self) -> core::result::Result<alloc::vec::Vec<u8>, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub const fn quanta_index_contract::ArtifactIdentityV1::logical_identity(&self) -> &quanta_index_contract_base::ids::LogicalGenerationIdentityV1
+pub const fn quanta_index_contract::ArtifactIdentityV1::new(logical_identity: quanta_index_contract_base::ids::LogicalGenerationIdentityV1, content_digest: quanta_index_contract::ArtifactContentDigestV1, byte_size: u64) -> Self
+impl core::clone::Clone for quanta_index_contract::ArtifactIdentityV1
+pub fn quanta_index_contract::ArtifactIdentityV1::clone(&self) -> quanta_index_contract::ArtifactIdentityV1
+impl core::cmp::Eq for quanta_index_contract::ArtifactIdentityV1
+impl core::cmp::PartialEq for quanta_index_contract::ArtifactIdentityV1
+pub fn quanta_index_contract::ArtifactIdentityV1::eq(&self, other: &quanta_index_contract::ArtifactIdentityV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::ArtifactIdentityV1
+pub fn quanta_index_contract::ArtifactIdentityV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::ArtifactIdentityV1
+impl core::marker::Freeze for quanta_index_contract::ArtifactIdentityV1
+impl core::marker::Send for quanta_index_contract::ArtifactIdentityV1
+impl core::marker::Sync for quanta_index_contract::ArtifactIdentityV1
+impl core::marker::Unpin for quanta_index_contract::ArtifactIdentityV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ArtifactIdentityV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ArtifactIdentityV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ArtifactIdentityV1
 pub struct quanta_index_contract::AuxEpochV1(_)
 impl quanta_index_contract::AuxEpochV1
 pub const quanta_index_contract::AuxEpochV1::GENESIS: Self
@@ -8392,6 +9408,68 @@ impl core::marker::Unpin for quanta_index_contract::BatchPublishReceipt
 impl core::marker::UnsafeUnpin for quanta_index_contract::BatchPublishReceipt
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::BatchPublishReceipt
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::BatchPublishReceipt
+pub struct quanta_index_contract::CandidateCommitmentV1(_)
+impl quanta_index_contract::CandidateCommitmentV1
+pub const fn quanta_index_contract::CandidateCommitmentV1::as_bytes(&self) -> &[u8; 32]
+pub const fn quanta_index_contract::CandidateCommitmentV1::from_bytes(bytes: [u8; 32]) -> Self
+pub fn quanta_index_contract::CandidateCommitmentV1::from_wire_str(value: &str) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::CandidateCommitmentV1::to_wire_string(self) -> alloc::string::String
+impl core::clone::Clone for quanta_index_contract::CandidateCommitmentV1
+pub fn quanta_index_contract::CandidateCommitmentV1::clone(&self) -> quanta_index_contract::CandidateCommitmentV1
+impl core::cmp::Eq for quanta_index_contract::CandidateCommitmentV1
+impl core::cmp::Ord for quanta_index_contract::CandidateCommitmentV1
+pub fn quanta_index_contract::CandidateCommitmentV1::cmp(&self, other: &quanta_index_contract::CandidateCommitmentV1) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::CandidateCommitmentV1
+pub fn quanta_index_contract::CandidateCommitmentV1::eq(&self, other: &quanta_index_contract::CandidateCommitmentV1) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::CandidateCommitmentV1
+pub fn quanta_index_contract::CandidateCommitmentV1::partial_cmp(&self, other: &quanta_index_contract::CandidateCommitmentV1) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for quanta_index_contract::CandidateCommitmentV1
+pub fn quanta_index_contract::CandidateCommitmentV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::CandidateCommitmentV1
+pub fn quanta_index_contract::CandidateCommitmentV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::CandidateCommitmentV1
+pub fn quanta_index_contract::CandidateCommitmentV1::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::CandidateCommitmentV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::CandidateCommitmentV1
+impl core::marker::Freeze for quanta_index_contract::CandidateCommitmentV1
+impl core::marker::Send for quanta_index_contract::CandidateCommitmentV1
+impl core::marker::Sync for quanta_index_contract::CandidateCommitmentV1
+impl core::marker::Unpin for quanta_index_contract::CandidateCommitmentV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::CandidateCommitmentV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::CandidateCommitmentV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::CandidateCommitmentV1
+pub struct quanta_index_contract::CandidateObjectDigestV1(_)
+impl quanta_index_contract::CandidateObjectDigestV1
+pub const fn quanta_index_contract::CandidateObjectDigestV1::as_bytes(&self) -> &[u8; 32]
+pub const fn quanta_index_contract::CandidateObjectDigestV1::from_bytes(bytes: [u8; 32]) -> Self
+pub fn quanta_index_contract::CandidateObjectDigestV1::from_wire_str(value: &str) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::CandidateObjectDigestV1::to_wire_string(self) -> alloc::string::String
+impl quanta_index_contract::CandidateObjectDigestV1
+pub fn quanta_index_contract::CandidateObjectDigestV1::for_canonical_envelope(bytes: &[u8]) -> Self
+impl core::clone::Clone for quanta_index_contract::CandidateObjectDigestV1
+pub fn quanta_index_contract::CandidateObjectDigestV1::clone(&self) -> quanta_index_contract::CandidateObjectDigestV1
+impl core::cmp::Eq for quanta_index_contract::CandidateObjectDigestV1
+impl core::cmp::Ord for quanta_index_contract::CandidateObjectDigestV1
+pub fn quanta_index_contract::CandidateObjectDigestV1::cmp(&self, other: &quanta_index_contract::CandidateObjectDigestV1) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::CandidateObjectDigestV1
+pub fn quanta_index_contract::CandidateObjectDigestV1::eq(&self, other: &quanta_index_contract::CandidateObjectDigestV1) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::CandidateObjectDigestV1
+pub fn quanta_index_contract::CandidateObjectDigestV1::partial_cmp(&self, other: &quanta_index_contract::CandidateObjectDigestV1) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for quanta_index_contract::CandidateObjectDigestV1
+pub fn quanta_index_contract::CandidateObjectDigestV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::CandidateObjectDigestV1
+pub fn quanta_index_contract::CandidateObjectDigestV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::CandidateObjectDigestV1
+pub fn quanta_index_contract::CandidateObjectDigestV1::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::CandidateObjectDigestV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::CandidateObjectDigestV1
+impl core::marker::Freeze for quanta_index_contract::CandidateObjectDigestV1
+impl core::marker::Send for quanta_index_contract::CandidateObjectDigestV1
+impl core::marker::Sync for quanta_index_contract::CandidateObjectDigestV1
+impl core::marker::Unpin for quanta_index_contract::CandidateObjectDigestV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::CandidateObjectDigestV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::CandidateObjectDigestV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::CandidateObjectDigestV1
 pub struct quanta_index_contract::ChunkId(_)
 impl quanta_index_contract::ChunkId
 pub fn quanta_index_contract::ChunkId::as_str(&self) -> &str
@@ -9712,6 +10790,59 @@ impl core::marker::Unpin for quanta_index_contract::QuarantineDiscardRequest
 impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineDiscardRequest
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineDiscardRequest
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineDiscardRequest
+pub struct quanta_index_contract::QuarantineIncidentDigestV1(_)
+impl quanta_index_contract::QuarantineIncidentDigestV1
+pub const fn quanta_index_contract::QuarantineIncidentDigestV1::as_bytes(&self) -> &[u8; 32]
+pub const fn quanta_index_contract::QuarantineIncidentDigestV1::from_bytes(bytes: [u8; 32]) -> Self
+pub fn quanta_index_contract::QuarantineIncidentDigestV1::from_wire_str(value: &str) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::QuarantineIncidentDigestV1::to_wire_string(self) -> alloc::string::String
+impl core::clone::Clone for quanta_index_contract::QuarantineIncidentDigestV1
+pub fn quanta_index_contract::QuarantineIncidentDigestV1::clone(&self) -> quanta_index_contract::QuarantineIncidentDigestV1
+impl core::cmp::Eq for quanta_index_contract::QuarantineIncidentDigestV1
+impl core::cmp::Ord for quanta_index_contract::QuarantineIncidentDigestV1
+pub fn quanta_index_contract::QuarantineIncidentDigestV1::cmp(&self, other: &quanta_index_contract::QuarantineIncidentDigestV1) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::QuarantineIncidentDigestV1
+pub fn quanta_index_contract::QuarantineIncidentDigestV1::eq(&self, other: &quanta_index_contract::QuarantineIncidentDigestV1) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::QuarantineIncidentDigestV1
+pub fn quanta_index_contract::QuarantineIncidentDigestV1::partial_cmp(&self, other: &quanta_index_contract::QuarantineIncidentDigestV1) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for quanta_index_contract::QuarantineIncidentDigestV1
+pub fn quanta_index_contract::QuarantineIncidentDigestV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::QuarantineIncidentDigestV1
+pub fn quanta_index_contract::QuarantineIncidentDigestV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::QuarantineIncidentDigestV1
+pub fn quanta_index_contract::QuarantineIncidentDigestV1::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::QuarantineIncidentDigestV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantineIncidentDigestV1
+impl core::marker::Freeze for quanta_index_contract::QuarantineIncidentDigestV1
+impl core::marker::Send for quanta_index_contract::QuarantineIncidentDigestV1
+impl core::marker::Sync for quanta_index_contract::QuarantineIncidentDigestV1
+impl core::marker::Unpin for quanta_index_contract::QuarantineIncidentDigestV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineIncidentDigestV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineIncidentDigestV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineIncidentDigestV1
+pub struct quanta_index_contract::QuarantineIncidentV1
+impl quanta_index_contract::QuarantineIncidentV1
+pub fn quanta_index_contract::QuarantineIncidentV1::decode_canonical(bytes: &[u8]) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::QuarantineIncidentV1::digest(&self) -> core::result::Result<quanta_index_contract::QuarantineIncidentDigestV1, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::QuarantineIncidentV1::encode_canonical(&self) -> core::result::Result<alloc::vec::Vec<u8>, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub const fn quanta_index_contract::QuarantineIncidentV1::evidence(&self) -> &quanta_index_contract::QuarantineObservationEvidenceV1
+pub fn quanta_index_contract::QuarantineIncidentV1::new(sequence: u64, observed_at_unix_nanos: u64, evidence: quanta_index_contract::QuarantineObservationEvidenceV1) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub const fn quanta_index_contract::QuarantineIncidentV1::sequence(&self) -> u64
+impl core::clone::Clone for quanta_index_contract::QuarantineIncidentV1
+pub fn quanta_index_contract::QuarantineIncidentV1::clone(&self) -> quanta_index_contract::QuarantineIncidentV1
+impl core::cmp::Eq for quanta_index_contract::QuarantineIncidentV1
+impl core::cmp::PartialEq for quanta_index_contract::QuarantineIncidentV1
+pub fn quanta_index_contract::QuarantineIncidentV1::eq(&self, other: &quanta_index_contract::QuarantineIncidentV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::QuarantineIncidentV1
+pub fn quanta_index_contract::QuarantineIncidentV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantineIncidentV1
+impl core::marker::Freeze for quanta_index_contract::QuarantineIncidentV1
+impl core::marker::Send for quanta_index_contract::QuarantineIncidentV1
+impl core::marker::Sync for quanta_index_contract::QuarantineIncidentV1
+impl core::marker::Unpin for quanta_index_contract::QuarantineIncidentV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineIncidentV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineIncidentV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineIncidentV1
 pub struct quanta_index_contract::QuarantineInventoryRequest
 impl core::clone::Clone for quanta_index_contract::QuarantineInventoryRequest
 pub fn quanta_index_contract::QuarantineInventoryRequest::clone(&self) -> quanta_index_contract::QuarantineInventoryRequest
@@ -9760,6 +10891,89 @@ impl core::marker::Unpin for quanta_index_contract::QuarantineInventoryV1
 impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineInventoryV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineInventoryV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineInventoryV1
+pub struct quanta_index_contract::QuarantineObservationDigestV1(_)
+impl quanta_index_contract::QuarantineObservationDigestV1
+pub const fn quanta_index_contract::QuarantineObservationDigestV1::as_bytes(&self) -> &[u8; 32]
+pub const fn quanta_index_contract::QuarantineObservationDigestV1::from_bytes(bytes: [u8; 32]) -> Self
+pub fn quanta_index_contract::QuarantineObservationDigestV1::from_wire_str(value: &str) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::QuarantineObservationDigestV1::to_wire_string(self) -> alloc::string::String
+impl core::clone::Clone for quanta_index_contract::QuarantineObservationDigestV1
+pub fn quanta_index_contract::QuarantineObservationDigestV1::clone(&self) -> quanta_index_contract::QuarantineObservationDigestV1
+impl core::cmp::Eq for quanta_index_contract::QuarantineObservationDigestV1
+impl core::cmp::Ord for quanta_index_contract::QuarantineObservationDigestV1
+pub fn quanta_index_contract::QuarantineObservationDigestV1::cmp(&self, other: &quanta_index_contract::QuarantineObservationDigestV1) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::QuarantineObservationDigestV1
+pub fn quanta_index_contract::QuarantineObservationDigestV1::eq(&self, other: &quanta_index_contract::QuarantineObservationDigestV1) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::QuarantineObservationDigestV1
+pub fn quanta_index_contract::QuarantineObservationDigestV1::partial_cmp(&self, other: &quanta_index_contract::QuarantineObservationDigestV1) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for quanta_index_contract::QuarantineObservationDigestV1
+pub fn quanta_index_contract::QuarantineObservationDigestV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::QuarantineObservationDigestV1
+pub fn quanta_index_contract::QuarantineObservationDigestV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::QuarantineObservationDigestV1
+pub fn quanta_index_contract::QuarantineObservationDigestV1::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::QuarantineObservationDigestV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantineObservationDigestV1
+impl core::marker::Freeze for quanta_index_contract::QuarantineObservationDigestV1
+impl core::marker::Send for quanta_index_contract::QuarantineObservationDigestV1
+impl core::marker::Sync for quanta_index_contract::QuarantineObservationDigestV1
+impl core::marker::Unpin for quanta_index_contract::QuarantineObservationDigestV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineObservationDigestV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineObservationDigestV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineObservationDigestV1
+pub struct quanta_index_contract::QuarantineObservationEvidenceV1
+impl quanta_index_contract::QuarantineObservationEvidenceV1
+pub fn quanta_index_contract::QuarantineObservationEvidenceV1::decode_canonical(bytes: &[u8]) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::QuarantineObservationEvidenceV1::digest(&self) -> core::result::Result<quanta_index_contract::QuarantineObservationDigestV1, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::QuarantineObservationEvidenceV1::encode_canonical(&self) -> core::result::Result<alloc::vec::Vec<u8>, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::QuarantineObservationEvidenceV1::new(raw_relative_path_components: alloc::vec::Vec<alloc::vec::Vec<u8>>, observed_byte_size: core::option::Option<u64>, raw_payload_digest: core::option::Option<quanta_index_contract::QuarantinePayloadDigestV1>, encoded_address_digest: core::option::Option<quanta_index_contract::CandidateObjectDigestV1>, reason: quanta_index_contract::QuarantineReasonCodeV1, state_root_uuid_commitment: quanta_index_contract::StateRootUuidCommitmentV1) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+impl core::clone::Clone for quanta_index_contract::QuarantineObservationEvidenceV1
+pub fn quanta_index_contract::QuarantineObservationEvidenceV1::clone(&self) -> quanta_index_contract::QuarantineObservationEvidenceV1
+impl core::cmp::Eq for quanta_index_contract::QuarantineObservationEvidenceV1
+impl core::cmp::PartialEq for quanta_index_contract::QuarantineObservationEvidenceV1
+pub fn quanta_index_contract::QuarantineObservationEvidenceV1::eq(&self, other: &quanta_index_contract::QuarantineObservationEvidenceV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::QuarantineObservationEvidenceV1
+pub fn quanta_index_contract::QuarantineObservationEvidenceV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantineObservationEvidenceV1
+impl core::marker::Freeze for quanta_index_contract::QuarantineObservationEvidenceV1
+impl core::marker::Send for quanta_index_contract::QuarantineObservationEvidenceV1
+impl core::marker::Sync for quanta_index_contract::QuarantineObservationEvidenceV1
+impl core::marker::Unpin for quanta_index_contract::QuarantineObservationEvidenceV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineObservationEvidenceV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineObservationEvidenceV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineObservationEvidenceV1
+pub struct quanta_index_contract::QuarantinePayloadDigestV1(_)
+impl quanta_index_contract::QuarantinePayloadDigestV1
+pub const fn quanta_index_contract::QuarantinePayloadDigestV1::as_bytes(&self) -> &[u8; 32]
+pub const fn quanta_index_contract::QuarantinePayloadDigestV1::from_bytes(bytes: [u8; 32]) -> Self
+pub fn quanta_index_contract::QuarantinePayloadDigestV1::from_wire_str(value: &str) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::QuarantinePayloadDigestV1::to_wire_string(self) -> alloc::string::String
+impl quanta_index_contract::QuarantinePayloadDigestV1
+pub fn quanta_index_contract::QuarantinePayloadDigestV1::for_payload(payload: &[u8]) -> Self
+impl core::clone::Clone for quanta_index_contract::QuarantinePayloadDigestV1
+pub fn quanta_index_contract::QuarantinePayloadDigestV1::clone(&self) -> quanta_index_contract::QuarantinePayloadDigestV1
+impl core::cmp::Eq for quanta_index_contract::QuarantinePayloadDigestV1
+impl core::cmp::Ord for quanta_index_contract::QuarantinePayloadDigestV1
+pub fn quanta_index_contract::QuarantinePayloadDigestV1::cmp(&self, other: &quanta_index_contract::QuarantinePayloadDigestV1) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::QuarantinePayloadDigestV1
+pub fn quanta_index_contract::QuarantinePayloadDigestV1::eq(&self, other: &quanta_index_contract::QuarantinePayloadDigestV1) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::QuarantinePayloadDigestV1
+pub fn quanta_index_contract::QuarantinePayloadDigestV1::partial_cmp(&self, other: &quanta_index_contract::QuarantinePayloadDigestV1) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for quanta_index_contract::QuarantinePayloadDigestV1
+pub fn quanta_index_contract::QuarantinePayloadDigestV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::QuarantinePayloadDigestV1
+pub fn quanta_index_contract::QuarantinePayloadDigestV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::QuarantinePayloadDigestV1
+pub fn quanta_index_contract::QuarantinePayloadDigestV1::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::QuarantinePayloadDigestV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::QuarantinePayloadDigestV1
+impl core::marker::Freeze for quanta_index_contract::QuarantinePayloadDigestV1
+impl core::marker::Send for quanta_index_contract::QuarantinePayloadDigestV1
+impl core::marker::Sync for quanta_index_contract::QuarantinePayloadDigestV1
+impl core::marker::Unpin for quanta_index_contract::QuarantinePayloadDigestV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantinePayloadDigestV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantinePayloadDigestV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantinePayloadDigestV1
 pub struct quanta_index_contract::QuarantinedGenerationEntryV1
 pub quanta_index_contract::QuarantinedGenerationEntryV1::detail: alloc::string::String
 pub quanta_index_contract::QuarantinedGenerationEntryV1::path: alloc::string::String
@@ -10009,6 +11223,53 @@ impl core::marker::Unpin for quanta_index_contract::RepoMapCallEdge
 impl core::marker::UnsafeUnpin for quanta_index_contract::RepoMapCallEdge
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RepoMapCallEdge
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RepoMapCallEdge
+pub struct quanta_index_contract::RepoMapCandidateCommitmentsV1
+pub quanta_index_contract::RepoMapCandidateCommitmentsV1::compiled_graph: [u8; 32]
+pub quanta_index_contract::RepoMapCandidateCommitmentsV1::producer_authority: [u8; 32]
+pub quanta_index_contract::RepoMapCandidateCommitmentsV1::producer_manifest: [u8; 32]
+pub quanta_index_contract::RepoMapCandidateCommitmentsV1::projection_profile: [u8; 32]
+pub quanta_index_contract::RepoMapCandidateCommitmentsV1::schema: [u8; 32]
+impl core::clone::Clone for quanta_index_contract::RepoMapCandidateCommitmentsV1
+pub fn quanta_index_contract::RepoMapCandidateCommitmentsV1::clone(&self) -> quanta_index_contract::RepoMapCandidateCommitmentsV1
+impl core::cmp::Eq for quanta_index_contract::RepoMapCandidateCommitmentsV1
+impl core::cmp::PartialEq for quanta_index_contract::RepoMapCandidateCommitmentsV1
+pub fn quanta_index_contract::RepoMapCandidateCommitmentsV1::eq(&self, other: &quanta_index_contract::RepoMapCandidateCommitmentsV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::RepoMapCandidateCommitmentsV1
+pub fn quanta_index_contract::RepoMapCandidateCommitmentsV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::RepoMapCandidateCommitmentsV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::RepoMapCandidateCommitmentsV1
+impl core::marker::Freeze for quanta_index_contract::RepoMapCandidateCommitmentsV1
+impl core::marker::Send for quanta_index_contract::RepoMapCandidateCommitmentsV1
+impl core::marker::Sync for quanta_index_contract::RepoMapCandidateCommitmentsV1
+impl core::marker::Unpin for quanta_index_contract::RepoMapCandidateCommitmentsV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::RepoMapCandidateCommitmentsV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RepoMapCandidateCommitmentsV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RepoMapCandidateCommitmentsV1
+pub struct quanta_index_contract::RepoMapCandidateEnvelopeV1
+impl quanta_index_contract::RepoMapCandidateEnvelopeV1
+pub const fn quanta_index_contract::RepoMapCandidateEnvelopeV1::artifact(&self) -> &quanta_index_contract::ArtifactIdentityV1
+pub fn quanta_index_contract::RepoMapCandidateEnvelopeV1::commitment(&self) -> core::result::Result<quanta_index_contract::CandidateCommitmentV1, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::RepoMapCandidateEnvelopeV1::compiled_payload(&self) -> &[u8]
+pub fn quanta_index_contract::RepoMapCandidateEnvelopeV1::decode_canonical(bytes: &[u8]) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::RepoMapCandidateEnvelopeV1::encode_canonical(&self) -> core::result::Result<alloc::vec::Vec<u8>, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub const fn quanta_index_contract::RepoMapCandidateEnvelopeV1::logical_identity(&self) -> &quanta_index_contract_base::ids::LogicalGenerationIdentityV1
+pub fn quanta_index_contract::RepoMapCandidateEnvelopeV1::new(logical_identity: quanta_index_contract_base::ids::LogicalGenerationIdentityV1, commitments: quanta_index_contract::RepoMapCandidateCommitmentsV1, artifact: quanta_index_contract::ArtifactIdentityV1, compiled_payload: alloc::vec::Vec<u8>) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::RepoMapCandidateEnvelopeV1::object_digest(&self) -> core::result::Result<quanta_index_contract::CandidateObjectDigestV1, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+impl core::clone::Clone for quanta_index_contract::RepoMapCandidateEnvelopeV1
+pub fn quanta_index_contract::RepoMapCandidateEnvelopeV1::clone(&self) -> quanta_index_contract::RepoMapCandidateEnvelopeV1
+impl core::cmp::Eq for quanta_index_contract::RepoMapCandidateEnvelopeV1
+impl core::cmp::PartialEq for quanta_index_contract::RepoMapCandidateEnvelopeV1
+pub fn quanta_index_contract::RepoMapCandidateEnvelopeV1::eq(&self, other: &quanta_index_contract::RepoMapCandidateEnvelopeV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::RepoMapCandidateEnvelopeV1
+pub fn quanta_index_contract::RepoMapCandidateEnvelopeV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::RepoMapCandidateEnvelopeV1
+impl core::marker::Freeze for quanta_index_contract::RepoMapCandidateEnvelopeV1
+impl core::marker::Send for quanta_index_contract::RepoMapCandidateEnvelopeV1
+impl core::marker::Sync for quanta_index_contract::RepoMapCandidateEnvelopeV1
+impl core::marker::Unpin for quanta_index_contract::RepoMapCandidateEnvelopeV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::RepoMapCandidateEnvelopeV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RepoMapCandidateEnvelopeV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RepoMapCandidateEnvelopeV1
 pub struct quanta_index_contract::RepoMapChunkNode
 pub quanta_index_contract::RepoMapChunkNode::chunk_id: quanta_index_contract::ChunkId
 pub quanta_index_contract::RepoMapChunkNode::end_byte: u32
@@ -11065,7 +12326,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneIngestIpcRe
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneIngestIpcResponseEnvelope
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneIngestIpcResponseEnvelope
 pub struct quanta_index_contract::SearchPlaneIpcError
-pub quanta_index_contract::SearchPlaneIpcError::code: alloc::string::String
+pub quanta_index_contract::SearchPlaneIpcError::code: quanta_index_contract::SearchPlaneErrorCodeV2
 pub quanta_index_contract::SearchPlaneIpcError::message: alloc::string::String
 pub quanta_index_contract::SearchPlaneIpcError::repair: core::option::Option<quanta_index_contract::QueryErrorRepair>
 impl quanta_index_contract::SearchPlaneIpcError
@@ -11620,6 +12881,38 @@ impl core::marker::Unpin for quanta_index_contract::SemanticTombstoneScope
 impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticTombstoneScope
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticTombstoneScope
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticTombstoneScope
+pub struct quanta_index_contract::StateRootUuidCommitmentV1(_)
+impl quanta_index_contract::StateRootUuidCommitmentV1
+pub const fn quanta_index_contract::StateRootUuidCommitmentV1::as_bytes(&self) -> &[u8; 32]
+pub const fn quanta_index_contract::StateRootUuidCommitmentV1::from_bytes(bytes: [u8; 32]) -> Self
+pub fn quanta_index_contract::StateRootUuidCommitmentV1::from_wire_str(value: &str) -> core::result::Result<Self, quanta_index_contract::CanonicalRepoMapCodecErrorV1>
+pub fn quanta_index_contract::StateRootUuidCommitmentV1::to_wire_string(self) -> alloc::string::String
+impl quanta_index_contract::StateRootUuidCommitmentV1
+pub fn quanta_index_contract::StateRootUuidCommitmentV1::for_uuid_bytes(uuid_bytes: [u8; 16]) -> Self
+impl core::clone::Clone for quanta_index_contract::StateRootUuidCommitmentV1
+pub fn quanta_index_contract::StateRootUuidCommitmentV1::clone(&self) -> quanta_index_contract::StateRootUuidCommitmentV1
+impl core::cmp::Eq for quanta_index_contract::StateRootUuidCommitmentV1
+impl core::cmp::Ord for quanta_index_contract::StateRootUuidCommitmentV1
+pub fn quanta_index_contract::StateRootUuidCommitmentV1::cmp(&self, other: &quanta_index_contract::StateRootUuidCommitmentV1) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::StateRootUuidCommitmentV1
+pub fn quanta_index_contract::StateRootUuidCommitmentV1::eq(&self, other: &quanta_index_contract::StateRootUuidCommitmentV1) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::StateRootUuidCommitmentV1
+pub fn quanta_index_contract::StateRootUuidCommitmentV1::partial_cmp(&self, other: &quanta_index_contract::StateRootUuidCommitmentV1) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for quanta_index_contract::StateRootUuidCommitmentV1
+pub fn quanta_index_contract::StateRootUuidCommitmentV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::StateRootUuidCommitmentV1
+pub fn quanta_index_contract::StateRootUuidCommitmentV1::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::StateRootUuidCommitmentV1
+pub fn quanta_index_contract::StateRootUuidCommitmentV1::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::StateRootUuidCommitmentV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::StateRootUuidCommitmentV1
+impl core::marker::Freeze for quanta_index_contract::StateRootUuidCommitmentV1
+impl core::marker::Send for quanta_index_contract::StateRootUuidCommitmentV1
+impl core::marker::Sync for quanta_index_contract::StateRootUuidCommitmentV1
+impl core::marker::Unpin for quanta_index_contract::StateRootUuidCommitmentV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::StateRootUuidCommitmentV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::StateRootUuidCommitmentV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::StateRootUuidCommitmentV1
 pub struct quanta_index_contract::StructuralCursorV1
 pub quanta_index_contract::StructuralCursorV1::aux_epoch: quanta_index_contract::AuxEpochV1
 pub quanta_index_contract::StructuralCursorV1::candidate_id: alloc::string::String
@@ -12070,8 +13363,8 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::WeightsHashError
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::WeightsHashError
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::WeightsHashError
 pub const quanta_index_contract::BATCH_DIGEST_TOKEN_LEN_V1: usize
-pub const quanta_index_contract::ERR_RESULT_TOO_LARGE: &str
-pub const quanta_index_contract::ERR_SERVER_OVERLOADED: &str
+pub const quanta_index_contract::ERR_RESULT_TOO_LARGE: quanta_index_contract::SearchPlaneErrorCodeV2
+pub const quanta_index_contract::ERR_SERVER_OVERLOADED: quanta_index_contract::SearchPlaneErrorCodeV2
 pub const quanta_index_contract::INGEST_BATCH_DIGEST_DOMAIN_V1: &[u8]
 pub const quanta_index_contract::INGEST_BATCH_DIGEST_FIELD_SEPARATOR_V1: &[u8]
 pub const quanta_index_contract::MAX_CLUSTER_MEMBERSHIP_BATCH_ITEMS_V1: usize

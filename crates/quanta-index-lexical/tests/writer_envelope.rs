@@ -31,11 +31,11 @@ use quanta_index_lexical::regex::RegexPolicy;
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn repo() -> RepoId {
-    RepoId::new("envelope-repo")
+    RepoId::new("envelope-repo").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new("envelope-rev")
+    RevisionId::new("envelope-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 fn adapter(root: std::path::PathBuf, policy: LexicalWriterPolicy) -> LexicalAdapter {

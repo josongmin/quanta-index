@@ -69,14 +69,17 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse> 
     ) -> SearchPlaneControlIpcResponse {
         let SearchPlaneControlIpcRequest::CurrentGeneration(request) = request else {
             return error_response(
-                "TEST_UNEXPECTED_REQUEST",
+                quanta_index_contract::SearchPlaneErrorCodeV2::Internal,
                 "only CurrentGeneration is stubbed",
             );
         };
         match request.repo_id.as_str() {
             HOLD_REPO => {
                 if self.entered.send(()).is_err() {
-                    return error_response("TEST_OBSERVER_GONE", "test side went away");
+                    return error_response(
+                        quanta_index_contract::SearchPlaneErrorCodeV2::Internal,
+                        "test side went away",
+                    );
                 }
                 let _wait = self.release.wait();
             }
@@ -85,14 +88,15 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse> 
                 // The checkpoint a route places after its native work.
                 if let Err(err) = budget.checkpoint("after-native") {
                     return match err {
-                        CoreError::Typed { code, message } => error_response(&code, message),
+                        CoreError::Typed { code, message } => error_response(code, message),
                         other @ (CoreError::InvalidContract(_)
                         | CoreError::NotReady(_)
                         | CoreError::NotImplemented(_)
                         | CoreError::NotFound(_)
-                        | CoreError::Storage(_)) => {
-                            error_response("TEST_UNEXPECTED_ERROR", other.to_string())
-                        }
+                        | CoreError::Storage(_)) => error_response(
+                            quanta_index_contract::SearchPlaneErrorCodeV2::Internal,
+                            other.to_string(),
+                        ),
                     };
                 }
             }
@@ -109,9 +113,12 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse> 
     }
 }
 
-fn error_response(code: &str, message: impl Into<String>) -> SearchPlaneControlIpcResponse {
+fn error_response(
+    code: quanta_index_contract::SearchPlaneErrorCodeV2,
+    message: impl Into<String>,
+) -> SearchPlaneControlIpcResponse {
     SearchPlaneControlIpcResponse::Error(SearchPlaneIpcError {
-        code: code.to_string(),
+        code,
         message: message.into(),
         repair: None,
     })
@@ -189,8 +196,9 @@ fn current_generation(repo: &str) -> SearchPlaneControlIpcRequestEnvelope {
     SearchPlaneControlIpcRequestEnvelope {
         request_id: 7,
         payload: SearchPlaneControlIpcRequest::CurrentGeneration(CurrentGenerationRequest {
-            repo_id: RepoId::new(repo),
-            revision_id: RevisionId::new("rev"),
+            repo_id: RepoId::new(repo).expect("test fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev")
+                .expect("static fixture ID satisfies canonical policy"),
             track: SearchPlaneTrackKind::Lexical,
         }),
     }

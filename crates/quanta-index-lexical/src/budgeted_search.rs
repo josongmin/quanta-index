@@ -283,9 +283,9 @@ mod tests {
         Ok(index)
     }
 
-    fn typed_code(err: &CoreError) -> Option<&str> {
+    fn typed_code(err: &CoreError) -> Option<quanta_index_contract::SearchPlaneErrorCodeV2> {
         match err {
-            CoreError::Typed { code, .. } => Some(code.as_str()),
+            CoreError::Typed { code, .. } => Some(*code),
             CoreError::InvalidContract(_)
             | CoreError::NotReady(_)
             | CoreError::NotImplemented(_)

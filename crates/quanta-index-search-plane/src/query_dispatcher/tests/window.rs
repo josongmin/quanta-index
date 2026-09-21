@@ -1,4 +1,4 @@
-use quanta_index_contract::{INTERNAL_FETCH_CEILING, PUBLIC_TOP_K_MAX, TOP_K_OUT_OF_RANGE_CODE};
+use quanta_index_contract::{INTERNAL_FETCH_CEILING, PUBLIC_TOP_K_MAX};
 use quanta_index_core::{CoreError, LexicalSearchPageV1};
 
 use crate::query_dispatcher::tests::support::common::{build_probe_query, candidate};
@@ -38,7 +38,12 @@ fn query_window_uses_one_continuation_row_and_never_requires_full_count_v1() {
     );
     for refused in [0, PUBLIC_TOP_K_MAX + 1, u32::MAX] {
         match probe_top_k_v1(refused) {
-            Err(CoreError::Typed { code, .. }) => assert_eq!(code, TOP_K_OUT_OF_RANGE_CODE),
+            Err(CoreError::Typed { code, .. }) => assert_eq!(
+                code,
+                quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                    quanta_index_contract::lex::LexicalErrorCode::QueryTopKOutOfRange,
+                ),
+            ),
             other => {
                 panic!("top_k={refused} must be refused with the shared code, got {other:?}")
             }

@@ -8,18 +8,20 @@
 use crate::normalize;
 use crate::normalize::{CaseMode, TextQueryError};
 use crate::phrase::PhrasePlannerError;
+use quanta_index_contract::SearchPlaneErrorCodeV2 as Code;
 use quanta_index_core::CoreError;
 use quanta_index_lq_positions::{PositionsError, PositionsErrorCode};
+use quanta_index_lq_regex::RegexErrorCode;
 use quanta_index_lq_trigram::{TrigramError, TrigramErrorCode};
 
 pub(crate) fn map_trigram_error(context: &str, err: &TrigramError) -> CoreError {
     match err.code {
         TrigramErrorCode::PlanLimitExceeded => CoreError::Typed {
-            code: "LEX_TRIGRAM_PLAN_LIMIT_EXCEEDED".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
             message: format!("lexical: {context}: {err}"),
         },
         TrigramErrorCode::RegexPrefilterUnusable => CoreError::Typed {
-            code: "LEX_TRIGRAM_PREFILTER_UNUSABLE".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPrefilterUnusable,
             message: format!("lexical: {context}: {err}"),
         },
         TrigramErrorCode::IndexDeserialize | TrigramErrorCode::IndexCorrupted => {
@@ -35,8 +37,25 @@ pub(crate) fn map_trigram_error(context: &str, err: &TrigramError) -> CoreError 
 /// cannot express; the code is the normalizer's, shared by every route.
 pub(crate) fn map_text_query_error(err: &TextQueryError) -> CoreError {
     CoreError::Typed {
-        code: err.code().to_string(),
+        code: match err {
+            TextQueryError::NoTokens => Code::LexTextQueryNoTokens,
+            TextQueryError::TokenTooLong { .. } => Code::LexTextQueryTokenTooLong,
+        },
         message: format!("lexical: {err}"),
+    }
+}
+
+/// Preserve the historical `LEX_REGEX_` namespace without synthesizing a
+/// wire code from an arbitrary string. Every lower-domain variant is owned.
+pub(crate) const fn regex_wire_code(code: RegexErrorCode) -> Code {
+    match code {
+        RegexErrorCode::ParseFail => Code::LexRegexParseFail,
+        RegexErrorCode::ForbiddenSyntax => Code::LexRegexForbiddenSyntax,
+        RegexErrorCode::PlanLimitExceeded => Code::LexRegexPlanLimitExceeded,
+        RegexErrorCode::RegexPrefilterUnusable => Code::LexRegexRegexPrefilterUnusable,
+        RegexErrorCode::QueryTimeout => Code::LexRegexQueryTimeout,
+        RegexErrorCode::Interrupted => Code::LexRegexInterrupted,
+        RegexErrorCode::ExecutionInternal => Code::LexRegexExecutionInternal,
     }
 }
 
@@ -87,7 +106,7 @@ pub(crate) fn fold_literal_prefix(literal: &[u8]) -> Vec<u8> {
 pub(crate) fn map_positions_error(context: &str, err: &PositionsError) -> CoreError {
     match err.code {
         PositionsErrorCode::PlanLimitExceeded => CoreError::Typed {
-            code: "LEX_PHRASE_PLAN_LIMIT_EXCEEDED".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexPhrasePlanLimitExceeded,
             message: format!("lexical: {context}: {err}"),
         },
         PositionsErrorCode::StateGenerationRegression

@@ -245,8 +245,10 @@ mod tests {
 
     fn generation(generation: u64) -> GenKey {
         GenKey {
-            repo_id: RepoId::new("repo-alpha"),
-            revision_id: RevisionId::new("rev-alpha"),
+            repo_id: RepoId::new("repo-alpha")
+                .expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev-alpha")
+                .expect("static fixture ID satisfies canonical policy"),
             generation: ManifestGeneration::new(generation),
         }
     }

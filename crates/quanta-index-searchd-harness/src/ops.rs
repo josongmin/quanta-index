@@ -124,11 +124,11 @@ fn capture_result_provenance(rt: &mut E2eRuntime) -> OpsSnapshot {
 fn capture_typed_error(rt: &mut E2eRuntime) -> OpsSnapshot {
     let result = rt.query_text(TextQuerySyntax::Native, "", OPS_TOP_K);
     let (code, message) = result.typed_error.as_ref().map_or((None, None), |error| {
-        (Some(error.code.clone()), Some(error.message.clone()))
+        (Some(error.code.as_str()), Some(error.message.clone()))
     });
     // Provenance is preserved when the rejection carries a non-empty TYPED code,
     // not a generic human string (the ticket No-Go).
-    let provenance_ok = code.as_ref().is_some_and(|code| !code.is_empty());
+    let provenance_ok = code.is_some_and(|code| !code.is_empty());
     OpsSnapshot {
         surface: "typed_error",
         operator_question: "what typed error does the remote return for a rejected query?",

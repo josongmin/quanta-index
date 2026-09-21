@@ -26,11 +26,11 @@ use quanta_index_semantic::{
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn repo_id() -> RepoId {
-    RepoId::new("repo-sem")
+    RepoId::new("repo-sem").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision_id() -> RevisionId {
-    RevisionId::new("rev-sem")
+    RevisionId::new("rev-sem").expect("static fixture ID satisfies canonical policy")
 }
 
 fn model_contract(dimension: u32) -> EmbeddingModelContract {
@@ -78,7 +78,9 @@ fn embedding_record_same_owner(
 /// answered by the same typed code naming the file.
 fn expect_sidecar_corrupt(err: CoreError, expected_file: &str) -> TestResult {
     match err {
-        CoreError::Typed { code, message } if code == "GENERATION_SIDECAR_CORRUPT" => {
+        CoreError::Typed { code, message }
+            if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt =>
+        {
             if !message.contains(expected_file) {
                 return Err(format!("sidecar refusal must name {expected_file}: {message}").into());
             }
@@ -748,7 +750,12 @@ fn build_rejects_contract_dimension_mismatch() -> TestResult {
     // so a dimension mismatch is the typed vector code naming the embedding.
     match err {
         CoreError::Typed { code, message } => {
-            assert_eq!(code, "SEM_INVALID_VECTOR");
+            assert_eq!(
+                code,
+                quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                    quanta_index_contract::lex::LexicalErrorCode::SemInvalidVector,
+                )
+            );
             assert!(
                 message.contains("3 components, contract dimension is 2")
                     && message.contains("emb-1"),
@@ -795,7 +802,12 @@ fn query_dimension_mismatch_fails_closed() -> TestResult {
     };
     match err {
         CoreError::Typed { code, .. } => {
-            assert_eq!(code, "SEM_DIM_MISMATCH");
+            assert_eq!(
+                code,
+                quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                    quanta_index_contract::lex::LexicalErrorCode::SemDimMismatch,
+                )
+            );
         }
         other @ (CoreError::InvalidContract(_)
         | CoreError::NotReady(_)
@@ -810,7 +822,7 @@ fn query_dimension_mismatch_fails_closed() -> TestResult {
 
 fn typed_code<T>(result: &Result<T, CoreError>) -> Option<String> {
     match result {
-        Err(CoreError::Typed { code, .. }) => Some(code.clone()),
+        Err(CoreError::Typed { code, .. }) => Some(code.to_string()),
         _ => None,
     }
 }
@@ -1797,7 +1809,10 @@ fn validate_before_delete_preserves_prior_unsealed_rows() -> TestResult {
         return Err("invalid-dim scope must reject batch".into());
     };
     assert!(
-        matches!(err, CoreError::Typed { ref code, .. } if code == "SEM_INVALID_VECTOR"),
+        matches!(err, CoreError::Typed { ref code, .. }
+        if *code == quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+            quanta_index_contract::lex::LexicalErrorCode::SemInvalidVector,
+        )),
         "{err:?}"
     );
 
@@ -2216,7 +2231,8 @@ fn a_format_2_generation_is_refused_typed_at_open() -> TestResult {
     let reopened = SemanticAdapter::with_state_root(root)?;
     match reopened.open(&repo_id(), &revision_id(), generation) {
         Err(CoreError::Typed { code, message })
-            if code == "GENERATION_MANIFEST_MISSING" && message.contains("rebuilt") => {}
+            if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestMissing
+                && message.contains("rebuilt") => {}
         Ok(_) => return Err("a format-2 generation must not be served".into()),
         Err(other) => {
             return Err(format!(

@@ -82,8 +82,9 @@ fn fixture_semantic_source_record() -> SemanticSourceRecordV1 {
 
 fn fixture_search_corpus_batch() -> SearchCorpusIngestBatch {
     SearchCorpusIngestBatch {
-        repo_id: RepoId::new("repo-1"),
-        revision_id: RevisionId::new("rev-1"),
+        repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev-1")
+            .expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(7),
         base_generation: None,
         manifest_digest: "manifest:lex".to_string(),

@@ -25,7 +25,7 @@
 //! string alone or as an alternative, a bare or `Any`-side negation, an
 //! `All` with no positive scorable clause) has rows no scorable leaf
 //! reaches, and relevance never invents a score for them: it is refused
-//! [`HISTORY_TEXT_QUERY_UNSCORABLE_CODE`]. Regex, predicate and structural
+//! [`quanta_index_core::HISTORY_TEXT_QUERY_UNSCORABLE_CODE`]. Regex, predicate and structural
 //! leaves are refused the same way (the route refuses them earlier for
 //! both orders). The recency order runs the same expression as a filter
 //! and needs no score, so it serves what relevance refuses.
@@ -36,7 +36,7 @@
 //! (`LqOptions::case_mode`).
 
 use quanta_index_contract::{LqExpr, LqLeaf, LqPatternType};
-use quanta_index_core::{CoreError, HISTORY_TEXT_QUERY_UNSCORABLE_CODE, HistoryTextQueryV1};
+use quanta_index_core::{CoreError, HistoryTextQueryV1};
 use tantivy::Term;
 use tantivy::query::{BooleanQuery, Occur, PhraseQuery, Query, TermQuery};
 use tantivy::schema::{Field, IndexRecordOption};
@@ -46,14 +46,21 @@ use crate::normalize::{self, CaseMode, TextQueryError, Token};
 
 fn unscorable(message: impl Into<String>) -> CoreError {
     CoreError::Typed {
-        code: HISTORY_TEXT_QUERY_UNSCORABLE_CODE.to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextQueryUnscorable,
         message: format!("history relevance: {}", message.into()),
     }
 }
 
 fn map_text_query_error(err: &TextQueryError) -> CoreError {
     CoreError::Typed {
-        code: err.code().to_string(),
+        code: match err {
+            TextQueryError::NoTokens => {
+                quanta_index_contract::SearchPlaneErrorCodeV2::LexTextQueryNoTokens
+            }
+            TextQueryError::TokenTooLong { .. } => {
+                quanta_index_contract::SearchPlaneErrorCodeV2::LexTextQueryTokenTooLong
+            }
+        },
         message: format!("history relevance: {err}"),
     }
 }

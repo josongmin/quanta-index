@@ -10,9 +10,8 @@ mod shard;
 mod writer;
 
 pub(crate) use manifest::{
-    MAX_DOC_ID, TEXT_AUTHORITY_DIR_NAME, TEXT_AUTHORITY_FORMAT_UNSUPPORTED_CODE,
-    TEXT_AUTHORITY_MANIFEST_FILE_NAME, TextAuthorityManifest, leading_format_version,
-    read_manifest, shard_index_of, text_authority_dir,
+    MAX_DOC_ID, TEXT_AUTHORITY_DIR_NAME, TEXT_AUTHORITY_MANIFEST_FILE_NAME, TextAuthorityManifest,
+    leading_format_version, read_manifest, shard_index_of, text_authority_dir,
 };
 pub(crate) use reader::{ShardedTextAuthority, load_shard};
 pub(crate) use shard::{ShardBody, sha256_of_bytes};

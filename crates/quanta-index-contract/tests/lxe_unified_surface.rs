@@ -46,8 +46,8 @@ where
 
 fn generation_pin() -> GenerationPin {
     GenerationPin::new(
-        RepoId::new("repo-lxe"),
-        RevisionId::new("rev-lxe"),
+        RepoId::new("repo-lxe").expect("static fixture ID satisfies canonical policy"),
+        RevisionId::new("rev-lxe").expect("static fixture ID satisfies canonical policy"),
         ManifestGeneration::new(42),
     )
 }

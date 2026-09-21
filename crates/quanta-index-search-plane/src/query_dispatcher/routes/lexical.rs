@@ -1,9 +1,9 @@
 //! Lexical text and symbol query routes.
 
 use quanta_index_contract::{
-    GenerationPin, LexicalCursor, LexicalRowOrderKey, QUERY_CURSOR_GENERATION_MISMATCH_CODE,
-    QueryResultWindowV1, SearchPlaneTrackKind, SymbolQueryRequest, SymbolQueryResponse,
-    TextQueryRequest, TextQueryResponse, validate_lexical_page_v1,
+    GenerationPin, LexicalCursor, LexicalRowOrderKey, QueryResultWindowV1, SearchPlaneTrackKind,
+    SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse,
+    validate_lexical_page_v1,
 };
 use quanta_index_core::{
     CoreError, LexicalPageSpec, LexicalPolicy, LexicalQueryPort, QueryRouteV1, RequestBudgetV1,
@@ -184,7 +184,7 @@ fn continuation(
             Ok(Some(cursor.clone()))
         }
         Some(cursor) => Err(CoreError::Typed {
-            code: QUERY_CURSOR_GENERATION_MISMATCH_CODE.to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::QueryCursorGenerationMismatch,
             message: format!(
                 "the cursor was cut from generation {} but the request resolves to generation {}; pin the page's generation to continue it",
                 cursor.manifest_generation.get(),

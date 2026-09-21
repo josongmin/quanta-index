@@ -27,15 +27,10 @@
 //! variant plus a registry row and, only if it introduces a genuinely new
 //! lowering shape, one new [`PredicateKind`] variant with its dispatch
 //! arm. Unsupported names continue to typed-fail through
-//! [`unimplemented_predicate`] / [`PREDICATE_UNIMPLEMENTED_CODE`].
+//! [`unimplemented_predicate`].
 
 use quanta_index_contract::{LqFileScope, LqPredicateArg};
 use quanta_index_core::{CoreError, LexicalPredicateAliasV1, LexicalPredicateV1};
-
-/// Stable typed-reject code for predicate shapes outside the executable
-/// subset. Kept as the single owner of this wire code so diagnostics cannot
-/// drift between lowering sites.
-pub(crate) const PREDICATE_UNIMPLEMENTED_CODE: &str = "LEX_PREDICATE_UNIMPLEMENTED";
 
 /// Follow-up owner referenced by predicate typed-reject diagnostics.
 pub(crate) const PREDICATE_OWNER: &str = "LXE-03-predicate-extensions";
@@ -291,7 +286,7 @@ pub(crate) fn kind_of(name: &str) -> Option<PredicateKind> {
 /// admit. Centralizes the wire code so every lowering site stays consistent.
 pub(crate) fn unimplemented_predicate(message: String) -> CoreError {
     CoreError::Typed {
-        code: PREDICATE_UNIMPLEMENTED_CODE.to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::LexPredicateUnimplemented,
         message,
     }
 }

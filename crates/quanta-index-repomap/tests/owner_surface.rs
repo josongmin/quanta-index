@@ -23,11 +23,11 @@ fn rust_language() -> LanguageCode {
 }
 
 fn repo_id() -> RepoId {
-    RepoId::new("repo-map-owner-test")
+    RepoId::new("repo-map-owner-test").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision_id() -> RevisionId {
-    RevisionId::new("rev-owner-test")
+    RevisionId::new("rev-owner-test").expect("static fixture ID satisfies canonical policy")
 }
 
 fn manifest_generation() -> ManifestGeneration {

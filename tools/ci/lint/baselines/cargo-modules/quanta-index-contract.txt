@@ -84,6 +84,7 @@ crate quanta_index_contract
 │   │   ├── struct QueryErrorRepairVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
 │   │   ├── enum RepairClass: pub
+│   │   ├── enum SearchPlaneErrorCodeV2: pub
 │   │   ├── struct SearchPlaneIpcError: pub
 │   │   └── struct SearchPlaneIpcErrorVisitor: pub(self)
 │   │       └── type Value: pub(self)
@@ -511,8 +512,26 @@ crate quanta_index_contract
 │   ├── struct RepoMapSourceBundleV1Visitor: pub(self)
 │   │   └── type Value: pub(self)
 │   ├── struct RepoMapSymbolNode: pub
-│   └── struct RepoMapSymbolNodeVisitor: pub(self)
-│       └── type Value: pub(self)
+│   ├── struct RepoMapSymbolNodeVisitor: pub(self)
+│   │   └── type Value: pub(self)
+│   └── mod canonical_v3: pub(self)
+│       ├── struct ArtifactContentDigestV1: pub
+│       ├── struct ArtifactIdentityCommitmentV1: pub
+│       ├── struct ArtifactIdentityV1: pub
+│       ├── struct CandidateCommitmentV1: pub
+│       ├── struct CandidateObjectDigestV1: pub
+│       ├── enum CanonicalRepoMapCodecErrorV1: pub
+│       ├── struct QuarantineIncidentDigestV1: pub
+│       ├── struct QuarantineIncidentV1: pub
+│       ├── struct QuarantineObservationDigestV1: pub
+│       ├── struct QuarantineObservationEvidenceV1: pub
+│       ├── struct QuarantinePayloadDigestV1: pub
+│       ├── enum QuarantineReasonCodeV1: pub
+│       ├── struct RepoMapCandidateCommitmentsV1: pub
+│       ├── struct RepoMapCandidateEnvelopeV1: pub
+│       ├── struct StateRootUuidCommitmentV1: pub
+│       └── mod cbor: pub(self)
+│           └── struct Decoder: pub(super)
 ├── mod results: pub
 │   ├── mod cluster_membership: pub(self)
 │   │   ├── struct ClusterMembershipBatchReadResponseV1: pub

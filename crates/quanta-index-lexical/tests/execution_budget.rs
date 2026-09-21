@@ -38,11 +38,11 @@ const BUDGET: usize = 4;
 const DOCS: u32 = 5;
 
 fn repo() -> RepoId {
-    RepoId::new("budget-repo")
+    RepoId::new("budget-repo").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new("budget-rev")
+    RevisionId::new("budget-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 fn generation() -> ManifestGeneration {
@@ -126,7 +126,7 @@ fn adapter_with_budget(
 }
 
 fn is_budget_refusal(err: &CoreError) -> bool {
-    matches!(err, CoreError::Typed { code, .. } if code == LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE)
+    matches!(err, CoreError::Typed { code, .. } if *code == LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE)
 }
 
 fn seeded(budget: usize) -> Result<(tempfile::TempDir, LexicalAdapter), Box<dyn Error>> {

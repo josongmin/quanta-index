@@ -243,7 +243,7 @@ pub(crate) async fn open_generation(
     manifest.validate_scope(repo, revision, generation)?;
     if manifest.manifest_digest != sealed_digest {
         return Err(CoreError::Typed {
-            code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
             message: format!(
                 "semantic: sealed marker says {sealed_digest} but the manifest says {} for generation {}",
                 manifest.manifest_digest,
@@ -837,7 +837,7 @@ impl LoadedGeneration {
     fn validate_query_vector(&self, query_vector: &[f32]) -> Result<(), CoreError> {
         if query_vector.len() != self.dimension {
             return Err(CoreError::Typed {
-                code: LexicalErrorCode::SemDimMismatch.as_code_str().to_string(),
+                code: LexicalErrorCode::SemDimMismatch.into(),
                 message: format!(
                     "semantic: query vector dim {} does not match index dim {} for generation {}",
                     query_vector.len(),
@@ -1482,8 +1482,8 @@ mod tests {
         ClusterMembershipReadRequestV1 {
             cluster_record_id: "cluster:a".to_string(),
             generation: GenerationPin::new(
-                RepoId::new("repo"),
-                RevisionId::new("rev"),
+                RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
                 ManifestGeneration::new(7),
             ),
             expected_authority_digest: "authority:a".to_string(),

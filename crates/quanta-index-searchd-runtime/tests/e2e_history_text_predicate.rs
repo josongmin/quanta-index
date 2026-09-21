@@ -159,7 +159,11 @@ fn recency_and_relevance_count_the_same_rows_for_the_same_query() -> TestResult 
         None,
     );
     match relevance.typed_error {
-        Some(error) if error.code == quanta_index_core::HISTORY_TEXT_QUERY_UNSCORABLE_CODE => {}
+        Some(error)
+            if error.code
+                == e2e_harness::E2eErrorCode::Remote(
+                    quanta_index_core::HISTORY_TEXT_QUERY_UNSCORABLE_CODE,
+                ) => {}
         other => {
             return Err(
                 format!("a raw string alone is unscorable under relevance, got {other:?}").into(),
@@ -178,7 +182,7 @@ fn recency_and_relevance_count_the_same_rows_for_the_same_query() -> TestResult 
             None,
         );
         match page.typed_error {
-            Some(error) if error.code == "LEX_TEXT_QUERY_NO_TOKENS" => {}
+            Some(error) if error.code.as_str() == "LEX_TEXT_QUERY_NO_TOKENS" => {}
             other => {
                 return Err(format!(
                     "a token-less literal is refused typed under {order}, got {other:?}"

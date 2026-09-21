@@ -416,8 +416,10 @@ mod tests {
     fn cand(id: &str) -> LexicalCandidate {
         LexicalCandidate {
             candidate_id: id.to_string(),
-            repo_id: RepoId::new("repo-hybrid"),
-            revision_id: RevisionId::new("rev-hybrid"),
+            repo_id: RepoId::new("repo-hybrid")
+                .expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev-hybrid")
+                .expect("static fixture ID satisfies canonical policy"),
             manifest_generation: ManifestGeneration::new(1),
             repo_relative_path: RepoRelativePath::new("src/lib.rs"),
             start_line: 0,

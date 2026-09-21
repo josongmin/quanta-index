@@ -36,11 +36,11 @@ const MANIFEST_DIGEST: &str = "manifest:scv2-product-scenarios";
 const CORPUS_POLICY_DIGEST: &str = "policy:semantic-source-v1";
 
 fn repo_id() -> RepoId {
-    RepoId::new("repo-scv2-scenarios")
+    RepoId::new("repo-scv2-scenarios").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision_id() -> RevisionId {
-    RevisionId::new("rev-scv2-scenarios")
+    RevisionId::new("rev-scv2-scenarios").expect("static fixture ID satisfies canonical policy")
 }
 
 fn symbol_embedding(

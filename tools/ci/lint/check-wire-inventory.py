@@ -103,6 +103,10 @@ TOOL_MIGRATION_FIXTURES = {
         "tools/ci/tests/test_write_error_authority_inventory.py",
         "test_inventory_source_digest_changes_with_raw_source_bytes",
     ),
+    "search_plane_error_table_stale_content_refused": (
+        "tools/ci/tests/test_check_search_plane_error_codes.py",
+        "test_committed_table_check_rejects_stale_content",
+    ),
     "verification_receipt_v1_not_release_authority": (
         "tools/ci/tests/test_check_proof_authority.py",
         "test_legacy_verification_receipt_is_not_proof_manifest",

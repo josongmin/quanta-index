@@ -20,7 +20,9 @@ use std::path::Path;
 
 use anyhow::Result as AnyResult;
 use quanta_index_contract::lex::LexicalErrorCode;
-use quanta_index_contract::{QueryErrorRepair, RepairClass, SearchPlaneIpcError};
+use quanta_index_contract::{
+    QueryErrorRepair, RepairClass, SearchPlaneErrorCodeV2, SearchPlaneIpcError,
+};
 use quanta_index_search_plane::repair_for_code;
 use serde_json::{Value, json};
 
@@ -63,7 +65,8 @@ pub struct AmbiguityReport {
 
 fn audit_one(code: LexicalErrorCode, expected_repairable: bool) -> CodeAudit {
     let code_str = code.as_code_str();
-    let repair = repair_for_code(code_str);
+    let typed_code = SearchPlaneErrorCodeV2::Lexical(code);
+    let repair = repair_for_code(typed_code);
     let mut failures = Vec::new();
 
     match (&repair, expected_repairable) {
@@ -76,7 +79,7 @@ fn audit_one(code: LexicalErrorCode, expected_repairable: bool) -> CodeAudit {
             if repair.docs_anchor.is_none() {
                 failures.push(format!("{code_str}: repairable but missing docs_anchor"));
             }
-            if !payload_roundtrips(code_str, Some(repair.clone())) {
+            if !payload_roundtrips(typed_code, Some(repair.clone())) {
                 failures.push(format!("{code_str}: wire payload failed serde round-trip"));
             }
         }
@@ -99,9 +102,9 @@ fn audit_one(code: LexicalErrorCode, expected_repairable: bool) -> CodeAudit {
     }
 }
 
-fn payload_roundtrips(code: &str, repair: Option<QueryErrorRepair>) -> bool {
+fn payload_roundtrips(code: SearchPlaneErrorCodeV2, repair: Option<QueryErrorRepair>) -> bool {
     let payload = SearchPlaneIpcError {
-        code: code.to_string(),
+        code,
         message: "rail snapshot".to_string(),
         repair,
     };

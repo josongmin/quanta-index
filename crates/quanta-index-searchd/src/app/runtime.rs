@@ -188,7 +188,7 @@ impl StateRootLease {
                 state_root_identity_v1,
             }),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Err(CoreError::Typed {
-                code: "STATE_ROOT_IN_USE".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInUse,
                 message: format!(
                     "searchd state root already has a live owner: {}",
                     state_root.display()
@@ -342,7 +342,7 @@ fn ensure_private_state_root_v1(
     let mode = metadata.mode() & 0o7777;
     if metadata.uid() != owner || !access.admits_mode(mode) {
         return Err(CoreError::Typed {
-            code: "STATE_ROOT_INSECURE".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInsecure,
             message: format!(
                 "searchd state root {} is uid {} mode {mode:04o}; it must belong to uid {owner} and be {}",
                 state_root.display(),
@@ -445,9 +445,9 @@ impl QueryTextEmbedderPort for ProviderUnavailableQueryTextEmbedder {
         _budget: &RequestBudgetV1,
     ) -> Result<Vec<f32>, quanta_index_core::CoreError> {
         Err(quanta_index_core::CoreError::Typed {
-            code: LexicalErrorCode::SemProviderUnavailable
-                .as_code_str()
-                .to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                LexicalErrorCode::SemProviderUnavailable,
+            ),
             message: "query-time embedder is not configured for this runtime".to_string(),
         })
     }
@@ -1530,8 +1530,9 @@ mod tests {
 
     fn pinned_request() -> DomainStructuralQueryRequest {
         request_with_generation(GenerationSelector::Pinned(GenerationPin::new(
-            RepoId::new("repo".to_string()),
-            RevisionId::new("rev".to_string()),
+            RepoId::new("repo".to_string()).expect("static fixture ID satisfies canonical policy"),
+            RevisionId::new("rev".to_string())
+                .expect("static fixture ID satisfies canonical policy"),
             quanta_index_contract::ManifestGeneration::new(7),
         )))
     }
@@ -1540,8 +1541,10 @@ mod tests {
     fn structural_readiness_rejects_active_generation_selector() {
         let producer = LedgerStructuralProducer::new(Arc::new(RwLock::new(Ledger::new())));
         let readiness = producer.readiness(&request_with_generation(GenerationSelector::Active {
-            repo_id: RepoId::new("repo".to_string()),
-            revision_id: RevisionId::new("rev".to_string()),
+            repo_id: RepoId::new("repo".to_string())
+                .expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev".to_string())
+                .expect("static fixture ID satisfies canonical policy"),
         }));
         assert!(matches!(
             readiness,
@@ -1721,7 +1724,7 @@ mod tests {
             Err(quanta_index_core::CoreError::Typed { code, .. }) => {
                 let expected = quanta_index_contract::lex::LexicalErrorCode::SemProviderUnavailable
                     .as_code_str();
-                if code != expected {
+                if code.as_wire_str() != expected {
                     return Err(
                         format!("expected SEM_PROVIDER_UNAVAILABLE, got code {code}").into(),
                     );
@@ -1952,7 +1955,11 @@ mod tests {
             match (outcome, admitted) {
                 (Ok(lease), true) => drop(lease),
                 (Err(quanta_index_core::CoreError::Typed { code, message }), false) => {
-                    assert_eq!(code, "STATE_ROOT_INSECURE", "mode {mode:04o} {access:?}");
+                    assert_eq!(
+                        code,
+                        quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInsecure,
+                        "mode {mode:04o} {access:?}"
+                    );
                     assert!(message.contains(&format!("mode {mode:04o}")), "{message}");
                     assert!(message.contains("chmod"), "{message}");
                 }

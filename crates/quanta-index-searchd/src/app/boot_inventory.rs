@@ -567,8 +567,9 @@ mod tests {
     fn snapshot(track: SearchPlaneTrackKind, generation: u64) -> InventoriedSealedGenerationV1 {
         InventoriedSealedGenerationV1 {
             identity: GenerationSnapshot {
-                repo_id: RepoId::new("repo"),
-                revision_id: RevisionId::new("rev"),
+                repo_id: RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                revision_id: RevisionId::new("rev")
+                    .expect("static fixture ID satisfies canonical policy"),
                 track,
                 manifest_generation: ManifestGeneration::new(generation),
                 manifest_digest: format!("digest-{generation}"),
@@ -584,8 +585,8 @@ mod tests {
         let mut ledger = Ledger::new();
         for generation in generations {
             ledger.record_historically_sealed_search_corpus(
-                &RepoId::new("repo"),
-                &RevisionId::new("rev"),
+                &RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                &RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
                 ManifestGeneration::new(*generation),
                 &format!("digest-{generation}"),
             );
@@ -624,14 +625,15 @@ mod tests {
             let guard = ledger.read().expect("ledger");
             (
                 guard.track_sealed(
-                    &RepoId::new("repo"),
-                    &RevisionId::new("rev"),
+                    &RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                    &RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
                     SearchPlaneTrackKind::Lexical,
                 ),
                 guard
                     .track_manifest_digest(
-                        &RepoId::new("repo"),
-                        &RevisionId::new("rev"),
+                        &RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                        &RevisionId::new("rev")
+                            .expect("static fixture ID satisfies canonical policy"),
                         SearchPlaneTrackKind::Lexical,
                     )
                     .map(str::to_string),
@@ -678,8 +680,9 @@ mod tests {
             .expect("the semantic inventory seeds");
         let half = |track: SearchPlaneTrackKind, generation: u64| HalfSealedPair {
             key: SealedGenerationKey {
-                repo_id: RepoId::new("repo"),
-                revision_id: RevisionId::new("rev"),
+                repo_id: RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                revision_id: RevisionId::new("rev")
+                    .expect("static fixture ID satisfies canonical policy"),
                 generation: ManifestGeneration::new(generation),
             },
             sealed_track: track,
@@ -739,8 +742,8 @@ mod tests {
             let guard = ledger.read().expect("ledger");
             (
                 guard.track_sealed(
-                    &RepoId::new("repo"),
-                    &RevisionId::new("rev"),
+                    &RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                    &RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
                     SearchPlaneTrackKind::Lexical,
                 ),
                 guard.lexical_sealed(),
@@ -877,14 +880,15 @@ mod tests {
         );
 
         let refused = finish_interrupted_reclaims(&ScriptedFinish(Err(CoreError::Typed {
-            code: "GENERATION_IDENTITY_SCOPE_MISMATCH".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityScopeMismatch,
             message: "not a reclaim entry".to_string(),
         })))
         .expect_err("a refusal fails boot");
         assert!(
             matches!(
                 refused.downcast_ref::<CoreError>(),
-                Some(CoreError::Typed { code, .. }) if code == "GENERATION_IDENTITY_SCOPE_MISMATCH"
+                Some(CoreError::Typed { code, .. })
+                    if *code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityScopeMismatch
             ),
             "{refused:?}"
         );

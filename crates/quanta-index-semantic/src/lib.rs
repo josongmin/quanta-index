@@ -70,8 +70,7 @@ use quanta_index_core::{
     SemanticStreamWindowPolicy, TrackDiskUsagePort,
     domains::generation::{
         GenerationQuarantineReasonV1, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
-        IncompleteGenerationDiscardPort, InventoriedSealedGenerationV1,
-        QUARANTINE_TARGET_NOT_QUARANTINED_CODE, QuarantineDiscardOutcomeV1,
+        IncompleteGenerationDiscardPort, InventoriedSealedGenerationV1, QuarantineDiscardOutcomeV1,
         QuarantinedGenerationDiscardPort, QuarantinedGenerationV1, SealedGenerationBytesV1,
         SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
         unique_inode_tree_bytes,
@@ -342,7 +341,7 @@ impl SemanticAdapter {
             .map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
                     CoreError::Typed {
-                        code: "GENERATION_IDENTITY_INCOMPLETE".to_string(),
+                        code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityIncomplete,
                         message: format!(
                             "semantic: incomplete generation has no sealed marker for generation {}",
                             candidate.manifest_generation.get()
@@ -357,7 +356,8 @@ impl SemanticAdapter {
             })?;
         if sealed_digest != candidate.manifest_digest {
             return Err(CoreError::Typed {
-                code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
+                code:
+                    quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
                 message: format!(
                     "semantic: sealed marker says {sealed_digest} but the candidate says {} for repo={} revision={} generation={}",
                     candidate.manifest_digest,
@@ -415,7 +415,8 @@ fn read_sealed_scope_manifest(
         .map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 CoreError::Typed {
-                    code: "GENERATION_IDENTITY_INCOMPLETE".to_string(),
+                    code:
+                        quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityIncomplete,
                     message: format!(
                         "semantic: generation {} has no sealed marker",
                         candidate.manifest_generation.get()
@@ -517,7 +518,7 @@ impl IncompleteGenerationDiscardPort for SemanticAdapter {
                 return Err(generation_digest_mismatch(candidate, "manifest"));
             }
             return Err(CoreError::Typed {
-                code: "GENERATION_IMMUTABLE".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationImmutable,
                 message: format!(
                     "semantic: refusing to discard sealed generation {}",
                     candidate.manifest_generation.get()
@@ -577,7 +578,7 @@ impl SealedGenerationReclaimPort for SemanticAdapter {
         let marker_path = layout::sealed_marker_path(&generation_dir);
         if !marker_path.exists() {
             return Err(CoreError::Typed {
-                code: "GENERATION_NOT_SEALED".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationNotSealed,
                 message: format!(
                     "semantic: refusing to reclaim unsealed generation {} as retired history",
                     retired.manifest_generation.get()
@@ -667,7 +668,7 @@ impl SealedGenerationReclaimPort for SemanticAdapter {
                 != generation_dir
             {
                 return Err(CoreError::Typed {
-                    code: "GENERATION_IDENTITY_SCOPE_MISMATCH".to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityScopeMismatch,
                     message: format!(
                         "semantic: manifest does not own physical path {}",
                         generation_dir.display()
@@ -682,7 +683,7 @@ impl SealedGenerationReclaimPort for SemanticAdapter {
             })?;
             if marker_digest != manifest.manifest_digest {
                 return Err(CoreError::Typed {
-                    code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
                     message: format!(
                         "semantic: sealed marker and manifest disagree at {}",
                         generation_dir.display()
@@ -733,7 +734,7 @@ impl SealedGenerationReclaimPort for SemanticAdapter {
 
 fn generation_digest_mismatch(candidate: &GenerationSnapshot, source: &str) -> CoreError {
     CoreError::Typed {
-        code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
         message: format!(
             "semantic: {source} digest conflicts with candidate for repo={} revision={} generation={}",
             candidate.repo_id.as_str(),
@@ -977,7 +978,7 @@ fn inventory_generation_dir(
         .map_err(|err| unreadable(format!("read manifest {}: {err}", manifest_path.display())))?;
     let manifest = SemanticManifest::decode(&manifest_bytes).map_err(|err| {
         if let CoreError::Typed { code, message } = &err
-            && code == FORMAT_UNSUPPORTED_CODE
+            && *code == FORMAT_UNSUPPORTED_CODE
         {
             quarantine(
                 generation_dir.to_path_buf(),
@@ -988,8 +989,13 @@ fn inventory_generation_dir(
             unreadable(format!("decode manifest: {err}"))
         }
     })?;
-    let repo_id = RepoId::new(manifest.repo_id.clone());
-    let revision_id = RevisionId::new(manifest.revision_id.clone());
+    let repo_id = RepoId::new(manifest.repo_id.clone())
+        .map_err(|error| unreadable(format!("semantic manifest has invalid repo ID: {error}")))?;
+    let revision_id = RevisionId::new(manifest.revision_id.clone()).map_err(|error| {
+        unreadable(format!(
+            "semantic manifest has invalid revision ID: {error}"
+        ))
+    })?;
     let generation = ManifestGeneration::new(manifest.generation);
     if let Err(err) = manifest.validate_scope(&repo_id, &revision_id, generation) {
         return Err(quarantine(
@@ -1077,7 +1083,7 @@ fn discard_quarantined_directory(
     entry: &QuarantinedGenerationV1,
 ) -> Result<QuarantineDiscardOutcomeV1, CoreError> {
     let not_quarantined = |why: String| CoreError::Typed {
-        code: QUARANTINE_TARGET_NOT_QUARANTINED_CODE.to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined,
         message: format!(
             "semantic: refusing to discard {}: {why}",
             entry.path.display()
@@ -1187,8 +1193,10 @@ mod incomplete_generation_discard_tests {
 
     fn candidate(generation: u64, digest: &str) -> GenerationSnapshot {
         GenerationSnapshot {
-            repo_id: RepoId::new("../../repo-alpha"),
-            revision_id: RevisionId::new("/rev-alpha"),
+            repo_id: RepoId::new("../../repo-alpha")
+                .expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("/rev-alpha")
+                .expect("static fixture ID satisfies canonical policy"),
             track: SearchPlaneTrackKind::Semantic,
             manifest_generation: ManifestGeneration::new(generation),
             manifest_digest: digest.to_string(),
@@ -1286,7 +1294,7 @@ mod incomplete_generation_discard_tests {
             .expect_err("sealed exact must be immutable");
         assert!(matches!(
             exact_error,
-            CoreError::Typed { ref code, .. } if code == "GENERATION_IMMUTABLE"
+            CoreError::Typed { ref code, .. } if *code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationImmutable
         ));
         let mut conflict = sealed;
         conflict.manifest_digest = "digest-b".to_string();
@@ -1296,7 +1304,7 @@ mod incomplete_generation_discard_tests {
         assert!(matches!(
             conflict_error,
             CoreError::Typed { ref code, .. }
-                if code == "GENERATION_IDENTITY_DIGEST_MISMATCH"
+                if *code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch
         ));
         assert!(generation_dir.exists());
     }
@@ -1327,7 +1335,7 @@ mod incomplete_generation_discard_tests {
         assert!(matches!(
             error,
             CoreError::Typed { ref code, .. }
-                if code == "GENERATION_IDENTITY_DIGEST_MISMATCH"
+                if *code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch
         ));
         assert!(generation_dir.exists());
     }

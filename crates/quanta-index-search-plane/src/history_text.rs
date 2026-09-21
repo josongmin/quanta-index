@@ -430,8 +430,10 @@ mod tests {
 
     fn generation() -> AuxiliaryGenerationKeyV1 {
         AuxiliaryGenerationKeyV1 {
-            repo_id: RepoId::new("repo-history-text"),
-            revision_id: RevisionId::new("rev-history-text"),
+            repo_id: RepoId::new("repo-history-text")
+                .expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev-history-text")
+                .expect("static fixture ID satisfies canonical policy"),
             generation: ManifestGeneration::new(3),
         }
     }
@@ -560,7 +562,7 @@ mod tests {
         let first = handles.claim(&generation(), EPOCH)?;
         let second = handles.claim(&generation(), EPOCH)?;
         let failure = || CoreError::Typed {
-            code: "HISTORY_TEXT_INDEX_NOT_READY".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexNotReady,
             message: "injected".to_string(),
         };
         for landed in [
@@ -568,7 +570,8 @@ mod tests {
             handles.land(second, &unbounded, never_opened),
         ] {
             match landed {
-                Err(CoreError::Typed { code, .. }) if code == "HISTORY_TEXT_INDEX_NOT_READY" => {}
+                Err(CoreError::Typed { code, .. })
+                    if code == quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexNotReady => {}
                 Err(other) => {
                     return Err(format!("the opener's failure by value: {other:?}").into());
                 }
@@ -595,7 +598,10 @@ mod tests {
             Err(CoreError::Typed { code, message })
                 if message.contains("history-text:await-open") =>
             {
-                assert_eq!(code, "REQUEST_DEADLINE_EXCEEDED");
+                assert_eq!(
+                    code,
+                    quanta_index_contract::SearchPlaneErrorCodeV2::RequestDeadlineExceeded
+                );
                 Ok(())
             }
             Err(other) => Err(format!("the waiter's own interruption: {other:?}").into()),

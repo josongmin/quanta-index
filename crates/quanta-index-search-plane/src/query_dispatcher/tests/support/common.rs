@@ -97,8 +97,10 @@ pub(crate) fn activation_catalog_with_generations(
 
 pub(crate) fn ready_ledger() -> Arc<RwLock<Ledger>> {
     let mut ledger = Ledger::default();
-    let repo_id = RepoId::new("repo-map-ipc");
-    let revision_id = RevisionId::new("rev-map-ipc");
+    let repo_id =
+        RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy");
+    let revision_id =
+        RevisionId::new("rev-map-ipc").expect("static fixture ID satisfies canonical policy");
     ledger.lexical_seal(ManifestGeneration::new(9));
     ledger.semantic_seal_with_digest(ManifestGeneration::new(9), "manifest-digest-9");
     ledger.record_track_materialized(
@@ -151,8 +153,9 @@ pub(crate) fn manual_query(expr: LqExpr, filters: Vec<LqFilter>) -> LqQuery {
 pub(crate) fn candidate(id: &str, score: f32) -> LexicalCandidate {
     LexicalCandidate {
         candidate_id: id.to_string(),
-        repo_id: RepoId::new("repo-map-ipc"),
-        revision_id: RevisionId::new("rev-map-ipc"),
+        repo_id: RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev-map-ipc")
+            .expect("static fixture ID satisfies canonical policy"),
         manifest_generation: ManifestGeneration::new(9),
         repo_relative_path: RepoRelativePath::new("src/lib.rs"),
         start_line: 1,
@@ -167,8 +170,9 @@ pub(crate) fn candidate(id: &str, score: f32) -> LexicalCandidate {
 pub(crate) fn symbol_candidate(id: &str, score: f32) -> SymbolCandidate {
     SymbolCandidate {
         candidate_id: id.to_string(),
-        repo_id: RepoId::new("repo-map-ipc"),
-        revision_id: RevisionId::new("rev-map-ipc"),
+        repo_id: RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev-map-ipc")
+            .expect("static fixture ID satisfies canonical policy"),
         manifest_generation: ManifestGeneration::new(9),
         repo_relative_path: RepoRelativePath::new("src/lib.rs"),
         start_line: 1,
@@ -201,15 +205,15 @@ pub(crate) fn dispatcher_with_obs(
 
 pub(crate) fn ready_pin() -> quanta_index_contract::GenerationPin {
     make_pin(
-        RepoId::new("repo-map-ipc"),
-        RevisionId::new("rev-map-ipc"),
+        RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+        RevisionId::new("rev-map-ipc").expect("static fixture ID satisfies canonical policy"),
         ManifestGeneration::new(9),
     )
 }
 
 pub(crate) fn ipc_error_from(
     response: SearchPlaneQueryIpcResponse,
-) -> Result<(String, String), String> {
+) -> Result<(quanta_index_contract::SearchPlaneErrorCodeV2, String), String> {
     match response {
         SearchPlaneQueryIpcResponse::Error(err) => Ok((err.code, err.message)),
         other @ (SearchPlaneQueryIpcResponse::Text(_)

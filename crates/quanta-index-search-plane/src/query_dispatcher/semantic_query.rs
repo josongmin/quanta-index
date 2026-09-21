@@ -487,7 +487,7 @@ pub(super) fn ensure_query_model_matches_index_v1(
     // by this revision; it is refused, not assumed (QI-BB-028).
     let Some(index_model_revision) = index_model_revision else {
         return Err(CoreError::Typed {
-            code: LexicalErrorCode::SemModelMismatch.as_code_str().to_string(),
+            code: LexicalErrorCode::SemModelMismatch.into(),
             message: format!(
                 "{plane}: index model {index_model_id} was sealed without a model revision and cannot be compared to query embedder {embedder_model_id}/{embedder_model_revision}; reseal the generation"
             ),
@@ -497,7 +497,7 @@ pub(super) fn ensure_query_model_matches_index_v1(
         return Ok(());
     }
     Err(CoreError::Typed {
-        code: LexicalErrorCode::SemModelMismatch.as_code_str().to_string(),
+        code: LexicalErrorCode::SemModelMismatch.into(),
         message: format!(
             "{plane}: query embedder model {embedder_model_id}/{embedder_model_revision} is not comparable to index model {index_model_id}/{index_model_revision} (equal dimension is insufficient; vectors from different models or revisions are not cosine-comparable)"
         ),
@@ -573,8 +573,10 @@ mod seed_fusion_tests {
     fn lexical_candidate(id: &str) -> LexicalCandidate {
         LexicalCandidate {
             candidate_id: id.to_string(),
-            repo_id: RepoId::new("repo-seed-fusion"),
-            revision_id: RevisionId::new("rev-seed-fusion"),
+            repo_id: RepoId::new("repo-seed-fusion")
+                .expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev-seed-fusion")
+                .expect("static fixture ID satisfies canonical policy"),
             manifest_generation: ManifestGeneration::new(1),
             repo_relative_path: RepoRelativePath::new("src/session.rs"),
             start_line: 0,

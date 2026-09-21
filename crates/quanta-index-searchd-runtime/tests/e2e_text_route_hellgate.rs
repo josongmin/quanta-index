@@ -124,17 +124,20 @@ fn boot_with_text_route_authorities() -> AnyResult<E2eRuntime> {
         batch_digest: "text-hellgate-repo-meta".to_string(),
         entries: vec![
             RepoMetaEntry {
-                source_repo_id: RepoId::new("corp-a"),
+                source_repo_id: RepoId::new("corp-a")
+                    .expect("static fixture ID satisfies canonical policy"),
                 key: "license".to_string(),
                 value: "apache-2.0".to_string(),
             },
             RepoMetaEntry {
-                source_repo_id: RepoId::new("corp-b"),
+                source_repo_id: RepoId::new("corp-b")
+                    .expect("static fixture ID satisfies canonical policy"),
                 key: "license".to_string(),
                 value: "gpl-3.0".to_string(),
             },
             RepoMetaEntry {
-                source_repo_id: RepoId::new("corp-a"),
+                source_repo_id: RepoId::new("corp-a")
+                    .expect("static fixture ID satisfies canonical policy"),
                 key: "tier".to_string(),
                 value: "prod".to_string(),
             },
@@ -147,15 +150,18 @@ fn boot_with_text_route_authorities() -> AnyResult<E2eRuntime> {
         batch_digest: "text-hellgate-repo-topic".to_string(),
         entries: vec![
             RepoTopicEntry {
-                source_repo_id: RepoId::new("corp-a"),
+                source_repo_id: RepoId::new("corp-a")
+                    .expect("static fixture ID satisfies canonical policy"),
                 topic: "security".to_string(),
             },
             RepoTopicEntry {
-                source_repo_id: RepoId::new("corp-a"),
+                source_repo_id: RepoId::new("corp-a")
+                    .expect("static fixture ID satisfies canonical policy"),
                 topic: "platform".to_string(),
             },
             RepoTopicEntry {
-                source_repo_id: RepoId::new("corp-b"),
+                source_repo_id: RepoId::new("corp-b")
+                    .expect("static fixture ID satisfies canonical policy"),
                 topic: "ml".to_string(),
             },
         ],
@@ -167,11 +173,13 @@ fn boot_with_text_route_authorities() -> AnyResult<E2eRuntime> {
         batch_digest: "text-hellgate-repo-commit-recency".to_string(),
         entries: vec![
             RepoCommitRecencyEntry {
-                source_repo_id: RepoId::new("corp-a"),
+                source_repo_id: RepoId::new("corp-a")
+                    .expect("static fixture ID satisfies canonical policy"),
                 latest_committer_time_ms: now_ms.saturating_sub(6 * 60 * 60 * 1000),
             },
             RepoCommitRecencyEntry {
-                source_repo_id: RepoId::new("corp-b"),
+                source_repo_id: RepoId::new("corp-b")
+                    .expect("static fixture ID satisfies canonical policy"),
                 latest_committer_time_ms: 1_700_000_000_000,
             },
         ],
@@ -183,11 +191,13 @@ fn boot_with_text_route_authorities() -> AnyResult<E2eRuntime> {
         batch_digest: "text-hellgate-repo-description".to_string(),
         entries: vec![
             RepoDescriptionEntry {
-                source_repo_id: RepoId::new("corp-a"),
+                source_repo_id: RepoId::new("corp-a")
+                    .expect("static fixture ID satisfies canonical policy"),
                 description: "Apache distributed systems platform".to_string(),
             },
             RepoDescriptionEntry {
-                source_repo_id: RepoId::new("corp-b"),
+                source_repo_id: RepoId::new("corp-b")
+                    .expect("static fixture ID satisfies canonical policy"),
                 description: "Machine learning training pipelines".to_string(),
             },
         ],
@@ -199,22 +209,26 @@ fn boot_with_text_route_authorities() -> AnyResult<E2eRuntime> {
         batch_digest: "text-hellgate-file-owners".to_string(),
         entries: vec![
             FileOwnershipEntry {
-                source_repo_id: RepoId::new("corp-a"),
+                source_repo_id: RepoId::new("corp-a")
+                    .expect("static fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/corp-a.rs"),
                 owners: vec!["@alice".to_string(), "@acme/platform".to_string()],
             },
             FileOwnershipEntry {
-                source_repo_id: RepoId::new("corp-a"),
+                source_repo_id: RepoId::new("corp-a")
+                    .expect("static fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/gate-a.rs"),
                 owners: vec!["@alice".to_string()],
             },
             FileOwnershipEntry {
-                source_repo_id: RepoId::new("corp-b"),
+                source_repo_id: RepoId::new("corp-b")
+                    .expect("static fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/corp-b.rs"),
                 owners: vec!["@bob".to_string()],
             },
             FileOwnershipEntry {
-                source_repo_id: RepoId::new("corp-b"),
+                source_repo_id: RepoId::new("corp-b")
+                    .expect("static fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/gate-b.py"),
                 owners: Vec::new(),
             },
@@ -227,7 +241,8 @@ fn boot_with_text_route_authorities() -> AnyResult<E2eRuntime> {
         batch_digest: "text-hellgate-file-contributors".to_string(),
         entries: vec![
             FileContributorEntry {
-                source_repo_id: RepoId::new("corp-a"),
+                source_repo_id: RepoId::new("corp-a")
+                    .expect("static fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/corp-a.rs"),
                 contributors: vec![
                     FileContributorIdentityEntry {
@@ -243,7 +258,8 @@ fn boot_with_text_route_authorities() -> AnyResult<E2eRuntime> {
                 ],
             },
             FileContributorEntry {
-                source_repo_id: RepoId::new("corp-a"),
+                source_repo_id: RepoId::new("corp-a")
+                    .expect("static fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/gate-a.rs"),
                 contributors: vec![FileContributorIdentityEntry {
                     canonical: "alice".to_string(),
@@ -252,7 +268,8 @@ fn boot_with_text_route_authorities() -> AnyResult<E2eRuntime> {
                 }],
             },
             FileContributorEntry {
-                source_repo_id: RepoId::new("corp-b"),
+                source_repo_id: RepoId::new("corp-b")
+                    .expect("static fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/corp-b.rs"),
                 contributors: vec![FileContributorIdentityEntry {
                     canonical: "bob".to_string(),
@@ -261,7 +278,8 @@ fn boot_with_text_route_authorities() -> AnyResult<E2eRuntime> {
                 }],
             },
             FileContributorEntry {
-                source_repo_id: RepoId::new("corp-b"),
+                source_repo_id: RepoId::new("corp-b")
+                    .expect("static fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/gate-b.py"),
                 contributors: Vec::new(),
             },
@@ -284,10 +302,12 @@ fn boot_with_runtime_dirty_fixture() -> AnyResult<E2eRuntime> {
 
 fn rev_at_time_ancestor_revision() -> RevisionId {
     RevisionId::new("1111111111111111111111111111111111111111")
+        .expect("static fixture ID satisfies canonical policy")
 }
 
 fn rev_at_time_head_revision() -> RevisionId {
     RevisionId::new("2222222222222222222222222222222222222222")
+        .expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision_scope_key(path: &str) -> SearchScopeKey {
@@ -504,8 +524,8 @@ fn verify_repo_meta_description_and_repo_file(rt: &mut E2eRuntime) -> AnyResult<
         anyhow::bail!("invalid repo:has.meta regex must typed-fail");
     };
     ensure!(
-        meta_error.code.starts_with("LEX_REGEX_"),
-        "invalid repo:has.meta regex must fail with LEX_REGEX_*, got {}",
+        meta_error.code.as_str() == "LEX_REGEX_PARSE_FAIL",
+        "invalid repo:has.meta regex must fail with LEX_REGEX_PARSE_FAIL, got {}",
         meta_error.code,
     );
 
@@ -536,8 +556,8 @@ fn verify_repo_meta_description_and_repo_file(rt: &mut E2eRuntime) -> AnyResult<
         anyhow::bail!("invalid repo:has.description regex must typed-fail");
     };
     ensure!(
-        description_error.code.starts_with("LEX_REGEX_"),
-        "invalid repo:has.description regex must fail with LEX_REGEX_*, got {}",
+        description_error.code.as_str() == "LEX_REGEX_PARSE_FAIL",
+        "invalid repo:has.description regex must fail with LEX_REGEX_PARSE_FAIL, got {}",
         description_error.code,
     );
 
@@ -572,7 +592,7 @@ fn verify_repo_meta_description_and_repo_file(rt: &mut E2eRuntime) -> AnyResult<
         anyhow::bail!("empty repo:has.file content matcher must typed-fail");
     };
     ensure!(
-        repo_file_error.code == "LEX_PREDICATE_UNIMPLEMENTED",
+        repo_file_error.code.as_str() == "LEX_PREDICATE_UNIMPLEMENTED",
         "empty repo:has.file content matcher must fail closed, got {}",
         repo_file_error.code,
     );
@@ -644,7 +664,7 @@ fn verify_repo_topic_and_commit_recency(rt: &mut E2eRuntime) -> AnyResult<()> {
         anyhow::bail!("invalid repo:has.commit.after timeref must typed-fail");
     };
     ensure!(
-        error.code == "HISTORY_INVALID_TIMEREF" && error.message.contains("timeref"),
+        error.code.as_str() == "HISTORY_INVALID_TIMEREF" && error.message.contains("timeref"),
         "invalid repo:has.commit.after must fail with HISTORY_INVALID_TIMEREF + timeref message, got {} {:?}",
         error.code,
         error.message,
@@ -781,8 +801,8 @@ fn verify_file_owner_contributor_and_projection(rt: &mut E2eRuntime) -> AnyResul
         anyhow::bail!("invalid contributor regex must typed-fail");
     };
     ensure!(
-        contributor_error.code.starts_with("LEX_REGEX_"),
-        "invalid contributor regex must fail with LEX_REGEX_*, got {}",
+        contributor_error.code.as_str() == "LEX_REGEX_PARSE_FAIL",
+        "invalid contributor regex must fail with LEX_REGEX_PARSE_FAIL, got {}",
         contributor_error.code,
     );
 
@@ -883,7 +903,7 @@ fn sourcegraph_rev_at_time_hellgate() -> AnyResult<()> {
         anyhow::bail!("invalid rev:at.time must typed-fail");
     };
     ensure!(
-        error.code == "HISTORY_INVALID_TIMEREF" && error.message.contains("timeref"),
+        error.code.as_str() == "HISTORY_INVALID_TIMEREF" && error.message.contains("timeref"),
         "invalid rev:at.time must fail with HISTORY_INVALID_TIMEREF + timeref message, got {} {:?}",
         error.code,
         error.message,

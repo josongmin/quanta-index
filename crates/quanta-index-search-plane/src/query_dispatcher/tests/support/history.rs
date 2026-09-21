@@ -103,9 +103,12 @@ pub(crate) fn ledger_with_history_ops(
 pub(crate) fn ledger_with_rev_at_time_history()
 -> Result<Arc<RwLock<Ledger>>, Box<dyn std::error::Error>> {
     let ledger = Arc::new(RwLock::new(Ledger::default()));
-    let repo_id = RepoId::new("repo-map-ipc");
-    let base_revision_id = RevisionId::new("2222222222222222222222222222222222222222");
-    let ancestor_revision_id = RevisionId::new("1111111111111111111111111111111111111111");
+    let repo_id =
+        RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy");
+    let base_revision_id = RevisionId::new("2222222222222222222222222222222222222222")
+        .expect("static fixture ID satisfies canonical policy");
+    let ancestor_revision_id = RevisionId::new("1111111111111111111111111111111111111111")
+        .expect("static fixture ID satisfies canonical policy");
     {
         let mut guard = ledger
             .write()
