@@ -180,6 +180,25 @@ def test_include_cycle_is_rejected(tmp_path: Path, monkeypatch) -> None:
         raise AssertionError("scope include cycle was accepted")
 
 
+def test_composed_scope_uses_smallest_included_thread_cap(tmp_path: Path, monkeypatch) -> None:
+    data = _catalog(tmp_path)
+    data["local_scopes"]["one"]["test_threads"] = 1
+    data["local_scopes"]["composite"] = {
+        "lane": "composite-lane",
+        "test_threads": 4,
+        "includes": ["one"],
+    }
+    monkeypatch.setattr(MODULE, "ROOT", tmp_path)
+
+    lane, threads, include_lib, packages, targets = MODULE.resolve_targets(data, ["composite"])
+
+    assert lane == "composite-lane"
+    assert threads == 1
+    assert include_lib is False
+    assert packages == []
+    assert [target["id"] for target in targets] == ["first-alpha"]
+
+
 def test_multiple_source_rows_can_share_one_cargo_test_target(tmp_path: Path, monkeypatch) -> None:
     data = _catalog(tmp_path)
     data["integration_targets"][0]["target"] = "grouped-suite"

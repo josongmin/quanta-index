@@ -1034,7 +1034,7 @@ def source_snapshot(root: Path, *, excluded_paths: Iterable[Path] = ()) -> dict[
     merge_base = (
         _optional_git(root, "merge-base", "HEAD", upstream) if upstream is not None else None
     )
-    return {
+    snapshot = {
         "head": head,
         "dirty_digest": dirty_digest(
             root,
@@ -1045,6 +1045,9 @@ def source_snapshot(root: Path, *, excluded_paths: Iterable[Path] = ()) -> dict[
         "upstream": upstream,
         "merge_base": merge_base,
     }
+    if _git_status_snapshot(root) != status_snapshot:
+        raise RuntimeError("Git source changed while capturing proof snapshot")
+    return snapshot
 
 
 def proof_source_snapshot(

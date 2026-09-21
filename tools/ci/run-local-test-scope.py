@@ -55,6 +55,13 @@ def resolve_targets(
         scope = scopes.get(scope_name)
         if not isinstance(scope, dict):
             raise ValueError(f"unknown local test scope: {scope_name}")
+        lane = scope.get("lane")
+        if not isinstance(lane, str) or not lane:
+            raise ValueError(f"local scope {scope_name} has no lane")
+        test_threads = scope.get("test_threads")
+        if not isinstance(test_threads, int) or isinstance(test_threads, bool) or test_threads < 1:
+            raise ValueError(f"local scope {scope_name} has invalid test_threads")
+        thread_limits.append(test_threads)
         includes = scope.get("includes", [])
         if not isinstance(includes, list):
             raise ValueError(f"local scope {scope_name}.includes is not a list")
@@ -97,10 +104,6 @@ def resolve_targets(
         if not isinstance(lane, str) or not lane:
             raise ValueError(f"local scope {scope_name} has no lane")
         default_lanes.append(lane)
-        test_threads = scope.get("test_threads")
-        if not isinstance(test_threads, int) or isinstance(test_threads, bool) or test_threads < 1:
-            raise ValueError(f"local scope {scope_name} has invalid test_threads")
-        thread_limits.append(test_threads)
         expand_scope(scope_name, ())
 
     resolved: list[dict[str, str]] = []

@@ -713,6 +713,19 @@ def test_source_snapshot_tracks_upstream_merge_base_and_detached_head(tmp_path: 
     assert disconnected["merge_base"] is None
 
 
+def test_source_snapshot_rejects_source_change_during_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    original = MODULE._git_status_snapshot(tmp_path)
+    changed = original + b"? changed-during-capture\0"
+    snapshots = iter((original, changed))
+    monkeypatch.setattr(MODULE, "_git_status_snapshot", lambda _root: next(snapshots))
+
+    with pytest.raises(RuntimeError, match="source changed while capturing proof snapshot"):
+        MODULE.source_snapshot(tmp_path)
+
+
 def test_manifest_refuses_absolute_traversal_and_symlink_escape(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
