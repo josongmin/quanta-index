@@ -167,6 +167,13 @@ targets = [
 [local_scopes.query-truth-owner]
 lane = "test-query-truth-owner-lane"
 test_threads = 4
+targets = [
+  "query-truth-owner-v1",
+]
+
+[local_scopes.query-truth-owner-lib]
+lane = "test-query-truth-owner-lane"
+test_threads = 4
 lib = true
 packages = [
   "quanta-index-contract-base",
@@ -239,6 +246,12 @@ owners = [
 id = "contract-hybrid-candidate"
 path = "crates/quanta-index-contract/tests/hybrid_candidate_contract.rs"
 owner = "quanta-index-contract"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "query-truth-owner-v1"
+path = "crates/quanta-index-contract-base/tests/query_truth_owner_v1.rs"
+owner = "quanta-index-contract-base"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]

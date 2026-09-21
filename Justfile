@@ -31,6 +31,7 @@ rust-profile-list:
         'test-read-view-lifetime-owner P04 read-view lifetime, pin/GC barrier owner proof' \
         'test-search-plane-read-view-lib P04 search-plane read-view lib proof' \
         'test-query-truth-owner P05 query outcome/cursor/oracle owner proof' \
+        'test-query-truth-owner-lib P05 outcome/cursor/oracle lib suites' \
         'test-integration-fast bounded integration loop; excludes slow text/Lance storage' \
         'test-integration-storage text-authority shard persistence slice' \
         'test-integration-semantic semantic storage integration slice' \
@@ -66,6 +67,7 @@ rust-profile profile:
         test-read-view-lifetime-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-read-view-lifetime-owner ;; \
         test-search-plane-read-view-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-search-plane-read-view-lib ;; \
         test-query-truth-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-query-truth-owner ;; \
+        test-query-truth-owner-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-query-truth-owner-lib ;; \
         test-integration-fast) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-fast ;; \
         test-integration-storage) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-storage ;; \
         test-integration-semantic) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-semantic ;; \
@@ -235,6 +237,9 @@ rust-test-search-plane-read-view-lib lane="test-search-plane-read-view-lane":
 
 rust-test-query-truth-owner lane="test-query-truth-owner-lane":
     python3 tools/ci/run-local-test-scope.py query-truth-owner --lane {{lane}}
+
+rust-test-query-truth-owner-lib lane="test-query-truth-owner-lane":
+    python3 tools/ci/run-local-test-scope.py query-truth-owner-lib --lane {{lane}}
 
 rust-test-integration-fast lane="test-integration-lane":
     python3 tools/ci/run-local-test-scope.py integration-fast --lane {{lane}}
@@ -840,6 +845,7 @@ proof-p04-read-view-lifetime-owner:
 # binding) stays NOT_RUN on this host.
 proof-p05-query-truth-owner:
     @just rust-profile test-query-truth-owner
+    @just rust-profile test-query-truth-owner-lib
     @just rust-hexagonal
     @just rust-wire-inventory
     @just rust-public-api
