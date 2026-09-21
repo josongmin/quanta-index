@@ -286,6 +286,20 @@ changed-file fast gate; it is **not** a complete qualification receipt for
 unchanged Rust files. A full verification claim still requires the appropriate
 CI/`just` rails.
 
+Two further CI setup costs were identified without changing the validation
+commands: `prompt-manager` now installs only the project runtime dependencies,
+pytest, and Ruff; its prior `.[dev]` install also pulled Semgrep and pre-commit,
+which have separate jobs. `agent-output` now identifies changed JSON files
+before setting up Python or installing project dependencies, and skips both
+when its validation step is also skipped. Its push comparison now uses the
+event's `before` SHA rather than `HEAD~1` (which missed earlier commits in a
+multi-commit push); PR and merge-group comparisons use their event base SHA,
+and unavailable bases fail closed. Changed paths are passed as NUL-delimited
+files rather than interpolated into a shell command through a step output,
+preserving unusual filenames. These are dependency/idle-job reductions and a
+selection-correctness fix; no end-to-end CI timing delta is claimed while
+hosted jobs cannot start.
+
 The local scope runner's cross-product guard previously compared the source
 file stem instead of the declared Cargo `target`. A renamed/grouped test target
 from another selected package could be executed unintentionally. The guard now

@@ -372,39 +372,55 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Identify changed agent output JSONs
+        id: changed
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          MERGE_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            pull_request) base="$PR_BASE_SHA" ;;
+            push) base="$PUSH_BEFORE_SHA" ;;
+            merge_group) base="$MERGE_BASE_SHA" ;;
+            *) echo "unsupported event: $EVENT_NAME" >&2; exit 2 ;;
+          esac
+          if [[ "$base" == "0000000000000000000000000000000000000000" ]]; then
+            base="$(git hash-object -t tree /dev/null)"
+          elif [[ ! "$base" =~ ^[0-9a-f]{40}$ ]] || ! git cat-file -e "${base}^{commit}"; then
+            echo "invalid or unavailable base commit: $base" >&2
+            exit 2
+          fi
+          git diff --name-only -z --diff-filter=ACMRT "$base" HEAD -- \
+            '**/agent_output*.json' 'agent_output*.json' \
+            > "$RUNNER_TEMP/agent-output-changed-files"
+          if [[ -s "$RUNNER_TEMP/agent-output-changed-files" ]]; then
+            echo "has_files=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_files=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup Python
+        if: steps.changed.outputs.has_files == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install agent-output dependencies
+        if: steps.changed.outputs.has_files == 'true'
         run: python -m pip install -e .
 
-      - name: Identify changed agent output JSONs
-        id: changed
-        run: |
-          if [ -n "${{ github.event.pull_request.base.sha }}" ]; then
-            BASE="${{ github.event.pull_request.base.sha }}"
-          else
-            BASE="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
-          fi
-          files=$(git diff --name-only --diff-filter=AM "$BASE"...HEAD -- '**/agent_output*.json' 'agent_output*.json' 2>/dev/null || true)
-          {
-            echo "files<<EOF"
-            echo "$files"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
       - name: Validate agent outputs (semantic gate)
-        if: steps.changed.outputs.files != ''
+        if: steps.changed.outputs.has_files == 'true'
         run: |
           set -euo pipefail
-          while IFS= read -r f; do
-            [ -z "$f" ] && continue
+          while IFS= read -r -d '' f; do
             echo "::group::$f"
             python3 tools/ci/agent/validate_agent_output.py "$f" --skip-rust-gates
             echo "::endgroup::"
-          done <<< "${{ steps.changed.outputs.files }}"
+          done < "$RUNNER_TEMP/agent-output-changed-files"
 
   semgrep:
     runs-on: ubuntu-latest
@@ -452,9 +468,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install prompt-manager deps
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .[dev]
+        run: python -m pip install -e . 'pytest>=8.3.0' 'ruff==0.16.8'
 
       - name: prompt-manager sync
         run: python tools/prompt-manager/pm.py sync
