@@ -13,6 +13,14 @@ WORKFLOW = ROOT / ".github/workflows/ci.yml"
 CORRECTNESS_WORKFLOW = ROOT / ".github/workflows/correctness.yml"
 
 
+def test_ci_avoids_duplicate_branch_push_and_pull_request_runs() -> None:
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    triggers = workflow["on"]
+    assert triggers["push"] == {"branches": ["main"]}
+    assert "pull_request" in triggers
+    assert "merge_group" in triggers
+
+
 def test_scoped_repository_lints_skip_unrelated_docs_and_cover_their_inputs() -> None:
     config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
     hooks = {

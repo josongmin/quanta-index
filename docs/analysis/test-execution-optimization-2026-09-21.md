@@ -733,6 +733,13 @@ hash those files in 1 MiB chunks. This is byte-compatible and keeps memory
 bounded for release-sized binaries; the focused proof/workflow set passes 73
 tests after the change.
 
+Regular CI also subscribed to both every branch push and every pull request.
+An open feature branch therefore launched the same workflow twice for one
+commit. Push validation is now restricted to `main`; feature branches retain
+the pull-request workflow, and merge queues retain `merge_group`. A trigger
+topology test fixes all three owners so branch deduplication cannot silently
+remove main or merge-queue coverage.
+
 ## Remaining measurement
 
 On a quiet host, run:
