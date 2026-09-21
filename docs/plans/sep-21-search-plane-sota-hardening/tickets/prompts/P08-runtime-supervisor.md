@@ -54,10 +54,18 @@ mandatory proofs:
 - before/after FD/thread/socket inode/lease/residual provider task accounting
 - live work가 남은 상태에서 graceful `drive` return 발생 건수 = 0; child 종료 전 lease drop 발생 건수 = 0
 
-proof node는 `p08-runtime-supervisor`다. `test_authority_targets`가 비어 있거나 mandatory process/signal/rollback/
-lease scenario를 선택하지 않으면 패치 전에 `BLOCKED`다. canonical release command는
-`just rust-profile test-daemon-all`이다. facade/re-export 변경에는 `just rust-hexagonal`, `just rust-cargo-modules`,
+owner node expected tuple은 `id=p08-runtime-supervisor-owner`, `family=P`, `required_host=any`,
+`dependencies=[p07-provider-boundary-owner]`이며 disposable local processes만 사용한다. release node는
+`id=p08-runtime-supervisor`, `family=P`, `required_host=linux-production-like`,
+`dependencies=[p08-runtime-supervisor-owner,p07-provider-boundary]`다. `test_authority_targets`가 비어 있으면 production implementation 전에 같은
+lane에서 proof bootstrap을 먼저 수행한다. exact process test/suite, target ID, recipe, selector를 등록하고 dry-run이
+mandatory process/signal/rollback/lease scenario를 실제 선택하지 못할 때 `BLOCKED`다. canonical
+`just rust-proof-p08-runtime-supervisor`는 먼저 `just rust-profile release-daemon-fresh`로 exact release daemon path/SHA를
+동결하고 process harness에 `QUANTA_INDEX_SEARCHD_BIN`으로 주입한다. release proof에서 `CARGO_BIN_EXE_*` 사용은 금지한다.
+`test-daemon-all`은 subordinate scenario rail이며 manifest binary와 실제 child executable이 exact match해야 한다.
+signal/kill/slowloris/lease proof는 task가 직접 spawn한 disposable process/state root만 대상으로 한다. facade/re-export 변경에는 `just rust-hexagonal`, `just rust-cargo-modules`,
 `just rust-public-api`를 추가한다. macOS focused proof를 Linux production proof로 승격하지 마라. 최종 보고에 source freeze, lifecycle diagram, owned
 resource inventory, exit semantics, command/counts, platform별 NOT_RUN, P09 readiness events와
-`artifacts/sep-21/handoffs/P08.json`을 남겨라. 이 checkpoint에서 S21-08/09의 M3 lifecycle closure를 함께 판정한다. explicit
+`artifacts/sep-21/handoffs/P08.json`을 남겨라. S21-08/09 lifecycle closure를 선언하려면 clean P08 result HEAD에서
+P07/P08 mandatory selectors를 재실행해 same-HEAD M3 integration receipt를 만든다. 없으면 atomic closure를 선언하지 않는다. explicit
 owner path만 checkpoint commit하고 current lane branch에 non-force push한다.

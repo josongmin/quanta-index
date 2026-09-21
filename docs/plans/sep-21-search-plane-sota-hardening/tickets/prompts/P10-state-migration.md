@@ -57,8 +57,13 @@ DoD fixtures:
 - non-empty destination, symlink/path traversal, wrong owner/mode, disk-full, fsync/rename crash를 fail-closed
 - broad/root/home/unresolved target과 source=destination destructive operation을 mutation 전에 거부
 
-proof node는 `p10-state-migration`이다. `test_authority_targets`가 비어 있거나 disposable migration/backup/restore/
-rollback/corruption scenarios를 선택하지 않으면 패치 전에 `BLOCKED`다. canonical release command는
+owner node expected tuple은 `id=p10-state-migration-owner`, `family=X`, `required_host=any`,
+`dependencies=[p09-control-readiness-owner]`이며 disposable state roots만 사용한다. release node는
+`id=p10-state-migration`, `family=X`, `required_host=linux-production-like`,
+`dependencies=[p10-state-migration-owner,p09-control-readiness]`다. transitive
+identity/activation/journal/supervisor contracts는 current source digest로 소비한다. `test_authority_targets`가 비어 있으면
+production implementation 전에 same lane에서 exact fixture/suite/target/recipe/selector를 bootstrap한다. disposable
+migration/backup/restore/rollback/corruption scenarios를 dry-run에서 실제 선택하지 못할 때 `BLOCKED`다. canonical release command는
 `release-daemon-fresh`의 exact path/hash로 reopen/process proof를 실행하는 dedicated recipe여야 한다. registry의
 `just rust-profile test-daemon-all`이 Cargo test binary만 실행하면 recipe/registry를 먼저 고친다. Linux
 production-like/release-daemon proof가 필요하다. 모든 drill은 disposable state root에서 수행한다. 실제/공유 state

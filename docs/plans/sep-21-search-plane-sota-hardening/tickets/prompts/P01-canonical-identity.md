@@ -28,7 +28,8 @@ lane은 live persistence를 바꾸지 않으며 S21-01 전체 closure가 아니�
 - Cargo manifests/lockfile, identity/error/layout owner tests, dedicated Just/profile/test-authority/proof registry delta
 - `tools/ci/search-plane-error-code-table.schema.json` 규약에 따른 committed
   `tools/ci/inventory/search-plane-error-codes.json` producer/validator
-- shared public API baseline/wire inventory는 P02I single writer가 적용할 exact delta만 handoff한다.
+- P01A 자체 public surface 변경으로 발생한 public API baseline/wire inventory는 이 lane이 같은 checkpoint에서
+  갱신한다. P02I에는 P02A/P02B 후속 delta의 single-writer 경계만 handoff한다.
 
 ## 구현 순서
 
@@ -72,7 +73,7 @@ lane은 live persistence를 바꾸지 않으며 S21-01 전체 closure가 아니�
 - production RepoMap filesystem mutation 0; live cutover symbols는 의도적으로 P03에 남음
 - `rust-public-api`, wire inventory, fuzz smoke와 owner-local tests가 same source를 가리킴
 
-proof node는 `p01-canonical-identity`다. 현재 staged row를 이 lane이 dedicated recipe와 non-empty
+proof expected tuple은 `id=p01-canonical-identity`, `family=U`, `dependencies=[p00-authority-freeze]`다. 현재 staged row를 이 lane이 dedicated recipe와 non-empty
 test-authority scope/targets로 교체하고 executable로 전환한다. generic `test-fast`나 compile-only를
 OWNER_PROOF_GREEN으로 승격하지 않는다.
 

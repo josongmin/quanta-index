@@ -73,7 +73,7 @@ inventory한다.
 
 아래 graph 하나만 허용한다.
 
-`P00 → P01A → (P02A ∥ P02B) → P02I → P03(S21-01B + S21-02) → P04 → … → P12`
+`P00 → P01A → (P02A ∥ P02B) → P02I → P03(S21-01B + S21-02) → P04 → … → P11 → P12A → P12Q`
 
 - P01A: canonical IDs, candidate/quarantine codecs, closed error-code migration, pure address/security primitives.
   live `persistence.rs`/`store.rs`, activation/quarantine filesystem mutation은 금지한다.
@@ -89,7 +89,7 @@ inventory한다.
 ## write scope
 
 - SEP-21 ADR/decision registry
-- S21-00/01/02/04/13 tickets, INDEX/ACTION-LIST/FINAL-AUDIT
+- S21-00/01/02/03/04/13 tickets, INDEX/ACTION-LIST/FINAL-AUDIT
 - P00/P01A/P02A/P02B/P02I/P03 prompts와 common runbook
 - `tools/ci/{proof-authority,test-authority}.toml`, wire inventory, proof schema/checker/writer/tests, Just recipes, CI wiring
 - generated docs는 `tools/prompt-manager/sources/` owner 수정 후 sync만 허용
@@ -104,6 +104,24 @@ inventory한다.
 - missing/stale/short-SHA/wrong-binary/zero-execution/ignored-only/unregistered proof가 validator와 blocking CI에서 실패한다.
 - source digest는 staged+unstaged+scoped untracked bytes를 포함하고 proof output은 제외한다.
 - registry 기반 writer만 terminal manifest를 만들며 자유입력 command/profile/target은 authority가 아니다.
+- proof schema/writer/checker는 domain `quanta-proof-source-binding-v1`의 canonical `{source,source_pair}` 전체로
+  `source-binding-digest`를 계산하고, 최종 canonical manifest bytes로 `manifest-digest`를 계산한다. writer는 proof ID별
+  current alias와 별도로
+  `archive/<proof-id>/<source-binding-digest>/<manifest-digest>.json` immutable receipt를 create-new 발급한다.
+  동일 path의 exact bytes는 idempotent success, 다른 bytes/overwrite/delete는 fail-closed다. primary source만 같은 서로
+  다른 pair와 동일 source의 서로 다른 retry receipt가 충돌하지 않아야 한다.
+- manifest `dependency_receipts`와 handoff는 dependency의 exact immutable archive path/digest만 참조한다. writer/checker의
+  historical mode는 registry alias equality를 요구하지 않고 transitive archive DAG를 검증한다. current alias가 후속
+  receipt로 이동해도 과거 DAG는 유효해야 하며 archive path/bytes/digest 변경은 실패해야 한다.
+- `tools/ci/lint/check-lane-handoff.py`와 owner tests/canonical recipe를 이 lane에서 구현한다. schema validation 외에
+  top-level quanta SHA/digest와 paired quanta entry equality, `PUSHED ⇒ attempted=true ∧ remote_sha=result_sha`, proof
+  archive path/source/count/status consistency를 fail-closed 검증한다. downstream lane이 존재하지 않는 validator를
+  가정하지 않게 P00 owner proof에 포함한다. `selected == executed == passed`, proof ID uniqueness,
+  `not_run[]`와 `proofs[status=NOT_RUN]` exact consistency도 검증한다.
+  P02I `integration_commits`는 P02A/P02B exactly once이며 MERGE면 original ancestry 보존, CHERRY_PICK이면
+  original/applied mapping과 patch identity를 검증한다.
+- archive negative fixtures는 source_pair만 다른 binding, 동일 source retry의 서로 다른 manifest leaf, dependency current
+  alias 갱신 뒤 old archive DAG 성공, archived dependency path/bytes/digest 변조 실패를 포함한다.
 - public/persisted format별 producer/consumer/version/decoder/migration fixture가 inventory에 있다.
 - aggregate receipt schema/writer와 canonical final recipe가 dependency validation → four-verdict calculation → aggregate
   artifact → P12 manifest issuance를 수행한다. dependency manifest 검증만 하는 recipe는 P12 proof가 아니다.

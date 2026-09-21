@@ -93,10 +93,13 @@ Closed Phase A owners:
 - PR CI blocks on the current P00 receipt; the explicit release gate uses `--require-all --bind-source`
 - exact-pair release receipts bind normalized Semantica repository identity, Git state and `Cargo.lock`
 
-Per-lane requirement, not Phase A closure: each P01-P12 owner must register any new concrete `test-authority`
+Per-lane requirement, not Phase A closure: each P01-P11 owner and P12A infrastructure owner must register any new concrete `test-authority`
 target before claiming its proof. Empty future target lists are not evidence and are not promoted by the M0 receipt.
 
 ### Phase B — final aggregate
+
+Phase B는 `P12A → P12Q` 두 직렬 lane이다. P12A가 아래 aggregate infrastructure를 구현하고 checkpoint를 만든다.
+P12Q는 그 clean result에서 source 수정 없이 전체 proof를 실행·수집하고 terminal verdict/manifest를 발급한다.
 
 - final clean source에서 동일 release daemon binary를 모든 process/cross-repo proof에 사용한다.
 - mandatory family 전부와 deployment/activation/rollback evidence를 aggregate하고 누락/실패/skipped/stale를
@@ -106,7 +109,7 @@ target before claiming its proof. Empty future target lists are not evidence and
   recipe가 dependency manifest validation → four-verdict calculation → atomic aggregate artifact publication → P12
   proof-manifest issuance를 수행한다. 기존 dependency manifests를 검사만 하고 새 aggregate artifact를 만들지 않는
   command는 P12 producer가 아니며 final proof를 발행할 수 없다.
-- aggregate receipt는 P11 immediate handoff뿐 아니라 P00→P12 transitive handoff chain, P02A/P02B/P02I fork/join,
+- aggregate receipt는 P11 immediate handoff뿐 아니라 P00→P11 transitive handoff chain, P02A/P02B/P02I fork/join,
   exact source pair, attested binary와 모든 mandatory artifact digest를 검증한다.
 
 ## Owner files

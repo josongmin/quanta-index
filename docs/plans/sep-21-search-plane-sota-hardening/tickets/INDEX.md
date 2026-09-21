@@ -222,9 +222,9 @@ Authority rules:
 |---|---|---|
 | [S21-00](S21-00-authority-freeze-and-cutover-contract.md) | authority/ADR/schema/cutover freeze | none |
 | [S21-01](S21-01-canonical-identity-and-layout-v3.md) | P01A pure identity/codec/error primitives; P03 live layout/quarantine closure | 00; live phase also 03, 04 |
-| [S21-02](S21-02-sealed-candidate-activation-and-recovery.md) | immutable RepoMap candidate, content-bound activation, recovery reconciliation | 00, 01, 03, 04 |
-| [S21-03](S21-03-repomap-graph-compiler-and-resource-envelope.md) | validated typed graph compiler and bounded materialization | 00, 01 |
-| [S21-04](S21-04-operation-journal-and-sequence-authority.md) | replay-first durable operation state machine and sequence authority | 00, 01 |
+| [S21-02](S21-02-sealed-candidate-activation-and-recovery.md) | immutable RepoMap candidate, content-bound activation, recovery reconciliation | 00, 01A, 03, 04; closes with 01B in P03 |
+| [S21-03](S21-03-repomap-graph-compiler-and-resource-envelope.md) | validated typed graph compiler and bounded materialization | 00, 01A |
+| [S21-04](S21-04-operation-journal-and-sequence-authority.md) | replay-first durable operation state machine and sequence authority | 00, 01A |
 | [S21-05](S21-05-read-view-v2-and-snapshot-lifetime.md) | actual immutable handle pinning for every declared domain | 00, 02, 04 |
 | [S21-06](S21-06-query-completeness-continuation-and-provenance.md) | canonical cursor, completeness, ranking and explain truth | 00, 05 |
 | [S21-07](S21-07-sdk-wire-response-binding.md) | shared request/response/receipt semantic validators | 00, 01, 02, 04, 06 |
@@ -250,7 +250,7 @@ Authority rules:
 
 Parallelism:
 
-- 전체 graph는 `P00 → P01A → (P02A ∥ P02B) → P02I → P03 → P04 → … → P12`이다.
+- 전체 graph는 `P00 → P01A → (P02A ∥ P02B) → P02I → P03 → P04 → … → P11 → P12A → P12Q`이다.
 - 오직 P02A graph compiler와 P02B operation/global-event journal만 병렬 가능하다. 서로 다른 worktree/branch에서
   같은 P01A base를 사용하며 P03은 P02I same-HEAD 통합 proof 이후 시작한다.
 - W3는 P04→P05→P06 순차 stack이다. P06은 P05 public schema를 재설계하지 않는다.
@@ -258,8 +258,9 @@ Parallelism:
 - 같은 contract DTO/baseline 파일을 동시에 수정하는 병렬 작업과 그 밖의 병렬 lane은 금지한다.
 
 Handoff rule: 각 순차 lane은 immediate predecessor handoff만 직접 검증한다. P02I는 P02A/P02B 두 handoff와 proof를
-동일 HEAD에서 검증한다. 이 규칙은 transitive provenance를 버린다는 뜻이 아니다. P12 aggregate producer가 P00부터
-P12까지 전 체인과 fork/join을 재검증한다. 매 lane이 모든 과거 artifact를 재검증하는 방식은 금지한다.
+동일 HEAD에서 검증한다. 이 규칙은 transitive provenance를 버린다는 뜻이 아니다. P12A aggregate producer가 P00부터
+P11까지 전 체인과 fork/join을 검증하도록 구현하고 P12Q가 final source pair에서 재검증한다. 매 lane이 모든 과거
+artifact를 재검증하는 방식은 금지한다.
 
 ## 7. Finding coverage
 

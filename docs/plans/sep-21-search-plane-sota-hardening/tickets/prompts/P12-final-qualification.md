@@ -1,33 +1,59 @@
-# Copy/paste prompt — P12 Final SOTA Qualification
+# Copy/paste prompt — P12Q Final SOTA Qualification
 
-당신은 S21-13 phase B final qualification owner다. 먼저 repo root 기준
-`docs/plans/sep-21-search-plane-sota-hardening/tickets/prompts/COMMON-EXECUTION-CONTRACT.md`와 같은 디렉터리의
-`README.md`를 읽고 그대로 적용한다. 모든 lane handoff/proof가 current final source pair에 결속되고 legacy
-live paths가 제거된 뒤에만 시작한다. 코드를 편의상 고쳐서 proof를 맞추지 말고 발견된 결함은 owning ticket으로
-되돌린다.
+당신은 S21-13 phase B qualification-only owner다. 먼저 repo root 기준
+`docs/plans/sep-21-search-plane-sota-hardening/tickets/prompts/COMMON-EXECUTION-CONTRACT.md`, 같은 디렉터리의
+`README.md`, `docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/README.md`를 읽고 그대로 적용한다. immediate P12A clean checkpoint/handoff가 start
+HEAD와 exact match하고 aggregate infrastructure owner checks가 green일 때만 시작한다. product code, proof registry,
+schema/writer/validator/recipe를 고치지 않는다. 결함은 owning lane으로 되돌리고 `BLOCKED`다.
 
 읽을 문서:
 
 - repo instructions
-- `docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-AUDIT.md`
-- `docs/plans/sep-21-search-plane-sota-hardening/tickets/INDEX.md`
+- `docs/plans/sep-21-search-plane-sota-hardening/tickets/{FINAL-AUDIT,INDEX,ACTION-LIST}.md`
 - `docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-13-release-evidence-and-sota-qualification.md`
-- P00 proof authority와 P01~P11 handoff 전부
+- P00~P11 handoff 전부와 immediate P12A handoff
 
-목표: 한 final clean source pair와 동일 attested release daemon binary에서 mandatory proof graph를 검증하고
-code/deploy/activation/rollback 상태를 분리 판정한다.
+## REQUIRED INPUTS
 
-preflight:
+- `SEMANTICA_CHECKOUT=/Users/songmin/Documents/code-new/semantica-codegraph-v2`; canonical identity
+  `github:josongmin/semantica-codegraph-v2`와 exact match해야 한다.
+- `P12_TERMINAL_INPUT`: final source pair, registry digest, attested daemon path/SHA, host, config/corpus/provider/fixture
+  digests, handoff list와 artifact digests를 담은 schema-valid absolute JSON path.
+- pinned Linux production-like host identity와 actual release daemon absolute path/SHA.
+- real-provider, deploy, activation, rollback 실행 승인을 각각 독립적으로 확인한다. 승인 없는 verdict는 `NOT_RUN`이다.
 
-- quanta-index/Semantica exact clean HEAD, upstream/merge-base, dirty=clean
-- frozen `tools/ci/proof-authority.toml` digest, proof ID/dependency DAG, S/U/A/D/P/F/Q/X 전수 재산정
+두 입력이 없거나 stale하면 즉시 `BLOCKED`다. 로컬 default, 과거 SHA, 대화의 DONE, mock binary로 보완하지 않는다.
+
+## 목표
+
+한 final clean quanta/Semantica source pair와 동일 attested release daemon binary에서 mandatory proof graph를 실행·수집하고
+`CODE_QUALIFIED`, `DEPLOYED`, `ACTIVATED`, `ROLLBACK_PROVEN`을 서로 독립적으로 판정한다.
+
+## preflight
+
+- quanta-index/Semantica exact clean HEAD, branch/upstream/merge-base, dirty=clean
+- frozen `tools/ci/proof-authority.toml` digest와 proof ID/family/dependency DAG
 - daemon binary SHA/features/toolchain/state-root format
 - pinned Linux production-like host identity
 - corpus/config/model/provider/fixture digests
-- 모든 profile이 실제 target을 선택하는지 inventory 확인
+- 모든 profile/selector의 non-empty actual target selection
+- aggregate `product_handoffs` exact list:
+  `P00,P01,P02A,P02B,P02I,P03,P04,P05,P06,P07,P08,P09,P10,P11`
+- 별도 `infrastructure_handoff=P12A`; P12A result SHA는 current start HEAD와 exact match하고
+  `p12a-proof-infrastructure` manifest가 source-bound green이어야 한다.
 
-canonical mandatory families는 proof registry의 8개 code와 모든 registered release proof ID다. 아래는 별도 family
-enum이 아니라 coverage dimension이다.
+P12 output 자체와 P12A를 product handoff ledger에 포함하지 않는다. final aggregate가 P00→P11 product serial/fork-join
+chain을 검증하고 P12A를 별도 infrastructure prerequisite로 검증한 뒤 마지막으로 P12 handoff/manifest를 발급한다.
+
+## mandatory coverage
+
+final source에서 전체 dependency closure를 topological order로 재실행한다:
+`P00/P01/P02 → P03~P10 owner chain → P03~P10 release chain → P11 exact-pair/deploy/activate/rollback chain →
+aggregate/P12`. registry의 release proof뿐 아니라 모든 `*-owner` dependency manifest도 final
+`source-binding-digest/manifest-digest` keyed immutable archive에 재발급하고 `dependency_receipts`는 exact transitive
+archive path/digest를 가리킨다. historical handoff archives는 덮어쓰지 않으며 aggregate는 historical ledger와 final
+rerun ledger를 각각 검증한다.
+family code `S/U/A/D/P/F/Q/X`는 coverage dimension이며 임의로 새 family 의미를 만들지 않는다.
 
 - S: static architecture/public API/wire/module/policy
 - U: owner-local positive/negative/recovery
@@ -38,40 +64,38 @@ enum이 아니라 coverage dimension이다.
 - Q: fixed-corpus relevance, ANN recall, latency/QPS/RSS/FD/thread/disk/WAL
 - X: external Semantica/provider/migration/deploy evidence
 
-registered live/J7Q/integration targets는 해당 proof node와 `test-authority` target에 교차 결속돼야 한다.
-
-proof rules:
+## proof rules
 
 - each node records full source/binary/host/config identity and selected/executed/passed/failed/ignored counts
 - missing/stale/skipped/zero-selected/wrong-binary/dirty mismatch is failure
 - independent quality oracle cannot derive expected output from SUT output
-- same binary progresses through process/external proof; untracked rebuild는 별도 identity
-- macOS proof가 Linux credential/performance proof를 대체하지 않음
-- fake provider가 required real-provider proof를 대체하지 않음
-- final validator는 `--require-all --bind-source`로 manifest 0/missing/stale를 실패시키고 dependency receipt도 같은
-  source pair/daemon binary/required host에 결속한다.
-- final qualification command는 `verify-rust` 단독이 아니라 모든 registered proof 실행/수집과 aggregate receipt
-  schema validation을 포함해야 한다. dependency validation 뒤 four-verdict 계산, aggregate artifact 작성,
-  `p12-final-qualification` manifest 발급까지 하는 schema/writer/producer가 없으면 `BLOCKED`다.
+- same binary progresses through process/external proof; untracked rebuild is a new identity
+- macOS proof does not replace Linux credential/performance proof
+- fake provider does not replace required real-provider proof
+- final validator uses `--require-all --bind-source` and exact-pair validation
+- canonical command is `just proof-authority-final-qualification`; raw `verify-rust` success is not terminal authority
+- aggregate artifact is included in `P12_TERMINAL_INPUT` terminal artifacts and its digest must match the issued manifest
 
-canonical escalation은 `Justfile`과 `./scripts/cargow`를 사용하고 current profile registry로 실제 coverage를
-확인하라. raw command 성공만으로 product GREEN을 주장하지 마라.
-
-aggregate receipt의 closed state와 validator가 다음 verdict를 각각 계산한다. 사람이 보고문으로 임의 판정하지 않는다.
+aggregate closed state computes these separately:
 
 - `CODE_QUALIFIED`
 - `DEPLOYED`
 - `ACTIVATED`
 - `ROLLBACK_PROVEN`
 
-`PRODUCTION_READY`는 M0~M4 complete, registry digest 고정, legacy live path 0, full manifest valid,
-migration/rollback/cross-repo/Linux/승인된 real-provider proof pass, unresolved P0/P1/NOT_RUN/BLOCKED 0일 때만
-가능하다. deploy/activate/provider 승인이 없으면 해당 verdict는 NOT_RUN이고 `PRODUCTION_READY=false`다.
+`PRODUCTION_READY` requires M0~M4 complete, registry digest fixed, legacy live path 0, full manifest valid,
+migration/rollback/cross-repo/Linux/approved real-provider proof pass, unresolved P0/P1/`NOT_RUN`/`BLOCKED` 0. 승인 없는
+deploy/activate/provider/rollback은 해당 verdict `NOT_RUN`이고 `PRODUCTION_READY=false`다.
 
-proof node는 `p12-final-qualification`이다. 최종 보고에는 exact source pair, registry/plan/aggregate manifest digest,
-daemon binary, 모든 proof ID/family result/counts/artifact path, failed/skipped/not-run ledger, 네 verdict와 근거,
-unresolved risks와 `artifacts/sep-21/handoffs/P12.json`을 포함하라. 이 lane은 product code나 proof registry를 고치지
-않는다. aggregate recipe/target/dependency가 빠졌으면 owning lane으로 되돌리고 `BLOCKED`다. proof execution은 code 수정과
-분리한다. tracked qualification artifact/index 변경이 있을 때만 explicit path를 commit하고 current lane branch에
-non-force push하며 empty commit은 만들지 않는다. provider egress, deploy, activate, rollback은 각각 별도 명시
-요청 없이는 수행하지 않는다.
+proof node expected tuple은 `id=p12-final-qualification`, `family=S`,
+`dependencies=[p12a-proof-infrastructure]`, `source_binding=exact-pair`,
+`binary_binding=release-daemon`, `required_host=linux-production-like`다. aggregate가 `NOT_READY`이면 diagnostic artifact는
+남길 수 있지만 P12 manifest를 발급하지 않는다.
+
+최종 보고에는 exact source pair, registry/plan/aggregate digest, daemon binary, 모든 proof ID/family result/counts/artifact,
+failed/skipped/not-run ledger, 네 verdict와 근거, unresolved risks와 `artifacts/sep-21/handoffs/P12.json`을 포함한다.
+handoff는 `lane=P12`, `ticket=S21-13`, `paired_repositories`를 기록한다. tracked source write는 0이다.
+report/handoff/receipt는 source-digest 제외 artifact에만 발급한다. tracked 결함이 발견되면
+P12A 또는 owning product lane으로 되돌리고 새 checkpoint 후 전체 proof를 재실행하며 empty commit은 만들지 않는다.
+provider egress, deploy, activate, rollback은 각각 별도
+명시 승인 없이는 수행하지 않는다.
