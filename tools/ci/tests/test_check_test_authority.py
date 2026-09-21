@@ -318,11 +318,13 @@ def test_grouped_integration_sources_require_manifest_and_launcher_binding(tmp_p
             )
 
 
-def test_full_corpus_diagnostic_job_does_not_duplicate_pr_workspace_rail():
+def test_full_corpus_has_one_hosted_workspace_owner_per_event():
     workflow = yaml.safe_load(
         (REPO_ROOT / ".github" / "workflows" / "correctness.yml").read_text(encoding="utf-8")
     )
-    job = workflow["jobs"]["rust-full-corpus"]
+    assert "rust-full-corpus" not in workflow["jobs"]
+
+    job = workflow["jobs"]["rust-authority-nextest"]
     assert job["if"] == (
         "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
     )
@@ -331,10 +333,10 @@ def test_full_corpus_diagnostic_job_does_not_duplicate_pr_workspace_rail():
         for step in job["steps"]
         if isinstance(step, dict)
     )
-    run = next(step["run"] for step in job["steps"] if isinstance(step, dict) and "run" in step)
-    assert "--test runtime_risk_suite" in run
-    assert "test(/^e2e_full_corpus::/)" in run
-    assert "--no-tests fail" in run
+    run = "\n".join(
+        step["run"] for step in job["steps"] if isinstance(step, dict) and "run" in step
+    )
+    assert "nextest run --workspace --all-features --locked" in run
 
 
 def test_local_scope_rejects_unknown_target(tmp_path: Path):

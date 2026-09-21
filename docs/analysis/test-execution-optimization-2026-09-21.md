@@ -406,13 +406,13 @@ account billing.
 The correctness workflow still invoked `cargo test --test e2e_full_corpus`
 after that source became a module of `runtime_risk_suite` with
 `autotests = false`. A local `--no-run` probe confirmed Cargo exits 101 with
-"no test target named `e2e_full_corpus`" before compiling. The dedicated
-workflow job now selects `runtime_risk_suite` with a module filter, the same
-test surface as the local `just rust-test-full-corpus` rail. It runs on schedule or explicit
-dispatch, not on every PR: PR workspace nextest already executes the same
-module, so a second cold runtime build added no PR coverage. The catalog lint
-now validates every explicit workflow `--test` selector against cataloged
-Cargo target names; regression tests cover both split and equals syntax.
+"no test target named `e2e_full_corpus`" before compiling. The local `just
+rust-test-full-corpus` rail selects `runtime_risk_suite` with a module filter.
+Hosted CI does not build that same module in a second isolated job: PR/merge
+workspace nextest covers it in `ci.yml`, and scheduled/manual workspace
+nextest covers it in `correctness.yml`. The catalog lint validates every
+remaining explicit workflow `--test` selector against cataloged Cargo target
+names; regression tests cover both split and equals syntax.
 The focused checker tests (13/13), real catalog lint, Ruff, actionlint, and
 diff check passed. The corrected CI command has not run at this HEAD: the
 host had 70 Cargo/rustc processes during the audit, and jobs on the previous

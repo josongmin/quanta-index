@@ -324,34 +324,6 @@ jobs:
           source scripts/quanta-index-env.sh
           python3 tools/ci/lint/check-llvm-lines.py
 
-  rust-full-corpus:
-    name: rust-full-corpus (real-engine corpus)
-    # PR workspace nextest already runs this module; retain the isolated
-    # diagnostic rail for nightly and explicit runs without a second PR build.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.92.0
-
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
-
-      - name: Run full-corpus module from runtime_risk_suite
-        run: |
-          ./scripts/cargow nextest run \
-            -p quanta-index-searchd-runtime \
-            --test runtime_risk_suite \
-            --all-features \
-            --locked \
-            -E 'test(/^e2e_full_corpus::/)' \
-            --no-tests fail \
-            --success-output final
-
   rust-public-api:
     name: rust-public-api (contract surface diff)
     runs-on: ubuntu-latest
